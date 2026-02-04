@@ -25,6 +25,17 @@ Verify:
 golangci-lint version
 ```
 
+### go-arch-lint
+
+```bash
+go install github.com/fe3dback/go-arch-lint@latest
+```
+
+Verify:
+```bash
+go-arch-lint version
+```
+
 ## Project Setup
 
 Clone the repository and the Go module is already initialized:
@@ -41,9 +52,14 @@ go mod tidy
 
 ## Linting
 
-Run the linter:
+Run code linter:
 ```bash
 golangci-lint run
 ```
 
-Configuration is in `.golangci.yml`.
+Run architecture linter:
+```bash
+go-arch-lint check
+```
+
+Configuration files: `.golangci.yml`, `.go-arch-lint.yml`
