@@ -36,6 +36,39 @@ Verify:
 go-arch-lint version
 ```
 
+### markdownlint
+
+```bash
+brew install markdownlint-cli
+```
+
+Verify:
+```bash
+markdownlint --version
+```
+
+### yamllint
+
+```bash
+brew install yamllint
+```
+
+Verify:
+```bash
+yamllint --version
+```
+
+### shellcheck
+
+```bash
+brew install shellcheck
+```
+
+Verify:
+```bash
+shellcheck --version
+```
+
 ## Project Setup
 
 Clone the repository and the Go module is already initialized:
@@ -62,4 +95,19 @@ Run architecture linter:
 go-arch-lint check
 ```
 
-Configuration files: `.golangci.yml`, `.go-arch-lint.yml`
+Run markdown linter:
+```bash
+markdownlint '**/*.md'
+```
+
+Run YAML linter:
+```bash
+yamllint .
+```
+
+Run shell script linter:
+```bash
+shellcheck **/*.sh
+```
+
+Configuration files: `.golangci.yml`, `.go-arch-lint.yml`, `.markdownlint.yaml`, `.yamllint.yaml`
