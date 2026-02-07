@@ -1,4 +1,6 @@
-# Oro Agent Orchestrator: IPC & Coordination Comparison
+# [HISTORICAL] Oro Agent Orchestrator: IPC & Coordination Comparison
+
+> **Status: Historical.** Superseded by `2026-02-07-manager-redesign.md`. This doc assumed Manager = Go binary. Actual design: Manager = Claude session + Dispatcher (Go). IPC comparison analysis and resolved questions (R1-R6) remain valid reference material — the architectural framing changed, not the protocol-level decisions.
 
 ## Stated Objectives
 
