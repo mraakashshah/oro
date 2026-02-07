@@ -127,6 +127,7 @@ Throughout execution, memories are captured and fed back:
 - Manager runs `oro memories consolidate` periodically (dedup, prune stale)
 
 **Injection (automatic):**
+
 - Go wrapper queries memories before constructing bead prompt
 - Top 3 relevant memories (by tag overlap + BM25 + time decay) injected as `## Relevant Memories` section
 - Workers can also query mid-task: `oro recall "query"`
@@ -221,6 +222,7 @@ Dispatcher pulls work by priority: P0 (bugs, test failures) → P1 (merge confli
 - Manager crashes → Dispatcher continues autonomously (already running) → Manager restarts, reviews state
 
 ### Code Search (oro-w2u, not yet specced)
+
 All roles get a full code search stack for navigating the codebase efficiently. Three layers from CC-v3 reference: AST-aware read enforcer (token savings), search router (structural/literal/semantic), broad codebase search. One configuration for all roles.
 
 ## Implementation Beads
