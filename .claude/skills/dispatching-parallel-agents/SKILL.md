@@ -40,7 +40,8 @@ Each agent gets:
 - **Specific scope** — one subsystem or test file
 - **Clear goal** — make these tests pass / fix this behavior
 - **Constraints** — don't change other code
-- **Expected output** — summary of findings and changes
+- **Quality gate** — agent must run `./quality_gate.sh` before committing and fix any failures
+- **Bead closure** — agent closes bead with `bd close <id> --reason="summary"` (no output files)
 
 ### 3. Dispatch in Parallel
 
