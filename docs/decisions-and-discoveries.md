@@ -1,5 +1,31 @@
 # Decisions and Discoveries
 
+## 2026-02-07: bash ((PASS++)) kills scripts under set -e
+**Tags:** #bash #gotcha #set-e
+**Context:** quality_gate.sh silently exited after the first check with no error message.
+**Discovery:** `((PASS++))` returns exit code 1 when PASS is 0 (0 is falsy in bash arithmetic). Combined with `set -e`, this silently kills the script. No error, no output — just stops.
+**Fix:** Use `PASS=$((PASS + 1))` instead. This always returns exit 0.
+**Implications:** Never use `((var++))` in `set -e` scripts. This is a well-known bash trap but produces zero diagnostic output, making it hard to debug.
+
+## 2026-02-07: go-arch-lint v3 config — correct key is mayDependOn, excludeFiles uses regex
+**Tags:** #go #tooling #go-arch-lint
+**Context:** Tried `canDependOn`, `anyDependOn` — both rejected as unknown keys. `excludeFiles` uses Go regex, not globs — `**` is invalid regex.
+**Discovery:** v3 config uses `mayDependOn` for dependency rules. `excludeFiles` takes Go regex patterns: `"yap/.+"` works, `"yap/**"` doesn't. Internal packages importing themselves (e.g., test files) requires `internal` in its own `mayDependOn` list.
+**Implications:** Always check `go-arch-lint schema` for valid config keys. Use `.+` not `**` in excludeFiles.
+
+## 2026-02-07: biome v2 config — no ignore field in files section
+**Tags:** #tooling #biome #json
+**Context:** biome v2.3.11 rejected `ignores` key in `files` section. Only `includes`, `maxSize`, `ignoreUnknown`, `experimentalScannerIgnores` are valid.
+**Discovery:** biome v2 removed the simple `ignore` field. VCS integration (`useIgnoreFile: true`) handles gitignored dirs, but submodules and tracked dirs need explicit scoping in the CLI command or `experimentalScannerIgnores`.
+**Fix:** Scope biome in the quality gate command: `biome check --files-ignore-unknown=true docs/ .github/ .beads/ *.json` rather than scanning `.`.
+**Implications:** When biome can't exclude via config, scope via CLI args. Always run `biome migrate --write` after version bumps.
+
+## 2026-02-07: Quality gate scoping — never scan . for tools that walk directories
+**Tags:** #tooling #quality-gate #architecture
+**Context:** gofumpt, goimports, biome, go-arch-lint all hung or failed when scanning `.` because `references/` and `yap/` contain thousands of files from submodules and reference repos.
+**Decision:** Every tool in quality_gate.sh must be explicitly scoped to source directories (GO_DIRS, explicit paths) — never `.` or `./...` for tools that walk the filesystem. Go toolchain (`go test ./...`, `go build ./...`) is fine because Go respects module boundaries.
+**Implications:** When adding new tools to the gate, always specify explicit directories. Test with the full repo, not just src dirs.
+
 ## 2026-02-07: golangci-lint v2 gofumpt version mismatch
 **Tags:** #go #tooling #golangci-lint #gofumpt
 **Context:** During oro-fza foundation setup, files formatted by standalone `gofumpt` (v0.9.2) were still flagged as "not properly formatted" by golangci-lint v2.8.0's bundled gofumpt formatter.
