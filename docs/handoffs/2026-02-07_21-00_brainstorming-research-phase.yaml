@@ -42,13 +42,18 @@ beads:
   ready_after_specs: [oro-1s5]  # arch review, blocked by oro-seg + oro-w2u
   critical_path: "oro-seg + oro-w2u → oro-1s5 → oro-q63 → oro-bya → oro-v6f → downstream"
 
+done_later_this_session:
+  - task: "Reviewed and committed both spec files (oro-seg, oro-w2u)"
+    commit: a9f5073
+  - task: "Launched arch review agent (oro-1s5) in background"
+    status: "agent running at handoff time — check docs/plans/2026-02-07-arch-review.md"
+
 background_agents:
-  oro_seg: "Memory search/retrieval algorithm spec — reading BCR recall.py + CC-v3 recall_learnings.py"
-  oro_w2u: "Code search system spec — reading CC-v3 tldr-read-enforcer.ts + smart-search-router.ts"
-  note: "Both agents instructed to write spec files and close beads but NOT commit/push. Next session must review, commit, push."
+  oro_1s5: "Arch review — reading all 6 specs + protocol code, checking coherence"
+  note: "Agent will write to docs/plans/2026-02-07-arch-review.md and close oro-1s5. Next session must review, commit, push."
 
 skills_for_next_session:
   - resume-handoff
-  - review-implementation (review agent spec outputs)
-  - work-bead (for oro-1s5 arch review once specs land)
+  - review-implementation (review arch review output)
+  - work-bead (for oro-q63 SQLite schema DDL after arch review lands)
   - dispatching-parallel-agents (oro-q63 + oro-68t can run parallel after arch review)
