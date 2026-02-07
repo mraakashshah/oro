@@ -11,3 +11,9 @@
 **Context:** Reviewed AI-Unleashed/Claude-Skills/autoskill — watches for user corrections during sessions and proposes skill edits
 **Decision:** Not adopted. We prefer self-directed reflection (agent notices its own friction) over user-directed correction harvesting.
 **Implications:** The reflect step in finishing-work is our feedback loop. Keep it self-directed.
+
+## 2026-02-07: Create review-docs and review-implementation skills
+**Tags:** #skills #review #quality
+**Context:** Reviewed Xexr/marketplace review-documentation (1200-line multi-LLM orchestration) and review-implementation skills
+**Decision:** Created two lean skills (<300 words each). Extracted structured review categories and severity-weighted output format from Xexr. Skipped multi-LLM dispatch, mermaid diagrams, execution checklists — Claude Code only.
+**Implications:** Doc review and implementation review are separate concerns with different triggers. Both use read-only review phase before fixes.
