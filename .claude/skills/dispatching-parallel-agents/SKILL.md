@@ -53,15 +53,36 @@ Task("Fix api_test.go failures — response format mismatch")
 
 **Batch size:** max 15 parallel agents. Beyond that, diminishing returns.
 
-### 4. Review and Integrate
+### 4. Protect the Main Context
+
+**Agent transcripts can be 70k+ tokens.** Keep them out of your context window.
+
+- Run background agents with `run_in_background: true` and have them write results to files
+- **Never poll** with sleep loops — trust system reminders for progress updates
+- Continue working on other tasks while agents run
+- Check output files only when you need results to proceed
+
+```
+# RIGHT — agent writes output to file, main reads the file
+Task(run_in_background=true, prompt="... Write results to docs/agent-output.md")
+# Later: Read("docs/agent-output.md")
+
+# WRONG — dumps full transcript into main context
+TaskOutput(task_id="...")  # 70k+ tokens flooding your window
+```
+
+For agent pipelines, chain via files:
+```
+Research agent → output.md → Plan agent → plan.md → Implement agent
+```
+
+### 5. Review and Integrate
 
 When agents return:
-- Read each summary
+- Read each summary (from files, not TaskOutput)
 - Verify fixes don't conflict
 - Run full test suite
 - Integrate all changes
-
-**Do NOT use TaskOutput to poll agents.** Wait for them to complete and return results.
 
 ## Agent Prompt Structure
 
@@ -95,5 +116,7 @@ Return: Summary of root cause and changes made.
 
 - Dispatching agents for related failures
 - Agents editing the same files
+- Polling agents with sleep loops instead of trusting system reminders
+- Using TaskOutput to read agent results (floods context)
 - No review after agents return
 - Trusting agent results without running full test suite
