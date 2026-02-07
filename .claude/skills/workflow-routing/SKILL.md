@@ -19,6 +19,7 @@ Detect the user's primary goal from their message:
 | "design", "architect", "plan", "break down" | **Plan** | `brainstorming` → `writing-plans` → `premortem` |
 | "add", "implement", "create", "build" | **Build** | `writing-plans` → `executing-plans` → `finishing-work` |
 | "fix", "broken", "failing", "debug", "bug" | **Fix** | `systematic-debugging` → `test-driven-development` → `finishing-work` |
+| "spec", "decompose", "break into beads" | **Decompose** | `spec-to-beads` → `executing-beads` → `finishing-work` |
 
 If intent is clear from context, infer the goal. Otherwise, ask:
 
@@ -28,6 +29,7 @@ What's your primary goal?
 2. Plan — design/architect a solution
 3. Build — implement/code something
 4. Fix — debug/fix an issue
+5. Decompose — break a spec into beads and execute
 ```
 
 ## Workflow Chains
@@ -53,6 +55,11 @@ What's your primary goal?
 2. `test-driven-development` — write failing test, fix
 3. `verification-before-completion` — verify fix
 4. `finishing-work` — integrate
+
+### Decompose
+1. `spec-to-beads` — parse spec, create epic + task beads with acceptance criteria
+2. `executing-beads` — TDD cycle per bead, quality gate, atomic commit
+3. `finishing-work` — integrate and clean up
 
 ## Parallel Detection
 
@@ -90,3 +97,4 @@ Suggest the natural next step:
 | Plan | "Run premortem before building?" |
 | Fix | "Create commit for the fix?" |
 | Build | "Ready to finish and merge?" |
+| Decompose | "All beads closed. Ready to finish?" |

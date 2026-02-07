@@ -59,6 +59,22 @@ Git-backed issue tracker that survives conversation compaction. Provides persist
 
 **Never use `bd edit`** — it opens `$EDITOR` which agents cannot use. Use `bd update` with flags.
 
+## Acceptance Criteria Format
+
+When creating beads for TDD execution (via `spec-to-beads` or `executing-beads`), use this format:
+
+```bash
+bd create --title "..." --acceptance "Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>"
+```
+
+| Field | Purpose | Example |
+|-------|---------|---------|
+| `Test:` | Test file and function | `internal/auth/auth_test.go:TestValidateToken` |
+| `Cmd:` | Verification command | `go test ./internal/auth/... -run TestValidateToken -v` |
+| `Assert:` | What "pass" looks like | `returns valid=true for unexpired JWT` |
+
+This format enables `executing-beads` to automatically parse and verify each bead's completion.
+
 ## Advanced Features
 
 Run `bd prime` for full details on:

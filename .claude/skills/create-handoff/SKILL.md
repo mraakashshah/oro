@@ -62,6 +62,12 @@ next:
 files:
   created: [new files]
   modified: [changed files]
+
+beads:
+  completed: [bd-xxx]
+  in_progress: [bd-yyy]
+  remaining: [bd-zzz]
+  epic: bd-www
 ```
 
 ### 3. Field Guide
@@ -75,6 +81,7 @@ files:
 | `decisions:` | Important choices and rationale |
 | `worked:` / `failed:` | What to repeat vs avoid |
 | `next:` | Action items for next session |
+| `beads:` | Bead state for multi-session work (completed/in_progress/remaining/epic) |
 
 ## Principles
 
