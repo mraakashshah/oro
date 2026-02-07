@@ -295,11 +295,78 @@ P3: other ready beads         → only if epic is drained
 
 ---
 
+## Resolved Design Questions
+
+### R1: Merge protocol (was Q1)
+
+**Decision:** Worker stays alive through merge. Retry-first, escalate-last.
+
+**Flow:**
+1. Worker signals DONE (with merge context annotations on the bead)
+2. Manager acquires merge lock
+3. Manager runs `git rebase main` in worker's worktree
+4. **Clean?** → `git checkout main && git merge --ff-only` → release lock → recycle worker
+5. **Conflict?** → `git rebase --abort` → release lock → tell worker to rebase onto new main
+   - Auto-resolves? (most cases — import order, adjacent lines) → re-enter merge queue
+   - True conflict? → worker resolves using its own context + conflicting bead's merge annotations (`bd show <other-bead>`)
+   - Tests fail after resolution? → escalate to Architect via UDS notification
+
+**Merge context lives on the bead, not in SQLite.** When a worker completes, it annotates the bead with: intent, files changed, invariants, key decisions, commit SHA. This keeps SQLite focused on runtime coordination while beads own work artifacts. Any future resolver reads both beads to understand both sides.
+
+**Why not an external merge agent:** The original worker has the most context about its own changes. An external agent pays full cold-start cost to do a worse job. If the worker ralph'd, the fresh worker inherits handoff YAML + can read both beads' annotations — still better than a blind agent.
+
+**Why not block+notify Architect:** Pipeline stalls on human availability. Architect becomes a merge-conflict bottleneck with 5 workers. Only escalate when tests fail (semantic conflict), not for mechanical conflicts.
+
+---
+
+### R2: Manager restart / worker reconnection (was Q2)
+
+**Decision:** No special restart mode. Same heartbeat mechanism handles both normal operation and recovery. SHUTDOWN-before-reassign prevents dual workers.
+
+**Worker behavior on disconnect:**
+- Detect broken UDS connection → continue working (don't kill `claude -p`)
+- Buffer events (DONE, HEARTBEAT, HANDOFF) that can't be sent
+- Retry UDS connection every 2s with jitter, capped at 5s. No timeout — retry indefinitely.
+- On reconnect: send RECONNECT with current state + flush buffered events
+
+**RECONNECT message:**
+```json
+{"type": "RECONNECT", "worker_id": "worker-3", "bead_id": "beads-abc",
+ "state": "in_progress", "context_pct": 45,
+ "buffered_events": [{"type": "HEARTBEAT", "ts": "...", "context_pct": 40}]}
+```
+
+**Manager startup:** Read SQLite → start UDS server (same socket path) → accept connections normally. No special reconciliation window.
+
+**Reconciliation (Manager matches RECONNECT against SQLite):**
+| SQLite says | Worker says | Action |
+|------------|------------|--------|
+| Bead assigned to this worker | in_progress | Resume |
+| Bead assigned to this worker | done | Enter merge queue |
+| Bead reassigned to another worker | anything | SHUTDOWN worker |
+| Bead closed/merged | anything | SHUTDOWN worker |
+
+**Dead worker detection:** Heartbeat timeout (3N seconds, same as normal operation). On timeout:
+1. Send SHUTDOWN on old UDS connection
+2. If connection alive (false positive) → worker receives SHUTDOWN, exits cleanly
+3. If connection broken (truly dead) → fails silently
+4. **Only then** reassign bead to new worker
+
+**Why SHUTDOWN-before-reassign:** Eliminates dual-worker tiger entirely. You can't have two workers on the same bead because the old one is explicitly told to stop before the new one starts. No race condition — it's sequential.
+
+**Idempotent reconciliation:** Manager reconciliation is pure-read from SQLite + accept connections. No writes until reconciliation is validated. Safe to crash and re-run.
+
+**Premortem findings (accepted risks):**
+- Elephant: Heartbeat timeout calibration is a tuning problem (start at N=15s, 3N=45s, adjust empirically)
+- Elephant: Workers retry indefinitely if Manager is permanently dead (acceptable — operator will notice and kill manually)
+- Paper tiger: Stale socket path (standard unlink-before-listen)
+- Paper tiger: SQLite stale by one event (idempotent event processing handles replay)
+
+---
+
 ## Remaining Open Questions
 
-1. **Merge protocol** — Manager holds merge lock, sequential rebase-merge. What happens on conflict? Create P0 bead or block and notify Architect?
-2. **Manager restart / worker reconnection** — Workers reconnect with `{type: "RECONNECT", bead_id: "...", state: "in_progress"}`. Manager re-reads SQLite to reconcile. Need protocol spec.
-3. **Ralph handoff via UDS** — Worker sends HANDOFF with YAML context → Manager persists to SQLite → Manager spawns fresh Worker in same worktree → new Worker reads handoff from SQLite and constructs prompt for `claude -p`. Need message schema.
-4. **How does Worker detect context % from Claude's output?** Parse `claude -p` stdout? Use Claude Code hooks that write to a file the Go wrapper watches?
-5. **Bead prompt construction** — How does the Worker Go binary construct the `claude -p` prompt from bead metadata? What context gets included (bead description, dependencies, worktree state, handoff YAML)?
-6. **Two-stage review** — Do workers self-review (Superpowers pattern), or does Manager dispatch a separate review worker?
+1. **Ralph handoff via UDS** — Worker sends HANDOFF with YAML context → Manager persists to SQLite → Manager spawns fresh Worker in same worktree → new Worker reads handoff from SQLite and constructs prompt for `claude -p`. Need message schema.
+2. **How does Worker detect context % from Claude's output?** Parse `claude -p` stdout? Use Claude Code hooks that write to a file the Go wrapper watches?
+3. **Bead prompt construction** — How does the Worker Go binary construct the `claude -p` prompt from bead metadata? What context gets included (bead description, dependencies, worktree state, handoff YAML)?
+4. **Two-stage review** — Do workers self-review (Superpowers pattern), or does Manager dispatch a separate review worker?

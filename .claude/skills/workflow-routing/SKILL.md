@@ -41,10 +41,12 @@ What's your primary goal?
 3. Suggest: "Ready for planning?"
 
 ### Plan
-1. `brainstorming` — understand requirements
+1. `brainstorming` — understand requirements (includes per-decision premortems)
 2. `writing-plans` — create implementation plan
-3. `premortem` — identify risks before building
+3. `premortem` — full plan-level risk analysis before building
 4. Suggest: "Ready to build?"
+
+**Note:** `premortem` applies at two levels: per-decision (inside brainstorming) and per-plan (step 3). Both are mandatory.
 
 ### Build
 1. `executing-plans` — implement task-by-task

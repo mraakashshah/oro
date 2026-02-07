@@ -1,6 +1,6 @@
 ---
 name: premortem
-description: Use when a plan or design is approved but before implementation begins, to identify failure modes and risks
+description: Use before committing to any design decision or plan — at decision level during brainstorming AND at plan level before implementation
 ---
 
 # Pre-Mortem
@@ -10,6 +10,13 @@ description: Use when a plan or design is approved but before implementation beg
 Identify failure modes before they occur. Based on Gary Klein's technique.
 
 > "Imagine it's 3 months from now and this project has failed spectacularly. Why did it fail?"
+
+## When to Use
+
+- **Decision-level (during brainstorming):** Before committing to any individual design choice. Quick checklist. Propose options → premortem each → choose deliberately.
+- **Plan-level (before implementation):** After the full plan is written, before writing code. Deep checklist. Stress-test the integrated design.
+
+**A decision without a premortem is a guess, not a design choice.**
 
 ## Risk Categories (Shreyas Doshi Framework)
 
