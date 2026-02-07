@@ -22,3 +22,6 @@ deps:
     mayDependOn:
       - internal
       - pkg
+  pkg:
+    mayDependOn:
+      - pkg

@@ -1,19 +1,21 @@
-package protocol
+package protocol_test
 
 import (
 	"encoding/json"
 	"testing"
+
+	"oro/pkg/protocol"
 )
 
 func TestDirectiveConstants(t *testing.T) {
 	tests := []struct {
-		d    Directive
+		d    protocol.Directive
 		want string
 	}{
-		{DirectiveStart, "start"},
-		{DirectiveStop, "stop"},
-		{DirectivePause, "pause"},
-		{DirectiveFocus, "focus"},
+		{protocol.DirectiveStart, "start"},
+		{protocol.DirectiveStop, "stop"},
+		{protocol.DirectivePause, "pause"},
+		{protocol.DirectiveFocus, "focus"},
 	}
 	for _, tc := range tests {
 		if string(tc.d) != tc.want {
@@ -23,14 +25,14 @@ func TestDirectiveConstants(t *testing.T) {
 }
 
 func TestDirectiveValid(t *testing.T) {
-	valid := []Directive{DirectiveStart, DirectiveStop, DirectivePause, DirectiveFocus}
+	valid := []protocol.Directive{protocol.DirectiveStart, protocol.DirectiveStop, protocol.DirectivePause, protocol.DirectiveFocus}
 	for _, d := range valid {
 		if !d.Valid() {
 			t.Errorf("expected %q to be valid", d)
 		}
 	}
 
-	invalid := []Directive{"restart", "unknown", "", "STOP"}
+	invalid := []protocol.Directive{"restart", "unknown", "", "STOP"}
 	for _, d := range invalid {
 		if d.Valid() {
 			t.Errorf("expected %q to be invalid", d)
@@ -39,10 +41,10 @@ func TestDirectiveValid(t *testing.T) {
 }
 
 func TestCommandJSON(t *testing.T) {
-	cmd := Command{
+	cmd := protocol.Command{
 		ID:        42,
 		Ts:        "2025-01-15T10:30:00Z",
-		Directive: string(DirectiveFocus),
+		Directive: string(protocol.DirectiveFocus),
 		Target:    "epic-123",
 		Processed: false,
 	}
@@ -52,7 +54,7 @@ func TestCommandJSON(t *testing.T) {
 		t.Fatalf("marshal error: %v", err)
 	}
 
-	var got Command
+	var got protocol.Command
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}

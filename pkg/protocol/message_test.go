@@ -40,7 +40,7 @@ func TestMessageTypes(t *testing.T) {
 	}
 }
 
-func TestMessageJSON(t *testing.T) {
+func TestMessageJSON(t *testing.T) { //nolint:funlen // table-driven test with 8 message types
 	t.Parallel()
 
 	tests := []struct {

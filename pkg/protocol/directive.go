@@ -3,6 +3,7 @@ package protocol
 // Directive represents a manager-issued instruction to the dispatcher.
 type Directive string
 
+// Known directive values.
 const (
 	DirectiveStart Directive = "start" // Begin pulling and assigning ready work.
 	DirectiveStop  Directive = "stop"  // Finish current work, don't assign new beads.
