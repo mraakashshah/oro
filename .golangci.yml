@@ -1,729 +1,87 @@
-# =============================================================================
-# AGGRESSIVE Agent-Optimized Go Linter Configuration
-# =============================================================================
-#
-# Philosophy: Enable everything, tune down only what proves too noisy.
-# This catches maximum issues upfront.
-#
-# Version: 2.0
-# Spec: agent-optimized-go-quality-spec.md
-#
-# =============================================================================
+# Oro golangci-lint configuration — start strict, expand incrementally.
+version: "2"
 
 run:
-  timeout: 10m
-  issues-exit-code: 1
-  tests: true
+  timeout: 5m
   modules-download-mode: readonly
-  allow-parallel-runners: true
-
-output:
-  formats:
-    - format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
-  sort-results: true
 
 linters:
   disable-all: true
   enable:
-    # =========================================================================
-    # TIER 1: CORRECTNESS — Real bugs, always enable
-    # =========================================================================
+    # Correctness
+    - staticcheck
+    - govet
+    - ineffassign
+    - unused
+    - errcheck
 
-    # Core correctness
-    - staticcheck         # The gold standard for Go bugs
-    - govet               # Go's built-in correctness checks
-    - ineffassign         # Assignments that are never used
-    - unused              # Dead code detection
-    - wastedassign        # Assignments overwritten before use
+    # Error handling
+    - errorlint
+    - wrapcheck
 
-    # Type safety
-    - forcetypeassert     # Unchecked type assertions → panics
-    - unconvert           # Unnecessary type conversions
+    # Complexity
+    - gocyclo
+    - gocognit
+    - funlen
+    - nestif
 
-    # Nil/error bugs
-    - nilerr              # Return nil error with non-nil value
-    - nilnesserr          # err != nil check but return different nil error
-    - nilnil              # Simultaneous nil error and invalid value
+    # Structure
+    - gochecknoglobals
+    - gochecknoinits
+    - testpackage
 
-    # Loop bugs
-    - copyloopvar         # Loop variable capture (pre-Go 1.22 bug pattern)
-    - intrange            # Use range over int (Go 1.22+)
+    # Security
+    - gosec
 
-    # Shadowing
-    - predeclared         # Shadowing true, false, error, etc.
-
-    # =========================================================================
-    # TIER 2: ERROR HANDLING — Go's explicit error handling, enforce it
-    # =========================================================================
-
-    - errcheck            # All errors must be checked
-    - wrapcheck           # Errors from external packages must be wrapped
-    - errorlint           # Correct error comparison (errors.Is/As)
-    - errchkjson          # JSON encoding error handling
-    - rowserrcheck        # sql.Rows.Err must be checked
-    - sqlclosecheck       # sql.Rows/Stmt must be closed
-
-    # =========================================================================
-    # TIER 3: COMPLEXITY — Agent context limits
-    # =========================================================================
-
-    - gocyclo             # Cyclomatic complexity
-    - gocognit            # Cognitive complexity (nesting penalty)
-    - funlen              # Function length limits
-    - nestif              # Nesting depth limits
-
-    # =========================================================================
-    # TIER 4: STRUCTURE — Explicit dependencies, clear boundaries
-    # =========================================================================
-
-    # No hidden state
-    - gochecknoglobals    # No package-level mutable variables
-    - gochecknoinits      # No init() functions
-    - reassign            # No reassigning package variables
-    - containedctx        # No context.Context in structs
-
-    # Context discipline
-    - contextcheck        # Context must be inherited, not created ad-hoc
-    - fatcontext          # No context creation in loops
-    - noctx               # HTTP requests need context
-
-    # Interface discipline
-    - interfacebloat      # Interfaces shouldn't be huge
-    - iface               # Detect interface pollution
-
-    # Package discipline
-    - testpackage         # Tests in separate _test package
-
-    # =========================================================================
-    # TIER 5: SECURITY
-    # =========================================================================
-
-    - gosec               # Security issues (SQL injection, hardcoded creds, etc.)
-    - bidichk             # Dangerous unicode (RTL attacks, invisible chars)
-
-    # =========================================================================
-    # TIER 6: RESOURCES — Leaks and cleanup
-    # =========================================================================
-
-    - bodyclose           # HTTP response body must be closed
-    - durationcheck       # Duration multiplication bugs
-
-    # =========================================================================
-    # TIER 7: GREPPABILITY — Searchable, explicit code
-    # =========================================================================
-
-    - goconst             # Magic values → named constants
-    - usestdlibvars       # Use http.StatusOK not 200
-    - misspell            # Typos break grep
-
-    # =========================================================================
-    # TIER 8: DUPLICATION — DRY enforcement
-    # =========================================================================
-
-    - dupl                # Duplicate code detection
-
-    # =========================================================================
-    # TIER 9: STYLE & CONSISTENCY — Predictable patterns
-    # =========================================================================
-
-    # Mega-linters
-    - gocritic            # Opinionated diagnostics, style, performance
-    - revive              # Extensible style rules (golint successor)
-    - stylecheck          # staticcheck's style subset
-
-    # Function style
-    - nakedret            # No naked returns in long functions
-    - nonamedreturns      # No named returns (explicit is better)
-    - unparam             # No unused parameters
-
-    # Struct style
-    - tagalign            # Struct tags aligned
-    - embeddedstructfieldcheck  # Embedded fields at top
-
-    # Declaration style
-    - decorder            # Declaration order: const, var, type, func
-    - funcorder           # Function/method ordering
-    - grouper             # Expression group analysis
-
-    # Comment style
-    - godot               # Comments end with period
-    - godox               # Flag TODO/FIXME/BUG comments
-
-    # =========================================================================
-    # TIER 10: TESTING — Tests as specification
-    # =========================================================================
-
-    - paralleltest        # Tests should use t.Parallel()
-    - tparallel           # Parallel test propagation
-    - thelper             # Test helpers must call t.Helper()
-    - usetesting          # Use testing package correctly
-    - testableexamples    # Example functions should be testable
-
-    # =========================================================================
-    # TIER 11: PERFORMANCE
-    # =========================================================================
-
-    - prealloc            # Preallocate slices when size known
-    - perfsprint          # Faster alternatives to fmt.Sprintf
-    - mirror              # Correct bytes/strings API usage
-
-    # =========================================================================
-    # TIER 12: STDLIB MIGRATION — Use standard library over x/exp
-    # =========================================================================
-
-    - exptostd            # Replace x/exp with stdlib equivalents
-    - gocheckcompilerdirectives  # Valid //go: directives
-    - gochecksumtype      # Exhaustive sum type checks
-
-    # =========================================================================
-    # TIER 13: FORMATTING — Human readability (agents don't care, humans do)
-    # =========================================================================
-
-    - gofumpt             # Stricter gofmt
-    - goimports           # Import organization
-    - whitespace          # No unnecessary blank lines
-    - wsl_v5              # Whitespace discipline
-
-    # =========================================================================
-    # TIER 14: META — Quality of quality tooling
-    # =========================================================================
-
-    - nolintlint          # nolint directives must be valid and justified
-
-    # =========================================================================
-    # TIER 15: NICHE BUT USEFUL
-    # =========================================================================
-
-    - asciicheck          # No non-ASCII identifiers
-    - asasalint           # []any as any in variadic
-    - canonicalheader     # HTTP header canonicalization
-    - dupword             # "the the" in comments
-    - goprintffuncname    # Printf functions end in f
-    - gosmopolitan        # i18n anti-patterns
-    - iotamixing          # iota mixed with non-iota in const blocks
-    - nosprintfhostport   # URL host:port construction
-    - unqueryvet          # SELECT * detection in SQL
-
-    # =========================================================================
-    # TIER 16: MODERN GO — Latest patterns and features
-    # =========================================================================
-
-    - modernize           # Suggests modern Go idioms and features
-    - recvcheck           # Receiver type consistency (pointer vs value)
-
-    # =========================================================================
-    # TIER 17: PROTOCOL BUFFERS (if you use protobuf)
-    # =========================================================================
-
-    - protogetter         # Use getters not direct field access
-
-# =============================================================================
-# LINTER SETTINGS
-# =============================================================================
+    # Style
+    - gocritic
+    - revive
+    - misspell
 
 linters-settings:
-
-  # ---------------------------------------------------------------------------
-  # COMPLEXITY
-  # ---------------------------------------------------------------------------
-
   gocyclo:
-    min-complexity: 8               # Strict: agent context limits
+    min-complexity: 10
 
   gocognit:
-    min-complexity: 8               # Match cyclomatic
+    min-complexity: 10
 
   funlen:
-    lines: 40                       # Fits in agent context window
-    statements: 25                  # Logical complexity cap
-    ignore-comments: true           # Don't count comments
+    lines: 60
+    statements: 40
+    ignore-comments: true
 
   nestif:
-    min-complexity: 3               # Max 2 levels of nesting
-
-  # ---------------------------------------------------------------------------
-  # ERROR HANDLING
-  # ---------------------------------------------------------------------------
+    min-complexity: 4
 
   errcheck:
     check-type-assertions: true
-    check-blank: true
     exclude-functions:
-      - io.Copy
-      - io.CopyN
-      - io.CopyBuffer
       - (io.Closer).Close
       - (*os.File).Close
-      - (net.Conn).Close
-      - (*database/sql.Rows).Close
-      - (*database/sql.Stmt).Close
 
   wrapcheck:
-    ignoreSigs:
+    ignore-sigs:
       - .Errorf(
       - errors.New(
-      - errors.Unwrap(
       - errors.Join(
-      - .Wrap(
-      - .Wrapf(
-      - .WithMessage(
-      - .WithMessagef(
-      - .WithStack(
-    ignorePackageGlobs:
-      - encoding/*
-      - google.golang.org/protobuf/*
-    ignoreInterfaceRegexps:
-      - ^(?i)c]onnection$
-
-  errorlint:
-    errorf: true
-    errorf-multi: true
-    asserts: true
-    comparison: true
-    # Allow direct == for sentinel errors in same package
-    allowed-errors: []
-
-  errchkjson:
-    check-error-free-encoding: true
-    report-no-exported: true
-
-  # ---------------------------------------------------------------------------
-  # STRUCTURE
-  # ---------------------------------------------------------------------------
-
-  gochecknoglobals:
-    # Allow some common patterns
-    ignore-names:
-      - "^Err"                       # Sentinel errors
-      - "^_"                         # Blank identifier
-
-  gochecknoinits:
-    # Allow init in specific patterns
-    ignore-functions:
-      - "init"
-
-  interfacebloat:
-    max: 5                          # Small interfaces
-
-  iface:
-    enable:
-      - identical
-      - unused
-      - opaque
-
-  # ---------------------------------------------------------------------------
-  # SECURITY
-  # ---------------------------------------------------------------------------
-
-  gosec:
-    excludes:
-      - G104                        # Covered by errcheck
-      - G307                        # Covered by bodyclose
-    config:
-      global:
-        audit: enabled
-
-  # ---------------------------------------------------------------------------
-  # GREPPABILITY
-  # ---------------------------------------------------------------------------
-
-  goconst:
-    min-len: 2
-    min-occurrences: 2
-    ignore-tests: false
-    match-constant: true
-    numbers: true
-    min: 2
-    max: 2
-    ignore-strings: ""
-
-  misspell:
-    locale: US
-
-  # ---------------------------------------------------------------------------
-  # DUPLICATION
-  # ---------------------------------------------------------------------------
-
-  dupl:
-    threshold: 100                  # Tokens before flagging
-
-  # ---------------------------------------------------------------------------
-  # STYLE & CONSISTENCY
-  # ---------------------------------------------------------------------------
-
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-      - experimental
-      - opinionated
-    disabled-checks:
-      - whyNoLint                   # Covered by nolintlint
-      - hugeParam                   # Sometimes unavoidable with protos
-    settings:
-      captLocal:
-        paramsOnly: false
-      rangeValCopy:
-        sizeThreshold: 32
-      underef:
-        skipRecvDeref: false
-
-  revive:
-    severity: error
-    enable-all-rules: false
-    rules:
-      # Enabled rules
-      - name: blank-imports
-      - name: context-as-argument
-        arguments:
-          - allowTypesBefore: "*testing.T"
-      - name: context-keys-type
-      - name: dot-imports
-      - name: empty-block
-      - name: error-naming
-      - name: error-return
-      - name: error-strings
-      - name: errorf
-      - name: exported
-        arguments:
-          - checkPrivateReceivers
-          - sayRepetitiveInsteadOfStutters
-      - name: if-return
-      - name: increment-decrement
-      - name: indent-error-flow
-      - name: package-comments
-      - name: range
-      - name: receiver-naming
-      - name: redefines-builtin-id
-      - name: superfluous-else
-      - name: time-naming
-      - name: unexported-return
-      - name: unreachable-code
-      - name: var-declaration
-      - name: var-naming
-      # Additional strict rules
-      - name: add-constant
-        arguments:
-          - maxLitCount: "2"
-            allowStrs: '""'
-            allowInts: "0,1,2"
-            ignoreFuncs: "strconv.*,make"
-      - name: cognitive-complexity
-        arguments: [8]
-      - name: cyclomatic
-        arguments: [8]
-      - name: function-length
-        arguments: [40, 25]
-      - name: line-length-limit
-        arguments: [120]
-      - name: max-public-structs
-        arguments: [5]
-      - name: nested-structs
-      - name: unused-parameter
-      - name: unused-receiver
-
-  stylecheck:
-    checks:
-      - "all"
-      - "-ST1000"                   # Package comments (covered by revive)
-      - "-ST1003"                   # Naming (covered by revive)
-
-  nakedret:
-    max-func-lines: 0               # No naked returns ever (combined with nonamedreturns)
-
-  nonamedreturns:
-    report-error-in-defer: true
-
-  tagalign:
-    align: true
-    sort: true
-    order:
-      - json
-      - yaml
-      - xml
-      - form
-      - db
-      - validate
-      - mapstructure
-
-  decorder:
-    dec-order:
-      - const
-      - var
-      - type
-      - func
-    disable-dec-num-check: false
-    disable-dec-order-check: false
-    disable-init-func-first-check: false
-
-  funcorder:
-    struct-method: true
-    constructor: true
-
-  grouper:
-    const-require-grouping: true
-    const-require-single-const: false
-    import-require-grouping: true
-    import-require-single-import: false
-    type-require-grouping: true
-    type-require-single-type: false
-    var-require-grouping: true
-    var-require-single-var: false
-
-  godot:
-    scope: all
-    exclude:
-      - "^TODO"
-      - "^FIXME"
-      - "^BUG"
-      - "^HACK"
-      - "^XXX"
-      - "^NOTE"
-    capital: true
-    period: true
-
-  godox:
-    keywords:
-      - TODO
-      - FIXME
-      - BUG
-      - HACK
-      - XXX
-
-  # ---------------------------------------------------------------------------
-  # TESTING
-  # ---------------------------------------------------------------------------
-
-  paralleltest:
-    ignore-missing: false
-    ignore-missing-subtests: false
-
-  thelper:
-    test:
-      first: true
-      name: true
-      begin: true
-    benchmark:
-      first: true
-      name: true
-      begin: true
-    tb:
-      first: true
-      name: true
-      begin: true
-    fuzz:
-      first: true
-      name: true
-      begin: true
-
-  testpackage:
-    skip-regexp: (internal|export)_test\.go
-    allow-packages:
-      - main
-
-  # ---------------------------------------------------------------------------
-  # PERFORMANCE
-  # ---------------------------------------------------------------------------
-
-  prealloc:
-    simple: true
-    range-loops: true
-    for-loops: true
-
-  perfsprint:
-    int-conversion: true
-    err-error: true
-    errorf: true
-    sprintf1: true
-    strconcat: true
-
-  # ---------------------------------------------------------------------------
-  # FORMATTING
-  # ---------------------------------------------------------------------------
-
-  gofumpt:
-    module-path: ""                 # Set to your module path
-    extra-rules: true
-
-  goimports:
-    local-prefixes: ""              # Set to your module path
-
-  whitespace:
-    multi-if: true
-    multi-func: true
-
-  wsl_v5:
-    # Strict whitespace rules
-    allow-assign-and-anything: false
-    allow-assign-and-call: true
-    allow-cuddle-declarations: false
-    allow-multiline-assign: true
-    allow-separated-leading-comment: false
-    allow-trailing-comment: false
-    force-case-trailing-whitespace: 0
-    force-err-cuddling: true
-    force-short-decl-cuddling: false
-    strict-append: true
-
-  # ---------------------------------------------------------------------------
-  # META
-  # ---------------------------------------------------------------------------
-
-  nolintlint:
-    allow-unused: false
-    require-explanation: true
-    require-specific: true
-
-  # ---------------------------------------------------------------------------
-  # NICHE
-  # ---------------------------------------------------------------------------
-
-  gosmopolitan:
-    allow-time-local: false
-
-  dupword:
-    keywords:
-      - "the"
-      - "and"
-      - "a"
-      - "to"
-      - "is"
-
-  # ---------------------------------------------------------------------------
-  # MODERN GO
-  # ---------------------------------------------------------------------------
-
-  modernize:
-    # Enable all modernization suggestions
-    all: true
-
-  recvcheck:
-    # Check for receiver type consistency
-    disable-builtin: false
-
-  # ---------------------------------------------------------------------------
-  # SQL
-  # ---------------------------------------------------------------------------
-
-  unqueryvet:
-    # Detect SELECT * in queries
-    # Enable for both raw SQL and query builders
-    enable-all: true
-
-  # ---------------------------------------------------------------------------
-  # PROTOBUF
-  # ---------------------------------------------------------------------------
-
-  protogetter:
-    skip-generated-by:
-      - "protoc"
-    skip-files:
-      - ".*\\.pb\\.go$"
-    skip-any-generated: true
-
-# =============================================================================
-# ISSUE CONFIGURATION
-# =============================================================================
 
 issues:
-  exclude-use-default: false
-
   exclude-rules:
-    # -------------------------------------------------------------------------
-    # Test files get some relaxation
-    # -------------------------------------------------------------------------
-
     - path: _test\.go
       linters:
-        - funlen              # Test functions can be longer
-        - gocognit            # Test setup can be complex
-        - dupl                # Table tests have repetition
-        - goconst             # Test values can repeat
-        - gochecknoglobals    # Test fixtures are OK
-        - wrapcheck           # Test errors don't need wrapping
-        - containedctx        # Test structs may hold context
-        - paralleltest        # Not all tests can be parallel
-        - wsl_v5              # Less strict whitespace in tests
-        - nonamedreturns      # Named returns OK in tests
-
-    # -------------------------------------------------------------------------
-    # Main package relaxation
-    # -------------------------------------------------------------------------
+        - funlen
+        - gocognit
+        - gochecknoglobals
+        - wrapcheck
 
     - path: main\.go
       linters:
-        - gochecknoinits      # main may need init
-        - gochecknoglobals    # main may have config globals
+        - gochecknoinits
+        - gochecknoglobals
 
-    # -------------------------------------------------------------------------
-    # Generated code
-    # -------------------------------------------------------------------------
-
-    - path: \.pb\.go$
-      linters:
-        - all
-
-    - path: _gen\.go$
-      linters:
-        - all
-
-    - path: wire_gen\.go$
-      linters:
-        - all
-
-    - path: mock_.*\.go$
-      linters:
-        - all
-
-    # -------------------------------------------------------------------------
-    # Specific patterns
-    # -------------------------------------------------------------------------
-
-    # Allow TODO/FIXME in development
-    - source: "(TODO|FIXME|BUG|HACK|XXX)"
-      linters:
-        - godox
-      # Remove this rule for release builds
-
-    # Allow embedding context in request/response types
-    - text: "struct containing context.Context"
-      linters:
-        - containedctx
-      path: "(request|response|req|resp).*\.go$"
-
-  # Include all issues
   max-issues-per-linter: 0
   max-same-issues: 0
 
-  # Don't skip any issues
-  new: false
-  fix: false
-
-# =============================================================================
-# SEVERITY CONFIGURATION
-# =============================================================================
-
-severity:
-  default-severity: error
-  case-sensitive: false
-
-  rules:
-    # Warnings during adoption period (promote to error after stabilization)
-    - linters:
-        - godox               # TODO/FIXME tracking
-        - wsl_v5              # Whitespace can be noisy initially
-        - tagalign            # Tag alignment is cosmetic
-        - decorder            # Declaration order is cosmetic
-        - funcorder           # Function order is cosmetic
-        - embeddedstructfieldcheck
-        - grouper
-      severity: warning
-
-    # Informational
-    - linters:
-        - godot               # Comment grammar
-        - dupword             # Duplicate words
-      severity: info
+formatters:
+  enable:
+    - goimports

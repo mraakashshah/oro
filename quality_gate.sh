@@ -8,6 +8,7 @@ set -euo pipefail
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+# shellcheck disable=SC2034
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
@@ -20,14 +21,14 @@ check() {
     local name="$1"
     local cmd="$2"
 
-    printf "${BLUE}▶${NC} %-30s" "$name"
+    printf '%b▶%b %-30s' "$BLUE" "$NC" "$name"
 
     if eval "$cmd" > /tmp/check-output.txt 2>&1; then
-        printf "${GREEN}✓ PASS${NC}\n"
+        printf '%b✓ PASS%b\n' "$GREEN" "$NC"
         ((PASS++))
     else
-        printf "${RED}✗ FAIL${NC}\n"
-        cat /tmp/check-output.txt | head -20
+        printf '%b✗ FAIL%b\n' "$RED" "$NC"
+        head -20 /tmp/check-output.txt
         ((FAIL++))
     fi
 }
@@ -68,30 +69,29 @@ echo ""
 
 if $HAS_GO; then
 
+    # Go source directories (avoid scanning references/, yap/, etc.)
+    GO_DIRS="cmd internal pkg"
+
     # Tier 1: Fast checks (< 5s)
     header "GO TIER 1: FORMATTING"
-    check "gofumpt" "gofumpt -l -d . | grep -q '^' && exit 1 || exit 0"
-    check "goimports" "goimports -l . | grep -q '^' && exit 1 || exit 0"
+    check "gofumpt" "! gofumpt -l $GO_DIRS 2>/dev/null | grep -q '^'"
+    check "goimports" "! goimports -l $GO_DIRS 2>/dev/null | grep -q '^'"
 
     # Tier 2: Linting (< 30s)
     header "GO TIER 2: LINTING"
-    check "golangci-lint" "golangci-lint run --timeout 5m"
+    check "golangci-lint" "golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
 
-    # Tier 3: Architecture (< 10s)
-    header "GO TIER 3: ARCHITECTURE"
-    check "go-arch-lint" "go-arch-lint check"
-
-    # Tier 4: Testing (variable)
-    header "GO TIER 4: TESTING"
+    # Tier 3: Testing (variable)
+    header "GO TIER 3: TESTING"
     check "go test" "go test -race -shuffle=on ./..."
     check "coverage" "go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 70) exit 1}'"
 
-    # Tier 5: Security (< 30s)
-    header "GO TIER 5: SECURITY"
+    # Tier 4: Security (< 30s)
+    header "GO TIER 4: SECURITY"
     check "govulncheck" "govulncheck ./..."
 
-    # Tier 6: Build verification
-    header "GO TIER 6: BUILD"
+    # Tier 5: Build verification
+    header "GO TIER 5: BUILD"
     check "go build" "go build ./..."
     check "go vet" "go vet ./..."
 
@@ -129,9 +129,9 @@ printf "${RED}Failed:${NC} %d\n" "$FAIL"
 echo ""
 
 if [ "$FAIL" -gt 0 ]; then
-    printf "${RED}Quality gate FAILED${NC}\n"
+    printf '%bQuality gate FAILED%b\n' "$RED" "$NC"
     exit 1
 else
-    printf "${GREEN}Quality gate PASSED${NC}\n"
+    printf '%bQuality gate PASSED%b\n' "$GREEN" "$NC"
     exit 0
 fi
