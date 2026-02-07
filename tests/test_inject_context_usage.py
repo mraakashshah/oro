@@ -1,0 +1,142 @@
+"""Tests for the inject_context_usage PreToolUse hook."""
+
+import json
+import tempfile
+from pathlib import Path
+
+import importlib.util
+
+
+# Load the hook module directly from .claude/hooks/ (not a package)
+_spec = importlib.util.spec_from_file_location(
+    "inject_context_usage",
+    Path(__file__).resolve().parent.parent
+    / ".claude"
+    / "hooks"
+    / "inject_context_usage.py",
+)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+
+CONTEXT_WINDOW = _mod.CONTEXT_WINDOW
+CRITICAL_THRESHOLD = _mod.CRITICAL_THRESHOLD
+WARN_THRESHOLD = _mod.WARN_THRESHOLD
+calculate_context_pct = _mod.calculate_context_pct
+get_last_usage = _mod.get_last_usage
+
+
+def _make_transcript(entries: list[dict]) -> Path:
+    """Write a list of dicts as JSONL to a temp file, return its path."""
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
+    for entry in entries:
+        f.write(json.dumps(entry) + "\n")
+    f.close()
+    return Path(f.name)
+
+
+def _assistant_entry(
+    input_tokens: int,
+    cache_create: int = 0,
+    cache_read: int = 0,
+    output_tokens: int = 50,
+) -> dict:
+    """Build a minimal assistant transcript entry with usage data."""
+    return {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "usage": {
+                "input_tokens": input_tokens,
+                "cache_creation_input_tokens": cache_create,
+                "cache_read_input_tokens": cache_read,
+                "output_tokens": output_tokens,
+            },
+        },
+    }
+
+
+def _user_entry() -> dict:
+    return {"type": "user", "message": {"role": "user"}}
+
+
+class TestCalculateContextPct:
+    def test_zero_usage(self):
+        used, total, pct = calculate_context_pct({"input_tokens": 0})
+        assert used == 0
+        assert total == CONTEXT_WINDOW
+        assert pct == 0.0
+
+    def test_all_fields_sum(self):
+        usage = {
+            "input_tokens": 10_000,
+            "cache_creation_input_tokens": 30_000,
+            "cache_read_input_tokens": 60_000,
+        }
+        used, _, pct = calculate_context_pct(usage)
+        assert used == 100_000
+        assert pct == 100_000 / CONTEXT_WINDOW
+
+    def test_missing_fields_default_to_zero(self):
+        used, _, _ = calculate_context_pct({})
+        assert used == 0
+
+
+class TestGetLastUsage:
+    def test_empty_file(self, tmp_path):
+        p = tmp_path / "empty.jsonl"
+        p.write_text("")
+        assert get_last_usage(str(p)) is None
+
+    def test_no_assistant_messages(self):
+        transcript = _make_transcript([_user_entry(), _user_entry()])
+        assert get_last_usage(str(transcript)) is None
+
+    def test_returns_last_assistant_usage(self):
+        transcript = _make_transcript(
+            [
+                _user_entry(),
+                _assistant_entry(input_tokens=5_000, cache_create=10_000),
+                _user_entry(),
+                _assistant_entry(
+                    input_tokens=8_000, cache_create=50_000, cache_read=10_000
+                ),
+            ]
+        )
+        usage = get_last_usage(str(transcript))
+        assert usage["input_tokens"] == 8_000
+        assert usage["cache_creation_input_tokens"] == 50_000
+        assert usage["cache_read_input_tokens"] == 10_000
+
+    def test_missing_file(self):
+        assert get_last_usage("/nonexistent/path.jsonl") is None
+
+    def test_handles_malformed_lines(self):
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False)
+        f.write("not json\n")
+        f.write(json.dumps(_assistant_entry(input_tokens=1_000)) + "\n")
+        f.write("also bad {{\n")
+        f.close()
+        usage = get_last_usage(f.name)
+        assert usage is not None
+        assert usage["input_tokens"] == 1_000
+
+
+class TestThresholds:
+    def test_below_warn_produces_no_output(self):
+        """30% usage should produce no warning."""
+        used = int(CONTEXT_WINDOW * 0.30)
+        _, _, pct = calculate_context_pct({"input_tokens": used})
+        assert pct < WARN_THRESHOLD
+
+    def test_at_warn_threshold(self):
+        """40% usage should trigger warn."""
+        used = int(CONTEXT_WINDOW * WARN_THRESHOLD)
+        _, _, pct = calculate_context_pct({"input_tokens": used})
+        assert pct >= WARN_THRESHOLD
+        assert pct < CRITICAL_THRESHOLD
+
+    def test_at_critical_threshold(self):
+        """70% usage should trigger critical."""
+        used = int(CONTEXT_WINDOW * CRITICAL_THRESHOLD)
+        _, _, pct = calculate_context_pct({"input_tokens": used})
+        assert pct >= CRITICAL_THRESHOLD

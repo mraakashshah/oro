@@ -11,6 +11,17 @@
 				]
 			}
 		],
+		"PreToolUse": [
+			{
+				"matcher": "",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/inject_context_usage.py"
+					}
+				]
+			}
+		],
 		"PostToolUse": [
 			{
 				"matcher": "Edit|Write",
