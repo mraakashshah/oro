@@ -230,10 +230,13 @@ All roles get a full code search stack for navigating the codebase efficiently. 
 | Bead | What | Blocked by |
 |------|------|------------|
 | ~~oro-o7r~~ | Manager redesign (this doc) | — |
-| oro-w6n | Dispatcher Go binary | oro-o7r |
-| oro-773 | Worker Go binary | — |
-| oro-r7b | `oro` CLI (directives, status, recall) | — |
-| oro-68t | Merge coordinator logic | — |
-| oro-w2u | Code search spec (all roles) | oro-o7r |
-| oro-seg | Memory search/retrieval algorithm | oro-ldf |
+| oro-2jb | Shared protocol package (UDS message types + SQLite schema + Go types) | — |
+| oro-68t | Merge coordinator (Go package, integrated by Dispatcher) | — |
+| oro-rue | Ops agent spawner (review, merge conflict, diagnosis) | oro-2jb |
+| oro-w6n | Dispatcher Go binary | oro-2jb, oro-68t, oro-rue |
+| oro-773 | Worker Go binary | oro-2jb |
+| oro-r7b | `oro` CLI (start/stop/status, directives, remember/recall) | oro-2jb |
+| oro-0q5 | Memory system (SQLite tables + extraction + prompt injection) | oro-2jb |
+| oro-w2u | Code search spec (all roles) | ~~oro-o7r~~ |
+| oro-seg | Memory search/retrieval algorithm spec (FTS5 + RRF) | — |
 | oro-ldf | Embedding-based memory (future) | oro-w6n |
