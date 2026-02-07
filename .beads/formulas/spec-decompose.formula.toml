@@ -1,0 +1,50 @@
+formula = "spec-decompose"
+type = "workflow"
+description = "Spec-driven decomposition and execution. Breaks specs into self-evaluating beads, executes via TDD, quality-gates every commit."
+version = 1
+
+[vars]
+[vars.feature]
+description = "Feature or spec being implemented"
+required = true
+[vars.spec_path]
+description = "Path to spec document (optional — can describe inline)"
+[vars.lang]
+description = "Primary language"
+enum = ["go", "python"]
+default = "go"
+
+[[steps]]
+id = "decompose"
+title = "Decompose spec for {{feature}}"
+type = "task"
+description = "Parse spec, create epic + task beads with acceptance criteria. Recursively decompose any bead >7min estimate. Use spec-to-beads skill."
+
+[[steps]]
+id = "approve"
+title = "Approve bead DAG for {{feature}}"
+needs = ["decompose"]
+type = "human"
+description = "Review the bead tree. Confirm acceptance criteria, estimates, and dependencies before execution."
+gate = { type = "human" }
+
+[[steps]]
+id = "execute"
+title = "Execute beads for {{feature}}"
+needs = ["approve"]
+type = "task"
+description = "For each bead via bd ready: TDD cycle (red/green/refactor), quality gate, atomic commit, bd close. Context checkpoint after each bead. Use executing-beads skill."
+
+[[steps]]
+id = "verify"
+title = "Verify {{feature}} complete"
+needs = ["execute"]
+type = "task"
+description = "Full quality gate (quality_gate.sh for Go, uv run pytest + ruff for Python). All child beads closed. bd show <epic> --children confirms no open beads."
+
+[[steps]]
+id = "finish"
+title = "Finish {{feature}}"
+needs = ["verify"]
+type = "task"
+description = "Use finishing-work skill. Land the plane: file remaining issues, quality gates, commit, push, verify."
