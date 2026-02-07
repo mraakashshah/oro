@@ -1,0 +1,54 @@
+---
+date: 2026-02-07
+status: partial
+prior: 2026-02-07_20-00_protocol-beads-parallel.yaml
+---
+
+goal: Add research phase to brainstorming skill, launch spec beads in parallel
+now: Check background agent results for oro-seg and oro-w2u, review specs, commit, then run arch review (oro-1s5)
+test: go test ./pkg/protocol/... -v  # 13 tests still passing
+
+done_this_session:
+  - task: "Analyzed CC-v3, compound-engineering, superpowers reference projects for spec workflows"
+    findings: "CC-v3 has heavy research skill (parallel sub-agents, YAML frontmatter, persisted docs). Compound-eng has dedicated research/design agent types. Superpowers keeps it simple (brainstorm → write-plan → execute-plan)."
+  - task: "Added Step 1: Research Prior Art to brainstorming skill"
+    files: [.claude/skills/brainstorming/SKILL.md]
+    commit: 7de9f5e
+    details: "Internal prior art reading + external WebSearch/WebFetch when domain has established solutions. 474 words, under 500 budget. Steps renumbered 1-7."
+  - task: "Launched two background agents for oro-seg and oro-w2u spec beads"
+    status: "agents still running at handoff time"
+
+decisions:
+  research_in_brainstorming: "Extended brainstorming rather than creating separate spec-writing skill. Avoids duplicating the interactive design loop. Research is Step 1, before proposing approaches."
+  web_search_conditional: "WebSearch/WebFetch used only when problem domain has established external solutions. Skip for project-internal design."
+  no_ccv3_weight: "Rejected CC-v3's parallel sub-agent research infrastructure as too heavy. Simple 3-bullet research step is sufficient for our scale."
+
+worked:
+  - "Reviewing three reference projects (CC-v3, compound-eng, superpowers) gave clear picture of the spectrum from light to heavy"
+  - "Extending existing skill rather than creating new one kept token budget under control"
+
+failed: []
+
+next:
+  - "Check oro-seg agent output — review spec at docs/plans/2026-02-07-memory-search-spec.md"
+  - "Check oro-w2u agent output — review spec at docs/plans/2026-02-07-code-search-spec.md"
+  - "If specs are good: commit both, close beads, then oro-1s5 (arch review) is unblocked"
+  - "After arch review: oro-q63 (SQLite schema DDL) is next on critical path"
+  - "oro-68t (merge coordinator) is also ready and independent — can run in parallel"
+
+beads:
+  completed_this_session: []
+  in_progress: [oro-seg, oro-w2u]  # background agents running
+  ready_after_specs: [oro-1s5]  # arch review, blocked by oro-seg + oro-w2u
+  critical_path: "oro-seg + oro-w2u → oro-1s5 → oro-q63 → oro-bya → oro-v6f → downstream"
+
+background_agents:
+  oro_seg: "Memory search/retrieval algorithm spec — reading BCR recall.py + CC-v3 recall_learnings.py"
+  oro_w2u: "Code search system spec — reading CC-v3 tldr-read-enforcer.ts + smart-search-router.ts"
+  note: "Both agents instructed to write spec files and close beads but NOT commit/push. Next session must review, commit, push."
+
+skills_for_next_session:
+  - resume-handoff
+  - review-implementation (review agent spec outputs)
+  - work-bead (for oro-1s5 arch review once specs land)
+  - dispatching-parallel-agents (oro-q63 + oro-68t can run parallel after arch review)
