@@ -1,0 +1,26 @@
+.oro/
+.beads/
+.env
+yap/
+
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.worktrees/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# Handoffs (internal session coordination)
+docs/handoffs/
+
+# Reference repos (cloned locally, not tracked)
+docs/alternative-architecture-analysis/reference/
