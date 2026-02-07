@@ -1,0 +1,3 @@
+[submodule "references/bcr"]
+	path = references/bcr
+	url = git@github.com:mraakashshah/bcr.git
