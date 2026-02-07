@@ -57,29 +57,32 @@ Task("Fix api_test.go failures — response format mismatch")
 
 **Agent transcripts can be 70k+ tokens.** Keep them out of your context window.
 
-- Run background agents with `run_in_background: true` and have them write results to files
-- **Never poll** with sleep loops — trust system reminders for progress updates
+- Run background agents with `run_in_background: true`
+- **Never poll** with sleep loops — trust system reminders and task completion notifications
 - Continue working on other tasks while agents run
-- Check output files only when you need results to proceed
+- Task completion notifications provide summaries — usually sufficient
+
+**Reporting results — use the project's existing channels, not output files:**
+
+- **If using beads:** Agent closes the bead with `bd close <id> --reason="summary"`. The bead IS the output record. Don't create `docs/agent-output-*.md` files — they accumulate as debt.
+- **If no issue tracker:** Agent can write to a summary file as a fallback.
+- **Never use TaskOutput** to read full transcripts — floods your context with 70k+ tokens.
 
 ```
-# RIGHT — agent writes output to file, main reads the file
-Task(run_in_background=true, prompt="... Write results to docs/agent-output.md")
-# Later: Read("docs/agent-output.md")
+# RIGHT — agent closes bead, main reads completion notification
+Task(run_in_background=true, prompt="... Close bead with bd close <id> --reason='summary'")
+
+# ALSO RIGHT (no issue tracker) — agent writes small summary file
+Task(run_in_background=true, prompt="... Write results to /tmp/agent-summary.md")
 
 # WRONG — dumps full transcript into main context
 TaskOutput(task_id="...")  # 70k+ tokens flooding your window
 ```
 
-For agent pipelines, chain via files:
-```
-Research agent → output.md → Plan agent → plan.md → Implement agent
-```
-
 ### 5. Review and Integrate
 
 When agents return:
-- Read each summary (from files, not TaskOutput)
+- Read completion notifications or bead annotations (not TaskOutput)
 - Verify fixes don't conflict
 - Run full test suite
 - Integrate all changes
