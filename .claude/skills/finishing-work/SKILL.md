@@ -79,6 +79,7 @@ Before cleanup, briefly note friction encountered during this work:
 - **What went off-script?** (unexpected failures, wrong assumptions, missing context)
 - **What slowed you down?** (unclear requirements, tooling gaps, flaky tests)
 - **What should change?** (skill updates, new rules, missing automation)
+- **Were you corrected?** If the user corrected you on something generalizable, propose a skill or rule edit so it doesn't recur.
 
 If genuinely clean run, say so — but clean runs should be rare. Most work has micro-friction worth capturing.
 

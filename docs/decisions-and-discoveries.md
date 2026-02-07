@@ -5,3 +5,9 @@
 **Context:** Reviewed aleiby/claude-skills/tackle — its reflect phase logs friction after every PR as queryable data
 **Decision:** Added Step 4 (Reflect) to finishing-work skill. Captures off-script moments, slowdowns, and improvement suggestions before cleanup.
 **Implications:** Skills can self-improve over time if friction is consistently logged. "Clean run" should be rare — most work has learnable friction.
+
+## 2026-02-07: Skip autoskill pattern (user-correction-driven learning)
+**Tags:** #skills #decisions #philosophy
+**Context:** Reviewed AI-Unleashed/Claude-Skills/autoskill — watches for user corrections during sessions and proposes skill edits
+**Decision:** Not adopted. We prefer self-directed reflection (agent notices its own friction) over user-directed correction harvesting.
+**Implications:** The reflect step in finishing-work is our feedback loop. Keep it self-directed.
