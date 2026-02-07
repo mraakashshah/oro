@@ -1,0 +1,66 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Resolved oro-o7r (P0 Manager redesign) and set up GitHub remote
+now: Pick up implementation beads — oro-773 (Worker) is the recommended starting point
+test: bd ready
+
+done_this_session:
+  - task: Brainstormed Manager redesign via structured Q&A
+    decisions:
+      - manager_is_claude_session: "Escalation-only Claude session in tmux pane, not a Go binary"
+      - dispatcher_role: "New Go binary named 'Dispatcher' handles all mechanical coordination (building metaphor: Architect/Manager/Dispatcher/Workers)"
+      - dispatcher_nudges_manager: "tmux send-keys to Manager pane — Dispatcher is Manager's 'user'"
+      - sqlite_shared_bus: "Manager ↔ Dispatcher communication via SQLite commands table, not files"
+      - dispatcher_inert_until_start: "Manager must issue 'start' directive before Dispatcher begins work"
+      - dispatcher_autonomy: "Handles assignment, heartbeat, crash recovery, merge, review autonomously"
+      - three_escalation_cases: "Semantic merge conflict (tests fail), stuck bead (2 ralphs), priority contention (all slots busy + P0)"
+      - ops_agents: "Dispatcher spawns short-lived claude -p for merge resolution, code review, crash analysis"
+      - shared_soft_pool: "~5 worker slots, soft limit, shared between workers and ops agents"
+      - model_routing: "Dispatcher picks Opus for judgment, Sonnet for mechanical tasks"
+      - no_oro_enqueue: "Removed — Dispatcher watches beads DB directly via bd ready"
+      - no_architect_manager_channel: "Creating beads IS the signal. No direct communication."
+  - task: Wrote docs/plans/2026-02-07-manager-redesign.md
+  - task: Wrote docs/plans/2026-02-07-oro-lifecycle.md (end-to-end system overview)
+  - task: Marked orchestrator-ipc-comparison.md as historical
+  - task: Updated oro-w6n bead (Manager daemon → Dispatcher)
+  - task: Created GitHub remote (mraakashshah/oro, private)
+  - task: Renamed .claude → dot-claude in reference dirs (yap/reference/CC-v3, yap/reference/beads, references/bcr) to stop slash command leakage
+
+blockers: []
+
+questions:
+  - "Memory system spec still references 'Manager Go binary' in places — minor cleanup needed"
+  - "Should oro CLI commands for directives (start/stop/pause/focus) be added to ad_hoc/oro or wait for Go binary?"
+
+worked:
+  - One-question-at-a-time brainstorming surfaced clean role separation
+  - User pushback on file-based commands led to better SQLite decision
+  - Naming exercise (sidecar → Dispatcher) clarified role purpose
+
+failed: []
+
+next:
+  - "oro-773: Implement Worker Go binary — foundation piece, no blockers. Recommended first."
+  - "oro-w6n: Implement Dispatcher Go binary — now unblocked by oro-o7r"
+  - "oro-w2u: Spec code search system — now unblocked by oro-o7r"
+  - "oro-r7b: Implement oro CLI with directive commands"
+  - "Consider bootstrapping: once Worker + Dispatcher + CLI exist, Oro can build the rest of itself"
+
+files:
+  created:
+    - docs/plans/2026-02-07-manager-redesign.md
+    - docs/plans/2026-02-07-oro-lifecycle.md
+  modified:
+    - docs/plans/2026-02-07-orchestrator-ipc-comparison.md
+    - references/bcr (submodule — .claude → dot-claude)
+    - yap/reference/Continuous-Claude-v3/.claude → dot-claude (untracked)
+    - yap/reference/beads/.claude → dot-claude (untracked)
+
+beads:
+  completed: [oro-o7r]
+  updated: [oro-w6n]
+  in_progress: []
+  remaining: [oro-w2u, oro-w6n, oro-773, oro-r7b, oro-68t, oro-seg, oro-ldf]

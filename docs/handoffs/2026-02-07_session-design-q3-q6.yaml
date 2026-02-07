@@ -1,0 +1,50 @@
+---
+date: 2026-02-07
+status: partial
+---
+
+goal: Resolve remaining 4 open design questions for Oro orchestrator (oro-1s7)
+now: Pick up Q3 (ralph handoff via UDS) — 4 questions remain before implementation beads unblock
+
+test: "cat docs/plans/2026-02-07-orchestrator-ipc-comparison.md"
+
+done_this_session:
+  - task: Resolved Q1 — merge protocol (worker stays alive, retry-first, bead-based merge context, escalate on test failure)
+    files: [docs/plans/2026-02-07-orchestrator-ipc-comparison.md]
+  - task: Resolved Q2 — reconnection protocol (no special restart mode, heartbeat timeout, SHUTDOWN-before-reassign)
+    files: [docs/plans/2026-02-07-orchestrator-ipc-comparison.md]
+  - task: Updated brainstorming/premortem/workflow-routing skills to enforce per-decision premortems
+    files: [.claude/skills/brainstorming/SKILL.md, .claude/skills/premortem/SKILL.md, .claude/skills/workflow-routing/SKILL.md]
+
+decisions:
+  - merge_protocol: "Worker stays alive through merge. Retry fresh rebase first. Worker resolves true conflicts using own context + other bead's merge annotations (bd show). Escalate to Architect only on test failure. Merge context lives on the bead, not in SQLite."
+  - reconnection_protocol: "No special restart mode. Workers continue working + buffer events on disconnect. Retry UDS indefinitely. Manager uses heartbeat timeout (3N) for dead detection. SHUTDOWN on old connection before reassigning bead — eliminates dual-worker race."
+  - premortem_always: "Every design decision gets a premortem before committing. Updated brainstorming skill to include per-decision premortem step. Premortem skill now describes two levels: decision-level and plan-level."
+
+findings:
+  - external_merge_agent_rejected: "An external merge agent has zero context about why code was written. Original worker is the cheapest, most context-rich resolver. If worker ralph'd, bead merge annotations provide enough context for any resolver."
+  - merge_context_on_bead: "Merge context (intent, files, invariants, decisions) belongs on the bead not in SQLite. Beads own work artifacts, SQLite owns runtime state."
+  - shutdown_before_reassign: "Sending SHUTDOWN on old UDS connection before reassigning eliminates the dual-worker tiger entirely. Sequential, not racy."
+
+worked:
+  - "Premortem on each design option before committing caught the dual-worker tiger and conflict cascade risks"
+  - "User challenge 'why SQLite and not a bead?' simplified the merge context design significantly"
+
+failed: []
+
+next:
+  - "Q3: Ralph handoff via UDS — message schema for HANDOFF, what gets persisted where, how fresh worker picks up"
+  - "Q4: Context % detection — how Worker Go binary detects Claude's context usage"
+  - "Q5: Bead prompt construction — what goes into the claude -p prompt"
+  - "Q6: Two-stage review — self-review vs separate review worker"
+  - "After all 6 resolved: close oro-1s7, unblocks oro-w6n/oro-773/oro-r7b/oro-68t"
+
+files:
+  created: [docs/handoffs/2026-02-07_session-design-q3-q6.yaml]
+  modified: [docs/plans/2026-02-07-orchestrator-ipc-comparison.md, .claude/skills/brainstorming/SKILL.md, .claude/skills/premortem/SKILL.md, .claude/skills/workflow-routing/SKILL.md]
+
+beads:
+  completed: []
+  in_progress: [oro-1s7]
+  remaining: [oro-w6n, oro-773, oro-r7b, oro-68t]
+  epic: null

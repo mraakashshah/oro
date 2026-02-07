@@ -1,0 +1,59 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Resolve oro-o7r — redesign orchestrator with Manager as Claude session, not Go binary
+now: Done. oro-o7r closed. Three docs written/updated. Downstream beads updated.
+
+done_this_session:
+  - task: Brainstormed Manager redesign through structured Q&A
+    decisions:
+      - Manager is Claude session (escalation-only), Dispatcher is Go binary (autonomous coordinator)
+      - Dispatcher nudges Manager via tmux send-keys
+      - SQLite shared bus for Manager ↔ Dispatcher commands
+      - Dispatcher autonomous after Manager issues `start` directive
+      - Dispatcher spawns ops agents (claude -p) for merge conflicts, code review
+      - Worker pool is soft ~5 slots, shared between workers and ops agents
+      - Model routing: Opus for judgment, Sonnet for mechanical
+      - Escalation boundary: semantic merge conflicts, stuck beads (2 ralphs), priority contention
+  - task: Wrote docs/plans/2026-02-07-manager-redesign.md (detailed architecture)
+  - task: Wrote docs/plans/2026-02-07-oro-lifecycle.md (end-to-end system overview)
+  - task: Marked orchestrator-ipc-comparison.md as historical
+  - task: Updated oro-w6n bead title/description (Manager daemon → Dispatcher)
+
+blockers: []
+
+decisions:
+  dispatcher_name: "Go binary that handles mechanical coordination. Named 'Dispatcher' to fit building metaphor (Architect/Manager/Dispatcher/Workers)."
+  manager_is_passive: "Manager only acts when nudged by Dispatcher. Three escalation cases only."
+  no_oro_enqueue: "Removed. Dispatcher watches beads DB directly. Creating a bead IS the signal."
+  sqlite_shared_bus: "Manager writes commands via oro CLI → SQLite. Dispatcher watches. Preferred over file-based commands."
+
+worked:
+  - One-question-at-a-time brainstorming surfaced clean role separation
+  - User pushback on file-based commands led to better SQLite decision
+  - Naming exercise (sidecar → Dispatcher) clarified the role's purpose
+
+failed: []
+
+next:
+  - "oro-w2u: Spec code search system (now unblocked by oro-o7r closure)"
+  - "oro-w6n: Implement Dispatcher Go binary (now unblocked)"
+  - "oro-773: Implement Worker Go binary (ready, no blockers)"
+  - "oro-r7b: Implement oro CLI with directive commands (ready)"
+  - "Consider: memory system spec references 'Manager Go binary' in places — minor cleanup needed"
+
+files:
+  created:
+    - docs/plans/2026-02-07-manager-redesign.md
+    - docs/plans/2026-02-07-oro-lifecycle.md
+    - docs/handoffs/2026-02-07_manager-redesign-complete.yaml
+  modified:
+    - docs/plans/2026-02-07-orchestrator-ipc-comparison.md
+
+beads:
+  closed: [oro-o7r]
+  updated: [oro-w6n]
+  in_progress: []
+  remaining: [oro-w2u, oro-w6n, oro-773, oro-r7b, oro-68t, oro-seg, oro-ldf]

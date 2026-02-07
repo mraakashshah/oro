@@ -1,0 +1,57 @@
+---
+date: 2026-02-07
+status: active
+---
+
+goal: Build oro session CLI and write memory system spec with cross-reference analysis
+now: Both committed. Memory spec needs design decisions resolved before implementation.
+
+test: "oro resume"
+
+done_this_session:
+  - task: "Built ad_hoc/oro CLI with start/stop/resume commands (BCR self-bootstrapping pattern)"
+    files: [ad_hoc/oro]
+  - task: "Researched memory patterns across all 4 references (BCR, CC-v3, OpenClaw, Compound)"
+    files: []
+  - task: "Wrote memory system spec with cross-reference analysis and premortem"
+    files: [docs/plans/2026-02-07-memory-system-spec.md]
+
+decisions:
+  oro_cli_shell: "Shell script for now (ad_hoc/oro), replaced by Go binary when oro-r7b is built"
+  self_bootstrapping: "BCR pattern: derive state from filesystem (bd, git, latest handoff), never pass as arguments"
+  resume_auto_discover: "oro resume finds latest non-complete handoff + live bd/git state, no filename arg needed"
+  memory_jsonl: "Single JSONL backend (.oro/memories.jsonl), not dual-backend like BCR"
+  memory_injection: "Prompt injection first (CC-v3 pattern), memory-as-tool later (OpenClaw pattern)"
+  memory_extraction: "Recommended Option A (worker self-report via [MEMORY] markers) with regex fallback"
+
+findings:
+  bcr_memory_gap: "BCR extracted memories but never injected them back into prompts. CC-v3 and Compound close this loop."
+  cc_v3_hybrid_search: "RRF (Reciprocal Rank Fusion) combining BM25 + vector is the gold standard for memory recall, but needs heavy infra (PostgreSQL + pgvector)"
+  openclaw_memory_tool: "Memory as a tool the agent queries mid-task, not just context injected at start. Avoids pre-loading noise."
+  compound_solutions: "Treats memory as documented solutions with YAML frontmatter, not raw learnings. Searchable and structured."
+  extract_store_inject: "The pattern that works across all references: Extract -> Store -> Inject back. 2/3 is useless."
+
+worked:
+  - "Parallel explore agents for BCR memory research was efficient"
+  - "Cross-reference notes already existed in docs/learnings/ — should have read them first"
+
+failed:
+  - "Initially only researched BCR for memory, missed CC-v3/OpenClaw/Compound learnings docs that were already in the repo"
+
+next:
+  - "Resolve memory spec open questions: Option A vs C extraction, worker memory merge flow, git-tracking"
+  - "Pick up implementation beads in order: oro-w6n (Manager) -> oro-773 (Worker) -> oro-r7b (CLI) / oro-68t (merge)"
+  - "When building oro-r7b (CLI), migrate ad_hoc/oro shell script into Go binary"
+  - "Memory system implementation can be a new bead after spec questions are resolved"
+
+files:
+  created:
+    - ad_hoc/oro
+    - docs/plans/2026-02-07-memory-system-spec.md
+  modified: []
+
+beads:
+  completed: []
+  in_progress: []
+  remaining: [oro-w6n, oro-773, oro-r7b, oro-68t]
+  epic: null

@@ -1,0 +1,73 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Resolve all remaining design decisions before implementation
+now: Pick up oro-aa0 (AST code search spec) or start implementation with oro-w6n (Manager daemon)
+
+done_this_session:
+  - task: Resolved 3 open memory system questions
+    files: [docs/plans/2026-02-07-memory-system-spec.md]
+  - task: Decided SQLite FTS5 for memories (not JSONL) — retrieval quality over storage simplicity
+    files: [docs/plans/2026-02-07-memory-system-spec.md]
+  - task: Decided hybrid extraction (Option C) — self-report + daemon + consolidation
+    files: [docs/plans/2026-02-07-memory-system-spec.md]
+  - task: Fixed stale premortem markers in orchestrator doc (Tigers #3/#4 resolved as R1/R2)
+    files: [docs/plans/2026-02-07-orchestrator-ipc-comparison.md]
+  - task: Created embeddings epic (oro-ldf) blocked by oro-w6n
+  - task: Created code search spec bead (oro-aa0) and memory search spec bead (oro-seg)
+  - task: Logged decisions in decisions-and-discoveries.md
+    files: [docs/decisions-and-discoveries.md]
+  - task: Prior work review of search implementations (BCR + CC-v3)
+
+decisions:
+  memory_backend: "SQLite FTS5 (not JSONL). Retrieval is the hard problem. FTS5 gives BM25 ranked search. Same DB as runtime state (.oro/state.db)."
+  extraction_method: "Hybrid (Option C). Worker self-report [MEMORY] markers + daemon post-session extraction + periodic consolidation."
+  memories_git_tracked: "No. SQLite binary doesn't diff. Human-curated knowledge goes to docs/decisions-and-discoveries.md."
+  lancedb_rejected: "No Go SDK. Manager is Go binary. SQLite FTS5 + embeddings column covers same ground."
+  embeddings_strategy: "BCR strategy (local embeddings + SQLite storage + cosine similarity) is valid. SIGILL was fastembed bug, not strategy bug. Own epic (oro-ldf)."
+  code_search: "User wants AST-based code search (CC-v3 TLDR stack pattern). Separate spec bead (oro-aa0)."
+
+findings:
+  bcr_search: "Three-factor ranking: cosine_similarity x confidence x time_decay. 30-day half-life. FastEmbed BAAI/bge-small-en-v1.5 384-dim. Fallback: LIKE %query%."
+  ccv3_search: "Hybrid RRF: 1/(60+fts_rank) + 1/(60+vec_rank). FTS via ts_rank + GIN. Vector via pgvector 1024-dim. Dedup at write: cosine >= 0.85 skip. BM25 SQLite fallback."
+  ccv3_daemon: "Watches stale sessions (heartbeat > 5min). Spawns headless Claude Sonnet for extraction. Max 2 concurrent. PID file singleton."
+  key_reference_files:
+    - yap/reference/Continuous-Claude-v3/opc/scripts/core/recall_learnings.py
+    - yap/reference/Continuous-Claude-v3/opc/scripts/core/store_learning.py
+    - yap/reference/Continuous-Claude-v3/opc/scripts/core/memory_daemon.py
+    - references/bcr (recall.py, embeddings.py, daemon.py)
+
+worked:
+  - "Prior work review via parallel explore agents — got comprehensive code-level analysis of both BCR and CC-v3 search implementations"
+  - "Incremental spec updates — edit decisions into existing doc rather than rewriting"
+
+failed: []
+
+next:
+  - "Spec out AST-based code search (oro-aa0) — review CC-v3 TLDR stack, ast-grep MCP, tree-sitter options for Go"
+  - "Spec out memory search algorithm (oro-seg) — design FTS5 queries, scoring formula, injection budget"
+  - "Start implementation with oro-w6n (Manager daemon) — all design is complete"
+
+files:
+  modified:
+    - docs/plans/2026-02-07-memory-system-spec.md
+    - docs/plans/2026-02-07-orchestrator-ipc-comparison.md
+    - docs/decisions-and-discoveries.md
+
+beads:
+  completed: []
+  in_progress: []
+  remaining:
+    - "oro-w6n: Manager daemon (P2, ready)"
+    - "oro-773: Worker Go binary (P2, ready)"
+    - "oro-r7b: oro CLI (P2, ready)"
+    - "oro-68t: merge coordinator (P2, ready)"
+    - "oro-ldf: embeddings epic (P3, blocked by oro-w6n)"
+    - "oro-aa0: AST code search spec (P2, blocked by oro-w6n)"
+    - "oro-seg: memory search spec (P2, blocked by oro-ldf)"
+
+commits:
+  - "09995aa docs(design): resolve memory system open questions — SQLite + hybrid extraction"
+  - "0390f4b docs(design): link embeddings column to oro-ldf epic, not deferred future"

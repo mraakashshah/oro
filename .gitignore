@@ -19,8 +19,6 @@ Thumbs.db
 # bv (beads viewer) local config and caches
 .bv/
 
-# Handoffs (internal session coordination)
-docs/handoffs/
 
 # Reference repos (cloned locally, not tracked)
 docs/alternative-architecture-analysis/reference/

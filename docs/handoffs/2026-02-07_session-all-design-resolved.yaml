@@ -1,0 +1,72 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Resolve all 6 open design questions for Oro orchestrator (oro-1s7)
+now: oro-1s7 CLOSED. 4 implementation beads unblocked and ready.
+
+test: "bd ready"
+
+done_this_session:
+  - task: "Resolved Q1: merge protocol — worker stays alive, retry-first, bead-based merge context, escalate on test failure"
+  - task: "Resolved Q2: reconnection — no special restart mode, heartbeat timeout, SHUTDOWN-before-reassign eliminates dual-worker race"
+  - task: "Resolved Q3: ralph handoff — dual-path (worktree file for speed, bead annotation for durability), lightweight UDS signal"
+  - task: "Resolved Q4: context detection — Claude Code hook writes to .oro/context_pct, Go wrapper watches via fsnotify + poll fallback"
+  - task: "Resolved Q5: bead prompt — Go wrapper as template engine, token budget with priority-based truncation"
+  - task: "Resolved Q6: two-stage review — self-review + spec-reviewer (Superpowers pattern), cap at 2 review cycles then escalate"
+  - task: "Updated brainstorming/premortem/workflow-routing skills to enforce per-decision premortems"
+  - task: "Closed oro-1s7, unblocking 4 implementation beads"
+
+decisions:
+  merge_protocol: "Worker stays alive through merge. Retry fresh rebase first. Worker resolves true conflicts using own context + other bead's merge annotations. Escalate to Architect only on test failure. Merge context lives on the bead, not in SQLite."
+  reconnection: "No special restart mode. Workers continue+buffer on disconnect, retry UDS indefinitely. Heartbeat timeout (3N) for dead detection. SHUTDOWN on old connection before reassigning — eliminates dual-worker race."
+  ralph_handoff: "Dual-path: .oro/handoff.yaml in worktree (operational, consumed by fresh worker) + bead annotation (permanent record, Manager visibility). UDS carries only the signal."
+  context_detection: "Claude Code hook writes context % to .oro/context_pct. Go wrapper watches via fsnotify + 5s poll fallback."
+  bead_prompt: "Go wrapper is template engine. Assembles from bd show + git status + handoff YAML. 4K token budget with priority-based truncation."
+  two_stage_review: "Self-review (tests + acceptance criteria) then spec-reviewer in same worktree. Reviewer reads bead acceptance criteria + git diff. Cap at 2 review cycles, then escalate to Architect."
+  premortem_always: "Every design decision gets a premortem before committing. Brainstorming skill updated with per-decision premortem step."
+
+findings:
+  external_merge_agent_rejected: "Zero context about why code was written. Original worker is cheapest, most context-rich resolver."
+  merge_context_on_bead: "Beads own work artifacts, SQLite owns runtime state. Merge context belongs on bead."
+  shutdown_before_reassign: "Sending SHUTDOWN on old UDS before reassigning eliminates dual-worker tiger."
+  superpowers_review: "Superpowers mandates two-stage review. Reviewer doesn't need impl context — needs the spec. This avoids context-blind problem."
+  bcr_no_surviving_prompt_code: "BCR source in ../bcr but prompt construction not found in oro repo. Clean-sheet design."
+
+worked:
+  - "Per-decision premortems caught dual-worker tiger, conflict cascade, context-blind reviewer"
+  - "User challenges ('why SQLite?', 'how did BCR do it?', 'is external merge agent correct?') simplified designs"
+  - "Reference implementation research (Superpowers two-stage review) changed Q6 decision"
+
+failed: []
+
+next:
+  - "Pick up implementation beads in dependency order (all are P2, none block each other)"
+  - "Recommended order: oro-w6n (Manager) first — it's the coordination hub"
+  - "Then oro-773 (Worker) — needs Manager to connect to"
+  - "Then oro-r7b (CLI) and oro-68t (merge coordinator) in parallel"
+  - "Each bead should start with writing-plans skill to create detailed implementation plan"
+  - "Run plan-level premortem before building each component"
+
+files:
+  modified:
+    - docs/plans/2026-02-07-orchestrator-ipc-comparison.md
+    - .claude/skills/brainstorming/SKILL.md
+    - .claude/skills/premortem/SKILL.md
+    - .claude/skills/workflow-routing/SKILL.md
+
+beads:
+  completed: [oro-1s7]
+  in_progress: []
+  remaining: [oro-w6n, oro-773, oro-r7b, oro-68t]
+  epic: null
+
+bead_dependency_graph: |
+  oro-1s7 (CLOSED - all design questions resolved)
+
+  Ready for implementation (no dependencies between them):
+    oro-w6n (Manager daemon) — start here
+    oro-773 (Worker binary) — needs Manager to test against
+    oro-r7b (oro CLI) — needs Manager to send commands to
+    oro-68t (merge coordinator) — needs Manager + Worker

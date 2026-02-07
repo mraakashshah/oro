@@ -1,0 +1,56 @@
+---
+date: 2026-02-07
+status: complete
+prior: 2026-02-07_skills-adoption.yaml
+---
+
+goal: Refine skill library — add reflection loop, review skills, and decisions log. Evaluate external skills for adoption.
+now: Skills are done. Next session should focus on beads work.
+
+done_this_session:
+  - task: Added docs/handoffs/ to gitignore
+    commit: 6f10c56
+    detail: Handoffs are internal session coordination, not project history
+
+  - task: Committed project config files
+    commit: d7081d2
+    files: [.gitattributes, CLAUDE.MD, README.md, bcrCLAUDE.md]
+
+  - task: Added reflection step to finishing-work
+    commit: 3699e3c
+    source: aleiby/claude-skills/tackle
+    detail: Step 4 (Reflect) captures friction, off-script moments, improvement suggestions before cleanup
+
+  - task: Added correction-awareness to reflect step
+    commit: 9a273ff
+    source: AI-Unleashed/Claude-Skills/autoskill (adapted, not adopted)
+    detail: "Were you corrected? Propose a skill/rule edit." Self-directed, not user-correction harvesting.
+
+  - task: Created review-docs and review-implementation skills
+    commit: d0e45cd
+    source: Xexr/marketplace/review-documentation (simplified)
+    detail: Structured review categories, severity-weighted output, read-only review before fixes
+
+  - task: Created docs/decisions-and-discoveries.md
+    commit: 3699e3c
+    detail: Ongoing log for architectural decisions. 3 entries so far.
+
+skills_inventory:
+  count: 30
+  new: [review-docs, review-implementation]
+  modified: [finishing-work]
+
+decisions_made:
+  - "Handoffs are internal — gitignored, not committed"
+  - "Self-directed reflection over user-correction harvesting (autoskill rejected)"
+  - "Doc review and implementation review are separate skills with different triggers"
+  - "Review categories and severity-weighted output from Xexr, multi-LLM orchestration skipped"
+
+what_comes_next:
+  not_needed_yet:
+    agents: "No recurring sub-agent pattern to extract yet — wait for real usage"
+    workflows: "Skills already encode workflows (executing-plans, workflow-routing, dispatching-parallel-agents)"
+  next_layer: "Hooks — automating lint-before-commit, auto-doc-review after code changes. That gives review skills teeth."
+  actual_next: "Beads work. Skills will sharpen through use + the reflect step."
+
+no_remote: true

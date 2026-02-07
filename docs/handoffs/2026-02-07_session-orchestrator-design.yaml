@@ -1,0 +1,64 @@
+---
+date: 2026-02-07
+status: partial
+---
+
+goal: Design and spec the Oro agent orchestrator (Architect/Manager/Worker model)
+now: Pick up oro-1s7 — resolve the 6 remaining open design questions before implementation
+
+test: "cat docs/plans/2026-02-07-orchestrator-ipc-comparison.md"
+
+done_this_session:
+  - task: Explored all 5 reference implementations (Superpowers, CC-v3, Compound, OpenClaw, Loom)
+    files: [docs/learnings/cross-reference-notes.md]
+  - task: Studied BCR implementation — catalogued 10 failure modes (zombies, merge races, pipe buffer, stale PIDs, etc.)
+    files: []
+  - task: Wrote IPC comparison doc — evaluated UDS vs fsnotify vs SQLite+WAL against 10 objectives and 6 reference patterns
+    files: [docs/plans/2026-02-07-orchestrator-ipc-comparison.md]
+  - task: Ran premortem — identified 4 tigers, 3 elephants, 2 paper tigers
+    files: [docs/plans/2026-02-07-orchestrator-ipc-comparison.md]
+  - task: Resolved top 2 tigers via design decisions (workers are Go binaries spawning claude -p)
+    files: [docs/plans/2026-02-07-orchestrator-ipc-comparison.md]
+  - task: Fixed noisy stop-checklist hook (invalid JSON schema)
+    files: [.claude/hooks/stop-checklist.sh]
+
+decisions:
+  - hybrid_ipc: "UDS for real-time push + SQLite WAL for durable state. UDS gives push semantics and instant zombie detection. SQLite gives crash safety and queryability."
+  - workers_are_go_binaries: "Workers are Go binaries that spawn claude -p as subprocess. Go binary owns UDS connection. Resolves runtime mismatch tiger (Claude Code is not a daemon)."
+  - no_tmux_for_workers: "Workers run as background processes supervised by Manager. Only Architect (interactive) and Manager (dashboard) get tmux panes."
+  - architect_pushes_via_uds: "Architect signals new work via oro enqueue CLI which sends NEW_WORK over UDS. Manager also proactively pulls from beads DB by priority."
+  - priority_queue: "P0=bugs, P1=merge conflicts, P2=current epic beads, P3=other ready beads. Manager keeps pulling as long as work exists at current priority or higher."
+  - five_concurrent_workers: "Up to 5 Worker processes. Each worker can internally use Claude subagents via Task tool."
+
+findings:
+  - bcr_main_failures: "Zombie processes (354 watchers), merge races (FF-only), stale PID files, pipe buffer fills, hung tests. All traced to: lifecycle not tied to work, no automated cleanup, filesystem race conditions."
+  - none_use_tmux: "None of the 4 reference implementations use tmux for agent coordination. CC-v3 uses PostgreSQL, OpenClaw uses WebSocket gateway, Superpowers uses subagent dispatch."
+  - uds_mirrors_openclaw: "UDS is the local equivalent of OpenClaw's WebSocket gateway pattern — single coordination point, push-based, bidirectional."
+
+worked:
+  - "Brainstorming skill (one question at a time) kept design focused"
+  - "Premortem caught the fundamental runtime mismatch before any code was written"
+  - "BCR postmortem provided concrete failure modes to design against"
+
+failed: []
+
+next:
+  - "Resolve 6 open questions (oro-1s7): merge protocol, reconnection, ralph handoff, context detection, bead prompt construction, two-stage review"
+  - "After oro-1s7: implement Manager (oro-w6n), Worker (oro-773), CLI (oro-r7b), merge coordinator (oro-68t)"
+
+files:
+  created: [docs/plans/2026-02-07-orchestrator-ipc-comparison.md]
+  modified: [.claude/hooks/stop-checklist.sh]
+
+beads:
+  completed: []
+  in_progress: []
+  remaining: [oro-1s7, oro-w6n, oro-773, oro-r7b, oro-68t]
+  epic: null
+
+bead_dependency_graph: |
+  oro-1s7 (P1 design questions)
+    ├── blocks → oro-w6n (Manager daemon)
+    ├── blocks → oro-773 (Worker binary)
+    ├── blocks → oro-r7b (oro CLI)
+    └── blocks → oro-68t (merge coordinator)

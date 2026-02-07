@@ -1,0 +1,65 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Audited all beads against spec, fixed mismatches, set up foundation for implementation phase
+now: Claim oro-fza (foundation bead), execute it — Go module + CI + quality gate + first test
+
+test: bd ready  # should show oro-fza as only P1
+
+done_this_session:
+  - task: Spec vs beads audit — compared lifecycle doc + detail specs against all 7 beads
+    files: [docs/plans/2026-02-07-oro-lifecycle.md]
+  - task: Fixed oro-r7b stale title (removed "enqueue", added actual CLI commands)
+  - task: Removed wrong oro-seg → oro-ldf dependency (FTS5 doesn't need embeddings)
+  - task: Clarified oro-68t as Go package integrated by Dispatcher (updated description)
+  - task: Created oro-2jb — shared protocol package (UDS message types + SQLite schema + Go types)
+  - task: Created oro-0q5 — memory system implementation (tables + extraction + injection)
+  - task: Created oro-rue — ops agent spawner (review, merge conflict, diagnosis)
+  - task: Wired all dependencies — w6n←{2jb,68t,rue}, 773←2jb, r7b←2jb, 0q5←2jb, rue←2jb
+  - task: Updated lifecycle doc bead table to match actual graph
+  - task: Unignored .beads/ from .gitignore — now git-tracked for all contributors
+  - task: Created oro-fza (P1) — foundation bead (Go module + CI + quality gate)
+  - task: Wired oro-2jb depends on oro-fza
+
+decisions:
+  - beads_in_git: ".beads/ must be git-tracked — it's the shared issue tracker, like local-first GitHub Issues"
+  - foundation_first: "No feature bead can start without Go module + CI + quality gate (oro-fza)"
+  - decompose_before_execute: "All implementation beads lack acceptance criteria — must run spec-to-beads before execution"
+
+findings:
+  - beads_had_no_acceptance_criteria: "Beads were created during design phase as descriptions, not self-evaluating units. spec-decompose formula exists but was never run."
+  - spec_decompose_formula_exists: ".beads/formulas/spec-decompose.formula.toml defines the full workflow — decompose, approve, execute, verify, finish"
+
+worked:
+  - Parallel bd show commands to gather all bead details at once
+  - Systematic spec-component-to-bead coverage mapping
+
+failed: []
+
+next:
+  - "bd update oro-fza --status=in_progress  # claim foundation"
+  - "Execute oro-fza: go mod init, cmd/ + internal/ + pkg/ dirs, CI (GitHub Actions), quality_gate.sh, Makefile, first passing test"
+  - "bd close oro-fza"
+  - "Decompose oro-2jb using spec-to-beads skill (premortem first)"
+  - "Decompose remaining implementation beads (oro-68t, oro-773, oro-r7b, oro-0q5, oro-rue)"
+  - "Use work-bead / executing-beads skills for TDD execution of each sub-bead"
+
+files:
+  modified: [.gitignore, docs/plans/2026-02-07-oro-lifecycle.md]
+  created: [docs/handoffs/2026-02-07_bead-audit-and-foundation.yaml]
+
+beads:
+  completed: []
+  in_progress: []
+  created: [oro-2jb, oro-0q5, oro-rue, oro-fza]
+  remaining: [oro-fza, oro-2jb, oro-68t, oro-773, oro-r7b, oro-0q5, oro-rue, oro-w6n, oro-w2u, oro-seg, oro-ldf]
+  critical_path: oro-fza → oro-2jb → {oro-w6n, oro-773, oro-r7b, oro-0q5, oro-rue}
+
+skills_for_next_session:
+  - resume-handoff (to pick up this handoff)
+  - premortem (before Go package structure decisions)
+  - spec-to-beads (to decompose oro-2jb into sub-beads with acceptance criteria)
+  - test-driven-development (inside oro-fza execution)
+  - work-bead (end-to-end bead execution)
