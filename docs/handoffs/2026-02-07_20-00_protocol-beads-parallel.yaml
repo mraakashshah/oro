@@ -1,0 +1,59 @@
+---
+date: 2026-02-07
+status: partial
+prior: 2026-02-07_19-00_decompose-oro-2jb.yaml
+---
+
+goal: Decompose oro-2jb and execute first protocol beads via parallel agents
+now: Execute oro-q63 (SQLite schema DDL), then oro-bya (row types), then oro-v6f (integration test)
+test: go test ./pkg/protocol/... -v  # 13 tests passing (messages + directives)
+
+done_this_session:
+  - task: "Premortem on oro-2jb — no blocking tigers"
+  - task: "Decomposed oro-2jb into 5 sub-beads, wired dependencies"
+    commit: 9b43c75
+  - task: "oro-6dq: UDS message types — completed via parallel agent"
+    files: [pkg/protocol/message.go, pkg/protocol/message_test.go]
+  - task: "oro-ef8: directive types — completed via parallel agent"
+    files: [pkg/protocol/directive.go, pkg/protocol/directive_test.go]
+  - task: "Updated dispatching-parallel-agents skill — use bead annotations not output files"
+    files: [.claude/skills/dispatching-parallel-agents/SKILL.md]
+  - task: "Deleted agent output files (docs/agent-output-*.md) — file debt"
+
+decisions:
+  no_output_files: "Parallel agents should close beads with bd close --reason, not write docs/agent-output-*.md files. Bead annotations are the durable queryable record."
+  new_work_dropped: "NEW_WORK message type removed — Dispatcher watches beads DB directly per Manager Redesign"
+  signal_dropped: "SIGNAL message type removed — SHUTDOWN used directly"
+  package_location: "pkg/protocol/ — shared, importable by all consumers"
+  types_only: "No business logic, no net, no database/sql in protocol package"
+
+worked:
+  - "Parallel agents for independent beads — both completed cleanly, no file conflicts"
+  - "Task completion notifications sufficient for summaries — no need to read output files"
+  - "Detailed agent prompts with explicit constraints (don't touch other agent's files)"
+
+failed:
+  - "Initially created docs/agent-output-*.md files — unnecessary given bead annotations + task notifications"
+
+next:
+  - "oro-q63: SQLite schema DDL (ready, may need sqlite driver dep for tests)"
+  - "oro-bya: SQLite row types (blocked by oro-q63)"
+  - "oro-v6f: Integration test (blocked by all four sub-beads)"
+  - "After oro-v6f: 5 downstream beads unblocked (oro-0q5, oro-773, oro-r7b, oro-rue, oro-w6n)"
+
+beads:
+  completed: [oro-fza, oro-dxu, oro-2jb, oro-6dq, oro-ef8]
+  in_progress: []
+  remaining: [oro-q63, oro-bya, oro-v6f, oro-68t, oro-seg, oro-w2u, oro-0q5, oro-773, oro-r7b, oro-rue, oro-w6n, oro-ldf]
+  critical_path: "oro-q63 → oro-bya → oro-v6f → downstream"
+
+skills_for_next_session:
+  - resume-handoff
+  - work-bead (execute oro-q63 sequentially — needs sqlite driver)
+  - dispatching-parallel-agents (if oro-bya and another bead become parallel-ready)
+
+message_types_inventory:
+  dispatcher_to_worker: [ASSIGN, SHUTDOWN]
+  worker_to_dispatcher: [HEARTBEAT, STATUS, HANDOFF, DONE, READY_FOR_REVIEW, RECONNECT]
+  sqlite_tables: [events, assignments, commands, memories, memories_fts]
+  directives: [start, stop, pause, focus]
