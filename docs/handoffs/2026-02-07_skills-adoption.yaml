@@ -1,0 +1,95 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Build comprehensive skill library for oro from 3 reference implementations (Superpowers, Continuous Claude v3, Compound Engineering)
+now: Commit uncommitted changes (writing-skills update, planning.md), then move to actual project work — skills are done
+test: ls .claude/skills/ | wc -l  # should be 28
+
+done_this_session:
+  - task: Created 23 base skills from reference implementations
+    commit: d8a7757
+    files: [.claude/skills/*/SKILL.md]
+
+  - task: Added 4 more skills (tmux, session-logs, github, beads) + merged skill-creator insights into writing-skills
+    commit: d4da4d5
+    sources: [openclaw/tmux, openclaw/session-logs, openclaw/github, beads plugin]
+
+  - task: Merged agent context isolation into dispatching-parallel-agents
+    commit: f1a6a7d
+    detail: File-based coordination, no TaskOutput, no polling — from CC-v3
+
+  - task: Created git-commits skill with tier-based conventional commits
+    commit: 8e59213
+    source: https://skills.sh/vasilyu1983/ai-agents-public/git-commit-message
+
+  - task: Added env file auto-copying to using-git-worktrees
+    commit: c0ef156
+
+  - task: Added "Skill vs Rule vs Hook" decision tree to writing-skills
+    status: uncommitted
+    file: .claude/skills/writing-skills/SKILL.md
+
+  - task: Appended future reference notes to planning.md
+    status: uncommitted
+    file: yap/planning.md
+
+uncommitted_changes:
+  - .claude/skills/writing-skills/SKILL.md  # decision tree addition
+  - docs/learnings/cross-reference-notes.md  # modified
+  - .gitattributes  # untracked
+  - .gitignore  # untracked
+  - CLAUDE.MD  # untracked
+  - README.md  # untracked
+  - bcrCLAUDE.md  # untracked
+
+skills_inventory:
+  count: 28
+  categories:
+    discipline: [test-driven-development, systematic-debugging, verification-before-completion, observe-before-editing, destructive-command-safety, using-skills]
+    workflow: [brainstorming, writing-plans, executing-plans, requesting-code-review, receiving-code-review, finishing-work]
+    orchestration: [dispatching-parallel-agents, workflow-routing, premortem, completion-check, explore]
+    tools: [beads, git-commits, tmux, github, session-logs]
+    continuity: [create-handoff, resume-handoff, documenting-solutions, refactor, using-git-worktrees, writing-skills]
+
+decisions:
+  excluded_from_CC-v3: "90+ CC-v3 skills excluded — tool-specific wrappers (tldr, agentica, MCP), infrastructure plumbing, or architectural rules that belong as rules not skills"
+  excluded_from_CE: "Ruby-specific (dhh-rails-style, andrew-kane-gem-writer), tool-specific (gemini-imagegen, agent-browser, rclone), agent-native-architecture (product design philosophy not process skill)"
+  compound_learnings_deferred: "Requires learnings cache infrastructure we don't have yet. Decision tree extracted into writing-skills."
+  compound_docs_simplified: "510-line Rails-specific version simplified into documenting-solutions (~200 words)"
+  context_isolation_merged: "Not a standalone skill — merged into dispatching-parallel-agents as step 4"
+  no_remote_configured: "git push not possible — no remote set up yet"
+
+global_adaptations_applied:
+  - "your human partner → the user"
+  - "superpowers:skill-name → skill-name (flat namespace)"
+  - "TypeScript/JS examples → Go + Python"
+  - "npm test → go test ./... / uv run pytest"
+  - "Removed tool-specific dependencies (tldr, agentica, MCP)"
+  - "All descriptions follow CSO rule (conditions only, no workflow summaries)"
+
+worked:
+  - "Strategic adoption — reading source, assessing overlap with existing rules/skills, only pulling genuine gaps"
+  - "Merging related concepts into existing skills instead of creating new ones"
+  - "Parallel agent reads for batch evaluation"
+
+failed:
+  - "Background agent ae6232d crashed (classifyHandoffIfNeeded undefined) — but output was already read before failure, no data lost"
+
+next:
+  - Commit writing-skills update and planning.md changes
+  - Set up git remote and push all local commits
+  - Start actual project work — skill library is complete
+  - Consider Context7 MCP explicit config (currently injected by wrw plugin)
+
+files:
+  created: [docs/handoffs/2026-02-07_skills-adoption.yaml]
+  modified: [.claude/skills/writing-skills/SKILL.md, yap/planning.md]
+
+reference_sources:
+  superpowers: yap/reference/superpowers/
+  cc_v3: yap/reference/Continuous-Claude-v3/
+  compound_engineering: yap/reference/compound-engineering-plugin/
+  openclaw: yap/reference/openclaw/
+  beads: yap/reference/beads/
