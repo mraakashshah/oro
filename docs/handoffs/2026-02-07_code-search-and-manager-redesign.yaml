@@ -1,0 +1,63 @@
+---
+date: 2026-02-07
+status: partial
+---
+
+goal: Spec out code search for Oro workers. Discovered major architecture change — Manager is a Claude session, not a Go binary.
+now: Resolve oro-o7r (Manager role redesign) first — it blocks everything downstream including code search spec.
+test: bd ready
+
+done_this_session:
+  - task: Analyzed CC-v3 code search architecture in depth
+    files:
+      - yap/reference/Continuous-Claude-v3/.claude/hooks/src/tldr-read-enforcer.ts
+      - yap/reference/Continuous-Claude-v3/.claude/hooks/src/smart-search-router.ts
+      - yap/reference/Continuous-Claude-v3/.claude/servers/morph/warpgrep_codebase_search.py
+  - task: Identified Manager role mismatch — previous design assumed Go binary, user intent is Claude session
+  - task: Created P0 bead oro-o7r for Manager redesign
+  - task: Created oro-w2u for code search spec (supersedes oro-aa0)
+  - task: Wired dependencies — oro-o7r blocks oro-w6n and oro-w2u
+
+blockers:
+  - oro-o7r must be resolved before any implementation beads proceed
+
+questions:
+  - If Manager is a Claude session, what provides the UDS server / lifecycle management? Thin Go wrapper? Shell scripts?
+  - How does Manager-to-Worker communication work if Manager is Claude, not a Go daemon?
+  - Does the Manager run in a tmux pane like the Architect?
+
+decisions:
+  - all_roles_get_full_code_search_stack: "Workers rarely trigger upper layers but get full stack for simplicity. One hook config, not role-specific variants. Zero cost when idle."
+  - manager_is_claude_session: "User clarified — Architect plans/creates beads, Manager coordinates/dispatches/merge-gatekeeps/cleanup. Both are Claude sessions, not Go binaries."
+  - supersede_oro_aa0: "Old bead scoped to workers only. New oro-w2u covers all roles."
+
+findings:
+  - ccv3_three_layer_search:
+      layer1_read_enforcer: "PreToolUse hook intercepts Read on code files >3KB. Returns AST summary (structure/context/extract modes). 26-99% token savings. Bypasses test files, config, small files."
+      layer2_search_router: "PreToolUse hook intercepts Grep. Classifies structural/literal/semantic. Routes to ast-grep, TLDR search, or FAISS semantic. Stores context to /tmp for read-enforcer coordination."
+      layer3_warpgrep: "Morph MCP server. Agentic parallel grep subagent for broad natural-language queries. Third-party, not built by CC-v3."
+      tldr_daemon: "Long-running process caches AST parses. 50ms cached vs 500ms CLI. Serves structure/context/extract/search/semantic/impact/cfg/dfg/slice commands."
+  - ccv3_hook_coordination: "Search router writes context to /tmp/claude-search-context/<session>.json. Read enforcer picks it up to return focused context instead of generic structure. Two hooks work in tandem."
+
+worked:
+  - Reading CC-v3 TypeScript source directly — much more informative than the learnings summary
+  - Brainstorming one question at a time to uncover the Manager role mismatch early
+
+failed:
+  - None this session
+
+next:
+  - "P0: Resolve oro-o7r — redesign orchestrator with Manager as Claude session. Revisit IPC comparison doc. Key question: what thin binary/daemon layer sits between Claude sessions and provides lifecycle management?"
+  - "P2: After oro-o7r, spec code search (oro-w2u). Key decision: port TLDR to Go, use tree-sitter in Go, or keep polyglot (Go wrapper + external tools like ast-grep CLI)."
+  - "P2: Consider whether Oro needs its own TLDR daemon equivalent or can use ast-grep + tree-sitter directly from Claude Code hooks"
+
+files:
+  created:
+    - docs/handoffs/2026-02-07_code-search-and-manager-redesign.yaml
+  modified: []
+
+beads:
+  created: [oro-o7r, oro-w2u]
+  closed: [oro-aa0]
+  in_progress: []
+  remaining: [oro-o7r, oro-w2u, oro-w6n, oro-773, oro-r7b, oro-68t, oro-seg, oro-ldf]
