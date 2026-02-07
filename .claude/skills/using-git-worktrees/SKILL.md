@@ -43,7 +43,16 @@ git worktree add .worktrees/$BRANCH_NAME -b $BRANCH_NAME
 cd .worktrees/$BRANCH_NAME
 ```
 
-### 2. Run Project Setup
+### 2. Copy Environment Files
+
+```bash
+main_root=$(git rev-parse --show-toplevel)
+for env in .env .env.local .env.test; do
+  [ -f "$main_root/$env" ] && cp "$main_root/$env" .
+done
+```
+
+### 3. Run Project Setup
 
 ```bash
 # Go
@@ -56,7 +65,7 @@ if [ -f pyproject.toml ]; then uv sync; fi
 if [ -f package.json ]; then npm install; fi
 ```
 
-### 3. Verify Clean Baseline
+### 4. Verify Clean Baseline
 
 ```bash
 go test ./...      # Go
@@ -65,7 +74,7 @@ uv run pytest      # Python
 
 If tests fail: report failures, ask whether to proceed.
 
-### 4. Report
+### 5. Report
 
 ```
 Worktree ready at <full-path>
