@@ -1,7 +1,7 @@
 # Oro Memory System: Spec & Premortem
 
 **Date:** 2026-02-07
-**Status:** Draft — needs design decisions before implementation
+**Status:** Decided — all open questions resolved 2026-02-07
 
 ## Problem
 
@@ -117,35 +117,48 @@ Three memory layers (distinct purposes, clear ownership):
 
 ┌──────────────────────────────────────────────────────────────┐
 │  Layer 3: Project Memory (NEW — this spec)                   │
-│  Owner: .oro/memories.jsonl (JSONL, append-only)             │
+│  Owner: .oro/state.db (SQLite, memories table)               │
 │  Scope: cross-session learnings, patterns, gotchas           │
 │  Lifetime: permanent, with decay scoring on retrieval        │
 │  Access: oro remember / oro recall                           │
+│  Search: FTS5 (BM25) now, + embeddings column later          │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 ### Layer 3 Detail: Project Memory
 
-**Storage:** `.oro/memories.jsonl` — one JSON object per line.
+**Storage:** `.oro/state.db` — `memories` table in the same SQLite database used for runtime state.
 
-```json
-{"content": "ruff --fix must run before pyright or you get false positives from unfixed imports",
- "type": "gotcha", "tags": ["tooling", "ruff", "pyright"],
- "source": "extracted", "bead_id": "oro-w6n", "worker_id": "worker-2",
- "created": "2026-02-07T15:30:00Z", "confidence": 0.8}
+```sql
+CREATE TABLE memories (
+    id INTEGER PRIMARY KEY,
+    content TEXT NOT NULL,
+    type TEXT NOT NULL,  -- lesson | decision | gotcha | pattern | preference
+    tags TEXT,           -- JSON array
+    source TEXT NOT NULL, -- 'self_report' | 'daemon_extracted'
+    bead_id TEXT,
+    worker_id TEXT,
+    confidence REAL DEFAULT 0.8,
+    created_at TEXT DEFAULT (datetime('now')),
+    embedding BLOB       -- reserved for future vector search
+);
+
+CREATE VIRTUAL TABLE memories_fts USING fts5(content, tags, content=memories, content_rowid=id);
 ```
 
 **Types:** `lesson`, `decision`, `gotcha`, `pattern`, `preference`
 
-**Why JSONL, not SQLite:**
-- BCR's SQLite + embeddings was the fragile path (ONNX arm64 crash, dual-backend confusion)
-- JSONL is grep-debuggable, append-only, zero dependencies
-- Recall via keyword/tag filtering + recency is good enough for <10K memories
-- If we ever need semantic search, we add it as a retrieval layer on top of JSONL, not as a separate backend
+**Why SQLite, not JSONL:**
+- Retrieval is the hard problem, not storage. JSONL grep can't rank results.
+- FTS5 gives BM25 ranked search out of the box — keyword "database timeout" surfaces related "SQLite lock contention" via term proximity.
+- Already in the stack for runtime state — one DB, one Go driver, one dependency.
+- Embeddings column reserved for future semantic search (cosine similarity) without schema migration.
+- Structured queries (`WHERE type='gotcha' AND bead_id=?`) are free.
+- Time decay scoring is a SQL expression: `confidence * (0.5 ^ ((julianday('now') - julianday(created_at)) / 30.0))`
 
-### Extraction
+### Extraction (DECIDED: Option C — Hybrid)
 
-**Option A: Worker self-reports (recommended)**
+**Path 1: Worker self-reports (real-time)**
 
 Worker Go binary monitors Claude's stdout for extraction markers:
 ```
@@ -153,29 +166,17 @@ Worker Go binary monitors Claude's stdout for extraction markers:
 [MEMORY] type=lesson: SQLite WAL mode requires single-writer for consistency
 ```
 
-Claude is instructed (in bead prompt, R5) to emit `[MEMORY]` lines for learnings. Go binary parses and appends to `.oro/memories.jsonl`.
+Claude is instructed (in bead prompt, R5) to emit `[MEMORY]` lines. Go binary parses and INSERTs to `memories` table with `source='self_report'`.
 
-- Pro: Zero latency, no daemon, no API cost, worker has full context
-- Pro: Works offline, no external dependencies
-- Con: Depends on Claude following instructions (mitigated: it's in the system prompt)
-- Con: Only captures what Claude explicitly marks
+**Path 2: Daemon post-session extraction (background)**
 
-**Option B: Post-session extraction (BCR pattern)**
+Daemon watches session logs after worker completes, extracts implicit learnings via regex patterns ("I learned", "Note:", "Gotcha:", "Pattern:") and optionally Claude API (Haiku). INSERTs with `source='daemon_extracted'`.
 
-Daemon watches session logs, runs extraction via Claude API (Haiku) or regex patterns after session completes.
+BCR's daemon extraction worked — the failure was never wiring recall. Oro closes that loop via prompt injection (see below).
 
-- Pro: Catches implicit learnings Claude didn't explicitly mark
-- Pro: Regex fallback works without API key
-- Con: Delayed — memories only available after session ends
-- Con: Extra daemon process, API costs, extraction quality varies
-- Con: BCR proved this path is fragile (daemon not auto-started, recall never wired)
+**Path 3: Periodic consolidation**
 
-**Option C: Hybrid — self-report + periodic consolidation**
-
-Workers self-report (Option A). A periodic consolidation pass (not a daemon — just `oro memories consolidate` run by Manager between beads) deduplicates and merges related memories.
-
-- Pro: Best of both — immediate capture + quality improvement over time
-- Con: Two extraction paths to maintain
+Manager runs `oro memories consolidate` between beads: deduplicates by FTS5 similarity, merges related memories, prunes low-confidence stale entries. Not a daemon — triggered by Manager's event loop.
 
 ### Injection (Memory → Prompt)
 
@@ -200,13 +201,13 @@ Worker reads results and incorporates as needed. This avoids pre-loading noise �
 
 ### CLI Commands
 
-Extend `ad_hoc/oro` (or future Go binary):
+Built into the Go binary (same binary as Manager/Worker):
 
 ```
-oro remember "content" --type=lesson --tags=x,y    # Manual store
-oro recall "query" [--limit=10] [--type=gotcha]     # Search
+oro remember "content" --type=lesson --tags=x,y    # Manual INSERT
+oro recall "query" [--limit=10] [--type=gotcha]     # FTS5 ranked search
 oro memories [--tag=x] [--type=y]                   # List/browse
-oro memories consolidate                             # Dedup + prune
+oro memories consolidate                             # Dedup + prune via FTS5 similarity
 ```
 
 ---
@@ -221,13 +222,13 @@ oro memories consolidate                             # Dedup + prune
 |---|------|----------|------------|
 | T1 | **Claude ignores [MEMORY] markers** — extraction rate drops to near zero because workers don't reliably emit markers | HIGH | Make marker instruction prominent in bead prompt. Add fallback: Go binary also scans for "I learned", "Note:", "Gotcha:" regex patterns in stdout (BCR's proven regex set). Belt + suspenders. |
 | T2 | **Memory injection is noise** — irrelevant memories in prompt waste tokens and confuse workers | HIGH | Start with tag-only filtering (high precision, low recall). Only inject memories whose tags overlap with bead tags. Let workers ignore irrelevant ones. Cap at 3 memories, not 5. Keep token budget tiny (200 tokens). |
-| T3 | **JSONL grows unbounded** — 5 workers × many beads × many sessions = thousands of memories, search gets slow | MEDIUM | Consolidation pass caps file at 1000 entries. Oldest low-confidence entries pruned first. JSONL grep is fast up to ~50K lines anyway. Not a real problem until much later. |
+| T3 | **Memories table grows unbounded** — 5 workers × many beads × many sessions = thousands of memories | LOW | SQLite handles millions of rows. Consolidation pass prunes low-confidence stale entries. FTS5 index keeps search fast. Not a real problem. |
 
 ### Elephants (known issues, accepted)
 
 | # | Risk | Notes |
 |---|------|-------|
-| E1 | **Keyword search misses semantic matches** | Accepted. "database timeout" won't match "SQLite lock contention". Tag-based filtering compensates. Upgrade to embeddings later if needed — JSONL format doesn't prevent it. |
+| E1 | **FTS5 misses semantic matches** | Accepted. "database timeout" won't match "SQLite lock contention" unless terms overlap. Tag-based filtering + BM25 term proximity compensate. Embeddings column reserved for future upgrade — no schema change needed. |
 | E2 | **Memory quality varies** | Some memories will be trivial or wrong. Confidence scoring + decay means bad memories fade. Consolidation can prune low-confidence entries. |
 | E3 | **No cross-project memory** | Memories are per-project (`.oro/memories.jsonl`). Fine for now. Global memory is a future concern. |
 
@@ -235,13 +236,15 @@ oro memories consolidate                             # Dedup + prune
 
 | # | Risk | Why fine |
 |---|------|---------|
-| P1 | **Concurrent JSONL writes** | Manager is single writer for consolidation. Workers write to their own worktree copies, Manager merges on bead completion. No concurrent writes to same file. |
-| P2 | **Memory conflicts with beads DB** | Different scopes — beads own work artifacts, memories own cross-session learnings. Clear ownership boundary, same as SQLite vs beads in IPC design. |
+| P1 | **Concurrent SQLite writes** | Manager is single writer for main DB. Workers write to their own worktree SQLite copies. Manager merges rows on bead completion. No concurrent writes to same DB. |
+| P2 | **Memory conflicts with beads DB** | Different scopes — beads own work artifacts, memories own cross-session learnings. Clear ownership boundary. |
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-1. **Option A vs C for extraction?** — A (self-report only) is minimal. C (hybrid) is more robust but more complex. Recommend starting with A, adding consolidation later.
-2. **Where does Manager merge worker memories?** — Worker writes to `.oro/memories.jsonl` in its worktree. On bead completion (merge step), Manager appends worker's new memories to main `.oro/memories.jsonl`. Same merge-on-completion flow as code.
-3. **Should memories be git-tracked?** — Probably yes — they're project knowledge, not runtime state. `.oro/memories.jsonl` gets committed like `docs/decisions-and-discoveries.md`.
+1. **Extraction method: Option C (hybrid).** Self-report markers for real-time capture + daemon for implicit extraction + periodic consolidation for quality. Maximizes capture rate.
+2. **Where does Manager merge worker memories?** Worker INSERTs to a local SQLite in its worktree (`.oro/state.db`). On bead completion (merge step), Manager copies new rows to the main `.oro/state.db`. Same merge-on-completion flow as code.
+3. **Should memories be git-tracked?** No. Memories live in SQLite (binary, doesn't diff). SQLite is runtime-adjacent state in `.oro/state.db`. Project knowledge worth preserving long-term goes to `docs/decisions-and-discoveries.md` (human-curated, git-tracked).
+4. **Why SQLite, not JSONL?** Retrieval quality. FTS5 gives BM25 ranked search; JSONL grep can't rank. Already in the stack for runtime state — one DB, one driver. Embeddings column reserved for future semantic search.
+5. **Why not LanceDB?** No Go SDK. Manager is a Go binary. SQLite FTS5 + future embeddings column covers the same ground without adding a language bridge.

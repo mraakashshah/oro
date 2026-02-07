@@ -254,8 +254,8 @@ CREATE TABLE assignments (
 |---|------|----------|------------|
 | 1 | Claude Code is not a daemon — runtime mismatch | HIGH | Workers are Go binaries that spawn `claude -p`. Go binary owns UDS. |
 | 2 | Workers can't hold UDS connections | HIGH | Go wrapper holds the connection, Claude is a managed subprocess. |
-| 3 | Merge serialization undesigned | HIGH | **Still open.** Manager must hold merge lock + sequential rebase-merge. |
-| 4 | Manager SPOF recovery unclear | MEDIUM | **Still open.** Manager restarts, re-reads SQLite, workers reconnect with current state. Need reconnection protocol. |
+| 3 | Merge serialization undesigned | HIGH | **Resolved as R1.** Worker stays alive through merge. Retry-first, escalate-last. |
+| 4 | Manager SPOF recovery unclear | MEDIUM | **Resolved as R2.** Heartbeat + SHUTDOWN-before-reassign. No special restart mode. |
 
 ### Elephants (acknowledged, watch for)
 
