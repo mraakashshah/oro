@@ -24,7 +24,7 @@ done_this_session:
   - task: Added correction-awareness to reflect step
     commit: 9a273ff
     source: AI-Unleashed/Claude-Skills/autoskill (adapted, not adopted)
-    detail: "Were you corrected? Propose a skill/rule edit." Self-directed, not user-correction harvesting.
+    detail: "Were you corrected? Propose a skill/rule edit. Self-directed, not user-correction harvesting."
 
   - task: Created review-docs and review-implementation skills
     commit: d0e45cd

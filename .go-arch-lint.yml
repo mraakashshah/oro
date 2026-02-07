@@ -1,0 +1,21 @@
+version: 3
+allow:
+  depOnAnyVendor: true
+
+components:
+  cmd:
+    in: cmd/**
+  internal:
+    in: internal/**
+  pkg:
+    in: pkg/**
+
+deps:
+  cmd:
+    mayDependOn:
+      - internal
+      - pkg
+  internal:
+    mayDependOn:
+      - internal
+      - pkg

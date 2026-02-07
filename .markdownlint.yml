@@ -1,0 +1,14 @@
+# Lenient markdownlint config — disable noisy rules for existing docs.
+default: true
+MD013: false    # Line length
+MD033: false    # Allow inline HTML
+MD024: false    # Allow duplicate headings (different sections)
+MD036: false    # Allow emphasis as heading
+MD022: false    # Blanks around headings
+MD032: false    # Blanks around lists
+MD040: false    # Fenced code language
+MD031: false    # Blanks around fences
+MD058: false    # Blanks around tables
+MD060: false    # Table column style
+MD041: false    # First line heading
+MD034: false    # Bare URLs
