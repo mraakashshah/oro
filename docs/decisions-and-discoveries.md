@@ -1,5 +1,11 @@
 # Decisions and Discoveries
 
+## 2026-02-07: golangci-lint v2 gofumpt version mismatch
+**Tags:** #go #tooling #golangci-lint #gofumpt
+**Context:** During oro-fza foundation setup, files formatted by standalone `gofumpt` (v0.9.2) were still flagged as "not properly formatted" by golangci-lint v2.8.0's bundled gofumpt formatter.
+**Decision:** Don't enable gofumpt as a golangci-lint formatter. Run standalone `gofumpt` in the quality gate and Makefile instead. Keep golangci-lint for linting only.
+**Implications:** Formatting and linting are separate concerns with separate tools. Version coupling between golangci-lint's bundled formatters and standalone tools causes false positives. Also: golangci-lint v2 moved formatters to a `formatters:` section (not `linters:`), and requires `version: "2"` at the top of the config.
+
 ## 2026-02-07: Add reflection step to finishing-work
 **Tags:** #skills #workflow #feedback-loops
 **Context:** Reviewed aleiby/claude-skills/tackle — its reflect phase logs friction after every PR as queryable data
