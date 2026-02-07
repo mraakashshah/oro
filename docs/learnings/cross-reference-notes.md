@@ -112,6 +112,7 @@ Combines BM25 (lexical) + vector (semantic) for robustness.
 - `/workflows:compound` - knowledge codification
 
 **Agent Categories** (27 total):
+
 - Review (14), Research (4), Design (3), Workflow (5), Docs (1)
 
 ### OpenClaw (50+ Skills)

@@ -30,6 +30,20 @@ A reusable reference guide for proven techniques, patterns, or tools.
 **Skills are:** Reusable techniques, patterns, tools, reference guides
 **Skills are NOT:** Narratives, README files, changelogs, setup guides, or user-facing documentation
 
+## Skill vs Rule vs Hook
+
+When a recurring pattern needs to become permanent, pick the right artifact:
+
+```
+Is it a sequence of steps/commands? → SKILL (executable > declarative)
+Should it fire automatically on an event? → HOOK (automatic > manual)
+Is it "when X, do Y" or "never do X"? → RULE (heuristic)
+Does it enhance an existing agent? → AGENT UPDATE
+None of the above? → Skip (not worth capturing)
+```
+
+Signal threshold: 1 occurrence = note, 2 = consider, 3+ = create.
+
 ## Skill Types
 
 | Type | Examples | Test With |
