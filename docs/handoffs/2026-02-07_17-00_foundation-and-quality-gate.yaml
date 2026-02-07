@@ -1,0 +1,63 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Executed oro-fza (foundation bead) and oro-dxu (comprehensive quality gate) — project is ready for feature beads
+now: Pick up oro-2jb (shared protocol package) — run spec-to-beads with premortem first, it's a large bead that needs decomposition
+test: ./quality_gate.sh  # 13/13 checks should pass
+
+done_this_session:
+  - task: "oro-fza: Go module scaffolding, CI, quality gate, first test"
+    files: [cmd/oro/main.go, internal/version/version.go, internal/version/version_test.go, Makefile, .github/workflows/ci.yml, .golangci.yml, quality_gate.sh, pkg/.gitkeep]
+    commit: db91516
+  - task: "oro-dxu: Comprehensive quality gate — 13 checks"
+    files: [quality_gate.sh, .markdownlint.yml, .go-arch-lint.yml, docs/handoffs/2026-02-07_skills-refinement.yaml]
+    commit: c4c46cf
+  - task: "Logged golangci-lint v2 gofumpt version mismatch discovery"
+    files: [docs/decisions-and-discoveries.md]
+    commit: 88d5cdc
+
+decisions:
+  golangci_gofumpt_separation: "Don't enable gofumpt as golangci-lint formatter — bundled version disagrees with standalone. Run gofumpt separately in quality gate."
+  golangci_v2_config: "Requires version: '2' at top, formatters in separate formatters: section, not linters:"
+  bash_arithmetic_sete: "((PASS++)) returns exit 1 when PASS=0 under set -e. Use PASS=$((PASS + 1)) instead."
+  biome_for_json: "biome over prettier for JSON/YAML linting — faster, single binary"
+  go_arch_lint_now: "Define cmd/internal/pkg layers immediately, internal may self-import"
+  markdownlint_lenient: "Disable MD013, MD022, MD031, MD032, MD033, MD034, MD040, MD041, MD058, MD060 — existing docs have many violations"
+
+findings:
+  quality_gate_13_checks: "Go(9): gofumpt, goimports, golangci-lint, go-arch-lint, go test, coverage, govulncheck, go build, go vet. Shell(1): shellcheck. Docs(3): markdownlint, yamllint, biome"
+  python_gate_ready: "Python tiers exist (ruff, pylint, pyright, pytest) but gated behind HAS_PYTHON — will activate when pyproject.toml appears"
+
+worked:
+  - "Worktree-based bead execution — clean isolation, ff-merge to main"
+  - "Iterative gate debugging — run gate, fix one failure, repeat"
+
+failed:
+  - "((PASS++)) with set -e — silent script death, no error message"
+  - "golangci-lint gofumpt formatter — version mismatch causes false positives"
+  - "go-arch-lint canDependOn/anyDependOn — wrong config key, correct key is mayDependOn"
+  - "quality_gate.sh scanning . for gofumpt/goimports — must scope to GO_DIRS to avoid references/ yap/"
+
+next:
+  - "Decompose oro-2jb using spec-to-beads skill (premortem first) — it's the next critical path item"
+  - "All 4 ready beads are P2: oro-2jb, oro-68t, oro-seg, oro-w2u"
+  - "Critical path: oro-2jb → {oro-w6n, oro-773, oro-r7b, oro-0q5, oro-rue}"
+  - "Consider: oro-seg and oro-w2u are spec beads that can be done in parallel with oro-2jb"
+
+files:
+  created: [.github/workflows/ci.yml, Makefile, cmd/oro/main.go, internal/version/version.go, internal/version/version_test.go, pkg/.gitkeep, .markdownlint.yml, .go-arch-lint.yml]
+  modified: [quality_gate.sh, .golangci.yml, docs/decisions-and-discoveries.md, docs/handoffs/2026-02-07_skills-refinement.yaml]
+
+beads:
+  completed: [oro-fza, oro-dxu]
+  in_progress: []
+  remaining: [oro-2jb, oro-68t, oro-773, oro-r7b, oro-0q5, oro-rue, oro-w6n, oro-w2u, oro-seg, oro-ldf]
+  critical_path: "oro-2jb → {oro-w6n, oro-773, oro-r7b, oro-0q5, oro-rue}"
+
+skills_for_next_session:
+  - resume-handoff
+  - premortem (before oro-2jb structure decisions)
+  - spec-to-beads (decompose oro-2jb into sub-beads with acceptance criteria)
+  - work-bead (execute sub-beads)
