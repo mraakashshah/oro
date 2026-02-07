@@ -1,0 +1,83 @@
+// Package protocol defines UDS message types for the Oro dispatcher-worker protocol.
+// Messages are line-delimited JSON over Unix domain sockets.
+package protocol
+
+// MessageType identifies the kind of UDS message.
+type MessageType string
+
+// Dispatcher -> Worker message types.
+const (
+	MsgAssign   MessageType = "ASSIGN"
+	MsgShutdown MessageType = "SHUTDOWN"
+)
+
+// Worker -> Dispatcher message types.
+const (
+	MsgHeartbeat      MessageType = "HEARTBEAT"
+	MsgStatus         MessageType = "STATUS"
+	MsgHandoff        MessageType = "HANDOFF"
+	MsgDone           MessageType = "DONE"
+	MsgReadyForReview MessageType = "READY_FOR_REVIEW"
+	MsgReconnect      MessageType = "RECONNECT"
+)
+
+// Message is the envelope for all UDS messages. The Type field selects which
+// payload pointer is populated; unused payloads are nil and omitted from JSON.
+type Message struct {
+	Type           MessageType            `json:"type"`
+	Assign         *AssignPayload         `json:"assign,omitempty"`
+	Heartbeat      *HeartbeatPayload      `json:"heartbeat,omitempty"`
+	Status         *StatusPayload         `json:"status,omitempty"`
+	Handoff        *HandoffPayload        `json:"handoff,omitempty"`
+	Done           *DonePayload           `json:"done,omitempty"`
+	ReadyForReview *ReadyForReviewPayload `json:"ready_for_review,omitempty"`
+	Reconnect      *ReconnectPayload      `json:"reconnect,omitempty"`
+}
+
+// AssignPayload is sent by the dispatcher to assign a bead to a worker.
+type AssignPayload struct {
+	BeadID   string `json:"bead_id"`
+	Worktree string `json:"worktree"`
+}
+
+// HeartbeatPayload is sent by a worker to report liveness and context usage.
+type HeartbeatPayload struct {
+	BeadID     string `json:"bead_id"`
+	WorkerID   string `json:"worker_id"`
+	ContextPct int    `json:"context_pct"`
+}
+
+// StatusPayload is sent by a worker to report state transitions.
+type StatusPayload struct {
+	BeadID   string `json:"bead_id"`
+	WorkerID string `json:"worker_id"`
+	State    string `json:"state"`
+	Result   string `json:"result"`
+}
+
+// HandoffPayload is sent by a worker when it hands off to another worker.
+type HandoffPayload struct {
+	BeadID   string `json:"bead_id"`
+	WorkerID string `json:"worker_id"`
+}
+
+// DonePayload is sent by a worker when it completes its bead.
+type DonePayload struct {
+	BeadID   string `json:"bead_id"`
+	WorkerID string `json:"worker_id"`
+}
+
+// ReadyForReviewPayload is sent by a worker when its bead is ready for review.
+type ReadyForReviewPayload struct {
+	BeadID   string `json:"bead_id"`
+	WorkerID string `json:"worker_id"`
+}
+
+// ReconnectPayload is sent by a worker reconnecting after a disconnect.
+type ReconnectPayload struct {
+	WorkerID       string    `json:"worker_id"`
+	BeadID         string    `json:"bead_id"`
+	State          string    `json:"state"`
+	ContextPct     int       `json:"context_pct"`
+	BufferedEvents []Message `json:"buffered_events"`
+}
