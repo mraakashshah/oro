@@ -59,7 +59,7 @@ def get_last_usage(transcript_path: str) -> dict | None:
                 msg = entry.get("message")
                 if isinstance(msg, dict) and msg.get("usage"):
                     last_usage = msg["usage"]
-    except (OSError, IOError):
+    except OSError:
         return None
     return last_usage
 

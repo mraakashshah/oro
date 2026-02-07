@@ -77,7 +77,7 @@ if $HAS_GO; then
     check "golangci-lint" "golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
 
     header "GO TIER 3: ARCHITECTURE"
-    check "go-arch-lint" "go-arch-lint check"
+    check "go-arch-lint" "go-arch-lint check --project-path ."
 
     header "GO TIER 4: TESTING"
     check "go test" "go test -race -shuffle=on ./..."
@@ -110,7 +110,7 @@ fi
 header "DOCS & CONFIG"
 check "markdownlint" "markdownlint --config .markdownlint.yml 'docs/**/*.md' '*.md' --ignore references --ignore yap --ignore archive"
 check "yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
-check "biome (json)" "biome check --files-ignore-unknown=true docs/ .github/ .beads/"
+check "biome (json)" "biome check --files-ignore-unknown=true docs/ .github/ .beads/ *.json"
 
 # =============================================================================
 # PYTHON CHECKS
@@ -123,10 +123,14 @@ if $HAS_PYTHON; then
 
     header "PYTHON TIER 2: LINTING"
     check "ruff check" "ruff check ."
-    check "pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' | xargs pylint --disable=all --enable=E"
+    if command -v pylint >/dev/null 2>&1; then
+        check "pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' | xargs pylint --disable=all --enable=E"
+    fi
 
     header "PYTHON TIER 3: TYPE CHECKING"
-    check "pyright" "pyright"
+    if command -v pyright >/dev/null 2>&1 && pyright --version >/dev/null 2>&1; then
+        check "pyright" "pyright"
+    fi
 
     header "PYTHON TIER 4: TESTING"
     check "pytest" "uv run pytest"

@@ -1,22 +1,17 @@
 """Tests for the inject_context_usage PreToolUse hook."""
 
+import importlib.util
 import json
 import tempfile
 from pathlib import Path
 
-import importlib.util
-
-
 # Load the hook module directly from .claude/hooks/ (not a package)
 _spec = importlib.util.spec_from_file_location(
     "inject_context_usage",
-    Path(__file__).resolve().parent.parent
-    / ".claude"
-    / "hooks"
-    / "inject_context_usage.py",
+    Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "inject_context_usage.py",
 )
-_mod = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_mod)
+_mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
 CONTEXT_WINDOW = _mod.CONTEXT_WINDOW
 CRITICAL_THRESHOLD = _mod.CRITICAL_THRESHOLD
@@ -97,9 +92,7 @@ class TestGetLastUsage:
                 _user_entry(),
                 _assistant_entry(input_tokens=5_000, cache_create=10_000),
                 _user_entry(),
-                _assistant_entry(
-                    input_tokens=8_000, cache_create=50_000, cache_read=10_000
-                ),
+                _assistant_entry(input_tokens=8_000, cache_create=50_000, cache_read=10_000),
             ]
         )
         usage = get_last_usage(str(transcript))

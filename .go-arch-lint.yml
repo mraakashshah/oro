@@ -1,6 +1,9 @@
 version: 3
 allow:
   depOnAnyVendor: true
+excludeFiles:
+  - "yap/.+"
+  - "references/.+"
 
 components:
   cmd:
