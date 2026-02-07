@@ -19,7 +19,7 @@ If an invoked skill turns out to be wrong for the situation, you don't need to f
 
 **Orchestration:** dispatching-parallel-agents, workflow-routing, premortem, completion-check, explore
 
-**Tools:** beads, tmux, github, session-logs
+**Tools:** beads, git-commits, tmux, github, session-logs
 
 **Continuity:** create-handoff, resume-handoff, documenting-solutions, refactor, using-git-worktrees, writing-skills
 
