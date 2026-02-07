@@ -29,7 +29,7 @@
 --- PASS: TestMessageJSON/RECONNECT (0.00s)
 --- PASS: TestMessageJSON (0.00s)
 PASS
-ok  	oro/pkg/protocol	0.180s
+ok      oro/pkg/protocol    0.180s
 ```
 
 ## Design Decisions
