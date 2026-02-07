@@ -20,6 +20,7 @@ Detect the user's primary goal from their message:
 | "add", "implement", "create", "build" | **Build** | `writing-plans` → `executing-plans` → `finishing-work` |
 | "fix", "broken", "failing", "debug", "bug" | **Fix** | `systematic-debugging` → `test-driven-development` → `finishing-work` |
 | "spec", "decompose", "break into beads" | **Decompose** | `spec-to-beads` → `executing-beads` → `finishing-work` |
+| "work bead", "pick up a bead", "execute bead" | **Work Bead** | `work-bead` |
 
 If intent is clear from context, infer the goal. Otherwise, ask:
 
