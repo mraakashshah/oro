@@ -18,20 +18,28 @@ Turn ideas into fully formed designs through collaborative dialogue. Understand 
 
 ## Steps
 
-### 1. Understand the Idea
+### 1. Research Prior Art
+
+Before proposing anything, gather evidence:
+
+- **Internal**: Read reference implementations, existing specs in `docs/plans/`, and related code mentioned in the bead/task description
+- **External**: Use `WebSearch` / `WebFetch` when the problem domain has established solutions worth comparing (algorithms, protocols, libraries). Skip for project-internal design.
+- **Summarize findings** for the user: what exists, what approaches others took, key trade-offs observed. This grounds the conversation in evidence, not guesses.
+
+### 2. Understand the Idea
 
 - Check current project state (files, docs, recent commits)
 - Ask questions **one at a time** — never multiple questions per message
 - Prefer multiple choice questions when possible
 - Focus on: purpose, constraints, success criteria
 
-### 2. Explore Approaches
+### 3. Explore Approaches
 
 - Propose 2-3 approaches with trade-offs
 - Lead with recommended option and explain why
 - Keep YAGNI in mind — strip unnecessary features
 
-### 3. Premortem Each Decision
+### 4. Premortem Each Decision
 
 **Before committing to any design choice**, stress-test it:
 
@@ -43,20 +51,20 @@ Turn ideas into fully formed designs through collaborative dialogue. Understand 
 
 This applies to every architectural decision, not just the final plan.
 
-### 4. Present the Design
+### 5. Present the Design
 
 - Break into sections of 200-300 words
 - Ask after each section: "Does this look right so far?"
 - Cover: architecture, components, data flow, error handling, testing
 - Go back and clarify if anything doesn't make sense
 
-### 5. Document
+### 6. Document
 
 - Write validated design to `docs/plans/YYYY-MM-DD-<topic>-design.md`
 - Include resolved premortems with each decision (risks accepted, mitigations chosen)
 - Commit the design document
 
-### 6. Implementation Handoff
+### 7. Implementation Handoff
 
 - Ask: "Ready to set up for implementation?"
 - Use `writing-plans` skill to create detailed implementation plan
@@ -71,6 +79,7 @@ This applies to every architectural decision, not just the final plan.
 
 ## Red Flags
 
+- Proposing approaches without reading reference implementations or prior art
 - Jumping to implementation without understanding requirements
 - Asking 5 questions at once
 - Presenting entire design as a wall of text
