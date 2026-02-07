@@ -1,0 +1,67 @@
+---
+date: 2026-02-07
+status: complete
+prior: 2026-02-07_17-00_foundation-and-quality-gate.yaml
+---
+
+goal: Comprehensive 18-check quality gate covering Go, Python, shell, docs, and JSON
+now: Pick up oro-2jb (shared protocol package) — decompose with spec-to-beads + premortem first
+test: ./quality_gate.sh  # 18/18 checks should pass
+
+done_this_session:
+  - task: "oro-fza: Go module scaffolding, CI, quality gate, first test"
+    commit: db91516
+    files: [cmd/oro/main.go, internal/version/version.go, internal/version/version_test.go, Makefile, .github/workflows/ci.yml, .golangci.yml, pkg/.gitkeep]
+  - task: "oro-dxu: Comprehensive quality gate — 13→18 checks"
+    commits: [c4c46cf, df5e508]
+    files: [quality_gate.sh, .markdownlint.yml, .go-arch-lint.yml, biome.json, pyproject.toml]
+  - task: "Fixed Python tooling — ruff autofix, pyright type ignores, uv tool install pylint/pyright"
+    files: [tests/test_inject_context_usage.py, .claude/hooks/inject_context_usage.py]
+  - task: "Pre-commit hook expanded — added markdownlint, yamllint to existing ruff/gofmt/shellcheck/biome"
+    files: [.git/hooks/pre-commit]
+  - task: "Logged 5 discoveries to decisions-and-discoveries.md"
+    commits: [88d5cdc, bb1dab4]
+
+quality_gate_checks:
+  go: [gofumpt, goimports, golangci-lint, go-arch-lint, "go test", coverage, govulncheck, "go build", "go vet"]
+  shell: [shellcheck]
+  docs: [markdownlint, yamllint, "biome (json)"]
+  python: ["ruff format", "ruff check", pylint, pyright, pytest]
+
+decisions:
+  gofumpt_separate: "Don't use as golangci-lint formatter — version mismatch. Run standalone."
+  bash_arithmetic: "Use PASS=$((PASS + 1)) not ((PASS++)) under set -e"
+  go_arch_lint_regex: "excludeFiles uses Go regex (yap/.+), not globs (yap/**). mayDependOn is the correct key."
+  biome_scoping: "No ignores field in biome v2 files section. Scope via CLI args."
+  gate_scoping: "Never scan . for directory-walking tools. Always explicit dirs."
+  markdownlint_lenient: "Disabled MD013,MD022,MD024,MD031,MD032,MD033,MD034,MD036,MD040,MD041,MD058,MD060"
+  pylint_errors_only: "--disable=all --enable=E — only real errors, not style"
+  pyright_venv: "Must set venvPath/venv in pyproject.toml and exclude .venv"
+
+worked:
+  - "Iterative gate debugging — run, fix one failure, repeat"
+  - "uv tool install for broken Python tool interpreters"
+  - "Scoping tools to explicit dirs instead of fighting config excludes"
+
+failed:
+  - "((PASS++)) with set -e — silent death, zero diagnostics"
+  - "biome ignores/ignore field — doesn't exist in v2, wasted iterations"
+  - "go-arch-lint canDependOn/anyDependOn — wrong keys, 3 attempts to find mayDependOn"
+  - "go-arch-lint glob patterns — uses regex, not glob"
+
+next:
+  - "Decompose oro-2jb using spec-to-beads skill (premortem first)"
+  - "Critical path: oro-2jb → {oro-w6n, oro-773, oro-r7b, oro-0q5, oro-rue}"
+  - "Parallel spec work available: oro-seg, oro-w2u (no blockers)"
+
+beads:
+  completed: [oro-fza, oro-dxu]
+  in_progress: []
+  remaining: [oro-2jb, oro-68t, oro-773, oro-r7b, oro-0q5, oro-rue, oro-w6n, oro-w2u, oro-seg, oro-ldf]
+  critical_path: "oro-2jb → {oro-w6n, oro-773, oro-r7b, oro-0q5, oro-rue}"
+
+skills_for_next_session:
+  - resume-handoff
+  - premortem (before oro-2jb structure decisions)
+  - spec-to-beads (decompose oro-2jb)
+  - work-bead (execute sub-beads)
