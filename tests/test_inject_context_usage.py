@@ -123,20 +123,20 @@ class TestGetLastUsage:
 
 class TestThresholds:
     def test_below_warn_produces_no_output(self):
-        """30% usage should produce no warning."""
-        used = int(CONTEXT_WINDOW * 0.30)
+        """20% usage should produce no warning."""
+        used = int(CONTEXT_WINDOW * 0.20)
         _, _, pct = calculate_context_pct({"input_tokens": used})
         assert pct < WARN_THRESHOLD
 
     def test_at_warn_threshold(self):
-        """40% usage should trigger warn."""
+        """30% usage should trigger warn."""
         used = int(CONTEXT_WINDOW * WARN_THRESHOLD)
         _, _, pct = calculate_context_pct({"input_tokens": used})
         assert pct >= WARN_THRESHOLD
         assert pct < CRITICAL_THRESHOLD
 
     def test_at_critical_threshold(self):
-        """70% usage should trigger critical."""
+        """40% usage should trigger critical."""
         used = int(CONTEXT_WINDOW * CRITICAL_THRESHOLD)
         _, _, pct = calculate_context_pct({"input_tokens": used})
         assert pct >= CRITICAL_THRESHOLD
