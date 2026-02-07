@@ -72,7 +72,19 @@ Report: "Keeping branch. Worktree preserved."
 **Option 4 — Discard:**
 Confirm first — require typed "discard" confirmation.
 
-### Step 4: Landing the Plane
+### Step 4: Reflect
+
+Before cleanup, briefly note friction encountered during this work:
+
+- **What went off-script?** (unexpected failures, wrong assumptions, missing context)
+- **What slowed you down?** (unclear requirements, tooling gaps, flaky tests)
+- **What should change?** (skill updates, new rules, missing automation)
+
+If genuinely clean run, say so — but clean runs should be rare. Most work has micro-friction worth capturing.
+
+Log friction to the relevant `bd` issue notes or `docs/decisions-and-discoveries.md` if it's a broader insight.
+
+### Step 5: Landing the Plane
 
 After integration choice is executed:
 
