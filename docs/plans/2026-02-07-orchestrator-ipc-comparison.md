@@ -364,9 +364,126 @@ P3: other ready beads         → only if epic is drained
 
 ---
 
-## Remaining Open Questions
+### R3: Ralph handoff via UDS (was Q3)
 
-1. **Ralph handoff via UDS** — Worker sends HANDOFF with YAML context → Manager persists to SQLite → Manager spawns fresh Worker in same worktree → new Worker reads handoff from SQLite and constructs prompt for `claude -p`. Need message schema.
-2. **How does Worker detect context % from Claude's output?** Parse `claude -p` stdout? Use Claude Code hooks that write to a file the Go wrapper watches?
-3. **Bead prompt construction** — How does the Worker Go binary construct the `claude -p` prompt from bead metadata? What context gets included (bead description, dependencies, worktree state, handoff YAML)?
-4. **Two-stage review** — Do workers self-review (Superpowers pattern), or does Manager dispatch a separate review worker?
+**Decision:** Dual-path — worktree file for speed, bead annotation for durability. UDS carries only the signal, not the payload.
+
+**Flow:**
+1. Go wrapper detects `context_pct > threshold` (see Q4)
+2. Go wrapper injects prompt asking Claude to write `.oro/handoff.yaml` in worktree
+3. Claude writes handoff YAML (what's done, what remains, key decisions, files touched)
+4. Go wrapper validates file exists and is non-empty. If Claude failed, writes minimal fallback: `{bead_id, files_modified (git diff), last_action: "context_limit_reached"}`
+5. Go wrapper annotates bead: `bd update <id> --notes="handoff: <summary>"` (permanent record)
+6. Go wrapper sends lightweight UDS signal: `{"type": "HANDOFF", "bead_id": "beads-abc", "worker_id": "worker-3"}`
+7. Manager sends SHUTDOWN to old worker (reuses R2 pattern)
+8. Manager spawns fresh Worker in same worktree
+9. Fresh worker reads `.oro/handoff.yaml` + `bd show <id>` for full context
+10. Fresh worker deletes `.oro/handoff.yaml` at startup (prevents stale reads on future ralphs)
+
+**Why dual-path:**
+- **Worktree file:** Operational. Fresh worker reads it immediately. No serialization over UDS. Co-located with the code.
+- **Bead annotation:** Permanent record. Manager can inspect handoff quality. Survives worktree cleanup. Queryable via `bd show`.
+- **UDS:** Just a signal. Stays lightweight. No large payloads.
+
+**Premortem findings (accepted risks):**
+- Tiger (mitigated): Claude fails to write handoff → Go wrapper writes minimal fallback from git diff. Degraded but functional.
+- Tiger (mitigated): Stale handoff file → fresh worker deletes at startup before beginning work.
+- Elephant: Handoff quality depends on Claude's summarization ability. Bad handoff = fresh worker wastes cycles rediscovering context. Bead annotation lets Manager spot-check.
+
+---
+
+### R4: Context % detection (was Q4)
+
+**Decision:** Claude Code hook writes context % to `.oro/context_pct` in the worktree. Go wrapper watches via fsnotify + 5s poll fallback.
+
+**Flow:**
+1. `PreToolUse` hook (already exists in repo at `817d978`) writes context % to `.oro/context_pct`
+2. Go wrapper watches file via fsnotify, with 5s poll as fallback
+3. When `context_pct > threshold` → Go wrapper triggers ralph handoff (R3 flow)
+
+**Mitigations:**
+- Hook not installed in worker session → Go wrapper verifies `.claude/hooks/` exists in worktree at startup
+- Hook writes lag behind sudden jumps → accept as elephant; threshold set conservatively (e.g., 70% triggers handoff, leaving 30% buffer)
+- fsnotify miss → 5s poll fallback catches it
+
+---
+
+### R5: Bead prompt construction (was Q5)
+
+**Decision:** Go wrapper is a template engine. Assembles prompt from structured sources with a token budget.
+
+**Prompt template:**
+```
+You are a Worker agent executing bead {bead_id}.
+
+## Task
+{bead.description}
+
+## Acceptance Criteria
+{bead.acceptance_criteria or "See task description"}
+
+## Dependencies (completed)
+{for dep in bead.dependencies: dep.title — dep.notes (merge context)}
+
+## Worktree State
+Branch: {branch_name}
+Modified files: {git status --short}
+
+## Handoff Context (if ralph continuation)
+{contents of .oro/handoff.yaml, or "Fresh start — no prior context"}
+
+## Rules
+- Work in this worktree only
+- Run tests before signaling DONE
+- When context gets high, write .oro/handoff.yaml and stop
+- Commit your work before stopping (clean worktree always)
+```
+
+**Token budget enforcement:** If assembled prompt exceeds 4K tokens, truncate lowest-priority sections first: dependency notes → git diff → handoff context. Never truncate task description or acceptance criteria. Log truncation.
+
+**Note:** No surviving BCR prompt code to reference. BCR used `bcr agent <task-id>` but its source was external to this repo. This is a clean-sheet design informed by BCR's failure modes.
+
+**Premortem findings (accepted risks):**
+- Tiger (mitigated): Prompt too large → token budget with priority-based truncation
+- Elephant: Stale dependency context → accepted; dependency notes are best-effort enrichment, not critical
+- Paper tiger: Template rigidity → Claude adapts; core structure works across bead types
+
+---
+
+### R6: Two-stage review (was Q6)
+
+**Decision:** Two-stage review following Superpowers pattern. Self-review first (tests + acceptance criteria), then Manager dispatches spec-reviewer in same worktree.
+
+**Flow:**
+1. Worker self-reviews: runs tests, checks own work against acceptance criteria
+2. Worker signals READY_FOR_REVIEW (not DONE)
+3. Manager dispatches spec-reviewer worker in same worktree
+4. Reviewer reads `bd show <bead>` (acceptance criteria) + `git diff` (changes) — does NOT need implementer's full context
+5. Reviewer signals APPROVED → Worker signals DONE → enters merge queue
+6. Reviewer signals REJECTED with feedback → Manager sends feedback to original worker → worker fixes → back to step 1
+
+**Why two-stage (informed by reference implementations):**
+- Superpowers mandates: self-review → spec-compliance review → code-quality review. Two reviewers per task.
+- Compound uses 13+ parallel review agents synthesized into consolidated findings.
+- Key insight: reviewer doesn't need implementation context — it needs the **spec** (acceptance criteria on the bead). This avoids the "context-blind external agent" problem from Q1.
+
+**Simplification from Superpowers:** Combine spec-compliance and code-quality into a single reviewer pass. Superpowers separates them because it has abundant subagent capacity. Oro has 5 worker slots — a second review pass is expensive. One reviewer checking both spec compliance and code quality is sufficient.
+
+**Premortem findings (accepted risks):**
+- Tiger (mitigated): Vague acceptance criteria → rubber-stamp review. Mitigated by enforcing testable acceptance criteria at bead creation (spec-to-beads skill).
+- Elephant: Review worker consumes a worker slot (~20% throughput reduction). Accepted — correctness over speed.
+- Elephant: Review loops (reject → fix → re-review) can cycle if acceptance criteria are ambiguous. Cap at 2 review cycles, then escalate to Architect.
+
+---
+
+## All Design Questions Resolved
+
+All 6 open questions from the original design have been answered:
+- R1: Merge protocol (worker stays alive, retry-first, bead merge context)
+- R2: Reconnection (heartbeat + SHUTDOWN-before-reassign)
+- R3: Ralph handoff (worktree file + bead annotation, lightweight UDS signal)
+- R4: Context detection (Claude Code hook writes to file, Go wrapper watches)
+- R5: Bead prompt construction (Go wrapper as template engine, token budget)
+- R6: Two-stage review (self-review + spec-reviewer, Superpowers pattern)
+
+**Next:** Close oro-1s7. This unblocks: oro-w6n (Manager), oro-773 (Worker), oro-r7b (CLI), oro-68t (merge coordinator).
