@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# oro - Session management CLI
+# Minimal version: start, stop, resume
+#
+# Usage:
+#   oro start   - Fresh session (show available work, clean state)
+#   oro stop    - Graceful shutdown (write handoff, sync beads)
+#   oro resume  - Resume from latest handoff (auto-discover state)
+
+set -euo pipefail
+
+HANDOFF_DIR="docs/handoffs"
+
+# --- helpers ---
+
+latest_handoff() {
+    # Find most recent non-complete handoff, falling back to most recent overall
+    local latest=""
+    # Sort by filename (date prefix) descending
+    for f in $(ls -r "$HANDOFF_DIR"/*.yaml 2>/dev/null); do
+        local status
+        status=$(sed -n 's/^status: *//p' "$f" | head -1)
+        if [[ "$status" != "complete" ]]; then
+            echo "$f"
+            return 0
+        fi
+        # Track latest overall as fallback
+        [[ -z "$latest" ]] && latest="$f"
+    done
+    # All complete — return most recent
+    [[ -n "$latest" ]] && echo "$latest"
+}
+
+section() {
+    printf '\n## %s\n\n' "$1"
+}
+
+# --- commands ---
+
+cmd_start() {
+    echo "=== Oro: Fresh Start ==="
+
+    section "Git"
+    echo "Branch: $(git branch --show-current)"
+    git status --short || true
+    echo ""
+    git log --oneline -5
+
+    section "Available Work"
+    bd ready 2>/dev/null || echo "(no beads database found)"
+
+    section "In Progress"
+    local in_progress
+    in_progress=$(bd list --status=in_progress 2>/dev/null)
+    if [[ -z "$in_progress" ]]; then
+        echo "(none)"
+    else
+        echo "$in_progress"
+        echo ""
+        echo "WARNING: Found in-progress work. Consider 'oro resume' instead."
+    fi
+}
+
+cmd_stop() {
+    echo "=== Oro: Graceful Shutdown ==="
+
+    local date_str
+    date_str=$(date +%Y-%m-%d)
+    local timestamp
+    timestamp=$(date +%H%M)
+
+    # Gather state
+    local branch
+    branch=$(git branch --show-current)
+    local git_status
+    git_status=$(git status --short)
+    local git_log
+    git_log=$(git log --oneline -5)
+    local in_progress
+    in_progress=$(bd list --status=in_progress 2>/dev/null || true)
+    local ready
+    ready=$(bd ready 2>/dev/null || true)
+    local recent_closed
+    recent_closed=$(bd list --status=closed 2>/dev/null | head -5 || true)
+
+    # Build handoff
+    mkdir -p "$HANDOFF_DIR"
+    local handoff_file="${HANDOFF_DIR}/${date_str}_session-${timestamp}.yaml"
+
+    cat > "$handoff_file" << YAML
+---
+date: ${date_str}
+status: active
+---
+
+goal: TODO — fill in session goal
+now: TODO — fill in current state
+
+done_this_session: []
+
+decisions: {}
+
+findings: {}
+
+worked: []
+failed: []
+
+next: []
+
+files:
+  modified: []
+
+beads:
+  completed: []
+  in_progress: []
+  remaining: []
+
+# --- auto-discovered state below ---
+
+_state:
+  branch: ${branch}
+  git_log: |
+$(echo "$git_log" | sed 's/^/    /')
+  git_status: |
+$(echo "${git_status:-"(clean)"}" | sed 's/^/    /')
+  in_progress: |
+$(echo "${in_progress:-"(none)"}" | sed 's/^/    /')
+  ready: |
+$(echo "${ready:-"(none)"}" | sed 's/^/    /')
+  recent_closed: |
+$(echo "${recent_closed:-"(none)"}" | sed 's/^/    /')
+YAML
+
+    # Sync beads
+    bd sync --flush-only 2>/dev/null || true
+
+    echo ""
+    echo "Handoff written to: ${handoff_file}"
+    echo ""
+    echo "Fill in goal/now/done_this_session, or let Claude do it."
+    echo "The _state section was auto-discovered from filesystem."
+}
+
+cmd_resume() {
+    echo "=== Oro: Resume ==="
+
+    # 1. Find latest handoff
+    section "Latest Handoff"
+    local handoff
+    handoff=$(latest_handoff)
+    if [[ -n "$handoff" ]]; then
+        echo "File: ${handoff}"
+        echo ""
+        # Show the human-written fields (everything before _state)
+        sed '/_state:/,$d' "$handoff"
+    else
+        echo "(no handoff files found in ${HANDOFF_DIR}/)"
+    fi
+
+    # 2. Live filesystem state (BCR pattern: derive, don't remember)
+    section "Live State (filesystem)"
+    echo "Branch: $(git branch --show-current)"
+    local git_status
+    git_status=$(git status --short)
+    if [[ -n "$git_status" ]]; then
+        echo ""
+        echo "$git_status"
+    else
+        echo "Working tree clean"
+    fi
+    echo ""
+    echo "Recent commits:"
+    git log --oneline -5
+
+    section "Beads: In Progress"
+    local in_progress
+    in_progress=$(bd list --status=in_progress 2>/dev/null)
+    if [[ -z "$in_progress" ]]; then
+        echo "(none)"
+    else
+        echo "$in_progress"
+    fi
+
+    section "Beads: Ready"
+    bd ready 2>/dev/null || echo "(none)"
+}
+
+# --- main ---
+
+usage() {
+    echo "Usage: oro <command>"
+    echo ""
+    echo "Commands:"
+    echo "  start   Fresh session — show available work"
+    echo "  stop    Graceful shutdown — write handoff, sync beads"
+    echo "  resume  Resume — auto-discover state from filesystem + latest handoff"
+    exit 1
+}
+
+case "${1:-}" in
+    start)  cmd_start ;;
+    stop)   cmd_stop ;;
+    resume) cmd_resume ;;
+    -h|--help) usage ;;
+    *)      usage ;;
+esac
