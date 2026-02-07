@@ -1,0 +1,57 @@
+---
+date: 2026-02-07
+status: complete
+prior: 2026-02-07_18-00_quality-gate-complete.yaml
+---
+
+goal: Decompose oro-2jb (shared protocol package) into executable sub-beads
+now: Pick up oro-6dq, oro-q63, or oro-ef8 (all unblocked, parallelizable)
+test: bd ready  # should show 6 items including 3 protocol sub-beads
+
+done_this_session:
+  - task: "Premortem on oro-2jb — no blocking tigers found"
+  - task: "Promoted oro-2jb to epic, created 5 sub-beads"
+    beads: [oro-6dq, oro-q63, oro-bya, oro-ef8, oro-v6f]
+  - task: "Wired dependency graph: 6dq/q63/ef8 parallel, bya→q63, v6f→all"
+  - task: "Re-linked downstream beads (oro-0q5, oro-773, oro-r7b, oro-rue, oro-w6n) to oro-v6f"
+
+decisions:
+  package_location: "pkg/protocol/ — shared, importable by all consumers"
+  types_only: "No business logic, no net, no database/sql. Pure types + schema DDL string."
+  new_work_removed: "NEW_WORK message type dropped — Dispatcher watches beads DB directly (per Manager Redesign)"
+  signal_vs_shutdown: "SIGNAL message dropped, SHUTDOWN used directly"
+
+premortem_summary:
+  tigers: []
+  elephants:
+    - "Premature API design — accepted, specs are detailed enough, types-only is cheap to change"
+  paper_tigers:
+    - "Schema migration — no production data yet"
+    - "JSON wire format mismatch — standard encoding/json pattern"
+
+worked:
+  - "Reading all 4 spec docs to extract exhaustive type inventory before decomposing"
+  - "Cleaning message types against authoritative Manager Redesign doc (dropped stale types)"
+
+next:
+  - "Execute oro-6dq (UDS message types) — pkg/protocol/message.go + message_test.go"
+  - "Execute oro-q63 (SQLite schema DDL) — pkg/protocol/schema.go + schema_test.go"
+  - "Execute oro-ef8 (directive types) — pkg/protocol/directive.go + directive_test.go"
+  - "These three are parallel, then oro-bya (row types), then oro-v6f (integration test)"
+
+beads:
+  completed: [oro-fza, oro-dxu, oro-2jb]
+  ready: [oro-6dq, oro-q63, oro-ef8, oro-68t, oro-seg, oro-w2u]
+  blocked: [oro-bya, oro-v6f, oro-0q5, oro-773, oro-r7b, oro-rue, oro-w6n, oro-ldf]
+  dependency_graph: "oro-6dq/q63/ef8 (parallel) → oro-bya (after q63) → oro-v6f (after all) → downstream"
+
+skills_for_next_session:
+  - resume-handoff
+  - work-bead (execute sub-beads via TDD)
+  - dispatching-parallel-agents (oro-6dq, oro-q63, oro-ef8 can run in parallel)
+
+message_types_inventory:
+  dispatcher_to_worker: [ASSIGN, SHUTDOWN]
+  worker_to_dispatcher: [HEARTBEAT, STATUS, HANDOFF, DONE, READY_FOR_REVIEW, RECONNECT]
+  sqlite_tables: [events, assignments, commands, memories, memories_fts]
+  directives: [start, stop, pause, focus]
