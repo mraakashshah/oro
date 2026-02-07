@@ -140,7 +140,7 @@ CREATE TABLE memories (
     worker_id TEXT,
     confidence REAL DEFAULT 0.8,
     created_at TEXT DEFAULT (datetime('now')),
-    embedding BLOB       -- reserved for future vector search
+    embedding BLOB       -- populated by oro-ldf epic (local embeddings + hybrid RRF search)
 );
 
 CREATE VIRTUAL TABLE memories_fts USING fts5(content, tags, content=memories, content_rowid=id);
