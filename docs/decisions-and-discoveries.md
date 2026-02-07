@@ -1,5 +1,23 @@
 # Decisions and Discoveries
 
+## 2026-02-07: Parallel agents skip quality gate — need pre-push hook
+**Tags:** #agents #quality-gate #hooks #process-gap
+**Context:** Dispatched two parallel agents to implement protocol beads. Both committed and pushed code that passed tests but failed golangci-lint, go-arch-lint, and gofumpt. Pre-commit hook only checks per-file lint on staged files, not cross-cutting checks.
+**Decision:** Created P0 bead (oro-t3u) for a pre-push hook that runs the full 18-check quality gate. Agent prompts must also include quality gate as a bead completion step.
+**Implications:** Until the hook exists, manually run `./quality_gate.sh` after agent work before pushing. Never trust agent commits without verification.
+
+## 2026-02-07: Use bead annotations, not output files, for agent results
+**Tags:** #agents #beads #dispatching #file-debt
+**Context:** Dispatching skill recommended agents write `docs/agent-output-*.md` files. This creates file debt — orphan files nobody cleans up, duplicating what bead annotations already capture.
+**Decision:** Agents close beads with `bd close <id> --reason="summary"`. Task completion notifications provide session-level summaries. Updated dispatching-parallel-agents skill.
+**Implications:** No output files to clean up. Bead is the durable, queryable record. Fallback to tmp files only when no issue tracker exists.
+
+## 2026-02-07: go-arch-lint pkg component needs self-dependency
+**Tags:** #go #go-arch-lint #gotcha
+**Context:** `pkg/protocol` tests import `oro/pkg/protocol` (external test package). go-arch-lint flagged this as "pkg shouldn't depend on oro/pkg/protocol" because `pkg` component had no `mayDependOn` rule for itself.
+**Decision:** Added `pkg: mayDependOn: [pkg]` to `.go-arch-lint.yml`.
+**Implications:** Any new top-level component needs a self-dependency rule if its tests use external test packages.
+
 ## 2026-02-07: bash ((PASS++)) kills scripts under set -e
 **Tags:** #bash #gotcha #set-e
 **Context:** quality_gate.sh silently exited after the first check with no error message.
