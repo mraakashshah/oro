@@ -217,8 +217,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 
-	// --- Graceful shutdown: broadcast PREPARE_SHUTDOWN to all workers ---
+	// --- Graceful shutdown ---
+	d.shutdownCleanup()
 
+	// Broadcast PREPARE_SHUTDOWN to all workers.
 	// Collect worker IDs under lock.
 	d.mu.Lock()
 	workerIDs := make([]string, 0, len(d.workers))
@@ -973,6 +975,16 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 		return fmt.Errorf("write to worker %s: %w", w.id, err)
 	}
 	return nil
+}
+
+// shutdownCleanup cancels active ops agents and aborts in-flight merges.
+func (d *Dispatcher) shutdownCleanup() {
+	for _, taskID := range d.ops.Active() {
+		if err := d.ops.Cancel(taskID); err == nil {
+			_ = d.logEvent(context.Background(), "ops_cancelled", "dispatcher", "", "", taskID)
+		}
+	}
+	d.merger.Abort()
 }
 
 // ConnectedWorkers returns the number of currently connected workers.

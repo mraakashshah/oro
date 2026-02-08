@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // GitRunner abstracts git command execution for testability.
@@ -51,6 +52,10 @@ func (e *ConflictError) Error() string {
 type Coordinator struct {
 	mu  sync.Mutex
 	git GitRunner
+
+	// abortMu protects activeWorktree for concurrent access from Abort().
+	abortMu        sync.Mutex
+	activeWorktree string // non-empty while a merge is in progress
 }
 
 // NewCoordinator creates a Coordinator with the given GitRunner.
@@ -67,6 +72,15 @@ func NewCoordinator(git GitRunner) *Coordinator {
 func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	c.abortMu.Lock()
+	c.activeWorktree = opts.Worktree
+	c.abortMu.Unlock()
+	defer func() {
+		c.abortMu.Lock()
+		c.activeWorktree = ""
+		c.abortMu.Unlock()
+	}()
 
 	// Step 1: Rebase branch onto main
 	_, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", "main", opts.Branch)
@@ -113,6 +127,23 @@ func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts Opts, rebase
 		Files:  files,
 		BeadID: opts.BeadID,
 	}
+}
+
+// Abort runs best-effort 'git rebase --abort' on any in-progress merge worktree.
+// Safe to call concurrently with Merge — uses a separate lock and a fresh
+// context (since the caller's context is typically cancelled at shutdown time).
+func (c *Coordinator) Abort() {
+	c.abortMu.Lock()
+	wt := c.activeWorktree
+	c.abortMu.Unlock()
+
+	if wt == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, _ = c.git.Run(ctx, wt, "rebase", "--abort")
 }
 
 // conflictPattern matches git's CONFLICT output lines.

@@ -694,3 +694,86 @@ func containsArg(args []string, target string) bool {
 	}
 	return false
 }
+
+// --- funcGitRunner ---
+
+// funcGitRunner delegates Run to a user-supplied function.
+type funcGitRunner struct {
+	fn func(ctx context.Context, dir string, args ...string) (string, string, error)
+}
+
+func (f *funcGitRunner) Run(ctx context.Context, dir string, args ...string) (string, string, error) {
+	return f.fn(ctx, dir, args...)
+}
+
+// --- Abort tests ---
+
+func TestCoordinatorAbortOnCancel(t *testing.T) {
+	rebaseStarted := make(chan struct{})
+	unblockRebase := make(chan struct{})
+	abortCalled := make(chan string, 1) // receives worktree dir
+
+	runner := &funcGitRunner{fn: func(_ context.Context, dir string, args ...string) (string, string, error) {
+		// rebase --abort path
+		if len(args) >= 2 && args[0] == "rebase" && args[1] == "--abort" {
+			abortCalled <- dir
+			return "", "", nil
+		}
+		// rebase (blocking) path
+		if len(args) >= 1 && args[0] == "rebase" {
+			close(rebaseStarted)
+			<-unblockRebase
+			return "", "", fmt.Errorf("interrupted")
+		}
+		return "", "", nil
+	}}
+
+	coord := NewCoordinator(runner)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := coord.Merge(context.Background(), Opts{
+			Branch:   "agent/test-abort",
+			Worktree: "/tmp/wt-abort",
+			BeadID:   "test-abort",
+		})
+		errCh <- err
+	}()
+
+	// Wait for rebase to start
+	<-rebaseStarted
+
+	// Abort while merge is in progress
+	coord.Abort()
+
+	select {
+	case dir := <-abortCalled:
+		if dir != "/tmp/wt-abort" {
+			t.Fatalf("expected abort on /tmp/wt-abort, got %s", dir)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected git rebase --abort to be called")
+	}
+
+	// Unblock rebase so merge goroutine can finish
+	close(unblockRebase)
+
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("merge did not return after abort")
+	}
+}
+
+func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
+	mock := &mockGitRunner{}
+	coord := NewCoordinator(mock)
+
+	// Abort with no merge in progress — should be a no-op
+	coord.Abort()
+
+	calls := mock.getCalls()
+	if len(calls) != 0 {
+		t.Fatalf("expected no git calls when no merge in progress, got %d", len(calls))
+	}
+}

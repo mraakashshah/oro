@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2089,6 +2090,133 @@ func TestAssignBeadCleansUpOnFailure(t *testing.T) {
 	// Verify worktree_cleanup event was logged
 	if eventCount(t, d.db, "worktree_cleanup") == 0 {
 		t.Fatal("expected 'worktree_cleanup' event after sendToWorker failure")
+	}
+}
+
+// --- Slow process for shutdown tests ---
+
+type slowProcess struct {
+	waitCh chan struct{}
+	killed atomic.Bool
+}
+
+func (p *slowProcess) Wait() error {
+	<-p.waitCh
+	return fmt.Errorf("killed")
+}
+
+func (p *slowProcess) Kill() error {
+	p.killed.Store(true)
+	select {
+	case <-p.waitCh:
+	default:
+		close(p.waitCh)
+	}
+	return nil
+}
+
+func (p *slowProcess) Output() (string, error) { return "APPROVED: ok", nil }
+
+type slowSubprocessSpawner struct {
+	mu        sync.Mutex
+	processes []*slowProcess
+}
+
+func (s *slowSubprocessSpawner) Spawn(_ context.Context, _ string, _ string, _ string) (ops.Process, error) {
+	p := &slowProcess{waitCh: make(chan struct{})}
+	s.mu.Lock()
+	s.processes = append(s.processes, p)
+	s.mu.Unlock()
+	return p, nil
+}
+
+func TestDispatcherShutdownOpsCleanup(t *testing.T) {
+	db := newTestDB(t)
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+
+	slowSpawner := &slowSubprocessSpawner{}
+	opsSpawner := ops.NewSpawner(slowSpawner)
+
+	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	cfg := Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		MaxWorkers:       5,
+		HeartbeatTimeout: 500 * time.Millisecond,
+		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  500 * time.Millisecond,
+	}
+
+	d := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	cancel := startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-ops-kill", Title: "Ops kill test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Spawn an ops agent by sending READY_FOR_REVIEW
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-ops-kill", WorkerID: "w1"},
+	})
+
+	// Wait for ops agent to be spawned
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(opsSpawner.Active()) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(opsSpawner.Active()) == 0 {
+		t.Fatal("expected active ops agent after READY_FOR_REVIEW")
+	}
+
+	// Trigger shutdown
+	cancel()
+
+	// Wait for all ops agents to be killed
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(opsSpawner.Active()) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(opsSpawner.Active()) != 0 {
+		t.Fatalf("expected 0 active ops agents after shutdown, got %d", len(opsSpawner.Active()))
+	}
+
+	// Verify all processes were killed
+	slowSpawner.mu.Lock()
+	procs := make([]*slowProcess, len(slowSpawner.processes))
+	copy(procs, slowSpawner.processes)
+	slowSpawner.mu.Unlock()
+
+	for i, p := range procs {
+		if !p.killed.Load() {
+			t.Errorf("process %d was not killed during shutdown", i)
+		}
 	}
 }
 
