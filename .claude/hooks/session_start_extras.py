@@ -56,7 +56,7 @@ You are an expert autonomous coding agent. These rules override defaults.
 """
 
 # Pattern: ◐ oro-xyz [● P2] [feature] - Title
-_BEAD_LINE_RE = re.compile(r"^◐\s+([\w-]+)\s+\[")
+_BEAD_LINE_RE = re.compile(r"^◐\s+([\w.-]+)\s+\[")
 # Pattern:   Updated: 2026-02-07
 _UPDATED_RE = re.compile(r"Updated:\s*(\d{4}-\d{2}-\d{2})")
 
@@ -187,7 +187,7 @@ def recent_learnings(knowledge_file: str, n: int = 5) -> list[dict]:
     return sorted_entries[:n]
 
 
-_CLOSED_LINE_RE = re.compile(r"^✓\s+([\w-]+)\s+\[.*?\]\s+\[.*?\]\s+-\s+(.+)$")
+_CLOSED_LINE_RE = re.compile(r"^✓\s+([\w.-]+)\s+\[.*?\]\s+\[.*?\]\s+-\s+(.+)$")
 
 
 def recently_closed_beads(limit: int = 3) -> list[dict]:
@@ -228,7 +228,7 @@ def ready_beads(limit: int = 4) -> list[dict]:
 
     beads = []
     # Pattern: 1. [● P2] [feature] oro-xyz: Title
-    ready_re = re.compile(r"^\d+\.\s+\[.*?\]\s+\[.*?\]\s+([\w-]+):\s+(.+)$")
+    ready_re = re.compile(r"^\d+\.\s+\[.*?\]\s+\[.*?\]\s+([\w.-]+):\s+(.+)$")
     for line in result.stdout.splitlines():
         m = ready_re.match(line.strip())
         if m:
@@ -344,8 +344,12 @@ def _format_output(stale: list[dict], merged: list[dict], learnings: list[dict])
 
 def main() -> None:
     # Read hook input from stdin (SessionStart event)
+    hook_input = {}
     with contextlib.suppress(json.JSONDecodeError, ValueError):
-        json.loads(sys.stdin.read())
+        hook_input = json.loads(sys.stdin.read())
+
+    # Determine session source: "startup", "resume", "clear", "compact"
+    session_source = hook_input.get("source", "startup")
 
     # 1. Stale bead detection
     stale = []
@@ -380,10 +384,10 @@ def main() -> None:
     # 3. Recent learnings
     learnings = recent_learnings(KNOWLEDGE_FILE)
 
-    # 4. Latest handoff + project state (skip if .no-reprime exists)
+    # 4. Latest handoff + project state (skip if .no-reprime exists, unless /clear)
     handoff = ""
     state = ""
-    is_priming = not Path(".no-reprime").is_file()
+    is_priming = not Path(".no-reprime").is_file() or session_source == "clear"
     if is_priming:
         handoff = latest_handoff(HANDOFFS_DIR)
         state = project_state()
