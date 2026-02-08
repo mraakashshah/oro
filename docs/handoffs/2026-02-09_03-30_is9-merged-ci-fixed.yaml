@@ -1,0 +1,88 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Merged all is9 sub-beads to main (UDS directives + fsnotify replacing polling),
+  fixed CI shellcheck failure, closed is9 epic.
+
+now: >
+  mgf (P1) is unblocked — manager spawns workers via scale directive.
+  ptz worker has failed twice (stuck, no output). Investigate before respawning.
+
+test: go test -race -p 2 ./... && shellcheck --severity=info ad_hoc/oro-worker.sh
+
+done_this_session:
+  - task: "Merged is9.2 (oro directive CLI) to main"
+    files: [cmd/oro/cmd_directive.go, cmd/oro/cmd_directive_test.go, cmd/oro/root.go, pkg/protocol/directive.go]
+    details: >
+      Worker had deleted preflight files out of scope. Added fix commit to restore them.
+      Rebase onto main auto-squashed the fix (main already had the files). Clean ff-merge.
+
+  - task: "Merged is9.3 (fsnotify watcher) to main"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go, go.mod, go.sum]
+    details: >
+      Same preflight deletion bug as is9.2. Rebase onto main (which already had is9.2)
+      auto-resolved — preflight deletions dropped. Added fsnotify v1.9.0 dependency.
+      assignLoop now watches .beads/ with 60s fallback poll.
+
+  - task: "Closed is9 epic (all 3 children merged)"
+    details: "is9.1 (UDS handler), is9.2 (directive CLI), is9.3 (fsnotify) all on main"
+
+  - task: "Fixed CI shellcheck failure (SC2015 in oro-worker.sh)"
+    files: [ad_hoc/oro-worker.sh]
+    details: "Moved || true outside subshell: $(cmd) || true instead of $(cmd || true)"
+
+  - task: "Added --severity=info to shellcheck in CI and quality gate"
+    files: [quality_gate.sh, .github/workflows/ci.yml]
+    details: >
+      Root cause: local shellcheck 0.11.0 treats SC2015 as info (non-fatal),
+      CI ubuntu-latest has older version treating it as error. Pinning severity
+      ensures local and CI catch identical issues.
+
+decisions:
+  - shellcheck_severity: >
+      Pin --severity=info in both quality_gate.sh and ci.yml so local
+      and CI shellcheck behave identically regardless of version.
+  - rebase_resolves_deletions: >
+      When workers wrongly delete files that exist on main, rebasing onto
+      main auto-drops those deletions. No manual restoration needed if
+      main already has the correct state.
+
+worked:
+  - "Rebase auto-resolved out-of-scope deletions — no manual fix needed for is9.3"
+  - "One-at-a-time merge per learning oro-06v — clean sequential merges"
+  - "Stash dirty state before merge operations"
+
+failed:
+  - "cd into worktree then git worktree remove kills shell CWD — session restart needed"
+  - "ptz worker stuck on both spawn attempts — unknown root cause"
+  - "Sonnet workers delete files outside bead scope (systematic bug, both is9.2 and is9.3)"
+
+next:
+  - "Spawn mgf worker (P1, now unblocked by is9 closure)"
+  - "Investigate ptz worker stuck issue before third attempt"
+  - "Add worker prompt constraint: do NOT delete files unrelated to your bead"
+  - "Fix tee buffering for worker log visibility (stdbuf -oL or unbuffer)"
+  - "Consider adding --severity=info to worker prompt quality gate section"
+
+files:
+  modified:
+    - ad_hoc/oro-worker.sh
+    - quality_gate.sh
+    - .github/workflows/ci.yml
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - cmd/oro/root.go
+    - pkg/protocol/directive.go
+    - go.mod
+    - go.sum
+  created:
+    - cmd/oro/cmd_directive.go
+    - cmd/oro/cmd_directive_test.go
+    - docs/handoffs/2026-02-09_03-00_worker-chain-progress.yaml
+
+beads:
+  completed: [oro-e4c, oro-is9, oro-is9.1, oro-is9.2, oro-is9.3]
+  ready: [oro-mgf, oro-ptz, oro-by8, oro-nqi]
