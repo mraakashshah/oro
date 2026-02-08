@@ -83,6 +83,19 @@ beads:
 | `next:` | Action items for next session |
 | `beads:` | Bead state for multi-session work (completed/in_progress/remaining/epic) |
 
+### 4. Capture Learnings
+
+Before writing the handoff, ask yourself: "Did I learn anything this session worth preserving?"
+
+If yes, run for each learning:
+```bash
+bd comment <bead-id> "LEARNED: <what you learned>"
+```
+
+This feeds into knowledge.jsonl and gets resurfaced in future sessions. Examples:
+- "LEARNED: modernc sqlite doesn't support FTS5 bm25() — use rank column instead"
+- "LEARNED: git rebase fails if branch is checked out in any worktree — remove worktree first"
+
 ## Principles
 
 - **More information, not less** — this is the minimum, always add more if needed
