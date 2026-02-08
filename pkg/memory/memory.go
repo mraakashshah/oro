@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 
 	"oro/pkg/protocol"
@@ -91,14 +92,34 @@ func tagsFromJSON(s string) []string {
 	return tags
 }
 
-// Insert adds a new memory. Returns the inserted ID.
+// DedupJaccardThreshold is the minimum Jaccard similarity of terms above which
+// a new memory is considered a duplicate of an existing one. Per the search
+// spec, 0.7 is the day-one threshold for FTS5 overlap dedup.
+const DedupJaccardThreshold = 0.7
+
+// Insert adds a new memory with write-time dedup. Before inserting, it checks
+// FTS5 for existing memories with high term overlap (Jaccard similarity).
+// If a near-duplicate exists:
+//   - If the existing memory has lower confidence, update it to max of both
+//   - Return the existing ID (no new row created)
+//
+// Returns the inserted (or existing duplicate) ID.
 func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
-	tags := tagsToJSON(m.Tags)
 	conf := m.Confidence
 	if conf == 0 {
 		conf = 0.8
 	}
 
+	// Write-time dedup: check for near-duplicates via FTS5 + Jaccard.
+	dupID, err := s.checkDuplicate(ctx, m.Content, conf)
+	if err != nil {
+		// Dedup check failed -- proceed with insert rather than blocking writes.
+		_ = err
+	} else if dupID > 0 {
+		return dupID, nil
+	}
+
+	tags := tagsToJSON(m.Tags)
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -115,93 +136,157 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 	return id, nil
 }
 
-// Search performs FTS5 BM25-ranked search with optional type filter.
-// Results are scored by: BM25 relevance * confidence * time decay.
-// Time decay formula: confidence * (0.5 ^ ((julianday('now') - julianday(created_at)) / 30.0))
-func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]ScoredMemory, error) {
-	if query == "" {
-		return nil, nil
+// checkDuplicate searches for an existing memory with high term overlap.
+// Uses FTS5 to find candidates, then Jaccard similarity of lowercased terms
+// to confirm near-duplication. Returns the duplicate's ID if found
+// (and updates its confidence if needed), or 0 if no duplicate exists.
+func (s *Store) checkDuplicate(ctx context.Context, content string, newConf float64) (int64, error) {
+	results, err := s.Search(ctx, content, SearchOpts{Limit: 3})
+	if err != nil {
+		return 0, fmt.Errorf("dedup search: %w", err)
 	}
 
+	newTerms := termSet(content)
+	for _, r := range results {
+		existTerms := termSet(r.Content)
+		if jaccardSimilarity(newTerms, existTerms) < DedupJaccardThreshold {
+			continue
+		}
+		// Near-duplicate found. Update confidence to max of both if needed.
+		if newConf > r.Confidence {
+			if err := s.UpdateConfidence(ctx, r.ID, newConf); err != nil {
+				return 0, fmt.Errorf("dedup update confidence: %w", err)
+			}
+		}
+		return r.ID, nil
+	}
+
+	return 0, nil
+}
+
+// termSet returns the set of lowercased words in s.
+func termSet(s string) map[string]struct{} {
+	words := strings.Fields(strings.ToLower(s))
+	set := make(map[string]struct{}, len(words))
+	for _, w := range words {
+		set[w] = struct{}{}
+	}
+	return set
+}
+
+// jaccardSimilarity computes |A ∩ B| / |A ∪ B| for two term sets.
+func jaccardSimilarity(a, b map[string]struct{}) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 1.0
+	}
+	intersection := 0
+	for w := range a {
+		if _, ok := b[w]; ok {
+			intersection++
+		}
+	}
+	union := len(a) + len(b) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// searchSQL builds the FTS5 search SQL and args for the given query and opts.
+func searchSQL(query string, opts SearchOpts) (string, []interface{}) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 10
 	}
 
-	// Build the query dynamically based on filters.
-	var conditions []string
-	var args []interface{}
-
-	conditions = append(conditions, "memories_fts MATCH ?")
-	args = append(args, sanitizeFTS5Query(query))
+	conditions := []string{"memories_fts MATCH ?"}
+	args := []interface{}{sanitizeFTS5Query(query)}
 
 	if opts.Type != "" {
 		conditions = append(conditions, "m.type = ?")
 		args = append(args, opts.Type)
 	}
 
-	whereClause := strings.Join(conditions, " AND ")
-
+	// Use FTS5 rank for relevance ordering; compute score in Go.
 	q := fmt.Sprintf(`
 		SELECT m.id, m.content, m.type, m.tags, m.source,
 		       COALESCE(m.bead_id, '') AS bead_id,
 		       COALESCE(m.worker_id, '') AS worker_id,
 		       m.confidence, m.created_at, m.embedding,
-		       (-bm25(memories_fts)) * m.confidence *
-		       POWER(0.5, (julianday('now') - julianday(m.created_at)) / 30.0) AS score
+		       (julianday('now') - julianday(m.created_at)) AS age_days
 		FROM memories_fts
 		JOIN memories m ON memories_fts.rowid = m.id
 		WHERE %s
-		ORDER BY score DESC
+		ORDER BY rank
 		LIMIT ?
-	`, whereClause)
+	`, strings.Join(conditions, " AND "))
 
 	args = append(args, limit)
+	return q, args
+}
 
+// Search performs FTS5-ranked search with optional type filter.
+// Results are scored by: confidence * time_decay, ordered by FTS5 relevance.
+// Note: bm25() returns negligible values with modernc.org/sqlite (pure-Go),
+// so we use FTS5 rank for ordering and compute scores in Go.
+func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]ScoredMemory, error) {
+	if query == "" {
+		return nil, nil
+	}
+
+	q, args := searchSQL(query, opts)
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("memory search: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []ScoredMemory
 	for rows.Next() {
-		var sm ScoredMemory
-		var embedding sql.NullString
-		if err := rows.Scan(
-			&sm.ID, &sm.Content, &sm.Type, &sm.Tags, &sm.Source,
-			&sm.BeadID, &sm.WorkerID, &sm.Confidence, &sm.CreatedAt,
-			&embedding, &sm.Score,
-		); err != nil {
-			return nil, fmt.Errorf("memory search scan: %w", err)
+		sm, err := scanScoredMemory(rows)
+		if err != nil {
+			return nil, err
 		}
-		if embedding.Valid {
-			sm.Embedding = []byte(embedding.String)
-		}
-
 		if opts.MinScore > 0 && sm.Score < opts.MinScore {
 			continue
 		}
-
-		// Tag filter: any match
-		if len(opts.Tags) > 0 {
-			memTags := tagsFromJSON(sm.Tags)
-			if !anyTagMatch(memTags, opts.Tags) {
-				continue
-			}
+		if len(opts.Tags) > 0 && !anyTagMatch(tagsFromJSON(sm.Tags), opts.Tags) {
+			continue
 		}
-
 		results = append(results, sm)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("memory search rows: %w", err)
 	}
 
+	sortByScoreDesc(results)
 	return results, nil
 }
 
+// scanScoredMemory scans a single row from the search query into a ScoredMemory.
+func scanScoredMemory(rows *sql.Rows) (ScoredMemory, error) {
+	var sm ScoredMemory
+	var embedding sql.NullString
+	var ageDays float64
+	if err := rows.Scan(
+		&sm.ID, &sm.Content, &sm.Type, &sm.Tags, &sm.Source,
+		&sm.BeadID, &sm.WorkerID, &sm.Confidence, &sm.CreatedAt,
+		&embedding, &ageDays,
+	); err != nil {
+		return sm, fmt.Errorf("memory search scan: %w", err)
+	}
+	if embedding.Valid {
+		sm.Embedding = []byte(embedding.String)
+	}
+	// Score: confidence * time_decay (halves every 30 days)
+	sm.Score = sm.Confidence * math.Pow(0.5, ageDays/30.0)
+	return sm, nil
+}
+
 // sanitizeFTS5Query wraps each term in double quotes to prevent FTS5 operator
-// interpretation (e.g., "and", "or", "not" are FTS5 operators).
+// interpretation (e.g., "and", "or", "not" are FTS5 operators) and joins them
+// with OR for broader recall. FTS5 implicit AND requires all terms to appear,
+// which is too restrictive for fuzzy memory search.
 func sanitizeFTS5Query(query string) string {
 	words := strings.Fields(query)
 	if len(words) == 0 {
@@ -220,7 +305,7 @@ func sanitizeFTS5Query(query string) string {
 			quoted = append(quoted, `"`+clean+`"`)
 		}
 	}
-	return strings.Join(quoted, " ")
+	return strings.Join(quoted, " OR ")
 }
 
 // anyTagMatch returns true if any tag in a appears in b.
@@ -237,6 +322,13 @@ func anyTagMatch(a, b []string) bool {
 	return false
 }
 
+// sortByScoreDesc sorts ScoredMemory results by Score descending.
+func sortByScoreDesc(results []ScoredMemory) {
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+}
+
 // List returns memories matching optional filters, ordered by created_at desc.
 func (s *Store) List(ctx context.Context, opts ListOpts) ([]protocol.Memory, error) {
 	limit := opts.Limit
@@ -244,6 +336,29 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]protocol.Memory, err
 		limit = 50
 	}
 
+	q, args := listSQL(opts, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("memory list: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []protocol.Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory list rows: %w", err)
+	}
+	return results, nil
+}
+
+// listSQL builds the list query SQL and args.
+func listSQL(opts ListOpts, limit int) (string, []interface{}) {
 	var conditions []string
 	var args []interface{}
 
@@ -252,7 +367,6 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]protocol.Memory, err
 		args = append(args, opts.Type)
 	}
 	if opts.Tag != "" {
-		// Match tag within JSON array using LIKE
 		conditions = append(conditions, `tags LIKE ?`)
 		args = append(args, fmt.Sprintf(`%%"%s"%%`, opts.Tag))
 	}
@@ -267,41 +381,29 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]protocol.Memory, err
 		       COALESCE(bead_id, '') AS bead_id,
 		       COALESCE(worker_id, '') AS worker_id,
 		       confidence, created_at, embedding
-		FROM memories
-		%s
+		FROM memories %s
 		ORDER BY created_at DESC, id DESC
 		LIMIT ? OFFSET ?
 	`, whereClause)
-
 	args = append(args, limit, opts.Offset)
+	return q, args
+}
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, fmt.Errorf("memory list: %w", err)
+// scanMemory scans a single row from the list query into a protocol.Memory.
+func scanMemory(rows *sql.Rows) (protocol.Memory, error) {
+	var m protocol.Memory
+	var embedding sql.NullString
+	if err := rows.Scan(
+		&m.ID, &m.Content, &m.Type, &m.Tags, &m.Source,
+		&m.BeadID, &m.WorkerID, &m.Confidence, &m.CreatedAt,
+		&embedding,
+	); err != nil {
+		return m, fmt.Errorf("memory list scan: %w", err)
 	}
-	defer rows.Close()
-
-	var results []protocol.Memory
-	for rows.Next() {
-		var m protocol.Memory
-		var embedding sql.NullString
-		if err := rows.Scan(
-			&m.ID, &m.Content, &m.Type, &m.Tags, &m.Source,
-			&m.BeadID, &m.WorkerID, &m.Confidence, &m.CreatedAt,
-			&embedding,
-		); err != nil {
-			return nil, fmt.Errorf("memory list scan: %w", err)
-		}
-		if embedding.Valid {
-			m.Embedding = []byte(embedding.String)
-		}
-		results = append(results, m)
+	if embedding.Valid {
+		m.Embedding = []byte(embedding.String)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("memory list rows: %w", err)
-	}
-
-	return results, nil
+	return m, nil
 }
 
 // Delete removes a memory by ID.
@@ -386,6 +488,8 @@ func ExtractMarkers(ctx context.Context, r io.Reader, store *Store, workerID str
 }
 
 // implicitPatterns maps regex patterns to memory types for implicit extraction.
+//
+//nolint:gochecknoglobals // compile-once regex table, safe as package-level var
 var implicitPatterns = []struct {
 	re      *regexp.Regexp
 	memType string
@@ -432,19 +536,25 @@ func ExtractImplicit(text string) []InsertParams {
 	return results
 }
 
+// maxInjectedMemories is the maximum number of memories injected into a prompt.
+// Per search spec: 5 memories max, but token budget is the binding constraint.
+const maxInjectedMemories = 5
+
+// defaultTokenBudget is the default token budget for prompt injection (500 tokens).
+const defaultTokenBudget = 500
+
 // ForPrompt retrieves the most relevant memories for a bead and formats them
 // as a markdown section suitable for injection into the worker prompt.
-// Cap: maxTokens (approximate, using word count / 0.75 as token estimate).
+// Token estimation uses len(content)/4 (~4 chars per token for English).
 func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc string, maxTokens int) (string, error) {
 	if maxTokens <= 0 {
-		maxTokens = 200
+		maxTokens = defaultTokenBudget
 	}
 
 	if beadDesc == "" {
 		return "", nil
 	}
 
-	// Search by bead description keywords
 	results, err := store.Search(ctx, beadDesc, SearchOpts{
 		Limit: 10,
 		Tags:  beadTags,
@@ -457,36 +567,44 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 		return "", nil
 	}
 
-	// Take top 3
-	top := results
-	if len(top) > 3 {
-		top = top[:3]
-	}
-
+	// Build output with token budget enforcement.
+	// Token estimate: len(text) / 4 (~4 chars per token for English).
+	header := "## Relevant Memories"
+	tokenBudget := maxTokens - estimateTokens(header)
 	var lines []string
-	lines = append(lines, "## Relevant Memories")
+	lines = append(lines, header)
+	count := 0
 
-	for _, m := range top {
+	for _, m := range results {
+		if count >= maxInjectedMemories {
+			break
+		}
 		age := formatAge(m.CreatedAt)
 		line := fmt.Sprintf("- [%s] %s (%s, confidence: %.2f)",
 			m.Type, m.Content, age, m.Confidence)
-		lines = append(lines, line)
-	}
-
-	output := strings.Join(lines, "\n")
-
-	// Truncate if exceeds maxTokens (estimate: words / 0.75)
-	words := strings.Fields(output)
-	estimatedTokens := int(float64(len(words)) / 0.75)
-	if estimatedTokens > maxTokens {
-		// Truncate word count to fit
-		targetWords := int(float64(maxTokens) * 0.75)
-		if targetWords < len(words) {
-			output = strings.Join(words[:targetWords], " ") + "..."
+		cost := estimateTokens(line)
+		if tokenBudget-cost < 0 && count > 0 {
+			break
 		}
+		lines = append(lines, line)
+		tokenBudget -= cost
+		count++
 	}
 
-	return output, nil
+	if count == 0 {
+		return "", nil
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+// estimateTokens returns an approximate token count for text (~4 chars/token).
+func estimateTokens(text string) int {
+	n := len(text) / 4
+	if n == 0 && len(text) > 0 {
+		return 1
+	}
+	return n
 }
 
 // formatAge returns a human-readable age string from a datetime string.
@@ -529,24 +647,30 @@ func Consolidate(ctx context.Context, store *Store, opts ConsolidateOpts) (merge
 }
 
 // pruneStale removes memories whose decayed score is below minScore.
+// Decayed score = confidence * 0.5^(age_days/30).
 func pruneStale(ctx context.Context, store *Store, minScore float64, dryRun bool) (int, error) {
 	q := `
-		SELECT id FROM memories
-		WHERE confidence * POWER(0.5, (julianday('now') - julianday(created_at)) / 30.0) < ?
+		SELECT id, confidence,
+		       (julianday('now') - julianday(created_at)) AS age_days
+		FROM memories
 	`
-	rows, err := store.db.QueryContext(ctx, q, minScore)
+	rows, err := store.db.QueryContext(ctx, q)
 	if err != nil {
 		return 0, fmt.Errorf("prune stale query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []int64
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var confidence, ageDays float64
+		if err := rows.Scan(&id, &confidence, &ageDays); err != nil {
 			return 0, fmt.Errorf("prune stale scan: %w", err)
 		}
-		ids = append(ids, id)
+		decayedScore := confidence * math.Pow(0.5, ageDays/30.0)
+		if decayedScore < minScore {
+			ids = append(ids, id)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("prune stale rows: %w", err)

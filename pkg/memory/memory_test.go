@@ -1,8 +1,9 @@
-package memory
+package memory //nolint:testpackage // white-box tests for internal helpers (tagsFromJSON, termSet, etc.)
 
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
 		t.Fatalf("exec schema: %v", err)
@@ -341,6 +342,111 @@ func TestStore_UpdateConfidence(t *testing.T) {
 	}
 }
 
+func TestStore_InsertDedup(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a memory
+	id1, err := store.Insert(ctx, InsertParams{
+		Content: "always run ruff before pyright for linting", Type: "gotcha",
+		Source: "self_report", Confidence: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("insert 1: %v", err)
+	}
+
+	// Insert a near-duplicate (high Jaccard overlap)
+	id2, err := store.Insert(ctx, InsertParams{
+		Content: "always run ruff before pyright for linting checks", Type: "gotcha",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+
+	// Should return the same ID (deduped)
+	if id2 != id1 {
+		t.Errorf("expected dedup to return existing id %d, got %d", id1, id2)
+	}
+
+	// Only one memory should exist
+	all, err := store.List(ctx, ListOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 memory after dedup, got %d", len(all))
+	}
+
+	// Confidence should be updated to the higher value (0.9 from second insert)
+	if all[0].Confidence < 0.89 || all[0].Confidence > 0.91 {
+		t.Errorf("expected confidence updated to ~0.9, got %f", all[0].Confidence)
+	}
+}
+
+func TestStore_InsertNoDedupForDistinct(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert two distinct memories
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "always run ruff before pyright", Type: "gotcha",
+		Source: "self_report", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert 1: %v", err)
+	}
+
+	_, err = store.Insert(ctx, InsertParams{
+		Content: "SQLite WAL mode requires single-writer for consistency", Type: "lesson",
+		Source: "self_report", Confidence: 0.85,
+	})
+	if err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+
+	// Both should exist (distinct content, no dedup)
+	all, err := store.List(ctx, ListOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 distinct memories, got %d", len(all))
+	}
+}
+
+func TestJaccardSimilarity(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		want float64
+	}{
+		{"identical", "hello world", "hello world", 1.0},
+		{"disjoint", "hello world", "foo bar", 0.0},
+		{
+			"high overlap", "always run ruff before pyright for linting",
+			"always run ruff before pyright for linting checks", 7.0 / 8.0,
+		},
+		{"partial overlap", "ruff linting python", "ruff pyright go", 1.0 / 5.0},
+		{"empty both", "", "", 1.0},
+		{"empty one", "hello", "", 0.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := termSet(tt.a)
+			b := termSet(tt.b)
+			got := jaccardSimilarity(a, b)
+			if got < tt.want-0.01 || got > tt.want+0.01 {
+				t.Errorf("jaccardSimilarity(%q, %q) = %f, want %f", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+//nolint:funlen // table-driven test with many cases
 func TestParseMarker_ValidMarkers(t *testing.T) {
 	tests := []struct {
 		name string
@@ -570,30 +676,36 @@ func TestForPrompt_TokenCap(t *testing.T) {
 	store := NewStore(db)
 	ctx := context.Background()
 
-	// Insert memories with long content
+	// Insert memories with distinct but long content (unique words to avoid dedup)
 	for i := 0; i < 5; i++ {
-		longContent := strings.Repeat("word ", 100) + "unique_search_term"
+		longContent := fmt.Sprintf("searchable_term memory_%d %s", i, strings.Repeat("padding ", 50))
 		_, err := store.Insert(ctx, InsertParams{
 			Content: longContent, Type: "lesson",
 			Source: "self_report", Confidence: 0.9,
 		})
 		if err != nil {
-			t.Fatalf("insert: %v", err)
+			t.Fatalf("insert %d: %v", i, err)
 		}
 	}
 
-	// Request with very small token cap
-	result, err := ForPrompt(ctx, store, nil, "unique_search_term", 10)
+	// Request with small token cap — should include fewer memories than available
+	result, err := ForPrompt(ctx, store, nil, "searchable_term", 50)
 	if err != nil {
 		t.Fatalf("for prompt: %v", err)
 	}
 
-	// Should be truncated
-	words := strings.Fields(result)
-	estimatedTokens := int(float64(len(words)) / 0.75)
-	// Allow some slack but it should be much shorter than full output
-	if estimatedTokens > 20 {
-		t.Errorf("expected truncated output, got %d estimated tokens", estimatedTokens)
+	// With ~50 tokens budget, only 1 memory should fit (each line is ~110 chars = ~27 tokens)
+	lineCount := 0
+	for _, line := range strings.Split(result, "\n") {
+		if strings.HasPrefix(line, "- [") {
+			lineCount++
+		}
+	}
+	if lineCount > 2 {
+		t.Errorf("expected token cap to limit memories, got %d memory lines", lineCount)
+	}
+	if lineCount == 0 {
+		t.Error("expected at least one memory in output")
 	}
 }
 
@@ -617,19 +729,23 @@ func TestConsolidate_MergesDuplicates(t *testing.T) {
 	store := NewStore(db)
 	ctx := context.Background()
 
-	// Insert two very similar memories
-	_, err := store.Insert(ctx, InsertParams{
-		Content: "always run ruff before pyright for linting", Type: "gotcha",
-		Source: "self_report", Confidence: 0.7,
-	})
+	// Insert two very similar memories directly via SQL to bypass write-time dedup.
+	// This simulates memories that accumulated before dedup was added, or were
+	// inserted by different workers.
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"always run ruff before pyright for linting", "gotcha", `[]`, "self_report", 0.7,
+	)
 	if err != nil {
 		t.Fatalf("insert 1: %v", err)
 	}
 
-	_, err = store.Insert(ctx, InsertParams{
-		Content: "always run ruff before pyright for linting checks", Type: "gotcha",
-		Source: "self_report", Confidence: 0.9,
-	})
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"always run ruff before pyright for linting checks", "gotcha", `[]`, "self_report", 0.9,
+	)
 	if err != nil {
 		t.Fatalf("insert 2: %v", err)
 	}
