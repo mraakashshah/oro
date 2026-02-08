@@ -193,14 +193,14 @@ func jaccardSimilarity(a, b map[string]struct{}) float64 {
 }
 
 // searchSQL builds the FTS5 search SQL and args for the given query and opts.
-func searchSQL(query string, opts SearchOpts) (string, []interface{}) {
+func searchSQL(query string, opts SearchOpts) (stmt string, args []any) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 10
 	}
 
 	conditions := []string{"memories_fts MATCH ?"}
-	args := []interface{}{sanitizeFTS5Query(query)}
+	args = []any{sanitizeFTS5Query(query)}
 
 	if opts.Type != "" {
 		conditions = append(conditions, "m.type = ?")
@@ -358,9 +358,8 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]protocol.Memory, err
 }
 
 // listSQL builds the list query SQL and args.
-func listSQL(opts ListOpts, limit int) (string, []interface{}) {
+func listSQL(opts ListOpts, limit int) (query string, args []any) {
 	var conditions []string
-	var args []interface{}
 
 	if opts.Type != "" {
 		conditions = append(conditions, "type = ?")
@@ -368,7 +367,7 @@ func listSQL(opts ListOpts, limit int) (string, []interface{}) {
 	}
 	if opts.Tag != "" {
 		conditions = append(conditions, `tags LIKE ?`)
-		args = append(args, fmt.Sprintf(`%%"%s"%%`, opts.Tag))
+		args = append(args, fmt.Sprintf(`%%%q%%`, opts.Tag))
 	}
 
 	whereClause := ""
@@ -460,7 +459,7 @@ func ParseMarker(line string) *InsertParams {
 
 // ExtractMarkers scans an io.Reader for [MEMORY] markers and inserts them
 // into the store. Returns the count of successfully extracted markers.
-func ExtractMarkers(ctx context.Context, r io.Reader, store *Store, workerID string, beadID string) (int, error) {
+func ExtractMarkers(ctx context.Context, r io.Reader, store *Store, workerID, beadID string) (int, error) {
 	scanner := bufio.NewScanner(r)
 	count := 0
 
@@ -601,7 +600,7 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 // estimateTokens returns an approximate token count for text (~4 chars/token).
 func estimateTokens(text string) int {
 	n := len(text) / 4
-	if n == 0 && len(text) > 0 {
+	if n == 0 && text != "" {
 		return 1
 	}
 	return n
@@ -623,7 +622,7 @@ func formatAge(createdAt string) string {
 // - Merges content of duplicates, keeping higher confidence
 // - Prunes memories with decayed score below minScore
 // Returns count of merged and pruned memories.
-func Consolidate(ctx context.Context, store *Store, opts ConsolidateOpts) (merged int, pruned int, err error) {
+func Consolidate(ctx context.Context, store *Store, opts ConsolidateOpts) (merged, pruned int, err error) {
 	if opts.SimilarityThreshold <= 0 {
 		opts.SimilarityThreshold = 0.8
 	}
@@ -690,8 +689,28 @@ func pruneStale(ctx context.Context, store *Store, minScore float64, dryRun bool
 }
 
 // mergeDuplicates finds pairs of similar memories and merges them.
+// mergePair keeps the higher-confidence memory and deletes the other.
+func mergePair(ctx context.Context, store *Store, a, b protocol.Memory) error {
+	keepID, removeID := a.ID, b.ID
+	keepConf, removeConf := a.Confidence, b.Confidence
+
+	if removeConf > keepConf {
+		keepID, removeID = removeID, keepID
+		keepConf = removeConf
+	}
+
+	if err := store.UpdateConfidence(ctx, keepID, math.Max(keepConf, removeConf)); err != nil {
+		return fmt.Errorf("merge update confidence: %w", err)
+	}
+
+	if err := store.Delete(ctx, removeID); err != nil {
+		return fmt.Errorf("merge delete duplicate: %w", err)
+	}
+
+	return nil
+}
+
 func mergeDuplicates(ctx context.Context, store *Store, threshold float64, dryRun bool) (int, error) {
-	// Get all memories
 	all, err := store.List(ctx, ListOpts{Limit: 1000})
 	if err != nil {
 		return 0, fmt.Errorf("merge duplicates list: %w", err)
@@ -700,58 +719,29 @@ func mergeDuplicates(ctx context.Context, store *Store, threshold float64, dryRu
 	merged := 0
 	deleted := make(map[int64]bool)
 
-	for i := 0; i < len(all); i++ {
+	for i := range all {
 		if deleted[all[i].ID] {
 			continue
 		}
 
-		// Search for similar memories using this memory's content
 		similar, err := store.Search(ctx, all[i].Content, SearchOpts{Limit: 5})
 		if err != nil {
-			// FTS match might fail for some content; skip
 			continue
 		}
 
 		for _, s := range similar {
-			if s.ID == all[i].ID || deleted[s.ID] {
+			if s.ID == all[i].ID || deleted[s.ID] || s.Score < threshold {
 				continue
 			}
 
-			// Check similarity using normalized score
-			if s.Score < threshold {
-				continue
-			}
-
-			if dryRun {
-				merged++
-				deleted[s.ID] = true
-				continue
-			}
-
-			// Keep the one with higher confidence, merge content
-			keepID := all[i].ID
-			removeID := s.ID
-			keepConf := all[i].Confidence
-			removeConf := s.Confidence
-
-			if removeConf > keepConf {
-				keepID, removeID = removeID, keepID
-				keepConf = removeConf
-			}
-
-			// Update confidence of keeper to max
-			newConf := math.Max(keepConf, removeConf)
-			if err := store.UpdateConfidence(ctx, keepID, newConf); err != nil {
-				return merged, fmt.Errorf("merge update confidence: %w", err)
-			}
-
-			// Delete the duplicate
-			if err := store.Delete(ctx, removeID); err != nil {
-				return merged, fmt.Errorf("merge delete duplicate: %w", err)
+			if !dryRun {
+				if err := mergePair(ctx, store, all[i], s.Memory); err != nil {
+					return merged, err
+				}
 			}
 
 			merged++
-			deleted[removeID] = true
+			deleted[s.ID] = true
 		}
 	}
 
