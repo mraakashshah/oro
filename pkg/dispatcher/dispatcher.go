@@ -380,7 +380,6 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		Worktree: worktree,
 		BeadID:   beadID,
 	})
-
 	if err != nil {
 		var conflictErr *merge.ConflictError
 		if errors.As(err, &conflictErr) {

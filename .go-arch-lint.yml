@@ -4,6 +4,7 @@ allow:
 excludeFiles:
   - "yap/.+"
   - "references/.+"
+  - "\\.worktrees/.+"
 
 components:
   cmd:
