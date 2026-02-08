@@ -1,6 +1,7 @@
 version: 3
 allow:
   depOnAnyVendor: true
+  deepScan: false
 excludeFiles:
   - "yap/.+"
   - "references/.+"
@@ -23,10 +24,6 @@ deps:
     mayDependOn:
       - internal
       - pkg
-    deepScan:
-      mayDependOn:
-        - internal
-        - pkg
   pkg:
     mayDependOn:
       - pkg
