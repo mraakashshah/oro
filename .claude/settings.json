@@ -20,6 +20,15 @@
 						"command": "python3 .claude/hooks/inject_context_usage.py"
 					}
 				]
+			},
+			{
+				"matcher": "Task",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/enforce_worktree.py"
+					}
+				]
 			}
 		],
 		"PostToolUse": [
