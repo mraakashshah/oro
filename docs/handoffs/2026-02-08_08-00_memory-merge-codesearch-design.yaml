@@ -1,0 +1,75 @@
+---
+date: 2026-02-08
+status: complete
+---
+
+goal: Merge agent branches (worker refactor + memory system), create code search beads, design typed handoff + graceful shutdown
+now: Pick up oro-adw (extend HandoffPayload) or oro-98h (quality gate at worker level) — both are unblocked P1/P2
+test: go test -race ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: Merged oro-mak (Worker.Run refactor, complexity 26→7)
+    files: [pkg/worker/worker.go]
+    details: Extracted readMessages() and handleConnectionError() helpers
+
+  - task: Merged oro-3w4 (memory FTS5 compat with modernc.org/sqlite)
+    files: [pkg/memory/memory.go, pkg/memory/memory_test.go]
+    details: "modernc bm25() returns ~1e-6 vs C sqlite ~1-10. Fixed: OR queries, Go-side scoring, write-time Jaccard dedup"
+
+  - task: Lint cleanup for memory package
+    files: [pkg/memory/memory.go]
+    details: "Named returns, paramTypeCombine, interface{}→any, mergePair extraction (gocognit 27→12)"
+
+  - task: Boosted memory coverage 82.7%→91.9% for quality gate
+    files: [pkg/memory/memory_test.go]
+    details: "27 new test functions covering error paths, edge cases, consolidation"
+
+  - task: Created code search epic (oro-98q) with 4 child beads
+    details: "oro-98q.1 bypass rules, .2 AST summarizer, .3 hook binary, .4 wiring. Dependencies wired."
+
+  - task: Reviewed cs50victor/claude-code-teams-mcp for orchestration patterns
+    details: "Typed message payloads and graceful shutdown worth adopting. Rest (inbox, tasks, tmux spawn) already covered by Oro."
+
+  - task: Designed typed handoff + graceful shutdown + memory wiring
+    details: "4 new beads: oro-adw (HandoffPayload context), oro-hh0 (graceful shutdown), oro-yfs (extraction wiring), oro-bat (injection wiring)"
+
+  - task: Created P1 quality gate enforcement bead (oro-98h)
+    details: "Workers must pass quality_gate.sh before MsgDone. Blocks CLI (oro-r7b)."
+
+decisions:
+  - extend_handoff_payload: "Option A chosen — add Learnings/Decisions/FilesModified/ContextSummary to HandoffPayload rather than separate message type or direct DB writes"
+  - quality_gate_at_worker: "Push all test/lint/format work to workers. DonePayload gets QualityGatePassed bool. Dispatcher rejects merge if false."
+
+findings:
+  - memory_not_wired: "pkg/memory is fully built (91.9% coverage) but nothing calls it. No extraction, no injection, no callers."
+  - oro_not_runnable: "CLI is a stub (prints version). Packages work in isolation but no main wires dispatcher+workers+tmux."
+  - modernc_sqlite_bm25: "modernc.org/sqlite bm25() returns values ~1e6x smaller than C SQLite. Must compute scores in Go."
+
+worked:
+  - Parallel agent dispatch with worktrees for independent tasks (mak + memory)
+  - Quality gate as pre-push hook catches everything
+
+failed:
+  - Memory agent initially had undefined sortByScoreDesc — needed lint fixup pass after merge
+
+next:
+  - oro-98h (P1): Quality gate at worker level — DonePayload.QualityGatePassed, dispatcher rejects on false
+  - oro-adw (P2): Extend HandoffPayload with typed context fields
+  - oro-hh0 (P2): Graceful shutdown protocol (depends on oro-adw)
+  - oro-yfs (P2): Wire memory extraction into worker (depends on oro-adw)
+  - oro-bat (P2): Wire memory injection into dispatcher assign (depends on oro-yfs)
+  - oro-98q (P2): Code search epic — .1 and .2 are unblocked, can be parallelized
+  - oro-r7b (P2): CLI implementation — blocked by oro-98h
+
+files:
+  modified:
+    - pkg/worker/worker.go
+    - pkg/memory/memory.go
+    - pkg/memory/memory_test.go
+    - .beads/issues.jsonl
+
+beads:
+  completed: [oro-mak, oro-3w4, oro-7ya]
+  created: [oro-98q, oro-98q.1, oro-98q.2, oro-98q.3, oro-98q.4, oro-adw, oro-hh0, oro-yfs, oro-bat, oro-98h]
+  in_progress: [oro-0q5]
+  remaining: [oro-r7b, oro-ldf]
