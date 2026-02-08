@@ -2,11 +2,12 @@
 package main
 
 import (
-	"fmt"
-
-	"oro/internal/version"
+	"os"
 )
 
 func main() {
-	fmt.Printf("oro %s\n", version.String())
+	cmd := newRootCmd()
+	if err := cmd.Execute(); err != nil {
+		os.Exit(1)
+	}
 }
