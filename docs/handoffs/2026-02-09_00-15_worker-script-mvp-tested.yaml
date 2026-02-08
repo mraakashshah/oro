@@ -1,0 +1,87 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Completed oro architecture spec (oro-cfp closed, all questions resolved).
+  Built ad_hoc/oro-worker.sh and proved the full worker loop end-to-end:
+  bead → worktree → claude -p (12-section prompt) → TDD → quality gate → merge → close.
+
+now: >
+  Two immediate next steps:
+  1. Fix worker visibility (oro-e4c): add --verbose to claude -p so output
+     streams live. Currently log is empty until process exits — blind.
+  2. Test a real bead: run ad_hoc/oro-worker.sh oro-ptz --model sonnet --yes
+     for the preflight checks feature. This tests whether the worker can
+     handle a non-trivial bead with real Go code.
+
+test: go test -race -p 2 ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "Completed oro-cfp — architecture spec finalized"
+    files: [docs/plans/2026-02-08-oro-architecture-spec.md]
+    details: >
+      Resolved all open questions. Added manager beacon (12 sections),
+      architect beacon (9 sections), dispatcher escalation format
+      ([ORO-DISPATCH] prefix). Closed oro-cfp, oro-9fu, oro-0i7, oro-tk7.
+
+  - task: "Built ad_hoc/oro-worker.sh"
+    files: [ad_hoc/oro-worker.sh]
+    details: >
+      Manual worker script: parses bead from JSONL, creates worktree,
+      queries memories (oro recall), assembles 12-section prompt, launches
+      claude -p with --permission-mode acceptEdits and --add-dir for main
+      repo reference. Supports --model and --yes flags.
+
+  - task: "Proved worker loop end-to-end"
+    details: >
+      Created hello world bead (oro-jj2), ran worker script, worker did TDD
+      (test first, then impl), passed quality gate 18/18, committed with
+      conventional format, merged via oro-merge.sh (rebase + ff-only).
+      Full cycle: create bead → worker executes → merge → close → push.
+
+decisions:
+  - no_budget_flag: >
+      Removed --max-budget-usd from worker script. Uses OAuth token,
+      not API key — budget flag is meaningless.
+  - context_pct_belt_and_suspenders: >
+      Keep both inject_context_usage.py hook AND Go binary context_pct
+      polling. Hook nudges worker to self-decompose. Go binary catches
+      it if worker doesn't cooperate. Different layers, different purposes.
+  - architect_needs_beacon: >
+      Originally spec said "no special role prompt needed." Wrong — without
+      beacon, architect has no system awareness. Added 9-section beacon.
+
+worked:
+  - Shell script MVP to test worker loop before building Go binary
+  - --yes flag for non-interactive/background execution
+  - oro-merge.sh for post-worker merge (rebase + gate + ff-only)
+
+failed:
+  - claude -p buffers all output — log file empty until exit. Need --verbose.
+  - First run failed because read -rp blocks in non-interactive bash (fixed with --yes)
+
+next:
+  - Fix worker output visibility (oro-e4c)
+  - Test real bead (oro-ptz preflight checks)
+  - Consider scoped quality gate (skip Python/docs for Go-only beads)
+  - Port 12-section prompt to Go BuildPrompt() in pkg/worker/worker.go
+  - Build oro-worker binary (cmd/oro-worker/)
+  - Implement oro scale N in dispatcher
+
+files:
+  modified:
+    - docs/plans/2026-02-08-oro-architecture-spec.md
+    - ad_hoc/oro-worker.sh
+    - .beads/issues.jsonl
+  created:
+    - ad_hoc/oro-worker.sh
+    - cmd/hello/main.go (by worker)
+    - cmd/hello/main_test.go (by worker)
+    - docs/handoffs/2026-02-09_00-15_worker-script-mvp-tested.yaml
+
+beads:
+  completed: [oro-cfp, oro-9fu, oro-0i7, oro-tk7, oro-jj2]
+  created: [oro-e4c]
+  ready: [oro-is9, oro-nqi, oro-ptz, oro-by8, oro-e4c]
