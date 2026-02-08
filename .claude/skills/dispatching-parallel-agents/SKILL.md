@@ -39,7 +39,7 @@ Each agent gets:
 - **Worktree path** — work exclusively in this directory
 - **Specific scope** — one subsystem or task
 - **Commit instructions** — commit on the branch before completing
-- **Quality gate** — run tests/lint in the worktree
+- **Quality gate** — run tests AND full linter (golangci-lint/ruff) in the worktree
 - **Bead closure** — `bd close <id> --reason="summary"`
 
 Use the Task tool with multiple calls in a single message, `run_in_background: true`.
@@ -57,6 +57,7 @@ Branch: agent/task-1
 - ONLY modify files within .worktrees/task-1
 - Commit your work with a descriptive message before completing
 - Run tests: cd .worktrees/task-1 && [test_command]
+- Run linter: golangci-lint run ./... (Go projects) or ruff check . (Python projects)
 - Do NOT push, merge, or rebase
 - Close bead: bd close <id> --reason="summary"
 ```
