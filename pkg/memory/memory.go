@@ -20,12 +20,19 @@ import (
 
 // Store manages the memories table in SQLite.
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	embedder *Embedder
 }
 
 // NewStore creates a new Store backed by the given SQLite database.
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// SetEmbedder attaches an Embedder to the store. When set, Insert() computes
+// and stores TF-IDF embeddings, and HybridSearch() uses them for RRF scoring.
+func (s *Store) SetEmbedder(e *Embedder) {
+	s.embedder = e
 }
 
 // InsertParams holds parameters for inserting a new memory.
@@ -120,10 +127,19 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 	}
 
 	tags := tagsToJSON(m.Tags)
+
+	// Compute embedding if embedder is attached.
+	var embeddingBlob []byte
+	if s.embedder != nil {
+		if vec := s.embedder.Embed(m.Content); vec != nil {
+			embeddingBlob = MarshalEmbedding(vec)
+		}
+	}
+
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf,
+		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("memory insert: %w", err)
@@ -261,6 +277,191 @@ func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]Sc
 
 	sortByScoreDesc(results)
 	return results, nil
+}
+
+// rrfK is the smoothing constant for Reciprocal Rank Fusion.
+// k=60 is the standard starting point from the RRF paper (Cormack et al. 2009).
+const rrfK = 60.0
+
+// HybridSearch combines FTS5 text search with vector cosine similarity using
+// Reciprocal Rank Fusion (RRF). The combined score for each memory is:
+//
+//	RRF = 1/(k + textRank) + 1/(k + vectorRank)
+//
+// where textRank and vectorRank are 1-based positions in the FTS5 and cosine
+// similarity result lists respectively. Items appearing in only one list
+// receive a partial RRF score from that list alone.
+//
+// If no embedder is set, falls back to plain FTS5 Search().
+func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts) ([]ScoredMemory, error) {
+	if query == "" {
+		return nil, nil
+	}
+
+	// Phase 1: FTS5 text search (always available).
+	ftsResults, err := s.Search(ctx, query, SearchOpts{
+		Limit: maxHybridCandidates(opts.Limit),
+		Type:  opts.Type,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("hybrid fts search: %w", err)
+	}
+
+	// If no embedder, fall back to FTS5-only with original filtering.
+	if s.embedder == nil {
+		return applyFilters(ftsResults, opts), nil
+	}
+
+	// Phase 2: Vector similarity search.
+	queryVec := s.embedder.Embed(query)
+	vectorResults, vecErr := s.vectorSearch(ctx, queryVec, maxHybridCandidates(opts.Limit), opts.Type)
+	if vecErr != nil {
+		// Vector search failure is non-fatal; degrade gracefully to FTS-only.
+		return applyFilters(ftsResults, opts), nil //nolint:nilerr // intentional graceful degradation
+	}
+
+	// Phase 3: Fuse with RRF.
+	fused := fuseRRF(ftsResults, vectorResults)
+
+	return applyFilters(fused, opts), nil
+}
+
+// maxHybridCandidates returns the candidate pool size for each search phase.
+// We fetch more candidates than the final limit to give RRF a richer pool.
+func maxHybridCandidates(limit int) int {
+	if limit <= 0 {
+		limit = 10
+	}
+	n := limit * 3
+	if n < 20 {
+		n = 20
+	}
+	return n
+}
+
+// vectorSearch retrieves memories and ranks them by cosine similarity to queryVec.
+func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
+	if len(queryVec) == 0 {
+		return nil, nil
+	}
+
+	// Fetch all memories that have embeddings.
+	q := `SELECT id, content, type, tags, source,
+	       COALESCE(bead_id, '') AS bead_id,
+	       COALESCE(worker_id, '') AS worker_id,
+	       confidence, created_at, embedding,
+	       (julianday('now') - julianday(created_at)) AS age_days
+	FROM memories
+	WHERE embedding IS NOT NULL`
+
+	var args []any
+	if typeFilter != "" {
+		q += " AND type = ?"
+		args = append(args, typeFilter)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("vector search query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type scored struct {
+		sm  ScoredMemory
+		cos float64
+	}
+
+	var candidates []scored
+	for rows.Next() {
+		sm, err := scanScoredMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		vec := UnmarshalEmbedding(sm.Embedding)
+		if len(vec) == 0 {
+			continue
+		}
+		cos := CosineSimilarity(queryVec, vec)
+		candidates = append(candidates, scored{sm: sm, cos: cos})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("vector search rows: %w", err)
+	}
+
+	// Sort by cosine similarity descending.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].cos > candidates[j].cos
+	})
+
+	// Truncate to limit.
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+
+	results := make([]ScoredMemory, len(candidates))
+	for i, c := range candidates {
+		results[i] = c.sm
+		// Overwrite Score with cosine for later RRF ranking.
+		results[i].Score = c.cos
+	}
+	return results, nil
+}
+
+// fuseRRF merges FTS5 and vector result lists using Reciprocal Rank Fusion.
+// Each item's final score is: 1/(k+textRank) + 1/(k+vectorRank).
+// Items in only one list get a partial score.
+func fuseRRF(ftsResults, vectorResults []ScoredMemory) []ScoredMemory {
+	type entry struct {
+		sm         ScoredMemory
+		textRank   int
+		vectorRank int
+	}
+
+	byID := make(map[int64]*entry)
+
+	for rank, sm := range ftsResults {
+		byID[sm.ID] = &entry{sm: sm, textRank: rank + 1}
+	}
+
+	for rank, sm := range vectorResults {
+		if e, ok := byID[sm.ID]; ok {
+			e.vectorRank = rank + 1
+		} else {
+			byID[sm.ID] = &entry{sm: sm, vectorRank: rank + 1}
+		}
+	}
+
+	results := make([]ScoredMemory, 0, len(byID))
+	for _, e := range byID {
+		e.sm.Score = RRFScore(e.textRank, e.vectorRank, rrfK)
+		results = append(results, e.sm)
+	}
+
+	sortByScoreDesc(results)
+	return results
+}
+
+// applyFilters applies MinScore, Tags, and Limit filters to results.
+func applyFilters(results []ScoredMemory, opts SearchOpts) []ScoredMemory {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	var filtered []ScoredMemory
+	for _, r := range results {
+		if opts.MinScore > 0 && r.Score < opts.MinScore {
+			continue
+		}
+		if len(opts.Tags) > 0 && !anyTagMatch(tagsFromJSON(r.Tags), opts.Tags) {
+			continue
+		}
+		filtered = append(filtered, r)
+		if len(filtered) >= limit {
+			break
+		}
+	}
+	return filtered
 }
 
 // scanScoredMemory scans a single row from the search query into a ScoredMemory.
