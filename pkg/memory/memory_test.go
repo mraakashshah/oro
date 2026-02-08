@@ -860,3 +860,561 @@ func TestConsolidate_DryRun(t *testing.T) {
 		t.Errorf("expected memory to survive dry run, got %d memories", len(all))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Coverage-boosting tests for error paths, edge cases, and uncovered branches.
+// ---------------------------------------------------------------------------
+
+func TestTagsFromJSON_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int // expected length of result; 0 means nil
+	}{
+		{"empty string", "", 0},
+		{"invalid json", "not-json{{{", 0},
+		{"empty array", "[]", 0},
+		{"valid array", `["a","b"]`, 2},
+		{"number array", `[1,2,3]`, 0}, // json.Unmarshal into []string fails
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tagsFromJSON(tt.input)
+			if len(got) != tt.want {
+				t.Errorf("tagsFromJSON(%q) len = %d, want %d", tt.input, len(got), tt.want)
+			}
+		})
+	}
+}
+
+func TestTagsToJSON_EdgeCases(t *testing.T) {
+	// nil slice
+	if got := tagsToJSON(nil); got != "[]" {
+		t.Errorf("tagsToJSON(nil) = %q, want %q", got, "[]")
+	}
+	// empty slice
+	if got := tagsToJSON([]string{}); got != "[]" {
+		t.Errorf("tagsToJSON([]string{}) = %q, want %q", got, "[]")
+	}
+	// normal slice
+	got := tagsToJSON([]string{"a", "b"})
+	if got != `["a","b"]` {
+		t.Errorf("tagsToJSON([a,b]) = %q, want %q", got, `["a","b"]`)
+	}
+}
+
+func TestEstimateTokens_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{"empty string", "", 0},
+		{"one char", "x", 1},
+		{"three chars", "abc", 1},
+		{"four chars", "abcd", 1},
+		{"eight chars", "abcdefgh", 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := estimateTokens(tt.input)
+			if got != tt.want {
+				t.Errorf("estimateTokens(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatAge_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"full datetime", "2025-01-15 10:30:00", "2025-01-15"},
+		{"date only", "2025-01-15", "2025-01-15"},
+		{"short string", "2025", "2025"},
+		{"empty", "", ""},
+		{"exactly 10 chars", "2025-01-15", "2025-01-15"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatAge(tt.input)
+			if got != tt.want {
+				t.Errorf("formatAge(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSearch_EmptyQuery(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	results, err := store.Search(ctx, "", SearchOpts{})
+	if err != nil {
+		t.Fatalf("search empty query: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil for empty query, got %v", results)
+	}
+}
+
+func TestSearch_MinScoreFilter(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "unique xyzzy123 frobnicator", Type: "lesson",
+		Source: "self_report", Confidence: 0.1,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Search with high min score — low-confidence memory should be filtered
+	results, err := store.Search(ctx, "xyzzy123", SearchOpts{MinScore: 0.99})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results with high min score, got %d", len(results))
+	}
+}
+
+func TestSearch_DefaultLimit(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "unique_keyword_for_default_limit test", Type: "lesson",
+		Source: "self_report", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Limit <= 0 should use default of 10
+	results, err := store.Search(ctx, "unique_keyword_for_default_limit", SearchOpts{Limit: 0})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results))
+	}
+}
+
+func TestDelete_ClosedDB(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	_ = db.Close()
+
+	err := store.Delete(context.Background(), 1)
+	if err == nil {
+		t.Error("expected error from Delete on closed DB")
+	}
+	if !strings.Contains(err.Error(), "memory delete") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestUpdateConfidence_ClosedDB(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	_ = db.Close()
+
+	err := store.UpdateConfidence(context.Background(), 1, 0.5)
+	if err == nil {
+		t.Error("expected error from UpdateConfidence on closed DB")
+	}
+	if !strings.Contains(err.Error(), "memory update confidence") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestInsert_ClosedDB(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	_ = db.Close()
+
+	_, err := store.Insert(context.Background(), InsertParams{
+		Content: "test", Type: "lesson",
+		Source: "self_report", Confidence: 0.8,
+	})
+	if err == nil {
+		t.Error("expected error from Insert on closed DB")
+	}
+}
+
+func TestInsert_DefaultConfidence(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "unique_default_conf_kw memory", Type: "lesson",
+		Source: "self_report", Confidence: 0, // should default to 0.8
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	all, err := store.List(ctx, ListOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(all))
+	}
+	if all[0].Confidence < 0.79 || all[0].Confidence > 0.81 {
+		t.Errorf("expected default confidence ~0.8, got %f", all[0].Confidence)
+	}
+}
+
+func TestList_ClosedDB(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	_ = db.Close()
+
+	_, err := store.List(context.Background(), ListOpts{})
+	if err == nil {
+		t.Error("expected error from List on closed DB")
+	}
+	if !strings.Contains(err.Error(), "memory list") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestSearch_ClosedDB(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	_ = db.Close()
+
+	_, err := store.Search(context.Background(), "test", SearchOpts{})
+	if err == nil {
+		t.Error("expected error from Search on closed DB")
+	}
+	if !strings.Contains(err.Error(), "memory search") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestForPrompt_EmptyDescription(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	result, err := ForPrompt(ctx, store, nil, "", 500)
+	if err != nil {
+		t.Fatalf("for prompt: %v", err)
+	}
+	if result != "" {
+		t.Errorf("expected empty string for empty description, got: %q", result)
+	}
+}
+
+func TestForPrompt_DefaultTokenBudget(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "unique_token_budget_kw fact", Type: "lesson",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// maxTokens <= 0 should use defaultTokenBudget (500)
+	result, err := ForPrompt(ctx, store, nil, "unique_token_budget_kw", 0)
+	if err != nil {
+		t.Fatalf("for prompt: %v", err)
+	}
+	if !strings.Contains(result, "unique_token_budget_kw") {
+		t.Error("expected memory in prompt output with default token budget")
+	}
+}
+
+func TestConsolidate_DefaultOpts(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a fresh memory that should survive with default thresholds
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "unique_consolidate_default memory", Type: "lesson",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Call with zero thresholds to test defaults
+	merged, pruned, err := Consolidate(ctx, store, ConsolidateOpts{})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+
+	// With a single fresh high-confidence memory, nothing should be pruned or merged
+	if pruned != 0 {
+		t.Errorf("expected 0 pruned, got %d", pruned)
+	}
+	if merged != 0 {
+		t.Errorf("expected 0 merged, got %d", merged)
+	}
+}
+
+func TestConsolidate_PruneErrorPath(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	_ = db.Close()
+
+	_, _, err := Consolidate(context.Background(), store, ConsolidateOpts{})
+	if err == nil {
+		t.Error("expected error from Consolidate on closed DB")
+	}
+	if !strings.Contains(err.Error(), "consolidate prune") {
+		t.Errorf("expected prune error, got: %v", err)
+	}
+}
+
+func TestMergePair_ErrorPaths(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	a := protocol.Memory{ID: 1, Content: "a", Confidence: 0.5}
+	b := protocol.Memory{ID: 2, Content: "b", Confidence: 0.9}
+
+	// Close the DB so UpdateConfidence fails inside mergePair
+	_ = db.Close()
+
+	err := mergePair(ctx, store, a, b)
+	if err == nil {
+		t.Error("expected error from mergePair with closed DB")
+	}
+	if !strings.Contains(err.Error(), "merge update confidence") {
+		t.Errorf("expected 'merge update confidence' error, got: %v", err)
+	}
+}
+
+func TestMergePair_DeleteErrorPath(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert two memories so UpdateConfidence succeeds
+	id1, err := store.Insert(ctx, InsertParams{
+		Content: "unique_merge_delete_a xyzzy", Type: "lesson",
+		Source: "self_report", Confidence: 0.5,
+	})
+	if err != nil {
+		t.Fatalf("insert a: %v", err)
+	}
+	id2, err := store.Insert(ctx, InsertParams{
+		Content: "unique_merge_delete_b frobnicator", Type: "lesson",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert b: %v", err)
+	}
+
+	a := protocol.Memory{ID: id1, Content: "a", Confidence: 0.5}
+	b := protocol.Memory{ID: id2, Content: "b", Confidence: 0.9}
+
+	// Merge should succeed with a valid DB
+	err = mergePair(ctx, store, a, b)
+	if err != nil {
+		t.Fatalf("mergePair should succeed: %v", err)
+	}
+
+	// Verify: the lower-confidence memory (a, id1) should be deleted
+	all, err := store.List(ctx, ListOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 memory after merge, got %d", len(all))
+	}
+}
+
+func TestMergePair_KeepHigherConfidence(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	id1, err := store.Insert(ctx, InsertParams{
+		Content: "merge_keep_higher_a unique123", Type: "lesson",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert a: %v", err)
+	}
+	id2, err := store.Insert(ctx, InsertParams{
+		Content: "merge_keep_higher_b unique456", Type: "lesson",
+		Source: "self_report", Confidence: 0.3,
+	})
+	if err != nil {
+		t.Fatalf("insert b: %v", err)
+	}
+
+	// a has higher confidence, so b should be removed
+	a := protocol.Memory{ID: id1, Content: "a", Confidence: 0.9}
+	b := protocol.Memory{ID: id2, Content: "b", Confidence: 0.3}
+
+	err = mergePair(ctx, store, a, b)
+	if err != nil {
+		t.Fatalf("mergePair: %v", err)
+	}
+
+	all, err := store.List(ctx, ListOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(all))
+	}
+	if all[0].ID != id1 {
+		t.Errorf("expected keeper id=%d, got id=%d", id1, all[0].ID)
+	}
+}
+
+func TestSanitizeFTS5Query_EmptyAndSpecialChars(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"single word", "hello", `"hello"`},
+		{"strips quotes", `he"llo wo"rld`, `"hello" OR "world"`},
+		{"multiple words", "hello world", `"hello" OR "world"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeFTS5Query(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeFTS5Query(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListSQL_WithTagFilter(t *testing.T) {
+	// Exercise the tag-filtering branch in listSQL
+	q, args := listSQL(ListOpts{Tag: "python", Type: "lesson", Limit: 5, Offset: 10}, 5)
+	if !strings.Contains(q, "WHERE") {
+		t.Error("expected WHERE clause in query")
+	}
+	if !strings.Contains(q, "type = ?") {
+		t.Error("expected type filter in query")
+	}
+	if !strings.Contains(q, "tags LIKE ?") {
+		t.Error("expected tags LIKE filter in query")
+	}
+	// args: type, tag-like-pattern, limit, offset
+	if len(args) != 4 {
+		t.Errorf("expected 4 args, got %d", len(args))
+	}
+}
+
+func TestExtractMarkers_NoMarkers(t *testing.T) {
+	input := "just some output\nnothing interesting\n"
+	reader := strings.NewReader(input)
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	count, err := ExtractMarkers(ctx, reader, store, "w1", "b1")
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 extracted markers, got %d", count)
+	}
+}
+
+func TestForPrompt_SearchError(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	_ = db.Close()
+
+	_, err := ForPrompt(context.Background(), store, nil, "test query", 500)
+	if err == nil {
+		t.Error("expected error from ForPrompt on closed DB")
+	}
+	if !strings.Contains(err.Error(), "for prompt search") {
+		t.Errorf("expected 'for prompt search' error, got: %v", err)
+	}
+}
+
+func TestList_WithTagFilter(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "tag filtered memory zephyr", Type: "lesson",
+		Tags: []string{"python"}, Source: "self_report", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, err = store.Insert(ctx, InsertParams{
+		Content: "unrelated memory aether", Type: "gotcha",
+		Tags: []string{"go"}, Source: "self_report", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	results, err := store.List(ctx, ListOpts{Tag: "python"})
+	if err != nil {
+		t.Fatalf("list with tag: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for tag filter, got %d", len(results))
+	}
+}
+
+func TestConsolidate_MergeErrorPath(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert two similar memories to trigger merge
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"merge error path unique_xyzzy1234 test content", "gotcha", `[]`, "self_report", 0.7,
+	)
+	if err != nil {
+		t.Fatalf("insert 1: %v", err)
+	}
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"merge error path unique_xyzzy1234 test content slightly different", "gotcha", `[]`, "self_report", 0.9,
+	)
+	if err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+
+	// Consolidate with DryRun to test the merge-counting path without errors
+	merged, _, err := Consolidate(ctx, store, ConsolidateOpts{
+		SimilarityThreshold: 0.01,
+		MinDecayedScore:     0.001,
+		DryRun:              true,
+	})
+	if err != nil {
+		t.Fatalf("consolidate dry run: %v", err)
+	}
+	if merged == 0 {
+		t.Error("expected at least one merge candidate counted in dry run")
+	}
+}
