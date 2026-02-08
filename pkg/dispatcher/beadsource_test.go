@@ -1,0 +1,239 @@
+package dispatcher //nolint:testpackage // white-box tests for CLIBeadSource
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"testing"
+)
+
+// --- Mock CommandRunner ---
+
+// mockCommandRunner records calls and returns pre-configured output or errors.
+type mockCommandRunner struct {
+	calls  []mockCall
+	output []byte
+	err    error
+	// callFn, if set, overrides output/err based on the call.
+	callFn func(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+type mockCall struct {
+	Name string
+	Args []string
+}
+
+func (m *mockCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	m.calls = append(m.calls, mockCall{Name: name, Args: args})
+	if m.callFn != nil {
+		return m.callFn(ctx, name, args...)
+	}
+	return m.output, m.err
+}
+
+// --- Tests ---
+
+func TestCLIBeadSource_Ready_ParsesJSON(t *testing.T) {
+	beads := []Bead{
+		{ID: "abc.1", Title: "Implement widget", Priority: 1},
+		{ID: "def.2", Title: "Fix bug", Priority: 2},
+	}
+	data, err := json.Marshal(beads)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	runner := &mockCommandRunner{output: data}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Ready(context.Background())
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 beads, got %d", len(got))
+	}
+	if got[0].ID != "abc.1" {
+		t.Errorf("bead[0].ID: got %q, want %q", got[0].ID, "abc.1")
+	}
+	if got[1].Title != "Fix bug" {
+		t.Errorf("bead[1].Title: got %q, want %q", got[1].Title, "Fix bug")
+	}
+
+	// Verify the correct command was called.
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.Name != "bd" {
+		t.Errorf("command name: got %q, want %q", call.Name, "bd")
+	}
+	// Should include "ready" and "--json" in args.
+	if !sliceContains(call.Args, "ready") {
+		t.Errorf("expected 'ready' in args, got %v", call.Args)
+	}
+	if !sliceContains(call.Args, "--json") {
+		t.Errorf("expected '--json' in args, got %v", call.Args)
+	}
+}
+
+func TestCLIBeadSource_Ready_EmptyList(t *testing.T) {
+	runner := &mockCommandRunner{output: []byte("[]")}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Ready(context.Background())
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 beads, got %d", len(got))
+	}
+}
+
+func TestCLIBeadSource_Ready_CommandError(t *testing.T) {
+	runner := &mockCommandRunner{err: fmt.Errorf("bd not found")}
+	src := NewCLIBeadSource(runner)
+
+	_, err := src.Ready(context.Background())
+	if err == nil {
+		t.Fatal("expected error from Ready when command fails")
+	}
+}
+
+func TestCLIBeadSource_Ready_InvalidJSON(t *testing.T) {
+	runner := &mockCommandRunner{output: []byte("not json")}
+	src := NewCLIBeadSource(runner)
+
+	_, err := src.Ready(context.Background())
+	if err == nil {
+		t.Fatal("expected error from Ready when output is invalid JSON")
+	}
+}
+
+func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
+	detail := BeadDetail{
+		ID:                 "abc.1",
+		Title:              "Implement widget",
+		AcceptanceCriteria: "Widget renders correctly",
+	}
+	data, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	runner := &mockCommandRunner{output: data}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Show(context.Background(), "abc.1")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.ID != "abc.1" {
+		t.Errorf("ID: got %q, want %q", got.ID, "abc.1")
+	}
+	if got.Title != "Implement widget" {
+		t.Errorf("Title: got %q, want %q", got.Title, "Implement widget")
+	}
+	if got.AcceptanceCriteria != "Widget renders correctly" {
+		t.Errorf("AcceptanceCriteria: got %q, want %q", got.AcceptanceCriteria, "Widget renders correctly")
+	}
+
+	// Verify correct command.
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.Name != "bd" {
+		t.Errorf("command name: got %q, want %q", call.Name, "bd")
+	}
+	if !sliceContains(call.Args, "show") {
+		t.Errorf("expected 'show' in args, got %v", call.Args)
+	}
+	if !sliceContains(call.Args, "abc.1") {
+		t.Errorf("expected 'abc.1' in args, got %v", call.Args)
+	}
+	if !sliceContains(call.Args, "--json") {
+		t.Errorf("expected '--json' in args, got %v", call.Args)
+	}
+}
+
+func TestCLIBeadSource_Show_CommandError(t *testing.T) {
+	runner := &mockCommandRunner{err: fmt.Errorf("bead not found")}
+	src := NewCLIBeadSource(runner)
+
+	_, err := src.Show(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error from Show when command fails")
+	}
+}
+
+func TestCLIBeadSource_Show_InvalidJSON(t *testing.T) {
+	runner := &mockCommandRunner{output: []byte("not json")}
+	src := NewCLIBeadSource(runner)
+
+	_, err := src.Show(context.Background(), "abc.1")
+	if err == nil {
+		t.Fatal("expected error from Show when output is invalid JSON")
+	}
+}
+
+func TestCLIBeadSource_Close_Success(t *testing.T) {
+	runner := &mockCommandRunner{output: []byte("")}
+	src := NewCLIBeadSource(runner)
+
+	err := src.Close(context.Background(), "abc.1", "Completed successfully")
+	if err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Verify correct command.
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.Name != "bd" {
+		t.Errorf("command name: got %q, want %q", call.Name, "bd")
+	}
+	if !sliceContains(call.Args, "close") {
+		t.Errorf("expected 'close' in args, got %v", call.Args)
+	}
+	if !sliceContains(call.Args, "abc.1") {
+		t.Errorf("expected 'abc.1' in args, got %v", call.Args)
+	}
+	// Should include --reason flag with the reason.
+	foundReason := false
+	for _, arg := range call.Args {
+		if arg == `--reason=Completed successfully` {
+			foundReason = true
+			break
+		}
+	}
+	if !foundReason {
+		t.Errorf("expected '--reason=Completed successfully' in args, got %v", call.Args)
+	}
+}
+
+func TestCLIBeadSource_Close_CommandError(t *testing.T) {
+	runner := &mockCommandRunner{err: fmt.Errorf("close failed")}
+	src := NewCLIBeadSource(runner)
+
+	err := src.Close(context.Background(), "abc.1", "Done")
+	if err == nil {
+		t.Fatal("expected error from Close when command fails")
+	}
+}
+
+func TestCLIBeadSource_ImplementsBeadSource(t *testing.T) {
+	// Compile-time check that CLIBeadSource implements BeadSource.
+	var _ BeadSource = (*CLIBeadSource)(nil)
+}
+
+// sliceContains checks if a string slice contains a given string.
+func sliceContains(s []string, target string) bool {
+	for _, v := range s {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
