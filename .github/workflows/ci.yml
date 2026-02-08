@@ -133,6 +133,4 @@ jobs:
 
       # Tier 4: Testing
       - name: pytest
-        run: |
-          uv sync
-          uv run pytest
+        run: uvx pytest
