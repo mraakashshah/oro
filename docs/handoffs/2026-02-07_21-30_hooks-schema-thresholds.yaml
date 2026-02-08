@@ -1,0 +1,76 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Landed 4 beads (3 hooks + SQLite schema DDL) plus model-aware context thresholds
+now: Pick up oro-bya (SQLite row types) — next on critical path after oro-q63
+
+test: go test ./... && uv run pytest
+
+done_this_session:
+  - task: "oro-rez: LEARNED memory capture PostToolUse hook"
+    files: [.claude/hooks/memory_capture.py, tests/test_memory_capture.py]
+    notes: "bd comment <id> 'LEARNED: ...' writes to .beads/memory/knowledge.jsonl with auto-tagging, dedup, recall()"
+  - task: "oro-06v: SubagentStop validation PostToolUse hook"
+    files: [.claude/hooks/validate_agent_completion.py, tests/test_validate_agent_completion.py]
+    notes: "Warns (fail-open) if agent leaves dirty worktree, unpushed branch, or unclosed bead"
+  - task: "oro-a9r: Session-start extras"
+    files: [.claude/hooks/session_start_extras.py, tests/test_session_start_extras.py]
+    notes: "Stale bead detection, merged worktree cleanup suggestions, recent LEARNED entries"
+  - task: "oro-q63: SQLite schema DDL"
+    files: [pkg/protocol/schema.go, pkg/protocol/schema_test.go, go.mod, go.sum]
+    notes: "5 tables: events, assignments, commands, memories, memories_fts (FTS5). Triggers for FTS sync. modernc.org/sqlite added."
+  - task: "Model-aware context thresholds"
+    files: [.claude/hooks/inject_context_usage.py, tests/test_inject_context_usage.py, .claude/skills/context-checkpoint/SKILL.md]
+    notes: "detect_model() from transcript. Opus 45/60, Sonnet —/45, Haiku —/35. Removed pair-counting from checkpoint skill."
+  - task: "Wired all new hooks into settings.json"
+    files: [.claude/settings.json]
+
+blockers: []
+
+questions: []
+
+decisions:
+  - inspired_by_claude_protocol: "Reviewed github.com/AvivK5498/The-Claude-Protocol. Took LEARNED capture pattern, SubagentStop validation, session-start improvements. Skipped their clarify-vague-request hook and npm packaging."
+  - context_thresholds_model_aware: "Old thresholds (30/40%) too aggressive. New thresholds based on actual model capacity. Pair-counting removed — token-based hook is the single source of truth."
+
+worked:
+  - "TDD in worktrees for solo beads (oro-rez, oro-q63)"
+  - "Parallel agents for independent beads (oro-06v + oro-a9r dispatched simultaneously)"
+  - "importlib pattern for testing Python hooks that aren't packages"
+
+failed:
+  - "Chaining git rebase+merge for multiple branches in one command — killed bash tool twice"
+  - "Removing worktree while shell cwd was inside/related to it — corrupts bash tool state"
+
+next:
+  - "oro-jlz [P0]: Investigate bash tool death after worktree removal — reproduce and add safeguard"
+  - "oro-bya [P2]: SQLite row types (Go structs for each table) — depends on oro-q63 (done)"
+  - "oro-v6f [P2]: Integration test — schema + types against real SQLite — depends on oro-bya"
+  - "oro-68t [P2]: Merge coordinator — independent, can parallel with row types"
+
+files:
+  created:
+    - .claude/hooks/memory_capture.py
+    - .claude/hooks/validate_agent_completion.py
+    - .claude/hooks/session_start_extras.py
+    - pkg/protocol/schema.go
+    - pkg/protocol/schema_test.go
+    - go.sum
+    - tests/test_memory_capture.py
+    - tests/test_validate_agent_completion.py
+    - tests/test_session_start_extras.py
+    - .beads/memory/knowledge.jsonl
+    - docs/handoffs/2026-02-07_21-30_hooks-schema-thresholds.yaml
+  modified:
+    - .claude/hooks/inject_context_usage.py
+    - .claude/settings.json
+    - .claude/skills/context-checkpoint/SKILL.md
+    - go.mod
+    - tests/test_inject_context_usage.py
+
+beads:
+  completed: [oro-rez, oro-06v, oro-a9r, oro-q63]
+  in_progress: []
+  remaining: [oro-jlz, oro-bya, oro-v6f, oro-68t, oro-01h, oro-2md]
