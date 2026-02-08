@@ -1,0 +1,79 @@
+---
+date: 2026-02-08
+status: complete
+---
+
+goal: >
+  Completed the graceful shutdown epic (oro-489) and the model field
+  feature (oro-wn2). All 5 children of oro-489 are now closed.
+  Also added -p 2 parallelism limit to reduce CPU pressure during tests.
+
+now: >
+  1. Check bd ready for next available work (oro-nqi TUI dashboard is the main remaining epic).
+  2. The model field is in the oro data model but bd CLI (external) does not yet
+     support --model flag on bd create / bd show. If that's needed, implement it
+     in the beads CLI repo.
+
+test: go test -race -p 2 ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "oro-489.3: Remove active worktrees on dispatcher shutdown"
+    files:
+      - pkg/dispatcher/dispatcher.go (shutdownCleanup collects worktree paths, calls Remove)
+      - pkg/dispatcher/dispatcher_test.go (TestDispatcherShutdownWorktreeCleanup)
+    details: >
+      shutdownCleanup() now collects non-empty worktree paths from d.workers
+      under lock, then calls d.worktrees.Remove() best-effort with logging.
+
+  - task: "oro-wn2: Add model field to beads"
+    files:
+      - pkg/dispatcher/dispatcher.go (Bead.Model, BeadDetail.Model, DefaultModel const, ResolveModel method)
+      - pkg/protocol/message.go (AssignPayload.Model field)
+      - pkg/worker/worker.go (SubprocessSpawner interface adds model param, ClaudeSpawner passes --model)
+      - pkg/dispatcher/beadsource_test.go (model JSON parsing tests, ResolveModel tests)
+      - pkg/dispatcher/dispatcher_test.go (TestDispatcher_AssignBead_ModelPropagation, TestDispatcher_AssignBead_DefaultModel)
+      - pkg/worker/worker_test.go (mockSpawner updated with model param)
+    details: >
+      Model flows: bd ready JSON -> Bead.Model -> Bead.ResolveModel() ->
+      AssignPayload.Model -> worker handleAssign -> ClaudeSpawner --model flag.
+      Default is claude-opus-4-6 when omitted.
+
+  - task: "Fix race in slowProcess.Kill() test mock"
+    files: [pkg/dispatcher/dispatcher_test.go]
+    details: >
+      Replaced select-based double-close guard with sync.Once to prevent
+      panic from concurrent Kill() calls during shutdown tests.
+
+  - task: "Limit test parallelism to -p 2"
+    files: [Makefile, quality_gate.sh]
+
+  - task: "Remove stale oro binary from repo root"
+    details: 13MB untracked Mach-O executable deleted
+
+decisions:
+  - default_model_opus: >
+      DefaultModel is claude-opus-4-6. Bead.ResolveModel() returns this
+      when Model field is empty. Worker handleAssign also has a fallback.
+  - spawner_interface_change: >
+      Added model as second param to worker.SubprocessSpawner.Spawn()
+      (after ctx, before prompt). Breaking change to interface but all
+      callers updated in same commit.
+  - p2_parallelism: >
+      -p 2 limits packages tested in parallel. Cuts peak CPU ~50% with
+      minimal wall-clock impact (~15s vs ~9s).
+
+findings:
+  - slowprocess_race: >
+      The select{case <-ch: default: close(ch)} pattern is NOT safe
+      for concurrent close — two goroutines can both enter default.
+      Use sync.Once instead.
+
+beads:
+  completed: [oro-489, oro-489.3, oro-wn2]
+  in_progress: []
+  remaining: []
+
+next:
+  - Check bd ready for next work items
+  - oro-nqi (TUI dashboard) is the main remaining epic if desired
+  - Consider implementing --model flag in beads CLI if needed
