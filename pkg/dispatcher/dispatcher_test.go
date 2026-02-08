@@ -450,6 +450,61 @@ func TestDispatcher_AssignBead(t *testing.T) {
 	waitForWorkerState(t, d, "w1", WorkerBusy, 1*time.Second)
 }
 
+func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Assign bead with explicit sonnet model
+	beadSrc.SetBeads([]Bead{{
+		ID: "bead-model", Title: "Model test", Priority: 1,
+		Model: "claude-sonnet-4-5-20250929",
+	}})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Assign.Model != "claude-sonnet-4-5-20250929" {
+		t.Fatalf("expected model claude-sonnet-4-5-20250929, got %q", msg.Assign.Model)
+	}
+}
+
+func TestDispatcher_AssignBead_DefaultModel(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Assign bead with no model — should default to opus
+	beadSrc.SetBeads([]Bead{{ID: "bead-default", Title: "Default model", Priority: 1}})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Assign.Model != DefaultModel {
+		t.Fatalf("expected default model %q, got %q", DefaultModel, msg.Assign.Model)
+	}
+}
+
 func TestDispatcher_WorkerDone_MergesClean(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -2096,8 +2151,9 @@ func TestAssignBeadCleansUpOnFailure(t *testing.T) {
 // --- Slow process for shutdown tests ---
 
 type slowProcess struct {
-	waitCh chan struct{}
-	killed atomic.Bool
+	waitCh    chan struct{}
+	killed    atomic.Bool
+	closeOnce sync.Once
 }
 
 func (p *slowProcess) Wait() error {
@@ -2107,11 +2163,7 @@ func (p *slowProcess) Wait() error {
 
 func (p *slowProcess) Kill() error {
 	p.killed.Store(true)
-	select {
-	case <-p.waitCh:
-	default:
-		close(p.waitCh)
-	}
+	p.closeOnce.Do(func() { close(p.waitCh) })
 	return nil
 }
 
@@ -2217,6 +2269,87 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 		if !p.killed.Load() {
 			t.Errorf("process %d was not killed during shutdown", i)
 		}
+	}
+}
+
+func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
+	db := newTestDB(t)
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+
+	spawner := ops.NewSpawner(&mockSubprocessSpawner{})
+	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	cfg := Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		MaxWorkers:       5,
+		HeartbeatTimeout: 500 * time.Millisecond,
+		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  500 * time.Millisecond,
+	}
+
+	d := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc)
+	cancel := startDispatcher(t, d)
+
+	// Connect two workers
+	conn1, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w2", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 2, 1*time.Second)
+
+	// Start and assign two beads (creates worktrees)
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-wt-1", Title: "WT cleanup 1", Priority: 1},
+		{ID: "bead-wt-2", Title: "WT cleanup 2", Priority: 2},
+	})
+
+	// Consume ASSIGN messages
+	if _, ok := readMsg(t, conn1, 2*time.Second); !ok {
+		t.Fatal("expected ASSIGN for w1")
+	}
+	if _, ok := readMsg(t, conn2, 2*time.Second); !ok {
+		t.Fatal("expected ASSIGN for w2")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Trigger shutdown
+	cancel()
+
+	// Wait for worktrees to be removed
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		wtMgr.mu.Lock()
+		n := len(wtMgr.removed)
+		wtMgr.mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	wtMgr.mu.Lock()
+	removed := make([]string, len(wtMgr.removed))
+	copy(removed, wtMgr.removed)
+	wtMgr.mu.Unlock()
+
+	if len(removed) < 2 {
+		t.Fatalf("expected at least 2 worktrees removed, got %d: %v", len(removed), removed)
 	}
 }
 

@@ -46,6 +46,7 @@ type Bead struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
 	Priority int    `json:"priority"`
+	Model    string `json:"model,omitempty"` // claude model override; default "claude-opus-4-6"
 }
 
 // BeadDetail holds extended information about a single bead.
@@ -53,6 +54,18 @@ type BeadDetail struct {
 	ID                 string `json:"id"`
 	Title              string `json:"title"`
 	AcceptanceCriteria string `json:"acceptance_criteria"`
+	Model              string `json:"model,omitempty"`
+}
+
+// DefaultModel is used when a bead has no explicit model set.
+const DefaultModel = "claude-opus-4-6"
+
+// ResolveModel returns the bead's model or DefaultModel if empty.
+func (b Bead) ResolveModel() string {
+	if b.Model != "" {
+		return b.Model
+	}
+	return DefaultModel
 }
 
 // --- Interfaces for testability ---
@@ -785,6 +798,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 		Assign: &protocol.AssignPayload{
 			BeadID:        bead.ID,
 			Worktree:      worktree,
+			Model:         bead.ResolveModel(),
 			MemoryContext: memCtx,
 		},
 	})
@@ -977,7 +991,8 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 	return nil
 }
 
-// shutdownCleanup cancels active ops agents and aborts in-flight merges.
+// shutdownCleanup cancels active ops agents, aborts in-flight merges,
+// and removes active worktrees.
 func (d *Dispatcher) shutdownCleanup() {
 	for _, taskID := range d.ops.Active() {
 		if err := d.ops.Cancel(taskID); err == nil {
@@ -985,6 +1000,26 @@ func (d *Dispatcher) shutdownCleanup() {
 		}
 	}
 	d.merger.Abort()
+
+	// Collect worktree paths under lock.
+	d.mu.Lock()
+	var paths []string
+	for _, w := range d.workers {
+		if w.worktree != "" {
+			paths = append(paths, w.worktree)
+		}
+	}
+	d.mu.Unlock()
+
+	// Remove worktrees best-effort (don't block shutdown).
+	ctx := context.Background()
+	for _, p := range paths {
+		if err := d.worktrees.Remove(ctx, p); err != nil {
+			_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", "", "", err.Error())
+		} else {
+			_ = d.logEvent(ctx, "worktree_removed", "dispatcher", "", "", p)
+		}
+	}
 }
 
 // ConnectedWorkers returns the number of currently connected workers.

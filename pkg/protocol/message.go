@@ -46,6 +46,7 @@ type Message struct {
 type AssignPayload struct {
 	BeadID        string `json:"bead_id"`
 	Worktree      string `json:"worktree"`
+	Model         string `json:"model,omitempty"`
 	MemoryContext string `json:"memory_context,omitempty"`
 }
 

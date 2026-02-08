@@ -69,6 +69,7 @@ type mockSpawner struct {
 }
 
 type spawnCall struct {
+	Model   string
 	Prompt  string
 	Workdir string
 }
@@ -77,10 +78,10 @@ func newMockSpawner() *mockSpawner {
 	return &mockSpawner{process: newMockProcess()}
 }
 
-func (s *mockSpawner) Spawn(_ context.Context, prompt, workdir string) (worker.Process, io.ReadCloser, error) {
+func (s *mockSpawner) Spawn(_ context.Context, model, prompt, workdir string) (worker.Process, io.ReadCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, spawnCall{Prompt: prompt, Workdir: workdir})
+	s.calls = append(s.calls, spawnCall{Model: model, Prompt: prompt, Workdir: workdir})
 	if s.spawnErr != nil {
 		return nil, nil, s.spawnErr
 	}
@@ -1960,7 +1961,7 @@ type connClosingSpawner struct {
 	connToClose net.Conn
 }
 
-func (s *connClosingSpawner) Spawn(_ context.Context, _, _ string) (worker.Process, io.ReadCloser, error) {
+func (s *connClosingSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, io.ReadCloser, error) {
 	// Close the connection so the next write (SendStatus) will fail
 	_ = s.connToClose.Close()
 	return s.process, nil, nil

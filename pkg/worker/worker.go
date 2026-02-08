@@ -24,7 +24,7 @@ import (
 // SubprocessSpawner abstracts claude -p invocation for testing.
 // Spawn returns the process, a reader for its stdout (may be nil), and any error.
 type SubprocessSpawner interface {
-	Spawn(ctx context.Context, prompt string, workdir string) (Process, io.ReadCloser, error)
+	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, io.ReadCloser, error)
 }
 
 // Process abstracts a running subprocess.
@@ -235,7 +235,11 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.mu.Unlock()
 
 	prompt := BuildPrompt(msg.Assign.BeadID, msg.Assign.Worktree, msg.Assign.MemoryContext)
-	proc, stdout, err := w.spawner.Spawn(ctx, prompt, msg.Assign.Worktree)
+	model := msg.Assign.Model
+	if model == "" {
+		model = "claude-opus-4-6"
+	}
+	proc, stdout, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
 	}
@@ -628,8 +632,8 @@ type ClaudeSpawner struct{}
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.
 // Returns the process and a ReadCloser for its stdout stream.
-func (s *ClaudeSpawner) Spawn(ctx context.Context, prompt, workdir string) (Process, io.ReadCloser, error) {
-	cmd := exec.CommandContext(ctx, "claude", "-p", prompt)
+func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, io.ReadCloser, error) {
+	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", model)
 	cmd.Dir = workdir
 	cmd.Stderr = os.Stderr
 

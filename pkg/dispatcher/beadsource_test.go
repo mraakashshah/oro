@@ -77,6 +77,59 @@ func TestCLIBeadSource_Ready_ParsesJSON(t *testing.T) {
 	}
 }
 
+func TestCLIBeadSource_Ready_ParsesModelField(t *testing.T) {
+	beads := []Bead{
+		{ID: "abc.1", Title: "Opus task", Priority: 1, Model: "claude-opus-4-6"},
+		{ID: "def.2", Title: "Sonnet task", Priority: 2, Model: "claude-sonnet-4-5-20250929"},
+		{ID: "ghi.3", Title: "Default task", Priority: 3}, // no model
+	}
+	data, err := json.Marshal(beads)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	runner := &mockCommandRunner{output: data}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Ready(context.Background())
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if got[0].Model != "claude-opus-4-6" {
+		t.Errorf("bead[0].Model: got %q, want %q", got[0].Model, "claude-opus-4-6")
+	}
+	if got[1].Model != "claude-sonnet-4-5-20250929" {
+		t.Errorf("bead[1].Model: got %q, want %q", got[1].Model, "claude-sonnet-4-5-20250929")
+	}
+	if got[2].Model != "" {
+		t.Errorf("bead[2].Model: got %q, want empty", got[2].Model)
+	}
+}
+
+func TestCLIBeadSource_Show_ParsesModelField(t *testing.T) {
+	detail := BeadDetail{
+		ID:                 "abc.1",
+		Title:              "Sonnet task",
+		AcceptanceCriteria: "Widget renders",
+		Model:              "claude-sonnet-4-5-20250929",
+	}
+	data, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	runner := &mockCommandRunner{output: data}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Show(context.Background(), "abc.1")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.Model != "claude-sonnet-4-5-20250929" {
+		t.Errorf("Model: got %q, want %q", got.Model, "claude-sonnet-4-5-20250929")
+	}
+}
+
 func TestCLIBeadSource_Ready_EmptyList(t *testing.T) {
 	runner := &mockCommandRunner{output: []byte("[]")}
 	src := NewCLIBeadSource(runner)
@@ -220,6 +273,26 @@ func TestCLIBeadSource_Close_CommandError(t *testing.T) {
 	err := src.Close(context.Background(), "abc.1", "Done")
 	if err == nil {
 		t.Fatal("expected error from Close when command fails")
+	}
+}
+
+func TestBead_ResolveModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		want  string
+	}{
+		{"empty defaults to opus", "", DefaultModel},
+		{"explicit sonnet", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929"},
+		{"explicit opus", "claude-opus-4-6", "claude-opus-4-6"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := Bead{ID: "test", Model: tt.model}
+			if got := b.ResolveModel(); got != tt.want {
+				t.Errorf("ResolveModel() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
