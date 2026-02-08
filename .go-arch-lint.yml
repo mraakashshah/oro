@@ -23,6 +23,10 @@ deps:
     mayDependOn:
       - internal
       - pkg
+    deepScan:
+      mayDependOn:
+        - internal
+        - pkg
   pkg:
     mayDependOn:
       - pkg

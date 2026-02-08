@@ -1,4 +1,7 @@
-package main
+// Package runners provides production implementations of the interfaces
+// defined in pkg/dispatcher, pkg/merge, and pkg/ops. These are os/exec-backed
+// runners that invoke real binaries (bd, git, claude, tmux).
+package runners
 
 import (
 	"context"
@@ -68,8 +71,6 @@ type opsProcess struct {
 	output *strings.Builder
 }
 
-func (p *opsProcess) Wait() error { return fmt.Errorf("wait: %w", p.cmd.Wait()) }
-func (p *opsProcess) Kill() error { return fmt.Errorf("kill: %w", p.cmd.Process.Kill()) }
-func (p *opsProcess) Output() (string, error) {
-	return p.output.String(), nil
-}
+func (p *opsProcess) Wait() error             { return fmt.Errorf("wait: %w", p.cmd.Wait()) }         //nolint:revive // interface impl
+func (p *opsProcess) Kill() error             { return fmt.Errorf("kill: %w", p.cmd.Process.Kill()) } //nolint:revive // interface impl
+func (p *opsProcess) Output() (string, error) { return p.output.String(), nil }                       //nolint:revive // interface impl
