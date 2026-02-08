@@ -73,7 +73,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
 
 		sess := &TmuxSession{Name: "oro", Runner: fake}
-		err := sess.Create("You are the Oro Architect.", "You are the Oro Manager.")
+		err := sess.Create("You are the Oro Manager.")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -106,7 +106,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
 
 		sess := &TmuxSession{Name: "oro", Runner: fake}
-		err := sess.Create("You are the Oro Architect.", "You are the Oro Manager.")
+		err := sess.Create("You are the Oro Manager.")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -193,7 +193,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
 
 		sess := &TmuxSession{Name: "oro", Runner: fake}
-		err := sess.Create("You are the Oro Architect.", "You are the Oro Manager.")
+		err := sess.Create("You are the Oro Manager.")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}

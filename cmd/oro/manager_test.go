@@ -5,37 +5,6 @@ import (
 	"testing"
 )
 
-func TestArchitectPrompt(t *testing.T) {
-	prompt := ArchitectPrompt()
-
-	t.Run("prompt includes strategic role", func(t *testing.T) {
-		if !strings.Contains(prompt, "Oro Architect") {
-			t.Error("expected architect prompt to identify as Oro Architect")
-		}
-	})
-
-	t.Run("prompt includes bd commands", func(t *testing.T) {
-		for _, cmd := range []string{"bd ready", "bd stats", "bd show"} {
-			if !strings.Contains(prompt, cmd) {
-				t.Errorf("expected architect prompt to reference %q", cmd)
-			}
-		}
-	})
-
-	t.Run("prompt is interactive (waits for human)", func(t *testing.T) {
-		lower := strings.ToLower(prompt)
-		if !strings.Contains(lower, "interactive") && !strings.Contains(lower, "wait for the human") {
-			t.Error("expected architect prompt to describe interactive behavior")
-		}
-	})
-
-	t.Run("prompt is non-empty and substantial", func(t *testing.T) {
-		if len(prompt) < 200 {
-			t.Errorf("expected architect prompt to be substantial (>200 chars), got %d chars", len(prompt))
-		}
-	})
-}
-
 func TestManagerPrompt(t *testing.T) {
 	prompt := ManagerPrompt()
 

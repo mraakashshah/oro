@@ -40,9 +40,9 @@ func (s *TmuxSession) Exists() bool {
 }
 
 // Create creates the Oro tmux session with two panes (architect + manager).
-// Both panes run interactive Claude sessions with their prompts as initial messages.
+// The managerPrompt is sent to the manager pane (pane 1) via `claude -p '<prompt>'`.
 // If the session already exists, it is a no-op.
-func (s *TmuxSession) Create(architectPrompt, managerPrompt string) error {
+func (s *TmuxSession) Create(managerPrompt string) error {
 	if s.Exists() {
 		return nil
 	}
@@ -58,15 +58,12 @@ func (s *TmuxSession) Create(architectPrompt, managerPrompt string) error {
 	}
 
 	// Send the architect command to the left pane (pane 0).
-	// Interactive claude with the architect prompt as the initial message.
-	architectCmd := fmt.Sprintf("claude '%s'", architectPrompt)
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectCmd, "Enter"); err != nil {
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", "claude", "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys architect: %w", err)
 	}
 
 	// Send the manager command to the right pane (pane 1).
-	// Interactive claude with the manager prompt as the initial message.
-	managerCmd := fmt.Sprintf("claude '%s'", managerPrompt)
+	managerCmd := fmt.Sprintf("claude -p '%s'", managerPrompt)
 	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerCmd, "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys manager: %w", err)
 	}
