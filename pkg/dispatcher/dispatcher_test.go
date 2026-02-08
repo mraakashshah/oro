@@ -476,7 +476,7 @@ func TestDispatcher_WorkerDone_MergesClean(t *testing.T) {
 	// Send DONE
 	sendMsg(t, conn, protocol.Message{
 		Type: protocol.MsgDone,
-		Done: &protocol.DonePayload{BeadID: "bead-merge", WorkerID: "w1"},
+		Done: &protocol.DonePayload{BeadID: "bead-merge", WorkerID: "w1", QualityGatePassed: true},
 	})
 
 	// Wait for merge to complete (logged as "merged" event)
@@ -531,7 +531,7 @@ func TestDispatcher_WorkerDone_MergeConflict_SpawnsOpsAgent(t *testing.T) {
 	// Send DONE — will trigger merge which conflicts
 	sendMsg(t, conn, protocol.Message{
 		Type: protocol.MsgDone,
-		Done: &protocol.DonePayload{BeadID: "bead-conflict", WorkerID: "w1"},
+		Done: &protocol.DonePayload{BeadID: "bead-conflict", WorkerID: "w1", QualityGatePassed: true},
 	})
 
 	// Wait for merge_conflict event
@@ -880,7 +880,7 @@ func TestDispatcher_Escalation(t *testing.T) {
 	// Send DONE — merge will fail (not conflict) → escalation
 	sendMsg(t, conn, protocol.Message{
 		Type: protocol.MsgDone,
-		Done: &protocol.DonePayload{BeadID: "bead-esc", WorkerID: "w1"},
+		Done: &protocol.DonePayload{BeadID: "bead-esc", WorkerID: "w1", QualityGatePassed: true},
 	})
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -1411,7 +1411,7 @@ func TestHandleDone_UnknownWorker(t *testing.T) {
 	// Send done for a worker that does not exist in the map
 	d.handleDone(ctx, "w-ghost", protocol.Message{
 		Type: protocol.MsgDone,
-		Done: &protocol.DonePayload{BeadID: "bead-ghost", WorkerID: "w-ghost"},
+		Done: &protocol.DonePayload{BeadID: "bead-ghost", WorkerID: "w-ghost", QualityGatePassed: true},
 	})
 
 	// Event logged but no merge triggered (no worktree)
@@ -1470,6 +1470,116 @@ func TestHandleReconnect_UnknownWorker(t *testing.T) {
 	// Event should be logged even if worker not tracked
 	if eventCount(t, d.db, "reconnect") == 0 {
 		t.Fatal("expected 'reconnect' event")
+	}
+}
+
+func TestHandleDone_QualityGateFailed_RejectsMerge(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-fail", Title: "QG fail test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with QualityGatePassed=false
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-fail",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Should log a quality_gate_failed event
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "quality_gate_rejected") > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if eventCount(t, d.db, "quality_gate_rejected") == 0 {
+		t.Fatal("expected 'quality_gate_rejected' event when QualityGatePassed=false")
+	}
+
+	// Should NOT have merged
+	if eventCount(t, d.db, "merged") != 0 {
+		t.Fatal("should not merge when quality gate failed")
+	}
+
+	// Worker should be reassigned (re-ASSIGN sent)
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after quality gate rejection")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN after quality gate rejection, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "bead-qg-fail" {
+		t.Fatalf("expected reassignment of bead-qg-fail, got %s", msg.Assign.BeadID)
+	}
+}
+
+func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-pass", Title: "QG pass test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with QualityGatePassed=true
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-pass",
+			WorkerID:          "w1",
+			QualityGatePassed: true,
+		},
+	})
+
+	// Should log done event and proceed to merge
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "merged") > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if eventCount(t, d.db, "merged") == 0 {
+		t.Fatal("expected 'merged' event when QualityGatePassed=true")
+	}
+
+	// No quality_gate_rejected event
+	if eventCount(t, d.db, "quality_gate_rejected") != 0 {
+		t.Fatal("should not have quality_gate_rejected when gate passed")
 	}
 }
 

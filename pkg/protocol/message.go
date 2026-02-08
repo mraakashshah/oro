@@ -63,8 +63,9 @@ type HandoffPayload struct {
 
 // DonePayload is sent by a worker when it completes its bead.
 type DonePayload struct {
-	BeadID   string `json:"bead_id"`
-	WorkerID string `json:"worker_id"`
+	BeadID            string `json:"bead_id"`
+	WorkerID          string `json:"worker_id"`
+	QualityGatePassed bool   `json:"quality_gate_passed"`
 }
 
 // ReadyForReviewPayload is sent by a worker when its bead is ready for review.

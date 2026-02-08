@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -273,7 +274,7 @@ func TestSendHeartbeat_ProducesCorrectJSON(t *testing.T) {
 	}
 }
 
-func TestSendDone_ProducesCorrectJSON(t *testing.T) {
+func TestSendDone_QualityGatePassed(t *testing.T) {
 	t.Parallel()
 
 	spawner := newMockSpawner()
@@ -284,7 +285,7 @@ func TestSendDone_ProducesCorrectJSON(t *testing.T) {
 
 	msgCh := readMessageAsync(t, dispatcherConn)
 
-	if err := w.SendDone(context.Background()); err != nil {
+	if err := w.SendDone(context.Background(), true); err != nil {
 		t.Fatalf("sendDone: %v", err)
 	}
 
@@ -296,8 +297,107 @@ func TestSendDone_ProducesCorrectJSON(t *testing.T) {
 		if msg.Done.WorkerID != "w-4" {
 			t.Errorf("expected worker_id w-4, got %s", msg.Done.WorkerID)
 		}
+		if !msg.Done.QualityGatePassed {
+			t.Error("expected QualityGatePassed=true")
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for done message")
+	}
+}
+
+func TestSendDone_QualityGateFailed(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-4f", workerConn, spawner)
+
+	msgCh := readMessageAsync(t, dispatcherConn)
+
+	if err := w.SendDone(context.Background(), false); err != nil {
+		t.Fatalf("sendDone: %v", err)
+	}
+
+	select {
+	case msg := <-msgCh:
+		if msg.Type != protocol.MsgDone {
+			t.Fatalf("expected DONE, got %s", msg.Type)
+		}
+		if msg.Done.QualityGatePassed {
+			t.Error("expected QualityGatePassed=false")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for done message")
+	}
+}
+
+func TestRunQualityGate_Success(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp worktree with a passing quality_gate.sh
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, err := worker.RunQualityGate(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Error("expected quality gate to pass")
+	}
+}
+
+func TestRunQualityGate_Failure(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp worktree with a failing quality_gate.sh
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, err := worker.RunQualityGate(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("RunQualityGate unexpected error: %v", err)
+	}
+	if passed {
+		t.Error("expected quality gate to fail")
+	}
+}
+
+func TestRunQualityGate_NoScript(t *testing.T) {
+	t.Parallel()
+
+	// No quality_gate.sh in dir — should return false with an error
+	tmpDir := t.TempDir()
+
+	passed, err := worker.RunQualityGate(context.Background(), tmpDir)
+	if err == nil {
+		t.Fatal("expected error when quality_gate.sh is missing")
+	}
+	if passed {
+		t.Error("expected quality gate to fail when script is missing")
+	}
+}
+
+func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {
+	t.Parallel()
+
+	prompt := worker.BuildPrompt("bead-123", "/tmp/wt-123")
+	if !strings.Contains(prompt, "quality_gate.sh") {
+		t.Error("expected prompt to contain quality_gate.sh instruction")
 	}
 }
 

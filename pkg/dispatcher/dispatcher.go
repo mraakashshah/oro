@@ -353,6 +353,29 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 
 	_ = d.logEvent(ctx, "done", workerID, beadID, workerID, "")
 
+	// Reject merge if quality gate did not pass — log warning and reassign bead.
+	if !msg.Done.QualityGatePassed {
+		_ = d.logEvent(ctx, "quality_gate_rejected", workerID, beadID, workerID,
+			`{"reason":"QualityGatePassed=false"}`)
+
+		d.mu.Lock()
+		w, ok := d.workers[workerID]
+		if ok {
+			// Re-assign the same bead back to the worker
+			_ = d.sendToWorker(w, protocol.Message{
+				Type: protocol.MsgAssign,
+				Assign: &protocol.AssignPayload{
+					BeadID:   beadID,
+					Worktree: w.worktree,
+				},
+			})
+			w.state = WorkerBusy
+			w.beadID = beadID
+		}
+		d.mu.Unlock()
+		return
+	}
+
 	// Get worktree from tracked worker
 	d.mu.Lock()
 	w, ok := d.workers[workerID]

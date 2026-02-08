@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -187,7 +188,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.worktree = msg.Assign.Worktree
 	w.mu.Unlock()
 
-	prompt := buildPrompt(msg.Assign.BeadID, msg.Assign.Worktree)
+	prompt := BuildPrompt(msg.Assign.BeadID, msg.Assign.Worktree)
 	proc, err := w.spawner.Spawn(ctx, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
@@ -213,9 +214,10 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	return nil
 }
 
-// buildPrompt constructs the prompt string for claude -p.
-func buildPrompt(beadID, worktree string) string {
-	return fmt.Sprintf("Execute bead %s in worktree %s", beadID, worktree)
+// BuildPrompt constructs the prompt string for claude -p.
+// It includes the instruction to run quality_gate.sh before completing.
+func BuildPrompt(beadID, worktree string) string {
+	return fmt.Sprintf("Execute bead %s in worktree %s. Before completing, run ./quality_gate.sh and ensure it passes.", beadID, worktree)
 }
 
 // watchContext polls .oro/context_pct in the current worktree and triggers
@@ -390,8 +392,8 @@ func (w *Worker) SendStatus(_ context.Context, state, result string) error {
 	})
 }
 
-// SendDone sends a DONE message to the Dispatcher.
-func (w *Worker) SendDone(_ context.Context) error {
+// SendDone sends a DONE message to the Dispatcher with the quality gate result.
+func (w *Worker) SendDone(_ context.Context, qualityGatePassed bool) error {
 	w.mu.Lock()
 	beadID := w.beadID
 	w.mu.Unlock()
@@ -399,8 +401,9 @@ func (w *Worker) SendDone(_ context.Context) error {
 	return w.sendMessage(protocol.Message{
 		Type: protocol.MsgDone,
 		Done: &protocol.DonePayload{
-			BeadID:   beadID,
-			WorkerID: w.ID,
+			BeadID:            beadID,
+			WorkerID:          w.ID,
+			QualityGatePassed: qualityGatePassed,
 		},
 	})
 }
@@ -433,6 +436,29 @@ func (w *Worker) SendReadyForReview(_ context.Context) error {
 			WorkerID: w.ID,
 		},
 	})
+}
+
+// RunQualityGate executes ./quality_gate.sh in the given worktree directory.
+// It returns (true, nil) if the script exits 0, (false, nil) if it exits non-zero,
+// and (false, err) if the script cannot be found or started.
+func RunQualityGate(ctx context.Context, worktree string) (bool, error) {
+	scriptPath := filepath.Join(worktree, "quality_gate.sh")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return false, fmt.Errorf("quality gate script not found: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
+	cmd.Dir = worktree
+
+	if err := cmd.Run(); err != nil {
+		// Non-zero exit is not an error — it means the gate failed
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("run quality gate: %w", err)
+	}
+	return true, nil
 }
 
 // ClaudeSpawner is the production SubprocessSpawner that invokes `claude -p`.

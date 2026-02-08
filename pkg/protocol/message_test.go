@@ -107,6 +107,17 @@ func TestMessageJSON(t *testing.T) { //nolint:funlen // table-driven test with 8
 			},
 		},
 		{
+			name: "DONE_with_quality_gate",
+			msg: protocol.Message{
+				Type: protocol.MsgDone,
+				Done: &protocol.DonePayload{
+					BeadID:            "bead-qg",
+					WorkerID:          "worker-qg",
+					QualityGatePassed: true,
+				},
+			},
+		},
+		{
 			name: "READY_FOR_REVIEW",
 			msg: protocol.Message{
 				Type: protocol.MsgReadyForReview,
@@ -160,6 +171,50 @@ func TestMessageJSON(t *testing.T) { //nolint:funlen // table-driven test with 8
 
 			if string(wantJSON) != string(gotJSON) {
 				t.Errorf("round-trip mismatch for %s:\n  want: %s\n  got:  %s", tc.name, wantJSON, gotJSON)
+			}
+		})
+	}
+}
+
+func TestDonePayload_QualityGatePassed_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		passed bool
+	}{
+		{"gate_passed", true},
+		{"gate_failed", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			msg := protocol.Message{
+				Type: protocol.MsgDone,
+				Done: &protocol.DonePayload{
+					BeadID:            "bead-qg",
+					WorkerID:          "worker-qg",
+					QualityGatePassed: tc.passed,
+				},
+			}
+
+			data, err := json.Marshal(msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+
+			var got protocol.Message
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+
+			if got.Done == nil {
+				t.Fatal("expected Done payload to be non-nil")
+			}
+			if got.Done.QualityGatePassed != tc.passed {
+				t.Errorf("QualityGatePassed: got %v, want %v", got.Done.QualityGatePassed, tc.passed)
 			}
 		})
 	}
