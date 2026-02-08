@@ -264,9 +264,38 @@ When `oro stop` or context cancellation occurs, dispatcher runs `shutdownCleanup
 - [x] **Worker spawning:** Dispatcher spawns worker processes (not manager).
 - [x] **Architect/Manager same directory:** Safe. Both run in the same repo. Beads uses SQLite WAL + `BEGIN IMMEDIATE` + 30s busy timeout for concurrent writes. With beads daemon, writes are serialized via RPC. No separate worktree needed.
 - [x] **Role differentiation:** Initial message via tmux send-keys (gastown's beacon pattern). Go binary assembles role-specific prompt and sends it as the first message after `claude` starts. Both sessions share the same CLAUDE.md.
+- [x] **Hooks must be role-aware:** `oro start` sets `ORO_ROLE=architect|manager` env var before launching each `claude` session. Session start hooks (session_start_extras.py, enforce-skills.sh) check `$ORO_ROLE` and filter injected context. Architect doesn't need TDD/commit protocol. Manager doesn't need coding skills. Workers get their own prompt via `claude -p` (no hooks needed).
+
+## Worker Prompt Template
+
+Workers run as `claude -p` which gets NO CLAUDE.md, no `.claude/rules/`, no skills, no hooks.
+The prompt is the **only** context. `oro-worker` Go binary assembles it from these sections:
+
+```
+ 1. Role          — "You are an oro worker. You execute one bead at a time."
+ 2. Bead          — title, description, acceptance criteria (from `bd show <id>`)
+ 3. Memory        — learnings/decisions from prior sessions on this bead (from dispatcher)
+ 4. Coding rules  — inlined from project standards:
+                    - Functional first: pure functions, immutability, early returns
+                    - Pure core (business logic), impure edges (I/O, CLI)
+                    - Go: gofumpt, golangci-lint, go-arch-lint
+                    - Python: PEP 8, ruff, pyright, pytest fixtures > classes
+ 5. TDD           — "Write tests FIRST. Red-green-refactor. Every feature/fix needs a test."
+ 6. Quality gate  — concrete command: `./quality_gate.sh` (or per-language equivalent)
+ 7. Worktree      — "You are in <path>. Commit to branch agent/<bead-id>."
+ 8. Git           — conventional commits (`feat(scope): msg`), no amend, new commits only
+ 9. Beads tools   — `bd create` (decompose), `bd close` (done), `bd dep add` (blockers)
+10. Constraints   — no git push, no files outside worktree, no modifying main
+11. Failure       — 3 failed test attempts → create P0 bead, exit
+                    Bead too big → decompose with bd create, exit
+                    Context limit → create handoff beads with remaining work, exit
+                    Blocked → create blocker bead, exit
+12. Exit          — "When acceptance criteria pass and quality gate is green, exit."
+```
+
+Note: `ORO_ROLE=worker` env var set for any hooks that fire during tool use.
 
 ## Open Questions
 
 - [ ] Manager initial message: what should the role-specific beacon contain? (responsibilities, available `oro` CLI commands, behavioral guidelines)
-- [ ] Worker prompt template: what sections does `oro-worker` assemble before launching `claude -p`?
 - [ ] fsnotify specifics: watch entire `.beads/` dir? Or just `beads.db` (SQLite WAL changes)?
