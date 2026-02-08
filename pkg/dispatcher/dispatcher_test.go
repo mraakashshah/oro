@@ -1035,6 +1035,444 @@ func TestState_Constants(t *testing.T) {
 	}
 }
 
+// --- New coverage tests ---
+
+func TestHandleStatus_LogsEvent(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-status", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Send STATUS message
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgStatus,
+		Status: &protocol.StatusPayload{
+			WorkerID: "w-status",
+			BeadID:   "bead-s1",
+			State:    "coding",
+			Result:   "in progress",
+		},
+	})
+
+	// Wait for status event
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "status") > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected 'status' event logged")
+}
+
+func TestHandleStatus_NilPayload(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	// Call handleStatus with nil Status — should return early without panic
+	d.handleStatus(ctx, "w1", protocol.Message{Type: protocol.MsgStatus, Status: nil})
+	// No event should be logged
+	if eventCount(t, d.db, "status") != 0 {
+		t.Fatal("expected no status event for nil payload")
+	}
+}
+
+func TestExtractWorkerID_AllBranches(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  protocol.Message
+		want string
+	}{
+		{
+			name: "status",
+			msg:  protocol.Message{Status: &protocol.StatusPayload{WorkerID: "ws"}},
+			want: "ws",
+		},
+		{
+			name: "handoff",
+			msg:  protocol.Message{Handoff: &protocol.HandoffPayload{WorkerID: "wh"}},
+			want: "wh",
+		},
+		{
+			name: "ready_for_review",
+			msg:  protocol.Message{ReadyForReview: &protocol.ReadyForReviewPayload{WorkerID: "wr"}},
+			want: "wr",
+		},
+		{
+			name: "all_nil",
+			msg:  protocol.Message{},
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractWorkerID(tt.msg)
+			if got != tt.want {
+				t.Fatalf("extractWorkerID(%s): got %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRegisterWorker_NewAndReRegister(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Create a pipe to simulate a connection
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+	// Register new worker
+	d.registerWorker("w-new", server)
+	if d.ConnectedWorkers() != 1 {
+		t.Fatalf("expected 1 worker, got %d", d.ConnectedWorkers())
+	}
+	st, _, ok := d.WorkerInfo("w-new")
+	if !ok {
+		t.Fatal("expected worker to be tracked")
+	}
+	if st != WorkerIdle {
+		t.Fatalf("expected idle, got %s", st)
+	}
+
+	// Re-register same worker with a new connection (simulates reconnect)
+	server2, client2 := net.Pipe()
+	t.Cleanup(func() { _ = server2.Close(); _ = client2.Close() })
+
+	d.registerWorker("w-new", server2)
+	if d.ConnectedWorkers() != 1 {
+		t.Fatalf("expected still 1 worker after re-register, got %d", d.ConnectedWorkers())
+	}
+}
+
+func TestProcessCommands_FocusAndPause(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Insert focus command
+	insertCommand(t, d.db, "focus")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Verify directive event logged
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "directive") > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if eventCount(t, d.db, "directive") == 0 {
+		t.Fatal("expected 'directive' event for focus")
+	}
+
+	// Insert an invalid directive — should be skipped (markCommandProcessed still called)
+	_, err := d.db.Exec(`INSERT INTO commands (directive, args, status) VALUES ('bogus', '', 'pending')`)
+	if err != nil {
+		t.Fatalf("insert bogus command: %v", err)
+	}
+
+	// Wait for it to be processed
+	time.Sleep(200 * time.Millisecond)
+
+	// The bogus command should be marked processed (not pending)
+	var status string
+	err = d.db.QueryRow(`SELECT status FROM commands WHERE directive='bogus'`).Scan(&status)
+	if err != nil {
+		t.Fatalf("query bogus command: %v", err)
+	}
+	if status != "processed" {
+		t.Fatalf("expected bogus command processed, got %s", status)
+	}
+}
+
+func TestSQLiteHelpers_ClosedDB(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Close the DB to force errors
+	_ = d.db.Close()
+
+	// logEvent should return error
+	err := d.logEvent(ctx, "test", "test", "", "", "")
+	if err == nil {
+		t.Fatal("expected error from logEvent on closed db")
+	}
+
+	// logEventLocked should return error
+	err = d.logEventLocked(ctx, "test", "test", "", "", "")
+	if err == nil {
+		t.Fatal("expected error from logEventLocked on closed db")
+	}
+
+	// createAssignment should return error
+	err = d.createAssignment(ctx, "b1", "w1", "/tmp/wt")
+	if err == nil {
+		t.Fatal("expected error from createAssignment on closed db")
+	}
+
+	// completeAssignment should return error
+	err = d.completeAssignment(ctx, "b1")
+	if err == nil {
+		t.Fatal("expected error from completeAssignment on closed db")
+	}
+
+	// pendingCommands should return error
+	_, err = d.pendingCommands(ctx)
+	if err == nil {
+		t.Fatal("expected error from pendingCommands on closed db")
+	}
+
+	// markCommandProcessed should return error
+	err = d.markCommandProcessed(ctx, 1)
+	if err == nil {
+		t.Fatal("expected error from markCommandProcessed on closed db")
+	}
+}
+
+func TestSendToWorker_BrokenConn(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Create a pipe and close the read end to simulate broken connection
+	server, client := net.Pipe()
+	_ = client.Close() // close the reader — writes to server will fail
+
+	w := &trackedWorker{
+		id:      "w-broken",
+		conn:    server,
+		state:   WorkerIdle,
+		encoder: json.NewEncoder(server),
+	}
+
+	err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+	if err == nil {
+		t.Fatal("expected error writing to broken connection")
+	}
+	_ = server.Close()
+}
+
+func TestHandleReconnect_IdleState(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+
+	// Send RECONNECT with idle state (not "running")
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID:   "w-idle-reconnect",
+			BeadID:     "bead-idle",
+			State:      "idle",
+			ContextPct: 15,
+		},
+	})
+
+	// Should be tracked as idle
+	waitForWorkerState(t, d, "w-idle-reconnect", WorkerIdle, 1*time.Second)
+}
+
+func TestHandleReconnect_WithBufferedEvents(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+
+	// Send RECONNECT with a buffered heartbeat event
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID:   "w-buffered",
+			BeadID:     "bead-buf",
+			State:      "running",
+			ContextPct: 20,
+			BufferedEvents: []protocol.Message{
+				{
+					Type:      protocol.MsgHeartbeat,
+					Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-buffered", BeadID: "bead-buf", ContextPct: 25},
+				},
+			},
+		},
+	})
+
+	waitForWorkerState(t, d, "w-buffered", WorkerBusy, 1*time.Second)
+
+	// The buffered heartbeat should have been processed — check event
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "heartbeat") > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected buffered heartbeat event to be processed")
+}
+
+func TestHandleReconnect_NilPayload(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	// Should not panic
+	d.handleReconnect(ctx, "w1", protocol.Message{Type: protocol.MsgReconnect, Reconnect: nil})
+	if eventCount(t, d.db, "reconnect") != 0 {
+		t.Fatal("expected no reconnect event for nil payload")
+	}
+}
+
+func TestHandleReviewResult_ContextCancelled(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan ops.Result, 1)
+
+	// Cancel before sending result
+	cancel()
+
+	// Should return without blocking
+	d.handleReviewResult(ctx, "w1", "b1", resultCh)
+	// No panic, no events
+}
+
+func TestHandleReviewResult_UnknownVerdict(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-unk", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	ctx := context.Background()
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{Verdict: "UNKNOWN_VERDICT", Feedback: "something weird"}
+
+	d.handleReviewResult(ctx, "w-unk", "bead-unk", resultCh)
+
+	// Should log review_failed and escalate
+	if eventCount(t, d.db, "review_failed") == 0 {
+		t.Fatal("expected 'review_failed' event for unknown verdict")
+	}
+}
+
+func TestHandleHeartbeat_NilPayload(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	d.handleHeartbeat(ctx, "w1", protocol.Message{Type: protocol.MsgHeartbeat, Heartbeat: nil})
+	if eventCount(t, d.db, "heartbeat") != 0 {
+		t.Fatal("expected no heartbeat event for nil payload")
+	}
+}
+
+func TestHandleDone_NilPayload(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	d.handleDone(ctx, "w1", protocol.Message{Type: protocol.MsgDone, Done: nil})
+	if eventCount(t, d.db, "done") != 0 {
+		t.Fatal("expected no done event for nil payload")
+	}
+}
+
+func TestHandleHandoff_NilPayload(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	d.handleHandoff(ctx, "w1", protocol.Message{Type: protocol.MsgHandoff, Handoff: nil})
+	if eventCount(t, d.db, "handoff") != 0 {
+		t.Fatal("expected no handoff event for nil payload")
+	}
+}
+
+func TestHandleReadyForReview_NilPayload(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	d.handleReadyForReview(ctx, "w1", protocol.Message{Type: protocol.MsgReadyForReview, ReadyForReview: nil})
+	if eventCount(t, d.db, "ready_for_review") != 0 {
+		t.Fatal("expected no ready_for_review event for nil payload")
+	}
+}
+
+func TestProcessCommands_ClosedDB(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Close DB to force pendingCommands error
+	_ = d.db.Close()
+
+	// Should not panic — just returns early
+	d.processCommands(ctx)
+}
+
+func TestHandleDone_UnknownWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Send done for a worker that does not exist in the map
+	d.handleDone(ctx, "w-ghost", protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{BeadID: "bead-ghost", WorkerID: "w-ghost"},
+	})
+
+	// Event logged but no merge triggered (no worktree)
+	if eventCount(t, d.db, "done") == 0 {
+		t.Fatal("expected 'done' event even for unknown worker")
+	}
+	// No merge event since worker had no worktree
+	if eventCount(t, d.db, "merged") != 0 {
+		t.Fatal("expected no 'merged' event for unknown worker")
+	}
+}
+
+func TestHandleHandoff_UnknownWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	d.handleHandoff(ctx, "w-ghost", protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{BeadID: "bead-ghost", WorkerID: "w-ghost"},
+	})
+
+	if eventCount(t, d.db, "handoff") == 0 {
+		t.Fatal("expected 'handoff' event even for unknown worker")
+	}
+}
+
+func TestHandleReadyForReview_UnknownWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	d.handleReadyForReview(ctx, "w-ghost", protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-ghost", WorkerID: "w-ghost"},
+	})
+
+	if eventCount(t, d.db, "ready_for_review") == 0 {
+		t.Fatal("expected 'ready_for_review' event even for unknown worker")
+	}
+}
+
+func TestHandleReconnect_UnknownWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Reconnect for a worker not yet registered — registerWorker happens before handleMessage
+	// in handleConn, but we can call handleReconnect directly for a worker that is not in the map
+	d.handleReconnect(ctx, "w-ghost", protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: "w-ghost",
+			BeadID:   "bead-ghost",
+			State:    "running",
+		},
+	})
+
+	// Event should be logged even if worker not tracked
+	if eventCount(t, d.db, "reconnect") == 0 {
+		t.Fatal("expected 'reconnect' event")
+	}
+}
+
 // Verify errors.As works with ConflictError (integration sanity check).
 func TestConflictError_ErrorsAs(t *testing.T) {
 	err := fmt.Errorf("wrapped: %w", &merge.ConflictError{Files: []string{"a.go"}, BeadID: "b1"})

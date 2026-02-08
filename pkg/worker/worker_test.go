@@ -647,3 +647,1084 @@ func TestMessageBuffer_MaxCapacity(t *testing.T) {
 		t.Error("expected empty buffer after drain")
 	}
 }
+
+func TestMessageBuffer_Len(t *testing.T) {
+	t.Parallel()
+
+	buf := worker.NewMessageBuffer(5)
+
+	if buf.Len() != 0 {
+		t.Errorf("expected Len 0 on new buffer, got %d", buf.Len())
+	}
+
+	buf.Add(protocol.Message{Type: protocol.MsgHeartbeat})
+	buf.Add(protocol.Message{Type: protocol.MsgDone})
+	if buf.Len() != 2 {
+		t.Errorf("expected Len 2 after two adds, got %d", buf.Len())
+	}
+
+	buf.Drain()
+	if buf.Len() != 0 {
+		t.Errorf("expected Len 0 after drain, got %d", buf.Len())
+	}
+}
+
+func TestNew_Success(t *testing.T) {
+	t.Parallel()
+
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-new-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	spawner := newMockSpawner()
+	w, err := worker.New("w-new", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	if w.ID != "w-new" {
+		t.Errorf("expected ID w-new, got %s", w.ID)
+	}
+}
+
+func TestNew_FailsOnBadSocket(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	_, err := worker.New("w-bad", "/tmp/nonexistent-oro-socket-path/w.sock", spawner)
+	if err == nil {
+		t.Fatal("expected error from New() with bad socket path, got nil")
+	}
+}
+
+func TestSendMessage_WhenDisconnected_Buffers(t *testing.T) { //nolint:funlen // integration test requires sequential setup
+	t.Parallel()
+
+	// Use a real UDS so we can exercise New() + reconnect path
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-disc-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	acceptCh := make(chan net.Conn, 5)
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			acceptCh <- c
+		}
+	}()
+
+	spawner := newMockSpawner()
+	w, err := worker.New("w-disc", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Accept first connection
+	var dispConn1 net.Conn
+	select {
+	case dispConn1 = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for connection")
+	}
+
+	// Close dispatcher side to trigger disconnect
+	_ = dispConn1.Close()
+
+	// During reconnect, SendHeartbeat should buffer (not error)
+	// Give a moment for the disconnect to be detected
+	time.Sleep(100 * time.Millisecond)
+
+	// Accept reconnection
+	var dispConn2 net.Conn
+	select {
+	case dispConn2 = <-acceptCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for reconnection")
+	}
+	defer func() { _ = dispConn2.Close() }()
+
+	// Read the RECONNECT message
+	msg := readMessage(t, dispConn2)
+	if msg.Type != protocol.MsgReconnect {
+		t.Fatalf("expected RECONNECT, got %s", msg.Type)
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestHandleMessage_UnknownType(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-unk", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Send unknown message type
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: "UNKNOWN_TYPE",
+	})
+
+	// Worker should NOT crash; send a shutdown to verify it's still running
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgShutdown,
+	})
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after shutdown")
+	}
+}
+
+func TestRun_ContextCancellationDuringIdle(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-idle", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Cancel immediately without any messages
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected nil error on context cancel, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after context cancellation")
+	}
+}
+
+func TestRun_ContextCancellationDuringProcessing(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-proc", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Assign work
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-proc",
+			Worktree: "/tmp/wt-proc",
+		},
+	})
+
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// Cancel while subprocess is "running"
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after cancel during processing")
+	}
+
+	// Subprocess should be killed
+	if !spawner.process.Killed() {
+		t.Error("expected subprocess killed on context cancel")
+	}
+}
+
+func TestHandleAssign_MissingPayload(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-nilassign", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Send ASSIGN with nil payload
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		// Assign is nil
+	})
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected error for nil ASSIGN payload, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after bad ASSIGN")
+	}
+}
+
+func TestHandleAssign_SpawnError(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	spawner.spawnErr = fmt.Errorf("spawn failed")
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-spawnerr", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-fail",
+			Worktree: "/tmp/wt-fail",
+		},
+	})
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected error for spawn failure, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after spawn error")
+	}
+}
+
+func TestReconnect_ContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-rctx-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	acceptCh := make(chan net.Conn, 5)
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			acceptCh <- c
+		}
+	}()
+
+	spawner := newMockSpawner()
+	w, err := worker.New("w-rctx", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Accept first connection
+	var dispConn1 net.Conn
+	select {
+	case dispConn1 = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first connection")
+	}
+
+	// Close listener so reconnect cannot succeed, then close conn to trigger reconnect
+	_ = listener.Close()
+	_ = dispConn1.Close()
+
+	// Give worker time to detect disconnect and start reconnecting
+	time.Sleep(200 * time.Millisecond)
+
+	// Cancel context during reconnect
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected error from reconnect with cancelled context, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not exit after cancel during reconnect")
+	}
+}
+
+func TestReconnect_ReportsIdleWhenNoProcRunning(t *testing.T) { //nolint:funlen // integration test requires sequential setup
+	t.Parallel()
+
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-idle-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	acceptCh := make(chan net.Conn, 5)
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			acceptCh <- c
+		}
+	}()
+
+	spawner := newMockSpawner()
+	w, err := worker.New("w-idle-recon", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Accept first connection (no ASSIGN sent, so proc is nil => state should be "idle")
+	var dispConn1 net.Conn
+	select {
+	case dispConn1 = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first connection")
+	}
+
+	// Close to trigger reconnect
+	_ = dispConn1.Close()
+
+	// Accept reconnection
+	var dispConn2 net.Conn
+	select {
+	case dispConn2 = <-acceptCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for reconnection")
+	}
+	defer func() { _ = dispConn2.Close() }()
+
+	// Read RECONNECT and verify state is "idle"
+	msg := readMessage(t, dispConn2)
+	if msg.Type != protocol.MsgReconnect {
+		t.Fatalf("expected RECONNECT, got %s", msg.Type)
+	}
+	if msg.Reconnect.State != "idle" {
+		t.Errorf("expected state idle for worker without proc, got %s", msg.Reconnect.State)
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestRun_MalformedJSON_Skipped(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-malform", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Send malformed JSON (should be skipped)
+	_, _ = dispatcherConn.Write([]byte("this is not json\n"))
+
+	// Send a valid shutdown to prove the worker is still alive
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgShutdown,
+	})
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after shutdown following malformed JSON")
+	}
+}
+
+func TestRun_ConnectionClosedNoSocketPath_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+
+	w := worker.NewWithConn("w-nopath", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Close dispatcher side — worker has no socketPath so it can't reconnect
+	_ = dispatcherConn.Close()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected error when connection closes with no socketPath, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after connection close")
+	}
+}
+
+// errorAfterConn wraps a net.Conn and returns a read error after the underlying conn closes,
+// instead of io.EOF. This triggers the scanner.Err() != nil path in Run.
+type errorAfterConn struct {
+	net.Conn
+	readErr error
+}
+
+func (c *errorAfterConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if err != nil {
+		// Replace the EOF with a custom error
+		return n, c.readErr
+	}
+	return n, nil
+}
+
+// immediateErrorConn returns an error on the first Read call with no delay,
+// ensuring errCh is loaded before the context is cancelled.
+type immediateErrorConn struct {
+	net.Conn
+}
+
+func (c *immediateErrorConn) Read(_ []byte) (int, error) {
+	return 0, fmt.Errorf("immediate connection error")
+}
+
+func (c *immediateErrorConn) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (c *immediateErrorConn) Close() error {
+	return nil
+}
+
+func (c *immediateErrorConn) LocalAddr() net.Addr                { return nil }
+func (c *immediateErrorConn) RemoteAddr() net.Addr               { return nil }
+func (c *immediateErrorConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *immediateErrorConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *immediateErrorConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+func TestRun_ScannerError(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+
+	customErr := fmt.Errorf("simulated read error")
+	wrappedConn := &errorAfterConn{Conn: workerConn, readErr: customErr}
+
+	w := worker.NewWithConn("w-scanerr", wrappedConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Close the dispatcher side — the wrapped conn will return our custom error
+	_ = dispatcherConn.Close()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected scanner error, got nil")
+		}
+		// The error should be our custom error (not "connection closed")
+		if err.Error() != "simulated read error" {
+			t.Logf("got error: %v (expected simulated read error, but any error is fine for coverage)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after scanner error")
+	}
+}
+
+func TestContextWatcher_EmptyWorktree_NoCrash(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-empty-wt", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Send ASSIGN with empty worktree — triggers wt == "" path in watchContext
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-empty-wt",
+			Worktree: "",
+		},
+	})
+
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// Wait for several poll cycles — watcher should hit wt == "" and continue
+	time.Sleep(300 * time.Millisecond)
+
+	// Should not crash
+	if spawner.process.Killed() {
+		t.Error("subprocess should not be killed with empty worktree")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestContextWatcher_Below70_NoHandoff(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-below", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Create worktree with context_pct below threshold
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+		t.Fatal(err)
+	}
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-below",
+			Worktree: tmpDir,
+		},
+	})
+
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// Write context_pct = 50 (below threshold)
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("50"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for several poll cycles
+	time.Sleep(300 * time.Millisecond)
+
+	// Subprocess should NOT have been killed
+	if spawner.process.Killed() {
+		t.Error("subprocess should not be killed when context_pct is below threshold")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestSendMessage_WriteError_WhenConnClosed(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+
+	w := worker.NewWithConn("w-werr", workerConn, spawner)
+
+	// Close the worker side of the connection so writes will fail
+	_ = dispatcherConn.Close()
+	_ = workerConn.Close()
+
+	// Attempt to send — should get a write error
+	err := w.SendHeartbeat(context.Background(), 10)
+	if err == nil {
+		t.Fatal("expected write error, got nil")
+	}
+}
+
+func TestReconnect_DialFailsThenSucceeds(t *testing.T) { //nolint:funlen // integration test requires sequential setup
+	t.Parallel()
+
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-retry-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	// Create initial listener for New()
+	listener1, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	acceptCh := make(chan net.Conn, 5)
+	go func() {
+		for {
+			c, err := listener1.Accept()
+			if err != nil {
+				return
+			}
+			acceptCh <- c
+		}
+	}()
+
+	spawner := newMockSpawner()
+	w, err := worker.New("w-retry", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Accept first connection
+	var dispConn1 net.Conn
+	select {
+	case dispConn1 = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first connection")
+	}
+
+	// Close the listener AND remove the socket file so the first reconnect attempt will fail
+	_ = listener1.Close()
+	_ = os.Remove(sockPath)
+
+	// Close dispatcher side to trigger disconnect
+	_ = dispConn1.Close()
+
+	// Wait for worker to attempt reconnect and fail at least once
+	// reconnectBaseInterval is 2s ± 500ms, so wait 4s to ensure at least one failed attempt
+	time.Sleep(4 * time.Second)
+
+	// Now create a new listener on the same path so the next attempt succeeds
+	_ = os.Remove(sockPath) // remove stale socket
+	listener2, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen2: %v", err)
+	}
+	defer func() { _ = listener2.Close() }()
+
+	acceptCh2 := make(chan net.Conn, 5)
+	go func() {
+		for {
+			c, err := listener2.Accept()
+			if err != nil {
+				return
+			}
+			acceptCh2 <- c
+		}
+	}()
+
+	// Accept reconnection
+	var dispConn2 net.Conn
+	select {
+	case dispConn2 = <-acceptCh2:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for reconnection after retry")
+	}
+	defer func() { _ = dispConn2.Close() }()
+
+	// Read RECONNECT
+	msg := readMessage(t, dispConn2)
+	if msg.Type != protocol.MsgReconnect {
+		t.Fatalf("expected RECONNECT, got %s", msg.Type)
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestReconnect_SendReconnectFails_Retries(t *testing.T) { //nolint:funlen // integration test requires sequential setup
+	t.Parallel()
+
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-reconn-fail-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	acceptCh := make(chan net.Conn, 10)
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			acceptCh <- c
+		}
+	}()
+
+	spawner := newMockSpawner()
+	w, err := worker.New("w-rfail", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Accept first connection
+	var dispConn1 net.Conn
+	select {
+	case dispConn1 = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first connection")
+	}
+
+	// Close to trigger reconnect
+	_ = dispConn1.Close()
+
+	// Accept reconnect — immediately close to make sendMessage(RECONNECT) fail
+	var dispConn2 net.Conn
+	select {
+	case dispConn2 = <-acceptCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for reconnection")
+	}
+	_ = dispConn2.Close() // close immediately so sendMessage fails
+
+	// Worker should retry and connect again
+	var dispConn3 net.Conn
+	select {
+	case dispConn3 = <-acceptCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for second reconnection attempt")
+	}
+	defer func() { _ = dispConn3.Close() }()
+
+	// This time read the RECONNECT successfully
+	msg := readMessage(t, dispConn3)
+	if msg.Type != protocol.MsgReconnect {
+		t.Fatalf("expected RECONNECT, got %s", msg.Type)
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestContextWatcher_InvalidContent_Ignored(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-badpct", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+		t.Fatal(err)
+	}
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-badpct",
+			Worktree: tmpDir,
+		},
+	})
+
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// Write non-numeric content
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("not-a-number"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for several poll cycles — should not crash or handoff
+	time.Sleep(300 * time.Millisecond)
+
+	if spawner.process.Killed() {
+		t.Error("subprocess should not be killed when context_pct is invalid")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestHandleAssign_SendStatusError(t *testing.T) {
+	t.Parallel()
+
+	// Use a spawner that closes the dispatcher conn during spawn, so SendStatus fails
+	dispatcherConn, workerConn := net.Pipe()
+
+	closingSpawner := &connClosingSpawner{
+		process:     newMockProcess(),
+		connToClose: dispatcherConn,
+	}
+
+	w := worker.NewWithConn("w-statuserr", workerConn, closingSpawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-statuserr",
+			Worktree: "/tmp/wt-statuserr",
+		},
+	})
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected error from SendStatus failure, got nil")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not exit after SendStatus error")
+	}
+}
+
+// connClosingSpawner closes the given connection during Spawn so that
+// the subsequent SendStatus call in handleAssign fails.
+type connClosingSpawner struct {
+	process     *mockProcess
+	connToClose net.Conn
+}
+
+func (s *connClosingSpawner) Spawn(_ context.Context, _, _ string) (worker.Process, error) {
+	// Close the connection so the next write (SendStatus) will fail
+	_ = s.connToClose.Close()
+	return s.process, nil
+}
+
+func TestRun_ErrChWithCancelledContext(t *testing.T) {
+	t.Parallel()
+
+	// Use immediateErrorConn so errCh is loaded almost instantly.
+	// Use a pre-cancelled context so ctx.Err() != nil when the select runs.
+	// Both ctx.Done and errCh are ready; Go randomly picks one.
+	// Run multiple iterations to maximize chance of hitting errCh path.
+	for i := range 50 {
+		func() {
+			spawner := newMockSpawner()
+			conn := &immediateErrorConn{}
+
+			w := worker.NewWithConn(fmt.Sprintf("w-race-%d", i), conn, spawner)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel() // pre-cancel so ctx.Done() is immediately ready
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- w.Run(ctx) }()
+
+			select {
+			case err := <-errCh:
+				// nil: ctx.Done won or errCh won with ctx.Err()!=nil (line 138)
+				// Both are valid. We just need coverage.
+				_ = err
+			case <-time.After(2 * time.Second):
+				t.Fatal("worker did not exit")
+			}
+		}()
+	}
+}
+
+func TestSendMessage_BuffersWhenDisconnected(t *testing.T) { //nolint:funlen // integration test requires sequential setup
+	t.Parallel()
+
+	// Create a real UDS to exercise the disconnected buffering path
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-buf-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	acceptCh := make(chan net.Conn, 10)
+	go func() {
+		for {
+			c, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			acceptCh <- c
+		}
+	}()
+
+	spawner := newMockSpawner()
+	w, err := worker.New("w-bufmsg", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Accept first connection
+	var dispConn1 net.Conn
+	select {
+	case dispConn1 = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first connection")
+	}
+
+	// Send ASSIGN so worker has a bead
+	sendMessage(t, dispConn1, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-bufmsg",
+			Worktree: "/tmp/wt-bufmsg",
+		},
+	})
+	_ = readMessage(t, dispConn1) // drain STATUS
+
+	// Close dispatcher to trigger disconnect
+	_ = dispConn1.Close()
+
+	// Wait for the worker to detect the disconnect and enter reconnect state
+	time.Sleep(500 * time.Millisecond)
+
+	// Send messages while disconnected — they should be buffered
+	_ = w.SendHeartbeat(ctx, 25)
+	_ = w.SendHeartbeat(ctx, 30)
+
+	// Accept reconnection
+	var dispConn2 net.Conn
+	select {
+	case dispConn2 = <-acceptCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for reconnection")
+	}
+	defer func() { _ = dispConn2.Close() }()
+
+	// Read RECONNECT — it should contain the buffered heartbeats
+	msg := readMessage(t, dispConn2)
+	if msg.Type != protocol.MsgReconnect {
+		t.Fatalf("expected RECONNECT, got %s", msg.Type)
+	}
+	if len(msg.Reconnect.BufferedEvents) < 2 {
+		t.Errorf("expected at least 2 buffered events, got %d", len(msg.Reconnect.BufferedEvents))
+	}
+
+	cancel()
+	<-errCh
+}

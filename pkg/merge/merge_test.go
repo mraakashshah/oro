@@ -395,6 +395,226 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 	}
 }
 
+func TestMerge_CheckoutMainFails(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// 1. git rebase — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 2. git checkout main — fails
+			{Stdout: "", Stderr: "error: pathspec 'main' did not match", Err: fmt.Errorf("exit status 1")},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/chk",
+		Worktree: "/tmp/wt-chk",
+		BeadID:   "oro-chk",
+	})
+
+	if err == nil {
+		t.Fatal("expected error on checkout failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "checkout main failed") {
+		t.Errorf("expected 'checkout main failed' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "/tmp/wt-chk") {
+		t.Errorf("expected worktree path in error, got: %v", err)
+	}
+	// Should NOT be a ConflictError
+	var conflictErr *ConflictError
+	if errors.As(err, &conflictErr) {
+		t.Error("checkout failure should not produce ConflictError")
+	}
+}
+
+func TestMerge_RevParseFails(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// 1. git rebase — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 2. git checkout main — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 3. git merge --ff-only — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 4. git rev-parse HEAD — fails
+			{Stdout: "", Stderr: "fatal: bad default revision", Err: fmt.Errorf("exit status 128")},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/rev",
+		Worktree: "/tmp/wt-rev",
+		BeadID:   "oro-rev",
+	})
+
+	if err == nil {
+		t.Fatal("expected error on rev-parse failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "rev-parse HEAD failed") {
+		t.Errorf("expected 'rev-parse HEAD failed' in error, got: %v", err)
+	}
+	// Should NOT be a ConflictError
+	var conflictErr *ConflictError
+	if errors.As(err, &conflictErr) {
+		t.Error("rev-parse failure should not produce ConflictError")
+	}
+}
+
+func TestMerge_ContextCancelledDuringRebase(t *testing.T) {
+	// When the context is already cancelled and the rebase returns an error,
+	// the context error should take priority over conflict handling.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// git rebase fails because context is cancelled
+			{Stdout: "", Stderr: "signal: killed", Err: fmt.Errorf("signal: killed")},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	_, err := coord.Merge(ctx, Opts{
+		Branch:   "bead/ctx",
+		Worktree: "/tmp/wt-ctx",
+		BeadID:   "oro-ctx",
+	})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "merge cancelled") {
+		t.Errorf("expected 'merge cancelled' in error, got: %v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected error to wrap context.Canceled, got: %v", err)
+	}
+}
+
+func TestNewCoordinator_SetsGitRunner(t *testing.T) {
+	mock := &mockGitRunner{}
+	coord := NewCoordinator(mock)
+	if coord == nil {
+		t.Fatal("expected non-nil Coordinator")
+	}
+	if coord.git != mock {
+		t.Error("expected Coordinator.git to be the provided GitRunner")
+	}
+}
+
+func TestConflictError_EmptyFiles(t *testing.T) {
+	err := &ConflictError{
+		Files:  nil,
+		BeadID: "oro-empty",
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "oro-empty") {
+		t.Errorf("error message should contain bead ID, got: %s", msg)
+	}
+	if !strings.Contains(msg, "merge conflict") {
+		t.Errorf("error message should contain 'merge conflict', got: %s", msg)
+	}
+}
+
+func TestConflictError_SingleFile(t *testing.T) {
+	err := &ConflictError{
+		Files:  []string{"only.go"},
+		BeadID: "oro-single",
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "only.go") {
+		t.Errorf("error message should contain file name, got: %s", msg)
+	}
+}
+
+func TestParseConflictFiles_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		stderr   string
+		expected []string
+	}{
+		{
+			name:     "empty string",
+			stderr:   "",
+			expected: nil,
+		},
+		{
+			name:     "whitespace only",
+			stderr:   "   \n\t\n  ",
+			expected: nil,
+		},
+		{
+			name:     "conflict line with trailing whitespace",
+			stderr:   "CONFLICT (content): Merge conflict in spaced.go   \n",
+			expected: []string{"spaced.go"},
+		},
+		{
+			name: "mixed conflict types",
+			stderr: `CONFLICT (content): Merge conflict in a.go
+CONFLICT (rename/delete): Merge conflict in b.go
+CONFLICT (modify/delete): Merge conflict in c.go`,
+			expected: []string{"a.go", "b.go", "c.go"},
+		},
+		{
+			name:     "CONFLICT keyword in non-matching line",
+			stderr:   "CONFLICT something else entirely",
+			expected: nil,
+		},
+		{
+			name:     "file path with spaces",
+			stderr:   "CONFLICT (content): Merge conflict in path/to/my file.go",
+			expected: []string{"path/to/my file.go"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			files := parseConflictFiles(tc.stderr)
+			if len(files) != len(tc.expected) {
+				t.Fatalf("expected %d files, got %d: %v", len(tc.expected), len(files), files)
+			}
+			for i, f := range tc.expected {
+				if files[i] != f {
+					t.Errorf("file[%d]: expected %q, got %q", i, f, files[i])
+				}
+			}
+		})
+	}
+}
+
+func TestMerge_RebaseNoConflictPattern(t *testing.T) {
+	// Rebase fails but stderr doesn't contain CONFLICT pattern
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// git rebase fails with non-conflict error
+			{Stdout: "", Stderr: "fatal: not a git repository", Err: fmt.Errorf("exit status 128")},
+			// git rebase --abort
+			{Stdout: "", Stderr: "", Err: nil},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/noconf",
+		Worktree: "/tmp/wt-noconf",
+		BeadID:   "oro-noconf",
+	})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
+	}
+	// Files should be nil since no CONFLICT pattern matched
+	if conflictErr.Files != nil {
+		t.Errorf("expected nil files, got: %v", conflictErr.Files)
+	}
+}
+
 // --- Helper types ---
 
 // blockingGitRunner blocks the first call until signaled, then uses pre-configured results.

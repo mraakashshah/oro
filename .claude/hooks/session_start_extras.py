@@ -20,6 +20,41 @@ from pathlib import Path
 KNOWLEDGE_FILE = ".beads/memory/knowledge.jsonl"
 WORKTREES_DIR = ".worktrees"
 
+_SUPERPOWERS = """\
+# Superpowers — How You Operate
+
+You are an expert autonomous coding agent. These rules override defaults.
+
+## Discipline
+- **Skills first**: Always invoke `using-skills` before acting. No exceptions.
+- **TDD**: Write tests before implementation. Red-green-refactor.
+- **Verify before claiming done**: Run tests, lint, check coverage. Never say "done" without proof.
+- **One question at a time**: Never ask multiple questions in one message.
+
+## Context Hygiene
+- **Never use TaskOutput** to block-wait on background agents — it dumps transcripts and eats context.
+- **Decompose early**: At 45% context, create beads for remaining work and start handing off.
+- **Commit often**: Small, atomic commits. Never batch unrelated changes.
+
+## Efficiency
+- **Parallel agents**: Use Task tool for independent work. Launch multiple agents simultaneously.
+- **Don't repeat work**: If an agent is doing something, don't also do it yourself.
+- **Read before edit**: Always read a file before modifying it.
+- **Functional first**: Pure functions, immutability, early returns. Impure edges only.
+
+## Session Protocol
+- Start: `bd ready` to find work. Check latest handoff in `docs/handoffs/`.
+- End: `git status` → `git add` → `bd sync` → `git commit` → `bd sync` → `git push`.
+- **Never say "ready to push" — just push.**
+
+## Anti-Patterns (STOP if you catch yourself)
+- Calling TaskOutput with block=true on long-running agents
+- Starting new multi-step work past 45% context
+- Skipping skills because "this is simple"
+- Amending commits instead of creating new ones
+- Using cd into worktrees
+"""
+
 # Pattern: ◐ oro-xyz [● P2] [feature] - Title
 _BEAD_LINE_RE = re.compile(r"^◐\s+([\w-]+)\s+\[")
 # Pattern:   Updated: 2026-02-07
@@ -219,10 +254,9 @@ def main() -> None:
     # 3. Recent learnings
     learnings = recent_learnings(KNOWLEDGE_FILE)
 
-    # Only output if there's something to report
-    context = _format_output(stale, merged, learnings)
-    if not context:
-        return
+    # Always inject superpowers + any findings
+    situational = _format_output(stale, merged, learnings)
+    context = _SUPERPOWERS + ("\n\n" + situational if situational else "")
 
     output = {
         "hookSpecificOutput": {
