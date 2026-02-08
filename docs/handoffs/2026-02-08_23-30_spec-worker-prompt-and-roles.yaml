@@ -1,0 +1,89 @@
+---
+date: 2026-02-08
+status: partial
+---
+
+goal: >
+  Continued oro-cfp architecture spec session. Resolved worker prompt template
+  (12 sections), role-aware hooks (ORO_ROLE env var), confirmed architect/manager
+  share same directory safely, removed sibling beads from worker prompt (dispatcher's
+  concern, not worker's). Added gastown reference to yap/reference/.
+
+now: >
+  Continue oro-cfp — 2 open questions remain:
+  1. oro-9fu: Manager initial message (beacon) content — what the tmux send-keys
+     beacon should contain (responsibilities, oro CLI commands, behavioral guidelines)
+  2. oro-0i7: fsnotify watch target — .beads/ dir vs beads.db vs issues.jsonl
+  Read docs/plans/2026-02-08-oro-architecture-spec.md "Open Questions" section.
+  Ask human one question at a time. Once both resolved, close oro-cfp.
+
+test: go test -race -p 2 ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "Resolved worker prompt template (oro-tk7)"
+    files: [docs/plans/2026-02-08-oro-architecture-spec.md]
+    details: >
+      12 sections: role, bead, memory, coding rules (inlined from CLAUDE.md/rules
+      since -p gets nothing), TDD, quality gate (concrete cmd), worktree, git
+      conventions, beads tools, constraints, failure protocol, exit protocol.
+      Removed sibling beads (dispatcher's concern). Workers hand off through beads.
+
+  - task: "Added role-aware hooks requirement"
+    details: >
+      ORO_ROLE=architect|manager|worker env var set by oro start before launching
+      each claude session. Hooks check $ORO_ROLE to filter injected context.
+      session_start_extras.py injects too much for architect/manager roles.
+
+  - task: "Confirmed same-directory safe for architect+manager"
+    details: >
+      Beads uses SQLite WAL + BEGIN IMMEDIATE + 30s busy timeout. With beads
+      daemon running, writes serialized via RPC. No separate worktree needed.
+
+  - task: "Added gastown to yap/reference"
+    details: >
+      Cloned, renamed .claude to dot-claude. Logged gotcha in decisions doc.
+
+decisions:
+  - no_sibling_context_in_worker_prompt: >
+      Workers don't need to know about other active beads/workers. The dispatcher
+      handles assignment and the manager handles coordination. Conflicting edits
+      are a decomposition problem, not a worker problem.
+  - worker_handoff_through_beads: >
+      Workers create beads for remaining work (bd create) and exit. The Go binary
+      sends HANDOFF over UDS with learnings/decisions. Worker doesn't need to
+      know about UDS — it just creates beads and exits.
+  - role_aware_hooks: >
+      ORO_ROLE env var checked by hooks. Architect doesn't need TDD/commit
+      protocol. Manager doesn't need coding skills. Workers are -p so most
+      hooks don't apply anyway, but PreToolUse/PostToolUse still fire.
+  - inline_rules_in_worker_prompt: >
+      claude -p gets NO CLAUDE.md, no .claude/rules/, no skills. Everything
+      the worker needs must be inlined in the prompt template.
+
+worked:
+  - Asking "think hard, anything we may want?" surfaced 5 missing sections
+  - Human correction removed unnecessary sibling context
+
+failed:
+  - Suggested CLAUDE.md conditionals (don't exist)
+
+beads:
+  in_progress: [oro-cfp]
+  resolved_this_session: [oro-tk7]
+  remaining: [oro-9fu, oro-0i7]
+  blocked: [oro-9fu, oro-0i7]
+
+next:
+  - Resume oro-cfp with human
+  - Resolve oro-9fu (manager beacon content)
+  - Resolve oro-0i7 (fsnotify watch target)
+  - Close oro-cfp once both resolved
+  - Then unblocked: oro-is9 (push-based architecture), oro-mgf (worker launcher)
+
+files:
+  modified:
+    - docs/plans/2026-02-08-oro-architecture-spec.md
+    - docs/decisions-and-discoveries.md
+  created:
+    - yap/reference/gastown/ (cloned, .claude → dot-claude)
+    - docs/handoffs/2026-02-08_23-30_spec-worker-prompt-and-roles.yaml
