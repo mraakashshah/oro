@@ -1,0 +1,28 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Merge completed worker branches (is9.2, is9.3) to main and close is9 epic.
+
+done:
+  - "Merged is9.2 (oro directive CLI) — 4 new files, 359 insertions"
+  - "Merged is9.3 (fsnotify watcher) — 4 files, 151 insertions"
+  - "Closed is9 epic (all 3 sub-beads merged)"
+  - "Cleaned up ptz branch (worker was stuck, no commits)"
+
+decisions:
+  - preflight_deletion_bug: >
+      Both is9.2 and is9.3 sonnet workers independently deleted
+      preflight files outside their bead scope. Rebase onto main
+      auto-resolved this (main already had the files). Need worker
+      prompt guardrail to prevent this pattern.
+  - never_cd_into_worktree: >
+      Shell CWD corrupted when worktree was removed while cd'd into it.
+      NEVER cd into a worktree from the manager session.
+
+next:
+  - Spawn mgf worker (now unblocked by is9 closure)
+  - Respawn ptz worker (stuck on both attempts, needs investigation)
+  - Add worker prompt guardrail against deleting files outside bead scope
