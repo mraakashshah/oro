@@ -1,0 +1,60 @@
+---
+date: 2026-02-08
+status: partial
+---
+
+goal: >
+  Implemented oro-489.2 (cancel ops agents on shutdown) and oro-489.4
+  (abort in-flight merges on shutdown). Both committed, tested, pushed.
+  oro-wn2 agent ran but did NOT commit its changes — work is lost and
+  needs to be re-done (agent transcript has full implementation details).
+
+now: >
+  1. Pick up oro-wn2 (model field) — re-implement using the agent transcript
+     at /private/tmp/claude-501/-Users-as21-codehouse-oro/tasks/a5ae589.output
+     as reference (if it still exists). Otherwise implement from scratch.
+  2. oro-489.3 (remove worktrees on shutdown) is now unblocked since 489.2 is done.
+  3. Clean up the stale `oro` binary in repo root (untracked Mach-O executable).
+
+test: go test -race ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "oro-489.2: Cancel all active ops agents on dispatcher shutdown"
+    files:
+      - pkg/dispatcher/dispatcher.go (shutdownCleanup method, called from Run)
+      - pkg/dispatcher/dispatcher_test.go (TestDispatcherShutdownOpsCleanup with slowProcess mock)
+    details: >
+      Added shutdownCleanup() that calls ops.Active() + Cancel() for each
+      agent with logging. Uses slowProcess/slowSubprocessSpawner test mocks
+      to verify processes are killed during shutdown.
+
+  - task: "oro-489.4: Abort in-flight rebase/merge on dispatcher shutdown"
+    files:
+      - pkg/merge/merge.go (Abort method, abortMu + activeWorktree fields)
+      - pkg/merge/merge_test.go (TestCoordinatorAbortOnCancel, TestCoordinatorAbort_NoMergeInProgress)
+    details: >
+      Coordinator tracks activeWorktree via separate abortMu (avoids deadlock
+      with main merge mutex). Abort() reads activeWorktree and runs
+      'git rebase --abort' with a fresh 5s-timeout background context.
+
+decisions:
+  - separate_abort_mutex: >
+      Used abortMu instead of main mu to avoid deadlock — Abort() runs
+      concurrently while Merge() holds mu for the entire operation.
+  - fresh_context_for_abort: >
+      Abort() creates context.WithTimeout(Background, 5s) because the
+      caller's context is already cancelled at shutdown time.
+  - extracted_shutdownCleanup: >
+      Dispatcher.Run was over funlen limit (65 > 60), so extracted ops
+      cancellation + merge abort into shutdownCleanup() helper.
+
+findings:
+  - oro_wn2_agent_lost_work: >
+      Agent a5ae589 ran for 15 min editing files but never committed.
+      The bead is still open. Changes need to be re-implemented.
+
+beads:
+  completed: [oro-489.2, oro-489.4]
+  in_progress: [oro-wn2]
+  remaining: [oro-489.3]
+  epic: oro-489
