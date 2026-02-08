@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"time"
 
-	"oro/internal/runners"
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
@@ -204,13 +203,13 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		return nil, nil, fmt.Errorf("get working dir: %w", err)
 	}
 
-	runner := &runners.ExecCommandRunner{}
+	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := dispatcher.NewCLIBeadSource(runner)
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, runner)
 	esc := dispatcher.NewTmuxEscalator("", "", runner) // defaults: session "oro", pane "oro:0.1"
 
-	merger := merge.NewCoordinator(&runners.ExecGitRunner{})
-	opsSpawner := ops.NewSpawner(&runners.ClaudeOpsSpawner{})
+	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
+	opsSpawner := ops.NewSpawner(&ops.ClaudeOpsSpawner{})
 
 	cfg := dispatcher.Config{
 		SocketPath: sockPath,

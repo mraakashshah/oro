@@ -1,11 +1,7 @@
 version: 3
 allow:
   depOnAnyVendor: true
-  # deepScan disabled: internal/runners provides production implementations
-  # (os/exec-backed) of interfaces defined in pkg/. Deep scan flags this
-  # structural interface satisfaction as a cross-component dependency, but
-  # this is intentional DI — cmd/ wires runners into pkg/ interfaces.
-  deepScan: false
+  deepScan: true
 excludeFiles:
   - "yap/.+"
   - "references/.+"
