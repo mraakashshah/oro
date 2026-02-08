@@ -126,7 +126,7 @@ git -C "$REPO_ROOT" worktree add "$WORKTREE" -b "$BRANCH" main
 # 4. QUERY MEMORIES
 # =============================================================================
 log "Querying memories..."
-MEMORIES=$(cd "$REPO_ROOT" && oro recall "$BEAD_TITLE" 2>/dev/null || true)
+MEMORIES=$(cd "$REPO_ROOT" && oro recall "$BEAD_TITLE" 2>/dev/null) || true
 if [ -z "$MEMORIES" ]; then
     MEMORIES="No relevant memories found."
 fi
