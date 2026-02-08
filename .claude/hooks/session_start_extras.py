@@ -187,6 +187,63 @@ def recent_learnings(knowledge_file: str, n: int = 5) -> list[dict]:
     return sorted_entries[:n]
 
 
+HANDOFFS_DIR = "docs/handoffs"
+
+
+def latest_handoff(handoffs_dir: str) -> str:
+    """Read the latest handoff YAML file and return its contents (truncated to 2000 chars)."""
+    hd = Path(handoffs_dir)
+    if not hd.is_dir():
+        return ""
+    files = sorted(hd.glob("*.yaml"))
+    if not files:
+        return ""
+    try:
+        content = files[-1].read_text()
+        label = f"## Latest Handoff ({files[-1].name})\n```yaml\n"
+        return label + content[:2000] + ("\n...(truncated)" if len(content) > 2000 else "") + "\n```"
+    except OSError:
+        return ""
+
+
+def project_state() -> str:
+    """Gather bd ready, git status, git log, and current.md into a context string."""
+    sections = []
+
+    # bd ready
+    try:
+        result = subprocess.run(["bd", "ready"], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and result.stdout.strip():
+            sections.append(f"## Ready Work\n```\n{result.stdout.strip()}\n```")
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # git status + log
+    try:
+        status = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5)
+        log = subprocess.run(["git", "log", "--oneline", "-5"], capture_output=True, text=True, timeout=5)
+        git_lines = []
+        if status.returncode == 0:
+            git_lines.append(f"Status:\n{status.stdout.strip() or '(clean)'}")
+        if log.returncode == 0:
+            git_lines.append(f"Recent commits:\n{log.stdout.strip()}")
+        if git_lines:
+            sections.append("## Git State\n```\n" + "\n".join(git_lines) + "\n```")
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # current.md
+    current = Path("current.md")
+    if current.is_file():
+        try:
+            content = current.read_text()[:1500]
+            sections.append(f"## current.md\n{content}")
+        except OSError:
+            pass
+
+    return "\n\n".join(sections)
+
+
 def _format_output(stale: list[dict], merged: list[dict], learnings: list[dict]) -> str:
     """Format all findings into a single context string."""
     sections = []
@@ -254,9 +311,20 @@ def main() -> None:
     # 3. Recent learnings
     learnings = recent_learnings(KNOWLEDGE_FILE)
 
-    # Always inject superpowers + any findings
+    # 4. Latest handoff + project state (skip if .no-reprime exists)
+    handoff = ""
+    state = ""
+    if not Path(".no-reprime").is_file():
+        handoff = latest_handoff(HANDOFFS_DIR)
+        state = project_state()
+
+    # Always inject superpowers + project state + any findings
     situational = _format_output(stale, merged, learnings)
-    context = _SUPERPOWERS + ("\n\n" + situational if situational else "")
+    parts = [_SUPERPOWERS]
+    for section in (handoff, state, situational):
+        if section:
+            parts.append(section)
+    context = "\n\n".join(parts)
 
     output = {
         "hookSpecificOutput": {
