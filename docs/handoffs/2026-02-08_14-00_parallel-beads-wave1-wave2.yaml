@@ -1,0 +1,80 @@
+---
+date: 2026-02-08
+status: complete
+---
+
+goal: Executed 9 beads across 2 parallel waves using subagent worktrees, all merged and pushed
+now: Launch wave 3 — oro-98q.4, oro-bat, oro-r7b.2, oro-r7b.3, oro-r7b.5 are all ready (no blockers)
+test: go test -race ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "Wave 1: 5 parallel agents (oro-0q5, oro-98h, oro-adw, oro-98q, oro-ldf)"
+    files: [pkg/protocol/message.go, pkg/dispatcher/dispatcher.go, pkg/worker/worker.go, pkg/memory/embed.go, pkg/memory/memory.go, pkg/codesearch/bypass.go, pkg/codesearch/summarize.go]
+    details: "0q5 verified+closed. 98h quality gate at worker. adw typed handoff. 98q.1+98q.2 bypass+AST summarizer. ldf TF-IDF embeddings + hybrid RRF."
+
+  - task: "Wave 2: 4 parallel agents (oro-98q.3, oro-r7b.1, oro-hh0, oro-yfs)"
+    files: [cmd/oro-search-hook/main.go, cmd/oro/*.go, pkg/protocol/message.go, pkg/worker/worker.go]
+    details: "98q.3 hook binary entry point. r7b.1 CLI scaffold with cobra. hh0 graceful shutdown protocol. yfs memory extraction wired into worker."
+
+  - task: Resolved merge conflicts between oro-98h and oro-adw (dispatcher_test.go)
+    details: "Both modified test file. Kept all tests from both branches. Fixed missing conn setup in ReassignIncludesForPromptOutput test."
+
+  - task: Fixed agent oro-98q output (bad test function name, external test package, gosec permissions)
+    details: "Agent left uncommitted code with syntax errors. Fixed and committed manually."
+
+decisions:
+  - parallel_worktree_pattern: "Each agent gets its own worktree+branch. Manager merges ff-only. Works well for independent subsystems."
+  - tfidf_over_neural: "No pure-Go neural embedding lib without CGo. TF-IDF + RRF hybrid scoring is pragmatic — embedding quality matters less than fusion."
+  - fail_open_hook: "oro-search-hook returns allow ({}) on any error. Never blocks the user."
+
+worked:
+  - "Parallel 5-agent dispatch with worktree isolation — all completed and merged"
+  - "Sequential merge with stash/rebase/ff-only pattern"
+  - "TDD in subagents — tests written first, most agents self-sufficient"
+
+failed:
+  - "cd into worktree then removing it kills CWD — lost shell state, had to recover"
+  - "Agent oro-98q didn't commit its work (syntax error in test name). Had to fix manually."
+  - "Chaining worktree remove + rebase + merge in one command is fragile — do one step at a time"
+
+beads:
+  completed: [oro-0q5, oro-98h, oro-adw, oro-ldf, oro-98q.1, oro-98q.2, oro-98q.3, oro-r7b.1, oro-hh0, oro-yfs]
+  remaining:
+    ready: [oro-98q.4, oro-bat, oro-r7b.2, oro-r7b.3, oro-r7b.5]
+    blocked: [oro-r7b.4, oro-ujb]
+  epic: oro-ujb
+
+next:
+  - "Launch wave 3: oro-98q.4 + oro-bat + oro-r7b.2 + oro-r7b.3 + oro-r7b.5 (all independent)"
+  - "oro-r7b.3 (tmux session) unblocks oro-r7b.4 (manager prompt)"
+  - "oro-bat unblocks oro-ujb (MVP epic) — the critical path"
+  - "After wave 3, only oro-r7b.4 remains before MVP epic oro-ujb is unblocked"
+  - "Consider closing parent epics oro-98q and oro-r7b once all children land"
+
+files:
+  created:
+    - pkg/codesearch/bypass.go
+    - pkg/codesearch/bypass_test.go
+    - pkg/codesearch/summarize.go
+    - pkg/codesearch/summarize_test.go
+    - pkg/memory/embed.go
+    - pkg/memory/embed_test.go
+    - cmd/oro-search-hook/main.go
+    - cmd/oro-search-hook/main_test.go
+    - cmd/oro/root.go
+    - cmd/oro/cmd_start.go
+    - cmd/oro/cmd_stop.go
+    - cmd/oro/cmd_status.go
+    - cmd/oro/cmd_remember.go
+    - cmd/oro/cmd_recall.go
+    - cmd/oro/main_test.go
+  modified:
+    - pkg/protocol/message.go
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - pkg/worker/worker.go
+    - pkg/worker/worker_test.go
+    - pkg/memory/memory.go
+    - cmd/oro/main.go
+    - go.mod
+    - go.sum
