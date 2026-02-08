@@ -1,5 +1,11 @@
 # Decisions and Discoveries
 
+## 2026-02-08: Never clone repos with .claude/ into yap/reference/ without renaming
+**Tags:** #hooks #yap #reference #gotcha
+**Context:** Cloned gastown into `yap/reference/gastown`. The clone has its own `.claude/hooks/`. Shell CWD moved into the clone dir during `git clone`, and Claude Code's hook resolution found the *clone's* `.claude/` instead of ours. Every subsequent tool call failed — hooks couldn't find their scripts. Had to ask the user to manually fix it. Twice.
+**Decision:** Always rename `.claude` → `dot-claude` atomically with the clone: `git clone <repo> yap/reference/<name> && mv yap/reference/<name>/.claude yap/reference/<name>/dot-claude`. This matches the existing pattern (e.g., Continuous-Claude-v3/dot-claude/).
+**Implications:** Any future reference repo additions must follow this pattern. Consider adding a helper script to `yap/reference/` or updating `update_repos.sh`.
+
 ## 2026-02-07: Parallel agents skip quality gate — need pre-push hook
 **Tags:** #agents #quality-gate #hooks #process-gap
 **Context:** Dispatched two parallel agents to implement protocol beads. Both committed and pushed code that passed tests but failed golangci-lint, go-arch-lint, and gofumpt. Pre-commit hook only checks per-file lint on staged files, not cross-cutting checks.
