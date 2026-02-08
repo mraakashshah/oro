@@ -131,51 +131,24 @@ Git worktrees for parallel AI agents is now a well-established pattern:
 
 **Recommendation: A (Manager creates and destroys) for simple/medium tiers, C (pre-provisioned pool) for heavy tier.** In the simple tier, creating 2-3 worktrees takes seconds and the main session has full control. In the heavy tier (Oro's daemon model), the Dispatcher maintains a pool of ready worktrees to minimize dispatch latency.
 
-### Decision 7: Scale Tiers
+### Decision 7: Two Tiers (Not Three)
 
-This is the key architectural decision. Not all parallelism needs worktree isolation.
+Two tiers, not three. All agents always commit. The only difference is coordination.
 
 | Tier | When | Isolation | Commits | Merge | Coordination |
 |------|------|-----------|---------|-------|-------------|
-| **Simple** | 2-5 agents, disjoint files, short tasks | None (shared workspace) | Manager commits | N/A | Task notifications |
-| **Medium** | 2-10 agents, overlapping risk, or agents need to commit/test | Worktree per agent | Agent commits in worktree | Squash or FF-only, manager merges | File-based status |
-| **Heavy** | 5+ sustained workers, long-running, ralph handoff needed | Worktree per worker + daemon supervision | Agent commits freely | FF-only with rebase, merge coordinator | UDS + SQLite |
+| **Claude agents** | Task tool subagents in Claude Code sessions | Worktree per agent | Agent commits on branch | Manager merges ff-only to main | Task notifications |
+| **Oro agents** | Dispatcher + Worker binaries (full orchestration) | Worktree per worker + daemon | Agent commits on branch | Dispatcher merges ff-only via merge coordinator | UDS + SQLite |
 
-**Selection heuristic:**
+**Core principle:** Every agent gets a worktree. Every agent commits. No agent merges or pushes. The orchestrator (manager or Dispatcher) handles merge and push.
 
-```
-if agents_edit_disjoint_files AND task_duration < 5min AND no_test_verification_needed:
-    use SIMPLE (current skill, no worktrees)
-elif agents_may_overlap OR agents_need_to_commit OR agents_need_to_run_tests:
-    use MEDIUM (worktree per agent, manager merges)
-elif sustained_parallel_work OR ralph_handoff_needed OR daemon_orchestration:
-    use HEAVY (Oro's full Worker model)
-```
+**Selection:** If you're in a Claude Code session using the Task tool → Claude tier. If you're running the Oro daemon → Oro tier.
 
 ---
 
 ## Architecture: The Swarm Lifecycle
 
-### Simple Tier (No Worktrees)
-
-This is the current `dispatching-parallel-agents` skill, preserved as-is for lightweight cases.
-
-```
-Main Session
-  ├── Task(agent-1, "fix auth_test.go", run_in_background=true)
-  ├── Task(agent-2, "fix pipeline_test.py", run_in_background=true)
-  └── Task(agent-3, "fix api_test.go", run_in_background=true)
-       │
-       ▼ (agents edit files in shared workspace)
-       │
-  Main reviews completion notifications
-  Main runs full test suite
-  Main commits all changes
-```
-
-**Constraints:** Agents MUST NOT edit the same files. No git operations by agents. Manager commits everything.
-
-### Medium Tier (Worktree Per Agent)
+### Claude Agents (Task Tool Subagents)
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -231,7 +204,7 @@ Before marking complete:
 4. Verify clean working tree: git status
 ```
 
-### Heavy Tier (Oro's Full Worker Model)
+### Oro Agents (Dispatcher + Workers)
 
 This is the daemon-based orchestration described in `2026-02-07-orchestrator-ipc-comparison.md`. The lifecycle:
 
@@ -275,31 +248,16 @@ Dispatcher (Go daemon)
 
 ## Mapping to the `dispatching-parallel-agents` Skill
 
-The updated skill should be tier-aware. Proposed structure:
+The skill should be updated to use worktrees by default:
 
-### Current Skill (becomes "Simple Tier" section)
+1. **Manager creates worktrees + branches** before dispatch
+2. **Agent prompt template** includes worktree path, commit instructions, quality gate
+3. **Agent commits on its branch** (never merges or pushes)
+4. **Manager merges ff-only** after all agents complete
+5. **Manager cleans up worktrees** after merge and test verification
+6. **Conflict handling**: fail-fast + escalate to user
 
-The existing content is preserved verbatim as the simple tier. No worktrees, no agent commits, manager does everything.
-
-### New Addition: "Medium Tier" section
-
-Added to the skill when agents need isolation:
-
-1. **When to use medium tier**: Agents may touch overlapping files, agents need to run tests against committed state, tasks take >5 minutes, or more than 3 agents.
-
-2. **Worktree setup**: Manager creates worktrees before dispatch using the `using-git-worktrees` skill.
-
-3. **Agent prompt template**: Includes worktree path, commit instructions, test commands, and quality gate.
-
-4. **Merge protocol**: Manager sequentially merges agent branches after all complete. Squash for simple changes, ff-only for complex.
-
-5. **Conflict handling**: If merge conflicts, manager resolves or re-dispatches the conflicting agent with context about both sides.
-
-6. **Cleanup**: Manager removes worktrees after successful merge and test verification.
-
-### Heavy Tier: Reference Only
-
-The skill should reference Oro's full Worker model (`docs/plans/2026-02-07-orchestrator-ipc-comparison.md`) for sustained parallel work. This tier requires the Dispatcher daemon infrastructure and is not invocable from a single Claude Code session.
+For Oro's full daemon-based orchestration, reference `docs/plans/2026-02-07-orchestrator-ipc-comparison.md`.
 
 ---
 
@@ -309,11 +267,10 @@ The skill should reference Oro's full Worker model (`docs/plans/2026-02-07-orche
 
 | Trade-off | Why Accepted |
 |-----------|--------------|
-| **Worktree creation overhead (1-3s per agent)** | Negligible compared to agent runtime (minutes). Pre-provisioned pool eliminates this for heavy tier. |
+| **Worktree creation overhead (1-3s per agent)** | Negligible compared to agent runtime (minutes). Pre-provisioned pool eliminates this for Oro tier. |
 | **Sequential merge serialization** | Necessary to prevent merge races. Merge time is small (~seconds) compared to agent work time. |
-| **Manager as merge bottleneck (medium tier)** | Acceptable for 2-10 agents. Heavy tier moves merge to Dispatcher daemon. |
-| **Squash merge loses intermediate commits** | Acceptable for simple/medium tasks. Heavy tier preserves full history with ff-only. |
-| **No auto-conflict-resolution in simple/medium tiers** | Conflicts are rare when agents edit disjoint files. Fail-fast + escalation is simpler and safer. |
+| **Manager as merge bottleneck (Claude tier)** | Acceptable for 2-10 agents. Oro tier moves merge to Dispatcher daemon. |
+| **Fail-fast conflict resolution (Claude tier)** | Conflicts are rare with worktree isolation. Escalation to user is simpler and safer than auto-resolve. |
 
 ### Risks
 
@@ -330,13 +287,13 @@ The skill should reference Oro's full Worker model (`docs/plans/2026-02-07-orche
 
 ## Summary
 
-| Dimension | Simple | Medium | Heavy |
-|-----------|--------|--------|-------|
-| **Agent count** | 2-5 | 2-10 | 5+ sustained |
-| **Isolation** | None | Worktree | Worktree + daemon |
-| **Who commits** | Manager | Agent | Agent |
-| **Who merges** | N/A | Manager | Dispatcher |
-| **Coordination** | Task notifications | File-based | UDS + SQLite |
-| **Conflict resolution** | N/A (disjoint) | Fail-fast | Worker resolves |
-| **Infrastructure** | None | Git worktrees | Full Oro stack |
-| **Skill reference** | `dispatching-parallel-agents` (current) | Updated skill + `using-git-worktrees` | Oro Worker model |
+| Dimension | Claude Agents | Oro Agents |
+|-----------|--------------|------------|
+| **Runtime** | Task tool subagents | Dispatcher + Worker binaries |
+| **Isolation** | Worktree per agent | Worktree per worker + daemon |
+| **Who commits** | Agent (on branch) | Agent (on branch) |
+| **Who merges** | Manager (ff-only) | Dispatcher (ff-only via merge coordinator) |
+| **Coordination** | Task notifications | UDS + SQLite |
+| **Conflict resolution** | Fail-fast + escalate | Worker resolves, escalate to Architect |
+| **Infrastructure** | Git worktrees | Full Oro stack |
+| **Skill reference** | `dispatching-parallel-agents` | Oro Worker model docs |
