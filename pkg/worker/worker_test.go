@@ -3,8 +3,10 @@ package worker_test
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/memory"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
+
+	_ "modernc.org/sqlite"
 )
 
 // mockProcess implements worker.Process for testing.
@@ -60,6 +65,7 @@ type mockSpawner struct {
 	calls    []spawnCall
 	process  *mockProcess
 	spawnErr error
+	stdout   io.ReadCloser // optional: simulated subprocess stdout
 }
 
 type spawnCall struct {
@@ -71,14 +77,14 @@ func newMockSpawner() *mockSpawner {
 	return &mockSpawner{process: newMockProcess()}
 }
 
-func (s *mockSpawner) Spawn(_ context.Context, prompt, workdir string) (worker.Process, error) {
+func (s *mockSpawner) Spawn(_ context.Context, prompt, workdir string) (worker.Process, io.ReadCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, spawnCall{Prompt: prompt, Workdir: workdir})
 	if s.spawnErr != nil {
-		return nil, s.spawnErr
+		return nil, nil, s.spawnErr
 	}
-	return s.process, nil
+	return s.process, s.stdout, nil
 }
 
 func (s *mockSpawner) SpawnCalls() []spawnCall {
@@ -1954,10 +1960,10 @@ type connClosingSpawner struct {
 	connToClose net.Conn
 }
 
-func (s *connClosingSpawner) Spawn(_ context.Context, _, _ string) (worker.Process, error) {
+func (s *connClosingSpawner) Spawn(_ context.Context, _, _ string) (worker.Process, io.ReadCloser, error) {
 	// Close the connection so the next write (SendStatus) will fail
 	_ = s.connToClose.Close()
-	return s.process, nil
+	return s.process, nil, nil
 }
 
 func TestRun_ErrChWithCancelledContext(t *testing.T) {
@@ -2076,6 +2082,285 @@ func TestSendMessage_BuffersWhenDisconnected(t *testing.T) { //nolint:funlen // 
 	}
 	if len(msg.Reconnect.BufferedEvents) < 2 {
 		t.Errorf("expected at least 2 buffered events, got %d", len(msg.Reconnect.BufferedEvents))
+	}
+
+	cancel()
+	<-errCh
+}
+
+// setupTestDB creates an in-memory SQLite database with the full schema for memory tests.
+func setupTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("exec schema: %v", err)
+	}
+
+	return db
+}
+
+func TestWorkerExtractsMemories(t *testing.T) { //nolint:funlen // integration test
+	t.Parallel()
+
+	// Set up memory store backed by in-memory SQLite.
+	db := setupTestDB(t)
+	store := memory.NewStore(db)
+
+	// Create an io.Pipe to simulate subprocess stdout.
+	pr, pw := io.Pipe()
+
+	spawner := &mockSpawner{
+		process: newMockProcess(),
+		stdout:  pr,
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-mem", workerConn, spawner)
+	w.SetMemoryStore(store)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Send ASSIGN
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-mem",
+			Worktree: "/tmp/wt-mem",
+		},
+	})
+
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// Simulate subprocess output with [MEMORY] markers and implicit patterns.
+	output := strings.Join([]string{
+		"Starting work on bead...",
+		"[MEMORY] type=gotcha: ruff --fix must run before pyright",
+		"[MEMORY] type=lesson tags=go,testing: table-driven tests are cleaner",
+		"I learned that WAL mode needs a single writer.",
+		"Note: Always check error returns in Go",
+		"Some regular output line",
+		"Gotcha: FTS5 requires content sync triggers",
+		"Done with bead.",
+	}, "\n")
+	_, err := pw.Write([]byte(output + "\n"))
+	if err != nil {
+		t.Fatalf("write to pipe: %v", err)
+	}
+	_ = pw.Close()
+
+	// Allow time for the processOutput goroutine to read and process all lines.
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify [MEMORY] markers were extracted in real-time.
+	all, err := store.List(ctx, memory.ListOpts{})
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
+
+	// At this point, only explicit [MEMORY] markers should be stored (2 markers).
+	markerCount := 0
+	for _, m := range all {
+		if m.Source == "self_report" {
+			markerCount++
+		}
+	}
+	if markerCount != 2 {
+		t.Errorf("expected 2 explicit memory markers, got %d", markerCount)
+	}
+
+	// Now trigger handoff to extract implicit memories.
+	handoffCh := readMessageAsync(t, dispatcherConn)
+	if err := w.SendHandoff(ctx); err != nil {
+		t.Fatalf("send handoff: %v", err)
+	}
+
+	select {
+	case msg := <-handoffCh:
+		if msg.Type != protocol.MsgHandoff {
+			t.Fatalf("expected HANDOFF, got %s", msg.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for handoff message")
+	}
+
+	// After handoff, implicit memories should also be stored.
+	all, err = store.List(ctx, memory.ListOpts{})
+	if err != nil {
+		t.Fatalf("list memories after handoff: %v", err)
+	}
+
+	// Count daemon_extracted (implicit) memories.
+	implicitCount := 0
+	for _, m := range all {
+		if m.Source == "daemon_extracted" {
+			implicitCount++
+		}
+	}
+
+	// Expected implicit: "WAL mode needs a single writer" (I learned),
+	// "Always check error returns in Go" (Note:), "FTS5 requires content sync triggers" (Gotcha:)
+	if implicitCount != 3 {
+		t.Errorf("expected 3 implicit memories after handoff, got %d", implicitCount)
+		for _, m := range all {
+			t.Logf("  memory: source=%s type=%s content=%q", m.Source, m.Type, m.Content)
+		}
+	}
+
+	// Verify total: 2 explicit + 3 implicit = 5.
+	if len(all) != 5 {
+		t.Errorf("expected 5 total memories, got %d", len(all))
+		for _, m := range all {
+			t.Logf("  memory: source=%s type=%s content=%q", m.Source, m.Type, m.Content)
+		}
+	}
+
+	// Verify session text was accumulated.
+	sessionText := w.SessionText()
+	if !strings.Contains(sessionText, "Starting work on bead") {
+		t.Error("expected session text to contain subprocess output")
+	}
+	if !strings.Contains(sessionText, "[MEMORY] type=gotcha") {
+		t.Error("expected session text to contain memory marker lines")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integration test
+	t.Parallel()
+
+	db := setupTestDB(t)
+	store := memory.NewStore(db)
+
+	pr, pw := io.Pipe()
+
+	spawner := &mockSpawner{
+		process: newMockProcess(),
+		stdout:  pr,
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-mem-done", workerConn, spawner)
+	w.SetMemoryStore(store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Send ASSIGN
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-done-mem",
+			Worktree: "/tmp/wt-done-mem",
+		},
+	})
+
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// Simulate subprocess output with implicit patterns.
+	output := "Pattern: functional core with imperative shell\nDone.\n"
+	_, _ = pw.Write([]byte(output))
+	_ = pw.Close()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// SendDone should extract implicit memories.
+	doneCh := readMessageAsync(t, dispatcherConn)
+	if err := w.SendDone(ctx, true); err != nil {
+		t.Fatalf("send done: %v", err)
+	}
+
+	select {
+	case msg := <-doneCh:
+		if msg.Type != protocol.MsgDone {
+			t.Fatalf("expected DONE, got %s", msg.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for done message")
+	}
+
+	// Verify implicit memory was extracted.
+	all, err := store.List(ctx, memory.ListOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 implicit memory, got %d", len(all))
+		for _, m := range all {
+			t.Logf("  memory: source=%s type=%s content=%q", m.Source, m.Type, m.Content)
+		}
+	}
+	if len(all) > 0 && all[0].Type != "pattern" {
+		t.Errorf("expected type=pattern, got %q", all[0].Type)
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestWorkerNoMemoryStore_NoCrash(t *testing.T) {
+	t.Parallel()
+
+	// Verify worker works fine without a memory store (nil memStore).
+	pr, pw := io.Pipe()
+
+	spawner := &mockSpawner{
+		process: newMockProcess(),
+		stdout:  pr,
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-nomem", workerConn, spawner)
+	// Deliberately NOT setting memory store.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-nomem",
+			Worktree: "/tmp/wt-nomem",
+		},
+	})
+
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// Write output with markers (should not crash even without store).
+	_, _ = pw.Write([]byte("[MEMORY] type=gotcha: should not crash\nDone.\n"))
+	_ = pw.Close()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Session text should still be accumulated.
+	if !strings.Contains(w.SessionText(), "should not crash") {
+		t.Error("expected session text to accumulate even without memory store")
 	}
 
 	cancel()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -16,12 +17,14 @@ import (
 	"sync"
 	"time"
 
+	"oro/pkg/memory"
 	"oro/pkg/protocol"
 )
 
 // SubprocessSpawner abstracts claude -p invocation for testing.
+// Spawn returns the process, a reader for its stdout (may be nil), and any error.
 type SubprocessSpawner interface {
-	Spawn(ctx context.Context, prompt string, workdir string) (Process, error)
+	Spawn(ctx context.Context, prompt string, workdir string) (Process, io.ReadCloser, error)
 }
 
 // Process abstracts a running subprocess.
@@ -59,6 +62,8 @@ type Worker struct {
 	buffer              *MessageBuffer
 	disconnected        bool
 	contextPollInterval time.Duration
+	memStore            *memory.Store
+	sessionText         strings.Builder
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -93,6 +98,22 @@ func (w *Worker) SetContextPollInterval(d time.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.contextPollInterval = d
+}
+
+// SetMemoryStore attaches a memory store to the worker for memory extraction.
+// When set, [MEMORY] markers in subprocess stdout are captured in real-time,
+// and implicit patterns are extracted on handoff/completion.
+func (w *Worker) SetMemoryStore(s *memory.Store) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.memStore = s
+}
+
+// SessionText returns the accumulated subprocess output text. Thread-safe.
+func (w *Worker) SessionText() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.sessionText.String()
 }
 
 // Run is the main event loop. It reads messages from the UDS connection and
@@ -201,7 +222,7 @@ func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message
 }
 
 // handleAssign processes an ASSIGN message: stores state, spawns subprocess,
-// starts context watcher.
+// starts context watcher, and pipes stdout through memory extraction.
 func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if msg.Assign == nil {
 		return fmt.Errorf("ASSIGN message missing payload")
@@ -210,10 +231,11 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.mu.Lock()
 	w.beadID = msg.Assign.BeadID
 	w.worktree = msg.Assign.Worktree
+	w.sessionText.Reset()
 	w.mu.Unlock()
 
 	prompt := BuildPrompt(msg.Assign.BeadID, msg.Assign.Worktree)
-	proc, err := w.spawner.Spawn(ctx, prompt, msg.Assign.Worktree)
+	proc, stdout, err := w.spawner.Spawn(ctx, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
 	}
@@ -221,6 +243,11 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.mu.Lock()
 	w.proc = proc
 	w.mu.Unlock()
+
+	// Pipe subprocess stdout through memory marker extraction.
+	if stdout != nil {
+		go w.processOutput(ctx, stdout)
+	}
 
 	// Send STATUS running
 	if err := w.SendStatus(ctx, "running", ""); err != nil {
@@ -236,6 +263,56 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	}()
 
 	return nil
+}
+
+// processOutput reads subprocess stdout line by line, accumulates session text
+// for later implicit extraction, and extracts [MEMORY] markers in real-time.
+func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
+	defer func() { _ = stdout.Close() }()
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		w.mu.Lock()
+		w.sessionText.WriteString(line)
+		w.sessionText.WriteString("\n")
+		store := w.memStore
+		workerID := w.ID
+		beadID := w.beadID
+		w.mu.Unlock()
+
+		// Extract [MEMORY] markers in real-time.
+		if store != nil {
+			if params := memory.ParseMarker(line); params != nil {
+				params.WorkerID = workerID
+				params.BeadID = beadID
+				_, _ = store.Insert(ctx, *params) // best-effort; don't block on errors
+			}
+		}
+	}
+}
+
+// extractImplicitMemories runs ExtractImplicit on accumulated session text
+// and inserts results into the memory store. Called on handoff/completion.
+func (w *Worker) extractImplicitMemories(ctx context.Context) {
+	w.mu.Lock()
+	store := w.memStore
+	text := w.sessionText.String()
+	workerID := w.ID
+	beadID := w.beadID
+	w.mu.Unlock()
+
+	if store == nil || text == "" {
+		return
+	}
+
+	results := memory.ExtractImplicit(text)
+	for i := range results {
+		results[i].WorkerID = workerID
+		results[i].BeadID = beadID
+		_, _ = store.Insert(ctx, results[i]) // best-effort
+	}
 }
 
 // BuildPrompt constructs the prompt string for claude -p.
@@ -417,7 +494,10 @@ func (w *Worker) SendStatus(_ context.Context, state, result string) error {
 }
 
 // SendDone sends a DONE message to the Dispatcher with the quality gate result.
-func (w *Worker) SendDone(_ context.Context, qualityGatePassed bool) error {
+// Before sending, it extracts implicit memories from accumulated session text.
+func (w *Worker) SendDone(ctx context.Context, qualityGatePassed bool) error {
+	w.extractImplicitMemories(ctx)
+
 	w.mu.Lock()
 	beadID := w.beadID
 	w.mu.Unlock()
@@ -433,10 +513,12 @@ func (w *Worker) SendDone(_ context.Context, qualityGatePassed bool) error {
 }
 
 // SendHandoff sends a HANDOFF message to the Dispatcher.
-// Before sending, it reads typed context files from .oro/ in the worktree
-// and populates the HandoffPayload with learnings, decisions, files modified,
-// and a context summary for cross-session memory persistence.
-func (w *Worker) SendHandoff(_ context.Context) error {
+// Before sending, it extracts implicit memories from accumulated session text
+// and reads typed context files from .oro/ in the worktree to populate the
+// HandoffPayload with learnings, decisions, files modified, and a context
+// summary for cross-session memory persistence.
+func (w *Worker) SendHandoff(ctx context.Context) error {
+	w.extractImplicitMemories(ctx)
 	w.mu.Lock()
 	beadID := w.beadID
 	worktree := w.worktree
@@ -539,16 +621,21 @@ func RunQualityGate(ctx context.Context, worktree string) (bool, error) {
 type ClaudeSpawner struct{}
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.
-func (s *ClaudeSpawner) Spawn(ctx context.Context, prompt, workdir string) (Process, error) {
+// Returns the process and a ReadCloser for its stdout stream.
+func (s *ClaudeSpawner) Spawn(ctx context.Context, prompt, workdir string) (Process, io.ReadCloser, error) {
 	cmd := exec.CommandContext(ctx, "claude", "-p", prompt)
 	cmd.Dir = workdir
-	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start claude: %w", err)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
-	return &cmdProcess{cmd: cmd}, nil
+
+	if err := cmd.Start(); err != nil {
+		return nil, nil, fmt.Errorf("start claude: %w", err)
+	}
+	return &cmdProcess{cmd: cmd}, stdoutPipe, nil
 }
 
 // cmdProcess wraps *exec.Cmd to implement the Process interface.
