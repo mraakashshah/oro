@@ -5,16 +5,19 @@ type Directive string
 
 // Known directive values.
 const (
-	DirectiveStart Directive = "start" // Begin pulling and assigning ready work.
-	DirectiveStop  Directive = "stop"  // Finish current work, don't assign new beads.
-	DirectivePause Directive = "pause" // Hold new assignments, workers keep running.
-	DirectiveFocus Directive = "focus" // Prioritize beads from a specific epic.
+	DirectiveStart  Directive = "start"  // Begin pulling and assigning ready work.
+	DirectiveStop   Directive = "stop"   // Finish current work, don't assign new beads.
+	DirectivePause  Directive = "pause"  // Hold new assignments, workers keep running.
+	DirectiveResume Directive = "resume" // Resume from paused state.
+	DirectiveScale  Directive = "scale"  // Set target worker pool size.
+	DirectiveFocus  Directive = "focus"  // Prioritize beads from a specific epic.
+	DirectiveStatus Directive = "status" // Query dispatcher state.
 )
 
-// Valid reports whether d is one of the four known directive values.
+// Valid reports whether d is one of the known directive values.
 func (d Directive) Valid() bool {
 	switch d {
-	case DirectiveStart, DirectiveStop, DirectivePause, DirectiveFocus:
+	case DirectiveStart, DirectiveStop, DirectivePause, DirectiveResume, DirectiveScale, DirectiveFocus, DirectiveStatus:
 		return true
 	default:
 		return false
