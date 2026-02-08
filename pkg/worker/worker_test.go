@@ -91,7 +91,9 @@ func (s *mockSpawner) SpawnCalls() []spawnCall {
 // readMessage reads a single line-delimited JSON message from a connection.
 func readMessage(t *testing.T, conn net.Conn) protocol.Message {
 	t.Helper()
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
 		t.Fatalf("failed to read message: %v", scanner.Err())
@@ -109,7 +111,7 @@ func readMessageAsync(t *testing.T, conn net.Conn) <-chan protocol.Message {
 	t.Helper()
 	ch := make(chan protocol.Message, 1)
 	go func() {
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		scanner := bufio.NewScanner(conn)
 		if scanner.Scan() {
 			var msg protocol.Message
@@ -141,7 +143,7 @@ func TestReceiveAssign_StoresState(t *testing.T) {
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-1", workerConn, spawner)
 
@@ -196,7 +198,7 @@ func TestReceiveShutdown_ExitsCleanly(t *testing.T) {
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-2", workerConn, spawner)
 
@@ -243,7 +245,7 @@ func TestSendHeartbeat_ProducesCorrectJSON(t *testing.T) {
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-3", workerConn, spawner)
 
@@ -276,7 +278,7 @@ func TestSendDone_ProducesCorrectJSON(t *testing.T) {
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-4", workerConn, spawner)
 
@@ -304,7 +306,7 @@ func TestSendHandoff_ProducesCorrectJSON(t *testing.T) {
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-5", workerConn, spawner)
 
@@ -332,7 +334,7 @@ func TestSendReadyForReview_ProducesCorrectJSON(t *testing.T) {
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-6", workerConn, spawner)
 
@@ -360,7 +362,7 @@ func TestSendStatus_ProducesCorrectJSON(t *testing.T) {
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-7", workerConn, spawner)
 
@@ -386,7 +388,7 @@ func TestSendStatus_ProducesCorrectJSON(t *testing.T) {
 	}
 }
 
-func TestReconnection_BuffersAndResends(t *testing.T) {
+func TestReconnection_BuffersAndResends(t *testing.T) { //nolint:funlen // integration test requires sequential setup
 	t.Parallel()
 
 	spawner := newMockSpawner()
@@ -396,14 +398,14 @@ func TestReconnection_BuffersAndResends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
 	}
-	defer os.RemoveAll(sockDir)
+	defer func() { _ = os.RemoveAll(sockDir) }()
 	sockPath := filepath.Join(sockDir, "w.sock")
 
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	// Accept connections in background
 	type connResult struct {
@@ -457,7 +459,7 @@ func TestReconnection_BuffersAndResends(t *testing.T) {
 	_ = readMessage(t, dispConn1)
 
 	// Close the dispatcher side to simulate disconnect
-	dispConn1.Close()
+	_ = dispConn1.Close()
 
 	// Worker should reconnect. Accept the new connection.
 	var secondResult connResult
@@ -470,7 +472,7 @@ func TestReconnection_BuffersAndResends(t *testing.T) {
 		t.Fatalf("accept reconnect: %v", secondResult.err)
 	}
 	dispConn2 := secondResult.conn
-	defer dispConn2.Close()
+	defer func() { _ = dispConn2.Close() }()
 
 	// Worker should send a RECONNECT message with current state
 	msg := readMessage(t, dispConn2)
@@ -493,12 +495,12 @@ func TestReconnection_BuffersAndResends(t *testing.T) {
 	<-errCh
 }
 
-func TestContextWatcher_TriggersHandoffAbove70(t *testing.T) {
+func TestContextWatcher_TriggersHandoffAbove70(t *testing.T) { //nolint:funlen // integration test requires sequential setup
 	t.Parallel()
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-ctx", workerConn, spawner)
 	w.SetContextPollInterval(50 * time.Millisecond) // fast polling for test
@@ -512,7 +514,7 @@ func TestContextWatcher_TriggersHandoffAbove70(t *testing.T) {
 	// Create a temp worktree dir with .oro/context_pct
 	tmpDir := t.TempDir()
 	oroDir := filepath.Join(tmpDir, ".oro")
-	if err := os.MkdirAll(oroDir, 0o755); err != nil {
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
 		t.Fatal(err)
 	}
 
@@ -529,12 +531,12 @@ func TestContextWatcher_TriggersHandoffAbove70(t *testing.T) {
 	_ = readMessage(t, dispatcherConn)
 
 	// Write context_pct > 70
-	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("75"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("75"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	// Worker should detect and send HANDOFF. Read messages until we get one.
-	dispatcherConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_ = dispatcherConn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	scanner := bufio.NewScanner(dispatcherConn)
 	gotHandoff := false
 	for scanner.Scan() {
@@ -576,7 +578,7 @@ func TestContextWatcher_NoFileIsNotError(t *testing.T) {
 
 	spawner := newMockSpawner()
 	dispatcherConn, workerConn := net.Pipe()
-	defer dispatcherConn.Close()
+	defer func() { _ = dispatcherConn.Close() }()
 
 	w := worker.NewWithConn("w-nofile", workerConn, spawner)
 	w.SetContextPollInterval(50 * time.Millisecond)

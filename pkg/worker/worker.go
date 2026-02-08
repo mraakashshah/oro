@@ -230,7 +230,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 			}
 
 			pctPath := filepath.Join(wt, ".oro", "context_pct")
-			data, err := os.ReadFile(pctPath)
+			data, err := os.ReadFile(pctPath) //nolint:gosec // path is constructed internally, not user input
 			if err != nil {
 				// File doesn't exist or unreadable — not an error
 				continue
@@ -271,16 +271,16 @@ func (w *Worker) reconnect(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("worker reconnect: %w", ctx.Err())
 		default:
 		}
 
-		jitter := time.Duration(rand.Int64N(int64(2*reconnectJitter))) - reconnectJitter
+		jitter := time.Duration(rand.Int64N(int64(2*reconnectJitter))) - reconnectJitter //nolint:gosec // jitter doesn't need crypto rand
 		wait := reconnectBaseInterval + jitter
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("worker reconnect: %w", ctx.Err())
 		case <-time.After(wait):
 		}
 
@@ -446,12 +446,18 @@ type cmdProcess struct {
 }
 
 func (p *cmdProcess) Wait() error {
-	return p.cmd.Wait()
+	if err := p.cmd.Wait(); err != nil {
+		return fmt.Errorf("claude process wait: %w", err)
+	}
+	return nil
 }
 
 func (p *cmdProcess) Kill() error {
 	if p.cmd.Process == nil {
 		return nil
 	}
-	return p.cmd.Process.Kill()
+	if err := p.cmd.Process.Kill(); err != nil {
+		return fmt.Errorf("kill claude process: %w", err)
+	}
+	return nil
 }

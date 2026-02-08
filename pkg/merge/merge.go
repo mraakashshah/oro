@@ -21,15 +21,15 @@ type GitRunner interface {
 	Run(ctx context.Context, dir string, args ...string) (stdout string, stderr string, err error)
 }
 
-// MergeOpts holds parameters for a single merge operation.
-type MergeOpts struct {
+// Opts holds parameters for a single merge operation.
+type Opts struct {
 	Branch   string // branch to merge (e.g., "bead/abc")
 	Worktree string // path to the worktree
 	BeadID   string // for logging/context
 }
 
-// MergeResult holds the outcome of a successful merge.
-type MergeResult struct {
+// Result holds the outcome of a successful merge.
+type Result struct {
 	CommitSHA string
 }
 
@@ -65,7 +65,7 @@ func NewCoordinator(git GitRunner) *Coordinator {
 //  3. If conflict: git rebase --abort, return *ConflictError
 //
 // Only one Merge runs at a time (mutex-protected).
-func (c *Coordinator) Merge(ctx context.Context, opts MergeOpts) (*MergeResult, error) {
+func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -74,7 +74,7 @@ func (c *Coordinator) Merge(ctx context.Context, opts MergeOpts) (*MergeResult, 
 	if err != nil {
 		// Context cancelled/deadline exceeded takes priority over conflict handling
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, fmt.Errorf("merge cancelled: %w", ctx.Err())
 		}
 		// Rebase failed — abort and return conflict error
 		return nil, c.handleRebaseFailure(ctx, opts, stderr)
@@ -98,14 +98,14 @@ func (c *Coordinator) Merge(ctx context.Context, opts MergeOpts) (*MergeResult, 
 		return nil, fmt.Errorf("rev-parse HEAD failed: %w", err)
 	}
 
-	return &MergeResult{
+	return &Result{
 		CommitSHA: strings.TrimSpace(stdout),
 	}, nil
 }
 
 // handleRebaseFailure aborts the in-progress rebase and returns a ConflictError
 // with the parsed conflicting file paths.
-func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts MergeOpts, rebaseStderr string) error {
+func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts Opts, rebaseStderr string) error {
 	// Best-effort abort — even if this fails, we still return the conflict error.
 	_, _, _ = c.git.Run(ctx, opts.Worktree, "rebase", "--abort")
 

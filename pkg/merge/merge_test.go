@@ -1,7 +1,8 @@
-package merge
+package merge //nolint:testpackage // internal test needs access to unexported types
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -31,7 +32,7 @@ type mockGitRunner struct {
 	results []mockResult
 }
 
-func (m *mockGitRunner) Run(ctx context.Context, dir string, args ...string) (string, string, error) {
+func (m *mockGitRunner) Run(_ context.Context, dir string, args ...string) (string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -70,7 +71,7 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 	}
 
 	coord := NewCoordinator(mock)
-	opts := MergeOpts{
+	opts := Opts{
 		Branch:   "bead/abc",
 		Worktree: "/tmp/wt-abc",
 		BeadID:   "oro-abc",
@@ -117,7 +118,7 @@ CONFLICT (content): Merge conflict in pkg/util/helper.go
 	}
 
 	coord := NewCoordinator(mock)
-	opts := MergeOpts{
+	opts := Opts{
 		Branch:   "bead/xyz",
 		Worktree: "/tmp/wt-xyz",
 		BeadID:   "oro-xyz",
@@ -128,8 +129,8 @@ CONFLICT (content): Merge conflict in pkg/util/helper.go
 		t.Fatal("expected error, got nil")
 	}
 
-	conflictErr, ok := err.(*ConflictError)
-	if !ok {
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) {
 		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
 	}
 
@@ -156,10 +157,10 @@ CONFLICT (content): Merge conflict in pkg/util/helper.go
 	assertArgs(t, calls[1], "/tmp/wt-xyz", "rebase", "--abort")
 }
 
-func TestMerge_LockPreventsConcurrentMerges(t *testing.T) {
+func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // concurrency test requires sequential setup
 	// First merge blocks until we signal it
 	var firstMergeStarted atomic.Bool
-	var unblockFirst chan struct{} = make(chan struct{})
+	unblockFirst := make(chan struct{})
 
 	// A blocking GitRunner for the first merge
 	blockingRunner := &blockingGitRunner{
@@ -182,19 +183,17 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) {
 	coord := NewCoordinator(blockingRunner)
 
 	var wg sync.WaitGroup
-	var secondStartedAt time.Time
-	var firstFinishedAt time.Time
 
 	// Start first merge
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = coord.Merge(context.Background(), MergeOpts{
+		_, _ = coord.Merge(context.Background(), Opts{
 			Branch:   "bead/first",
 			Worktree: "/tmp/wt-1",
 			BeadID:   "oro-1",
 		})
-		firstFinishedAt = time.Now()
+		_ = time.Now() // first finished
 	}()
 
 	// Wait for first merge to actually start
@@ -206,8 +205,8 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		secondStartedAt = time.Now()
-		_, _ = coord.Merge(context.Background(), MergeOpts{
+		_ = time.Now() // second started
+		_, _ = coord.Merge(context.Background(), Opts{
 			Branch:   "bead/second",
 			Worktree: "/tmp/wt-2",
 			BeadID:   "oro-2",
@@ -223,13 +222,6 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) {
 	wg.Wait()
 
 	// The second merge must have started its git operations after the first finished
-	if secondStartedAt.After(firstFinishedAt) {
-		// This is expected — second started attempting after first finished
-		// Actually we need to verify the second goroutine was blocked.
-		// The timing check: second goroutine was started before first finished,
-		// but the second's Merge() call should not have progressed until after first completed.
-	}
-
 	// Verify all 8 git calls happened sequentially (4 per merge)
 	calls := blockingRunner.getCalls()
 	if len(calls) != 8 {
@@ -258,7 +250,7 @@ func TestMerge_ContextCancellation(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := coord.Merge(ctx, MergeOpts{
+		_, err := coord.Merge(ctx, Opts{
 			Branch:   "bead/cancel",
 			Worktree: "/tmp/wt-cancel",
 			BeadID:   "oro-cancel",
@@ -357,7 +349,7 @@ func TestMerge_RebaseAbortFails(t *testing.T) {
 	}
 
 	coord := NewCoordinator(mock)
-	_, err := coord.Merge(context.Background(), MergeOpts{
+	_, err := coord.Merge(context.Background(), Opts{
 		Branch:   "bead/bad",
 		Worktree: "/tmp/wt-bad",
 		BeadID:   "oro-bad",
@@ -367,7 +359,8 @@ func TestMerge_RebaseAbortFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if _, ok := err.(*ConflictError); !ok {
+	var conflictErr2 *ConflictError
+	if !errors.As(err, &conflictErr2) {
 		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
 	}
 }
@@ -386,7 +379,7 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 	}
 
 	coord := NewCoordinator(mock)
-	_, err := coord.Merge(context.Background(), MergeOpts{
+	_, err := coord.Merge(context.Background(), Opts{
 		Branch:   "bead/ff",
 		Worktree: "/tmp/wt-ff",
 		BeadID:   "oro-ff",
@@ -396,7 +389,8 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 		t.Fatal("expected error on ff-only failure, got nil")
 	}
 	// Should NOT be a ConflictError — this is a different kind of failure
-	if _, ok := err.(*ConflictError); ok {
+	var conflictErr3 *ConflictError
+	if errors.As(err, &conflictErr3) {
 		t.Error("ff-only failure should not produce ConflictError")
 	}
 }
@@ -412,7 +406,7 @@ type blockingGitRunner struct {
 	firstCalled atomic.Bool
 }
 
-func (b *blockingGitRunner) Run(ctx context.Context, dir string, args ...string) (string, string, error) {
+func (b *blockingGitRunner) Run(_ context.Context, dir string, args ...string) (string, string, error) {
 	// Call onFirstCall only once
 	if b.firstCalled.CompareAndSwap(false, true) {
 		if b.onFirstCall != nil {
@@ -445,10 +439,10 @@ type contextAwareGitRunner struct {
 	blockCh chan struct{}
 }
 
-func (c *contextAwareGitRunner) Run(ctx context.Context, dir string, args ...string) (string, string, error) {
+func (c *contextAwareGitRunner) Run(ctx context.Context, _ string, _ ...string) (string, string, error) {
 	select {
 	case <-ctx.Done():
-		return "", "", ctx.Err()
+		return "", "", fmt.Errorf("test context: %w", ctx.Err())
 	case <-c.blockCh:
 		return "", "", nil
 	}
