@@ -26,6 +26,15 @@
 				]
 			},
 			{
+				"matcher": "Bash",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/worktree_guard.py"
+					}
+				]
+			},
+			{
 				"matcher": "Task",
 				"hooks": [
 					{

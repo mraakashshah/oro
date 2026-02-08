@@ -82,6 +82,31 @@ Tests passing (<N> tests, 0 failures)
 Ready to implement <feature-name>
 ```
 
+## Worktree Removal (CRITICAL)
+
+Removing a worktree while the shell cwd is inside it **permanently kills the Bash tool** — every subsequent command returns exit code 1 with no output. This is a known Claude Code bug (GitHub #9190) with no recovery except session restart.
+
+**Mandatory sequence:**
+
+```bash
+# 1. ALWAYS cd to project root FIRST
+cd "$(git rev-parse --show-toplevel)"
+
+# 2. THEN remove the worktree
+git worktree remove .worktrees/$BRANCH_NAME
+
+# 3. Verify bash still works
+echo "bash ok"
+```
+
+**Rules:**
+- NEVER chain worktree removal with other commands (`&&`, `;`)
+- NEVER remove a worktree from inside it or any of its subdirectories
+- ALWAYS verify bash works after removal before continuing
+- A PreToolUse hook (`worktree_guard.py`) will block dangerous removals, but don't rely on it — follow the sequence above
+
+**If bash dies anyway:** The session is unrecoverable. Use `/clear` or restart Claude Code.
+
 ## Quick Reference
 
 | Situation | Action |
@@ -91,6 +116,7 @@ Ready to implement <feature-name>
 | Neither exists | Check CLAUDE.md → ask user |
 | Directory not ignored | Add to .gitignore + commit |
 | Tests fail at baseline | Report + ask |
+| Removing a worktree | cd to project root first, then remove |
 
 ## Red Flags
 
@@ -98,3 +124,5 @@ Ready to implement <feature-name>
 - Skipping baseline test verification
 - Proceeding with failing tests without asking
 - Assuming directory location when ambiguous
+- Running `git worktree remove` without first `cd` to project root
+- Chaining worktree removal with other commands
