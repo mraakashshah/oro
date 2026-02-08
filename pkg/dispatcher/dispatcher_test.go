@@ -1677,6 +1677,16 @@ func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:fun
 		t.Fatalf("seed memory: %v", err)
 	}
 
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
 	// Set bead with title that matches the memory
 	beadSrc.SetBeads([]Bead{{ID: "bead-reassign", Title: "fix linting with ruff and pyright", Priority: 1}})
 
