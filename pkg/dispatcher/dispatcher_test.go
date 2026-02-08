@@ -1904,6 +1904,194 @@ func TestAssignIncludesMemories(t *testing.T) { //nolint:funlen // integration t
 	}
 }
 
+func TestDispatcherShutdownBroadcast(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	// Set a short shutdown timeout for the test
+	d.cfg.ShutdownTimeout = 500 * time.Millisecond
+
+	cancel := startDispatcher(t, d)
+
+	// Connect 3 workers
+	type workerConn struct {
+		id   string
+		conn net.Conn
+	}
+	workers := make([]workerConn, 3)
+	for i := 0; i < 3; i++ {
+		wid := fmt.Sprintf("w-shutdown-%d", i)
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: wid, ContextPct: 5},
+		})
+		workers[i] = workerConn{id: wid, conn: conn}
+	}
+	waitForWorkers(t, d, 3, 2*time.Second)
+
+	// Start and assign beads to all workers
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-sd-0", Title: "Shutdown test 0", Priority: 1},
+		{ID: "bead-sd-1", Title: "Shutdown test 1", Priority: 2},
+		{ID: "bead-sd-2", Title: "Shutdown test 2", Priority: 3},
+	})
+
+	// Each worker reads its ASSIGN
+	for i, w := range workers {
+		msg, ok := readMsg(t, w.conn, 3*time.Second)
+		if !ok {
+			t.Fatalf("worker %d: expected ASSIGN", i)
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("worker %d: expected ASSIGN, got %s", i, msg.Type)
+		}
+	}
+	beadSrc.SetBeads(nil)
+
+	// Cancel the context — this simulates shutdown
+	cancel()
+
+	// ALL workers should receive PREPARE_SHUTDOWN
+	for i, w := range workers {
+		msg, ok := readMsg(t, w.conn, 2*time.Second)
+		if !ok {
+			t.Fatalf("worker %d: expected PREPARE_SHUTDOWN after context cancel", i)
+		}
+		if msg.Type != protocol.MsgPrepareShutdown {
+			t.Fatalf("worker %d: expected PREPARE_SHUTDOWN, got %s", i, msg.Type)
+		}
+	}
+}
+
+func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	// Very short shutdown timeout
+	d.cfg.ShutdownTimeout = 300 * time.Millisecond
+
+	cancel := startDispatcher(t, d)
+
+	// Connect 2 workers
+	conn1, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-force-0", ContextPct: 5},
+	})
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-force-1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 2, 2*time.Second)
+
+	// Start and assign beads
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-force-0", Title: "Force 0", Priority: 1},
+		{ID: "bead-force-1", Title: "Force 1", Priority: 2},
+	})
+
+	// Consume ASSIGN for both workers
+	_, ok := readMsg(t, conn1, 3*time.Second)
+	if !ok {
+		t.Fatal("worker 0: expected ASSIGN")
+	}
+	_, ok = readMsg(t, conn2, 3*time.Second)
+	if !ok {
+		t.Fatal("worker 1: expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Cancel context to trigger shutdown
+	cancel()
+
+	// Both workers should receive PREPARE_SHUTDOWN
+	msg1, ok := readMsg(t, conn1, 2*time.Second)
+	if !ok {
+		t.Fatal("worker 0: expected PREPARE_SHUTDOWN")
+	}
+	if msg1.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("worker 0: expected PREPARE_SHUTDOWN, got %s", msg1.Type)
+	}
+	msg2, ok := readMsg(t, conn2, 2*time.Second)
+	if !ok {
+		t.Fatal("worker 1: expected PREPARE_SHUTDOWN")
+	}
+	if msg2.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("worker 1: expected PREPARE_SHUTDOWN, got %s", msg2.Type)
+	}
+
+	// Do NOT send SHUTDOWN_APPROVED — workers stay silent
+	// After ShutdownTimeout, the dispatcher should force-close connections.
+	// The workers should get disconnected (reads will fail or return EOF).
+	// We verify by polling ConnectedWorkers until it reaches 0.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.ConnectedWorkers() == 0 {
+			return // success
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("expected 0 connected workers after shutdown timeout, got %d", d.ConnectedWorkers())
+}
+
+func TestConfig_ShutdownTimeout_Default(t *testing.T) {
+	cfg := Config{SocketPath: "/tmp/test.sock", DBPath: ":memory:"}
+	resolved := cfg.withDefaults()
+	if resolved.ShutdownTimeout != 10*time.Second {
+		t.Fatalf("ShutdownTimeout: got %v, want 10s", resolved.ShutdownTimeout)
+	}
+}
+
+func TestAssignBeadCleansUpOnFailure(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+
+	// Create a broken connection: net.Pipe() then close the read end
+	server, client := net.Pipe()
+	_ = client.Close() // close reader — writes to server will fail
+
+	// Register the worker with the broken connection
+	d.registerWorker("w-broken", server)
+	t.Cleanup(func() { _ = server.Close() })
+
+	ctx := context.Background()
+	bead := Bead{ID: "bead-cleanup", Title: "Cleanup test", Priority: 1}
+
+	// Grab the tracked worker so we can call assignBead directly
+	d.mu.Lock()
+	w := d.workers["w-broken"]
+	d.mu.Unlock()
+
+	// Call assignBead — worktree creation succeeds, but sendToWorker should fail
+	d.assignBead(ctx, w, bead)
+
+	// Assert the worktree was cleaned up
+	wtMgr.mu.Lock()
+	removed := make([]string, len(wtMgr.removed))
+	copy(removed, wtMgr.removed)
+	wtMgr.mu.Unlock()
+
+	expectedPath := "/tmp/worktree-bead-cleanup"
+	found := false
+	for _, r := range removed {
+		if r == expectedPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected worktree %q to be removed after sendToWorker failure, removed: %v", expectedPath, removed)
+	}
+
+	// Verify worktree_cleanup event was logged
+	if eventCount(t, d.db, "worktree_cleanup") == 0 {
+		t.Fatal("expected 'worktree_cleanup' event after sendToWorker failure")
+	}
+}
+
 func TestConflictError_ErrorsAs(t *testing.T) {
 	err := fmt.Errorf("wrapped: %w", &merge.ConflictError{Files: []string{"a.go"}, BeadID: "b1"})
 	var ce *merge.ConflictError

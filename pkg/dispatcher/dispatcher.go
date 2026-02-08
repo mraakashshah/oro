@@ -107,6 +107,7 @@ type Config struct {
 	MaxWorkers       int           // Worker pool size (default 5).
 	HeartbeatTimeout time.Duration // Worker heartbeat timeout (default 45s).
 	PollInterval     time.Duration // bd ready poll interval (default 10s).
+	ShutdownTimeout  time.Duration // Graceful shutdown timeout (default 10s).
 }
 
 func (c *Config) withDefaults() Config {
@@ -119,6 +120,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.PollInterval == 0 {
 		out.PollInterval = 10 * time.Second
+	}
+	if out.ShutdownTimeout == 0 {
+		out.ShutdownTimeout = 10 * time.Second
 	}
 	return out
 }
@@ -213,8 +217,47 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 
-	_ = ln.Close()
-	return nil
+	// --- Graceful shutdown: broadcast PREPARE_SHUTDOWN to all workers ---
+
+	// Collect worker IDs under lock.
+	d.mu.Lock()
+	workerIDs := make([]string, 0, len(d.workers))
+	for id := range d.workers {
+		workerIDs = append(workerIDs, id)
+	}
+	d.mu.Unlock()
+
+	// Initiate graceful shutdown for each worker (non-blocking).
+	for _, id := range workerIDs {
+		d.GracefulShutdownWorker(id, d.cfg.ShutdownTimeout)
+	}
+
+	// Wait up to ShutdownTimeout for all workers to drain.
+	shutdownDeadline := time.NewTimer(d.cfg.ShutdownTimeout)
+	defer shutdownDeadline.Stop()
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-shutdownDeadline.C:
+			// Timeout expired — force-close all remaining connections.
+			d.mu.Lock()
+			for id, w := range d.workers {
+				_ = w.conn.Close()
+				delete(d.workers, id)
+			}
+			d.mu.Unlock()
+			_ = ln.Close()
+			return nil
+		case <-ticker.C:
+			if d.ConnectedWorkers() == 0 {
+				_ = ln.Close()
+				return nil
+			}
+		}
+	}
 }
 
 // --- UDS server ---
@@ -735,7 +778,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	w.state = WorkerBusy
 	w.beadID = bead.ID
 	w.worktree = worktree
-	_ = d.sendToWorker(w, protocol.Message{
+	err = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:        bead.ID,
@@ -744,6 +787,11 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 		},
 	})
 	d.mu.Unlock()
+
+	if err != nil {
+		_ = d.worktrees.Remove(ctx, worktree)
+		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
+	}
 }
 
 // --- Directive / command processing ---
