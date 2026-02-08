@@ -95,10 +95,10 @@ func TestFullStart(t *testing.T) {
 		if managerSendKeys == nil {
 			t.Fatal("expected send-keys to oro:0.1 for manager pane")
 		}
-		// The manager send-keys should reference the real prompt (or at least "claude -p").
+		// The manager send-keys should reference interactive claude (not -p).
 		managerCmd := strings.Join(managerSendKeys, " ")
-		if !strings.Contains(managerCmd, "claude -p") {
-			t.Errorf("expected manager pane to run 'claude -p ...', got: %s", managerCmd)
+		if !strings.Contains(managerCmd, "claude '") {
+			t.Errorf("expected manager pane to run interactive 'claude ...', got: %s", managerCmd)
 		}
 		// Verify it includes content from the real ManagerPrompt (check for a distinctive phrase).
 		if !strings.Contains(managerCmd, "Oro Manager") {
@@ -212,7 +212,7 @@ func TestCreateWithManagerPrompt(t *testing.T) {
 
 		sess := &TmuxSession{Name: "oro", Runner: fake}
 		prompt := "You are a test manager."
-		err := sess.Create(prompt)
+		err := sess.Create("You are a test architect.", prompt)
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
