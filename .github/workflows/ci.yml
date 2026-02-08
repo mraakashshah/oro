@@ -113,30 +113,26 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Install dependencies
-        run: uv sync
-
       # Tier 1: Formatting
       - name: ruff format
-        run: uv run ruff format --check .
+        run: uvx ruff format --check .
 
       # Tier 2: Linting
       - name: ruff check
-        run: uv run ruff check .
+        run: uvx ruff check .
 
       - name: pylint (errors only)
         run: |
-          uv pip install pylint
           find . -name '*.py' -not -path './references/*' -not -path './yap/*' \
             -not -path './archive/*' -not -path './.worktrees/*' -not -path './.venv/*' \
-            | xargs uv run pylint --disable=all --enable=E
+            | xargs uvx pylint --disable=all --enable=E
 
       # Tier 3: Type checking
       - name: pyright
-        run: |
-          uv pip install pyright
-          uv run pyright
+        run: uvx pyright
 
       # Tier 4: Testing
       - name: pytest
-        run: uv run pytest
+        run: |
+          uv sync
+          uv run pytest

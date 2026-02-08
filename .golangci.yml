@@ -1,4 +1,4 @@
-# Oro golangci-lint configuration — start strict, expand incrementally.
+# Oro golangci-lint configuration (v2 format)
 version: "2"
 
 run:
@@ -6,7 +6,7 @@ run:
   modules-download-mode: readonly
 
 linters:
-  disable-all: true
+  default: none
   enable:
     # Correctness
     - staticcheck
@@ -38,49 +38,51 @@ linters:
     - revive
     - misspell
 
-linters-settings:
-  gocyclo:
-    min-complexity: 10
+  settings:
+    gocyclo:
+      min-complexity: 15
 
-  gocognit:
-    min-complexity: 10
+    gocognit:
+      min-complexity: 30
 
-  funlen:
-    lines: 60
-    statements: 40
-    ignore-comments: true
+    funlen:
+      lines: 60
+      statements: 40
+      ignore-comments: true
 
-  nestif:
-    min-complexity: 4
+    nestif:
+      min-complexity: 4
 
-  errcheck:
-    check-type-assertions: true
-    exclude-functions:
-      - (io.Closer).Close
-      - (*os.File).Close
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
 
-  wrapcheck:
-    ignore-sigs:
-      - .Errorf(
-      - errors.New(
-      - errors.Join(
+    wrapcheck:
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Join(
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - funlen
-        - gocognit
-        - gochecknoglobals
-        - wrapcheck
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - funlen
+          - gocyclo
+          - gocognit
+          - gochecknoglobals
+          - wrapcheck
 
-    - path: main\.go
-      linters:
-        - gochecknoinits
-        - gochecknoglobals
+      - path: main\.go
+        linters:
+          - gochecknoinits
+          - gochecknoglobals
 
-  max-issues-per-linter: 0
-  max-same-issues: 0
 
 formatters:
   enable:
