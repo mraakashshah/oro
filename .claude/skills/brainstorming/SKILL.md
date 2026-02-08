@@ -18,13 +18,33 @@ Turn ideas into fully formed designs through collaborative dialogue. Understand 
 
 ## Steps
 
-### 1. Research Prior Art
+### 1. Research Prior Art (GATE -- mandatory before any proposals)
 
-Before proposing anything, gather evidence:
+Before proposing anything, gather evidence. **You must not proceed to Step 3 until this checklist is complete.**
 
-- **Internal**: Read reference implementations, existing specs in `docs/plans/`, and related code mentioned in the bead/task description
-- **External**: Use `WebSearch` / `WebFetch` when the problem domain has established solutions worth comparing (algorithms, protocols, libraries). Skip for project-internal design.
-- **Summarize findings** for the user: what exists, what approaches others took, key trade-offs observed. This grounds the conversation in evidence, not guesses.
+#### Research checklist
+
+- [ ] **Read internal references** -- existing specs in `docs/plans/`, related code mentioned in the bead/task description, and reference implementations in the codebase. Use `Read`, `Grep`, `Glob` to find and read them.
+- [ ] **Read external references** (when applicable) -- Use `WebSearch` / `WebFetch` when the problem domain has established solutions worth comparing (algorithms, protocols, libraries). Skip for project-internal design.
+- [ ] **Present research summary to the user** -- before proposing anything, show:
+  1. What files/sources you read (with paths or URLs)
+  2. What approaches others took
+  3. Key trade-offs observed
+
+#### What counts as research
+
+| Sufficient | Insufficient |
+|------------|-------------|
+| Read 2+ reference files and summarized findings | Read 0 files, jumped to proposals |
+| Searched codebase for related patterns | Assumed you know the codebase |
+| Checked `docs/plans/` for prior designs | Skipped because "this is new" |
+| Used WebSearch for external prior art | Relied on training data alone |
+
+#### Self-check before moving on
+
+> "Can I cite specific files I read and specific patterns I observed?"
+>
+> If NO: go back and read more. You are not ready to propose.
 
 ### 2. Understand the Idea
 
@@ -79,9 +99,10 @@ This applies to every architectural decision, not just the final plan.
 
 ## Red Flags
 
-- Proposing approaches without reading reference implementations or prior art
+- **Proposing approaches without citing specific files or sources you read** -- the #1 failure mode
 - Jumping to implementation without understanding requirements
 - Asking 5 questions at once
 - Presenting entire design as a wall of text
 - Adding features the user didn't ask for
 - **Committing to a design decision without premorteming it first**
+- Saying "based on my understanding" instead of "based on reading X at line Y"
