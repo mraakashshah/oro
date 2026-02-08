@@ -21,10 +21,12 @@ set -euo pipefail
 # ---- Args ----
 BEAD_ID=""
 MODEL="sonnet"
+AUTO_YES=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --model)  MODEL="$2"; shift 2 ;;
+        --yes|-y) AUTO_YES=true; shift ;;
         -*)       echo "Unknown flag: $1" >&2; exit 1 ;;
         *)        BEAD_ID="$1"; shift ;;
     esac
@@ -246,11 +248,13 @@ echo "$PROMPT"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 
-read -rp "Launch worker? [y/N] " confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    warn "Aborted by user."
-    cleanup_on_error
-    exit 0
+if [ "$AUTO_YES" = false ]; then
+    read -rp "Launch worker? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        warn "Aborted by user."
+        cleanup_on_error
+        exit 0
+    fi
 fi
 
 # =============================================================================
