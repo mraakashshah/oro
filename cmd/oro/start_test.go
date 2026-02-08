@@ -9,6 +9,69 @@ import (
 	"time"
 )
 
+func TestStartCommandPreflightChecks(t *testing.T) {
+	// Test that the start command runs preflight checks before attempting to start.
+	// Since we can't easily mock exec.LookPath, this test verifies that with all
+	// tools present, preflight doesn't block the start command.
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	sockPath := filepath.Join(tmpDir, "oro.sock")
+	dbPath := filepath.Join(tmpDir, "state.db")
+
+	cmd := newStartCmd()
+
+	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+
+	// Try to run with daemon-only mode (simpler than full start).
+	cmd.SetArgs([]string{"--daemon-only", "--workers", "1"})
+
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+
+	// Run in background since it blocks.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	// Wait for socket to appear (confirms preflight passed and dispatcher started).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sockPath); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// If socket exists, preflight checks passed.
+	if _, err := os.Stat(sockPath); err != nil {
+		t.Fatalf("preflight may have failed - socket not created: %v", err)
+	}
+
+	// Clean up - send interrupt to stop daemon.
+	pid, err := ReadPIDFile(pidFile)
+	if err != nil {
+		t.Fatalf("read PID file: %v", err)
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatalf("find process: %v", err)
+	}
+	_ = proc.Signal(os.Interrupt)
+
+	// Wait for shutdown.
+	select {
+	case <-errCh:
+		// OK
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not exit")
+	}
+}
+
 func TestDaemonOnlyStartsDispatcher(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")

@@ -101,6 +101,11 @@ func newStartCmd() *cobra.Command {
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
 		Long:  "Creates a tmux session with the full Oro layout and begins autonomous execution.\nStarts the dispatcher daemon and worker pool in the background.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Run preflight checks before attempting to start.
+			if err := runPreflightChecks(); err != nil {
+				return err
+			}
+
 			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 			if err != nil {
 				return err
