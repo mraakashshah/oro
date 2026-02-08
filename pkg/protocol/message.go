@@ -12,6 +12,7 @@ const (
 	MsgAssign          MessageType = "ASSIGN"
 	MsgShutdown        MessageType = "SHUTDOWN"
 	MsgPrepareShutdown MessageType = "PREPARE_SHUTDOWN"
+	MsgACK             MessageType = "ACK"
 )
 
 // Worker -> Dispatcher message types.
@@ -23,6 +24,11 @@ const (
 	MsgReadyForReview   MessageType = "READY_FOR_REVIEW"
 	MsgReconnect        MessageType = "RECONNECT"
 	MsgShutdownApproved MessageType = "SHUTDOWN_APPROVED"
+)
+
+// Manager -> Dispatcher message types.
+const (
+	MsgDirective MessageType = "DIRECTIVE"
 )
 
 // Message is the envelope for all UDS messages. The Type field selects which
@@ -38,6 +44,8 @@ type Message struct {
 	Reconnect        *ReconnectPayload        `json:"reconnect,omitempty"`
 	PrepareShutdown  *PrepareShutdownPayload  `json:"prepare_shutdown,omitempty"`
 	ShutdownApproved *ShutdownApprovedPayload `json:"shutdown_approved,omitempty"`
+	Directive        *DirectivePayload        `json:"directive,omitempty"`
+	ACK              *ACKPayload              `json:"ack,omitempty"`
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.
@@ -110,4 +118,16 @@ type ReconnectPayload struct {
 	State          string    `json:"state"`
 	ContextPct     int       `json:"context_pct"`
 	BufferedEvents []Message `json:"buffered_events"`
+}
+
+// DirectivePayload is sent by the manager to issue directives to the dispatcher.
+type DirectivePayload struct {
+	Op   string `json:"op"`   // start | stop | pause | focus
+	Args string `json:"args"` // optional arguments (e.g., epic ID for focus)
+}
+
+// ACKPayload is sent by the dispatcher in response to a directive.
+type ACKPayload struct {
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
 }

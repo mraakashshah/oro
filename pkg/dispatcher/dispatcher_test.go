@@ -296,13 +296,34 @@ func readMsg(t *testing.T, conn net.Conn, timeout time.Duration) (protocol.Messa
 	return msg, true
 }
 
-// insertCommand inserts a pending command directly into SQLite.
-func insertCommand(t *testing.T, db *sql.DB, directive string) {
+// sendDirective sends a DIRECTIVE message to the dispatcher via UDS.
+func sendDirective(t *testing.T, socketPath, directive string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO commands (directive, args, status) VALUES (?, '', 'pending')`, directive)
+	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		t.Fatalf("insert command: %v", err)
+		t.Fatalf("connect to dispatcher: %v", err)
 	}
+	defer func() { _ = conn.Close() }()
+
+	msg := protocol.Message{
+		Type: protocol.MsgDirective,
+		Directive: &protocol.DirectivePayload{
+			Op:   directive,
+			Args: "",
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal directive: %v", err)
+	}
+	data = append(data, '\n')
+	if _, err := conn.Write(data); err != nil {
+		t.Fatalf("write directive: %v", err)
+	}
+
+	// Read ACK (but don't validate it here - some tests may want to check it)
+	scanner := bufio.NewScanner(conn)
+	_ = scanner.Scan()
 }
 
 // waitForState polls until the dispatcher reaches the expected state or times out.
@@ -379,7 +400,7 @@ func TestDispatcher_StartDirective_BeginsAssigning(t *testing.T) {
 	startDispatcher(t, d)
 
 	// Insert start command
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 
 	waitForState(t, d, StateRunning, 1*time.Second)
 
@@ -426,7 +447,7 @@ func TestDispatcher_AssignBead(t *testing.T) {
 	waitForWorkers(t, d, 1, 1*time.Second)
 
 	// Start + provide beads
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-42", Title: "Build thing", Priority: 1}})
@@ -461,7 +482,7 @@ func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Assign bead with explicit sonnet model
@@ -490,7 +511,7 @@ func TestDispatcher_AssignBead_DefaultModel(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Assign bead with no model — should default to opus
@@ -517,7 +538,7 @@ func TestDispatcher_WorkerDone_MergesClean(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-merge", Title: "Merge test", Priority: 1}})
@@ -574,7 +595,7 @@ func TestDispatcher_WorkerDone_MergeConflict_SpawnsOpsAgent(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-conflict", Title: "Conflict test", Priority: 1}})
@@ -614,7 +635,7 @@ func TestDispatcher_Handoff_RespawnsWorker(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-handoff", Title: "Handoff test", Priority: 1}})
@@ -665,7 +686,7 @@ func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
 	waitForWorkers(t, d, 1, 1*time.Second)
 
 	// Assign work so the worker is busy (idle workers are not timed out)
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-dead", Title: "Dead worker test", Priority: 1}})
@@ -697,7 +718,7 @@ func TestDispatcher_ReadyForReview_SpawnsReviewer(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-review", Title: "Review test", Priority: 1}})
@@ -742,7 +763,7 @@ func TestDispatcher_ReviewApproved_WorkerSignalsDone(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-approved", Title: "Approved test", Priority: 1}})
@@ -784,7 +805,7 @@ func TestDispatcher_ReviewRejected_FeedbackSent(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-rejected", Title: "Rejected test", Priority: 1}})
@@ -857,10 +878,10 @@ func TestDispatcher_StopDirective_FinishesCurrent(t *testing.T) {
 	startDispatcher(t, d)
 
 	// Start, then stop
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	insertCommand(t, d.db, "stop")
+	sendDirective(t, d.cfg.SocketPath, "stop")
 	waitForState(t, d, StateStopping, 1*time.Second)
 
 	// Connect a worker — it should NOT receive assignments in stopping state
@@ -885,10 +906,10 @@ func TestDispatcher_PauseDirective(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	insertCommand(t, d.db, "pause")
+	sendDirective(t, d.cfg.SocketPath, "pause")
 	waitForState(t, d, StatePaused, 1*time.Second)
 
 	// No new assignments while paused
@@ -923,7 +944,7 @@ func TestDispatcher_Escalation(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-esc", Title: "Escalation test", Priority: 1}})
@@ -954,7 +975,7 @@ func TestDispatcher_ConcurrentWorkers(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{
@@ -1204,12 +1225,12 @@ func TestRegisterWorker_NewAndReRegister(t *testing.T) {
 	}
 }
 
-func TestProcessCommands_FocusAndPause(t *testing.T) {
+func TestDirective_FocusAndInvalid(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
-	// Insert focus command
-	insertCommand(t, d.db, "focus")
+	// Send focus directive
+	sendDirective(t, d.cfg.SocketPath, "focus")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Verify directive event logged
@@ -1224,23 +1245,30 @@ func TestProcessCommands_FocusAndPause(t *testing.T) {
 		t.Fatal("expected 'directive' event for focus")
 	}
 
-	// Insert an invalid directive — should be skipped (markCommandProcessed still called)
-	_, err := d.db.Exec(`INSERT INTO commands (directive, args, status) VALUES ('bogus', '', 'pending')`)
+	// Send an invalid directive via UDS — should receive ACK with OK=false
+	conn, err := net.Dial("unix", d.cfg.SocketPath)
 	if err != nil {
-		t.Fatalf("insert bogus command: %v", err)
+		t.Fatalf("connect: %v", err)
 	}
+	defer conn.Close()
 
-	// Wait for it to be processed
-	time.Sleep(200 * time.Millisecond)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDirective,
+		Directive: &protocol.DirectivePayload{
+			Op:   "bogus",
+			Args: "",
+		},
+	})
 
-	// The bogus command should be marked processed (not pending)
-	var status string
-	err = d.db.QueryRow(`SELECT status FROM commands WHERE directive='bogus'`).Scan(&status)
-	if err != nil {
-		t.Fatalf("query bogus command: %v", err)
+	msg, ok := readMsg(t, conn, 1*time.Second)
+	if !ok {
+		t.Fatal("expected ACK for invalid directive")
 	}
-	if status != "processed" {
-		t.Fatalf("expected bogus command processed, got %s", status)
+	if msg.Type != protocol.MsgACK {
+		t.Fatalf("expected ACK, got %s", msg.Type)
+	}
+	if msg.ACK.OK {
+		t.Fatal("expected ACK.OK=false for invalid directive")
 	}
 }
 
@@ -1449,17 +1477,6 @@ func TestHandleReadyForReview_NilPayload(t *testing.T) {
 	}
 }
 
-func TestProcessCommands_ClosedDB(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
-	ctx := context.Background()
-
-	// Close DB to force pendingCommands error
-	_ = d.db.Close()
-
-	// Should not panic — just returns early
-	d.processCommands(ctx)
-}
-
 func TestHandleDone_UnknownWorker(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -1540,7 +1557,7 @@ func TestHandleDone_QualityGateFailed_RejectsMerge(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-qg-fail", Title: "QG fail test", Priority: 1}})
@@ -1600,7 +1617,7 @@ func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-qg-pass", Title: "QG pass test", Priority: 1}})
@@ -1649,7 +1666,7 @@ func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-mem", Title: "Memory handoff test", Priority: 1}})
@@ -1740,7 +1757,7 @@ func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:fun
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Set bead with title that matches the memory
@@ -1786,7 +1803,7 @@ func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-gs", Title: "Graceful shutdown test", Priority: 1}})
@@ -1854,7 +1871,7 @@ func TestDispatcher_GracefulShutdown_TimeoutFallsBackToHardKill(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-timeout", Title: "Timeout test", Priority: 1}})
@@ -1935,7 +1952,7 @@ func TestAssignIncludesMemories(t *testing.T) { //nolint:funlen // integration t
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Set bead with title that matches the memory
@@ -1985,7 +2002,7 @@ func TestDispatcherShutdownBroadcast(t *testing.T) {
 	waitForWorkers(t, d, 3, 2*time.Second)
 
 	// Start and assign beads to all workers
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{
@@ -2042,7 +2059,7 @@ func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
 	waitForWorkers(t, d, 2, 2*time.Second)
 
 	// Start and assign beads
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{
@@ -2216,7 +2233,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{{ID: "bead-ops-kill", Title: "Ops kill test", Priority: 1}})
@@ -2311,7 +2328,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	waitForWorkers(t, d, 2, 1*time.Second)
 
 	// Start and assign two beads (creates worktrees)
-	insertCommand(t, d.db, "start")
+	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]Bead{
@@ -2362,4 +2379,39 @@ func TestConflictError_ErrorsAs(t *testing.T) {
 	if ce.BeadID != "b1" {
 		t.Fatalf("BeadID: got %s, want b1", ce.BeadID)
 	}
+}
+
+func TestDispatcher_DirectiveHandler_SendsACK(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Manager connects as a client
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+
+	// Send DIRECTIVE message
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDirective,
+		Directive: &protocol.DirectivePayload{
+			Op:   string(protocol.DirectiveStart),
+			Args: "",
+		},
+	})
+
+	// Should receive ACK
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ACK response")
+	}
+	if msg.Type != protocol.MsgACK {
+		t.Fatalf("expected ACK, got %s", msg.Type)
+	}
+	if msg.ACK == nil {
+		t.Fatal("expected non-nil ACK payload")
+	}
+	if !msg.ACK.OK {
+		t.Fatalf("expected OK=true, got %v", msg.ACK.OK)
+	}
+
+	// Verify directive was applied (dispatcher should be running)
+	waitForState(t, d, StateRunning, 1*time.Second)
 }

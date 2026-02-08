@@ -219,9 +219,6 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	// Accept connections
 	go d.acceptLoop(ctx, ln)
 
-	// Command poll loop
-	go d.commandLoop(ctx)
-
 	// Bead assignment loop
 	go d.assignLoop(ctx)
 
@@ -312,6 +309,12 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 		var msg protocol.Message
 		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 			continue
+		}
+
+		// Handle DIRECTIVE messages from manager (short-lived connection).
+		if msg.Type == protocol.MsgDirective {
+			d.handleDirectiveWithACK(ctx, conn, msg)
+			return // Manager disconnects after receiving ACK
 		}
 
 		// Extract workerID from the first message that carries one.
@@ -663,6 +666,39 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 	d.mu.Unlock()
 }
 
+// handleDirectiveWithACK handles a DIRECTIVE message from the manager and sends an ACK response.
+// This is used for short-lived manager connections that send a directive and expect an ACK.
+func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, msg protocol.Message) {
+	if msg.Directive == nil {
+		return
+	}
+
+	dir := protocol.Directive(msg.Directive.Op)
+	ack := protocol.ACKPayload{OK: true}
+
+	if !dir.Valid() {
+		ack.OK = false
+		ack.Detail = "invalid directive"
+	} else {
+		d.applyDirective(dir)
+		_ = d.logEvent(ctx, "directive", "manager", "", "",
+			fmt.Sprintf(`{"directive":%q}`, msg.Directive.Op))
+		ack.Detail = fmt.Sprintf("applied %s", msg.Directive.Op)
+	}
+
+	// Send ACK response
+	ackMsg := protocol.Message{
+		Type: protocol.MsgACK,
+		ACK:  &ack,
+	}
+	data, err := json.Marshal(ackMsg)
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	_, _ = conn.Write(data)
+}
+
 // GracefulShutdownWorker initiates a graceful shutdown for a specific worker.
 // It sends PREPARE_SHUTDOWN with the given timeout, then waits for SHUTDOWN_APPROVED.
 // If the worker does not respond within the timeout, it sends a hard SHUTDOWN.
@@ -807,44 +843,6 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	if err != nil {
 		_ = d.worktrees.Remove(ctx, worktree)
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
-	}
-}
-
-// --- Directive / command processing ---
-
-// commandLoop polls the commands table for pending directives.
-func (d *Dispatcher) commandLoop(ctx context.Context) {
-	ticker := time.NewTicker(d.cfg.PollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			d.processCommands(ctx)
-		}
-	}
-}
-
-// processCommands reads and executes pending commands from SQLite.
-func (d *Dispatcher) processCommands(ctx context.Context) {
-	cmds, err := d.pendingCommands(ctx)
-	if err != nil {
-		return
-	}
-
-	for _, cmd := range cmds {
-		dir := protocol.Directive(cmd.Directive)
-		if !dir.Valid() {
-			_ = d.markCommandProcessed(ctx, cmd.ID)
-			continue
-		}
-
-		d.applyDirective(dir)
-		_ = d.markCommandProcessed(ctx, cmd.ID)
-		_ = d.logEvent(ctx, "directive", "manager", "", "",
-			fmt.Sprintf(`{"directive":%q}`, cmd.Directive))
 	}
 }
 
