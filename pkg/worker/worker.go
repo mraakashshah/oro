@@ -96,7 +96,7 @@ func (w *Worker) SetContextPollInterval(d time.Duration) {
 
 // Run is the main event loop. It reads messages from the UDS connection and
 // dispatches them. It returns nil on clean shutdown or context cancellation.
-func (w *Worker) Run(ctx context.Context) error {
+func (w *Worker) Run(ctx context.Context) error { //nolint:gocognit // event loop — refactor tracked in oro-mak
 	scanner := bufio.NewScanner(w.conn)
 	msgCh := make(chan protocol.Message)
 	errCh := make(chan error, 1)
