@@ -22,7 +22,7 @@ DEBOUNCE_SECONDS = 60
 # Model-specific thresholds: (warn, critical)
 # warn=None means no warn zone — jump straight to critical
 THRESHOLDS = {
-    "opus": (0.45, 0.60),
+    "opus": (0.65, 0.80),
     "sonnet": (None, 0.45),
     "haiku": (None, 0.35),
 }

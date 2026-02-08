@@ -268,11 +268,13 @@ export ORO_ROLE=worker
 
 # Run claude -p in the worktree with:
 #   --model: configurable model
+#   --verbose: stream tool use and progress in real time
 #   --permission-mode acceptEdits: auto-approve file edits
 #   --add-dir: allow reading main repo as reference
 CLAUDE_EXIT=0
 (cd "$WORKTREE" && claude -p "$PROMPT" \
     --model "$MODEL" \
+    --verbose \
     --permission-mode "acceptEdits" \
     --add-dir "$REPO_ROOT" \
 ) 2>&1 | tee "$LOG_FILE" || CLAUDE_EXIT=$?
