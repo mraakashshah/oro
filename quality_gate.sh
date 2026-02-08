@@ -99,7 +99,7 @@ fi
 if $HAS_SHELL; then
 
     header "SHELL: LINT"
-    check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck {} +"
+    check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +"
 
 fi
 

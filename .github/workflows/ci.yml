@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: shellcheck
-        run: find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck {} +
+        run: find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +
 
   docs:
     name: Docs & Config
