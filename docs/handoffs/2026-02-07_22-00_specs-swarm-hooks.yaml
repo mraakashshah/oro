@@ -1,0 +1,67 @@
+---
+date: 2026-02-07
+status: complete
+prior: 2026-02-07_21-00_brainstorming-research-phase.yaml
+---
+
+goal: Complete all spec work, arch review, swarm patterns, skill updates, and enforcement hooks
+now: Start oro-q63 (SQLite schema DDL) — critical path is unblocked
+test: go test ./pkg/protocol/... -v  # 13 tests passing
+
+done_this_session:
+  - task: "Added Step 1: Research Prior Art to brainstorming skill (internal + WebSearch)"
+    files: [.claude/skills/brainstorming/SKILL.md]
+    commit: 7de9f5e
+  - task: "oro-seg: Memory search/retrieval algorithm spec (FTS5 BM25 day-one, hybrid RRF future)"
+    files: [docs/plans/2026-02-07-memory-search-spec.md]
+    commit: a9f5073
+  - task: "oro-w2u: Code search system spec (Go TLDR read enforcer day-one, ast-grep future)"
+    files: [docs/plans/2026-02-07-code-search-spec.md]
+    commit: a9f5073
+  - task: "oro-1s5: Architectural review — green light with 6 actionable items"
+    files: [docs/plans/2026-02-07-arch-review.md]
+    commit: ba937c8
+    findings: "3 contradictions (token budget mismatch, Manager vs Worker prompt assembly, stale jsonl refs), 5 gaps (no AssignType, no REVIEW_FEEDBACK msg, ops agent comms, worker-local SQLite merge, code search hook deployment), schema issues (stale event types, missing status on assignments)"
+  - task: "oro-on7: Agent swarm spec — simplified to 2 tiers (Claude agents + Oro agents)"
+    files: [docs/plans/2026-02-07-agent-swarm-spec.md]
+    commit: 79d6cf5, 1e4755a
+  - task: "oro-b9m: Rewrote dispatching-parallel-agents skill — worktrees + agent commits + ff-only merge"
+    files: [.claude/skills/dispatching-parallel-agents/SKILL.md]
+    commit: 7e01672
+  - task: "Pre-Task worktree enforcement hook — warns if agent prompt lacks worktree/commit instructions"
+    files: [.claude/hooks/enforce_worktree.py, .claude/settings.json]
+    commit: a1739be
+
+decisions:
+  two_tier_swarm: "Collapsed 3-tier swarm model to 2: Claude agents (Task tool + worktrees) and Oro agents (Dispatcher + Workers). Every agent always commits on a branch. No agent merges or pushes."
+  research_in_brainstorming: "Extended brainstorming skill with research phase rather than creating separate spec-writing skill. WebSearch for external prior art when appropriate."
+  ff_only_merge: "All agent merges are ff-only after rebase. No merge commits, no squash."
+  agents_always_commit: "Subagents always commit in their worktree. The old 'write files, don't commit' pattern is retired."
+
+worked:
+  - "Background subagents for spec writing — both oro-seg and oro-w2u completed cleanly in ~3.5 min each"
+  - "Arch review as background agent — thorough, found real issues"
+  - "Swarm spec as background agent — comprehensive with good prior art research"
+  - "Iterative spec refinement with user (3-tier → 2-tier) after agent draft"
+
+failed:
+  - "npx markdownlint — unnecessary, already installed globally at /Users/as21/.npm-global/bin/markdownlint"
+  - "bd sync creates unstaged .beads/ changes that break git pull --rebase — need to stage .beads/ before pull"
+
+next:
+  - "oro-q63: SQLite schema DDL — incorporate arch review fixes (stale event types, AssignType, missing status column, REVIEW_FEEDBACK message type)"
+  - "oro-bya: SQLite row types (blocked by oro-q63)"
+  - "oro-v6f: Integration test (blocked by oro-q63 + oro-bya)"
+  - "oro-68t: Merge coordinator (independent, can parallel with oro-q63)"
+  - "oro-01h: Post-commit discovery reminder hook (P3)"
+  - "oro-2md: Brainstorming research guard hook (P4)"
+
+beads:
+  completed: [oro-seg, oro-w2u, oro-1s5, oro-on7, oro-b9m]
+  remaining: [oro-q63, oro-bya, oro-v6f, oro-68t, oro-0q5, oro-773, oro-r7b, oro-rue, oro-w6n, oro-ldf, oro-01h, oro-2md]
+  critical_path: "oro-q63 → oro-bya → oro-v6f → 5 downstream implementations"
+
+skills_for_next_session:
+  - resume-handoff
+  - work-bead (oro-q63 — needs sqlite driver dep)
+  - dispatching-parallel-agents (now with worktrees — use for oro-q63 + oro-68t in parallel)
