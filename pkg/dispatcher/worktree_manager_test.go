@@ -4,51 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 )
 
-// --- Mock CommandRunner ---
-
-type mockCommandRunner struct {
-	mu      sync.Mutex
-	calls   []cmdCall
-	failOn  string // if set, fail when any arg contains this string
-	failErr error
-}
-
-type cmdCall struct {
-	Dir  string
-	Args []string
-}
-
-func (m *mockCommandRunner) Run(_ context.Context, dir string, args ...string) (string, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.calls = append(m.calls, cmdCall{Dir: dir, Args: args})
-	if m.failOn != "" {
-		for _, a := range args {
-			if strings.Contains(a, m.failOn) {
-				err := m.failErr
-				if err == nil {
-					err = fmt.Errorf("mock failure on %s", a)
-				}
-				return "", "", err
-			}
-		}
-	}
-	return "", "", nil
-}
-
-func (m *mockCommandRunner) getCalls() []cmdCall {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]cmdCall, len(m.calls))
-	copy(out, m.calls)
-	return out
-}
-
-// --- Tests ---
+// worktree tests reuse mockCommandRunner from beadsource_test.go
 
 func TestGitWorktreeManager_Create_Success(t *testing.T) {
 	runner := &mockCommandRunner{}
@@ -69,17 +28,14 @@ func TestGitWorktreeManager_Create_Success(t *testing.T) {
 		t.Fatalf("branch: got %q, want %q", branch, wantBranch)
 	}
 
-	// Verify the git command that was executed.
-	calls := runner.getCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 command call, got %d", len(calls))
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
 	}
-	call := calls[0]
-	if call.Dir != "/repo/root" {
-		t.Fatalf("dir: got %q, want %q", call.Dir, "/repo/root")
+	call := runner.calls[0]
+	if call.Name != "git" {
+		t.Fatalf("name: got %q, want %q", call.Name, "git")
 	}
-	// Expected: worktree add <path> -b agent/<beadID> main
-	wantArgs := []string{"worktree", "add", wantPath, "-b", wantBranch, "main"}
+	wantArgs := []string{"-C", "/repo/root", "worktree", "add", wantPath, "-b", wantBranch, "main"}
 	if len(call.Args) != len(wantArgs) {
 		t.Fatalf("args: got %v, want %v", call.Args, wantArgs)
 	}
@@ -92,8 +48,7 @@ func TestGitWorktreeManager_Create_Success(t *testing.T) {
 
 func TestGitWorktreeManager_Create_Error(t *testing.T) {
 	runner := &mockCommandRunner{
-		failOn:  "worktree",
-		failErr: fmt.Errorf("git worktree add failed: branch already exists"),
+		err: fmt.Errorf("git worktree add failed: branch already exists"),
 	}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
@@ -115,15 +70,11 @@ func TestGitWorktreeManager_Remove_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	calls := runner.getCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 command call, got %d", len(calls))
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
 	}
-	call := calls[0]
-	if call.Dir != "/repo/root" {
-		t.Fatalf("dir: got %q, want %q", call.Dir, "/repo/root")
-	}
-	wantArgs := []string{"worktree", "remove", "/repo/root/.worktrees/abc123", "--force"}
+	call := runner.calls[0]
+	wantArgs := []string{"-C", "/repo/root", "worktree", "remove", "/repo/root/.worktrees/abc123", "--force"}
 	if len(call.Args) != len(wantArgs) {
 		t.Fatalf("args: got %v, want %v", call.Args, wantArgs)
 	}
@@ -136,8 +87,7 @@ func TestGitWorktreeManager_Remove_Success(t *testing.T) {
 
 func TestGitWorktreeManager_Remove_Error(t *testing.T) {
 	runner := &mockCommandRunner{
-		failOn:  "worktree",
-		failErr: fmt.Errorf("git worktree remove failed: not a worktree"),
+		err: fmt.Errorf("git worktree remove failed: not a worktree"),
 	}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 

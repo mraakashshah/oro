@@ -6,11 +6,7 @@ import (
 	"path/filepath"
 )
 
-// CommandRunner abstracts command execution for testability.
-// The same pattern used by merge.GitRunner, scoped to this package.
-type CommandRunner interface {
-	Run(ctx context.Context, dir string, args ...string) (stdout string, stderr string, err error)
-}
+// CommandRunner is defined in beadsource.go.
 
 // GitWorktreeManager is the production WorktreeManager that shells out
 // to git to create and remove worktrees.
@@ -33,7 +29,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 	path = filepath.Join(g.repoRoot, ".worktrees", beadID)
 	branch = "agent/" + beadID
 
-	_, _, err = g.runner.Run(ctx, g.repoRoot,
+	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
 		"worktree", "add", path, "-b", branch, "main",
 	)
 	if err != nil {
@@ -45,7 +41,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 
 // Remove runs `git worktree remove <path> --force`.
 func (g *GitWorktreeManager) Remove(ctx context.Context, path string) error {
-	_, _, err := g.runner.Run(ctx, g.repoRoot,
+	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot,
 		"worktree", "remove", path, "--force",
 	)
 	if err != nil {

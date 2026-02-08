@@ -6,11 +6,7 @@ import (
 	"strings"
 )
 
-// CommandRunner executes an external command. Extracted as an interface for
-// testability so production code can shell out while tests use a mock.
-type CommandRunner interface {
-	Run(ctx context.Context, name string, args ...string) error
-}
+// CommandRunner is defined in beadsource.go.
 
 // TmuxEscalator implements the Escalator interface by sending messages to a
 // tmux pane via `tmux send-keys`. This is the production mechanism for
@@ -41,7 +37,7 @@ func NewTmuxEscalator(sessionName, paneTarget string, runner CommandRunner) *Tmu
 // The message is sanitized to prevent shell injection through tmux.
 func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 	sanitized := sanitizeForTmux(msg)
-	err := e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, sanitized, "Enter")
+	_, err := e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, sanitized, "Enter")
 	if err != nil {
 		return fmt.Errorf("tmux escalate to %s: %w", e.paneTarget, err)
 	}
