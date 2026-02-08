@@ -24,6 +24,8 @@ import (
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // --- Dispatcher states ---
@@ -115,12 +117,13 @@ type trackedWorker struct {
 
 // Config holds Dispatcher configuration.
 type Config struct {
-	SocketPath       string        // UDS socket path.
-	DBPath           string        // SQLite database path.
-	MaxWorkers       int           // Worker pool size (default 5).
-	HeartbeatTimeout time.Duration // Worker heartbeat timeout (default 45s).
-	PollInterval     time.Duration // bd ready poll interval (default 10s).
-	ShutdownTimeout  time.Duration // Graceful shutdown timeout (default 10s).
+	SocketPath           string        // UDS socket path.
+	DBPath               string        // SQLite database path.
+	MaxWorkers           int           // Worker pool size (default 5).
+	HeartbeatTimeout     time.Duration // Worker heartbeat timeout (default 45s).
+	PollInterval         time.Duration // bd ready poll interval (default 10s).
+	FallbackPollInterval time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
+	ShutdownTimeout      time.Duration // Graceful shutdown timeout (default 10s).
 }
 
 func (c *Config) withDefaults() Config {
@@ -133,6 +136,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.PollInterval == 0 {
 		out.PollInterval = 10 * time.Second
+	}
+	if out.FallbackPollInterval == 0 {
+		out.FallbackPollInterval = 60 * time.Second
 	}
 	if out.ShutdownTimeout == 0 {
 		out.ShutdownTimeout = 10 * time.Second
@@ -158,6 +164,9 @@ type Dispatcher struct {
 	workers  map[string]*trackedWorker
 	listener net.Listener
 
+	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
+	beadsDir string
+
 	// nowFunc allows tests to control time.
 	nowFunc func() time.Time
 }
@@ -176,6 +185,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		memories:  memory.NewStore(db),
 		state:     StateInert,
 		workers:   make(map[string]*trackedWorker),
+		beadsDir:  ".beads",
 		nowFunc:   time.Now,
 	}
 }
@@ -754,8 +764,47 @@ func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Durati
 
 // --- Priority queue / assignment loop ---
 
-// assignLoop polls BeadSource and assigns work to idle workers.
+// assignLoop watches .beads/ directory and assigns work when files change.
+// Falls back to 60s polling as a safety net.
 func (d *Dispatcher) assignLoop(ctx context.Context) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		// Fallback to pure polling if fsnotify fails
+		d.assignLoopPoll(ctx)
+		return
+	}
+	defer func() { _ = watcher.Close() }()
+
+	if err := watcher.Add(d.beadsDir); err != nil {
+		// Fallback to pure polling if watch fails
+		d.assignLoopPoll(ctx)
+		return
+	}
+
+	// Fallback poll as safety net (default 60s)
+	fallbackTicker := time.NewTicker(d.cfg.FallbackPollInterval)
+	defer fallbackTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-watcher.Events:
+			// File changed in .beads/ directory
+			d.tryAssign(ctx)
+		case err := <-watcher.Errors:
+			if err != nil {
+				_ = d.logEvent(ctx, "watcher_error", "dispatcher", "", "", err.Error())
+			}
+		case <-fallbackTicker.C:
+			// Safety net poll
+			d.tryAssign(ctx)
+		}
+	}
+}
+
+// assignLoopPoll is a fallback polling loop when fsnotify is unavailable.
+func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.PollInterval)
 	defer ticker.Stop()
 

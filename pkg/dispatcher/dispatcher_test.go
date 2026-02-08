@@ -2415,3 +2415,95 @@ func TestDispatcher_DirectiveHandler_SendsACK(t *testing.T) {
 	// Verify directive was applied (dispatcher should be running)
 	waitForState(t, d, StateRunning, 1*time.Second)
 }
+
+func TestDispatcher_BeadDirWatcher_TriggersAssignment(t *testing.T) {
+	// Create temp directory for .beads/
+	beadsDir := t.TempDir()
+
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Configure dispatcher to watch the temp beads directory
+	d.beadsDir = beadsDir
+
+	startDispatcher(t, d)
+
+	// Connect worker
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Start dispatcher
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Initially no beads
+	beadSrc.SetBeads(nil)
+
+	// Add the bead to the mock source first
+	beadSrc.SetBeads([]Bead{{ID: "bead-watch-1", Title: "Test bead", Priority: 1}})
+
+	// Now create a new file in .beads/ to trigger the watcher
+	// (fsnotify triggers on CREATE, WRITE, REMOVE, RENAME events)
+	testFile := beadsDir + "/trigger.tmp"
+	if err := os.WriteFile(testFile, []byte("trigger"), 0o600); err != nil {
+		t.Fatalf("write trigger file: %v", err)
+	}
+
+	// Should receive ASSIGN without waiting for poll interval
+	msg, ok := readMsg(t, conn, 500*time.Millisecond) // Less than 60s fallback poll
+	if !ok {
+		t.Fatal("expected ASSIGN triggered by fsnotify, not poll interval")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign == nil || msg.Assign.BeadID != "bead-watch-1" {
+		t.Fatalf("expected bead-watch-1, got %v", msg.Assign)
+	}
+}
+
+func TestDispatcher_BeadDirWatcher_FallbackPoll(t *testing.T) {
+	// Create temp directory for .beads/
+	beadsDir := t.TempDir()
+
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Configure dispatcher with short fallback interval for testing
+	d.cfg.FallbackPollInterval = 200 * time.Millisecond
+	d.beadsDir = beadsDir
+
+	startDispatcher(t, d)
+
+	// Connect worker
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Start dispatcher
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Initially no beads
+	beadSrc.SetBeads(nil)
+
+	// Add the bead to the mock source (but don't trigger fsnotify)
+	beadSrc.SetBeads([]Bead{{ID: "bead-fallback", Title: "Fallback test", Priority: 1}})
+
+	// Should receive ASSIGN from fallback poll within reasonable time
+	msg, ok := readMsg(t, conn, 1*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN from fallback poll")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign == nil || msg.Assign.BeadID != "bead-fallback" {
+		t.Fatalf("expected bead-fallback, got %v", msg.Assign)
+	}
+}
