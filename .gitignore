@@ -22,3 +22,12 @@ Thumbs.db
 
 # Reference repos (cloned locally, not tracked)
 docs/alternative-architecture-analysis/reference/
+
+# Build artifacts
+coverage.out
+__pycache__/
+
+# Local config
+.claude/settings.local.json
+.perles/
+uv.lock
