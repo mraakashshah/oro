@@ -1,0 +1,76 @@
+---
+date: 2026-02-08
+status: complete
+---
+
+goal: >
+  Completed oro-is9.1: replaced dispatcher commandLoop polling with direct
+  UDS directive handling. Manager now connects as client, sends DIRECTIVE,
+  receives ACK, disconnects. All tests pass, quality gate clean.
+
+now: >
+  Bead complete. Next session should pick up oro-is9.2 (add 'oro directive'
+  CLI command) or oro-is9.3 (replace bd ready polling with fsnotify).
+
+test: go test -race -p 2 ./... && ./quality_gate.sh
+
+done_this_session:
+  - task: "Added DIRECTIVE and ACK message types to protocol"
+    files: [pkg/protocol/message.go]
+    details: >
+      Added MsgDirective (Manager->Dispatcher) and MsgACK (Dispatcher->Manager)
+      message types. Created DirectivePayload (op, args) and ACKPayload (ok, detail).
+
+  - task: "Implemented handleDirectiveWithACK in dispatcher"
+    files: [pkg/dispatcher/dispatcher.go]
+    details: >
+      Modified handleConn to detect DIRECTIVE messages and call
+      handleDirectiveWithACK which applies directive and sends ACK immediately.
+      Manager connections are short-lived (not tracked as workers).
+
+  - task: "Removed commandLoop and processCommands polling"
+    files: [pkg/dispatcher/dispatcher.go]
+    details: >
+      Deleted commandLoop() and processCommands() methods. Removed go
+      d.commandLoop(ctx) from Run(). Directives now arrive via UDS, not SQLite polling.
+
+  - task: "Updated all tests to use sendDirective helper"
+    files: [pkg/dispatcher/dispatcher_test.go]
+    details: >
+      Replaced insertCommand (SQLite insert) with sendDirective (UDS message).
+      Removed TestProcessCommands_ClosedDB. Updated TestProcessCommands_FocusAndPause
+      to TestDirective_FocusAndInvalid using new UDS approach.
+
+decisions:
+  - short_lived_manager_connections: >
+      Manager connections are not registered as workers. They connect, send
+      DIRECTIVE, read ACK, and disconnect. handleConn returns immediately after
+      sending ACK for DIRECTIVE messages.
+  - ack_in_handleConn: >
+      ACK is sent directly in handleConn rather than via sendToWorker because
+      manager connections don't have a trackedWorker struct.
+
+findings:
+  - directive_handling_path: >
+      handleConn detects msg.Type == MsgDirective early, calls
+      handleDirectiveWithACK(ctx, conn, msg), then returns. This prevents
+      manager from being registered as a worker.
+
+worked:
+  - TDD approach with failing test first
+  - Replacing helper functions (insertCommand -> sendDirective) via sed
+  - Using handleConn early return for manager connections
+
+next:
+  - Pick up oro-is9.2: add 'oro directive' CLI command
+  - Pick up oro-is9.3: replace bd ready polling with fsnotify watcher
+
+files:
+  modified:
+    - pkg/protocol/message.go
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+
+beads:
+  completed: [oro-is9.1]
+  epic: oro-is9
