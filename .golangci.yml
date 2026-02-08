@@ -19,6 +19,7 @@ linters:
     - errorlint
     - wrapcheck
     - nilerr
+    - errname
 
     # Complexity
     - gocyclo
@@ -131,6 +132,10 @@ linters:
         - name: superfluous-else
         - name: unreachable-code
         - name: redefines-builtin-id
+        - name: get-return
+        - name: string-of-int
+        - name: early-return
+        - name: unnecessary-stmt
 
     prealloc:
       simple: true
