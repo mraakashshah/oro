@@ -1719,6 +1719,143 @@ func containsStr(s, substr string) bool {
 	return false
 }
 
+func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-gs", Title: "Graceful shutdown test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Trigger graceful shutdown via the dispatcher method
+	d.GracefulShutdownWorker("w1", 2*time.Second)
+
+	// Worker should receive PREPARE_SHUTDOWN
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected PREPARE_SHUTDOWN message")
+	}
+	if msg.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("expected PREPARE_SHUTDOWN, got %s", msg.Type)
+	}
+	if msg.PrepareShutdown == nil {
+		t.Fatal("expected non-nil PrepareShutdown payload")
+	}
+
+	// Simulate worker responding with HANDOFF then SHUTDOWN_APPROVED
+	sendMsg(t, conn, protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{BeadID: "bead-gs", WorkerID: "w1"},
+	})
+	sendMsg(t, conn, protocol.Message{
+		Type:             protocol.MsgShutdownApproved,
+		ShutdownApproved: &protocol.ShutdownApprovedPayload{WorkerID: "w1"},
+	})
+
+	// Wait for shutdown_approved event
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "shutdown_approved") > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if eventCount(t, d.db, "shutdown_approved") == 0 {
+		t.Fatal("expected 'shutdown_approved' event")
+	}
+
+	// Worker should then receive hard SHUTDOWN
+	msg2, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected SHUTDOWN after approval")
+	}
+	if msg2.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", msg2.Type)
+	}
+}
+
+func TestDispatcher_GracefulShutdown_TimeoutFallsBackToHardKill(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-timeout", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-timeout", Title: "Timeout test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Trigger graceful shutdown with a very short timeout
+	d.GracefulShutdownWorker("w-timeout", 200*time.Millisecond)
+
+	// Worker receives PREPARE_SHUTDOWN but does NOT respond
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected PREPARE_SHUTDOWN")
+	}
+	if msg.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("expected PREPARE_SHUTDOWN, got %s", msg.Type)
+	}
+
+	// Do NOT respond — dispatcher should fall back to hard SHUTDOWN after timeout
+	msg2, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected hard SHUTDOWN after timeout")
+	}
+	if msg2.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN (hard kill), got %s", msg2.Type)
+	}
+}
+
+func TestDispatcher_GracefulShutdown_UnknownWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Should not panic for unknown worker
+	d.GracefulShutdownWorker("w-nonexistent", 1*time.Second)
+}
+
+func TestDispatcher_HandleShutdownApproved_NilPayload(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	// Should not panic
+	d.handleShutdownApproved(ctx, "w1", protocol.Message{Type: protocol.MsgShutdownApproved, ShutdownApproved: nil})
+	if eventCount(t, d.db, "shutdown_approved") != 0 {
+		t.Fatal("expected no shutdown_approved event for nil payload")
+	}
+}
+
+func TestExtractWorkerID_ShutdownApproved(t *testing.T) {
+	msg := protocol.Message{ShutdownApproved: &protocol.ShutdownApprovedPayload{WorkerID: "wsa"}}
+	got := extractWorkerID(msg)
+	if got != "wsa" {
+		t.Fatalf("extractWorkerID: got %q, want %q", got, "wsa")
+	}
+}
+
 // Verify errors.As works with ConflictError (integration sanity check).
 func TestConflictError_ErrorsAs(t *testing.T) {
 	err := fmt.Errorf("wrapped: %w", &merge.ConflictError{Files: []string{"a.go"}, BeadID: "b1"})

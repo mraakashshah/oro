@@ -283,6 +283,8 @@ func extractWorkerID(msg protocol.Message) string {
 		return msg.ReadyForReview.WorkerID
 	case msg.Reconnect != nil:
 		return msg.Reconnect.WorkerID
+	case msg.ShutdownApproved != nil:
+		return msg.ShutdownApproved.WorkerID
 	default:
 		return ""
 	}
@@ -324,6 +326,8 @@ func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg pro
 		d.handleReadyForReview(ctx, workerID, msg)
 	case protocol.MsgReconnect:
 		d.handleReconnect(ctx, workerID, msg)
+	case protocol.MsgShutdownApproved:
+		d.handleShutdownApproved(ctx, workerID, msg)
 	}
 }
 
@@ -581,6 +585,77 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	for _, buffered := range msg.Reconnect.BufferedEvents {
 		d.handleMessage(ctx, workerID, buffered)
 	}
+}
+
+func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string, msg protocol.Message) {
+	if msg.ShutdownApproved == nil {
+		return
+	}
+
+	_ = d.logEvent(ctx, "shutdown_approved", workerID, "", workerID, "")
+
+	// Send hard SHUTDOWN to finalize
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	if ok {
+		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+		w.state = WorkerIdle
+		w.beadID = ""
+	}
+	d.mu.Unlock()
+}
+
+// GracefulShutdownWorker initiates a graceful shutdown for a specific worker.
+// It sends PREPARE_SHUTDOWN with the given timeout, then waits for SHUTDOWN_APPROVED.
+// If the worker does not respond within the timeout, it sends a hard SHUTDOWN.
+func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Duration) {
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		d.mu.Unlock()
+		return
+	}
+	_ = d.sendToWorker(w, protocol.Message{
+		Type: protocol.MsgPrepareShutdown,
+		PrepareShutdown: &protocol.PrepareShutdownPayload{
+			Timeout: timeout,
+		},
+	})
+	d.mu.Unlock()
+
+	// Wait for SHUTDOWN_APPROVED or timeout in background
+	go func() {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-timer.C:
+				// Timeout — send hard SHUTDOWN
+				d.mu.Lock()
+				w, ok := d.workers[workerID]
+				if ok {
+					_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+					w.state = WorkerIdle
+					w.beadID = ""
+				}
+				d.mu.Unlock()
+				return
+			case <-ticker.C:
+				// Check if approval was already received (worker state reset to idle)
+				d.mu.Lock()
+				w, ok := d.workers[workerID]
+				approved := ok && w.state == WorkerIdle
+				d.mu.Unlock()
+				if approved {
+					return
+				}
+			}
+		}
+	}()
 }
 
 // --- Priority queue / assignment loop ---

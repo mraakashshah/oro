@@ -760,6 +760,160 @@ func TestHandoffPopulatesContext(t *testing.T) { //nolint:funlen // integration 
 	<-errCh
 }
 
+func TestGracefulShutdown(t *testing.T) { //nolint:funlen // integration test requires sequential setup
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-graceful", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Create a temp worktree with .oro/ context files
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(oroDir, "learnings.json"), []string{"graceful shutdown works"})
+	writeJSON(t, filepath.Join(oroDir, "decisions.json"), []string{"use prepare-shutdown protocol"})
+	writeJSON(t, filepath.Join(oroDir, "files_modified.json"), []string{"pkg/protocol/message.go"})
+	if err := os.WriteFile(filepath.Join(oroDir, "context_summary.txt"), []byte("Implemented graceful shutdown"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Assign work so the worker has bead/worktree state
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-graceful",
+			Worktree: tmpDir,
+		},
+	})
+
+	// Drain STATUS message
+	_ = readMessage(t, dispatcherConn)
+
+	// Send PREPARE_SHUTDOWN with a 5-second timeout
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgPrepareShutdown,
+		PrepareShutdown: &protocol.PrepareShutdownPayload{
+			Timeout: 5 * time.Second,
+		},
+	})
+
+	// Worker should respond with HANDOFF (saving context) then SHUTDOWN_APPROVED.
+	// Read messages until we get both.
+	_ = dispatcherConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	scanner := bufio.NewScanner(dispatcherConn)
+	var gotHandoff, gotApproved bool
+	var handoffMsg *protocol.HandoffPayload
+	for scanner.Scan() {
+		var msg protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		switch msg.Type {
+		case protocol.MsgHandoff:
+			gotHandoff = true
+			handoffMsg = msg.Handoff
+		case protocol.MsgShutdownApproved:
+			gotApproved = true
+			if msg.ShutdownApproved == nil {
+				t.Fatal("SHUTDOWN_APPROVED message missing payload")
+			}
+			if msg.ShutdownApproved.WorkerID != "w-graceful" {
+				t.Errorf("expected worker_id w-graceful, got %s", msg.ShutdownApproved.WorkerID)
+			}
+		}
+		if gotHandoff && gotApproved {
+			break
+		}
+	}
+
+	if !gotHandoff {
+		t.Fatal("worker did not send HANDOFF in response to PREPARE_SHUTDOWN")
+	}
+	if !gotApproved {
+		t.Fatal("worker did not send SHUTDOWN_APPROVED in response to PREPARE_SHUTDOWN")
+	}
+
+	// Verify handoff payload contains saved context
+	if handoffMsg == nil {
+		t.Fatal("handoff payload is nil")
+	}
+	if handoffMsg.BeadID != "bead-graceful" {
+		t.Errorf("expected bead_id bead-graceful, got %s", handoffMsg.BeadID)
+	}
+	if len(handoffMsg.Learnings) != 1 || handoffMsg.Learnings[0] != "graceful shutdown works" {
+		t.Errorf("expected learnings, got %v", handoffMsg.Learnings)
+	}
+	if len(handoffMsg.Decisions) != 1 || handoffMsg.Decisions[0] != "use prepare-shutdown protocol" {
+		t.Errorf("expected decisions, got %v", handoffMsg.Decisions)
+	}
+
+	// Subprocess should have been killed after graceful shutdown
+	killed := false
+	for range 20 {
+		if spawner.process.Killed() {
+			killed = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !killed {
+		t.Error("expected subprocess to be killed after graceful shutdown")
+	}
+
+	// Worker Run should have exited cleanly
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected nil error on graceful shutdown, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after graceful shutdown")
+	}
+}
+
+func TestGracefulShutdown_NilPayload(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-graceful-nil", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Send PREPARE_SHUTDOWN with nil payload — worker should treat it like hard shutdown
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgPrepareShutdown,
+	})
+
+	// Worker should exit cleanly (falls back to hard shutdown behavior)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after PREPARE_SHUTDOWN with nil payload")
+	}
+}
+
 // writeJSON is a test helper that marshals v to JSON and writes it to path.
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()

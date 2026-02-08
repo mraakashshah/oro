@@ -2,36 +2,42 @@
 // Messages are line-delimited JSON over Unix domain sockets.
 package protocol
 
+import "time"
+
 // MessageType identifies the kind of UDS message.
 type MessageType string
 
 // Dispatcher -> Worker message types.
 const (
-	MsgAssign   MessageType = "ASSIGN"
-	MsgShutdown MessageType = "SHUTDOWN"
+	MsgAssign          MessageType = "ASSIGN"
+	MsgShutdown        MessageType = "SHUTDOWN"
+	MsgPrepareShutdown MessageType = "PREPARE_SHUTDOWN"
 )
 
 // Worker -> Dispatcher message types.
 const (
-	MsgHeartbeat      MessageType = "HEARTBEAT"
-	MsgStatus         MessageType = "STATUS"
-	MsgHandoff        MessageType = "HANDOFF"
-	MsgDone           MessageType = "DONE"
-	MsgReadyForReview MessageType = "READY_FOR_REVIEW"
-	MsgReconnect      MessageType = "RECONNECT"
+	MsgHeartbeat        MessageType = "HEARTBEAT"
+	MsgStatus           MessageType = "STATUS"
+	MsgHandoff          MessageType = "HANDOFF"
+	MsgDone             MessageType = "DONE"
+	MsgReadyForReview   MessageType = "READY_FOR_REVIEW"
+	MsgReconnect        MessageType = "RECONNECT"
+	MsgShutdownApproved MessageType = "SHUTDOWN_APPROVED"
 )
 
 // Message is the envelope for all UDS messages. The Type field selects which
 // payload pointer is populated; unused payloads are nil and omitted from JSON.
 type Message struct {
-	Type           MessageType            `json:"type"`
-	Assign         *AssignPayload         `json:"assign,omitempty"`
-	Heartbeat      *HeartbeatPayload      `json:"heartbeat,omitempty"`
-	Status         *StatusPayload         `json:"status,omitempty"`
-	Handoff        *HandoffPayload        `json:"handoff,omitempty"`
-	Done           *DonePayload           `json:"done,omitempty"`
-	ReadyForReview *ReadyForReviewPayload `json:"ready_for_review,omitempty"`
-	Reconnect      *ReconnectPayload      `json:"reconnect,omitempty"`
+	Type             MessageType              `json:"type"`
+	Assign           *AssignPayload           `json:"assign,omitempty"`
+	Heartbeat        *HeartbeatPayload        `json:"heartbeat,omitempty"`
+	Status           *StatusPayload           `json:"status,omitempty"`
+	Handoff          *HandoffPayload          `json:"handoff,omitempty"`
+	Done             *DonePayload             `json:"done,omitempty"`
+	ReadyForReview   *ReadyForReviewPayload   `json:"ready_for_review,omitempty"`
+	Reconnect        *ReconnectPayload        `json:"reconnect,omitempty"`
+	PrepareShutdown  *PrepareShutdownPayload  `json:"prepare_shutdown,omitempty"`
+	ShutdownApproved *ShutdownApprovedPayload `json:"shutdown_approved,omitempty"`
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.
@@ -80,6 +86,19 @@ type DonePayload struct {
 // ReadyForReviewPayload is sent by a worker when its bead is ready for review.
 type ReadyForReviewPayload struct {
 	BeadID   string `json:"bead_id"`
+	WorkerID string `json:"worker_id"`
+}
+
+// PrepareShutdownPayload is sent by the dispatcher to request a graceful shutdown.
+// The worker should save context (send MsgHandoff with learnings/decisions),
+// then reply with MsgShutdownApproved before the timeout expires.
+type PrepareShutdownPayload struct {
+	Timeout time.Duration `json:"timeout"`
+}
+
+// ShutdownApprovedPayload is sent by a worker after it has saved context
+// in response to a PrepareShutdown request.
+type ShutdownApprovedPayload struct {
 	WorkerID string `json:"worker_id"`
 }
 

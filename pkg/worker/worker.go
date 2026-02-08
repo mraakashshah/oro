@@ -170,10 +170,34 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 	case protocol.MsgShutdown:
 		w.killProc()
 		return true, nil
+	case protocol.MsgPrepareShutdown:
+		return w.handlePrepareShutdown(ctx, msg)
 	default:
 		// Unknown message type, ignore
 		return false, nil
 	}
+}
+
+// handlePrepareShutdown processes a PREPARE_SHUTDOWN message by saving context
+// via a HANDOFF message, then sending SHUTDOWN_APPROVED, and finally killing
+// the subprocess. If the payload is nil, it falls back to hard shutdown.
+func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message) (bool, error) {
+	if msg.PrepareShutdown == nil {
+		// No payload — fall back to hard shutdown
+		w.killProc()
+		return true, nil
+	}
+
+	// Save context by sending a HANDOFF with learnings/decisions
+	_ = w.SendHandoff(ctx)
+
+	// Signal that we're ready to be shut down
+	_ = w.SendShutdownApproved(ctx)
+
+	// Kill the subprocess
+	w.killProc()
+
+	return true, nil
 }
 
 // handleAssign processes an ASSIGN message: stores state, spawns subprocess,
@@ -460,6 +484,17 @@ func readFileString(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// SendShutdownApproved sends a SHUTDOWN_APPROVED message to the Dispatcher,
+// indicating that the worker has saved its context and is ready to be killed.
+func (w *Worker) SendShutdownApproved(_ context.Context) error {
+	return w.sendMessage(protocol.Message{
+		Type: protocol.MsgShutdownApproved,
+		ShutdownApproved: &protocol.ShutdownApprovedPayload{
+			WorkerID: w.ID,
+		},
+	})
 }
 
 // SendReadyForReview sends a READY_FOR_REVIEW message to the Dispatcher.
