@@ -55,9 +55,12 @@ func TestCLICommands(t *testing.T) {
 	})
 
 	t.Run("start parses --daemon-only flag", func(t *testing.T) {
-		_, _, err := executeCommand("start", "-d")
+		out, _, err := executeCommand("start", "--help")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if !containsAll(out, "-d", "--daemon-only") {
+			t.Errorf("expected start help to show -d/--daemon-only flag, got:\n%s", out)
 		}
 	})
 

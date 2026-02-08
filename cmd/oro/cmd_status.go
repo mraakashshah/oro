@@ -13,7 +13,25 @@ func newStatusCmd() *cobra.Command {
 		Short: "Show current swarm state",
 		Long:  "Displays dispatcher status, worker count and active beads,\nmanager state, and bead summary.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "not implemented")
+			pidPath, err := DefaultPIDPath()
+			if err != nil {
+				return err
+			}
+
+			status, pid, err := DaemonStatus(pidPath)
+			if err != nil {
+				return err
+			}
+
+			switch status {
+			case StatusRunning:
+				fmt.Fprintf(cmd.OutOrStdout(), "dispatcher: running (PID %d)\n", pid)
+			case StatusStale:
+				fmt.Fprintf(cmd.OutOrStdout(), "dispatcher: stale (PID %d, process dead)\n", pid)
+			case StatusStopped:
+				fmt.Fprintln(cmd.OutOrStdout(), "dispatcher: stopped")
+			}
+
 			return nil
 		},
 	}
