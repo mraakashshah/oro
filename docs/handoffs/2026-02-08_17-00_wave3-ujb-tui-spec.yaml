@@ -1,0 +1,112 @@
+---
+date: 2026-02-08
+status: partial
+---
+
+goal: Landed wave 3 (5 beads), started wave 4 (ujb sub-beads), wrote TUI dashboard spec
+now: >
+  1. oro-nqi.1 — Research TUI reference repos (7 URLs) and Linear design philosophy (2 URLs), update spec
+  2. oro-ujb.5 — Wire dispatcher.Run into oro start --daemon-only (all deps met)
+  3. oro-ujb.1 — Wire full oro start (depends on ujb.5)
+test: go test -race ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "Wave 3: 5 parallel agents (oro-98q.4, oro-bat, oro-r7b.2, oro-r7b.3, oro-r7b.5)"
+    files: [cmd/oro-search-hook/integration_test.go, .claude/settings.json, Makefile,
+            pkg/worker/worker.go, pkg/worker/worker_test.go, pkg/dispatcher/dispatcher_test.go,
+            cmd/oro/daemon.go, cmd/oro/daemon_test.go, cmd/oro/cmd_start.go, cmd/oro/cmd_stop.go, cmd/oro/cmd_status.go,
+            cmd/oro/tmux.go, cmd/oro/tmux_test.go,
+            cmd/oro/cmd_remember.go, cmd/oro/cmd_recall.go, cmd/oro/store.go, cmd/oro/memory_test.go]
+
+  - task: "Closed oro-r7b epic (all 5 children) and oro-98q epic (all 4 children)"
+
+  - task: "Wave 3.5: oro-r7b.4 manager prompt"
+    files: [cmd/oro/manager.go, cmd/oro/manager_test.go]
+
+  - task: "Wave 4: 3 parallel ujb sub-beads (ujb.2, ujb.3, ujb.4)"
+    files: [pkg/dispatcher/beadsource.go, pkg/dispatcher/beadsource_test.go,
+            pkg/dispatcher/worktree_manager.go, pkg/dispatcher/worktree_manager_test.go,
+            pkg/dispatcher/escalator.go, pkg/dispatcher/escalator_test.go]
+
+  - task: "Fixed CommandRunner interface collision (ujb.6) — 3 agents each declared their own"
+    details: "Unified to beadsource.go signature: Run(ctx, name, args) ([]byte, error). Adapted worktree_manager to use git -C flag. Rewrote test mocks."
+
+  - task: "TUI dashboard spec written"
+    files: [docs/plans/2026-02-08-tui-dashboard-spec.md]
+    details: "Kanban board default, workers view, all-beads tree view, tabbed drilldowns (overview/worker/diff/deps/memory). Charm stack: Bubble Tea + Bubbles + Lip Gloss."
+
+  - task: "Updated .gitignore to exclude __pycache__, coverage.out, .perles/, uv.lock, settings.local.json"
+
+decisions:
+  - commandrunner_unification: "Used beadsource.go's signature (ctx, name, args) -> ([]byte, error) as the canonical one. worktree_manager uses git -C <repoRoot> instead of passing dir as first arg."
+  - tui_as_peer_panel: "TUI runs alongside architect+manager+editor, not as replacement. Invoked via 'oro dash'."
+  - kanban_default: "Linear-style 4-column board (ready/in_progress/blocked/done) as default view."
+  - everything_drilldown: "Tabbed detail view: overview, worker, diff, deps, memory."
+
+worked:
+  - "Parallel worktree agents continue to work well — 8 more beads dispatched and merged this session"
+  - "Merging while other agents still running saves time"
+  - "Pre-emptive .gitignore update prevented future artifact commits"
+
+failed:
+  - "Three independent agents declaring same interface name — caused build failure on merge. Need to either pre-define shared interfaces or have merge step check for collisions."
+  - "git commit --no-verify picked up unstaged files from earlier git add -A that failed — always verify staged files before commit"
+
+next:
+  - "oro-nqi.1: Research 7 beads viewer repos + 2 Linear design links, update TUI spec"
+  - "oro-ujb.5: Wire dispatcher.New() + dispatcher.Run() into cmd_start.go daemon-only mode with real SQLite, BeadSource, WorktreeManager, Escalator"
+  - "oro-ujb.1: Full oro start — fork daemon subprocess + create tmux session with ManagerPrompt()"
+  - "Clean up stale worktrees from previous waves (already removed in this session)"
+
+blockers: []
+
+questions:
+  - "Should dispatcher SQLite state DB be separate from memory DB (~/.oro/state.db vs ~/.oro/memories.db)?"
+
+files:
+  created:
+    - pkg/dispatcher/beadsource.go
+    - pkg/dispatcher/beadsource_test.go
+    - pkg/dispatcher/worktree_manager.go
+    - pkg/dispatcher/worktree_manager_test.go
+    - pkg/dispatcher/escalator.go
+    - pkg/dispatcher/escalator_test.go
+    - cmd/oro/manager.go
+    - cmd/oro/manager_test.go
+    - cmd/oro/daemon.go
+    - cmd/oro/daemon_test.go
+    - cmd/oro/tmux.go
+    - cmd/oro/tmux_test.go
+    - cmd/oro/store.go
+    - cmd/oro/memory_test.go
+    - cmd/oro-search-hook/integration_test.go
+    - docs/plans/2026-02-08-tui-dashboard-spec.md
+  modified:
+    - .claude/settings.json
+    - .gitignore
+    - Makefile
+    - pkg/worker/worker.go
+    - pkg/worker/worker_test.go
+    - pkg/dispatcher/dispatcher_test.go
+    - cmd/oro/cmd_start.go
+    - cmd/oro/cmd_stop.go
+    - cmd/oro/cmd_status.go
+    - cmd/oro/cmd_remember.go
+    - cmd/oro/cmd_recall.go
+
+beads:
+  completed: [oro-98q.4, oro-bat, oro-r7b.2, oro-r7b.3, oro-r7b.5, oro-r7b.4, oro-r7b, oro-98q, oro-ujb.2, oro-ujb.3, oro-ujb.4, oro-ujb.6]
+  in_progress: []
+  remaining: [oro-ujb.5, oro-ujb.1, oro-nqi.1]
+  epic: [oro-ujb, oro-nqi]
+
+tui_reference_urls_for_next_session:
+  - https://github.com/Dicklesworthstone/beads_viewer
+  - https://github.com/w3dev33/beads-task-issue-tracker
+  - https://github.com/cameronsjo/beadspace
+  - https://github.com/AvivK5498/Beads-Kanban-UI
+  - https://github.com/rhydlewis/beads-dashboard
+  - https://github.com/mantoni/beads-ui
+  - https://github.com/zjrosen/perles
+  - https://www.lennysnewsletter.com/p/how-linear-builds-product
+  - https://x.com/karrisaarinen/status/1715085201653805116
