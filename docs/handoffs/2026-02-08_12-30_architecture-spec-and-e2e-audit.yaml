@@ -1,0 +1,126 @@
+---
+date: 2026-02-08
+status: partial
+---
+
+goal: >
+  Audited oro's end-to-end readiness, identified gaps, created beads for
+  remaining work, and began a design session with the human to correct
+  the architecture spec. Key outcome: many prior specs were wrong about
+  roles and communication. New draft spec written from human's actual intent.
+
+now: >
+  Continue the design conversation (oro-cfp). The human was answering
+  architecture questions when context ran out. Open questions in
+  docs/plans/2026-02-08-oro-architecture-spec.md need resolution.
+  Start by reading that spec and asking the next open question.
+
+test: go test -race -p 2 ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "End-to-end readiness audit"
+    details: >
+      Read all source files (cmd/oro/*, pkg/*/*, internal/*). Built and
+      tested successfully (10/10 packages pass). Identified 5 gaps for
+      e2e readiness.
+
+  - task: "Created 5 gap beads"
+    details: >
+      oro-mgf (worker launcher), oro-ptz (preflight checks), oro-by8
+      (bootstrap ~/.oro), oro-lcg (e2e integration test), oro-87o
+      (enhanced oro status). Set up dependency graph.
+
+  - task: "Architecture spec from human design session"
+    files: [docs/plans/2026-02-08-oro-architecture-spec.md]
+    details: >
+      Human corrected multiple assumptions from prior agent specs.
+      Wrote new draft spec capturing the real architecture.
+
+  - task: "Reverted incorrect tmux change"
+    details: >
+      Made both panes interactive (wrong), then reverted after
+      discovering specs disagreed with human intent, then learned
+      the specs were also wrong. Reverted to original code.
+
+decisions:
+  - architect_is_bare_claude: >
+      Architect is bare `claude` with project CLAUDE.md. No special
+      role prompt. Human IS the architect. Does not write code, only
+      makes beads.
+  - manager_is_interactive_but_autonomous: >
+      Manager is interactive (human can talk to it) but primarily
+      autonomous. Gets poked by dispatcher via tmux send-keys.
+      Two input sources: human + dispatcher escalations.
+      Does not write code except as last resort for broken merges.
+  - everyone_makes_beads: >
+      Beads are the universal language. Architect, manager, workers
+      all create beads. Workers create P0 beads on merge failure,
+      decompose when bead too big, decompose on context limit.
+  - dispatcher_is_mechanical: >
+      Go binary, no AI, no judgment. Manages worker lifecycle, UDS,
+      heartbeats, merges, ops agents. Does NOT spawn workers — manager
+      controls swarm size via scale directive.
+  - push_not_poll: >
+      Replace all polling with push: UDS for directives (manager →
+      dispatcher), fsnotify for bead changes (.beads/ → dispatcher).
+      Current 10s polling loops are wrong.
+  - manager_controls_swarm_size: >
+      Swarm starts at 0 workers. Manager sends scale N directive.
+      Dispatcher manages worker processes to match target.
+  - prior_specs_are_wrong: >
+      Multiple docs in docs/plans/ and docs/handoffs/ have incorrect
+      architecture. The new spec (2026-02-08-oro-architecture-spec.md)
+      is the source of truth, but still has open questions.
+
+findings:
+  - old_specs_wrong: >
+      Prior agent sessions wrote specs saying architect gets no prompt,
+      manager is non-interactive claude -p, dispatcher spawns workers.
+      Human corrected all of these.
+  - code_is_solid: >
+      All 10 packages build and pass tests with race detector. The
+      internal machinery (dispatcher, worker, memory, merge, ops,
+      protocol) is production quality. Gap is integration/plumbing.
+
+worked:
+  - Deep exploration of codebase before making claims
+  - Asking human one question at a time to clarify architecture
+
+failed:
+  - Trusting prior agent specs without human validation
+  - Making code changes (interactive tmux) before confirming with human
+
+questions:
+  - Is manager `claude -p` or interactive `claude` with initial message?
+  - How does `scale N` work mechanically — dispatcher spawns worker processes?
+  - fsnotify target — .beads/issues.jsonl or individual bead files?
+  - Remove SQLite commands table in favor of UDS-only? Or keep as audit log?
+  - What should the manager prompt actually contain?
+  - Worker prompt template — what sections does the Go binary assemble?
+
+beads:
+  created:
+    - oro-mgf: "Worker launcher (updated: manager controls, not dispatcher)"
+    - oro-ptz: "Preflight checks"
+    - oro-by8: "Bootstrap ~/.oro"
+    - oro-lcg: "E2E integration test"
+    - oro-87o: "Enhanced oro status"
+    - oro-cfp: "Finalize architecture spec with human"
+    - oro-is9: "Replace polling with push (UDS + fsnotify)"
+  in_progress: []
+  blocked:
+    - oro-is9: blocked by oro-cfp
+    - oro-mgf: blocked by oro-cfp + oro-is9
+    - oro-lcg: blocked by oro-mgf + oro-by8
+    - oro-87o: blocked by oro-mgf
+
+next:
+  - Resume design conversation with human (oro-cfp) — read the spec, ask next open question
+  - Once spec finalized, update manager prompt to match
+  - Implement UDS directives + fsnotify (oro-is9)
+  - Then worker launcher (oro-mgf)
+
+files:
+  created:
+    - docs/plans/2026-02-08-oro-architecture-spec.md
+  modified: []
