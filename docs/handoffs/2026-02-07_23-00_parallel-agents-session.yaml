@@ -1,0 +1,69 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Built 4 core packages in parallel — protocol integration test + merge coordinator + worker binary + ops agent spawner
+now: Implement the Dispatcher (oro-w6n) which composes all three new packages into the orchestrator binary
+
+test: go test ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: Protocol integration test (oro-v6f)
+    files: [pkg/protocol/integration_test.go]
+    details: 8 subtests — insert+scan all 4 row types, FTS5 search, update/delete triggers, DEFAULT values
+  - task: Merge coordinator (oro-68t)
+    files: [pkg/merge/merge.go, pkg/merge/merge_test.go]
+    details: Coordinator with sync.Mutex lock, sequential rebase+ff-only, ConflictError with parsed files, GitRunner interface for testability. 8 tests including race detection.
+  - task: Worker binary (oro-773)
+    files: [pkg/worker/worker.go, pkg/worker/buffer.go, pkg/worker/worker_test.go]
+    details: UDS client, ASSIGN/SHUTDOWN handling, subprocess spawner interface, context_pct file watcher (>70% triggers handoff), reconnection with message buffering, RECONNECT message. 11 tests.
+  - task: Ops agent spawner (oro-rue)
+    files: [pkg/ops/ops.go, pkg/ops/ops_test.go]
+    details: Review/merge-conflict/diagnosis agents, model routing (opus for judgment, sonnet for mechanical), verdict parsing, lifecycle tracking. 17 tests.
+  - task: Merge script (ad_hoc/oro-merge.sh)
+    files: [ad_hoc/oro-merge.sh]
+    details: Wrapper for quality gate + rebase + ff-only merge. Manual version of what dispatcher automates.
+
+decisions:
+  - parallel_subagents: Dispatched 3 Task tool agents with isolated worktrees. Worked well but agents don't run golangci-lint — only go test + go vet. Needed ~15 manual lint fixes post-merge.
+  - type_renames: golangci-lint revive rule catches stuttering (merge.MergeOpts → merge.Opts, ops.OpsType → ops.Type, ops.OpsAgent → ops.Agent). Applied across all packages.
+  - nolint_funlen: Long integration/concurrency tests got nolint:funlen — procedural test setup is inherently verbose.
+
+worked:
+  - 3 parallel subagents in worktrees — all completed successfully (~4 min each)
+  - Sequential rebase+ff-only merge after all agents done — clean linear history
+  - Quality gate on pre-push caught all lint issues before they reached remote
+
+failed:
+  - Subagents don't run golangci-lint — only go test + go vet. Next time, add golangci-lint to agent instructions.
+  - oro-merge.sh fails on dirty submodule (references/bcr) — git diff --quiet catches it but git stash won't save submodule state. Had to merge manually.
+  - Amending commits after merge folded worker lint fixes into ops commit. Minor — content correct, commit message wrong.
+
+findings:
+  - golangci_lint_gaps: wrapcheck, errorlint, revive (stutter), testpackage, gosec, funlen — agents miss all of these. Pre-merge gate is essential.
+  - submodule_stash: git stash does not save submodule dirty state. oro-merge.sh needs to handle this or ignore submodules in its dirty check.
+
+next:
+  - Fix oro-merge.sh to ignore submodule changes in dirty check (add --ignore-submodules to git diff)
+  - Add golangci-lint to subagent instructions (critical for pre-merge quality)
+  - Implement Dispatcher (oro-w6n) — composes merge, worker, ops packages into UDS server with priority queue
+  - Implement CLI (oro-r7b) and memory system (oro-0q5) — both unblocked
+
+files:
+  created:
+    - pkg/protocol/integration_test.go
+    - pkg/merge/merge.go
+    - pkg/merge/merge_test.go
+    - pkg/worker/worker.go
+    - pkg/worker/buffer.go
+    - pkg/worker/worker_test.go
+    - pkg/ops/ops.go
+    - pkg/ops/ops_test.go
+    - ad_hoc/oro-merge.sh
+  modified: [go.mod, go.sum]
+
+beads:
+  completed: [oro-v6f, oro-68t, oro-773, oro-rue]
+  remaining: [oro-w6n, oro-r7b, oro-0q5, oro-ldf]
+  note: oro-w6n now unblocked (was waiting on oro-68t + oro-rue)
