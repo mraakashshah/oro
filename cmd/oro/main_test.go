@@ -48,9 +48,12 @@ func TestCLICommands(t *testing.T) {
 	})
 
 	t.Run("start parses -w flag", func(t *testing.T) {
-		_, _, err := executeCommand("start", "-w", "4")
+		out, _, err := executeCommand("start", "--help")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if !containsAll(out, "-w", "--workers") {
+			t.Errorf("expected start help to show -w/--workers flag, got:\n%s", out)
 		}
 	})
 
@@ -65,9 +68,12 @@ func TestCLICommands(t *testing.T) {
 	})
 
 	t.Run("start parses --model flag", func(t *testing.T) {
-		_, _, err := executeCommand("start", "--model", "opus")
+		out, _, err := executeCommand("start", "--help")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if !contains(out, "--model") {
+			t.Errorf("expected start help to show --model flag, got:\n%s", out)
 		}
 	})
 

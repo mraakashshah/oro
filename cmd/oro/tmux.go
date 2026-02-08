@@ -40,8 +40,9 @@ func (s *TmuxSession) Exists() bool {
 }
 
 // Create creates the Oro tmux session with two panes (architect + manager).
+// The managerPrompt is sent to the manager pane (pane 1) via `claude -p '<prompt>'`.
 // If the session already exists, it is a no-op.
-func (s *TmuxSession) Create() error {
+func (s *TmuxSession) Create(managerPrompt string) error {
 	if s.Exists() {
 		return nil
 	}
@@ -62,7 +63,8 @@ func (s *TmuxSession) Create() error {
 	}
 
 	// Send the manager command to the right pane (pane 1).
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", "claude -p 'You are the Oro Manager.'", "Enter"); err != nil {
+	managerCmd := fmt.Sprintf("claude -p '%s'", managerPrompt)
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerCmd, "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys manager: %w", err)
 	}
 

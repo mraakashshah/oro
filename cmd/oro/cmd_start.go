@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"time"
 
 	"oro/internal/runners"
 	"oro/pkg/dispatcher"
@@ -14,6 +19,75 @@ import (
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 )
+
+// DaemonSpawner abstracts spawning the daemon subprocess for testability.
+type DaemonSpawner interface {
+	SpawnDaemon(pidPath string, workers int) (pid int, err error)
+}
+
+// ExecDaemonSpawner spawns a real child process running `oro start --daemon-only`.
+type ExecDaemonSpawner struct{}
+
+// SpawnDaemon forks a child process running the current binary with --daemon-only.
+func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers int) (int, error) {
+	child := exec.CommandContext(context.Background(), os.Args[0], "start", "--daemon-only", "--workers", strconv.Itoa(workers)) //nolint:gosec // intentionally re-executing self
+	child.Stdout = os.Stdout
+	child.Stderr = os.Stderr
+	if err := child.Start(); err != nil {
+		return 0, fmt.Errorf("spawn daemon: %w", err)
+	}
+	return child.Process.Pid, nil
+}
+
+// socketPollTimeout is the maximum time to wait for the dispatcher socket.
+const socketPollTimeout = 5 * time.Second
+
+// socketPollInterval is how often to check for the socket file.
+const socketPollInterval = 50 * time.Millisecond
+
+// runFullStart implements the non-daemon start flow:
+// 1. Spawn daemon subprocess
+// 2. Wait for socket file to appear
+// 3. Create tmux session with manager prompt
+// 4. Print status
+func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration) error {
+	pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
+	if err != nil {
+		return err
+	}
+	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
+	if err != nil {
+		return err
+	}
+
+	// 1. Spawn the daemon subprocess.
+	pid, err := spawner.SpawnDaemon(pidPath, workers)
+	if err != nil {
+		return fmt.Errorf("spawn daemon: %w", err)
+	}
+
+	// 2. Wait for the dispatcher socket to appear.
+	deadline := time.Now().Add(socketTimeout)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(sockPath); statErr == nil {
+			break
+		}
+		time.Sleep(socketPollInterval)
+	}
+	if _, err := os.Stat(sockPath); err != nil {
+		return fmt.Errorf("dispatcher socket not ready at %s: %w", sockPath, err)
+	}
+
+	// 3. Create tmux session with the real manager prompt.
+	sess := &TmuxSession{Name: "oro", Runner: tmuxRunner}
+	if err := sess.Create(ManagerPrompt()); err != nil {
+		return fmt.Errorf("create tmux session: %w", err)
+	}
+
+	// 4. Print status.
+	fmt.Fprintf(w, "oro swarm started (PID %d, workers=%d, model=%s)\n", pid, workers, model)
+	return nil
+}
 
 // newStartCmd creates the "oro start" subcommand.
 func newStartCmd() *cobra.Command {
@@ -54,10 +128,7 @@ func newStartCmd() *cobra.Command {
 				return runDaemonOnly(cmd, pidPath, workers)
 			}
 
-			// TODO: full start — spawn daemon subprocess, create tmux session.
-			_ = model
-			fmt.Fprintf(cmd.OutOrStdout(), "starting oro swarm (workers=%d, model=%s)\n", workers, model)
-			return nil
+			return runFullStart(cmd.OutOrStdout(), workers, model, &ExecDaemonSpawner{}, &ExecRunner{}, socketPollTimeout)
 		},
 	}
 
