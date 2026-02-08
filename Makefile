@@ -11,7 +11,7 @@ build-search-hook:
 	go build -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook
 
 test:
-	go test -race -shuffle=on ./...
+	go test -race -shuffle=on -p 2 ./...
 
 lint:
 	golangci-lint run --timeout 5m
