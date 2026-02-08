@@ -62,7 +62,7 @@ type Worker struct {
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
 func New(id string, socketPath string, spawner SubprocessSpawner) (*Worker, error) {
-	conn, err := net.Dial("unix", socketPath)
+	conn, err := net.Dial("unix", socketPath) //nolint:noctx // UDS connect is instant, no context needed
 	if err != nil {
 		return nil, fmt.Errorf("connect to dispatcher: %w", err)
 	}
@@ -135,7 +135,7 @@ func (w *Worker) Run(ctx context.Context) error { //nolint:gocognit // event loo
 		case err := <-errCh:
 			// Connection dropped
 			if ctx.Err() != nil {
-				return nil
+				return nil //nolint:nilerr // context cancelled = clean shutdown, swallow connection error
 			}
 			if w.socketPath == "" {
 				// No socketPath means we can't reconnect (test with net.Pipe)
@@ -284,7 +284,7 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		case <-time.After(wait):
 		}
 
-		conn, err := net.Dial("unix", w.socketPath)
+		conn, err := net.Dial("unix", w.socketPath) //nolint:noctx // UDS reconnect is instant
 		if err != nil {
 			continue
 		}

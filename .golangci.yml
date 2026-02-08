@@ -18,6 +18,7 @@ linters:
     # Error handling
     - errorlint
     - wrapcheck
+    - nilerr
 
     # Complexity
     - gocyclo
@@ -29,6 +30,18 @@ linters:
     - gochecknoglobals
     - gochecknoinits
     - testpackage
+
+    # Resource safety
+    - bodyclose
+    - noctx
+    - durationcheck
+
+    # Cleanup
+    - unconvert
+    - unparam
+
+    # Testing
+    - thelper
 
     # Security
     - gosec
@@ -77,6 +90,8 @@ linters:
           - gocognit
           - gochecknoglobals
           - wrapcheck
+          - noctx
+          - unparam
 
       - path: main\.go
         linters:

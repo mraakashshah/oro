@@ -188,7 +188,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	}
 
 	// Start UDS listener
-	ln, err := net.Listen("unix", d.cfg.SocketPath)
+	ln, err := net.Listen("unix", d.cfg.SocketPath) //nolint:noctx // UDS bind is instant
 	if err != nil {
 		return fmt.Errorf("listen unix %s: %w", d.cfg.SocketPath, err)
 	}
