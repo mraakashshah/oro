@@ -1,0 +1,95 @@
+---
+date: 2026-02-08
+status: complete
+---
+
+goal: >
+  Completed oro-cfp architecture spec (all open questions resolved) and built
+  ad_hoc/oro-worker.sh — a manual worker script for testing the bead execution
+  loop without the full dispatcher infrastructure.
+
+now: >
+  Test the worker script! Pick a bead (oro-ptz or oro-by8 are good candidates)
+  and run: ad_hoc/oro-worker.sh <bead-id> --model sonnet --budget 5.00
+  The script creates a worktree, assembles the 12-section prompt, queries
+  memories, and launches claude -p. After it completes, merge with
+  ad_hoc/oro-merge.sh agent/<bead-id>. Iterate on the prompt based on results.
+
+test: go test -race -p 2 ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "Resolved oro-0i7 (fsnotify watch target)"
+    details: "Already resolved in spec from prior session. Closed bead."
+
+  - task: "Resolved oro-9fu (manager beacon content)"
+    files: [docs/plans/2026-02-08-oro-architecture-spec.md]
+    details: >
+      12-section manager beacon: role, system map, startup protocol, oro CLI,
+      beads CLI, decomposition heuristics, scale policy, escalation playbook,
+      human interaction, dispatcher message format ([ORO-DISPATCH] prefix),
+      anti-patterns, shutdown sequence.
+
+  - task: "Added architect beacon template"
+    files: [docs/plans/2026-02-08-oro-architecture-spec.md]
+    details: >
+      9-section architect beacon: role (senior systems architect), system map,
+      core skills (code reading, spec writing, system design, dependency
+      analysis), output contract, bead craft, strategic decomposition,
+      research, beads CLI, anti-patterns.
+
+  - task: "Closed oro-cfp (all open questions resolved)"
+    details: >
+      Spec status changed to Complete. Closed oro-cfp, oro-9fu, oro-0i7, oro-tk7.
+
+  - task: "Built ad_hoc/oro-worker.sh"
+    files: [ad_hoc/oro-worker.sh]
+    details: >
+      Manual worker script that simulates dispatcher+oro-worker flow:
+      parse bead from JSONL, create worktree on agent/<bead-id> branch,
+      query memories via oro recall, assemble 12-section prompt, launch
+      claude -p with hooks+search (worktree inherits .claude/ from git),
+      report results (commits, files changed). Supports --model and --budget
+      flags. Uses --permission-mode acceptEdits, --add-dir for main repo
+      reference. Pairs with existing ad_hoc/oro-merge.sh.
+
+decisions:
+  - dispatcher_escalation_prefix: >
+      [ORO-DISPATCH] prefix for tmux send-keys messages from dispatcher to
+      manager. Format: [ORO-DISPATCH] <TYPE>: <bead-id> — <summary>. <details>.
+      Types: MERGE_CONFLICT, STUCK, PRIORITY_CONTENTION, WORKER_CRASH, STATUS,
+      DRAIN_COMPLETE.
+  - architect_gets_beacon_too: >
+      Originally spec said architect runs as bare claude with no role prompt.
+      Added 9-section beacon because without it, architect has no system
+      awareness (doesn't know workers/dispatcher exist, doesn't know its
+      output is beads not code).
+  - worker_prompt_in_shell_not_go: >
+      BuildPrompt() in pkg/worker/worker.go is a 2-line placeholder. The full
+      12-section prompt is only in the spec and now in the shell script.
+      Eventually the Go binary needs to match.
+
+worked:
+  - Asking user to "think harder, go deeper" on manager beacon surfaced
+    critical sections (escalation playbook, scale policy, decomposition heuristics)
+  - Mirroring worker prompt structure (numbered sections) for manager beacon
+
+failed:
+  - N/A this session
+
+next:
+  - Test oro-worker.sh against a real bead (oro-ptz or oro-by8)
+  - Iterate on 12-section prompt based on worker execution results
+  - Port finalized prompt template to Go (update BuildPrompt in pkg/worker/worker.go)
+  - Implement oro scale N command in dispatcher
+  - Create oro-worker binary (cmd/oro-worker/)
+
+files:
+  modified:
+    - docs/plans/2026-02-08-oro-architecture-spec.md
+  created:
+    - ad_hoc/oro-worker.sh
+    - docs/handoffs/2026-02-08_23-55_spec-complete-worker-script.yaml
+
+beads:
+  completed: [oro-cfp, oro-9fu, oro-0i7, oro-tk7]
+  ready: [oro-is9, oro-nqi, oro-ptz, oro-by8]
