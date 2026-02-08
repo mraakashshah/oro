@@ -13,8 +13,15 @@ import json
 import sys
 
 CONTEXT_WINDOW = 200_000
-WARN_THRESHOLD = 0.30  # 30%
-CRITICAL_THRESHOLD = 0.40  # 40%
+
+# Model-specific thresholds: (warn, critical)
+# warn=None means no warn zone — jump straight to critical
+THRESHOLDS = {
+    "opus": (0.45, 0.60),
+    "sonnet": (None, 0.45),
+    "haiku": (None, 0.35),
+}
+DEFAULT_THRESHOLDS = (0.45, 0.60)  # assume opus if unknown
 
 WARN_MESSAGE = (
     "<IMPORTANT>\n"
@@ -41,6 +48,34 @@ CRITICAL_MESSAGE = (
     "Continuing without decomposing will lose context and waste work.\n"
     "</EXTREMELY_IMPORTANT>"
 )
+
+
+def detect_model(transcript_path: str) -> str:
+    """Detect model family from transcript. Returns 'opus', 'sonnet', or 'haiku'."""
+    last_model = ""
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message")
+                if isinstance(msg, dict) and msg.get("model"):
+                    last_model = msg["model"]
+    except OSError:
+        pass
+    lower = last_model.lower()
+    if "opus" in lower:
+        return "opus"
+    if "sonnet" in lower:
+        return "sonnet"
+    if "haiku" in lower:
+        return "haiku"
+    return "opus"  # default assumption
 
 
 def get_last_usage(transcript_path: str) -> dict | None:
@@ -87,9 +122,12 @@ def main() -> None:
 
     used, total, pct = calculate_context_pct(usage)
 
-    if pct >= CRITICAL_THRESHOLD:
+    model = detect_model(transcript_path)
+    warn_threshold, critical_threshold = THRESHOLDS.get(model, DEFAULT_THRESHOLDS)
+
+    if pct >= critical_threshold:
         message = CRITICAL_MESSAGE.format(pct=int(pct * 100), used=used, total=total)
-    elif pct >= WARN_THRESHOLD:
+    elif warn_threshold is not None and pct >= warn_threshold:
         message = WARN_MESSAGE.format(pct=int(pct * 100), used=used, total=total)
     else:
         return

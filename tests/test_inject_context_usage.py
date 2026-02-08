@@ -14,10 +14,11 @@ _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
 CONTEXT_WINDOW = _mod.CONTEXT_WINDOW
-CRITICAL_THRESHOLD = _mod.CRITICAL_THRESHOLD
-WARN_THRESHOLD = _mod.WARN_THRESHOLD
+THRESHOLDS = _mod.THRESHOLDS
+DEFAULT_THRESHOLDS = _mod.DEFAULT_THRESHOLDS
 calculate_context_pct = _mod.calculate_context_pct
 get_last_usage = _mod.get_last_usage
+detect_model = _mod.detect_model
 
 
 def _make_transcript(entries: list[dict]) -> Path:
@@ -115,21 +116,34 @@ class TestGetLastUsage:
 
 
 class TestThresholds:
-    def test_below_warn_produces_no_output(self):
-        """20% usage should produce no warning."""
-        used = int(CONTEXT_WINDOW * 0.20)
+    def test_opus_below_warn(self):
+        """30% usage should produce no warning for opus."""
+        warn, _ = THRESHOLDS["opus"]
+        used = int(CONTEXT_WINDOW * 0.30)
         _, _, pct = calculate_context_pct({"input_tokens": used})
-        assert pct < WARN_THRESHOLD
+        assert pct < warn
 
-    def test_at_warn_threshold(self):
-        """30% usage should trigger warn."""
-        used = int(CONTEXT_WINDOW * WARN_THRESHOLD)
+    def test_opus_at_warn(self):
+        """45% usage should trigger warn for opus."""
+        warn, critical = THRESHOLDS["opus"]
+        used = int(CONTEXT_WINDOW * warn)
         _, _, pct = calculate_context_pct({"input_tokens": used})
-        assert pct >= WARN_THRESHOLD
-        assert pct < CRITICAL_THRESHOLD
+        assert pct >= warn
+        assert pct < critical
 
-    def test_at_critical_threshold(self):
-        """40% usage should trigger critical."""
-        used = int(CONTEXT_WINDOW * CRITICAL_THRESHOLD)
+    def test_opus_at_critical(self):
+        """60% usage should trigger critical for opus."""
+        _, critical = THRESHOLDS["opus"]
+        used = int(CONTEXT_WINDOW * critical)
         _, _, pct = calculate_context_pct({"input_tokens": used})
-        assert pct >= CRITICAL_THRESHOLD
+        assert pct >= critical
+
+    def test_sonnet_no_warn_zone(self):
+        """Sonnet has no warn threshold."""
+        warn, _ = THRESHOLDS["sonnet"]
+        assert warn is None
+
+    def test_haiku_critical_lower(self):
+        """Haiku critical is 35%."""
+        _, critical = THRESHOLDS["haiku"]
+        assert critical == 0.35

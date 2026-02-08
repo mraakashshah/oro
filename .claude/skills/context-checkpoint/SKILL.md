@@ -11,28 +11,21 @@ Monitor context consumption and trigger proactive handoff before quality degrade
 
 **Core principle:** Better to hand off early than to lose context and produce bad work.
 
-## Threshold Table
+## How It Works
 
-Proxy: count user-assistant message pairs in the current session.
+The `inject_context_usage.py` PreToolUse hook monitors token consumption automatically and injects warnings. Thresholds are model-aware:
 
-### Opus 4.6
+| Model | Warn | Critical |
+|-------|------|----------|
+| Opus 4.6 | 45% | 60% |
+| Sonnet | — | 45% |
+| Haiku | — | 35% |
 
-| Pairs | Zone | Action |
-|-------|------|--------|
-| 0-40 | Green | Continue. Pick next bead. |
-| 41-60 | Yellow | Finish current bead, then evaluate. Only start a new bead if it's small (<=5min estimate). |
-| 60+ | Red | Stop immediately. Initiate handoff now. |
+Trust those warnings.
 
-### Sonnet
+## Quality Signals (Override Token Count)
 
-| Pairs | Zone | Action |
-|-------|------|--------|
-| 0-40 | Green | Continue. Pick next bead. |
-| 41+ | Red | Stop immediately. Initiate handoff now. No middle zone — just hand off. |
-
-## Quality Signals (Override Message Count)
-
-These symptoms indicate context degradation regardless of message count — treat as immediate Orange:
+These symptoms indicate context degradation regardless of token usage — treat as immediate Red:
 
 - **Repeating yourself** — suggesting something already tried or discussed
 - **Forgetting earlier context** — asking about decisions already made
@@ -42,29 +35,15 @@ These symptoms indicate context degradation regardless of message count — trea
 
 ## Checkpoint Protocol
 
-### Green Zone (Continue)
+### Green (Continue)
 
-```
-Context check: Green (N pairs). Proceeding to next bead.
-```
+No warnings from the hook. Proceed to next bead.
 
-Return to `executing-beads` Step 1.
+### Yellow (Hook warns at 30%)
 
-### Yellow Zone (Evaluate)
+Finish current bead, then evaluate. Only start a new bead if it's small.
 
-```
-Context check: Yellow (N pairs). Evaluating next bead size.
-```
-
-- Check next bead's estimate via `bd ready` + `bd show <id>`
-- If estimate <=5min: proceed with caution
-- If estimate >5min: escalate to Orange
-
-### Orange Zone (Handoff)
-
-```
-Context check: Orange (N pairs). Initiating handoff.
-```
+### Red (Hook warns at 40%, or quality signals fire)
 
 1. Close current bead if work is complete
 2. For in-progress work: `bd update <id> --notes "Partial: <what's done, what remains>"`
@@ -72,16 +51,6 @@ Context check: Orange (N pairs). Initiating handoff.
 4. Use `create-handoff` skill with `beads:` section
 5. `bd sync --flush-only`
 6. `git pull --rebase && git push`
-
-### Red Zone (Emergency)
-
-```
-Context check: RED. Emergency handoff.
-```
-
-1. Save current state immediately — `bd update <id> --notes "Emergency handoff: <state>"`
-2. Minimal handoff document (skip polish)
-3. `bd sync --flush-only && git push`
 
 ## Handoff Template Addition
 
@@ -97,8 +66,8 @@ beads:
 
 ## Red Flags
 
-- Ignoring Orange/Red signals and starting new beads
+- Ignoring Red signals and starting new beads
 - Skipping checkpoint after bead completion
 - Not saving in-progress state before handoff
 - Producing a handoff without the `beads:` section
-- Rationalizing "just one more bead" past Orange
+- Rationalizing "just one more bead" past Red
