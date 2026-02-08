@@ -96,12 +96,34 @@ func (w *Worker) SetContextPollInterval(d time.Duration) {
 
 // Run is the main event loop. It reads messages from the UDS connection and
 // dispatches them. It returns nil on clean shutdown or context cancellation.
-func (w *Worker) Run(ctx context.Context) error { //nolint:gocognit // event loop — refactor tracked in oro-mak
+func (w *Worker) Run(ctx context.Context) error {
+	msgCh, errCh := w.readMessages()
+
+	for {
+		select {
+		case <-ctx.Done():
+			w.killProc()
+			return nil
+
+		case msg := <-msgCh:
+			if done, err := w.handleMessage(ctx, msg); err != nil || done {
+				return err
+			}
+
+		case err := <-errCh:
+			return w.handleConnectionError(ctx, err)
+		}
+	}
+}
+
+// readMessages starts a goroutine that reads line-delimited JSON from the
+// connection and sends parsed messages on msgCh. When the scanner stops
+// (EOF or error), the cause is sent on errCh.
+func (w *Worker) readMessages() (msgs <-chan protocol.Message, readErr <-chan error) {
 	scanner := bufio.NewScanner(w.conn)
 	msgCh := make(chan protocol.Message)
 	errCh := make(chan error, 1)
 
-	// Read messages in a goroutine so we can select on ctx.Done.
 	go func() {
 		for scanner.Scan() {
 			var msg protocol.Message
@@ -117,37 +139,26 @@ func (w *Worker) Run(ctx context.Context) error { //nolint:gocognit // event loo
 		}
 	}()
 
-	for {
-		select {
-		case <-ctx.Done():
-			w.killProc()
-			return nil
+	return msgCh, errCh
+}
 
-		case msg := <-msgCh:
-			done, err := w.handleMessage(ctx, msg)
-			if err != nil {
-				return err
-			}
-			if done {
-				return nil
-			}
-
-		case err := <-errCh:
-			// Connection dropped
-			if ctx.Err() != nil {
-				return nil //nolint:nilerr // context cancelled = clean shutdown, swallow connection error
-			}
-			if w.socketPath == "" {
-				// No socketPath means we can't reconnect (test with net.Pipe)
-				return err
-			}
-			if reconnErr := w.reconnect(ctx); reconnErr != nil {
-				return reconnErr
-			}
-			// After reconnect, restart the read loop with the new connection
-			return w.Run(ctx)
-		}
+// handleConnectionError processes a connection drop. It returns nil when
+// the context is already cancelled (clean shutdown), returns the original
+// error when reconnection is impossible, or attempts to reconnect and
+// restarts the event loop.
+func (w *Worker) handleConnectionError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return nil //nolint:nilerr // context cancelled = clean shutdown, swallow connection error
 	}
+	if w.socketPath == "" {
+		// No socketPath means we can't reconnect (test with net.Pipe)
+		return err
+	}
+	if reconnErr := w.reconnect(ctx); reconnErr != nil {
+		return reconnErr
+	}
+	// After reconnect, restart the read loop with the new connection
+	return w.Run(ctx)
 }
 
 // handleMessage processes a single incoming message. Returns (true, nil) on shutdown.
