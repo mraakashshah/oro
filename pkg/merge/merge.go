@@ -10,7 +10,6 @@ package merge
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -134,20 +133,4 @@ func parseConflictFiles(stderr string) []string {
 		files = append(files, strings.TrimSpace(m[1]))
 	}
 	return files
-}
-
-// ExecGitRunner is the default GitRunner that shells out via os/exec.
-type ExecGitRunner struct{}
-
-// Run executes a git command in the given directory, returning stdout, stderr, and any error.
-func (r *ExecGitRunner) Run(ctx context.Context, dir string, args ...string) (stdoutStr, stderrStr string, err error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
-	return stdout.String(), stderr.String(), err
 }
