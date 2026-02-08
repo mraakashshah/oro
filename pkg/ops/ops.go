@@ -267,7 +267,7 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 }
 
 // parseReviewOutput looks for APPROVED or REJECTED in the output.
-func parseReviewOutput(stdout string) (Verdict, string) {
+func parseReviewOutput(stdout string) (verdict Verdict, feedback string) {
 	upper := strings.ToUpper(stdout)
 	if strings.Contains(upper, "APPROVED") {
 		return VerdictApproved, extractFeedback(stdout, "APPROVED")
@@ -279,7 +279,7 @@ func parseReviewOutput(stdout string) (Verdict, string) {
 }
 
 // parseMergeOutput looks for RESOLVED or FAILED in the output.
-func parseMergeOutput(stdout string) (Verdict, string) {
+func parseMergeOutput(stdout string) (verdict Verdict, feedback string) {
 	upper := strings.ToUpper(stdout)
 	if strings.Contains(upper, "RESOLVED") {
 		return VerdictResolved, extractFeedback(stdout, "RESOLVED")

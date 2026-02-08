@@ -140,7 +140,7 @@ func parseConflictFiles(stderr string) []string {
 type ExecGitRunner struct{}
 
 // Run executes a git command in the given directory, returning stdout, stderr, and any error.
-func (r *ExecGitRunner) Run(ctx context.Context, dir string, args ...string) (string, string, error) {
+func (r *ExecGitRunner) Run(ctx context.Context, dir string, args ...string) (stdoutStr, stderrStr string, err error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 
@@ -148,6 +148,6 @@ func (r *ExecGitRunner) Run(ctx context.Context, dir string, args ...string) (st
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	return stdout.String(), stderr.String(), err
 }

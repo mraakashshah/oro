@@ -39,6 +39,11 @@ linters:
     # Cleanup
     - unconvert
     - unparam
+    - nakedret
+    - whitespace
+
+    # Duplication
+    - dupl
 
     # Testing
     - thelper
@@ -50,6 +55,9 @@ linters:
     - gocritic
     - revive
     - misspell
+
+    # Performance
+    - prealloc
 
   settings:
     gocyclo:
@@ -78,6 +86,57 @@ linters:
         - errors.New(
         - errors.Join(
 
+    nakedret:
+      max-func-lines: 10
+
+    dupl:
+      threshold: 200
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - commentedOutCode
+
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+          arguments:
+            - checkPrivateReceivers
+            - sayRepetitiveInsteadOfStutters
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: true
+
   exclusions:
     generated: lax
     presets:
@@ -92,13 +151,21 @@ linters:
           - wrapcheck
           - noctx
           - unparam
+          - dupl
+          - prealloc
+          - gocritic
 
       - path: main\.go
         linters:
           - gochecknoinits
           - gochecknoglobals
 
-
 formatters:
   enable:
     - goimports
+  settings:
+    gofumpt:
+      extra-rules: true
+    goimports:
+      local-prefixes:
+        - oro

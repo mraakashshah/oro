@@ -61,7 +61,7 @@ type Worker struct {
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
-func New(id string, socketPath string, spawner SubprocessSpawner) (*Worker, error) {
+func New(id, socketPath string, spawner SubprocessSpawner) (*Worker, error) {
 	conn, err := net.Dial("unix", socketPath) //nolint:noctx // UDS connect is instant, no context needed
 	if err != nil {
 		return nil, fmt.Errorf("connect to dispatcher: %w", err)
@@ -445,6 +445,7 @@ type cmdProcess struct {
 	cmd *exec.Cmd
 }
 
+// Wait blocks until the subprocess exits.
 func (p *cmdProcess) Wait() error {
 	if err := p.cmd.Wait(); err != nil {
 		return fmt.Errorf("claude process wait: %w", err)
@@ -452,6 +453,7 @@ func (p *cmdProcess) Wait() error {
 	return nil
 }
 
+// Kill terminates the subprocess immediately.
 func (p *cmdProcess) Kill() error {
 	if p.cmd.Process == nil {
 		return nil
