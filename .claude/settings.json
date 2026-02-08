@@ -39,6 +39,16 @@
 				]
 			},
 			{
+				"matcher": "Read",
+				"hooks": [
+					{
+						"type": "command",
+						"command": ".claude/hooks/oro-search-hook",
+						"timeout": 5000
+					}
+				]
+			},
+			{
 				"matcher": "Task",
 				"hooks": [
 					{
