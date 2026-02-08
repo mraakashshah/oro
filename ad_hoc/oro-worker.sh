@@ -2,7 +2,7 @@
 # =============================================================================
 # oro-worker.sh — Manual worker for testing the oro bead execution loop
 #
-# Usage: ad_hoc/oro-worker.sh <bead-id> [--model <model>] [--budget <usd>]
+# Usage: ad_hoc/oro-worker.sh <bead-id> [--model <model>]
 #
 # Simulates what the dispatcher + oro-worker binary will do:
 #   1. Reads bead details from .beads/issues.jsonl
@@ -21,19 +21,17 @@ set -euo pipefail
 # ---- Args ----
 BEAD_ID=""
 MODEL="sonnet"
-BUDGET="5.00"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --model)  MODEL="$2"; shift 2 ;;
-        --budget) BUDGET="$2"; shift 2 ;;
         -*)       echo "Unknown flag: $1" >&2; exit 1 ;;
         *)        BEAD_ID="$1"; shift ;;
     esac
 done
 
 if [ -z "$BEAD_ID" ]; then
-    echo "Usage: ad_hoc/oro-worker.sh <bead-id> [--model <model>] [--budget <usd>]" >&2
+    echo "Usage: ad_hoc/oro-worker.sh <bead-id> [--model <model>]" >&2
     echo ""
     echo "Available beads:"
     bd ready 2>/dev/null || echo "  (run 'bd ready' to see available work)"
@@ -95,7 +93,6 @@ echo ""
 log "Bead:     ${BEAD_ID} — ${BEAD_TITLE}"
 log "Type:     ${BEAD_TYPE} (P${BEAD_PRIORITY})"
 log "Model:    ${MODEL}"
-log "Budget:   \$${BUDGET}"
 log "Branch:   ${BRANCH}"
 log "Worktree: ${WORKTREE}"
 
@@ -259,7 +256,7 @@ fi
 # =============================================================================
 # 7. LAUNCH CLAUDE -P
 # =============================================================================
-log "Launching claude -p (model=${MODEL}, budget=\$${BUDGET})..."
+log "Launching claude -p (model=${MODEL})..."
 log "Output log: ${LOG_FILE}"
 echo ""
 
@@ -267,13 +264,11 @@ export ORO_ROLE=worker
 
 # Run claude -p in the worktree with:
 #   --model: configurable model
-#   --max-budget-usd: spending cap
 #   --permission-mode acceptEdits: auto-approve file edits
 #   --add-dir: allow reading main repo as reference
 CLAUDE_EXIT=0
 (cd "$WORKTREE" && claude -p "$PROMPT" \
     --model "$MODEL" \
-    --max-budget-usd "$BUDGET" \
     --permission-mode "acceptEdits" \
     --add-dir "$REPO_ROOT" \
 ) 2>&1 | tee "$LOG_FILE" || CLAUDE_EXIT=$?
@@ -289,7 +284,7 @@ echo ""
 echo "  Bead:      ${BEAD_ID} — ${BEAD_TITLE}"
 echo "  Branch:    ${BRANCH}"
 echo "  Worktree:  ${WORKTREE}"
-echo "  Model:     ${MODEL}"
+echo "  Model:    ${MODEL}"
 echo "  Exit code: ${CLAUDE_EXIT}"
 echo "  Log:       ${LOG_FILE}"
 echo ""
