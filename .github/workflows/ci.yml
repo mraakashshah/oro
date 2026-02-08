@@ -8,6 +8,7 @@ on:
 
 jobs:
   go:
+    name: Go
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,16 +17,126 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Tier 1: Formatting
+      - name: gofumpt
+        run: |
+          go install mvdan.cc/gofumpt@latest
+          test -z "$(gofumpt -l cmd internal pkg)"
+
+      - name: goimports
+        run: |
+          go install golang.org/x/tools/cmd/goimports@latest
+          test -z "$(goimports -l cmd internal pkg)"
+
+      # Tier 2: Linting
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          args: --timeout 5m ./cmd/... ./internal/... ./pkg/...
+
+      # Tier 3: Architecture
+      - name: go-arch-lint
+        run: |
+          go install github.com/fe3dback/go-arch-lint@latest
+          go-arch-lint check --project-path .
+
+      # Tier 4: Testing + Coverage (90% minimum)
+      - name: Test + Coverage
+        run: |
+          go test -race -shuffle=on -coverprofile=coverage.out ./internal/... ./pkg/...
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "Total coverage: ${COVERAGE}%"
+          awk "BEGIN {exit ($COVERAGE < 90)}"
+
+      # Tier 5: Security
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      # Tier 6: Build
       - name: Build
         run: go build ./...
 
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test -race -shuffle=on ./...
+  shell:
+    name: Shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Lint
-        uses: golangci/golangci-lint-action@v6
+      - name: shellcheck
+        run: find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck {} +
+
+  docs:
+    name: Docs & Config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: markdownlint
+        uses: DavidAnson/markdownlint-cli2-action@v22
         with:
-          version: latest
+          config: .markdownlint.yml
+          globs: |
+            docs/**/*.md
+            *.md
+            !references/**
+            !yap/**
+            !archive/**
+
+      - name: yamllint
+        run: |
+          pip install yamllint
+          find . \( -name '*.yml' -o -name '*.yaml' \) \
+            -not -path './references/*' -not -path './yap/*' \
+            -not -path './archive/*' -not -path './.worktrees/*' \
+            -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings
+
+      - name: biome (json)
+        run: |
+          npm install --no-save @biomejs/biome
+          npx biome check --files-ignore-unknown=true docs/ .github/ .beads/ *.json
+
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv sync
+
+      # Tier 1: Formatting
+      - name: ruff format
+        run: uv run ruff format --check .
+
+      # Tier 2: Linting
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: pylint (errors only)
+        run: |
+          uv pip install pylint
+          find . -name '*.py' -not -path './references/*' -not -path './yap/*' \
+            -not -path './archive/*' -not -path './.worktrees/*' -not -path './.venv/*' \
+            | xargs uv run pylint --disable=all --enable=E
+
+      # Tier 3: Type checking
+      - name: pyright
+        run: |
+          uv pip install pyright
+          uv run pyright
+
+      # Tier 4: Testing
+      - name: pytest
+        run: uv run pytest
