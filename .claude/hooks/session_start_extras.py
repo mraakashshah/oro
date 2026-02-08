@@ -187,6 +187,75 @@ def recent_learnings(knowledge_file: str, n: int = 5) -> list[dict]:
     return sorted_entries[:n]
 
 
+_CLOSED_LINE_RE = re.compile(r"^✓\s+([\w-]+)\s+\[.*?\]\s+\[.*?\]\s+-\s+(.+)$")
+
+
+def recently_closed_beads(limit: int = 3) -> list[dict]:
+    """Get the most recently closed beads (sorted by close date, descending)."""
+    try:
+        result = subprocess.run(
+            ["bd", "list", "--status=closed", "--sort=closed", "--reverse", f"--limit={limit}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+
+    beads = []
+    for line in result.stdout.splitlines():
+        m = _CLOSED_LINE_RE.match(line.strip())
+        if m:
+            beads.append({"id": m.group(1), "title": m.group(2).strip()})
+    return beads
+
+
+def ready_beads(limit: int = 4) -> list[dict]:
+    """Get beads that are ready to work on (no blockers)."""
+    try:
+        result = subprocess.run(
+            ["bd", "ready"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+
+    beads = []
+    # Pattern: 1. [● P2] [feature] oro-xyz: Title
+    ready_re = re.compile(r"^\d+\.\s+\[.*?\]\s+\[.*?\]\s+([\w-]+):\s+(.+)$")
+    for line in result.stdout.splitlines():
+        m = ready_re.match(line.strip())
+        if m:
+            beads.append({"id": m.group(1), "title": m.group(2).strip()})
+    return beads[:limit]
+
+
+def session_banner(closed: list[dict], ready: list[dict]) -> str:
+    """Format a user-visible session banner with recently closed and up-next beads."""
+    lines = []
+
+    if closed:
+        lines.append("  Just finished:")
+        for b in closed:
+            lines.append(f"    ✓ {b['id']}: {b['title']}")
+
+    if ready:
+        lines.append("  Up next:")
+        for b in ready:
+            lines.append(f"    → {b['id']}: {b['title']}")
+
+    if not lines:
+        return ""
+
+    return "\n".join(lines)
+
+
 HANDOFFS_DIR = "docs/handoffs"
 
 
@@ -314,7 +383,8 @@ def main() -> None:
     # 4. Latest handoff + project state (skip if .no-reprime exists)
     handoff = ""
     state = ""
-    if not Path(".no-reprime").is_file():
+    is_priming = not Path(".no-reprime").is_file()
+    if is_priming:
         handoff = latest_handoff(HANDOFFS_DIR)
         state = project_state()
 
@@ -326,12 +396,21 @@ def main() -> None:
             parts.append(section)
     context = "\n\n".join(parts)
 
-    output = {
+    output: dict = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
             "additionalContext": context,
         }
     }
+
+    # 5. User-visible banner (only when priming)
+    if is_priming:
+        closed = recently_closed_beads(limit=3)
+        ready = ready_beads(limit=4)
+        banner = session_banner(closed, ready)
+        if banner:
+            output["systemMessage"] = banner
+
     json.dump(output, sys.stdout)
 
 

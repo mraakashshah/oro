@@ -16,6 +16,7 @@ _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 find_stale_beads = _mod.find_stale_beads
 find_merged_worktrees = _mod.find_merged_worktrees
 recent_learnings = _mod.recent_learnings
+session_banner = _mod.session_banner
 
 
 # --- find_stale_beads ---
@@ -295,3 +296,49 @@ class TestRecentLearnings:
         )
         result = recent_learnings(str(p), n=5)
         assert len(result) == 1
+
+
+# --- session_banner ---
+
+
+class TestSessionBanner:
+    def test_empty_when_no_beads(self):
+        assert session_banner([], []) == ""
+
+    def test_just_finished_only(self):
+        closed = [{"id": "oro-abc", "title": "Fix bug"}]
+        result = session_banner(closed, [])
+        assert "Just finished:" in result
+        assert "✓ oro-abc: Fix bug" in result
+        assert "Up next:" not in result
+
+    def test_up_next_only(self):
+        ready = [{"id": "oro-xyz", "title": "Add feature"}]
+        result = session_banner([], ready)
+        assert "Up next:" in result
+        assert "→ oro-xyz: Add feature" in result
+        assert "Just finished:" not in result
+
+    def test_both_sections(self):
+        closed = [{"id": "oro-aaa", "title": "Done task"}]
+        ready = [{"id": "oro-bbb", "title": "Next task"}]
+        result = session_banner(closed, ready)
+        assert "Just finished:" in result
+        assert "✓ oro-aaa: Done task" in result
+        assert "Up next:" in result
+        assert "→ oro-bbb: Next task" in result
+        # "Just finished" appears before "Up next"
+        assert result.index("Just finished:") < result.index("Up next:")
+
+    def test_multiple_entries(self):
+        closed = [
+            {"id": "oro-1", "title": "First"},
+            {"id": "oro-2", "title": "Second"},
+        ]
+        ready = [
+            {"id": "oro-3", "title": "Third"},
+            {"id": "oro-4", "title": "Fourth"},
+        ]
+        result = session_banner(closed, ready)
+        assert result.count("✓") == 2
+        assert result.count("→") == 2
