@@ -1,0 +1,63 @@
+---
+date: 2026-02-07
+status: complete
+---
+
+goal: Closed 4 beads — worktree guard hook (P0), post-commit reminder, brainstorm research guard, SQLite row types
+now: Pick up oro-v6f (integration test) — unblocked by oro-bya. Then oro-68t (merge coordinator).
+
+test: go test ./... && uv run pytest
+
+done_this_session:
+  - task: "oro-jlz [P0]: Worktree removal guard hook"
+    files: [.claude/hooks/worktree_guard.py, tests/test_worktree_guard.py, .claude/settings.json, .claude/skills/using-git-worktrees/SKILL.md]
+    notes: "PreToolUse Bash hook blocks git worktree remove when cwd is inside the target. Root cause is upstream Claude Code bug #9190 — POSIX getcwd() ENOENT on deleted cwd. Skill updated with mandatory cd-first removal sequence."
+  - task: "oro-01h: Post-commit discovery reminder hook"
+    files: [.claude/hooks/post_commit_reminder.py, tests/test_post_commit_reminder.py, .claude/settings.json]
+    notes: "PostToolUse Bash hook. Detects feat/fix commits, reminds to log to decisions-and-discoveries.md. 31 tests. Dispatched via parallel agent."
+  - task: "oro-2md: Brainstorming research guard"
+    files: [.claude/skills/brainstorming/SKILL.md, docs/decisions-and-discoveries.md]
+    notes: "Decided skill-only (no hook). Hooks can't intercept text output or judge research sufficiency. Added research gate checklist to brainstorming skill. Decision documented."
+  - task: "oro-bya: SQLite row types"
+    files: [pkg/protocol/tables.go, pkg/protocol/tables_test.go]
+    notes: "4 structs: Event, Assignment, CommandRow, Memory. Named CommandRow to avoid collision with existing Command UDS type. 8 tests verify real SQLite scan + JSON round-trip."
+
+blockers: []
+
+questions: []
+
+decisions:
+  - commandrow_naming: "Named CommandRow (not Command) because Command already exists in directive.go as a UDS message type. Schema table is 'commands' but the Go struct needs a distinct name."
+  - brainstorm_no_hook: "Hooks work for mechanical invariants (cwd path, token count). Judgment-dependent gates (did you research enough?) belong in skills."
+  - worktree_guard_pretooluse: "Used PreToolUse with decision=block rather than PostToolUse warning. This is a data-loss prevention scenario — warning after the fact is too late."
+
+worked:
+  - "Parallel agents in worktrees for independent hooks (oro-01h + oro-2md)"
+  - "Safe merge sequence: remove worktrees FIRST, then stash, rebase one-at-a-time, ff-only merge"
+  - "TDD with real SQLite for row type verification — tests scan actual rows, not just compile checks"
+
+failed: []
+
+next:
+  - "oro-v6f [P2]: Integration test — schema + types against real SQLite (unblocked by oro-bya)"
+  - "oro-68t [P2]: Merge coordinator — sequential rebase-merge with lock, P0 on conflict"
+
+files:
+  created:
+    - .claude/hooks/worktree_guard.py
+    - .claude/hooks/post_commit_reminder.py
+    - tests/test_worktree_guard.py
+    - tests/test_post_commit_reminder.py
+    - pkg/protocol/tables.go
+    - pkg/protocol/tables_test.go
+    - docs/handoffs/2026-02-07_22-45_guards-hooks-rowtypes.yaml
+  modified:
+    - .claude/settings.json
+    - .claude/skills/using-git-worktrees/SKILL.md
+    - .claude/skills/brainstorming/SKILL.md
+    - docs/decisions-and-discoveries.md
+
+beads:
+  completed: [oro-jlz, oro-01h, oro-2md, oro-bya]
+  in_progress: []
+  remaining: [oro-v6f, oro-68t]
