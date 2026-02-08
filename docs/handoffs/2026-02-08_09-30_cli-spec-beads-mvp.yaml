@@ -1,0 +1,78 @@
+---
+date: 2026-02-08
+status: complete
+---
+
+goal: Merge agent branches, write CLI spec, create MVP epic, reorganize beads
+now: Start with oro-98h (P1, quality gate at worker) or oro-adw (P2, typed handoff) — both unblocked
+test: go test -race ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: Merged oro-mak (Worker.Run refactor, complexity 26→7)
+    files: [pkg/worker/worker.go]
+
+  - task: Merged oro-3w4 + oro-0q5 (memory system + FTS5 fix)
+    files: [pkg/memory/memory.go, pkg/memory/memory_test.go]
+    details: "modernc bm25() ~1e6x smaller than C sqlite. Fixed with Go-side scoring, OR queries, Jaccard dedup. Coverage 91.9%."
+
+  - task: Reviewed cs50victor/claude-code-teams-mcp
+    details: "Adopted: typed handoff payloads, graceful shutdown. Rest covered by Oro."
+
+  - task: Created code search epic (oro-98q) with 4 children
+    details: "Bypass rules, AST summarizer, hook binary, wiring. Spec at docs/plans/2026-02-07-code-search-spec.md"
+
+  - task: Created typed handoff + graceful shutdown + memory wiring beads
+    details: "oro-adw → oro-hh0 → oro-yfs → oro-bat dependency chain"
+
+  - task: Created P1 quality gate enforcement (oro-98h)
+    details: "Workers must pass quality_gate.sh before MsgDone. DonePayload.QualityGatePassed bool."
+
+  - task: Wrote CLI spec
+    files: [docs/plans/2026-02-08-oro-cli-spec.md]
+    details: "oro start = tmux 2-pane (architect interactive + manager autonomous), daemon auto-launch, workers in worktrees"
+
+  - task: Created CLI epic (oro-r7b, 5 children) and MVP epic (oro-ujb)
+    details: "MVP depends on CLI + quality gate + memory wiring"
+
+decisions:
+  - cli_single_binary: "One Go binary for daemon + session + memory commands. Daemon is hidden, auto-launched."
+  - architect_independent: "Architect pane is user's interactive session. Does not talk to manager. Two independent streams."
+  - manager_autonomous: "Manager is claude -p that loops on bd ready, dispatches, reviews, merges. Never stops."
+  - quality_gate_at_worker: "Workers run quality_gate.sh. DonePayload carries QualityGatePassed. Dispatcher rejects merge if false."
+
+findings:
+  - memory_not_wired: "pkg/memory fully built (91.9% cov) but no callers in worker or dispatcher"
+  - oro_not_runnable: "CLI stub prints version only. All packages work in isolation but nothing wires them."
+
+next:
+  - "oro-98h (P1): Quality gate enforcement at worker level"
+  - "oro-adw (P2): Extend HandoffPayload with typed context"
+  - "oro-r7b.1 (P2): CLI scaffold with cobra"
+  - "oro-98q.1 + .2 (P2): Code search bypass + summarizer (parallelizable)"
+
+beads:
+  completed: [oro-mak, oro-3w4, oro-7ya]
+  created: [oro-98q, oro-98q.1, oro-98q.2, oro-98q.3, oro-98q.4, oro-adw, oro-hh0, oro-yfs, oro-bat, oro-98h, oro-ujb, oro-r7b.1, oro-r7b.2, oro-r7b.3, oro-r7b.4, oro-r7b.5]
+  in_progress: [oro-0q5]
+  epics: [oro-r7b (CLI), oro-98q (code search), oro-ujb (MVP)]
+
+dependency_graph: |
+  MVP (oro-ujb)
+    ├── CLI Epic (oro-r7b)
+    │     ├── .1 scaffold [unblocked]
+    │     ├── .2 daemon [← .1]
+    │     ├── .3 tmux [← .1]
+    │     ├── .4 manager prompt [← .3]
+    │     └── .5 remember/recall [← .1]
+    ├── Quality gate (oro-98h) [unblocked, P1]
+    └── Memory injection (oro-bat)
+          └── Memory extraction (oro-yfs)
+                └── Typed handoff (oro-adw) [unblocked]
+                      ├── Graceful shutdown (oro-hh0) [← oro-adw]
+                      └── Memory extraction (oro-yfs) [← oro-adw]
+
+  Code Search Epic (oro-98q) [independent]
+    ├── .1 bypass rules [unblocked]
+    ├── .2 AST summarizer [unblocked]
+    ├── .3 hook binary [← .1, .2]
+    └── .4 wiring [← .3]
