@@ -1,0 +1,71 @@
+---
+date: 2026-02-08
+status: partial
+---
+
+goal: Dispatched parallel subagents for Dispatcher (oro-w6n) and Memory system (oro-0q5)
+now: Wait for dispatcher agent to finish, then merge both branches and fix remaining test failures
+test: go test ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: Dispatched oro-w6n (Dispatcher) subagent
+    files: [.worktrees/oro-w6n/pkg/dispatcher/dispatcher.go, .worktrees/oro-w6n/pkg/dispatcher/dispatcher_test.go]
+    details: Agent still running at session end. Has dispatcher.go + dispatcher_test.go written but not committed.
+  - task: Dispatched oro-0q5 (Memory) subagent
+    files: [.worktrees/oro-0q5/pkg/memory/memory.go, .worktrees/oro-0q5/pkg/memory/memory_test.go]
+    details: Agent finished. 12/17 tests pass. Committed on agent/oro-0q5 branch (10bce45). Manager fixed NULL scanning (COALESCE) and list ordering (id DESC tiebreaker).
+  - task: Partial fixes to memory package
+    files: [pkg/memory/memory.go]
+    details: Fixed NULL bead_id/worker_id scanning with COALESCE. Fixed list ordering with id DESC tiebreaker. Added sanitizeFTS5Query to prevent FTS5 operator interpretation. 3 tests still failing.
+
+blockers:
+  - oro-w6n dispatcher agent still running in background (agent ID aca6e8a)
+
+decisions:
+  - parallel_dispatch: Launched w6n + 0q5 in parallel since they share no files. r7b (CLI) held because it has soft dependency on w6n's socket API.
+  - fts5_sanitization: FTS5 interprets words like "and"/"or"/"not" as operators. Added sanitizeFTS5Query that wraps each word in double quotes.
+
+worked:
+  - Memory agent completed quickly (~3.5 min), produced good structure
+  - COALESCE fix for NULL scanning was correct pattern
+
+failed:
+  - Memory agent didn't run golangci-lint or commit (despite instructions)
+  - FTS5 query sanitization added but 3 tests still failing — likely bm25()/POWER() function compatibility with modernc.org/sqlite needs investigation
+  - ForPrompt returns empty string — Search may silently return no results rather than erroring
+
+findings:
+  - fts5_modernc_compat: modernc.org/sqlite may not support bm25() ranking function or POWER() in FTS5 context. Need to test raw SQL queries in isolation to confirm.
+  - agent_quality: Even with golangci-lint in instructions, agents don't always run it. Pre-merge gate remains essential.
+
+next:
+  - Check if dispatcher agent (aca6e8a) finished — check worktree for commits
+  - Fix 3 remaining memory test failures (oro-3w4) — debug FTS5 bm25/POWER with modernc sqlite
+  - Merge oro-w6n branch to main (oro-66l) — remove worktree first, rebase, ff-only, lint fix
+  - Merge oro-0q5 branch to main (oro-7ya) — depends on oro-3w4 fix first
+  - Run full quality gate on main after both merges
+
+files:
+  created:
+    - .worktrees/oro-w6n/pkg/dispatcher/dispatcher.go
+    - .worktrees/oro-w6n/pkg/dispatcher/dispatcher_test.go
+    - .worktrees/oro-0q5/pkg/memory/memory.go
+    - .worktrees/oro-0q5/pkg/memory/memory_test.go
+    - docs/handoffs/2026-02-08_04-00_dispatcher-memory-parallel.yaml
+
+worktrees:
+  - path: .worktrees/oro-w6n
+    branch: agent/oro-w6n
+    status: agent still running, not committed
+  - path: .worktrees/oro-0q5
+    branch: agent/oro-0q5
+    status: committed (10bce45), 12/17 tests pass
+
+beads:
+  in_progress: [oro-w6n, oro-0q5]
+  created: [oro-3w4, oro-66l, oro-7ya]
+  remaining: [oro-r7b, oro-ldf]
+  note: >
+    oro-3w4 (fix memory test failures) blocks oro-7ya (merge memory).
+    oro-66l (merge dispatcher) is independent.
+    oro-r7b (CLI) and oro-ldf (embeddings) still unblocked but not started.
