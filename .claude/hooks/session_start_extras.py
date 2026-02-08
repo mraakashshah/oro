@@ -191,10 +191,14 @@ _CLOSED_LINE_RE = re.compile(r"^✓\s+([\w.-]+)\s+\[.*?\]\s+\[.*?\]\s+-\s+(.+)$"
 
 
 def recently_closed_beads(limit: int = 3) -> list[dict]:
-    """Get the most recently closed beads (sorted by close date, descending)."""
+    """Get the most recently closed beads (sorted by close date, descending).
+
+    Fetches all closed beads without --limit (bd applies limit before sort,
+    which returns wrong results). Slices to ``limit`` in Python instead.
+    """
     try:
         result = subprocess.run(
-            ["bd", "list", "--status=closed", "--sort=closed", "--reverse", f"--limit={limit}"],
+            ["bd", "list", "--status=closed", "--sort=closed", "--limit=0"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -209,7 +213,7 @@ def recently_closed_beads(limit: int = 3) -> list[dict]:
         m = _CLOSED_LINE_RE.match(line.strip())
         if m:
             beads.append({"id": m.group(1), "title": m.group(2).strip()})
-    return beads
+    return beads[:limit]
 
 
 def ready_beads(limit: int = 4) -> list[dict]:
