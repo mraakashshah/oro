@@ -234,7 +234,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.sessionText.Reset()
 	w.mu.Unlock()
 
-	prompt := BuildPrompt(msg.Assign.BeadID, msg.Assign.Worktree)
+	prompt := BuildPrompt(msg.Assign.BeadID, msg.Assign.Worktree, msg.Assign.MemoryContext)
 	proc, stdout, err := w.spawner.Spawn(ctx, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
@@ -317,8 +317,14 @@ func (w *Worker) extractImplicitMemories(ctx context.Context) {
 
 // BuildPrompt constructs the prompt string for claude -p.
 // It includes the instruction to run quality_gate.sh before completing.
-func BuildPrompt(beadID, worktree string) string {
-	return fmt.Sprintf("Execute bead %s in worktree %s. Before completing, run ./quality_gate.sh and ensure it passes.", beadID, worktree)
+// If memoryContext is non-empty, it is appended as a section so the worker
+// benefits from cross-session memories retrieved by the dispatcher.
+func BuildPrompt(beadID, worktree, memoryContext string) string {
+	base := fmt.Sprintf("Execute bead %s in worktree %s. Before completing, run ./quality_gate.sh and ensure it passes.", beadID, worktree)
+	if memoryContext == "" {
+		return base
+	}
+	return base + "\n\n" + memoryContext
 }
 
 // watchContext polls .oro/context_pct in the current worktree and triggers

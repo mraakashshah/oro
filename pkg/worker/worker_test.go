@@ -401,7 +401,7 @@ func TestRunQualityGate_NoScript(t *testing.T) {
 func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {
 	t.Parallel()
 
-	prompt := worker.BuildPrompt("bead-123", "/tmp/wt-123")
+	prompt := worker.BuildPrompt("bead-123", "/tmp/wt-123", "")
 	if !strings.Contains(prompt, "quality_gate.sh") {
 		t.Error("expected prompt to contain quality_gate.sh instruction")
 	}
@@ -2361,6 +2361,86 @@ func TestWorkerNoMemoryStore_NoCrash(t *testing.T) {
 	// Session text should still be accumulated.
 	if !strings.Contains(w.SessionText(), "should not crash") {
 		t.Error("expected session text to accumulate even without memory store")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestBuildPrompt_IncludesMemoryContext(t *testing.T) {
+	t.Parallel()
+
+	memCtx := "## Relevant Memories\n- [lesson] always run go vet before committing (2025-01-15, confidence: 0.90)"
+	prompt := worker.BuildPrompt("bead-mc", "/tmp/wt-mc", memCtx)
+
+	if !strings.Contains(prompt, "go vet") {
+		t.Error("expected prompt to contain memory context content 'go vet'")
+	}
+	if !strings.Contains(prompt, "Relevant Memories") {
+		t.Error("expected prompt to contain 'Relevant Memories' header from memory context")
+	}
+	if !strings.Contains(prompt, "quality_gate.sh") {
+		t.Error("expected prompt to still contain quality_gate.sh instruction")
+	}
+	if !strings.Contains(prompt, "bead-mc") {
+		t.Error("expected prompt to contain bead ID")
+	}
+}
+
+func TestBuildPrompt_EmptyMemoryContext(t *testing.T) {
+	t.Parallel()
+
+	prompt := worker.BuildPrompt("bead-empty", "/tmp/wt-empty", "")
+
+	// Should work the same as before — no memory section
+	if !strings.Contains(prompt, "quality_gate.sh") {
+		t.Error("expected prompt to contain quality_gate.sh instruction")
+	}
+	if strings.Contains(prompt, "Relevant Memories") {
+		t.Error("prompt should NOT contain memory section when memoryContext is empty")
+	}
+}
+
+func TestHandleAssign_PassesMemoryContextToSpawner(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-mc", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	memCtx := "## Relevant Memories\n- [lesson] use table-driven tests"
+
+	// Send ASSIGN with MemoryContext
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:        "bead-mc-pass",
+			Worktree:      "/tmp/wt-mc-pass",
+			MemoryContext: memCtx,
+		},
+	})
+
+	// Drain STATUS message
+	_ = readMessage(t, dispatcherConn)
+
+	// Verify the spawner received a prompt containing the memory context
+	calls := spawner.SpawnCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 spawn call, got %d", len(calls))
+	}
+	if !strings.Contains(calls[0].Prompt, "table-driven tests") {
+		t.Errorf("expected prompt to contain memory context, got: %s", calls[0].Prompt)
+	}
+	if !strings.Contains(calls[0].Prompt, "Relevant Memories") {
+		t.Errorf("expected prompt to contain 'Relevant Memories' header, got: %s", calls[0].Prompt)
 	}
 
 	cancel()

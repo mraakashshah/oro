@@ -1857,6 +1857,53 @@ func TestExtractWorkerID_ShutdownApproved(t *testing.T) {
 }
 
 // Verify errors.As works with ConflictError (integration sanity check).
+func TestAssignIncludesMemories(t *testing.T) { //nolint:funlen // integration test
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Pre-seed memories that match the bead title.
+	_, err := d.db.Exec(
+		`INSERT INTO memories (content, type, tags, source, bead_id, confidence)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"always run go vet before committing", "lesson", `["go"]`,
+		"self_report", "bead-prev", 0.9,
+	)
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-mem", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Set bead with title that matches the memory
+	beadSrc.SetBeads([]Bead{{ID: "bead-mem-inject", Title: "run go vet and lint checks", Priority: 1}})
+
+	// Read ASSIGN — should include non-empty MemoryContext
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.MemoryContext == "" {
+		t.Fatal("expected non-empty MemoryContext in ASSIGN payload when relevant memories exist")
+	}
+	if !containsStr(msg.Assign.MemoryContext, "go vet") {
+		t.Errorf("expected MemoryContext to contain 'go vet', got: %s", msg.Assign.MemoryContext)
+	}
+	if !containsStr(msg.Assign.MemoryContext, "Relevant Memories") {
+		t.Errorf("expected MemoryContext to contain header 'Relevant Memories', got: %s", msg.Assign.MemoryContext)
+	}
+}
+
 func TestConflictError_ErrorsAs(t *testing.T) {
 	err := fmt.Errorf("wrapped: %w", &merge.ConflictError{Files: []string{"a.go"}, BeadID: "b1"})
 	var ce *merge.ConflictError
