@@ -15,12 +15,20 @@ Monitor context consumption and trigger proactive handoff before quality degrade
 
 Proxy: count user-assistant message pairs in the current session.
 
+### Opus 4.6
+
 | Pairs | Zone | Action |
 |-------|------|--------|
-| 0-10 | Green | Continue. Pick next bead. |
-| 11-15 | Yellow | Finish current bead, then evaluate. Only start a new bead if it's small (<=5min estimate). |
-| 16-20 | Orange | Do NOT start a new bead. Initiate handoff now. |
-| 20+ | Red | Stop immediately. Emergency handoff. |
+| 0-40 | Green | Continue. Pick next bead. |
+| 41-60 | Yellow | Finish current bead, then evaluate. Only start a new bead if it's small (<=5min estimate). |
+| 60+ | Red | Stop immediately. Initiate handoff now. |
+
+### Sonnet
+
+| Pairs | Zone | Action |
+|-------|------|--------|
+| 0-40 | Green | Continue. Pick next bead. |
+| 41+ | Red | Stop immediately. Initiate handoff now. No middle zone — just hand off. |
 
 ## Quality Signals (Override Message Count)
 
