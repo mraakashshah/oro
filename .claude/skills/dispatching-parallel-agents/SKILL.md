@@ -7,120 +7,108 @@ description: Use when facing 2 or more independent tasks that can be worked on w
 
 ## Overview
 
-When you have multiple unrelated problems, investigating them sequentially wastes time. Dispatch one agent per independent problem domain.
+Dispatch one agent per independent problem. Each agent gets its own git worktree, commits on a branch, and the manager merges ff-only to main.
 
-**Core principle:** One agent per independent problem. Let them work concurrently.
+**Core principle:** Every agent gets a worktree. Every agent commits. No agent merges or pushes.
 
 ## When to Use
 
-**Use when:**
-- 2+ tasks with different root causes
-- Multiple subsystems broken independently
+- 2+ tasks with different root causes or independent scope
+- Multiple subsystems to build/fix independently
 - Each problem can be understood without context from others
-- No shared state between investigations
 
 **Don't use when:**
 - Failures are related (fix one might fix others)
 - Need to understand full system state first
-- Agents would edit same files (conflicts)
 - Exploratory debugging (don't know what's broken yet)
 
 ## The Pattern
 
-### 1. Identify Independent Domains
+### 1. Create Worktrees
 
-Group by what's broken:
-- Domain A: Authentication flow
-- Domain B: Data processing pipeline
-- Domain C: API response formatting
+Before dispatching, create one worktree + branch per agent:
 
-### 2. Create Focused Agent Tasks
+```bash
+git worktree add .worktrees/task-1 -b agent/task-1
+git worktree add .worktrees/task-2 -b agent/task-2
+```
+
+### 2. Dispatch Agents to Worktrees
 
 Each agent gets:
-- **Specific scope** — one subsystem or test file
-- **Clear goal** — make these tests pass / fix this behavior
-- **Constraints** — don't change other code
-- **Quality gate** — agent must run `./quality_gate.sh` before committing and fix any failures
-- **Bead closure** — agent closes bead with `bd close <id> --reason="summary"` (no output files)
+- **Worktree path** — work exclusively in this directory
+- **Specific scope** — one subsystem or task
+- **Commit instructions** — commit on the branch before completing
+- **Quality gate** — run tests/lint in the worktree
+- **Bead closure** — `bd close <id> --reason="summary"`
 
-### 3. Dispatch in Parallel
+Use the Task tool with multiple calls in a single message, `run_in_background: true`.
 
-Use the Task tool with multiple calls in a single message:
+**Agent prompt template:**
+
 ```
-Task("Fix auth_test.go failures — timing issues in token refresh")
-Task("Fix pipeline_test.py failures — data transformation errors")
-Task("Fix api_test.go failures — response format mismatch")
+You are working in an isolated git worktree at: .worktrees/task-1
+Branch: agent/task-1
+
+## Task
+[task description]
+
+## Rules
+- ONLY modify files within .worktrees/task-1
+- Commit your work with a descriptive message before completing
+- Run tests: cd .worktrees/task-1 && [test_command]
+- Do NOT push, merge, or rebase
+- Close bead: bd close <id> --reason="summary"
 ```
 
-**Batch size:** max 15 parallel agents. Beyond that, diminishing returns.
-
-### 4. Protect the Main Context
-
-**Agent transcripts can be 70k+ tokens.** Keep them out of your context window.
+### 3. Protect the Main Context
 
 - Run background agents with `run_in_background: true`
-- **Never poll** with sleep loops — trust system reminders and task completion notifications
-- Continue working on other tasks while agents run
-- Task completion notifications provide summaries — usually sufficient
+- **Never poll** — trust task completion notifications
+- Agent closes bead with `bd close <id> --reason="summary"` — the bead IS the output
+- **Never use TaskOutput** to read full transcripts (70k+ tokens)
 
-**Reporting results — use the project's existing channels, not output files:**
+### 4. Merge Results
 
-- **If using beads:** Agent closes the bead with `bd close <id> --reason="summary"`. The bead IS the output record. Don't create `docs/agent-output-*.md` files — they accumulate as debt.
-- **If no issue tracker:** Agent can write to a summary file as a fallback.
-- **Never use TaskOutput** to read full transcripts — floods your context with 70k+ tokens.
+When all agents complete, sequentially merge each branch ff-only:
 
-```
-# RIGHT — agent closes bead, main reads completion notification
-Task(run_in_background=true, prompt="... Close bead with bd close <id> --reason='summary'")
+```bash
+# For each agent branch:
+git rebase main agent/task-1
+git checkout main
+git merge --ff-only agent/task-1
 
-# ALSO RIGHT (no issue tracker) — agent writes small summary file
-Task(run_in_background=true, prompt="... Write results to /tmp/agent-summary.md")
-
-# WRONG — dumps full transcript into main context
-TaskOutput(task_id="...")  # 70k+ tokens flooding your window
+git rebase main agent/task-2
+git checkout main
+git merge --ff-only agent/task-2
 ```
 
-### 5. Review and Integrate
+If rebase conflicts: fail-fast, investigate, resolve manually.
 
-When agents return:
-- Read completion notifications or bead annotations (not TaskOutput)
-- Verify fixes don't conflict
-- Run full test suite
-- Integrate all changes
+### 5. Cleanup
 
-## Agent Prompt Structure
-
-Good prompts are **focused, self-contained, specific about output:**
-
+```bash
+git worktree remove .worktrees/task-1
+git worktree remove .worktrees/task-2
+git branch -d agent/task-1 agent/task-2
 ```
-Fix the 3 failing tests in internal/auth/token_test.go:
 
-1. "TestRefreshExpiredToken" — expects new token, gets expired
-2. "TestConcurrentRefresh" — race condition on token store
-3. "TestRefreshRetry" — retry count wrong
-
-Root cause is likely timing issues. Your task:
-1. Read the test file and understand what each test verifies
-2. Identify root cause
-3. Fix (don't just increase timeouts — find the real issue)
-
-Return: Summary of root cause and changes made.
-```
+Run full test suite on main. Push when green.
 
 ## Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
 | Too broad ("fix all tests") | Scope to one file/subsystem |
-| No context (error messages) | Paste failures and test names |
-| No constraints | Specify what NOT to change |
-| Vague output request | Ask for specific summary format |
+| No worktree path in prompt | Agent must know where to work |
+| No commit instruction | Agent must commit before completing |
+| Polling agents with sleep loops | Trust system reminders |
+| Using TaskOutput for results | Read bead annotations instead |
 
 ## Red Flags
 
 - Dispatching agents for related failures
-- Agents editing the same files
-- Polling agents with sleep loops instead of trusting system reminders
-- Using TaskOutput to read agent results (floods context)
-- No review after agents return
-- Trusting agent results without running full test suite
+- Agents without worktree isolation
+- Agents merging or pushing (only manager does this)
+- No test suite run on main after merge
+- Trusting agent results without verification
