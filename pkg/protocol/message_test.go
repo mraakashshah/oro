@@ -40,6 +40,127 @@ func TestMessageTypes(t *testing.T) {
 	}
 }
 
+func TestHandoffPayloadFields(t *testing.T) {
+	t.Parallel()
+
+	// Verify HandoffPayload includes the new typed context fields and they
+	// marshal/unmarshal correctly through JSON round-trip.
+	original := protocol.HandoffPayload{
+		BeadID:         "bead-ctx-1",
+		WorkerID:       "worker-ctx",
+		Learnings:      []string{"ruff must run before pyright", "SQLite WAL requires single-writer"},
+		Decisions:      []string{"use table-driven tests"},
+		FilesModified:  []string{"pkg/protocol/message.go", "pkg/worker/worker.go"},
+		ContextSummary: "Extended HandoffPayload with typed context fields for cross-session memory",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal HandoffPayload: %v", err)
+	}
+
+	var decoded protocol.HandoffPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal HandoffPayload: %v", err)
+	}
+
+	// Verify all fields survived round-trip
+	if decoded.BeadID != original.BeadID {
+		t.Errorf("BeadID: got %q, want %q", decoded.BeadID, original.BeadID)
+	}
+	if decoded.WorkerID != original.WorkerID {
+		t.Errorf("WorkerID: got %q, want %q", decoded.WorkerID, original.WorkerID)
+	}
+	if len(decoded.Learnings) != len(original.Learnings) {
+		t.Fatalf("Learnings len: got %d, want %d", len(decoded.Learnings), len(original.Learnings))
+	}
+	for i, l := range decoded.Learnings {
+		if l != original.Learnings[i] {
+			t.Errorf("Learnings[%d]: got %q, want %q", i, l, original.Learnings[i])
+		}
+	}
+	if len(decoded.Decisions) != len(original.Decisions) {
+		t.Fatalf("Decisions len: got %d, want %d", len(decoded.Decisions), len(original.Decisions))
+	}
+	for i, d := range decoded.Decisions {
+		if d != original.Decisions[i] {
+			t.Errorf("Decisions[%d]: got %q, want %q", i, d, original.Decisions[i])
+		}
+	}
+	if len(decoded.FilesModified) != len(original.FilesModified) {
+		t.Fatalf("FilesModified len: got %d, want %d", len(decoded.FilesModified), len(original.FilesModified))
+	}
+	for i, f := range decoded.FilesModified {
+		if f != original.FilesModified[i] {
+			t.Errorf("FilesModified[%d]: got %q, want %q", i, f, original.FilesModified[i])
+		}
+	}
+	if decoded.ContextSummary != original.ContextSummary {
+		t.Errorf("ContextSummary: got %q, want %q", decoded.ContextSummary, original.ContextSummary)
+	}
+
+	// Verify omitempty: empty slices and empty string should not appear in JSON
+	emptyPayload := protocol.HandoffPayload{
+		BeadID:   "bead-empty",
+		WorkerID: "worker-empty",
+	}
+	emptyData, err := json.Marshal(emptyPayload)
+	if err != nil {
+		t.Fatalf("marshal empty payload: %v", err)
+	}
+	emptyJSON := string(emptyData)
+	for _, field := range []string{"learnings", "decisions", "files_modified", "context_summary"} {
+		if contains(emptyJSON, field) {
+			t.Errorf("expected omitted field %q in JSON of empty payload, got: %s", field, emptyJSON)
+		}
+	}
+}
+
+// TestAssignPayloadMemoryContext verifies the new MemoryContext field on AssignPayload.
+func TestAssignPayloadMemoryContext(t *testing.T) {
+	t.Parallel()
+
+	original := protocol.AssignPayload{
+		BeadID:        "bead-mem-1",
+		Worktree:      "/tmp/wt-mem",
+		MemoryContext: "## Relevant Memories\n- [gotcha] ruff must run before pyright",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var decoded protocol.AssignPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.MemoryContext != original.MemoryContext {
+		t.Errorf("MemoryContext: got %q, want %q", decoded.MemoryContext, original.MemoryContext)
+	}
+
+	// Verify omitempty: empty MemoryContext should not appear
+	emptyAssign := protocol.AssignPayload{BeadID: "b1", Worktree: "/tmp/wt"}
+	emptyData, err := json.Marshal(emptyAssign)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	if contains(string(emptyData), "memory_context") {
+		t.Errorf("expected omitted memory_context in empty payload, got: %s", string(emptyData))
+	}
+}
+
+// contains checks if substr exists in s (simple helper to avoid importing strings).
+func contains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMessageJSON(t *testing.T) { //nolint:funlen // table-driven test with 8 message types
 	t.Parallel()
 
@@ -91,8 +212,12 @@ func TestMessageJSON(t *testing.T) { //nolint:funlen // table-driven test with 8
 			msg: protocol.Message{
 				Type: protocol.MsgHandoff,
 				Handoff: &protocol.HandoffPayload{
-					BeadID:   "bead-abc",
-					WorkerID: "worker-3",
+					BeadID:         "bead-abc",
+					WorkerID:       "worker-3",
+					Learnings:      []string{"learned something"},
+					Decisions:      []string{"decided something"},
+					FilesModified:  []string{"file.go"},
+					ContextSummary: "summary of work",
 				},
 			},
 		},

@@ -673,6 +673,105 @@ func TestContextWatcher_TriggersHandoffAbove70(t *testing.T) { //nolint:funlen /
 	<-errCh
 }
 
+func TestHandoffPopulatesContext(t *testing.T) { //nolint:funlen // integration test requires sequential setup
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-hctx", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond) // fast polling for test
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Create a temp worktree dir with .oro/ context files
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+		t.Fatal(err)
+	}
+
+	// Write context files that the worker should read before handoff
+	writeJSON(t, filepath.Join(oroDir, "learnings.json"), []string{"ruff before pyright", "WAL needs single writer"})
+	writeJSON(t, filepath.Join(oroDir, "decisions.json"), []string{"use table-driven tests"})
+	writeJSON(t, filepath.Join(oroDir, "files_modified.json"), []string{"pkg/protocol/message.go", "pkg/worker/worker.go"})
+	if err := os.WriteFile(filepath.Join(oroDir, "context_summary.txt"), []byte("Extended handoff with typed context"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Send ASSIGN with the temp worktree
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-hctx",
+			Worktree: tmpDir,
+		},
+	})
+
+	// Drain STATUS message
+	_ = readMessage(t, dispatcherConn)
+
+	// Write context_pct > 70 to trigger handoff
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("75"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read messages until we get a HANDOFF
+	_ = dispatcherConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	scanner := bufio.NewScanner(dispatcherConn)
+	var handoffMsg *protocol.HandoffPayload
+	for scanner.Scan() {
+		var msg protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.Type == protocol.MsgHandoff {
+			handoffMsg = msg.Handoff
+			break
+		}
+	}
+	if handoffMsg == nil {
+		t.Fatal("did not receive HANDOFF message with context fields")
+	}
+
+	// Verify context fields are populated
+	if handoffMsg.BeadID != "bead-hctx" {
+		t.Errorf("expected bead_id bead-hctx, got %s", handoffMsg.BeadID)
+	}
+	if len(handoffMsg.Learnings) != 2 {
+		t.Errorf("expected 2 learnings, got %d", len(handoffMsg.Learnings))
+	}
+	if len(handoffMsg.Decisions) != 1 {
+		t.Errorf("expected 1 decision, got %d", len(handoffMsg.Decisions))
+	}
+	if len(handoffMsg.FilesModified) != 2 {
+		t.Errorf("expected 2 files_modified, got %d", len(handoffMsg.FilesModified))
+	}
+	if handoffMsg.ContextSummary != "Extended handoff with typed context" {
+		t.Errorf("expected context_summary, got %q", handoffMsg.ContextSummary)
+	}
+
+	cancel()
+	<-errCh
+}
+
+// writeJSON is a test helper that marshals v to JSON and writes it to path.
+func writeJSON(t *testing.T, path string, v any) {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal json for %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 func TestContextWatcher_NoFileIsNotError(t *testing.T) {
 	t.Parallel()
 

@@ -409,18 +409,57 @@ func (w *Worker) SendDone(_ context.Context, qualityGatePassed bool) error {
 }
 
 // SendHandoff sends a HANDOFF message to the Dispatcher.
+// Before sending, it reads typed context files from .oro/ in the worktree
+// and populates the HandoffPayload with learnings, decisions, files modified,
+// and a context summary for cross-session memory persistence.
 func (w *Worker) SendHandoff(_ context.Context) error {
 	w.mu.Lock()
 	beadID := w.beadID
+	worktree := w.worktree
 	w.mu.Unlock()
 
+	payload := protocol.HandoffPayload{
+		BeadID:   beadID,
+		WorkerID: w.ID,
+	}
+
+	// Populate context from .oro/ files (best-effort; missing files are not errors)
+	if worktree != "" {
+		oroDir := filepath.Join(worktree, ".oro")
+		payload.Learnings = readJSONStringSlice(filepath.Join(oroDir, "learnings.json"))
+		payload.Decisions = readJSONStringSlice(filepath.Join(oroDir, "decisions.json"))
+		payload.FilesModified = readJSONStringSlice(filepath.Join(oroDir, "files_modified.json"))
+		payload.ContextSummary = readFileString(filepath.Join(oroDir, "context_summary.txt"))
+	}
+
 	return w.sendMessage(protocol.Message{
-		Type: protocol.MsgHandoff,
-		Handoff: &protocol.HandoffPayload{
-			BeadID:   beadID,
-			WorkerID: w.ID,
-		},
+		Type:    protocol.MsgHandoff,
+		Handoff: &payload,
 	})
+}
+
+// readJSONStringSlice reads a JSON file containing a []string and returns it.
+// Returns nil on any error (file not found, invalid JSON, etc.).
+func readJSONStringSlice(path string) []string {
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed internally, not user input
+	if err != nil {
+		return nil
+	}
+	var result []string
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil
+	}
+	return result
+}
+
+// readFileString reads a file and returns its trimmed contents as a string.
+// Returns empty string on any error.
+func readFileString(path string) string {
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed internally, not user input
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // SendReadyForReview sends a READY_FOR_REVIEW message to the Dispatcher.

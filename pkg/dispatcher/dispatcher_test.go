@@ -1537,7 +1537,6 @@ func TestHandleDone_QualityGateFailed_RejectsMerge(t *testing.T) {
 func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
-
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
@@ -1581,6 +1580,133 @@ func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
 	if eventCount(t, d.db, "quality_gate_rejected") != 0 {
 		t.Fatal("should not have quality_gate_rejected when gate passed")
 	}
+}
+
+func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	insertCommand(t, d.db, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-mem", Title: "Memory handoff test", Priority: 1}})
+	_, ok2 := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok2 {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send HANDOFF with learnings and decisions
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{
+			BeadID:         "bead-mem",
+			WorkerID:       "w1",
+			Learnings:      []string{"ruff must run before pyright", "WAL needs single writer"},
+			Decisions:      []string{"use table-driven tests"},
+			FilesModified:  []string{"pkg/protocol/message.go"},
+			ContextSummary: "Extended handoff with typed context",
+		},
+	})
+
+	// Worker should receive SHUTDOWN
+	msg, ok3 := readMsg(t, conn, 2*time.Second)
+	if !ok3 {
+		t.Fatal("expected SHUTDOWN after handoff")
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
+	}
+
+	// Wait for handoff event to be logged
+	deadline2 := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline2) {
+		if eventCount(t, d.db, "handoff") > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Verify memories were persisted: 2 learnings + 1 decision = 3 memories
+	var memCount int
+	err := d.db.QueryRow(`SELECT COUNT(*) FROM memories WHERE bead_id='bead-mem'`).Scan(&memCount)
+	if err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if memCount != 3 {
+		t.Fatalf("expected 3 memories persisted from handoff, got %d", memCount)
+	}
+
+	// Verify types: 2 lesson, 1 decision
+	var lessonCount, decisionCount int
+	err = d.db.QueryRow(`SELECT COUNT(*) FROM memories WHERE bead_id='bead-mem' AND type='lesson'`).Scan(&lessonCount)
+	if err != nil {
+		t.Fatalf("count lessons: %v", err)
+	}
+	err = d.db.QueryRow(`SELECT COUNT(*) FROM memories WHERE bead_id='bead-mem' AND type='decision'`).Scan(&decisionCount)
+	if err != nil {
+		t.Fatalf("count decisions: %v", err)
+	}
+	if lessonCount != 2 {
+		t.Errorf("expected 2 lessons, got %d", lessonCount)
+	}
+	if decisionCount != 1 {
+		t.Errorf("expected 1 decision, got %d", decisionCount)
+	}
+}
+
+func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:funlen // integration test
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Pre-seed a memory that matches the bead title
+	_, err := d.db.Exec(
+		`INSERT INTO memories (content, type, tags, source, bead_id, confidence)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"ruff must run before pyright for linting", "lesson", `["python"]`,
+		"self_report", "bead-reassign", 0.9,
+	)
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Set bead with title that matches the memory
+	beadSrc.SetBeads([]Bead{{ID: "bead-reassign", Title: "fix linting with ruff and pyright", Priority: 1}})
+
+	// Read ASSIGN — should include MemoryContext
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.MemoryContext == "" {
+		t.Fatal("expected non-empty MemoryContext in ASSIGN after seeding relevant memories")
+	}
+	if !containsStr(msg.Assign.MemoryContext, "ruff") {
+		t.Errorf("expected MemoryContext to contain 'ruff', got: %s", msg.Assign.MemoryContext)
+	}
+	if !containsStr(msg.Assign.MemoryContext, "Relevant Memories") {
+		t.Errorf("expected MemoryContext header, got: %s", msg.Assign.MemoryContext)
+	}
+}
+
+// containsStr checks if s contains substr.
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // Verify errors.As works with ConflictError (integration sanity check).

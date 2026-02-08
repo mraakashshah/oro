@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -133,6 +134,7 @@ type Dispatcher struct {
 	beads     BeadSource
 	worktrees WorktreeManager
 	escalator Escalator
+	memories  *memory.Store
 
 	mu       sync.Mutex
 	state    State
@@ -154,6 +156,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		beads:     beads,
 		worktrees: wt,
 		escalator: esc,
+		memories:  memory.NewStore(db),
 		state:     StateInert,
 		workers:   make(map[string]*trackedWorker),
 		nowFunc:   time.Now,
@@ -436,6 +439,9 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 
 	_ = d.logEvent(ctx, "handoff", workerID, beadID, workerID, "")
 
+	// Persist learnings and decisions from the handoff payload as memories.
+	d.persistHandoffContext(ctx, msg.Handoff)
+
 	// Send SHUTDOWN to the old worker
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
@@ -454,6 +460,36 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 
 	// Re-assign the same bead+worktree to the next idle worker (or the same one reconnects)
 	_ = d.logEvent(ctx, "handoff_pending", "dispatcher", beadID, "", worktree)
+}
+
+// persistHandoffContext stores learnings and decisions from a HandoffPayload
+// into the memory store for cross-session retrieval.
+func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.HandoffPayload) {
+	if d.memories == nil {
+		return
+	}
+
+	for _, learning := range h.Learnings {
+		_, _ = d.memories.Insert(ctx, memory.InsertParams{
+			Content:    learning,
+			Type:       "lesson",
+			Source:     "self_report",
+			BeadID:     h.BeadID,
+			WorkerID:   h.WorkerID,
+			Confidence: 0.8,
+		})
+	}
+
+	for _, decision := range h.Decisions {
+		_, _ = d.memories.Insert(ctx, memory.InsertParams{
+			Content:    decision,
+			Type:       "decision",
+			Source:     "self_report",
+			BeadID:     h.BeadID,
+			WorkerID:   h.WorkerID,
+			Confidence: 0.8,
+		})
+	}
 }
 
 func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, msg protocol.Message) {
@@ -601,6 +637,8 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 }
 
 // assignBead creates a worktree and sends ASSIGN to the worker.
+// If memories exist for the bead's description, they are included in the
+// AssignPayload.MemoryContext field for cross-session continuity.
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead) {
 	worktree, branch, err := d.worktrees.Create(ctx, bead.ID)
 	if err != nil {
@@ -612,6 +650,12 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
 
+	// Retrieve relevant memories for this bead (best-effort).
+	var memCtx string
+	if d.memories != nil {
+		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, bead.Title, 0)
+	}
+
 	d.mu.Lock()
 	w.state = WorkerBusy
 	w.beadID = bead.ID
@@ -619,8 +663,9 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	_ = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:   bead.ID,
-			Worktree: worktree,
+			BeadID:        bead.ID,
+			Worktree:      worktree,
+			MemoryContext: memCtx,
 		},
 	})
 	d.mu.Unlock()
