@@ -80,8 +80,8 @@ if $HAS_GO; then
     check "go-arch-lint" "go-arch-lint check --project-path ."
 
     header "GO TIER 4: TESTING"
-    check "go test" "go test -race -shuffle=on ./..."
-    check "coverage" "go test -coverprofile=coverage.out ./internal/... ./pkg/... && go tool cover -func=coverage.out | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 70) exit 1}'"
+    check "go test" "go test -race -shuffle=on -coverprofile=coverage.out ./internal/... ./pkg/... && go tool cover -func=coverage.out | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 90) exit 1}'"
+    check "coverage" "go tool cover -func=coverage.out | tail -1"
 
     header "GO TIER 5: SECURITY"
     check "govulncheck" "govulncheck ./..."
