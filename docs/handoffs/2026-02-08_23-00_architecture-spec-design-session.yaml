@@ -1,0 +1,110 @@
+---
+date: 2026-02-08
+status: partial
+---
+
+goal: >
+  Continued architecture spec design session (oro-cfp). Resolved 8 of 11
+  open questions through human design conversation. Added gastown as reference
+  material in yap/reference/. Updated spec with UDS protocol design, worker
+  lifecycle, role isolation, and manager/dispatcher responsibility split.
+
+now: >
+  Continue oro-cfp — 3 open questions remain:
+  1. oro-9fu: Manager initial message (beacon) content
+  2. oro-tk7: Worker prompt template sections
+  3. oro-0i7: fsnotify watch target specifics
+  Read docs/plans/2026-02-08-oro-architecture-spec.md and pick up at
+  "Open Questions" section. Ask human one question at a time.
+
+test: go test -race -p 2 ./... && golangci-lint run ./...
+
+done_this_session:
+  - task: "Added gastown to yap/reference"
+    files: [yap/reference/gastown/]
+    details: >
+      Cloned steveyegge/gastown. Renamed .claude → dot-claude to prevent
+      hook hijacking (broke shell 2x before learning this lesson).
+
+  - task: "Resolved 8 architecture questions"
+    files: [docs/plans/2026-02-08-oro-architecture-spec.md]
+    details: >
+      Manager→Dispatcher: UDS on same socket (short-lived DIRECTIVE msg).
+      Scale N: dispatcher spawns oro-worker processes.
+      Manager launch: interactive claude + tmux send-keys beacon.
+      fsnotify: watch .beads/ dir, 60s fallback poll.
+      SQLite commands table: audit log only, no polling.
+      Worker spawning: dispatcher owns it.
+      Same directory safe: beads WAL + RPC handles concurrent writes.
+      Role differentiation: initial message via tmux send-keys.
+
+  - task: "Documented .claude hijacking gotcha"
+    files: [docs/decisions-and-discoveries.md]
+    details: >
+      Never clone repos with .claude/ into yap/reference/ without
+      renaming to dot-claude first. Broke hooks 2x same way.
+
+  - task: "Created beads for remaining open questions"
+    details: >
+      oro-9fu (manager beacon), oro-tk7 (worker prompt), oro-0i7
+      (fsnotify target). All blocked by oro-cfp.
+
+decisions:
+  - uds_same_socket: >
+      Manager and worker connections share one UDS socket, discriminated
+      by first message type. Manager sends DIRECTIVE (short-lived),
+      workers send HEARTBEAT (persistent). Avoids managing two listeners.
+  - manager_decides_dispatcher_manages: >
+      Manager = strategy (scale N, focus, stop). Dispatcher = execution
+      (spawn/kill processes, assign beads, merge, cleanup). Clean separation.
+  - process_group_kill: >
+      Scale down and shutdown use SIGTERM → 5s grace → SIGKILL on
+      process group (like gastown). Prevents orphaned claude processes.
+  - same_directory_safe: >
+      Architect and manager share repo directory. Beads handles concurrent
+      writes via SQLite WAL + BEGIN IMMEDIATE + 30s busy timeout.
+      With beads daemon, writes serialized via RPC.
+  - gastown_beacon_pattern: >
+      Manager differentiated from architect via initial message sent
+      through tmux send-keys after claude starts. Go binary assembles
+      role-specific prompt. Same pattern gastown uses for Mayor.
+
+findings:
+  - gastown_architecture: >
+      gastown uses CLI+beads polling (no UDS). Mayor is interactive claude.
+      Polecats are transient workers with unique branches. Communication
+      via beads DB + tmux send-keys nudges. Scales to 20-30 agents by
+      throwing compute at it. Oro uses UDS for precision at 50 workers.
+  - dot_claude_hijacking: >
+      git clone puts shell CWD inside clone. If clone has .claude/hooks/,
+      Claude Code resolves hooks from clone's .claude/ instead of project's.
+      All tool calls break. Fix: mv .claude dot-claude atomically with clone.
+
+worked:
+  - Compare/contrast analysis before deciding (UDS vs CLI)
+  - Reading gastown source code to understand real patterns
+  - Asking human one question at a time
+
+failed:
+  - Cloning repo with .claude/ into subdirectory (broke hooks 2x)
+  - Making up CLAUDE.md features that don't exist (conditionals)
+
+beads:
+  in_progress: [oro-cfp]
+  created: [oro-9fu, oro-tk7, oro-0i7]
+  blocked: [oro-9fu, oro-tk7, oro-0i7]  # all blocked by oro-cfp
+
+next:
+  - Resume oro-cfp design session with human
+  - Resolve oro-9fu (manager beacon content)
+  - Resolve oro-tk7 (worker prompt template)
+  - Resolve oro-0i7 (fsnotify watch target)
+  - Once all resolved, close oro-cfp and unblock downstream work
+
+files:
+  created:
+    - docs/handoffs/2026-02-08_23-00_architecture-spec-design-session.yaml
+    - yap/reference/gastown/ (cloned, .claude renamed to dot-claude)
+  modified:
+    - docs/plans/2026-02-08-oro-architecture-spec.md (major rewrite — 8 questions resolved)
+    - docs/decisions-and-discoveries.md (added dot-claude hijacking gotcha)
