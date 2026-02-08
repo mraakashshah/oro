@@ -108,7 +108,46 @@ Tabbed view with 5 tabs:
 - `Esc` or `Backspace` — back to board
 - `j/k` or arrows — scroll within tab viewport
 
-### 3. Status Bar (always visible, bottom)
+### 3. Workers View (`w` to toggle)
+
+Table of active agents with their assignments and health:
+
+```
+ ┌─ Active Workers ────────────────────────────────────────────┐
+ │ ID    │ Bead       │ Status    │ Context │ Heartbeat │ Cyc  │
+ │───────┼────────────┼───────────┼─────────┼───────────┼──────│
+ │ w-1   │ oro-ujb.2  │ executing │ 34%     │ 2s ago    │ 0    │
+ │ w-2   │ oro-ujb.3  │ executing │ 12%     │ 1s ago    │ 0    │
+ │ w-3   │ —          │ idle      │ —       │ —         │ —    │
+ └─────────────────────────────────────────────────────────────┘
+```
+
+- `Enter` on a worker row drills into its assigned bead detail
+- Shows ralph cycle count, context %, last heartbeat
+- Idle workers shown dimmed
+
+### 4. All Beads View (`a` to toggle)
+
+Sortable table of every bead with parent/child and dependency info:
+
+```
+ ┌─ All Beads ─────────────────────────────────────────────────┐
+ │ ID         │ Title                    │ P  │ Status │ Parent│
+ │────────────┼──────────────────────────┼────┼────────┼───────│
+ │ oro-ujb    │ Epic: End-to-end MVP     │ P1 │ open   │ —     │
+ │  └ ujb.2   │ Production BeadSource    │ P2 │ done   │ ujb   │
+ │  └ ujb.3   │ Production WorktreeMgr   │ P2 │ done   │ ujb   │
+ │  └ ujb.5   │ Wire dispatcher.Run      │ P2 │ blocked│ ujb   │
+ │    └→ ujb.6│ (blocked by ujb.6)       │    │        │       │
+ └─────────────────────────────────────────────────────────────┘
+```
+
+- Tree-indented by parent/child hierarchy
+- Dependency arrows shown inline
+- Sort by: priority (`p`), status (`s`), created (`c`)
+- Filter by status, type, or search (`/`)
+
+### 5. Status Bar (always visible, bottom)
 
 ```
  ┌─────────────────────────────────────────────────────────────┐
