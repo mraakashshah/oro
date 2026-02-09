@@ -1,0 +1,81 @@
+---
+date: 2026-02-08
+status: complete
+---
+
+goal: >
+  Verified dispatcher+worker work together end-to-end over UDS.
+  Landed oro-by8 (bootstrap ~/.oro/). Added three worktree safety hooks.
+  Closed oro-ptz (preflight checks already implemented).
+
+now: >
+  oro-mgf (P1) is the next critical bead — manager spawns workers via
+  scale directive + worker process lifecycle. This is the last piece
+  before the swarm can actually run multiple workers.
+
+test: go test -race -p 2 ./... && uv run pytest
+
+done_this_session:
+  - task: "Dispatcher-worker integration tests over real UDS"
+    files: [pkg/integration/dispatcher_worker_test.go]
+    details: >
+      Three tests: FullCycle (assign→status→done→merge), GracefulShutdown
+      (PREPARE_SHUTDOWN→HANDOFF→exit), Heartbeat (liveness tracking).
+      Uses real Dispatcher + real Worker with mock spawner/git/beads.
+
+  - task: "Merged bead/oro-by8 — bootstrap ~/.oro directory"
+    files: [cmd/oro/cmd_start.go, cmd/oro/daemon.go, cmd/oro/store.go, cmd/oro/start_test.go]
+    details: >
+      Added bootstrapOroDir() called early in oro start after preflight.
+      Removed 3 redundant MkdirAll calls from buildDispatcher, WritePIDFile,
+      defaultMemoryStore. Two tests: correct 0750 perms + idempotency.
+
+  - task: "Fixed go.mod — promoted fsnotify from indirect to direct"
+    files: [go.mod, go.sum]
+
+  - task: "Diagnosed and documented bash cwd-deletion crash"
+    files: [docs/solutions/2026-02-08-bash-dies-after-worktree-remove.md, docs/decisions-and-discoveries.md]
+    details: >
+      Root cause: cd into worktree + git worktree remove = deleted cwd.
+      macOS silently fails all commands. Session-killing, unrecoverable.
+
+  - task: "Added rebase_worktree_guard.py hook"
+    files: [.claude/hooks/rebase_worktree_guard.py, .claude/hooks/test_rebase_worktree_guard.py, .claude/settings.json]
+    details: >
+      Blocks git rebase on branches checked out in worktrees. Queries
+      git worktree list --porcelain. 18 tests. Registered in settings.json.
+
+  - task: "Closed oro-ptz (preflight checks)"
+    details: "Already implemented in cmd/oro/preflight.go from previous session."
+
+decisions:
+  - worktree_hook_trinity: >
+      Three hooks now guard worktree safety: no_cd_guard (blocks cd into
+      worktrees), worktree_guard (blocks remove when cwd inside),
+      rebase_worktree_guard (blocks rebase on checked-out branches).
+      Together they prevent the full failure cascade.
+  - integration_test_package: >
+      Used package integration_test (external) in pkg/integration/ since
+      it imports both dispatcher and worker packages.
+
+findings:
+  - bash_cwd_crash: >
+      Claude Code Bash tool persists cwd. Deleting that directory (via
+      git worktree remove) permanently kills bash — exit 1, no output,
+      even echo fails. Only fix: new session. Prevention: never cd into
+      worktrees.
+
+worked:
+  - "Real UDS integration tests with mock spawner/git caught no bugs — protocol is solid"
+  - "work-bead skill for oro-by8 TDD workflow"
+
+failed:
+  - "cd into worktree during work-bead broke the session — now prevented by hooks"
+
+next:
+  - "Pick up oro-mgf (P1): manager spawns workers via scale directive"
+  - "oro-nqi (P2 epic): TUI dashboard — needs decomposition into sub-beads"
+
+beads:
+  completed: [oro-by8, oro-ptz]
+  remaining: [oro-mgf, oro-nqi]
