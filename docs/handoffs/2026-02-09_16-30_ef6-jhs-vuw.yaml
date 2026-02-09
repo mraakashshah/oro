@@ -1,0 +1,74 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Closed 3 beads: priority sorting (ef6), review rejection counter (jhs),
+  and ralph handoff with worker respawn (vuw). All pushed, quality gate 18/18.
+
+now: >
+  Pick up oro-7i6 (P2, focus epic filtering in tryAssign) — small surgical
+  change similar to ef6. Then oro-lcg (P2, E2E integration test) to validate
+  the full lifecycle now that ralph/priority/rejection are all in.
+
+test: go test -race -count=1 ./...
+
+done_this_session:
+  - task: "oro-ef6 (P2): Priority sorting in dispatcher assignment"
+    files: [pkg/dispatcher/dispatcher.go]
+    details: >
+      Added sort.Slice in tryAssign() to sort beads P0→P3 before assignment.
+      4-line change. Commit 3ec82f2.
+
+  - task: "oro-jhs (P2): Review rejection counter and feedback forwarding"
+    files: [pkg/dispatcher/dispatcher.go, pkg/protocol/message.go]
+    details: >
+      Added Feedback field to AssignPayload. Added rejectionCounts map to
+      Dispatcher. handleReviewResult now: increments counter on rejection,
+      forwards reviewer feedback text in re-ASSIGN, escalates to Manager
+      after 2 rejections (3rd triggers STUCK escalation via tmux send-keys).
+      clearRejectionCount on approval. maxReviewRejections=2 constant.
+      Commit 104edc0.
+
+  - task: "oro-vuw (P1): Ralph handoff — context cycling with worker respawn"
+    files: [pkg/dispatcher/dispatcher.go, pkg/protocol/message.go]
+    details: >
+      Added pendingHandoff type and pendingHandoffs map to Dispatcher.
+      handleHandoff now: stores pending handoff (bead+worktree+model),
+      spawns fresh worker via procMgr.Spawn(). registerWorker checks
+      pendingHandoffs — when new worker connects, immediately assigns
+      the same bead+worktree (skips worktree creation). consumePendingHandoff
+      removes entry after use. Graceful degradation when no ProcessManager
+      configured. Commit b7a64af. Unblocks oro-2dj.
+
+decisions:
+  - pending_handoff_in_registerWorker: >
+      Chose to check for pending handoffs in registerWorker() rather than
+      a separate polling loop. Simpler, deterministic — new worker gets
+      assigned immediately on first heartbeat. No race conditions.
+  - rejection_threshold_2: >
+      maxReviewRejections=2 means 3rd rejection escalates. Matches spec
+      "after 2 rejection cycles, escalate to manager."
+
+worked:
+  - TDD cycle for all 3 beads — RED test first, then minimal GREEN implementation
+  - Small beads (ef6, jhs) done quickly, building confidence for larger vuw
+  - mockProcessManager pattern from scale tests reused for handoff tests
+
+next:
+  - "oro-7i6: Focus epic filtering — when focusedEpic set, prioritize matching beads in tryAssign"
+  - "oro-lcg: E2E integration test — exercises full lifecycle with all new features"
+  - "oro-2dj: Stuck worker diagnosis agent — newly unblocked by vuw"
+  - "oro-lar: Add bd sync to shutdown cleanup — tiny change"
+  - "oro-vhd: Model routing — Opus vs Sonnet per task type"
+
+files:
+  modified:
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - pkg/protocol/message.go
+
+beads:
+  completed: [oro-ef6, oro-jhs, oro-vuw]
+  remaining: [oro-7i6, oro-lcg, oro-2dj, oro-lar, oro-vhd, oro-nqi]
