@@ -248,7 +248,7 @@ INSERT INTO memories + trigger memories_fts sync
 ### Day-One: Read Path (Prompt Injection)
 
 ```
-Manager prepares worker prompt for bead
+Worker Go binary prepares prompt for bead
   |
   v
 Extract query context: bead title + description + tags
@@ -272,7 +272,7 @@ Render as "## Relevant Memories" section in worker prompt
 ### Future: Read Path (Hybrid RRF)
 
 ```
-Manager prepares worker prompt for bead
+Worker Go binary prepares prompt for bead
   |
   v
 Extract query context: bead title + description + tags

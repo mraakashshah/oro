@@ -184,10 +184,10 @@ This is where BCR failed — it extracted but never injected. Two complementary 
 
 **Approach 1: Prompt injection (CC-v3 pattern)**
 
-Go wrapper queries `.oro/memories.jsonl` before constructing bead prompt (R5):
+Worker Go binary queries `.oro/state.db` memories table before constructing bead prompt (R5):
 1. Filter by tags matching bead tags
-2. Score by keyword overlap with bead description × time decay
-3. Inject top 3 into prompt as a `## Relevant Memories` section (200 token cap)
+2. Score by BM25 × confidence × time decay
+3. Inject top 5 into prompt as a `## Relevant Memories` section (500 token cap)
 
 **Approach 2: Memory as a tool (OpenClaw pattern)**
 
@@ -221,7 +221,7 @@ oro memories consolidate                             # Dedup + prune via FTS5 si
 | # | Risk | Severity | Mitigation |
 |---|------|----------|------------|
 | T1 | **Claude ignores [MEMORY] markers** — extraction rate drops to near zero because workers don't reliably emit markers | HIGH | Make marker instruction prominent in bead prompt. Add fallback: Go binary also scans for "I learned", "Note:", "Gotcha:" regex patterns in stdout (BCR's proven regex set). Belt + suspenders. |
-| T2 | **Memory injection is noise** — irrelevant memories in prompt waste tokens and confuse workers | HIGH | Start with tag-only filtering (high precision, low recall). Only inject memories whose tags overlap with bead tags. Let workers ignore irrelevant ones. Cap at 3 memories, not 5. Keep token budget tiny (200 tokens). |
+| T2 | **Memory injection is noise** — irrelevant memories in prompt waste tokens and confuse workers | HIGH | Start with tag-only filtering (high precision, low recall). Only inject memories whose tags overlap with bead tags. Let workers ignore irrelevant ones. Cap at 5 memories. Token budget: 500 tokens (per memory search spec). |
 | T3 | **Memories table grows unbounded** — 5 workers × many beads × many sessions = thousands of memories | LOW | SQLite handles millions of rows. Consolidation pass prunes low-confidence stale entries. FTS5 index keeps search fast. Not a real problem. |
 
 ### Elephants (known issues, accepted)
@@ -230,7 +230,7 @@ oro memories consolidate                             # Dedup + prune via FTS5 si
 |---|------|-------|
 | E1 | **FTS5 misses semantic matches** | Accepted. "database timeout" won't match "SQLite lock contention" unless terms overlap. Tag-based filtering + BM25 term proximity compensate. Embeddings column reserved for future upgrade — no schema change needed. |
 | E2 | **Memory quality varies** | Some memories will be trivial or wrong. Confidence scoring + decay means bad memories fade. Consolidation can prune low-confidence entries. |
-| E3 | **No cross-project memory** | Memories are per-project (`.oro/memories.jsonl`). Fine for now. Global memory is a future concern. |
+| E3 | **No cross-project memory** | Memories are per-project (`.oro/state.db`). Fine for now. Global memory is a future concern. |
 
 ### Paper Tigers (seem scary, actually fine)
 
@@ -244,7 +244,7 @@ oro memories consolidate                             # Dedup + prune via FTS5 si
 ## Resolved Questions
 
 1. **Extraction method: Option C (hybrid).** Self-report markers for real-time capture + daemon for implicit extraction + periodic consolidation for quality. Maximizes capture rate.
-2. **Where does Manager merge worker memories?** Worker INSERTs to a local SQLite in its worktree (`.oro/state.db`). On bead completion (merge step), Manager copies new rows to the main `.oro/state.db`. Same merge-on-completion flow as code.
+2. **Where does Dispatcher merge worker memories?** Worker INSERTs to a local SQLite in its worktree (`.oro/state.db`). On bead completion (merge step), Dispatcher copies new rows to the main `.oro/state.db`. Same merge-on-completion flow as code.
 3. **Should memories be git-tracked?** No. Memories live in SQLite (binary, doesn't diff). SQLite is runtime-adjacent state in `.oro/state.db`. Project knowledge worth preserving long-term goes to `docs/decisions-and-discoveries.md` (human-curated, git-tracked).
 4. **Why SQLite, not JSONL?** Retrieval quality. FTS5 gives BM25 ranked search; JSONL grep can't rank. Already in the stack for runtime state — one DB, one driver. Embeddings column reserved for future semantic search.
 5. **Why not LanceDB?** No Go SDK. Manager is a Go binary. SQLite FTS5 + future embeddings column covers the same ground without adding a language bridge.
