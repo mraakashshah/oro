@@ -14,11 +14,11 @@ _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
 CONTEXT_WINDOW = _mod.CONTEXT_WINDOW
-THRESHOLDS = _mod.THRESHOLDS
-DEFAULT_THRESHOLDS = _mod.DEFAULT_THRESHOLDS
+DEFAULT_THRESHOLD = _mod.DEFAULT_THRESHOLD
 calculate_context_pct = _mod.calculate_context_pct
 get_last_usage = _mod.get_last_usage
 detect_model = _mod.detect_model
+load_thresholds = _mod.load_thresholds
 
 
 def _make_transcript(entries: list[dict]) -> Path:
@@ -115,35 +115,64 @@ class TestGetLastUsage:
         assert usage["input_tokens"] == 1_000
 
 
+class TestLoadThresholds:
+    def test_loads_from_file(self, tmp_path):
+        (tmp_path / "thresholds.json").write_text('{"opus": 65, "sonnet": 50}')
+        result = load_thresholds(str(tmp_path))
+        assert result == {"opus": 0.65, "sonnet": 0.50}
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        result = load_thresholds(str(tmp_path))
+        assert result == {}
+
+    def test_malformed_json_returns_empty(self, tmp_path):
+        (tmp_path / "thresholds.json").write_text("not json")
+        result = load_thresholds(str(tmp_path))
+        assert result == {}
+
+
 class TestThresholds:
-    def test_opus_below_warn(self):
-        """30% usage should produce no warning for opus."""
-        warn, _ = THRESHOLDS["opus"]
+    def test_default_threshold_is_50(self):
+        assert DEFAULT_THRESHOLD == 0.50
+
+    def test_opus_below_threshold(self):
+        """30% usage should produce no trigger for opus (threshold=65%)."""
         used = int(CONTEXT_WINDOW * 0.30)
         _, _, pct = calculate_context_pct({"input_tokens": used})
-        assert pct < warn
+        assert pct < 0.65
 
-    def test_opus_at_warn(self):
-        """45% usage should trigger warn for opus."""
-        warn, critical = THRESHOLDS["opus"]
-        used = int(CONTEXT_WINDOW * warn)
+    def test_opus_above_threshold(self):
+        """70% usage should breach opus threshold (65%)."""
+        used = int(CONTEXT_WINDOW * 0.70)
         _, _, pct = calculate_context_pct({"input_tokens": used})
-        assert pct >= warn
-        assert pct < critical
+        assert pct >= 0.65
 
-    def test_opus_at_critical(self):
-        """60% usage should trigger critical for opus."""
-        _, critical = THRESHOLDS["opus"]
-        used = int(CONTEXT_WINDOW * critical)
+    def test_sonnet_threshold(self):
+        """55% usage should breach sonnet threshold (50%)."""
+        used = int(CONTEXT_WINDOW * 0.55)
         _, _, pct = calculate_context_pct({"input_tokens": used})
-        assert pct >= critical
+        assert pct >= 0.50
 
-    def test_sonnet_no_warn_zone(self):
-        """Sonnet has no warn threshold."""
-        warn, _ = THRESHOLDS["sonnet"]
-        assert warn is None
 
-    def test_haiku_critical_lower(self):
-        """Haiku critical is 35%."""
-        _, critical = THRESHOLDS["haiku"]
-        assert critical == 0.35
+class TestDetectModel:
+    def test_opus(self):
+        transcript = _make_transcript(
+            [{"type": "assistant", "message": {"model": "claude-opus-4-6", "role": "assistant"}}]
+        )
+        assert detect_model(str(transcript)) == "opus"
+
+    def test_sonnet(self):
+        transcript = _make_transcript(
+            [{"type": "assistant", "message": {"model": "claude-sonnet-4-5-20250929", "role": "assistant"}}]
+        )
+        assert detect_model(str(transcript)) == "sonnet"
+
+    def test_haiku(self):
+        transcript = _make_transcript(
+            [{"type": "assistant", "message": {"model": "claude-haiku-4-5-20251001", "role": "assistant"}}]
+        )
+        assert detect_model(str(transcript)) == "haiku"
+
+    def test_default_opus(self):
+        transcript = _make_transcript([_user_entry()])
+        assert detect_model(str(transcript)) == "opus"
