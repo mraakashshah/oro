@@ -1,0 +1,115 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Completed epic oro-8lx (P0): unified context threshold system with
+  compact-before-handoff. Single source of truth (thresholds.json), read by
+  both Go worker and Python hook. Two-stage behavior: first breach triggers
+  /compact, second triggers ralph handoff. Quality gate 18/18, all pushed.
+
+now: >
+  Pick up oro-lcg (P2, E2E integration test) to validate the full lifecycle
+  with all new features (priority sorting, focus epic, rejection counter,
+  ralph handoff, compact-before-handoff, model routing, bd sync shutdown).
+
+test: go test -race -count=1 ./...
+
+done_this_session:
+  - task: "oro-8lx.1: Create thresholds.json config and LoadThresholds loader"
+    files: [thresholds.json, pkg/worker/worker.go, pkg/worker/worker_test.go]
+    details: >
+      Added Thresholds type with For(model) method, LoadThresholds(dir) func.
+      Replaced contextHandoffThreshold=70 const with DefaultThreshold=50.
+      thresholds.json at repo root: {"opus": 65, "sonnet": 50, "haiku": 40}.
+      Commit 47595d7.
+
+  - task: "oro-8lx.2: Add stdin pipe to subprocess spawner"
+    files: [pkg/worker/worker.go, pkg/worker/worker_test.go, pkg/integration/dispatcher_worker_test.go]
+    details: >
+      Changed SubprocessSpawner.Spawn() return from (Process, ReadCloser, error)
+      to (Process, ReadCloser, WriteCloser, error). Added StdinPipe to
+      ClaudeSpawner. Worker stores stdin on struct. Updated all mocks (worker_test,
+      integration). Commit 0cbd480.
+
+  - task: "oro-8lx.3: Two-stage watchContext — compact first, handoff second"
+    files: [pkg/worker/worker.go, pkg/worker/worker_test.go]
+    details: >
+      Rewrote watchContext(): loads thresholds from worktree root, uses
+      modelFamily() to extract opus/sonnet/haiku from full model ID. First
+      breach: sendCompact() writes "/compact\n" to stdin, sets w.compacted=true,
+      creates .oro/compacted flag. Second breach: SendHandoff + killProc.
+      Added model and compacted fields to Worker struct, stored in handleAssign.
+      Thread-safe syncWriteCloser for tests. Commit 1e598c5.
+
+  - task: "oro-8lx.4: Update Python hook for unified thresholds (background agent)"
+    files: [.claude/hooks/inject_context_usage.py, .claude/hooks/test_inject_context_usage.py]
+    details: >
+      Replaced hardcoded THRESHOLDS dict with load_thresholds() reading
+      thresholds.json via git rev-parse --show-toplevel. Single threshold per
+      model, DEFAULT_THRESHOLD=0.50. Checks .oro/compacted flag: absent ->
+      COMPACT_MESSAGE, present -> HANDOFF_MESSAGE. 11 tests. Commit ba4b1b5.
+
+  - task: "oro-8lx.5: Update context-checkpoint skill"
+    files: [.claude/skills/context-checkpoint/SKILL.md]
+    details: >
+      Removed warn/critical table. Added single threshold table and two-stage
+      response documentation. References thresholds.json as source of truth.
+      Commit ba38ee6.
+
+  - task: "Fix old Python test referencing removed THRESHOLDS constant"
+    files: [tests/test_inject_context_usage.py]
+    details: >
+      Rewrote to use new API (DEFAULT_THRESHOLD, load_thresholds). 19 tests
+      pass. Commit 344450a.
+
+  - task: "Fix integration test mock missing Sync method (from prior session)"
+    files: [pkg/integration/dispatcher_worker_test.go]
+    details: >
+      Added Sync() to mockBeadSource after lar agent added Sync to
+      BeadSource interface. Commit 93c802d.
+
+decisions:
+  - thresholds_at_repo_root: >
+      Put thresholds.json at repo root, not .oro/. The .oro/ dir is gitignored
+      (runtime state for worktrees). thresholds.json is project config that
+      needs to be checked in. Biome with useIgnoreFile=true would also skip
+      .oro/ files.
+  - stdin_on_spawner_interface: >
+      Added io.WriteCloser as 3rd return from Spawn() rather than adding
+      Stdin() to Process interface. Keeps process management and I/O separate.
+  - model_family_extraction: >
+      modelFamily() uses string.Contains to extract opus/sonnet/haiku from
+      full model IDs like "claude-opus-4-6". Same approach as Python hook's
+      detect_model().
+  - single_threshold_no_warn_critical: >
+      User explicitly requested one threshold level per model. Compact is the
+      "warn" action, handoff is the "critical" action, triggered by the same
+      threshold on first and second breach respectively.
+
+worked:
+  - Parallel agent for oro-8lx.4 (Python hook) while doing oro-8lx.3 (Go) on main — different files, no conflicts
+  - syncWriteCloser pattern for race-free stdin testing
+  - TDD cycle caught the race condition early via -race flag
+
+next:
+  - "oro-lcg (P2): E2E integration test — validates full lifecycle with all new features"
+  - "oro-2dj (P3): Wire diagnosis agent for stuck workers"
+  - "oro-nqi (P2 epic): TUI dashboard"
+
+files:
+  created:
+    - thresholds.json
+    - .claude/hooks/test_inject_context_usage.py
+  modified:
+    - pkg/worker/worker.go
+    - pkg/worker/worker_test.go
+    - pkg/integration/dispatcher_worker_test.go
+    - .claude/hooks/inject_context_usage.py
+    - .claude/skills/context-checkpoint/SKILL.md
+    - tests/test_inject_context_usage.py
+
+beads:
+  completed: [oro-8lx, oro-8lx.1, oro-8lx.2, oro-8lx.3, oro-8lx.4, oro-8lx.5]
+  remaining: [oro-lcg, oro-2dj, oro-nqi]
