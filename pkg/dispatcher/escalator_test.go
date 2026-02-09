@@ -129,3 +129,53 @@ func TestTmuxEscalator_CustomPaneTarget(t *testing.T) {
 		t.Fatalf("expected custom pane myapp:1.2, got %s", call.args[2])
 	}
 }
+
+// --- FormatEscalation tests ---
+
+func TestFormatEscalation_WithDetails(t *testing.T) {
+	got := dispatcher.FormatEscalation(dispatcher.EscMergeConflict, "bead-abc", "merge failed", "conflicting files in src/")
+	want := "[ORO-DISPATCH] MERGE_CONFLICT: bead-abc \u2014 merge failed. conflicting files in src/."
+	if got != want {
+		t.Fatalf("FormatEscalation with details:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestFormatEscalation_WithoutDetails(t *testing.T) {
+	got := dispatcher.FormatEscalation(dispatcher.EscStuck, "bead-xyz", "review failed", "")
+	want := "[ORO-DISPATCH] STUCK: bead-xyz \u2014 review failed."
+	if got != want {
+		t.Fatalf("FormatEscalation without details:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestFormatEscalation_AllTypes(t *testing.T) {
+	types := []struct {
+		typ  dispatcher.EscalationType
+		name string
+	}{
+		{dispatcher.EscMergeConflict, "MERGE_CONFLICT"},
+		{dispatcher.EscStuck, "STUCK"},
+		{dispatcher.EscPriorityContention, "PRIORITY_CONTENTION"},
+		{dispatcher.EscWorkerCrash, "WORKER_CRASH"},
+		{dispatcher.EscStatus, "STATUS"},
+		{dispatcher.EscDrainComplete, "DRAIN_COMPLETE"},
+	}
+
+	for _, tc := range types {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dispatcher.FormatEscalation(tc.typ, "bead-1", "summary", "")
+			prefix := "[ORO-DISPATCH] " + tc.name + ": bead-1"
+			if !strings.HasPrefix(got, prefix) {
+				t.Fatalf("expected prefix %q, got %q", prefix, got)
+			}
+		})
+	}
+}
+
+func TestFormatEscalation_EmptyBeadID(t *testing.T) {
+	got := dispatcher.FormatEscalation(dispatcher.EscDrainComplete, "", "all workers drained", "")
+	want := "[ORO-DISPATCH] DRAIN_COMPLETE:  \u2014 all workers drained."
+	if got != want {
+		t.Fatalf("FormatEscalation empty bead:\n got: %q\nwant: %q", got, want)
+	}
+}

@@ -509,7 +509,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 			return
 		}
 		// Non-conflict merge failure — escalate
-		_ = d.escalator.Escalate(ctx, fmt.Sprintf("merge failed for bead %s: %s", beadID, err))
+		_ = d.escalator.Escalate(ctx, FormatEscalation(EscMergeConflict, beadID, "merge failed", err.Error()))
 		_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, err.Error())
 		return
 	}
@@ -640,7 +640,7 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			d.mu.Unlock()
 		default:
 			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, result.Feedback)
-			_ = d.escalator.Escalate(ctx, fmt.Sprintf("review failed for bead %s: %s", beadID, result.Feedback))
+			_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID, "review failed", result.Feedback))
 		}
 	}
 }
@@ -1113,14 +1113,25 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 			dead = append(dead, id)
 		}
 	}
-	// Remove dead workers and collect their beadIDs for reassignment
+	// Remove dead workers and collect info for escalation after unlock.
+	type deadInfo struct {
+		workerID string
+		beadID   string
+	}
+	deadWorkers := make([]deadInfo, 0, len(dead))
 	for _, id := range dead {
 		w := d.workers[id]
+		deadWorkers = append(deadWorkers, deadInfo{workerID: id, beadID: w.beadID})
 		_ = d.logEventLocked(ctx, "heartbeat_timeout", "dispatcher", w.beadID, id, "")
 		_ = w.conn.Close()
 		delete(d.workers, id)
 	}
 	d.mu.Unlock()
+
+	// Escalate outside the lock.
+	for _, dw := range deadWorkers {
+		_ = d.escalator.Escalate(ctx, FormatEscalation(EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID))
+	}
 }
 
 // --- SQLite helpers ---

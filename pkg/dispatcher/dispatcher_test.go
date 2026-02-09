@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -745,6 +746,49 @@ func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
 	t.Fatalf("worker should have been removed after heartbeat timeout, still have %d", d.ConnectedWorkers())
 }
 
+func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	d.cfg.HeartbeatTimeout = 100 * time.Millisecond
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-crash", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Assign work so the worker is busy (idle workers are not timed out)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-crash", Title: "Crash test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Don't send any more heartbeats — wait for timeout + escalation
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := esc.Messages()
+		if len(msgs) > 0 {
+			msg := msgs[0]
+			if !strings.HasPrefix(msg, "[ORO-DISPATCH] WORKER_CRASH: bead-crash") {
+				t.Fatalf("heartbeat escalation should use structured format, got: %q", msg)
+			}
+			if !strings.Contains(msg, "w-crash") {
+				t.Fatalf("heartbeat escalation should mention worker ID, got: %q", msg)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("expected heartbeat timeout escalation message")
+}
+
 func TestDispatcher_ReadyForReview_SpawnsReviewer(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -1002,6 +1046,10 @@ func TestDispatcher_Escalation(t *testing.T) {
 	for time.Now().Before(deadline) {
 		msgs := esc.Messages()
 		if len(msgs) > 0 {
+			msg := msgs[0]
+			if !strings.HasPrefix(msg, "[ORO-DISPATCH] MERGE_CONFLICT: bead-esc") {
+				t.Fatalf("escalation should use structured format, got: %q", msg)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -1458,7 +1506,7 @@ func TestHandleReviewResult_ContextCancelled(t *testing.T) {
 }
 
 func TestHandleReviewResult_UnknownVerdict(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
+	d, _, _, esc, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -1477,6 +1525,15 @@ func TestHandleReviewResult_UnknownVerdict(t *testing.T) {
 	// Should log review_failed and escalate
 	if eventCount(t, d.db, "review_failed") == 0 {
 		t.Fatal("expected 'review_failed' event for unknown verdict")
+	}
+
+	// Verify structured escalation format
+	msgs := esc.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected escalation message for unknown verdict")
+	}
+	if !strings.HasPrefix(msgs[0], "[ORO-DISPATCH] STUCK: bead-unk") {
+		t.Fatalf("review escalation should use structured format, got: %q", msgs[0])
 	}
 }
 
