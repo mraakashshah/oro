@@ -109,6 +109,7 @@ type trackedWorker struct {
 	state    WorkerState
 	beadID   string
 	worktree string
+	model    string // resolved model for the current bead assignment
 	lastSeen time.Time
 	encoder  *json.Encoder
 }
@@ -445,6 +446,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 				Assign: &protocol.AssignPayload{
 					BeadID:   beadID,
 					Worktree: w.worktree,
+					Model:    w.model,
 				},
 			})
 			w.state = WorkerBusy
@@ -878,6 +880,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	w.state = WorkerBusy
 	w.beadID = bead.ID
 	w.worktree = worktree
+	w.model = bead.ResolveModel()
 	err = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
@@ -1085,4 +1088,15 @@ func (d *Dispatcher) WorkerInfo(id string) (state WorkerState, beadID string, ok
 		return "", "", false
 	}
 	return w.state, w.beadID, true
+}
+
+// WorkerModel returns the stored model for a tracked worker (for testing).
+func (d *Dispatcher) WorkerModel(id string) (model string, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, exists := d.workers[id]
+	if !exists {
+		return "", false
+	}
+	return w.model, true
 }

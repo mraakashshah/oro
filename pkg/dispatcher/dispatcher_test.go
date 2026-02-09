@@ -2507,3 +2507,427 @@ func TestDispatcher_BeadDirWatcher_FallbackPoll(t *testing.T) {
 		t.Fatalf("expected bead-fallback, got %v", msg.Assign)
 	}
 }
+
+// --- Quality gate retry tests ---
+
+func TestQualityGateRetry_ReAssignSameBeadAndWorktree(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-retry", Title: "QG retry", Priority: 1}})
+	assignMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if assignMsg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", assignMsg.Type)
+	}
+	origWorktree := assignMsg.Assign.Worktree
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with quality gate failed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-retry",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Worker should receive re-ASSIGN with the same bead ID and worktree
+	retryMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after quality gate failure")
+	}
+	if retryMsg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
+	}
+	if retryMsg.Assign.BeadID != "bead-qg-retry" {
+		t.Fatalf("expected same bead ID bead-qg-retry, got %s", retryMsg.Assign.BeadID)
+	}
+	if retryMsg.Assign.Worktree != origWorktree {
+		t.Fatalf("expected same worktree %s, got %s", origWorktree, retryMsg.Assign.Worktree)
+	}
+}
+
+func TestQualityGateRetry_WorkerStaysBusy(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-busy", Title: "QG busy", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Verify worker is busy after initial assignment
+	waitForWorkerState(t, d, "w1", WorkerBusy, 1*time.Second)
+
+	// Send DONE with quality gate failed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-busy",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Consume the re-ASSIGN
+	_, ok = readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN")
+	}
+
+	// Worker should remain busy (not idle) after quality gate retry
+	st, beadID, ok := d.WorkerInfo("w1")
+	if !ok {
+		t.Fatal("expected worker to still be tracked")
+	}
+	if st != WorkerBusy {
+		t.Fatalf("expected worker state Busy after retry, got %s", st)
+	}
+	if beadID != "bead-qg-busy" {
+		t.Fatalf("expected worker bead ID bead-qg-busy, got %s", beadID)
+	}
+}
+
+func TestQualityGateRetry_NoMergeHappens(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-nomerge", Title: "QG no merge", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with quality gate failed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-nomerge",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Consume the re-ASSIGN
+	_, ok = readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN")
+	}
+
+	// Wait a bit to ensure no async merge was triggered
+	time.Sleep(300 * time.Millisecond)
+
+	// No merge-related events should exist
+	if eventCount(t, d.db, "merged") != 0 {
+		t.Fatal("no merge should happen when quality gate failed")
+	}
+	if eventCount(t, d.db, "merge_conflict") != 0 {
+		t.Fatal("no merge_conflict should happen when quality gate failed")
+	}
+	if eventCount(t, d.db, "merge_failed") != 0 {
+		t.Fatal("no merge_failed should happen when quality gate failed")
+	}
+
+	// Assignment should NOT be completed
+	var count int
+	err := d.db.QueryRow(`SELECT COUNT(*) FROM assignments WHERE bead_id='bead-qg-nomerge' AND status='completed'`).Scan(&count)
+	if err != nil {
+		t.Fatalf("query assignments: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("assignment should not be completed when quality gate failed")
+	}
+}
+
+func TestQualityGateRetry_EventLogged(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-event", Title: "QG event", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with quality gate failed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-event",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Wait for quality_gate_rejected event
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "quality_gate_rejected") > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if eventCount(t, d.db, "quality_gate_rejected") == 0 {
+		t.Fatal("expected 'quality_gate_rejected' event")
+	}
+
+	// Also verify a "done" event was logged (happens before the quality gate check)
+	if eventCount(t, d.db, "done") == 0 {
+		t.Fatal("expected 'done' event before quality gate check")
+	}
+
+	// Verify the quality_gate_rejected event payload contains the reason
+	var payload string
+	err := d.db.QueryRow(
+		`SELECT payload FROM events WHERE type='quality_gate_rejected' AND bead_id='bead-qg-event'`,
+	).Scan(&payload)
+	if err != nil {
+		t.Fatalf("query event payload: %v", err)
+	}
+	if !containsStr(payload, "QualityGatePassed=false") {
+		t.Fatalf("expected payload to contain reason, got: %s", payload)
+	}
+}
+
+func TestQualityGatePassed_NormalMergeFlow(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-merge", Title: "QG merge", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with quality gate passed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-merge",
+			WorkerID:          "w1",
+			QualityGatePassed: true,
+		},
+	})
+
+	// Wait for merge to complete
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "merged") > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if eventCount(t, d.db, "merged") == 0 {
+		t.Fatal("expected 'merged' event when quality gate passed")
+	}
+
+	// No quality_gate_rejected event
+	if eventCount(t, d.db, "quality_gate_rejected") != 0 {
+		t.Fatal("should not have quality_gate_rejected when gate passed")
+	}
+
+	// Worker should become idle after merge
+	waitForWorkerState(t, d, "w1", WorkerIdle, 2*time.Second)
+
+	// Assignment should be completed
+	var status string
+	err := d.db.QueryRow(`SELECT status FROM assignments WHERE bead_id='bead-qg-merge'`).Scan(&status)
+	if err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("expected completed, got %s", status)
+	}
+}
+
+func TestQualityGateRetry_ModelPreserved(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Assign bead with explicit model
+	beadSrc.SetBeads([]Bead{{
+		ID: "bead-qg-model", Title: "QG model", Priority: 1,
+		Model: "claude-sonnet-4-5-20250929",
+	}})
+	assignMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if assignMsg.Assign.Model != "claude-sonnet-4-5-20250929" {
+		t.Fatalf("initial ASSIGN should have model claude-sonnet-4-5-20250929, got %q", assignMsg.Assign.Model)
+	}
+	beadSrc.SetBeads(nil)
+
+	// Verify the model is stored on the tracked worker
+	model, ok := d.WorkerModel("w1")
+	if !ok {
+		t.Fatal("expected worker to be tracked")
+	}
+	if model != "claude-sonnet-4-5-20250929" {
+		t.Fatalf("expected stored model claude-sonnet-4-5-20250929, got %q", model)
+	}
+
+	// Send DONE with quality gate failed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-model",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Worker should receive re-ASSIGN with the same model preserved
+	retryMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after quality gate failure")
+	}
+	if retryMsg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
+	}
+	if retryMsg.Assign.Model != "claude-sonnet-4-5-20250929" {
+		t.Fatalf("re-ASSIGN should preserve model claude-sonnet-4-5-20250929, got %q", retryMsg.Assign.Model)
+	}
+}
+
+func TestQualityGateRetry_DefaultModelPreserved(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Assign bead with no model (should resolve to default)
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-defmodel", Title: "QG default model", Priority: 1}})
+	assignMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if assignMsg.Assign.Model != DefaultModel {
+		t.Fatalf("initial ASSIGN should have default model %q, got %q", DefaultModel, assignMsg.Assign.Model)
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with quality gate failed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-defmodel",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Worker should receive re-ASSIGN with the default model preserved
+	retryMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after quality gate failure")
+	}
+	if retryMsg.Assign.Model != DefaultModel {
+		t.Fatalf("re-ASSIGN should preserve default model %q, got %q", DefaultModel, retryMsg.Assign.Model)
+	}
+}
+
+func TestQualityGateRetry_UnknownWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Send DONE with quality gate failed for an unregistered worker
+	d.handleDone(ctx, "w-ghost", protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-ghost",
+			WorkerID:          "w-ghost",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Events should be logged but no panic
+	if eventCount(t, d.db, "done") == 0 {
+		t.Fatal("expected 'done' event even for unknown worker")
+	}
+	if eventCount(t, d.db, "quality_gate_rejected") == 0 {
+		t.Fatal("expected 'quality_gate_rejected' event even for unknown worker")
+	}
+
+	// No merge should happen
+	if eventCount(t, d.db, "merged") != 0 {
+		t.Fatal("should not merge for unknown worker")
+	}
+}
