@@ -56,14 +56,25 @@ def is_cwd_inside(cwd: str, worktree_path: str) -> bool:
         return False
 
 
-def _get_cwd() -> str:
-    """Get the current working directory. Separated for testing."""
-    return os.getcwd()
+def _get_cwd(hook_input: dict) -> str:
+    """Get the Bash tool's working directory from hook input.
+
+    Uses the 'cwd' field from the hook input (the Bash tool's actual CWD),
+    NOT os.getcwd() which returns the hook process's CWD (always project root).
+    Falls back to os.getcwd() if 'cwd' is missing (shouldn't happen).
+    """
+    return hook_input.get("cwd", os.getcwd())
 
 
-def _resolve_worktree_path(path: str) -> str:
-    """Resolve a possibly-relative worktree path to absolute. Separated for testing."""
-    return str(Path(path).resolve())
+def _resolve_worktree_path(path: str, cwd: str) -> str:
+    """Resolve a possibly-relative worktree path to absolute.
+
+    Uses the provided cwd for relative path resolution, not the hook's cwd.
+    """
+    p = Path(path)
+    if not p.is_absolute():
+        p = Path(cwd) / p
+    return str(p.resolve())
 
 
 def build_decision(hook_input: dict) -> dict | None:
@@ -87,18 +98,19 @@ def build_decision(hook_input: dict) -> dict | None:
     if wt_path is None:
         return None
 
-    cwd = _get_cwd()
-    resolved_wt = _resolve_worktree_path(wt_path)
+    cwd = _get_cwd(hook_input)
+    resolved_wt = _resolve_worktree_path(wt_path, cwd)
 
     if not is_cwd_inside(cwd, resolved_wt):
         return None
 
+    project_root = str(Path(__file__).resolve().parent.parent.parent)
     return {
         "decision": "block",
         "reason": (
             f"BLOCKED: Your shell cwd ({cwd}) is inside the worktree you're removing ({resolved_wt}). "
             f"This will permanently kill the Bash tool (Claude Code bug #9190). "
-            f"Run `cd {_resolve_worktree_path('.')}` first to move to the project root, "
+            f"Run `cd {project_root}` first to move to the project root, "
             f"then retry the worktree remove command."
         ),
     }
