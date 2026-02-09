@@ -1176,7 +1176,7 @@ func TestApplyDirective(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		d.applyDirective(tt.dir, tt.args)
+		_, _ = d.applyDirective(tt.dir, tt.args)
 		if d.GetState() != tt.want {
 			t.Fatalf("after %s: got %s, want %s", tt.dir, d.GetState(), tt.want)
 		}
