@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -864,6 +865,11 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	if err != nil {
 		return
 	}
+
+	// Sort by priority (P0 first, P3 last).
+	sort.Slice(beads, func(i, j int) bool {
+		return beads[i].Priority < beads[j].Priority
+	})
 
 	// Assign beads to idle workers (1:1).
 	for i, bead := range beads {

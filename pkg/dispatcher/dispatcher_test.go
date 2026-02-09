@@ -3411,6 +3411,41 @@ func TestDispatcher_ScaleDirective_ACKIncludesDetail(t *testing.T) {
 
 // TestDispatcher_ScaleDirective_InvalidArgs verifies that a scale directive
 // with non-integer args returns an error ACK.
+func TestDispatcher_PrioritySorting_HighestPriorityAssignedFirst(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect a single worker
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Provide beads in REVERSE priority order: P3 first, P0 last
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-p3", Title: "Low priority", Priority: 3},
+		{ID: "bead-p0", Title: "Critical", Priority: 0},
+		{ID: "bead-p2", Title: "Medium priority", Priority: 2},
+	})
+
+	// Worker should receive the P0 bead (highest priority = lowest number)
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "bead-p0" {
+		t.Fatalf("expected highest priority bead bead-p0, got %s", msg.Assign.BeadID)
+	}
+}
+
 func TestDispatcher_ScaleDirective_InvalidArgs(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	pm := &mockProcessManager{}
