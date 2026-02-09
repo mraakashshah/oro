@@ -1,0 +1,102 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Created bead dependency graphs for two epics: smart code search
+  (multi-language support, Grep routing, semantic search) and memory CLI
+  for workers. Deep-dived claude-mem (26K stars) and wrote learnings file.
+
+now: >
+  Pick up oro-cwz.1 (P1, multi-language file summarization via ast-grep)
+  or oro-jtw.1-4 (P2, memory CLI for workers). Both are unblocked.
+  Read yap/claude-mem.md for design inspiration before starting.
+
+test: go test -race -count=1 ./...
+
+done_this_session:
+  - task: "Created epic oro-cwz: Smart code search (P1)"
+    files: [.beads/issues.jsonl]
+    details: >
+      5 child beads with dependency graph. Specced each with deep premortem.
+      cwz.1 (multi-lang summarization, P1, ready) blocks cwz.2 (search router)
+      and cwz.3 (semantic search). cwz.4 (cross-hook context) and cwz.5
+      (daemon caching) punted to P4.
+
+  - task: "Created epic oro-jtw: Memory CLI for workers (P2)"
+    files: [.beads/issues.jsonl]
+    details: >
+      4 child beads, all unblocked. jtw.1 (oro memories list), jtw.2
+      (oro forget), jtw.3 (oro memories consolidate), jtw.4 (wire
+      worker SetMemoryStore — bug fix). All wrap existing Store methods.
+
+  - task: "Deep-dived claude-mem, wrote learnings"
+    files: [yap/claude-mem.md]
+    details: >
+      26K-star Claude Code memory plugin. Key learnings: progressive
+      disclosure (3-layer retrieval saves 10x tokens), structured
+      observations with file tracking and discovery tokens, session
+      summaries (request/investigated/learned/completed/next_steps),
+      hybrid search (SQLite FTS5 + Chroma vector). Reference code
+      cloned to yap/reference/claude-mem/ (.claude renamed to _claude).
+
+  - task: "Fixed beads repo ID mismatch"
+    details: "bd migrate --update-repo-id (6e9eb848 → 62de16bf)"
+
+decisions:
+  - non_go_is_p0: >
+      Oro is a general-purpose orchestrator, not Go-only. Multi-language
+      summarization is the critical path — without it the Read hook does
+      nothing on Python/TS/Rust projects.
+  - punt_context_and_daemon: >
+      Cross-hook context passing and daemon caching punted to P4.
+      Context passing may be solved by reading transcript_path directly.
+      Daemon caching is premature optimization (6ms parse time).
+  - progressive_disclosure: >
+      claude-mem's 3-layer retrieval (index → timeline → detail) is the
+      right model for ForPrompt(). Instead of dumping 5 memories, inject
+      a compact index and let workers fetch details on demand.
+
+findings:
+  - premortem_search_router: >
+      Structural grep queries may be <5% of all greps. Token savings
+      delta vs ripgrep is marginal (~30-50%). Consider updatedInput
+      mechanism (rewrite pattern) instead of deny-with-results.
+  - premortem_semantic_search: >
+      At 74-file scale (oro itself), Claude can brute-force the codebase.
+      Semantic search ROI is at 1000+ files — which is the target for
+      oro users working on large projects.
+  - premortem_multi_lang: >
+      ast-grep CLI not installed on user machines is the biggest risk.
+      Must fail-open gracefully. Consider bundling or going straight
+      to tree-sitter Go bindings.
+  - worker_memstore_orphaned: >
+      Worker.SetMemoryStore() exists but dispatcher never calls it.
+      Real-time [MEMORY] marker extraction is dead code. Learnings
+      flow through HandoffPayload instead.
+
+beads:
+  created:
+    - oro-cwz (epic, P1, smart code search)
+    - oro-cwz.1 (feature, P1, multi-lang summarization — READY)
+    - oro-cwz.2 (feature, P2, search router — blocked on cwz.1)
+    - oro-cwz.3 (feature, P2, semantic search — blocked on cwz.1+cwz.2)
+    - oro-cwz.4 (feature, P4, cross-hook context — punted)
+    - oro-cwz.5 (feature, P4, daemon caching — punted)
+    - oro-jtw (epic, P2, memory CLI)
+    - oro-jtw.1 (task, P2, oro memories list — READY)
+    - oro-jtw.2 (task, P2, oro forget — READY)
+    - oro-jtw.3 (task, P3, oro memories consolidate — READY)
+    - oro-jtw.4 (bug, P2, wire SetMemoryStore — READY)
+
+next:
+  - "Pick up oro-cwz.1: introduce Summarizer interface, ast-grep integration, Python+TS support"
+  - "Or pick up oro-jtw.1-4: quick wins, all wrap existing Store methods"
+  - "Consider adding structured session summaries inspired by claude-mem"
+  - "Consider progressive disclosure for ForPrompt() context injection"
+
+files:
+  created:
+    - yap/claude-mem.md
+    - docs/handoffs/2026-02-09_18-00_smart-search-and-memory-beads.yaml
