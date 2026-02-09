@@ -3206,6 +3206,101 @@ func TestDispatcher_FocusDirective_ClearsEpic(t *testing.T) {
 	}
 }
 
+func TestDispatcher_FocusEpic_PrioritizesFocusedBeads(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Set focus to "epic-auth"
+	sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "epic-auth")
+
+	// Provide beads: higher-priority bead is NOT in focused epic,
+	// lower-priority bead IS in focused epic.
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-p0-other", Title: "Critical other", Priority: 0, Epic: "epic-other"},
+		{ID: "bead-p2-auth", Title: "Auth task", Priority: 2, Epic: "epic-auth"},
+	})
+
+	// Focused epic bead should be assigned first despite lower priority
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Assign.BeadID != "bead-p2-auth" {
+		t.Fatalf("expected focused epic bead bead-p2-auth, got %s", msg.Assign.BeadID)
+	}
+}
+
+func TestDispatcher_FocusEpic_FallsBackToNonFocused(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Focus on epic with NO ready beads
+	sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "epic-nonexistent")
+
+	// Only non-focused beads available
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-other", Title: "Other work", Priority: 2, Epic: "epic-other"},
+	})
+
+	// Should still assign the non-focused bead (fallback)
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Assign.BeadID != "bead-other" {
+		t.Fatalf("expected fallback bead bead-other, got %s", msg.Assign.BeadID)
+	}
+}
+
+func TestDispatcher_NoFocus_PriorityOnly(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// No focus set — pure priority ordering
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-p2", Title: "Medium", Priority: 2, Epic: "epic-a"},
+		{ID: "bead-p0", Title: "Critical", Priority: 0, Epic: "epic-b"},
+	})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Assign.BeadID != "bead-p0" {
+		t.Fatalf("expected priority bead bead-p0, got %s", msg.Assign.BeadID)
+	}
+}
+
 // --- Scale directive tests ---
 
 // mockProcessManager records Spawn and Kill calls for testing.

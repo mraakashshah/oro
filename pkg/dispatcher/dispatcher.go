@@ -51,6 +51,7 @@ type Bead struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
 	Priority int    `json:"priority"`
+	Epic     string `json:"epic,omitempty"`  // parent epic ID for focus filtering
 	Model    string `json:"model,omitempty"` // claude model override; default "claude-opus-4-6"
 }
 
@@ -977,8 +978,19 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
-	// Sort by priority (P0 first, P3 last).
-	sort.Slice(beads, func(i, j int) bool {
+	// Sort by focused epic first (if set), then by priority (P0 first, P3 last).
+	d.mu.Lock()
+	epic := d.focusedEpic
+	d.mu.Unlock()
+
+	sort.SliceStable(beads, func(i, j int) bool {
+		if epic != "" {
+			iMatch := beads[i].Epic == epic
+			jMatch := beads[j].Epic == epic
+			if iMatch != jMatch {
+				return iMatch // focused epic beads come first
+			}
+		}
 		return beads[i].Priority < beads[j].Priority
 	})
 
