@@ -22,11 +22,7 @@ func defaultMemoryStore() (*memory.Store, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolve home dir: %w", err)
 		}
-		dir := filepath.Join(home, ".oro")
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return nil, fmt.Errorf("create .oro dir: %w", err)
-		}
-		dbPath = filepath.Join(dir, "memories.db")
+		dbPath = filepath.Join(home, ".oro", "memories.db")
 	}
 
 	db, err := sql.Open("sqlite", dbPath)

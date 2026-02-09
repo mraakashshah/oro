@@ -106,6 +106,15 @@ func newStartCmd() *cobra.Command {
 				return err
 			}
 
+			// Bootstrap ~/.oro/ directory if it doesn't exist.
+			oroDir, err := defaultOroDir()
+			if err != nil {
+				return err
+			}
+			if err := bootstrapOroDir(oroDir); err != nil {
+				return fmt.Errorf("bootstrap oro dir: %w", err)
+			}
+
 			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 			if err != nil {
 				return err
@@ -167,6 +176,24 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
 	return nil
 }
 
+// defaultOroDir returns the default ~/.oro directory path.
+func defaultOroDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	return filepath.Join(home, ".oro"), nil
+}
+
+// bootstrapOroDir creates the oro state directory with 0750 permissions.
+// It is idempotent — calling it on an existing directory is a no-op.
+func bootstrapOroDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create oro dir %s: %w", dir, err)
+	}
+	return nil
+}
+
 // oroDir returns the resolved path, respecting ORO_*_PATH env overrides.
 func oroPath(envKey, defaultSuffix string) (string, error) {
 	if v := os.Getenv(envKey); v != "" {
@@ -189,11 +216,6 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	dbPath, err := oroPath("ORO_DB_PATH", "state.db")
 	if err != nil {
 		return nil, nil, err
-	}
-
-	// Ensure parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o750); err != nil {
-		return nil, nil, fmt.Errorf("create db dir: %w", err)
 	}
 
 	db, err := sql.Open("sqlite", dbPath)

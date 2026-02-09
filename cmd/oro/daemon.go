@@ -36,10 +36,6 @@ func DefaultPIDPath() (string, error) {
 // WritePIDFile writes the given PID to the specified file path.
 // It creates parent directories as needed.
 func WritePIDFile(path string, pid int) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create PID dir %s: %w", dir, err)
-	}
 	data := []byte(strconv.Itoa(pid))
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write PID file %s: %w", path, err)

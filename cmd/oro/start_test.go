@@ -9,6 +9,60 @@ import (
 	"time"
 )
 
+func TestBootstrapOroDir_CreatesWithCorrectPerms(t *testing.T) {
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+
+	// Directory should not exist yet.
+	if _, err := os.Stat(oroDir); err == nil {
+		t.Fatal("expected .oro dir to not exist before bootstrap")
+	}
+
+	if err := bootstrapOroDir(oroDir); err != nil {
+		t.Fatalf("bootstrapOroDir: %v", err)
+	}
+
+	// Verify directory was created.
+	info, err := os.Stat(oroDir)
+	if err != nil {
+		t.Fatalf("stat .oro dir: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("expected .oro to be a directory")
+	}
+
+	// Verify permissions are 0750.
+	perm := info.Mode().Perm()
+	if perm != 0o750 {
+		t.Errorf("expected perms 0750, got %04o", perm)
+	}
+}
+
+func TestBootstrapOroDir_Idempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+
+	// Create twice — should not error.
+	if err := bootstrapOroDir(oroDir); err != nil {
+		t.Fatalf("first bootstrap: %v", err)
+	}
+
+	// Write a file inside to prove idempotent call doesn't wipe contents.
+	marker := filepath.Join(oroDir, "marker.txt")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	if err := bootstrapOroDir(oroDir); err != nil {
+		t.Fatalf("second bootstrap: %v", err)
+	}
+
+	// Verify marker still exists.
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("marker file was deleted by idempotent bootstrap")
+	}
+}
+
 func TestStartCommandPreflightChecks(t *testing.T) {
 	// Test that the start command runs preflight checks before attempting to start.
 	// Since we can't easily mock exec.LookPath, this test verifies that with all
