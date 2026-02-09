@@ -1,0 +1,87 @@
+---
+date: 2026-02-08
+status: partial
+---
+
+goal: >
+  Gap analysis of oro architecture spec vs implementation. Created beads for
+  all missing work. Built and merged 3 beacon/prompt beads in parallel.
+  Built and merged worker subcommand (oro-9qf). Fixed worktree_guard hook bug.
+
+now: >
+  Pick up oro-jtq (P1): dispatcher scale directive + process manager.
+  This is the last piece before oro can spawn workers autonomously.
+  After jtq, close oro-mgf epic. Then oro-lcg (E2E test) is unblocked.
+
+test: go test -race -p 2 ./... && python3 -m pytest .claude/hooks/ -v
+
+done_this_session:
+  - task: "Gap analysis: spec vs implementation across all 4 roles"
+    details: >
+      Read lifecycle doc and architecture spec. Mapped every spec requirement
+      to implementation status. Found ~15 gaps across dispatcher, worker,
+      manager, and architect.
+
+  - task: "Created 7 new beads for all missing work"
+    details: >
+      oro-sk5 (manager beacon), oro-8g7 (architect beacon), oro-0hz (worker prompt),
+      oro-20s (beacon injection), oro-78l (resume/status/focus directives),
+      oro-us0 (quality gate retry), oro-qqr (structured escalations).
+      Wired dependencies.
+
+  - task: "Built and merged 3 beacons in parallel (dispatching-parallel-agents)"
+    files: [cmd/oro/architect.go, cmd/oro/architect_test.go, cmd/oro/manager.go,
+            cmd/oro/manager_test.go, cmd/oro/cmd_start.go, cmd/oro/start_full_test.go,
+            pkg/worker/prompt.go, pkg/worker/prompt_test.go]
+    details: >
+      Launched 3 subagents in parallel worktrees. All passed tests + quality gate.
+      Merged sequentially via rebase + ff-only to main. Beads closed: oro-0hz, oro-sk5, oro-8g7.
+
+  - task: "Decomposed oro-mgf epic into 2 children"
+    details: >
+      oro-9qf (worker subcommand) and oro-jtq (scale directive + process manager).
+      jtq depends on 9qf.
+
+  - task: "Built and merged oro-9qf (worker subcommand)"
+    files: [cmd/oro/cmd_worker.go, cmd/oro/cmd_worker_test.go, cmd/oro/root.go]
+    details: >
+      oro worker --socket=<path> --id=<id> subcommand wrapping pkg/worker library.
+      5 tests. Registered in root.go. Lint-clean (wrapcheck fix).
+
+  - task: "Fixed worktree_guard.py hook bug"
+    files: [.claude/hooks/worktree_guard.py]
+    details: >
+      Bug: hook used os.getcwd() which returns the hook process's CWD (always project root),
+      not the Bash tool's CWD. Fix: read hook_input["cwd"] which Claude Code provides
+      as the actual Bash tool working directory. Also fixed _resolve_worktree_path to
+      resolve relative paths against the Bash tool's CWD.
+
+decisions:
+  - mgf_decomposition: >
+      Split oro-mgf (too large: 7+ files, 3 concerns) into oro-9qf (worker binary)
+      and oro-jtq (scale directive + process manager). jtq depends on 9qf.
+  - worktree_guard_fix: >
+      Root cause of bash shell death: os.getcwd() in hook returns hook process CWD,
+      not Bash tool CWD. The no_cd_guard DID block correctly when tested, suggesting
+      it either wasn't registered at incident time or was user-overridden.
+
+worked:
+  - "Parallel agent dispatch for 3 independent beacons — all succeeded first try"
+  - "Sequential rebase + ff-only merge pattern (stash → rebase → checkout main → merge → pop)"
+
+failed:
+  - "Chaining git worktree remove with subsequent commands when CWD is inside worktree — kills shell"
+  - "Not checking out main before attempting ff-only merge — HEAD stays on agent branch"
+
+beads:
+  completed: [oro-0hz, oro-sk5, oro-8g7, oro-9qf]
+  in_progress: []
+  remaining: [oro-jtq, oro-mgf, oro-20s, oro-78l, oro-us0, oro-qqr, oro-lcg, oro-87o]
+  epic: oro-mgf
+
+next:
+  - "oro-jtq (P1): Add scale directive to dispatcher — ProcessManager interface, Spawn/Kill, reconcileScale()"
+  - "Close oro-mgf epic after jtq lands"
+  - "oro-20s (P2): Fix beacon injection in tmux.go — interactive claude + send-keys + ORO_ROLE"
+  - "oro-78l (P2): Implement resume/status/focus directives in applyDirective()"
+  - "oro-us0 (P2): Quality gate retry (re-assign bead on DONE with passed=false)"
