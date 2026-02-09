@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -90,6 +92,13 @@ type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
 }
 
+// ProcessManager spawns and kills oro worker OS processes.
+// Production implementations use exec.Command to run `oro worker`.
+type ProcessManager interface {
+	Spawn(id string) (*os.Process, error)
+	Kill(id string) error
+}
+
 // --- Worker tracking ---
 
 // WorkerState represents the state of a connected worker.
@@ -159,12 +168,14 @@ type Dispatcher struct {
 	worktrees WorktreeManager
 	escalator Escalator
 	memories  *memory.Store
+	procMgr   ProcessManager
 
-	mu          sync.Mutex
-	state       State
-	workers     map[string]*trackedWorker
-	listener    net.Listener
-	focusedEpic string
+	mu            sync.Mutex
+	state         State
+	workers       map[string]*trackedWorker
+	listener      net.Listener
+	focusedEpic   string
+	targetWorkers int
 
 	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
 	beadsDir string
@@ -687,16 +698,22 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 	}
 
 	dir := protocol.Directive(msg.Directive.Op)
+	args := msg.Directive.Args
 	ack := protocol.ACKPayload{OK: true}
 
 	if !dir.Valid() {
 		ack.OK = false
 		ack.Detail = "invalid directive"
 	} else {
-		detail := d.applyDirective(dir, msg.Directive.Args)
-		_ = d.logEvent(ctx, "directive", "manager", "", "",
-			fmt.Sprintf(`{"directive":%q}`, msg.Directive.Op))
-		ack.Detail = detail
+		detail, err := d.applyDirective(dir, args)
+		if err != nil {
+			ack.OK = false
+			ack.Detail = err.Error()
+		} else {
+			_ = d.logEvent(ctx, "directive", "manager", "", "",
+				fmt.Sprintf(`{"directive":%q,"args":%q}`, msg.Directive.Op, args))
+			ack.Detail = detail
+		}
 	}
 
 	// Send ACK response
@@ -909,26 +926,29 @@ type statusResponse struct {
 }
 
 // applyDirective transitions the dispatcher state machine and returns a detail
-// string for the ACK response. It accepts the full DirectivePayload to access args.
-func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) string {
+// string for the ACK response. Returns an error for invalid args (e.g. scale).
+func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string, error) {
+	if dir == protocol.DirectiveScale {
+		return d.applyScaleDirective(args)
+	}
 	switch dir {
 	case protocol.DirectiveStart:
 		d.setState(StateRunning)
-		return "started"
+		return "started", nil
 	case protocol.DirectiveStop:
 		d.setState(StateStopping)
-		return "stopping"
+		return "stopping", nil
 	case protocol.DirectivePause:
 		d.setState(StatePaused)
-		return "paused"
+		return "paused", nil
 	case protocol.DirectiveResume:
 		if d.GetState() == StateRunning {
-			return "already running"
+			return "already running", nil
 		}
 		d.setState(StateRunning)
-		return "resumed"
+		return "resumed", nil
 	case protocol.DirectiveStatus:
-		return d.buildStatusJSON()
+		return d.buildStatusJSON(), nil
 	case protocol.DirectiveFocus:
 		d.mu.Lock()
 		d.focusedEpic = args
@@ -937,11 +957,11 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) string 
 			d.setState(StateRunning)
 		}
 		if args == "" {
-			return "focus cleared"
+			return "focus cleared", nil
 		}
-		return fmt.Sprintf("focused on %s", args)
+		return fmt.Sprintf("focused on %s", args), nil
 	default:
-		return fmt.Sprintf("applied %s", dir)
+		return fmt.Sprintf("applied %s", dir), nil
 	}
 }
 
@@ -971,6 +991,99 @@ func (d *Dispatcher) buildStatusJSON() string {
 		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
 	return string(data)
+}
+
+// applyScaleDirective parses the target count from args, stores it, and
+// calls reconcileScale. Returns the ACK detail string.
+func (d *Dispatcher) applyScaleDirective(args string) (string, error) {
+	target, err := strconv.Atoi(args)
+	if err != nil {
+		return "", fmt.Errorf("invalid scale args %q: %w", args, err)
+	}
+	if target < 0 {
+		return "", fmt.Errorf("invalid scale target %d: must be non-negative", target)
+	}
+
+	d.mu.Lock()
+	d.targetWorkers = target
+	connected := len(d.workers)
+	d.mu.Unlock()
+
+	detail := d.reconcileScale()
+	if detail == "" {
+		detail = fmt.Sprintf("target=%d, current=%d, no change", target, connected)
+	}
+	return detail, nil
+}
+
+// reconcileScale compares target vs connected workers and spawns or shuts down
+// workers to reach the target. Returns a detail string describing the action taken.
+func (d *Dispatcher) reconcileScale() string {
+	d.mu.Lock()
+	target := d.targetWorkers
+	connected := len(d.workers)
+	d.mu.Unlock()
+
+	switch {
+	case connected < target:
+		return d.scaleUp(target, connected)
+	case connected > target:
+		return d.scaleDown(target, connected)
+	default:
+		return ""
+	}
+}
+
+// scaleUp spawns (target - connected) new worker processes.
+func (d *Dispatcher) scaleUp(target, connected int) string {
+	toSpawn := target - connected
+	if d.procMgr == nil {
+		return fmt.Sprintf("target=%d, need %d workers but no ProcessManager configured", target, toSpawn)
+	}
+
+	spawned := 0
+	for i := 0; i < toSpawn; i++ {
+		id := fmt.Sprintf("worker-%d-%d", time.Now().UnixNano(), i)
+		if _, err := d.procMgr.Spawn(id); err != nil {
+			continue
+		}
+		spawned++
+	}
+	return fmt.Sprintf("target=%d, spawning %d", target, spawned)
+}
+
+// scaleDown initiates graceful shutdown for excess workers, preferring idle
+// workers first, then newest busy workers.
+func (d *Dispatcher) scaleDown(target, connected int) string {
+	toRemove := connected - target
+
+	d.mu.Lock()
+	// Partition into idle and busy workers.
+	var idle, busy []string
+	for id, w := range d.workers {
+		if w.state == WorkerIdle {
+			idle = append(idle, id)
+		} else {
+			busy = append(busy, id)
+		}
+	}
+	d.mu.Unlock()
+
+	// Build removal list: idle first, then busy (newest = end of slice).
+	var victims []string
+	victims = append(victims, idle...)
+	victims = append(victims, busy...)
+
+	// Trim to the number we need to remove.
+	if len(victims) > toRemove {
+		victims = victims[:toRemove]
+	}
+
+	for _, id := range victims {
+		d.GracefulShutdownWorker(id, d.cfg.ShutdownTimeout)
+	}
+
+	return fmt.Sprintf("target=%d, shutting down %d", target, len(victims))
 }
 
 // --- Heartbeat monitoring ---
@@ -1137,6 +1250,13 @@ func (d *Dispatcher) ConnectedWorkers() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.workers)
+}
+
+// TargetWorkers returns the target worker pool size set by a scale directive.
+func (d *Dispatcher) TargetWorkers() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.targetWorkers
 }
 
 // WorkerInfo returns state info for a tracked worker (for testing).
