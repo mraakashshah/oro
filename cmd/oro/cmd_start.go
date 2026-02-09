@@ -47,9 +47,9 @@ const socketPollInterval = 50 * time.Millisecond
 // runFullStart implements the non-daemon start flow:
 // 1. Spawn daemon subprocess
 // 2. Wait for socket file to appear
-// 3. Create tmux session with manager prompt
+// 3. Create tmux session with both beacons
 // 4. Print status
-func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration) error {
+func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration)) error {
 	pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 	if err != nil {
 		return err
@@ -77,9 +77,9 @@ func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner,
 		return fmt.Errorf("dispatcher socket not ready at %s: %w", sockPath, err)
 	}
 
-	// 3. Create tmux session with the real manager prompt.
-	sess := &TmuxSession{Name: "oro", Runner: tmuxRunner}
-	if err := sess.Create(ManagerBeacon()); err != nil {
+	// 3. Create tmux session with both beacons (architect + manager).
+	sess := &TmuxSession{Name: "oro", Runner: tmuxRunner, Sleeper: sleeper}
+	if err := sess.Create(ArchitectBeacon(), ManagerBeacon()); err != nil {
 		return fmt.Errorf("create tmux session: %w", err)
 	}
 
@@ -141,7 +141,7 @@ func newStartCmd() *cobra.Command {
 				return runDaemonOnly(cmd, pidPath, workers)
 			}
 
-			return runFullStart(cmd.OutOrStdout(), workers, model, &ExecDaemonSpawner{}, &ExecRunner{}, socketPollTimeout)
+			return runFullStart(cmd.OutOrStdout(), workers, model, &ExecDaemonSpawner{}, &ExecRunner{}, socketPollTimeout, nil)
 		},
 	}
 

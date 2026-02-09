@@ -60,7 +60,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 3, "sonnet", spawner, fakeTmux, 100*time.Millisecond)
+		err := runFullStart(&stdout, 3, "sonnet", spawner, fakeTmux, 100*time.Millisecond, noopSleep)
 		if err != nil {
 			t.Fatalf("runFullStart returned error: %v", err)
 		}
@@ -82,41 +82,58 @@ func TestFullStart(t *testing.T) {
 			t.Fatal("expected tmux new-session to be called")
 		}
 
-		// 3. Verify manager pane gets the real ManagerBeacon.
-		var managerSendKeys []string
+		// 3. Verify both panes launch interactive claude with ORO_ROLE env var.
+		var pane0Calls, pane1Calls [][]string
 		for _, call := range fakeTmux.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				fullCmd := strings.Join(call, " ")
-				if strings.Contains(fullCmd, "oro:0.1") {
-					managerSendKeys = call
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "oro:0.0") {
+					pane0Calls = append(pane0Calls, call)
+				}
+				if strings.Contains(joined, "oro:0.1") {
+					pane1Calls = append(pane1Calls, call)
 				}
 			}
-		}
-		if managerSendKeys == nil {
-			t.Fatal("expected send-keys to oro:0.1 for manager pane")
-		}
-		// The manager send-keys should reference the real prompt (or at least "claude -p").
-		managerCmd := strings.Join(managerSendKeys, " ")
-		if !strings.Contains(managerCmd, "claude -p") {
-			t.Errorf("expected manager pane to run 'claude -p ...', got: %s", managerCmd)
-		}
-		// Verify it includes content from the real ManagerBeacon (check for a distinctive phrase).
-		if !strings.Contains(managerCmd, "Oro Manager") {
-			t.Errorf("expected manager pane command to include 'Oro Manager' from ManagerBeacon(), got: %s", managerCmd)
 		}
 
-		// 4. Verify architect pane gets plain "claude".
-		var architectSendKeys []string
-		for _, call := range fakeTmux.calls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				fullCmd := strings.Join(call, " ")
-				if strings.Contains(fullCmd, "oro:0.0") {
-					architectSendKeys = call
-				}
-			}
+		// Architect pane (0): should have launch + beacon injection.
+		if len(pane0Calls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
 		}
-		if architectSendKeys == nil {
-			t.Fatal("expected send-keys to oro:0.0 for architect pane")
+		p0Launch := strings.Join(pane0Calls[0], " ")
+		if !strings.Contains(p0Launch, "ORO_ROLE=architect") {
+			t.Errorf("pane 0 should set ORO_ROLE=architect, got: %s", p0Launch)
+		}
+		if !strings.Contains(p0Launch, "claude") {
+			t.Errorf("pane 0 should launch claude, got: %s", p0Launch)
+		}
+		if strings.Contains(p0Launch, "claude -p") {
+			t.Errorf("pane 0 should use interactive claude, not 'claude -p', got: %s", p0Launch)
+		}
+		// Verify architect beacon is injected.
+		p0Beacon := strings.Join(pane0Calls[1], " ")
+		if !strings.Contains(p0Beacon, "oro architect") {
+			t.Errorf("pane 0 beacon should contain architect beacon content, got: %s", p0Beacon)
+		}
+
+		// Manager pane (1): should have launch + beacon injection.
+		if len(pane1Calls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
+		}
+		p1Launch := strings.Join(pane1Calls[0], " ")
+		if !strings.Contains(p1Launch, "ORO_ROLE=manager") {
+			t.Errorf("pane 1 should set ORO_ROLE=manager, got: %s", p1Launch)
+		}
+		if !strings.Contains(p1Launch, "claude") {
+			t.Errorf("pane 1 should launch claude, got: %s", p1Launch)
+		}
+		if strings.Contains(p1Launch, "claude -p") {
+			t.Errorf("pane 1 should use interactive claude, not 'claude -p', got: %s", p1Launch)
+		}
+		// Verify manager beacon is injected with real ManagerBeacon content.
+		p1Beacon := strings.Join(pane1Calls[1], " ")
+		if !strings.Contains(p1Beacon, "Oro Manager") {
+			t.Errorf("pane 1 beacon should contain 'Oro Manager' from ManagerBeacon(), got: %s", p1Beacon)
 		}
 
 		// 5. Verify status output.
@@ -143,7 +160,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", spawner, newFakeCmd(), 100*time.Millisecond)
+		err := runFullStart(&stdout, 2, "sonnet", spawner, newFakeCmd(), 100*time.Millisecond, noopSleep)
 		if err == nil {
 			t.Fatal("expected error when spawn fails")
 		}
@@ -166,7 +183,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", spawner, newFakeCmd(), 100*time.Millisecond)
+		err := runFullStart(&stdout, 2, "sonnet", spawner, newFakeCmd(), 100*time.Millisecond, noopSleep)
 		if err == nil {
 			t.Fatal("expected error when socket never appears")
 		}
@@ -195,7 +212,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", spawner, fakeTmux, 100*time.Millisecond)
+		err := runFullStart(&stdout, 2, "sonnet", spawner, fakeTmux, 100*time.Millisecond, noopSleep)
 		if err == nil {
 			t.Fatal("expected error when tmux create fails")
 		}
@@ -206,33 +223,66 @@ func TestFullStart(t *testing.T) {
 }
 
 func TestCreateWithManagerBeacon(t *testing.T) {
-	t.Run("passes manager prompt to pane 1", func(t *testing.T) {
+	t.Run("injects both beacons via send-keys to respective panes", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake}
-		prompt := "You are a test manager."
-		err := sess.Create(prompt)
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.Create("You are a test architect.", "You are a test manager.")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Find the send-keys call for pane 1 (manager).
-		var managerCall []string
+		// Collect send-keys calls per pane.
+		var pane0Calls, pane1Calls [][]string
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "oro:0.0") {
+					pane0Calls = append(pane0Calls, call)
+				}
 				if strings.Contains(joined, "oro:0.1") {
-					managerCall = call
+					pane1Calls = append(pane1Calls, call)
 				}
 			}
 		}
-		if managerCall == nil {
-			t.Fatal("expected send-keys for manager pane oro:0.1")
+
+		// Pane 0: beacon injection (second send-keys) should contain architect beacon.
+		if len(pane0Calls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
 		}
-		joined := strings.Join(managerCall, " ")
-		if !strings.Contains(joined, "You are a test manager.") {
-			t.Errorf("expected manager command to contain prompt, got: %s", joined)
+		p0Beacon := strings.Join(pane0Calls[1], " ")
+		if !strings.Contains(p0Beacon, "You are a test architect.") {
+			t.Errorf("pane 0 beacon should contain architect text, got: %s", p0Beacon)
+		}
+
+		// Pane 1: beacon injection (second send-keys) should contain manager beacon.
+		if len(pane1Calls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
+		}
+		p1Beacon := strings.Join(pane1Calls[1], " ")
+		if !strings.Contains(p1Beacon, "You are a test manager.") {
+			t.Errorf("pane 1 beacon should contain manager text, got: %s", p1Beacon)
+		}
+	})
+
+	t.Run("neither pane uses claude -p", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.Create("architect prompt", "manager prompt")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "claude -p") {
+					t.Errorf("no pane should use 'claude -p', got: %s", joined)
+				}
+			}
 		}
 	})
 }

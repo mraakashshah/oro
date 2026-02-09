@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // CmdRunner abstracts command execution for testability.
@@ -24,8 +25,9 @@ func (e *ExecRunner) Run(name string, args ...string) (string, error) {
 
 // TmuxSession manages a tmux session with the Oro layout.
 type TmuxSession struct {
-	Name   string
-	Runner CmdRunner
+	Name    string
+	Runner  CmdRunner
+	Sleeper func(time.Duration) // optional; overrides time.Sleep for testing
 }
 
 // NewTmuxSession creates a TmuxSession with the default ExecRunner.
@@ -39,10 +41,15 @@ func (s *TmuxSession) Exists() bool {
 	return err == nil
 }
 
+// beaconDelay is the time to wait after launching claude before injecting a beacon.
+// This gives the interactive claude process time to start and be ready for input.
+const beaconDelay = 2 * time.Second
+
 // Create creates the Oro tmux session with two panes (architect + manager).
-// The managerPrompt is sent to the manager pane (pane 1) via `claude -p '<prompt>'`.
+// Both panes launch interactive claude (with ORO_ROLE set), then inject
+// the role-specific beacon text via send-keys after a short delay.
 // If the session already exists, it is a no-op.
-func (s *TmuxSession) Create(managerPrompt string) error {
+func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
 	if s.Exists() {
 		return nil
 	}
@@ -57,18 +64,42 @@ func (s *TmuxSession) Create(managerPrompt string) error {
 		return fmt.Errorf("tmux split-window: %w", err)
 	}
 
-	// Send the architect command to the left pane (pane 0).
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", "claude", "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys architect: %w", err)
+	// Launch interactive claude with ORO_ROLE=architect in pane 0.
+	architectCmd := "export ORO_ROLE=architect && claude"
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectCmd, "Enter"); err != nil {
+		return fmt.Errorf("tmux send-keys architect launch: %w", err)
 	}
 
-	// Send the manager command to the right pane (pane 1).
-	managerCmd := fmt.Sprintf("claude -p '%s'", managerPrompt)
+	// Launch interactive claude with ORO_ROLE=manager in pane 1.
+	managerCmd := "export ORO_ROLE=manager && claude"
 	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerCmd, "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys manager: %w", err)
+		return fmt.Errorf("tmux send-keys manager launch: %w", err)
+	}
+
+	// Wait for claude to start in both panes before injecting beacons.
+	s.sleep(beaconDelay)
+
+	// Inject architect beacon into pane 0.
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectBeacon, "Enter"); err != nil {
+		return fmt.Errorf("tmux send-keys architect beacon: %w", err)
+	}
+
+	// Inject manager beacon into pane 1.
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerBeacon, "Enter"); err != nil {
+		return fmt.Errorf("tmux send-keys manager beacon: %w", err)
 	}
 
 	return nil
+}
+
+// sleep pauses for the given duration. It uses the Sleeper if set (for testing),
+// otherwise falls back to time.Sleep.
+func (s *TmuxSession) sleep(d time.Duration) {
+	if s.Sleeper != nil {
+		s.Sleeper(d)
+		return
+	}
+	time.Sleep(d)
 }
 
 // Kill destroys the named tmux session.
