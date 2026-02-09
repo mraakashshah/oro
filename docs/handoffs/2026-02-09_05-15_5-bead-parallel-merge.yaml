@@ -1,0 +1,78 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Spawned 5 parallel agents on worktree branches, merged all to main with
+  conflict resolution, quality gate passed, pushed.
+
+now: >
+  oro-mgf epic (P1) is unblocked — all child tasks (jtq scale directive) landed.
+  Check if mgf can be closed or if it needs additional integration work.
+  oro-nqi (TUI dashboard) is the next epic.
+
+test: go test -race -count=1 ./... && shellcheck --severity=info ad_hoc/oro-worker.sh
+
+done_this_session:
+  - task: "oro-us0: Quality gate retry + model preservation"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    details: >
+      Verified existing retry logic, added model field to trackedWorker,
+      preserved model in re-ASSIGN payload. 8 new tests.
+
+  - task: "oro-78l: Resume, status, and focus directives"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    details: >
+      Changed applyDirective signature to (dir, args) -> (string, error).
+      Added focusedEpic field, statusResponse JSON struct, buildStatusJSON().
+      5 new tests + sendDirectiveWithArgs helper.
+
+  - task: "oro-jtq: Scale directive + ProcessManager + reconcileScale"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    details: >
+      ProcessManager interface (Spawn/Kill), applyScaleDirective parsing,
+      reconcileScale with scaleUp/scaleDown (idle-first shutdown).
+      Conflict with 78l resolved: unified applyDirective(dir,args)->(string,error).
+      5 new tests + mockProcessManager.
+
+  - task: "oro-qqr: Structured [ORO-DISPATCH] escalation format"
+    files: [pkg/dispatcher/escalator.go, pkg/dispatcher/escalator_test.go, pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    details: >
+      EscalationType constants, FormatEscalation formatter, updated 3 call sites
+      (merge failure, review failure, heartbeat timeout). 4 new escalator tests +
+      3 integration test updates.
+
+  - task: "oro-20s: Beacon injection with ORO_ROLE env var"
+    files: [cmd/oro/tmux.go, cmd/oro/cmd_start.go, cmd/oro/tmux_test.go, cmd/oro/start_full_test.go]
+    details: >
+      Both panes now launch interactive claude (not claude -p). ORO_ROLE env var
+      set before launch. Beacons injected via send-keys after 2s delay.
+      Sleeper field for test determinism.
+
+decisions:
+  - applyDirective_unified_signature: >
+      Merged 78l's (dir,args)->string with jtq's error return into
+      (dir,args)->(string,error). Scale routes through applyScaleDirective,
+      all others return nil error. handleDirectiveWithACK checks error
+      and sets ACK.OK=false on failure.
+  - worktree_removal_before_rebase: >
+      Confirmed learning: must git worktree remove --force before rebase,
+      otherwise git refuses because branch is checked out in worktree.
+
+worked:
+  - "5 parallel agents on separate worktrees — all completed successfully"
+  - "Merging as agents complete rather than waiting for all"
+  - "Manual conflict resolution for overlapping dispatcher changes (jtq+78l)"
+
+failed:
+  - "git add -A during rebase accidentally committed oro and oro-search-hook binaries — fixed with immediate removal commit"
+
+next:
+  - "Check oro-mgf epic — jtq (scale directive) was its child, may be closeable"
+  - "oro-nqi TUI dashboard epic is next P2 work"
+  - "oro-lcg (e2e integration test) was blocked on oro-20s, now unblocked"
+
+beads:
+  completed: [oro-us0, oro-78l, oro-jtq, oro-qqr, oro-20s]
+  remaining_ready: [oro-mgf (epic), oro-nqi (epic)]
