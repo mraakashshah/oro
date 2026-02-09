@@ -3576,6 +3576,161 @@ func TestDispatcher_ReviewRejection_EscalatesAfterTwoRejections(t *testing.T) {
 	}
 }
 
+// --- Ralph handoff tests (oro-vuw) ---
+
+func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	startDispatcher(t, d)
+
+	// Connect worker, assign bead
+	conn1, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-ralph", Title: "Ralph test", Priority: 1}})
+	assignMsg, ok := readMsg(t, conn1, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	originalWorktree := assignMsg.Assign.Worktree
+	beadSrc.SetBeads(nil)
+
+	// Worker sends HANDOFF (context exhausted)
+	sendMsg(t, conn1, protocol.Message{
+		Type: protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{
+			BeadID:    "bead-ralph",
+			WorkerID:  "w1",
+			Learnings: []string{"learned something"},
+		},
+	})
+
+	// Old worker should receive SHUTDOWN
+	msg, ok := readMsg(t, conn1, 2*time.Second)
+	if !ok {
+		t.Fatal("expected SHUTDOWN after handoff")
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
+	}
+
+	// Dispatcher should have spawned a new worker process
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(pm.SpawnedIDs()) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(pm.SpawnedIDs()) == 0 {
+		t.Fatal("expected new worker process to be spawned for handoff")
+	}
+
+	// Simulate new worker connecting (the spawned process)
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w2", ContextPct: 0},
+	})
+
+	// New worker should receive ASSIGN with the SAME bead and worktree
+	msg2, ok := readMsg(t, conn2, 3*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN for new worker after handoff")
+	}
+	if msg2.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg2.Type)
+	}
+	if msg2.Assign.BeadID != "bead-ralph" {
+		t.Fatalf("expected bead-ralph, got %s", msg2.Assign.BeadID)
+	}
+	if msg2.Assign.Worktree != originalWorktree {
+		t.Fatalf("expected same worktree %s, got %s", originalWorktree, msg2.Assign.Worktree)
+	}
+}
+
+func TestDispatcher_Handoff_PendingHandoffConsumedOnce(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Manually add a pending handoff
+	d.mu.Lock()
+	d.pendingHandoffs = map[string]*pendingHandoff{
+		"bead-x": {worktree: "/tmp/wt-x", model: DefaultModel},
+	}
+	d.mu.Unlock()
+
+	// Consume it
+	h := d.consumePendingHandoff()
+	if h == nil {
+		t.Fatal("expected pending handoff")
+	}
+	if h.worktree != "/tmp/wt-x" {
+		t.Fatalf("expected worktree /tmp/wt-x, got %s", h.worktree)
+	}
+
+	// Second consume should return nil (already consumed)
+	h2 := d.consumePendingHandoff()
+	if h2 != nil {
+		t.Fatal("expected nil after consuming pending handoff")
+	}
+}
+
+func TestDispatcher_Handoff_NoProcManager_LogsOnly(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	// No procMgr set — handoff should still SHUTDOWN but not spawn
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-noproc", Title: "No proc", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send HANDOFF
+	sendMsg(t, conn, protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{BeadID: "bead-noproc", WorkerID: "w1"},
+	})
+
+	// Should still get SHUTDOWN
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected SHUTDOWN")
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
+	}
+
+	// handoff_pending event logged
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "handoff_pending") > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("expected handoff_pending event")
+}
+
 func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 

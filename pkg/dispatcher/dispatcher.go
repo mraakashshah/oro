@@ -124,6 +124,15 @@ type trackedWorker struct {
 	encoder  *json.Encoder
 }
 
+// pendingHandoff holds context for a bead whose worker has been shut down
+// during a ralph handoff. The next worker to connect will be assigned this
+// bead+worktree instead of going through normal assignment.
+type pendingHandoff struct {
+	beadID   string
+	worktree string
+	model    string
+}
+
 // --- Config ---
 
 // Config holds Dispatcher configuration.
@@ -177,7 +186,8 @@ type Dispatcher struct {
 	listener        net.Listener
 	focusedEpic     string
 	targetWorkers   int
-	rejectionCounts map[string]int // bead ID -> review rejection count
+	rejectionCounts map[string]int             // bead ID -> review rejection count
+	pendingHandoffs map[string]*pendingHandoff // bead ID -> pending handoff info
 
 	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
 	beadsDir string
@@ -201,6 +211,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		state:           StateInert,
 		workers:         make(map[string]*trackedWorker),
 		rejectionCounts: make(map[string]int),
+		pendingHandoffs: make(map[string]*pendingHandoff),
 		beadsDir:        ".beads",
 		nowFunc:         time.Now,
 	}
@@ -377,10 +388,10 @@ func extractWorkerID(msg protocol.Message) string {
 	}
 }
 
-// registerWorker adds or updates a tracked worker.
+// registerWorker adds or updates a tracked worker. If a pending handoff exists,
+// the worker is immediately assigned that bead+worktree (ralph respawn).
 func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if _, exists := d.workers[id]; !exists {
 		d.workers[id] = &trackedWorker{
 			id:       id,
@@ -394,6 +405,56 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		d.workers[id].lastSeen = d.nowFunc()
 		d.workers[id].encoder = json.NewEncoder(conn)
 	}
+
+	// Check for pending ralph handoffs — assign immediately if one exists.
+	var h *pendingHandoff
+	for beadID, ph := range d.pendingHandoffs {
+		h = ph
+		delete(d.pendingHandoffs, beadID)
+		break
+	}
+
+	if h != nil {
+		w := d.workers[id]
+		w.state = WorkerBusy
+		w.beadID = h.beadID
+		w.worktree = h.worktree
+		w.model = h.model
+
+		// Retrieve relevant memories (best-effort, outside lock).
+		// We need to unlock before calling memory.ForPrompt.
+		d.mu.Unlock()
+
+		var memCtx string
+		if d.memories != nil {
+			memCtx, _ = memory.ForPrompt(context.Background(), d.memories, nil, h.beadID, 0)
+		}
+
+		d.mu.Lock()
+		_ = d.sendToWorker(w, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:        h.beadID,
+				Worktree:      h.worktree,
+				Model:         h.model,
+				MemoryContext: memCtx,
+			},
+		})
+	}
+	d.mu.Unlock()
+}
+
+// consumePendingHandoff returns and removes a single pending handoff, or nil
+// if none exist. Used when a new worker connects to immediately assign a
+// ralph-handoff bead+worktree.
+func (d *Dispatcher) consumePendingHandoff() *pendingHandoff {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for beadID, h := range d.pendingHandoffs {
+		delete(d.pendingHandoffs, beadID)
+		return h
+	}
+	return nil
 }
 
 // --- Message handling ---
@@ -534,12 +595,13 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	// Persist learnings and decisions from the handoff payload as memories.
 	d.persistHandoffContext(ctx, msg.Handoff)
 
-	// Send SHUTDOWN to the old worker
+	// Send SHUTDOWN to the old worker and capture worktree+model for respawn.
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
-	var worktree string
+	var worktree, model string
 	if ok {
 		worktree = w.worktree
+		model = w.model
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		w.state = WorkerIdle
 		w.beadID = ""
@@ -550,8 +612,26 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		return
 	}
 
-	// Re-assign the same bead+worktree to the next idle worker (or the same one reconnects)
+	// Store pending handoff so the next worker to connect gets this bead+worktree.
+	d.mu.Lock()
+	d.pendingHandoffs[beadID] = &pendingHandoff{
+		beadID:   beadID,
+		worktree: worktree,
+		model:    model,
+	}
+	d.mu.Unlock()
+
 	_ = d.logEvent(ctx, "handoff_pending", "dispatcher", beadID, "", worktree)
+
+	// Spawn a fresh worker process to continue the bead.
+	if d.procMgr != nil {
+		newID := fmt.Sprintf("worker-handoff-%d", d.nowFunc().UnixNano())
+		if _, err := d.procMgr.Spawn(newID); err != nil {
+			_ = d.logEvent(ctx, "handoff_spawn_failed", "dispatcher", beadID, newID, err.Error())
+		} else {
+			_ = d.logEvent(ctx, "handoff_spawned", "dispatcher", beadID, newID, worktree)
+		}
+	}
 }
 
 // persistHandoffContext stores learnings and decisions from a HandoffPayload
