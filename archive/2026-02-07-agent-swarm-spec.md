@@ -1,8 +1,10 @@
-# Agent Swarm Patterns: Parallel Agents with Git Worktrees, Commits, and Coordination
+# [HISTORICAL] Agent Swarm Patterns: Parallel Agents with Git Worktrees, Commits, and Coordination
+
+> **Status: Historical.** Superseded by `2026-02-08-oro-architecture-spec.md`. The two-tier model (Claude agents vs Oro agents) was replaced by a unified dispatcher/worker architecture. The worktree isolation patterns remain valid reference material.
 
 **Date:** 2026-02-07
 **Bead:** oro-on7
-**Status:** Spec
+**Status:** Historical
 
 ---
 

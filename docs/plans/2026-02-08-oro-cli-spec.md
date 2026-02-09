@@ -1,47 +1,44 @@
 # Oro CLI Spec
 
-**Date:** 2026-02-08
+**Date:** 2026-02-08 (updated 2026-02-09)
 **Bead:** oro-r7b
 **Status:** Spec
+**Reference:** [Architecture Spec](2026-02-08-oro-architecture-spec.md)
 
 ## Overview
 
 `oro` is the single entry point for the Oro agent swarm. It manages two concerns:
 
-1. **Session orchestration** — tmux layout, Claude Code sessions, daemon lifecycle
-2. **Memory interface** — remember/recall commands for the memory store
+1. **Session orchestration** — tmux layout, Claude Code sessions, dispatcher lifecycle
+2. **Runtime commands** — directives, memory interface, status queries
 
-The dispatcher daemon is an implementation detail — it launches automatically and the user never interacts with it directly.
+All commands that interact with the dispatcher communicate via UDS (Unix domain socket). The dispatcher daemon is started by `oro start` and runs in the background.
 
 ## Commands
 
 ### `oro start`
 
-Creates a tmux session with the full Oro layout and begins autonomous execution.
+Creates a tmux session with the full Oro layout and launches the dispatcher.
 
 **What happens:**
 
-1. Check if an `oro` tmux session already exists. If so, attach to it.
-2. Start the dispatcher daemon in background (if not already running).
-   - Dispatcher opens UDS socket, SQLite WAL, begins heartbeat monitor.
-   - Spawns worker pool (default 2, configurable via `oro start -w N`).
-   - Workers connect to dispatcher via UDS, wait for assignments.
-3. Create tmux session `oro` with two vertical panes:
-   - **Left pane: Architect** — Interactive `claude` session. User's workspace for exploration, design, bead creation.
-   - **Right pane: Manager** — Autonomous `claude -p` session primed with a system prompt that instructs it to:
-     - Run `bd ready` to find work
-     - Send `start` directive to dispatcher (via SQLite command row)
-     - Monitor worker completion events
-     - Handle merge (via merge coordinator)
-     - Run quality gate on main after each merge
-     - Loop: pull next ready bead, assign, review, merge, repeat
-     - Never stop unless told to (`oro stop` or explicit instruction)
-4. Attach to the tmux session.
+1. Preflight checks: verify `tmux`, `claude`, `bd`, `git` are available.
+2. Bootstrap `~/.oro` directory if first run.
+3. Check if an `oro` tmux session already exists. If so, attach to it.
+4. Launch dispatcher Go binary in background (**inert**, swarm size 0).
+   - Dispatcher opens UDS socket at `/tmp/oro.sock`.
+   - Begins fsnotify watch on `.beads/` with 60s fallback poll.
+5. Create tmux session `oro` with two panes:
+   - **Pane 0: Architect** — Interactive `claude` session. Human's workspace.
+   - **Pane 1: Manager** — Interactive `claude` session. Reads CLAUDE.md for role context.
+6. Send role-specific beacons via `tmux send-keys`:
+   - Architect beacon (9-section template, sets `ORO_ROLE=architect`)
+   - Manager beacon (12-section template, sets `ORO_ROLE=manager`)
+7. Manager autonomously runs startup protocol: `bd stats` → `bd ready` → `bd blocked` → decides swarm size → `oro start` directive → `oro scale N`.
+8. Attach to the tmux session.
 
 **Flags:**
-- `-w N` — Number of workers (default 2)
 - `-d` — Daemon-only mode (start dispatcher without tmux/sessions, for CI or testing)
-- `--model <model>` — Model for manager session (default sonnet)
 
 ### `oro stop`
 
@@ -49,33 +46,58 @@ Graceful shutdown of the entire swarm.
 
 **What happens:**
 
-1. Send `stop` directive to dispatcher (SQLite command row).
-2. Dispatcher sends `MsgPrepareShutdown` to all workers (graceful shutdown protocol).
-3. Workers save context, send `MsgShutdownApproved`, exit.
-4. Dispatcher waits for all workers (timeout 30s), then exits.
-5. Manager session receives shutdown signal, writes handoff, exits.
-6. Kill tmux session `oro`.
-7. Run `bd sync`.
+1. Send `stop` directive to dispatcher via UDS.
+2. Dispatcher runs shutdown cleanup:
+   a. Cancel ops agents
+   b. Abort in-flight merges
+   c. PREPARE_SHUTDOWN → wait for SHUTDOWN_APPROVED (or timeout)
+   d. SIGTERM → grace period → SIGKILL worker processes
+   e. Remove worktrees
+   f. `bd sync`
+   g. Close UDS listener
+3. Kill tmux session `oro`.
+
+### `oro scale N`
+
+Set target worker swarm size.
+
+**What happens:**
+
+1. Send `scale` directive with target N to dispatcher via UDS.
+2. Dispatcher compares target vs current workers.
+3. If scaling up: spawn `oro-worker --socket=<path> --id=<worker-id>` processes.
+4. If scaling down: select workers to remove (idle first, then newest busy), send PREPARE_SHUTDOWN.
+5. Returns ACK with detail: `"target=N, spawning/killing M"`.
 
 ### `oro status`
 
-Show current swarm state.
+Query current swarm state via UDS.
 
-**Output:**
-- Dispatcher: running/stopped, PID, uptime
-- Workers: count, active beads, context %, last heartbeat
-- Manager: running/stopped
-- Beads: in_progress count, ready count, blocked count
-- Recent merges: last 3 merged beads
+**What happens:**
+
+1. Send `status` directive to dispatcher via UDS.
+2. Dispatcher returns JSON: state, worker count, queue depth, current assignments, merge queue.
+3. Display:
+   - Dispatcher: state (inert/running/paused/stopping), uptime
+   - Workers: count, active beads, context %
+   - Beads: in_progress count, ready count, blocked count
+
+### `oro pause` / `oro resume`
+
+Send pause/resume directives to dispatcher via UDS. Pause: workers finish current bead but don't get new assignments. Resume: dispatcher starts assigning again.
+
+### `oro focus <epic>`
+
+Send focus directive to dispatcher via UDS. Prioritize beads from a specific epic.
 
 ### `oro remember <text>`
 
 Insert a memory into the store.
 
 **What happens:**
-1. Parse text for type hints (prefix with `lesson:`, `decision:`, `gotcha:`, `pattern:`).
+1. Parse text for type hints (prefix with `lesson:`, `decision:`, `gotcha:`, `pattern:`, `preference:`).
 2. Default type: `lesson`, source: `user_manual`, confidence: 1.0.
-3. Insert via `memory.Store.Insert()`.
+3. Insert via `memory.Store.Insert()` into `.oro/state.db`.
 4. Print confirmation with ID.
 
 ### `oro recall <query>`
@@ -84,15 +106,28 @@ Search memories by text query.
 
 **What happens:**
 1. FTS5 search via `memory.Store.Search()`.
-2. Display top 5 results with type, content, age, confidence, source.
+2. Score by BM25 × confidence × time decay (30-day half-life).
+3. Display top 5 results with type, content, age, confidence, source.
 
 ### `oro logs [worker-id]`
 
-Tail dispatcher event log. Optional filter by worker.
+Tail dispatcher event log from SQLite. Optional filter by worker.
 
-### `oro pause` / `oro resume`
+### `oro dash`
 
-Send pause/resume directives to dispatcher. Pause: workers finish current bead but don't get new assignments. Resume: dispatcher starts assigning again.
+Launch TUI dashboard (see [TUI Dashboard Spec](2026-02-08-tui-dashboard-spec.md)).
+
+## UDS Protocol
+
+All `oro` CLI commands (except `remember`, `recall`, `logs`, `dash`) connect to the dispatcher's UDS socket as short-lived connections. Protocol: line-delimited JSON.
+
+```
+→ {"type":"DIRECTIVE","directive":{"op":"scale","args":"5"}}
+← {"type":"ACK","ack":{"ok":true,"detail":"target=5, spawning 3"}}
+(disconnects)
+```
+
+SQLite `commands` table retained as write-after-ACK audit log only. Dispatcher does NOT poll it.
 
 ## Architecture
 
@@ -100,84 +135,43 @@ Send pause/resume directives to dispatcher. Pause: workers finish current bead b
 oro start
   │
   ├── Dispatcher daemon (background Go process)
-  │     ├── UDS listener (/tmp/oro-dispatcher.sock)
-  │     ├── SQLite WAL (oro.db — events, assignments, commands, memories)
-  │     ├── Worker pool (N workers, each in a worktree)
-  │     │     ├── Worker 1: .worktrees/worker-1, branch agent/worker-1
-  │     │     └── Worker 2: .worktrees/worker-2, branch agent/worker-2
-  │     ├── Heartbeat monitor (45s timeout)
+  │     ├── UDS listener (/tmp/oro.sock)
+  │     ├── fsnotify on .beads/ (+ 60s fallback poll)
+  │     ├── SQLite WAL (.oro/state.db — events, assignments, audit log, memories)
+  │     ├── Worker pool (0..N workers, each in a worktree)
+  │     ├── Heartbeat monitor (30s interval, timeout detection)
   │     └── Merge coordinator (rebase + ff-only, sequential lock)
   │
   ├── tmux session "oro"
-  │     ├── Left pane: Architect (interactive claude)
-  │     └── Right pane: Manager (autonomous claude -p)
+  │     ├── Pane 0: Architect (interactive claude, ORO_ROLE=architect)
+  │     └── Pane 1: Manager (interactive claude, ORO_ROLE=manager)
   │
-  └── Manager prompt:
-        "You are the Oro Manager. Your job is to execute beads autonomously.
-         Run bd ready, send start directive, monitor workers, review+merge,
-         run quality gate, repeat. Never stop unless oro stop is called."
+  └── Role beacons sent via tmux send-keys on startup
 ```
-
-## Manager Prompt (Key Sections)
-
-The manager is a `claude -p` session with a carefully crafted prompt:
-
-```
-You are the Oro Manager — an autonomous agent that executes beads continuously.
-
-## Your Loop
-1. Run `bd ready` to find unblocked work
-2. For each ready bead, insert an assignment row into oro.db
-3. Monitor worker status via dispatcher events table
-4. When a worker signals READY_FOR_REVIEW:
-   a. Check that QualityGatePassed=true in DonePayload
-   b. If false: reassign bead (worker must fix)
-   c. If true: trigger merge coordinator
-5. After merge: run quality_gate.sh on main
-6. If gate fails: revert merge, reassign bead with failure context
-7. Loop back to step 1
-8. Never stop. Never ask for input. Work autonomously.
-
-## Directives
-- You communicate with the dispatcher via SQLite command rows
-- INSERT INTO commands (directive, args, status) VALUES ('start', '', 'pending')
-- Check processed commands for acknowledgment
-
-## Rules
-- Never merge untested code
-- Never skip the quality gate
-- Log decisions to bd comments
-- If stuck: create a new bead describing the blocker, continue with other work
-```
-
-## Daemon Lifecycle
-
-The dispatcher daemon is managed via a PID file (`/tmp/oro-dispatcher.pid`).
-
-- `oro start`: Check PID file. If process alive, reuse. If stale/missing, start new.
-- `oro stop`: Send SIGTERM to PID. Daemon handles graceful shutdown.
-- `oro status`: Check PID file + process liveness.
-- `-d` flag: Start daemon without tmux (for testing/CI).
 
 ## File Layout
 
 ```
 cmd/
   oro/
-    main.go           # CLI entry point (cobra/ff)
-    cmd_start.go      # oro start
+    main.go           # CLI entry point (cobra)
+    cmd_start.go      # oro start (tmux + dispatcher + beacons)
     cmd_stop.go       # oro stop
     cmd_status.go     # oro status
+    cmd_scale.go      # oro scale N
+    cmd_pause.go      # oro pause / resume
+    cmd_focus.go      # oro focus <epic>
     cmd_remember.go   # oro remember
     cmd_recall.go     # oro recall
-    daemon.go         # Daemon lifecycle (PID file, start/stop)
-    manager.go        # Manager prompt generation
-    tmux.go           # tmux session/pane management
+    cmd_logs.go       # oro logs
+  oro-worker/
+    main.go           # Worker binary (UDS client + claude -p subprocess)
 ```
 
-## Open Questions
+## Resolved Questions
 
-1. **Manager model**: Should the manager use opus (better reasoning) or sonnet (faster, cheaper) by default? Probably sonnet with `--model` override.
-2. **Worker count**: Default 2 workers. What's the right max? Probably capped at 5 (git worktree contention, API rate limits).
-3. **Architect session**: Plain `claude` or `claude` with special CLAUDE.md? Probably just `claude` with the project's existing CLAUDE.md — the architect is the user's session.
-4. **Manager context exhaustion**: What happens when the manager hits context limits? Options: (a) manager writes handoff and respawns itself, (b) oro detects and restarts manager. Probably (b) — oro monitors the manager tmux pane and restarts if it exits.
+1. **Manager model**: Interactive `claude` with CLAUDE.md + role beacon (not `claude -p`). Manager decides its own approach based on beacon instructions.
+2. **Worker count**: Starts at 0 (inert). Manager decides scale via `oro scale N`. Default max 8, recommended start ceil(ready_beads / 2).
+3. **Architect session**: Interactive `claude` with project CLAUDE.md + architect beacon. The human's session.
+4. **Manager context exhaustion**: Manager is an interactive Claude session — handles its own context like any session. If it exits, `oro` can detect and restart the pane.
+5. **Directive transport**: UDS, not SQLite. SQLite `commands` table is audit log only.

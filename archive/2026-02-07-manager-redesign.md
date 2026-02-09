@@ -1,7 +1,6 @@
-# Oro Orchestrator: Manager Redesign
+# [HISTORICAL] Oro Orchestrator: Manager Redesign
 
-> Supersedes the architecture section of `2026-02-07-orchestrator-ipc-comparison.md`.
-> Protocol-level decisions (R1-R6) from that doc remain valid — this doc reframes *who* owns each responsibility.
+> **Status: Historical.** Superseded by `2026-02-08-oro-architecture-spec.md`. This doc introduced the Dispatcher concept (correct) but still specified Manager→Dispatcher communication via SQLite (changed to UDS in the architecture spec). Protocol-level decisions (R1-R6) from the IPC comparison remain valid and are incorporated into the architecture spec.
 
 ## Design Context
 

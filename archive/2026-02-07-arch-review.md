@@ -1,8 +1,10 @@
-# Architectural Review
+# [HISTORICAL] Architectural Review
+
+> **Status: Historical.** This review targeted earlier spec versions (IPC comparison, lifecycle, memory specs). Many identified contradictions (C1-C3) and gaps (G1-G5) were resolved in `2026-02-08-oro-architecture-spec.md`. Retained as reference for the resolution rationale.
 
 **Date:** 2026-02-07
 **Bead:** oro-1s5
-**Status:** Complete
+**Status:** Historical
 
 ## Summary
 

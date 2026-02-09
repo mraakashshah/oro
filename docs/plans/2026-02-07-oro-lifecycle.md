@@ -2,7 +2,8 @@
 
 > How Oro runs, end-to-end. The authoritative overview of all roles, capabilities, and behaviors.
 >
-> **Detail docs:** [Manager Redesign](2026-02-07-manager-redesign.md) · [IPC Comparison (historical)](2026-02-07-orchestrator-ipc-comparison.md) · [Memory System](2026-02-07-memory-system-spec.md)
+> **Detail docs:** [Manager Redesign (archived)](../../archive/2026-02-07-manager-redesign.md) · [IPC Comparison (archived)](../../archive/2026-02-07-orchestrator-ipc-comparison.md) · [Memory System](2026-02-07-memory-system-spec.md)
+> **Authoritative spec:** [Architecture Spec](2026-02-08-oro-architecture-spec.md) — resolves all open questions and supersedes detail docs above.
 
 ## What Oro Is
 
@@ -144,7 +145,7 @@ The Dispatcher handles everything except three cases that require the Manager's 
 | Stuck worker | Same bead fails after 2 ralph cycles | Investigate, rewrite acceptance criteria, or decompose bead |
 | Priority contention | All slots busy + new P0 arrives | Decide which work to preempt |
 
-Dispatcher sends escalations via `tmux send-keys` to Manager pane. Manager responds with `oro` CLI commands → SQLite → Dispatcher picks up.
+Dispatcher sends escalations via `tmux send-keys` to Manager pane. Manager responds with `oro` CLI commands → UDS → Dispatcher acts immediately.
 
 ### Phase 9: Session End
 
@@ -180,12 +181,12 @@ User decides to stop
               │   │claude-p│     │          │
               │   └────────┘     └────┬─────┘
               │                       │
-              │     oro CLI → SQLite ──┘
+              │       oro CLI → UDS ──┘
               │
          SQLite (.oro/state.db)
          ├── events (runtime log)
          ├── assignments (who's doing what)
-         ├── commands (Manager directives)
+         ├── commands (audit log only)
          └── memories (cross-session learnings)
 ```
 
@@ -198,7 +199,7 @@ User decides to stop
 | `pause` | Hold new assignments, workers keep running |
 | `focus <epic>` | Prioritize beads from this epic |
 
-Dispatcher is inert until it receives `start`. After that, fully autonomous.
+Manager sends directives via `oro` CLI commands, which connect to the Dispatcher's UDS socket. SQLite `commands` table is retained as a write-after-ACK audit log only. Dispatcher is inert until it receives `start`. After that, fully autonomous.
 
 ## Worker Pool
 
