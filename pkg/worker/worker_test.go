@@ -2,6 +2,7 @@ package worker_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -65,7 +66,8 @@ type mockSpawner struct {
 	calls    []spawnCall
 	process  *mockProcess
 	spawnErr error
-	stdout   io.ReadCloser // optional: simulated subprocess stdout
+	stdout   io.ReadCloser  // optional: simulated subprocess stdout
+	stdin    io.WriteCloser // optional: simulated subprocess stdin
 }
 
 type spawnCall struct {
@@ -78,14 +80,14 @@ func newMockSpawner() *mockSpawner {
 	return &mockSpawner{process: newMockProcess()}
 }
 
-func (s *mockSpawner) Spawn(_ context.Context, model, prompt, workdir string) (worker.Process, io.ReadCloser, error) {
+func (s *mockSpawner) Spawn(_ context.Context, model, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, spawnCall{Model: model, Prompt: prompt, Workdir: workdir})
 	if s.spawnErr != nil {
-		return nil, nil, s.spawnErr
+		return nil, nil, nil, s.spawnErr
 	}
-	return s.process, s.stdout, nil
+	return s.process, s.stdout, s.stdin, nil
 }
 
 func (s *mockSpawner) SpawnCalls() []spawnCall {
@@ -1961,10 +1963,10 @@ type connClosingSpawner struct {
 	connToClose net.Conn
 }
 
-func (s *connClosingSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, io.ReadCloser, error) {
+func (s *connClosingSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	// Close the connection so the next write (SendStatus) will fail
 	_ = s.connToClose.Close()
-	return s.process, nil, nil
+	return s.process, nil, nil, nil
 }
 
 func TestRun_ErrChWithCancelledContext(t *testing.T) {
@@ -2446,6 +2448,26 @@ func TestHandleAssign_PassesMemoryContextToSpawner(t *testing.T) {
 
 	cancel()
 	<-errCh
+}
+
+// nopWriteCloser wraps a writer with a no-op Close.
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
+
+func TestSpawnerReturnsStdin(t *testing.T) {
+	spawner := newMockSpawner()
+	var buf bytes.Buffer
+	spawner.stdin = nopWriteCloser{&buf}
+
+	ctx := context.Background()
+	_, _, stdin, err := spawner.Spawn(ctx, "opus", "test", "/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stdin == nil {
+		t.Fatal("expected stdin writer, got nil")
+	}
 }
 
 func TestLoadThresholds(t *testing.T) {

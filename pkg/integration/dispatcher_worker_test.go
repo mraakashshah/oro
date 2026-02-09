@@ -151,11 +151,11 @@ func newMockWorkerSpawner() *mockWorkerSpawner {
 	return &mockWorkerSpawner{process: newMockWorkerProcess()}
 }
 
-func (s *mockWorkerSpawner) Spawn(_ context.Context, model, prompt, workdir string) (worker.Process, io.ReadCloser, error) {
+func (s *mockWorkerSpawner) Spawn(_ context.Context, model, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, spawnCall{Model: model, Prompt: prompt, Workdir: workdir})
-	return s.process, nil, nil
+	return s.process, nil, nil, nil
 }
 
 func (s *mockWorkerSpawner) SpawnCalls() []spawnCall {

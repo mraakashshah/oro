@@ -22,9 +22,9 @@ import (
 )
 
 // SubprocessSpawner abstracts claude -p invocation for testing.
-// Spawn returns the process, a reader for its stdout (may be nil), and any error.
+// Spawn returns the process, stdout reader, stdin writer (both may be nil), and any error.
 type SubprocessSpawner interface {
-	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, io.ReadCloser, error)
+	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, error)
 }
 
 // Process abstracts a running subprocess.
@@ -81,6 +81,7 @@ type Worker struct {
 	ID                  string
 	conn                net.Conn
 	proc                Process
+	stdin               io.WriteCloser
 	beadID              string
 	worktree            string
 	mu                  sync.Mutex
@@ -266,13 +267,14 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if model == "" {
 		model = "claude-opus-4-6"
 	}
-	proc, stdout, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
+	proc, stdout, stdin, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
 	}
 
 	w.mu.Lock()
 	w.proc = proc
+	w.stdin = stdin
 	w.mu.Unlock()
 
 	// Pipe subprocess stdout through memory marker extraction.
@@ -658,21 +660,26 @@ func RunQualityGate(ctx context.Context, worktree string) (bool, error) {
 type ClaudeSpawner struct{}
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.
-// Returns the process and a ReadCloser for its stdout stream.
-func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, io.ReadCloser, error) {
+// Returns the process, stdout reader, stdin writer, and any error.
+func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, io.ReadCloser, io.WriteCloser, error) {
 	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", model)
 	cmd.Dir = workdir
 	cmd.Stderr = os.Stderr
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, nil, fmt.Errorf("stdout pipe: %w", err)
+		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, nil, fmt.Errorf("start claude: %w", err)
+		return nil, nil, nil, fmt.Errorf("start claude: %w", err)
 	}
-	return &cmdProcess{cmd: cmd}, stdoutPipe, nil
+	return &cmdProcess{cmd: cmd}, stdoutPipe, stdinPipe, nil
 }
 
 // cmdProcess wraps *exec.Cmd to implement the Process interface.
