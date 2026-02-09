@@ -326,6 +326,44 @@ func sendDirective(t *testing.T, socketPath, directive string) {
 	_ = scanner.Scan()
 }
 
+// sendDirectiveWithArgs sends a DIRECTIVE message with args and returns the ACK payload.
+func sendDirectiveWithArgs(t *testing.T, socketPath, directive, args string) *protocol.ACKPayload {
+	t.Helper()
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("connect to dispatcher: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	msg := protocol.Message{
+		Type: protocol.MsgDirective,
+		Directive: &protocol.DirectivePayload{
+			Op:   directive,
+			Args: args,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal directive: %v", err)
+	}
+	data = append(data, '\n')
+	if _, err := conn.Write(data); err != nil {
+		t.Fatalf("write directive: %v", err)
+	}
+
+	ackMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatalf("expected ACK for directive %s", directive)
+	}
+	if ackMsg.Type != protocol.MsgACK {
+		t.Fatalf("expected ACK, got %s", ackMsg.Type)
+	}
+	if ackMsg.ACK == nil {
+		t.Fatal("expected non-nil ACK payload")
+	}
+	return ackMsg.ACK
+}
+
 // waitForState polls until the dispatcher reaches the expected state or times out.
 func waitForState(t *testing.T, d *Dispatcher, want State, timeout time.Duration) {
 	t.Helper()
@@ -1080,16 +1118,17 @@ func TestApplyDirective(t *testing.T) {
 
 	tests := []struct {
 		dir  protocol.Directive
+		args string
 		want State
 	}{
-		{protocol.DirectiveStart, StateRunning},
-		{protocol.DirectivePause, StatePaused},
-		{protocol.DirectiveStop, StateStopping},
-		{protocol.DirectiveFocus, StateRunning},
+		{protocol.DirectiveStart, "", StateRunning},
+		{protocol.DirectivePause, "", StatePaused},
+		{protocol.DirectiveStop, "", StateStopping},
+		{protocol.DirectiveFocus, "epic-1", StateRunning},
 	}
 
 	for _, tt := range tests {
-		d.applyDirective(tt.dir)
+		d.applyDirective(tt.dir, tt.args)
 		if d.GetState() != tt.want {
 			t.Fatalf("after %s: got %s, want %s", tt.dir, d.GetState(), tt.want)
 		}
@@ -2929,5 +2968,183 @@ func TestQualityGateRetry_UnknownWorker(t *testing.T) {
 	// No merge should happen
 	if eventCount(t, d.db, "merged") != 0 {
 		t.Fatal("should not merge for unknown worker")
+	}
+}
+
+// --- Resume, Status, Focus directive tests ---
+
+func TestDispatcher_ResumeDirective_WhenPaused(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Start then pause
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+	sendDirective(t, d.cfg.SocketPath, "pause")
+	waitForState(t, d, StatePaused, 1*time.Second)
+
+	// Send resume
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "resume", "")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+	if ack.Detail != "resumed" {
+		t.Fatalf("expected detail 'resumed', got %q", ack.Detail)
+	}
+	waitForState(t, d, StateRunning, 1*time.Second)
+}
+
+func TestDispatcher_ResumeDirective_WhenAlreadyRunning(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Start (already running)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Send resume while already running
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "resume", "")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+	if ack.Detail != "already running" {
+		t.Fatalf("expected detail 'already running', got %q", ack.Detail)
+	}
+	// State should still be running
+	if d.GetState() != StateRunning {
+		t.Fatalf("expected running state, got %s", d.GetState())
+	}
+}
+
+func TestDispatcher_StatusDirective_ReturnsJSON(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Start and connect a worker with an assignment
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-status-dir", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-s1", Title: "Status test", Priority: 1},
+		{ID: "bead-s2", Title: "Status test 2", Priority: 2},
+	})
+	// Wait for assignment
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send status directive
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "status", "")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+
+	// Parse the JSON detail
+	var status statusResponse
+	if err := json.Unmarshal([]byte(ack.Detail), &status); err != nil {
+		t.Fatalf("failed to parse status JSON: %v, raw: %s", err, ack.Detail)
+	}
+
+	if status.State != string(StateRunning) {
+		t.Fatalf("expected state 'running', got %q", status.State)
+	}
+	if status.WorkerCount != 1 {
+		t.Fatalf("expected 1 worker, got %d", status.WorkerCount)
+	}
+	// Assignments should have the worker->bead mapping
+	if len(status.Assignments) == 0 {
+		t.Fatal("expected at least one assignment in status")
+	}
+	if status.Assignments["w-status-dir"] != "bead-s1" {
+		t.Fatalf("expected assignment w-status-dir->bead-s1, got %v", status.Assignments)
+	}
+
+	// State should NOT have changed
+	if d.GetState() != StateRunning {
+		t.Fatalf("status directive should not change state, got %s", d.GetState())
+	}
+}
+
+func TestDispatcher_FocusDirective_SetsEpic(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Start dispatcher
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Send focus directive with epic ID
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "epic-42")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+	if ack.Detail != "focused on epic-42" {
+		t.Fatalf("expected detail 'focused on epic-42', got %q", ack.Detail)
+	}
+
+	// Verify focusedEpic is stored
+	d.mu.Lock()
+	epic := d.focusedEpic
+	d.mu.Unlock()
+	if epic != "epic-42" {
+		t.Fatalf("expected focusedEpic 'epic-42', got %q", epic)
+	}
+
+	// State should be running
+	if d.GetState() != StateRunning {
+		t.Fatalf("expected running state after focus, got %s", d.GetState())
+	}
+
+	// Verify focusedEpic shows in status
+	statusACK := sendDirectiveWithArgs(t, d.cfg.SocketPath, "status", "")
+	var status statusResponse
+	if err := json.Unmarshal([]byte(statusACK.Detail), &status); err != nil {
+		t.Fatalf("failed to parse status JSON: %v", err)
+	}
+	if status.FocusedEpic != "epic-42" {
+		t.Fatalf("expected focused_epic 'epic-42' in status, got %q", status.FocusedEpic)
+	}
+}
+
+func TestDispatcher_FocusDirective_ClearsEpic(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Set a focus first
+	sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "epic-99")
+	d.mu.Lock()
+	if d.focusedEpic != "epic-99" {
+		d.mu.Unlock()
+		t.Fatalf("expected focusedEpic 'epic-99', got %q", d.focusedEpic)
+	}
+	d.mu.Unlock()
+
+	// Clear focus with empty args
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+	if ack.Detail != "focus cleared" {
+		t.Fatalf("expected detail 'focus cleared', got %q", ack.Detail)
+	}
+
+	// Verify focusedEpic is cleared
+	d.mu.Lock()
+	epic := d.focusedEpic
+	d.mu.Unlock()
+	if epic != "" {
+		t.Fatalf("expected empty focusedEpic after clear, got %q", epic)
 	}
 }

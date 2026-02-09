@@ -160,10 +160,11 @@ type Dispatcher struct {
 	escalator Escalator
 	memories  *memory.Store
 
-	mu       sync.Mutex
-	state    State
-	workers  map[string]*trackedWorker
-	listener net.Listener
+	mu          sync.Mutex
+	state       State
+	workers     map[string]*trackedWorker
+	listener    net.Listener
+	focusedEpic string
 
 	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
 	beadsDir string
@@ -692,10 +693,10 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 		ack.OK = false
 		ack.Detail = "invalid directive"
 	} else {
-		d.applyDirective(dir)
+		detail := d.applyDirective(dir, msg.Directive.Args)
 		_ = d.logEvent(ctx, "directive", "manager", "", "",
 			fmt.Sprintf(`{"directive":%q}`, msg.Directive.Op))
-		ack.Detail = fmt.Sprintf("applied %s", msg.Directive.Op)
+		ack.Detail = detail
 	}
 
 	// Send ACK response
@@ -898,19 +899,78 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	}
 }
 
-// applyDirective transitions the dispatcher state machine.
-func (d *Dispatcher) applyDirective(dir protocol.Directive) {
+// statusResponse is the JSON structure returned by the status directive.
+type statusResponse struct {
+	State       string            `json:"state"`
+	WorkerCount int               `json:"worker_count"`
+	QueueDepth  int               `json:"queue_depth"`
+	Assignments map[string]string `json:"assignments"`
+	FocusedEpic string            `json:"focused_epic,omitempty"`
+}
+
+// applyDirective transitions the dispatcher state machine and returns a detail
+// string for the ACK response. It accepts the full DirectivePayload to access args.
+func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) string {
 	switch dir {
 	case protocol.DirectiveStart:
 		d.setState(StateRunning)
+		return "started"
 	case protocol.DirectiveStop:
 		d.setState(StateStopping)
+		return "stopping"
 	case protocol.DirectivePause:
 		d.setState(StatePaused)
-	case protocol.DirectiveFocus:
-		// Focus keeps running state but could filter beads — for now just ensure running.
+		return "paused"
+	case protocol.DirectiveResume:
+		if d.GetState() == StateRunning {
+			return "already running"
+		}
 		d.setState(StateRunning)
+		return "resumed"
+	case protocol.DirectiveStatus:
+		return d.buildStatusJSON()
+	case protocol.DirectiveFocus:
+		d.mu.Lock()
+		d.focusedEpic = args
+		d.mu.Unlock()
+		if d.GetState() != StateRunning {
+			d.setState(StateRunning)
+		}
+		if args == "" {
+			return "focus cleared"
+		}
+		return fmt.Sprintf("focused on %s", args)
+	default:
+		return fmt.Sprintf("applied %s", dir)
 	}
+}
+
+// buildStatusJSON constructs the status response JSON string.
+func (d *Dispatcher) buildStatusJSON() string {
+	d.mu.Lock()
+	state := d.state
+	workerCount := len(d.workers)
+	assignments := make(map[string]string, len(d.workers))
+	for id, w := range d.workers {
+		if w.beadID != "" {
+			assignments[id] = w.beadID
+		}
+	}
+	epic := d.focusedEpic
+	d.mu.Unlock()
+
+	resp := statusResponse{
+		State:       string(state),
+		WorkerCount: workerCount,
+		QueueDepth:  0, // bd ready count not cached; zero for now
+		Assignments: assignments,
+		FocusedEpic: epic,
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error())
+	}
+	return string(data)
 }
 
 // --- Heartbeat monitoring ---
