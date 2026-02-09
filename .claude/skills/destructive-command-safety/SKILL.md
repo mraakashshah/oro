@@ -34,10 +34,17 @@ NO DESTRUCTIVE COMMANDS WITHOUT EXPLICIT USER CONFIRMATION
 - `git push --force` — overwrites remote history
 - `git commit --amend` — rewrites last commit
 
+### Pre-approved — No confirmation needed (with conditions)
+
+- `git worktree remove [--force]` — worktrees are disposable; all work must be committed to a branch before removal
+- `git worktree prune` — cleans up stale worktree references
+- `git branch -d` (lowercase `-d` only) — safe delete, refuses if branch is not merged. **`git branch -D` (uppercase) is still dangerous.**
+
 ### Safe — No confirmation needed
 
 - `git status`, `git log`, `git diff`
 - `git branch` (list only)
+- `git worktree list` (read-only)
 - `git show`, `git blame`
 - `ls`, `cat`, `find`, `grep`
 - `go test`, `uv run pytest`, `ruff check`
