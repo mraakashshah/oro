@@ -48,6 +48,10 @@ func (m *mockBeadSource) Close(_ context.Context, _ string, _ string) error {
 	return nil
 }
 
+func (m *mockBeadSource) Sync(_ context.Context) error {
+	return nil
+}
+
 func (m *mockBeadSource) SetBeads(beads []dispatcher.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
