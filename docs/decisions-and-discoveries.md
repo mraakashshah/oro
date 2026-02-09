@@ -1,5 +1,11 @@
 # Decisions and Discoveries
 
+## 2026-02-08: Never cd into worktrees — bash dies when worktree is removed
+**Tags:** #worktree #bash #cwd #session-killer
+**Context:** During work-bead execution, a `cd` into `.worktrees/bead-oro-by8/` was followed by `git worktree remove`. This deleted the shell's cwd. On macOS, a process whose cwd is deleted cannot execute any commands — every bash call silently returns exit code 1 with no output. The session became unrecoverable.
+**Decision:** Never `cd` into a worktree. Always use absolute paths. If a `cd` happened, always `cd` back to the main repo before removing the worktree. Documented in `docs/solutions/2026-02-08-bash-dies-after-worktree-remove.md`.
+**Implications:** The `work-bead` and `using-git-worktrees` skills must enforce absolute-path-only worktree access. This is a session-killing bug with no recovery — prevention is the only fix.
+
 ## 2026-02-08: Never clone repos with .claude/ into yap/reference/ without renaming
 **Tags:** #hooks #yap #reference #gotcha
 **Context:** Cloned gastown into `yap/reference/gastown`. The clone has its own `.claude/hooks/`. Shell CWD moved into the clone dir during `git clone`, and Claude Code's hook resolution found the *clone's* `.claude/` instead of ours. Every subsequent tool call failed — hooks couldn't find their scripts. Had to ask the user to manually fix it. Twice.
