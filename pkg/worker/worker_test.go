@@ -2450,6 +2450,26 @@ func TestHandleAssign_PassesMemoryContextToSpawner(t *testing.T) {
 	<-errCh
 }
 
+// syncWriteCloser is a thread-safe io.WriteCloser backed by a bytes.Buffer.
+type syncWriteCloser struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *syncWriteCloser) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *syncWriteCloser) Close() error { return nil }
+
+func (w *syncWriteCloser) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
 // nopWriteCloser wraps a writer with a no-op Close.
 type nopWriteCloser struct{ io.Writer }
 
@@ -2468,6 +2488,122 @@ func TestSpawnerReturnsStdin(t *testing.T) {
 	if stdin == nil {
 		t.Fatal("expected stdin writer, got nil")
 	}
+}
+
+func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-stage integration test
+	t.Parallel()
+
+	// Set up mock spawner with a thread-safe writable stdin buffer.
+	spawner := newMockSpawner()
+	stdinBuf := &syncWriteCloser{}
+	spawner.stdin = stdinBuf
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-compact", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	// Create worktree with thresholds.json (opus=65)
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "thresholds.json"), []byte(`{"opus": 65}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Send ASSIGN with model=opus
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-compact",
+			Worktree: tmpDir,
+			Model:    "opus",
+		},
+	})
+
+	// Drain STATUS message
+	_ = readMessage(t, dispatcherConn)
+
+	// --- First threshold breach: should compact, NOT handoff ---
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for compact to be written to stdin
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(stdinBuf.String(), "/compact") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(stdinBuf.String(), "/compact") {
+		t.Fatal("expected /compact to be written to stdin on first threshold breach")
+	}
+
+	// Verify .oro/compacted flag was created
+	if _, err := os.Stat(filepath.Join(oroDir, "compacted")); os.IsNotExist(err) {
+		t.Fatal("expected .oro/compacted flag to be created after compact")
+	}
+
+	// Verify subprocess was NOT killed (no handoff yet)
+	if spawner.process.Killed() {
+		t.Fatal("subprocess should not be killed on first threshold breach (compact only)")
+	}
+
+	// Reset context_pct below threshold to simulate compact working
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("30"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// --- Second threshold breach: should handoff ---
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should get HANDOFF message
+	_ = dispatcherConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	scanner := bufio.NewScanner(dispatcherConn)
+	gotHandoff := false
+	for scanner.Scan() {
+		var msg protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.Type == protocol.MsgHandoff {
+			gotHandoff = true
+			break
+		}
+	}
+	if !gotHandoff {
+		t.Fatal("expected HANDOFF on second threshold breach")
+	}
+
+	// Subprocess should be killed after handoff
+	killed := false
+	for range 20 {
+		if spawner.process.Killed() {
+			killed = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !killed {
+		t.Fatal("expected subprocess to be killed after handoff")
+	}
+
+	cancel()
+	<-errCh
 }
 
 func TestLoadThresholds(t *testing.T) {

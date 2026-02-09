@@ -84,6 +84,8 @@ type Worker struct {
 	stdin               io.WriteCloser
 	beadID              string
 	worktree            string
+	model               string
+	compacted           bool
 	mu                  sync.Mutex
 	spawner             SubprocessSpawner
 	socketPath          string // for reconnection
@@ -275,6 +277,8 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.mu.Lock()
 	w.proc = proc
 	w.stdin = stdin
+	w.model = model
+	w.compacted = false
 	w.mu.Unlock()
 
 	// Pipe subprocess stdout through memory marker extraction.
@@ -361,13 +365,21 @@ func BuildPrompt(beadID, worktree, memoryContext string) string {
 }
 
 // watchContext polls .oro/context_pct in the current worktree and triggers
-// handoff if context usage exceeds the threshold.
+// a two-stage response when context usage exceeds the model-specific threshold:
+//  1. First breach: send /compact to subprocess stdin, create .oro/compacted flag
+//  2. Second breach: send HANDOFF and kill subprocess (ralph handoff)
 func (w *Worker) watchContext(ctx context.Context) {
 	w.mu.Lock()
 	interval := w.contextPollInterval
+	wt := w.worktree
+	model := w.model
 	w.mu.Unlock()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// Load per-model thresholds from worktree root.
+	th := LoadThresholds(wt)
+	threshold := th.For(modelFamily(model))
 
 	for {
 		select {
@@ -375,7 +387,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.mu.Lock()
-			wt := w.worktree
+			wt = w.worktree
 			w.mu.Unlock()
 
 			if wt == "" {
@@ -385,7 +397,6 @@ func (w *Worker) watchContext(ctx context.Context) {
 			pctPath := filepath.Join(wt, ".oro", "context_pct")
 			data, err := os.ReadFile(pctPath) //nolint:gosec // path is constructed internally, not user input
 			if err != nil {
-				// File doesn't exist or unreadable — not an error
 				continue
 			}
 
@@ -394,13 +405,54 @@ func (w *Worker) watchContext(ctx context.Context) {
 				continue
 			}
 
-			if pct > DefaultThreshold {
-				_ = w.SendHandoff(ctx)
-				w.killProc()
-				return
+			if pct <= threshold {
+				continue
 			}
+
+			w.mu.Lock()
+			alreadyCompacted := w.compacted
+			w.mu.Unlock()
+
+			if !alreadyCompacted {
+				// First breach: compact
+				w.sendCompact()
+				w.mu.Lock()
+				w.compacted = true
+				w.mu.Unlock()
+				// Write flag file so hooks can also see compact happened
+				oroDir := filepath.Join(wt, ".oro")
+				_ = os.MkdirAll(oroDir, 0o750) //nolint:gosec // runtime directory
+				_ = os.WriteFile(filepath.Join(oroDir, "compacted"), []byte("1"), 0o600)
+				continue
+			}
+
+			// Second breach: ralph handoff
+			_ = w.SendHandoff(ctx)
+			w.killProc()
+			return
 		}
 	}
+}
+
+// sendCompact writes /compact to the subprocess stdin.
+func (w *Worker) sendCompact() {
+	w.mu.Lock()
+	stdin := w.stdin
+	w.mu.Unlock()
+	if stdin != nil {
+		_, _ = io.WriteString(stdin, "/compact\n")
+	}
+}
+
+// modelFamily extracts the model family name (opus, sonnet, haiku) from a full model ID.
+func modelFamily(model string) string {
+	lower := strings.ToLower(model)
+	for _, family := range []string{"opus", "sonnet", "haiku"} {
+		if strings.Contains(lower, family) {
+			return family
+		}
+	}
+	return model
 }
 
 // killProc kills the current subprocess if one is running.
