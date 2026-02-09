@@ -10,7 +10,7 @@ working directory is inside the worktree being removed, blocks the command
 and instructs the agent to cd to the project root first.
 
 Input: JSON on stdin with tool_name, tool_input, etc.
-Output: JSON with decision=block if dangerous, nothing otherwise (passthrough).
+Output: JSON with permissionDecision=deny if dangerous, nothing otherwise (passthrough).
 """
 
 import json
@@ -80,8 +80,8 @@ def _resolve_worktree_path(path: str, cwd: str) -> str:
 def build_decision(hook_input: dict) -> dict | None:
     """Decide whether to block a worktree remove command.
 
-    Returns a dict with {"decision": "block", "reason": "..."} if the command
-    is dangerous, or None to passthrough (approve).
+    Returns a dict with {"permissionDecision": "deny", "reason": "..."} if the
+    command is dangerous, or None to passthrough (approve).
     """
     if hook_input.get("tool_name") != "Bash":
         return None
@@ -106,8 +106,8 @@ def build_decision(hook_input: dict) -> dict | None:
 
     project_root = str(Path(__file__).resolve().parent.parent.parent)
     return {
-        "decision": "block",
-        "reason": (
+        "permissionDecision": "deny",
+        "message": (
             f"BLOCKED: Your shell cwd ({cwd}) is inside the worktree you're removing ({resolved_wt}). "
             f"This will permanently kill the Bash tool (Claude Code bug #9190). "
             f"Run `cd {project_root}` first to move to the project root, "
@@ -126,11 +126,13 @@ def main() -> None:
     if result is None:
         return
 
+    message = result.pop("message", "")
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             **result,
-        }
+        },
+        "systemMessage": message,
     }
     json.dump(output, sys.stdout)
 

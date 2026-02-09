@@ -42,9 +42,9 @@ class TestBuildDecision:
         mock_branches.return_value = {"bead/oro-by8"}
         result = build_decision(self._hook_input("git rebase main bead/oro-by8"))
         assert result is not None
-        assert result["decision"] == "block"
-        assert "bead/oro-by8" in result["reason"]
-        assert "worktree remove" in result["reason"]
+        assert result["permissionDecision"] == "deny"
+        assert "bead/oro-by8" in result["message"]
+        assert "worktree remove" in result["message"]
 
     @patch("rebase_worktree_guard.get_worktree_branches")
     def test_allows_rebase_on_non_worktree_branch(self, mock_branches):

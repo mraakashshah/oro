@@ -13,7 +13,7 @@ Safe sequence (from docs/solutions/2026-02-08-bash-dies-after-worktree-remove.md
   4. git merge --ff-only bead/<id>
 
 Input: JSON on stdin with tool_name, tool_input, etc.
-Output: JSON with decision=block if dangerous, nothing otherwise (passthrough).
+Output: JSON with permissionDecision=deny if dangerous, nothing otherwise (passthrough).
 """
 
 import json
@@ -76,7 +76,7 @@ def get_worktree_branches() -> set[str]:
 def build_decision(hook_input: dict) -> dict | None:
     """Decide whether to block a git rebase command.
 
-    Returns a dict with {"decision": "block", "reason": "..."} if the
+    Returns a dict with {"permissionDecision": "deny", "reason": "..."} if the
     rebase target branch is checked out in a worktree, or None to
     passthrough (approve).
     """
@@ -100,8 +100,8 @@ def build_decision(hook_input: dict) -> dict | None:
         return None
 
     return {
-        "decision": "block",
-        "reason": (
+        "permissionDecision": "deny",
+        "message": (
             f"BLOCKED: Branch '{branch}' is checked out in a worktree. "
             f"git rebase will fail. Remove the worktree first:\n"
             f"  git worktree remove .worktrees/bead-{branch.removeprefix('bead/')}\n"
@@ -120,11 +120,13 @@ def main() -> None:
     if result is None:
         return
 
+    message = result.pop("message", "")
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             **result,
-        }
+        },
+        "systemMessage": message,
     }
     json.dump(output, sys.stdout)
 

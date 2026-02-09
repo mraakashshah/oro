@@ -10,7 +10,7 @@ Blocks commands containing `cd <path>` where path resolves outside the
 project root. Allows `cd /project/root` (returning home) explicitly.
 
 Input: JSON on stdin with tool_name, tool_input, etc.
-Output: JSON with decision=block if dangerous, nothing otherwise (passthrough).
+Output: JSON with permissionDecision=deny if dangerous, nothing otherwise (passthrough).
 """
 
 import json
@@ -77,8 +77,8 @@ def build_decision(hook_input: dict) -> dict | None:
     for target in targets:
         if is_outside_root(target, _PROJECT_ROOT):
             return {
-                "decision": "block",
-                "reason": (
+                "permissionDecision": "deny",
+                "message": (
                     f"BLOCKED: `cd {target}` leaves the project root ({_PROJECT_ROOT}). "
                     f"Use absolute paths instead of cd. "
                     f"Never cd into worktrees — it causes shell corruption when combined "
@@ -99,11 +99,13 @@ def main() -> None:
     if result is None:
         return
 
+    message = result.pop("message", "")
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             **result,
-        }
+        },
+        "systemMessage": message,
     }
     json.dump(output, sys.stdout)
 
