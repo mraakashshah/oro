@@ -36,8 +36,35 @@ type Process interface {
 // DefaultContextPollInterval controls how often the context watcher polls .oro/context_pct.
 const DefaultContextPollInterval = 5 * time.Second
 
-// contextHandoffThreshold is the context percentage above which a handoff is triggered.
-const contextHandoffThreshold = 70
+// DefaultThreshold is the fallback context percentage when thresholds.json is missing or model unknown.
+const DefaultThreshold = 50
+
+// Thresholds holds per-model context percentage thresholds loaded from .oro/thresholds.json.
+type Thresholds struct {
+	models map[string]int
+}
+
+// For returns the threshold for the given model, falling back to DefaultThreshold.
+func (t Thresholds) For(model string) int {
+	if v, ok := t.models[model]; ok {
+		return v
+	}
+	return DefaultThreshold
+}
+
+// LoadThresholds reads per-model thresholds from <dir>/thresholds.json.
+// Returns defaults if the file is missing or unreadable.
+func LoadThresholds(dir string) Thresholds {
+	data, err := os.ReadFile(filepath.Join(dir, "thresholds.json")) //nolint:gosec // path constructed internally
+	if err != nil {
+		return Thresholds{}
+	}
+	var models map[string]int
+	if err := json.Unmarshal(data, &models); err != nil {
+		return Thresholds{}
+	}
+	return Thresholds{models: models}
+}
 
 // reconnectBaseInterval is the base retry interval for reconnection.
 const reconnectBaseInterval = 2 * time.Second
@@ -365,7 +392,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 				continue
 			}
 
-			if pct > contextHandoffThreshold {
+			if pct > DefaultThreshold {
 				_ = w.SendHandoff(ctx)
 				w.killProc()
 				return
