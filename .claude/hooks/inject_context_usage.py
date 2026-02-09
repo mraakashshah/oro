@@ -3,7 +3,14 @@
 
 Reads the Claude Code transcript to find the most recent token usage,
 calculates context consumption as a percentage, and injects warnings
-when the agent should decompose remaining work into sub-beads.
+when the agent should compact or hand off.
+
+Thresholds are loaded from thresholds.json at the project root.
+Each model has a single threshold (percentage). Default is 50%.
+
+When the threshold is breached:
+- If .oro/compacted does NOT exist: tell agent to run /compact
+- If .oro/compacted EXISTS: tell agent to hand off
 
 Input: JSON on stdin with transcript_path, tool_name, tool_input, etc.
 Output: JSON with additionalContext when threshold exceeded, nothing otherwise.
@@ -11,6 +18,7 @@ Output: JSON with additionalContext when threshold exceeded, nothing otherwise.
 
 import contextlib
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,40 +27,62 @@ CONTEXT_WINDOW = 200_000
 DEBOUNCE_FILE = "/tmp/oro-context-warn-ts"
 DEBOUNCE_SECONDS = 60
 
-# Model-specific thresholds: (warn, critical)
-# warn=None means no warn zone — jump straight to critical
-THRESHOLDS = {
-    "opus": (0.65, 0.80),
-    "sonnet": (None, 0.45),
-    "haiku": (None, 0.35),
-}
-DEFAULT_THRESHOLDS = (0.45, 0.60)  # assume opus if unknown
+DEFAULT_THRESHOLD = 0.50
 
-WARN_MESSAGE = (
+COMPACT_MESSAGE = (
     "<IMPORTANT>\n"
     "Context usage is at {pct}% ({used:,}/{total:,} tokens). "
     "You are approaching context limits.\n\n"
-    "ACTION REQUIRED:\n"
-    "1. Identify remaining work not yet completed\n"
-    "2. Create bd issues (beads) for each remaining item\n"
-    "3. Add dependencies between them\n"
-    "4. Complete your current task, commit, and hand off\n\n"
-    "Do NOT start new multi-step work. Finish what you're doing and decompose the rest.\n"
+    "ACTION REQUIRED: Run /compact to free up context space.\n"
+    "Do NOT start new multi-step work until you have compacted.\n"
     "</IMPORTANT>"
 )
 
-CRITICAL_MESSAGE = (
+HANDOFF_MESSAGE = (
     "<EXTREMELY_IMPORTANT>\n"
     "Context usage is at {pct}% ({used:,}/{total:,} tokens). "
-    "Context exhaustion is imminent.\n\n"
+    "Context exhaustion is imminent and compaction has already been done.\n\n"
     "STOP starting new work. You MUST:\n"
     "1. Commit any in-progress changes NOW\n"
     "2. Create bd issues for ALL remaining work\n"
     "3. Run `bd sync --flush-only`\n"
     "4. Create a handoff (invoke `create-handoff` skill)\n\n"
-    "Continuing without decomposing will lose context and waste work.\n"
+    "Continuing without handing off will lose context and waste work.\n"
     "</EXTREMELY_IMPORTANT>"
 )
+
+
+def _find_project_root() -> str:
+    """Find the project root via git rev-parse, falling back to cwd."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return str(Path.cwd())
+
+
+def load_thresholds(project_root: str) -> dict[str, float]:
+    """Load per-model thresholds from thresholds.json at the project root.
+
+    The file maps model family names to integer percentages (e.g. {"opus": 65}).
+    Returns a dict mapping model names to float fractions (e.g. {"opus": 0.65}).
+    Returns empty dict if file is missing or malformed.
+    """
+    thresholds_path = Path(project_root) / "thresholds.json"
+    try:
+        raw = json.loads(thresholds_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v / 100.0 for k, v in raw.items() if isinstance(v, (int, float))}
 
 
 def detect_model(transcript_path: str) -> str:
@@ -128,14 +158,19 @@ def main() -> None:
     used, total, pct = calculate_context_pct(usage)
 
     model = detect_model(transcript_path)
-    warn_threshold, critical_threshold = THRESHOLDS.get(model, DEFAULT_THRESHOLDS)
+    project_root = _find_project_root()
+    thresholds = load_thresholds(project_root)
+    threshold = thresholds.get(model, DEFAULT_THRESHOLD)
 
-    if pct >= critical_threshold:
-        message = CRITICAL_MESSAGE.format(pct=int(pct * 100), used=used, total=total)
-    elif warn_threshold is not None and pct >= warn_threshold:
-        message = WARN_MESSAGE.format(pct=int(pct * 100), used=used, total=total)
-    else:
+    if pct < threshold:
         return
+
+    # Check for .oro/compacted flag
+    compacted_flag = Path(project_root) / ".oro" / "compacted"
+    if compacted_flag.is_file():
+        message = HANDOFF_MESSAGE.format(pct=int(pct * 100), used=used, total=total)
+    else:
+        message = COMPACT_MESSAGE.format(pct=int(pct * 100), used=used, total=total)
 
     # Debounce: skip if we warned less than DEBOUNCE_SECONDS ago
     debounce = Path(DEBOUNCE_FILE)
