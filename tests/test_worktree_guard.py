@@ -123,8 +123,8 @@ class TestBuildDecision:
         ):
             result = build_decision(hook_input)
             assert result is not None
-            assert result["decision"] == "block"
-            assert "cd" in result["reason"].lower() or "cwd" in result["reason"].lower()
+            assert result["permissionDecision"] == "deny"
+            assert "cd" in result["message"].lower() or "cwd" in result["message"].lower()
 
     def test_dangerous_removal_from_subdirectory_blocks(self):
         """CWD is in a subdirectory of the worktree — must block."""
@@ -138,7 +138,7 @@ class TestBuildDecision:
         ):
             result = build_decision(hook_input)
             assert result is not None
-            assert result["decision"] == "block"
+            assert result["permissionDecision"] == "deny"
 
     def test_block_message_includes_cd_instruction(self):
         """Block message must tell the agent HOW to fix it."""
@@ -151,7 +151,7 @@ class TestBuildDecision:
             patch.object(_mod, "_resolve_worktree_path", return_value="/repo/.worktrees/feat-x"),
         ):
             result = build_decision(hook_input)
-            assert "cd" in result["reason"]
+            assert "cd" in result["message"]
 
     def test_malformed_json_passthrough(self):
         """Bad input should not crash — fail open."""
