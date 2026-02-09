@@ -3862,6 +3862,194 @@ func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
 	}
 }
 
+// --- Diagnosis agent wiring tests (oro-2dj) ---
+
+// setupHandoffDiagnosis creates a dispatcher with a connected worker assigned to
+// a bead, ready for testing handoff-triggered diagnosis. Returns all pieces
+// needed to send multiple handoffs and verify diagnosis/escalation behavior.
+func setupHandoffDiagnosis(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, *mockSubprocessSpawner) {
+	t.Helper()
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-stuck", Title: "Stuck bead", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume initial ASSIGN
+	if !ok {
+		t.Fatal("expected initial ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	return d, conn, esc, spawnMock
+}
+
+func TestDispatcher_Handoff_TracksCountPerBead(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// handoffCounts should exist and be empty initially
+	d.mu.Lock()
+	if d.handoffCounts == nil {
+		d.mu.Unlock()
+		t.Fatal("expected handoffCounts map to be initialized")
+	}
+	count := d.handoffCounts["bead-x"]
+	d.mu.Unlock()
+
+	if count != 0 {
+		t.Fatalf("expected 0 handoffs for unknown bead, got %d", count)
+	}
+}
+
+func TestDispatcher_Handoff_FirstHandoff_RespawnsNormally(t *testing.T) {
+	d, conn, _, _ := setupHandoffDiagnosis(t)
+
+	// First handoff — should respawn worker normally, NOT diagnose
+	sendMsg(t, conn, protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{BeadID: "bead-stuck", WorkerID: "w1"},
+	})
+
+	// Worker should receive SHUTDOWN
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected SHUTDOWN after first handoff")
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
+	}
+
+	// Verify handoff count is 1
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		count := d.handoffCounts["bead-stuck"]
+		d.mu.Unlock()
+		if count == 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	d.mu.Lock()
+	got := d.handoffCounts["bead-stuck"]
+	d.mu.Unlock()
+	t.Fatalf("expected handoff count 1, got %d", got)
+}
+
+func TestDispatcher_Handoff_SecondHandoff_TriggersDiagnosis(t *testing.T) {
+	d, conn, _, spawnMock := setupHandoffDiagnosis(t)
+
+	// Set diagnosis output
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "Root cause: test flake in TestFoo due to race condition"
+	spawnMock.mu.Unlock()
+
+	// Pre-set handoff count to 1 (simulating first handoff already happened)
+	d.mu.Lock()
+	d.handoffCounts["bead-stuck"] = 1
+	d.mu.Unlock()
+
+	// Second handoff — should trigger ops.Diagnose() instead of normal respawn
+	sendMsg(t, conn, protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{BeadID: "bead-stuck", WorkerID: "w1"},
+	})
+
+	// Worker should still receive SHUTDOWN
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected SHUTDOWN after second handoff")
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
+	}
+
+	// Verify diagnosis event logged
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "diagnosis_spawned") > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("expected 'diagnosis_spawned' event after 2nd handoff")
+}
+
+func TestDispatcher_Handoff_DiagnosisFailure_EscalatesToManager(t *testing.T) {
+	d, conn, esc, spawnMock := setupHandoffDiagnosis(t)
+
+	// Make diagnosis agent fail
+	spawnMock.mu.Lock()
+	spawnMock.spawnErr = errors.New("diagnosis agent spawn failed")
+	spawnMock.mu.Unlock()
+
+	// Pre-set handoff count to 1
+	d.mu.Lock()
+	d.handoffCounts["bead-stuck"] = 1
+	d.mu.Unlock()
+
+	// Second handoff — diagnosis should be triggered but fail
+	sendMsg(t, conn, protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{BeadID: "bead-stuck", WorkerID: "w1"},
+	})
+
+	// Consume SHUTDOWN
+	readMsg(t, conn, 2*time.Second)
+
+	// Verify escalation to manager
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := esc.Messages()
+		for _, m := range msgs {
+			if strings.Contains(m, "bead-stuck") && strings.Contains(m, "STUCK") {
+				// Also verify diagnosis_escalated event
+				if eventCount(t, d.db, "diagnosis_escalated") > 0 {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected STUCK escalation for bead-stuck, got: %v", esc.Messages())
+}
+
+func TestDispatcher_Handoff_CountResetsOnDone(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Simulate handoff counts for different beads
+	d.mu.Lock()
+	d.handoffCounts["bead-a"] = 2
+	d.handoffCounts["bead-b"] = 1
+	d.mu.Unlock()
+
+	// Clear bead-a's count (simulates bead completion via clearHandoffCount)
+	d.clearHandoffCount("bead-a")
+
+	d.mu.Lock()
+	_, aExists := d.handoffCounts["bead-a"]
+	bCount := d.handoffCounts["bead-b"]
+	d.mu.Unlock()
+
+	if aExists {
+		t.Fatal("expected bead-a handoff count to be cleared")
+	}
+	if bCount != 1 {
+		t.Fatalf("expected bead-b count to remain 1, got %d", bCount)
+	}
+}
+
 func TestShutdownCleanup_CallsBeadSync(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 

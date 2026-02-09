@@ -207,6 +207,7 @@ type Dispatcher struct {
 	focusedEpic     string
 	targetWorkers   int
 	rejectionCounts map[string]int             // bead ID -> review rejection count
+	handoffCounts   map[string]int             // bead ID -> ralph handoff count
 	pendingHandoffs map[string]*pendingHandoff // bead ID -> pending handoff info
 
 	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
@@ -231,6 +232,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		state:           StateInert,
 		workers:         make(map[string]*trackedWorker),
 		rejectionCounts: make(map[string]int),
+		handoffCounts:   make(map[string]int),
 		pendingHandoffs: make(map[string]*pendingHandoff),
 		beadsDir:        ".beads",
 		nowFunc:         time.Now,
@@ -568,6 +570,9 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 		return
 	}
 
+	// Clear handoff count for completed bead.
+	d.clearHandoffCount(beadID)
+
 	// Merge in background
 	go d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
 }
@@ -604,6 +609,10 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
 }
 
+// maxHandoffsBeforeDiagnosis is the number of ralph handoffs for the same bead
+// before the dispatcher spawns a diagnosis agent instead of respawning.
+const maxHandoffsBeforeDiagnosis = 2
+
 func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg protocol.Message) {
 	if msg.Handoff == nil {
 		return
@@ -614,6 +623,12 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 
 	// Persist learnings and decisions from the handoff payload as memories.
 	d.persistHandoffContext(ctx, msg.Handoff)
+
+	// Track handoff count per bead.
+	d.mu.Lock()
+	d.handoffCounts[beadID]++
+	handoffCount := d.handoffCounts[beadID]
+	d.mu.Unlock()
 
 	// Send SHUTDOWN to the old worker and capture worktree+model for respawn.
 	d.mu.Lock()
@@ -632,7 +647,24 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		return
 	}
 
-	// Store pending handoff so the next worker to connect gets this bead+worktree.
+	// On 2nd+ handoff for the same bead, spawn diagnosis agent instead of respawning.
+	if handoffCount >= maxHandoffsBeforeDiagnosis {
+		_ = d.logEvent(ctx, "diagnosis_spawned", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"handoff_count":%d}`, handoffCount))
+		resultCh := d.ops.Diagnose(ctx, ops.DiagOpts{
+			BeadID:   beadID,
+			Worktree: worktree,
+			Symptom:  fmt.Sprintf("worker stuck after %d ralph handoffs", handoffCount),
+		})
+		go d.handleDiagnosisResult(ctx, beadID, workerID, resultCh)
+		return
+	}
+
+	d.respawnWorker(ctx, beadID, worktree, model)
+}
+
+// respawnWorker stores a pending handoff and spawns a fresh worker process.
+func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model string) {
 	d.mu.Lock()
 	d.pendingHandoffs[beadID] = &pendingHandoff{
 		beadID:   beadID,
@@ -643,7 +675,6 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 
 	_ = d.logEvent(ctx, "handoff_pending", "dispatcher", beadID, "", worktree)
 
-	// Spawn a fresh worker process to continue the bead.
 	if d.procMgr != nil {
 		newID := fmt.Sprintf("worker-handoff-%d", d.nowFunc().UnixNano())
 		if _, err := d.procMgr.Spawn(newID); err != nil {
@@ -651,6 +682,30 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		} else {
 			_ = d.logEvent(ctx, "handoff_spawned", "dispatcher", beadID, newID, worktree)
 		}
+	}
+}
+
+// handleDiagnosisResult waits for the ops diagnosis result. If diagnosis
+// succeeds (non-empty feedback, no error), it logs the result. If diagnosis
+// fails or is inconclusive, it escalates to the Manager.
+func (d *Dispatcher) handleDiagnosisResult(ctx context.Context, beadID, workerID string, resultCh <-chan ops.Result) {
+	select {
+	case <-ctx.Done():
+		return
+	case result := <-resultCh:
+		if result.Err != nil {
+			// Diagnosis failed — escalate to manager.
+			_ = d.logEvent(ctx, "diagnosis_escalated", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, result.Err.Error()))
+			_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
+				"diagnosis failed", result.Err.Error()))
+			return
+		}
+
+		// Diagnosis succeeded — log feedback and escalate with diagnosis context.
+		_ = d.logEvent(ctx, "diagnosis_complete", "dispatcher", beadID, workerID, result.Feedback)
+		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
+			"diagnosis complete", result.Feedback))
 	}
 }
 
@@ -774,6 +829,13 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 func (d *Dispatcher) clearRejectionCount(beadID string) {
 	d.mu.Lock()
 	delete(d.rejectionCounts, beadID)
+	d.mu.Unlock()
+}
+
+// clearHandoffCount removes the handoff counter for a bead (e.g., on completion).
+func (d *Dispatcher) clearHandoffCount(beadID string) {
+	d.mu.Lock()
+	delete(d.handoffCounts, beadID)
 	d.mu.Unlock()
 }
 
