@@ -1,0 +1,99 @@
+package worker
+
+import (
+	"fmt"
+	"strings"
+)
+
+// PromptParams contains all inputs needed to assemble the 12-section worker prompt.
+type PromptParams struct {
+	BeadID             string
+	Title              string
+	Description        string
+	AcceptanceCriteria string
+	MemoryContext      string // may be empty
+	WorktreePath       string
+	Model              string
+}
+
+// section writes a markdown section (## header + body) to the builder.
+func section(b *strings.Builder, header, body string) {
+	fmt.Fprintf(b, "## %s\n\n%s\n\n", header, body)
+}
+
+// memoryBody returns the memory section content, falling back to a
+// placeholder when no prior context is available.
+func memoryBody(ctx string) string {
+	if ctx == "" {
+		return "No prior context for this bead."
+	}
+	return ctx
+}
+
+// AssemblePrompt builds the complete 12-section worker prompt from bead details
+// and context. This prompt is passed to `claude -p` when spawning a worker.
+func AssemblePrompt(params PromptParams) string {
+	var b strings.Builder
+
+	// 1. Role
+	section(&b, "Role", "You are an oro worker. You execute one bead at a time.")
+
+	// 2. Bead
+	section(&b, "Bead", fmt.Sprintf(
+		"- **ID:** %s\n- **Title:** %s\n- **Description:** %s\n- **Acceptance Criteria:** %s",
+		params.BeadID, params.Title, params.Description, params.AcceptanceCriteria,
+	))
+
+	// 3. Memory
+	section(&b, "Memory", memoryBody(params.MemoryContext))
+
+	// 4. Coding Rules
+	section(&b, "Coding Rules", strings.Join([]string{
+		"- Functional first: pure functions, immutability, early returns",
+		"- Pure core (business logic), impure edges (I/O, CLI)",
+		"- Go: gofumpt, golangci-lint, go-arch-lint",
+		"- Python: PEP 8, ruff, pyright, pytest fixtures > classes",
+	}, "\n"))
+
+	// 5. TDD
+	section(&b, "TDD", "Write tests FIRST. Red-green-refactor. Every feature/fix needs a test.")
+
+	// 6. Quality Gate
+	section(&b, "Quality Gate", "Before completing, run `./quality_gate.sh` and ensure it passes.")
+
+	// 7. Worktree
+	section(&b, "Worktree", fmt.Sprintf(
+		"You are in `%s`. Commit to branch `agent/%s`.", params.WorktreePath, params.BeadID,
+	))
+
+	// 8. Git
+	section(&b, "Git", "Use conventional commits (`feat(scope): msg`, `fix(scope): msg`, `test(scope): msg`).\nNo amend, new commits only.")
+
+	// 9. Beads Tools
+	section(&b, "Beads Tools", strings.Join([]string{
+		"- `bd create` — decompose a bead into smaller sub-beads",
+		"- `bd close` — mark a bead as done",
+		"- `bd dep add` — declare a blocker dependency",
+	}, "\n"))
+
+	// 10. Constraints
+	section(&b, "Constraints", strings.Join([]string{
+		"- Do no git push",
+		"- Do not modify files outside your worktree",
+		"- Do not modify the main branch",
+	}, "\n"))
+
+	// 11. Failure
+	section(&b, "Failure", strings.Join([]string{
+		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
+		"- Bead too big: decompose with `bd create`, then exit.",
+		"- Context limit reached: create handoff beads, then exit.",
+		"- Blocked: create a blocker bead with `bd dep add`, then exit.",
+	}, "\n"))
+
+	// 12. Exit
+	b.WriteString("## Exit\n\n")
+	b.WriteString("When acceptance criteria pass and quality gate is green, exit.\n")
+
+	return b.String()
+}
