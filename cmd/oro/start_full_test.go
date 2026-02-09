@@ -82,7 +82,7 @@ func TestFullStart(t *testing.T) {
 			t.Fatal("expected tmux new-session to be called")
 		}
 
-		// 3. Verify manager pane gets the real ManagerPrompt.
+		// 3. Verify manager pane gets the real ManagerBeacon.
 		var managerSendKeys []string
 		for _, call := range fakeTmux.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
@@ -100,9 +100,9 @@ func TestFullStart(t *testing.T) {
 		if !strings.Contains(managerCmd, "claude -p") {
 			t.Errorf("expected manager pane to run 'claude -p ...', got: %s", managerCmd)
 		}
-		// Verify it includes content from the real ManagerPrompt (check for a distinctive phrase).
+		// Verify it includes content from the real ManagerBeacon (check for a distinctive phrase).
 		if !strings.Contains(managerCmd, "Oro Manager") {
-			t.Errorf("expected manager pane command to include 'Oro Manager' from ManagerPrompt(), got: %s", managerCmd)
+			t.Errorf("expected manager pane command to include 'Oro Manager' from ManagerBeacon(), got: %s", managerCmd)
 		}
 
 		// 4. Verify architect pane gets plain "claude".
@@ -205,7 +205,7 @@ func TestFullStart(t *testing.T) {
 	})
 }
 
-func TestCreateWithManagerPrompt(t *testing.T) {
+func TestCreateWithManagerBeacon(t *testing.T) {
 	t.Run("passes manager prompt to pane 1", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")

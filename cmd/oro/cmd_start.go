@@ -79,7 +79,7 @@ func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner,
 
 	// 3. Create tmux session with the real manager prompt.
 	sess := &TmuxSession{Name: "oro", Runner: tmuxRunner}
-	if err := sess.Create(ManagerPrompt()); err != nil {
+	if err := sess.Create(ManagerBeacon()); err != nil {
 		return fmt.Errorf("create tmux session: %w", err)
 	}
 

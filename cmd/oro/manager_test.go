@@ -5,54 +5,104 @@ import (
 	"testing"
 )
 
-func TestManagerPrompt(t *testing.T) {
-	prompt := ManagerPrompt()
+func TestManagerBeacon(t *testing.T) {
+	beacon := ManagerBeacon()
 
-	t.Run("prompt includes bd ready loop", func(t *testing.T) {
-		if !strings.Contains(prompt, "bd ready") {
-			t.Error("expected manager prompt to contain 'bd ready' for finding available work")
+	t.Run("returns non-empty string", func(t *testing.T) {
+		if beacon == "" {
+			t.Fatal("expected ManagerBeacon() to return a non-empty string")
 		}
 	})
 
-	t.Run("prompt includes quality gate check", func(t *testing.T) {
-		qualityTerms := []string{"test", "lint"}
-		for _, term := range qualityTerms {
-			if !strings.Contains(strings.ToLower(prompt), term) {
-				t.Errorf("expected manager prompt to reference quality gate %q", term)
+	t.Run("contains all 12 section headers", func(t *testing.T) {
+		sections := []string{
+			"## Role",
+			"## System Map",
+			"## Startup",
+			"## Oro CLI",
+			"## Beads CLI",
+			"## Decomposition",
+			"## Scale Policy",
+			"## Escalations",
+			"## Human Interaction",
+			"## Dispatcher Messages",
+			"## Anti-patterns",
+			"## Shutdown",
+		}
+		for _, section := range sections {
+			if !strings.Contains(beacon, section) {
+				t.Errorf("expected beacon to contain section header %q", section)
 			}
 		}
 	})
 
-	t.Run("prompt includes never-stop instruction", func(t *testing.T) {
-		lower := strings.ToLower(prompt)
-		hasNeverStop := strings.Contains(lower, "never stop") ||
-			strings.Contains(lower, "do not stop") ||
-			strings.Contains(lower, "continuously") ||
-			strings.Contains(lower, "continuous loop")
-		if !hasNeverStop {
-			t.Error("expected manager prompt to contain a never-stop / continuous loop instruction")
+	t.Run("contains key terms", func(t *testing.T) {
+		keyTerms := []string{
+			"oro start",
+			"oro scale",
+			"bd ready",
+			"[ORO-DISPATCH]",
+			"quality gate",
+		}
+		lower := strings.ToLower(beacon)
+		for _, term := range keyTerms {
+			if !strings.Contains(lower, strings.ToLower(term)) {
+				t.Errorf("expected beacon to contain key term %q", term)
+			}
 		}
 	})
 
-	t.Run("prompt includes bd close for completing beads", func(t *testing.T) {
-		if !strings.Contains(prompt, "bd close") {
-			t.Error("expected manager prompt to contain 'bd close' for finishing beads")
+	t.Run("is substantial in size", func(t *testing.T) {
+		if len(beacon) < 2000 {
+			t.Errorf("expected beacon to be substantial (>2000 chars for 12 sections), got %d chars", len(beacon))
 		}
 	})
 
-	t.Run("prompt is non-empty and substantial", func(t *testing.T) {
-		if len(prompt) < 200 {
-			t.Errorf("expected manager prompt to be substantial (>200 chars), got %d chars", len(prompt))
+	t.Run("role section establishes coordinator identity", func(t *testing.T) {
+		if !strings.Contains(beacon, "You are the oro manager") {
+			t.Error("expected Role section to contain 'You are the oro manager'")
+		}
+		if !strings.Contains(beacon, "do not write code") {
+			t.Error("expected Role section to state manager does not write code")
 		}
 	})
 
-	t.Run("prompt includes dispatch or execute instruction", func(t *testing.T) {
-		lower := strings.ToLower(prompt)
-		hasExecute := strings.Contains(lower, "execute") ||
-			strings.Contains(lower, "dispatch") ||
-			strings.Contains(lower, "pick")
-		if !hasExecute {
-			t.Error("expected manager prompt to instruct picking/executing/dispatching beads")
+	t.Run("startup section includes initialization steps", func(t *testing.T) {
+		startupTerms := []string{"bd stats", "bd ready", "bd blocked", "oro start", "oro scale"}
+		for _, term := range startupTerms {
+			if !strings.Contains(beacon, term) {
+				t.Errorf("expected Startup section to contain %q", term)
+			}
+		}
+	})
+
+	t.Run("escalations section covers failure playbook", func(t *testing.T) {
+		escalationTypes := []string{"MERGE_CONFLICT", "STUCK_WORKER", "PRIORITY_CONTENTION", "WORKER_CRASH"}
+		for _, etype := range escalationTypes {
+			if !strings.Contains(beacon, etype) {
+				t.Errorf("expected Escalations section to contain %q", etype)
+			}
+		}
+	})
+
+	t.Run("dispatcher messages section describes ORO-DISPATCH protocol", func(t *testing.T) {
+		if !strings.Contains(beacon, "[ORO-DISPATCH]") {
+			t.Error("expected Dispatcher Messages section to contain '[ORO-DISPATCH]'")
+		}
+		dispatchTypes := []string{"MERGE_CONFLICT", "STUCK", "PRIORITY_CONTENTION", "STATUS"}
+		for _, dtype := range dispatchTypes {
+			if !strings.Contains(beacon, dtype) {
+				t.Errorf("expected Dispatcher Messages section to contain message type %q", dtype)
+			}
+		}
+	})
+
+	t.Run("shutdown section includes ordered steps", func(t *testing.T) {
+		shutdownTerms := []string{"oro scale 0", "oro stop", "bd sync"}
+		for _, term := range shutdownTerms {
+			if !strings.Contains(beacon, term) {
+				t.Errorf("expected Shutdown section to contain %q", term)
+			}
 		}
 	})
 }
