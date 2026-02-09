@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -276,6 +277,40 @@ func TestCLIBeadSource_Close_CommandError(t *testing.T) {
 	}
 }
 
+func TestCLIBeadSource_Sync_Success(t *testing.T) {
+	runner := &mockCommandRunner{output: []byte("")}
+	src := NewCLIBeadSource(runner)
+
+	err := src.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.Name != "bd" {
+		t.Errorf("command name: got %q, want %q", call.Name, "bd")
+	}
+	if !sliceContains(call.Args, "sync") {
+		t.Errorf("expected 'sync' in args, got %v", call.Args)
+	}
+	if !sliceContains(call.Args, "--flush-only") {
+		t.Errorf("expected '--flush-only' in args, got %v", call.Args)
+	}
+}
+
+func TestCLIBeadSource_Sync_CommandError(t *testing.T) {
+	runner := &mockCommandRunner{err: fmt.Errorf("sync failed")}
+	src := NewCLIBeadSource(runner)
+
+	err := src.Sync(context.Background())
+	if err == nil {
+		t.Fatal("expected error from Sync when command fails")
+	}
+}
+
 func TestBead_ResolveModel(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -283,8 +318,8 @@ func TestBead_ResolveModel(t *testing.T) {
 		want  string
 	}{
 		{"empty defaults to opus", "", DefaultModel},
-		{"explicit sonnet", "claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929"},
-		{"explicit opus", "claude-opus-4-6", "claude-opus-4-6"},
+		{"explicit sonnet", ModelSonnet, ModelSonnet},
+		{"explicit opus", ModelOpus, ModelOpus},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -293,6 +328,73 @@ func TestBead_ResolveModel(t *testing.T) {
 				t.Errorf("ResolveModel() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBead_ResolveModel_ByType(t *testing.T) {
+	tests := []struct {
+		name     string
+		beadType string
+		model    string
+		want     string
+	}{
+		// Explicit model always wins, regardless of type.
+		{"explicit model overrides type", "task", ModelOpus, ModelOpus},
+		{"explicit sonnet overrides epic", "epic", ModelSonnet, ModelSonnet},
+
+		// Type-based routing when Model is empty.
+		{"epic routes to opus", "epic", "", ModelOpus},
+		{"feature routes to opus", "feature", "", ModelOpus},
+		{"task routes to sonnet", "task", "", ModelSonnet},
+		{"bug routes to sonnet", "bug", "", ModelSonnet},
+
+		// Unknown type defaults to opus.
+		{"unknown type defaults to opus", "unknown", "", ModelOpus},
+		{"empty type defaults to opus", "", "", ModelOpus},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := Bead{ID: "test", Type: tt.beadType, Model: tt.model}
+			if got := b.ResolveModel(); got != tt.want {
+				t.Errorf("ResolveModel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModelConstants(t *testing.T) {
+	if ModelOpus != "claude-opus-4-6" {
+		t.Errorf("ModelOpus = %q, want %q", ModelOpus, "claude-opus-4-6")
+	}
+	if ModelSonnet != "claude-sonnet-4-5-20250929" {
+		t.Errorf("ModelSonnet = %q, want %q", ModelSonnet, "claude-sonnet-4-5-20250929")
+	}
+	if DefaultModel != ModelOpus {
+		t.Errorf("DefaultModel = %q, want %q (same as ModelOpus)", DefaultModel, ModelOpus)
+	}
+}
+
+func TestBead_TypeField_JSON(t *testing.T) {
+	// Verify JSON round-trip with the Type field.
+	b := Bead{ID: "test-1", Title: "Fix login", Priority: 1, Type: "bug"}
+	data, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got Bead
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Type != "bug" {
+		t.Errorf("Type: got %q, want %q", got.Type, "bug")
+	}
+
+	// Verify omitempty: empty type should not appear in JSON.
+	b2 := Bead{ID: "test-2", Title: "No type"}
+	data2, _ := json.Marshal(b2)
+	if strings.Contains(string(data2), "issue_type") {
+		t.Errorf("expected issue_type to be omitted for empty Type, got: %s", data2)
 	}
 }
 

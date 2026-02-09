@@ -51,8 +51,9 @@ type Bead struct {
 	ID       string `json:"id"`
 	Title    string `json:"title"`
 	Priority int    `json:"priority"`
-	Epic     string `json:"epic,omitempty"`  // parent epic ID for focus filtering
-	Model    string `json:"model,omitempty"` // claude model override; default "claude-opus-4-6"
+	Epic     string `json:"epic,omitempty"`       // parent epic ID for focus filtering
+	Type     string `json:"issue_type,omitempty"` // task, bug, feature, epic
+	Model    string `json:"model,omitempty"`      // claude model override; empty = auto-route by Type
 }
 
 // BeadDetail holds extended information about a single bead.
@@ -63,15 +64,32 @@ type BeadDetail struct {
 	Model              string `json:"model,omitempty"`
 }
 
-// DefaultModel is used when a bead has no explicit model set.
-const DefaultModel = "claude-opus-4-6"
+// Model constants for routing.
+const (
+	ModelOpus   = "claude-opus-4-6"
+	ModelSonnet = "claude-sonnet-4-5-20250929"
+)
 
-// ResolveModel returns the bead's model or DefaultModel if empty.
+// DefaultModel is used when a bead has no explicit model set and no type-based
+// routing applies. Kept as ModelOpus for backward compatibility.
+const DefaultModel = ModelOpus
+
+// ResolveModel returns the model to use for this bead. Priority:
+//  1. Explicit Model field (bead-level override)
+//  2. Type-based routing: epic/feature -> Opus, task/bug -> Sonnet
+//  3. DefaultModel (Opus) as fallback
 func (b Bead) ResolveModel() string {
 	if b.Model != "" {
 		return b.Model
 	}
-	return DefaultModel
+	switch b.Type {
+	case "epic", "feature":
+		return ModelOpus
+	case "task", "bug":
+		return ModelSonnet
+	default:
+		return DefaultModel
+	}
 }
 
 // --- Interfaces for testability ---
@@ -81,6 +99,7 @@ type BeadSource interface {
 	Ready(ctx context.Context) ([]Bead, error)
 	Show(ctx context.Context, id string) (*BeadDetail, error)
 	Close(ctx context.Context, id string, reason string) error
+	Sync(ctx context.Context) error
 }
 
 // WorktreeManager creates and removes git worktrees.
@@ -1382,6 +1401,13 @@ func (d *Dispatcher) shutdownCleanup() {
 		} else {
 			_ = d.logEvent(ctx, "worktree_removed", "dispatcher", "", "", p)
 		}
+	}
+
+	// Flush bead state to disk before exiting.
+	if err := d.beads.Sync(ctx); err != nil {
+		_ = d.logEvent(ctx, "bead_sync_failed", "dispatcher", "", "", err.Error())
+	} else {
+		_ = d.logEvent(ctx, "bead_synced", "dispatcher", "", "", "")
 	}
 }
 

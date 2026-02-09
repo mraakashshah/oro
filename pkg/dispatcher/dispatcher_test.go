@@ -25,9 +25,10 @@ import (
 // --- Mock implementations ---
 
 type mockBeadSource struct {
-	mu    sync.Mutex
-	beads []Bead
-	shown map[string]*BeadDetail
+	mu     sync.Mutex
+	beads  []Bead
+	shown  map[string]*BeadDetail
+	synced bool
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]Bead, error) {
@@ -48,6 +49,13 @@ func (m *mockBeadSource) Show(_ context.Context, id string) (*BeadDetail, error)
 }
 
 func (m *mockBeadSource) Close(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
+func (m *mockBeadSource) Sync(_ context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.synced = true
 	return nil
 }
 
@@ -3851,5 +3859,20 @@ func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
 	}
 	if bCount != 1 {
 		t.Fatalf("expected bead-b count to remain 1, got %d", bCount)
+	}
+}
+
+func TestShutdownCleanup_CallsBeadSync(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Call shutdownCleanup directly (no need to start the full dispatcher).
+	d.shutdownCleanup()
+
+	beadSrc.mu.Lock()
+	synced := beadSrc.synced
+	beadSrc.mu.Unlock()
+
+	if !synced {
+		t.Fatal("expected BeadSource.Sync to be called during shutdownCleanup")
 	}
 }

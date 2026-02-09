@@ -58,3 +58,12 @@ func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
 	}
 	return nil
 }
+
+// Sync runs `bd sync --flush-only` to flush bead state to disk.
+func (s *CLIBeadSource) Sync(ctx context.Context) error {
+	_, err := s.runner.Run(ctx, "bd", "sync", "--flush-only")
+	if err != nil {
+		return fmt.Errorf("bd sync: %w", err)
+	}
+	return nil
+}
