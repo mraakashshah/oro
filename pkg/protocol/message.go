@@ -56,6 +56,7 @@ type AssignPayload struct {
 	Worktree      string `json:"worktree"`
 	Model         string `json:"model,omitempty"`
 	MemoryContext string `json:"memory_context,omitempty"`
+	Feedback      string `json:"feedback,omitempty"`
 }
 
 // HeartbeatPayload is sent by a worker to report liveness and context usage.

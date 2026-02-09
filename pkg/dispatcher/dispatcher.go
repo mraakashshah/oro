@@ -171,12 +171,13 @@ type Dispatcher struct {
 	memories  *memory.Store
 	procMgr   ProcessManager
 
-	mu            sync.Mutex
-	state         State
-	workers       map[string]*trackedWorker
-	listener      net.Listener
-	focusedEpic   string
-	targetWorkers int
+	mu              sync.Mutex
+	state           State
+	workers         map[string]*trackedWorker
+	listener        net.Listener
+	focusedEpic     string
+	targetWorkers   int
+	rejectionCounts map[string]int // bead ID -> review rejection count
 
 	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
 	beadsDir string
@@ -189,18 +190,19 @@ type Dispatcher struct {
 func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spawner, beads BeadSource, wt WorktreeManager, esc Escalator) *Dispatcher {
 	resolved := cfg.withDefaults()
 	return &Dispatcher{
-		cfg:       resolved,
-		db:        db,
-		merger:    merger,
-		ops:       opsSpawner,
-		beads:     beads,
-		worktrees: wt,
-		escalator: esc,
-		memories:  memory.NewStore(db),
-		state:     StateInert,
-		workers:   make(map[string]*trackedWorker),
-		beadsDir:  ".beads",
-		nowFunc:   time.Now,
+		cfg:             resolved,
+		db:              db,
+		merger:          merger,
+		ops:             opsSpawner,
+		beads:           beads,
+		worktrees:       wt,
+		escalator:       esc,
+		memories:        memory.NewStore(db),
+		state:           StateInert,
+		workers:         make(map[string]*trackedWorker),
+		rejectionCounts: make(map[string]int),
+		beadsDir:        ".beads",
+		nowFunc:         time.Now,
 	}
 }
 
@@ -613,6 +615,10 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	go d.handleReviewResult(ctx, workerID, beadID, resultCh)
 }
 
+// maxReviewRejections is the number of rejection cycles before escalating to
+// the Manager instead of re-assigning the bead to the worker.
+const maxReviewRejections = 2
+
 // handleReviewResult waits for the ops review result and acts on it.
 func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID string, resultCh <-chan ops.Result) {
 	select {
@@ -622,10 +628,27 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 		switch result.Verdict {
 		case ops.VerdictApproved:
 			_ = d.logEvent(ctx, "review_approved", "ops", beadID, workerID, result.Feedback)
+			d.clearRejectionCount(beadID)
 			// Worker can now proceed to DONE
 		case ops.VerdictRejected:
 			_ = d.logEvent(ctx, "review_rejected", "ops", beadID, workerID, result.Feedback)
-			// Send feedback to worker via STATUS-like mechanism
+
+			// Increment rejection counter.
+			d.mu.Lock()
+			d.rejectionCounts[beadID]++
+			count := d.rejectionCounts[beadID]
+			d.mu.Unlock()
+
+			if count > maxReviewRejections {
+				// Escalate to Manager after too many rejections.
+				_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
+					fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, result.Feedback))
+				_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
+					fmt.Sprintf("review rejected %d times", count), result.Feedback))
+				return
+			}
+
+			// Re-assign with reviewer feedback.
 			d.mu.Lock()
 			w, ok := d.workers[workerID]
 			if ok {
@@ -635,6 +658,7 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 					Assign: &protocol.AssignPayload{
 						BeadID:   beadID,
 						Worktree: w.worktree,
+						Feedback: result.Feedback,
 					},
 				})
 			}
@@ -644,6 +668,13 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID, "review failed", result.Feedback))
 		}
 	}
+}
+
+// clearRejectionCount removes the rejection counter for a bead (e.g., on approval or completion).
+func (d *Dispatcher) clearRejectionCount(beadID string) {
+	d.mu.Lock()
+	delete(d.rejectionCounts, beadID)
+	d.mu.Unlock()
 }
 
 func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg protocol.Message) {

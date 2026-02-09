@@ -3461,3 +3461,145 @@ func TestDispatcher_ScaleDirective_InvalidArgs(t *testing.T) {
 		t.Fatalf("expected ACK detail to contain 'invalid', got: %s", ack.Detail)
 	}
 }
+
+// --- Review rejection counter tests (oro-jhs) ---
+
+// helper: set up dispatcher with rejected reviewer, connect worker, assign bead, trigger review.
+// Returns the dispatcher, conn, escalator, and spawnMock for further assertions.
+func setupReviewRejection(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, *mockSubprocessSpawner) {
+	t.Helper()
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "REJECTED: missing edge case tests"
+	spawnMock.mu.Unlock()
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-rej", Title: "Rejection test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume initial ASSIGN
+	if !ok {
+		t.Fatal("expected initial ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	return d, conn, esc, spawnMock
+}
+
+func TestDispatcher_ReviewRejection_FeedbackForwarded(t *testing.T) {
+	_, conn, _, _ := setupReviewRejection(t)
+
+	// First rejection
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+
+	// Should get re-ASSIGN with feedback text
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after rejection")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.Feedback == "" {
+		t.Fatal("expected feedback text in re-ASSIGN after rejection")
+	}
+	if !strings.Contains(msg.Assign.Feedback, "missing edge case tests") {
+		t.Fatalf("expected feedback to contain reviewer comment, got: %s", msg.Assign.Feedback)
+	}
+}
+
+func TestDispatcher_ReviewRejection_EscalatesAfterTwoRejections(t *testing.T) {
+	d, conn, esc, _ := setupReviewRejection(t)
+
+	// First rejection cycle
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+	_, ok := readMsg(t, conn, 3*time.Second) // consume re-ASSIGN
+	if !ok {
+		t.Fatal("expected re-ASSIGN after 1st rejection")
+	}
+
+	// Second rejection cycle
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+	_, ok = readMsg(t, conn, 3*time.Second) // consume re-ASSIGN
+	if !ok {
+		t.Fatal("expected re-ASSIGN after 2nd rejection")
+	}
+
+	// Third rejection cycle — should escalate to manager, NOT re-assign
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+
+	// Should NOT receive another ASSIGN — escalation instead
+	// Wait for escalation event
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "review_escalated") > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if eventCount(t, d.db, "review_escalated") == 0 {
+		t.Fatal("expected 'review_escalated' event after 3rd rejection")
+	}
+
+	// Verify escalation message sent to manager
+	msgs := esc.Messages()
+	found := false
+	for _, m := range msgs {
+		if strings.Contains(m, "bead-rej") && strings.Contains(m, "STUCK") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected escalation about bead-rej, got: %v", msgs)
+	}
+}
+
+func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Simulate rejection counts for different beads
+	d.mu.Lock()
+	if d.rejectionCounts == nil {
+		d.rejectionCounts = make(map[string]int)
+	}
+	d.rejectionCounts["bead-a"] = 2
+	d.rejectionCounts["bead-b"] = 1
+	d.mu.Unlock()
+
+	// Clear bead-a's count (simulates bead completion)
+	d.clearRejectionCount("bead-a")
+
+	d.mu.Lock()
+	_, aExists := d.rejectionCounts["bead-a"]
+	bCount := d.rejectionCounts["bead-b"]
+	d.mu.Unlock()
+
+	if aExists {
+		t.Fatal("expected bead-a rejection count to be cleared")
+	}
+	if bCount != 1 {
+		t.Fatalf("expected bead-b count to remain 1, got %d", bCount)
+	}
+}
