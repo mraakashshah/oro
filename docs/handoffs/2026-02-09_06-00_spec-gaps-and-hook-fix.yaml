@@ -1,0 +1,109 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Closed mgf epic (ExecProcessManager), 6fw (skill update), 87o (oro status),
+  fixed critical hook bug, audited full spec, created beads for all gaps.
+
+now: >
+  Pick up oro-vuw (P1, ralph handoff) — highest priority spec gap.
+  Or oro-lcg (P2, E2E test) to validate everything works together.
+  9 open beads total. oro-2dj blocked on oro-vuw.
+
+test: go test -race -count=1 ./... && python3 -m pytest tests/ -v
+
+done_this_session:
+  - task: "oro-mgf (P1 epic): ExecProcessManager for spawning real oro-worker processes"
+    files: [pkg/dispatcher/process_manager.go, pkg/dispatcher/process_manager_test.go, cmd/oro/cmd_start.go]
+    details: >
+      NewOroProcessManager spawns `oro worker --socket --id`. Spawn tracks processes
+      in mutex-guarded map with background reaper goroutine. Kill does SIGTERM → 3s
+      grace → SIGKILL. Wired into buildDispatcher() in cmd_start.go. 6 tests.
+
+  - task: "oro-6fw (P3 task): Update destructive-command-safety skill"
+    files: [.claude/skills/destructive-command-safety/SKILL.md]
+    details: >
+      Added pre-approved section: git worktree remove, git worktree prune,
+      git branch -d (lowercase only). Added git worktree list to safe section.
+
+  - task: "oro-87o (P3 task): Enhanced oro status with dispatcher info"
+    files: [cmd/oro/cmd_status.go, cmd/oro/cmd_status_test.go]
+    details: >
+      Connects to dispatcher UDS, sends status directive, parses JSON response.
+      Shows worker count, queue depth, focused epic, active bead assignments.
+      Graceful degradation when dispatcher unreachable. 7 tests.
+
+  - task: "Fix PreToolUse guard hooks (critical bug)"
+    files:
+      - .claude/hooks/worktree_guard.py
+      - .claude/hooks/no_cd_guard.py
+      - .claude/hooks/rebase_worktree_guard.py
+      - .claude/hooks/test_rebase_worktree_guard.py
+      - tests/test_worktree_guard.py
+    details: >
+      All 3 guard hooks used "decision: block" — a field Claude Code silently
+      ignores. Fixed to "permissionDecision: deny" with systemMessage for
+      explanations. This is why cd-into-worktree commands weren't blocked
+      despite guards firing. Updated all tests (44 assertions).
+
+  - task: "Spec audit: architecture spec + lifecycle spec vs implementation"
+    details: >
+      Full audit of both specs. Memory system and code search already done.
+      Found 7 gaps, created beads for all of them.
+
+decisions:
+  - hook_api_format: >
+      PreToolUse hooks must output {"hookSpecificOutput": {"permissionDecision": "deny"},
+      "systemMessage": "..."} — NOT {"decision": "block", "reason": "..."}. The old
+      format is silently ignored. Discovered via Context7 MCP docs query.
+  - mgf_title_correction: >
+      Renamed oro-mgf from "Manager spawns workers" to "Scale directive + worker
+      process lifecycle (dispatcher spawns workers)" — manager decides scale,
+      dispatcher spawns.
+
+findings:
+  - shell_death_root_cause: >
+      cd into worktree persists in Bash tool cwd. git worktree remove deletes
+      the directory. All subsequent bash commands fail with exit code 1. Only
+      /clear fixes it. Guards existed but were using wrong API field.
+  - spec_95_percent_complete: >
+      Both specs audited. 95%+ implemented. Major gap: ralph handoff (P1).
+      Minor: review counter, focus filtering, diagnosis wiring, bd sync,
+      priority sorting, model routing.
+
+worked:
+  - "Parallel agents for mgf + 6fw (independent worktrees)"
+  - "Context7 MCP for Claude Code hook API docs — found the permissionDecision field"
+  - "One git operation at a time (never chain stash+rebase+merge+pop)"
+
+failed:
+  - "Chaining git stash && git rebase && git merge && git stash pop — corrupts shell on failure"
+  - "cd .claude/hooks && pytest — shifted cwd, broke all subsequent hook resolution"
+
+next:
+  - "oro-vuw (P1): Ralph handoff — context cycling with worker respawn in same worktree"
+  - "oro-lcg (P2): E2E integration test — validates full oro lifecycle"
+  - "oro-ef6 (P2): Priority sorting in dispatcher assignment"
+  - "oro-7i6 (P2): Focus epic filtering in bead assignment"
+  - "oro-jhs (P2): Review rejection counter and feedback forwarding"
+
+files:
+  created:
+    - pkg/dispatcher/process_manager.go
+    - pkg/dispatcher/process_manager_test.go
+    - cmd/oro/cmd_status_test.go
+  modified:
+    - cmd/oro/cmd_start.go
+    - cmd/oro/cmd_status.go
+    - .claude/skills/destructive-command-safety/SKILL.md
+    - .claude/hooks/worktree_guard.py
+    - .claude/hooks/no_cd_guard.py
+    - .claude/hooks/rebase_worktree_guard.py
+    - .claude/hooks/test_rebase_worktree_guard.py
+    - tests/test_worktree_guard.py
+
+beads:
+  completed: [oro-mgf, oro-6fw, oro-87o]
+  remaining: [oro-vuw, oro-jhs, oro-7i6, oro-ef6, oro-lcg, oro-nqi, oro-vhd, oro-lar, oro-2dj]
