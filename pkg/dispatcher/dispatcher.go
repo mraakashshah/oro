@@ -218,6 +218,12 @@ type Dispatcher struct {
 
 	// nowFunc allows tests to control time.
 	nowFunc func() time.Time
+
+	// testUnlockHook, if non-nil, is called after releasing the lock in
+	// registerWorker/handleQGFailure (before memory.ForPrompt). Tests use
+	// this to inject a synchronization point that guarantees a concurrent
+	// deletion occurs during the unlock window.
+	testUnlockHook func()
 }
 
 // New creates a Dispatcher. It does NOT start listening or polling — call Run().
@@ -413,6 +419,9 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		// Retrieve relevant memories (best-effort, outside lock).
 		// We need to unlock before calling memory.ForPrompt.
 		d.mu.Unlock()
+		if d.testUnlockHook != nil {
+			d.testUnlockHook()
+		}
 
 		var memCtx string
 		if d.memories != nil {
@@ -420,6 +429,13 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		}
 
 		d.mu.Lock()
+		// Re-check: the worker may have been removed (e.g. by checkHeartbeats)
+		// while the lock was released for memory.ForPrompt.
+		w, ok := d.workers[id]
+		if !ok {
+			d.mu.Unlock()
+			return
+		}
 		_ = d.sendToWorker(w, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
@@ -558,6 +574,9 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	}
 
 	// Retrieve relevant memories for retry prompt (best-effort, before lock).
+	if d.testUnlockHook != nil {
+		d.testUnlockHook()
+	}
 	var memCtx string
 	if d.memories != nil {
 		searchTerm := beadID
