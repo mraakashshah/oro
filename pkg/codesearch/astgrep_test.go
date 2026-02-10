@@ -2,12 +2,21 @@ package codesearch_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"oro/pkg/codesearch"
 )
+
+// requireAstGrep skips the test if ast-grep is not installed.
+func requireAstGrep(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("ast-grep"); err != nil {
+		t.Skip("ast-grep not installed, skipping")
+	}
+}
 
 // pythonFixture is a realistic Python source file with classes, dataclasses,
 // functions (sync and async), private members, and nesting. ~5.5KB.
@@ -424,6 +433,7 @@ func estimateTokens(s string) int {
 }
 
 func TestSummarizePython(t *testing.T) {
+	requireAstGrep(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server.py")
 	if err := os.WriteFile(path, []byte(pythonFixture), 0o600); err != nil {
@@ -474,6 +484,7 @@ func TestSummarizePython(t *testing.T) {
 }
 
 func TestSummarizeTypeScript(t *testing.T) {
+	requireAstGrep(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server.ts")
 	if err := os.WriteFile(path, []byte(typescriptFixture), 0o600); err != nil {
@@ -570,6 +581,7 @@ func TestSummarizeFileAstGrepNotInstalled(t *testing.T) {
 }
 
 func TestSummarizeFilePythonTestFile(t *testing.T) {
+	requireAstGrep(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test_handler.py")
 	src := "import pytest\n\ndef test_create():\n    pass\n\ndef test_delete():\n    pass\n\nclass TestHandler:\n    def test_get(self):\n        pass\n"
