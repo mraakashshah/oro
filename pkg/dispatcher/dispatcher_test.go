@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -4223,5 +4224,112 @@ func TestTryAssignSkipsEpics(t *testing.T) {
 		if id == "epic-1" {
 			t.Fatal("epic bead epic-1 was assigned to a worker — epics must be skipped")
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Structured session summary tests (oro-jtw.7)
+// ---------------------------------------------------------------------------
+
+func TestPersistHandoffWithSummary(t *testing.T) {
+	db := newTestDB(t)
+	d := &Dispatcher{
+		db:       db,
+		memories: memory.NewStore(db),
+	}
+	ctx := context.Background()
+
+	handoff := &protocol.HandoffPayload{
+		BeadID:   "bead-summary-1",
+		WorkerID: "worker-42",
+		Summary: &protocol.Summary{
+			Request:      "implement structured session summaries",
+			Investigated: "protocol message structs, dispatcher persistHandoffContext",
+			Learned:      "memories table supports arbitrary types via FTS5",
+			Completed:    "added Summary struct, wired persistence",
+			NextSteps:    "verify ForPrompt surfaces summaries",
+		},
+	}
+	d.persistHandoffContext(ctx, handoff)
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT content, type, source, bead_id, worker_id, confidence FROM memories WHERE type = 'summary'`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var count int
+	for rows.Next() {
+		var content, mtype, source, beadID, workerID string
+		var confidence float64
+		if err := rows.Scan(&content, &mtype, &source, &beadID, &workerID, &confidence); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		count++
+
+		if mtype != "summary" {
+			t.Errorf("expected type=summary, got %q", mtype)
+		}
+		if source != "self_report" {
+			t.Errorf("expected source=self_report, got %q", source)
+		}
+		if beadID != "bead-summary-1" {
+			t.Errorf("expected bead_id=bead-summary-1, got %q", beadID)
+		}
+		if workerID != "worker-42" {
+			t.Errorf("expected worker_id=worker-42, got %q", workerID)
+		}
+		if confidence != 0.9 {
+			t.Errorf("expected confidence=0.9, got %f", confidence)
+		}
+
+		for _, field := range []string{"request:", "investigated:", "learned:", "completed:", "next_steps:"} {
+			if !strings.Contains(content, field) {
+				t.Errorf("expected content to contain %q, got: %s", field, content)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 summary memory, got %d", count)
+	}
+}
+
+func TestPersistHandoffWithSummary_NilSummary(t *testing.T) {
+	db := newTestDB(t)
+	d := &Dispatcher{
+		db:       db,
+		memories: memory.NewStore(db),
+	}
+	ctx := context.Background()
+
+	handoff := &protocol.HandoffPayload{
+		BeadID:    "bead-nil-summary",
+		WorkerID:  "worker-99",
+		Learnings: []string{"nil summary should not create summary memory"},
+	}
+	d.persistHandoffContext(ctx, handoff)
+
+	var lessonCount int
+	err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE type = 'lesson'`).Scan(&lessonCount)
+	if err != nil {
+		t.Fatalf("count lessons: %v", err)
+	}
+	if lessonCount != 1 {
+		t.Errorf("expected 1 lesson memory, got %d", lessonCount)
+	}
+
+	var summaryCount int
+	err = db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE type = 'summary'`).Scan(&summaryCount)
+	if err != nil {
+		t.Fatalf("count summaries: %v", err)
+	}
+	if summaryCount != 0 {
+		t.Errorf("expected 0 summary memories for nil Summary, got %d", summaryCount)
 	}
 }

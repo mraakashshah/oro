@@ -1570,3 +1570,81 @@ func TestSearchByFilePath(t *testing.T) {
 		t.Errorf("expected 2 results without file filter, got %d", len(results))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Structured session summary tests (oro-jtw.7)
+// ---------------------------------------------------------------------------
+
+func TestForPromptIncludesSummaries(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content:    "request: implement auth | investigated: JWT libs | learned: use RS256 | completed: token generation | next_steps: add middleware",
+		Type:       "summary",
+		Source:     "self_report",
+		BeadID:     "bead-prompt-summary",
+		WorkerID:   "worker-1",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert summary: %v", err)
+	}
+
+	output, err := ForPrompt(ctx, store, nil, "implement auth JWT middleware", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt: %v", err)
+	}
+	if output == "" {
+		t.Fatal("expected non-empty ForPrompt output")
+	}
+	if !strings.Contains(output, "[summary]") {
+		t.Errorf("expected ForPrompt output to contain [summary] label, got: %s", output)
+	}
+	if !strings.Contains(output, "implement auth") {
+		t.Errorf("expected ForPrompt output to contain summary content, got: %s", output)
+	}
+}
+
+func TestSummaryMemorySearchable(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content:    "request: unique_summary_searchtest_xyz build search index | investigated: FTS5 | learned: rank column works | completed: search impl | next_steps: add filters",
+		Type:       "summary",
+		Source:     "self_report",
+		BeadID:     "bead-search-summary",
+		WorkerID:   "worker-2",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert summary: %v", err)
+	}
+
+	results, err := store.Search(ctx, "unique_summary_searchtest_xyz", SearchOpts{
+		Type: "summary",
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 search result for type=summary, got %d", len(results))
+	}
+	if results[0].Type != "summary" {
+		t.Errorf("expected type=summary, got %q", results[0].Type)
+	}
+
+	listed, err := store.List(ctx, ListOpts{Type: "summary"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("expected 1 listed result for type=summary, got %d", len(listed))
+	}
+	if listed[0].Type != "summary" {
+		t.Errorf("expected listed type=summary, got %q", listed[0].Type)
+	}
+}

@@ -2,7 +2,10 @@
 // Messages are line-delimited JSON over Unix domain sockets.
 package protocol
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // MessageType identifies the kind of UDS message.
 type MessageType string
@@ -60,6 +63,7 @@ type AssignPayload struct {
 	Title              string `json:"title,omitempty"`
 	Description        string `json:"description,omitempty"`
 	AcceptanceCriteria string `json:"acceptance_criteria,omitempty"`
+	Attempt            int    `json:"attempt,omitempty"`
 }
 
 // HeartbeatPayload is sent by a worker to report liveness and context usage.
@@ -77,6 +81,24 @@ type StatusPayload struct {
 	Result   string `json:"result"`
 }
 
+// Summary holds a structured session summary populated by the worker before
+// handoff or completion. Persisted as type=summary in the memories table for
+// cross-session bead continuity.
+type Summary struct {
+	Request      string `json:"request"`
+	Investigated string `json:"investigated"`
+	Learned      string `json:"learned"`
+	Completed    string `json:"completed"`
+	NextSteps    string `json:"next_steps"`
+}
+
+// FormatContent formats the Summary as a pipe-delimited content string
+// suitable for storage in the memories table.
+func (s *Summary) FormatContent() string {
+	return fmt.Sprintf("request: %s | investigated: %s | learned: %s | completed: %s | next_steps: %s",
+		s.Request, s.Investigated, s.Learned, s.Completed, s.NextSteps)
+}
+
 // HandoffPayload is sent by a worker when it hands off to another worker.
 // Includes typed context fields that the worker populates from .oro/ files
 // before sending, enabling cross-session memory persistence.
@@ -87,6 +109,7 @@ type HandoffPayload struct {
 	Decisions      []string `json:"decisions,omitempty"`
 	FilesModified  []string `json:"files_modified,omitempty"`
 	ContextSummary string   `json:"context_summary,omitempty"`
+	Summary        *Summary `json:"summary,omitempty"`
 }
 
 // DonePayload is sent by a worker when it completes its bead.
@@ -94,6 +117,7 @@ type DonePayload struct {
 	BeadID            string `json:"bead_id"`
 	WorkerID          string `json:"worker_id"`
 	QualityGatePassed bool   `json:"quality_gate_passed"`
+	QGOutput          string `json:"qg_output,omitempty"`
 }
 
 // ReadyForReviewPayload is sent by a worker when its bead is ready for review.
