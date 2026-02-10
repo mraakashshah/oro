@@ -292,48 +292,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	<-ctx.Done()
 
 	// --- Graceful shutdown ---
-	d.shutdownCleanup()
-
-	// Broadcast PREPARE_SHUTDOWN to all workers.
-	// Collect worker IDs under lock.
-	d.mu.Lock()
-	workerIDs := make([]string, 0, len(d.workers))
-	for id := range d.workers {
-		workerIDs = append(workerIDs, id)
-	}
-	d.mu.Unlock()
-
-	// Initiate graceful shutdown for each worker (non-blocking).
-	for _, id := range workerIDs {
-		d.GracefulShutdownWorker(id, d.cfg.ShutdownTimeout)
-	}
-
-	// Wait up to ShutdownTimeout for all workers to drain.
-	shutdownDeadline := time.NewTimer(d.cfg.ShutdownTimeout)
-	defer shutdownDeadline.Stop()
-
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-shutdownDeadline.C:
-			// Timeout expired — force-close all remaining connections.
-			d.mu.Lock()
-			for id, w := range d.workers {
-				_ = w.conn.Close()
-				delete(d.workers, id)
-			}
-			d.mu.Unlock()
-			_ = ln.Close()
-			return nil
-		case <-ticker.C:
-			if d.ConnectedWorkers() == 0 {
-				_ = ln.Close()
-				return nil
-			}
-		}
-	}
+	// Phase 1: cancel ops/merges, Phase 2: stop workers, Phase 3: remove worktrees.
+	d.shutdownSequence()
+	_ = ln.Close()
+	return nil
 }
 
 // --- UDS server ---
@@ -1554,26 +1516,81 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 	return nil
 }
 
-// shutdownCleanup cancels active ops agents, aborts in-flight merges,
-// and removes active worktrees.
-func (d *Dispatcher) shutdownCleanup() {
+// shutdownSequence orchestrates the three-phase graceful shutdown:
+//  1. Cancel ops agents and abort in-flight merges (safe before worker stop).
+//  2. Send PREPARE_SHUTDOWN to all workers, wait for drain or force-kill.
+//  3. Remove worktrees and flush bead state (safe after workers are stopped).
+func (d *Dispatcher) shutdownSequence() {
+	// Phase 1: Cancel ops agents and abort in-flight merges.
+	d.shutdownCancelOps()
+
+	// Phase 2: Send PREPARE_SHUTDOWN to all workers and wait for them to drain.
+	// Collect worker IDs and worktree paths under lock BEFORE the wait loop,
+	// because workers will be deleted from the map as they disconnect.
+	d.mu.Lock()
+	workerIDs := make([]string, 0, len(d.workers))
+	var worktreePaths []string
+	for id, w := range d.workers {
+		workerIDs = append(workerIDs, id)
+		if w.worktree != "" {
+			worktreePaths = append(worktreePaths, w.worktree)
+		}
+	}
+	d.mu.Unlock()
+
+	for _, id := range workerIDs {
+		d.GracefulShutdownWorker(id, d.cfg.ShutdownTimeout)
+	}
+
+	d.shutdownWaitForWorkers()
+
+	// Phase 3: Workers are stopped — now safe to remove worktrees and flush state.
+	d.shutdownRemoveWorktrees(worktreePaths)
+}
+
+// shutdownWaitForWorkers waits up to ShutdownTimeout for all workers to drain,
+// then force-closes any remaining connections.
+func (d *Dispatcher) shutdownWaitForWorkers() {
+	deadline := time.NewTimer(d.cfg.ShutdownTimeout)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-deadline.C:
+			// Timeout expired — force-close all remaining connections.
+			d.mu.Lock()
+			for id, w := range d.workers {
+				_ = w.conn.Close()
+				delete(d.workers, id)
+			}
+			d.mu.Unlock()
+			return
+		case <-ticker.C:
+			if d.ConnectedWorkers() == 0 {
+				return
+			}
+		}
+	}
+}
+
+// shutdownCancelOps cancels active ops agents and aborts in-flight merges.
+// Safe to call before workers are stopped.
+func (d *Dispatcher) shutdownCancelOps() {
 	for _, taskID := range d.ops.Active() {
 		if err := d.ops.Cancel(taskID); err == nil {
 			_ = d.logEvent(context.Background(), "ops_cancelled", "dispatcher", "", "", taskID)
 		}
 	}
 	d.merger.Abort()
+}
 
-	// Collect worktree paths under lock.
-	d.mu.Lock()
-	var paths []string
-	for _, w := range d.workers {
-		if w.worktree != "" {
-			paths = append(paths, w.worktree)
-		}
-	}
-	d.mu.Unlock()
-
+// shutdownRemoveWorktrees removes the given worktrees and flushes bead state.
+// Must be called AFTER all workers have been stopped so their working
+// directories are no longer in use.
+func (d *Dispatcher) shutdownRemoveWorktrees(paths []string) {
 	// Remove worktrees best-effort (don't block shutdown).
 	ctx := context.Background()
 	for _, p := range paths {

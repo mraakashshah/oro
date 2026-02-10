@@ -75,6 +75,7 @@ type mockWorktreeManager struct {
 	created  map[string]string // beadID -> worktree path
 	removed  []string
 	createFn func(ctx context.Context, beadID string) (string, string, error)
+	removeFn func(ctx context.Context, path string) error
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID string) (string, string, error) {
@@ -92,7 +93,15 @@ func (m *mockWorktreeManager) Create(ctx context.Context, beadID string) (string
 	return path, branch, nil
 }
 
-func (m *mockWorktreeManager) Remove(_ context.Context, path string) error {
+func (m *mockWorktreeManager) Remove(ctx context.Context, path string) error {
+	m.mu.Lock()
+	fn := m.removeFn
+	m.mu.Unlock()
+	if fn != nil {
+		if err := fn(ctx, path); err != nil {
+			return err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.removed = append(m.removed, path)
@@ -2479,6 +2488,126 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	}
 }
 
+func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
+	// This test verifies that during shutdown, PREPARE_SHUTDOWN is sent to
+	// workers BEFORE worktrees are removed. Previously, shutdownCleanup()
+	// removed worktrees first, causing active workers to crash when their
+	// working directories disappeared.
+
+	db := newTestDB(t)
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+
+	spawner := ops.NewSpawner(&mockSubprocessSpawner{})
+	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	cfg := Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		MaxWorkers:       5,
+		HeartbeatTimeout: 2 * time.Second,
+		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  2 * time.Second,
+	}
+
+	d := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc)
+	cancel := startDispatcher(t, d)
+
+	// Connect two workers.
+	conn1, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-order-1", ContextPct: 5},
+	})
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-order-2", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 2, 1*time.Second)
+
+	// Start dispatcher and assign two beads so worktrees get created.
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{
+		{ID: "bead-order-1", Title: "Order test 1", Priority: 1},
+		{ID: "bead-order-2", Title: "Order test 2", Priority: 2},
+	})
+
+	// Consume ASSIGN messages from both workers.
+	if _, ok := readMsg(t, conn1, 2*time.Second); !ok {
+		t.Fatal("expected ASSIGN for w-order-1")
+	}
+	if _, ok := readMsg(t, conn2, 2*time.Second); !ok {
+		t.Fatal("expected ASSIGN for w-order-2")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Track whether PREPARE_SHUTDOWN was sent before worktree removal.
+	// We read messages from both worker connections in goroutines.
+	var shutdownSent atomic.Int32
+
+	go func() {
+		msg, ok := readMsg(t, conn1, 5*time.Second)
+		if ok && msg.Type == protocol.MsgPrepareShutdown {
+			shutdownSent.Add(1)
+		}
+	}()
+	go func() {
+		msg, ok := readMsg(t, conn2, 5*time.Second)
+		if ok && msg.Type == protocol.MsgPrepareShutdown {
+			shutdownSent.Add(1)
+		}
+	}()
+
+	// Install a removeFn that checks ordering: by the time Remove is called,
+	// PREPARE_SHUTDOWN should already have been sent to workers.
+	var worktreeRemovedBeforeShutdown atomic.Bool
+	wtMgr.mu.Lock()
+	wtMgr.removeFn = func(_ context.Context, _ string) error {
+		// If PREPARE_SHUTDOWN hasn't been sent to ANY worker yet, flag the error.
+		if shutdownSent.Load() == 0 {
+			worktreeRemovedBeforeShutdown.Store(true)
+		}
+		return nil
+	}
+	wtMgr.mu.Unlock()
+
+	// Trigger shutdown.
+	cancel()
+
+	// Wait for worktrees to be removed.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		wtMgr.mu.Lock()
+		n := len(wtMgr.removed)
+		wtMgr.mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	wtMgr.mu.Lock()
+	nRemoved := len(wtMgr.removed)
+	wtMgr.mu.Unlock()
+
+	if nRemoved < 2 {
+		t.Fatalf("expected at least 2 worktrees removed, got %d", nRemoved)
+	}
+
+	if worktreeRemovedBeforeShutdown.Load() {
+		t.Fatal("worktrees were removed BEFORE PREPARE_SHUTDOWN was sent to workers — " +
+			"shutdown must stop workers before cleaning up worktrees")
+	}
+}
+
 func TestConflictError_ErrorsAs(t *testing.T) {
 	err := fmt.Errorf("wrapped: %w", &merge.ConflictError{Files: []string{"a.go"}, BeadID: "b1"})
 	var ce *merge.ConflictError
@@ -4058,15 +4187,15 @@ func TestDispatcher_Handoff_CountResetsOnDone(t *testing.T) {
 func TestShutdownCleanup_CallsBeadSync(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
-	// Call shutdownCleanup directly (no need to start the full dispatcher).
-	d.shutdownCleanup()
+	// Call shutdownRemoveWorktrees directly (no need to start the full dispatcher).
+	d.shutdownRemoveWorktrees(nil)
 
 	beadSrc.mu.Lock()
 	synced := beadSrc.synced
 	beadSrc.mu.Unlock()
 
 	if !synced {
-		t.Fatal("expected BeadSource.Sync to be called during shutdownCleanup")
+		t.Fatal("expected BeadSource.Sync to be called during shutdownRemoveWorktrees")
 	}
 }
 
