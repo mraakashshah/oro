@@ -14,7 +14,6 @@ type PromptParams struct {
 	MemoryContext      string // may be empty
 	WorktreePath       string
 	Model              string
-	Attempt            int // QG retry attempt (0 = first attempt)
 }
 
 // section writes a markdown section (## header + body) to the builder.
@@ -40,14 +39,10 @@ func AssemblePrompt(params PromptParams) string {
 	section(&b, "Role", "You are an oro worker. You execute one bead at a time.")
 
 	// 2. Bead
-	beadBody := fmt.Sprintf(
+	section(&b, "Bead", fmt.Sprintf(
 		"- **ID:** %s\n- **Title:** %s\n- **Description:** %s\n- **Acceptance Criteria:** %s",
 		params.BeadID, params.Title, params.Description, params.AcceptanceCriteria,
-	)
-	if params.Attempt > 0 {
-		beadBody += fmt.Sprintf("\n\n> **Retry attempt %d.** The quality gate has failed on previous attempts. Focus on fixing the issues identified in the feedback.", params.Attempt)
-	}
-	section(&b, "Bead", beadBody)
+	))
 
 	// 3. Memory
 	section(&b, "Memory", memoryBody(params.MemoryContext))
