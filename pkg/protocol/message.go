@@ -60,6 +60,7 @@ type AssignPayload struct {
 	Title              string `json:"title,omitempty"`
 	Description        string `json:"description,omitempty"`
 	AcceptanceCriteria string `json:"acceptance_criteria,omitempty"`
+	Attempt            int    `json:"attempt,omitempty"`
 }
 
 // HeartbeatPayload is sent by a worker to report liveness and context usage.
@@ -94,6 +95,7 @@ type DonePayload struct {
 	BeadID            string `json:"bead_id"`
 	WorkerID          string `json:"worker_id"`
 	QualityGatePassed bool   `json:"quality_gate_passed"`
+	QGOutput          string `json:"qg_output,omitempty"`
 }
 
 // ReadyForReviewPayload is sent by a worker when its bead is ready for review.

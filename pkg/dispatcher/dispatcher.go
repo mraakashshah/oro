@@ -208,6 +208,7 @@ type Dispatcher struct {
 	targetWorkers   int
 	rejectionCounts map[string]int             // bead ID -> review rejection count
 	handoffCounts   map[string]int             // bead ID -> ralph handoff count
+	attemptCounts   map[string]int             // bead ID -> QG retry attempt count
 	pendingHandoffs map[string]*pendingHandoff // bead ID -> pending handoff info
 
 	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
@@ -233,6 +234,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		workers:         make(map[string]*trackedWorker),
 		rejectionCounts: make(map[string]int),
 		handoffCounts:   make(map[string]int),
+		attemptCounts:   make(map[string]int),
 		pendingHandoffs: make(map[string]*pendingHandoff),
 		beadsDir:        ".beads",
 		nowFunc:         time.Now,
@@ -530,27 +532,9 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 
 	_ = d.logEvent(ctx, "done", workerID, beadID, workerID, "")
 
-	// Reject merge if quality gate did not pass — log warning and reassign bead.
+	// Reject merge if quality gate did not pass — retry or escalate.
 	if !msg.Done.QualityGatePassed {
-		_ = d.logEvent(ctx, "quality_gate_rejected", workerID, beadID, workerID,
-			`{"reason":"QualityGatePassed=false"}`)
-
-		d.mu.Lock()
-		w, ok := d.workers[workerID]
-		if ok {
-			// Re-assign the same bead back to the worker
-			_ = d.sendToWorker(w, protocol.Message{
-				Type: protocol.MsgAssign,
-				Assign: &protocol.AssignPayload{
-					BeadID:   beadID,
-					Worktree: w.worktree,
-					Model:    w.model,
-				},
-			})
-			w.state = WorkerBusy
-			w.beadID = beadID
-		}
-		d.mu.Unlock()
+		d.handleQGFailure(ctx, workerID, beadID, msg.Done.QGOutput)
 		return
 	}
 
@@ -570,11 +554,50 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 		return
 	}
 
-	// Clear handoff count for completed bead.
+	// Clear handoff and attempt counts for completed bead.
 	d.clearHandoffCount(beadID)
+	d.clearAttemptCount(beadID)
 
 	// Merge in background
 	go d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
+}
+
+// handleQGFailure processes a quality-gate failure: increments the attempt
+// counter, escalates if the cap is reached, or re-assigns with feedback.
+func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) {
+	_ = d.logEvent(ctx, "quality_gate_rejected", workerID, beadID, workerID,
+		`{"reason":"QualityGatePassed=false"}`)
+
+	d.mu.Lock()
+	d.attemptCounts[beadID]++
+	attempt := d.attemptCounts[beadID]
+	d.mu.Unlock()
+
+	if attempt >= maxQGRetries {
+		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
+			fmt.Sprintf(`{"attempts":%d}`, attempt))
+		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
+			fmt.Sprintf("quality gate failed %d times", attempt), qgOutput))
+		return
+	}
+
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	if ok {
+		_ = d.sendToWorker(w, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   beadID,
+				Worktree: w.worktree,
+				Model:    w.model,
+				Attempt:  attempt,
+				Feedback: qgOutput,
+			},
+		})
+		w.state = WorkerBusy
+		w.beadID = beadID
+	}
+	d.mu.Unlock()
 }
 
 // mergeAndComplete runs merge.Coordinator.Merge and handles the result.
@@ -609,6 +632,10 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
 }
+
+// maxQGRetries is the number of quality-gate retry attempts before escalating
+// to the Manager instead of re-assigning the bead to the worker.
+const maxQGRetries = 3
 
 // maxHandoffsBeforeDiagnosis is the number of ralph handoffs for the same bead
 // before the dispatcher spawns a diagnosis agent instead of respawning.
@@ -837,6 +864,13 @@ func (d *Dispatcher) clearRejectionCount(beadID string) {
 func (d *Dispatcher) clearHandoffCount(beadID string) {
 	d.mu.Lock()
 	delete(d.handoffCounts, beadID)
+	d.mu.Unlock()
+}
+
+// clearAttemptCount removes the QG retry attempt counter for a bead.
+func (d *Dispatcher) clearAttemptCount(beadID string) {
+	d.mu.Lock()
+	delete(d.attemptCounts, beadID)
 	d.mu.Unlock()
 }
 

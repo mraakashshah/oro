@@ -4225,3 +4225,119 @@ func TestTryAssignSkipsEpics(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgHeartbeat, Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5}})
+	waitForWorkers(t, d, 1, 1*time.Second)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-attempt", Title: "QG attempt test", Priority: 1}})
+	assignMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected initial ASSIGN")
+	}
+	if assignMsg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", assignMsg.Type)
+	}
+	beadSrc.SetBeads(nil)
+	if assignMsg.Assign.Attempt != 0 {
+		t.Fatalf("expected initial Attempt=0, got %d", assignMsg.Assign.Attempt)
+	}
+
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgDone, Done: &protocol.DonePayload{BeadID: "bead-qg-attempt", WorkerID: "w1", QualityGatePassed: false}})
+	retry1, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after 1st QG failure")
+	}
+	if retry1.Assign.Attempt != 1 {
+		t.Fatalf("expected Attempt=1, got %d", retry1.Assign.Attempt)
+	}
+
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgDone, Done: &protocol.DonePayload{BeadID: "bead-qg-attempt", WorkerID: "w1", QualityGatePassed: false}})
+	retry2, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after 2nd QG failure")
+	}
+	if retry2.Assign.Attempt != 2 {
+		t.Fatalf("expected Attempt=2, got %d", retry2.Assign.Attempt)
+	}
+
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgDone, Done: &protocol.DonePayload{BeadID: "bead-qg-attempt", WorkerID: "w1", QualityGatePassed: false}})
+	noMsg, gotMsg := readMsg(t, conn, 500*time.Millisecond)
+	if gotMsg && noMsg.Type == protocol.MsgAssign {
+		t.Fatal("expected escalation at maxQGRetries, but got re-ASSIGN")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := esc.Messages()
+		for _, m := range msgs {
+			if strings.Contains(m, "bead-qg-attempt") && strings.Contains(m, "STUCK") {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected escalation message for bead-qg-attempt after maxQGRetries")
+}
+
+func TestHandleDone_QGFailRetryPassesQGOutput(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgHeartbeat, Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5}})
+	waitForWorkers(t, d, 1, 1*time.Second)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-output", Title: "QG output test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected initial ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgDone, Done: &protocol.DonePayload{BeadID: "bead-qg-output", WorkerID: "w1", QualityGatePassed: false, QGOutput: "FAIL: TestFoo expected 42 got 0"}})
+	retry, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after QG failure")
+	}
+	if !strings.Contains(retry.Assign.Feedback, "FAIL: TestFoo") {
+		t.Fatalf("expected Feedback to contain QG output, got %q", retry.Assign.Feedback)
+	}
+}
+
+func TestHandleDone_QGFailRetryAttemptCountResetsOnSuccess(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgHeartbeat, Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5}})
+	waitForWorkers(t, d, 1, 1*time.Second)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+	beadSrc.SetBeads([]Bead{{ID: "bead-qg-reset", Title: "QG reset test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected initial ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgDone, Done: &protocol.DonePayload{BeadID: "bead-qg-reset", WorkerID: "w1", QualityGatePassed: false}})
+	_, ok = readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN")
+	}
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgDone, Done: &protocol.DonePayload{BeadID: "bead-qg-reset", WorkerID: "w1", QualityGatePassed: true}})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "merged") > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	d.mu.Lock()
+	count := d.attemptCounts["bead-qg-reset"]
+	d.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected attemptCounts cleared, got %d", count)
+	}
+}
