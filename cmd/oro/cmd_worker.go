@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os/signal"
 	"syscall"
 
+	"oro/pkg/memory"
 	"oro/pkg/worker"
 
 	"github.com/spf13/cobra"
@@ -53,8 +55,23 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 		return fmt.Errorf("create worker %s: %w", id, err)
 	}
 
+	// Wire memory store so [MEMORY] markers and implicit patterns are captured.
+	dbPath, err := oroPath("ORO_DB_PATH", "state.db")
+	if err == nil {
+		db, dbErr := sql.Open("sqlite", dbPath)
+		if dbErr == nil {
+			defer func() { _ = db.Close() }()
+			w.SetMemoryStore(openWorkerMemoryStore(db))
+		}
+	}
+
 	if err := w.Run(ctx); err != nil {
 		return fmt.Errorf("worker %s: %w", id, err)
 	}
 	return nil
+}
+
+// openWorkerMemoryStore creates a memory.Store from an open DB connection.
+func openWorkerMemoryStore(db *sql.DB) *memory.Store {
+	return memory.NewStore(db)
 }
