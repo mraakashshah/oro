@@ -1,0 +1,79 @@
+---
+date: 2026-02-10
+status: partial
+---
+
+goal: >
+  First real dogfood run of oro. Built/installed binary, attempted oro start,
+  discovered and fixed critical worker registration bug (oro-cfh), verified
+  oro can assign beads to workers end-to-end.
+
+now: >
+  Dispatcher assigns epics to workers (oro-cwz got assigned instead of
+  oro-cwz.1). Fix tryAssign to filter to leaf tasks only. Then re-attempt
+  using oro to work on oro-lcg.
+
+test: go test -race -count=1 ./...
+
+done_this_session:
+  - task: "cfh: Fix worker silent connect — send initial heartbeat on Run()"
+    files: [pkg/worker/worker.go, pkg/worker/worker_test.go]
+    details: >
+      Worker connected to dispatcher UDS but never sent any message.
+      Dispatcher handleConn blocked on scanner.Scan() waiting for worker
+      to identify itself — chicken-and-egg deadlock. Fixed by adding
+      w.SendHeartbeat(ctx, 0) at start of Run(). Updated 32 existing tests
+      with startWorkerRun helper that drains initial heartbeat.
+      Commit: 1edb1bc
+
+  - task: "First successful oro dogfood run"
+    details: >
+      oro start --daemon-only → directive start → scale 1 → worker
+      connected, registered, assigned oro-cwz. Full lifecycle works.
+
+findings:
+  - worker_registration_bug: >
+      Worker connects to dispatcher UDS but never announces itself.
+      handleConn blocks on scanner.Scan() waiting for workerID.
+      Fix: send HEARTBEAT(workerID, contextPct=0) immediately on Run().
+  - epic_assignment_bug: >
+      Dispatcher assigns epics (type=epic) to workers, not just leaf tasks.
+      bd ready --json returns ALL ready beads including epics. Workers
+      can't execute epics. Need to filter in tryAssign or beads.Ready().
+  - daemon_only_no_auto_spawn: >
+      oro start --daemon-only doesn't auto-spawn workers. Need explicit
+      'oro directive scale N' after start. Full oro start (non-daemon)
+      handles this via tmux session setup.
+
+decisions:
+  - initial_heartbeat_over_reconnect: >
+      Used existing SendHeartbeat(ctx, 0) rather than adding a new message
+      type. Simple, reuses existing dispatcher registration path.
+  - test_helper_pattern: >
+      Created startWorkerRun(ctx, t, w, dispatcherConn) helper for
+      net.Pipe tests. UDS-based tests (worker.New) drain heartbeat
+      manually after acceptCh.
+
+worked:
+  - "go install ./cmd/oro/ produces working binary"
+  - "oro start --daemon-only for headless testing"
+  - "oro directive start/scale for manual control"
+
+failed:
+  - "Worker silently connecting without announcement — no way for dispatcher to know it's there"
+  - "replace_all on test pattern matched the helper function itself, causing infinite recursion"
+
+next:
+  - "Fix epic assignment: filter tryAssign to skip type=epic beads"
+  - "Re-run oro with leaf-task-only assignment to test oro-lcg execution"
+  - "Consider auto-scale on start directive (currently requires separate scale directive)"
+
+files:
+  modified:
+    - pkg/worker/worker.go
+    - pkg/worker/worker_test.go
+
+beads:
+  completed: [oro-cfh]
+  in_progress: [oro-lcg]
+  remaining: []
