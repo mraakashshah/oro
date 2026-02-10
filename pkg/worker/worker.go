@@ -81,7 +81,6 @@ type Worker struct {
 	ID                  string
 	conn                net.Conn
 	proc                Process
-	stdin               io.WriteCloser
 	beadID              string
 	worktree            string
 	model               string
@@ -306,14 +305,13 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if model == "" {
 		model = "claude-opus-4-6"
 	}
-	proc, stdout, stdin, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
+	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
 	}
 
 	w.mu.Lock()
 	w.proc = proc
-	w.stdin = stdin
 	w.model = model
 	w.compacted = false
 	w.mu.Unlock()
@@ -483,9 +481,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 			w.mu.Unlock()
 
 			if !alreadyCompacted {
-				// First breach: send /compact if stdin available, then wait
-				// for Claude's auto-compaction to reduce context usage.
-				w.sendCompact()
+				// First breach: wait for Claude's auto-compaction to reduce context.
 				w.mu.Lock()
 				w.compacted = true
 				w.mu.Unlock()
@@ -500,16 +496,6 @@ func (w *Worker) watchContext(ctx context.Context) {
 			w.killProc()
 			return
 		}
-	}
-}
-
-// sendCompact writes /compact to the subprocess stdin.
-func (w *Worker) sendCompact() {
-	w.mu.Lock()
-	stdin := w.stdin
-	w.mu.Unlock()
-	if stdin != nil {
-		_, _ = io.WriteString(stdin, "/compact\n")
 	}
 }
 

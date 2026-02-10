@@ -2,7 +2,6 @@ package worker_test
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -1911,6 +1910,18 @@ func TestReconnect_SendReconnectFails_Retries(t *testing.T) { //nolint:funlen //
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	w.SetReconnectInterval(50 * time.Millisecond) // fast retry for tests
+
+	// Use a dial hook to close the worker's connection on the first
+	// reconnect attempt, guaranteeing that sendMessage(RECONNECT) fails.
+	// This avoids UDS kernel-buffering races where server-side Close()
+	// doesn't reliably cause a client-side write error.
+	var hookOnce sync.Once
+	w.SetReconnectDialHook(func(c net.Conn) {
+		hookOnce.Do(func() {
+			_ = c.Close() // close worker-side conn before sendMessage
+		})
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1932,25 +1943,25 @@ func TestReconnect_SendReconnectFails_Retries(t *testing.T) { //nolint:funlen //
 	// Close to trigger reconnect
 	_ = dispConn1.Close()
 
-	// Accept reconnect — immediately close to make sendMessage(RECONNECT) fail
-	var dispConn2 net.Conn
+	// The hook closes the worker's conn on the first reconnect dial,
+	// so sendMessage(RECONNECT) fails. The worker retries and dials again.
+	// Drain the first (broken) accepted connection.
 	select {
-	case dispConn2 = <-acceptCh:
+	case c := <-acceptCh:
+		_ = c.Close()
 	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for reconnection")
+		t.Fatal("timeout waiting for first reconnection attempt")
 	}
-	_ = dispConn2.Close() // close immediately so sendMessage fails
 
-	// Worker should retry and connect again
+	// Accept the retry connection where RECONNECT succeeds.
 	var dispConn3 net.Conn
 	select {
 	case dispConn3 = <-acceptCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for second reconnection attempt")
 	}
 	defer func() { _ = dispConn3.Close() }()
 
-	// This time read the RECONNECT successfully
 	msg := readMessage(t, dispConn3)
 	if msg.Type != protocol.MsgReconnect {
 		t.Fatalf("expected RECONNECT, got %s", msg.Type)
@@ -2537,53 +2548,10 @@ func TestHandleAssign_PassesMemoryContextToSpawner(t *testing.T) {
 	<-errCh
 }
 
-// syncWriteCloser is a thread-safe io.WriteCloser backed by a bytes.Buffer.
-type syncWriteCloser struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (w *syncWriteCloser) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.Write(p)
-}
-
-func (w *syncWriteCloser) Close() error { return nil }
-
-func (w *syncWriteCloser) String() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.String()
-}
-
-// nopWriteCloser wraps a writer with a no-op Close.
-type nopWriteCloser struct{ io.Writer }
-
-func (nopWriteCloser) Close() error { return nil }
-
-func TestSpawnerReturnsStdin(t *testing.T) {
-	spawner := newMockSpawner()
-	var buf bytes.Buffer
-	spawner.stdin = nopWriteCloser{&buf}
-
-	ctx := context.Background()
-	_, _, stdin, err := spawner.Spawn(ctx, "opus", "test", "/tmp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stdin == nil {
-		t.Fatal("expected stdin writer, got nil")
-	}
-}
-
 func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-stage integration test
 	t.Parallel()
 
-	// Set up mock spawner with a thread-safe writable stdin buffer.
 	spawner := newMockSpawner()
-	stdinBuf := &syncWriteCloser{}
-	spawner.stdin = stdinBuf
 
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
@@ -2619,34 +2587,30 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	// Drain STATUS message
 	_ = readMessage(t, dispatcherConn)
 
-	// --- First threshold breach: should compact, NOT handoff ---
+	// --- First threshold breach: should mark compacted, NOT handoff ---
+	// (gives Claude's built-in auto-compaction a chance to reduce context)
 	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Wait for compact to be written to stdin
+	// Wait for .oro/compacted flag to be created
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(stdinBuf.String(), "/compact") {
+		if _, err := os.Stat(filepath.Join(oroDir, "compacted")); err == nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !strings.Contains(stdinBuf.String(), "/compact") {
-		t.Fatal("expected /compact to be written to stdin on first threshold breach")
-	}
-
-	// Verify .oro/compacted flag was created
 	if _, err := os.Stat(filepath.Join(oroDir, "compacted")); os.IsNotExist(err) {
-		t.Fatal("expected .oro/compacted flag to be created after compact")
+		t.Fatal("expected .oro/compacted flag to be created after first breach")
 	}
 
 	// Verify subprocess was NOT killed (no handoff yet)
 	if spawner.process.Killed() {
-		t.Fatal("subprocess should not be killed on first threshold breach (compact only)")
+		t.Fatal("subprocess should not be killed on first threshold breach")
 	}
 
-	// Reset context_pct below threshold to simulate compact working
+	// Reset context_pct below threshold to simulate auto-compact working
 	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("30"), 0o600); err != nil {
 		t.Fatal(err)
 	}
