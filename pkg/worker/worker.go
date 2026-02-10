@@ -482,32 +482,25 @@ func (w *Worker) watchContext(ctx context.Context) {
 			alreadyCompacted := w.compacted
 			w.mu.Unlock()
 
-			if !alreadyCompacted && w.canCompact() {
-				// First breach with stdin available: compact in-place
+			if !alreadyCompacted {
+				// First breach: send /compact if stdin available, then wait
+				// for Claude's auto-compaction to reduce context usage.
 				w.sendCompact()
 				w.mu.Lock()
 				w.compacted = true
 				w.mu.Unlock()
-				// Write flag file so hooks can also see compact happened
 				oroDir := filepath.Join(wt, ".oro")
 				_ = os.MkdirAll(oroDir, 0o750) //nolint:gosec // runtime directory
 				_ = os.WriteFile(filepath.Join(oroDir, "compacted"), []byte("1"), 0o600)
 				continue
 			}
 
-			// Either already compacted or can't compact (no stdin) — handoff
+			// Second breach: auto-compact didn't help enough — handoff
 			_ = w.SendHandoff(ctx)
 			w.killProc()
 			return
 		}
 	}
-}
-
-// canCompact reports whether the subprocess stdin is available for compaction.
-func (w *Worker) canCompact() bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.stdin != nil
 }
 
 // sendCompact writes /compact to the subprocess stdin.
