@@ -834,7 +834,19 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 		case ops.VerdictApproved:
 			_ = d.logEvent(ctx, "review_approved", "ops", beadID, workerID, result.Feedback)
 			d.clearRejectionCount(beadID)
-			// Worker can now proceed to DONE
+			// Notify worker to proceed to DONE.
+			d.mu.Lock()
+			w, ok := d.workers[workerID]
+			if ok {
+				_ = d.sendToWorker(w, protocol.Message{
+					Type: protocol.MsgReviewResult,
+					ReviewResult: &protocol.ReviewResultPayload{
+						Verdict:  "approved",
+						Feedback: result.Feedback,
+					},
+				})
+			}
+			d.mu.Unlock()
 		case ops.VerdictRejected:
 			_ = d.logEvent(ctx, "review_rejected", "ops", beadID, workerID, result.Feedback)
 

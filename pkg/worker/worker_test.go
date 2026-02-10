@@ -2819,10 +2819,223 @@ func TestWorkerSendsInitialHeartbeat(t *testing.T) {
 	}
 }
 
+func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integration test
+	t.Parallel()
+
+	t.Run("QG pass triggers ReadyForReview then approval triggers Done", func(t *testing.T) {
+		t.Parallel()
+
+		// Create temp worktree with a passing quality_gate.sh
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "quality_gate.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'all checks passed'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+			t.Fatal(err)
+		}
+
+		pr, pw := io.Pipe()
+		proc := newMockProcess()
+
+		spawner := &mockSpawner{
+			process: proc,
+			stdout:  pr,
+		}
+
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-rfr", workerConn, spawner)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-rfr",
+				Worktree: tmpDir,
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		// Subprocess finishes
+		_, _ = pw.Write([]byte("implementation done\n"))
+		_ = pw.Close()
+		close(proc.waitCh)
+
+		// After QG passes, worker must send READY_FOR_REVIEW (not DONE)
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgReadyForReview {
+			t.Fatalf("expected READY_FOR_REVIEW after QG pass, got %s", msg.Type)
+		}
+		if msg.ReadyForReview.BeadID != "bead-rfr" {
+			t.Errorf("expected bead_id bead-rfr, got %s", msg.ReadyForReview.BeadID)
+		}
+		if msg.ReadyForReview.WorkerID != "w-rfr" {
+			t.Errorf("expected worker_id w-rfr, got %s", msg.ReadyForReview.WorkerID)
+		}
+
+		// Simulate dispatcher sending approval
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgReviewResult,
+			ReviewResult: &protocol.ReviewResultPayload{
+				Verdict: "approved",
+			},
+		})
+
+		// Worker should now send DONE
+		msg = readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgDone {
+			t.Fatalf("expected DONE after approval, got %s", msg.Type)
+		}
+		if !msg.Done.QualityGatePassed {
+			t.Error("expected QualityGatePassed=true")
+		}
+		if msg.Done.QGOutput == "" {
+			t.Error("expected QGOutput to be populated with quality gate output")
+		}
+
+		cancel()
+		<-errCh
+	})
+
+	t.Run("QG fail sends Done immediately without review", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "quality_gate.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'lint error'\nexit 1\n"), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+			t.Fatal(err)
+		}
+
+		pr, pw := io.Pipe()
+		proc := newMockProcess()
+
+		spawner := &mockSpawner{
+			process: proc,
+			stdout:  pr,
+		}
+
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-rfr-fail", workerConn, spawner)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-rfr-fail",
+				Worktree: tmpDir,
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		_, _ = pw.Write([]byte("work done\n"))
+		_ = pw.Close()
+		close(proc.waitCh)
+
+		// QG fails -> worker should send DONE immediately (no review)
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgDone {
+			t.Fatalf("expected DONE directly on QG failure, got %s", msg.Type)
+		}
+		if msg.Done.QualityGatePassed {
+			t.Error("expected QualityGatePassed=false")
+		}
+
+		cancel()
+		<-errCh
+	})
+
+	t.Run("review rejection re-assigns worker", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "quality_gate.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'tests pass'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+			t.Fatal(err)
+		}
+
+		pr, pw := io.Pipe()
+		proc := newMockProcess()
+
+		spawner := &mockSpawner{
+			process: proc,
+			stdout:  pr,
+		}
+
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-rfr-rej", workerConn, spawner)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-rfr-rej",
+				Worktree: tmpDir,
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		_, _ = pw.Write([]byte("done\n"))
+		_ = pw.Close()
+		close(proc.waitCh)
+
+		// QG passes -> READY_FOR_REVIEW
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgReadyForReview {
+			t.Fatalf("expected READY_FOR_REVIEW, got %s", msg.Type)
+		}
+
+		// Dispatcher rejects by re-assigning with feedback (same as existing rejection flow)
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-rfr-rej",
+				Worktree: tmpDir,
+				Feedback: "missing edge case tests",
+			},
+		})
+
+		// Worker should accept re-assignment (sends STATUS running)
+		msg = readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgStatus {
+			t.Fatalf("expected STATUS after re-assign, got %s", msg.Type)
+		}
+		if msg.Status.State != "running" {
+			t.Errorf("expected state running, got %s", msg.Status.State)
+		}
+
+		cancel()
+		<-errCh
+	})
+}
+
 func TestSubprocessExit_RunsQGAndSendsDone(t *testing.T) {
 	t.Parallel()
 
-	t.Run("QG passes", func(t *testing.T) {
+	t.Run("QG passes sends ReadyForReview then Done on approval", func(t *testing.T) {
 		t.Parallel()
 
 		// Create temp worktree with a passing quality_gate.sh
@@ -2871,10 +3084,27 @@ func TestSubprocessExit_RunsQGAndSendsDone(t *testing.T) {
 		_ = pw.Close()
 		close(proc.waitCh)
 
-		// Worker should send DONE with QualityGatePassed=true
+		// Worker should send READY_FOR_REVIEW (not DONE) after QG passes
 		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgReadyForReview {
+			t.Fatalf("expected READY_FOR_REVIEW after QG pass, got %s", msg.Type)
+		}
+		if msg.ReadyForReview.BeadID != "bead-qg-pass" {
+			t.Errorf("expected bead_id bead-qg-pass, got %s", msg.ReadyForReview.BeadID)
+		}
+
+		// Dispatcher sends REVIEW_RESULT with approved verdict
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgReviewResult,
+			ReviewResult: &protocol.ReviewResultPayload{
+				Verdict: "approved",
+			},
+		})
+
+		// Worker should now send DONE with QualityGatePassed=true
+		msg = readMessage(t, dispatcherConn)
 		if msg.Type != protocol.MsgDone {
-			t.Fatalf("expected DONE, got %s", msg.Type)
+			t.Fatalf("expected DONE after review approval, got %s", msg.Type)
 		}
 		if !msg.Done.QualityGatePassed {
 			t.Error("expected QualityGatePassed=true")

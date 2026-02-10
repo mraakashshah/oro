@@ -96,6 +96,7 @@ type Worker struct {
 	sessionText         strings.Builder
 	outputWg            sync.WaitGroup // tracks processOutput goroutine completion
 	reconnectDialHook   func(net.Conn) // test hook: called after dial, before sendMessage
+	pendingQGOutput     string         // QG output stored while awaiting review result
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -247,10 +248,33 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 		return true, nil
 	case protocol.MsgPrepareShutdown:
 		return w.handlePrepareShutdown(ctx, msg)
+	case protocol.MsgReviewResult:
+		return false, w.handleReviewResult(ctx, msg)
 	default:
 		// Unknown message type, ignore
 		return false, nil
 	}
+}
+
+// handleReviewResult processes a REVIEW_RESULT message from the dispatcher.
+// On approval, it sends DONE with the stored quality gate output.
+func (w *Worker) handleReviewResult(ctx context.Context, msg protocol.Message) error {
+	if msg.ReviewResult == nil {
+		return nil
+	}
+
+	if msg.ReviewResult.Verdict == "approved" {
+		w.mu.Lock()
+		qgOutput := w.pendingQGOutput
+		w.pendingQGOutput = ""
+		w.mu.Unlock()
+
+		return w.SendDone(ctx, true, qgOutput)
+	}
+
+	// Rejected or unknown verdict — the dispatcher handles rejection by
+	// sending a new ASSIGN with feedback, so nothing to do here.
+	return nil
 }
 
 // handlePrepareShutdown processes a PREPARE_SHUTDOWN message by saving context
@@ -341,7 +365,9 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 }
 
 // awaitSubprocessAndReport waits for the subprocess to exit, ensures stdout
-// processing is complete, runs the quality gate, and sends a DONE message.
+// processing is complete, runs the quality gate, and either sends DONE (on
+// failure) or READY_FOR_REVIEW (on pass) so the dispatcher can run an ops
+// review before the worker signals completion.
 func (w *Worker) awaitSubprocessAndReport(ctx context.Context, proc Process) {
 	_ = proc.Wait()
 
@@ -363,7 +389,21 @@ func (w *Worker) awaitSubprocessAndReport(ctx context.Context, proc Process) {
 		_ = w.SendDone(ctx, false, err.Error())
 		return
 	}
-	_ = w.SendDone(ctx, passed, output)
+
+	if !passed {
+		// QG failed — send DONE immediately so the dispatcher can re-assign.
+		_ = w.SendDone(ctx, false, output)
+		return
+	}
+
+	// QG passed — store the output and send READY_FOR_REVIEW.
+	// The worker waits for the dispatcher to send back a REVIEW_RESULT
+	// (approved) or a new ASSIGN (rejected with feedback).
+	w.mu.Lock()
+	w.pendingQGOutput = output
+	w.mu.Unlock()
+
+	_ = w.SendReadyForReview(ctx)
 }
 
 // processOutput reads subprocess stdout line by line, accumulates session text

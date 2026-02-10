@@ -16,6 +16,7 @@ const (
 	MsgShutdown        MessageType = "SHUTDOWN"
 	MsgPrepareShutdown MessageType = "PREPARE_SHUTDOWN"
 	MsgACK             MessageType = "ACK"
+	MsgReviewResult    MessageType = "REVIEW_RESULT"
 )
 
 // Worker -> Dispatcher message types.
@@ -49,6 +50,7 @@ type Message struct {
 	ShutdownApproved *ShutdownApprovedPayload `json:"shutdown_approved,omitempty"`
 	Directive        *DirectivePayload        `json:"directive,omitempty"`
 	ACK              *ACKPayload              `json:"ack,omitempty"`
+	ReviewResult     *ReviewResultPayload     `json:"review_result,omitempty"`
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.
@@ -124,6 +126,15 @@ type DonePayload struct {
 type ReadyForReviewPayload struct {
 	BeadID   string `json:"bead_id"`
 	WorkerID string `json:"worker_id"`
+}
+
+// ReviewResultPayload is sent by the dispatcher to a worker after a review
+// completes. Verdict is "approved" or "rejected". On rejection the dispatcher
+// typically re-assigns via MsgAssign instead, so this message is primarily
+// used for the approval path.
+type ReviewResultPayload struct {
+	Verdict  string `json:"verdict"`
+	Feedback string `json:"feedback,omitempty"`
 }
 
 // PrepareShutdownPayload is sent by the dispatcher to request a graceful shutdown.

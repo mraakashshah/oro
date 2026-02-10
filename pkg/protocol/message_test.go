@@ -20,6 +20,7 @@ func TestMessageTypes(t *testing.T) {
 		protocol.MsgDone,
 		protocol.MsgReadyForReview,
 		protocol.MsgReconnect,
+		protocol.MsgReviewResult,
 	}
 
 	expected := []string{
@@ -31,6 +32,7 @@ func TestMessageTypes(t *testing.T) {
 		"DONE",
 		"READY_FOR_REVIEW",
 		"RECONNECT",
+		"REVIEW_RESULT",
 	}
 
 	for i, mt := range types {
