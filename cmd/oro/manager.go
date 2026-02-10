@@ -33,7 +33,7 @@ On receiving this beacon, execute the following initialization sequence:
 3. Run ` + "`bd blocked`" + ` to identify blocked work and understand dependency chains.
 4. Decide initial swarm size: ` + "`ceil(ready_beads / 2)`" + `, capped at max 5.
 5. Run ` + "`oro start`" + ` to launch the dispatcher (if not already running).
-6. Run ` + "`oro scale N`" + ` to set the worker count to your chosen size.
+6. Run ` + "`oro directive scale N`" + ` to set the worker count to your chosen size.
 7. Report status to the human: ready count, blocked count, chosen scale, any concerns.
 
 ## Oro CLI
@@ -42,11 +42,11 @@ These commands control the swarm. All connect to the dispatcher via UDS.
 
 - ` + "`oro start`" + ` — launch the dispatcher daemon
 - ` + "`oro stop`" + ` — gracefully shut down the dispatcher and all workers
-- ` + "`oro pause`" + ` — pause all worker execution (workers finish current bead, then idle)
-- ` + "`oro resume`" + ` — resume paused workers
-- ` + "`oro scale N`" + ` — set the target worker count to N
-- ` + "`oro focus <epic>`" + ` — prioritize beads belonging to the given epic
-- ` + "`oro status`" + ` — display current swarm state (workers, queue depth, active beads)
+- ` + "`oro directive pause`" + ` — pause all worker execution (workers finish current bead, then idle)
+- ` + "`oro directive resume`" + ` — resume paused workers
+- ` + "`oro directive scale N`" + ` — set the target worker count to N
+- ` + "`oro directive focus <epic>`" + ` — prioritize beads belonging to the given epic
+- ` + "`oro directive status`" + ` — display current swarm state (workers, queue depth, active beads)
 
 ## Beads CLI
 
@@ -84,7 +84,7 @@ When breaking work into beads, follow these principles:
 When the dispatcher sends an escalation, respond with the appropriate playbook:
 
 ### MERGE_CONFLICT
-1. Pause the conflicting worker (` + "`oro pause`" + `).
+1. Pause the conflicting worker (` + "`oro directive pause`" + `).
 2. Assess conflict scope. If trivial, let the ops agent resolve it.
 3. If complex, scale down and resolve sequentially.
 4. Resume after resolution.
@@ -97,7 +97,7 @@ When the dispatcher sends an escalation, respond with the appropriate playbook:
 ### PRIORITY_CONTENTION
 1. Review the competing priorities.
 2. Consult the human if the priorities conflict with stated goals.
-3. Use ` + "`oro focus`" + ` to set the winning priority.
+3. Use ` + "`oro directive focus`" + ` to set the winning priority.
 
 ### WORKER_CRASH
 1. Note the crashed worker and its bead.
@@ -132,7 +132,7 @@ Do NOT do any of the following:
 - Talk to workers or send them messages
 - Manage git worktrees yourself
 - Run git merge or rebase commands
-- Poll ` + "`oro status`" + ` in a tight loop (rely on dispatcher messages instead)
+- Poll ` + "`oro directive status`" + ` in a tight loop (rely on dispatcher messages instead)
 - Create beads without acceptance criteria
 - Over-decompose (beads smaller than a single function are too small)
 - Ignore human input or deprioritize human requests
@@ -141,7 +141,7 @@ Do NOT do any of the following:
 
 When ending a session or when the human requests shutdown:
 
-1. Run ` + "`oro scale 0`" + ` to begin draining workers.
+1. Run ` + "`oro directive scale 0`" + ` to begin draining workers.
 2. Wait for drain confirmation from the dispatcher (` + "`[ORO-DISPATCH] STATUS`" + ` with 0 active workers).
 3. Run ` + "`oro stop`" + ` to shut down the dispatcher.
 4. Run ` + "`bd sync`" + ` to ensure the backlog state is persisted.

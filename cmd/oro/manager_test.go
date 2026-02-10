@@ -39,7 +39,7 @@ func TestManagerBeacon(t *testing.T) {
 	t.Run("contains key terms", func(t *testing.T) {
 		keyTerms := []string{
 			"oro start",
-			"oro scale",
+			"oro directive scale",
 			"bd ready",
 			"[ORO-DISPATCH]",
 			"quality gate",
@@ -68,7 +68,7 @@ func TestManagerBeacon(t *testing.T) {
 	})
 
 	t.Run("startup section includes initialization steps", func(t *testing.T) {
-		startupTerms := []string{"bd stats", "bd ready", "bd blocked", "oro start", "oro scale"}
+		startupTerms := []string{"bd stats", "bd ready", "bd blocked", "oro start", "oro directive scale"}
 		for _, term := range startupTerms {
 			if !strings.Contains(beacon, term) {
 				t.Errorf("expected Startup section to contain %q", term)
@@ -97,8 +97,34 @@ func TestManagerBeacon(t *testing.T) {
 		}
 	})
 
+	t.Run("CLI commands use oro directive prefix for runtime operations", func(t *testing.T) {
+		// These operations are subcommands of "oro directive", not top-level.
+		// The beacon must instruct the manager to use the correct CLI form.
+		directiveOps := []string{
+			"oro directive scale",
+			"oro directive pause",
+			"oro directive resume",
+			"oro directive focus",
+			"oro directive status",
+		}
+		for _, op := range directiveOps {
+			if !strings.Contains(beacon, op) {
+				t.Errorf("expected beacon to contain %q (not bare form without 'directive')", op)
+			}
+		}
+
+		// "oro start" and "oro stop" are legitimate top-level commands,
+		// so they should NOT require the "directive" prefix.
+		topLevel := []string{"oro start", "oro stop"}
+		for _, cmd := range topLevel {
+			if !strings.Contains(beacon, cmd) {
+				t.Errorf("expected beacon to contain top-level command %q", cmd)
+			}
+		}
+	})
+
 	t.Run("shutdown section includes ordered steps", func(t *testing.T) {
-		shutdownTerms := []string{"oro scale 0", "oro stop", "bd sync"}
+		shutdownTerms := []string{"oro directive scale 0", "oro stop", "bd sync"}
 		for _, term := range shutdownTerms {
 			if !strings.Contains(beacon, term) {
 				t.Errorf("expected Shutdown section to contain %q", term)
