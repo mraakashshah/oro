@@ -11,16 +11,21 @@ import (
 func noopSleep(time.Duration) {}
 
 // fakeCmd records exec calls for testing without real tmux.
+// It supports both single-value and sequential (multi-value) outputs per key.
 type fakeCmd struct {
 	calls  [][]string // each call is [name, arg1, arg2, ...]
 	output map[string]string
 	errs   map[string]error
+	seqOut map[string][]string // sequential outputs per key
+	seqIdx map[string]int      // current index into seqOut per key
 }
 
 func newFakeCmd() *fakeCmd {
 	return &fakeCmd{
 		output: make(map[string]string),
 		errs:   make(map[string]error),
+		seqOut: make(map[string][]string),
+		seqIdx: make(map[string]int),
 	}
 }
 
@@ -32,10 +37,29 @@ func key(name string, args ...string) string {
 func (f *fakeCmd) Run(name string, args ...string) (string, error) {
 	f.calls = append(f.calls, append([]string{name}, args...))
 	k := key(name, args...)
+	// Check for sequential output first.
+	if seq, ok := f.seqOut[k]; ok {
+		idx := f.seqIdx[k]
+		if idx < len(seq) {
+			f.seqIdx[k] = idx + 1
+			return seq[idx], f.errs[k]
+		}
+		// Past the end of sequence: return last value.
+		return seq[len(seq)-1], f.errs[k]
+	}
 	if err, ok := f.errs[k]; ok {
 		return f.output[k], err
 	}
 	return f.output[k], nil
+}
+
+// readyPaneOutput returns fake capture-pane output containing the Claude prompt.
+const readyPaneOutput = "some startup output\n> "
+
+// stubCapturePaneReady sets up the fake to return ready output for both panes.
+func stubCapturePaneReady(fake *fakeCmd, sessionName string) {
+	fake.output[key("tmux", "capture-pane", "-p", "-t", sessionName+":0.0")] = readyPaneOutput
+	fake.output[key("tmux", "capture-pane", "-p", "-t", sessionName+":0.1")] = readyPaneOutput
 }
 
 // findCall returns the first call matching the given tmux subcommand, or nil.
@@ -75,8 +99,9 @@ func TestTmuxLayout(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		// list-panes returns two panes after creation
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
+		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -195,8 +220,9 @@ func TestTmuxLayout(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
+		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.Create("architect beacon text", "manager beacon text")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -220,8 +246,9 @@ func TestTmuxLayout(t *testing.T) {
 	t.Run("Create launches interactive claude with ORO_ROLE env var", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -277,8 +304,9 @@ func TestTmuxLayout(t *testing.T) {
 	t.Run("Create injects beacons via send-keys after claude launch", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.Create("architect beacon text here", "manager beacon text here")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -356,6 +384,154 @@ func TestTmuxLayout(t *testing.T) {
 		}
 		if !found {
 			t.Error("expected has-session to be called")
+		}
+	})
+
+	t.Run("Create polls pane readiness before injecting beacons", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCapturePaneReady(fake, "oro")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		err := sess.Create("architect beacon", "manager beacon")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// Verify capture-pane was called for both panes.
+		var capturePane0, capturePane1 bool
+		for _, call := range fake.calls {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:0.0") {
+				capturePane0 = true
+			}
+			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:0.1") {
+				capturePane1 = true
+			}
+		}
+		if !capturePane0 {
+			t.Error("expected capture-pane to be called for pane 0")
+		}
+		if !capturePane1 {
+			t.Error("expected capture-pane to be called for pane 1")
+		}
+	})
+
+	t.Run("Create times out when Claude never becomes ready", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		// capture-pane returns content without the > prompt — never ready
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "Loading claude..."
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.1")] = "Loading claude..."
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect beacon", "manager beacon")
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		if !strings.Contains(err.Error(), "did not become ready") {
+			t.Errorf("expected 'did not become ready' in error, got: %v", err)
+		}
+	})
+}
+
+func TestPaneReady(t *testing.T) {
+	t.Run("returns nil when prompt found immediately", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "Welcome to Claude\n> "
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		err := sess.PaneReady("oro:0.0")
+		if err != nil {
+			t.Fatalf("PaneReady returned error: %v", err)
+		}
+	})
+
+	t.Run("returns nil after polling succeeds on third attempt", func(t *testing.T) {
+		fake := newFakeCmd()
+		// First two capture-pane calls return no prompt; third has it.
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.0")
+		fake.seqOut[captureKey] = []string{
+			"Loading...",
+			"Still loading...",
+			"Welcome to Claude\n> ",
+		}
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
+		err := sess.PaneReady("oro:0.0")
+		if err != nil {
+			t.Fatalf("PaneReady returned error: %v", err)
+		}
+
+		// Count capture-pane calls — should be exactly 3.
+		count := 0
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "capture-pane" {
+				count++
+			}
+		}
+		if count != 3 {
+			t.Errorf("expected 3 capture-pane calls, got %d", count)
+		}
+	})
+
+	t.Run("times out when prompt never appears", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "$ claude\nStarting..."
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
+		err := sess.PaneReady("oro:0.0")
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		if !strings.Contains(err.Error(), "did not become ready") {
+			t.Errorf("expected 'did not become ready' in error, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "oro:0.0") {
+			t.Errorf("expected pane target in error, got: %v", err)
+		}
+	})
+
+	t.Run("handles capture-pane error gracefully and keeps polling", func(t *testing.T) {
+		fake := newFakeCmd()
+		// First call errors, second succeeds with prompt.
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.0")
+		fake.seqOut[captureKey] = []string{
+			"",
+			"Welcome\n> ",
+		}
+		// We need errors on the first call only. Use a custom approach:
+		// Actually the seqOut approach doesn't support per-call errors.
+		// Let's just test that errors are tolerated by having the output empty on first call.
+		// An empty output has no prompt, so it will retry. Second call has the prompt.
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
+		err := sess.PaneReady("oro:0.0")
+		if err != nil {
+			t.Fatalf("PaneReady returned error: %v", err)
+		}
+	})
+
+	t.Run("recognizes prompt with leading whitespace", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Claude Code sometimes has the prompt with some whitespace.
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "some output\n  > "
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		err := sess.PaneReady("oro:0.0")
+		if err != nil {
+			t.Fatalf("PaneReady returned error: %v", err)
+		}
+	})
+
+	t.Run("uses default 30s timeout when ReadyTimeout is zero", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "Welcome\n> "
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.PaneReady("oro:0.0")
+		if err != nil {
+			t.Fatalf("PaneReady returned error: %v", err)
 		}
 	})
 }

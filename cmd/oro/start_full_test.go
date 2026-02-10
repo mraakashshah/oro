@@ -80,6 +80,7 @@ func TestFullStart(t *testing.T) {
 		fakeTmux := newFakeCmd()
 		// has-session returns error (session does not exist)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCapturePaneReady(fakeTmux, "oro")
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,
@@ -254,8 +255,9 @@ func TestCreateWithManagerBeacon(t *testing.T) {
 	t.Run("injects both beacons via send-keys to respective panes", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.Create("You are a test architect.", "You are a test manager.")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -297,8 +299,9 @@ func TestCreateWithManagerBeacon(t *testing.T) {
 	t.Run("neither pane uses claude -p", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.Create("architect prompt", "manager prompt")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)

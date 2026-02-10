@@ -23,11 +23,18 @@ func (e *ExecRunner) Run(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// defaultReadyTimeout is the default time to wait for Claude to become ready.
+const defaultReadyTimeout = 30 * time.Second
+
+// pollInterval is the time between capture-pane readiness checks.
+const pollInterval = 500 * time.Millisecond
+
 // TmuxSession manages a tmux session with the Oro layout.
 type TmuxSession struct {
-	Name    string
-	Runner  CmdRunner
-	Sleeper func(time.Duration) // optional; overrides time.Sleep for testing
+	Name         string
+	Runner       CmdRunner
+	Sleeper      func(time.Duration) // optional; overrides time.Sleep for testing
+	ReadyTimeout time.Duration       // timeout for Claude readiness polling; 0 means defaultReadyTimeout
 }
 
 // NewTmuxSession creates a TmuxSession with the default ExecRunner.
@@ -41,13 +48,9 @@ func (s *TmuxSession) Exists() bool {
 	return err == nil
 }
 
-// beaconDelay is the time to wait after launching claude before injecting a beacon.
-// This gives the interactive claude process time to start and be ready for input.
-const beaconDelay = 2 * time.Second
-
 // Create creates the Oro tmux session with two panes (architect + manager).
-// Both panes launch interactive claude (with ORO_ROLE set), then inject
-// the role-specific beacon text via send-keys after a short delay.
+// Both panes launch interactive claude (with ORO_ROLE set), then poll for
+// Claude readiness before injecting the role-specific beacon text via send-keys.
 // If the session already exists, it is a no-op.
 func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
 	if s.Exists() {
@@ -76,8 +79,15 @@ func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
 		return fmt.Errorf("tmux send-keys manager launch: %w", err)
 	}
 
-	// Wait for claude to start in both panes before injecting beacons.
-	s.sleep(beaconDelay)
+	// Poll both panes until Claude is ready (prompt appears).
+	architectPane := s.Name + ":0.0"
+	if err := s.PaneReady(architectPane); err != nil {
+		return err
+	}
+	managerPane := s.Name + ":0.1"
+	if err := s.PaneReady(managerPane); err != nil {
+		return err
+	}
 
 	// Inject architect beacon into pane 0.
 	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectBeacon, "Enter"); err != nil {
@@ -90,6 +100,40 @@ func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
 	}
 
 	return nil
+}
+
+// PaneReady polls the pane content via tmux capture-pane until Claude's input
+// prompt (a line starting with ">") appears. It polls every 500ms and times out
+// after ReadyTimeout (default 30s).
+func (s *TmuxSession) PaneReady(paneTarget string) error {
+	timeout := s.ReadyTimeout
+	if timeout == 0 {
+		timeout = defaultReadyTimeout
+	}
+	deadline := time.Now().Add(timeout)
+
+	for {
+		out, err := s.Runner.Run("tmux", "capture-pane", "-p", "-t", paneTarget)
+		if err == nil && hasPrompt(out) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("claude did not become ready in pane %s within %v", paneTarget, timeout)
+		}
+		s.sleep(pollInterval)
+	}
+}
+
+// hasPrompt checks whether captured pane output contains Claude's input prompt.
+// It looks for a line that starts with ">" (optionally preceded by whitespace).
+func hasPrompt(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, ">") {
+			return true
+		}
+	}
+	return false
 }
 
 // sleep pauses for the given duration. It uses the Sleeper if set (for testing),
