@@ -28,7 +28,9 @@ func newRootCmd() *cobra.Command {
 		newDirectiveCmd(),
 		newRememberCmd(),
 		newRecallCmd(),
+		newForgetCmd(),
 		newWorkerCmd(),
+		newMemoriesCmd(),
 	)
 
 	return cmd

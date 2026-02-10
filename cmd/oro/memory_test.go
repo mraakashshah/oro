@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -162,6 +163,263 @@ func TestRememberRecall(t *testing.T) {
 		}
 		if !strings.Contains(output, "confidence") || !strings.Contains(output, "0.") {
 			t.Errorf("expected recall output to contain confidence score, got: %s", output)
+		}
+	})
+}
+
+func TestMemoriesList(t *testing.T) {
+	db := setupTestMemoryDB(t)
+	store := memory.NewStore(db)
+	ctx := context.Background()
+
+	seeds := []memory.InsertParams{
+		{Content: "always run tests before committing", Type: "lesson", Tags: []string{"testing", "ci"}, Source: "cli", Confidence: 0.9},
+		{Content: "decided to use FTS5 for search", Type: "decision", Tags: []string{"search"}, Source: "cli", Confidence: 0.8},
+		{Content: "modernc sqlite does not support bm25 well", Type: "gotcha", Tags: []string{"search", "sqlite"}, Source: "daemon_extracted", Confidence: 0.7},
+		{Content: "use table-driven tests in Go", Type: "pattern", Tags: []string{"testing", "go"}, Source: "cli", Confidence: 0.85},
+		{Content: "worker memory usage spikes after 50 beads", Type: "self_report", Tags: []string{"performance"}, Source: "daemon_extracted", Confidence: 0.6},
+	}
+	for _, s := range seeds {
+		if _, err := store.Insert(ctx, s); err != nil {
+			t.Fatalf("seed insert: %v", err)
+		}
+	}
+
+	t.Run("lists all memories with default limit", func(t *testing.T) {
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("memories list execute: %v", err)
+		}
+		output := out.String()
+		if !strings.Contains(output, "ID") {
+			t.Errorf("expected header with ID column, got: %s", output)
+		}
+		if !strings.Contains(output, "TYPE") {
+			t.Errorf("expected header with TYPE column, got: %s", output)
+		}
+		if !strings.Contains(output, "CONTENT") {
+			t.Errorf("expected header with CONTENT column, got: %s", output)
+		}
+		for _, s := range seeds {
+			snippet := s.Content
+			if len(snippet) > 20 {
+				snippet = snippet[:20]
+			}
+			if !strings.Contains(output, snippet) {
+				t.Errorf("expected output to contain %q, got: %s", snippet, output)
+			}
+		}
+	})
+
+	t.Run("filter by type", func(t *testing.T) {
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--type", "gotcha"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("memories list --type execute: %v", err)
+		}
+		output := out.String()
+		if !strings.Contains(output, "modernc sqlite") {
+			t.Errorf("expected gotcha memory in output, got: %s", output)
+		}
+		if strings.Contains(output, "always run tests") {
+			t.Errorf("expected no lesson memories when filtering by gotcha, got: %s", output)
+		}
+	})
+
+	t.Run("filter by tag", func(t *testing.T) {
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--tag", "performance"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("memories list --tag execute: %v", err)
+		}
+		output := out.String()
+		if !strings.Contains(output, "worker memory usage") {
+			t.Errorf("expected performance-tagged memory, got: %s", output)
+		}
+		if strings.Contains(output, "decided to use FTS5") {
+			t.Errorf("expected no search-tagged memories when filtering by performance, got: %s", output)
+		}
+	})
+
+	t.Run("limit flag restricts count", func(t *testing.T) {
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--limit", "2"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("memories list --limit execute: %v", err)
+		}
+		output := out.String()
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		dataLines := 0
+		for _, l := range lines {
+			l = strings.TrimSpace(l)
+			if l == "" || strings.HasPrefix(l, "ID") {
+				continue
+			}
+			dataLines++
+		}
+		if dataLines != 2 {
+			t.Errorf("expected 2 data lines with --limit=2, got %d lines:\n%s", dataLines, output)
+		}
+	})
+
+	t.Run("empty result prints message", func(t *testing.T) {
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--type", "nonexistent_type"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("memories list --type nonexistent execute: %v", err)
+		}
+		output := out.String()
+		if !strings.Contains(output, "No memories found") {
+			t.Errorf("expected 'No memories found' for empty result, got: %s", output)
+		}
+	})
+
+	t.Run("content is truncated for long entries", func(t *testing.T) {
+		longContent := strings.Repeat("abcdefghij", 10)
+		if _, err := store.Insert(ctx, memory.InsertParams{
+			Content: longContent, Type: "lesson", Source: "cli", Confidence: 0.5,
+		}); err != nil {
+			t.Fatalf("insert long memory: %v", err)
+		}
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--type", "lesson"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("memories list execute: %v", err)
+		}
+		output := out.String()
+		if strings.Contains(output, longContent) {
+			t.Errorf("expected long content to be truncated, but found full string in output")
+		}
+		if !strings.Contains(output, "abcdefghij") {
+			t.Errorf("expected truncated content to start with prefix, got: %s", output)
+		}
+	})
+}
+
+func TestForget(t *testing.T) {
+	db := setupTestMemoryDB(t)
+	store := memory.NewStore(db)
+	ctx := context.Background()
+
+	t.Run("deletes memory by id", func(t *testing.T) {
+		id, err := store.Insert(ctx, memory.InsertParams{
+			Content:    "forget me test memory unique_forget_abc",
+			Type:       "lesson",
+			Source:     "cli",
+			Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+
+		cmd := newForgetCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{fmt.Sprintf("%d", id)})
+
+		err = cmd.Execute()
+		if err != nil {
+			t.Fatalf("forget execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, "Forgot") {
+			t.Errorf("expected output to contain 'Forgot', got: %s", output)
+		}
+		if !strings.Contains(output, fmt.Sprintf("%d", id)) {
+			t.Errorf("expected output to contain id %d, got: %s", id, output)
+		}
+
+		// Verify the memory is gone
+		results, err := store.Search(ctx, "unique_forget_abc", memory.SearchOpts{Limit: 5})
+		if err != nil {
+			t.Fatalf("search after forget: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected 0 results after forget, got %d", len(results))
+		}
+	})
+
+	t.Run("deletes multiple memories by id", func(t *testing.T) {
+		id1, err := store.Insert(ctx, memory.InsertParams{
+			Content: "multi forget first unique_mf1", Type: "lesson",
+			Source: "cli", Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("insert 1: %v", err)
+		}
+		id2, err := store.Insert(ctx, memory.InsertParams{
+			Content: "multi forget second unique_mf2", Type: "lesson",
+			Source: "cli", Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("insert 2: %v", err)
+		}
+
+		cmd := newForgetCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{fmt.Sprintf("%d", id1), fmt.Sprintf("%d", id2)})
+
+		err = cmd.Execute()
+		if err != nil {
+			t.Fatalf("forget execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, fmt.Sprintf("%d", id1)) {
+			t.Errorf("expected output to contain id %d, got: %s", id1, output)
+		}
+		if !strings.Contains(output, fmt.Sprintf("%d", id2)) {
+			t.Errorf("expected output to contain id %d, got: %s", id2, output)
+		}
+
+		results1, _ := store.Search(ctx, "unique_mf1", memory.SearchOpts{Limit: 5})
+		results2, _ := store.Search(ctx, "unique_mf2", memory.SearchOpts{Limit: 5})
+		if len(results1) != 0 || len(results2) != 0 {
+			t.Errorf("expected 0 results after forget, got %d and %d", len(results1), len(results2))
+		}
+	})
+
+	t.Run("returns error for nonexistent id", func(t *testing.T) {
+		cmd := newForgetCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"999999"})
+
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error for nonexistent id, got nil")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("expected error to contain 'not found', got: %s", err.Error())
+		}
+	})
+
+	t.Run("returns error for invalid id", func(t *testing.T) {
+		cmd := newForgetCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"notanumber"})
+
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error for invalid id, got nil")
 		}
 	})
 }
