@@ -92,9 +92,11 @@ type Worker struct {
 	buffer              *MessageBuffer
 	disconnected        bool
 	contextPollInterval time.Duration
+	reconnectInterval   time.Duration // base retry interval for reconnection
 	memStore            *memory.Store
 	sessionText         strings.Builder
 	outputWg            sync.WaitGroup // tracks processOutput goroutine completion
+	reconnectDialHook   func(net.Conn) // test hook: called after dial, before sendMessage
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -110,6 +112,7 @@ func New(id, socketPath string, spawner SubprocessSpawner) (*Worker, error) {
 		socketPath:          socketPath,
 		buffer:              NewMessageBuffer(maxBufferedMessages),
 		contextPollInterval: DefaultContextPollInterval,
+		reconnectInterval:   reconnectBaseInterval,
 	}, nil
 }
 
@@ -121,6 +124,7 @@ func NewWithConn(id string, conn net.Conn, spawner SubprocessSpawner) *Worker {
 		spawner:             spawner,
 		buffer:              NewMessageBuffer(maxBufferedMessages),
 		contextPollInterval: DefaultContextPollInterval,
+		reconnectInterval:   reconnectBaseInterval,
 	}
 }
 
@@ -129,6 +133,21 @@ func (w *Worker) SetContextPollInterval(d time.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.contextPollInterval = d
+}
+
+// SetReconnectInterval overrides the base reconnect retry interval (for testing).
+func (w *Worker) SetReconnectInterval(d time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reconnectInterval = d
+}
+
+// SetReconnectDialHook sets a function called after each successful dial during
+// reconnection, before the RECONNECT message is sent. For testing only.
+func (w *Worker) SetReconnectDialHook(fn func(net.Conn)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reconnectDialHook = fn
 }
 
 // SetMemoryStore attaches a memory store to the worker for memory extraction.
@@ -463,8 +482,8 @@ func (w *Worker) watchContext(ctx context.Context) {
 			alreadyCompacted := w.compacted
 			w.mu.Unlock()
 
-			if !alreadyCompacted {
-				// First breach: compact
+			if !alreadyCompacted && w.canCompact() {
+				// First breach with stdin available: compact in-place
 				w.sendCompact()
 				w.mu.Lock()
 				w.compacted = true
@@ -476,12 +495,19 @@ func (w *Worker) watchContext(ctx context.Context) {
 				continue
 			}
 
-			// Second breach: ralph handoff
+			// Either already compacted or can't compact (no stdin) — handoff
 			_ = w.SendHandoff(ctx)
 			w.killProc()
 			return
 		}
 	}
+}
+
+// canCompact reports whether the subprocess stdin is available for compaction.
+func (w *Worker) canCompact() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.stdin != nil
 }
 
 // sendCompact writes /compact to the subprocess stdin.
@@ -530,8 +556,11 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		default:
 		}
 
+		w.mu.Lock()
+		baseInterval := w.reconnectInterval
+		w.mu.Unlock()
 		jitter := time.Duration(rand.Int64N(int64(2*reconnectJitter))) - reconnectJitter //nolint:gosec // jitter doesn't need crypto rand
-		wait := reconnectBaseInterval + jitter
+		wait := baseInterval + jitter
 
 		select {
 		case <-ctx.Done():
@@ -552,7 +581,12 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		if w.proc == nil {
 			state = "idle"
 		}
+		hook := w.reconnectDialHook
 		w.mu.Unlock()
+
+		if hook != nil {
+			hook(conn)
+		}
 
 		// Send RECONNECT with buffered events
 		buffered := w.buffer.Drain()
