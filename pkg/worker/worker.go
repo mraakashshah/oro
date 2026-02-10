@@ -321,6 +321,8 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 
 // processOutput reads subprocess stdout line by line, accumulates session text
 // for later implicit extraction, and extracts [MEMORY] markers in real-time.
+// When stdout closes (subprocess exits), it extracts implicit memories so that
+// learnings from failed attempts are persisted before the dispatcher re-assigns.
 func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 	defer func() { _ = stdout.Close() }()
 
@@ -345,6 +347,10 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 			}
 		}
 	}
+
+	// Subprocess stdout closed — extract implicit memories so learnings from
+	// failed attempts (e.g. QG failure) are persisted regardless of outcome.
+	w.extractImplicitMemories(ctx)
 }
 
 // extractImplicitMemories runs ExtractImplicit on accumulated session text

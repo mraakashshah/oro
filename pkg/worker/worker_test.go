@@ -2665,6 +2665,92 @@ func TestLoadThresholds(t *testing.T) {
 	})
 }
 
+// TestProcessExitExtractsMemories verifies that when a subprocess exits
+// (stdout closes) without calling SendDone or SendHandoff, implicit
+// memories are still extracted from the session text. This ensures
+// learnings from failed attempts are persisted before dispatcher re-assigns.
+func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integration test
+	t.Parallel()
+
+	db := setupTestDB(t)
+	store := memory.NewStore(db)
+
+	// io.Pipe simulates subprocess stdout.
+	pr, pw := io.Pipe()
+
+	spawner := &mockSpawner{
+		process: newMockProcess(),
+		stdout:  pr,
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-exit-mem", workerConn, spawner)
+	w.SetMemoryStore(store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// Send ASSIGN to start the subprocess.
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-exit",
+			Worktree: "/tmp/wt-exit",
+		},
+	})
+
+	// Drain STATUS message.
+	_ = readMessage(t, dispatcherConn)
+
+	// Simulate subprocess output with implicit patterns, then close stdout
+	// (simulating subprocess exit) WITHOUT calling SendDone or SendHandoff.
+	output := strings.Join([]string{
+		"Running quality gate...",
+		"I learned that WAL mode needs a single writer.",
+		"Gotcha: FTS5 requires content sync triggers",
+		"Quality gate failed, exiting.",
+	}, "\n")
+	_, err := pw.Write([]byte(output + "\n"))
+	if err != nil {
+		t.Fatalf("write to pipe: %v", err)
+	}
+	// Close stdout to simulate subprocess exit.
+	_ = pw.Close()
+
+	// Wait for processOutput to finish and extract memories.
+	// processOutput calls extractImplicitMemories on exit.
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify implicit memories were extracted even without SendDone/SendHandoff.
+	all, err := store.List(ctx, memory.ListOpts{})
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
+
+	implicitCount := 0
+	for _, m := range all {
+		if m.Source == "daemon_extracted" {
+			implicitCount++
+		}
+	}
+
+	// Expected: "WAL mode needs a single writer" (I learned),
+	// "FTS5 requires content sync triggers" (Gotcha:)
+	if implicitCount != 2 {
+		t.Errorf("expected 2 implicit memories after process exit, got %d", implicitCount)
+		for _, m := range all {
+			t.Logf("  memory: source=%s type=%s content=%q", m.Source, m.Type, m.Content)
+		}
+	}
+
+	cancel()
+	<-errCh
+}
+
 // TestWorkerSendsInitialHeartbeat verifies that Run() sends a HEARTBEAT
 // immediately on startup so the dispatcher can register the worker.
 func TestWorkerSendsInitialHeartbeat(t *testing.T) {
