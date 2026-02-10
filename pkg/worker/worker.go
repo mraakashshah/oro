@@ -264,7 +264,19 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.sessionText.Reset()
 	w.mu.Unlock()
 
-	prompt := BuildPrompt(msg.Assign.BeadID, msg.Assign.Worktree, msg.Assign.MemoryContext)
+	var prompt string
+	if msg.Assign.Title != "" {
+		prompt = AssemblePrompt(PromptParams{
+			BeadID:             msg.Assign.BeadID,
+			Title:              msg.Assign.Title,
+			AcceptanceCriteria: msg.Assign.AcceptanceCriteria,
+			MemoryContext:      msg.Assign.MemoryContext,
+			WorktreePath:       msg.Assign.Worktree,
+			Model:              msg.Assign.Model,
+		})
+	} else {
+		prompt = BuildPrompt(msg.Assign.BeadID, msg.Assign.Worktree, msg.Assign.MemoryContext)
+	}
 	model := msg.Assign.Model
 	if model == "" {
 		model = "claude-opus-4-6"

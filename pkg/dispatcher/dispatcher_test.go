@@ -4105,3 +4105,66 @@ func TestMergeClosesBead(t *testing.T) {
 		t.Fatalf("expected beads.Close(%q) to be called after successful merge, but closed=%v", beadID, closed)
 	}
 }
+
+// TestAssignUsesRichPrompt verifies that assignBead populates the AssignPayload
+// with bead title, description, and acceptance criteria from beads.Show().
+func TestAssignUsesRichPrompt(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Init schema.
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	d.state = StateRunning
+
+	// Set up bead detail for Show().
+	beadSrc.shown["rich-bead"] = &BeadDetail{
+		ID:                 "rich-bead",
+		Title:              "Implement widget parser",
+		AcceptanceCriteria: "Test: pkg/widget_test.go:TestParse | Assert: parses valid input",
+	}
+
+	// Create a fake worker connection via net.Pipe.
+	srvConn, clientConn := net.Pipe()
+	defer func() { _ = srvConn.Close(); _ = clientConn.Close() }()
+
+	w := &trackedWorker{
+		id:       "w-rich",
+		conn:     srvConn,
+		state:    WorkerIdle,
+		lastSeen: d.nowFunc(),
+		encoder:  json.NewEncoder(srvConn),
+	}
+
+	bead := Bead{ID: "rich-bead", Title: "Implement widget parser", Priority: 1}
+
+	// Read what assignBead sends.
+	msgCh := make(chan protocol.Message, 1)
+	go func() {
+		scanner := bufio.NewScanner(clientConn)
+		if scanner.Scan() {
+			var msg protocol.Message
+			_ = json.Unmarshal(scanner.Bytes(), &msg)
+			msgCh <- msg
+		}
+	}()
+
+	d.assignBead(ctx, w, bead)
+
+	select {
+	case msg := <-msgCh:
+		if msg.Assign == nil {
+			t.Fatal("expected ASSIGN message")
+		}
+		if msg.Assign.Title != "Implement widget parser" {
+			t.Errorf("expected title %q, got %q", "Implement widget parser", msg.Assign.Title)
+		}
+		if msg.Assign.AcceptanceCriteria == "" {
+			t.Error("expected non-empty acceptance criteria")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ASSIGN message")
+	}
+}

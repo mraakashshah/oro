@@ -1099,6 +1099,13 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
 
+	// Retrieve bead details for rich prompt (best-effort).
+	var title, acceptance string
+	if detail, showErr := d.beads.Show(ctx, bead.ID); showErr == nil && detail != nil {
+		title = detail.Title
+		acceptance = detail.AcceptanceCriteria
+	}
+
 	// Retrieve relevant memories for this bead (best-effort).
 	var memCtx string
 	if d.memories != nil {
@@ -1113,10 +1120,12 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	err = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:        bead.ID,
-			Worktree:      worktree,
-			Model:         bead.ResolveModel(),
-			MemoryContext: memCtx,
+			BeadID:             bead.ID,
+			Worktree:           worktree,
+			Model:              bead.ResolveModel(),
+			MemoryContext:      memCtx,
+			Title:              title,
+			AcceptanceCriteria: acceptance,
 		},
 	})
 	d.mu.Unlock()
