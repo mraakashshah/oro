@@ -210,6 +210,7 @@ type Dispatcher struct {
 	handoffCounts   map[string]int             // bead ID -> ralph handoff count
 	attemptCounts   map[string]int             // bead ID -> QG retry attempt count
 	pendingHandoffs map[string]*pendingHandoff // bead ID -> pending handoff info
+	qgStuckTracker  map[string]*qgHistory      // bead ID -> consecutive QG output hashes
 
 	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
 	beadsDir string
@@ -236,6 +237,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		handoffCounts:   make(map[string]int),
 		attemptCounts:   make(map[string]int),
 		pendingHandoffs: make(map[string]*pendingHandoff),
+		qgStuckTracker:  make(map[string]*qgHistory),
 		beadsDir:        ".beads",
 		nowFunc:         time.Now,
 	}
@@ -554,19 +556,30 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 		return
 	}
 
-	// Clear handoff count for completed bead.
+	// Clear tracking state for completed bead.
 	d.clearHandoffCount(beadID)
 	d.clearAttemptCount(beadID)
+	d.clearStuckTracker(beadID)
 
 	// Merge in background
 	go d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
 }
 
-// handleQGFailure processes a quality-gate failure: increments the attempt
-// counter, escalates if the cap is reached, or re-assigns with feedback.
+// handleQGFailure processes a quality-gate failure: checks for stuck detection
+// (repeated identical outputs), increments the attempt counter, escalates if
+// either cap is reached, or re-assigns with feedback.
 func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) {
 	_ = d.logEvent(ctx, "quality_gate_rejected", workerID, beadID, workerID,
 		`{"reason":"QualityGatePassed=false"}`)
+
+	// Check stuck detection: hash QGOutput and track consecutive identical hashes.
+	if d.isQGStuck(beadID, qgOutput) {
+		_ = d.logEvent(ctx, "qg_stuck_detected", workerID, beadID, workerID,
+			fmt.Sprintf(`{"repeated_count":%d}`, maxStuckCount))
+		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
+			fmt.Sprintf("QG output repeated %d times — worker stuck", maxStuckCount), qgOutput))
+		return
+	}
 
 	d.mu.Lock()
 	d.attemptCounts[beadID]++
@@ -581,17 +594,28 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		return
 	}
 
+	// Retrieve relevant memories for retry prompt (best-effort, before lock).
+	var memCtx string
+	if d.memories != nil {
+		searchTerm := beadID
+		if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && detail != nil && detail.Title != "" {
+			searchTerm = detail.Title
+		}
+		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, searchTerm, 0)
+	}
+
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
 	if ok {
 		_ = d.sendToWorker(w, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
-				BeadID:   beadID,
-				Worktree: w.worktree,
-				Model:    w.model,
-				Attempt:  attempt,
-				Feedback: qgOutput,
+				BeadID:        beadID,
+				Worktree:      w.worktree,
+				Model:         w.model,
+				Attempt:       attempt,
+				Feedback:      qgOutput,
+				MemoryContext: memCtx,
 			},
 		})
 		w.state = WorkerBusy
