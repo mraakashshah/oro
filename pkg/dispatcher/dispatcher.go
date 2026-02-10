@@ -635,11 +635,12 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		var conflictErr *merge.ConflictError
 		if errors.As(err, &conflictErr) {
 			// Spawn ops agent to resolve conflict
-			d.ops.ResolveMergeConflict(ctx, ops.MergeOpts{
+			resultCh := d.ops.ResolveMergeConflict(ctx, ops.MergeOpts{
 				BeadID:        beadID,
 				Worktree:      worktree,
 				ConflictFiles: conflictErr.Files,
 			})
+			go d.handleMergeConflictResult(ctx, beadID, workerID, worktree, resultCh)
 			_ = d.logEvent(ctx, "merge_conflict", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"files":%q}`, conflictErr.Files))
 			return
@@ -655,6 +656,26 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	_ = d.completeAssignment(ctx, beadID)
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
+}
+
+// handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
+func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, workerID, worktree string, resultCh <-chan ops.Result) {
+	select {
+	case <-ctx.Done():
+		return
+	case result := <-resultCh:
+		switch result.Verdict {
+		case ops.VerdictResolved:
+			_ = d.logEvent(ctx, "merge_conflict_resolved", "ops", beadID, workerID, result.Feedback)
+			// Resolution succeeded — retry the merge.
+			d.mergeAndComplete(ctx, beadID, workerID, worktree, "main")
+		default:
+			// Resolution failed or unknown verdict — escalate.
+			_ = d.logEvent(ctx, "merge_conflict_failed", "ops", beadID, workerID, result.Feedback)
+			_ = d.escalator.Escalate(ctx, FormatEscalation(EscMergeConflict, beadID,
+				"merge conflict resolution failed", result.Feedback))
+		}
+	}
 }
 
 // maxQGRetries is the number of quality-gate retry attempts before escalating

@@ -4414,3 +4414,114 @@ func TestAssignBead_RevertsBusyOnSendFailure(t *testing.T) {
 		t.Fatalf("expected worktree %q to be removed, removed: %v", expectedPath, removed)
 	}
 }
+
+// --- Merge conflict result channel consumption tests (oro-ptp) ---
+
+// TestMergeConflict_ResultChannelConsumed verifies that when a merge conflict
+// triggers ResolveMergeConflict, the returned result channel is consumed and
+// the resolution outcome is logged.
+func TestMergeConflict_ResultChannelConsumed(t *testing.T) {
+	d, beadSrc, _, _, gitRunner, spawnMock := newTestDispatcher(t)
+
+	// Configure git runner to return conflict on rebase
+	gitRunner.mu.Lock()
+	gitRunner.conflict = true
+	gitRunner.mu.Unlock()
+
+	// Configure ops agent to return RESOLVED
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "Fixed conflicts in main.go\n\nRESOLVED\n\nMerge completed successfully."
+	spawnMock.mu.Unlock()
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-mcr", Title: "Merge conflict resolution", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE — will trigger merge which conflicts, then ops agent resolves
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{BeadID: "bead-mcr", WorkerID: "w1", QualityGatePassed: true},
+	})
+
+	// Wait for merge_conflict_resolved event — proves the result channel was consumed
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if eventCount(t, d.db, "merge_conflict_resolved") > 0 {
+			return // success
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("expected 'merge_conflict_resolved' event — result channel should have been consumed")
+}
+
+// TestMergeConflict_ResolutionFailed_Escalates verifies that when the merge
+// conflict ops agent fails, the dispatcher escalates to the manager.
+func TestMergeConflict_ResolutionFailed_Escalates(t *testing.T) {
+	d, beadSrc, _, esc, gitRunner, spawnMock := newTestDispatcher(t)
+
+	// Configure git runner to return conflict on rebase
+	gitRunner.mu.Lock()
+	gitRunner.conflict = true
+	gitRunner.mu.Unlock()
+
+	// Configure ops agent to return FAILED
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "Cannot resolve conflicts automatically.\n\nFAILED\n\nSemantic conflict."
+	spawnMock.mu.Unlock()
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]Bead{{ID: "bead-mcf", Title: "Merge conflict fail", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE — triggers merge conflict, ops agent fails
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{BeadID: "bead-mcf", WorkerID: "w1", QualityGatePassed: true},
+	})
+
+	// Wait for escalation — proves the result channel was consumed and failure handled
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs := esc.Messages()
+		for _, m := range msgs {
+			if strings.Contains(m, "bead-mcf") && strings.Contains(m, "MERGE_CONFLICT") {
+				// Also verify the event was logged
+				if eventCount(t, d.db, "merge_conflict_failed") > 0 {
+					return // success
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected MERGE_CONFLICT escalation for bead-mcf, got: %v", esc.Messages())
+}
