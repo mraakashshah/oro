@@ -282,6 +282,10 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 		return fmt.Errorf("ASSIGN message missing payload")
 	}
 
+	// Kill any existing subprocess from a previous assignment (e.g. QG retry
+	// re-ASSIGN) to prevent zombie process leaks.
+	w.killProc()
+
 	w.mu.Lock()
 	w.beadID = msg.Assign.BeadID
 	w.worktree = msg.Assign.Worktree

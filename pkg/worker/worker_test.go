@@ -2955,3 +2955,85 @@ func TestSubprocessExit_RunsQGAndSendsDone(t *testing.T) {
 		<-errCh
 	})
 }
+
+// multiMockSpawner returns a different mockProcess for each Spawn call,
+// enabling tests to verify that old processes are killed on re-ASSIGN.
+type multiMockSpawner struct {
+	mu        sync.Mutex
+	calls     []spawnCall
+	processes []*mockProcess // pre-populated; Spawn pops from index 0..n
+	idx       int
+}
+
+func (s *multiMockSpawner) Spawn(_ context.Context, model, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, spawnCall{Model: model, Prompt: prompt, Workdir: workdir})
+	if s.idx >= len(s.processes) {
+		return nil, nil, nil, fmt.Errorf("no more mock processes")
+	}
+	proc := s.processes[s.idx]
+	s.idx++
+	return proc, nil, nil, nil
+}
+
+func TestHandleAssign_KillsOldSubprocess(t *testing.T) {
+	t.Parallel()
+
+	oldProc := newMockProcess()
+	newProc := newMockProcess()
+
+	spawner := &multiMockSpawner{
+		processes: []*mockProcess{oldProc, newProc},
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-reassign", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// First ASSIGN — spawns oldProc
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-first",
+			Worktree: "/tmp/wt-first",
+		},
+	})
+	// Drain STATUS from first ASSIGN
+	_ = readMessage(t, dispatcherConn)
+
+	// oldProc should be running (not killed)
+	if oldProc.Killed() {
+		t.Fatal("old process should NOT be killed yet")
+	}
+
+	// Second ASSIGN (re-assignment after QG failure) — should kill oldProc, spawn newProc
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-retry",
+			Worktree: "/tmp/wt-retry",
+		},
+	})
+	// Drain STATUS from second ASSIGN
+	_ = readMessage(t, dispatcherConn)
+
+	// Old process must have been killed before the new spawn
+	if !oldProc.Killed() {
+		t.Error("expected old subprocess to be killed on re-ASSIGN")
+	}
+
+	// New process should still be alive
+	if newProc.Killed() {
+		t.Error("new subprocess should NOT be killed")
+	}
+
+	cancel()
+	<-errCh
+}
