@@ -162,6 +162,32 @@ func TestShouldBypass(t *testing.T) {
 			want: true,
 		},
 
+		// --- Multi-language test file bypass ---
+		{
+			name: "Python test file (test_ prefix)",
+			input: codesearch.ToolInput{
+				FilePath: "/project/tests/test_handler.py",
+				FileSize: 15000,
+			},
+			want: true,
+		},
+		{
+			name: "TypeScript test file (.test.ts)",
+			input: codesearch.ToolInput{
+				FilePath: "/project/src/handler.test.ts",
+				FileSize: 15000,
+			},
+			want: true,
+		},
+		{
+			name: "JavaScript spec file (.spec.js)",
+			input: codesearch.ToolInput{
+				FilePath: "/project/src/handler.spec.js",
+				FileSize: 15000,
+			},
+			want: true,
+		},
+
 		// --- Should NOT bypass (return false) — intercept for summarization ---
 		{
 			name: "large Go source file",
@@ -184,6 +210,22 @@ func TestShouldBypass(t *testing.T) {
 			input: codesearch.ToolInput{
 				FilePath: "/project/main.go",
 				FileSize: 5000,
+			},
+			want: false,
+		},
+		{
+			name: "large Python source file",
+			input: codesearch.ToolInput{
+				FilePath: "/project/src/server.py",
+				FileSize: 10000,
+			},
+			want: false,
+		},
+		{
+			name: "large TypeScript source file",
+			input: codesearch.ToolInput{
+				FilePath: "/project/src/server.ts",
+				FileSize: 10000,
 			},
 			want: false,
 		},

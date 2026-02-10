@@ -21,6 +21,8 @@ func TestHookDispatch(t *testing.T) {
 	smallGoFile := writeTempGoFile(t, 5)
 	// Create a file that will cause summarize to fail (not valid Go).
 	badFile := writeTempFile(t, ".go", "this is not valid Go code {{{")
+	largePyFile := writeTempFile(t, ".py", generatePythonFixture())
+	largeTSFile := writeTempFile(t, ".ts", generateTypeScriptFixture())
 
 	tests := []struct {
 		name       string
@@ -143,6 +145,30 @@ func TestHookDispatch(t *testing.T) {
 			wantAllow: true,
 		},
 		{
+			name: "deny and summarize large Python file Read",
+			input: map[string]any{
+				"hook_type": "PreToolUse",
+				"tool_name": "Read",
+				"tool_input": map[string]any{
+					"file_path": largePyFile,
+				},
+			},
+			wantDeny:   true,
+			wantReason: "func",
+		},
+		{
+			name: "deny and summarize large TypeScript file Read",
+			input: map[string]any{
+				"hook_type": "PreToolUse",
+				"tool_name": "Read",
+				"tool_input": map[string]any{
+					"file_path": largeTSFile,
+				},
+			},
+			wantDeny:   true,
+			wantReason: "func",
+		},
+		{
 			name: "allow Read of nonexistent file (stat error = graceful allow)",
 			input: map[string]any{
 				"hook_type": "PreToolUse",
@@ -231,4 +257,38 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return digits
+}
+
+// generatePythonFixture returns a Python source file >3KB with classes and functions.
+func generatePythonFixture() string {
+	var b strings.Builder
+	b.WriteString("from typing import Any, Optional, Callable\nimport asyncio\n\n")
+	for i := range 20 {
+		b.WriteString("class Service" + itoa(i) + ":\n")
+		b.WriteString("    def __init__(self) -> None:\n")
+		b.WriteString("        self.name = \"service_" + itoa(i) + "\"\n\n")
+		b.WriteString("    def process(self, data: dict) -> dict:\n")
+		b.WriteString("        return {\"status\": \"ok\", \"service\": self.name}\n\n")
+		b.WriteString("    async def handle(self, request: Any) -> dict:\n")
+		b.WriteString("        result = await asyncio.sleep(0)\n")
+		b.WriteString("        return {\"handled\": True}\n\n")
+	}
+	b.WriteString("def main() -> None:\n")
+	b.WriteString("    pass\n")
+	return b.String()
+}
+
+// generateTypeScriptFixture returns a TypeScript source file >3KB.
+func generateTypeScriptFixture() string {
+	var b strings.Builder
+	b.WriteString("export interface Config {\n  port: number;\n  host: string;\n}\n\n")
+	for i := range 20 {
+		b.WriteString("interface Handler" + itoa(i) + " {\n")
+		b.WriteString("  handle(req: Request): Promise<Response>;\n")
+		b.WriteString("  name: string;\n}\n\n")
+		b.WriteString("function processRequest" + itoa(i) + "(req: Request): Response {\n")
+		b.WriteString("  return new Response(\"ok\");\n}\n\n")
+	}
+	b.WriteString("export function main(): void {\n  console.log(\"start\");\n}\n")
+	return b.String()
 }

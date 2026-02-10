@@ -62,9 +62,25 @@ func isClaudeDir(path string) bool {
 	return strings.Contains(path, "/.claude/") || strings.HasPrefix(path, ".claude/")
 }
 
-// isTestFile returns true if the file is a Go test file.
+// isTestFile returns true if the file is a test file in any supported language.
 func isTestFile(path string) bool {
-	return strings.HasSuffix(path, "_test.go")
+	base := filepath.Base(path)
+	if strings.HasSuffix(base, "_test.go") {
+		return true
+	}
+	if strings.HasSuffix(base, ".py") {
+		name := strings.TrimSuffix(base, ".py")
+		if strings.HasPrefix(name, "test_") || strings.HasSuffix(name, "_test") {
+			return true
+		}
+	}
+	ext := filepath.Ext(base)
+	nameWithoutExt := strings.TrimSuffix(base, ext)
+	innerExt := filepath.Ext(nameWithoutExt)
+	if innerExt == ".test" || innerExt == ".spec" {
+		return true
+	}
+	return false
 }
 
 // isNonCodeExt returns true if the given extension is a non-code file type.

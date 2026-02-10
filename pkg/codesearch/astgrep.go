@@ -1,11 +1,13 @@
 package codesearch
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 type astGrepMatch struct {
@@ -107,6 +109,8 @@ rule:
       - has:
           kind: class_declaration`
 
+const astGrepTimeout = 5 * time.Second
+
 func summarizeWithAstGrep(filePath string, lang Language) (string, error) {
 	rules, ok := langRules[lang]
 	if !ok {
@@ -131,7 +135,9 @@ func runAstGrep(filePath, rules string) ([]astGrepMatch, error) {
 	if err != nil {
 		return nil, fmt.Errorf("codesearch: ast-grep not found in PATH: %w", err)
 	}
-	cmd := exec.Command(astGrepBin, "scan", "--json", "--inline-rules", rules, filePath) //nolint:gosec,noctx // filePath from trusted caller; no context available yet
+	ctx, cancel := context.WithTimeout(context.Background(), astGrepTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, astGrepBin, "scan", "--json", "--inline-rules", rules, filePath) //nolint:gosec // filePath from trusted caller
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("codesearch: ast-grep failed: %w", err)
@@ -205,7 +211,7 @@ func ruleIDToKind(ruleID string) string {
 	}
 }
 
-func formatPythonSignature(kind, firstLine, ruleID string) (string, string) { //nolint:gocritic // clarity
+func formatPythonSignature(kind, firstLine, ruleID string) (string, string) { //nolint:gocritic // readability
 	switch ruleID {
 	case "py-func":
 		return "func", extractPythonFuncSig(firstLine)
@@ -234,7 +240,7 @@ func extractPythonClassSig(line string) string {
 	return strings.TrimPrefix(sig, "class ")
 }
 
-func formatTSSignature(kind, firstLine, ruleID string) (string, string) { //nolint:gocritic // clarity
+func formatTSSignature(kind, firstLine, ruleID string) (string, string) { //nolint:gocritic // readability
 	switch ruleID {
 	case "ts-func", "js-func":
 		return "func", extractTSFuncSig(firstLine)

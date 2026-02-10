@@ -88,7 +88,7 @@ func HandleHook(input []byte) []byte {
 	}
 
 	// Attempt summarization.
-	summary, err := codesearch.Summarize(filePath)
+	summary, err := codesearch.SummarizeFile(filePath)
 	if err != nil {
 		// Fail open: if summarization fails, allow the read through.
 		return allowJSON
