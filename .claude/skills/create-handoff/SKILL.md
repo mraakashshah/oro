@@ -83,7 +83,47 @@ beads:
 | `next:` | Action items for next session |
 | `beads:` | Bead state for multi-session work (completed/in_progress/remaining/epic) |
 
-### 4. Capture Learnings
+### 4. Scan for Undocumented Learnings
+
+Before writing the handoff, scan for learnings that should be documented:
+
+1. **Read knowledge.jsonl**: `cat .beads/memory/knowledge.jsonl | jq -s '.'`
+2. **Filter to this session**: Look at entries whose `bead` field matches beads you worked on this session
+3. **Cross-reference**: Check if each learning already appears in `docs/decisions-and-discoveries.md`
+4. **Check frequency**: Count how many times each tag appears across ALL entries (not just this session)
+5. **Detect cross-bead patterns**: If the same tag or similar content appears across multiple beads worked this session, note it
+
+**Frequency thresholds:**
+
+| Count | Level | Action |
+|-------|-------|--------|
+| 1 | Note | Already surfaced at session start. No additional action. |
+| 2 | Consider | Note: "this has come up before" — include previous occurrence |
+| 3+ | Create | Propose specific codification target (see decision tree below) |
+
+**Decision tree for 3+ frequency:**
+- Repeatable sequence of steps → Propose a **skill** (`.claude/skills/<name>/SKILL.md`)
+- Triggered by specific event → Propose a **hook** (`.claude/hooks/<name>.py`)
+- Heuristic or constraint → Propose a **rule** (`.claude/rules/<file>.md`)
+- Solved problem with context → Propose a **solution doc** (`docs/decisions-and-discoveries.md` entry)
+
+**Add to handoff YAML** (after `next:` section):
+
+```yaml
+learnings:
+  undocumented:
+    - "<content>" (<bead>, <tags>)
+  proposed_codification:
+    - type: skill|hook|rule|solution
+      target: <file path>
+      content: "<what to codify>"
+      frequency: <count>
+      tag: <primary tag>
+```
+
+If no undocumented learnings exist, omit the `learnings:` section entirely.
+
+### 5. Capture Learnings
 
 Before writing the handoff, ask yourself: "Did I learn anything this session worth preserving?"
 
