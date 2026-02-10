@@ -101,7 +101,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
 		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -222,7 +222,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
 		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon text", "manager beacon text")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -248,7 +248,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -306,7 +306,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon text here", "manager beacon text here")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -392,7 +392,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -440,7 +440,7 @@ func TestPaneReady(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "Welcome to Claude\n> "
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.PaneReady("oro:0.0")
 		if err != nil {
 			t.Fatalf("PaneReady returned error: %v", err)
@@ -517,7 +517,7 @@ func TestPaneReady(t *testing.T) {
 		// Claude Code sometimes has the prompt with some whitespace.
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "some output\n  > "
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.PaneReady("oro:0.0")
 		if err != nil {
 			t.Fatalf("PaneReady returned error: %v", err)
@@ -532,6 +532,154 @@ func TestPaneReady(t *testing.T) {
 		err := sess.PaneReady("oro:0.0")
 		if err != nil {
 			t.Fatalf("PaneReady returned error: %v", err)
+		}
+	})
+}
+
+func TestVerifyBeaconReceived(t *testing.T) {
+	t.Run("returns nil when indicator found immediately", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.1")] = "some output\nbd stats\nmore output"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.VerifyBeaconReceived("oro:0.1", "bd stats", time.Second)
+		if err != nil {
+			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
+		}
+	})
+
+	t.Run("returns nil after polling succeeds on third attempt", func(t *testing.T) {
+		fake := newFakeCmd()
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
+		fake.seqOut[captureKey] = []string{
+			"claude loading...",
+			"still waiting...",
+			"running bd stats\noutput here",
+		}
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.VerifyBeaconReceived("oro:0.1", "bd stats", 5*time.Second)
+		if err != nil {
+			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
+		}
+
+		// Count capture-pane calls — should be exactly 3.
+		count := 0
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "capture-pane" {
+				count++
+			}
+		}
+		if count != 3 {
+			t.Errorf("expected 3 capture-pane calls, got %d", count)
+		}
+	})
+
+	t.Run("returns error on timeout with diagnostic pane content", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.1")] = "stuck on loading screen"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.VerifyBeaconReceived("oro:0.1", "bd stats", 50*time.Millisecond)
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		if !strings.Contains(err.Error(), "oro:0.1") {
+			t.Errorf("expected pane target in error, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "bd stats") {
+			t.Errorf("expected indicator in error, got: %v", err)
+		}
+		// Error should include last captured pane content for diagnostics
+		if !strings.Contains(err.Error(), "stuck on loading screen") {
+			t.Errorf("expected pane content in error for diagnostics, got: %v", err)
+		}
+	})
+
+	t.Run("indicator matching is substring-based", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "some text with > prompt visible"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.VerifyBeaconReceived("oro:0.0", ">", time.Second)
+		if err != nil {
+			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
+		}
+	})
+
+	t.Run("tolerates capture-pane errors and keeps polling", func(t *testing.T) {
+		fake := newFakeCmd()
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
+		// First call returns empty (simulating error), second has indicator
+		fake.seqOut[captureKey] = []string{
+			"",
+			"bd stats\nsome output",
+		}
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.VerifyBeaconReceived("oro:0.1", "bd stats", 5*time.Second)
+		if err != nil {
+			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
+		}
+	})
+}
+
+func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
+	t.Run("Create calls VerifyBeaconReceived for manager pane after injection", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCapturePaneReady(fake, "oro")
+
+		// After beacon injection, the manager pane will show "bd stats" activity.
+		// We need sequential output: first calls return prompt (for PaneReady),
+		// then subsequent calls return beacon activity (for VerifyBeaconReceived).
+		// Since stubCapturePaneReady uses output (not seqOut), and VerifyBeaconReceived
+		// also uses capture-pane on the same key, we use seqOut to handle both phases.
+		managerCaptureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
+		delete(fake.output, managerCaptureKey)
+		fake.seqOut[managerCaptureKey] = []string{
+			readyPaneOutput,            // PaneReady poll
+			"bd stats\noutput visible", // VerifyBeaconReceived poll
+		}
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
+		err := sess.Create("architect beacon", "manager beacon")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// Verify that capture-pane was called for the manager pane MORE than once
+		// (once for PaneReady, at least once for VerifyBeaconReceived).
+		managerCaptureCount := 0
+		for _, call := range fake.calls {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:0.1") {
+				managerCaptureCount++
+			}
+		}
+		if managerCaptureCount < 2 {
+			t.Errorf("expected at least 2 capture-pane calls for manager (PaneReady + VerifyBeacon), got %d", managerCaptureCount)
+		}
+	})
+
+	t.Run("Create does not fail when beacon verification times out (warning only)", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCapturePaneReady(fake, "oro")
+
+		// Manager pane never shows beacon activity after injection.
+		managerCaptureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
+		delete(fake.output, managerCaptureKey)
+		fake.seqOut[managerCaptureKey] = []string{
+			readyPaneOutput,    // PaneReady poll succeeds
+			"no beacon output", // VerifyBeaconReceived polls — never shows indicator
+		}
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		// Create should succeed even if beacon verification fails — it's a warning
+		err := sess.Create("architect beacon", "manager beacon")
+		if err != nil {
+			t.Fatalf("Create should not fail on beacon verification timeout, got: %v", err)
 		}
 	})
 }

@@ -270,7 +270,7 @@ func TestStartSendsDirective(t *testing.T) {
 	tmuxRunner := &mockCmdRunner{}
 
 	var buf bytes.Buffer
-	err = runFullStart(&buf, 2, "sonnet", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {})
+	err = runFullStart(&buf, 2, "sonnet", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("runFullStart: %v", err)
 	}

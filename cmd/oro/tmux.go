@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -29,12 +30,16 @@ const defaultReadyTimeout = 30 * time.Second
 // pollInterval is the time between capture-pane readiness checks.
 const pollInterval = 500 * time.Millisecond
 
+// defaultBeaconTimeout is the default time to wait for beacon verification.
+const defaultBeaconTimeout = 60 * time.Second
+
 // TmuxSession manages a tmux session with the Oro layout.
 type TmuxSession struct {
-	Name         string
-	Runner       CmdRunner
-	Sleeper      func(time.Duration) // optional; overrides time.Sleep for testing
-	ReadyTimeout time.Duration       // timeout for Claude readiness polling; 0 means defaultReadyTimeout
+	Name          string
+	Runner        CmdRunner
+	Sleeper       func(time.Duration) // optional; overrides time.Sleep for testing
+	ReadyTimeout  time.Duration       // timeout for Claude readiness polling; 0 means defaultReadyTimeout
+	BeaconTimeout time.Duration       // timeout for beacon verification polling; 0 means defaultBeaconTimeout
 }
 
 // NewTmuxSession creates a TmuxSession with the default ExecRunner.
@@ -99,6 +104,16 @@ func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
 		return fmt.Errorf("tmux send-keys manager beacon: %w", err)
 	}
 
+	// Verify manager received beacon (look for bd stats execution).
+	beaconTimeout := s.BeaconTimeout
+	if beaconTimeout == 0 {
+		beaconTimeout = defaultBeaconTimeout
+	}
+	if err := s.VerifyBeaconReceived(s.Name+":0.1", "bd stats", beaconTimeout); err != nil {
+		// Warning only — don't fail startup.
+		fmt.Fprintf(os.Stderr, "warning: manager beacon may not have been received: %v\n", err)
+	}
+
 	return nil
 }
 
@@ -121,6 +136,30 @@ func (s *TmuxSession) PaneReady(paneTarget string) error {
 			return fmt.Errorf("claude did not become ready in pane %s within %v", paneTarget, timeout)
 		}
 		s.sleep(pollInterval)
+	}
+}
+
+// VerifyBeaconReceived polls the pane content via tmux capture-pane until the
+// given indicator string appears, confirming the Claude session received and
+// started processing the beacon. It polls every 1s and returns an error with
+// diagnostic pane content on timeout.
+func (s *TmuxSession) VerifyBeaconReceived(paneTarget, indicator string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastOutput string
+
+	for {
+		out, err := s.Runner.Run("tmux", "capture-pane", "-p", "-t", paneTarget)
+		if err == nil {
+			lastOutput = out
+			if strings.Contains(out, indicator) {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("beacon indicator %q not found in pane %s within %v; last pane content:\n%s",
+				indicator, paneTarget, timeout, lastOutput)
+		}
+		s.sleep(1 * time.Second)
 	}
 }
 

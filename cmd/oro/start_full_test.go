@@ -88,7 +88,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 3, "sonnet", spawner, fakeTmux, 100*time.Millisecond, noopSleep)
+		err := runFullStart(&stdout, 3, "sonnet", spawner, fakeTmux, 100*time.Millisecond, noopSleep, 50*time.Millisecond)
 		if err != nil {
 			t.Fatalf("runFullStart returned error: %v", err)
 		}
@@ -188,7 +188,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", spawner, newFakeCmd(), 100*time.Millisecond, noopSleep)
+		err := runFullStart(&stdout, 2, "sonnet", spawner, newFakeCmd(), 100*time.Millisecond, noopSleep, 50*time.Millisecond)
 		if err == nil {
 			t.Fatal("expected error when spawn fails")
 		}
@@ -211,7 +211,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", spawner, newFakeCmd(), 100*time.Millisecond, noopSleep)
+		err := runFullStart(&stdout, 2, "sonnet", spawner, newFakeCmd(), 100*time.Millisecond, noopSleep, 50*time.Millisecond)
 		if err == nil {
 			t.Fatal("expected error when socket never appears")
 		}
@@ -241,7 +241,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", spawner, fakeTmux, 100*time.Millisecond, noopSleep)
+		err := runFullStart(&stdout, 2, "sonnet", spawner, fakeTmux, 100*time.Millisecond, noopSleep, 50*time.Millisecond)
 		if err == nil {
 			t.Fatal("expected error when tmux create fails")
 		}
@@ -257,7 +257,7 @@ func TestCreateWithManagerBeacon(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("You are a test architect.", "You are a test manager.")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -301,7 +301,7 @@ func TestCreateWithManagerBeacon(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect prompt", "manager prompt")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
