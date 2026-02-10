@@ -1,0 +1,82 @@
+---
+date: 2026-02-09
+status: partial
+---
+
+goal: >
+  Executed 5 of 6 dogfood beads (oro-bk6 epic). All unblocked beads
+  completed with TDD, atomic commits, and full quality gate. One bead
+  remains: bk6.4 (wire AssemblePrompt).
+
+now: >
+  Pick up oro-bk6.4 (P1, wire AssemblePrompt with bead details).
+  This is the last bead in the dogfood epic. After that, the oro-bk6
+  epic can be closed.
+
+test: go test -race -count=1 ./...
+
+done_this_session:
+  - task: "bk6.1: Process manager uses os.Args[0]"
+    files: [pkg/dispatcher/process_manager.go, pkg/dispatcher/process_manager_test.go]
+    details: >
+      Changed NewOroProcessManager to capture os.Args[0] instead of
+      hardcoding "oro". Added CmdForWorker() export for testability.
+      Commit: 077e7e8
+
+  - task: "bk6.2: Fix manager beacon CLI commands"
+    files: [cmd/oro/manager.go, cmd/oro/manager_test.go]
+    details: >
+      Changed all runtime commands in beacon from bare "oro scale/pause/resume/focus/status"
+      to "oro directive scale/pause/resume/focus/status". Kept "oro start" and "oro stop"
+      as top-level. Commit: 98b6101
+
+  - task: "bk6.5: Call beads.Close() after merge"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    details: >
+      Added d.beads.Close(ctx, beadID, reason) call in mergeAndComplete()
+      after successful merge. Enhanced mockBeadSource to track closed IDs.
+      Commit: 3690db3
+
+  - task: "jtw.4: Wire worker SetMemoryStore"
+    files: [cmd/oro/cmd_worker.go, cmd/oro/cmd_worker_test.go]
+    details: >
+      Worker now opens shared state.db and calls w.SetMemoryStore() so
+      [MEMORY] markers are captured in real-time. Fail-open if DB
+      unavailable. Commit: e433291
+
+  - task: "bk6.3: Auto-send start directive"
+    files: [cmd/oro/cmd_start.go, cmd/oro/start_test.go, cmd/oro/start_full_test.go]
+    details: >
+      runFullStart now sends "start" directive after socket is ready,
+      transitioning dispatcher from StateInert to StateRunning.
+      Updated fakeSpawner to use real UDS listeners. Commit: 01a1368
+
+decisions:
+  - testability_over_integration: >
+      For jtw.4, wrote unit test for openWorkerMemoryStore instead of
+      full integration test. Worker memory extraction already tested
+      in pkg/worker/worker_test.go.
+
+beads:
+  completed: [oro-bk6.1, oro-bk6.2, oro-bk6.3, oro-bk6.5, oro-jtw.4]
+  remaining: [oro-bk6.4]
+  epic: oro-bk6
+
+next:
+  - "Pick up oro-bk6.4: Wire AssemblePrompt with bead details from beads.Show()"
+  - "Close oro-bk6 epic after bk6.4 is done"
+  - "Consider starting oro-cwz.1 (P1, multi-language summarization) next"
+
+files:
+  modified:
+    - pkg/dispatcher/process_manager.go
+    - pkg/dispatcher/process_manager_test.go
+    - cmd/oro/manager.go
+    - cmd/oro/manager_test.go
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - cmd/oro/cmd_worker.go
+    - cmd/oro/cmd_worker_test.go
+    - cmd/oro/cmd_start.go
+    - cmd/oro/start_test.go
+    - cmd/oro/start_full_test.go
