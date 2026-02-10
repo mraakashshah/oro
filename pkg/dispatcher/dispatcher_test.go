@@ -4525,3 +4525,72 @@ func TestMergeConflict_ResolutionFailed_Escalates(t *testing.T) {
 	}
 	t.Fatalf("expected MERGE_CONFLICT escalation for bead-mcf, got: %v", esc.Messages())
 }
+
+// TestHandleHandoff_NoAssignAfterShutdown verifies that tryAssign cannot grab a
+// worker that is in the process of shutting down due to a handoff. The worker
+// must transition through WorkerShuttingDown (invisible to tryAssign) rather
+// than going straight to WorkerIdle.
+func TestHandleHandoff_NoAssignAfterShutdown(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect a worker and register it.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-handoff", ContextPct: 10},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Start the dispatcher so tryAssign is active.
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Manually put the worker into busy state with a bead assignment,
+	// simulating what assignBead does.
+	d.mu.Lock()
+	w := d.workers["w-handoff"]
+	w.state = WorkerBusy
+	w.beadID = "bead-handoff"
+	w.worktree = "/tmp/worktree-handoff"
+	w.model = "test-model"
+	d.mu.Unlock()
+
+	// Now trigger a handoff. This sends SHUTDOWN and should NOT make the
+	// worker visible to tryAssign as idle.
+	d.handleHandoff(context.Background(), "w-handoff", protocol.Message{
+		Type: protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{
+			BeadID:   "bead-handoff",
+			WorkerID: "w-handoff",
+		},
+	})
+
+	// After handleHandoff, the worker state must NOT be WorkerIdle.
+	// It should be WorkerShuttingDown so that tryAssign skips it.
+	st, _, ok := d.WorkerInfo("w-handoff")
+	if !ok {
+		t.Fatal("expected worker to still be tracked")
+	}
+	if st == WorkerIdle {
+		t.Fatalf("worker state after handoff should not be WorkerIdle (got %s); "+
+			"tryAssign could race and grab this worker", st)
+	}
+	if st != WorkerShuttingDown {
+		t.Fatalf("expected WorkerShuttingDown, got %s", st)
+	}
+
+	// Verify tryAssign does NOT pick up this worker even though there are
+	// ready beads.
+	beadSrc.SetBeads([]Bead{{ID: "bead-new", Title: "New task", Priority: 1}})
+	d.tryAssign(context.Background())
+
+	// Worker should still be ShuttingDown — not reassigned to bead-new.
+	st2, beadID, _ := d.WorkerInfo("w-handoff")
+	if st2 == WorkerBusy && beadID == "bead-new" {
+		t.Fatal("tryAssign grabbed a shutting-down worker — race condition!")
+	}
+	if st2 != WorkerShuttingDown {
+		t.Fatalf("expected worker to remain WorkerShuttingDown, got %s", st2)
+	}
+}

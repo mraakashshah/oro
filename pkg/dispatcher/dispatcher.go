@@ -127,9 +127,10 @@ type WorkerState string
 
 // Worker state constants.
 const (
-	WorkerIdle      WorkerState = "idle"
-	WorkerBusy      WorkerState = "busy"
-	WorkerReviewing WorkerState = "reviewing"
+	WorkerIdle         WorkerState = "idle"
+	WorkerBusy         WorkerState = "busy"
+	WorkerReviewing    WorkerState = "reviewing"
+	WorkerShuttingDown WorkerState = "shutting_down" // transient: handoff SHUTDOWN sent, not yet disconnected
 )
 
 // trackedWorker holds runtime state for a connected worker.
@@ -711,7 +712,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		worktree = w.worktree
 		model = w.model
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-		w.state = WorkerIdle
+		w.state = WorkerShuttingDown // transient state — invisible to tryAssign
 		w.beadID = ""
 	}
 	d.mu.Unlock()
