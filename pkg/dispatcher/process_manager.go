@@ -48,11 +48,18 @@ func NewOroProcessManager(socketPath string) *ExecProcessManager {
 		socketPath: socketPath,
 		procs:      make(map[string]*os.Process),
 	}
+	self := os.Args[0]
 	pm.cmdFactory = func(id string) *exec.Cmd {
 		//nolint:gosec // intentionally spawning worker subprocess
-		return exec.CommandContext(context.Background(), "oro", "worker", "--socket", socketPath, "--id", id)
+		return exec.CommandContext(context.Background(), self, "worker", "--socket", socketPath, "--id", id)
 	}
 	return pm
+}
+
+// CmdForWorker returns the exec.Cmd that would be used to spawn a worker
+// with the given ID, without actually starting it. Useful for testing.
+func (pm *ExecProcessManager) CmdForWorker(id string) *exec.Cmd {
+	return pm.cmdFactory(id)
 }
 
 // Spawn starts a new worker process with the given ID and tracks it.

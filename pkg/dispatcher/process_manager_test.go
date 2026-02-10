@@ -141,6 +141,35 @@ func TestExecProcessManager_ConcurrentSpawn(t *testing.T) {
 	}
 }
 
+// TestSpawnUsesCurrentBinary verifies that NewOroProcessManager spawns
+// workers using os.Args[0] (the current binary path) instead of a
+// hardcoded "oro" string. This ensures oro works without being on PATH.
+func TestSpawnUsesCurrentBinary(t *testing.T) {
+	pm := dispatcher.NewOroProcessManager("/tmp/test.sock")
+
+	cmd := pm.CmdForWorker("w-test")
+	if cmd == nil {
+		t.Fatal("CmdForWorker returned nil")
+	}
+
+	want := os.Args[0]
+	got := cmd.Args[0]
+	if got != want {
+		t.Fatalf("expected command to use os.Args[0] (%q), got %q", want, got)
+	}
+
+	// Also verify the remaining args are correct.
+	expectedArgs := []string{want, "worker", "--socket", "/tmp/test.sock", "--id", "w-test"}
+	if len(cmd.Args) != len(expectedArgs) {
+		t.Fatalf("expected %d args, got %d: %v", len(expectedArgs), len(cmd.Args), cmd.Args)
+	}
+	for i, exp := range expectedArgs {
+		if cmd.Args[i] != exp {
+			t.Fatalf("arg[%d]: expected %q, got %q", i, exp, cmd.Args[i])
+		}
+	}
+}
+
 // TestExecProcessManager_Kill_AfterKillRemovesFromTracking verifies that
 // a second Kill on the same ID returns an error (already removed).
 func TestExecProcessManager_Kill_AfterKillRemovesFromTracking(t *testing.T) {
