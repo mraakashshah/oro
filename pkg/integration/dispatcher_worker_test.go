@@ -374,7 +374,7 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 	beadSrc.SetBeads(nil)
 
 	// Step 7: Worker sends DONE with quality gate passed
-	if err := w.SendDone(ctx, true); err != nil {
+	if err := w.SendDone(ctx, true, ""); err != nil {
 		t.Fatalf("send done: %v", err)
 	}
 

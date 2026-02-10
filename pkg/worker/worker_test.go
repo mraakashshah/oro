@@ -309,7 +309,7 @@ func TestSendDone_QualityGatePassed(t *testing.T) {
 
 	msgCh := readMessageAsync(t, dispatcherConn)
 
-	if err := w.SendDone(context.Background(), true); err != nil {
+	if err := w.SendDone(context.Background(), true, ""); err != nil {
 		t.Fatalf("sendDone: %v", err)
 	}
 
@@ -340,7 +340,7 @@ func TestSendDone_QualityGateFailed(t *testing.T) {
 
 	msgCh := readMessageAsync(t, dispatcherConn)
 
-	if err := w.SendDone(context.Background(), false); err != nil {
+	if err := w.SendDone(context.Background(), false, ""); err != nil {
 		t.Fatalf("sendDone: %v", err)
 	}
 
@@ -2378,7 +2378,7 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 
 	// SendDone should extract implicit memories.
 	doneCh := readMessageAsync(t, dispatcherConn)
-	if err := w.SendDone(ctx, true); err != nil {
+	if err := w.SendDone(ctx, true, ""); err != nil {
 		t.Fatalf("send done: %v", err)
 	}
 
@@ -2853,4 +2853,141 @@ func TestWorkerSendsInitialHeartbeat(t *testing.T) {
 	if msg.Heartbeat.ContextPct != 0 {
 		t.Fatalf("expected initial context_pct=0, got %d", msg.Heartbeat.ContextPct)
 	}
+}
+
+func TestSubprocessExit_RunsQGAndSendsDone(t *testing.T) {
+	t.Parallel()
+
+	t.Run("QG passes", func(t *testing.T) {
+		t.Parallel()
+
+		// Create temp worktree with a passing quality_gate.sh
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "quality_gate.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'all checks passed'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+			t.Fatal(err)
+		}
+
+		// io.Pipe simulates subprocess stdout.
+		pr, pw := io.Pipe()
+		proc := newMockProcess()
+
+		spawner := &mockSpawner{
+			process: proc,
+			stdout:  pr,
+		}
+
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-qg-pass", workerConn, spawner)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+		// Send ASSIGN with real temp worktree containing quality_gate.sh
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-qg-pass",
+				Worktree: tmpDir,
+			},
+		})
+
+		// Drain STATUS message
+		_ = readMessage(t, dispatcherConn)
+
+		// Write some output, then close stdout and let process exit
+		_, _ = pw.Write([]byte("doing work...\n"))
+		_ = pw.Close()
+		close(proc.waitCh)
+
+		// Worker should send DONE with QualityGatePassed=true
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgDone {
+			t.Fatalf("expected DONE, got %s", msg.Type)
+		}
+		if !msg.Done.QualityGatePassed {
+			t.Error("expected QualityGatePassed=true")
+		}
+		if msg.Done.BeadID != "bead-qg-pass" {
+			t.Errorf("expected bead_id bead-qg-pass, got %s", msg.Done.BeadID)
+		}
+
+		cancel()
+		<-errCh
+	})
+
+	t.Run("QG fails", func(t *testing.T) {
+		t.Parallel()
+
+		// Create temp worktree with a failing quality_gate.sh
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "quality_gate.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'lint error: unused var'\nexit 1\n"), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+			t.Fatal(err)
+		}
+
+		// io.Pipe simulates subprocess stdout.
+		pr, pw := io.Pipe()
+		proc := newMockProcess()
+
+		spawner := &mockSpawner{
+			process: proc,
+			stdout:  pr,
+		}
+
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-qg-fail", workerConn, spawner)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+		// Send ASSIGN with real temp worktree containing failing quality_gate.sh
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-qg-fail",
+				Worktree: tmpDir,
+			},
+		})
+
+		// Drain STATUS message
+		_ = readMessage(t, dispatcherConn)
+
+		// Write some output, then close stdout and let process exit
+		_, _ = pw.Write([]byte("doing work...\n"))
+		_ = pw.Close()
+		close(proc.waitCh)
+
+		// Worker should send DONE with QualityGatePassed=false and QGOutput populated
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgDone {
+			t.Fatalf("expected DONE, got %s", msg.Type)
+		}
+		if msg.Done.QualityGatePassed {
+			t.Error("expected QualityGatePassed=false")
+		}
+		if msg.Done.BeadID != "bead-qg-fail" {
+			t.Errorf("expected bead_id bead-qg-fail, got %s", msg.Done.BeadID)
+		}
+		if !strings.Contains(msg.Done.QGOutput, "lint error: unused var") {
+			t.Errorf("expected QGOutput to contain lint error, got: %q", msg.Done.QGOutput)
+		}
+
+		cancel()
+		<-errCh
+	})
 }

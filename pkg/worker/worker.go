@@ -94,6 +94,7 @@ type Worker struct {
 	contextPollInterval time.Duration
 	memStore            *memory.Store
 	sessionText         strings.Builder
+	outputWg            sync.WaitGroup // tracks processOutput goroutine completion
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -300,6 +301,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 
 	// Pipe subprocess stdout through memory marker extraction.
 	if stdout != nil {
+		w.outputWg.Add(1)
 		go w.processOutput(ctx, stdout)
 	}
 
@@ -311,12 +313,36 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	// Start context file watcher
 	go w.watchContext(ctx)
 
-	// Wait for subprocess completion in background
-	go func() {
-		_ = proc.Wait()
-	}()
+	// Wait for subprocess completion, run quality gate, and send DONE.
+	go w.awaitSubprocessAndReport(ctx, proc)
 
 	return nil
+}
+
+// awaitSubprocessAndReport waits for the subprocess to exit, ensures stdout
+// processing is complete, runs the quality gate, and sends a DONE message.
+func (w *Worker) awaitSubprocessAndReport(ctx context.Context, proc Process) {
+	_ = proc.Wait()
+
+	// Wait for processOutput to finish so all stdout is captured.
+	w.outputWg.Wait()
+
+	// Don't run QG or send DONE if context was cancelled (shutdown).
+	if ctx.Err() != nil {
+		return
+	}
+
+	w.mu.Lock()
+	wt := w.worktree
+	w.mu.Unlock()
+
+	passed, output, err := RunQualityGate(ctx, wt)
+	if err != nil {
+		// Script missing or cannot start — report as failed with error detail.
+		_ = w.SendDone(ctx, false, err.Error())
+		return
+	}
+	_ = w.SendDone(ctx, passed, output)
 }
 
 // processOutput reads subprocess stdout line by line, accumulates session text
@@ -324,6 +350,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 // When stdout closes (subprocess exits), it extracts implicit memories so that
 // learnings from failed attempts are persisted before the dispatcher re-assigns.
 func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
+	defer w.outputWg.Done()
 	defer func() { _ = stdout.Close() }()
 
 	scanner := bufio.NewScanner(stdout)
@@ -609,7 +636,7 @@ func (w *Worker) SendStatus(_ context.Context, state, result string) error {
 
 // SendDone sends a DONE message to the Dispatcher with the quality gate result.
 // Before sending, it extracts implicit memories from accumulated session text.
-func (w *Worker) SendDone(ctx context.Context, qualityGatePassed bool) error {
+func (w *Worker) SendDone(ctx context.Context, qualityGatePassed bool, qgOutput string) error {
 	w.extractImplicitMemories(ctx)
 
 	w.mu.Lock()
@@ -622,6 +649,7 @@ func (w *Worker) SendDone(ctx context.Context, qualityGatePassed bool) error {
 			BeadID:            beadID,
 			WorkerID:          w.ID,
 			QualityGatePassed: qualityGatePassed,
+			QGOutput:          qgOutput,
 		},
 	})
 }
