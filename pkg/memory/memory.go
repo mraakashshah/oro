@@ -352,6 +352,8 @@ func maxHybridCandidates(limit int) int {
 }
 
 // vectorSearch retrieves memories and ranks them by cosine similarity to queryVec.
+//
+//nolint:funlen // extra lines from file tracking columns in SELECT
 func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
 	if len(queryVec) == 0 {
 		return nil, nil
