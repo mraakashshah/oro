@@ -4333,3 +4333,84 @@ func TestPersistHandoffWithSummary_NilSummary(t *testing.T) {
 		t.Errorf("expected 0 summary memories for nil Summary, got %d", summaryCount)
 	}
 }
+
+// TestAssignBead_RevertsBusyOnSendFailure verifies that when sendToWorker fails
+// after the worker has been marked Busy, the worker state reverts to Idle and
+// the beadID/worktree fields are cleared.
+func TestAssignBead_RevertsBusyOnSendFailure(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+
+	// Create a broken connection: net.Pipe() then close the read end.
+	// Writes to server will fail because the other end is closed.
+	server, client := net.Pipe()
+	_ = client.Close()
+
+	// Register the worker with the broken connection
+	d.registerWorker("w-fail-assign", server)
+	t.Cleanup(func() { _ = server.Close() })
+
+	ctx := context.Background()
+	bead := Bead{ID: "bead-revert", Title: "Revert test", Priority: 1}
+
+	// Grab the tracked worker
+	d.mu.Lock()
+	w := d.workers["w-fail-assign"]
+	d.mu.Unlock()
+
+	// Verify worker starts Idle
+	st, beadID, ok := d.WorkerInfo("w-fail-assign")
+	if !ok {
+		t.Fatal("expected worker to exist")
+	}
+	if st != WorkerIdle {
+		t.Fatalf("expected worker to start Idle, got %s", st)
+	}
+	if beadID != "" {
+		t.Fatalf("expected empty beadID, got %q", beadID)
+	}
+
+	// Call assignBead — worktree creation succeeds, but sendToWorker should fail
+	d.assignBead(ctx, w, bead)
+
+	// Assert worker reverted to Idle with cleared fields
+	st, beadID, ok = d.WorkerInfo("w-fail-assign")
+	if !ok {
+		t.Fatal("expected worker to still exist after failed assign")
+	}
+	if st != WorkerIdle {
+		t.Fatalf("expected worker to revert to Idle after sendToWorker failure, got %s", st)
+	}
+	if beadID != "" {
+		t.Fatalf("expected beadID to be cleared after sendToWorker failure, got %q", beadID)
+	}
+
+	// Also verify worktree field is cleared
+	d.mu.Lock()
+	wt := w.worktree
+	model := w.model
+	d.mu.Unlock()
+	if wt != "" {
+		t.Fatalf("expected worktree to be cleared after sendToWorker failure, got %q", wt)
+	}
+	if model != "" {
+		t.Fatalf("expected model to be cleared after sendToWorker failure, got %q", model)
+	}
+
+	// Verify the worktree was also cleaned up (existing behavior)
+	wtMgr.mu.Lock()
+	removed := make([]string, len(wtMgr.removed))
+	copy(removed, wtMgr.removed)
+	wtMgr.mu.Unlock()
+
+	expectedPath := "/tmp/worktree-bead-revert"
+	found := false
+	for _, r := range removed {
+		if r == expectedPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected worktree %q to be removed, removed: %v", expectedPath, removed)
+	}
+}

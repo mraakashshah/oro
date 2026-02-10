@@ -1208,6 +1208,13 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 			AcceptanceCriteria: acceptance,
 		},
 	})
+	if err != nil {
+		// Revert worker to Idle so it is not permanently stuck in Busy.
+		w.state = WorkerIdle
+		w.beadID = ""
+		w.worktree = ""
+		w.model = ""
+	}
 	d.mu.Unlock()
 
 	if err != nil {
