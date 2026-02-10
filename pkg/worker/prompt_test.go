@@ -393,3 +393,24 @@ func TestAssemblePrompt_GitContent(t *testing.T) {
 		t.Error("expected Git section to mention 'new commits only'")
 	}
 }
+
+func TestAssemblePrompt_AttemptZero_NoRetryNote(t *testing.T) {
+	t.Parallel()
+	params := worker.PromptParams{BeadID: "bead-no-retry", Title: "No retry", Description: "First attempt", AcceptanceCriteria: "Tests pass", WorktreePath: "/tmp/wt-no-retry", Model: "claude-opus-4-6", Attempt: 0}
+	prompt := worker.AssemblePrompt(params)
+	if strings.Contains(prompt, "Retry attempt") {
+		t.Error("prompt should NOT contain Retry attempt when Attempt=0")
+	}
+}
+
+func TestAssemblePrompt_AttemptPositive_IncludesRetryNote(t *testing.T) {
+	t.Parallel()
+	params := worker.PromptParams{BeadID: "bead-retry", Title: "Retry", Description: "Second attempt", AcceptanceCriteria: "Tests pass", WorktreePath: "/tmp/wt-retry", Model: "claude-opus-4-6", Attempt: 2}
+	prompt := worker.AssemblePrompt(params)
+	if !strings.Contains(prompt, "Retry attempt 2") {
+		t.Error("expected Retry attempt 2")
+	}
+	if !strings.Contains(prompt, "quality gate has failed") {
+		t.Error("expected quality gate has failed note")
+	}
+}
