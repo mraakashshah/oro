@@ -4168,3 +4168,60 @@ func TestAssignUsesRichPrompt(t *testing.T) {
 		t.Fatal("timed out waiting for ASSIGN message")
 	}
 }
+
+func TestTryAssignSkipsEpics(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect a worker.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Start dispatcher.
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Provide both an epic and a leaf task — only the task should be assigned.
+	beadSrc.SetBeads([]Bead{
+		{ID: "epic-1", Title: "Epic: big feature", Priority: 0, Type: "epic"},
+		{ID: "task-1", Title: "Implement thing", Priority: 1, Type: "task"},
+	})
+
+	// Read the ASSIGN message — must be for the task, not the epic.
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN for task-1")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "task-1" {
+		t.Fatalf("expected task-1 to be assigned, got %s", msg.Assign.BeadID)
+	}
+
+	// Verify the epic was NOT assigned — worker should stay idle after completing task-1,
+	// no second assignment should come. We drain briefly to confirm.
+	// First, disconnect so we don't get more messages, and check worktree manager.
+	// The simplest check: worktree was only created for task-1, never for epic-1.
+	d.mu.Lock()
+	var assignedBeads []string
+	for _, w := range d.workers {
+		if w.beadID != "" {
+			assignedBeads = append(assignedBeads, w.beadID)
+		}
+	}
+	d.mu.Unlock()
+
+	for _, id := range assignedBeads {
+		if id == "epic-1" {
+			t.Fatal("epic bead epic-1 was assigned to a worker — epics must be skipped")
+		}
+	}
+}

@@ -1055,9 +1055,17 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	}
 
 	// Poll for ready beads.
-	beads, err := d.beads.Ready(ctx)
+	allBeads, err := d.beads.Ready(ctx)
 	if err != nil {
 		return
+	}
+
+	// Filter out epic beads — workers can only execute leaf tasks.
+	beads := make([]Bead, 0, len(allBeads))
+	for _, b := range allBeads {
+		if b.Type != "epic" {
+			beads = append(beads, b)
+		}
 	}
 
 	// Sort by focused epic first (if set), then by priority (P0 first, P3 last).
