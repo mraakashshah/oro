@@ -28,6 +28,7 @@ type mockBeadSource struct {
 	mu     sync.Mutex
 	beads  []Bead
 	shown  map[string]*BeadDetail
+	closed []string
 	synced bool
 }
 
@@ -48,7 +49,10 @@ func (m *mockBeadSource) Show(_ context.Context, id string) (*BeadDetail, error)
 	return nil, fmt.Errorf("bead %s not found", id)
 }
 
-func (m *mockBeadSource) Close(_ context.Context, _ string, _ string) error {
+func (m *mockBeadSource) Close(_ context.Context, id string, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = append(m.closed, id)
 	return nil
 }
 
@@ -4062,5 +4066,42 @@ func TestShutdownCleanup_CallsBeadSync(t *testing.T) {
 
 	if !synced {
 		t.Fatal("expected BeadSource.Sync to be called during shutdownCleanup")
+	}
+}
+
+// TestMergeClosesBead verifies that after a successful merge, the dispatcher
+// calls beads.Close(beadID) so the bead doesn't get re-assigned.
+func TestMergeClosesBead(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Init schema so logEvent works.
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	beadID := "bead-merge-close"
+	workerID := "w-merge"
+	worktree := "/tmp/worktree-" + beadID
+	branch := "agent/" + beadID
+
+	// Call mergeAndComplete directly (white-box).
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
+
+	// Verify beads.Close was called with the correct bead ID.
+	beadSrc.mu.Lock()
+	closed := beadSrc.closed
+	beadSrc.mu.Unlock()
+
+	found := false
+	for _, id := range closed {
+		if id == beadID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected beads.Close(%q) to be called after successful merge, but closed=%v", beadID, closed)
 	}
 }
