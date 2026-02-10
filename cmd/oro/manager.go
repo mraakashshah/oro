@@ -32,7 +32,7 @@ On receiving this beacon, execute the following initialization sequence:
 2. Run ` + "`bd ready`" + ` to list actionable (unblocked) beads.
 3. Run ` + "`bd blocked`" + ` to identify blocked work and understand dependency chains.
 4. Decide initial swarm size: ` + "`ceil(ready_beads / 2)`" + `, capped at max 5.
-5. Run ` + "`oro start`" + ` to launch the dispatcher (if not already running).
+5. Run ` + "`oro directive status`" + ` to confirm the dispatcher is running.
 6. Run ` + "`oro directive scale N`" + ` to set the worker count to your chosen size.
 7. Report status to the human: ready count, blocked count, chosen scale, any concerns.
 
@@ -40,7 +40,7 @@ On receiving this beacon, execute the following initialization sequence:
 
 These commands control the swarm. All connect to the dispatcher via UDS.
 
-- ` + "`oro start`" + ` — launch the dispatcher daemon
+- ` + "`oro start`" + ` — launch the dispatcher daemon (used by the human to start the swarm, not by the manager)
 - ` + "`oro stop`" + ` — gracefully shut down the dispatcher and all workers
 - ` + "`oro directive pause`" + ` — pause all worker execution (workers finish current bead, then idle)
 - ` + "`oro directive resume`" + ` — resume paused workers

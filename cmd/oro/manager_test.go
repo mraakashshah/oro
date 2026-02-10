@@ -68,11 +68,37 @@ func TestManagerBeacon(t *testing.T) {
 	})
 
 	t.Run("startup section includes initialization steps", func(t *testing.T) {
-		startupTerms := []string{"bd stats", "bd ready", "bd blocked", "oro start", "oro directive scale"}
+		startupTerms := []string{"bd stats", "bd ready", "bd blocked", "oro directive status", "oro directive scale"}
 		for _, term := range startupTerms {
 			if !strings.Contains(beacon, term) {
 				t.Errorf("expected Startup section to contain %q", term)
 			}
+		}
+	})
+
+	t.Run("startup section uses directive status not oro start", func(t *testing.T) {
+		// Extract just the Startup section to verify step 5 does NOT tell the
+		// manager to run "oro start" (the dispatcher is already running by the
+		// time the manager receives the beacon).
+		startIdx := strings.Index(beacon, "## Startup")
+		if startIdx == -1 {
+			t.Fatal("could not find ## Startup section")
+		}
+		// Find the next section header after Startup
+		rest := beacon[startIdx+len("## Startup"):]
+		nextSection := strings.Index(rest, "\n## ")
+		var startupSection string
+		if nextSection == -1 {
+			startupSection = rest
+		} else {
+			startupSection = rest[:nextSection]
+		}
+
+		if strings.Contains(startupSection, "oro start") {
+			t.Error("Startup section should NOT contain 'oro start' — the dispatcher is already running; use 'oro directive status' instead")
+		}
+		if !strings.Contains(startupSection, "oro directive status") {
+			t.Error("Startup section should contain 'oro directive status' to confirm the dispatcher is running")
 		}
 	})
 
@@ -94,6 +120,27 @@ func TestManagerBeacon(t *testing.T) {
 			if !strings.Contains(beacon, dtype) {
 				t.Errorf("expected Dispatcher Messages section to contain message type %q", dtype)
 			}
+		}
+	})
+
+	t.Run("CLI section notes oro start is human-only", func(t *testing.T) {
+		// The "oro start" entry in the CLI section should clarify that it is
+		// used by the human to launch the swarm, not by the manager.
+		cliIdx := strings.Index(beacon, "## Oro CLI")
+		if cliIdx == -1 {
+			t.Fatal("could not find ## Oro CLI section")
+		}
+		rest := beacon[cliIdx:]
+		nextSection := strings.Index(rest[len("## Oro CLI"):], "\n## ")
+		var cliSection string
+		if nextSection == -1 {
+			cliSection = rest
+		} else {
+			cliSection = rest[:len("## Oro CLI")+nextSection]
+		}
+
+		if !strings.Contains(strings.ToLower(cliSection), "human") {
+			t.Error("expected CLI section's 'oro start' entry to note it is used by the human")
 		}
 	})
 
