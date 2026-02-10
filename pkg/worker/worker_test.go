@@ -370,7 +370,7 @@ func TestRunQualityGate_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, err := worker.RunQualityGate(context.Background(), tmpDir)
+	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir)
 	if err != nil {
 		t.Fatalf("RunQualityGate: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestRunQualityGate_Failure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, err := worker.RunQualityGate(context.Background(), tmpDir)
+	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir)
 	if err != nil {
 		t.Fatalf("RunQualityGate unexpected error: %v", err)
 	}
@@ -407,13 +407,85 @@ func TestRunQualityGate_NoScript(t *testing.T) {
 	// No quality_gate.sh in dir — should return false with an error
 	tmpDir := t.TempDir()
 
-	passed, err := worker.RunQualityGate(context.Background(), tmpDir)
+	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir)
 	if err == nil {
 		t.Fatal("expected error when quality_gate.sh is missing")
 	}
 	if passed {
 		t.Error("expected quality gate to fail when script is missing")
 	}
+}
+
+func TestRunQualityGate_CapturesOutput(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success with stdout", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "quality_gate.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'all tests passed'\necho 'lint clean'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+			t.Fatal(err)
+		}
+
+		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir)
+		if err != nil {
+			t.Fatalf("RunQualityGate: %v", err)
+		}
+		if !passed {
+			t.Error("expected quality gate to pass")
+		}
+		if !strings.Contains(output, "all tests passed") {
+			t.Errorf("expected output to contain 'all tests passed', got: %q", output)
+		}
+		if !strings.Contains(output, "lint clean") {
+			t.Errorf("expected output to contain 'lint clean', got: %q", output)
+		}
+	})
+
+	t.Run("failure with stdout and stderr", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "quality_gate.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'running tests'\necho 'FAIL: TestFoo' >&2\nexit 1\n"), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+			t.Fatal(err)
+		}
+
+		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir)
+		if err != nil {
+			t.Fatalf("RunQualityGate unexpected error: %v", err)
+		}
+		if passed {
+			t.Error("expected quality gate to fail")
+		}
+		if !strings.Contains(output, "running tests") {
+			t.Errorf("expected output to contain stdout 'running tests', got: %q", output)
+		}
+		if !strings.Contains(output, "FAIL: TestFoo") {
+			t.Errorf("expected output to contain stderr 'FAIL: TestFoo', got: %q", output)
+		}
+	})
+
+	t.Run("missing script returns error", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := t.TempDir()
+
+		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir)
+		if err == nil {
+			t.Fatal("expected error when quality_gate.sh is missing")
+		}
+		if passed {
+			t.Error("expected quality gate to fail when script is missing")
+		}
+		if output != "" {
+			t.Errorf("expected empty output on missing script, got: %q", output)
+		}
+	})
 }
 
 func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {

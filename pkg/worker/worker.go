@@ -709,26 +709,29 @@ func (w *Worker) SendReadyForReview(_ context.Context) error {
 }
 
 // RunQualityGate executes ./quality_gate.sh in the given worktree directory.
-// It returns (true, nil) if the script exits 0, (false, nil) if it exits non-zero,
-// and (false, err) if the script cannot be found or started.
-func RunQualityGate(ctx context.Context, worktree string) (bool, error) {
+// It returns (true, output, nil) if the script exits 0, (false, output, nil) if
+// it exits non-zero, and (false, "", err) if the script cannot be found or started.
+// Output contains combined stdout and stderr from the script.
+func RunQualityGate(ctx context.Context, worktree string) (passed bool, output string, err error) {
 	scriptPath := filepath.Join(worktree, "quality_gate.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
-		return false, fmt.Errorf("quality gate script not found: %w", err)
+		return false, "", fmt.Errorf("quality gate script not found: %w", err)
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
 
-	if err := cmd.Run(); err != nil {
+	out, err := cmd.CombinedOutput()
+	output = string(out)
+	if err != nil {
 		// Non-zero exit is not an error — it means the gate failed
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return false, nil
+			return false, output, nil
 		}
-		return false, fmt.Errorf("run quality gate: %w", err)
+		return false, output, fmt.Errorf("run quality gate: %w", err)
 	}
-	return true, nil
+	return true, output, nil
 }
 
 // ClaudeSpawner is the production SubprocessSpawner that invokes `claude -p`.
