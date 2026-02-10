@@ -1418,3 +1418,155 @@ func TestConsolidate_MergeErrorPath(t *testing.T) {
 		t.Error("expected at least one merge candidate counted in dry run")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// File tracking tests (oro-jtw.6)
+// ---------------------------------------------------------------------------
+
+func TestInsertWithFileTracking(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	id, err := store.Insert(ctx, InsertParams{
+		Content:       "learned about dispatcher concurrency patterns",
+		Type:          "lesson",
+		Tags:          []string{"go", "concurrency"},
+		Source:        "self_report",
+		BeadID:        "bead-123",
+		WorkerID:      "worker-1",
+		Confidence:    0.9,
+		FilesRead:     []string{"pkg/dispatcher/dispatcher.go", "pkg/worker/worker.go"},
+		FilesModified: []string{"pkg/dispatcher/dispatcher.go"},
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected non-zero id")
+	}
+
+	var filesRead, filesModified string
+	err = db.QueryRowContext(ctx,
+		`SELECT files_read, files_modified FROM memories WHERE id = ?`, id,
+	).Scan(&filesRead, &filesModified)
+	if err != nil {
+		t.Fatalf("raw query: %v", err)
+	}
+	if !strings.Contains(filesRead, "dispatcher.go") {
+		t.Errorf("expected files_read to contain dispatcher.go, got: %s", filesRead)
+	}
+	if !strings.Contains(filesModified, "dispatcher.go") {
+		t.Errorf("expected files_modified to contain dispatcher.go, got: %s", filesModified)
+	}
+
+	all, err := store.List(ctx, ListOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 memory, got %d", len(all))
+	}
+	if !strings.Contains(all[0].FilesRead, "dispatcher.go") {
+		t.Errorf("List: expected FilesRead to contain dispatcher.go, got: %s", all[0].FilesRead)
+	}
+	if !strings.Contains(all[0].FilesModified, "dispatcher.go") {
+		t.Errorf("List: expected FilesModified to contain dispatcher.go, got: %s", all[0].FilesModified)
+	}
+}
+
+func TestInsertWithFileTracking_EmptySlices(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	id, err := store.Insert(ctx, InsertParams{
+		Content:    "memory with no file tracking",
+		Type:       "lesson",
+		Source:     "self_report",
+		Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	var filesRead, filesModified string
+	err = db.QueryRowContext(ctx,
+		`SELECT files_read, files_modified FROM memories WHERE id = ?`, id,
+	).Scan(&filesRead, &filesModified)
+	if err != nil {
+		t.Fatalf("raw query: %v", err)
+	}
+	if filesRead != "[]" {
+		t.Errorf(`expected files_read='[]' for empty, got: %q`, filesRead)
+	}
+	if filesModified != "[]" {
+		t.Errorf(`expected files_modified='[]' for empty, got: %q`, filesModified)
+	}
+}
+
+func TestSearchByFilePath(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content:       "concurrency patterns in dispatcher unique_filetrack_xyz",
+		Type:          "lesson",
+		Tags:          []string{"go"},
+		Source:        "self_report",
+		Confidence:    0.9,
+		FilesRead:     []string{"pkg/dispatcher/dispatcher.go"},
+		FilesModified: []string{"pkg/dispatcher/dispatcher.go"},
+	})
+	if err != nil {
+		t.Fatalf("insert 1: %v", err)
+	}
+
+	_, err = store.Insert(ctx, InsertParams{
+		Content:       "worker lifecycle patterns unique_filetrack_xyz",
+		Type:          "lesson",
+		Tags:          []string{"go"},
+		Source:        "self_report",
+		Confidence:    0.9,
+		FilesRead:     []string{"pkg/worker/worker.go"},
+		FilesModified: []string{"pkg/worker/worker.go"},
+	})
+	if err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+
+	results, err := store.Search(ctx, "unique_filetrack_xyz", SearchOpts{
+		FilePath: "dispatcher.go",
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for dispatcher.go filter, got %d", len(results))
+	}
+	if !strings.Contains(results[0].Content, "dispatcher") {
+		t.Errorf("expected result about dispatcher, got: %s", results[0].Content)
+	}
+
+	results, err = store.Search(ctx, "unique_filetrack_xyz", SearchOpts{
+		FilePath: "worker.go",
+	})
+	if err != nil {
+		t.Fatalf("search worker: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result for worker.go filter, got %d", len(results))
+	}
+	if !strings.Contains(results[0].Content, "worker") {
+		t.Errorf("expected result about worker, got: %s", results[0].Content)
+	}
+
+	results, err = store.Search(ctx, "unique_filetrack_xyz", SearchOpts{})
+	if err != nil {
+		t.Fatalf("search all: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 results without file filter, got %d", len(results))
+	}
+}

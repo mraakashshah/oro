@@ -719,23 +719,25 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 
 	for _, learning := range h.Learnings {
 		_, _ = d.memories.Insert(ctx, memory.InsertParams{
-			Content:    learning,
-			Type:       "lesson",
-			Source:     "self_report",
-			BeadID:     h.BeadID,
-			WorkerID:   h.WorkerID,
-			Confidence: 0.8,
+			Content:       learning,
+			Type:          "lesson",
+			Source:        "self_report",
+			BeadID:        h.BeadID,
+			WorkerID:      h.WorkerID,
+			Confidence:    0.8,
+			FilesModified: h.FilesModified,
 		})
 	}
 
 	for _, decision := range h.Decisions {
 		_, _ = d.memories.Insert(ctx, memory.InsertParams{
-			Content:    decision,
-			Type:       "decision",
-			Source:     "self_report",
-			BeadID:     h.BeadID,
-			WorkerID:   h.WorkerID,
-			Confidence: 0.8,
+			Content:       decision,
+			Type:          "decision",
+			Source:        "self_report",
+			BeadID:        h.BeadID,
+			WorkerID:      h.WorkerID,
+			Confidence:    0.8,
+			FilesModified: h.FilesModified,
 		})
 	}
 }

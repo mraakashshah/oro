@@ -35,5 +35,8 @@ func defaultMemoryStore() (*memory.Store, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
+	// Apply migrations for existing databases (columns may already exist).
+	_, _ = db.ExecContext(context.Background(), protocol.MigrateFileTracking)
+
 	return memory.NewStore(db), nil
 }

@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS memories (
     worker_id TEXT,
     confidence REAL DEFAULT 0.8,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    embedding BLOB
+    embedding BLOB,
+    files_read TEXT DEFAULT '[]',
+    files_modified TEXT DEFAULT '[]'
 );
 
 -- FTS5 full-text index over memories for BM25-ranked search
@@ -71,4 +73,10 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, content, tags) VALUES ('delete', old.id, old.content, old.tags);
     INSERT INTO memories_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
 END;
+`
+
+// MigrateFileTracking adds files_read and files_modified columns to existing memories tables.
+const MigrateFileTracking = `
+ALTER TABLE memories ADD COLUMN files_read TEXT DEFAULT '[]';
+ALTER TABLE memories ADD COLUMN files_modified TEXT DEFAULT '[]';
 `

@@ -39,14 +39,16 @@ type CommandRow struct {
 // Memory represents a row in the memories SQLite table.
 // Cross-session project memory: learnings, decisions, gotchas, patterns.
 type Memory struct {
-	ID         int64   `json:"id"`
-	Content    string  `json:"content"`
-	Type       string  `json:"type"`
-	Tags       string  `json:"tags"`
-	Source     string  `json:"source"`
-	BeadID     string  `json:"bead_id"`
-	WorkerID   string  `json:"worker_id"`
-	Confidence float64 `json:"confidence"`
-	CreatedAt  string  `json:"created_at"`
-	Embedding  []byte  `json:"embedding"`
+	ID            int64   `json:"id"`
+	Content       string  `json:"content"`
+	Type          string  `json:"type"`
+	Tags          string  `json:"tags"`
+	Source        string  `json:"source"`
+	BeadID        string  `json:"bead_id"`
+	WorkerID      string  `json:"worker_id"`
+	Confidence    float64 `json:"confidence"`
+	CreatedAt     string  `json:"created_at"`
+	Embedding     []byte  `json:"embedding"`
+	FilesRead     string  `json:"files_read"`
+	FilesModified string  `json:"files_modified"`
 }

@@ -37,13 +37,15 @@ func (s *Store) SetEmbedder(e *Embedder) {
 
 // InsertParams holds parameters for inserting a new memory.
 type InsertParams struct {
-	Content    string
-	Type       string // lesson | decision | gotcha | pattern | preference
-	Tags       []string
-	Source     string // self_report | daemon_extracted
-	BeadID     string
-	WorkerID   string
-	Confidence float64
+	Content       string
+	Type          string // lesson | decision | gotcha | pattern | preference
+	Tags          []string
+	Source        string // self_report | daemon_extracted
+	BeadID        string
+	WorkerID      string
+	Confidence    float64
+	FilesRead     []string
+	FilesModified []string
 }
 
 // SearchOpts configures a FTS5 search query.
@@ -52,6 +54,7 @@ type SearchOpts struct {
 	Type     string   // optional filter
 	Tags     []string // optional tag filter (any match)
 	MinScore float64  // minimum combined score threshold
+	FilePath string   // optional: filter memories touching this file path
 }
 
 // ScoredMemory is a Memory with an associated relevance score.
@@ -127,6 +130,8 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 	}
 
 	tags := tagsToJSON(m.Tags)
+	filesRead := tagsToJSON(m.FilesRead)
+	filesModified := tagsToJSON(m.FilesModified)
 
 	// Compute embedding if embedder is attached.
 	var embeddingBlob []byte
@@ -137,9 +142,9 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 	}
 
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob,
+		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob, filesRead, filesModified,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("memory insert: %w", err)
@@ -222,6 +227,11 @@ func searchSQL(query string, opts SearchOpts) (stmt string, args []any) {
 		conditions = append(conditions, "m.type = ?")
 		args = append(args, opts.Type)
 	}
+	if opts.FilePath != "" {
+		conditions = append(conditions, "(m.files_read LIKE ? OR m.files_modified LIKE ?)")
+		pattern := "%" + opts.FilePath + "%"
+		args = append(args, pattern, pattern)
+	}
 
 	// Use FTS5 rank for relevance ordering; compute score in Go.
 	q := fmt.Sprintf(`
@@ -229,6 +239,8 @@ func searchSQL(query string, opts SearchOpts) (stmt string, args []any) {
 		       COALESCE(m.bead_id, '') AS bead_id,
 		       COALESCE(m.worker_id, '') AS worker_id,
 		       m.confidence, m.created_at, m.embedding,
+		       COALESCE(m.files_read, '[]') AS files_read,
+		       COALESCE(m.files_modified, '[]') AS files_modified,
 		       (julianday('now') - julianday(m.created_at)) AS age_days
 		FROM memories_fts
 		JOIN memories m ON memories_fts.rowid = m.id
@@ -350,6 +362,7 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 	       COALESCE(bead_id, '') AS bead_id,
 	       COALESCE(worker_id, '') AS worker_id,
 	       confidence, created_at, embedding,
+	       COALESCE(files_read, '[]') AS files_read, COALESCE(files_modified, '[]') AS files_modified,
 	       (julianday('now') - julianday(created_at)) AS age_days
 	FROM memories
 	WHERE embedding IS NOT NULL`
@@ -472,7 +485,7 @@ func scanScoredMemory(rows *sql.Rows) (ScoredMemory, error) {
 	if err := rows.Scan(
 		&sm.ID, &sm.Content, &sm.Type, &sm.Tags, &sm.Source,
 		&sm.BeadID, &sm.WorkerID, &sm.Confidence, &sm.CreatedAt,
-		&embedding, &ageDays,
+		&embedding, &sm.FilesRead, &sm.FilesModified, &ageDays,
 	); err != nil {
 		return sm, fmt.Errorf("memory search scan: %w", err)
 	}
@@ -580,7 +593,9 @@ func listSQL(opts ListOpts, limit int) (query string, args []any) {
 		SELECT id, content, type, tags, source,
 		       COALESCE(bead_id, '') AS bead_id,
 		       COALESCE(worker_id, '') AS worker_id,
-		       confidence, created_at, embedding
+		       confidence, created_at, embedding,
+		       COALESCE(files_read, '[]') AS files_read,
+		       COALESCE(files_modified, '[]') AS files_modified
 		FROM memories %s
 		ORDER BY created_at DESC, id DESC
 		LIMIT ? OFFSET ?
@@ -596,7 +611,7 @@ func scanMemory(rows *sql.Rows) (protocol.Memory, error) {
 	if err := rows.Scan(
 		&m.ID, &m.Content, &m.Type, &m.Tags, &m.Source,
 		&m.BeadID, &m.WorkerID, &m.Confidence, &m.CreatedAt,
-		&embedding,
+		&embedding, &m.FilesRead, &m.FilesModified,
 	); err != nil {
 		return m, fmt.Errorf("memory list scan: %w", err)
 	}

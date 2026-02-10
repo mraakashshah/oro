@@ -35,7 +35,8 @@ func formatCreatedAt(createdAt string) string {
 
 // newRecallCmdWithStore creates the "oro recall" subcommand wired to a memory.Store.
 func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
-	return &cobra.Command{
+	var filePath string
+	cmd := &cobra.Command{
 		Use:   "recall <query>",
 		Short: "Search memories",
 		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.",
@@ -43,7 +44,7 @@ func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := strings.Join(args, " ")
 
-			results, err := store.Search(context.Background(), query, memory.SearchOpts{Limit: 5})
+			results, err := store.Search(context.Background(), query, memory.SearchOpts{Limit: 5, FilePath: filePath})
 			if err != nil {
 				return fmt.Errorf("recall: %w", err)
 			}
@@ -52,12 +53,15 @@ func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&filePath, "file", "", "filter memories by file path")
+	return cmd
 }
 
 // newRecallCmd creates the "oro recall" subcommand.
 // In production, it creates a store from the default DB path.
 func newRecallCmd() *cobra.Command {
-	return &cobra.Command{
+	var filePath string
+	cmd := &cobra.Command{
 		Use:   "recall <query>",
 		Short: "Search memories",
 		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.",
@@ -69,7 +73,7 @@ func newRecallCmd() *cobra.Command {
 			}
 			query := strings.Join(args, " ")
 
-			results, searchErr := store.Search(context.Background(), query, memory.SearchOpts{Limit: 5})
+			results, searchErr := store.Search(context.Background(), query, memory.SearchOpts{Limit: 5, FilePath: filePath})
 			if searchErr != nil {
 				return fmt.Errorf("recall: %w", searchErr)
 			}
@@ -78,4 +82,6 @@ func newRecallCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&filePath, "file", "", "filter memories by file path")
+	return cmd
 }
