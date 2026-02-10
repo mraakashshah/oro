@@ -33,6 +33,30 @@ When the threshold is breached:
 
 Trust the hook messages and act on them immediately.
 
+## Learning Checkpoint
+
+After completing a bead and before checking context zones, scan for learnings:
+
+1. **Scan knowledge.jsonl** for entries where `bead` matches the just-completed bead ID:
+   ```bash
+   cat .beads/memory/knowledge.jsonl | grep '"bead":"<completed-bead-id>"'
+   ```
+
+2. **Check tag frequency** across ALL entries (not just this bead):
+   - Count occurrences of each tag from the matched entries
+   - If any tag appears 3+ times total: flag for codification
+
+3. **Propose actions** (if learnings found):
+   - Learnings only in knowledge.jsonl (not in memory store): suggest `oro remember "<content>"` to promote
+   - Tag at 3+ frequency: propose codification per decision tree:
+     - Repeatable sequence → **skill** (`.claude/skills/`)
+     - Event-triggered → **hook** (`.claude/hooks/`)
+     - Heuristic/constraint → **rule** (`.claude/rules/`)
+     - Solved problem → **solution doc** (`docs/decisions-and-discoveries.md`)
+   - Format proposals as a brief `## Learning Checkpoint` note (3-5 lines max)
+
+4. **If no learnings**: Skip silently. Don't add noise.
+
 ## Quality Signals (Override Token Count)
 
 These symptoms indicate context degradation regardless of token usage — treat as immediate handoff:
