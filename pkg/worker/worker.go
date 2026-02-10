@@ -766,7 +766,13 @@ func RunQualityGate(ctx context.Context, worktree string) (passed bool, output s
 type ClaudeSpawner struct{}
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.
-// Returns the process, stdout reader, stdin writer, and any error.
+// Returns the process, stdout reader, stdin writer (nil), and any error.
+//
+// Stdin is NOT piped. Claude Code uses Ink (a React-for-CLI framework) which
+// calls setRawMode on process.stdin at startup. When stdin is a pipe, setRawMode
+// blocks indefinitely, causing `claude -p` to hang with zero output. Connecting
+// stdin to /dev/null avoids this. The trade-off: sendCompact() becomes a no-op,
+// so context overflow triggers handoff instead of in-place compaction.
 func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, io.ReadCloser, io.WriteCloser, error) {
 	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", model)
 	cmd.Dir = workdir
@@ -777,15 +783,10 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
-	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("stdin pipe: %w", err)
-	}
-
 	if err := cmd.Start(); err != nil {
 		return nil, nil, nil, fmt.Errorf("start claude: %w", err)
 	}
-	return &cmdProcess{cmd: cmd}, stdoutPipe, stdinPipe, nil
+	return &cmdProcess{cmd: cmd}, stdoutPipe, nil, nil
 }
 
 // cmdProcess wraps *exec.Cmd to implement the Process interface.
