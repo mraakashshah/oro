@@ -52,10 +52,3 @@ func (d *Dispatcher) isQGStuck(beadID, qgOutput string) bool {
 	}
 	return true
 }
-
-// clearStuckTracker removes the QG stuck hash history for a bead.
-func (d *Dispatcher) clearStuckTracker(beadID string) {
-	d.mu.Lock()
-	delete(d.qgStuckTracker, beadID)
-	d.mu.Unlock()
-}

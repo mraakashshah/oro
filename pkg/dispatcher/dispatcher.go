@@ -520,9 +520,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	}
 
 	// Clear tracking state for completed bead.
-	d.clearHandoffCount(beadID)
-	d.clearAttemptCount(beadID)
-	d.clearStuckTracker(beadID)
+	d.clearBeadTracking(beadID)
 
 	// Merge in background
 	go d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
@@ -541,6 +539,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 			fmt.Sprintf(`{"repeated_count":%d}`, maxStuckCount))
 		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
 			fmt.Sprintf("QG output repeated %d times — worker stuck", maxStuckCount), qgOutput))
+		d.clearBeadTracking(beadID)
 		return
 	}
 
@@ -554,6 +553,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 			fmt.Sprintf(`{"attempts":%d}`, attempt))
 		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
 			fmt.Sprintf("quality gate failed %d times", attempt), qgOutput))
+		d.clearBeadTracking(beadID)
 		return
 	}
 
@@ -735,6 +735,7 @@ func (d *Dispatcher) handleDiagnosisResult(ctx context.Context, beadID, workerID
 				fmt.Sprintf(`{"error":%q}`, result.Err.Error()))
 			_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
 				"diagnosis failed", result.Err.Error()))
+			d.clearBeadTracking(beadID)
 			return
 		}
 
@@ -742,6 +743,7 @@ func (d *Dispatcher) handleDiagnosisResult(ctx context.Context, beadID, workerID
 		_ = d.logEvent(ctx, "diagnosis_complete", "dispatcher", beadID, workerID, result.Feedback)
 		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
 			"diagnosis complete", result.Feedback))
+		d.clearBeadTracking(beadID)
 	}
 }
 
@@ -862,6 +864,7 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 					fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, result.Feedback))
 				_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
 					fmt.Sprintf("review rejected %d times", count), result.Feedback))
+				d.clearBeadTracking(beadID)
 				return
 			}
 
@@ -883,6 +886,7 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 		default:
 			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, result.Feedback)
 			_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID, "review failed", result.Feedback))
+			d.clearBeadTracking(beadID)
 		}
 	}
 }
@@ -901,10 +905,16 @@ func (d *Dispatcher) clearHandoffCount(beadID string) {
 	d.mu.Unlock()
 }
 
-// clearAttemptCount removes the QG retry attempt counter for a bead.
-func (d *Dispatcher) clearAttemptCount(beadID string) {
+// clearBeadTracking removes all five tracking-map entries for a bead in a
+// single lock acquisition. Call this on every terminal path (success,
+// escalation, heartbeat timeout) to prevent map entry leaks.
+func (d *Dispatcher) clearBeadTracking(beadID string) {
 	d.mu.Lock()
 	delete(d.attemptCounts, beadID)
+	delete(d.handoffCounts, beadID)
+	delete(d.rejectionCounts, beadID)
+	delete(d.pendingHandoffs, beadID)
+	delete(d.qgStuckTracker, beadID)
 	d.mu.Unlock()
 }
 
@@ -1431,9 +1441,12 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	}
 	d.mu.Unlock()
 
-	// Escalate outside the lock.
+	// Escalate outside the lock and clear tracking maps for abandoned beads.
 	for _, dw := range deadWorkers {
 		_ = d.escalator.Escalate(ctx, FormatEscalation(EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID))
+		if dw.beadID != "" {
+			d.clearBeadTracking(dw.beadID)
+		}
 	}
 }
 
