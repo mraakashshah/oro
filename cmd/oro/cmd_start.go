@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +76,11 @@ func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner,
 	}
 	if _, err := os.Stat(sockPath); err != nil {
 		return fmt.Errorf("dispatcher socket not ready at %s: %w", sockPath, err)
+	}
+
+	// 2b. Send start directive so dispatcher transitions from Inert to Running.
+	if err := sendStartDirective(sockPath); err != nil {
+		return fmt.Errorf("send start directive: %w", err)
 	}
 
 	// 3. Create tmux session with both beacons (architect + manager).
@@ -247,4 +253,22 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	d := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
 	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath))
 	return d, db, nil
+}
+
+// sendStartDirective connects to the dispatcher UDS and sends a "start"
+// directive so it transitions from StateInert to StateRunning.
+func sendStartDirective(sockPath string) error {
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", sockPath)
+	if err != nil {
+		return fmt.Errorf("connect to dispatcher: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if err := sendDirective(conn, "start", ""); err != nil {
+		return err
+	}
+	if _, err := readACK(conn); err != nil {
+		return err
+	}
+	return nil
 }

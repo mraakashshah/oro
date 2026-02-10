@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 // fakeSpawner records calls to SpawnDaemon for testing.
@@ -32,9 +37,29 @@ func (f *fakeSpawner) SpawnDaemon(pidPath string, workers int) (pid int, err err
 		return 0, err
 	}
 	if f.socketPath != "" {
-		if err := os.WriteFile(f.socketPath, []byte("fake"), 0o600); err != nil {
-			return 0, err
+		// Start a real UDS listener so sendStartDirective can connect.
+		ln, listenErr := net.Listen("unix", f.socketPath)
+		if listenErr != nil {
+			return 0, listenErr
 		}
+		// Accept one connection and ACK the directive.
+		go func() {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.Close(); _ = ln.Close() }()
+			scanner := bufio.NewScanner(conn)
+			if scanner.Scan() {
+				ack := protocol.Message{
+					Type: protocol.MsgACK,
+					ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+				}
+				data, _ := json.Marshal(ack)
+				data = append(data, '\n')
+				_, _ = conn.Write(data)
+			}
+		}()
 	}
 	return f.returnPID, nil
 }
@@ -43,7 +68,9 @@ func TestFullStart(t *testing.T) {
 	t.Run("spawns daemon, waits for socket, creates tmux session, prints status", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pidFile := filepath.Join(tmpDir, "oro.pid")
-		sockPath := filepath.Join(tmpDir, "oro.sock")
+		// Use short socket path — macOS limits UDS paths to 108 chars.
+		sockPath := fmt.Sprintf("/tmp/oro-ft-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
 		dbPath := filepath.Join(tmpDir, "state.db")
 
 		t.Setenv("ORO_PID_PATH", pidFile)
@@ -195,7 +222,8 @@ func TestFullStart(t *testing.T) {
 	t.Run("returns error when tmux create fails", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pidFile := filepath.Join(tmpDir, "oro.pid")
-		sockPath := filepath.Join(tmpDir, "oro.sock")
+		sockPath := fmt.Sprintf("/tmp/oro-ft-tmux-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
 		t.Setenv("ORO_PID_PATH", pidFile)
 		t.Setenv("ORO_SOCKET_PATH", sockPath)
 		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))

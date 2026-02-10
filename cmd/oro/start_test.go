@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 func TestBootstrapOroDir_CreatesWithCorrectPerms(t *testing.T) {
@@ -215,4 +219,85 @@ func TestDaemonOnlyStartsDispatcher(t *testing.T) {
 	if err == nil {
 		t.Error("socket should be closed after shutdown")
 	}
+}
+
+// TestStartSendsDirective verifies that runFullStart sends a "start" directive
+// to the dispatcher after the socket is ready, transitioning it from StateInert
+// to StateRunning.
+func TestStartSendsDirective(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	sockPath := filepath.Join(tmpDir, "oro.sock")
+
+	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+
+	// Start a fake UDS listener that records the directive it receives.
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	directiveCh := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		scanner := bufio.NewScanner(conn)
+		if scanner.Scan() {
+			var msg protocol.Message
+			if json.Unmarshal(scanner.Bytes(), &msg) == nil && msg.Directive != nil {
+				directiveCh <- msg.Directive.Op
+			}
+		}
+
+		// Send ACK
+		ack := protocol.Message{
+			Type: protocol.MsgACK,
+			ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+		}
+		data, _ := json.Marshal(ack)
+		data = append(data, '\n')
+		_, _ = conn.Write(data)
+	}()
+
+	// Mock spawner that does nothing (socket already exists).
+	spawner := &mockDaemonSpawner{pid: 12345}
+	tmuxRunner := &mockCmdRunner{}
+
+	var buf bytes.Buffer
+	err = runFullStart(&buf, 2, "sonnet", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {})
+	if err != nil {
+		t.Fatalf("runFullStart: %v", err)
+	}
+
+	// Verify start directive was sent.
+	select {
+	case op := <-directiveCh:
+		if op != "start" {
+			t.Fatalf("expected 'start' directive, got %q", op)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for start directive")
+	}
+}
+
+// mockDaemonSpawner implements DaemonSpawner for testing.
+type mockDaemonSpawner struct {
+	pid int
+}
+
+func (m *mockDaemonSpawner) SpawnDaemon(_ string, _ int) (int, error) {
+	return m.pid, nil
+}
+
+// mockCmdRunner implements CmdRunner for testing — records commands but does nothing.
+type mockCmdRunner struct{}
+
+func (m *mockCmdRunner) Run(_ string, _ ...string) (string, error) {
+	return "", nil
 }
