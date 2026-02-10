@@ -151,6 +151,11 @@ func (w *Worker) SessionText() string {
 func (w *Worker) Run(ctx context.Context) error {
 	msgCh, errCh := w.readMessages()
 
+	// Announce ourselves so the dispatcher can register this worker.
+	if err := w.SendHeartbeat(ctx, 0); err != nil {
+		return fmt.Errorf("send initial heartbeat: %w", err)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():

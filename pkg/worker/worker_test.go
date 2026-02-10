@@ -146,6 +146,23 @@ func sendMessage(t *testing.T, conn net.Conn, msg protocol.Message) {
 	}
 }
 
+// startWorkerRun launches w.Run in a goroutine, drains the initial HEARTBEAT
+// that Run() sends on startup, and returns the error channel. This must be
+// used instead of bare `go func() { errCh <- w.Run(ctx) }()` because
+// net.Pipe writes block until the other side reads.
+func startWorkerRun(ctx context.Context, t *testing.T, w *worker.Worker, dispatcherConn net.Conn) <-chan error {
+	t.Helper()
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Drain the initial heartbeat so Run() can enter its event loop.
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgHeartbeat {
+		t.Fatalf("expected initial HEARTBEAT, got %s", msg.Type)
+	}
+	return errCh
+}
+
 // --- Tests ---
 
 func TestReceiveAssign_StoresState(t *testing.T) {
@@ -160,8 +177,7 @@ func TestReceiveAssign_StoresState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -215,8 +231,7 @@ func TestReceiveShutdown_ExitsCleanly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// First assign so we have a running subprocess
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -555,6 +570,9 @@ func TestReconnection_BuffersAndResends(t *testing.T) { //nolint:funlen // integ
 	}
 	dispConn1 := firstResult.conn
 
+	// Drain initial heartbeat
+	_ = readMessage(t, dispConn1)
+
 	// Send ASSIGN on first connection
 	sendMessage(t, dispConn1, protocol.Message{
 		Type: protocol.MsgAssign,
@@ -617,8 +635,7 @@ func TestContextWatcher_TriggersHandoffAbove70(t *testing.T) { //nolint:funlen /
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Create a temp worktree dir with .oro/context_pct
 	tmpDir := t.TempDir()
@@ -695,8 +712,7 @@ func TestHandoffPopulatesContext(t *testing.T) { //nolint:funlen // integration 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Create a temp worktree dir with .oro/ context files
 	tmpDir := t.TempDir()
@@ -781,8 +797,7 @@ func TestGracefulShutdown(t *testing.T) { //nolint:funlen // integration test re
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Create a temp worktree with .oro/ context files
 	tmpDir := t.TempDir()
@@ -904,8 +919,7 @@ func TestGracefulShutdown_NilPayload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send PREPARE_SHUTDOWN with nil payload — worker should treat it like hard shutdown
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -948,8 +962,7 @@ func TestContextWatcher_NoFileIsNotError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN with a nonexistent worktree (no .oro/context_pct)
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -1115,6 +1128,9 @@ func TestSendMessage_WhenDisconnected_Buffers(t *testing.T) { //nolint:funlen //
 		t.Fatal("timeout waiting for connection")
 	}
 
+	// Drain initial heartbeat
+	_ = readMessage(t, dispConn1)
+
 	// Close dispatcher side to trigger disconnect
 	_ = dispConn1.Close()
 
@@ -1153,8 +1169,7 @@ func TestHandleMessage_UnknownType(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send unknown message type
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -1187,8 +1202,7 @@ func TestRun_ContextCancellationDuringIdle(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Cancel immediately without any messages
 	time.Sleep(50 * time.Millisecond)
@@ -1216,8 +1230,7 @@ func TestRun_ContextCancellationDuringProcessing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Assign work
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -1261,8 +1274,7 @@ func TestHandleAssign_MissingPayload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN with nil payload
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -1293,8 +1305,7 @@ func TestHandleAssign_SpawnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
@@ -1359,6 +1370,9 @@ func TestReconnect_ContextCancelled(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for first connection")
 	}
+
+	// Drain initial heartbeat
+	_ = readMessage(t, dispConn1)
 
 	// Close listener so reconnect cannot succeed, then close conn to trigger reconnect
 	_ = listener.Close()
@@ -1427,6 +1441,9 @@ func TestReconnect_ReportsIdleWhenNoProcRunning(t *testing.T) { //nolint:funlen 
 		t.Fatal("timeout waiting for first connection")
 	}
 
+	// Drain initial heartbeat
+	_ = readMessage(t, dispConn1)
+
 	// Close to trigger reconnect
 	_ = dispConn1.Close()
 
@@ -1464,8 +1481,7 @@ func TestRun_MalformedJSON_Skipped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send malformed JSON (should be skipped)
 	_, _ = dispatcherConn.Write([]byte("this is not json\n"))
@@ -1496,8 +1512,7 @@ func TestRun_ConnectionClosedNoSocketPath_ReturnsError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Close dispatcher side — worker has no socketPath so it can't reconnect
 	_ = dispatcherConn.Close()
@@ -1566,8 +1581,7 @@ func TestRun_ScannerError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Close the dispatcher side — the wrapped conn will return our custom error
 	_ = dispatcherConn.Close()
@@ -1599,8 +1613,7 @@ func TestContextWatcher_EmptyWorktree_NoCrash(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN with empty worktree — triggers wt == "" path in watchContext
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -1639,8 +1652,7 @@ func TestContextWatcher_Below70_NoHandoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Create worktree with context_pct below threshold
 	tmpDir := t.TempDir()
@@ -1743,6 +1755,9 @@ func TestReconnect_DialFailsThenSucceeds(t *testing.T) { //nolint:funlen // inte
 		t.Fatal("timeout waiting for first connection")
 	}
 
+	// Drain initial heartbeat
+	_ = readMessage(t, dispConn1)
+
 	// Close the listener AND remove the socket file so the first reconnect attempt will fail
 	_ = listener1.Close()
 	_ = os.Remove(sockPath)
@@ -1839,6 +1854,9 @@ func TestReconnect_SendReconnectFails_Retries(t *testing.T) { //nolint:funlen //
 		t.Fatal("timeout waiting for first connection")
 	}
 
+	// Drain initial heartbeat
+	_ = readMessage(t, dispConn1)
+
 	// Close to trigger reconnect
 	_ = dispConn1.Close()
 
@@ -1883,8 +1901,7 @@ func TestContextWatcher_InvalidContent_Ignored(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	tmpDir := t.TempDir()
 	oroDir := filepath.Join(tmpDir, ".oro")
@@ -1935,8 +1952,7 @@ func TestHandleAssign_SendStatusError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
@@ -2049,6 +2065,9 @@ func TestSendMessage_BuffersWhenDisconnected(t *testing.T) { //nolint:funlen // 
 		t.Fatal("timeout waiting for first connection")
 	}
 
+	// Drain initial heartbeat
+	_ = readMessage(t, dispConn1)
+
 	// Send ASSIGN so worker has a bead
 	sendMessage(t, dispConn1, protocol.Message{
 		Type: protocol.MsgAssign,
@@ -2132,8 +2151,7 @@ func TestWorkerExtractsMemories(t *testing.T) { //nolint:funlen // integration t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -2265,8 +2283,7 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -2341,8 +2358,7 @@ func TestWorkerNoMemoryStore_NoCrash(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
@@ -2416,8 +2432,7 @@ func TestHandleAssign_PassesMemoryContextToSpawner(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	memCtx := "## Relevant Memories\n- [lesson] use table-driven tests"
 
@@ -2517,8 +2532,7 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- w.Run(ctx) }()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN with model=opus
 	sendMessage(t, dispatcherConn, protocol.Message{
@@ -2649,4 +2663,36 @@ func TestLoadThresholds(t *testing.T) {
 			t.Errorf("unknown model: got %d, want 50", th.For("unknown-model"))
 		}
 	})
+}
+
+// TestWorkerSendsInitialHeartbeat verifies that Run() sends a HEARTBEAT
+// immediately on startup so the dispatcher can register the worker.
+func TestWorkerSendsInitialHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-announce", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() { _ = w.Run(ctx) }()
+
+	// The first message from the worker should be a HEARTBEAT with its ID.
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgHeartbeat {
+		t.Fatalf("expected first message to be HEARTBEAT, got %s", msg.Type)
+	}
+	if msg.Heartbeat == nil {
+		t.Fatal("heartbeat payload is nil")
+	}
+	if msg.Heartbeat.WorkerID != "w-announce" {
+		t.Fatalf("expected worker ID %q, got %q", "w-announce", msg.Heartbeat.WorkerID)
+	}
+	if msg.Heartbeat.ContextPct != 0 {
+		t.Fatalf("expected initial context_pct=0, got %d", msg.Heartbeat.ContextPct)
+	}
 }
