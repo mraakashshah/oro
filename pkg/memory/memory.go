@@ -31,6 +31,8 @@ func NewStore(db *sql.DB) *Store {
 
 // SetEmbedder attaches an Embedder to the store. When set, Insert() computes
 // and stores TF-IDF embeddings, and HybridSearch() uses them for RRF scoring.
+//
+//oro:testonly
 func (s *Store) SetEmbedder(e *Embedder) {
 	s.embedder = e
 }
@@ -305,6 +307,8 @@ const rrfK = 60.0
 // receive a partial RRF score from that list alone.
 //
 // If no embedder is set, falls back to plain FTS5 Search().
+//
+//oro:testonly
 func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts) ([]ScoredMemory, error) {
 	if query == "" {
 		return nil, nil
@@ -677,6 +681,8 @@ func ParseMarker(line string) *InsertParams {
 
 // ExtractMarkers scans an io.Reader for [MEMORY] markers and inserts them
 // into the store. Returns the count of successfully extracted markers.
+//
+//oro:testonly
 func ExtractMarkers(ctx context.Context, r io.Reader, store *Store, workerID, beadID string) (int, error) {
 	scanner := bufio.NewScanner(r)
 	count := 0
@@ -840,6 +846,8 @@ func formatAge(createdAt string) string {
 // - Merges content of duplicates, keeping higher confidence
 // - Prunes memories with decayed score below minScore
 // Returns count of merged and pruned memories.
+//
+//oro:testonly
 func Consolidate(ctx context.Context, store *Store, opts ConsolidateOpts) (merged, pruned int, err error) {
 	if opts.SimilarityThreshold <= 0 {
 		opts.SimilarityThreshold = 0.8

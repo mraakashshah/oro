@@ -1642,6 +1642,8 @@ func (d *Dispatcher) ConnectedWorkers() int {
 }
 
 // TargetWorkers returns the target worker pool size set by a scale directive.
+//
+//oro:testonly
 func (d *Dispatcher) TargetWorkers() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -1649,6 +1651,8 @@ func (d *Dispatcher) TargetWorkers() int {
 }
 
 // WorkerInfo returns state info for a tracked worker (for testing).
+//
+//oro:testonly
 func (d *Dispatcher) WorkerInfo(id string) (state WorkerState, beadID string, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -1660,6 +1664,8 @@ func (d *Dispatcher) WorkerInfo(id string) (state WorkerState, beadID string, ok
 }
 
 // WorkerModel returns the stored model for a tracked worker (for testing).
+//
+//oro:testonly
 func (d *Dispatcher) WorkerModel(id string) (model string, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

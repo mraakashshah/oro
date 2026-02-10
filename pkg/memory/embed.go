@@ -22,6 +22,8 @@ type Embedder struct {
 }
 
 // NewEmbedder creates an Embedder with an empty vocabulary.
+//
+//oro:testonly
 func NewEmbedder() *Embedder {
 	return &Embedder{vocab: make(map[string]int)}
 }
@@ -70,6 +72,8 @@ func (e *Embedder) Embed(text string) []float32 {
 }
 
 // VocabSize returns the current vocabulary size (number of dimensions).
+//
+//oro:testonly
 func (e *Embedder) VocabSize() int {
 	return len(e.vocab)
 }

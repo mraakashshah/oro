@@ -76,17 +76,89 @@ if $HAS_GO; then
     header "GO TIER 2: LINTING"
     check "golangci-lint" "golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
 
-    header "GO TIER 3: ARCHITECTURE"
+    header "GO TIER 3: DEAD CODE"
+    # Detect exported functions in pkg/ and internal/ only referenced from test files.
+    # shellcheck disable=SC2317,SC2329
+    check_dead_exports() {
+        local dead_found=0
+        local checked=0
+        local skipped=0
+
+        # Collect all exported function declarations from non-test Go files.
+        # Handles both standalone: func FuncName(...)
+        # and methods:             func (r *Type) FuncName(...)
+        while IFS=: read -r file lineno line; do
+            # Extract function name: last word before the opening paren
+            local func_name
+            func_name=$(echo "$line" | sed -E 's/^func[[:space:]]+(\([^)]*\)[[:space:]]+)?([A-Z][A-Za-z0-9_]*).*/\2/')
+            if [ -z "$func_name" ]; then
+                continue
+            fi
+
+            checked=$((checked + 1))
+
+            # Check for //oro:testonly suppression in the godoc block above.
+            # Scan upward through consecutive comment lines.
+            local suppressed=false
+            local scan=$((lineno - 1))
+            while [ "$scan" -ge 1 ]; do
+                local scan_line
+                scan_line=$(sed -n "${scan}p" "$file")
+                if echo "$scan_line" | grep -q '//oro:testonly'; then
+                    suppressed=true
+                    break
+                elif echo "$scan_line" | grep -qE '^[[:space:]]*//' ; then
+                    # Still in a comment block, keep scanning
+                    scan=$((scan - 1))
+                else
+                    break  # Non-comment line — stop
+                fi
+            done
+            if $suppressed; then
+                skipped=$((skipped + 1))
+                continue
+            fi
+
+            # Search for this function name in non-test Go files, excluding
+            # the declaration line and comment-only lines (godoc, etc.).
+            # We look in pkg/, internal/, AND cmd/ so that wiring from cmd/
+            # or same-file callers count.
+            local callers
+            callers=$(grep -rn --include="*.go" --exclude="*_test.go" "\\b${func_name}\\b" pkg/ internal/ cmd/ \
+                | grep -v "^${file}:${lineno}:" \
+                | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
+                || true)
+
+            if [ -z "$callers" ]; then
+                echo "DEAD EXPORT: ${func_name} in ${file}:${lineno}"
+                echo "  Only referenced from test files (or not at all outside its own file)"
+                dead_found=$((dead_found + 1))
+            fi
+        done < <(grep -rn --include="*.go" --exclude="*_test.go" -E '^func[[:space:]]+(\([^)]*\)[[:space:]]+)?[A-Z]' pkg/ internal/)
+
+        echo ""
+        echo "Checked ${checked} exported functions, skipped ${skipped} (testonly), found ${dead_found} dead"
+
+        if [ "$dead_found" -gt 0 ]; then
+            echo ""
+            echo "Fix: wire these functions from production code, remove them, or add //oro:testonly above."
+            return 1
+        fi
+        return 0
+    }
+    check "dead exports" "check_dead_exports"
+
+    header "GO TIER 4: ARCHITECTURE"
     check "go-arch-lint" "go-arch-lint check --project-path ."
 
-    header "GO TIER 4: TESTING"
+    header "GO TIER 5: TESTING"
     check "go test" "go test -race -shuffle=on -p 2 -coverprofile=coverage.out ./internal/... ./pkg/... && go tool cover -func=coverage.out | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 90) exit 1}'"
     check "coverage" "go tool cover -func=coverage.out | tail -1"
 
-    header "GO TIER 5: SECURITY"
+    header "GO TIER 6: SECURITY"
     check "govulncheck" "govulncheck ./..."
 
-    header "GO TIER 6: BUILD"
+    header "GO TIER 7: BUILD"
     check "go build" "go build ./..."
     check "go vet" "go vet ./..."
 

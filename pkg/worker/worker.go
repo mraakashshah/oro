@@ -117,6 +117,8 @@ func New(id, socketPath string, spawner SubprocessSpawner) (*Worker, error) {
 }
 
 // NewWithConn creates a Worker with a pre-established connection (for testing).
+//
+//oro:testonly
 func NewWithConn(id string, conn net.Conn, spawner SubprocessSpawner) *Worker {
 	return &Worker{
 		ID:                  id,
@@ -129,6 +131,8 @@ func NewWithConn(id string, conn net.Conn, spawner SubprocessSpawner) *Worker {
 }
 
 // SetContextPollInterval overrides the context watcher poll interval (for testing).
+//
+//oro:testonly
 func (w *Worker) SetContextPollInterval(d time.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -136,6 +140,8 @@ func (w *Worker) SetContextPollInterval(d time.Duration) {
 }
 
 // SetReconnectInterval overrides the base reconnect retry interval (for testing).
+//
+//oro:testonly
 func (w *Worker) SetReconnectInterval(d time.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -144,6 +150,8 @@ func (w *Worker) SetReconnectInterval(d time.Duration) {
 
 // SetReconnectDialHook sets a function called after each successful dial during
 // reconnection, before the RECONNECT message is sent. For testing only.
+//
+//oro:testonly
 func (w *Worker) SetReconnectDialHook(fn func(net.Conn)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -160,6 +168,8 @@ func (w *Worker) SetMemoryStore(s *memory.Store) {
 }
 
 // SessionText returns the accumulated subprocess output text. Thread-safe.
+//
+//oro:testonly
 func (w *Worker) SessionText() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -779,6 +789,8 @@ func (w *Worker) SendShutdownApproved(_ context.Context) error {
 }
 
 // SendReadyForReview sends a READY_FOR_REVIEW message to the Dispatcher.
+//
+//oro:testonly
 func (w *Worker) SendReadyForReview(_ context.Context) error {
 	w.mu.Lock()
 	beadID := w.beadID

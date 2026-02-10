@@ -28,6 +28,8 @@ type ExecProcessManager struct {
 // NewExecProcessManager creates a new ExecProcessManager that spawns
 // `sleep 3600` subprocesses (suitable for unit tests). For production use,
 // call NewOroProcessManager which spawns real `oro worker` processes.
+//
+//oro:testonly
 func NewExecProcessManager(socketPath string) *ExecProcessManager {
 	pm := &ExecProcessManager{
 		socketPath: socketPath,
@@ -58,6 +60,8 @@ func NewOroProcessManager(socketPath string) *ExecProcessManager {
 
 // CmdForWorker returns the exec.Cmd that would be used to spawn a worker
 // with the given ID, without actually starting it. Useful for testing.
+//
+//oro:testonly
 func (pm *ExecProcessManager) CmdForWorker(id string) *exec.Cmd {
 	return pm.cmdFactory(id)
 }
