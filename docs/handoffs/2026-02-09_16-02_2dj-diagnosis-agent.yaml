@@ -1,0 +1,71 @@
+---
+date: 2026-02-09
+status: complete
+---
+
+goal: >
+  Completed oro-2dj (P3): Wire diagnosis agent for stuck workers. Dispatcher
+  now tracks ralph handoff count per bead and spawns ops.Diagnose() on the
+  2nd handoff instead of respawning. Diagnosis failure escalates to manager.
+  Also researched beads formula/molecule system — concluded we don't need it.
+
+now: >
+  Pick up oro-lcg (P2, E2E integration test) to validate the full lifecycle
+  with all new features. Alternatively, oro-nqi (P2, TUI dashboard epic)
+  if a larger effort is desired.
+
+test: go test -race -count=1 ./...
+
+done_this_session:
+  - task: "oro-2dj: Wire diagnosis agent for stuck workers"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    details: >
+      Added handoffCounts map[string]int to Dispatcher struct. Incremented
+      in handleHandoff(). On 2nd+ handoff for same bead, spawns
+      ops.Diagnose() with symptom description instead of respawning worker.
+      handleDiagnosisResult() escalates to manager on failure or reports
+      diagnosis feedback on success. Extracted respawnWorker() helper to
+      stay under funlen=60 lint limit. clearHandoffCount() clears on bead
+      completion in handleDone(). 5 new tests, quality gate 18/18.
+      Commit bf5241f.
+
+  - task: "Research: beads formula/molecule system"
+    details: >
+      Read all 11 docs from randlee/github-research/beads/. Molecules are
+      reusable declarative workflow templates with lifecycle phases
+      (solid=template, liquid=persistent, vapor=ephemeral/auto-cleanup).
+      Concluded we don't need them — our dispatcher already provides
+      programmatic orchestration. Molecules useful for teams needing
+      declarative workflows without a custom orchestrator.
+
+decisions:
+  - handoff_threshold_2: >
+      maxHandoffsBeforeDiagnosis=2 matches the spec ("same bead fails
+      after 2 context cycles"). First handoff respawns normally, second
+      triggers diagnosis.
+  - diagnosis_always_escalates: >
+      Both success and failure of diagnosis escalate to manager (with
+      different payloads). Manager always gets notified when a bead is
+      diagnosed as stuck, since diagnosis feedback needs human review.
+  - respawnWorker_extraction: >
+      Extracted normal respawn logic into respawnWorker() to keep
+      handleHandoff under funlen=60 lint limit.
+  - no_molecules_needed: >
+      Beads molecule/formula system adds declarative workflow orchestration.
+      Our dispatcher already does this programmatically. Would revisit if
+      we need standardized multi-step templates for non-developers.
+
+worked:
+  - "Following review rejection pattern (rejectionCounts) as template for handoffCounts"
+  - "Pre-setting handoff count in tests to simulate prior handoffs without full flow"
+
+next:
+  - "oro-lcg: E2E integration test — oro start → assign → done → merge → stop"
+  - "oro-nqi: TUI dashboard epic (Charm/Bubble Tea)"
+
+files:
+  modified: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+
+beads:
+  completed: [oro-2dj]
+  remaining: [oro-lcg, oro-nqi]
