@@ -1,0 +1,79 @@
+---
+date: 2026-02-10
+status: complete
+---
+
+goal: >
+  Closed two P2 bugs: oro-0er (graceful shutdown) and oro-gzi (claude -p hang).
+  Also cleaned up dead stdin/compact code after discovering Claude auto-compacts.
+
+now: >
+  Check bd ready for next work. Flaky test TestReconnect_SendReconnectFails_Retries
+  still intermittently fails (pre-existing, not caused by this session). Consider
+  picking up oro-cwz.2 (search router, P2) or oro-jtw.5 (progressive disclosure, P2).
+
+test: go test -race -count=1 ./... && ./quality_gate.sh
+
+done_this_session:
+  - task: "oro-0er: Full graceful shutdown for oro stop"
+    files: [cmd/oro/cmd_stop.go, cmd/oro/cmd_stop_test.go]
+    details: >
+      Sends stop directive via UDS, SIGTERM, waits for drain, kills tmux,
+      runs bd sync. Falls back gracefully when UDS unavailable. 4 tests added.
+
+  - task: "oro-gzi: Fix claude -p hanging as subprocess"
+    files: [pkg/worker/worker.go, pkg/worker/worker_test.go]
+    details: >
+      Root cause: Ink (Claude Code TUI) calls setRawMode on process.stdin.
+      Pipes block this indefinitely. Fix: don't pipe stdin (use /dev/null).
+      Verified claude -p works with /dev/null stdin.
+
+  - task: "Clean up dead compaction code"
+    files: [pkg/worker/worker.go, pkg/worker/worker_test.go]
+    details: >
+      Removed sendCompact, canCompact, Worker.stdin field, syncWriteCloser,
+      nopWriteCloser, TestSpawnerReturnsStdin. Context watcher now relies
+      on Claude's built-in auto-compaction. Two-strike: first breach waits,
+      second breach triggers handoff.
+
+decisions:
+  - no_stdin_pipe: >
+      claude -p cannot have piped stdin due to Ink setRawMode blocking.
+      /dev/null stdin is the only safe option. Trade-off accepted: no
+      explicit /compact from worker, rely on Claude auto-compaction.
+  - two_strike_preserved: >
+      First context breach marks flag and continues (auto-compact window).
+      Second breach triggers handoff. This gives Claude one chance to
+      self-compact before we kill the subprocess.
+
+findings:
+  - ink_raw_mode: >
+      Claude Code 2.1.38 uses Ink React-for-CLI framework which calls
+      setRawMode on process.stdin at startup. Pipes cause indefinite block.
+      /dev/null avoids this. Verified via sample(1) stack trace showing
+      main thread in kevent64 with established TCP connections but zero output.
+  - reproduction: >
+      timeout 15 claude -p "hello" hangs (exit 124).
+      timeout 15 claude -p "hello" < /dev/null works instantly.
+      claude doctor shows "Raw mode not supported on current process.stdin".
+
+worked:
+  - "sample(1) + lsof to inspect hung claude process — showed established TCP but kevent64 block"
+  - "Testing with < /dev/null to isolate stdin as the issue"
+  - "fakeCmd pattern from tmux_test.go for testing stop command"
+
+failed:
+  - "--strict-mcp-config and --setting-sources did not fix the hang (not MCP related)"
+  - "env -i minimal environment did not fix the hang (not env related)"
+
+next:
+  - Pick up oro-cwz.2 or oro-jtw.5
+  - Consider filing bead for flaky TestReconnect_SendReconnectFails_Retries
+
+files:
+  created: [cmd/oro/cmd_stop_test.go]
+  modified: [cmd/oro/cmd_stop.go, pkg/worker/worker.go, pkg/worker/worker_test.go]
+
+beads:
+  completed: [oro-0er, oro-gzi]
+  remaining: [oro-cwz.2, oro-jtw.5, oro-jtw.3, oro-vqv, oro-u80, oro-q9y]
