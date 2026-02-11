@@ -381,16 +381,11 @@ func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 	}()
 
 	// Wait for the listener to be ready
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		d.mu.Lock()
-		ln := d.listener
-		d.mu.Unlock()
-		if ln != nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer d.mu.Unlock()
+		return d.listener != nil
+	}, 2*time.Second)
 
 	t.Cleanup(func() {
 		cancel()
@@ -516,42 +511,26 @@ func sendDirectiveWithArgs(t *testing.T, socketPath, directive, args string) *pr
 // waitForState polls until the dispatcher reaches the expected state or times out.
 func waitForState(t *testing.T, d *Dispatcher, want State, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if d.GetState() == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("dispatcher state: got %s, want %s", d.GetState(), want)
+	waitFor(t, func() bool {
+		return d.GetState() == want
+	}, timeout)
 }
 
 // waitForWorkers polls until the expected number of workers are connected.
 func waitForWorkers(t *testing.T, d *Dispatcher, want int, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if d.ConnectedWorkers() == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("connected workers: got %d, want %d", d.ConnectedWorkers(), want)
+	waitFor(t, func() bool {
+		return d.ConnectedWorkers() == want
+	}, timeout)
 }
 
 // waitForWorkerState polls until a specific worker reaches the expected state.
 func waitForWorkerState(t *testing.T, d *Dispatcher, workerID string, want protocol.WorkerState, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		st, _, ok := d.WorkerInfo(workerID)
-		if ok && st == want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	st, _, _ := d.WorkerInfo(workerID)
-	t.Fatalf("worker %s state: got %s, want %s", workerID, st, want)
+		return ok && st == want
+	}, timeout)
 }
 
 // eventCount returns the number of events with the given type.
@@ -576,7 +555,7 @@ func TestDispatcher_StartsInert(t *testing.T) {
 	}
 
 	// Even with beads available, no assignments should happen in inert state
-	time.Sleep(100 * time.Millisecond)
+	// Verify state remains inert (no sleep needed - state is synchronous)
 	if d.GetState() != StateInert {
 		t.Fatalf("dispatcher should remain inert without start directive")
 	}
@@ -696,8 +675,10 @@ func TestAcceptLoopBackpressure(t *testing.T) {
 	// Wait for all connection attempts to complete
 	wg.Wait()
 
-	// Give handlers time to acquire semaphore slots
-	time.Sleep(200 * time.Millisecond)
+	// Wait for handlers to acquire semaphore slots
+	waitFor(t, func() bool {
+		return len(d.acceptSem) >= 100
+	}, 1*time.Second)
 
 	// Count how many semaphore slots are in use
 	slotsInUse := len(d.acceptSem)
@@ -720,7 +701,9 @@ func TestAcceptLoopBackpressure(t *testing.T) {
 	}
 
 	// Wait for handlers to release semaphore
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool {
+		return len(d.acceptSem) == 0
+	}, 1*time.Second)
 
 	// Verify semaphore is empty after cleanup
 	if len(d.acceptSem) != 0 {
@@ -854,16 +837,9 @@ func TestDispatcher_WorkerDone_MergesClean(t *testing.T) {
 	})
 
 	// Wait for merge to complete (logged as "merged" event)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "merged") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "merged") == 0 {
-		t.Fatal("expected 'merged' event in DB")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "merged") > 0
+	}, 2*time.Second)
 
 	// Assignment should be completed
 	var status string
@@ -909,16 +885,9 @@ func TestDispatcher_WorkerDone_MergeConflict_SpawnsOpsAgent(t *testing.T) {
 	})
 
 	// Wait for merge_conflict event
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "merge_conflict") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "merge_conflict") == 0 {
-		t.Fatal("expected 'merge_conflict' event — ops agent should have been spawned")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "merge_conflict") > 0
+	}, 2*time.Second)
 }
 
 func TestDispatcher_Handoff_RespawnsWorker(t *testing.T) {
@@ -958,14 +927,9 @@ func TestDispatcher_Handoff_RespawnsWorker(t *testing.T) {
 	}
 
 	// Verify handoff event logged
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "handoff") > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected 'handoff' event")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "handoff") > 0
+	}, 1*time.Second)
 }
 
 func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
@@ -994,14 +958,9 @@ func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
 	beadSrc.SetBeads(nil)
 
 	// Don't send any more heartbeats — wait for timeout
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if d.ConnectedWorkers() == 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("worker should have been removed after heartbeat timeout, still have %d", d.ConnectedWorkers())
+	waitFor(t, func() bool {
+		return d.ConnectedWorkers() == 0
+	}, 2*time.Second)
 }
 
 func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T) {
@@ -1029,8 +988,7 @@ func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T)
 	beadSrc.SetBeads(nil)
 
 	// Don't send any more heartbeats — wait for timeout + escalation
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		msgs := esc.Messages()
 		if len(msgs) > 0 {
 			msg := msgs[0]
@@ -1040,11 +998,10 @@ func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T)
 			if !strings.Contains(msg, "w-crash") {
 				t.Fatalf("heartbeat escalation should mention worker ID, got: %q", msg)
 			}
-			return
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected heartbeat timeout escalation message")
+		return false
+	}, 2*time.Second)
 }
 
 func TestDispatcher_ReadyForReview_SpawnsReviewer(t *testing.T) {
@@ -1078,14 +1035,9 @@ func TestDispatcher_ReadyForReview_SpawnsReviewer(t *testing.T) {
 	waitForWorkerState(t, d, "w1", protocol.WorkerReviewing, 1*time.Second)
 
 	// Verify event logged
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "ready_for_review") > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected 'ready_for_review' event")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "ready_for_review") > 0
+	}, 1*time.Second)
 }
 
 func TestDispatcher_ReviewApproved_WorkerSignalsDone(t *testing.T) {
@@ -1120,14 +1072,9 @@ func TestDispatcher_ReviewApproved_WorkerSignalsDone(t *testing.T) {
 	})
 
 	// Wait for review_approved event
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "review_approved") > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected 'review_approved' event")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "review_approved") > 0
+	}, 3*time.Second)
 }
 
 func TestDispatcher_ReviewRejected_FeedbackSent(t *testing.T) {
@@ -1161,16 +1108,9 @@ func TestDispatcher_ReviewRejected_FeedbackSent(t *testing.T) {
 	})
 
 	// Wait for review_rejected event
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "review_rejected") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "review_rejected") == 0 {
-		t.Fatal("expected 'review_rejected' event")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "review_rejected") > 0
+	}, 3*time.Second)
 
 	// After rejection, worker should receive re-ASSIGN with feedback (the bead re-assigned)
 	msg, ok := readMsg(t, conn, 2*time.Second)
@@ -1203,14 +1143,9 @@ func TestDispatcher_Reconnect_ResumesWorker(t *testing.T) {
 	waitForWorkerState(t, d, "w-reconnect", protocol.WorkerBusy, 1*time.Second)
 
 	// Verify reconnect event
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "reconnect") > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected 'reconnect' event")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "reconnect") > 0
+	}, 1*time.Second)
 }
 
 func TestDispatcher_StopDirective_FinishesCurrent(t *testing.T) {
@@ -1235,8 +1170,7 @@ func TestDispatcher_StopDirective_FinishesCurrent(t *testing.T) {
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-noassign", Title: "Should not be assigned", Priority: 1}})
 
 	// Wait a couple poll cycles — no ASSIGN should arrive
-	time.Sleep(200 * time.Millisecond)
-	_, ok := readMsg(t, conn, 200*time.Millisecond)
+	_, ok := readMsg(t, conn, 400*time.Millisecond)
 	if ok {
 		t.Fatal("should not receive ASSIGN in stopping state")
 	}
@@ -1261,8 +1195,7 @@ func TestDispatcher_PauseDirective(t *testing.T) {
 	waitForWorkers(t, d, 1, 1*time.Second)
 
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-paused", Title: "Paused", Priority: 1}})
-	time.Sleep(200 * time.Millisecond)
-	_, ok := readMsg(t, conn, 200*time.Millisecond)
+	_, ok := readMsg(t, conn, 400*time.Millisecond)
 	if ok {
 		t.Fatal("should not receive ASSIGN in paused state")
 	}
@@ -1300,19 +1233,17 @@ func TestDispatcher_Escalation(t *testing.T) {
 		Done: &protocol.DonePayload{BeadID: "bead-esc", WorkerID: "w1", QualityGatePassed: true},
 	})
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		msgs := esc.Messages()
 		if len(msgs) > 0 {
 			msg := msgs[0]
 			if !strings.HasPrefix(msg, "[ORO-DISPATCH] MERGE_CONFLICT: bead-esc") {
 				t.Fatalf("escalation should use structured format, got: %q", msg)
 			}
-			return
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected escalation message")
+		return false
+	}, 2*time.Second)
 }
 
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
@@ -1482,14 +1413,9 @@ func TestHandleStatus_LogsEvent(t *testing.T) {
 	})
 
 	// Wait for status event
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "status") > 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("expected 'status' event logged")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "status") > 0
+	}, 1*time.Second)
 }
 
 func TestHandleStatus_NilPayload(t *testing.T) {
@@ -1579,16 +1505,9 @@ func TestDirective_FocusAndInvalid(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Verify directive event logged
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "directive") > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "directive") == 0 {
-		t.Fatal("expected 'directive' event for focus")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "directive") > 0
+	}, 1*time.Second)
 
 	// Send an invalid directive via UDS — should receive ACK with OK=false
 	conn, err := net.Dial("unix", d.cfg.SocketPath)
@@ -1729,14 +1648,9 @@ func TestHandleReconnect_WithBufferedEvents(t *testing.T) {
 	waitForWorkerState(t, d, "w-buffered", protocol.WorkerBusy, 1*time.Second)
 
 	// The buffered heartbeat should have been processed — check event
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "heartbeat") > 0 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("expected buffered heartbeat event to be processed")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "heartbeat") > 0
+	}, 1*time.Second)
 }
 
 func TestHandleReconnect_NilPayload(t *testing.T) {
@@ -1932,16 +1846,9 @@ func TestHandleDone_QualityGateFailed_RejectsMerge(t *testing.T) {
 	})
 
 	// Should log a quality_gate_failed event
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "quality_gate_rejected") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "quality_gate_rejected") == 0 {
-		t.Fatal("expected 'quality_gate_rejected' event when QualityGatePassed=false")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "quality_gate_rejected") > 0
+	}, 2*time.Second)
 
 	// Should NOT have merged
 	if eventCount(t, d.db, "merged") != 0 {
@@ -1992,16 +1899,9 @@ func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
 	})
 
 	// Should log done event and proceed to merge
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "merged") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "merged") == 0 {
-		t.Fatal("expected 'merged' event when QualityGatePassed=true")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "merged") > 0
+	}, 2*time.Second)
 
 	// No quality_gate_rejected event
 	if eventCount(t, d.db, "quality_gate_rejected") != 0 {
@@ -2053,13 +1953,9 @@ func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
 	}
 
 	// Wait for handoff event to be logged
-	deadline2 := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline2) {
-		if eventCount(t, d.db, "handoff") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "handoff") > 0
+	}, 1*time.Second)
 
 	// Verify memories were persisted: 2 learnings + 1 decision = 3 memories
 	var memCount int
@@ -2193,16 +2089,9 @@ func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
 	})
 
 	// Wait for shutdown_approved event
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "shutdown_approved") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "shutdown_approved") == 0 {
-		t.Fatal("expected 'shutdown_approved' event")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "shutdown_approved") > 0
+	}, 2*time.Second)
 
 	// Worker should then receive hard SHUTDOWN
 	msg2, ok := readMsg(t, conn, 2*time.Second)
@@ -3191,16 +3080,9 @@ func TestQualityGateRetry_EventLogged(t *testing.T) {
 	})
 
 	// Wait for quality_gate_rejected event
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "quality_gate_rejected") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "quality_gate_rejected") == 0 {
-		t.Fatal("expected 'quality_gate_rejected' event")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "quality_gate_rejected") > 0
+	}, 2*time.Second)
 
 	// Also verify a "done" event was logged (happens before the quality gate check)
 	if eventCount(t, d.db, "done") == 0 {
@@ -3252,16 +3134,9 @@ func TestQualityGatePassed_NormalMergeFlow(t *testing.T) {
 	})
 
 	// Wait for merge to complete
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "merged") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "merged") == 0 {
-		t.Fatal("expected 'merged' event when quality gate passed")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "merged") > 0
+	}, 2*time.Second)
 
 	// No quality_gate_rejected event
 	if eventCount(t, d.db, "quality_gate_rejected") != 0 {
@@ -4033,16 +3908,9 @@ func TestDispatcher_ReviewRejection_EscalatesAfterTwoRejections(t *testing.T) {
 
 	// Should NOT receive another ASSIGN — escalation instead
 	// Wait for escalation event
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "review_escalated") > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if eventCount(t, d.db, "review_escalated") == 0 {
-		t.Fatal("expected 'review_escalated' event after 3rd rejection")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "review_escalated") > 0
+	}, 3*time.Second)
 
 	// Verify escalation message sent to manager
 	msgs := esc.Messages()
@@ -4833,14 +4701,9 @@ func TestMergeConflict_ResultChannelConsumed(t *testing.T) {
 	})
 
 	// Wait for merge_conflict_resolved event — proves the result channel was consumed
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "merge_conflict_resolved") > 0 {
-			return // success
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected 'merge_conflict_resolved' event — result channel should have been consumed")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "merge_conflict_resolved") > 0
+	}, 3*time.Second)
 }
 
 // TestMergeConflict_ResolutionFailed_Escalates verifies that when the merge
@@ -4999,16 +4862,11 @@ func TestDispatcherBuffering(t *testing.T) {
 	go func() { _ = d.Run(ctx) }()
 
 	// Wait for the listener to be ready
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		d.mu.Lock()
-		ln := d.listener
-		d.mu.Unlock()
-		if ln != nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer d.mu.Unlock()
+		return d.listener != nil
+	}, 2*time.Second)
 
 	// 1. Manually create a tracked worker with a broken connection
 	// This simulates the scenario where the dispatcher thinks a worker is connected
@@ -5245,16 +5103,11 @@ func TestShutdownHardTimeout(t *testing.T) {
 	}()
 
 	// Wait for the listener to be ready
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		d.mu.Lock()
-		ln := d.listener
-		d.mu.Unlock()
-		if ln != nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer d.mu.Unlock()
+		return d.listener != nil
+	}, 2*time.Second)
 
 	// Connect a worker that will never respond to PREPARE_SHUTDOWN
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
