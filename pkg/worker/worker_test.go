@@ -755,17 +755,9 @@ func TestContextWatcher_TriggersHandoffAbove70(t *testing.T) { //nolint:funlen /
 	}
 
 	// Subprocess should have been killed after handoff (poll briefly for goroutine to complete killProc)
-	killed := false
-	for range 20 {
-		if spawner.process.Killed() {
-			killed = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !killed {
-		t.Error("expected subprocess to be killed after handoff")
-	}
+	waitFor(t, func() bool {
+		return spawner.process.Killed()
+	}, 200*time.Millisecond)
 
 	cancel()
 	<-errCh
@@ -955,17 +947,9 @@ func TestGracefulShutdown(t *testing.T) { //nolint:funlen // integration test re
 	}
 
 	// Subprocess should have been killed after graceful shutdown
-	killed := false
-	for range 20 {
-		if spawner.process.Killed() {
-			killed = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !killed {
-		t.Error("expected subprocess to be killed after graceful shutdown")
-	}
+	waitFor(t, func() bool {
+		return spawner.process.Killed()
+	}, 200*time.Millisecond)
 
 	// Worker Run should have exited cleanly
 	cancel()
@@ -1048,8 +1032,8 @@ func TestContextWatcher_NoFileIsNotError(t *testing.T) {
 	// Drain STATUS
 	_ = readMessage(t, dispatcherConn)
 
-	// Wait a bit to ensure no crash
-	time.Sleep(200 * time.Millisecond)
+	// Wait a bit to ensure no crash - verify worker goroutine is stable
+	justWait(200 * time.Millisecond)
 
 	// Worker should still be running (context cancellation should work)
 	cancel()
@@ -1208,7 +1192,7 @@ func TestSendMessage_WhenDisconnected_Buffers(t *testing.T) { //nolint:funlen //
 
 	// During reconnect, SendHeartbeat should buffer (not error)
 	// Give a moment for the disconnect to be detected
-	time.Sleep(100 * time.Millisecond)
+	justWait(500 * time.Millisecond)
 
 	// Accept reconnection
 	var dispConn2 net.Conn
@@ -1277,7 +1261,7 @@ func TestRun_ContextCancellationDuringIdle(t *testing.T) {
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Cancel immediately without any messages
-	time.Sleep(50 * time.Millisecond)
+	justWait(50 * time.Millisecond)
 	cancel()
 
 	select {
@@ -1451,7 +1435,8 @@ func TestReconnect_ContextCancelled(t *testing.T) {
 	_ = dispConn1.Close()
 
 	// Give worker time to detect disconnect and start reconnecting
-	time.Sleep(200 * time.Millisecond)
+	// Need enough time for the worker to detect disconnect and enter reconnect loop
+	justWait(500 * time.Millisecond)
 
 	// Cancel context during reconnect
 	cancel()
@@ -1700,7 +1685,7 @@ func TestContextWatcher_EmptyWorktree_NoCrash(t *testing.T) {
 	_ = readMessage(t, dispatcherConn)
 
 	// Wait for several poll cycles — watcher should hit wt == "" and continue
-	time.Sleep(300 * time.Millisecond)
+	justWait(300 * time.Millisecond)
 
 	// Should not crash
 	if spawner.process.Killed() {
@@ -1750,7 +1735,7 @@ func TestContextWatcher_Below70_NoHandoff(t *testing.T) {
 	}
 
 	// Wait for several poll cycles
-	time.Sleep(300 * time.Millisecond)
+	justWait(300 * time.Millisecond)
 
 	// Subprocess should NOT have been killed
 	if spawner.process.Killed() {
@@ -1839,7 +1824,7 @@ func TestReconnect_DialFailsThenSucceeds(t *testing.T) { //nolint:funlen // inte
 
 	// Wait for worker to attempt reconnect and fail at least once
 	// reconnectBaseInterval is 2s ± 500ms, so wait 4s to ensure at least one failed attempt
-	time.Sleep(4 * time.Second)
+	justWait(4 * time.Second)
 
 	// Now create a new listener on the same path so the next attempt succeeds
 	_ = os.Remove(sockPath) // remove stale socket
@@ -2010,7 +1995,7 @@ func TestContextWatcher_InvalidContent_Ignored(t *testing.T) {
 	}
 
 	// Wait for several poll cycles — should not crash or handoff
-	time.Sleep(300 * time.Millisecond)
+	justWait(300 * time.Millisecond)
 
 	if spawner.process.Killed() {
 		t.Error("subprocess should not be killed when context_pct is invalid")
@@ -2166,7 +2151,9 @@ func TestSendMessage_BuffersWhenDisconnected(t *testing.T) { //nolint:funlen // 
 	_ = dispConn1.Close()
 
 	// Wait for the worker to detect the disconnect and enter reconnect state
-	time.Sleep(500 * time.Millisecond)
+	// We need to ensure the worker actually detects the disconnect before we
+	// send heartbeats, but not wait so long that reconnect completes
+	justWait(100 * time.Millisecond)
 
 	// Send messages while disconnected — they should be buffered
 	_ = w.SendHeartbeat(ctx, 25)
@@ -2267,7 +2254,7 @@ func TestWorkerExtractsMemories(t *testing.T) { //nolint:funlen // integration t
 	_ = pw.Close()
 
 	// Allow time for the processOutput goroutine to read and process all lines.
-	time.Sleep(200 * time.Millisecond)
+	justWait(200 * time.Millisecond)
 
 	// Verify [MEMORY] markers were extracted in real-time.
 	all, err := store.List(ctx, memory.ListOpts{})
@@ -2386,7 +2373,7 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 	_, _ = pw.Write([]byte(output))
 	_ = pw.Close()
 
-	time.Sleep(200 * time.Millisecond)
+	justWait(200 * time.Millisecond)
 
 	// SendDone should extract implicit memories.
 	doneCh := readMessageAsync(t, dispatcherConn)
@@ -2459,7 +2446,7 @@ func TestWorkerNoMemoryStore_NoCrash(t *testing.T) {
 	_, _ = pw.Write([]byte("[MEMORY] type=gotcha: should not crash\nDone.\n"))
 	_ = pw.Close()
 
-	time.Sleep(200 * time.Millisecond)
+	justWait(200 * time.Millisecond)
 
 	// Session text should still be accumulated.
 	if !strings.Contains(w.SessionText(), "should not crash") {
@@ -2595,16 +2582,10 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	}
 
 	// Wait for .oro/compacted flag to be created
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(filepath.Join(oroDir, "compacted")); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if _, err := os.Stat(filepath.Join(oroDir, "compacted")); os.IsNotExist(err) {
-		t.Fatal("expected .oro/compacted flag to be created after first breach")
-	}
+	waitFor(t, func() bool {
+		_, err := os.Stat(filepath.Join(oroDir, "compacted"))
+		return err == nil
+	}, 2*time.Second)
 
 	// Verify subprocess was NOT killed (no handoff yet)
 	if spawner.process.Killed() {
@@ -2615,7 +2596,7 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("30"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	justWait(100 * time.Millisecond)
 
 	// --- Second threshold breach: should handoff ---
 	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
@@ -2641,17 +2622,9 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	}
 
 	// Subprocess should be killed after handoff
-	killed := false
-	for range 20 {
-		if spawner.process.Killed() {
-			killed = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !killed {
-		t.Fatal("expected subprocess to be killed after handoff")
-	}
+	waitFor(t, func() bool {
+		return spawner.process.Killed()
+	}, 200*time.Millisecond)
 
 	cancel()
 	<-errCh
@@ -2698,13 +2671,10 @@ func TestWatchContext_CreatesOroDirectoryWith0700Perms(t *testing.T) {
 	}
 
 	// Wait for .oro/compacted flag to be created
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(filepath.Join(oroDir, "compacted")); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitFor(t, func() bool {
+		_, err := os.Stat(filepath.Join(oroDir, "compacted"))
+		return err == nil
+	}, 2*time.Second)
 
 	// Verify .oro directory has 0700 permissions (no group or other access)
 	info, err := os.Stat(oroDir)
@@ -2823,7 +2793,7 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 
 	// Wait for processOutput to finish and extract memories.
 	// processOutput calls extractImplicitMemories on exit.
-	time.Sleep(500 * time.Millisecond)
+	justWait(500 * time.Millisecond)
 
 	// Verify implicit memories were extracted even without SendDone/SendHandoff.
 	all, err := store.List(ctx, memory.ListOpts{})
@@ -3390,7 +3360,7 @@ func TestReconnect_TimerCleanup(t *testing.T) {
 
 	// Give the worker time to detect the disconnect and enter the reconnect
 	// sleep (the 10s timer).
-	time.Sleep(300 * time.Millisecond)
+	justWait(300 * time.Millisecond)
 
 	// Snapshot goroutine count before cancellation.
 	before := runtime.NumGoroutine()
@@ -3406,9 +3376,9 @@ func TestReconnect_TimerCleanup(t *testing.T) {
 	}
 
 	// Allow background goroutines to wind down.
-	time.Sleep(200 * time.Millisecond)
+	justWait(200 * time.Millisecond)
 	runtime.GC()
-	time.Sleep(100 * time.Millisecond)
+	justWait(100 * time.Millisecond)
 
 	after := runtime.NumGoroutine()
 
@@ -3471,7 +3441,7 @@ func TestSubprocessHealthCheck(t *testing.T) {
 	}
 
 	// Give the worker time to set up the subprocess monitoring goroutine
-	time.Sleep(50 * time.Millisecond)
+	justWait(50 * time.Millisecond)
 
 	// Simulate subprocess death: close stdout and waitCh to make subprocess exit
 	// WITHOUT the worker explicitly killing it (simulating unexpected death)
