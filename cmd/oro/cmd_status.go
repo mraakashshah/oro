@@ -33,14 +33,14 @@ func newStatusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 			if err != nil {
-				return err
+				return fmt.Errorf("get pid path: %w", err)
 			}
 
 			w := cmd.OutOrStdout()
 
 			status, pid, err := DaemonStatus(pidPath)
 			if err != nil {
-				return err
+				return fmt.Errorf("get daemon status: %w", err)
 			}
 
 			switch status {

@@ -53,11 +53,11 @@ const socketPollInterval = 50 * time.Millisecond
 func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration) error {
 	pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 	if err != nil {
-		return err
+		return fmt.Errorf("get pid path: %w", err)
 	}
 	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
 	if err != nil {
-		return err
+		return fmt.Errorf("get socket path: %w", err)
 	}
 
 	// 1. Spawn the daemon subprocess.
@@ -109,13 +109,13 @@ func newStartCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Run preflight checks before attempting to start.
 			if err := runPreflightChecks(); err != nil {
-				return err
+				return fmt.Errorf("preflight checks failed: %w", err)
 			}
 
 			// Bootstrap ~/.oro/ directory if it doesn't exist.
 			oroDir, err := defaultOroDir()
 			if err != nil {
-				return err
+				return fmt.Errorf("get oro dir: %w", err)
 			}
 			if err := bootstrapOroDir(oroDir); err != nil {
 				return fmt.Errorf("bootstrap oro dir: %w", err)
@@ -123,13 +123,13 @@ func newStartCmd() *cobra.Command {
 
 			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 			if err != nil {
-				return err
+				return fmt.Errorf("get pid path: %w", err)
 			}
 
 			// Check if already running.
 			status, pid, err := DaemonStatus(pidPath)
 			if err != nil {
-				return err
+				return fmt.Errorf("get daemon status: %w", err)
 			}
 
 			switch status {
@@ -162,7 +162,7 @@ func newStartCmd() *cobra.Command {
 func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
 	if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
-		return err
+		return fmt.Errorf("write pid file: %w", err)
 	}
 
 	ctx := cmd.Context()
@@ -171,7 +171,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
 
 	d, db, err := buildDispatcher(workers)
 	if err != nil {
-		return err
+		return fmt.Errorf("build dispatcher: %w", err)
 	}
 	defer db.Close()
 
@@ -268,10 +268,10 @@ func sendStartDirective(sockPath string) error {
 	defer func() { _ = conn.Close() }()
 
 	if err := sendDirective(conn, "start", ""); err != nil {
-		return err
+		return fmt.Errorf("send start directive: %w", err)
 	}
 	if _, err := readACK(conn); err != nil {
-		return err
+		return fmt.Errorf("read ack: %w", err)
 	}
 	return nil
 }

@@ -87,11 +87,11 @@ func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
 	// Poll both panes until Claude is ready (prompt appears).
 	architectPane := s.Name + ":0.0"
 	if err := s.PaneReady(architectPane); err != nil {
-		return err
+		return fmt.Errorf("wait for architect pane ready: %w", err)
 	}
 	managerPane := s.Name + ":0.1"
 	if err := s.PaneReady(managerPane); err != nil {
-		return err
+		return fmt.Errorf("wait for manager pane ready: %w", err)
 	}
 
 	// Inject architect beacon into pane 0.

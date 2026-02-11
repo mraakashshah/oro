@@ -198,11 +198,17 @@ func (w *Worker) Run(ctx context.Context) error {
 
 		case msg := <-msgCh:
 			if done, err := w.handleMessage(ctx, msg); err != nil || done {
-				return err
+				if err != nil {
+					return fmt.Errorf("handle message: %w", err)
+				}
+				return nil
 			}
 
 		case err := <-errCh:
-			return w.handleConnectionError(ctx, err)
+			if handleErr := w.handleConnectionError(ctx, err); handleErr != nil {
+				return fmt.Errorf("handle connection error: %w", handleErr)
+			}
+			return nil
 		}
 	}
 }
@@ -246,7 +252,7 @@ func (w *Worker) handleConnectionError(ctx context.Context, err error) error {
 	}
 	if w.socketPath == "" {
 		// No socketPath means we can't reconnect (test with net.Pipe)
-		return err
+		return fmt.Errorf("connection error (no reconnect possible): %w", err)
 	}
 	if reconnErr := w.reconnect(ctx); reconnErr != nil {
 		return reconnErr
@@ -320,7 +326,7 @@ func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message
 // starts context watcher, and pipes stdout through memory extraction.
 func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if msg.Assign == nil {
-		return fmt.Errorf("ASSIGN message missing payload")
+		return fmt.Errorf("assign message missing payload")
 	}
 
 	// Kill any existing subprocess from a previous assignment (e.g. QG retry
@@ -373,7 +379,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 
 	// Send STATUS running
 	if err := w.SendStatus(ctx, "running", ""); err != nil {
-		return err
+		return fmt.Errorf("send status: %w", err)
 	}
 
 	// Start subprocess exit monitor

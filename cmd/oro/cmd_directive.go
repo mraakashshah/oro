@@ -49,22 +49,22 @@ func runDirective(ctx context.Context, w io.Writer, args []string) error {
 
 	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
 	if err != nil {
-		return err
+		return fmt.Errorf("get socket path: %w", err)
 	}
 
 	conn, err := dialDispatcher(ctx, sockPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("dial dispatcher: %w", err)
 	}
 	defer conn.Close()
 
 	if err := sendDirective(conn, op, opArgs); err != nil {
-		return err
+		return fmt.Errorf("send directive: %w", err)
 	}
 
 	ack, err := readACK(conn)
 	if err != nil {
-		return err
+		return fmt.Errorf("read ack: %w", err)
 	}
 
 	printDirectiveResult(w, op, ack)

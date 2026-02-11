@@ -37,11 +37,11 @@ func newStopCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 			if err != nil {
-				return err
+				return fmt.Errorf("get pid path: %w", err)
 			}
 			sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
 			if err != nil {
-				return err
+				return fmt.Errorf("get socket path: %w", err)
 			}
 
 			cfg := &stopConfig{
@@ -81,7 +81,7 @@ func defaultSignal(pid int) error {
 func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 	status, pid, err := DaemonStatus(cfg.pidPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("get daemon status: %w", err)
 	}
 
 	switch status {
@@ -133,16 +133,16 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 func sendStopDirective(ctx context.Context, sockPath string) error {
 	conn, err := dialDispatcher(ctx, sockPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("dial dispatcher: %w", err)
 	}
 	defer conn.Close()
 
 	if err := sendDirective(conn, "stop", ""); err != nil {
-		return err
+		return fmt.Errorf("send stop directive: %w", err)
 	}
 
 	if _, err := readACK(conn); err != nil {
-		return err
+		return fmt.Errorf("read ack: %w", err)
 	}
 
 	return nil
