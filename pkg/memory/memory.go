@@ -105,10 +105,10 @@ func tagsFromJSON(s string) []string {
 	return tags
 }
 
-// DedupJaccardThreshold is the minimum Jaccard similarity of terms above which
+// dedupJaccardThreshold is the minimum Jaccard similarity of terms above which
 // a new memory is considered a duplicate of an existing one. Per the search
 // spec, 0.7 is the day-one threshold for FTS5 overlap dedup.
-const DedupJaccardThreshold = 0.7
+const dedupJaccardThreshold = 0.7
 
 // Insert adds a new memory with write-time dedup. Before inserting, it checks
 // FTS5 for existing memories with high term overlap (Jaccard similarity).
@@ -178,7 +178,7 @@ func (s *Store) checkDuplicate(ctx context.Context, content string, newConf floa
 	newTerms := termSet(content)
 	for _, r := range results {
 		existTerms := termSet(r.Content)
-		if jaccardSimilarity(newTerms, existTerms) < DedupJaccardThreshold {
+		if jaccardSimilarity(newTerms, existTerms) < dedupJaccardThreshold {
 			continue
 		}
 		// Near-duplicate found. Update confidence to max of both if needed.

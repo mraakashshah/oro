@@ -39,31 +39,31 @@ const DefaultContextPollInterval = 5 * time.Second
 // DefaultThreshold is the fallback context percentage when thresholds.json is missing or model unknown.
 const DefaultThreshold = 50
 
-// Thresholds holds per-model context percentage thresholds loaded from <worktree>/.oro/thresholds.json.
-type Thresholds struct {
+// thresholds holds per-model context percentage thresholds loaded from <worktree>/.oro/thresholds.json.
+type thresholds struct {
 	models map[string]int
 }
 
 // For returns the threshold for the given model, falling back to DefaultThreshold.
-func (t Thresholds) For(model string) int {
+func (t thresholds) For(model string) int {
 	if v, ok := t.models[model]; ok {
 		return v
 	}
 	return DefaultThreshold
 }
 
-// LoadThresholds reads per-model thresholds from <dir>/thresholds.json.
+// loadThresholds reads per-model thresholds from <dir>/thresholds.json.
 // Returns defaults if the file is missing or unreadable.
-func LoadThresholds(dir string) Thresholds {
+func loadThresholds(dir string) thresholds {
 	data, err := os.ReadFile(filepath.Join(dir, "thresholds.json")) //nolint:gosec // path constructed internally
 	if err != nil {
-		return Thresholds{}
+		return thresholds{}
 	}
 	var models map[string]int
 	if err := json.Unmarshal(data, &models); err != nil {
-		return Thresholds{}
+		return thresholds{}
 	}
-	return Thresholds{models: models}
+	return thresholds{models: models}
 }
 
 // reconnectBaseInterval is the base retry interval for reconnection.
@@ -569,7 +569,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Load per-model thresholds from worktree root.
-	th := LoadThresholds(wt)
+	th := loadThresholds(wt)
 	threshold := th.For(modelFamily(model))
 
 	var subprocExitDetectedAt time.Time

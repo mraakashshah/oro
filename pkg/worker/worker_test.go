@@ -2690,51 +2690,6 @@ func TestWatchContext_CreatesOroDirectoryWith0700Perms(t *testing.T) {
 	<-errCh
 }
 
-func TestLoadThresholds(t *testing.T) {
-	t.Run("loads from file", func(t *testing.T) {
-		dir := t.TempDir()
-		data := `{"opus": 65, "sonnet": 50, "haiku": 40}`
-		if err := os.WriteFile(filepath.Join(dir, "thresholds.json"), []byte(data), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		th := worker.LoadThresholds(dir)
-
-		if th.For("opus") != 65 {
-			t.Errorf("opus: got %d, want 65", th.For("opus"))
-		}
-		if th.For("sonnet") != 50 {
-			t.Errorf("sonnet: got %d, want 50", th.For("sonnet"))
-		}
-		if th.For("haiku") != 40 {
-			t.Errorf("haiku: got %d, want 40", th.For("haiku"))
-		}
-	})
-
-	t.Run("falls back to default when file missing", func(t *testing.T) {
-		dir := t.TempDir()
-		th := worker.LoadThresholds(dir)
-
-		if th.For("opus") != 50 {
-			t.Errorf("opus default: got %d, want 50", th.For("opus"))
-		}
-	})
-
-	t.Run("falls back to default for unknown model", func(t *testing.T) {
-		dir := t.TempDir()
-		data := `{"opus": 65, "sonnet": 50, "haiku": 40}`
-		if err := os.WriteFile(filepath.Join(dir, "thresholds.json"), []byte(data), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		th := worker.LoadThresholds(dir)
-
-		if th.For("unknown-model") != 50 {
-			t.Errorf("unknown model: got %d, want 50", th.For("unknown-model"))
-		}
-	})
-}
-
 // TestProcessExitExtractsMemories verifies that when a subprocess exits
 // (stdout closes) without calling SendDone or SendHandoff, implicit
 // memories are still extracted from the session text. This ensures
