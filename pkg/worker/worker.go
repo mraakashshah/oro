@@ -208,6 +208,9 @@ func (w *Worker) Run(ctx context.Context) error {
 // (EOF or error), the cause is sent on errCh.
 func (w *Worker) readMessages() (msgs <-chan protocol.Message, readErr <-chan error) {
 	scanner := bufio.NewScanner(w.conn)
+	// Configure scanner to accept messages up to MaxMessageSize (1MB).
+	// Default scanner max is 64KB which is too small for large payloads.
+	scanner.Buffer(make([]byte, 0, 64*1024), protocol.MaxMessageSize)
 	msgCh := make(chan protocol.Message)
 	errCh := make(chan error, 1)
 

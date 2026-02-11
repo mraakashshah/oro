@@ -338,6 +338,9 @@ func (d *Dispatcher) acceptLoop(ctx context.Context, ln net.Listener) {
 // handleConn reads line-delimited JSON messages from a worker connection.
 func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 	scanner := bufio.NewScanner(conn)
+	// Configure scanner to accept messages up to MaxMessageSize (1MB).
+	// Default scanner max is 64KB which is too small for large payloads.
+	scanner.Buffer(make([]byte, 0, 64*1024), protocol.MaxMessageSize)
 	var workerID string
 
 	defer func() {
@@ -991,6 +994,12 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 
 func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg protocol.Message) {
 	if msg.Reconnect == nil {
+		return
+	}
+
+	// Validate the reconnect payload to prevent unbounded buffered events
+	if err := msg.Reconnect.Validate(); err != nil {
+		_ = d.logEvent(ctx, "reconnect_rejected", workerID, msg.Reconnect.BeadID, workerID, err.Error())
 		return
 	}
 

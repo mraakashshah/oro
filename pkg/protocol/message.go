@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// MaxMessageSize is the maximum size in bytes for a single UDS message.
+// Scanner buffers are configured to accept up to this size.
+const MaxMessageSize = 1 * 1024 * 1024 // 1 MB
+
 // MessageType identifies the kind of UDS message.
 type MessageType string
 
@@ -157,6 +161,19 @@ type ReconnectPayload struct {
 	State          string    `json:"state"`
 	ContextPct     int       `json:"context_pct"`
 	BufferedEvents []Message `json:"buffered_events"`
+}
+
+// maxBufferedEvents is the maximum number of buffered events allowed in a
+// ReconnectPayload. This prevents unbounded memory usage during reconnection.
+const maxBufferedEvents = 100
+
+// Validate checks that the ReconnectPayload is within acceptable limits.
+// Returns an error if BufferedEvents exceeds maxBufferedEvents.
+func (r *ReconnectPayload) Validate() error {
+	if len(r.BufferedEvents) > maxBufferedEvents {
+		return fmt.Errorf("too many buffered events: %d > %d", len(r.BufferedEvents), maxBufferedEvents)
+	}
+	return nil
 }
 
 // DirectivePayload is sent by the manager to issue directives to the dispatcher.
