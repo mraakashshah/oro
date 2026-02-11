@@ -41,6 +41,8 @@ type GrepRouteResult struct {
 //   - Structural patterns (func\s+\w+, type Server struct) -> RouteAST
 //   - Semantic patterns (where is auth logic?) -> RouteSemantic
 //   - Everything else (TODO, handleRequest) -> RouteRipgrep (passthrough)
+//
+//oro:testonly
 func RouteGrep(pattern string) GrepRouteResult {
 	queryType := ClassifyQuery(pattern)
 
