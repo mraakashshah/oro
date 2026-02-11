@@ -4727,3 +4727,163 @@ func TestHandleHandoff_NoAssignAfterShutdown(t *testing.T) {
 		t.Fatalf("expected worker to remain WorkerShuttingDown, got %s", st2)
 	}
 }
+
+// TestDispatcherBuffering verifies that the dispatcher buffers messages sent to
+// disconnected workers and replays them on reconnect. If >10 messages are pending,
+// the worker is treated as dead and removed.
+func TestDispatcherBuffering(t *testing.T) {
+	db := newTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	beadSrc := &mockBeadSource{shown: make(map[string]*BeadDetail)}
+	wt := &mockWorktreeManager{}
+	esc := &mockEscalator{}
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+	spawner := ops.NewSpawner(&mockSubprocessSpawner{verdict: "APPROVED"})
+
+	// Use short path for UDS — macOS limits to 108 chars.
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	d := New(Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		HeartbeatTimeout: 500 * time.Millisecond,
+		PollInterval:     100 * time.Millisecond,
+	}, db, merger, spawner, beadSrc, wt, esc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+
+	// Wait for the listener to be ready
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		ln := d.listener
+		d.mu.Unlock()
+		if ln != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// 1. Manually create a tracked worker with a broken connection
+	// This simulates the scenario where the dispatcher thinks a worker is connected
+	// but the connection is actually broken.
+	brokenConn, _ := net.Pipe() // Create a pipe, close writer side immediately
+	_ = brokenConn.Close()
+
+	d.mu.Lock()
+	d.workers["w1"] = &trackedWorker{
+		id:       "w1",
+		conn:     brokenConn,
+		state:    WorkerIdle,
+		beadID:   "bead1",
+		worktree: "/tmp/worktree-bead1",
+		model:    "claude-opus-4-6",
+		lastSeen: time.Now(),
+		encoder:  json.NewEncoder(brokenConn),
+	}
+	w := d.workers["w1"]
+
+	// 2. Send an ASSIGN message while the worker is "disconnected"
+	// This should be buffered since the connection is broken
+	err := d.sendToWorker(w, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead1",
+			Worktree: "/tmp/worktree-bead1",
+			Model:    "claude-opus-4-6",
+		},
+	})
+	d.mu.Unlock()
+
+	// sendToWorker should fail because conn is broken, but message should be buffered
+	if err == nil {
+		t.Fatal("expected sendToWorker to fail on broken connection")
+	}
+
+	// 3. Verify message was buffered (this will fail until we implement buffering)
+	d.mu.Lock()
+	w = d.workers["w1"]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("worker was removed prematurely")
+	}
+	if len(w.pendingMsgs) != 1 {
+		d.mu.Unlock()
+		t.Fatalf("expected 1 pending message, got %d", len(w.pendingMsgs))
+	}
+	d.mu.Unlock()
+
+	// 4. Worker reconnects with a new connection
+	wConn, err := net.Dial("unix", d.cfg.SocketPath)
+	if err != nil {
+		t.Fatalf("dial dispatcher (reconnect): %v", err)
+	}
+	defer func() { _ = wConn.Close() }()
+
+	// Send RECONNECT message
+	enc := json.NewEncoder(wConn)
+	_ = enc.Encode(protocol.Message{
+		Type:      protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{WorkerID: "w1", BeadID: "bead1", State: "idle"},
+	})
+
+	// 5. Read messages from the new connection — should receive the buffered ASSIGN
+	scanner := bufio.NewScanner(wConn)
+	if !scanner.Scan() {
+		t.Fatal("expected to receive buffered ASSIGN message")
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		t.Fatalf("unmarshal buffered message: %v", err)
+	}
+
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN message, got %s", msg.Type)
+	}
+	if msg.Assign == nil || msg.Assign.BeadID != "bead1" {
+		t.Fatalf("expected ASSIGN for bead1, got %+v", msg.Assign)
+	}
+
+	// 6. Test that >10 pending messages causes worker removal
+	// Create a new broken connection and buffer 11 messages
+	brokenConn2, _ := net.Pipe()
+	_ = brokenConn2.Close()
+
+	d.mu.Lock()
+	d.workers["w2"] = &trackedWorker{
+		id:       "w2",
+		conn:     brokenConn2,
+		state:    WorkerIdle,
+		beadID:   "bead2",
+		worktree: "/tmp/worktree-bead2",
+		model:    "claude-opus-4-6",
+		lastSeen: time.Now(),
+		encoder:  json.NewEncoder(brokenConn2),
+	}
+	w2 := d.workers["w2"]
+
+	// Buffer 11 ASSIGN messages
+	for i := 0; i < 11; i++ {
+		_ = d.sendToWorker(w2, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   fmt.Sprintf("bead-%d", i),
+				Worktree: fmt.Sprintf("/tmp/worktree-bead-%d", i),
+				Model:    "claude-opus-4-6",
+			},
+		})
+	}
+
+	// Worker should be removed after 10 pending messages
+	_, exists := d.workers["w2"]
+	d.mu.Unlock()
+
+	if exists {
+		t.Fatal("expected worker w2 to be removed after >10 pending messages")
+	}
+}

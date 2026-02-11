@@ -137,14 +137,15 @@ const (
 
 // trackedWorker holds runtime state for a connected worker.
 type trackedWorker struct {
-	id       string
-	conn     net.Conn
-	state    WorkerState
-	beadID   string
-	worktree string
-	model    string // resolved model for the current bead assignment
-	lastSeen time.Time
-	encoder  *json.Encoder
+	id          string
+	conn        net.Conn
+	state       WorkerState
+	beadID      string
+	worktree    string
+	model       string // resolved model for the current bead assignment
+	lastSeen    time.Time
+	encoder     *json.Encoder
+	pendingMsgs []protocol.Message // buffered messages for disconnected worker
 }
 
 // pendingHandoff holds context for a bead whose worker has been shut down
@@ -1126,6 +1127,12 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 		default:
 			w.state = WorkerIdle
 		}
+
+		// Replay any pending messages that were buffered during disconnect
+		for _, pending := range w.pendingMsgs {
+			_ = d.sendToWorker(w, pending)
+		}
+		w.pendingMsgs = nil // Clear buffer after replay
 	}
 	d.mu.Unlock()
 
@@ -1740,7 +1747,14 @@ func (d *Dispatcher) markCommandProcessed(ctx context.Context, id int64) error {
 
 // --- UDS send helper ---
 
-// sendToWorker sends a message to a tracked worker. Caller must hold d.mu.
+// maxPendingMessages is the maximum number of messages to buffer for a
+// disconnected worker before treating it as dead.
+const maxPendingMessages = 10
+
+// sendToWorker sends a message to a tracked worker. If the worker is
+// disconnected (write fails), the message is buffered up to maxPendingMessages.
+// If the buffer exceeds maxPendingMessages, the worker is removed from tracking.
+// Caller must hold d.mu.
 func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -1749,7 +1763,17 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 	data = append(data, '\n')
 	_, err = w.conn.Write(data)
 	if err != nil {
-		return fmt.Errorf("write to worker %s: %w", w.id, err)
+		// Connection is broken — buffer the message
+		w.pendingMsgs = append(w.pendingMsgs, msg)
+
+		// If buffer exceeds limit, treat worker as dead and remove it
+		if len(w.pendingMsgs) > maxPendingMessages {
+			_ = w.conn.Close()
+			delete(d.workers, w.id)
+			return fmt.Errorf("worker %s exceeded pending message limit (%d), removed", w.id, maxPendingMessages)
+		}
+
+		return fmt.Errorf("write to worker %s: %w (message buffered)", w.id, err)
 	}
 	return nil
 }
