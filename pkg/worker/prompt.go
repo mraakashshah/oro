@@ -93,9 +93,14 @@ func AssemblePrompt(params PromptParams) string {
 	// 11. Failure
 	section(&b, "Failure", strings.Join([]string{
 		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
+		"  `bd create --title=\"P0: <bead-title> test failure\" --type=bug --priority=0 --description=\"QG output: <paste error>\"`",
 		"- Bead too big: decompose with `bd create`, then exit.",
+		"  `bd create --title=\"<subtask>\" --type=task --parent=<bead-id>` for each piece",
 		"- Context limit reached: create handoff beads, then exit.",
-		"- Blocked: create a blocker bead with `bd dep add`, then exit.",
+		"  `bd create --title=\"Continue: <bead-title>\" --type=task --description=\"Remaining: <what's left>\"`",
+		"- Blocked: create a blocker bead, then declare the dependency and exit.",
+		"  `bd create --title=\"Blocker: <what's blocking>\" --type=bug --priority=0`",
+		"  then `bd dep add <this-bead> <blocker-bead>`",
 	}, "\n"))
 
 	// 12. Exit

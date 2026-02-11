@@ -394,6 +394,54 @@ func TestAssemblePrompt_GitContent(t *testing.T) {
 	}
 }
 
+func TestAssemblePrompt_FailureSectionHasBdCreateExamples(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-fail-ex",
+		Title:              "Failure examples test",
+		Description:        "Test failure section has bd create examples",
+		AcceptanceCriteria: "bd create examples present in Failure section",
+		MemoryContext:      "",
+		WorktreePath:       "/tmp/wt-fail-ex",
+		Model:              "claude-opus-4-6",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract just the Failure section for focused assertions
+	failStart := strings.Index(prompt, "## Failure")
+	if failStart == -1 {
+		t.Fatal("expected prompt to contain ## Failure section")
+	}
+	failEnd := strings.Index(prompt[failStart+1:], "## ")
+	var failureSection string
+	if failEnd == -1 {
+		failureSection = prompt[failStart:]
+	} else {
+		failureSection = prompt[failStart : failStart+1+failEnd]
+	}
+
+	// Each failure mode should have a concrete bd create command example
+	checks := []struct {
+		name   string
+		substr string
+	}{
+		{"bd create --title flag", `bd create --title=`},
+		{"test failure bug type+priority", `--type=bug --priority=0`},
+		{"decompose with parent", `--parent=`},
+		{"context limit handoff", `bd create --title="Continue:`},
+		{"blocker bug creation", `bd create --title="Blocker:`},
+		{"bd dep add example", `bd dep add`},
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(failureSection, c.substr) {
+			t.Errorf("%s: expected Failure section to contain %q", c.name, c.substr)
+		}
+	}
+}
+
 func TestAssemblePrompt_AttemptZero_NoRetryNote(t *testing.T) {
 	t.Parallel()
 	params := worker.PromptParams{BeadID: "bead-no-retry", Title: "No retry", Description: "First attempt", AcceptanceCriteria: "Tests pass", WorktreePath: "/tmp/wt-no-retry", Model: "claude-opus-4-6", Attempt: 0}
