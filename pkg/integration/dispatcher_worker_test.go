@@ -281,7 +281,10 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 		ShutdownTimeout:      2 * time.Second,
 	}
 
-	d := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	if err != nil {
+		t.Fatalf("dispatcher.New failed: %v", err)
+	}
 
 	// Override beads dir to avoid watching real .beads/
 	// Since beadsDir is unexported, we rely on the fallback poll interval (50ms)
@@ -433,7 +436,10 @@ func TestDispatcherWorker_GracefulShutdown(t *testing.T) {
 		ShutdownTimeout:      2 * time.Second,
 	}
 
-	d := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	if err != nil {
+		t.Fatalf("dispatcher.New failed: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -532,7 +538,10 @@ func TestDispatcherWorker_Heartbeat(t *testing.T) {
 		ShutdownTimeout:      1 * time.Second,
 	}
 
-	d := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	if err != nil {
+		t.Fatalf("dispatcher.New failed: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)

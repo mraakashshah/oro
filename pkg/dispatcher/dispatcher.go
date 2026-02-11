@@ -190,6 +190,27 @@ func (c *Config) withDefaults() Config {
 	return out
 }
 
+// validate checks that all Config values are valid. Returns an error if any
+// duration is <= 0 or if MaxWorkers is negative. Call this AFTER withDefaults().
+func (c Config) validate() error {
+	if c.MaxWorkers < 0 {
+		return fmt.Errorf("MaxWorkers must be non-negative, got %d", c.MaxWorkers)
+	}
+	if c.HeartbeatTimeout <= 0 {
+		return fmt.Errorf("HeartbeatTimeout must be positive, got %v", c.HeartbeatTimeout)
+	}
+	if c.PollInterval <= 0 {
+		return fmt.Errorf("PollInterval must be positive, got %v", c.PollInterval)
+	}
+	if c.FallbackPollInterval <= 0 {
+		return fmt.Errorf("FallbackPollInterval must be positive, got %v", c.FallbackPollInterval)
+	}
+	if c.ShutdownTimeout <= 0 {
+		return fmt.Errorf("ShutdownTimeout must be positive, got %v", c.ShutdownTimeout)
+	}
+	return nil
+}
+
 // --- Dispatcher ---
 
 // Dispatcher is the main orchestrator.
@@ -236,8 +257,12 @@ type Dispatcher struct {
 }
 
 // New creates a Dispatcher. It does NOT start listening or polling — call Run().
-func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spawner, beads BeadSource, wt WorktreeManager, esc Escalator) *Dispatcher {
+// Returns nil and an error if the Config is invalid after applying defaults.
+func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spawner, beads BeadSource, wt WorktreeManager, esc Escalator) (*Dispatcher, error) {
 	resolved := cfg.withDefaults()
+	if err := resolved.validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	return &Dispatcher{
 		cfg:             resolved,
 		db:              db,
@@ -257,7 +282,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		beadsDir:        ".beads",
 		nowFunc:         time.Now,
 		acceptSem:       make(chan struct{}, 100), // limit to 100 concurrent connection handlers
-	}
+	}, nil
 }
 
 // GetState returns the current dispatcher state.

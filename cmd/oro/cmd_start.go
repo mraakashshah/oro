@@ -249,7 +249,10 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		DBPath:     dbPath,
 	}
 
-	d := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
+	}
 	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath))
 	return d, db, nil
 }

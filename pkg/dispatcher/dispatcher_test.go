@@ -190,6 +190,125 @@ func (m *mockProcess) Output() (string, error) { return m.output, nil }
 
 // --- Test helpers ---
 
+// TestConfigValidation verifies that Config.validate() rejects invalid values.
+func TestConfigValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       Config
+		wantError bool
+		errSubstr string
+	}{
+		{
+			name:      "all defaults pass validation",
+			cfg:       Config{},
+			wantError: false,
+		},
+		{
+			name: "valid explicit values",
+			cfg: Config{
+				MaxWorkers:           10,
+				HeartbeatTimeout:     30 * time.Second,
+				PollInterval:         5 * time.Second,
+				FallbackPollInterval: 30 * time.Second,
+				ShutdownTimeout:      15 * time.Second,
+			},
+			wantError: false,
+		},
+		{
+			name: "negative HeartbeatTimeout",
+			cfg: Config{
+				HeartbeatTimeout: -1 * time.Second,
+			},
+			wantError: true,
+			errSubstr: "HeartbeatTimeout",
+		},
+		{
+			name: "zero HeartbeatTimeout gets default and passes",
+			cfg: Config{
+				HeartbeatTimeout: 0,
+			},
+			wantError: false,
+		},
+		{
+			name: "negative PollInterval",
+			cfg: Config{
+				PollInterval: -5 * time.Second,
+			},
+			wantError: true,
+			errSubstr: "PollInterval",
+		},
+		{
+			name: "zero PollInterval gets default and passes",
+			cfg: Config{
+				PollInterval: 0,
+			},
+			wantError: false,
+		},
+		{
+			name: "negative FallbackPollInterval",
+			cfg: Config{
+				FallbackPollInterval: -10 * time.Second,
+			},
+			wantError: true,
+			errSubstr: "FallbackPollInterval",
+		},
+		{
+			name: "zero FallbackPollInterval gets default and passes",
+			cfg: Config{
+				FallbackPollInterval: 0,
+			},
+			wantError: false,
+		},
+		{
+			name: "negative ShutdownTimeout",
+			cfg: Config{
+				ShutdownTimeout: -3 * time.Second,
+			},
+			wantError: true,
+			errSubstr: "ShutdownTimeout",
+		},
+		{
+			name: "zero ShutdownTimeout gets default and passes",
+			cfg: Config{
+				ShutdownTimeout: 0,
+			},
+			wantError: false,
+		},
+		{
+			name: "negative MaxWorkers",
+			cfg: Config{
+				MaxWorkers: -1,
+			},
+			wantError: true,
+			errSubstr: "MaxWorkers",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Apply defaults first (as New() does)
+			resolved := tt.cfg.withDefaults()
+			err := resolved.validate()
+
+			// Early return for success case
+			if !tt.wantError {
+				if err != nil {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+
+			// Error case: must have error and contain expected substring
+			if err == nil {
+				t.Fatalf("expected validation error containing %q, got nil", tt.errSubstr)
+			}
+			if !strings.Contains(err.Error(), tt.errSubstr) {
+				t.Fatalf("expected error containing %q, got: %v", tt.errSubstr, err)
+			}
+		})
+	}
+}
+
 // newTestDB creates an in-memory SQLite database with the protocol schema.
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -244,7 +363,10 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 		PollInterval:     50 * time.Millisecond,
 	}
 
-	d := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	return d, beadSrc, wtMgr, esc, gitRunner, spawnMock
 }
 
@@ -2455,7 +2577,10 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 		ShutdownTimeout:  500 * time.Millisecond,
 	}
 
-	d := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	cancel := startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -2543,7 +2668,10 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 		ShutdownTimeout:  500 * time.Millisecond,
 	}
 
-	d := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc)
+	d, err := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	cancel := startDispatcher(t, d)
 
 	// Connect two workers
@@ -2629,7 +2757,10 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 		ShutdownTimeout:  2 * time.Second,
 	}
 
-	d := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc)
+	d, err := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
 	cancel := startDispatcher(t, d)
 
 	// Connect two workers.
