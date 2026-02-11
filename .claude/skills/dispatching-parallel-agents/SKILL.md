@@ -56,11 +56,12 @@ Branch: agent/task-1
 ## Rules
 - ONLY modify files within .worktrees/task-1
 - Commit your work with a descriptive message before completing
-- Run tests: cd .worktrees/task-1 && [test_command]
-- Run linter: golangci-lint run ./... (Go projects) or ruff check . (Python projects)
+- Run tests: go -C .worktrees/task-1 test -race -count=1 ./pkg/... -v
 - Do NOT push, merge, or rebase
 - Close bead: bd close <id> --reason="summary"
 ```
+
+**IMPORTANT:** Tell agents to use `go -C <worktree>` instead of `cd <worktree> && go test`. The `cd` persists in the Bash tool cwd — if the worktree is later removed, ALL subsequent bash commands fail silently. Use absolute paths everywhere.
 
 ### 3. Protect the Main Context
 
@@ -68,29 +69,68 @@ Branch: agent/task-1
 - **Never poll** — trust task completion notifications
 - Agent closes bead with `bd close <id> --reason="summary"` — the bead IS the output
 - **Never use TaskOutput** to read full transcripts (70k+ tokens)
+- **Do NOT create TaskCreate/TodoWrite entries** to track agents — they go stale after compaction. Use `bd` for persistent tracking.
 
 ### 4. Merge Results
 
-When all agents complete, sequentially merge each branch ff-only:
+**Remove ALL worktrees before rebasing** — the rebase guard hook blocks `git rebase` when any branch is checked out in a worktree.
 
 ```bash
-# For each agent branch:
+# 1. Stash beads changes (bd operations modify .beads/issues.jsonl)
+git stash
+
+# 2. Remove ALL worktrees (even for still-running agents if needed)
+git worktree remove .worktrees/task-1
+git worktree remove .worktrees/task-2
+# If worktree has untracked files: git worktree remove --force .worktrees/task-X
+
+# 3. Merge in order (see Merge Ordering below)
 git rebase main agent/task-1
 git checkout main
 git merge --ff-only agent/task-1
 
-git rebase main agent/task-2
-git checkout main
-git merge --ff-only agent/task-2
+# 4. Repeat for each branch, then restore stash
+git stash pop
 ```
 
-If rebase conflicts: fail-fast, investigate, resolve manually.
+#### Merge Ordering Strategy
+
+Order matters. Merge in this sequence to minimize conflicts:
+
+1. **New files only** (no existing file modifications) — zero conflict risk
+2. **Small, isolated packages** — low conflict risk
+3. **Mechanical/formatting changes** — medium risk but easy to resolve
+4. **Cross-cutting changes** (interface renames, type moves) — merge before dependents
+5. **Large structural refactors** (dispatcher.go, big test files) — highest conflict risk, merge last
+
+Within the same risk tier, merge smaller changesets first.
+
+#### Fixing Agent Mistakes at Merge Time
+
+Agents frequently make these errors — check before merging:
+
+| Problem | Detection | Fix |
+|---------|-----------|-----|
+| **Didn't commit** | `git -C .worktrees/X log` shows same commit as main | Stage + commit from manager: `git -C .worktrees/X add . && git -C .worktrees/X commit -m "..."` |
+| **Syntax errors** | Diagnostics show compile errors in worktree | Read the file, fix with Edit tool, then commit |
+| **Wrong package name** | Linter rejects (e.g., `package foo` should be `package foo_test`) | Fix the package declaration, recommit |
+| **Extra closing braces** | Common when replacing `time.Sleep` blocks with `waitFor` closures — leaves orphan `}` | Search for pattern: `}, timeout)\n\t}\n\n\t//` and remove extra `}` |
+
+**Always verify agent commits compile** before merging: `go -C .worktrees/X build ./...`
+
+#### Conflict Resolution
+
+When `git rebase main agent/X` produces conflicts:
+
+1. **Read the conflict markers** — understand what both sides changed
+2. **Keep both changes** when they're additive (new fields, new methods, new tests)
+3. **Prefer HEAD** for structural changes (type renames, package moves) that later branches should adopt
+4. **Fix cross-references** after resolution — e.g., if branch A moved `WorkerState` to `protocol.WorkerState`, branch B's code needs updating post-merge
+5. **Always build + test after conflict resolution** before merging the next branch
 
 ### 5. Cleanup
 
 ```bash
-git worktree remove .worktrees/task-1
-git worktree remove .worktrees/task-2
 git branch -d agent/task-1 agent/task-2
 ```
 
@@ -105,6 +145,10 @@ Run full test suite on main. Push when green.
 | No commit instruction | Agent must commit before completing |
 | Polling agents with sleep loops | Trust system reminders |
 | Using TaskOutput for results | Read bead annotations instead |
+| Using `cd` into worktrees | Shell cwd persists — use `go -C` or absolute paths |
+| Creating TaskCreate entries for agents | They go stale after compaction — use bd |
+| Merging before removing worktrees | Rebase guard hook blocks — remove first |
+| Dispatching overlapping file scopes | Two agents editing dispatcher_test.go = guaranteed merge conflict |
 
 ## Red Flags
 
@@ -113,3 +157,4 @@ Run full test suite on main. Push when green.
 - Agents merging or pushing (only manager does this)
 - No test suite run on main after merge
 - Trusting agent results without verification
+- Two agents modifying the same large file (split by package instead)
