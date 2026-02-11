@@ -279,6 +279,11 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
 	}
 
+	// Restore in-memory tracking maps from active assignments persisted in SQLite.
+	if err := d.restoreState(ctx); err != nil {
+		return fmt.Errorf("restore state: %w", err)
+	}
+
 	// Clean up stale socket from a previous crash (if any). If another
 	// dispatcher is actively listening, this returns an error so we don't
 	// clobber it.
@@ -839,6 +844,19 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 			defer d.wg.Done()
 			d.handleDiagnosisResult(ctx, beadID, workerID, resultCh)
 		}()
+
+		// Create a continuation bead to capture remaining work from the exhausted handoff.
+		contTitle := fmt.Sprintf("Continue: %s (handoff exhausted)", beadID)
+		contDesc := fmt.Sprintf("Handoff exhausted after %d handoffs for %s.\n\nContext from last handoff:\n%s",
+			handoffCount, beadID, msg.Handoff.ContextSummary)
+		newID, createErr := d.beads.Create(ctx, contTitle, "task", 1, contDesc, beadID)
+		if createErr != nil {
+			_ = d.logEvent(ctx, "continuation_bead_create_failed", "dispatcher", beadID, workerID, createErr.Error())
+		} else {
+			_ = d.logEvent(ctx, "continuation_bead_created", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"new_bead_id":%q}`, newID))
+		}
+
 		return
 	}
 
@@ -1616,6 +1634,39 @@ func (d *Dispatcher) persistBeadCount(ctx context.Context, beadID, column string
 		_ = d.logEvent(ctx, "persist_count_failed", "dispatcher", beadID, "",
 			fmt.Sprintf(`{"column":%q,"value":%d,"error":%q}`, column, value, err.Error()))
 	}
+}
+
+// restoreState reconstructs the in-memory attemptCounts and handoffCounts maps
+// from active assignments persisted in SQLite. This ensures tracking state
+// survives a dispatcher restart.
+func (d *Dispatcher) restoreState(ctx context.Context) error {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT bead_id, attempt_count, handoff_count FROM assignments WHERE status='active'`)
+	if err != nil {
+		return fmt.Errorf("query active assignments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	for rows.Next() {
+		var beadID string
+		var attemptCount, handoffCount int
+		if err := rows.Scan(&beadID, &attemptCount, &handoffCount); err != nil {
+			return fmt.Errorf("scan assignment: %w", err)
+		}
+		if attemptCount > 0 {
+			d.attemptCounts[beadID] = attemptCount
+		}
+		if handoffCount > 0 {
+			d.handoffCounts[beadID] = handoffCount
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate assignments: %w", err)
+	}
+	return nil
 }
 
 func (d *Dispatcher) completeAssignment(ctx context.Context, beadID string) error {

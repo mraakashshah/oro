@@ -5740,6 +5740,67 @@ func TestShutdownTimeout_ForceKill(t *testing.T) {
 	})
 }
 
+func TestRestoreStateOnStartup(t *testing.T) {
+	// Setup: create dispatcher with test DB.
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Insert active assignments with known attempt_count and handoff_count values
+	// directly into SQLite BEFORE the dispatcher starts.
+	ctx := context.Background()
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status, attempt_count, handoff_count)
+		 VALUES ('oro-aaa', 'w1', '/tmp/wt-aaa', 'active', 2, 1)`)
+	if err != nil {
+		t.Fatalf("insert assignment 1: %v", err)
+	}
+	_, err = d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status, attempt_count, handoff_count)
+		 VALUES ('oro-bbb', 'w2', '/tmp/wt-bbb', 'active', 0, 3)`)
+	if err != nil {
+		t.Fatalf("insert assignment 2: %v", err)
+	}
+	// Insert a completed assignment — should NOT be restored.
+	_, err = d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status, attempt_count, handoff_count)
+		 VALUES ('oro-ccc', 'w3', '/tmp/wt-ccc', 'completed', 5, 5)`)
+	if err != nil {
+		t.Fatalf("insert assignment 3: %v", err)
+	}
+
+	// Start dispatcher — Run() should restore state from SQLite.
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	// Verify attempt counts were restored from active assignments only.
+	d.mu.Lock()
+	gotAttemptAAA := d.attemptCounts["oro-aaa"]
+	gotAttemptBBB := d.attemptCounts["oro-bbb"]
+	_, hasCCC := d.attemptCounts["oro-ccc"]
+	gotHandoffAAA := d.handoffCounts["oro-aaa"]
+	gotHandoffBBB := d.handoffCounts["oro-bbb"]
+	_, hasHandoffCCC := d.handoffCounts["oro-ccc"]
+	d.mu.Unlock()
+
+	if gotAttemptAAA != 2 {
+		t.Errorf("attemptCounts[oro-aaa]: got %d, want 2", gotAttemptAAA)
+	}
+	if gotAttemptBBB != 0 {
+		t.Errorf("attemptCounts[oro-bbb]: got %d, want 0", gotAttemptBBB)
+	}
+	if hasCCC {
+		t.Errorf("attemptCounts should not contain completed bead oro-ccc")
+	}
+	if gotHandoffAAA != 1 {
+		t.Errorf("handoffCounts[oro-aaa]: got %d, want 1", gotHandoffAAA)
+	}
+	if gotHandoffBBB != 3 {
+		t.Errorf("handoffCounts[oro-bbb]: got %d, want 3", gotHandoffBBB)
+	}
+	if hasHandoffCCC {
+		t.Errorf("handoffCounts should not contain completed bead oro-ccc")
+	}
+}
+
 func TestConfig_ConsolidateAfterN(t *testing.T) {
 	// Test 1: Default Config has ConsolidateAfterN == 5.
 	cfg := Config{SocketPath: "/tmp/test.sock", DBPath: ":memory:"}
@@ -5760,4 +5821,66 @@ func TestConfig_ConsolidateAfterN(t *testing.T) {
 	if d.completionsSinceConsolidate != 0 {
 		t.Fatalf("completionsSinceConsolidate: got %d, want 0", d.completionsSinceConsolidate)
 	}
+}
+
+func TestHandoffExhaustion_CreatesContinuationBead(t *testing.T) {
+	d, conn, _, spawnMock := setupHandoffDiagnosis(t)
+
+	// Set diagnosis output so the diagnosis goroutine completes.
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "Root cause: context limit exceeded repeatedly"
+	spawnMock.mu.Unlock()
+
+	// Pre-set handoff count to 1 (simulating first handoff already happened).
+	d.mu.Lock()
+	d.handoffCounts["bead-stuck"] = 1
+	d.mu.Unlock()
+
+	// Second handoff — triggers diagnosis AND should create continuation bead.
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{
+			BeadID:         "bead-stuck",
+			WorkerID:       "w1",
+			ContextSummary: "Implemented 3 of 5 subtasks; remaining: validation and tests",
+		},
+	})
+
+	// Consume SHUTDOWN message sent to the old worker.
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected SHUTDOWN after handoff exhaustion")
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
+	}
+
+	// Wait for BeadSource.Create to be called with continuation bead.
+	beadSrc, ok := d.beads.(*mockBeadSource)
+	if !ok {
+		t.Fatal("beads is not *mockBeadSource")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		beadSrc.mu.Lock()
+		calls := make([]createCall, len(beadSrc.created))
+		copy(calls, beadSrc.created)
+		beadSrc.mu.Unlock()
+
+		for _, c := range calls {
+			if c.parent == "bead-stuck" && c.beadType == "task" &&
+				strings.Contains(c.description, "Implemented 3 of 5 subtasks") {
+				// Verify event was logged.
+				if eventCount(t, d.db, "continuation_bead_created") > 0 {
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Dump what was created for debug.
+	beadSrc.mu.Lock()
+	defer beadSrc.mu.Unlock()
+	t.Fatalf("expected BeadSource.Create with parent=bead-stuck, type=task, description containing handoff summary; got %+v", beadSrc.created)
 }
