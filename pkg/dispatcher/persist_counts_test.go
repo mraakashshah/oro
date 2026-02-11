@@ -207,5 +207,149 @@ func TestPersistBeadCount_NoMatchingRow(t *testing.T) {
 	}
 }
 
+// TestAssignmentMarkedCompleteOnMerge verifies that after a successful merge,
+// the assignments row status is 'completed'. Also verifies QG exhaustion marks complete.
+func TestAssignmentMarkedCompleteOnMerge(t *testing.T) {
+	t.Run("merge_marks_completed", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		cancel := startDispatcher(t, d)
+		defer cancel()
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mc1", Title: "Merge complete test", Priority: 1, Type: "task"}})
+		readMsg(t, conn, 2*time.Second) // drain ASSIGN
+
+		// Send successful DONE.
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgDone,
+			Done: &protocol.DonePayload{
+				BeadID:            "bead-mc1",
+				WorkerID:          "w1",
+				QualityGatePassed: true,
+			},
+		})
+
+		time.Sleep(300 * time.Millisecond)
+
+		var status string
+		err := d.db.QueryRow(
+			`SELECT status FROM assignments WHERE bead_id=?`, "bead-mc1",
+		).Scan(&status)
+		if err != nil {
+			t.Fatalf("query status: %v", err)
+		}
+		if status != "completed" {
+			t.Fatalf("expected status='completed', got %q", status)
+		}
+	})
+
+	t.Run("qg_exhaustion_marks_completed", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		cancel := startDispatcher(t, d)
+		defer cancel()
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mc2", Title: "QG exhaust complete test", Priority: 1, Type: "task"}})
+		readMsg(t, conn, 2*time.Second) // drain ASSIGN
+
+		// Seed at maxQGRetries-1 so next failure exhausts.
+		d.mu.Lock()
+		d.attemptCounts["bead-mc2"] = maxQGRetries - 1
+		d.mu.Unlock()
+
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgDone,
+			Done: &protocol.DonePayload{
+				BeadID:            "bead-mc2",
+				WorkerID:          "w1",
+				QualityGatePassed: false,
+				QGOutput:          fmt.Sprintf("unique-exhaust-%d", time.Now().UnixNano()),
+			},
+		})
+
+		time.Sleep(300 * time.Millisecond)
+
+		var status string
+		err := d.db.QueryRow(
+			`SELECT status FROM assignments WHERE bead_id=?`, "bead-mc2",
+		).Scan(&status)
+		if err != nil {
+			t.Fatalf("query status: %v", err)
+		}
+		if status != "completed" {
+			t.Fatalf("expected status='completed' after QG exhaustion, got %q", status)
+		}
+	})
+}
+
+// TestConsolidation_TriggeredAfterNCompletions verifies that memory consolidation
+// is triggered after ConsolidateAfterN bead completions.
+func TestConsolidation_TriggeredAfterNCompletions(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.ConsolidateAfterN = 2 // trigger after every 2 completions
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Complete 2 beads — should trigger consolidation after the 2nd.
+	for i := 1; i <= 2; i++ {
+		beadID := fmt.Sprintf("bead-con%d", i)
+		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: fmt.Sprintf("Consol test %d", i), Priority: 1, Type: "task"}})
+		readMsg(t, conn, 2*time.Second) // drain ASSIGN
+
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgDone,
+			Done: &protocol.DonePayload{
+				BeadID:            beadID,
+				WorkerID:          "w1",
+				QualityGatePassed: true,
+			},
+		})
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Verify counter was reset after consolidation.
+	d.mu.Lock()
+	counter := d.completionsSinceConsolidate
+	d.mu.Unlock()
+
+	if counter != 0 {
+		t.Fatalf("expected completionsSinceConsolidate=0 after consolidation, got %d", counter)
+	}
+
+	// Verify consolidation event was logged.
+	evCount := eventCount(t, d.db, "memory_consolidation")
+	if evCount == 0 {
+		t.Fatal("expected memory_consolidation event to be logged, got 0")
+	}
+}
+
 // Ensure sql import is used.
 var _ = (*sql.DB)(nil)

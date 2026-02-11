@@ -650,6 +650,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 				fmt.Sprintf(`{"new_bead_id":%q}`, newID))
 		}
 
+		_ = d.completeAssignment(ctx, beadID)
 		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
 			fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
@@ -764,6 +765,28 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	_ = d.completeAssignment(ctx, beadID)
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
+
+	// Trigger memory consolidation after every N bead completions.
+	d.mu.Lock()
+	d.completionsSinceConsolidate++
+	shouldConsolidate := d.cfg.ConsolidateAfterN > 0 && d.completionsSinceConsolidate >= d.cfg.ConsolidateAfterN
+	if shouldConsolidate {
+		d.completionsSinceConsolidate = 0
+	}
+	d.mu.Unlock()
+
+	if shouldConsolidate {
+		go func() {
+			merged, pruned, err := memory.Consolidate(ctx, d.memories, memory.ConsolidateOpts{})
+			if err != nil {
+				_ = d.logEvent(ctx, "memory_consolidation_failed", "dispatcher", "", "",
+					fmt.Sprintf(`{"error":%q}`, err.Error()))
+				return
+			}
+			_ = d.logEvent(ctx, "memory_consolidation", "dispatcher", "", "",
+				fmt.Sprintf(`{"merged":%d,"pruned":%d}`, merged, pruned))
+		}()
+	}
 }
 
 // handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
