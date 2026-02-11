@@ -2657,6 +2657,69 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	<-errCh
 }
 
+func TestWatchContext_CreatesOroDirectoryWith0700Perms(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-perm", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	// Create worktree WITHOUT .oro directory (so worker creates it)
+	tmpDir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// Send ASSIGN to trigger watchContext
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-perm",
+			Worktree: tmpDir,
+			Model:    "opus",
+		},
+	})
+
+	// Drain STATUS message
+	_ = readMessage(t, dispatcherConn)
+
+	// Write context_pct above threshold to trigger compacted flag creation
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for .oro/compacted flag to be created
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(oroDir, "compacted")); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Verify .oro directory has 0700 permissions (no group or other access)
+	info, err := os.Stat(oroDir)
+	if err != nil {
+		t.Fatalf("stat .oro dir: %v", err)
+	}
+	perm := info.Mode().Perm()
+	if perm != 0o700 {
+		t.Errorf("expected .oro perms 0700, got %04o", perm)
+	}
+
+	cancel()
+	<-errCh
+}
+
 func TestLoadThresholds(t *testing.T) {
 	t.Run("loads from file", func(t *testing.T) {
 		dir := t.TempDir()

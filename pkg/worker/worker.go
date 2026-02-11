@@ -540,7 +540,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 				w.compacted = true
 				w.mu.Unlock()
 				oroDir := filepath.Join(wt, ".oro")
-				_ = os.MkdirAll(oroDir, 0o750) //nolint:gosec // runtime directory
+				_ = os.MkdirAll(oroDir, 0o700) //nolint:gosec // runtime directory
 				_ = os.WriteFile(filepath.Join(oroDir, "compacted"), []byte("1"), 0o600)
 				continue
 			}

@@ -35,10 +35,10 @@ func TestBootstrapOroDir_CreatesWithCorrectPerms(t *testing.T) {
 		t.Fatal("expected .oro to be a directory")
 	}
 
-	// Verify permissions are 0750.
+	// Verify permissions are 0700 (no group or other access).
 	perm := info.Mode().Perm()
-	if perm != 0o750 {
-		t.Errorf("expected perms 0750, got %04o", perm)
+	if perm != 0o700 {
+		t.Errorf("expected perms 0700, got %04o", perm)
 	}
 }
 

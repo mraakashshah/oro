@@ -190,10 +190,10 @@ func defaultOroDir() (string, error) {
 	return filepath.Join(home, ".oro"), nil
 }
 
-// bootstrapOroDir creates the oro state directory with 0750 permissions.
+// bootstrapOroDir creates the oro state directory with 0700 permissions.
 // It is idempotent — calling it on an existing directory is a no-op.
 func bootstrapOroDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create oro dir %s: %w", dir, err)
 	}
 	return nil
