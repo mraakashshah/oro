@@ -284,6 +284,13 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
 	}
 
+	// Clean up stale socket from a previous crash (if any). If another
+	// dispatcher is actively listening, this returns an error so we don't
+	// clobber it.
+	if err := cleanStaleSocket(d.cfg.SocketPath); err != nil {
+		return fmt.Errorf("stale socket check %s: %w", d.cfg.SocketPath, err)
+	}
+
 	// Start UDS listener
 	ln, err := net.Listen("unix", d.cfg.SocketPath) //nolint:noctx // UDS bind is instant
 	if err != nil {
