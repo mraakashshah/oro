@@ -96,13 +96,7 @@ func TestStartCommandPreflightChecks(t *testing.T) {
 	}()
 
 	// Wait for socket to appear (confirms preflight passed and dispatcher started).
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(sockPath); err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForSocket(t, sockPath, 5*time.Second)
 
 	// If socket exists, preflight checks passed.
 	if _, err := os.Stat(sockPath); err != nil {
@@ -156,13 +150,7 @@ func TestDaemonOnlyStartsDispatcher(t *testing.T) {
 	}()
 
 	// Wait for socket file to appear (dispatcher is listening).
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(sockPath); err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForSocket(t, sockPath, 5*time.Second)
 
 	// Verify socket file exists.
 	if _, err := os.Stat(sockPath); err != nil {

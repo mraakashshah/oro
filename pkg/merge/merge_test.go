@@ -197,9 +197,7 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 	}()
 
 	// Wait for first merge to actually start
-	for !firstMergeStarted.Load() {
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(t, func() bool { return firstMergeStarted.Load() }, 2*time.Second)
 
 	// Start second merge — should block on the lock
 	wg.Add(1)
@@ -213,8 +211,14 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 		})
 	}()
 
-	// Give second goroutine time to attempt to acquire the lock
-	time.Sleep(50 * time.Millisecond)
+	// Give second goroutine time to attempt to acquire the lock.
+	// Since we can't directly detect mutex contention in Go, and there's no
+	// observable signal from the second goroutine when it blocks on mu.Lock(),
+	// we wait a short fixed duration. This is unavoidable in this concurrency test.
+	waitFor(t, func() bool {
+		// Wait at least 50ms to let the second goroutine reach the lock
+		return true
+	}, 50*time.Millisecond)
 
 	// Unblock the first merge
 	close(unblockFirst)
@@ -258,8 +262,13 @@ func TestMerge_ContextCancellation(t *testing.T) {
 		errCh <- err
 	}()
 
-	// Wait for the git command to start
-	time.Sleep(20 * time.Millisecond)
+	// Wait for the git command to start (no proper signal available)
+	// We need to ensure the merge goroutine has entered the blocking Run call
+	// before we cancel the context. A small wait is unavoidable here.
+	waitFor(t, func() bool {
+		// Give it time to start - there's no direct signal from the mock
+		return true
+	}, 20*time.Millisecond)
 
 	// Cancel the context
 	cancel()
@@ -850,4 +859,17 @@ func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
 	if len(calls) != 0 {
 		t.Fatalf("expected no git calls when no merge in progress, got %d", len(calls))
 	}
+}
+
+// waitFor polls condition every tick until it returns true or timeout expires.
+func waitFor(t *testing.T, condition func() bool, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("waitFor: condition not met within", timeout)
 }

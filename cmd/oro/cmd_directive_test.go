@@ -80,13 +80,7 @@ func TestDirectiveCmd(t *testing.T) {
 			go runMockDispatcher(ctx, t, sockPath, mockDone)
 
 			// Wait for socket to be ready
-			deadline := time.Now().Add(2 * time.Second)
-			for time.Now().Before(deadline) {
-				if _, err := os.Stat(sockPath); err == nil {
-					break
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+			waitForSocket(t, sockPath, 2*time.Second)
 
 			// Set environment variable for socket path
 			t.Setenv("ORO_SOCKET_PATH", sockPath)
@@ -203,4 +197,17 @@ func TestDirectiveCmd_NoSocket(t *testing.T) {
 	if !strings.Contains(err.Error(), "connect") && !strings.Contains(err.Error(), "no such file") {
 		t.Errorf("unexpected error message: %v", err)
 	}
+}
+
+// waitForSocket polls until sockPath exists or timeout expires.
+func waitForSocket(t *testing.T, sockPath string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sockPath); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("socket %s not created within %v", sockPath, timeout)
 }
