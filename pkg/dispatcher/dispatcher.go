@@ -692,8 +692,16 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 // (repeated identical outputs), increments the attempt counter, escalates if
 // either cap is reached, or re-assigns with feedback.
 func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) {
+	// Create typed QualityGateError for logging and potential error discrimination
+	qgErr := &protocol.QualityGateError{
+		BeadID:   beadID,
+		WorkerID: workerID,
+		Output:   qgOutput,
+		Attempt:  0, // Will be updated after lock
+	}
+
 	_ = d.logEvent(ctx, "quality_gate_rejected", workerID, beadID, workerID,
-		`{"reason":"QualityGatePassed=false"}`)
+		fmt.Sprintf(`{"reason":"QualityGatePassed=false","error":%q}`, qgErr.Error()))
 
 	// Check stuck detection: hash QGOutput and track consecutive identical hashes.
 	if d.isQGStuck(beadID, qgOutput) {
@@ -708,11 +716,12 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	d.mu.Lock()
 	d.attemptCounts[beadID]++
 	attempt := d.attemptCounts[beadID]
+	qgErr.Attempt = attempt
 
 	if attempt >= maxQGRetries {
 		d.mu.Unlock()
 		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
-			fmt.Sprintf(`{"attempts":%d}`, attempt))
+			fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
 		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
 			fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
 		d.clearBeadTracking(beadID)
@@ -768,7 +777,13 @@ func (d *Dispatcher) fetchBeadMemories(ctx context.Context, beadID string) strin
 		return ""
 	}
 	searchTerm := beadID
-	if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && detail != nil && detail.Title != "" {
+	detail, showErr := d.beads.Show(ctx, beadID)
+	if showErr != nil {
+		// Log BeadNotFoundError for visibility (best-effort, non-fatal)
+		bnfErr := &protocol.BeadNotFoundError{BeadID: beadID}
+		_ = d.logEvent(ctx, "bead_lookup_failed", "dispatcher", beadID, "",
+			fmt.Sprintf(`{"error":%q}`, bnfErr.Error()))
+	} else if detail != nil && detail.Title != "" {
 		searchTerm = detail.Title
 	}
 	memCtx, _ := memory.ForPrompt(ctx, d.memories, nil, searchTerm, 0)
@@ -1482,7 +1497,13 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 
 	// Retrieve bead details for rich prompt (best-effort).
 	var title, acceptance string
-	if detail, showErr := d.beads.Show(ctx, bead.ID); showErr == nil && detail != nil {
+	detail, showErr := d.beads.Show(ctx, bead.ID)
+	if showErr != nil {
+		// Log BeadNotFoundError for visibility (best-effort, non-fatal)
+		bnfErr := &protocol.BeadNotFoundError{BeadID: bead.ID}
+		_ = d.logEvent(ctx, "bead_lookup_failed", "dispatcher", bead.ID, w.id,
+			fmt.Sprintf(`{"error":%q}`, bnfErr.Error()))
+	} else if detail != nil {
 		title = detail.Title
 		acceptance = detail.AcceptanceCriteria
 	}
@@ -1861,10 +1882,20 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 		if len(w.pendingMsgs) > maxPendingMessages {
 			_ = w.conn.Close()
 			delete(d.workers, w.id)
-			return fmt.Errorf("worker %s exceeded pending message limit (%d), removed", w.id, maxPendingMessages)
+			// Return typed WorkerUnreachableError for error discrimination
+			return &protocol.WorkerUnreachableError{
+				WorkerID: w.id,
+				BeadID:   w.beadID,
+				Reason:   fmt.Sprintf("exceeded pending message limit (%d), removed", maxPendingMessages),
+			}
 		}
 
-		return fmt.Errorf("write to worker %s: %w (message buffered)", w.id, err)
+		// Return typed WorkerUnreachableError for error discrimination
+		return &protocol.WorkerUnreachableError{
+			WorkerID: w.id,
+			BeadID:   w.beadID,
+			Reason:   fmt.Sprintf("write failed: %v (message buffered)", err),
+		}
 	}
 	return nil
 }
