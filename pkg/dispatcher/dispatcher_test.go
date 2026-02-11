@@ -5553,3 +5553,93 @@ func TestCheckHeartbeats_WorkerDisconnect(t *testing.T) {
 		}
 	})
 }
+
+// TestShutdownTimeout_ForceKill verifies the dispatcher sends a hard SHUTDOWN
+// when the graceful shutdown timeout expires without receiving SHUTDOWN_APPROVED.
+func TestShutdownTimeout_ForceKill(t *testing.T) {
+	t.Run("hard_shutdown_after_timeout", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-force", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		// Start dispatcher and assign a bead to the worker.
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-force", Title: "Force kill test", Priority: 1}})
+		_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+		if !ok {
+			t.Fatal("expected ASSIGN")
+		}
+		beadSrc.SetBeads(nil)
+
+		// Verify worker is Busy with the bead before shutdown.
+		state, beadID, exists := d.WorkerInfo("w-force")
+		if !exists {
+			t.Fatal("worker w-force should exist")
+		}
+		if state != protocol.WorkerBusy {
+			t.Fatalf("expected WorkerBusy before shutdown, got %s", state)
+		}
+		if beadID != "bead-force" {
+			t.Fatalf("expected beadID bead-force, got %s", beadID)
+		}
+
+		// Trigger graceful shutdown with a short 100ms timeout.
+		d.GracefulShutdownWorker("w-force", 100*time.Millisecond)
+
+		// Worker receives PREPARE_SHUTDOWN but does NOT respond with SHUTDOWN_APPROVED.
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected PREPARE_SHUTDOWN")
+		}
+		if msg.Type != protocol.MsgPrepareShutdown {
+			t.Fatalf("expected PREPARE_SHUTDOWN, got %s", msg.Type)
+		}
+
+		// Do NOT send SHUTDOWN_APPROVED — dispatcher must fall back to hard SHUTDOWN.
+		msg2, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected hard SHUTDOWN after timeout")
+		}
+		if msg2.Type != protocol.MsgShutdown {
+			t.Fatalf("expected SHUTDOWN (hard kill), got %s", msg2.Type)
+		}
+
+		// After timeout: worker state should be Idle and beadID cleared.
+		waitFor(t, func() bool {
+			st, _, ok := d.WorkerInfo("w-force")
+			return ok && st == protocol.WorkerIdle
+		}, 2*time.Second)
+
+		state, beadID, exists = d.WorkerInfo("w-force")
+		if !exists {
+			t.Fatal("worker w-force should still exist after timeout")
+		}
+		if state != protocol.WorkerIdle {
+			t.Fatalf("expected WorkerIdle after timeout, got %s", state)
+		}
+		if beadID != "" {
+			t.Fatalf("expected beadID cleared after timeout, got %q", beadID)
+		}
+	})
+
+	t.Run("worker_disconnected_before_timeout", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		// Directly call handleShutdownTimeout for a worker that is not in the map.
+		// This must not panic and should return early gracefully.
+		d.handleShutdownTimeout("w-nonexistent")
+
+		// Verify no workers exist (nothing was created or modified).
+		if d.ConnectedWorkers() != 0 {
+			t.Fatalf("expected 0 connected workers, got %d", d.ConnectedWorkers())
+		}
+	})
+}
