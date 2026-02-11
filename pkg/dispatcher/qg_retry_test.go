@@ -390,6 +390,86 @@ func TestHandleDone_QGStuckDetection_DifferentOutputsReset(t *testing.T) {
 	}
 }
 
+// --- QG Retry Exhaustion Test (oro-029) ---
+
+func TestHandleQGFailure_Exhaustion(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	conn, scanner := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-exh1", Title: "Exhaustion test", Priority: 1, Type: "task"}})
+
+	// Drain initial ASSIGN.
+	readMsg(t, conn, 2*time.Second)
+
+	// Seed attemptCounts so the next failure is attempt #3 (= maxQGRetries).
+	d.mu.Lock()
+	d.attemptCounts["bead-exh1"] = maxQGRetries - 1 // 2
+	d.mu.Unlock()
+
+	// Send a single QG failure with a unique output to avoid stuck detection.
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-exh1",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+			QGOutput:          "unique-exhaustion-output-abc123",
+		},
+	})
+
+	// Give the dispatcher time to process.
+	time.Sleep(300 * time.Millisecond)
+
+	// Assert: escalation with "quality gate failed 3 times".
+	msgs := esc.Messages()
+	found := false
+	for _, m := range msgs {
+		if strings.Contains(m, "bead-exh1") && strings.Contains(m, "quality gate failed 3 times") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected escalation containing 'quality gate failed 3 times' for bead-exh1, got messages: %v", msgs)
+	}
+
+	// Assert: attemptCounts cleared (clearBeadTracking was called).
+	d.mu.Lock()
+	count := d.attemptCounts["bead-exh1"]
+	_, stuckExists := d.qgStuckTracker["bead-exh1"]
+	d.mu.Unlock()
+
+	if count != 0 {
+		t.Fatalf("expected attemptCounts to be cleared (0), got %d", count)
+	}
+	if stuckExists {
+		t.Fatal("expected qgStuckTracker entry to be cleared after exhaustion")
+	}
+
+	// Assert: no ASSIGN sent (worker should NOT get a re-assign).
+	msg, ok := readMsgFromScanner(t, scanner, 300*time.Millisecond)
+	if ok && msg.Type == protocol.MsgAssign {
+		t.Fatal("expected no ASSIGN after retry exhaustion, but got one")
+	}
+
+	// Assert: qg_retry_escalated event logged.
+	evCount := eventCount(t, d.db, "qg_retry_escalated")
+	if evCount == 0 {
+		t.Fatal("expected qg_retry_escalated event to be logged, but found 0")
+	}
+}
+
 func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
