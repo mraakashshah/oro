@@ -72,7 +72,7 @@ Report: "Keeping branch. Worktree preserved."
 **Option 4 — Discard:**
 Confirm first — require typed "discard" confirmation.
 
-### Step 4: Reflect
+### Step 4: Reflect and Document
 
 Before cleanup, briefly note friction encountered during this work:
 
@@ -84,6 +84,8 @@ Before cleanup, briefly note friction encountered during this work:
 If genuinely clean run, say so — but clean runs should be rare. Most work has micro-friction worth capturing.
 
 Log friction to the relevant `bd` issue notes or `docs/decisions-and-discoveries.md` if it's a broader insight.
+
+**Then invoke `documenting-solutions`** to capture any non-trivial problems solved during this work. This is not optional — if you learned something worth knowing next time, document it.
 
 ### Step 5: Landing the Plane
 
