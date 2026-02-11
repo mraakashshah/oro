@@ -88,6 +88,8 @@ func FormatEscalation(typ EscalationType, beadID, summary, details string) strin
 }
 
 // CountReadFiles counts lines starting with "Read:" in the acceptance criteria string.
+//
+//oro:testonly
 func CountReadFiles(acceptance string) int {
 	count := 0
 	for _, line := range strings.Split(acceptance, "\n") {
