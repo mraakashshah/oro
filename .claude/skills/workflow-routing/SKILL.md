@@ -19,7 +19,7 @@ Detect the user's primary goal from their message:
 | "design", "architect", "plan", "break down" | **Plan** | `brainstorming` → `writing-plans` → `premortem` |
 | "add", "implement", "create", "build" | **Build** | `writing-plans` → `executing-plans` → `finishing-work` |
 | "fix", "broken", "failing", "debug", "bug" | **Fix** | `systematic-debugging` → `test-driven-development` → `finishing-work` |
-| "spec", "decompose", "break into beads" | **Decompose** | `spec-to-beads` → `executing-beads` → `finishing-work` |
+| "spec", "decompose", "break into beads" | **Decompose** | `bead-craft` (decompose mode) → `executing-beads` → `finishing-work` |
 | "work bead", "pick up a bead", "execute bead" | **Work Bead** | `work-bead` |
 
 If intent is clear from context, infer the goal. Otherwise, ask:
@@ -60,7 +60,7 @@ What's your primary goal?
 4. `finishing-work` — integrate
 
 ### Decompose
-1. `spec-to-beads` — parse spec, create epic + task beads with acceptance criteria
+1. `bead-craft` (decompose mode) — parse spec, create epic + task beads with acceptance criteria
 2. `executing-beads` — TDD cycle per bead, quality gate, atomic commit
 3. `finishing-work` — integrate and clean up
 

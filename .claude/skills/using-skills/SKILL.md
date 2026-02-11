@@ -31,7 +31,7 @@ If an invoked skill turns out to be wrong for the situation, you don't need to f
 
 **Continuity:** create-handoff, resume-handoff, documenting-solutions, refactor, using-git-worktrees, writing-skills, context-checkpoint
 
-**Beads:** spec-to-beads, executing-beads, work-bead
+**Beads:** bead-craft, executing-beads, work-bead
 
 ## Priority
 

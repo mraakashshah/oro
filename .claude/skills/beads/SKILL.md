@@ -61,7 +61,7 @@ Git-backed issue tracker that survives conversation compaction. Provides persist
 
 ## Acceptance Criteria Format
 
-When creating beads for TDD execution (via `spec-to-beads` or `executing-beads`), use this format:
+When creating beads for TDD execution (via `bead-craft` or `executing-beads`), use this format:
 
 ```bash
 bd create --title "..." --acceptance "Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>"
