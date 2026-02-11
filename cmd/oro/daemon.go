@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"oro/pkg/protocol"
 )
 
 // DaemonStatusValue represents the health state of the daemon.
@@ -30,7 +32,7 @@ func DefaultPIDPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
-	return filepath.Join(home, ".oro", "oro.pid"), nil
+	return filepath.Join(home, protocol.OroDir, "oro.pid"), nil
 }
 
 // WritePIDFile writes the given PID to the specified file path.

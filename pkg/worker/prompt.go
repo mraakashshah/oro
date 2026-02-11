@@ -3,6 +3,8 @@ package worker
 import (
 	"fmt"
 	"strings"
+
+	"oro/pkg/protocol"
 )
 
 // PromptParams contains all inputs needed to assemble the 12-section worker prompt.
@@ -68,7 +70,7 @@ func AssemblePrompt(params PromptParams) string {
 
 	// 7. Worktree
 	section(&b, "Worktree", fmt.Sprintf(
-		"You are in `%s`. Commit to branch `agent/%s`.", params.WorktreePath, params.BeadID,
+		"You are in `%s`. Commit to branch `%s%s`.", params.WorktreePath, protocol.BranchPrefix, params.BeadID,
 	))
 
 	// 8. Git

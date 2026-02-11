@@ -237,7 +237,7 @@ type Dispatcher struct {
 	pendingHandoffs map[string]*pendingHandoff // bead ID -> pending handoff info
 	qgStuckTracker  map[string]*qgHistory      // bead ID -> consecutive QG output hashes
 
-	// beadsDir is the directory to watch for bead changes (defaults to ".beads")
+	// beadsDir is the directory to watch for bead changes (defaults to protocol.BeadsDir)
 	beadsDir string
 
 	// nowFunc allows tests to control time.
@@ -279,7 +279,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		attemptCounts:   make(map[string]int),
 		pendingHandoffs: make(map[string]*pendingHandoff),
 		qgStuckTracker:  make(map[string]*qgHistory),
-		beadsDir:        ".beads",
+		beadsDir:        protocol.BeadsDir,
 		nowFunc:         time.Now,
 		acceptSem:       make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
@@ -667,7 +667,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	var worktree, branch string
 	if ok {
 		worktree = w.worktree
-		branch = "agent/" + beadID
+		branch = protocol.BranchPrefix + beadID
 		w.state = WorkerIdle
 		w.beadID = ""
 	}

@@ -19,7 +19,7 @@ func defaultMemoryStore() (*memory.Store, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolve home dir: %w", err)
 		}
-		dbPath = filepath.Join(home, ".oro", "memories.db")
+		dbPath = filepath.Join(home, protocol.OroDir, "memories.db")
 	}
 
 	db, err := openDB(dbPath)

@@ -35,8 +35,8 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 		return "", "", fmt.Errorf("invalid bead ID: %w", err)
 	}
 
-	path = filepath.Join(g.repoRoot, ".worktrees", beadID)
-	branch = "agent/" + beadID
+	path = filepath.Join(g.repoRoot, protocol.WorktreesDir, beadID)
+	branch = protocol.BranchPrefix + beadID
 
 	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
 		"worktree", "add", path, "-b", branch, "main",
@@ -69,7 +69,7 @@ func (g *GitWorktreeManager) Prune(ctx context.Context) error {
 	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune")
 
 	// Step 2: Remove all directories under .worktrees/.
-	worktreesDir := filepath.Join(g.repoRoot, ".worktrees")
+	worktreesDir := filepath.Join(g.repoRoot, protocol.WorktreesDir)
 	entries, err := os.ReadDir(worktreesDir)
 	if err != nil {
 		// Directory doesn't exist or is unreadable — nothing to clean.

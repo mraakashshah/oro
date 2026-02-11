@@ -15,6 +15,7 @@ import (
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
+	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
@@ -187,7 +188,7 @@ func defaultOroDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
-	return filepath.Join(home, ".oro"), nil
+	return filepath.Join(home, protocol.OroDir), nil
 }
 
 // bootstrapOroDir creates the oro state directory with 0700 permissions.
@@ -208,7 +209,7 @@ func oroPath(envKey, defaultSuffix string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
-	return filepath.Join(home, ".oro", defaultSuffix), nil
+	return filepath.Join(home, protocol.OroDir, defaultSuffix), nil
 }
 
 // buildDispatcher constructs a Dispatcher with all production dependencies.

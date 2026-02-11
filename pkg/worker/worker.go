@@ -33,13 +33,13 @@ type Process interface {
 	Kill() error
 }
 
-// DefaultContextPollInterval controls how often the context watcher polls .oro/context_pct.
+// DefaultContextPollInterval controls how often the context watcher polls <worktree>/.oro/context_pct.
 const DefaultContextPollInterval = 5 * time.Second
 
 // DefaultThreshold is the fallback context percentage when thresholds.json is missing or model unknown.
 const DefaultThreshold = 50
 
-// Thresholds holds per-model context percentage thresholds loaded from .oro/thresholds.json.
+// Thresholds holds per-model context percentage thresholds loaded from <worktree>/.oro/thresholds.json.
 type Thresholds struct {
 	models map[string]int
 }
@@ -597,7 +597,7 @@ func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshol
 		return false
 	}
 
-	pctPath := filepath.Join(wt, ".oro", "context_pct")
+	pctPath := filepath.Join(wt, protocol.OroDir, "context_pct")
 	data, err := os.ReadFile(pctPath) //nolint:gosec // path is constructed internally, not user input
 	if err != nil {
 		return false
@@ -617,7 +617,7 @@ func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshol
 		w.mu.Lock()
 		w.compacted = true
 		w.mu.Unlock()
-		oroDir := filepath.Join(wt, ".oro")
+		oroDir := filepath.Join(wt, protocol.OroDir)
 		_ = os.MkdirAll(oroDir, 0o700) //nolint:gosec // runtime directory
 		_ = os.WriteFile(filepath.Join(oroDir, "compacted"), []byte("1"), 0o600)
 		return false
@@ -851,7 +851,7 @@ func (w *Worker) SendHandoff(ctx context.Context) error {
 
 	// Populate context from .oro/ files (best-effort; missing files are not errors)
 	if worktree != "" {
-		oroDir := filepath.Join(worktree, ".oro")
+		oroDir := filepath.Join(worktree, protocol.OroDir)
 		payload.Learnings = readJSONStringSlice(filepath.Join(oroDir, "learnings.json"))
 		payload.Decisions = readJSONStringSlice(filepath.Join(oroDir, "decisions.json"))
 		payload.FilesModified = readJSONStringSlice(filepath.Join(oroDir, "files_modified.json"))
