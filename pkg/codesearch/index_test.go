@@ -1,0 +1,261 @@
+package codesearch_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"oro/pkg/codesearch"
+)
+
+func TestCodeIndex_BuildAndSearch(t *testing.T) {
+	// Create a temp directory with Go source files.
+	rootDir := t.TempDir()
+	writeGoFile(t, rootDir, "main.go", `package main
+
+func main() {
+	handleAuth()
+}
+
+func handleAuth() {
+	// authentication logic
+}
+`)
+	writeGoFile(t, rootDir, "server.go", `package main
+
+type Server struct {
+	Port int
+}
+
+func (s *Server) Start() error {
+	return nil
+}
+
+func (s *Server) Stop() {
+}
+`)
+
+	emb := &codesearch.MockEmbedder{Dims: 8}
+	dbPath := filepath.Join(t.TempDir(), "test_index.db")
+
+	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	ctx := context.Background()
+
+	// Build the index.
+	stats, err := idx.Build(ctx, rootDir)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if stats.FilesProcessed != 2 {
+		t.Errorf("expected 2 files processed, got %d", stats.FilesProcessed)
+	}
+	if stats.ChunksIndexed < 4 {
+		t.Errorf("expected at least 4 chunks indexed, got %d", stats.ChunksIndexed)
+	}
+
+	// Search for auth-related code.
+	results, err := idx.Search(ctx, "authentication logic", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 search result")
+	}
+
+	// Each result should have valid fields.
+	for i, r := range results {
+		if r.Chunk.FilePath == "" {
+			t.Errorf("result %d: empty file path", i)
+		}
+		if r.Chunk.Name == "" {
+			t.Errorf("result %d: empty name", i)
+		}
+		if r.Score < -1.0 || r.Score > 1.0 {
+			t.Errorf("result %d: score %f out of cosine range", i, r.Score)
+		}
+	}
+}
+
+func TestCodeIndex_SearchEmpty(t *testing.T) {
+	emb := &codesearch.MockEmbedder{Dims: 8}
+	dbPath := filepath.Join(t.TempDir(), "empty_index.db")
+
+	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	results, err := idx.Search(context.Background(), "anything", 5)
+	if err != nil {
+		t.Fatalf("Search on empty index: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results on empty index, got %d", len(results))
+	}
+}
+
+func TestCodeIndex_TopKLimitsResults(t *testing.T) {
+	rootDir := t.TempDir()
+	writeGoFile(t, rootDir, "many.go", `package main
+
+func A() {}
+func B() {}
+func C() {}
+func D() {}
+func E() {}
+func F() {}
+`)
+
+	emb := &codesearch.MockEmbedder{Dims: 8}
+	dbPath := filepath.Join(t.TempDir(), "topk_index.db")
+
+	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	ctx := context.Background()
+	if _, err := idx.Build(ctx, rootDir); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	results, err := idx.Search(ctx, "test", 3)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) > 3 {
+		t.Errorf("expected at most 3 results, got %d", len(results))
+	}
+}
+
+func TestCodeIndex_RebuildClearsOldData(t *testing.T) {
+	rootDir := t.TempDir()
+	writeGoFile(t, rootDir, "v1.go", `package main
+
+func OldFunction() {}
+`)
+
+	emb := &codesearch.MockEmbedder{Dims: 8}
+	dbPath := filepath.Join(t.TempDir(), "rebuild_index.db")
+
+	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	ctx := context.Background()
+
+	// First build.
+	if _, err := idx.Build(ctx, rootDir); err != nil {
+		t.Fatalf("Build 1: %v", err)
+	}
+
+	// Replace the file with different content.
+	writeGoFile(t, rootDir, "v1.go", `package main
+
+func NewFunction() {}
+`)
+
+	// Second build (full rebuild).
+	stats, err := idx.Build(ctx, rootDir)
+	if err != nil {
+		t.Fatalf("Build 2: %v", err)
+	}
+
+	if stats.ChunksIndexed != 1 {
+		t.Errorf("expected 1 chunk after rebuild, got %d", stats.ChunksIndexed)
+	}
+}
+
+func TestCodeIndex_SkipsNonGoFiles(t *testing.T) {
+	rootDir := t.TempDir()
+	writeGoFile(t, rootDir, "main.go", `package main
+
+func Main() {}
+`)
+	// Write a non-Go file that should be skipped.
+	writeFile(t, rootDir, "readme.md", "# Hello")
+	writeFile(t, rootDir, "script.py", "def hello(): pass")
+
+	emb := &codesearch.MockEmbedder{Dims: 8}
+	dbPath := filepath.Join(t.TempDir(), "skip_index.db")
+
+	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	stats, err := idx.Build(context.Background(), rootDir)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if stats.FilesProcessed != 1 {
+		t.Errorf("expected 1 file processed (only .go), got %d", stats.FilesProcessed)
+	}
+}
+
+func TestCosineSimilarity(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b []float64
+		want float64
+		tol  float64
+	}{
+		{"identical", []float64{1, 0, 0}, []float64{1, 0, 0}, 1.0, 0.001},
+		{"opposite", []float64{1, 0, 0}, []float64{-1, 0, 0}, -1.0, 0.001},
+		{"orthogonal", []float64{1, 0, 0}, []float64{0, 1, 0}, 0.0, 0.001},
+		{"empty", []float64{}, []float64{}, 0.0, 0.001},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codesearch.CosineSimilarity(tt.a, tt.b)
+			if diff := got - tt.want; diff > tt.tol || diff < -tt.tol {
+				t.Errorf("CosineSimilarity(%v, %v) = %f, want %f", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeDecodeEmbedding(t *testing.T) {
+	original := []float64{1.5, -2.3, 0.0, 42.0, -0.001}
+	encoded := codesearch.EncodeEmbedding(original)
+	decoded := codesearch.DecodeEmbedding(encoded)
+
+	if len(decoded) != len(original) {
+		t.Fatalf("expected %d elements, got %d", len(original), len(decoded))
+	}
+	for i, v := range original {
+		if decoded[i] != v {
+			t.Errorf("element %d: expected %f, got %f", i, v, decoded[i])
+		}
+	}
+}
+
+func writeGoFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	writeFile(t, dir, name, content)
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write file %s: %v", name, err)
+	}
+}
