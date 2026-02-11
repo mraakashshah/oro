@@ -51,4 +51,5 @@ type Memory struct {
 	Embedding     []byte  `json:"embedding"`
 	FilesRead     string  `json:"files_read"`
 	FilesModified string  `json:"files_modified"`
+	Pinned        bool    `json:"pinned"`
 }

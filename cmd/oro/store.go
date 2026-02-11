@@ -34,6 +34,7 @@ func defaultMemoryStore() (*memory.Store, error) {
 
 	// Apply migrations for existing databases (columns may already exist).
 	_, _ = db.ExecContext(context.Background(), protocol.MigrateFileTracking)
+	_, _ = db.ExecContext(context.Background(), protocol.MigratePinnedMemories)
 
 	return memory.NewStore(db), nil
 }

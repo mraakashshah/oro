@@ -48,6 +48,7 @@ type InsertParams struct {
 	Confidence    float64
 	FilesRead     []string
 	FilesModified []string
+	Pinned        bool
 }
 
 // SearchOpts configures a FTS5 search query.
@@ -143,10 +144,15 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 		}
 	}
 
+	pinnedInt := 0
+	if m.Pinned {
+		pinnedInt = 1
+	}
+
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob, filesRead, filesModified,
+		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob, filesRead, filesModified, pinnedInt,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("memory insert: %w", err)
@@ -243,7 +249,8 @@ func searchSQL(query string, opts SearchOpts) (stmt string, args []any) {
 		       m.confidence, m.created_at, m.embedding,
 		       COALESCE(m.files_read, '[]') AS files_read,
 		       COALESCE(m.files_modified, '[]') AS files_modified,
-		       (julianday('now') - julianday(m.created_at)) AS age_days
+		       (julianday('now') - julianday(m.created_at)) AS age_days,
+		       COALESCE(m.pinned, 0) AS pinned
 		FROM memories_fts
 		JOIN memories m ON memories_fts.rowid = m.id
 		WHERE %s
@@ -369,7 +376,8 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 	       COALESCE(worker_id, '') AS worker_id,
 	       confidence, created_at, embedding,
 	       COALESCE(files_read, '[]') AS files_read, COALESCE(files_modified, '[]') AS files_modified,
-	       (julianday('now') - julianday(created_at)) AS age_days
+	       (julianday('now') - julianday(created_at)) AS age_days,
+	       COALESCE(pinned, 0) AS pinned
 	FROM memories
 	WHERE embedding IS NOT NULL`
 
@@ -488,18 +496,26 @@ func scanScoredMemory(rows *sql.Rows) (ScoredMemory, error) {
 	var sm ScoredMemory
 	var embedding sql.NullString
 	var ageDays float64
+	var pinnedInt int
 	if err := rows.Scan(
 		&sm.ID, &sm.Content, &sm.Type, &sm.Tags, &sm.Source,
 		&sm.BeadID, &sm.WorkerID, &sm.Confidence, &sm.CreatedAt,
-		&embedding, &sm.FilesRead, &sm.FilesModified, &ageDays,
+		&embedding, &sm.FilesRead, &sm.FilesModified, &ageDays, &pinnedInt,
 	); err != nil {
 		return sm, fmt.Errorf("memory search scan: %w", err)
 	}
 	if embedding.Valid {
 		sm.Embedding = []byte(embedding.String)
 	}
+	sm.Pinned = pinnedInt != 0
+
 	// Score: confidence * time_decay (halves every 30 days)
-	sm.Score = sm.Confidence * math.Pow(0.5, ageDays/30.0)
+	// Pinned memories skip time decay (decay factor = 1.0)
+	decayFactor := math.Pow(0.5, ageDays/30.0)
+	if sm.Pinned {
+		decayFactor = 1.0
+	}
+	sm.Score = sm.Confidence * decayFactor
 	return sm, nil
 }
 
@@ -601,7 +617,8 @@ func listSQL(opts ListOpts, limit int) (query string, args []any) {
 		       COALESCE(worker_id, '') AS worker_id,
 		       confidence, created_at, embedding,
 		       COALESCE(files_read, '[]') AS files_read,
-		       COALESCE(files_modified, '[]') AS files_modified
+		       COALESCE(files_modified, '[]') AS files_modified,
+		       COALESCE(pinned, 0) AS pinned
 		FROM memories %s
 		ORDER BY created_at DESC, id DESC
 		LIMIT ? OFFSET ?
@@ -614,16 +631,18 @@ func listSQL(opts ListOpts, limit int) (query string, args []any) {
 func scanMemory(rows *sql.Rows) (protocol.Memory, error) {
 	var m protocol.Memory
 	var embedding sql.NullString
+	var pinnedInt int
 	if err := rows.Scan(
 		&m.ID, &m.Content, &m.Type, &m.Tags, &m.Source,
 		&m.BeadID, &m.WorkerID, &m.Confidence, &m.CreatedAt,
-		&embedding, &m.FilesRead, &m.FilesModified,
+		&embedding, &m.FilesRead, &m.FilesModified, &pinnedInt,
 	); err != nil {
 		return m, fmt.Errorf("memory list scan: %w", err)
 	}
 	if embedding.Valid {
 		m.Embedding = []byte(embedding.String)
 	}
+	m.Pinned = pinnedInt != 0
 	return m, nil
 }
 
@@ -634,15 +653,17 @@ func (s *Store) GetByID(ctx context.Context, id int64) (protocol.Memory, error) 
 	       COALESCE(worker_id, '') AS worker_id,
 	       confidence, created_at, embedding,
 	       COALESCE(files_read, '[]') AS files_read,
-	       COALESCE(files_modified, '[]') AS files_modified
+	       COALESCE(files_modified, '[]') AS files_modified,
+	       COALESCE(pinned, 0) AS pinned
 	FROM memories WHERE id = ?`
 
 	var m protocol.Memory
 	var embedding sql.NullString
+	var pinnedInt int
 	err := s.db.QueryRowContext(ctx, q, id).Scan(
 		&m.ID, &m.Content, &m.Type, &m.Tags, &m.Source,
 		&m.BeadID, &m.WorkerID, &m.Confidence, &m.CreatedAt,
-		&embedding, &m.FilesRead, &m.FilesModified,
+		&embedding, &m.FilesRead, &m.FilesModified, &pinnedInt,
 	)
 	if err == sql.ErrNoRows {
 		return m, fmt.Errorf("memory %d not found", id)
@@ -653,6 +674,7 @@ func (s *Store) GetByID(ctx context.Context, id int64) (protocol.Memory, error) 
 	if embedding.Valid {
 		m.Embedding = []byte(embedding.String)
 	}
+	m.Pinned = pinnedInt != 0
 	return m, nil
 }
 

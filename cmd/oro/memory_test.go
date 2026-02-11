@@ -668,3 +668,123 @@ func TestRecallByID(t *testing.T) {
 		}
 	})
 }
+
+func TestPinnedMemoryCLI(t *testing.T) {
+	db := setupTestMemoryDB(t)
+	store := memory.NewStore(db)
+	ctx := context.Background()
+
+	t.Run("remember with --pin flag creates pinned memory", func(t *testing.T) {
+		cmd := newRememberCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--pin", "never cd into worktrees"})
+
+		err := cmd.Execute()
+		if err != nil {
+			t.Fatalf("remember --pin execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, "[pinned]") {
+			t.Errorf("expected output to contain '[pinned]', got: %s", output)
+		}
+		if !strings.Contains(output, "Remembered") {
+			t.Errorf("expected output to contain 'Remembered', got: %s", output)
+		}
+
+		// Verify the memory is actually pinned in the database
+		results, err := store.Search(ctx, "never cd into worktrees", memory.SearchOpts{Limit: 5})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected at least one memory")
+		}
+		if !results[0].Pinned {
+			t.Error("expected memory to be pinned=true")
+		}
+	})
+
+	t.Run("recall shows [pinned] indicator for pinned memories", func(t *testing.T) {
+		// The memory should already exist from the previous test
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"never cd into worktrees"})
+
+		err := cmd.Execute()
+		if err != nil {
+			t.Fatalf("recall execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, "[pinned]") {
+			t.Errorf("expected recall output to show '[pinned]' indicator, got: %s", output)
+		}
+	})
+
+	t.Run("recall by id shows [pinned] indicator", func(t *testing.T) {
+		// Insert a new pinned memory
+		id, err := store.Insert(ctx, memory.InsertParams{
+			Content:    "unique_pin_recall_id_test always backup before deploy",
+			Type:       "gotcha",
+			Source:     "cli",
+			Confidence: 0.9,
+			Pinned:     true,
+		})
+		if err != nil {
+			t.Fatalf("insert pinned: %v", err)
+		}
+
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--id", fmt.Sprintf("%d", id)})
+
+		err = cmd.Execute()
+		if err != nil {
+			t.Fatalf("recall --id execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, "[pinned]") {
+			t.Errorf("expected recall --id output to show '[pinned]' indicator, got: %s", output)
+		}
+		if !strings.Contains(output, "[gotcha]") {
+			t.Errorf("expected type label, got: %s", output)
+		}
+	})
+
+	t.Run("unpinned memory does not show [pinned] indicator", func(t *testing.T) {
+		// Insert an unpinned memory
+		_, err := store.Insert(ctx, memory.InsertParams{
+			Content:    "unique_unpin_test regular unpinned memory",
+			Type:       "lesson",
+			Source:     "cli",
+			Confidence: 0.8,
+			Pinned:     false,
+		})
+		if err != nil {
+			t.Fatalf("insert unpinned: %v", err)
+		}
+
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"unique_unpin_test"})
+
+		err = cmd.Execute()
+		if err != nil {
+			t.Fatalf("recall execute: %v", err)
+		}
+
+		output := out.String()
+		lines := strings.Split(output, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "unique_unpin_test") && strings.Contains(line, "[pinned]") {
+				t.Errorf("unpinned memory should not show '[pinned]' indicator, got line: %s", line)
+			}
+		}
+	})
+}

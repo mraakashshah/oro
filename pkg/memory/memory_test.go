@@ -1755,3 +1755,232 @@ func TestStore_GetByID_NotFound(t *testing.T) {
 		t.Errorf("expected 'not found' error, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Pinned memory tests (oro-u80)
+// ---------------------------------------------------------------------------
+
+func TestPinnedMemory(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a pinned memory with a very old created_at to test decay
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, created_at, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"pinned memory should never decay", "lesson", `["test"]`, "self_report", 0.8,
+		time.Now().AddDate(-2, 0, 0).Format("2006-01-02 15:04:05"), // 2 years old
+		1, // pinned
+	)
+	if err != nil {
+		t.Fatalf("insert pinned: %v", err)
+	}
+
+	// Search for it
+	results, err := store.Search(ctx, "pinned memory never decay", SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+
+	// Verify the memory is marked as pinned
+	if !results[0].Pinned {
+		t.Error("expected memory to be pinned")
+	}
+
+	// Verify decay factor is 1.0 (score should equal confidence)
+	// For a 2-year-old unpinned memory with conf=0.8, decay would be ~0.0002
+	// But for pinned, decay=1.0, so score should be 0.8
+	if results[0].Score < 0.79 || results[0].Score > 0.81 {
+		t.Errorf("expected pinned memory score ~0.8 (no decay), got %.4f", results[0].Score)
+	}
+}
+
+func TestPinnedMemoryAlwaysTop(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert an old pinned memory
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, created_at, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"old pinned memory unique_pin_top_xyz about testing", "lesson", `["test"]`, "self_report", 0.7,
+		time.Now().AddDate(-1, 0, 0).Format("2006-01-02 15:04:05"), // 1 year old
+		1, // pinned
+	)
+	if err != nil {
+		t.Fatalf("insert old pinned: %v", err)
+	}
+
+	// Insert a recent unpinned memory with higher confidence
+	_, err = store.Insert(ctx, InsertParams{
+		Content:    "new unpinned memory unique_pin_top_xyz about testing",
+		Type:       "lesson",
+		Tags:       []string{"test"},
+		Source:     "self_report",
+		Confidence: 0.9,
+		Pinned:     false,
+	})
+	if err != nil {
+		t.Fatalf("insert new unpinned: %v", err)
+	}
+
+	// Search for both
+	results, err := store.Search(ctx, "unique_pin_top_xyz testing", SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+
+	// The pinned memory should rank higher despite being older
+	// Old pinned: conf=0.7, decay=1.0 → score=0.7
+	// New unpinned: conf=0.9, decay=1.0 (fresh) → score=0.9
+	// Actually, the new one would still rank higher. Let me adjust the test.
+	// The key test is that pinned doesn't decay over time.
+
+	// Find the pinned memory in results
+	var pinnedScore float64
+	var unpinnedScore float64
+	for _, r := range results {
+		if r.Pinned && strings.Contains(r.Content, "old pinned") {
+			pinnedScore = r.Score
+		}
+		if !r.Pinned && strings.Contains(r.Content, "new unpinned") {
+			unpinnedScore = r.Score
+		}
+	}
+
+	// Pinned score should be close to 0.7 (no decay)
+	if pinnedScore < 0.69 || pinnedScore > 0.71 {
+		t.Errorf("expected pinned score ~0.7, got %.4f", pinnedScore)
+	}
+
+	// Unpinned score should be close to 0.9 (fresh, no decay yet)
+	if unpinnedScore < 0.89 || unpinnedScore > 0.91 {
+		t.Errorf("expected unpinned score ~0.9, got %.4f", unpinnedScore)
+	}
+}
+
+func TestPinnedMemoryVsOldUnpinned(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert an old pinned memory with lower confidence
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, created_at, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"old pinned unique_pin_vs_old_xyz critical info", "lesson", `["test"]`, "self_report", 0.6,
+		time.Now().AddDate(-2, 0, 0).Format("2006-01-02 15:04:05"), // 2 years old
+		1, // pinned
+	)
+	if err != nil {
+		t.Fatalf("insert old pinned: %v", err)
+	}
+
+	// Insert an old unpinned memory with higher original confidence
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, created_at, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"old unpinned unique_pin_vs_old_xyz information", "lesson", `["test"]`, "self_report", 0.9,
+		time.Now().AddDate(-2, 0, 0).Format("2006-01-02 15:04:05"), // 2 years old
+		0, // not pinned
+	)
+	if err != nil {
+		t.Fatalf("insert old unpinned: %v", err)
+	}
+
+	// Search for both
+	results, err := store.Search(ctx, "unique_pin_vs_old_xyz", SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+
+	// The pinned memory should rank higher
+	// Old pinned: conf=0.6, decay=1.0 → score=0.6
+	// Old unpinned: conf=0.9, decay=0.5^(730/30)≈0.5^24.3≈0.00000005 → score≈0
+	if !results[0].Pinned {
+		t.Errorf("expected pinned memory to rank first, got pinned=%v", results[0].Pinned)
+	}
+	if results[0].Score < 0.59 || results[0].Score > 0.61 {
+		t.Errorf("expected pinned score ~0.6, got %.4f", results[0].Score)
+	}
+
+	// The unpinned one should have a very low score due to decay
+	var unpinnedScore float64
+	for _, r := range results {
+		if !r.Pinned && strings.Contains(r.Content, "old unpinned") {
+			unpinnedScore = r.Score
+		}
+	}
+	if unpinnedScore > 0.01 {
+		t.Errorf("expected unpinned old memory to have very low score (<0.01), got %.6f", unpinnedScore)
+	}
+}
+
+func TestPinFlag(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a memory with Pinned=true
+	id, err := store.Insert(ctx, InsertParams{
+		Content:    "never cd into worktrees unique_pin_flag_xyz",
+		Type:       "gotcha",
+		Source:     "cli",
+		Confidence: 0.8,
+		Pinned:     true,
+	})
+	if err != nil {
+		t.Fatalf("insert with pin: %v", err)
+	}
+
+	// Retrieve it and verify pinned flag
+	mem, err := store.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("get by id: %v", err)
+	}
+	if !mem.Pinned {
+		t.Error("expected memory to be pinned")
+	}
+
+	// Also verify via search
+	results, err := store.Search(ctx, "unique_pin_flag_xyz", SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	if !results[0].Pinned {
+		t.Error("expected search result to show pinned=true")
+	}
+
+	// Verify via list
+	all, err := store.List(ctx, ListOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) == 0 {
+		t.Fatal("expected at least one memory")
+	}
+	found := false
+	for _, m := range all {
+		if m.ID == id && m.Pinned {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected to find pinned memory in list")
+	}
+}

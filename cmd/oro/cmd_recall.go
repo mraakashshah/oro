@@ -18,7 +18,11 @@ func formatRecallResults(results []memory.ScoredMemory) string {
 
 	var b strings.Builder
 	for i, r := range results {
-		fmt.Fprintf(&b, "%d. [%s] %s\n", i+1, r.Type, r.Content)
+		pinnedTag := ""
+		if r.Pinned {
+			pinnedTag = " [pinned]"
+		}
+		fmt.Fprintf(&b, "%d. [%s]%s %s\n", i+1, r.Type, pinnedTag, r.Content)
 		fmt.Fprintf(&b, "   confidence: %.2f | score: %.4f | source: %s | created: %s\n",
 			r.Confidence, r.Score, r.Source, formatCreatedAt(r.CreatedAt))
 	}
@@ -54,7 +58,11 @@ func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("recall: %w", err)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s\n", mem.Type, mem.Content)
+				pinnedTag := ""
+				if mem.Pinned {
+					pinnedTag = " [pinned]"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "[%s]%s %s\n", mem.Type, pinnedTag, mem.Content)
 				fmt.Fprintf(cmd.OutOrStdout(), "confidence: %.2f | source: %s | created: %s\n",
 					mem.Confidence, mem.Source, formatCreatedAt(mem.CreatedAt))
 				return nil
@@ -107,7 +115,11 @@ func newRecallCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("recall: %w", err)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s\n", mem.Type, mem.Content)
+				pinnedTag := ""
+				if mem.Pinned {
+					pinnedTag = " [pinned]"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "[%s]%s %s\n", mem.Type, pinnedTag, mem.Content)
 				fmt.Fprintf(cmd.OutOrStdout(), "confidence: %.2f | source: %s | created: %s\n",
 					mem.Confidence, mem.Source, formatCreatedAt(mem.CreatedAt))
 				return nil

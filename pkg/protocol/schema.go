@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS memories (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     embedding BLOB,
     files_read TEXT DEFAULT '[]',
-    files_modified TEXT DEFAULT '[]'
+    files_modified TEXT DEFAULT '[]',
+    pinned INTEGER DEFAULT 0
 );
 
 -- FTS5 full-text index over memories for BM25-ranked search
@@ -79,4 +80,10 @@ END;
 const MigrateFileTracking = `
 ALTER TABLE memories ADD COLUMN files_read TEXT DEFAULT '[]';
 ALTER TABLE memories ADD COLUMN files_modified TEXT DEFAULT '[]';
+`
+
+// MigratePinnedMemories adds the pinned column to existing memories tables.
+// Uses a try/ignore pattern since SQLite doesn't support IF NOT EXISTS for ALTER TABLE.
+const MigratePinnedMemories = `
+ALTER TABLE memories ADD COLUMN pinned INTEGER DEFAULT 0;
 `
