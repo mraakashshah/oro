@@ -25,7 +25,9 @@ func (e *ExecRunner) Run(name string, args ...string) (string, error) {
 }
 
 // defaultReadyTimeout is the default time to wait for Claude to become ready.
-const defaultReadyTimeout = 30 * time.Second
+// Claude Code with SessionStart hooks (bd list, bd ready, git status, etc.)
+// can take 30-45s to initialize.
+const defaultReadyTimeout = 60 * time.Second
 
 // pollInterval is the time between capture-pane readiness checks.
 const pollInterval = 500 * time.Millisecond
@@ -135,26 +137,46 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	return nil
 }
 
-// PaneReady polls the pane content via tmux capture-pane until Claude's input
-// prompt (a line starting with ">") appears. It polls every 500ms and times out
-// after ReadyTimeout (default 30s).
-func (s *TmuxSession) PaneReady(paneTarget string) error {
+// isShell returns true if cmd matches a known shell process name
+// (the foreground process hasn't changed from the login shell yet).
+func isShell(cmd string) bool {
+	switch cmd {
+	case "zsh", "bash", "sh", "fish":
+		return true
+	}
+	return false
+}
+
+// WaitForCommand polls tmux pane_current_command until the foreground process
+// is no longer a shell, indicating Claude has started. This is more reliable
+// than scraping pane content for a prompt character.
+func (s *TmuxSession) WaitForCommand(paneTarget string) error {
 	timeout := s.ReadyTimeout
 	if timeout == 0 {
 		timeout = defaultReadyTimeout
 	}
 	deadline := time.Now().Add(timeout)
+	var lastCmd string
 
 	for {
-		out, err := s.Runner.Run("tmux", "capture-pane", "-p", "-t", paneTarget)
-		if err == nil && hasPrompt(out) {
-			return nil
+		out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", paneTarget, "#{pane_current_command}")
+		if err == nil {
+			lastCmd = strings.TrimSpace(out)
+			if lastCmd != "" && !isShell(lastCmd) {
+				return nil
+			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("claude did not become ready in pane %s within %v", paneTarget, timeout)
+			return fmt.Errorf("claude did not start in pane %s within %v (last command: %s)", paneTarget, timeout, lastCmd)
 		}
 		s.sleep(pollInterval)
 	}
+}
+
+// PaneReady polls until Claude has started in the given pane.
+// It delegates to WaitForCommand which checks pane_current_command.
+func (s *TmuxSession) PaneReady(paneTarget string) error {
+	return s.WaitForCommand(paneTarget)
 }
 
 // VerifyBeaconReceived polls the pane content via tmux capture-pane until the
@@ -179,18 +201,6 @@ func (s *TmuxSession) VerifyBeaconReceived(paneTarget, indicator string, timeout
 		}
 		s.sleep(1 * time.Second)
 	}
-}
-
-// hasPrompt checks whether captured pane output contains Claude's input prompt.
-// It looks for a line that starts with ">" (optionally preceded by whitespace).
-func hasPrompt(output string) bool {
-	for _, line := range strings.Split(output, "\n") {
-		trimmed := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(trimmed, ">") {
-			return true
-		}
-	}
-	return false
 }
 
 // sleep pauses for the given duration. It uses the Sleeper if set (for testing),

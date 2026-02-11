@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"oro/pkg/dispatcher"
@@ -29,10 +30,13 @@ type DaemonSpawner interface {
 type ExecDaemonSpawner struct{}
 
 // SpawnDaemon forks a child process running the current binary with --daemon-only.
+// The child is placed in its own session (Setsid) so it survives parent exit
+// without receiving SIGHUP from the parent's process group.
 func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers int) (int, error) {
 	child := exec.CommandContext(context.Background(), os.Args[0], "start", "--daemon-only", "--workers", strconv.Itoa(workers)) //nolint:gosec // intentionally re-executing self
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := child.Start(); err != nil {
 		return 0, fmt.Errorf("spawn daemon: %w", err)
 	}

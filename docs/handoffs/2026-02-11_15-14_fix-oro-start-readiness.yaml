@@ -1,0 +1,73 @@
+---
+date: 2026-02-11
+status: complete
+---
+
+goal: >
+  Fixed oro start failure where Claude didn't become ready within 30s timeout.
+  Replaced fragile capture-pane prompt scraping (looking for ">") with
+  process-name-based readiness detection (pane_current_command). Also fixed
+  daemon child surviving parent exit via Setsid.
+
+now: >
+  Commit and push. Then try oro start to verify it works in production.
+  If Claude still takes >60s, increase defaultReadyTimeout further.
+
+test: go test -race -count=1 ./cmd/oro/ -run 'TestTmux|TestWaitForCommand|TestCreateVerifies|TestFullStart'
+
+done_this_session:
+  - task: "Replace hasPrompt/capture-pane with WaitForCommand/display-message"
+    files: [cmd/oro/tmux.go, cmd/oro/tmux_test.go, cmd/oro/start_full_test.go]
+    details: >
+      New WaitForCommand polls tmux display-message -p "#{pane_current_command}"
+      and returns when foreground process is not a shell (zsh/bash/sh/fish).
+      PaneReady now delegates to WaitForCommand. Removed hasPrompt entirely.
+      6 new TestWaitForCommand tests. Updated all stubs from capture-pane to
+      display-message (stubCapturePaneReady -> stubPaneReady).
+
+  - task: "Daemon child Setsid for parent-exit survival"
+    files: [cmd/oro/cmd_start.go]
+    details: >
+      Added SysProcAttr{Setsid: true} to SpawnDaemon child process so it
+      creates its own session and doesn't receive SIGHUP when parent exits.
+
+  - task: "Increased defaultReadyTimeout from 30s to 60s"
+    files: [cmd/oro/tmux.go]
+
+decisions:
+  - kept_login_shell: >
+      Considered gastown-style NewSessionWithCommand (pass command to tmux
+      new-session directly) but rejected it because tmux runs the command via
+      $SHELL -c which is non-interactive/non-login — .zshrc never loads, so
+      claude wouldn't be in PATH. Current approach creates login shell first,
+      then send-keys, which gets full PATH.
+  - process_detection_over_prompt_scraping: >
+      pane_current_command is a tmux-native mechanism that reports the
+      foreground process name. More reliable than scraping TUI output for
+      ">" which breaks with ANSI codes, version changes, or slow hooks.
+
+findings:
+  - tmux_command_execution: >
+      tmux new-session "cmd" runs via $SHELL -c "cmd" (non-interactive,
+      non-login). Only ~/.zshenv is sourced, not ~/.zshrc or ~/.zprofile.
+      This breaks PATH for tools installed via .zshrc modifications.
+
+worked:
+  - "WaitForCommand using pane_current_command — clean, reliable"
+  - "Setsid for daemon detachment — standard Unix pattern"
+
+failed:
+  - "Gastown-style NewSessionWithCommand — breaks PATH on non-login shell"
+  - "Just increasing timeout to 60s — band-aid, doesn't fix root cause"
+
+next:
+  - "Commit and push these changes"
+  - "Test oro start manually to verify production behavior"
+  - "Consider adding -l flag to send-keys for nudge injection (literal mode)"
+
+files:
+  modified:
+    - cmd/oro/tmux.go
+    - cmd/oro/tmux_test.go
+    - cmd/oro/cmd_start.go
+    - cmd/oro/start_full_test.go
