@@ -297,6 +297,12 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen unix %s: %w", d.cfg.SocketPath, err)
 	}
+	// Restrict socket permissions to 0600 (owner-only access) to prevent
+	// unauthorized local users from connecting and impersonating workers.
+	if err := os.Chmod(d.cfg.SocketPath, 0o600); err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("chmod socket %s: %w", d.cfg.SocketPath, err)
+	}
 	d.mu.Lock()
 	d.listener = ln
 	d.mu.Unlock()
