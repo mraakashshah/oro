@@ -227,6 +227,12 @@ type Dispatcher struct {
 	// this to inject a synchronization point that guarantees a concurrent
 	// deletion occurs during the unlock window.
 	testUnlockHook func()
+
+	// wg tracks all goroutines spawned by Run() to ensure graceful shutdown
+	wg sync.WaitGroup
+
+	// acceptSem limits concurrent connection handlers in acceptLoop
+	acceptSem chan struct{}
 }
 
 // New creates a Dispatcher. It does NOT start listening or polling — call Run().
@@ -250,6 +256,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		qgStuckTracker:  make(map[string]*qgHistory),
 		beadsDir:        ".beads",
 		nowFunc:         time.Now,
+		acceptSem:       make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}
 }
 
@@ -309,20 +316,49 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	d.mu.Unlock()
 
 	// Accept connections
-	go d.acceptLoop(ctx, ln)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.acceptLoop(ctx, ln)
+	}()
 
 	// Bead assignment loop
-	go d.assignLoop(ctx)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.assignLoop(ctx)
+	}()
 
 	// Heartbeat monitor
-	go d.heartbeatLoop(ctx)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.heartbeatLoop(ctx)
+	}()
 
 	<-ctx.Done()
+
+	// Close listener first so acceptLoop will exit
+	_ = ln.Close()
 
 	// --- Graceful shutdown ---
 	// Phase 1: cancel ops/merges, Phase 2: stop workers, Phase 3: remove worktrees.
 	d.shutdownSequence()
-	_ = ln.Close()
+
+	// Wait for all goroutines to finish with a 5s timeout
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All goroutines finished
+	case <-time.After(5 * time.Second):
+		// Timeout - goroutines did not finish in time
+	}
+
 	return nil
 }
 
@@ -338,7 +374,19 @@ func (d *Dispatcher) acceptLoop(ctx context.Context, ln net.Listener) {
 			}
 			continue
 		}
-		go d.handleConn(ctx, conn)
+		// Acquire semaphore slot before spawning handler
+		select {
+		case d.acceptSem <- struct{}{}:
+			d.wg.Add(1)
+			go func() {
+				defer d.wg.Done()
+				defer func() { <-d.acceptSem }() // Release semaphore slot
+				d.handleConn(ctx, conn)
+			}()
+		case <-ctx.Done():
+			_ = conn.Close()
+			return
+		}
 	}
 }
 
@@ -608,7 +656,11 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	d.clearBeadTracking(beadID)
 
 	// Merge in background
-	go d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
+	}()
 }
 
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
@@ -714,7 +766,11 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 				Worktree:      worktree,
 				ConflictFiles: conflictErr.Files,
 			})
-			go d.handleMergeConflictResult(ctx, beadID, workerID, worktree, resultCh)
+			d.wg.Add(1)
+			go func() {
+				defer d.wg.Done()
+				d.handleMergeConflictResult(ctx, beadID, workerID, worktree, resultCh)
+			}()
 			_ = d.logEvent(ctx, "merge_conflict", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"files":%q}`, conflictErr.Files))
 			return
@@ -803,7 +859,11 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 			Worktree: worktree,
 			Symptom:  fmt.Sprintf("worker stuck after %d ralph handoffs", handoffCount),
 		})
-		go d.handleDiagnosisResult(ctx, beadID, workerID, resultCh)
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.handleDiagnosisResult(ctx, beadID, workerID, resultCh)
+		}()
 		return
 	}
 
@@ -930,7 +990,11 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	})
 
 	// Handle review result asynchronously
-	go d.handleReviewResult(ctx, workerID, beadID, resultCh)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.handleReviewResult(ctx, workerID, beadID, resultCh)
+	}()
 }
 
 // maxReviewRejections is the number of rejection cycles before escalating to
@@ -1218,7 +1282,9 @@ func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Durati
 	d.mu.Unlock()
 
 	// Wait for SHUTDOWN_APPROVED or timeout in background
+	d.wg.Add(1)
 	go func() {
+		defer d.wg.Done()
 		timer := time.NewTimer(timeout)
 		defer timer.Stop()
 

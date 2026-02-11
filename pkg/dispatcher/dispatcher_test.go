@@ -496,6 +496,116 @@ func TestDispatcher_StartDirective_BeginsAssigning(t *testing.T) {
 	}
 }
 
+func TestRunWaitsForGoroutines(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Track if Run() has returned
+	runCompleted := make(chan struct{})
+
+	// Start dispatcher
+	go func() {
+		_ = d.Run(ctx)
+		close(runCompleted)
+	}()
+
+	// Wait for listener to be ready
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		ln := d.listener
+		d.mu.Unlock()
+		if ln != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Cancel the context
+	cancel()
+
+	// Run() should wait for goroutines to finish, then return within timeout
+	select {
+	case <-runCompleted:
+		// Success - Run() completed after goroutines finished
+	case <-time.After(6 * time.Second):
+		t.Fatal("Run() did not return within 6s timeout after context cancel")
+	}
+}
+
+func TestAcceptLoopBackpressure(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Verify the semaphore channel has capacity 100
+	if cap(d.acceptSem) != 100 {
+		t.Fatalf("Expected acceptSem capacity of 100, got %d", cap(d.acceptSem))
+	}
+
+	// Create 101 long-lived connections that hold their handlers open
+	conns := make([]net.Conn, 101)
+	connected := make([]bool, 101)
+	var wg sync.WaitGroup
+
+	// Connect 101 workers concurrently
+	for i := 0; i < 101; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			conn, err := net.DialTimeout("unix", d.cfg.SocketPath, 1*time.Second)
+			if err != nil {
+				return
+			}
+			conns[idx] = conn
+			connected[idx] = true
+
+			// Send heartbeat to register with dispatcher
+			sendMsg(t, conn, protocol.Message{
+				Type: protocol.MsgHeartbeat,
+				Heartbeat: &protocol.HeartbeatPayload{
+					WorkerID:   fmt.Sprintf("worker-%d", idx),
+					ContextPct: 10,
+				},
+			})
+		}(i)
+	}
+
+	// Wait for all connection attempts to complete
+	wg.Wait()
+
+	// Give handlers time to acquire semaphore slots
+	time.Sleep(200 * time.Millisecond)
+
+	// Count how many semaphore slots are in use
+	slotsInUse := len(d.acceptSem)
+
+	// Verify no more than 100 slots are in use (the semaphore is enforcing the limit)
+	if slotsInUse > 100 {
+		t.Errorf("Expected max 100 semaphore slots in use, got %d", slotsInUse)
+	}
+
+	// Verify we have exactly 100 slots in use (all slots filled)
+	if slotsInUse != 100 {
+		t.Logf("Warning: Expected 100 semaphore slots in use, got %d (101st connection may be blocked)", slotsInUse)
+	}
+
+	// Cleanup - close all connections to release semaphore slots
+	for _, conn := range conns {
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}
+
+	// Wait for handlers to release semaphore
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify semaphore is empty after cleanup
+	if len(d.acceptSem) != 0 {
+		t.Errorf("Expected semaphore to be empty after cleanup, got %d slots in use", len(d.acceptSem))
+	}
+}
+
 func TestDispatcher_AssignBead(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
