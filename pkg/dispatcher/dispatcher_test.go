@@ -5408,3 +5408,148 @@ func TestTryAssign_NoBeadsReady(t *testing.T) {
 		}
 	})
 }
+
+// TestCheckHeartbeats_WorkerDisconnect verifies that when a worker's heartbeat
+// times out while it has an assigned bead, the dispatcher correctly:
+// 1. Removes the worker from the workers map
+// 2. Sends an escalation with EscWorkerCrash
+// 3. Clears all bead tracking entries
+// 4. Logs a heartbeat_timeout event
+// Edge: idle workers are exempt from heartbeat timeout.
+func TestCheckHeartbeats_WorkerDisconnect(t *testing.T) {
+	t.Run("busy worker with assigned bead times out", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+
+		// Create a pipe to simulate a worker connection.
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		// Directly inject a busy worker with an assigned bead into the map.
+		beadID := "bead-disconnect"
+		workerID := "w-disconnect"
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     server,
+			state:    protocol.WorkerBusy,
+			beadID:   beadID,
+			worktree: "/tmp/worktree-disconnect",
+			lastSeen: now,
+			encoder:  json.NewEncoder(server),
+		}
+		// Seed tracking maps so we can verify they get cleared.
+		d.attemptCounts[beadID] = 2
+		d.handoffCounts[beadID] = 1
+		d.rejectionCounts[beadID] = 1
+		d.mu.Unlock()
+
+		// Verify the worker is registered.
+		if d.ConnectedWorkers() != 1 {
+			t.Fatalf("expected 1 worker, got %d", d.ConnectedWorkers())
+		}
+
+		// Advance time past HeartbeatTimeout (configured as 500ms in newTestDispatcher).
+		d.nowFunc = func() time.Time { return now.Add(600 * time.Millisecond) }
+
+		// Trigger heartbeat check.
+		d.checkHeartbeats(context.Background())
+
+		// Assert: worker deleted from map.
+		if d.ConnectedWorkers() != 0 {
+			t.Fatalf("expected 0 workers after heartbeat timeout, got %d", d.ConnectedWorkers())
+		}
+		_, _, ok := d.WorkerInfo(workerID)
+		if ok {
+			t.Fatal("expected worker to be removed from map")
+		}
+
+		// Assert: escalation sent with EscWorkerCrash.
+		msgs := esc.Messages()
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 escalation message, got %d", len(msgs))
+		}
+		if !strings.Contains(msgs[0], string(protocol.EscWorkerCrash)) {
+			t.Errorf("expected escalation to contain %q, got %q", protocol.EscWorkerCrash, msgs[0])
+		}
+		if !strings.Contains(msgs[0], beadID) {
+			t.Errorf("expected escalation to mention bead %q, got %q", beadID, msgs[0])
+		}
+
+		// Assert: bead tracking cleared.
+		d.mu.Lock()
+		_, hasAttempt := d.attemptCounts[beadID]
+		_, hasHandoff := d.handoffCounts[beadID]
+		_, hasRejection := d.rejectionCounts[beadID]
+		d.mu.Unlock()
+		if hasAttempt {
+			t.Error("expected attemptCounts to be cleared for bead")
+		}
+		if hasHandoff {
+			t.Error("expected handoffCounts to be cleared for bead")
+		}
+		if hasRejection {
+			t.Error("expected rejectionCounts to be cleared for bead")
+		}
+
+		// Assert: heartbeat_timeout event logged.
+		count := eventCount(t, d.db, "heartbeat_timeout")
+		if count != 1 {
+			t.Fatalf("expected 1 heartbeat_timeout event, got %d", count)
+		}
+	})
+
+	t.Run("idle worker is exempt from heartbeat timeout", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		workerID := "w-idle"
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     server,
+			state:    protocol.WorkerIdle,
+			lastSeen: now,
+			encoder:  json.NewEncoder(server),
+		}
+		d.mu.Unlock()
+
+		// Advance time well past HeartbeatTimeout.
+		d.nowFunc = func() time.Time { return now.Add(10 * time.Second) }
+
+		// Trigger heartbeat check.
+		d.checkHeartbeats(context.Background())
+
+		// Assert: idle worker NOT removed.
+		if d.ConnectedWorkers() != 1 {
+			t.Fatalf("expected idle worker to survive heartbeat check, got %d workers", d.ConnectedWorkers())
+		}
+		st, _, ok := d.WorkerInfo(workerID)
+		if !ok {
+			t.Fatal("expected idle worker to still be in map")
+		}
+		if st != protocol.WorkerIdle {
+			t.Fatalf("expected worker state idle, got %s", st)
+		}
+
+		// Assert: no escalations.
+		if len(esc.Messages()) != 0 {
+			t.Errorf("expected no escalation for idle worker, got %d", len(esc.Messages()))
+		}
+
+		// Assert: no heartbeat_timeout events.
+		count := eventCount(t, d.db, "heartbeat_timeout")
+		if count != 0 {
+			t.Errorf("expected 0 heartbeat_timeout events for idle worker, got %d", count)
+		}
+	})
+}
