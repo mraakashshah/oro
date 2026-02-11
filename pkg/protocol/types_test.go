@@ -18,34 +18,29 @@ func TestBeadResolveModel(t *testing.T) {
 			expected: "custom-model",
 		},
 		{
-			name:     "epic type routes to Opus",
-			bead:     protocol.Bead{Type: "epic"},
-			expected: protocol.ModelOpus,
+			name:     "EstimatedMinutes=3 routes to Haiku",
+			bead:     protocol.Bead{EstimatedMinutes: 3},
+			expected: protocol.ModelHaiku,
 		},
 		{
-			name:     "feature type routes to Opus",
-			bead:     protocol.Bead{Type: "feature"},
-			expected: protocol.ModelOpus,
+			name:     "EstimatedMinutes=5 routes to Haiku",
+			bead:     protocol.Bead{EstimatedMinutes: 5},
+			expected: protocol.ModelHaiku,
 		},
 		{
-			name:     "task type routes to Sonnet",
-			bead:     protocol.Bead{Type: "task"},
+			name:     "EstimatedMinutes=6 routes to Sonnet",
+			bead:     protocol.Bead{EstimatedMinutes: 6},
 			expected: protocol.ModelSonnet,
 		},
 		{
-			name:     "bug type routes to Sonnet",
-			bead:     protocol.Bead{Type: "bug"},
+			name:     "EstimatedMinutes=0 (unset) routes to Sonnet",
+			bead:     protocol.Bead{EstimatedMinutes: 0},
 			expected: protocol.ModelSonnet,
 		},
 		{
-			name:     "unknown type uses default",
-			bead:     protocol.Bead{Type: "unknown"},
-			expected: protocol.DefaultModel,
-		},
-		{
-			name:     "empty type uses default",
+			name:     "no fields set routes to Sonnet",
 			bead:     protocol.Bead{},
-			expected: protocol.DefaultModel,
+			expected: protocol.ModelSonnet,
 		},
 	}
 
@@ -99,6 +94,49 @@ func TestFormatEscalation(t *testing.T) {
 			got := protocol.FormatEscalation(tt.typ, tt.beadID, tt.summary, tt.details)
 			if got != tt.expected {
 				t.Errorf("protocol.FormatEscalation() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCountReadFiles(t *testing.T) {
+	tests := []struct {
+		name       string
+		acceptance string
+		expected   int
+	}{
+		{
+			name:       "empty string",
+			acceptance: "",
+			expected:   0,
+		},
+		{
+			name:       "single Read: line",
+			acceptance: "Read: foo.go",
+			expected:   1,
+		},
+		{
+			name:       "multi-line with 3 Read: lines",
+			acceptance: "Read: foo.go\nRead: bar.go\nCheck tests pass\nRead: baz.go",
+			expected:   3,
+		},
+		{
+			name:       "Read: without prefix space still counts",
+			acceptance: "Read:foo.go",
+			expected:   1,
+		},
+		{
+			name:       "lines that don't start with Read:",
+			acceptance: "Check tests pass\nVerify build\nDeploy to staging",
+			expected:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := protocol.CountReadFiles(tt.acceptance)
+			if got != tt.expected {
+				t.Errorf("CountReadFiles() = %d, want %d", got, tt.expected)
 			}
 		})
 	}

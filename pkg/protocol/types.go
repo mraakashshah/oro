@@ -1,15 +1,20 @@
 package protocol
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Bead represents a ready work item from the bead source.
 type Bead struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Priority int    `json:"priority"`
-	Epic     string `json:"epic,omitempty"`       // parent epic ID for focus filtering
-	Type     string `json:"issue_type,omitempty"` // task, bug, feature, epic
-	Model    string `json:"model,omitempty"`      // claude model override; empty = auto-route by Type
+	ID                 string `json:"id"`
+	Title              string `json:"title"`
+	Priority           int    `json:"priority"`
+	Epic               string `json:"epic,omitempty"`                // parent epic ID for focus filtering
+	Type               string `json:"issue_type,omitempty"`          // task, bug, feature, epic
+	Model              string `json:"model,omitempty"`               // claude model override; empty = auto-route by estimate
+	EstimatedMinutes   int    `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
+	AcceptanceCriteria string `json:"acceptance_criteria,omitempty"` // acceptance criteria text
 }
 
 // BeadDetail holds extended information about a single bead.
@@ -24,28 +29,25 @@ type BeadDetail struct {
 const (
 	ModelOpus   = "claude-opus-4-6"
 	ModelSonnet = "claude-sonnet-4-5-20250929"
+	ModelHaiku  = "claude-haiku-4-5-20251001"
 )
 
-// DefaultModel is used when a bead has no explicit model set and no type-based
-// routing applies. Kept as ModelOpus for backward compatibility.
-const DefaultModel = ModelOpus
+// DefaultModel is used when a bead has no explicit model set and estimate-based
+// routing does not apply.
+const DefaultModel = ModelSonnet
 
 // ResolveModel returns the model to use for this bead. Priority:
 //  1. Explicit Model field (bead-level override)
-//  2. Type-based routing: epic/feature -> Opus, task/bug -> Sonnet
-//  3. DefaultModel (Opus) as fallback
+//  2. Estimate-based routing: <=5 min -> Haiku, >5 min -> Sonnet
+//  3. DefaultModel (Sonnet) as fallback
 func (b Bead) ResolveModel() string {
 	if b.Model != "" {
 		return b.Model
 	}
-	switch b.Type {
-	case "epic", "feature":
-		return ModelOpus
-	case "task", "bug":
-		return ModelSonnet
-	default:
-		return DefaultModel
+	if b.EstimatedMinutes > 0 && b.EstimatedMinutes <= 5 {
+		return ModelHaiku
 	}
+	return ModelSonnet
 }
 
 // WorkerState represents the state of a connected worker.
@@ -83,4 +85,15 @@ func FormatEscalation(typ EscalationType, beadID, summary, details string) strin
 		return fmt.Sprintf("[ORO-DISPATCH] %s: %s — %s. %s.", typ, beadID, summary, details)
 	}
 	return fmt.Sprintf("[ORO-DISPATCH] %s: %s — %s.", typ, beadID, summary)
+}
+
+// CountReadFiles counts lines starting with "Read:" in the acceptance criteria string.
+func CountReadFiles(acceptance string) int {
+	count := 0
+	for _, line := range strings.Split(acceptance, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Read:") {
+			count++
+		}
+	}
+	return count
 }

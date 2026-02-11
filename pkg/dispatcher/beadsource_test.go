@@ -371,8 +371,11 @@ func TestModelConstants(t *testing.T) {
 	if protocol.ModelSonnet != "claude-sonnet-4-5-20250929" {
 		t.Errorf("protocol.ModelSonnet = %q, want %q", protocol.ModelSonnet, "claude-sonnet-4-5-20250929")
 	}
-	if protocol.DefaultModel != protocol.ModelOpus {
-		t.Errorf("protocol.DefaultModel = %q, want %q (same as protocol.ModelOpus)", protocol.DefaultModel, protocol.ModelOpus)
+	if protocol.ModelHaiku != "claude-haiku-4-5-20251001" {
+		t.Errorf("protocol.ModelHaiku = %q, want %q", protocol.ModelHaiku, "claude-haiku-4-5-20251001")
+	}
+	if protocol.DefaultModel != protocol.ModelSonnet {
+		t.Errorf("protocol.DefaultModel = %q, want %q (same as protocol.ModelSonnet)", protocol.DefaultModel, protocol.ModelSonnet)
 	}
 }
 
