@@ -354,7 +354,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	}
 	model := msg.Assign.Model
 	if model == "" {
-		model = "claude-opus-4-6"
+		model = protocol.DefaultModel
 	}
 	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
