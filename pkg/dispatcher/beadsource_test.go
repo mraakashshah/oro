@@ -412,6 +412,7 @@ func TestCLIBeadSource_Create(t *testing.T) {
 			t.Errorf("ID: got %q, want %q", id, "oro-abc")
 		}
 
+		// Verify correct command.
 		if len(runner.calls) != 1 {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
@@ -454,6 +455,7 @@ func TestCLIBeadSource_Create(t *testing.T) {
 			t.Errorf("ID: got %q, want %q", id, "oro-xyz")
 		}
 
+		// Verify --parent is NOT in args when parent is empty.
 		call := runner.calls[0]
 		for _, arg := range call.Args {
 			if strings.HasPrefix(arg, "--parent=") {

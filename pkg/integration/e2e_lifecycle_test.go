@@ -46,11 +46,11 @@ func (m *trackingBeadSource) Close(_ context.Context, id string, _ string) error
 	return nil
 }
 
-func (m *trackingBeadSource) Sync(_ context.Context) error { return nil }
-
 func (m *trackingBeadSource) Create(_ context.Context, _, _ string, _ int, _, _ string) (string, error) {
 	return "", nil
 }
+
+func (m *trackingBeadSource) Sync(_ context.Context) error { return nil }
 
 func (m *trackingBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
