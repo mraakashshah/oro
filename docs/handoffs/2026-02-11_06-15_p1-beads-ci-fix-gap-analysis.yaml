@@ -1,0 +1,160 @@
+---
+date: 2026-02-11
+status: partial
+---
+
+goal: >
+  Closed all 4 P1 beads (model routing), fixed CI (buildinfo rename),
+  closed 2 stale test beads, and performed full gap analysis of oro
+  vs architecture spec.
+
+now: >
+  Spec and beadcraft the 6 gaps between current implementation and the
+  full oro vision (architect/manager/dispatcher/workers). User wants
+  each gap specced one-by-one with beads created. The 6 gaps are:
+  1. Manager beacon + startup protocol
+  2. Architect beacon
+  3. Worker bead creation on failure
+  4. Dispatcher crash recovery
+  5. Memory consolidation automation
+  6. Code search integration
+
+test: go test -race -count=1 ./... && ./quality_gate.sh
+
+done_this_session:
+  - task: "fix(ci): rename internal/buildinfo to internal/appversion"
+    files: [internal/appversion/buildinfo.go, internal/appversion/buildinfo_test.go,
+            cmd/oro/root.go, Makefile]
+    details: >
+      golangci-lint v2.9.0 revive var-naming flags package names conflicting
+      with Go stdlib (debug/buildinfo). Renamed to appversion.
+
+  - task: "oro-or3: Add ModelHaiku, estimate-based routing, CountReadFiles"
+    files: [pkg/protocol/types.go, pkg/protocol/types_test.go,
+            pkg/dispatcher/beadsource_test.go]
+    details: >
+      Added ModelHaiku constant, EstimatedMinutes+AcceptanceCriteria fields
+      to Bead, changed DefaultModel to ModelSonnet, rewrote ResolveModel
+      for estimate-based routing (<=5min→haiku, else→sonnet), added
+      CountReadFiles helper.
+
+  - task: "oro-zzj: Update beadsource + dispatcher model routing tests"
+    files: [pkg/dispatcher/beadsource_test.go]
+    details: >
+      Rewrote TestBead_ResolveModel_ByType → ByEstimate, updated
+      DefaultModel assertions from Opus to Sonnet.
+
+  - task: "oro-bui: Worker fallback to protocol.DefaultModel"
+    files: [pkg/worker/worker.go]
+    details: Changed hardcoded "claude-opus-4-6" to protocol.DefaultModel.
+
+  - task: "oro-44u: QG retry escalation to opus with attempt reset"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go,
+            pkg/dispatcher/qg_retry_test.go, pkg/dispatcher/tracking_leak_test.go]
+    details: >
+      Added model escalation to opus in qgRetryWithReservation. If worker
+      not already opus, escalate + reset attemptCounts to 0 for fresh retries.
+
+  - task: "Closed stale beads oro-18s and oro-2im (tests already existed)"
+
+  - task: "Full gap analysis: oro vs architecture spec"
+    details: >
+      Read architecture spec, lifecycle doc, cmd_start.go, all role beacon
+      templates. Identified 6 gaps between current implementation and the
+      full 4-role vision.
+
+decisions:
+  - buildinfo_rename: >
+      Renamed internal/buildinfo → internal/appversion rather than adding
+      nolint or configuring revive exclusion. Cleaner than suppression.
+  - countreadfiles_testonly: >
+      Marked CountReadFiles as //oro:testonly since it's not yet wired
+      into production code. Will be used when worker uses acceptance
+      criteria for routing.
+
+findings:
+  - gap_analysis: >
+      The dispatcher/worker engine is 95% complete. The missing pieces
+      are the ROLE layer: architect beacon (9 sections), manager beacon
+      (12 sections), manager escalation handling, worker bead creation
+      on failure, dispatcher crash recovery, and automated memory
+      consolidation.
+  - beacons_are_nudges: >
+      oro start sends ArchitectNudge() and ManagerNudge() — described
+      as "short nudges (full role context injected by SessionStart hook)".
+      The full beacon templates exist in the architecture spec but are
+      not yet assembled by the Go binary or hooks.
+  - manager_one_way: >
+      Dispatcher sends [ORO-DISPATCH] escalations to manager tmux pane.
+      Manager has no structured prompt for handling them. The escalation
+      playbook exists in the spec but not in code.
+
+worked:
+  - parallel_agents: 3 agents (oro-or3 first, then oro-bui + oro-44u parallel)
+  - worktree_isolation: clean merges, no conflicts
+
+next:
+  - Spec gap 1 (manager beacon + startup protocol) and create beads
+  - Spec gap 2 (architect beacon) and create beads
+  - Spec gap 3 (worker bead creation on failure) and create beads
+  - Spec gap 4 (dispatcher crash recovery) and create beads
+  - Spec gap 5 (memory consolidation automation) and create beads
+  - Spec gap 6 (code search) — already has epic oro-w2u, may just need refresh
+
+files:
+  modified:
+    - internal/appversion/buildinfo.go
+    - internal/appversion/buildinfo_test.go
+    - cmd/oro/root.go
+    - Makefile
+    - pkg/protocol/types.go
+    - pkg/protocol/types_test.go
+    - pkg/dispatcher/beadsource_test.go
+    - pkg/worker/worker.go
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - pkg/dispatcher/qg_retry_test.go
+    - pkg/dispatcher/tracking_leak_test.go
+
+beads:
+  completed: [oro-or3, oro-zzj, oro-bui, oro-44u, oro-18s, oro-2im]
+  remaining: [spec+beadcraft for 6 vision gaps]
+
+key_context:
+  architecture_spec: docs/plans/2026-02-08-oro-architecture-spec.md
+  lifecycle_doc: docs/plans/2026-02-07-oro-lifecycle.md
+  beacon_templates: >
+    Architect (9 sections) and Manager (12 sections) beacon templates
+    are defined in the architecture spec. Worker prompt template (12
+    sections) also in spec. These are the authoritative reference for
+    what each role should receive on startup.
+  tmux_session: >
+    TmuxSession struct in cmd_start.go creates session with Create()
+    taking architectNudge and managerNudge strings. Beacons are "short
+    nudges" — full context expected from SessionStart hooks checking
+    ORO_ROLE env var.
+  six_gaps:
+    - name: Manager beacon + startup protocol
+      priority: P1
+      effort: 1-2 days
+      why: Without it no one starts the swarm or handles escalations
+    - name: Architect beacon
+      priority: P1
+      effort: 1 day
+      why: Human's Claude session doesn't know it's an architect
+    - name: Worker bead creation on failure
+      priority: P1
+      effort: 1 day
+      why: Stuck/oversized beads loop instead of decomposing
+    - name: Dispatcher crash recovery
+      priority: P2
+      effort: 1-2 days
+      why: Crash means manual intervention
+    - name: Memory consolidation automation
+      priority: P2
+      effort: half day
+      why: Memory grows unbounded
+    - name: Code search integration
+      priority: P3
+      effort: separate epic
+      why: Nice-to-have, not blocking
