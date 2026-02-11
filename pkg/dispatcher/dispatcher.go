@@ -183,6 +183,7 @@ type Dispatcher struct {
 	attemptCounts   map[string]int             // bead ID -> QG retry attempt count
 	pendingHandoffs map[string]*pendingHandoff // bead ID -> pending handoff info
 	qgStuckTracker  map[string]*qgHistory      // bead ID -> consecutive QG output hashes
+	escalatedBeads  map[string]bool            // bead ID -> true if PRIORITY_CONTENTION escalated
 
 	// beadsDir is the directory to watch for bead changes (defaults to protocol.BeadsDir)
 	beadsDir string
@@ -226,6 +227,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		attemptCounts:   make(map[string]int),
 		pendingHandoffs: make(map[string]*pendingHandoff),
 		qgStuckTracker:  make(map[string]*qgHistory),
+		escalatedBeads:  make(map[string]bool),
 		beadsDir:        protocol.BeadsDir,
 		nowFunc:         time.Now,
 		acceptSem:       make(chan struct{}, 100), // limit to 100 concurrent connection handlers
@@ -1109,7 +1111,7 @@ func (d *Dispatcher) clearHandoffCount(beadID string) {
 	d.mu.Unlock()
 }
 
-// clearBeadTracking removes all five tracking-map entries for a bead in a
+// clearBeadTracking removes all tracking-map entries for a bead in a
 // single lock acquisition. Call this on every terminal path (success,
 // escalation, heartbeat timeout) to prevent map entry leaks.
 func (d *Dispatcher) clearBeadTracking(beadID string) {
@@ -1119,6 +1121,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.rejectionCounts, beadID)
 	delete(d.pendingHandoffs, beadID)
 	delete(d.qgStuckTracker, beadID)
+	delete(d.escalatedBeads, beadID)
 	d.mu.Unlock()
 }
 
@@ -1164,6 +1167,11 @@ func (d *Dispatcher) pruneStaleTracking(ctx context.Context) {
 			orphanedBeads[beadID] = true
 		}
 	}
+	for beadID := range d.escalatedBeads {
+		if !activeBeads[beadID] {
+			orphanedBeads[beadID] = true
+		}
+	}
 
 	// Delete all orphaned entries.
 	for beadID := range orphanedBeads {
@@ -1172,6 +1180,7 @@ func (d *Dispatcher) pruneStaleTracking(ctx context.Context) {
 		delete(d.rejectionCounts, beadID)
 		delete(d.pendingHandoffs, beadID)
 		delete(d.qgStuckTracker, beadID)
+		delete(d.escalatedBeads, beadID)
 	}
 
 	d.mu.Unlock()
@@ -1429,19 +1438,17 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
-	// Find idle workers.
+	// Find idle workers and count total workers.
 	d.mu.Lock()
 	var idle []*trackedWorker
+	totalWorkers := 0
 	for _, w := range d.workers {
+		totalWorkers++
 		if w.state == protocol.WorkerIdle {
 			idle = append(idle, w)
 		}
 	}
 	d.mu.Unlock()
-
-	if len(idle) == 0 {
-		return
-	}
 
 	// Poll for ready beads.
 	allBeads, err := d.beads.Ready(ctx)
@@ -1473,6 +1480,32 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return beads[i].Priority < beads[j].Priority
 	})
 
+	// Check for P0 beads when all workers are busy (priority contention).
+	if len(idle) == 0 && totalWorkers > 0 {
+		for _, bead := range beads {
+			if bead.Priority != 0 {
+				continue
+			}
+			d.mu.Lock()
+			alreadyEscalated := d.escalatedBeads[bead.ID]
+			if !alreadyEscalated {
+				d.escalatedBeads[bead.ID] = true
+			}
+			d.mu.Unlock()
+
+			if !alreadyEscalated {
+				msg := protocol.FormatEscalation(protocol.EscPriorityContention,
+					bead.ID,
+					fmt.Sprintf("P0 bead queued but all %d workers busy", totalWorkers),
+					"")
+				d.escalate(ctx, msg, bead.ID, "")
+				_ = d.logEvent(ctx, "priority_contention", "dispatcher", bead.ID, "",
+					fmt.Sprintf(`{"total_workers":%d}`, totalWorkers))
+			}
+		}
+		return
+	}
+
 	// Assign beads to idle workers (1:1).
 	for i, bead := range beads {
 		if i >= len(idle) {
@@ -1492,6 +1525,11 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			fmt.Sprintf(`{"error":%q}`, err.Error()))
 		return
 	}
+
+	// Clear priority contention escalation flag when bead is assigned.
+	d.mu.Lock()
+	delete(d.escalatedBeads, bead.ID)
+	d.mu.Unlock()
 
 	worktree, branch, err := d.worktrees.Create(ctx, bead.ID)
 	if err != nil {

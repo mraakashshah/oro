@@ -5165,3 +5165,125 @@ func TestShutdownHardTimeout(t *testing.T) {
 		t.Fatalf("Run() did not return within %v (likely hanging in shutdownSequence)", maxWait)
 	}
 }
+
+// TestPriorityContention verifies that when all workers are busy and a P0 bead
+// is queued, the dispatcher triggers an EscPriorityContention escalation exactly once.
+func TestPriorityContention(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Start the dispatcher
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Connect one worker
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "worker-1",
+			ContextPct: 10,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Assign a P1 bead to make the worker busy
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-p1", Title: "P1 Task", Priority: 1},
+	})
+
+	// Wait for the P1 assignment
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN for P1 bead")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "bead-p1" {
+		t.Fatalf("expected bead-p1, got %s", msg.Assign.BeadID)
+	}
+
+	// Verify worker is busy
+	waitForWorkerState(t, d, "worker-1", protocol.WorkerBusy, 1*time.Second)
+
+	// Now add a P0 bead — all workers are busy, should trigger escalation
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-p1", Title: "P1 Task", Priority: 1}, // still in queue (worker busy)
+		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
+	})
+
+	// Wait for escalation to fire (dispatcher polls every 50ms)
+	waitFor(t, func() bool {
+		messages := esc.Messages()
+		return len(messages) > 0
+	}, 2*time.Second)
+
+	// Verify escalation message content
+	messages := esc.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("expected exactly 1 escalation, got %d: %v", len(messages), messages)
+	}
+
+	msg0 := messages[0]
+	if !strings.Contains(msg0, "PRIORITY_CONTENTION") {
+		t.Errorf("escalation should contain PRIORITY_CONTENTION, got: %s", msg0)
+	}
+	if !strings.Contains(msg0, "bead-p0") {
+		t.Errorf("escalation should contain bead-p0, got: %s", msg0)
+	}
+	if !strings.Contains(msg0, "all 1 workers busy") {
+		t.Errorf("escalation should contain 'all 1 workers busy', got: %s", msg0)
+	}
+
+	// Wait for a few more poll cycles (at least 200ms = 4 cycles at 50ms)
+	time.Sleep(250 * time.Millisecond)
+
+	// Verify no duplicate escalations occurred
+	messages = esc.Messages()
+	if len(messages) != 1 {
+		t.Errorf("expected no duplicate escalations, but got %d total: %v", len(messages), messages)
+	}
+
+	// Verify the escalation tracking flag is set
+	d.mu.Lock()
+	escalated := d.escalatedBeads["bead-p0"]
+	d.mu.Unlock()
+	if !escalated {
+		t.Error("expected escalatedBeads flag to be set for bead-p0")
+	}
+
+	// Now free up the worker and verify the P0 gets assigned (and flag cleared)
+	// Send DONE for the P1 bead
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			WorkerID:          "worker-1",
+			BeadID:            "bead-p1",
+			QualityGatePassed: true,
+		},
+	})
+
+	// Worker should go back to idle
+	waitForWorkerState(t, d, "worker-1", protocol.WorkerIdle, 1*time.Second)
+
+	// Wait for P0 assignment (dispatcher polls every 50ms)
+	msg, ok = readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN for P0 bead after worker became idle")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "bead-p0" {
+		t.Fatalf("expected bead-p0 to be assigned, got %s", msg.Assign.BeadID)
+	}
+
+	// Verify the escalation flag was cleared on assignment
+	d.mu.Lock()
+	escalated = d.escalatedBeads["bead-p0"]
+	d.mu.Unlock()
+	if escalated {
+		t.Error("expected escalatedBeads flag to be cleared for bead-p0 after assignment")
+	}
+}
