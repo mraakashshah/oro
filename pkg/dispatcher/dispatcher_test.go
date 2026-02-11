@@ -164,14 +164,14 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 	return "", "", nil
 }
 
-// mockSubprocessSpawner for ops.Spawner
-type mockSubprocessSpawner struct {
+// mockBatchSpawner for ops.Spawner
+type mockBatchSpawner struct {
 	mu       sync.Mutex
 	verdict  string
 	spawnErr error
 }
 
-func (m *mockSubprocessSpawner) Spawn(_ context.Context, _ string, _ string, _ string) (ops.Process, error) {
+func (m *mockBatchSpawner) Spawn(_ context.Context, _ string, _ string, _ string) (ops.Process, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.spawnErr != nil {
@@ -334,14 +334,14 @@ func newTestDB(t *testing.T) *sql.DB {
 
 // newTestDispatcher creates a Dispatcher with mocks and an in-memory DB.
 // It returns the dispatcher and all mocks for assertions.
-func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktreeManager, *mockEscalator, *mockGitRunner, *mockSubprocessSpawner) {
+func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktreeManager, *mockEscalator, *mockGitRunner, *mockBatchSpawner) {
 	t.Helper()
 	db := newTestDB(t)
 
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
 
-	spawnMock := &mockSubprocessSpawner{verdict: "APPROVED: looks good"}
+	spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
 	opsSpawner := ops.NewSpawner(spawnMock)
 
 	beadSrc := &mockBeadSource{
@@ -2540,12 +2540,12 @@ func (p *slowProcess) Kill() error {
 
 func (p *slowProcess) Output() (string, error) { return "APPROVED: ok", nil }
 
-type slowSubprocessSpawner struct {
+type slowBatchSpawner struct {
 	mu        sync.Mutex
 	processes []*slowProcess
 }
 
-func (s *slowSubprocessSpawner) Spawn(_ context.Context, _ string, _ string, _ string) (ops.Process, error) {
+func (s *slowBatchSpawner) Spawn(_ context.Context, _ string, _ string, _ string) (ops.Process, error) {
 	p := &slowProcess{waitCh: make(chan struct{})}
 	s.mu.Lock()
 	s.processes = append(s.processes, p)
@@ -2558,7 +2558,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
 
-	slowSpawner := &slowSubprocessSpawner{}
+	slowSpawner := &slowBatchSpawner{}
 	opsSpawner := ops.NewSpawner(slowSpawner)
 
 	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
@@ -2651,7 +2651,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
 
-	spawner := ops.NewSpawner(&mockSubprocessSpawner{})
+	spawner := ops.NewSpawner(&mockBatchSpawner{})
 	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
@@ -2740,7 +2740,7 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
 
-	spawner := ops.NewSpawner(&mockSubprocessSpawner{})
+	spawner := ops.NewSpawner(&mockBatchSpawner{})
 	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
@@ -3948,7 +3948,7 @@ func TestDispatcher_ScaleDirective_InvalidArgs(t *testing.T) {
 
 // helper: set up dispatcher with rejected reviewer, connect worker, assign bead, trigger review.
 // Returns the dispatcher, conn, escalator, and spawnMock for further assertions.
-func setupReviewRejection(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, *mockSubprocessSpawner) {
+func setupReviewRejection(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, *mockBatchSpawner) {
 	t.Helper()
 	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 	spawnMock.mu.Lock()
@@ -4246,7 +4246,7 @@ func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
 // setupHandoffDiagnosis creates a dispatcher with a connected worker assigned to
 // a bead, ready for testing handoff-triggered diagnosis. Returns all pieces
 // needed to send multiple handoffs and verify diagnosis/escalation behavior.
-func setupHandoffDiagnosis(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, *mockSubprocessSpawner) {
+func setupHandoffDiagnosis(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, *mockBatchSpawner) {
 	t.Helper()
 	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 	pm := &mockProcessManager{}
@@ -4981,7 +4981,7 @@ func TestDispatcherBuffering(t *testing.T) {
 	esc := &mockEscalator{}
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
-	spawner := ops.NewSpawner(&mockSubprocessSpawner{verdict: "APPROVED"})
+	spawner := ops.NewSpawner(&mockBatchSpawner{verdict: "APPROVED"})
 
 	// Use short path for UDS — macOS limits to 108 chars.
 	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())

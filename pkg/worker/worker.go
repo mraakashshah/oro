@@ -21,9 +21,9 @@ import (
 	"oro/pkg/protocol"
 )
 
-// SubprocessSpawner abstracts claude -p invocation for testing.
+// StreamingSpawner abstracts claude -p invocation for testing.
 // Spawn returns the process, stdout reader, stdin writer (both may be nil), and any error.
-type SubprocessSpawner interface {
+type StreamingSpawner interface {
 	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, error)
 }
 
@@ -86,7 +86,7 @@ type Worker struct {
 	model               string
 	compacted           bool
 	mu                  sync.Mutex
-	spawner             SubprocessSpawner
+	spawner             StreamingSpawner
 	socketPath          string // for reconnection
 	buffer              *MessageBuffer
 	disconnected        bool
@@ -104,7 +104,7 @@ type Worker struct {
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
-func New(id, socketPath string, spawner SubprocessSpawner) (*Worker, error) {
+func New(id, socketPath string, spawner StreamingSpawner) (*Worker, error) {
 	conn, err := net.Dial("unix", socketPath) //nolint:noctx // UDS connect is instant, no context needed
 	if err != nil {
 		return nil, fmt.Errorf("connect to dispatcher: %w", err)
@@ -123,7 +123,7 @@ func New(id, socketPath string, spawner SubprocessSpawner) (*Worker, error) {
 // NewWithConn creates a Worker with a pre-established connection (for testing).
 //
 //oro:testonly
-func NewWithConn(id string, conn net.Conn, spawner SubprocessSpawner) *Worker {
+func NewWithConn(id string, conn net.Conn, spawner StreamingSpawner) *Worker {
 	return &Worker{
 		ID:                  id,
 		conn:                conn,
@@ -942,7 +942,7 @@ func RunQualityGate(ctx context.Context, worktree string) (passed bool, output s
 	return true, output, nil
 }
 
-// ClaudeSpawner is the production SubprocessSpawner that invokes `claude -p`.
+// ClaudeSpawner is the production StreamingSpawner that invokes `claude -p`.
 type ClaudeSpawner struct{}
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.

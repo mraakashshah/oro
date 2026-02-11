@@ -138,7 +138,7 @@ func (p *mockWorkerProcess) Kill() error {
 	return nil
 }
 
-// mockWorkerSpawner implements worker.SubprocessSpawner for testing.
+// mockWorkerSpawner implements worker.StreamingSpawner for testing.
 type mockWorkerSpawner struct {
 	mu      sync.Mutex
 	calls   []spawnCall

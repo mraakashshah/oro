@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// ClaudeOpsSpawner implements SubprocessSpawner using os/exec.
+// ClaudeOpsSpawner implements BatchSpawner using os/exec.
 type ClaudeOpsSpawner struct{}
 
 // Spawn starts a `claude -p` subprocess with the given model and prompt.

@@ -60,7 +60,7 @@ func (p *mockProcess) Killed() bool {
 	return p.killed
 }
 
-// mockSpawner implements worker.SubprocessSpawner for testing.
+// mockSpawner implements worker.StreamingSpawner for testing.
 type mockSpawner struct {
 	mu       sync.Mutex
 	calls    []spawnCall

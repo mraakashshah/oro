@@ -61,8 +61,8 @@ func (m *mockProcess) wasKilled() bool {
 	return m.killed
 }
 
-// mockSubprocessSpawner records spawn calls and returns preconfigured processes.
-type mockSubprocessSpawner struct {
+// mockBatchSpawner records spawn calls and returns preconfigured processes.
+type mockBatchSpawner struct {
 	mu      sync.Mutex
 	calls   []spawnCall
 	process Process
@@ -75,14 +75,14 @@ type spawnCall struct {
 	workdir string
 }
 
-func (m *mockSubprocessSpawner) Spawn(_ context.Context, model, prompt, workdir string) (Process, error) {
+func (m *mockBatchSpawner) Spawn(_ context.Context, model, prompt, workdir string) (Process, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, spawnCall{model: model, prompt: prompt, workdir: workdir})
 	return m.process, m.err
 }
 
-func (m *mockSubprocessSpawner) getCalls() []spawnCall {
+func (m *mockBatchSpawner) getCalls() []spawnCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]spawnCall, len(m.calls))
@@ -94,7 +94,7 @@ func (m *mockSubprocessSpawner) getCalls() []spawnCall {
 
 func TestReviewApproved(t *testing.T) {
 	proc := newReadyMockProcess("Looking at the code...\n\nAPPROVED\n\nAll criteria met.", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.Review(context.Background(), ReviewOpts{
@@ -120,7 +120,7 @@ func TestReviewApproved(t *testing.T) {
 
 func TestReviewRejected(t *testing.T) {
 	proc := newReadyMockProcess("Reviewing changes...\n\nREJECTED: missing error handling in parse function", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.Review(context.Background(), ReviewOpts{
@@ -143,7 +143,7 @@ func TestReviewRejected(t *testing.T) {
 
 func TestReviewUsesCorrectModel(t *testing.T) {
 	proc := newReadyMockProcess("APPROVED", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.Review(context.Background(), ReviewOpts{
@@ -163,7 +163,7 @@ func TestReviewUsesCorrectModel(t *testing.T) {
 
 func TestMergeResolved(t *testing.T) {
 	proc := newReadyMockProcess("Fixed conflicts in main.go\n\nRESOLVED\n\nMerge completed successfully.", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.ResolveMergeConflict(context.Background(), MergeOpts{
@@ -185,7 +185,7 @@ func TestMergeResolved(t *testing.T) {
 
 func TestMergeFailed(t *testing.T) {
 	proc := newReadyMockProcess("Cannot resolve conflicts automatically.\n\nFAILED\n\nSemantic conflict between features.", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.ResolveMergeConflict(context.Background(), MergeOpts{
@@ -201,7 +201,7 @@ func TestMergeFailed(t *testing.T) {
 
 func TestMergeUsesCorrectModel(t *testing.T) {
 	proc := newReadyMockProcess("RESOLVED", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.ResolveMergeConflict(context.Background(), MergeOpts{
@@ -223,7 +223,7 @@ func TestDiagnosisCapturesFeedback(t *testing.T) {
 	diagText := "Worker stuck because test suite has infinite loop in TestFoo. " +
 		"The loop at line 42 never terminates when input is empty."
 	proc := newReadyMockProcess(diagText, nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.Diagnose(context.Background(), DiagOpts{
@@ -246,7 +246,7 @@ func TestDiagnosisCapturesFeedback(t *testing.T) {
 
 func TestDiagnosisUsesCorrectModel(t *testing.T) {
 	proc := newReadyMockProcess("diagnosis here", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.Diagnose(context.Background(), DiagOpts{
@@ -287,7 +287,7 @@ func TestModelRouting(t *testing.T) {
 
 func TestCancelKillsActiveAgent(t *testing.T) {
 	proc := newMockProcess("", nil) // Will block on Wait until killed
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	_ = s.Review(context.Background(), ReviewOpts{
@@ -317,7 +317,7 @@ func TestCancelKillsActiveAgent(t *testing.T) {
 }
 
 func TestCancelUnknownTask(t *testing.T) {
-	s := NewSpawner(&mockSubprocessSpawner{})
+	s := NewSpawner(&mockBatchSpawner{})
 
 	err := s.Cancel("nonexistent")
 	if err == nil {
@@ -327,7 +327,7 @@ func TestCancelUnknownTask(t *testing.T) {
 
 func TestContextCancellationPropagates(t *testing.T) {
 	proc := newMockProcess("", nil) // blocks on Wait
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -353,7 +353,7 @@ func TestContextCancellationPropagates(t *testing.T) {
 }
 
 func TestSpawnError(t *testing.T) {
-	mock := &mockSubprocessSpawner{
+	mock := &mockBatchSpawner{
 		process: nil,
 		err:     errors.New("spawn failed"),
 	}
@@ -375,7 +375,7 @@ func TestSpawnError(t *testing.T) {
 
 func TestReviewPromptContainsCriteria(t *testing.T) {
 	proc := newReadyMockProcess("APPROVED", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.Review(context.Background(), ReviewOpts{
@@ -400,7 +400,7 @@ func TestReviewPromptContainsCriteria(t *testing.T) {
 
 func TestMergePromptContainsConflictFiles(t *testing.T) {
 	proc := newReadyMockProcess("RESOLVED", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.ResolveMergeConflict(context.Background(), MergeOpts{
@@ -419,7 +419,7 @@ func TestMergePromptContainsConflictFiles(t *testing.T) {
 
 func TestDiagnosisPromptContainsSymptom(t *testing.T) {
 	proc := newReadyMockProcess("diagnosis", nil)
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	ch := s.Diagnose(context.Background(), DiagOpts{
@@ -438,7 +438,7 @@ func TestDiagnosisPromptContainsSymptom(t *testing.T) {
 
 func TestActiveTracking(t *testing.T) {
 	proc := newMockProcess("", nil) // blocks on Wait
-	mock := &mockSubprocessSpawner{process: proc}
+	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
 	if len(s.Active()) != 0 {

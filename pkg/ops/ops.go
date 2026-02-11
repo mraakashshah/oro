@@ -22,8 +22,8 @@ type Process interface {
 	Output() (string, error) // read stdout after completion
 }
 
-// SubprocessSpawner creates new claude -p processes.
-type SubprocessSpawner interface {
+// BatchSpawner creates new claude -p processes.
+type BatchSpawner interface {
 	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, error)
 }
 
@@ -114,11 +114,11 @@ type DiagOpts struct {
 type Spawner struct {
 	mu      sync.Mutex
 	active  map[string]*Agent
-	spawner SubprocessSpawner
+	spawner BatchSpawner
 }
 
-// NewSpawner creates a Spawner backed by the given SubprocessSpawner.
-func NewSpawner(sp SubprocessSpawner) *Spawner {
+// NewSpawner creates a Spawner backed by the given BatchSpawner.
+func NewSpawner(sp BatchSpawner) *Spawner {
 	return &Spawner{
 		active:  make(map[string]*Agent),
 		spawner: sp,
