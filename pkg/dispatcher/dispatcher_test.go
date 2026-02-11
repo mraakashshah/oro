@@ -25,11 +25,19 @@ import (
 
 // --- Mock implementations ---
 
+type createCall struct {
+	title, beadType     string
+	priority            int
+	description, parent string
+}
+
 type mockBeadSource struct {
 	mu       sync.Mutex
 	beads    []protocol.Bead
 	shown    map[string]*protocol.BeadDetail
 	closed   []string
+	created  []createCall
+	createID string // ID returned by Create; defaults to "oro-new1"
 	synced   bool
 	readyErr error // if set, Ready() returns this error
 }
@@ -68,8 +76,15 @@ func (m *mockBeadSource) Sync(_ context.Context) error {
 	return nil
 }
 
-func (m *mockBeadSource) Create(_ context.Context, _, _ string, _ int, _, _ string) (string, error) {
-	return "", nil
+func (m *mockBeadSource) Create(_ context.Context, title, beadType string, priority int, description, parent string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.created = append(m.created, createCall{title, beadType, priority, description, parent})
+	id := "oro-new1"
+	if m.createID != "" {
+		id = m.createID
+	}
+	return id, nil
 }
 
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {

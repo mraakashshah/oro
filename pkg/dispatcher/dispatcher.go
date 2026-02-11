@@ -633,6 +633,18 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	if attempt >= maxQGRetries {
 		d.mu.Unlock()
 		d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
+
+		// Create a P0 bug bead so the failure is tracked as actionable work.
+		p0Title := fmt.Sprintf("P0: QG exhausted for %s", beadID)
+		p0Desc := fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput)
+		newID, createErr := d.beads.Create(ctx, p0Title, "bug", 0, p0Desc, beadID)
+		if createErr != nil {
+			_ = d.logEvent(ctx, "p0_bead_create_failed", workerID, beadID, workerID, createErr.Error())
+		} else {
+			_ = d.logEvent(ctx, "p0_bead_created", workerID, beadID, workerID,
+				fmt.Sprintf(`{"new_bead_id":%q}`, newID))
+		}
+
 		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
 			fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,

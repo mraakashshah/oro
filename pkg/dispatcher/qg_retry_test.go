@@ -533,3 +533,86 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 		}
 	}
 }
+
+// --- QG Exhaustion Creates P0 Bead (oro-2ir.2) ---
+
+func TestQGExhaustion_CreatesP0Bead(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	conn, scanner := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-p0", Title: "P0 creation test", Priority: 2, Type: "task"}})
+
+	// Drain initial ASSIGN.
+	readMsg(t, conn, 2*time.Second)
+
+	// Seed attemptCounts to maxQGRetries-1 so next failure triggers exhaustion.
+	d.mu.Lock()
+	d.attemptCounts["bead-p0"] = maxQGRetries - 1
+	d.mu.Unlock()
+
+	// Send QG failure with unique output.
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-p0",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+			QGOutput:          "FAIL: TestWidget — expected 42, got nil",
+		},
+	})
+
+	// Wait for processing.
+	time.Sleep(300 * time.Millisecond)
+
+	// Assert: escalation still happens.
+	msgs := esc.Messages()
+	foundEsc := false
+	for _, m := range msgs {
+		if strings.Contains(m, "bead-p0") && strings.Contains(m, "quality gate failed") {
+			foundEsc = true
+			break
+		}
+	}
+	if !foundEsc {
+		t.Fatalf("expected escalation for bead-p0, got: %v", msgs)
+	}
+
+	// Assert: BeadSource.Create was called with P0 priority and QG output in description.
+	beadSrc.mu.Lock()
+	created := beadSrc.created
+	beadSrc.mu.Unlock()
+
+	if len(created) == 0 {
+		t.Fatal("expected BeadSource.Create to be called on QG exhaustion, but it was not")
+	}
+	c := created[0]
+	if c.priority != 0 {
+		t.Fatalf("expected P0 priority, got %d", c.priority)
+	}
+	if c.beadType != "bug" {
+		t.Fatalf("expected type 'bug', got %q", c.beadType)
+	}
+	if !strings.Contains(c.description, "FAIL: TestWidget") {
+		t.Fatalf("expected QG output in description, got %q", c.description)
+	}
+	if c.parent != "bead-p0" {
+		t.Fatalf("expected parent 'bead-p0', got %q", c.parent)
+	}
+
+	// Assert: no ASSIGN sent (worker should NOT get re-assigned).
+	msg, ok := readMsgFromScanner(t, scanner, 300*time.Millisecond)
+	if ok && msg.Type == protocol.MsgAssign {
+		t.Fatal("expected no ASSIGN after QG exhaustion, but got one")
+	}
+}
