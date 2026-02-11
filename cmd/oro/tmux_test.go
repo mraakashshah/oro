@@ -223,15 +223,15 @@ func TestTmuxLayout(t *testing.T) {
 		stubCapturePaneReady(fake, "oro")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("architect beacon text", "manager beacon text")
+		err := sess.Create("architect nudge text", "manager nudge text")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
 		// Verify send-keys was called for both panes:
-		// - pane 0: export ORO_ROLE=architect && claude, then architect beacon
-		// - pane 1: export ORO_ROLE=manager && claude, then manager beacon
-		// That's 4 send-keys calls total (2 launch + 2 beacon injection).
+		// - pane 0: role env vars + claude, then architect nudge
+		// - pane 1: role env vars + claude, then manager nudge
+		// That's 4 send-keys calls total (2 launch + 2 nudge injection).
 		sendKeysCount := 0
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
@@ -239,17 +239,17 @@ func TestTmuxLayout(t *testing.T) {
 			}
 		}
 		if sendKeysCount < 4 {
-			t.Errorf("expected at least 4 send-keys calls (2 launch + 2 beacon), got %d", sendKeysCount)
+			t.Errorf("expected at least 4 send-keys calls (2 launch + 2 nudge), got %d", sendKeysCount)
 		}
 	})
 
-	t.Run("Create launches interactive claude with ORO_ROLE env var", func(t *testing.T) {
+	t.Run("Create launches interactive claude with role env vars", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("architect beacon", "manager beacon")
+		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -268,13 +268,15 @@ func TestTmuxLayout(t *testing.T) {
 			}
 		}
 
-		// Pane 0: first send-keys should launch claude with ORO_ROLE=architect
+		// Pane 0: first send-keys should launch claude with all role env vars
 		if len(pane0Calls) < 2 {
 			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
 		}
 		p0Launch := strings.Join(pane0Calls[0], " ")
-		if !strings.Contains(p0Launch, "ORO_ROLE=architect") {
-			t.Errorf("pane 0 launch should set ORO_ROLE=architect, got: %s", p0Launch)
+		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
+			if !strings.Contains(p0Launch, envVar) {
+				t.Errorf("pane 0 launch should set %s, got: %s", envVar, p0Launch)
+			}
 		}
 		if !strings.Contains(p0Launch, "claude") {
 			t.Errorf("pane 0 launch should run claude, got: %s", p0Launch)
@@ -284,13 +286,15 @@ func TestTmuxLayout(t *testing.T) {
 			t.Errorf("pane 0 should use interactive claude, not 'claude -p', got: %s", p0Launch)
 		}
 
-		// Pane 1: first send-keys should launch claude with ORO_ROLE=manager
+		// Pane 1: first send-keys should launch claude with all role env vars
 		if len(pane1Calls) < 2 {
 			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
 		}
 		p1Launch := strings.Join(pane1Calls[0], " ")
-		if !strings.Contains(p1Launch, "ORO_ROLE=manager") {
-			t.Errorf("pane 1 launch should set ORO_ROLE=manager, got: %s", p1Launch)
+		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
+			if !strings.Contains(p1Launch, envVar) {
+				t.Errorf("pane 1 launch should set %s, got: %s", envVar, p1Launch)
+			}
 		}
 		if !strings.Contains(p1Launch, "claude") {
 			t.Errorf("pane 1 launch should run claude, got: %s", p1Launch)
@@ -301,13 +305,13 @@ func TestTmuxLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("Create injects beacons via send-keys after claude launch", func(t *testing.T) {
+	t.Run("Create injects nudges via send-keys after claude launch", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("architect beacon text here", "manager beacon text here")
+		err := sess.Create("architect nudge text here", "manager nudge text here")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -326,22 +330,22 @@ func TestTmuxLayout(t *testing.T) {
 			}
 		}
 
-		// Pane 0: second send-keys should contain the architect beacon.
+		// Pane 0: second send-keys should contain the architect nudge.
 		if len(pane0Calls) < 2 {
 			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
 		}
-		p0Beacon := strings.Join(pane0Calls[1], " ")
-		if !strings.Contains(p0Beacon, "architect beacon text here") {
-			t.Errorf("pane 0 beacon injection should contain architect beacon, got: %s", p0Beacon)
+		p0Nudge := strings.Join(pane0Calls[1], " ")
+		if !strings.Contains(p0Nudge, "architect nudge text here") {
+			t.Errorf("pane 0 nudge injection should contain architect nudge, got: %s", p0Nudge)
 		}
 
-		// Pane 1: second send-keys should contain the manager beacon.
+		// Pane 1: second send-keys should contain the manager nudge.
 		if len(pane1Calls) < 2 {
 			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
 		}
-		p1Beacon := strings.Join(pane1Calls[1], " ")
-		if !strings.Contains(p1Beacon, "manager beacon text here") {
-			t.Errorf("pane 1 beacon injection should contain manager beacon, got: %s", p1Beacon)
+		p1Nudge := strings.Join(pane1Calls[1], " ")
+		if !strings.Contains(p1Nudge, "manager nudge text here") {
+			t.Errorf("pane 1 nudge injection should contain manager nudge, got: %s", p1Nudge)
 		}
 	})
 
@@ -630,9 +634,9 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		// After beacon injection, the manager pane will show "bd stats" activity.
+		// After nudge injection, the manager pane will show "bd stats" activity.
 		// We need sequential output: first calls return prompt (for PaneReady),
-		// then subsequent calls return beacon activity (for VerifyBeaconReceived).
+		// then subsequent calls return nudge activity (for VerifyBeaconReceived).
 		// Since stubCapturePaneReady uses output (not seqOut), and VerifyBeaconReceived
 		// also uses capture-pane on the same key, we use seqOut to handle both phases.
 		managerCaptureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
@@ -643,7 +647,7 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 		}
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
-		err := sess.Create("architect beacon", "manager beacon")
+		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -662,24 +666,57 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 		}
 	})
 
-	t.Run("Create does not fail when beacon verification times out (warning only)", func(t *testing.T) {
+	t.Run("Create does not fail when nudge verification times out (warning only)", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		// Manager pane never shows beacon activity after injection.
+		// Manager pane never shows nudge activity after injection.
 		managerCaptureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
 		delete(fake.output, managerCaptureKey)
 		fake.seqOut[managerCaptureKey] = []string{
-			readyPaneOutput,    // PaneReady poll succeeds
-			"no beacon output", // VerifyBeaconReceived polls — never shows indicator
+			readyPaneOutput,   // PaneReady poll succeeds
+			"no nudge output", // VerifyBeaconReceived polls — never shows indicator
 		}
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		// Create should succeed even if beacon verification fails — it's a warning
-		err := sess.Create("architect beacon", "manager beacon")
+		// Create should succeed even if nudge verification fails — it's a warning
+		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
-			t.Fatalf("Create should not fail on beacon verification timeout, got: %v", err)
+			t.Fatalf("Create should not fail on nudge verification timeout, got: %v", err)
+		}
+	})
+}
+
+func TestRoleEnvCmd(t *testing.T) {
+	t.Run("architect role sets all three env vars", func(t *testing.T) {
+		cmd := roleEnvCmd("architect")
+		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
+			if !strings.Contains(cmd, envVar) {
+				t.Errorf("expected roleEnvCmd to contain %s, got: %s", envVar, cmd)
+			}
+		}
+		if !strings.Contains(cmd, "&& claude") {
+			t.Errorf("expected roleEnvCmd to end with '&& claude', got: %s", cmd)
+		}
+	})
+
+	t.Run("manager role sets all three env vars", func(t *testing.T) {
+		cmd := roleEnvCmd("manager")
+		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
+			if !strings.Contains(cmd, envVar) {
+				t.Errorf("expected roleEnvCmd to contain %s, got: %s", envVar, cmd)
+			}
+		}
+		if !strings.Contains(cmd, "&& claude") {
+			t.Errorf("expected roleEnvCmd to end with '&& claude', got: %s", cmd)
+		}
+	})
+
+	t.Run("uses export for env vars", func(t *testing.T) {
+		cmd := roleEnvCmd("worker")
+		if !strings.Contains(cmd, "export") {
+			t.Errorf("expected roleEnvCmd to use export, got: %s", cmd)
 		}
 	})
 }

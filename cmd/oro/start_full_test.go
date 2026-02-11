@@ -110,7 +110,7 @@ func TestFullStart(t *testing.T) {
 			t.Fatal("expected tmux new-session to be called")
 		}
 
-		// 3. Verify both panes launch interactive claude with ORO_ROLE env var.
+		// 3. Verify both panes launch interactive claude with role env vars.
 		var pane0Calls, pane1Calls [][]string
 		for _, call := range fakeTmux.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
@@ -124,13 +124,15 @@ func TestFullStart(t *testing.T) {
 			}
 		}
 
-		// Architect pane (0): should have launch + beacon injection.
+		// Architect pane (0): should have launch + nudge injection.
 		if len(pane0Calls) < 2 {
 			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
 		}
 		p0Launch := strings.Join(pane0Calls[0], " ")
-		if !strings.Contains(p0Launch, "ORO_ROLE=architect") {
-			t.Errorf("pane 0 should set ORO_ROLE=architect, got: %s", p0Launch)
+		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
+			if !strings.Contains(p0Launch, envVar) {
+				t.Errorf("pane 0 should set %s, got: %s", envVar, p0Launch)
+			}
 		}
 		if !strings.Contains(p0Launch, "claude") {
 			t.Errorf("pane 0 should launch claude, got: %s", p0Launch)
@@ -138,19 +140,21 @@ func TestFullStart(t *testing.T) {
 		if strings.Contains(p0Launch, "claude -p") {
 			t.Errorf("pane 0 should use interactive claude, not 'claude -p', got: %s", p0Launch)
 		}
-		// Verify architect beacon is injected.
-		p0Beacon := strings.Join(pane0Calls[1], " ")
-		if !strings.Contains(p0Beacon, "oro architect") {
-			t.Errorf("pane 0 beacon should contain architect beacon content, got: %s", p0Beacon)
+		// Verify architect nudge is injected (short, not the full beacon).
+		p0Nudge := strings.Join(pane0Calls[1], " ")
+		if !strings.Contains(p0Nudge, "oro architect") {
+			t.Errorf("pane 0 nudge should contain 'oro architect', got: %s", p0Nudge)
 		}
 
-		// Manager pane (1): should have launch + beacon injection.
+		// Manager pane (1): should have launch + nudge injection.
 		if len(pane1Calls) < 2 {
 			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
 		}
 		p1Launch := strings.Join(pane1Calls[0], " ")
-		if !strings.Contains(p1Launch, "ORO_ROLE=manager") {
-			t.Errorf("pane 1 should set ORO_ROLE=manager, got: %s", p1Launch)
+		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
+			if !strings.Contains(p1Launch, envVar) {
+				t.Errorf("pane 1 should set %s, got: %s", envVar, p1Launch)
+			}
 		}
 		if !strings.Contains(p1Launch, "claude") {
 			t.Errorf("pane 1 should launch claude, got: %s", p1Launch)
@@ -158,10 +162,10 @@ func TestFullStart(t *testing.T) {
 		if strings.Contains(p1Launch, "claude -p") {
 			t.Errorf("pane 1 should use interactive claude, not 'claude -p', got: %s", p1Launch)
 		}
-		// Verify manager beacon is injected with real ManagerBeacon content.
-		p1Beacon := strings.Join(pane1Calls[1], " ")
-		if !strings.Contains(p1Beacon, "Oro Manager") {
-			t.Errorf("pane 1 beacon should contain 'Oro Manager' from ManagerBeacon(), got: %s", p1Beacon)
+		// Verify manager nudge is injected (short, not the full beacon).
+		p1Nudge := strings.Join(pane1Calls[1], " ")
+		if !strings.Contains(p1Nudge, "oro manager") {
+			t.Errorf("pane 1 nudge should contain 'oro manager', got: %s", p1Nudge)
 		}
 
 		// 5. Verify status output.
@@ -251,8 +255,8 @@ func TestFullStart(t *testing.T) {
 	})
 }
 
-func TestCreateWithManagerBeacon(t *testing.T) {
-	t.Run("injects both beacons via send-keys to respective panes", func(t *testing.T) {
+func TestCreateWithNudges(t *testing.T) {
+	t.Run("injects both nudges via send-keys to respective panes", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
@@ -277,22 +281,22 @@ func TestCreateWithManagerBeacon(t *testing.T) {
 			}
 		}
 
-		// Pane 0: beacon injection (second send-keys) should contain architect beacon.
+		// Pane 0: nudge injection (second send-keys) should contain architect nudge.
 		if len(pane0Calls) < 2 {
 			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
 		}
-		p0Beacon := strings.Join(pane0Calls[1], " ")
-		if !strings.Contains(p0Beacon, "You are a test architect.") {
-			t.Errorf("pane 0 beacon should contain architect text, got: %s", p0Beacon)
+		p0Nudge := strings.Join(pane0Calls[1], " ")
+		if !strings.Contains(p0Nudge, "You are a test architect.") {
+			t.Errorf("pane 0 nudge should contain architect text, got: %s", p0Nudge)
 		}
 
-		// Pane 1: beacon injection (second send-keys) should contain manager beacon.
+		// Pane 1: nudge injection (second send-keys) should contain manager nudge.
 		if len(pane1Calls) < 2 {
 			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
 		}
-		p1Beacon := strings.Join(pane1Calls[1], " ")
-		if !strings.Contains(p1Beacon, "You are a test manager.") {
-			t.Errorf("pane 1 beacon should contain manager text, got: %s", p1Beacon)
+		p1Nudge := strings.Join(pane1Calls[1], " ")
+		if !strings.Contains(p1Nudge, "You are a test manager.") {
+			t.Errorf("pane 1 nudge should contain manager text, got: %s", p1Nudge)
 		}
 	})
 
@@ -302,7 +306,7 @@ func TestCreateWithManagerBeacon(t *testing.T) {
 		stubCapturePaneReady(fake, "oro")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("architect prompt", "manager prompt")
+		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -314,6 +318,30 @@ func TestCreateWithManagerBeacon(t *testing.T) {
 					t.Errorf("no pane should use 'claude -p', got: %s", joined)
 				}
 			}
+		}
+	})
+
+	t.Run("nudges are short not full beacons", func(t *testing.T) {
+		// Verify that ArchitectNudge and ManagerNudge are significantly shorter
+		// than the full beacon content, confirming the Gastown pattern.
+		archNudge := ArchitectNudge()
+		archBeacon := ArchitectBeacon()
+		if len(archNudge) >= len(archBeacon) {
+			t.Errorf("ArchitectNudge (%d chars) should be much shorter than ArchitectBeacon (%d chars)",
+				len(archNudge), len(archBeacon))
+		}
+		if len(archNudge) > 500 {
+			t.Errorf("ArchitectNudge should be a short nudge (<500 chars), got %d chars", len(archNudge))
+		}
+
+		mgrNudge := ManagerNudge()
+		mgrBeacon := ManagerBeacon()
+		if len(mgrNudge) >= len(mgrBeacon) {
+			t.Errorf("ManagerNudge (%d chars) should be much shorter than ManagerBeacon (%d chars)",
+				len(mgrNudge), len(mgrBeacon))
+		}
+		if len(mgrNudge) > 500 {
+			t.Errorf("ManagerNudge should be a short nudge (<500 chars), got %d chars", len(mgrNudge))
 		}
 	})
 }

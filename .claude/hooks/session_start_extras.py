@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """SessionStart hook: surface stale beads, merged worktree cleanup, recent learnings.
 
+Also injects role-specific beacon context when ORO_ROLE is set (architect/manager).
+The full role prompt is loaded from .claude/hooks/beacons/{role}.md, so send-keys
+only needs to send a short nudge — the hook handles the heavy context injection.
+
 Companion to enforce-skills.sh. Outputs additionalContext on SessionStart.
 
 Pure functions for testability:
   - find_stale_beads(bd_output, days_threshold=3)
   - find_merged_worktrees(worktrees_dir, main_branch="main")
   - recent_learnings(knowledge_file, n=5)
+  - role_beacon(role, beacons_dir)
 """
 
 import contextlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -19,6 +25,7 @@ from pathlib import Path
 
 KNOWLEDGE_FILE = ".beads/memory/knowledge.jsonl"
 WORKTREES_DIR = ".worktrees"
+BEACONS_DIR = ".claude/hooks/beacons"
 
 _SUPERPOWERS = """\
 # Superpowers — How You Operate
@@ -54,6 +61,22 @@ You are an expert autonomous coding agent. These rules override defaults.
 - Amending commits instead of creating new ones
 - Using cd into worktrees
 """
+
+
+def role_beacon(role: str, beacons_dir: str = BEACONS_DIR) -> str:
+    """Load the beacon markdown for the given ORO_ROLE (architect/manager).
+
+    Returns the beacon content as a string, or empty string if the role is
+    unknown or the beacon file does not exist.
+    """
+    if not role:
+        return ""
+    beacon_file = Path(beacons_dir) / f"{role}.md"
+    try:
+        return beacon_file.read_text()
+    except OSError:
+        return ""
+
 
 # Pattern: ◐ oro-xyz [● P2] [feature] - Title
 _BEAD_LINE_RE = re.compile(r"^◐\s+([\w.-]+)\s+\[")
@@ -396,9 +419,15 @@ def main() -> None:
         handoff = latest_handoff(HANDOFFS_DIR)
         state = project_state()
 
-    # Always inject superpowers + project state + any findings
+    # 5. Role-specific beacon injection (ORO_ROLE env var set by oro start)
+    oro_role = os.environ.get("ORO_ROLE", "")
+    beacon = role_beacon(oro_role)
+
+    # Always inject superpowers + role beacon + project state + any findings
     situational = _format_output(stale, merged, learnings)
     parts = [_SUPERPOWERS]
+    if beacon:
+        parts.append(f"# Role Beacon ({oro_role})\n\n{beacon}")
     for section in (handoff, state, situational):
         if section:
             parts.append(section)
@@ -411,7 +440,7 @@ def main() -> None:
         }
     }
 
-    # 5. User-visible banner (only when priming)
+    # 6. User-visible banner (only when priming)
     if is_priming:
         closed = recently_closed_beads(limit=3)
         ready = ready_beads(limit=4)

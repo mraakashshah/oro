@@ -17,6 +17,7 @@ find_stale_beads = _mod.find_stale_beads
 find_merged_worktrees = _mod.find_merged_worktrees
 recent_learnings = _mod.recent_learnings
 session_banner = _mod.session_banner
+role_beacon = _mod.role_beacon
 
 
 # --- find_stale_beads ---
@@ -342,3 +343,53 @@ class TestSessionBanner:
         result = session_banner(closed, ready)
         assert result.count("✓") == 2
         assert result.count("→") == 2
+
+
+# --- role_beacon ---
+
+
+class TestRoleBeacon:
+    def test_empty_role_returns_empty(self):
+        assert role_beacon("") == ""
+
+    def test_none_role_returns_empty(self):
+        assert role_beacon("", beacons_dir="/nonexistent") == ""
+
+    def test_unknown_role_returns_empty(self, tmp_path):
+        beacons_dir = tmp_path / "beacons"
+        beacons_dir.mkdir()
+        assert role_beacon("unknown", beacons_dir=str(beacons_dir)) == ""
+
+    def test_architect_beacon_loaded(self, tmp_path):
+        beacons_dir = tmp_path / "beacons"
+        beacons_dir.mkdir()
+        (beacons_dir / "architect.md").write_text("## Role\nYou are the architect.")
+        result = role_beacon("architect", beacons_dir=str(beacons_dir))
+        assert "You are the architect" in result
+        assert "## Role" in result
+
+    def test_manager_beacon_loaded(self, tmp_path):
+        beacons_dir = tmp_path / "beacons"
+        beacons_dir.mkdir()
+        (beacons_dir / "manager.md").write_text("# Manager\nYou coordinate work.")
+        result = role_beacon("manager", beacons_dir=str(beacons_dir))
+        assert "You coordinate work" in result
+
+    def test_missing_beacons_dir_returns_empty(self):
+        result = role_beacon("architect", beacons_dir="/nonexistent/path/beacons")
+        assert result == ""
+
+    def test_real_beacon_files_exist(self):
+        """Verify the actual beacon files shipped with the repo are loadable."""
+        repo_root = Path(__file__).resolve().parent.parent
+        beacons_dir = repo_root / ".claude" / "hooks" / "beacons"
+
+        architect = role_beacon("architect", beacons_dir=str(beacons_dir))
+        assert len(architect) > 500, "architect beacon should be substantial"
+        assert "## Role" in architect
+        assert "architect" in architect.lower()
+
+        manager = role_beacon("manager", beacons_dir=str(beacons_dir))
+        assert len(manager) > 500, "manager beacon should be substantial"
+        assert "## Role" in manager
+        assert "manager" in manager.lower()

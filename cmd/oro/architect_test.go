@@ -63,6 +63,50 @@ func TestArchitectBeacon_KeyTerms(t *testing.T) {
 	}
 }
 
+func TestArchitectNudge(t *testing.T) {
+	nudge := ArchitectNudge()
+
+	t.Run("returns non-empty string", func(t *testing.T) {
+		if nudge == "" {
+			t.Fatal("expected ArchitectNudge() to return non-empty string")
+		}
+	})
+
+	t.Run("is short (under 500 chars)", func(t *testing.T) {
+		if len(nudge) > 500 {
+			t.Errorf("expected ArchitectNudge() to be short (<500 chars), got %d chars", len(nudge))
+		}
+	})
+
+	t.Run("identifies the role", func(t *testing.T) {
+		if !strings.Contains(nudge, "architect") {
+			t.Error("expected ArchitectNudge() to mention 'architect'")
+		}
+	})
+
+	t.Run("mentions SessionStart hook", func(t *testing.T) {
+		if !strings.Contains(nudge, "SessionStart") {
+			t.Error("expected ArchitectNudge() to mention 'SessionStart' hook")
+		}
+	})
+
+	t.Run("suggests orientation commands", func(t *testing.T) {
+		if !strings.Contains(nudge, "bd stats") {
+			t.Error("expected ArchitectNudge() to suggest 'bd stats'")
+		}
+		if !strings.Contains(nudge, "bd ready") {
+			t.Error("expected ArchitectNudge() to suggest 'bd ready'")
+		}
+	})
+
+	t.Run("is much shorter than full beacon", func(t *testing.T) {
+		beacon := ArchitectBeacon()
+		if len(nudge) >= len(beacon)/2 {
+			t.Errorf("nudge (%d chars) should be much shorter than beacon (%d chars)", len(nudge), len(beacon))
+		}
+	})
+}
+
 func TestArchitectBeacon_ArchitectConstraints(t *testing.T) {
 	beacon := ArchitectBeacon()
 

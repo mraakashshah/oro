@@ -179,3 +179,50 @@ func TestManagerBeacon(t *testing.T) {
 		}
 	})
 }
+
+func TestManagerNudge(t *testing.T) {
+	nudge := ManagerNudge()
+
+	t.Run("returns non-empty string", func(t *testing.T) {
+		if nudge == "" {
+			t.Fatal("expected ManagerNudge() to return non-empty string")
+		}
+	})
+
+	t.Run("is short (under 500 chars)", func(t *testing.T) {
+		if len(nudge) > 500 {
+			t.Errorf("expected ManagerNudge() to be short (<500 chars), got %d chars", len(nudge))
+		}
+	})
+
+	t.Run("identifies the role", func(t *testing.T) {
+		if !strings.Contains(nudge, "manager") {
+			t.Error("expected ManagerNudge() to mention 'manager'")
+		}
+	})
+
+	t.Run("mentions SessionStart hook", func(t *testing.T) {
+		if !strings.Contains(nudge, "SessionStart") {
+			t.Error("expected ManagerNudge() to mention 'SessionStart' hook")
+		}
+	})
+
+	t.Run("suggests orientation commands", func(t *testing.T) {
+		if !strings.Contains(nudge, "bd stats") {
+			t.Error("expected ManagerNudge() to suggest 'bd stats'")
+		}
+		if !strings.Contains(nudge, "bd ready") {
+			t.Error("expected ManagerNudge() to suggest 'bd ready'")
+		}
+		if !strings.Contains(nudge, "oro directive status") {
+			t.Error("expected ManagerNudge() to suggest 'oro directive status'")
+		}
+	})
+
+	t.Run("is much shorter than full beacon", func(t *testing.T) {
+		beacon := ManagerBeacon()
+		if len(nudge) >= len(beacon)/2 {
+			t.Errorf("nudge (%d chars) should be much shorter than beacon (%d chars)", len(nudge), len(beacon))
+		}
+	})
+}

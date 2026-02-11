@@ -53,11 +53,19 @@ func (s *TmuxSession) Exists() bool {
 	return err == nil
 }
 
+// roleEnvCmd builds a shell command that exports ORO_ROLE, BD_ACTOR, and
+// GIT_AUTHOR_NAME for the given role, then launches interactive claude.
+func roleEnvCmd(role string) string {
+	return fmt.Sprintf("export ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude", role, role, role)
+}
+
 // Create creates the Oro tmux session with two panes (architect + manager).
-// Both panes launch interactive claude (with ORO_ROLE set), then poll for
-// Claude readiness before injecting the role-specific beacon text via send-keys.
+// Both panes launch interactive claude with role env vars (ORO_ROLE, BD_ACTOR,
+// GIT_AUTHOR_NAME) set, then poll for Claude readiness before injecting a short
+// nudge via send-keys. The full role context is injected by the SessionStart hook
+// reading the ORO_ROLE env var — send-keys only sends a short nudge/kick.
 // If the session already exists, it is a no-op.
-func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
+func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	if s.Exists() {
 		return nil
 	}
@@ -72,14 +80,14 @@ func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
 		return fmt.Errorf("tmux split-window: %w", err)
 	}
 
-	// Launch interactive claude with ORO_ROLE=architect in pane 0.
-	architectCmd := "export ORO_ROLE=architect && claude"
+	// Launch interactive claude with role env vars in pane 0 (architect).
+	architectCmd := roleEnvCmd("architect")
 	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectCmd, "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys architect launch: %w", err)
 	}
 
-	// Launch interactive claude with ORO_ROLE=manager in pane 1.
-	managerCmd := "export ORO_ROLE=manager && claude"
+	// Launch interactive claude with role env vars in pane 1 (manager).
+	managerCmd := roleEnvCmd("manager")
 	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerCmd, "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys manager launch: %w", err)
 	}
@@ -94,24 +102,24 @@ func (s *TmuxSession) Create(architectBeacon, managerBeacon string) error {
 		return fmt.Errorf("wait for manager pane ready: %w", err)
 	}
 
-	// Inject architect beacon into pane 0.
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectBeacon, "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys architect beacon: %w", err)
+	// Inject short architect nudge into pane 0.
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectNudge, "Enter"); err != nil {
+		return fmt.Errorf("tmux send-keys architect nudge: %w", err)
 	}
 
-	// Inject manager beacon into pane 1.
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerBeacon, "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys manager beacon: %w", err)
+	// Inject short manager nudge into pane 1.
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerNudge, "Enter"); err != nil {
+		return fmt.Errorf("tmux send-keys manager nudge: %w", err)
 	}
 
-	// Verify manager received beacon (look for bd stats execution).
+	// Verify manager received nudge (look for bd stats execution).
 	beaconTimeout := s.BeaconTimeout
 	if beaconTimeout == 0 {
 		beaconTimeout = defaultBeaconTimeout
 	}
 	if err := s.VerifyBeaconReceived(s.Name+":0.1", "bd stats", beaconTimeout); err != nil {
 		// Warning only — don't fail startup.
-		fmt.Fprintf(os.Stderr, "warning: manager beacon may not have been received: %v\n", err)
+		fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
 	}
 
 	return nil

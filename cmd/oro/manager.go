@@ -149,6 +149,17 @@ When ending a session or when the human requests shutdown:
 `
 
 // ManagerBeacon returns the full 12-section manager beacon prompt string.
+// This is used by the SessionStart hook to inject role context when ORO_ROLE=manager.
 func ManagerBeacon() string {
 	return managerBeacon
+}
+
+// managerNudge is the short nudge sent via tmux send-keys to kick the manager
+// session into action. The full role context is injected by the SessionStart hook
+// based on the ORO_ROLE env var — this nudge just gets things moving.
+const managerNudge = `You are the oro manager. Your full role context has been injected via SessionStart hook. Run ` + "`bd stats`" + ` then ` + "`bd ready`" + ` to assess the backlog, then ` + "`oro directive status`" + ` to confirm the dispatcher is running.`
+
+// ManagerNudge returns the short nudge string for the manager session.
+func ManagerNudge() string {
+	return managerNudge
 }

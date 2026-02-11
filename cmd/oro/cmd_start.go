@@ -83,9 +83,9 @@ func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner,
 		return fmt.Errorf("send start directive: %w", err)
 	}
 
-	// 3. Create tmux session with both beacons (architect + manager).
+	// 3. Create tmux session with short nudges (full role context injected by SessionStart hook).
 	sess := &TmuxSession{Name: "oro", Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
-	if err := sess.Create(ArchitectBeacon(), ManagerBeacon()); err != nil {
+	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
 		return fmt.Errorf("create tmux session: %w", err)
 	}
 
