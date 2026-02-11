@@ -1,7 +1,6 @@
 ---
 name: work-bead
 description: Use when picking up a bead to execute end-to-end — from claim through worktree, TDD, merge to main, and cleanup
-disable-model-invocation: true
 ---
 
 # Work Bead

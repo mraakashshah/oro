@@ -1,7 +1,6 @@
 ---
 name: bead-craft
 description: Use when decomposing a spec, design, or feature description into a bead dependency graph with self-evaluating acceptance criteria
-disable-model-invocation: true
 ---
 
 # Bead Craft
