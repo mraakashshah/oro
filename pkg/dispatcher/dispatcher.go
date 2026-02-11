@@ -130,6 +130,7 @@ type WorkerState string
 const (
 	WorkerIdle         WorkerState = "idle"
 	WorkerBusy         WorkerState = "busy"
+	WorkerReserved     WorkerState = "reserved" // transient: I/O in progress, heartbeat checker must skip
 	WorkerReviewing    WorkerState = "reviewing"
 	WorkerShuttingDown WorkerState = "shutting_down" // transient: handoff SHUTDOWN sent, not yet disconnected
 )
@@ -425,7 +426,8 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 
 	if h != nil {
 		w := d.workers[id]
-		w.state = WorkerBusy
+		// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
+		w.state = WorkerReserved
 		w.beadID = h.beadID
 		w.worktree = h.worktree
 		w.model = h.model
@@ -443,13 +445,13 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		}
 
 		d.mu.Lock()
-		// Re-check: the worker may have been removed (e.g. by checkHeartbeats)
-		// while the lock was released for memory.ForPrompt.
+		// Phase 2: Verify reservation still valid, then transition to Busy.
 		w, ok := d.workers[id]
-		if !ok {
+		if !ok || w.state != WorkerReserved {
 			d.mu.Unlock()
 			return
 		}
+		w.state = WorkerBusy
 		_ = d.sendToWorker(w, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
@@ -576,9 +578,9 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	d.mu.Lock()
 	d.attemptCounts[beadID]++
 	attempt := d.attemptCounts[beadID]
-	d.mu.Unlock()
 
 	if attempt >= maxQGRetries {
+		d.mu.Unlock()
 		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
 			fmt.Sprintf(`{"attempts":%d}`, attempt))
 		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
@@ -587,37 +589,60 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		return
 	}
 
-	// Retrieve relevant memories for retry prompt (best-effort, before lock).
+	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
+	if w, ok := d.workers[workerID]; ok {
+		w.state = WorkerReserved
+	}
+	d.mu.Unlock()
+
+	d.qgRetryWithReservation(ctx, workerID, beadID, qgOutput, attempt)
+}
+
+// qgRetryWithReservation performs the I/O phase (memory retrieval) and
+// completes the two-phase reservation for a QG retry. The worker must already
+// be in WorkerReserved state before this is called.
+func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadID, qgOutput string, attempt int) {
+	// Retrieve relevant memories for retry prompt (best-effort, outside lock).
 	if d.testUnlockHook != nil {
 		d.testUnlockHook()
 	}
-	var memCtx string
-	if d.memories != nil {
-		searchTerm := beadID
-		if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && detail != nil && detail.Title != "" {
-			searchTerm = detail.Title
-		}
-		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, searchTerm, 0)
-	}
+	memCtx := d.fetchBeadMemories(ctx, beadID)
 
 	d.mu.Lock()
+	// Phase 2: Verify reservation still valid, then transition to Busy.
 	w, ok := d.workers[workerID]
-	if ok {
-		_ = d.sendToWorker(w, protocol.Message{
-			Type: protocol.MsgAssign,
-			Assign: &protocol.AssignPayload{
-				BeadID:        beadID,
-				Worktree:      w.worktree,
-				Model:         w.model,
-				Attempt:       attempt,
-				Feedback:      qgOutput,
-				MemoryContext: memCtx,
-			},
-		})
-		w.state = WorkerBusy
-		w.beadID = beadID
+	if !ok || w.state != WorkerReserved {
+		d.mu.Unlock()
+		return
 	}
+	_ = d.sendToWorker(w, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:        beadID,
+			Worktree:      w.worktree,
+			Model:         w.model,
+			Attempt:       attempt,
+			Feedback:      qgOutput,
+			MemoryContext: memCtx,
+		},
+	})
+	w.state = WorkerBusy
+	w.beadID = beadID
 	d.mu.Unlock()
+}
+
+// fetchBeadMemories retrieves relevant memories for a bead (best-effort).
+// Returns empty string if memories are unavailable.
+func (d *Dispatcher) fetchBeadMemories(ctx context.Context, beadID string) string {
+	if d.memories == nil {
+		return ""
+	}
+	searchTerm := beadID
+	if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && detail != nil && detail.Title != "" {
+		searchTerm = detail.Title
+	}
+	memCtx, _ := memory.ForPrompt(ctx, d.memories, nil, searchTerm, 0)
+	return memCtx
 }
 
 // mergeAndComplete runs merge.Coordinator.Merge and handles the result.
@@ -883,45 +908,58 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			}
 			d.mu.Unlock()
 		case ops.VerdictRejected:
-			_ = d.logEvent(ctx, "review_rejected", "ops", beadID, workerID, result.Feedback)
-
-			// Increment rejection counter.
-			d.mu.Lock()
-			d.rejectionCounts[beadID]++
-			count := d.rejectionCounts[beadID]
-			d.mu.Unlock()
-
-			if count > maxReviewRejections {
-				// Escalate to Manager after too many rejections.
-				_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
-					fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, result.Feedback))
-				_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
-					fmt.Sprintf("review rejected %d times", count), result.Feedback))
-				d.clearBeadTracking(beadID)
-				return
-			}
-
-			// Re-assign with reviewer feedback.
-			d.mu.Lock()
-			w, ok := d.workers[workerID]
-			if ok {
-				w.state = WorkerBusy
-				_ = d.sendToWorker(w, protocol.Message{
-					Type: protocol.MsgAssign,
-					Assign: &protocol.AssignPayload{
-						BeadID:   beadID,
-						Worktree: w.worktree,
-						Feedback: result.Feedback,
-					},
-				})
-			}
-			d.mu.Unlock()
+			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
 			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, result.Feedback)
 			_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID, "review failed", result.Feedback))
 			d.clearBeadTracking(beadID)
 		}
 	}
+}
+
+// handleReviewRejection processes a rejected review verdict: increments the
+// rejection counter, escalates if the cap is reached, or re-assigns the bead
+// to the worker with reviewer feedback using the two-phase reservation pattern.
+func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID, feedback string) {
+	_ = d.logEvent(ctx, "review_rejected", "ops", beadID, workerID, feedback)
+
+	// Increment rejection counter and reserve worker in a single lock.
+	d.mu.Lock()
+	d.rejectionCounts[beadID]++
+	count := d.rejectionCounts[beadID]
+
+	if count > maxReviewRejections {
+		d.mu.Unlock()
+		_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
+			fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, feedback))
+		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
+			fmt.Sprintf("review rejected %d times", count), feedback))
+		d.clearBeadTracking(beadID)
+		return
+	}
+
+	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
+	if w, wOK := d.workers[workerID]; wOK {
+		w.state = WorkerReserved
+	}
+	d.mu.Unlock()
+
+	// Re-assign with reviewer feedback.
+	d.mu.Lock()
+	// Phase 2: Verify reservation still valid, then transition to Busy.
+	w, ok := d.workers[workerID]
+	if ok && w.state == WorkerReserved {
+		w.state = WorkerBusy
+		_ = d.sendToWorker(w, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   beadID,
+				Worktree: w.worktree,
+				Feedback: feedback,
+			},
+		})
+	}
+	d.mu.Unlock()
 }
 
 // clearRejectionCount removes the rejection counter for a bead (e.g., on approval or completion).
@@ -1455,7 +1493,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	d.mu.Lock()
 	var dead []string
 	for id, w := range d.workers {
-		if w.state != WorkerIdle && now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
+		if w.state != WorkerIdle && w.state != WorkerReserved && now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
 			dead = append(dead, id)
 		}
 	}
