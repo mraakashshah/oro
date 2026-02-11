@@ -319,7 +319,7 @@ func TestBead_ResolveModel(t *testing.T) {
 		model string
 		want  string
 	}{
-		{"empty defaults to opus", "", protocol.DefaultModel},
+		{"empty defaults to sonnet", "", protocol.DefaultModel},
 		{"explicit sonnet", protocol.ModelSonnet, protocol.ModelSonnet},
 		{"explicit opus", protocol.ModelOpus, protocol.ModelOpus},
 	}
@@ -333,30 +333,26 @@ func TestBead_ResolveModel(t *testing.T) {
 	}
 }
 
-func TestBead_ResolveModel_ByType(t *testing.T) {
+func TestBead_ResolveModel_ByEstimate(t *testing.T) {
 	tests := []struct {
 		name     string
-		beadType string
+		estimate int
 		model    string
 		want     string
 	}{
-		// Explicit model always wins, regardless of type.
-		{"explicit model overrides type", "task", protocol.ModelOpus, protocol.ModelOpus},
-		{"explicit sonnet overrides epic", "epic", protocol.ModelSonnet, protocol.ModelSonnet},
+		// Explicit model always wins, regardless of estimate.
+		{"explicit model overrides estimate", 3, protocol.ModelOpus, protocol.ModelOpus},
+		{"explicit sonnet overrides short estimate", 2, protocol.ModelSonnet, protocol.ModelSonnet},
 
-		// Type-based routing when Model is empty.
-		{"epic routes to opus", "epic", "", protocol.ModelOpus},
-		{"feature routes to opus", "feature", "", protocol.ModelOpus},
-		{"task routes to sonnet", "task", "", protocol.ModelSonnet},
-		{"bug routes to sonnet", "bug", "", protocol.ModelSonnet},
-
-		// Unknown type defaults to opus.
-		{"unknown type defaults to opus", "unknown", "", protocol.ModelOpus},
-		{"empty type defaults to opus", "", "", protocol.ModelOpus},
+		// Estimate-based routing when Model is empty.
+		{"3min routes to haiku", 3, "", protocol.ModelHaiku},
+		{"5min routes to haiku", 5, "", protocol.ModelHaiku},
+		{"6min routes to sonnet", 6, "", protocol.ModelSonnet},
+		{"0min (unset) routes to sonnet", 0, "", protocol.ModelSonnet},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := protocol.Bead{ID: "test", Type: tt.beadType, Model: tt.model}
+			b := protocol.Bead{ID: "test", EstimatedMinutes: tt.estimate, Model: tt.model}
 			if got := b.ResolveModel(); got != tt.want {
 				t.Errorf("ResolveModel() = %q, want %q", got, tt.want)
 			}
