@@ -56,6 +56,7 @@ type BeadSource interface {
 	Show(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	Close(ctx context.Context, id string, reason string) error
 	Sync(ctx context.Context) error
+	Create(ctx context.Context, title, beadType string, priority int, description, parent string) (string, error)
 }
 
 // WorktreeManager creates and removes git worktrees.
@@ -631,6 +632,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 
 	if attempt >= maxQGRetries {
 		d.mu.Unlock()
+		d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
 		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
 			fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
@@ -645,6 +647,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	}
 	d.mu.Unlock()
 
+	d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
 	d.qgRetryWithReservation(ctx, workerID, beadID, qgOutput, attempt)
 }
 
@@ -790,6 +793,8 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	d.handoffCounts[beadID]++
 	handoffCount := d.handoffCounts[beadID]
 	d.mu.Unlock()
+
+	d.persistBeadCount(ctx, beadID, "handoff_count", handoffCount)
 
 	// Send SHUTDOWN to the old worker and capture worktree+model for respawn.
 	d.mu.Lock()
@@ -1577,6 +1582,28 @@ func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, wor
 		return fmt.Errorf("create assignment: %w", err)
 	}
 	return nil
+}
+
+// persistBeadCount updates a counter column on the active assignment row for a bead.
+// column must be one of "attempt_count" or "handoff_count". This is a best-effort
+// operation: errors are logged but do not propagate.
+func (d *Dispatcher) persistBeadCount(ctx context.Context, beadID, column string, value int) {
+	if d.db == nil {
+		return
+	}
+	// Allowlist columns to prevent SQL injection.
+	switch column {
+	case "attempt_count", "handoff_count":
+	default:
+		return
+	}
+	_, err := d.db.ExecContext(ctx,
+		fmt.Sprintf(`UPDATE assignments SET %s=? WHERE bead_id=? AND status='active'`, column),
+		value, beadID)
+	if err != nil {
+		_ = d.logEvent(ctx, "persist_count_failed", "dispatcher", beadID, "",
+			fmt.Sprintf(`{"column":%q,"value":%d,"error":%q}`, column, value, err.Error()))
+	}
 }
 
 func (d *Dispatcher) completeAssignment(ctx context.Context, beadID string) error {

@@ -399,6 +399,90 @@ func TestBead_TypeField_JSON(t *testing.T) {
 	}
 }
 
+func TestCLIBeadSource_Create(t *testing.T) {
+	t.Run("with_parent", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-abc"}`)}
+		src := NewCLIBeadSource(runner)
+
+		id, err := src.Create(context.Background(), "Fix login bug", "bug", 1, "Login fails on retry", "oro-parent")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if id != "oro-abc" {
+			t.Errorf("ID: got %q, want %q", id, "oro-abc")
+		}
+
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "create") {
+			t.Errorf("expected 'create' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--title=Fix login bug") {
+			t.Errorf("expected '--title=Fix login bug' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--type=bug") {
+			t.Errorf("expected '--type=bug' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--priority=1") {
+			t.Errorf("expected '--priority=1' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--description=Login fails on retry") {
+			t.Errorf("expected '--description=Login fails on retry' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--parent=oro-parent") {
+			t.Errorf("expected '--parent=oro-parent' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--json") {
+			t.Errorf("expected '--json' in args, got %v", call.Args)
+		}
+	})
+
+	t.Run("without_parent", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-xyz"}`)}
+		src := NewCLIBeadSource(runner)
+
+		id, err := src.Create(context.Background(), "Add feature", "task", 2, "New feature desc", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if id != "oro-xyz" {
+			t.Errorf("ID: got %q, want %q", id, "oro-xyz")
+		}
+
+		call := runner.calls[0]
+		for _, arg := range call.Args {
+			if strings.HasPrefix(arg, "--parent=") {
+				t.Errorf("expected no --parent arg when parent is empty, got %v", call.Args)
+			}
+		}
+	})
+
+	t.Run("command_error", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("bd create failed")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "")
+		if err == nil {
+			t.Fatal("expected error from Create when command fails")
+		}
+	})
+
+	t.Run("invalid_json", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("not json")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "")
+		if err == nil {
+			t.Fatal("expected error from Create when output is invalid JSON")
+		}
+	})
+}
+
 func TestCLIBeadSource_ImplementsBeadSource(t *testing.T) {
 	// Compile-time check that CLIBeadSource implements BeadSource.
 	var _ BeadSource = (*CLIBeadSource)(nil)

@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS assignments (
     worktree TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
-    completed_at TEXT
+    completed_at TEXT,
+    attempt_count INTEGER DEFAULT 0,
+    handoff_count INTEGER DEFAULT 0
 );
 
 -- Manager directives to the dispatcher (start, stop, pause, focus)
@@ -86,4 +88,12 @@ ALTER TABLE memories ADD COLUMN files_modified TEXT DEFAULT '[]';
 // Uses a try/ignore pattern since SQLite doesn't support IF NOT EXISTS for ALTER TABLE.
 const MigratePinnedMemories = `
 ALTER TABLE memories ADD COLUMN pinned INTEGER DEFAULT 0;
+`
+
+// MigrateAssignmentCounts adds attempt_count and handoff_count columns to
+// existing assignments tables. Uses a try/ignore pattern since SQLite doesn't
+// support IF NOT EXISTS for ALTER TABLE.
+const MigrateAssignmentCounts = `
+ALTER TABLE assignments ADD COLUMN attempt_count INTEGER DEFAULT 0;
+ALTER TABLE assignments ADD COLUMN handoff_count INTEGER DEFAULT 0;
 `

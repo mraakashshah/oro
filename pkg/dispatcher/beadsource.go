@@ -61,6 +61,35 @@ func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+// Create runs `bd create` with the given parameters and parses the JSON output
+// to extract and return the new bead ID. If parent is non-empty, --parent is included.
+func (s *CLIBeadSource) Create(ctx context.Context, title, beadType string, priority int, description, parent string) (string, error) {
+	args := []string{
+		"create",
+		"--title=" + title,
+		"--type=" + beadType,
+		fmt.Sprintf("--priority=%d", priority),
+		"--description=" + description,
+	}
+	if parent != "" {
+		args = append(args, "--parent="+parent)
+	}
+	args = append(args, "--json")
+
+	out, err := s.runner.Run(ctx, "bd", args...)
+	if err != nil {
+		return "", fmt.Errorf("bd create: %w", err)
+	}
+
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return "", fmt.Errorf("parse bd create output: %w", err)
+	}
+	return result.ID, nil
+}
+
 // Sync runs `bd sync --flush-only` to flush bead state to disk.
 func (s *CLIBeadSource) Sync(ctx context.Context) error {
 	_, err := s.runner.Run(ctx, "bd", "sync", "--flush-only")
