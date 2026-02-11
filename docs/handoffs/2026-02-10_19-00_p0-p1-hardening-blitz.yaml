@@ -1,0 +1,106 @@
+---
+date: 2026-02-10
+status: partial
+---
+
+goal: >
+  Closed 18 beads across 2 waves using parallel agents (6 + 12).
+  All P0 concurrency hardening (1nf.*), lifecycle recovery (3e0.1-4,6,7),
+  security hardening (dfe.1-7), and test coverage (0qy.2) beads complete.
+
+now: >
+  Pick up remaining P0 tasks: oro-1nf.5 and oro-3e0.5 (both newly unblocked
+  by oro-1nf.3 merge). Then oro-i28 (oro init) and oro-rgx (role identity).
+  Check bd ready for current state.
+
+test: go test -race -count=1 ./... && ./quality_gate.sh
+
+done_this_session:
+  - task: "Wave 1 — 6 P0 concurrency/lifecycle beads"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/reservation_test.go,
+            pkg/dispatcher/stale_socket.go, pkg/dispatcher/stale_socket_test.go,
+            pkg/dispatcher/worktree_manager.go, pkg/dispatcher/worktree_manager_test.go,
+            pkg/merge/merge.go, pkg/merge/merge_test.go,
+            pkg/worker/worker.go, pkg/worker/worker_test.go,
+            cmd/oro/db.go, cmd/oro/db_test.go, cmd/oro/cmd_start.go, cmd/oro/store.go]
+    details: >
+      oro-1nf.1 (two-phase reservation), oro-1nf.2 (defer abortMu),
+      oro-1nf.4 (timer leak), oro-3e0.1 (orphan worktree prune),
+      oro-3e0.2 (WAL mode SQLite), oro-3e0.3 (stale socket detection)
+
+  - task: "Wave 2 — 12 P0/P1 security/lifecycle/test beads"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go,
+            pkg/dispatcher/escalator.go, pkg/dispatcher/escalator_test.go,
+            pkg/dispatcher/qg_stuck.go, pkg/dispatcher/tracking_leak_test.go,
+            pkg/dispatcher/socket_permissions_test.go, pkg/dispatcher/message_size_test.go,
+            pkg/dispatcher/exec_runner_test.go, pkg/dispatcher/qg_stuck_test.go,
+            pkg/protocol/message.go, pkg/protocol/message_test.go,
+            pkg/worker/worker.go, pkg/worker/worker_test.go,
+            pkg/worker/message_size_test.go, pkg/codesearch/lang_test.go,
+            pkg/integration/dispatcher_worker_test.go, cmd/oro/cmd_start.go]
+    details: >
+      oro-1nf.3 (WaitGroup tracking), oro-3e0.4 (subprocess health),
+      oro-dfe.1 (message size limits), oro-dfe.2 (socket perms 0600),
+      oro-dfe.3 (bead ID validation), oro-dfe.4 (tmux injection hardening),
+      oro-dfe.5 (tracking map cleanup), oro-dfe.6 (config validation),
+      oro-dfe.7 (runtime dir perms 0700), oro-3e0.6 (dispatcher buffering),
+      oro-3e0.7 (escalation delivery), oro-0qy.2 (test coverage)
+
+decisions:
+  - parallel_agents_on_sonnet: >
+      Wave 1 used Opus (default), wave 2 switched to Sonnet for speed.
+      Both worked well. Sonnet is sufficient for well-scoped TDD tasks.
+  - merge_order_matters: >
+      Dispatcher branches must merge in dependency order to minimize conflicts.
+      Non-dispatcher packages first, then dispatcher changes smallest-to-largest,
+      with interface-changing branches (dfe-6 New() signature) last.
+  - new_signature_dispatcher_new: >
+      dfe-6 changed New() from *Dispatcher to (*Dispatcher, error).
+      Required updating all callers including tests and integration tests.
+
+worked:
+  - "Worktree-per-agent pattern with sequential rebase+merge to main"
+  - "Merging non-conflicting packages first, then dispatcher branches"
+  - "Sonnet agents for well-scoped TDD tasks (cheaper, fast enough)"
+
+failed:
+  - "First wave used Opus for all agents — unnecessarily expensive"
+
+next:
+  - "oro-1nf.5: Add context cancellation to GracefulShutdownWorker (P0, unblocked)"
+  - "oro-3e0.5: Enforce hard timeout on dispatcher shutdown (P0, unblocked)"
+  - "oro-i28: Add oro init command (P0, big feature)"
+  - "oro-rgx: Rework role identity with env vars + hooks (P0, big feature)"
+  - "oro-7me: Attach to tmux after launch (P0, blocked by oro-rgx)"
+  - "Close epic beads oro-1nf, oro-3e0, oro-dfe once children done"
+
+beads:
+  completed:
+    - oro-1nf.1
+    - oro-1nf.2
+    - oro-1nf.3
+    - oro-1nf.4
+    - oro-3e0.1
+    - oro-3e0.2
+    - oro-3e0.3
+    - oro-3e0.4
+    - oro-3e0.6
+    - oro-3e0.7
+    - oro-dfe.1
+    - oro-dfe.2
+    - oro-dfe.3
+    - oro-dfe.4
+    - oro-dfe.5
+    - oro-dfe.6
+    - oro-dfe.7
+    - oro-0qy.2
+  remaining:
+    - oro-1nf.5
+    - oro-3e0.5
+    - oro-i28
+    - oro-rgx
+    - oro-7me
+  epics:
+    - oro-1nf
+    - oro-3e0
+    - oro-dfe
