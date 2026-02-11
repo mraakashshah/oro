@@ -83,15 +83,16 @@ type ProcessManager interface {
 
 // trackedWorker holds runtime state for a connected worker.
 type trackedWorker struct {
-	id          string
-	conn        net.Conn
-	state       protocol.WorkerState
-	beadID      string
-	worktree    string
-	model       string // resolved model for the current bead assignment
-	lastSeen    time.Time
-	encoder     *json.Encoder
-	pendingMsgs []protocol.Message // buffered messages for disconnected worker
+	id             string
+	conn           net.Conn
+	state          protocol.WorkerState
+	beadID         string
+	worktree       string
+	model          string // resolved model for the current bead assignment
+	lastSeen       time.Time
+	encoder        *json.Encoder
+	pendingMsgs    []protocol.Message // buffered messages for disconnected worker
+	shutdownCancel context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
 }
 
 // pendingHandoff holds context for a bead whose worker has been shut down
@@ -1252,6 +1253,7 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 // GracefulShutdownWorker initiates a graceful shutdown for a specific worker.
 // It sends PREPARE_SHUTDOWN with the given timeout, then waits for SHUTDOWN_APPROVED.
 // If the worker does not respond within the timeout, it sends a hard SHUTDOWN.
+// Duplicate shutdown calls for the same worker cancel the previous goroutine.
 func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Duration) {
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
@@ -1259,6 +1261,16 @@ func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Durati
 		d.mu.Unlock()
 		return
 	}
+
+	// Cancel any previous shutdown goroutine for this worker
+	if w.shutdownCancel != nil {
+		w.shutdownCancel()
+	}
+
+	// Create a new context for this shutdown attempt
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	w.shutdownCancel = cancel
+
 	_ = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgPrepareShutdown,
 		PrepareShutdown: &protocol.PrepareShutdownPayload{
@@ -1267,41 +1279,62 @@ func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Durati
 	})
 	d.mu.Unlock()
 
-	// Wait for SHUTDOWN_APPROVED or timeout in background
+	// Spawn background goroutine to wait for approval or timeout
 	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
+	go d.shutdownWaitLoop(ctx, cancel, workerID)
+}
 
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
+// shutdownWaitLoop polls for worker approval or timeout (extracted for complexity).
+func (d *Dispatcher) shutdownWaitLoop(shutdownCtx context.Context, cancelFunc context.CancelFunc, workerID string) {
+	defer d.wg.Done()
+	defer cancelFunc() // Clean up context when goroutine exits
 
-		for {
-			select {
-			case <-timer.C:
-				// Timeout — send hard SHUTDOWN
-				d.mu.Lock()
-				w, ok := d.workers[workerID]
-				if ok {
-					_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-					w.state = protocol.WorkerIdle
-					w.beadID = ""
-				}
-				d.mu.Unlock()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-shutdownCtx.Done():
+			// Context cancelled (either timeout or duplicate shutdown call)
+			if shutdownCtx.Err() == context.DeadlineExceeded {
+				d.handleShutdownTimeout(workerID)
+			}
+			// If err == context.Canceled, duplicate shutdown call cancelled us - exit silently
+			return
+		case <-ticker.C:
+			if d.checkShutdownApproved(workerID) {
 				return
-			case <-ticker.C:
-				// Check if approval was already received (worker state reset to idle)
-				d.mu.Lock()
-				w, ok := d.workers[workerID]
-				approved := ok && w.state == protocol.WorkerIdle
-				d.mu.Unlock()
-				if approved {
-					return
-				}
 			}
 		}
-	}()
+	}
+}
+
+// handleShutdownTimeout sends hard SHUTDOWN after graceful shutdown timeout.
+func (d *Dispatcher) handleShutdownTimeout(workerID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if ok {
+		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+		w.state = protocol.WorkerIdle
+		w.beadID = ""
+		w.shutdownCancel = nil
+	}
+}
+
+// checkShutdownApproved returns true if the worker has been approved for shutdown (state == Idle).
+func (d *Dispatcher) checkShutdownApproved(workerID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		return false
+	}
+	approved := w.state == protocol.WorkerIdle
+	if approved && w.shutdownCancel != nil {
+		w.shutdownCancel = nil // Clear cancel func after successful shutdown
+	}
+	return approved
 }
 
 // --- Priority queue / assignment loop ---
