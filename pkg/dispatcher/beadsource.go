@@ -45,6 +45,14 @@ func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDeta
 		return nil, fmt.Errorf("bd show %s: %w", id, err)
 	}
 
+	// bd show --json returns an array; try array first, fall back to object.
+	var arr []protocol.BeadDetail
+	if err := json.Unmarshal(out, &arr); err == nil {
+		if len(arr) == 0 {
+			return nil, fmt.Errorf("bead %s not found", id)
+		}
+		return &arr[0], nil
+	}
 	var detail protocol.BeadDetail
 	if err := json.Unmarshal(out, &detail); err != nil {
 		return nil, fmt.Errorf("parse bd show output: %w", err)

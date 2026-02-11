@@ -223,6 +223,44 @@ func TestCLIBeadSource_Show_CommandError(t *testing.T) {
 	}
 }
 
+func TestCLIBeadSource_Show_ArrayJSON(t *testing.T) {
+	// bd show --json returns an array: [{...}]
+	detail := protocol.BeadDetail{
+		ID:                 "abc.1",
+		Title:              "Implement widget",
+		AcceptanceCriteria: "Widget renders correctly",
+	}
+	data, err := json.Marshal([]protocol.BeadDetail{detail})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	runner := &mockCommandRunner{output: data}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Show(context.Background(), "abc.1")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.ID != "abc.1" {
+		t.Errorf("ID: got %q, want %q", got.ID, "abc.1")
+	}
+	if got.Title != "Implement widget" {
+		t.Errorf("Title: got %q, want %q", got.Title, "Implement widget")
+	}
+}
+
+func TestCLIBeadSource_Show_EmptyArray(t *testing.T) {
+	data, _ := json.Marshal([]protocol.BeadDetail{})
+	runner := &mockCommandRunner{output: data}
+	src := NewCLIBeadSource(runner)
+
+	_, err := src.Show(context.Background(), "abc.1")
+	if err == nil {
+		t.Fatal("expected error from Show when array is empty")
+	}
+}
+
 func TestCLIBeadSource_Show_InvalidJSON(t *testing.T) {
 	runner := &mockCommandRunner{output: []byte("not json")}
 	src := NewCLIBeadSource(runner)
