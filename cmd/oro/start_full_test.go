@@ -89,8 +89,13 @@ func TestFullStart(t *testing.T) {
 
 		var stdout bytes.Buffer
 		err := runFullStart(&stdout, 3, "sonnet", spawner, fakeTmux, 100*time.Millisecond, noopSleep, 50*time.Millisecond)
-		if err != nil {
-			t.Fatalf("runFullStart returned error: %v", err)
+		// We expect an error because AttachInteractive tries to attach to a real tmux session.
+		// In the test environment, there's no real "oro" session, so attach will fail.
+		if err == nil {
+			t.Fatal("expected error when AttachInteractive tries to attach to nonexistent session")
+		}
+		if !strings.Contains(err.Error(), "attach to tmux session") {
+			t.Fatalf("expected attach error, got: %v", err)
 		}
 
 		// 1. Verify daemon was spawned with correct args.

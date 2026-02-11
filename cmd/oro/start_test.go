@@ -259,11 +259,15 @@ func TestStartSendsDirective(t *testing.T) {
 
 	var buf bytes.Buffer
 	err = runFullStart(&buf, 2, "sonnet", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond)
-	if err != nil {
-		t.Fatalf("runFullStart: %v", err)
+	// We expect an error because AttachInteractive tries to attach to a real tmux session.
+	if err == nil {
+		t.Fatal("expected error when AttachInteractive tries to attach to nonexistent session")
+	}
+	if !contains(err.Error(), "attach to tmux session") {
+		t.Fatalf("expected attach error, got: %v", err)
 	}
 
-	// Verify start directive was sent.
+	// Verify start directive was sent (before the attach attempt).
 	select {
 	case op := <-directiveCh:
 		if op != "start" {
@@ -288,4 +292,67 @@ type mockCmdRunner struct{}
 
 func (m *mockCmdRunner) Run(_ string, _ ...string) (string, error) {
 	return "", nil
+}
+
+// TestRunFullStartAttachesSession verifies that runFullStart attempts to attach
+// to the tmux session after creation. Since AttachInteractive uses exec.Command
+// directly and would block, we can't fully test it here. But we verify the flow
+// by checking that runFullStart would call it (implementation check).
+func TestRunFullStartAttachesSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	sockPath := filepath.Join(tmpDir, "oro.sock")
+
+	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+
+	// Start a fake UDS listener.
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		scanner := bufio.NewScanner(conn)
+		if scanner.Scan() {
+			// Send ACK
+			ack := protocol.Message{
+				Type: protocol.MsgACK,
+				ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+			}
+			data, _ := json.Marshal(ack)
+			data = append(data, '\n')
+			_, _ = conn.Write(data)
+		}
+	}()
+
+	spawner := &mockDaemonSpawner{pid: 12345}
+	tmuxRunner := &mockCmdRunner{}
+
+	var buf bytes.Buffer
+	// Note: This will attempt to call AttachInteractive which tries to connect
+	// to a real tmux session "oro". Since there's no real tmux in the test env,
+	// this will fail. We're verifying the code path leads to attach being called.
+	err = runFullStart(&buf, 2, "sonnet", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond)
+
+	// We expect an error because AttachInteractive will fail (no tmux session).
+	if err == nil {
+		t.Fatal("expected error when AttachInteractive fails in test env")
+	}
+	if !contains(err.Error(), "attach to tmux session") {
+		t.Errorf("expected 'attach to tmux session' error, got: %v", err)
+	}
+
+	// Verify status message was printed before attach attempt.
+	out := buf.String()
+	if !contains(out, "oro swarm started") {
+		t.Errorf("expected status message before attach, got: %s", out)
+	}
 }

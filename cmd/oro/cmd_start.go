@@ -91,6 +91,12 @@ func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner,
 
 	// 4. Print status.
 	fmt.Fprintf(w, "oro swarm started (PID %d, workers=%d, model=%s)\n", pid, workers, model)
+
+	// 5. Attach to the tmux session interactively.
+	if err := sess.AttachInteractive(); err != nil {
+		return fmt.Errorf("attach to tmux session: %w", err)
+	}
+
 	return nil
 }
 

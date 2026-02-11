@@ -226,3 +226,17 @@ func (s *TmuxSession) Attach() error {
 	}
 	return nil
 }
+
+// AttachInteractive attaches to the named tmux session with real terminal I/O.
+// This bypasses the CmdRunner interface to connect stdin/stdout/stderr directly,
+// allowing interactive use. It blocks until the session is detached or exits.
+func (s *TmuxSession) AttachInteractive() error {
+	cmd := exec.CommandContext(context.Background(), "tmux", "attach-session", "-t", s.Name) //nolint:gosec // s.Name is controlled by codebase, not user input
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("tmux attach-session: %w", err)
+	}
+	return nil
+}

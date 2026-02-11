@@ -720,3 +720,40 @@ func TestRoleEnvCmd(t *testing.T) {
 		}
 	})
 }
+
+func TestAttach(t *testing.T) {
+	t.Run("Attach calls tmux attach-session via CmdRunner", func(t *testing.T) {
+		fake := newFakeCmd()
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.Attach()
+		if err != nil {
+			t.Fatalf("Attach returned error: %v", err)
+		}
+
+		// Verify attach-session was called with correct args.
+		attachCall := findCall(fake.calls, "attach-session")
+		if attachCall == nil {
+			t.Fatal("expected tmux attach-session to be called")
+		}
+		if !callHasArgPair(attachCall, "-t", "oro") {
+			t.Error("attach-session should target session 'oro'")
+		}
+	})
+
+	t.Run("AttachInteractive method exists and returns error on nonexistent session", func(t *testing.T) {
+		// Since AttachInteractive bypasses CmdRunner and uses exec.Command directly,
+		// we can't easily mock it. We verify it exists by calling it on a nonexistent
+		// session and expecting an error.
+		sess := &TmuxSession{Name: "nonexistent-test-session-12345"}
+
+		// This should fail because the session doesn't exist.
+		err := sess.AttachInteractive()
+		if err == nil {
+			t.Error("AttachInteractive should return error for nonexistent session")
+		}
+		// The error should mention tmux attach-session failure.
+		if !strings.Contains(err.Error(), "tmux attach-session") {
+			t.Errorf("expected error to mention tmux attach-session, got: %v", err)
+		}
+	})
+}
