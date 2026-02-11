@@ -245,7 +245,7 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := dispatcher.NewCLIBeadSource(runner)
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, runner)
-	esc := dispatcher.NewTmuxEscalator("", "", runner) // defaults: session "oro", pane "oro:0.1"
+	esc := dispatcher.NewTmuxEscalator("", "", runner) // defaults: session "oro", pane "oro:manager"
 
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
 	opsSpawner := ops.NewSpawner(&ops.ClaudeOpsSpawner{})
