@@ -244,3 +244,42 @@ func TestGitWorktreeManager_Prune_GitPruneErrorLogged(t *testing.T) {
 		t.Fatalf("expected .worktrees to be empty after Prune, got %d entries", len(entries))
 	}
 }
+
+func TestGitWorktreeManager_Create_InvalidBeadID(t *testing.T) {
+	t.Parallel()
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", runner)
+
+	tests := []struct {
+		name   string
+		beadID string
+	}{
+		{"path_traversal_parent", "../etc"},
+		{"path_traversal_double", "../../etc"},
+		{"absolute_path", "/etc/passwd"},
+		{"backslash", "oro\\test"},
+		{"special_chars", "oro@test"},
+		{"empty", ""},
+		{"uppercase", "ORO-1NF"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, _, err := mgr.Create(context.Background(), tt.beadID)
+			if err == nil {
+				t.Fatalf("Create with invalid bead ID %q should return error", tt.beadID)
+			}
+			if !strings.Contains(err.Error(), "invalid bead ID") {
+				t.Fatalf("error should mention 'invalid bead ID', got: %v", err)
+			}
+
+			// Verify git command was never called for invalid IDs.
+			if len(runner.calls) > 0 {
+				t.Fatalf("expected no git commands for invalid bead ID, got %d calls", len(runner.calls))
+			}
+		})
+	}
+}

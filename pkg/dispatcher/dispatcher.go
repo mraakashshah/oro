@@ -489,8 +489,51 @@ func (d *Dispatcher) consumePendingHandoff() *pendingHandoff {
 
 // --- Message handling ---
 
+// extractBeadID extracts the bead ID from a message payload if present.
+func extractBeadID(msg protocol.Message) string {
+	switch msg.Type {
+	case protocol.MsgHeartbeat:
+		if msg.Heartbeat != nil {
+			return msg.Heartbeat.BeadID
+		}
+	case protocol.MsgStatus:
+		if msg.Status != nil {
+			return msg.Status.BeadID
+		}
+	case protocol.MsgDone:
+		if msg.Done != nil {
+			return msg.Done.BeadID
+		}
+	case protocol.MsgHandoff:
+		if msg.Handoff != nil {
+			return msg.Handoff.BeadID
+		}
+	case protocol.MsgReadyForReview:
+		if msg.ReadyForReview != nil {
+			return msg.ReadyForReview.BeadID
+		}
+	case protocol.MsgReconnect:
+		if msg.Reconnect != nil {
+			return msg.Reconnect.BeadID
+		}
+	}
+	return ""
+}
+
 // handleMessage dispatches an incoming worker message.
 func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg protocol.Message) {
+	// Extract and validate bead ID from message payloads that carry one.
+	beadID := extractBeadID(msg)
+
+	// Validate bead ID if present (empty is allowed for some message types like SHUTDOWN_APPROVED).
+	if beadID != "" {
+		if err := protocol.ValidateBeadID(beadID); err != nil {
+			_ = d.logEvent(ctx, "invalid_bead_id", workerID, beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+			return
+		}
+	}
+
 	switch msg.Type {
 	case protocol.MsgHeartbeat:
 		d.handleHeartbeat(ctx, workerID, msg)
@@ -1322,6 +1365,13 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 // If memories exist for the bead's description, they are included in the
 // AssignPayload.MemoryContext field for cross-session continuity.
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead) {
+	// Validate bead ID before creating worktree (defense in depth).
+	if err := protocol.ValidateBeadID(bead.ID); err != nil {
+		_ = d.logEvent(ctx, "invalid_bead_id", "dispatcher", bead.ID, w.id,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return
+	}
+
 	worktree, branch, err := d.worktrees.Create(ctx, bead.ID)
 	if err != nil {
 		_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())

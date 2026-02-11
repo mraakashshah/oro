@@ -346,3 +346,65 @@ func TestDonePayload_QualityGatePassed_RoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateBeadID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		beadID  string
+		wantErr bool
+	}{
+		// Valid IDs
+		{"valid_simple", "oro-1nf", false},
+		{"valid_with_dot", "oro-1nf.1", false},
+		{"valid_with_multiple_dots", "oro-3e0.2.1", false},
+		{"valid_dfe", "oro-dfe.3", false},
+		{"valid_lowercase_letters", "abc-123", false},
+		{"valid_with_hyphens", "oro-test-1", false},
+		{"valid_with_underscores", "oro_test_1", false},
+		{"valid_mixed", "oro-1nf_2.3-test", false},
+		{"valid_min_length", "a1", false},
+		{"valid_max_length", "a12345678901234567890123456789012345678901234567890123456789012", false}, // 63 chars total
+
+		// Invalid IDs - path traversal
+		{"invalid_parent_dir", "../etc", true},
+		{"invalid_parent_with_valid_start", "oro-1nf/../etc", true},
+		{"invalid_double_parent", "../../etc", true},
+		{"invalid_absolute_path", "/etc/passwd", true},
+		{"invalid_absolute_with_valid_prefix", "/oro-1nf", true},
+
+		// Invalid IDs - special characters
+		{"invalid_backslash", "oro\\test", true},
+		{"invalid_null_byte", "oro\x00test", true},
+		{"invalid_space", "oro test", true},
+		{"invalid_special_chars", "oro@test", true},
+		{"invalid_parentheses", "oro(test)", true},
+		{"invalid_brackets", "oro[test]", true},
+		{"invalid_braces", "oro{test}", true},
+
+		// Invalid IDs - format violations
+		{"invalid_empty", "", true},
+		{"invalid_too_short", "a", true},
+		{"invalid_starts_with_hyphen", "-oro", true},
+		{"invalid_starts_with_dot", ".oro", true},
+		{"invalid_starts_with_underscore", "_oro", true},
+		{"invalid_uppercase", "ORO-1NF", true},
+		{"invalid_ends_with_hyphen", "oro-", true},
+		{"invalid_too_long", "a1234567890123456789012345678901234567890123456789012345678901234", true}, // 64 chars
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := protocol.ValidateBeadID(tc.beadID)
+			if tc.wantErr && err == nil {
+				t.Errorf("ValidateBeadID(%q) = nil, want error", tc.beadID)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("ValidateBeadID(%q) = %v, want nil", tc.beadID, err)
+			}
+		})
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"oro/pkg/protocol"
 )
 
 // CommandRunner is defined in beadsource.go.
@@ -27,6 +29,12 @@ func NewGitWorktreeManager(repoRoot string, runner CommandRunner) *GitWorktreeMa
 // Create runs `git worktree add <path> -b agent/<beadID> main` and returns
 // the worktree path and branch name.
 func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, branch string, err error) {
+	// Validate bead ID before using it in filepath operations to prevent
+	// directory traversal attacks.
+	if err := protocol.ValidateBeadID(beadID); err != nil {
+		return "", "", fmt.Errorf("invalid bead ID: %w", err)
+	}
+
 	path = filepath.Join(g.repoRoot, ".worktrees", beadID)
 	branch = "agent/" + beadID
 

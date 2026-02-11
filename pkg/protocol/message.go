@@ -4,6 +4,7 @@ package protocol
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -186,4 +187,33 @@ type DirectivePayload struct {
 type ACKPayload struct {
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
+}
+
+// beadIDPattern validates bead IDs for path safety. Matches IDs like "oro-1nf",
+// "oro-1nf.1", "oro-dfe.3". Must start with lowercase letter or digit, followed
+// by 0-61 chars of lowercase letters, digits, dots, hyphens, or underscores,
+// and must end with lowercase letter or digit.
+var beadIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,61}[a-z0-9]$`)
+
+// ValidateBeadID validates a bead ID for path safety to prevent directory
+// traversal attacks. Returns an error if the ID contains path traversal
+// sequences (../, /), special characters, or violates format constraints.
+func ValidateBeadID(id string) error {
+	if id == "" {
+		return fmt.Errorf("bead ID cannot be empty")
+	}
+
+	if len(id) < 2 {
+		return fmt.Errorf("bead ID must be at least 2 characters")
+	}
+
+	if len(id) > 63 {
+		return fmt.Errorf("bead ID must not exceed 63 characters")
+	}
+
+	if !beadIDPattern.MatchString(id) {
+		return fmt.Errorf("bead ID %q is invalid: must start with lowercase letter or digit, followed by lowercase letters, digits, dots, hyphens, or underscores", id)
+	}
+
+	return nil
 }
