@@ -1,0 +1,111 @@
+---
+date: 2026-02-11
+status: partial
+---
+
+goal: >
+  Spec'd and beadcrafted 3 architecture gaps (worker failure beads, dispatcher
+  crash recovery, memory consolidation automation). Implemented 9 of 10 task
+  beads across all 3 epics. Gaps 1 & 2 (beacons) were already complete.
+
+now: >
+  Close oro-4xy.4 (integration test for crash recovery) — agent was still
+  running at session end. Then close epic oro-4xy. After that, all gap work
+  is done and ready beads are TUI dashboard (oro-nqi.2) and other backlog.
+
+test: go test -race -count=1 ./... && ./quality_gate.sh
+
+done_this_session:
+  - task: "Gap analysis revision: gaps 1 & 2 already complete"
+    details: >
+      Explored beacons (architect.md 9 sections, manager.md 12 sections),
+      session_start_extras.py hook, ORO_ROLE env var. All fully implemented.
+
+  - task: "oro-2ir: Worker failure bead creation (P1 epic, 4 tasks)"
+    files: [pkg/dispatcher/beadsource.go, pkg/dispatcher/dispatcher.go,
+            pkg/dispatcher/dispatcher_test.go, pkg/dispatcher/qg_retry_test.go,
+            pkg/worker/prompt.go, pkg/worker/prompt_test.go]
+    details: >
+      Added BeadSource.Create method. Dispatcher now auto-creates P0 bead
+      on QG exhaustion and continuation bead on handoff exhaustion. Worker
+      prompt enriched with concrete bd create command examples.
+
+  - task: "oro-4xy: Dispatcher crash recovery (P2 epic, 3/4 tasks done)"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go,
+            pkg/dispatcher/persist_counts_test.go, pkg/protocol/schema.go]
+    details: >
+      Added attempt_count/handoff_count columns to assignments table.
+      persistBeadCount helper writes counts on QG retry and handoff.
+      restoreState reads active assignments on startup to reconstruct
+      in-memory maps. completeAssignment marks rows completed on merge
+      and QG exhaustion. Integration test (oro-4xy.4) still in agent.
+
+  - task: "oro-6x5: Memory consolidation automation (P2 epic, complete)"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go,
+            pkg/dispatcher/persist_counts_test.go]
+    details: >
+      Added ConsolidateAfterN config (default 5). Dispatcher triggers
+      memory.Consolidate() in goroutine after every N bead completions
+      in mergeAndComplete.
+
+decisions:
+  - beacons_already_done: >
+      Gaps 1 & 2 from previous session's gap analysis were already fully
+      implemented. architect.md (9 sections) and manager.md (12 sections)
+      exist in .claude/hooks/beacons/ and are loaded by session_start_extras.py.
+  - p0_bead_on_qg_exhaustion: >
+      After maxQGRetries, dispatcher creates a P0 bug bead with QG output
+      as description AND still escalates to manager. Both paths fire.
+  - consolidation_in_dispatcher: >
+      Rather than requiring manager to call consolidation, dispatcher
+      triggers it automatically. Simpler, no inter-role dependency.
+
+findings:
+  - parallel_agent_conflicts: >
+      4 parallel agents editing pkg/dispatcher caused compilation errors
+      from conflicting mock updates. Sequential execution was faster for
+      beads touching the same package.
+
+worked:
+  - parallel_agents_for_different_packages: >
+      Wave 1 agents on different packages (worker vs dispatcher) worked well
+  - sequential_for_same_package: >
+      Wave 2 beads all touching dispatcher.go — sequential was cleaner
+
+failed:
+  - four_agents_same_package: >
+      4 agents editing dispatcher_test.go simultaneously caused SetBeads
+      undefined errors and wasted time on merge conflicts
+
+next:
+  - Close oro-4xy.4 when agent finishes (check git log for commit)
+  - Close epic oro-4xy
+  - bd sync && git push
+  - Ready work after gaps: oro-nqi.2 (TUI scaffold), oro-0ro (search hook build)
+
+files:
+  modified:
+    - pkg/dispatcher/beadsource.go
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - pkg/dispatcher/beadsource_test.go
+    - pkg/dispatcher/qg_retry_test.go
+    - pkg/dispatcher/persist_counts_test.go
+    - pkg/protocol/schema.go
+    - pkg/worker/prompt.go
+    - pkg/worker/prompt_test.go
+    - pkg/integration/dispatcher_worker_test.go
+    - pkg/integration/e2e_lifecycle_test.go
+
+beads:
+  completed: [oro-2ir.1, oro-2ir.2, oro-2ir.3, oro-2ir.4, oro-4xy.1,
+              oro-4xy.2, oro-4xy.3, oro-6x5.1, oro-6x5.2, oro-2ir, oro-6x5]
+  in_progress: [oro-4xy.4]
+  remaining: [oro-4xy (epic close)]
+
+key_context:
+  pre_existing_diagnostics: >
+    dispatcher.go has pre-existing compile errors for protocol.MsgReviewResult,
+    protocol.ValidateBeadID, protocol.ReviewResultPayload, and
+    msg.Reconnect.Validate — these are NOT from this session. They're
+    forward references to types not yet implemented.
