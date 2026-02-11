@@ -79,6 +79,10 @@ func (m *mockWorktreeManager) Remove(_ context.Context, _ string) error {
 	return nil
 }
 
+func (m *mockWorktreeManager) Prune(_ context.Context) error {
+	return nil
+}
+
 type mockEscalator struct{}
 
 func (m *mockEscalator) Escalate(_ context.Context, _ string) error {
