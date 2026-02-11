@@ -9,6 +9,10 @@ import (
 // the dispatcher considers the worker stuck and escalates instead of re-assigning.
 const maxStuckCount = 3
 
+// maxQGHistorySize is the maximum number of hashes to retain in qgHistory.hashes
+// (sliding window). This prevents unbounded growth for beads with many QG retries.
+const maxQGHistorySize = 10
+
 // qgHistory tracks consecutive QG output hashes for a single bead to detect
 // when a worker is repeating the same mistake.
 type qgHistory struct {
@@ -37,6 +41,11 @@ func (d *Dispatcher) isQGStuck(beadID, qgOutput string) bool {
 	}
 
 	hist.hashes = append(hist.hashes, hash)
+
+	// Cap history at maxQGHistorySize (sliding window).
+	if len(hist.hashes) > maxQGHistorySize {
+		hist.hashes = hist.hashes[len(hist.hashes)-maxQGHistorySize:]
+	}
 
 	// Check if the last maxStuckCount hashes are all identical.
 	n := len(hist.hashes)

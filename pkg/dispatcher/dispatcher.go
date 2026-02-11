@@ -998,6 +998,67 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	d.mu.Unlock()
 }
 
+// pruneStaleTracking removes orphaned entries from all tracking maps.
+// An entry is orphaned if its bead ID is not currently assigned to any worker.
+// This runs periodically in heartbeatLoop to prevent unbounded map growth from
+// worker crashes that occur before escalation.
+func (d *Dispatcher) pruneStaleTracking(ctx context.Context) {
+	d.mu.Lock()
+
+	// Collect all active bead IDs from workers.
+	activeBeads := make(map[string]bool)
+	for _, w := range d.workers {
+		if w.beadID != "" {
+			activeBeads[w.beadID] = true
+		}
+	}
+
+	// Find orphaned bead IDs across all tracking maps.
+	orphanedBeads := make(map[string]bool)
+	for beadID := range d.attemptCounts {
+		if !activeBeads[beadID] {
+			orphanedBeads[beadID] = true
+		}
+	}
+	for beadID := range d.handoffCounts {
+		if !activeBeads[beadID] {
+			orphanedBeads[beadID] = true
+		}
+	}
+	for beadID := range d.rejectionCounts {
+		if !activeBeads[beadID] {
+			orphanedBeads[beadID] = true
+		}
+	}
+	for beadID := range d.pendingHandoffs {
+		if !activeBeads[beadID] {
+			orphanedBeads[beadID] = true
+		}
+	}
+	for beadID := range d.qgStuckTracker {
+		if !activeBeads[beadID] {
+			orphanedBeads[beadID] = true
+		}
+	}
+
+	// Delete all orphaned entries.
+	for beadID := range orphanedBeads {
+		delete(d.attemptCounts, beadID)
+		delete(d.handoffCounts, beadID)
+		delete(d.rejectionCounts, beadID)
+		delete(d.pendingHandoffs, beadID)
+		delete(d.qgStuckTracker, beadID)
+	}
+
+	d.mu.Unlock()
+
+	// Log the cleanup event if any orphans were found.
+	if len(orphanedBeads) > 0 {
+		_ = d.logEvent(ctx, "tracking_pruned", "dispatcher", "", "",
+			fmt.Sprintf(`{"orphaned_count":%d}`, len(orphanedBeads)))
+	}
+}
+
 func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg protocol.Message) {
 	if msg.Reconnect == nil {
 		return
@@ -1487,10 +1548,14 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 
 // --- Heartbeat monitoring ---
 
-// heartbeatLoop checks for workers that have exceeded the heartbeat timeout.
+// heartbeatLoop checks for workers that have exceeded the heartbeat timeout
+// and periodically prunes stale tracking map entries (hourly).
 func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.HeartbeatTimeout / 3)
 	defer ticker.Stop()
+
+	pruneTicker := time.NewTicker(1 * time.Hour)
+	defer pruneTicker.Stop()
 
 	for {
 		select {
@@ -1498,6 +1563,8 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.checkHeartbeats(ctx)
+		case <-pruneTicker.C:
+			d.pruneStaleTracking(ctx)
 		}
 	}
 }

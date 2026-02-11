@@ -418,3 +418,90 @@ func TestClearBeadTracking_IdempotentOnMissingBead(t *testing.T) {
 
 	assertTrackingMapsEmpty(t, d, "nonexistent-bead")
 }
+
+// TestPruneStaleTracking verifies that orphaned tracking entries are cleaned
+// up within one sweep of pruneStaleTracking.
+func TestPruneStaleTracking(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	// Seed tracking maps for multiple beads.
+	orphanedBead1 := "bead-orphan-1"
+	orphanedBead2 := "bead-orphan-2"
+	activeBead := "bead-active"
+
+	seedTrackingMaps(d, orphanedBead1)
+	seedTrackingMaps(d, orphanedBead2)
+	seedTrackingMaps(d, activeBead)
+
+	// Create a worker and assign the active bead.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	d.mu.Lock()
+	w := d.workers["w1"]
+	w.state = WorkerBusy
+	w.beadID = activeBead
+	d.mu.Unlock()
+
+	// Run pruneStaleTracking.
+	ctx := context.Background()
+	d.pruneStaleTracking(ctx)
+
+	// Verify orphaned entries are cleared.
+	assertTrackingMapsEmpty(t, d, orphanedBead1)
+	assertTrackingMapsEmpty(t, d, orphanedBead2)
+
+	// Verify active bead entries are preserved.
+	d.mu.Lock()
+	if d.attemptCounts[activeBead] != 1 {
+		t.Errorf("active bead attemptCounts should be preserved, got %d", d.attemptCounts[activeBead])
+	}
+	d.mu.Unlock()
+}
+
+// TestQGHistoryCap verifies that qgHistory.hashes is capped at 10 entries
+// (sliding window).
+func TestQGHistoryCap(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	beadID := "bead-qghistory"
+
+	// Send 15 distinct QG failures to trigger history capping.
+	for i := 0; i < 15; i++ {
+		output := fmt.Sprintf("error-%d", i)
+		_ = d.isQGStuck(beadID, output)
+	}
+
+	// Verify history is capped at 10.
+	d.mu.Lock()
+	hist, ok := d.qgStuckTracker[beadID]
+	d.mu.Unlock()
+
+	if !ok {
+		t.Fatal("expected qgHistory to exist")
+	}
+	if len(hist.hashes) > 10 {
+		t.Errorf("qgHistory.hashes should be capped at 10, got %d", len(hist.hashes))
+	}
+
+	// Verify the latest 10 hashes are retained (sliding window).
+	expectedHashes := make([]string, 10)
+	for i := 0; i < 10; i++ {
+		output := fmt.Sprintf("error-%d", i+5) // last 10: errors 5-14
+		expectedHashes[i] = hashQGOutput(output)
+	}
+
+	d.mu.Lock()
+	for i, h := range hist.hashes {
+		if h != expectedHashes[i] {
+			t.Errorf("hash[%d]: got %s, want %s", i, h, expectedHashes[i])
+		}
+	}
+	d.mu.Unlock()
+}
