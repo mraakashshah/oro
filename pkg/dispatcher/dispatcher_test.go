@@ -5154,7 +5154,7 @@ func TestGracefulShutdown_Cancellable(t *testing.T) {
 	// Set worker to Busy state so ticker checks don't cause early exit
 	d.mu.Lock()
 	if w, ok := d.workers["test-worker"]; ok {
-		w.state = WorkerBusy
+		w.state = protocol.WorkerBusy
 		w.beadID = "test-bead"
 	}
 	d.mu.Unlock()
@@ -5228,4 +5228,87 @@ func TestGracefulShutdown_Cancellable(t *testing.T) {
 	// Clean up
 	_ = goroutine1Exited.Load()
 	_ = goroutine2Exited.Load()
+}
+
+// TestShutdownHardTimeout verifies that shutdownSequence() completes within
+// 2*ShutdownTimeout even if a worker never responds to PREPARE_SHUTDOWN.
+// This prevents indefinite hangs when workers are unresponsive during shutdown.
+func TestShutdownHardTimeout(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	// Set a very short shutdown timeout for fast test execution
+	d.cfg.ShutdownTimeout = 200 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- d.Run(ctx)
+	}()
+
+	// Wait for the listener to be ready
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		d.mu.Lock()
+		ln := d.listener
+		d.mu.Unlock()
+		if ln != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Connect a worker that will never respond to PREPARE_SHUTDOWN
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-unresponsive", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 2*time.Second)
+
+	// Verify worker is connected
+	if d.ConnectedWorkers() != 1 {
+		t.Fatalf("expected 1 connected worker, got %d", d.ConnectedWorkers())
+	}
+
+	// Record start time and cancel context to trigger shutdown
+	start := time.Now()
+	cancel()
+
+	// Worker should receive PREPARE_SHUTDOWN but will NOT respond
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected PREPARE_SHUTDOWN")
+	}
+	if msg.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("expected PREPARE_SHUTDOWN, got %s", msg.Type)
+	}
+
+	// Do NOT send SHUTDOWN_APPROVED — worker stays silent
+
+	// Run() should return within 2*ShutdownTimeout for shutdownSequence +
+	// 5s for wg.Wait timeout. Total: 2*200ms + 5s = 5.4s
+	// We'll be more generous and allow 8s total.
+	maxWait := 8 * time.Second
+
+	select {
+	case err := <-errCh:
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("Run() returned error: %v", err)
+		}
+		// Verify Run() returned within expected bounds.
+		// Expected: 2*ShutdownTimeout (for shutdown) + 5s (wg.Wait timeout) = 5.4s
+		// We'll assert it's less than 8s to be safe.
+		if elapsed > maxWait {
+			t.Fatalf("Run() took %v, expected within %v", elapsed, maxWait)
+		}
+		// The critical assertion: shutdownSequence should have completed within
+		// 2*ShutdownTimeout. Since Run() waits for wg with 5s timeout, and our
+		// ShutdownTimeout is 200ms, if Run() completes in less than 1s, we know
+		// shutdownSequence() respected the 2*ShutdownTimeout bound (400ms).
+		if elapsed > 1*time.Second {
+			t.Fatalf("Run() took %v, suggesting shutdownSequence exceeded 2*ShutdownTimeout", elapsed)
+		}
+	case <-time.After(maxWait):
+		t.Fatalf("Run() did not return within %v (likely hanging in shutdownSequence)", maxWait)
+	}
 }

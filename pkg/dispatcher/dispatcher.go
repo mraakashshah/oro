@@ -314,8 +314,39 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	_ = ln.Close()
 
 	// --- Graceful shutdown ---
-	// Phase 1: cancel ops/merges, Phase 2: stop workers, Phase 3: remove worktrees.
-	d.shutdownSequence()
+	d.shutdownWithTimeout()
+
+	return nil
+}
+
+// shutdownWithTimeout orchestrates graceful shutdown with a hard timeout.
+// It wraps shutdownSequence in a context with 2*ShutdownTimeout to prevent
+// indefinite hangs if workers never respond to PREPARE_SHUTDOWN.
+func (d *Dispatcher) shutdownWithTimeout() {
+	// Wrap shutdownSequence in a hard timeout of 2*ShutdownTimeout to prevent
+	// indefinite hangs if workers never respond to PREPARE_SHUTDOWN.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*d.cfg.ShutdownTimeout)
+	defer shutdownCancel()
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		// Phase 1: cancel ops/merges, Phase 2: stop workers, Phase 3: remove worktrees.
+		d.shutdownSequence()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		// Shutdown sequence completed successfully
+	case <-shutdownCtx.Done():
+		// Hard timeout exceeded — force-close all connections and clear worker map
+		d.mu.Lock()
+		for id, w := range d.workers {
+			_ = w.conn.Close()
+			delete(d.workers, id)
+		}
+		d.mu.Unlock()
+	}
 
 	// Wait for all goroutines to finish with a 5s timeout
 	done := make(chan struct{})
@@ -330,8 +361,6 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	case <-time.After(5 * time.Second):
 		// Timeout - goroutines did not finish in time
 	}
-
-	return nil
 }
 
 // --- UDS server ---
