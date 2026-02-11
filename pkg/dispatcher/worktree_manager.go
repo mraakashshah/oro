@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -47,5 +48,32 @@ func (g *GitWorktreeManager) Remove(ctx context.Context, path string) error {
 	if err != nil {
 		return fmt.Errorf("worktree remove %s: %w", path, err)
 	}
+	return nil
+}
+
+// Prune cleans up orphaned worktree state left by a previous crash.
+// It runs `git worktree prune` to clean git's internal tracking, then
+// removes all directories under .worktrees/. Errors are logged but
+// do not prevent startup — this method always returns nil.
+func (g *GitWorktreeManager) Prune(ctx context.Context) error {
+	// Step 1: Ask git to prune its internal worktree bookkeeping.
+	// Errors are non-fatal — the directory cleanup below handles the rest.
+	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune")
+
+	// Step 2: Remove all directories under .worktrees/.
+	worktreesDir := filepath.Join(g.repoRoot, ".worktrees")
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		// Directory doesn't exist or is unreadable — nothing to clean.
+		return nil //nolint:nilerr // missing dir is expected, not an error
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(worktreesDir, entry.Name()))
+	}
+
 	return nil
 }

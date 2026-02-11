@@ -3,6 +3,8 @@ package dispatcher //nolint:testpackage // white-box tests for worktree manager
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -133,4 +135,112 @@ func TestGitWorktreeManager_Create_DifferentBeadIDs(t *testing.T) {
 func TestGitWorktreeManager_ImplementsInterface(t *testing.T) {
 	runner := &mockCommandRunner{}
 	var _ WorktreeManager = NewGitWorktreeManager("/repo", runner)
+}
+
+func TestGitWorktreeManager_Prune_CleansOrphanDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	worktreesDir := filepath.Join(tmpDir, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
+		t.Fatalf("mkdir .worktrees: %v", err)
+	}
+
+	// Create orphan worktree directories (leftover from a crash).
+	orphans := []string{"bead-1", "bead-2", "oro-abc.3"}
+	for _, name := range orphans {
+		dir := filepath.Join(worktreesDir, name)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir orphan %s: %v", name, err)
+		}
+		// Put a file inside to ensure non-empty dirs are removed.
+		if err := os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+			t.Fatalf("write file in orphan %s: %v", name, err)
+		}
+	}
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(tmpDir, runner)
+
+	err := mgr.Prune(context.Background())
+	if err != nil {
+		t.Fatalf("Prune returned error: %v", err)
+	}
+
+	// Verify git worktree prune was called.
+	if len(runner.calls) < 1 {
+		t.Fatal("expected at least 1 command call for git worktree prune")
+	}
+	pruneCall := runner.calls[0]
+	if pruneCall.Name != "git" {
+		t.Fatalf("call[0] name: got %q, want %q", pruneCall.Name, "git")
+	}
+	wantArgs := []string{"-C", tmpDir, "worktree", "prune"}
+	if len(pruneCall.Args) != len(wantArgs) {
+		t.Fatalf("prune args: got %v, want %v", pruneCall.Args, wantArgs)
+	}
+	for i, a := range pruneCall.Args {
+		if a != wantArgs[i] {
+			t.Fatalf("prune args[%d]: got %q, want %q", i, a, wantArgs[i])
+		}
+	}
+
+	// Verify all orphan directories were removed.
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		t.Fatalf("reading .worktrees after Prune: %v", err)
+	}
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("expected .worktrees to be empty, still has: %v", names)
+	}
+}
+
+func TestGitWorktreeManager_Prune_NoWorktreesDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Intentionally do NOT create .worktrees/ — Prune should be graceful.
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(tmpDir, runner)
+
+	err := mgr.Prune(context.Background())
+	if err != nil {
+		t.Fatalf("Prune with no .worktrees dir should not error, got: %v", err)
+	}
+
+	// git worktree prune should still be called (it's safe even without .worktrees/).
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call for git worktree prune, got %d", len(runner.calls))
+	}
+}
+
+func TestGitWorktreeManager_Prune_GitPruneErrorLogged(t *testing.T) {
+	tmpDir := t.TempDir()
+	worktreesDir := filepath.Join(tmpDir, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
+		t.Fatalf("mkdir .worktrees: %v", err)
+	}
+	// Create one orphan.
+	if err := os.MkdirAll(filepath.Join(worktreesDir, "stale-1"), 0o750); err != nil {
+		t.Fatalf("mkdir orphan: %v", err)
+	}
+
+	// git worktree prune fails, but Prune should still remove dirs and not return error.
+	runner := &mockCommandRunner{err: fmt.Errorf("git prune failed")}
+	mgr := NewGitWorktreeManager(tmpDir, runner)
+
+	err := mgr.Prune(context.Background())
+	if err != nil {
+		t.Fatalf("Prune should not return error even if git prune fails, got: %v", err)
+	}
+
+	// Orphan dir should still be removed even though git prune failed.
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		t.Fatalf("reading .worktrees after Prune: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected .worktrees to be empty after Prune, got %d entries", len(entries))
+	}
 }

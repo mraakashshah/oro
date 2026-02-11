@@ -108,6 +108,10 @@ func (m *mockWorktreeManager) Remove(ctx context.Context, path string) error {
 	return nil
 }
 
+func (m *mockWorktreeManager) Prune(ctx context.Context) error {
+	return nil
+}
+
 type mockEscalator struct {
 	mu       sync.Mutex
 	messages []string

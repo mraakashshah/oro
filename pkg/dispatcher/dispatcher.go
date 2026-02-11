@@ -106,6 +106,7 @@ type BeadSource interface {
 type WorktreeManager interface {
 	Create(ctx context.Context, beadID string) (path string, branch string, err error)
 	Remove(ctx context.Context, path string) error
+	Prune(ctx context.Context) error
 }
 
 // Escalator sends messages to the Manager. Production impl uses tmux send-keys.
@@ -275,6 +276,12 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	// Init schema
 	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
 		return fmt.Errorf("init schema: %w", err)
+	}
+
+	// Prune orphaned worktrees from a previous crash. Errors are logged
+	// but non-fatal — they must not prevent dispatcher startup.
+	if pruneErr := d.worktrees.Prune(ctx); pruneErr != nil {
+		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
 	}
 
 	// Start UDS listener
