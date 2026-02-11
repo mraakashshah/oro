@@ -77,41 +77,27 @@ func (d *Dispatcher) pruneStaleTracking(ctx context.Context) {
 		}
 	}
 
-	// Find orphaned bead IDs across all tracking maps.
-	orphanedBeads := make(map[string]bool)
-	for beadID := range d.attemptCounts {
-		if !activeBeads[beadID] {
-			orphanedBeads[beadID] = true
-		}
-	}
-	for beadID := range d.handoffCounts {
-		if !activeBeads[beadID] {
-			orphanedBeads[beadID] = true
-		}
-	}
-	for beadID := range d.rejectionCounts {
-		if !activeBeads[beadID] {
-			orphanedBeads[beadID] = true
-		}
-	}
-	for beadID := range d.pendingHandoffs {
-		if !activeBeads[beadID] {
-			orphanedBeads[beadID] = true
-		}
-	}
-	for beadID := range d.qgStuckTracker {
-		if !activeBeads[beadID] {
-			orphanedBeads[beadID] = true
-		}
-	}
-	for beadID := range d.escalatedBeads {
-		if !activeBeads[beadID] {
-			orphanedBeads[beadID] = true
-		}
-	}
+	// Find and delete orphaned bead IDs across all tracking maps.
+	orphanCount := d.deleteOrphanedTracking(activeBeads)
 
-	// Delete all orphaned entries.
-	for beadID := range orphanedBeads {
+	d.mu.Unlock()
+
+	if orphanCount > 0 {
+		_ = d.logEvent(ctx, "tracking_pruned", "dispatcher", "", "",
+			fmt.Sprintf(`{"orphaned_count":%d}`, orphanCount))
+	}
+}
+
+// deleteOrphanedTracking finds bead IDs present in tracking maps but not in
+// activeBeads, deletes them, and returns the count. Caller must hold d.mu.
+func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
+	orphaned := make(map[string]bool)
+	for _, m := range d.allTrackingKeys() {
+		if !activeBeads[m] {
+			orphaned[m] = true
+		}
+	}
+	for beadID := range orphaned {
 		delete(d.attemptCounts, beadID)
 		delete(d.handoffCounts, beadID)
 		delete(d.rejectionCounts, beadID)
@@ -119,12 +105,34 @@ func (d *Dispatcher) pruneStaleTracking(ctx context.Context) {
 		delete(d.qgStuckTracker, beadID)
 		delete(d.escalatedBeads, beadID)
 	}
+	return len(orphaned)
+}
 
-	d.mu.Unlock()
-
-	// Log the cleanup event if any orphans were found.
-	if len(orphanedBeads) > 0 {
-		_ = d.logEvent(ctx, "tracking_pruned", "dispatcher", "", "",
-			fmt.Sprintf(`{"orphaned_count":%d}`, len(orphanedBeads)))
+// allTrackingKeys returns all bead IDs referenced across tracking maps.
+// Caller must hold d.mu.
+func (d *Dispatcher) allTrackingKeys() []string {
+	seen := make(map[string]bool)
+	for id := range d.attemptCounts {
+		seen[id] = true
 	}
+	for id := range d.handoffCounts {
+		seen[id] = true
+	}
+	for id := range d.rejectionCounts {
+		seen[id] = true
+	}
+	for id := range d.pendingHandoffs {
+		seen[id] = true
+	}
+	for id := range d.qgStuckTracker {
+		seen[id] = true
+	}
+	for id := range d.escalatedBeads {
+		seen[id] = true
+	}
+	keys := make([]string, 0, len(seen))
+	for id := range seen {
+		keys = append(keys, id)
+	}
+	return keys
 }

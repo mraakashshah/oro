@@ -1232,27 +1232,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	// Check for P0 beads when all workers are busy (priority contention).
 	if len(idle) == 0 && totalWorkers > 0 {
-		for _, bead := range beads {
-			if bead.Priority != 0 {
-				continue
-			}
-			d.mu.Lock()
-			alreadyEscalated := d.escalatedBeads[bead.ID]
-			if !alreadyEscalated {
-				d.escalatedBeads[bead.ID] = true
-			}
-			d.mu.Unlock()
-
-			if !alreadyEscalated {
-				msg := protocol.FormatEscalation(protocol.EscPriorityContention,
-					bead.ID,
-					fmt.Sprintf("P0 bead queued but all %d workers busy", totalWorkers),
-					"")
-				d.escalate(ctx, msg, bead.ID, "")
-				_ = d.logEvent(ctx, "priority_contention", "dispatcher", bead.ID, "",
-					fmt.Sprintf(`{"total_workers":%d}`, totalWorkers))
-			}
-		}
+		d.checkPriorityContention(ctx, beads, totalWorkers)
 		return
 	}
 
@@ -1262,6 +1242,32 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 			break
 		}
 		d.assignBead(ctx, idle[i], bead)
+	}
+}
+
+// checkPriorityContention escalates P0 beads that are queued while all workers
+// are busy. Each bead is only escalated once (tracked by escalatedBeads).
+func (d *Dispatcher) checkPriorityContention(ctx context.Context, beads []protocol.Bead, totalWorkers int) {
+	for _, bead := range beads {
+		if bead.Priority != 0 {
+			continue
+		}
+		d.mu.Lock()
+		alreadyEscalated := d.escalatedBeads[bead.ID]
+		if !alreadyEscalated {
+			d.escalatedBeads[bead.ID] = true
+		}
+		d.mu.Unlock()
+
+		if !alreadyEscalated {
+			msg := protocol.FormatEscalation(protocol.EscPriorityContention,
+				bead.ID,
+				fmt.Sprintf("P0 bead queued but all %d workers busy", totalWorkers),
+				"")
+			d.escalate(ctx, msg, bead.ID, "")
+			_ = d.logEvent(ctx, "priority_contention", "dispatcher", bead.ID, "",
+				fmt.Sprintf(`{"total_workers":%d}`, totalWorkers))
+		}
 	}
 }
 
@@ -1291,18 +1297,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
 
-	// Retrieve bead details for rich prompt (best-effort).
-	var title, acceptance string
-	detail, showErr := d.beads.Show(ctx, bead.ID)
-	if showErr != nil {
-		// Log BeadNotFoundError for visibility (best-effort, non-fatal)
-		bnfErr := &protocol.BeadNotFoundError{BeadID: bead.ID}
-		_ = d.logEvent(ctx, "bead_lookup_failed", "dispatcher", bead.ID, w.id,
-			fmt.Sprintf(`{"error":%q}`, bnfErr.Error()))
-	} else if detail != nil {
-		title = detail.Title
-		acceptance = detail.AcceptanceCriteria
-	}
+	title, acceptance := d.lookupBeadDetail(ctx, bead.ID, w.id)
 
 	// Retrieve relevant memories for this bead (best-effort).
 	var memCtx string
@@ -1339,6 +1334,21 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.worktrees.Remove(ctx, worktree)
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
+}
+
+// lookupBeadDetail retrieves the title and acceptance criteria for a bead (best-effort).
+func (d *Dispatcher) lookupBeadDetail(ctx context.Context, beadID, workerID string) (title, acceptance string) {
+	detail, err := d.beads.Show(ctx, beadID)
+	if err != nil {
+		bnfErr := &protocol.BeadNotFoundError{BeadID: beadID}
+		_ = d.logEvent(ctx, "bead_lookup_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, bnfErr.Error()))
+		return "", ""
+	}
+	if detail != nil {
+		return detail.Title, detail.AcceptanceCriteria
+	}
+	return "", ""
 }
 
 // statusResponse is the JSON structure returned by the status directive.
