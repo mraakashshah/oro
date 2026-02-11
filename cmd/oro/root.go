@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"oro/internal/buildinfo"
+	"oro/internal/appversion"
 
 	"github.com/spf13/cobra"
 )
@@ -14,7 +14,7 @@ func newRootCmd() *cobra.Command {
 		Use:           "oro",
 		Short:         "Oro agent swarm orchestrator",
 		Long:          "oro is the single entry point for the Oro agent swarm.\nIt manages session orchestration and the memory interface.",
-		Version:       fmt.Sprintf("oro %s", buildinfo.String()),
+		Version:       fmt.Sprintf("oro %s", appversion.String()),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

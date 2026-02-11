@@ -1,15 +1,15 @@
-package buildinfo_test
+package appversion_test
 
 import (
 	"testing"
 
-	"oro/internal/buildinfo"
+	"oro/internal/appversion"
 )
 
 func TestVersionIsSet(t *testing.T) {
 	t.Parallel()
 
-	v := buildinfo.String()
+	v := appversion.String()
 	if v == "" {
 		t.Fatal("version.String() must not be empty")
 	}
