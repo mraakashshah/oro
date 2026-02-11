@@ -1,6 +1,7 @@
 ---
 name: using-skills
 description: Use at the start of any task to check which skills might apply -- even 1% chance means invoke the skill
+user-invocable: false
 ---
 
 <EXTREMELY-IMPORTANT>

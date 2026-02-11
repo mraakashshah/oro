@@ -1,6 +1,7 @@
 ---
 name: context-checkpoint
 description: Use after every bead completion to monitor context consumption and trigger proactive handoff before context degrades
+user-invocable: false
 ---
 
 # Context Checkpoint
