@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	"oro/pkg/ops"
+	"oro/pkg/protocol"
 )
 
 // TestReservationPattern_HeartbeatSkipsReserved verifies that checkHeartbeats
-// does NOT delete a worker in WorkerReserved state, even when the heartbeat
+// does NOT delete a worker in protocol.WorkerReserved state, even when the heartbeat
 // timeout has been exceeded. This is the core invariant of the two-phase
 // reservation pattern: reserved workers are immune to heartbeat reaping so
 // that the I/O window (memory.ForPrompt) cannot silently lose the assignment.
@@ -27,13 +28,13 @@ func TestReservationPattern_HeartbeatSkipsReserved(t *testing.T) {
 
 	workerID := "reserved-heartbeat-worker"
 
-	// Seed the worker directly with WorkerReserved state and an old lastSeen
+	// Seed the worker directly with protocol.WorkerReserved state and an old lastSeen
 	// that exceeds the heartbeat timeout.
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
 		id:       workerID,
 		conn:     serverConn,
-		state:    WorkerReserved,
+		state:    protocol.WorkerReserved,
 		beadID:   "reserved-bead",
 		worktree: "/tmp/reserved-wt",
 		model:    "test-model",
@@ -48,10 +49,10 @@ func TestReservationPattern_HeartbeatSkipsReserved(t *testing.T) {
 	// Verify the worker still exists.
 	st, beadID, ok := d.WorkerInfo(workerID)
 	if !ok {
-		t.Fatal("checkHeartbeats deleted a WorkerReserved worker; reservation must protect against heartbeat reaping")
+		t.Fatal("checkHeartbeats deleted a protocol.WorkerReserved worker; reservation must protect against heartbeat reaping")
 	}
-	if st != WorkerReserved {
-		t.Fatalf("expected WorkerReserved, got %s", st)
+	if st != protocol.WorkerReserved {
+		t.Fatalf("expected protocol.WorkerReserved, got %s", st)
 	}
 	if beadID != "reserved-bead" {
 		t.Fatalf("expected beadID=reserved-bead, got %s", beadID)
@@ -64,8 +65,8 @@ func TestReservationPattern_HeartbeatSkipsReserved(t *testing.T) {
 }
 
 // TestReservationPattern_RegisterWorkerUsesReserved verifies that registerWorker
-// sets the worker to WorkerReserved before unlocking for memory.ForPrompt, and
-// transitions to WorkerBusy after re-acquiring the lock. During the unlock
+// sets the worker to protocol.WorkerReserved before unlocking for memory.ForPrompt, and
+// transitions to protocol.WorkerBusy after re-acquiring the lock. During the unlock
 // window, checkHeartbeats must NOT delete the reserved worker.
 func TestReservationPattern_RegisterWorkerUsesReserved(t *testing.T) {
 	d, _, _, esc, _, _ := newTestDispatcher(t)
@@ -83,7 +84,7 @@ func TestReservationPattern_RegisterWorkerUsesReserved(t *testing.T) {
 	workerID := "reservation-register-worker"
 
 	// stateObserved captures the worker state during the unlock window.
-	var stateObserved WorkerState
+	var stateObserved protocol.WorkerState
 	var stateOK bool
 
 	unlockDone := make(chan struct{})
@@ -126,21 +127,21 @@ func TestReservationPattern_RegisterWorkerUsesReserved(t *testing.T) {
 
 	d.testUnlockHook = nil
 
-	// The state during the unlock window must have been WorkerReserved.
+	// The state during the unlock window must have been protocol.WorkerReserved.
 	if !stateOK {
 		t.Fatal("worker was not found in the map during the unlock window")
 	}
-	if stateObserved != WorkerReserved {
-		t.Fatalf("expected WorkerReserved during unlock window, got %s", stateObserved)
+	if stateObserved != protocol.WorkerReserved {
+		t.Fatalf("expected protocol.WorkerReserved during unlock window, got %s", stateObserved)
 	}
 
-	// After registerWorker completes, the worker must exist and be WorkerBusy.
+	// After registerWorker completes, the worker must exist and be protocol.WorkerBusy.
 	st, _, ok := d.WorkerInfo(workerID)
 	if !ok {
 		t.Fatal("worker was deleted despite being reserved; reservation pattern failed")
 	}
-	if st != WorkerBusy {
-		t.Fatalf("expected WorkerBusy after registerWorker completes, got %s", st)
+	if st != protocol.WorkerBusy {
+		t.Fatalf("expected protocol.WorkerBusy after registerWorker completes, got %s", st)
 	}
 
 	// ASSIGN must have been sent (spy was armed from the start).
@@ -155,7 +156,7 @@ func TestReservationPattern_RegisterWorkerUsesReserved(t *testing.T) {
 }
 
 // TestReservationPattern_HandleQGFailureUsesReserved verifies that
-// handleQGFailure sets the worker to WorkerReserved before releasing the lock
+// handleQGFailure sets the worker to protocol.WorkerReserved before releasing the lock
 // for memory.ForPrompt I/O, preventing checkHeartbeats from deleting it.
 func TestReservationPattern_HandleQGFailureUsesReserved(t *testing.T) {
 	d, _, _, esc, _, _ := newTestDispatcher(t)
@@ -172,7 +173,7 @@ func TestReservationPattern_HandleQGFailureUsesReserved(t *testing.T) {
 
 	workerID := "reservation-qg-worker"
 
-	var stateObserved WorkerState
+	var stateObserved protocol.WorkerState
 	var stateOK bool
 	unlockDone := make(chan struct{})
 
@@ -202,7 +203,7 @@ func TestReservationPattern_HandleQGFailureUsesReserved(t *testing.T) {
 	d.workers[workerID] = &trackedWorker{
 		id:       workerID,
 		conn:     spy,
-		state:    WorkerBusy,
+		state:    protocol.WorkerBusy,
 		beadID:   "reservation-qg-bead",
 		worktree: "/tmp/reservation-qg-wt",
 		model:    "test-model",
@@ -217,12 +218,12 @@ func TestReservationPattern_HandleQGFailureUsesReserved(t *testing.T) {
 
 	d.testUnlockHook = nil
 
-	// During the unlock window, the worker must have been in WorkerReserved state.
+	// During the unlock window, the worker must have been in protocol.WorkerReserved state.
 	if !stateOK {
 		t.Fatal("worker was not found in the map during the unlock window")
 	}
-	if stateObserved != WorkerReserved {
-		t.Fatalf("expected WorkerReserved during unlock window, got %s", stateObserved)
+	if stateObserved != protocol.WorkerReserved {
+		t.Fatalf("expected protocol.WorkerReserved during unlock window, got %s", stateObserved)
 	}
 
 	// After completion, the worker must still exist.
@@ -230,8 +231,8 @@ func TestReservationPattern_HandleQGFailureUsesReserved(t *testing.T) {
 	if !ok {
 		t.Fatal("worker was deleted despite being reserved during QG failure handling")
 	}
-	if st != WorkerBusy {
-		t.Fatalf("expected WorkerBusy after handleQGFailure, got %s", st)
+	if st != protocol.WorkerBusy {
+		t.Fatalf("expected protocol.WorkerBusy after handleQGFailure, got %s", st)
 	}
 
 	// No escalation should have been triggered (worker survived).
@@ -241,7 +242,7 @@ func TestReservationPattern_HandleQGFailureUsesReserved(t *testing.T) {
 }
 
 // TestReservationPattern_HandleReviewResultUsesReserved verifies that
-// handleReviewResult (rejected path) protects the worker with WorkerReserved
+// handleReviewResult (rejected path) protects the worker with protocol.WorkerReserved
 // state between the rejection count update and the re-assign lock acquisition.
 func TestReservationPattern_HandleReviewResultUsesReserved(t *testing.T) {
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)
@@ -269,7 +270,7 @@ func TestReservationPattern_HandleReviewResultUsesReserved(t *testing.T) {
 	d.workers[workerID] = &trackedWorker{
 		id:       workerID,
 		conn:     spy,
-		state:    WorkerReviewing,
+		state:    protocol.WorkerReviewing,
 		beadID:   beadID,
 		worktree: "/tmp/reservation-review-wt",
 		model:    "test-model",
@@ -292,8 +293,8 @@ func TestReservationPattern_HandleReviewResultUsesReserved(t *testing.T) {
 	if !ok {
 		t.Fatal("worker was deleted during handleReviewResult rejected path")
 	}
-	if st != WorkerBusy {
-		t.Fatalf("expected WorkerBusy after review rejection re-assign, got %s", st)
+	if st != protocol.WorkerBusy {
+		t.Fatalf("expected protocol.WorkerBusy after review rejection re-assign, got %s", st)
 	}
 
 	// ASSIGN must have been sent.
@@ -306,7 +307,7 @@ func TestReservationPattern_HandleReviewResultUsesReserved(t *testing.T) {
 // integration scenario: registerWorker with a pending handoff races against
 // checkHeartbeats. Without the reservation pattern, the heartbeat checker
 // would delete the worker during the memory.ForPrompt unlock window, losing
-// the bead assignment silently. With WorkerReserved, the worker survives.
+// the bead assignment silently. With protocol.WorkerReserved, the worker survives.
 func TestReservationPattern_ConcurrentHeartbeatDuringRegister(t *testing.T) {
 	d, _, _, esc, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
@@ -375,10 +376,10 @@ func TestReservationPattern_ConcurrentHeartbeatDuringRegister(t *testing.T) {
 	st, _, ok := d.WorkerInfo(workerID)
 	if !ok {
 		t.Fatal("worker was deleted by checkHeartbeats during unlock window; " +
-			"WorkerReserved state should protect against this")
+			"protocol.WorkerReserved state should protect against this")
 	}
-	if st != WorkerBusy {
-		t.Fatalf("expected WorkerBusy after registerWorker, got %s", st)
+	if st != protocol.WorkerBusy {
+		t.Fatalf("expected protocol.WorkerBusy after registerWorker, got %s", st)
 	}
 
 	// ASSIGN must have been sent.
@@ -441,7 +442,7 @@ func TestReservationPattern_InvalidReservationAfterRelock(t *testing.T) {
 		d.mu.Lock()
 		if w, exists := d.workers[workerID]; exists {
 			// Change state away from Reserved — simulating unexpected state change.
-			w.state = WorkerShuttingDown
+			w.state = protocol.WorkerShuttingDown
 		}
 		d.mu.Unlock()
 		spy.armed.Store(true)
@@ -459,7 +460,7 @@ func TestReservationPattern_InvalidReservationAfterRelock(t *testing.T) {
 	}
 }
 
-// compileSentinel ensures WorkerReserved is defined at compile time.
+// compileSentinel ensures protocol.WorkerReserved is defined at compile time.
 // This test function exists purely to create a compilation dependency on the
-// WorkerReserved constant — if it doesn't exist, the test file won't compile.
-var _ = WorkerReserved
+// protocol.WorkerReserved constant — if it doesn't exist, the test file won't compile.
+var _ = protocol.WorkerReserved

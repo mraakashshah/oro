@@ -27,21 +27,21 @@ import (
 
 type mockBeadSource struct {
 	mu     sync.Mutex
-	beads  []Bead
-	shown  map[string]*BeadDetail
+	beads  []protocol.Bead
+	shown  map[string]*protocol.BeadDetail
 	closed []string
 	synced bool
 }
 
-func (m *mockBeadSource) Ready(_ context.Context) ([]Bead, error) {
+func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]Bead, len(m.beads))
+	out := make([]protocol.Bead, len(m.beads))
 	copy(out, m.beads)
 	return out, nil
 }
 
-func (m *mockBeadSource) Show(_ context.Context, id string) (*BeadDetail, error) {
+func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if d, ok := m.shown[id]; ok {
@@ -64,7 +64,7 @@ func (m *mockBeadSource) Sync(_ context.Context) error {
 	return nil
 }
 
-func (m *mockBeadSource) SetBeads(beads []Bead) {
+func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.beads = beads
@@ -345,8 +345,8 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 	opsSpawner := ops.NewSpawner(spawnMock)
 
 	beadSrc := &mockBeadSource{
-		beads: []Bead{},
-		shown: make(map[string]*BeadDetail),
+		beads: []protocol.Bead{},
+		shown: make(map[string]*protocol.BeadDetail),
 	}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
@@ -540,7 +540,7 @@ func waitForWorkers(t *testing.T, d *Dispatcher, want int, timeout time.Duration
 }
 
 // waitForWorkerState polls until a specific worker reaches the expected state.
-func waitForWorkerState(t *testing.T, d *Dispatcher, workerID string, want WorkerState, timeout time.Duration) {
+func waitForWorkerState(t *testing.T, d *Dispatcher, workerID string, want protocol.WorkerState, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -592,7 +592,7 @@ func TestDispatcher_StartDirective_BeginsAssigning(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Now add beads and connect a worker
-	beadSrc.SetBeads([]Bead{{ID: "bead-1", Title: "Test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-1", Title: "Test", Priority: 1}})
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
@@ -747,7 +747,7 @@ func TestDispatcher_AssignBead(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-42", Title: "Build thing", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-42", Title: "Build thing", Priority: 1}})
 
 	// Read ASSIGN
 	msg, ok := readMsg(t, conn, 2*time.Second)
@@ -765,7 +765,7 @@ func TestDispatcher_AssignBead(t *testing.T) {
 	}
 
 	// Verify worker state changed to busy
-	waitForWorkerState(t, d, "w1", WorkerBusy, 1*time.Second)
+	waitForWorkerState(t, d, "w1", protocol.WorkerBusy, 1*time.Second)
 }
 
 func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
@@ -783,7 +783,7 @@ func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Assign bead with explicit sonnet model
-	beadSrc.SetBeads([]Bead{{
+	beadSrc.SetBeads([]protocol.Bead{{
 		ID: "bead-model", Title: "Model test", Priority: 1,
 		Model: "claude-sonnet-4-5-20250929",
 	}})
@@ -812,14 +812,14 @@ func TestDispatcher_AssignBead_DefaultModel(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Assign bead with no model — should default to opus
-	beadSrc.SetBeads([]Bead{{ID: "bead-default", Title: "Default model", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-default", Title: "Default model", Priority: 1}})
 
 	msg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if msg.Assign.Model != DefaultModel {
-		t.Fatalf("expected default model %q, got %q", DefaultModel, msg.Assign.Model)
+	if msg.Assign.Model != protocol.DefaultModel {
+		t.Fatalf("expected default model %q, got %q", protocol.DefaultModel, msg.Assign.Model)
 	}
 }
 
@@ -838,7 +838,7 @@ func TestDispatcher_WorkerDone_MergesClean(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-merge", Title: "Merge test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-merge", Title: "Merge test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -895,7 +895,7 @@ func TestDispatcher_WorkerDone_MergeConflict_SpawnsOpsAgent(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-conflict", Title: "Conflict test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-conflict", Title: "Conflict test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -935,7 +935,7 @@ func TestDispatcher_Handoff_RespawnsWorker(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-handoff", Title: "Handoff test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-handoff", Title: "Handoff test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -986,7 +986,7 @@ func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-dead", Title: "Dead worker test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-dead", Title: "Dead worker test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -1021,7 +1021,7 @@ func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T)
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-crash", Title: "Crash test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-crash", Title: "Crash test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -1061,7 +1061,7 @@ func TestDispatcher_ReadyForReview_SpawnsReviewer(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-review", Title: "Review test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-review", Title: "Review test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -1075,7 +1075,7 @@ func TestDispatcher_ReadyForReview_SpawnsReviewer(t *testing.T) {
 	})
 
 	// Worker state should change to reviewing
-	waitForWorkerState(t, d, "w1", WorkerReviewing, 1*time.Second)
+	waitForWorkerState(t, d, "w1", protocol.WorkerReviewing, 1*time.Second)
 
 	// Verify event logged
 	deadline := time.Now().Add(1 * time.Second)
@@ -1106,7 +1106,7 @@ func TestDispatcher_ReviewApproved_WorkerSignalsDone(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-approved", Title: "Approved test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-approved", Title: "Approved test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -1148,7 +1148,7 @@ func TestDispatcher_ReviewRejected_FeedbackSent(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-rejected", Title: "Rejected test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-rejected", Title: "Rejected test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -1200,7 +1200,7 @@ func TestDispatcher_Reconnect_ResumesWorker(t *testing.T) {
 	})
 
 	// Wait for worker to be tracked as busy
-	waitForWorkerState(t, d, "w-reconnect", WorkerBusy, 1*time.Second)
+	waitForWorkerState(t, d, "w-reconnect", protocol.WorkerBusy, 1*time.Second)
 
 	// Verify reconnect event
 	deadline := time.Now().Add(1 * time.Second)
@@ -1232,7 +1232,7 @@ func TestDispatcher_StopDirective_FinishesCurrent(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-noassign", Title: "Should not be assigned", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-noassign", Title: "Should not be assigned", Priority: 1}})
 
 	// Wait a couple poll cycles — no ASSIGN should arrive
 	time.Sleep(200 * time.Millisecond)
@@ -1260,7 +1260,7 @@ func TestDispatcher_PauseDirective(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-paused", Title: "Paused", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-paused", Title: "Paused", Priority: 1}})
 	time.Sleep(200 * time.Millisecond)
 	_, ok := readMsg(t, conn, 200*time.Millisecond)
 	if ok {
@@ -1287,7 +1287,7 @@ func TestDispatcher_Escalation(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-esc", Title: "Escalation test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-esc", Title: "Escalation test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -1322,7 +1322,7 @@ func TestDispatcher_ConcurrentWorkers(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-a", Title: "A", Priority: 1},
 		{ID: "bead-b", Title: "B", Priority: 2},
 		{ID: "bead-c", Title: "C", Priority: 3},
@@ -1556,7 +1556,7 @@ func TestRegisterWorker_NewAndReRegister(t *testing.T) {
 	if !ok {
 		t.Fatal("expected worker to be tracked")
 	}
-	if st != WorkerIdle {
+	if st != protocol.WorkerIdle {
 		t.Fatalf("expected idle, got %s", st)
 	}
 
@@ -1671,7 +1671,7 @@ func TestSendToWorker_BrokenConn(t *testing.T) {
 	w := &trackedWorker{
 		id:      "w-broken",
 		conn:    server,
-		state:   WorkerIdle,
+		state:   protocol.WorkerIdle,
 		encoder: json.NewEncoder(server),
 	}
 
@@ -1700,7 +1700,7 @@ func TestHandleReconnect_IdleState(t *testing.T) {
 	})
 
 	// Should be tracked as idle
-	waitForWorkerState(t, d, "w-idle-reconnect", WorkerIdle, 1*time.Second)
+	waitForWorkerState(t, d, "w-idle-reconnect", protocol.WorkerIdle, 1*time.Second)
 }
 
 func TestHandleReconnect_WithBufferedEvents(t *testing.T) {
@@ -1726,7 +1726,7 @@ func TestHandleReconnect_WithBufferedEvents(t *testing.T) {
 		},
 	})
 
-	waitForWorkerState(t, d, "w-buffered", WorkerBusy, 1*time.Second)
+	waitForWorkerState(t, d, "w-buffered", protocol.WorkerBusy, 1*time.Second)
 
 	// The buffered heartbeat should have been processed — check event
 	deadline := time.Now().Add(1 * time.Second)
@@ -1914,7 +1914,7 @@ func TestHandleDone_QualityGateFailed_RejectsMerge(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg-fail", Title: "QG fail test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-fail", Title: "QG fail test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -1974,7 +1974,7 @@ func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg-pass", Title: "QG pass test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-pass", Title: "QG pass test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -2023,7 +2023,7 @@ func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-mem", Title: "Memory handoff test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mem", Title: "Memory handoff test", Priority: 1}})
 	_, ok2 := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok2 {
 		t.Fatal("expected ASSIGN")
@@ -2115,7 +2115,7 @@ func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:fun
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Set bead with title that matches the memory
-	beadSrc.SetBeads([]Bead{{ID: "bead-reassign", Title: "fix linting with ruff and pyright", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-reassign", Title: "fix linting with ruff and pyright", Priority: 1}})
 
 	// Read ASSIGN — should include MemoryContext
 	msg, ok := readMsg(t, conn, 2*time.Second)
@@ -2160,7 +2160,7 @@ func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-gs", Title: "Graceful shutdown test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-gs", Title: "Graceful shutdown test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -2228,7 +2228,7 @@ func TestDispatcher_GracefulShutdown_TimeoutFallsBackToHardKill(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-timeout", Title: "Timeout test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-timeout", Title: "Timeout test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -2310,7 +2310,7 @@ func TestAssignIncludesMemories(t *testing.T) { //nolint:funlen // integration t
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Set bead with title that matches the memory
-	beadSrc.SetBeads([]Bead{{ID: "bead-mem-inject", Title: "run go vet and lint checks", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mem-inject", Title: "run go vet and lint checks", Priority: 1}})
 
 	// Read ASSIGN — should include non-empty MemoryContext
 	msg, ok := readMsg(t, conn, 2*time.Second)
@@ -2359,7 +2359,7 @@ func TestDispatcherShutdownBroadcast(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-sd-0", Title: "Shutdown test 0", Priority: 1},
 		{ID: "bead-sd-1", Title: "Shutdown test 1", Priority: 2},
 		{ID: "bead-sd-2", Title: "Shutdown test 2", Priority: 3},
@@ -2416,7 +2416,7 @@ func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-force-0", Title: "Force 0", Priority: 1},
 		{ID: "bead-force-1", Title: "Force 1", Priority: 2},
 	})
@@ -2485,7 +2485,7 @@ func TestAssignBeadCleansUpOnFailure(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 
 	ctx := context.Background()
-	bead := Bead{ID: "bead-cleanup", Title: "Cleanup test", Priority: 1}
+	bead := protocol.Bead{ID: "bead-cleanup", Title: "Cleanup test", Priority: 1}
 
 	// Grab the tracked worker so we can call assignBead directly
 	d.mu.Lock()
@@ -2561,7 +2561,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 	slowSpawner := &slowBatchSpawner{}
 	opsSpawner := ops.NewSpawner(slowSpawner)
 
-	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
+	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 
@@ -2593,7 +2593,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-ops-kill", Title: "Ops kill test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-ops-kill", Title: "Ops kill test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -2652,7 +2652,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	merger := merge.NewCoordinator(gitRunner)
 
 	spawner := ops.NewSpawner(&mockBatchSpawner{})
-	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
+	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 
@@ -2691,7 +2691,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-wt-1", Title: "WT cleanup 1", Priority: 1},
 		{ID: "bead-wt-2", Title: "WT cleanup 2", Priority: 2},
 	})
@@ -2741,7 +2741,7 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 	merger := merge.NewCoordinator(gitRunner)
 
 	spawner := ops.NewSpawner(&mockBatchSpawner{})
-	beadSrc := &mockBeadSource{beads: []Bead{}, shown: make(map[string]*BeadDetail)}
+	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 
@@ -2780,7 +2780,7 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-order-1", Title: "Order test 1", Priority: 1},
 		{ID: "bead-order-2", Title: "Order test 2", Priority: 2},
 	})
@@ -2926,7 +2926,7 @@ func TestDispatcher_BeadDirWatcher_TriggersAssignment(t *testing.T) {
 	beadSrc.SetBeads(nil)
 
 	// Add the bead to the mock source first
-	beadSrc.SetBeads([]Bead{{ID: "bead-watch-1", Title: "Test bead", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-watch-1", Title: "Test bead", Priority: 1}})
 
 	// Now create a new file in .beads/ to trigger the watcher
 	// (fsnotify triggers on CREATE, WRITE, REMOVE, RENAME events)
@@ -2976,7 +2976,7 @@ func TestDispatcher_BeadDirWatcher_FallbackPoll(t *testing.T) {
 	beadSrc.SetBeads(nil)
 
 	// Add the bead to the mock source (but don't trigger fsnotify)
-	beadSrc.SetBeads([]Bead{{ID: "bead-fallback", Title: "Fallback test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-fallback", Title: "Fallback test", Priority: 1}})
 
 	// Should receive ASSIGN from fallback poll within reasonable time
 	msg, ok := readMsg(t, conn, 1*time.Second)
@@ -3007,7 +3007,7 @@ func TestQualityGateRetry_ReAssignSameBeadAndWorktree(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg-retry", Title: "QG retry", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-retry", Title: "QG retry", Priority: 1}})
 	assignMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -3058,7 +3058,7 @@ func TestQualityGateRetry_WorkerStaysBusy(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg-busy", Title: "QG busy", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-busy", Title: "QG busy", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -3066,7 +3066,7 @@ func TestQualityGateRetry_WorkerStaysBusy(t *testing.T) {
 	beadSrc.SetBeads(nil)
 
 	// Verify worker is busy after initial assignment
-	waitForWorkerState(t, d, "w1", WorkerBusy, 1*time.Second)
+	waitForWorkerState(t, d, "w1", protocol.WorkerBusy, 1*time.Second)
 
 	// Send DONE with quality gate failed
 	sendMsg(t, conn, protocol.Message{
@@ -3089,7 +3089,7 @@ func TestQualityGateRetry_WorkerStaysBusy(t *testing.T) {
 	if !ok {
 		t.Fatal("expected worker to still be tracked")
 	}
-	if st != WorkerBusy {
+	if st != protocol.WorkerBusy {
 		t.Fatalf("expected worker state Busy after retry, got %s", st)
 	}
 	if beadID != "bead-qg-busy" {
@@ -3111,7 +3111,7 @@ func TestQualityGateRetry_NoMergeHappens(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg-nomerge", Title: "QG no merge", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-nomerge", Title: "QG no merge", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -3173,7 +3173,7 @@ func TestQualityGateRetry_EventLogged(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg-event", Title: "QG event", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-event", Title: "QG event", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -3234,7 +3234,7 @@ func TestQualityGatePassed_NormalMergeFlow(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg-merge", Title: "QG merge", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-merge", Title: "QG merge", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -3269,7 +3269,7 @@ func TestQualityGatePassed_NormalMergeFlow(t *testing.T) {
 	}
 
 	// Worker should become idle after merge
-	waitForWorkerState(t, d, "w1", WorkerIdle, 2*time.Second)
+	waitForWorkerState(t, d, "w1", protocol.WorkerIdle, 2*time.Second)
 
 	// Assignment should be completed
 	var status string
@@ -3297,7 +3297,7 @@ func TestQualityGateRetry_ModelPreserved(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Assign bead with explicit model
-	beadSrc.SetBeads([]Bead{{
+	beadSrc.SetBeads([]protocol.Bead{{
 		ID: "bead-qg-model", Title: "QG model", Priority: 1,
 		Model: "claude-sonnet-4-5-20250929",
 	}})
@@ -3357,13 +3357,13 @@ func TestQualityGateRetry_DefaultModelPreserved(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Assign bead with no model (should resolve to default)
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg-defmodel", Title: "QG default model", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-defmodel", Title: "QG default model", Priority: 1}})
 	assignMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != DefaultModel {
-		t.Fatalf("initial ASSIGN should have default model %q, got %q", DefaultModel, assignMsg.Assign.Model)
+	if assignMsg.Assign.Model != protocol.DefaultModel {
+		t.Fatalf("initial ASSIGN should have default model %q, got %q", protocol.DefaultModel, assignMsg.Assign.Model)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -3382,8 +3382,8 @@ func TestQualityGateRetry_DefaultModelPreserved(t *testing.T) {
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
 	}
-	if retryMsg.Assign.Model != DefaultModel {
-		t.Fatalf("re-ASSIGN should preserve default model %q, got %q", DefaultModel, retryMsg.Assign.Model)
+	if retryMsg.Assign.Model != protocol.DefaultModel {
+		t.Fatalf("re-ASSIGN should preserve default model %q, got %q", protocol.DefaultModel, retryMsg.Assign.Model)
 	}
 }
 
@@ -3475,7 +3475,7 @@ func TestDispatcher_StatusDirective_ReturnsJSON(t *testing.T) {
 	})
 	waitForWorkers(t, d, 1, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-s1", Title: "Status test", Priority: 1},
 		{ID: "bead-s2", Title: "Status test 2", Priority: 2},
 	})
@@ -3612,7 +3612,7 @@ func TestDispatcher_FocusEpic_PrioritizesFocusedBeads(t *testing.T) {
 
 	// Provide beads: higher-priority bead is NOT in focused epic,
 	// lower-priority bead IS in focused epic.
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p0-other", Title: "Critical other", Priority: 0, Epic: "epic-other"},
 		{ID: "bead-p2-auth", Title: "Auth task", Priority: 2, Epic: "epic-auth"},
 	})
@@ -3645,7 +3645,7 @@ func TestDispatcher_FocusEpic_FallsBackToNonFocused(t *testing.T) {
 	sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "epic-nonexistent")
 
 	// Only non-focused beads available
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-other", Title: "Other work", Priority: 2, Epic: "epic-other"},
 	})
 
@@ -3674,7 +3674,7 @@ func TestDispatcher_NoFocus_PriorityOnly(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// No focus set — pure priority ordering
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p2", Title: "Medium", Priority: 2, Epic: "epic-a"},
 		{ID: "bead-p0", Title: "Critical", Priority: 0, Epic: "epic-b"},
 	})
@@ -3813,7 +3813,7 @@ func TestDispatcher_ReconcileScale_ScaleDown(t *testing.T) {
 	d.mu.Lock()
 	for id, w := range d.workers {
 		if id == "w-scale-0" || id == "w-scale-1" {
-			w.state = WorkerBusy
+			w.state = protocol.WorkerBusy
 			w.beadID = "bead-" + id
 		}
 	}
@@ -3845,7 +3845,7 @@ func TestDispatcher_ReconcileScale_ScaleDown(t *testing.T) {
 	d.mu.Lock()
 	busyCount := 0
 	for _, w := range d.workers {
-		if w.state == WorkerBusy {
+		if w.state == protocol.WorkerBusy {
 			busyCount++
 		}
 	}
@@ -3909,7 +3909,7 @@ func TestDispatcher_PrioritySorting_HighestPriorityAssignedFirst(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Provide beads in REVERSE priority order: P3 first, P0 last
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p3", Title: "Low priority", Priority: 3},
 		{ID: "bead-p0", Title: "Critical", Priority: 0},
 		{ID: "bead-p2", Title: "Medium priority", Priority: 2},
@@ -3967,7 +3967,7 @@ func setupReviewRejection(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, 
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-rej", Title: "Rejection test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-rej", Title: "Rejection test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume initial ASSIGN
 	if !ok {
 		t.Fatal("expected initial ASSIGN")
@@ -4077,7 +4077,7 @@ func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-ralph", Title: "Ralph test", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-ralph", Title: "Ralph test", Priority: 1}})
 	assignMsg, ok := readMsg(t, conn1, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -4145,7 +4145,7 @@ func TestDispatcher_Handoff_PendingHandoffConsumedOnce(t *testing.T) {
 	// Manually add a pending handoff
 	d.mu.Lock()
 	d.pendingHandoffs = map[string]*pendingHandoff{
-		"bead-x": {worktree: "/tmp/wt-x", model: DefaultModel},
+		"bead-x": {worktree: "/tmp/wt-x", model: protocol.DefaultModel},
 	}
 	d.mu.Unlock()
 
@@ -4180,7 +4180,7 @@ func TestDispatcher_Handoff_NoProcManager_LogsOnly(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-noproc", Title: "No proc", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-noproc", Title: "No proc", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -4263,7 +4263,7 @@ func setupHandoffDiagnosis(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator,
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-stuck", Title: "Stuck bead", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-stuck", Title: "Stuck bead", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume initial ASSIGN
 	if !ok {
 		t.Fatal("expected initial ASSIGN")
@@ -4495,7 +4495,7 @@ func TestAssignUsesRichPrompt(t *testing.T) {
 	d.state = StateRunning
 
 	// Set up bead detail for Show().
-	beadSrc.shown["rich-bead"] = &BeadDetail{
+	beadSrc.shown["rich-bead"] = &protocol.BeadDetail{
 		ID:                 "rich-bead",
 		Title:              "Implement widget parser",
 		AcceptanceCriteria: "Test: pkg/widget_test.go:TestParse | Assert: parses valid input",
@@ -4508,12 +4508,12 @@ func TestAssignUsesRichPrompt(t *testing.T) {
 	w := &trackedWorker{
 		id:       "w-rich",
 		conn:     srvConn,
-		state:    WorkerIdle,
+		state:    protocol.WorkerIdle,
 		lastSeen: d.nowFunc(),
 		encoder:  json.NewEncoder(srvConn),
 	}
 
-	bead := Bead{ID: "rich-bead", Title: "Implement widget parser", Priority: 1}
+	bead := protocol.Bead{ID: "rich-bead", Title: "Implement widget parser", Priority: 1}
 
 	// Read what assignBead sends.
 	msgCh := make(chan protocol.Message, 1)
@@ -4564,7 +4564,7 @@ func TestTryAssignSkipsEpics(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	// Provide both an epic and a leaf task — only the task should be assigned.
-	beadSrc.SetBeads([]Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "epic-1", Title: "Epic: big feature", Priority: 0, Type: "epic"},
 		{ID: "task-1", Title: "Implement thing", Priority: 1, Type: "task"},
 	})
@@ -4724,7 +4724,7 @@ func TestAssignBead_RevertsBusyOnSendFailure(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 
 	ctx := context.Background()
-	bead := Bead{ID: "bead-revert", Title: "Revert test", Priority: 1}
+	bead := protocol.Bead{ID: "bead-revert", Title: "Revert test", Priority: 1}
 
 	// Grab the tracked worker
 	d.mu.Lock()
@@ -4736,7 +4736,7 @@ func TestAssignBead_RevertsBusyOnSendFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("expected worker to exist")
 	}
-	if st != WorkerIdle {
+	if st != protocol.WorkerIdle {
 		t.Fatalf("expected worker to start Idle, got %s", st)
 	}
 	if beadID != "" {
@@ -4751,7 +4751,7 @@ func TestAssignBead_RevertsBusyOnSendFailure(t *testing.T) {
 	if !ok {
 		t.Fatal("expected worker to still exist after failed assign")
 	}
-	if st != WorkerIdle {
+	if st != protocol.WorkerIdle {
 		t.Fatalf("expected worker to revert to Idle after sendToWorker failure, got %s", st)
 	}
 	if beadID != "" {
@@ -4819,7 +4819,7 @@ func TestMergeConflict_ResultChannelConsumed(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-mcr", Title: "Merge conflict resolution", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mcr", Title: "Merge conflict resolution", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -4870,7 +4870,7 @@ func TestMergeConflict_ResolutionFailed_Escalates(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-mcf", Title: "Merge conflict fail", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mcf", Title: "Merge conflict fail", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -4902,8 +4902,8 @@ func TestMergeConflict_ResolutionFailed_Escalates(t *testing.T) {
 
 // TestHandleHandoff_NoAssignAfterShutdown verifies that tryAssign cannot grab a
 // worker that is in the process of shutting down due to a handoff. The worker
-// must transition through WorkerShuttingDown (invisible to tryAssign) rather
-// than going straight to WorkerIdle.
+// must transition through protocol.WorkerShuttingDown (invisible to tryAssign) rather
+// than going straight to protocol.WorkerIdle.
 func TestHandleHandoff_NoAssignAfterShutdown(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -4924,7 +4924,7 @@ func TestHandleHandoff_NoAssignAfterShutdown(t *testing.T) {
 	// simulating what assignBead does.
 	d.mu.Lock()
 	w := d.workers["w-handoff"]
-	w.state = WorkerBusy
+	w.state = protocol.WorkerBusy
 	w.beadID = "bead-handoff"
 	w.worktree = "/tmp/worktree-handoff"
 	w.model = "test-model"
@@ -4940,32 +4940,32 @@ func TestHandleHandoff_NoAssignAfterShutdown(t *testing.T) {
 		},
 	})
 
-	// After handleHandoff, the worker state must NOT be WorkerIdle.
-	// It should be WorkerShuttingDown so that tryAssign skips it.
+	// After handleHandoff, the worker state must NOT be protocol.WorkerIdle.
+	// It should be protocol.WorkerShuttingDown so that tryAssign skips it.
 	st, _, ok := d.WorkerInfo("w-handoff")
 	if !ok {
 		t.Fatal("expected worker to still be tracked")
 	}
-	if st == WorkerIdle {
-		t.Fatalf("worker state after handoff should not be WorkerIdle (got %s); "+
+	if st == protocol.WorkerIdle {
+		t.Fatalf("worker state after handoff should not be protocol.WorkerIdle (got %s); "+
 			"tryAssign could race and grab this worker", st)
 	}
-	if st != WorkerShuttingDown {
-		t.Fatalf("expected WorkerShuttingDown, got %s", st)
+	if st != protocol.WorkerShuttingDown {
+		t.Fatalf("expected protocol.WorkerShuttingDown, got %s", st)
 	}
 
 	// Verify tryAssign does NOT pick up this worker even though there are
 	// ready beads.
-	beadSrc.SetBeads([]Bead{{ID: "bead-new", Title: "New task", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-new", Title: "New task", Priority: 1}})
 	d.tryAssign(context.Background())
 
 	// Worker should still be ShuttingDown — not reassigned to bead-new.
 	st2, beadID, _ := d.WorkerInfo("w-handoff")
-	if st2 == WorkerBusy && beadID == "bead-new" {
+	if st2 == protocol.WorkerBusy && beadID == "bead-new" {
 		t.Fatal("tryAssign grabbed a shutting-down worker — race condition!")
 	}
-	if st2 != WorkerShuttingDown {
-		t.Fatalf("expected worker to remain WorkerShuttingDown, got %s", st2)
+	if st2 != protocol.WorkerShuttingDown {
+		t.Fatalf("expected worker to remain protocol.WorkerShuttingDown, got %s", st2)
 	}
 }
 
@@ -4976,7 +4976,7 @@ func TestDispatcherBuffering(t *testing.T) {
 	db := newTestDB(t)
 	defer func() { _ = db.Close() }()
 
-	beadSrc := &mockBeadSource{shown: make(map[string]*BeadDetail)}
+	beadSrc := &mockBeadSource{shown: make(map[string]*protocol.BeadDetail)}
 	wt := &mockWorktreeManager{}
 	esc := &mockEscalator{}
 	gitRunner := &mockGitRunner{}
@@ -5020,7 +5020,7 @@ func TestDispatcherBuffering(t *testing.T) {
 	d.workers["w1"] = &trackedWorker{
 		id:       "w1",
 		conn:     brokenConn,
-		state:    WorkerIdle,
+		state:    protocol.WorkerIdle,
 		beadID:   "bead1",
 		worktree: "/tmp/worktree-bead1",
 		model:    "claude-opus-4-6",
@@ -5099,7 +5099,7 @@ func TestDispatcherBuffering(t *testing.T) {
 	d.workers["w2"] = &trackedWorker{
 		id:       "w2",
 		conn:     brokenConn2,
-		state:    WorkerIdle,
+		state:    protocol.WorkerIdle,
 		beadID:   "bead2",
 		worktree: "/tmp/worktree-bead2",
 		model:    "claude-opus-4-6",

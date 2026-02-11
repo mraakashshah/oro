@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"oro/pkg/protocol"
 )
 
 // --- Mock CommandRunner ---
@@ -35,7 +37,7 @@ func (m *mockCommandRunner) Run(ctx context.Context, name string, args ...string
 // --- Tests ---
 
 func TestCLIBeadSource_Ready_ParsesJSON(t *testing.T) {
-	beads := []Bead{
+	beads := []protocol.Bead{
 		{ID: "abc.1", Title: "Implement widget", Priority: 1},
 		{ID: "def.2", Title: "Fix bug", Priority: 2},
 	}
@@ -79,7 +81,7 @@ func TestCLIBeadSource_Ready_ParsesJSON(t *testing.T) {
 }
 
 func TestCLIBeadSource_Ready_ParsesModelField(t *testing.T) {
-	beads := []Bead{
+	beads := []protocol.Bead{
 		{ID: "abc.1", Title: "Opus task", Priority: 1, Model: "claude-opus-4-6"},
 		{ID: "def.2", Title: "Sonnet task", Priority: 2, Model: "claude-sonnet-4-5-20250929"},
 		{ID: "ghi.3", Title: "Default task", Priority: 3}, // no model
@@ -108,7 +110,7 @@ func TestCLIBeadSource_Ready_ParsesModelField(t *testing.T) {
 }
 
 func TestCLIBeadSource_Show_ParsesModelField(t *testing.T) {
-	detail := BeadDetail{
+	detail := protocol.BeadDetail{
 		ID:                 "abc.1",
 		Title:              "Sonnet task",
 		AcceptanceCriteria: "Widget renders",
@@ -165,7 +167,7 @@ func TestCLIBeadSource_Ready_InvalidJSON(t *testing.T) {
 }
 
 func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
-	detail := BeadDetail{
+	detail := protocol.BeadDetail{
 		ID:                 "abc.1",
 		Title:              "Implement widget",
 		AcceptanceCriteria: "Widget renders correctly",
@@ -317,13 +319,13 @@ func TestBead_ResolveModel(t *testing.T) {
 		model string
 		want  string
 	}{
-		{"empty defaults to opus", "", DefaultModel},
-		{"explicit sonnet", ModelSonnet, ModelSonnet},
-		{"explicit opus", ModelOpus, ModelOpus},
+		{"empty defaults to opus", "", protocol.DefaultModel},
+		{"explicit sonnet", protocol.ModelSonnet, protocol.ModelSonnet},
+		{"explicit opus", protocol.ModelOpus, protocol.ModelOpus},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := Bead{ID: "test", Model: tt.model}
+			b := protocol.Bead{ID: "test", Model: tt.model}
 			if got := b.ResolveModel(); got != tt.want {
 				t.Errorf("ResolveModel() = %q, want %q", got, tt.want)
 			}
@@ -339,22 +341,22 @@ func TestBead_ResolveModel_ByType(t *testing.T) {
 		want     string
 	}{
 		// Explicit model always wins, regardless of type.
-		{"explicit model overrides type", "task", ModelOpus, ModelOpus},
-		{"explicit sonnet overrides epic", "epic", ModelSonnet, ModelSonnet},
+		{"explicit model overrides type", "task", protocol.ModelOpus, protocol.ModelOpus},
+		{"explicit sonnet overrides epic", "epic", protocol.ModelSonnet, protocol.ModelSonnet},
 
 		// Type-based routing when Model is empty.
-		{"epic routes to opus", "epic", "", ModelOpus},
-		{"feature routes to opus", "feature", "", ModelOpus},
-		{"task routes to sonnet", "task", "", ModelSonnet},
-		{"bug routes to sonnet", "bug", "", ModelSonnet},
+		{"epic routes to opus", "epic", "", protocol.ModelOpus},
+		{"feature routes to opus", "feature", "", protocol.ModelOpus},
+		{"task routes to sonnet", "task", "", protocol.ModelSonnet},
+		{"bug routes to sonnet", "bug", "", protocol.ModelSonnet},
 
 		// Unknown type defaults to opus.
-		{"unknown type defaults to opus", "unknown", "", ModelOpus},
-		{"empty type defaults to opus", "", "", ModelOpus},
+		{"unknown type defaults to opus", "unknown", "", protocol.ModelOpus},
+		{"empty type defaults to opus", "", "", protocol.ModelOpus},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := Bead{ID: "test", Type: tt.beadType, Model: tt.model}
+			b := protocol.Bead{ID: "test", Type: tt.beadType, Model: tt.model}
 			if got := b.ResolveModel(); got != tt.want {
 				t.Errorf("ResolveModel() = %q, want %q", got, tt.want)
 			}
@@ -363,26 +365,26 @@ func TestBead_ResolveModel_ByType(t *testing.T) {
 }
 
 func TestModelConstants(t *testing.T) {
-	if ModelOpus != "claude-opus-4-6" {
-		t.Errorf("ModelOpus = %q, want %q", ModelOpus, "claude-opus-4-6")
+	if protocol.ModelOpus != "claude-opus-4-6" {
+		t.Errorf("protocol.ModelOpus = %q, want %q", protocol.ModelOpus, "claude-opus-4-6")
 	}
-	if ModelSonnet != "claude-sonnet-4-5-20250929" {
-		t.Errorf("ModelSonnet = %q, want %q", ModelSonnet, "claude-sonnet-4-5-20250929")
+	if protocol.ModelSonnet != "claude-sonnet-4-5-20250929" {
+		t.Errorf("protocol.ModelSonnet = %q, want %q", protocol.ModelSonnet, "claude-sonnet-4-5-20250929")
 	}
-	if DefaultModel != ModelOpus {
-		t.Errorf("DefaultModel = %q, want %q (same as ModelOpus)", DefaultModel, ModelOpus)
+	if protocol.DefaultModel != protocol.ModelOpus {
+		t.Errorf("protocol.DefaultModel = %q, want %q (same as protocol.ModelOpus)", protocol.DefaultModel, protocol.ModelOpus)
 	}
 }
 
 func TestBead_TypeField_JSON(t *testing.T) {
 	// Verify JSON round-trip with the Type field.
-	b := Bead{ID: "test-1", Title: "Fix login", Priority: 1, Type: "bug"}
+	b := protocol.Bead{ID: "test-1", Title: "Fix login", Priority: 1, Type: "bug"}
 	data, err := json.Marshal(b)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var got Bead
+	var got protocol.Bead
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -391,7 +393,7 @@ func TestBead_TypeField_JSON(t *testing.T) {
 	}
 
 	// Verify omitempty: empty type should not appear in JSON.
-	b2 := Bead{ID: "test-2", Title: "No type"}
+	b2 := protocol.Bead{ID: "test-2", Title: "No type"}
 	data2, _ := json.Marshal(b2)
 	if strings.Contains(string(data2), "issue_type") {
 		t.Errorf("expected issue_type to be omitted for empty Type, got: %s", data2)

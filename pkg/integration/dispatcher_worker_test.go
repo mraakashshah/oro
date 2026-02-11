@@ -29,18 +29,18 @@ import (
 
 type mockBeadSource struct {
 	mu    sync.Mutex
-	beads []dispatcher.Bead
+	beads []protocol.Bead
 }
 
-func (m *mockBeadSource) Ready(_ context.Context) ([]dispatcher.Bead, error) {
+func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]dispatcher.Bead, len(m.beads))
+	out := make([]protocol.Bead, len(m.beads))
 	copy(out, m.beads)
 	return out, nil
 }
 
-func (m *mockBeadSource) Show(_ context.Context, _ string) (*dispatcher.BeadDetail, error) {
+func (m *mockBeadSource) Show(_ context.Context, _ string) (*protocol.BeadDetail, error) {
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -52,7 +52,7 @@ func (m *mockBeadSource) Sync(_ context.Context) error {
 	return nil
 }
 
-func (m *mockBeadSource) SetBeads(beads []dispatcher.Bead) {
+func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.beads = beads
@@ -342,7 +342,7 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 		return d.GetState() == dispatcher.StateRunning
 	})
 
-	beadSrc.SetBeads([]dispatcher.Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "integ-bead-1", Title: "Integration test bead", Priority: 1},
 	})
 
@@ -370,7 +370,7 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 	if !ok {
 		t.Fatal("worker not found in dispatcher")
 	}
-	if state != dispatcher.WorkerBusy {
+	if state != protocol.WorkerBusy {
 		t.Errorf("expected worker busy, got %s", state)
 	}
 	if beadID != "integ-bead-1" {
@@ -402,7 +402,7 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 	// Worker should now be idle
 	waitFor(t, 2*time.Second, "worker idle after done", func() bool {
 		st, _, ok := d.WorkerInfo("w-integ-1")
-		return ok && st == dispatcher.WorkerIdle
+		return ok && st == protocol.WorkerIdle
 	})
 }
 
@@ -478,7 +478,7 @@ func TestDispatcherWorker_GracefulShutdown(t *testing.T) {
 	waitFor(t, 2*time.Second, "dispatcher running", func() bool {
 		return d.GetState() == dispatcher.StateRunning
 	})
-	beadSrc.SetBeads([]dispatcher.Bead{
+	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "shutdown-bead", Title: "Shutdown test", Priority: 1},
 	})
 	waitFor(t, 3*time.Second, "worker spawned", func() bool {

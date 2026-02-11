@@ -53,7 +53,7 @@ func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg1", Title: "QG test", Priority: 1, Type: "task"}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg1", Title: "QG test", Priority: 1, Type: "task"}})
 
 	// Drain initial ASSIGN.
 	readMsg(t, conn, 2*time.Second)
@@ -115,7 +115,7 @@ func TestHandleDone_QGFailRetryPassesQGOutput(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg2", Title: "QG output test", Priority: 1, Type: "task"}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg2", Title: "QG output test", Priority: 1, Type: "task"}})
 
 	// Drain initial ASSIGN.
 	readMsg(t, conn, 2*time.Second)
@@ -159,7 +159,7 @@ func TestHandleDone_QGFailRetryAttemptCountResetsOnSuccess(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qg3", Title: "QG reset test", Priority: 1, Type: "task"}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg3", Title: "QG reset test", Priority: 1, Type: "task"}})
 
 	// Drain initial ASSIGN.
 	readMsg(t, conn, 2*time.Second)
@@ -234,13 +234,13 @@ func TestHandleDone_QGFailReassignIncludesMemories(t *testing.T) {
 
 	// Register bead detail so Show() returns a title for FTS5 matching.
 	beadSrc.mu.Lock()
-	beadSrc.shown["bead-qgmem"] = &BeadDetail{
+	beadSrc.shown["bead-qgmem"] = &protocol.BeadDetail{
 		ID:    "bead-qgmem",
 		Title: "QG memory bead",
 	}
 	beadSrc.mu.Unlock()
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-qgmem", Title: "QG memory bead", Priority: 1, Type: "task"}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qgmem", Title: "QG memory bead", Priority: 1, Type: "task"}})
 
 	// Drain initial ASSIGN.
 	readMsg(t, conn, 2*time.Second)
@@ -289,7 +289,7 @@ func TestHandleDone_QGStuckDetection_IdenticalOutputsEscalate(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-stuck1", Title: "Stuck test", Priority: 1, Type: "task"}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-stuck1", Title: "Stuck test", Priority: 1, Type: "task"}})
 
 	// Drain initial ASSIGN.
 	readMsg(t, conn, 2*time.Second)
@@ -349,7 +349,7 @@ func TestHandleDone_QGStuckDetection_DifferentOutputsReset(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-stuck2", Title: "Stuck reset", Priority: 1, Type: "task"}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-stuck2", Title: "Stuck reset", Priority: 1, Type: "task"}})
 
 	// Drain initial ASSIGN.
 	readMsg(t, conn, 2*time.Second)
@@ -405,7 +405,7 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	beadSrc.SetBeads([]Bead{{ID: "bead-stuck3", Title: "Independent test", Priority: 1, Type: "task"}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-stuck3", Title: "Independent test", Priority: 1, Type: "task"}})
 
 	// Drain initial ASSIGN.
 	readMsg(t, conn, 2*time.Second)

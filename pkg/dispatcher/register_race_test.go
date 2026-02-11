@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 // spyConn wraps a net.Conn and counts Write calls made after an armed flag is set.
@@ -143,7 +145,7 @@ func TestHandleQGFailure_SafeAgainstConcurrentDeletion(t *testing.T) {
 	d.workers[workerID] = &trackedWorker{
 		id:       workerID,
 		conn:     spy,
-		state:    WorkerBusy,
+		state:    protocol.WorkerBusy,
 		beadID:   "qg-race-bead",
 		worktree: "/tmp/qg-race-wt",
 		model:    "test-model",

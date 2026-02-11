@@ -8,30 +8,7 @@ import (
 
 // CommandRunner is defined in beadsource.go.
 
-// EscalationType classifies a structured escalation message.
-type EscalationType string
-
-// Escalation type constants for [ORO-DISPATCH] messages.
-const (
-	EscMergeConflict      EscalationType = "MERGE_CONFLICT"
-	EscStuck              EscalationType = "STUCK"
-	EscPriorityContention EscalationType = "PRIORITY_CONTENTION"
-	EscWorkerCrash        EscalationType = "WORKER_CRASH"
-	EscStatus             EscalationType = "STATUS"
-	EscDrainComplete      EscalationType = "DRAIN_COMPLETE"
-)
-
-// FormatEscalation produces a structured escalation message in the form:
-//
-//	[ORO-DISPATCH] <TYPE>: <bead-id> — <summary>. <details>.
-//
-// If details is empty the trailing details clause is omitted.
-func FormatEscalation(typ EscalationType, beadID, summary, details string) string {
-	if details != "" {
-		return fmt.Sprintf("[ORO-DISPATCH] %s: %s \u2014 %s. %s.", typ, beadID, summary, details)
-	}
-	return fmt.Sprintf("[ORO-DISPATCH] %s: %s \u2014 %s.", typ, beadID, summary)
-}
+// EscalationType and FormatEscalation are now in pkg/protocol/types.go
 
 // TmuxEscalator implements the Escalator interface by sending messages to a
 // tmux pane via `tmux send-keys`. This is the production mechanism for

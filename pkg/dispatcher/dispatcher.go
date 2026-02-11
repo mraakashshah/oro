@@ -46,58 +46,14 @@ const (
 
 // --- Domain types ---
 
-// Bead represents a ready work item from the bead source.
-type Bead struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Priority int    `json:"priority"`
-	Epic     string `json:"epic,omitempty"`       // parent epic ID for focus filtering
-	Type     string `json:"issue_type,omitempty"` // task, bug, feature, epic
-	Model    string `json:"model,omitempty"`      // claude model override; empty = auto-route by Type
-}
-
-// BeadDetail holds extended information about a single bead.
-type BeadDetail struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	AcceptanceCriteria string `json:"acceptance_criteria"`
-	Model              string `json:"model,omitempty"`
-}
-
-// Model constants for routing.
-const (
-	ModelOpus   = "claude-opus-4-6"
-	ModelSonnet = "claude-sonnet-4-5-20250929"
-)
-
-// DefaultModel is used when a bead has no explicit model set and no type-based
-// routing applies. Kept as ModelOpus for backward compatibility.
-const DefaultModel = ModelOpus
-
-// ResolveModel returns the model to use for this bead. Priority:
-//  1. Explicit Model field (bead-level override)
-//  2. Type-based routing: epic/feature -> Opus, task/bug -> Sonnet
-//  3. DefaultModel (Opus) as fallback
-func (b Bead) ResolveModel() string {
-	if b.Model != "" {
-		return b.Model
-	}
-	switch b.Type {
-	case "epic", "feature":
-		return ModelOpus
-	case "task", "bug":
-		return ModelSonnet
-	default:
-		return DefaultModel
-	}
-}
+// Bead, BeadDetail, and model constants are now in pkg/protocol/types.go
 
 // --- Interfaces for testability ---
 
 // BeadSource provides ready work items. Production impl shells out to `bd ready`.
 type BeadSource interface {
-	Ready(ctx context.Context) ([]Bead, error)
-	Show(ctx context.Context, id string) (*BeadDetail, error)
+	Ready(ctx context.Context) ([]protocol.Bead, error)
+	Show(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	Close(ctx context.Context, id string, reason string) error
 	Sync(ctx context.Context) error
 }
@@ -123,23 +79,13 @@ type ProcessManager interface {
 
 // --- Worker tracking ---
 
-// WorkerState represents the state of a connected worker.
-type WorkerState string
-
-// Worker state constants.
-const (
-	WorkerIdle         WorkerState = "idle"
-	WorkerBusy         WorkerState = "busy"
-	WorkerReserved     WorkerState = "reserved" // transient: I/O in progress, heartbeat checker must skip
-	WorkerReviewing    WorkerState = "reviewing"
-	WorkerShuttingDown WorkerState = "shutting_down" // transient: handoff SHUTDOWN sent, not yet disconnected
-)
+// WorkerState is now in pkg/protocol/types.go
 
 // trackedWorker holds runtime state for a connected worker.
 type trackedWorker struct {
 	id          string
 	conn        net.Conn
-	state       WorkerState
+	state       protocol.WorkerState
 	beadID      string
 	worktree    string
 	model       string // resolved model for the current bead assignment
@@ -489,7 +435,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		d.workers[id] = &trackedWorker{
 			id:       id,
 			conn:     conn,
-			state:    WorkerIdle,
+			state:    protocol.WorkerIdle,
 			lastSeen: d.nowFunc(),
 			encoder:  json.NewEncoder(conn),
 		}
@@ -510,7 +456,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	if h != nil {
 		w := d.workers[id]
 		// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
-		w.state = WorkerReserved
+		w.state = protocol.WorkerReserved
 		w.beadID = h.beadID
 		w.worktree = h.worktree
 		w.model = h.model
@@ -530,11 +476,11 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		d.mu.Lock()
 		// Phase 2: Verify reservation still valid, then transition to Busy.
 		w, ok := d.workers[id]
-		if !ok || w.state != WorkerReserved {
+		if !ok || w.state != protocol.WorkerReserved {
 			d.mu.Unlock()
 			return
 		}
-		w.state = WorkerBusy
+		w.state = protocol.WorkerBusy
 		_ = d.sendToWorker(w, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
@@ -668,7 +614,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	if ok {
 		worktree = w.worktree
 		branch = protocol.BranchPrefix + beadID
-		w.state = WorkerIdle
+		w.state = protocol.WorkerIdle
 		w.beadID = ""
 	}
 	d.mu.Unlock()
@@ -707,7 +653,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	if d.isQGStuck(beadID, qgOutput) {
 		_ = d.logEvent(ctx, "qg_stuck_detected", workerID, beadID, workerID,
 			fmt.Sprintf(`{"repeated_count":%d}`, maxStuckCount))
-		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 			fmt.Sprintf("QG output repeated %d times — worker stuck", maxStuckCount), qgOutput), beadID, workerID)
 		d.clearBeadTracking(beadID)
 		return
@@ -722,7 +668,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		d.mu.Unlock()
 		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
 			fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
-		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 			fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
 		d.clearBeadTracking(beadID)
 		return
@@ -730,7 +676,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 
 	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
 	if w, ok := d.workers[workerID]; ok {
-		w.state = WorkerReserved
+		w.state = protocol.WorkerReserved
 	}
 	d.mu.Unlock()
 
@@ -739,7 +685,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 
 // qgRetryWithReservation performs the I/O phase (memory retrieval) and
 // completes the two-phase reservation for a QG retry. The worker must already
-// be in WorkerReserved state before this is called.
+// be in protocol.WorkerReserved state before this is called.
 func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadID, qgOutput string, attempt int) {
 	// Retrieve relevant memories for retry prompt (best-effort, outside lock).
 	if d.testUnlockHook != nil {
@@ -750,7 +696,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 	d.mu.Lock()
 	// Phase 2: Verify reservation still valid, then transition to Busy.
 	w, ok := d.workers[workerID]
-	if !ok || w.state != WorkerReserved {
+	if !ok || w.state != protocol.WorkerReserved {
 		d.mu.Unlock()
 		return
 	}
@@ -765,7 +711,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 			MemoryContext: memCtx,
 		},
 	})
-	w.state = WorkerBusy
+	w.state = protocol.WorkerBusy
 	w.beadID = beadID
 	d.mu.Unlock()
 }
@@ -816,7 +762,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 			return
 		}
 		// Non-conflict merge failure — escalate
-		d.escalate(ctx, FormatEscalation(EscMergeConflict, beadID, "merge failed", err.Error()), beadID, workerID)
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID, "merge failed", err.Error()), beadID, workerID)
 		_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, err.Error())
 		return
 	}
@@ -842,7 +788,7 @@ func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, work
 		default:
 			// Resolution failed or unknown verdict — escalate.
 			_ = d.logEvent(ctx, "merge_conflict_failed", "ops", beadID, workerID, result.Feedback)
-			d.escalate(ctx, FormatEscalation(EscMergeConflict, beadID,
+			d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID,
 				"merge conflict resolution failed", result.Feedback), beadID, workerID)
 		}
 	}
@@ -881,7 +827,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		worktree = w.worktree
 		model = w.model
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-		w.state = WorkerShuttingDown // transient state — invisible to tryAssign
+		w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
 		w.beadID = ""
 	}
 	d.mu.Unlock()
@@ -944,7 +890,7 @@ func (d *Dispatcher) handleDiagnosisResult(ctx context.Context, beadID, workerID
 			// Diagnosis failed — escalate to manager.
 			_ = d.logEvent(ctx, "diagnosis_escalated", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, result.Err.Error()))
-			d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 				"diagnosis failed", result.Err.Error()), beadID, workerID)
 			d.clearBeadTracking(beadID)
 			return
@@ -952,7 +898,7 @@ func (d *Dispatcher) handleDiagnosisResult(ctx context.Context, beadID, workerID
 
 		// Diagnosis succeeded — log feedback and escalate with diagnosis context.
 		_ = d.logEvent(ctx, "diagnosis_complete", "dispatcher", beadID, workerID, result.Feedback)
-		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 			"diagnosis complete", result.Feedback), beadID, workerID)
 		d.clearBeadTracking(beadID)
 	}
@@ -1014,7 +960,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	w, ok := d.workers[workerID]
 	var worktree string
 	if ok {
-		w.state = WorkerReviewing
+		w.state = protocol.WorkerReviewing
 		worktree = w.worktree
 	}
 	d.mu.Unlock()
@@ -1068,7 +1014,7 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
 			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, result.Feedback)
-			d.escalate(ctx, FormatEscalation(EscStuck, beadID, "review failed", result.Feedback), beadID, workerID)
+			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review failed", result.Feedback), beadID, workerID)
 			d.clearBeadTracking(beadID)
 		}
 	}
@@ -1089,7 +1035,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		d.mu.Unlock()
 		_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
 			fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, feedback))
-		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 			fmt.Sprintf("review rejected %d times", count), feedback), beadID, workerID)
 		d.clearBeadTracking(beadID)
 		return
@@ -1097,7 +1043,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 
 	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
 	if w, wOK := d.workers[workerID]; wOK {
-		w.state = WorkerReserved
+		w.state = protocol.WorkerReserved
 	}
 	d.mu.Unlock()
 
@@ -1105,8 +1051,8 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	d.mu.Lock()
 	// Phase 2: Verify reservation still valid, then transition to Busy.
 	w, ok := d.workers[workerID]
-	if ok && w.state == WorkerReserved {
-		w.state = WorkerBusy
+	if ok && w.state == protocol.WorkerReserved {
+		w.state = protocol.WorkerBusy
 		_ = d.sendToWorker(w, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
@@ -1227,9 +1173,9 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 		w.lastSeen = d.nowFunc()
 		switch msg.Reconnect.State {
 		case "running":
-			w.state = WorkerBusy
+			w.state = protocol.WorkerBusy
 		default:
-			w.state = WorkerIdle
+			w.state = protocol.WorkerIdle
 		}
 
 		// Replay any pending messages that were buffered during disconnect
@@ -1258,7 +1204,7 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 	w, ok := d.workers[workerID]
 	if ok {
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-		w.state = WorkerIdle
+		w.state = protocol.WorkerIdle
 		w.beadID = ""
 	}
 	d.mu.Unlock()
@@ -1339,7 +1285,7 @@ func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Durati
 				w, ok := d.workers[workerID]
 				if ok {
 					_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-					w.state = WorkerIdle
+					w.state = protocol.WorkerIdle
 					w.beadID = ""
 				}
 				d.mu.Unlock()
@@ -1348,7 +1294,7 @@ func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Durati
 				// Check if approval was already received (worker state reset to idle)
 				d.mu.Lock()
 				w, ok := d.workers[workerID]
-				approved := ok && w.state == WorkerIdle
+				approved := ok && w.state == protocol.WorkerIdle
 				d.mu.Unlock()
 				if approved {
 					return
@@ -1425,7 +1371,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	d.mu.Lock()
 	var idle []*trackedWorker
 	for _, w := range d.workers {
-		if w.state == WorkerIdle {
+		if w.state == protocol.WorkerIdle {
 			idle = append(idle, w)
 		}
 	}
@@ -1442,7 +1388,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	}
 
 	// Filter out epic beads — workers can only execute leaf tasks.
-	beads := make([]Bead, 0, len(allBeads))
+	beads := make([]protocol.Bead, 0, len(allBeads))
 	for _, b := range allBeads {
 		if b.Type != "epic" {
 			beads = append(beads, b)
@@ -1477,7 +1423,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 // assignBead creates a worktree and sends ASSIGN to the worker.
 // If memories exist for the bead's description, they are included in the
 // AssignPayload.MemoryContext field for cross-session continuity.
-func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead) {
+func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) {
 	// Validate bead ID before creating worktree (defense in depth).
 	if err := protocol.ValidateBeadID(bead.ID); err != nil {
 		_ = d.logEvent(ctx, "invalid_bead_id", "dispatcher", bead.ID, w.id,
@@ -1515,7 +1461,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	}
 
 	d.mu.Lock()
-	w.state = WorkerBusy
+	w.state = protocol.WorkerBusy
 	w.beadID = bead.ID
 	w.worktree = worktree
 	w.model = bead.ResolveModel()
@@ -1532,7 +1478,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead Bead
 	})
 	if err != nil {
 		// Revert worker to Idle so it is not permanently stuck in Busy.
-		w.state = WorkerIdle
+		w.state = protocol.WorkerIdle
 		w.beadID = ""
 		w.worktree = ""
 		w.model = ""
@@ -1690,7 +1636,7 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 	// Partition into idle and busy workers.
 	var idle, busy []string
 	for id, w := range d.workers {
-		if w.state == WorkerIdle {
+		if w.state == protocol.WorkerIdle {
 			idle = append(idle, id)
 		} else {
 			busy = append(busy, id)
@@ -1744,7 +1690,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	d.mu.Lock()
 	var dead []string
 	for id, w := range d.workers {
-		if w.state != WorkerIdle && w.state != WorkerReserved && now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
+		if w.state != protocol.WorkerIdle && w.state != protocol.WorkerReserved && now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
 			dead = append(dead, id)
 		}
 	}
@@ -1765,7 +1711,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 
 	// Escalate outside the lock and clear tracking maps for abandoned beads.
 	for _, dw := range deadWorkers {
-		d.escalate(ctx, FormatEscalation(EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
 		if dw.beadID != "" {
 			d.clearBeadTracking(dw.beadID)
 		}
@@ -2012,7 +1958,7 @@ func (d *Dispatcher) TargetWorkers() int {
 // WorkerInfo returns state info for a tracked worker (for testing).
 //
 //oro:testonly
-func (d *Dispatcher) WorkerInfo(id string) (state WorkerState, beadID string, ok bool) {
+func (d *Dispatcher) WorkerInfo(id string) (state protocol.WorkerState, beadID string, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, exists := d.workers[id]

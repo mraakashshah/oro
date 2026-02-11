@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"oro/pkg/protocol"
 )
 
 // CommandRunner abstracts command execution for testability.
@@ -23,13 +25,13 @@ func NewCLIBeadSource(runner CommandRunner) *CLIBeadSource {
 }
 
 // Ready runs `bd ready --json` and parses the output into a slice of Bead.
-func (s *CLIBeadSource) Ready(ctx context.Context) ([]Bead, error) {
+func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", "ready", "--json")
 	if err != nil {
 		return nil, fmt.Errorf("bd ready: %w", err)
 	}
 
-	var beads []Bead
+	var beads []protocol.Bead
 	if err := json.Unmarshal(out, &beads); err != nil {
 		return nil, fmt.Errorf("parse bd ready output: %w", err)
 	}
@@ -37,13 +39,13 @@ func (s *CLIBeadSource) Ready(ctx context.Context) ([]Bead, error) {
 }
 
 // Show runs `bd show <id> --json` and parses the output into a BeadDetail.
-func (s *CLIBeadSource) Show(ctx context.Context, id string) (*BeadDetail, error) {
+func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
 	out, err := s.runner.Run(ctx, "bd", "show", id, "--json")
 	if err != nil {
 		return nil, fmt.Errorf("bd show %s: %w", id, err)
 	}
 
-	var detail BeadDetail
+	var detail protocol.BeadDetail
 	if err := json.Unmarshal(out, &detail); err != nil {
 		return nil, fmt.Errorf("parse bd show output: %w", err)
 	}

@@ -75,7 +75,7 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		sendDirective(t, d.cfg.SocketPath, "start")
 		waitForState(t, d, StateRunning, 1*time.Second)
 
-		beadSrc.SetBeads([]Bead{{ID: beadID, Title: "Stuck leak test", Priority: 1, Type: "task"}})
+		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Stuck leak test", Priority: 1, Type: "task"}})
 
 		// Drain initial ASSIGN.
 		readMsg(t, conn, 2*time.Second)
@@ -135,7 +135,7 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		sendDirective(t, d.cfg.SocketPath, "start")
 		waitForState(t, d, StateRunning, 1*time.Second)
 
-		beadSrc.SetBeads([]Bead{{ID: beadID, Title: "QG cap leak", Priority: 1, Type: "task"}})
+		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "QG cap leak", Priority: 1, Type: "task"}})
 		readMsg(t, conn, 2*time.Second)
 
 		// Seed maps that won't interfere with QG retry logic.
@@ -326,7 +326,7 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		// Set the worker as busy with a bead, and backdate lastSeen.
 		d.mu.Lock()
 		w := d.workers[workerID]
-		w.state = WorkerBusy
+		w.state = protocol.WorkerBusy
 		w.beadID = beadID
 		w.lastSeen = d.nowFunc().Add(-2 * d.cfg.HeartbeatTimeout)
 		d.mu.Unlock()
@@ -365,7 +365,7 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		sendDirective(t, d.cfg.SocketPath, "start")
 		waitForState(t, d, StateRunning, 1*time.Second)
 
-		beadSrc.SetBeads([]Bead{{ID: beadID, Title: "Success test", Priority: 1, Type: "task"}})
+		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Success test", Priority: 1, Type: "task"}})
 		readMsg(t, conn, 2*time.Second)
 
 		// Seed non-QG maps (socket-safe: no pendingHandoffs or attemptCounts).
@@ -445,7 +445,7 @@ func TestPruneStaleTracking(t *testing.T) {
 
 	d.mu.Lock()
 	w := d.workers["w1"]
-	w.state = WorkerBusy
+	w.state = protocol.WorkerBusy
 	w.beadID = activeBead
 	d.mu.Unlock()
 
