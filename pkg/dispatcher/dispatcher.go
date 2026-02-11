@@ -115,6 +115,7 @@ type Config struct {
 	PollInterval         time.Duration // bd ready poll interval (default 10s).
 	FallbackPollInterval time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
 	ShutdownTimeout      time.Duration // Graceful shutdown timeout (default 10s).
+	ConsolidateAfterN    int           // Trigger context consolidation after N completed beads (default 5).
 }
 
 func (c *Config) withDefaults() Config {
@@ -133,6 +134,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.ShutdownTimeout == 0 {
 		out.ShutdownTimeout = 10 * time.Second
+	}
+	if out.ConsolidateAfterN == 0 {
+		out.ConsolidateAfterN = 5
 	}
 	return out
 }
@@ -181,11 +185,12 @@ type Dispatcher struct {
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
 	BeadTracker
 
-	mu            sync.Mutex
-	state         State
-	listener      net.Listener
-	focusedEpic   string
-	targetWorkers int
+	mu                          sync.Mutex
+	state                       State
+	listener                    net.Listener
+	focusedEpic                 string
+	targetWorkers               int
+	completionsSinceConsolidate int // counts completed beads since last context consolidation
 
 	// beadsDir is the directory to watch for bead changes (defaults to protocol.BeadsDir)
 	beadsDir string

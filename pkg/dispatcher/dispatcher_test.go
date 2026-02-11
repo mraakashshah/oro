@@ -5720,3 +5720,25 @@ func TestShutdownTimeout_ForceKill(t *testing.T) {
 		}
 	})
 }
+
+func TestConfig_ConsolidateAfterN(t *testing.T) {
+	// Test 1: Default Config has ConsolidateAfterN == 5.
+	cfg := Config{SocketPath: "/tmp/test.sock", DBPath: ":memory:"}
+	resolved := cfg.withDefaults()
+	if resolved.ConsolidateAfterN != 5 {
+		t.Fatalf("ConsolidateAfterN: got %d, want 5", resolved.ConsolidateAfterN)
+	}
+
+	// Test 2: Explicit value is preserved (not overwritten by default).
+	cfg2 := Config{SocketPath: "/tmp/test.sock", DBPath: ":memory:", ConsolidateAfterN: 10}
+	resolved2 := cfg2.withDefaults()
+	if resolved2.ConsolidateAfterN != 10 {
+		t.Fatalf("ConsolidateAfterN with explicit value: got %d, want 10", resolved2.ConsolidateAfterN)
+	}
+
+	// Test 3: Dispatcher struct has completionsSinceConsolidate counter field.
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if d.completionsSinceConsolidate != 0 {
+		t.Fatalf("completionsSinceConsolidate: got %d, want 0", d.completionsSinceConsolidate)
+	}
+}
