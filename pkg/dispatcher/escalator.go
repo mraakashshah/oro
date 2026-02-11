@@ -58,11 +58,12 @@ func NewTmuxEscalator(sessionName, paneTarget string, runner CommandRunner) *Tmu
 	}
 }
 
-// Escalate sends msg to the Manager's tmux pane via `tmux send-keys`.
-// The message is sanitized to prevent shell injection through tmux.
+// Escalate sends msg to the Manager's tmux pane via `tmux set-buffer` and
+// `paste-buffer`. This approach treats the message as completely literal text,
+// preventing shell injection through tmux.
 // Before sending, it verifies the tmux session exists to prevent silent failures.
 func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
-	// Verify the tmux session exists before attempting to send keys.
+	// Verify the tmux session exists before attempting to send.
 	// If the session is dead, tmux send-keys fails silently, leaving
 	// escalations undelivered and beads stuck forever.
 	_, err := e.runner.Run(ctx, "tmux", "has-session", "-t", e.sessionName)
@@ -71,20 +72,33 @@ func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 	}
 
 	sanitized := sanitizeForTmux(msg)
-	_, err = e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, sanitized, "Enter")
+
+	// Step 1: Set the message into a named tmux buffer
+	_, err = e.runner.Run(ctx, "tmux", "set-buffer", "-b", "oro-escalate", sanitized)
 	if err != nil {
-		return fmt.Errorf("tmux escalate to %s: %w", e.paneTarget, err)
+		return fmt.Errorf("tmux set-buffer: %w", err)
 	}
+
+	// Step 2: Paste the buffer content to the target pane (literal text)
+	_, err = e.runner.Run(ctx, "tmux", "paste-buffer", "-b", "oro-escalate", "-t", e.paneTarget, "-d")
+	if err != nil {
+		return fmt.Errorf("tmux paste-buffer to %s: %w", e.paneTarget, err)
+	}
+
+	// Step 3: Send Enter key to display the message
+	_, err = e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, "Enter")
+	if err != nil {
+		return fmt.Errorf("tmux send-keys Enter to %s: %w", e.paneTarget, err)
+	}
+
 	return nil
 }
 
-// sanitizeForTmux prepares a message string for safe use with tmux send-keys.
-// tmux send-keys treats each argument as literal text when passed as a separate
-// argument (not interpreted by a shell), but we still strip newlines to prevent
-// multi-command injection and escape characters that tmux interprets specially.
+// sanitizeForTmux prepares a message string for safe use with tmux load-buffer.
+// We strip newlines to prevent the message from spanning multiple lines in the
+// manager's terminal, which could be confusing.
 func sanitizeForTmux(msg string) string {
-	// Replace newlines with spaces — tmux send-keys + Enter would execute
-	// partial lines otherwise.
+	// Replace newlines with spaces for single-line display
 	msg = strings.ReplaceAll(msg, "\n", " ")
 	msg = strings.ReplaceAll(msg, "\r", " ")
 	return msg
