@@ -2,15 +2,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // defaultMemoryStore opens (or creates) the default SQLite memory store at
@@ -25,7 +22,7 @@ func defaultMemoryStore() (*memory.Store, error) {
 		dbPath = filepath.Join(home, ".oro", "memories.db")
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := openDB(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open memory db: %w", err)
 	}

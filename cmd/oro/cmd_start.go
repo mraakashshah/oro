@@ -17,7 +17,6 @@ import (
 	"oro/pkg/ops"
 
 	"github.com/spf13/cobra"
-	_ "modernc.org/sqlite"
 )
 
 // DaemonSpawner abstracts spawning the daemon subprocess for testability.
@@ -224,7 +223,7 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		return nil, nil, err
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := openDB(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
 	}
