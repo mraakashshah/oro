@@ -69,6 +69,117 @@ func newMemoriesListCmdWithStore(store *memory.Store) *cobra.Command {
 	return cmd
 }
 
+// newMemoriesConsolidateCmdWithStore creates the "oro memories consolidate" subcommand wired to a memory.Store.
+func newMemoriesConsolidateCmdWithStore(store *memory.Store) *cobra.Command {
+	var minScore float64
+	var similarity float64
+	var dryRun bool
+
+	cmd := &cobra.Command{
+		Use:   "consolidate",
+		Short: "Consolidate memories by deduplicating and pruning stale entries",
+		Long: `Consolidate the memory store by:
+  - Pruning memories with decayed scores below the threshold (default: 0.1)
+  - Merging near-duplicate memories based on similarity (default: 0.8)
+
+The decayed score is calculated as: confidence * 0.5^(age_days/30)
+
+Use --dry-run to preview what would be changed without modifying the store.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			opts := memory.ConsolidateOpts{
+				MinDecayedScore:     minScore,
+				SimilarityThreshold: similarity,
+				DryRun:              dryRun,
+			}
+
+			merged, pruned, err := memory.Consolidate(context.Background(), store, opts)
+			if err != nil {
+				return fmt.Errorf("consolidate: %w", err)
+			}
+
+			// Count remaining memories
+			remaining, err := store.List(context.Background(), memory.ListOpts{})
+			if err != nil {
+				return fmt.Errorf("consolidate list: %w", err)
+			}
+
+			if dryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN - No changes made\n")
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Consolidation complete:\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "  Pruned:    %d\n", pruned)
+			fmt.Fprintf(cmd.OutOrStdout(), "  Merged:    %d\n", merged)
+			fmt.Fprintf(cmd.OutOrStdout(), "  Remaining: %d\n", len(remaining))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().Float64Var(&minScore, "min-score", 0.1, "minimum decayed score to keep (0.0-1.0)")
+	cmd.Flags().Float64Var(&similarity, "similarity", 0.8, "BM25 similarity threshold for merging duplicates")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without modifying the store")
+
+	return cmd
+}
+
+// newMemoriesConsolidateCmd creates the production "oro memories consolidate" subcommand.
+func newMemoriesConsolidateCmd() *cobra.Command {
+	var minScore float64
+	var similarity float64
+	var dryRun bool
+
+	cmd := &cobra.Command{
+		Use:   "consolidate",
+		Short: "Consolidate memories by deduplicating and pruning stale entries",
+		Long: `Consolidate the memory store by:
+  - Pruning memories with decayed scores below the threshold (default: 0.1)
+  - Merging near-duplicate memories based on similarity (default: 0.8)
+
+The decayed score is calculated as: confidence * 0.5^(age_days/30)
+
+Use --dry-run to preview what would be changed without modifying the store.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, err := defaultMemoryStore()
+			if err != nil {
+				return fmt.Errorf("consolidate: %w", err)
+			}
+
+			opts := memory.ConsolidateOpts{
+				MinDecayedScore:     minScore,
+				SimilarityThreshold: similarity,
+				DryRun:              dryRun,
+			}
+
+			merged, pruned, err := memory.Consolidate(context.Background(), store, opts)
+			if err != nil {
+				return fmt.Errorf("consolidate: %w", err)
+			}
+
+			// Count remaining memories
+			remaining, err := store.List(context.Background(), memory.ListOpts{})
+			if err != nil {
+				return fmt.Errorf("consolidate list: %w", err)
+			}
+
+			if dryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN - No changes made\n")
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Consolidation complete:\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "  Pruned:    %d\n", pruned)
+			fmt.Fprintf(cmd.OutOrStdout(), "  Merged:    %d\n", merged)
+			fmt.Fprintf(cmd.OutOrStdout(), "  Remaining: %d\n", len(remaining))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().Float64Var(&minScore, "min-score", 0.1, "minimum decayed score to keep (0.0-1.0)")
+	cmd.Flags().Float64Var(&similarity, "similarity", 0.8, "BM25 similarity threshold for merging duplicates")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without modifying the store")
+
+	return cmd
+}
+
 // newMemoriesCmd creates the "oro memories" parent command with subcommands.
 func newMemoriesCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -78,6 +189,7 @@ func newMemoriesCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newMemoriesListCmd())
+	cmd.AddCommand(newMemoriesConsolidateCmd())
 	return cmd
 }
 

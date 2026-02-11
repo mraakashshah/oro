@@ -309,6 +309,178 @@ func TestMemoriesList(t *testing.T) {
 	})
 }
 
+func TestConsolidate(t *testing.T) {
+	t.Run("removes stale memories and reports stats", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		store := memory.NewStore(db)
+		ctx := context.Background()
+		// Insert a very old memory with low confidence that should be pruned
+		// After 1 year (365 days), decayed score = 0.1 * 0.5^(365/30) = 0.1 * 0.5^12.17 ≈ 0.0002
+		// This is well below default threshold of 0.1
+		_, err := db.Exec(
+			`INSERT INTO memories (content, type, tags, source, confidence, created_at)
+			 VALUES (?, ?, ?, ?, ?, datetime('now', '-1 year'))`,
+			"unique_xyzzy_stale_content_12345", "lesson", "[]", "self_report", 0.1,
+		)
+		if err != nil {
+			t.Fatalf("insert old memory: %v", err)
+		}
+
+		// Insert two similar memories to test merging
+		_, err = db.Exec(
+			`INSERT INTO memories (content, type, tags, source, confidence)
+			 VALUES (?, ?, ?, ?, ?)`,
+			"always run tests before commit", "lesson", "[]", "cli", 0.8,
+		)
+		if err != nil {
+			t.Fatalf("insert similar 1: %v", err)
+		}
+
+		_, err = db.Exec(
+			`INSERT INTO memories (content, type, tags, source, confidence)
+			 VALUES (?, ?, ?, ?, ?)`,
+			"always run tests before committing code", "lesson", "[]", "cli", 0.7,
+		)
+		if err != nil {
+			t.Fatalf("insert similar 2: %v", err)
+		}
+
+		// Insert a fresh memory with good confidence that should survive
+		_, err = store.Insert(ctx, memory.InsertParams{
+			Content:    "fresh memory with good confidence",
+			Type:       "lesson",
+			Source:     "cli",
+			Confidence: 0.9,
+		})
+		if err != nil {
+			t.Fatalf("insert fresh: %v", err)
+		}
+
+		// Run consolidate command
+		cmd := newMemoriesConsolidateCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{})
+
+		err = cmd.Execute()
+		if err != nil {
+			t.Fatalf("consolidate execute: %v", err)
+		}
+
+		output := out.String()
+		t.Logf("Consolidate output:\n%s", output)
+
+		// Verify output contains stats
+		if !strings.Contains(output, "Consolidation complete") {
+			t.Errorf("expected 'Consolidation complete' in output, got: %s", output)
+		}
+		if !strings.Contains(output, "Pruned:") {
+			t.Errorf("expected 'Pruned:' in output, got: %s", output)
+		}
+		if !strings.Contains(output, "Merged:") {
+			t.Errorf("expected 'Merged:' in output, got: %s", output)
+		}
+		if !strings.Contains(output, "Remaining:") {
+			t.Errorf("expected 'Remaining:' in output, got: %s", output)
+		}
+
+		// List all remaining memories to debug
+		allMemories, err := store.List(ctx, memory.ListOpts{})
+		if err != nil {
+			t.Fatalf("list all memories: %v", err)
+		}
+		t.Logf("Remaining memories after consolidate:")
+		for _, m := range allMemories {
+			t.Logf("  ID=%d, Content=%q, Confidence=%.2f, Created=%s",
+				m.ID, m.Content, m.Confidence, m.CreatedAt)
+		}
+
+		// Verify stale memory was removed
+		results, err := store.Search(ctx, "unique_xyzzy_stale_content_12345", memory.SearchOpts{Limit: 5})
+		if err != nil {
+			t.Fatalf("search after consolidate: %v", err)
+		}
+		if len(results) > 0 {
+			t.Errorf("expected stale memory to be pruned, but found %d results: %+v", len(results), results)
+		}
+
+		// Verify fresh memory survived
+		results, err = store.Search(ctx, "fresh memory with good confidence", memory.SearchOpts{Limit: 5})
+		if err != nil {
+			t.Fatalf("search fresh: %v", err)
+		}
+		if len(results) == 0 {
+			t.Error("expected fresh memory to survive consolidation")
+		}
+	})
+
+	t.Run("dry run shows stats without modifying", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		store := memory.NewStore(db)
+		ctx := context.Background()
+
+		// Insert an old memory
+		_, err := db.Exec(
+			`INSERT INTO memories (content, type, tags, source, confidence, created_at)
+			 VALUES (?, ?, ?, ?, ?, datetime('now', '-1 year'))`,
+			"old memory for dry run test", "lesson", "[]", "self_report", 0.1,
+		)
+		if err != nil {
+			t.Fatalf("insert old: %v", err)
+		}
+
+		countBefore, err := store.List(ctx, memory.ListOpts{})
+		if err != nil {
+			t.Fatalf("list before: %v", err)
+		}
+
+		// Run consolidate with dry-run flag
+		cmd := newMemoriesConsolidateCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--dry-run"})
+
+		err = cmd.Execute()
+		if err != nil {
+			t.Fatalf("consolidate dry-run execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, "DRY RUN") {
+			t.Errorf("expected dry run indicator in output, got: %s", output)
+		}
+
+		// Verify no memories were actually removed
+		countAfter, err := store.List(ctx, memory.ListOpts{})
+		if err != nil {
+			t.Fatalf("list after: %v", err)
+		}
+		if len(countAfter) != len(countBefore) {
+			t.Errorf("expected same count in dry run, before=%d after=%d", len(countBefore), len(countAfter))
+		}
+	})
+
+	t.Run("custom threshold flags work", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		store := memory.NewStore(db)
+
+		cmd := newMemoriesConsolidateCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--min-score", "0.05", "--similarity", "0.9"})
+
+		err := cmd.Execute()
+		if err != nil {
+			t.Fatalf("consolidate with flags execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, "Consolidation complete") {
+			t.Errorf("expected success output, got: %s", output)
+		}
+	})
+}
+
 func TestForget(t *testing.T) {
 	db := setupTestMemoryDB(t)
 	store := memory.NewStore(db)
