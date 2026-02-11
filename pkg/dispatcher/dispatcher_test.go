@@ -5884,3 +5884,262 @@ func TestHandoffExhaustion_CreatesContinuationBead(t *testing.T) {
 	defer beadSrc.mu.Unlock()
 	t.Fatalf("expected BeadSource.Create with parent=bead-stuck, type=task, description containing handoff summary; got %+v", beadSrc.created)
 }
+
+// TestCrashRecovery_ReconnectPreservesAttemptCount verifies the full crash
+// recovery flow: dispatcher starts, assigns a bead, worker reports a QG failure
+// (attempt 1 persisted to SQLite), dispatcher crashes (context cancelled), a
+// NEW dispatcher starts against the SAME database, worker reconnects, and the
+// next QG failure continues from attempt 2 (not 0).
+func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
+	// --- Shared state across both dispatcher lifetimes ---
+	// Use a temp-file SQLite DB so both dispatchers share persistent state.
+	tmpFile := fmt.Sprintf("/tmp/oro-crash-test-%d.db", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_ = os.Remove(tmpFile)
+		_ = os.Remove(tmpFile + "-wal")
+		_ = os.Remove(tmpFile + "-shm")
+	})
+
+	db, err := sql.Open("sqlite", tmpFile)
+	if err != nil {
+		t.Fatalf("open shared db: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatalf("set WAL: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		t.Fatalf("set busy_timeout: %v", err)
+	}
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	beadSrc := &mockBeadSource{
+		beads: []protocol.Bead{},
+		shown: make(map[string]*protocol.BeadDetail),
+	}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	// Helper: create a new dispatcher with a fresh socket but the shared DB.
+	makeDispatcher := func(t *testing.T) *Dispatcher {
+		t.Helper()
+		gitRunner := &mockGitRunner{}
+		merger := merge.NewCoordinator(gitRunner)
+		spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+		opsSpawner := ops.NewSpawner(spawnMock)
+
+		sockPath := fmt.Sprintf("/tmp/oro-crash-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+		cfg := Config{
+			SocketPath:       sockPath,
+			DBPath:           tmpFile,
+			MaxWorkers:       5,
+			HeartbeatTimeout: 2 * time.Second,
+			PollInterval:     50 * time.Millisecond,
+		}
+
+		d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		return d
+	}
+
+	// ========== PHASE 1: First dispatcher lifetime ==========
+	d1 := makeDispatcher(t)
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	errCh1 := make(chan error, 1)
+	go func() { errCh1 <- d1.Run(ctx1) }()
+
+	// Wait for listener to be ready.
+	waitFor(t, func() bool {
+		d1.mu.Lock()
+		defer d1.mu.Unlock()
+		return d1.listener != nil
+	}, 2*time.Second)
+
+	// Connect worker and register it.
+	conn1, scanner1 := connectWorker(t, d1.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d1, 1, 1*time.Second)
+
+	// Start the dispatcher and set up the bead.
+	// Use ModelOpus so the QG retry does NOT reset attempt count on model escalation.
+	sendDirective(t, d1.cfg.SocketPath, "start")
+	waitForState(t, d1, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-crash1", Title: "Crash recovery test", Priority: 1, Type: "task", Model: protocol.ModelOpus},
+	})
+
+	// Drain the initial ASSIGN.
+	assignMsg, ok := readMsgFromScanner(t, scanner1, 2*time.Second)
+	if !ok {
+		t.Fatal("expected initial ASSIGN")
+	}
+	if assignMsg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", assignMsg.Type)
+	}
+
+	// Send a QG failure — this should increment attempt to 1 and persist it.
+	sendMsg(t, conn1, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-crash1",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+			QGOutput:          "crash-test-fail-1",
+		},
+	})
+
+	// Read the re-ASSIGN (attempt=1).
+	retryMsg, ok := readMsgFromScanner(t, scanner1, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after first QG failure")
+	}
+	if retryMsg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
+	}
+	if retryMsg.Assign.Attempt != 1 {
+		t.Fatalf("expected Attempt=1 after first QG failure, got %d", retryMsg.Assign.Attempt)
+	}
+
+	// Verify attempt_count was persisted in SQLite.
+	var persistedCount int
+	if err := db.QueryRow(
+		`SELECT attempt_count FROM assignments WHERE bead_id='bead-crash1' AND status='active'`,
+	).Scan(&persistedCount); err != nil {
+		t.Fatalf("query attempt_count before crash: %v", err)
+	}
+	if persistedCount != 1 {
+		t.Fatalf("expected persisted attempt_count=1, got %d", persistedCount)
+	}
+
+	// Close the worker connection before shutting down dispatcher.
+	_ = conn1.Close()
+
+	// ========== PHASE 2: Simulate crash — cancel first dispatcher ==========
+	cancel1()
+	select {
+	case <-errCh1:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first dispatcher did not stop within timeout")
+	}
+
+	// ========== PHASE 3: Second dispatcher lifetime — restart ==========
+	d2 := makeDispatcher(t)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	errCh2 := make(chan error, 1)
+	go func() { errCh2 <- d2.Run(ctx2) }()
+	defer func() {
+		cancel2()
+		select {
+		case <-errCh2:
+		case <-time.After(3 * time.Second):
+		}
+	}()
+
+	// Wait for second dispatcher listener to be ready.
+	waitFor(t, func() bool {
+		d2.mu.Lock()
+		defer d2.mu.Unlock()
+		return d2.listener != nil
+	}, 2*time.Second)
+
+	// Verify restoreState reconstructed the attempt count from SQLite.
+	d2.mu.Lock()
+	restoredCount := d2.attemptCounts["bead-crash1"]
+	d2.mu.Unlock()
+	if restoredCount != 1 {
+		t.Fatalf("expected restored attemptCounts[bead-crash1]=1 after restart, got %d", restoredCount)
+	}
+
+	// Connect a worker to the new dispatcher and send RECONNECT.
+	conn2, scanner2 := connectWorker(t, d2.cfg.SocketPath)
+
+	// First register with a heartbeat so the worker is tracked.
+	sendMsg(t, conn2, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 10},
+	})
+	waitForWorkers(t, d2, 1, 1*time.Second)
+
+	// Send RECONNECT — worker tells dispatcher it was working on bead-crash1.
+	sendMsg(t, conn2, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID:   "w1",
+			BeadID:     "bead-crash1",
+			State:      "running",
+			ContextPct: 10,
+		},
+	})
+
+	// Give reconnect processing a moment.
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify the worker is now recognized as busy on bead-crash1.
+	d2.mu.Lock()
+	w, wOK := d2.workers["w1"]
+	var workerBeadID string
+	var workerState protocol.WorkerState
+	if wOK {
+		workerBeadID = w.beadID
+		workerState = w.state
+	}
+	d2.mu.Unlock()
+
+	if !wOK {
+		t.Fatal("expected worker w1 to be tracked after reconnect")
+	}
+	if workerBeadID != "bead-crash1" {
+		t.Fatalf("expected worker bead=bead-crash1, got %q", workerBeadID)
+	}
+	if workerState != protocol.WorkerBusy {
+		t.Fatalf("expected worker state=busy, got %s", workerState)
+	}
+
+	// Start the second dispatcher.
+	sendDirective(t, d2.cfg.SocketPath, "start")
+	waitForState(t, d2, StateRunning, 1*time.Second)
+
+	// ========== PHASE 4: Second QG failure — verify attempt continues from 2 ==========
+	sendMsg(t, conn2, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-crash1",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+			QGOutput:          "crash-test-fail-2",
+		},
+	})
+
+	// Read the re-ASSIGN — attempt should be 2, NOT 0 or 1.
+	retryMsg2, ok := readMsgFromScanner(t, scanner2, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after second QG failure on restarted dispatcher")
+	}
+	if retryMsg2.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", retryMsg2.Type)
+	}
+	if retryMsg2.Assign.Attempt != 2 {
+		t.Fatalf("expected Attempt=2 after crash recovery, got %d (attempt count was not preserved across restart)", retryMsg2.Assign.Attempt)
+	}
+
+	// Verify the persisted count also incremented to 2.
+	var finalCount int
+	if err := db.QueryRow(
+		`SELECT attempt_count FROM assignments WHERE bead_id='bead-crash1' AND status='active'`,
+	).Scan(&finalCount); err != nil {
+		t.Fatalf("query attempt_count after second failure: %v", err)
+	}
+	if finalCount != 2 {
+		t.Fatalf("expected persisted attempt_count=2, got %d", finalCount)
+	}
+}
