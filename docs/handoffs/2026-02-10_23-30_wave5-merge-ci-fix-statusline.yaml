@@ -1,0 +1,70 @@
+---
+date: 2026-02-10
+status: complete
+---
+
+goal: >
+  Merged Wave 5 (4 parallel agents), fixed CI, configured cute statusline.
+  Session total: 11 beads closed across Waves 4+5, plus CI fix and statusline.
+
+now: >
+  Check bd ready for next work. oro-lcg (e2e integration test) is in_progress
+  but was claimed in an earlier session — verify if started. Epics oro-cwz,
+  oro-0qy, oro-1p3 have remaining children. oro-nqi (TUI dashboard) is P2.
+
+test: go test -race -count=1 ./... && ./quality_gate.sh
+
+done_this_session:
+  - task: "Wave 5 merge — 4 agents with conflict resolution"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/bead_tracker.go,
+            pkg/dispatcher/worker_pool.go, pkg/codesearch/chunker.go,
+            pkg/codesearch/embedder.go, pkg/codesearch/index.go,
+            cmd/oro/cmd_index.go, pkg/worker/worker.go, pkg/memory/memory.go]
+    details: >
+      oro-k9o.1 (unexport types), oro-q9y (priority contention escalation),
+      oro-cwz.3 (semantic code search with embeddings — chunker, embedder,
+      CodeIndex, oro index build/search, 19 tests), oro-1p3.1 (extract
+      WorkerPool + BeadTracker from Dispatcher). Conflict: q9y added
+      escalatedBeads to flat Dispatcher; 1p31 moved tracking maps to
+      BeadTracker embedded struct. Resolved by adding escalatedBeads to
+      BeadTracker struct + all tracking functions. 3 lint fixes: extracted
+      checkPriorityContention, lookupBeadDetail, deleteOrphanedTracking.
+
+  - task: "Fix CI — rename internal/version to internal/buildinfo"
+    files: [internal/buildinfo/buildinfo.go, internal/buildinfo/buildinfo_test.go,
+            cmd/oro/root.go, Makefile]
+    details: >
+      golangci-lint v2.9.0 on GitHub CI added revive var-naming rule that
+      flags package names conflicting with Go stdlib. Renamed package and
+      updated all import references + ldflags path.
+
+  - task: "Configure Claude Code statusline"
+    files: [~/.claude/statusline-command.sh, ~/.claude/settings.json]
+    details: >
+      Two-line statusline: L1 = project emoji + git branch with colored
+      indicators + model emoji. L2 = color-coded context progress bar +
+      cost + duration + lines changed. Git cached 5s. No expensive bd calls.
+
+decisions:
+  - ci_fix_rename: >
+      Renamed internal/version → internal/buildinfo rather than adding
+      nolint directive. Cleaner fix, avoids future linter issues.
+  - conflict_resolution_strategy: >
+      When q9y (additive feature) conflicts with 1p3.1 (structural refactor),
+      take the refactor structure and integrate the feature's additions into
+      the new structure. Merge smaller changes first, big refactors last.
+
+worked:
+  - "Merge ordering: k9o1 (smallest) → q9y → cwz3 (new files) → 1p31 (big refactor)"
+  - "Verifying agent commits compile before merging (go -C .worktrees/X build ./...)"
+  - "Removing all worktrees before rebase (guard hook blocks otherwise)"
+
+next:
+  - Check oro-lcg status (in_progress from earlier session)
+  - Close parent epics if all children done (check oro-cwz, oro-0qy, oro-1p3)
+  - Pick up P2/P3 beads from bd ready
+
+beads:
+  completed: [oro-k9o.1, oro-q9y, oro-cwz.3, oro-1p3.1]
+  in_progress: [oro-lcg]
+  remaining: [oro-cwz.4, oro-cwz.5, oro-0ro, oro-cag, oro-4gz, oro-3wl]
