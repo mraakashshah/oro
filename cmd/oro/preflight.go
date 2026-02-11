@@ -15,7 +15,7 @@ func runPreflightChecks() error {
 
 	for _, tool := range requiredTools {
 		if _, err := exec.LookPath(tool); err != nil {
-			return fmt.Errorf("required tool '%s' not found in PATH - please install it before running oro start", tool)
+			return fmt.Errorf("required tool '%s' not found in PATH — run 'oro init' to bootstrap all dependencies", tool)
 		}
 	}
 
