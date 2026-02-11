@@ -117,25 +117,25 @@ func TestTmuxEscalator_DefaultSessionAndPane(t *testing.T) {
 		t.Fatalf("expected default session oro, got %s", call0.args[2])
 	}
 
-	// Check paste-buffer call for default pane target
+	// Check paste-buffer call for default window target
 	pasteCall := runner.calls[2]
 	foundPane := false
 	for i, arg := range pasteCall.args {
 		if arg == "-t" && i+1 < len(pasteCall.args) {
-			if pasteCall.args[i+1] == "oro:0.1" {
+			if pasteCall.args[i+1] == "oro:manager" {
 				foundPane = true
 				break
 			}
 		}
 	}
 	if !foundPane {
-		t.Fatalf("expected default pane oro:0.1 in paste-buffer call, got args: %v", pasteCall.args)
+		t.Fatalf("expected default window oro:manager in paste-buffer call, got args: %v", pasteCall.args)
 	}
 }
 
 func TestTmuxEscalator_SanitizesNewlines(t *testing.T) {
 	runner := &mockEscRunner{}
-	esc := dispatcher.NewTmuxEscalator("oro", "oro:0.1", runner)
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
 
 	err := esc.Escalate(context.Background(), "line1\nline2\rline3")
 	if err != nil {
@@ -152,7 +152,7 @@ func TestTmuxEscalator_SanitizesNewlines(t *testing.T) {
 
 func TestTmuxEscalator_EnterSuffix(t *testing.T) {
 	runner := &mockEscRunner{}
-	esc := dispatcher.NewTmuxEscalator("oro", "oro:0.1", runner)
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
 
 	_ = esc.Escalate(context.Background(), "test")
 

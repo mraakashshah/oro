@@ -20,13 +20,13 @@ type TmuxEscalator struct {
 }
 
 // NewTmuxEscalator creates a TmuxEscalator. If sessionName or paneTarget are
-// empty, sensible defaults ("oro" and "oro:0.1") are used.
+// empty, sensible defaults ("oro" and "oro:manager") are used.
 func NewTmuxEscalator(sessionName, paneTarget string, runner CommandRunner) *TmuxEscalator {
 	if sessionName == "" {
 		sessionName = "oro"
 	}
 	if paneTarget == "" {
-		paneTarget = "oro:0.1"
+		paneTarget = "oro:manager"
 	}
 	return &TmuxEscalator{
 		sessionName: sessionName,

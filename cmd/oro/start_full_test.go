@@ -115,62 +115,62 @@ func TestFullStart(t *testing.T) {
 			t.Fatal("expected tmux new-session to be called")
 		}
 
-		// 3. Verify both panes launch interactive claude with role env vars.
-		var pane0Calls, pane1Calls [][]string
+		// 3. Verify both windows launch interactive claude with role env vars.
+		var architectCalls, managerCalls [][]string
 		for _, call := range fakeTmux.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:0.0") {
-					pane0Calls = append(pane0Calls, call)
+				if strings.Contains(joined, "oro:architect") {
+					architectCalls = append(architectCalls, call)
 				}
-				if strings.Contains(joined, "oro:0.1") {
-					pane1Calls = append(pane1Calls, call)
+				if strings.Contains(joined, "oro:manager") {
+					managerCalls = append(managerCalls, call)
 				}
 			}
 		}
 
-		// Architect pane (0): should have launch + nudge injection.
-		if len(pane0Calls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
+		// Architect window: should have launch + nudge injection.
+		if len(architectCalls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to architect window, got %d", len(architectCalls))
 		}
-		p0Launch := strings.Join(pane0Calls[0], " ")
+		archLaunch := strings.Join(architectCalls[0], " ")
 		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
-			if !strings.Contains(p0Launch, envVar) {
-				t.Errorf("pane 0 should set %s, got: %s", envVar, p0Launch)
+			if !strings.Contains(archLaunch, envVar) {
+				t.Errorf("architect window should set %s, got: %s", envVar, archLaunch)
 			}
 		}
-		if !strings.Contains(p0Launch, "claude") {
-			t.Errorf("pane 0 should launch claude, got: %s", p0Launch)
+		if !strings.Contains(archLaunch, "claude") {
+			t.Errorf("architect window should launch claude, got: %s", archLaunch)
 		}
-		if strings.Contains(p0Launch, "claude -p") {
-			t.Errorf("pane 0 should use interactive claude, not 'claude -p', got: %s", p0Launch)
+		if strings.Contains(archLaunch, "claude -p") {
+			t.Errorf("architect window should use interactive claude, not 'claude -p', got: %s", archLaunch)
 		}
 		// Verify architect nudge is injected (short, not the full beacon).
-		p0Nudge := strings.Join(pane0Calls[1], " ")
-		if !strings.Contains(p0Nudge, "oro architect") {
-			t.Errorf("pane 0 nudge should contain 'oro architect', got: %s", p0Nudge)
+		archNudge := strings.Join(architectCalls[1], " ")
+		if !strings.Contains(archNudge, "oro architect") {
+			t.Errorf("architect window nudge should contain 'oro architect', got: %s", archNudge)
 		}
 
-		// Manager pane (1): should have launch + nudge injection.
-		if len(pane1Calls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
+		// Manager window: should have launch + nudge injection.
+		if len(managerCalls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to manager window, got %d", len(managerCalls))
 		}
-		p1Launch := strings.Join(pane1Calls[0], " ")
+		mgrLaunch := strings.Join(managerCalls[0], " ")
 		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
-			if !strings.Contains(p1Launch, envVar) {
-				t.Errorf("pane 1 should set %s, got: %s", envVar, p1Launch)
+			if !strings.Contains(mgrLaunch, envVar) {
+				t.Errorf("manager window should set %s, got: %s", envVar, mgrLaunch)
 			}
 		}
-		if !strings.Contains(p1Launch, "claude") {
-			t.Errorf("pane 1 should launch claude, got: %s", p1Launch)
+		if !strings.Contains(mgrLaunch, "claude") {
+			t.Errorf("manager window should launch claude, got: %s", mgrLaunch)
 		}
-		if strings.Contains(p1Launch, "claude -p") {
-			t.Errorf("pane 1 should use interactive claude, not 'claude -p', got: %s", p1Launch)
+		if strings.Contains(mgrLaunch, "claude -p") {
+			t.Errorf("manager window should use interactive claude, not 'claude -p', got: %s", mgrLaunch)
 		}
 		// Verify manager nudge is injected (short, not the full beacon).
-		p1Nudge := strings.Join(pane1Calls[1], " ")
-		if !strings.Contains(p1Nudge, "oro manager") {
-			t.Errorf("pane 1 nudge should contain 'oro manager', got: %s", p1Nudge)
+		mgrNudge := strings.Join(managerCalls[1], " ")
+		if !strings.Contains(mgrNudge, "oro manager") {
+			t.Errorf("manager window nudge should contain 'oro manager', got: %s", mgrNudge)
 		}
 
 		// 5. Verify status output.
@@ -242,7 +242,7 @@ func TestFullStart(t *testing.T) {
 		// has-session returns error (no session)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		// new-session fails
-		fakeTmux.errs[key("tmux", "new-session", "-d", "-s", "oro")] = fmt.Errorf("tmux not installed")
+		fakeTmux.errs[key("tmux", "new-session", "-d", "-s", "oro", "-n", "architect")] = fmt.Errorf("tmux not installed")
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,
@@ -261,7 +261,7 @@ func TestFullStart(t *testing.T) {
 }
 
 func TestCreateWithNudges(t *testing.T) {
-	t.Run("injects both nudges via send-keys to respective panes", func(t *testing.T) {
+	t.Run("injects both nudges via send-keys to respective windows", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
@@ -272,40 +272,40 @@ func TestCreateWithNudges(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Collect send-keys calls per pane.
-		var pane0Calls, pane1Calls [][]string
+		// Collect send-keys calls per window.
+		var architectCalls, managerCalls [][]string
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:0.0") {
-					pane0Calls = append(pane0Calls, call)
+				if strings.Contains(joined, "oro:architect") {
+					architectCalls = append(architectCalls, call)
 				}
-				if strings.Contains(joined, "oro:0.1") {
-					pane1Calls = append(pane1Calls, call)
+				if strings.Contains(joined, "oro:manager") {
+					managerCalls = append(managerCalls, call)
 				}
 			}
 		}
 
-		// Pane 0: nudge injection (second send-keys) should contain architect nudge.
-		if len(pane0Calls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
+		// Architect window: nudge injection (second send-keys) should contain architect nudge.
+		if len(architectCalls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to architect window, got %d", len(architectCalls))
 		}
-		p0Nudge := strings.Join(pane0Calls[1], " ")
-		if !strings.Contains(p0Nudge, "You are a test architect.") {
-			t.Errorf("pane 0 nudge should contain architect text, got: %s", p0Nudge)
+		archNudge := strings.Join(architectCalls[1], " ")
+		if !strings.Contains(archNudge, "You are a test architect.") {
+			t.Errorf("architect window nudge should contain architect text, got: %s", archNudge)
 		}
 
-		// Pane 1: nudge injection (second send-keys) should contain manager nudge.
-		if len(pane1Calls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
+		// Manager window: nudge injection (second send-keys) should contain manager nudge.
+		if len(managerCalls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to manager window, got %d", len(managerCalls))
 		}
-		p1Nudge := strings.Join(pane1Calls[1], " ")
-		if !strings.Contains(p1Nudge, "You are a test manager.") {
-			t.Errorf("pane 1 nudge should contain manager text, got: %s", p1Nudge)
+		mgrNudge := strings.Join(managerCalls[1], " ")
+		if !strings.Contains(mgrNudge, "You are a test manager.") {
+			t.Errorf("manager window nudge should contain manager text, got: %s", mgrNudge)
 		}
 	})
 
-	t.Run("neither pane uses claude -p", func(t *testing.T) {
+	t.Run("neither window uses claude -p", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
@@ -320,7 +320,7 @@ func TestCreateWithNudges(t *testing.T) {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
 				if strings.Contains(joined, "claude -p") {
-					t.Errorf("no pane should use 'claude -p', got: %s", joined)
+					t.Errorf("no window should use 'claude -p', got: %s", joined)
 				}
 			}
 		}

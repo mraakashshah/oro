@@ -59,8 +59,8 @@ func roleEnvCmd(role string) string {
 	return fmt.Sprintf("export ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude", role, role, role)
 }
 
-// Create creates the Oro tmux session with two panes (architect + manager).
-// Both panes launch interactive claude with role env vars (ORO_ROLE, BD_ACTOR,
+// Create creates the Oro tmux session with two windows (architect + manager).
+// Both windows launch interactive claude with role env vars (ORO_ROLE, BD_ACTOR,
 // GIT_AUTHOR_NAME) set, then poll for Claude readiness before injecting a short
 // nudge via send-keys. The full role context is injected by the SessionStart hook
 // reading the ORO_ROLE env var — send-keys only sends a short nudge/kick.
@@ -70,45 +70,55 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		return nil
 	}
 
-	// Create a detached session — left pane (pane 0) is the architect.
-	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name); err != nil {
+	// Create a detached session with first window named "architect".
+	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", "architect"); err != nil {
 		return fmt.Errorf("tmux new-session: %w", err)
 	}
 
-	// Split horizontally to create right pane (pane 1) — the manager.
-	if _, err := s.Runner.Run("tmux", "split-window", "-h", "-t", s.Name); err != nil {
-		return fmt.Errorf("tmux split-window: %w", err)
+	// Create second window named "manager".
+	if _, err := s.Runner.Run("tmux", "new-window", "-t", s.Name, "-n", "manager"); err != nil {
+		return fmt.Errorf("tmux new-window: %w", err)
 	}
 
-	// Launch interactive claude with role env vars in pane 0 (architect).
+	// Apply color theming to architect window (bright green).
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name+":architect", "window-style", "fg=colour46,bold"); err != nil {
+		return fmt.Errorf("tmux set-option architect color: %w", err)
+	}
+
+	// Apply color theming to manager window (orange).
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name+":manager", "window-style", "fg=colour208,bold"); err != nil {
+		return fmt.Errorf("tmux set-option manager color: %w", err)
+	}
+
+	// Launch interactive claude with role env vars in architect window.
 	architectCmd := roleEnvCmd("architect")
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectCmd, "Enter"); err != nil {
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":architect", architectCmd, "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys architect launch: %w", err)
 	}
 
-	// Launch interactive claude with role env vars in pane 1 (manager).
+	// Launch interactive claude with role env vars in manager window.
 	managerCmd := roleEnvCmd("manager")
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerCmd, "Enter"); err != nil {
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":manager", managerCmd, "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys manager launch: %w", err)
 	}
 
-	// Poll both panes until Claude is ready (prompt appears).
-	architectPane := s.Name + ":0.0"
+	// Poll both windows until Claude is ready (prompt appears).
+	architectPane := s.Name + ":architect"
 	if err := s.PaneReady(architectPane); err != nil {
-		return fmt.Errorf("wait for architect pane ready: %w", err)
+		return fmt.Errorf("wait for architect window ready: %w", err)
 	}
-	managerPane := s.Name + ":0.1"
+	managerPane := s.Name + ":manager"
 	if err := s.PaneReady(managerPane); err != nil {
-		return fmt.Errorf("wait for manager pane ready: %w", err)
+		return fmt.Errorf("wait for manager window ready: %w", err)
 	}
 
-	// Inject short architect nudge into pane 0.
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.0", architectNudge, "Enter"); err != nil {
+	// Inject short architect nudge into architect window.
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":architect", architectNudge, "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys architect nudge: %w", err)
 	}
 
-	// Inject short manager nudge into pane 1.
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":0.1", managerNudge, "Enter"); err != nil {
+	// Inject short manager nudge into manager window.
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":manager", managerNudge, "Enter"); err != nil {
 		return fmt.Errorf("tmux send-keys manager nudge: %w", err)
 	}
 
@@ -117,7 +127,7 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	if beaconTimeout == 0 {
 		beaconTimeout = defaultBeaconTimeout
 	}
-	if err := s.VerifyBeaconReceived(s.Name+":0.1", "bd stats", beaconTimeout); err != nil {
+	if err := s.VerifyBeaconReceived(s.Name+":manager", "bd stats", beaconTimeout); err != nil {
 		// Warning only — don't fail startup.
 		fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
 	}

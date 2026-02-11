@@ -56,10 +56,10 @@ func (f *fakeCmd) Run(name string, args ...string) (string, error) {
 // readyPaneOutput returns fake capture-pane output containing the Claude prompt.
 const readyPaneOutput = "some startup output\n> "
 
-// stubCapturePaneReady sets up the fake to return ready output for both panes.
+// stubCapturePaneReady sets up the fake to return ready output for both windows.
 func stubCapturePaneReady(fake *fakeCmd, sessionName string) {
-	fake.output[key("tmux", "capture-pane", "-p", "-t", sessionName+":0.0")] = readyPaneOutput
-	fake.output[key("tmux", "capture-pane", "-p", "-t", sessionName+":0.1")] = readyPaneOutput
+	fake.output[key("tmux", "capture-pane", "-p", "-t", sessionName+":architect")] = readyPaneOutput
+	fake.output[key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")] = readyPaneOutput
 }
 
 // findCall returns the first call matching the given tmux subcommand, or nil.
@@ -93,7 +93,7 @@ func callHasArgPair(call []string, arg, val string) bool {
 }
 
 func TestTmuxLayout(t *testing.T) {
-	t.Run("Create builds session with two panes", func(t *testing.T) {
+	t.Run("Create builds session with two windows", func(t *testing.T) {
 		fake := newFakeCmd()
 		// has-session returns error (session does not exist)
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
@@ -107,7 +107,7 @@ func TestTmuxLayout(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Verify: new-session was called with -d and -s oro
+		// Verify: new-session was called with -d, -s oro, and -n architect
 		newSessionCall := findCall(fake.calls, "new-session")
 		if newSessionCall == nil {
 			t.Fatal("expected tmux new-session to be called")
@@ -118,14 +118,48 @@ func TestTmuxLayout(t *testing.T) {
 		if !callHasArgPair(newSessionCall, "-s", "oro") {
 			t.Error("new-session should name the session 'oro'")
 		}
-
-		// Verify: split-window was called for horizontal split
-		splitCall := findCall(fake.calls, "split-window")
-		if splitCall == nil {
-			t.Fatal("expected tmux split-window to be called")
+		if !callHasArgPair(newSessionCall, "-n", "architect") {
+			t.Error("new-session should name the first window 'architect'")
 		}
-		if !callHasArg(splitCall, "-h") {
-			t.Error("split-window should use -h for horizontal split")
+
+		// Verify: new-window was called to create manager window
+		newWindowCall := findCall(fake.calls, "new-window")
+		if newWindowCall == nil {
+			t.Fatal("expected tmux new-window to be called")
+		}
+		if !callHasArgPair(newWindowCall, "-t", "oro") {
+			t.Error("new-window should target session 'oro'")
+		}
+		if !callHasArgPair(newWindowCall, "-n", "manager") {
+			t.Error("new-window should name the window 'manager'")
+		}
+
+		// Verify: set-option was called for architect window color
+		var foundArchitectColor bool
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "oro:architect") && strings.Contains(joined, "colour46") {
+					foundArchitectColor = true
+				}
+			}
+		}
+		if !foundArchitectColor {
+			t.Error("expected set-option for architect window with colour46")
+		}
+
+		// Verify: set-option was called for manager window color
+		var foundManagerColor bool
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "oro:manager") && strings.Contains(joined, "colour208") {
+					foundManagerColor = true
+				}
+			}
+		}
+		if !foundManagerColor {
+			t.Error("expected set-option for manager window with colour208")
 		}
 	})
 
@@ -216,7 +250,7 @@ func TestTmuxLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("Create sends commands to panes", func(t *testing.T) {
+	t.Run("Create sends commands to windows", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
@@ -228,9 +262,9 @@ func TestTmuxLayout(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Verify send-keys was called for both panes:
-		// - pane 0: role env vars + claude, then architect nudge
-		// - pane 1: role env vars + claude, then manager nudge
+		// Verify send-keys was called for both windows:
+		// - architect: role env vars + claude, then architect nudge
+		// - manager: role env vars + claude, then manager nudge
 		// That's 4 send-keys calls total (2 launch + 2 nudge injection).
 		sendKeysCount := 0
 		for _, call := range fake.calls {
@@ -254,54 +288,54 @@ func TestTmuxLayout(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Collect all send-keys calls targeting each pane.
-		var pane0Calls, pane1Calls [][]string
+		// Collect all send-keys calls targeting each window.
+		var architectCalls, managerCalls [][]string
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:0.0") {
-					pane0Calls = append(pane0Calls, call)
+				if strings.Contains(joined, "oro:architect") {
+					architectCalls = append(architectCalls, call)
 				}
-				if strings.Contains(joined, "oro:0.1") {
-					pane1Calls = append(pane1Calls, call)
+				if strings.Contains(joined, "oro:manager") {
+					managerCalls = append(managerCalls, call)
 				}
 			}
 		}
 
-		// Pane 0: first send-keys should launch claude with all role env vars
-		if len(pane0Calls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
+		// Architect window: first send-keys should launch claude with all role env vars
+		if len(architectCalls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to architect window, got %d", len(architectCalls))
 		}
-		p0Launch := strings.Join(pane0Calls[0], " ")
+		archLaunch := strings.Join(architectCalls[0], " ")
 		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
-			if !strings.Contains(p0Launch, envVar) {
-				t.Errorf("pane 0 launch should set %s, got: %s", envVar, p0Launch)
+			if !strings.Contains(archLaunch, envVar) {
+				t.Errorf("architect window launch should set %s, got: %s", envVar, archLaunch)
 			}
 		}
-		if !strings.Contains(p0Launch, "claude") {
-			t.Errorf("pane 0 launch should run claude, got: %s", p0Launch)
+		if !strings.Contains(archLaunch, "claude") {
+			t.Errorf("architect window launch should run claude, got: %s", archLaunch)
 		}
 		// Must NOT use claude -p
-		if strings.Contains(p0Launch, "claude -p") {
-			t.Errorf("pane 0 should use interactive claude, not 'claude -p', got: %s", p0Launch)
+		if strings.Contains(archLaunch, "claude -p") {
+			t.Errorf("architect window should use interactive claude, not 'claude -p', got: %s", archLaunch)
 		}
 
-		// Pane 1: first send-keys should launch claude with all role env vars
-		if len(pane1Calls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
+		// Manager window: first send-keys should launch claude with all role env vars
+		if len(managerCalls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to manager window, got %d", len(managerCalls))
 		}
-		p1Launch := strings.Join(pane1Calls[0], " ")
+		mgrLaunch := strings.Join(managerCalls[0], " ")
 		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
-			if !strings.Contains(p1Launch, envVar) {
-				t.Errorf("pane 1 launch should set %s, got: %s", envVar, p1Launch)
+			if !strings.Contains(mgrLaunch, envVar) {
+				t.Errorf("manager window launch should set %s, got: %s", envVar, mgrLaunch)
 			}
 		}
-		if !strings.Contains(p1Launch, "claude") {
-			t.Errorf("pane 1 launch should run claude, got: %s", p1Launch)
+		if !strings.Contains(mgrLaunch, "claude") {
+			t.Errorf("manager window launch should run claude, got: %s", mgrLaunch)
 		}
 		// Must NOT use claude -p
-		if strings.Contains(p1Launch, "claude -p") {
-			t.Errorf("pane 1 should use interactive claude, not 'claude -p', got: %s", p1Launch)
+		if strings.Contains(mgrLaunch, "claude -p") {
+			t.Errorf("manager window should use interactive claude, not 'claude -p', got: %s", mgrLaunch)
 		}
 	})
 
@@ -316,36 +350,36 @@ func TestTmuxLayout(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Collect send-keys calls per pane.
-		var pane0Calls, pane1Calls [][]string
+		// Collect send-keys calls per window.
+		var architectCalls, managerCalls [][]string
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:0.0") {
-					pane0Calls = append(pane0Calls, call)
+				if strings.Contains(joined, "oro:architect") {
+					architectCalls = append(architectCalls, call)
 				}
-				if strings.Contains(joined, "oro:0.1") {
-					pane1Calls = append(pane1Calls, call)
+				if strings.Contains(joined, "oro:manager") {
+					managerCalls = append(managerCalls, call)
 				}
 			}
 		}
 
-		// Pane 0: second send-keys should contain the architect nudge.
-		if len(pane0Calls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to pane 0, got %d", len(pane0Calls))
+		// Architect window: second send-keys should contain the architect nudge.
+		if len(architectCalls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to architect window, got %d", len(architectCalls))
 		}
-		p0Nudge := strings.Join(pane0Calls[1], " ")
-		if !strings.Contains(p0Nudge, "architect nudge text here") {
-			t.Errorf("pane 0 nudge injection should contain architect nudge, got: %s", p0Nudge)
+		archNudge := strings.Join(architectCalls[1], " ")
+		if !strings.Contains(archNudge, "architect nudge text here") {
+			t.Errorf("architect window nudge injection should contain architect nudge, got: %s", archNudge)
 		}
 
-		// Pane 1: second send-keys should contain the manager nudge.
-		if len(pane1Calls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to pane 1, got %d", len(pane1Calls))
+		// Manager window: second send-keys should contain the manager nudge.
+		if len(managerCalls) < 2 {
+			t.Fatalf("expected at least 2 send-keys to manager window, got %d", len(managerCalls))
 		}
-		p1Nudge := strings.Join(pane1Calls[1], " ")
-		if !strings.Contains(p1Nudge, "manager nudge text here") {
-			t.Errorf("pane 1 nudge injection should contain manager nudge, got: %s", p1Nudge)
+		mgrNudge := strings.Join(managerCalls[1], " ")
+		if !strings.Contains(mgrNudge, "manager nudge text here") {
+			t.Errorf("manager window nudge injection should contain manager nudge, got: %s", mgrNudge)
 		}
 	})
 
@@ -391,7 +425,7 @@ func TestTmuxLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("Create polls pane readiness before injecting beacons", func(t *testing.T) {
+	t.Run("Create polls window readiness before injecting beacons", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
@@ -402,22 +436,22 @@ func TestTmuxLayout(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Verify capture-pane was called for both panes.
-		var capturePane0, capturePane1 bool
+		// Verify capture-pane was called for both windows.
+		var captureArchitect, captureManager bool
 		for _, call := range fake.calls {
 			joined := strings.Join(call, " ")
-			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:0.0") {
-				capturePane0 = true
+			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:architect") {
+				captureArchitect = true
 			}
-			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:0.1") {
-				capturePane1 = true
+			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:manager") {
+				captureManager = true
 			}
 		}
-		if !capturePane0 {
-			t.Error("expected capture-pane to be called for pane 0")
+		if !captureArchitect {
+			t.Error("expected capture-pane to be called for architect window")
 		}
-		if !capturePane1 {
-			t.Error("expected capture-pane to be called for pane 1")
+		if !captureManager {
+			t.Error("expected capture-pane to be called for manager window")
 		}
 	})
 
@@ -425,8 +459,8 @@ func TestTmuxLayout(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		// capture-pane returns content without the > prompt — never ready
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "Loading claude..."
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.1")] = "Loading claude..."
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "Loading claude..."
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "Loading claude..."
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
@@ -442,10 +476,10 @@ func TestTmuxLayout(t *testing.T) {
 func TestPaneReady(t *testing.T) {
 	t.Run("returns nil when prompt found immediately", func(t *testing.T) {
 		fake := newFakeCmd()
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "Welcome to Claude\n> "
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "Welcome to Claude\n> "
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.PaneReady("oro:0.0")
+		err := sess.PaneReady("oro:architect")
 		if err != nil {
 			t.Fatalf("PaneReady returned error: %v", err)
 		}
@@ -454,7 +488,7 @@ func TestPaneReady(t *testing.T) {
 	t.Run("returns nil after polling succeeds on third attempt", func(t *testing.T) {
 		fake := newFakeCmd()
 		// First two capture-pane calls return no prompt; third has it.
-		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.0")
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:architect")
 		fake.seqOut[captureKey] = []string{
 			"Loading...",
 			"Still loading...",
@@ -462,7 +496,7 @@ func TestPaneReady(t *testing.T) {
 		}
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
-		err := sess.PaneReady("oro:0.0")
+		err := sess.PaneReady("oro:architect")
 		if err != nil {
 			t.Fatalf("PaneReady returned error: %v", err)
 		}
@@ -481,25 +515,25 @@ func TestPaneReady(t *testing.T) {
 
 	t.Run("times out when prompt never appears", func(t *testing.T) {
 		fake := newFakeCmd()
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "$ claude\nStarting..."
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "$ claude\nStarting..."
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
-		err := sess.PaneReady("oro:0.0")
+		err := sess.PaneReady("oro:architect")
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
 		}
 		if !strings.Contains(err.Error(), "did not become ready") {
 			t.Errorf("expected 'did not become ready' in error, got: %v", err)
 		}
-		if !strings.Contains(err.Error(), "oro:0.0") {
-			t.Errorf("expected pane target in error, got: %v", err)
+		if !strings.Contains(err.Error(), "oro:architect") {
+			t.Errorf("expected window target in error, got: %v", err)
 		}
 	})
 
 	t.Run("handles capture-pane error gracefully and keeps polling", func(t *testing.T) {
 		fake := newFakeCmd()
 		// First call errors, second succeeds with prompt.
-		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.0")
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:architect")
 		fake.seqOut[captureKey] = []string{
 			"",
 			"Welcome\n> ",
@@ -510,7 +544,7 @@ func TestPaneReady(t *testing.T) {
 		// An empty output has no prompt, so it will retry. Second call has the prompt.
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
-		err := sess.PaneReady("oro:0.0")
+		err := sess.PaneReady("oro:architect")
 		if err != nil {
 			t.Fatalf("PaneReady returned error: %v", err)
 		}
@@ -519,10 +553,10 @@ func TestPaneReady(t *testing.T) {
 	t.Run("recognizes prompt with leading whitespace", func(t *testing.T) {
 		fake := newFakeCmd()
 		// Claude Code sometimes has the prompt with some whitespace.
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "some output\n  > "
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "some output\n  > "
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.PaneReady("oro:0.0")
+		err := sess.PaneReady("oro:architect")
 		if err != nil {
 			t.Fatalf("PaneReady returned error: %v", err)
 		}
@@ -530,10 +564,10 @@ func TestPaneReady(t *testing.T) {
 
 	t.Run("uses default 30s timeout when ReadyTimeout is zero", func(t *testing.T) {
 		fake := newFakeCmd()
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "Welcome\n> "
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "Welcome\n> "
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
-		err := sess.PaneReady("oro:0.0")
+		err := sess.PaneReady("oro:architect")
 		if err != nil {
 			t.Fatalf("PaneReady returned error: %v", err)
 		}
@@ -543,10 +577,10 @@ func TestPaneReady(t *testing.T) {
 func TestVerifyBeaconReceived(t *testing.T) {
 	t.Run("returns nil when indicator found immediately", func(t *testing.T) {
 		fake := newFakeCmd()
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.1")] = "some output\nbd stats\nmore output"
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "some output\nbd stats\nmore output"
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:0.1", "bd stats", time.Second)
+		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
 		}
@@ -554,7 +588,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 
 	t.Run("returns nil after polling succeeds on third attempt", func(t *testing.T) {
 		fake := newFakeCmd()
-		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[captureKey] = []string{
 			"claude loading...",
 			"still waiting...",
@@ -562,7 +596,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		}
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:0.1", "bd stats", 5*time.Second)
+		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 5*time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
 		}
@@ -581,15 +615,15 @@ func TestVerifyBeaconReceived(t *testing.T) {
 
 	t.Run("returns error on timeout with diagnostic pane content", func(t *testing.T) {
 		fake := newFakeCmd()
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.1")] = "stuck on loading screen"
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "stuck on loading screen"
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:0.1", "bd stats", 50*time.Millisecond)
+		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 50*time.Millisecond)
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
 		}
-		if !strings.Contains(err.Error(), "oro:0.1") {
-			t.Errorf("expected pane target in error, got: %v", err)
+		if !strings.Contains(err.Error(), "oro:manager") {
+			t.Errorf("expected window target in error, got: %v", err)
 		}
 		if !strings.Contains(err.Error(), "bd stats") {
 			t.Errorf("expected indicator in error, got: %v", err)
@@ -602,10 +636,10 @@ func TestVerifyBeaconReceived(t *testing.T) {
 
 	t.Run("indicator matching is substring-based", func(t *testing.T) {
 		fake := newFakeCmd()
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:0.0")] = "some text with > prompt visible"
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "some text with > prompt visible"
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:0.0", ">", time.Second)
+		err := sess.VerifyBeaconReceived("oro:architect", ">", time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
 		}
@@ -613,7 +647,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 
 	t.Run("tolerates capture-pane errors and keeps polling", func(t *testing.T) {
 		fake := newFakeCmd()
-		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		// First call returns empty (simulating error), second has indicator
 		fake.seqOut[captureKey] = []string{
 			"",
@@ -621,7 +655,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		}
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:0.1", "bd stats", 5*time.Second)
+		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 5*time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
 		}
@@ -629,17 +663,17 @@ func TestVerifyBeaconReceived(t *testing.T) {
 }
 
 func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
-	t.Run("Create calls VerifyBeaconReceived for manager pane after injection", func(t *testing.T) {
+	t.Run("Create calls VerifyBeaconReceived for manager window after injection", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		// After nudge injection, the manager pane will show "bd stats" activity.
+		// After nudge injection, the manager window will show "bd stats" activity.
 		// We need sequential output: first calls return prompt (for PaneReady),
 		// then subsequent calls return nudge activity (for VerifyBeaconReceived).
 		// Since stubCapturePaneReady uses output (not seqOut), and VerifyBeaconReceived
 		// also uses capture-pane on the same key, we use seqOut to handle both phases.
-		managerCaptureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
+		managerCaptureKey := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		delete(fake.output, managerCaptureKey)
 		fake.seqOut[managerCaptureKey] = []string{
 			readyPaneOutput,            // PaneReady poll
@@ -652,12 +686,12 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Verify that capture-pane was called for the manager pane MORE than once
+		// Verify that capture-pane was called for the manager window MORE than once
 		// (once for PaneReady, at least once for VerifyBeaconReceived).
 		managerCaptureCount := 0
 		for _, call := range fake.calls {
 			joined := strings.Join(call, " ")
-			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:0.1") {
+			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:manager") {
 				managerCaptureCount++
 			}
 		}
@@ -671,8 +705,8 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubCapturePaneReady(fake, "oro")
 
-		// Manager pane never shows nudge activity after injection.
-		managerCaptureKey := key("tmux", "capture-pane", "-p", "-t", "oro:0.1")
+		// Manager window never shows nudge activity after injection.
+		managerCaptureKey := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		delete(fake.output, managerCaptureKey)
 		fake.seqOut[managerCaptureKey] = []string{
 			readyPaneOutput,   // PaneReady poll succeeds
