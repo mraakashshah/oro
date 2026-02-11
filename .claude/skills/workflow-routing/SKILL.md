@@ -16,21 +16,21 @@ Detect the user's primary goal from their message:
 | Signal | Goal | Skill Chain |
 |--------|------|-------------|
 | "how does", "what is", "find", "understand" | **Research** | `explore` → document findings |
-| "design", "architect", "plan", "break down" | **Plan** | `brainstorming` → `writing-plans` → `premortem` |
-| "add", "implement", "create", "build" | **Build** | `writing-plans` → `executing-plans` → `finishing-work` |
+| "design", "architect", "plan", "break down" | **Plan** | `brainstorming` → `premortem` → `writing-plans` |
+| "spec", "decompose", "break into beads", "encode" | **Encode** | `bead-craft` (decompose mode) |
+| "add", "implement", "create", "build" | **Build** | `executing-beads` → `finishing-work` |
 | "fix", "broken", "failing", "debug", "bug" | **Fix** | `systematic-debugging` → `test-driven-development` → `finishing-work` |
-| "spec", "decompose", "break into beads" | **Decompose** | `bead-craft` (decompose mode) → `executing-beads` → `finishing-work` |
-| "work bead", "pick up a bead", "execute bead" | **Work Bead** | `work-bead` |
+| "work bead", "pick up a bead", "execute bead", "do <id>" | **Work Bead** | `work-bead` |
 
 If intent is clear from context, infer the goal. Otherwise, ask:
 
 ```
 What's your primary goal?
 1. Research — understand/explore something
-2. Plan — design/architect a solution
-3. Build — implement/code something
-4. Fix — debug/fix an issue
-5. Decompose — break a spec into beads and execute
+2. Plan — design and spec a solution (brainstorming → premortem → writing-plans)
+3. Encode — decompose a spec into beads (bead-craft)
+4. Build — execute beads and ship
+5. Fix — debug/fix an issue
 ```
 
 ## Workflow Chains
@@ -41,28 +41,41 @@ What's your primary goal?
 3. Suggest: "Ready for planning?"
 
 ### Plan
-1. `brainstorming` — understand requirements (includes per-decision premortems)
-2. `writing-plans` — create implementation plan
-3. `premortem` — full plan-level risk analysis before building
-4. Suggest: "Ready to build?"
 
-**Note:** `premortem` applies at two levels: per-decision (inside brainstorming) and per-plan (step 3). Both are mandatory.
+**Runs automatically as a single chain — do not stop between steps.**
+
+1. `brainstorming` — explore requirements, generate design options, make decisions (includes per-decision premortems)
+2. `premortem` — full plan-level risk analysis on the chosen design
+3. `writing-plans` — produce a spec document incorporating brainstorming output and premortem mitigations
+4. Suggest: "Ready to encode into beads?"
+
+**Output:** A spec document ready for decomposition.
+
+### Encode
+
+**Runs automatically — invoke bead-craft and present the tree.**
+
+1. `bead-craft` (decompose mode) — parse spec into epic + task beads with full quality (Rule of Five, acceptance criteria, Read/Signature/Edges)
+2. Present bead tree for user confirmation
+3. Suggest: "Ready to build?"
+
+**Input:** Spec from Plan phase. **Output:** Bead dependency graph.
 
 ### Build
-1. `executing-plans` — implement task-by-task
+
+**Runs automatically — execute beads in dependency order.**
+
+1. `executing-beads` — TDD cycle per bead, quality gate, atomic commit
 2. `requesting-code-review` — review between batches
 3. `finishing-work` — integrate and clean up
+
+**Input:** Bead graph from Encode phase.
 
 ### Fix
 1. `systematic-debugging` — find root cause
 2. `test-driven-development` — write failing test, fix
 3. `verification-before-completion` — verify fix
 4. `finishing-work` — integrate
-
-### Decompose
-1. `bead-craft` (decompose mode) — parse spec, create epic + task beads with acceptance criteria
-2. `executing-beads` — TDD cycle per bead, quality gate, atomic commit
-3. `finishing-work` — integrate and clean up
 
 ## Parallel Detection
 
@@ -96,8 +109,8 @@ Suggest the natural next step:
 
 | After | Suggest |
 |-------|---------|
-| Research | "Ready for planning?" |
-| Plan | "Run premortem before building?" |
+| Research | "Ready to plan?" |
+| Plan | "Ready to encode into beads?" |
+| Encode | "Ready to build?" |
+| Build | "All beads closed. Ready to finish?" |
 | Fix | "Create commit for the fix?" |
-| Build | "Ready to finish and merge?" |
-| Decompose | "All beads closed. Ready to finish?" |
