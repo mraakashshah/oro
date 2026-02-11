@@ -26,16 +26,20 @@ import (
 // --- Mock implementations ---
 
 type mockBeadSource struct {
-	mu     sync.Mutex
-	beads  []protocol.Bead
-	shown  map[string]*protocol.BeadDetail
-	closed []string
-	synced bool
+	mu       sync.Mutex
+	beads    []protocol.Bead
+	shown    map[string]*protocol.BeadDetail
+	closed   []string
+	synced   bool
+	readyErr error // if set, Ready() returns this error
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.readyErr != nil {
+		return nil, m.readyErr
+	}
 	out := make([]protocol.Bead, len(m.beads))
 	copy(out, m.beads)
 	return out, nil
@@ -5286,4 +5290,121 @@ func TestPriorityContention(t *testing.T) {
 	if escalated {
 		t.Error("expected escalatedBeads flag to be cleared for bead-p0 after assignment")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// TestTryAssign_NoBeadsReady (oro-2ao)
+// ---------------------------------------------------------------------------
+
+// TestTryAssign_NoBeadsReady verifies tryAssign behavior when BeadSource.Ready()
+// returns an empty slice or an error. In both cases idle workers must remain
+// idle, no ASSIGN must be sent, and no worktree must be created.
+func TestTryAssign_NoBeadsReady(t *testing.T) {
+	t.Run("empty_ready_slice", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		// Connect a worker so there is an idle worker available.
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   "w-empty",
+				ContextPct: 5,
+			},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		// Start dispatcher so tryAssign operates.
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		// BeadSource already returns empty slice (newTestDispatcher sets beads: []).
+		// Explicitly ensure it's empty.
+		beadSrc.SetBeads([]protocol.Bead{})
+
+		// Directly invoke tryAssign.
+		d.tryAssign(context.Background())
+
+		// Worker must remain idle — no assignment.
+		st, beadID, ok := d.WorkerInfo("w-empty")
+		if !ok {
+			t.Fatal("expected worker w-empty to be tracked")
+		}
+		if st != protocol.WorkerIdle {
+			t.Fatalf("expected worker to remain idle, got state=%s beadID=%s", st, beadID)
+		}
+		if beadID != "" {
+			t.Fatalf("expected no bead assignment, got beadID=%s", beadID)
+		}
+
+		// No worktree should have been created.
+		wtMgr.mu.Lock()
+		createdCount := len(wtMgr.created)
+		wtMgr.mu.Unlock()
+		if createdCount != 0 {
+			t.Fatalf("expected 0 worktrees created, got %d", createdCount)
+		}
+
+		// Verify no ASSIGN was sent by attempting to read from the connection
+		// with a short timeout — should get nothing.
+		msg, gotMsg := readMsg(t, conn, 100*time.Millisecond)
+		if gotMsg && msg.Type == protocol.MsgAssign {
+			t.Fatal("received unexpected ASSIGN message when no beads are ready")
+		}
+	})
+
+	t.Run("ready_returns_error", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		// Connect a worker.
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   "w-err",
+				ContextPct: 5,
+			},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		// Start dispatcher.
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		// Configure Ready() to return an error.
+		beadSrc.mu.Lock()
+		beadSrc.readyErr = errors.New("bd ready failed: network timeout")
+		beadSrc.mu.Unlock()
+
+		// tryAssign must not panic or crash.
+		d.tryAssign(context.Background())
+
+		// Worker must remain idle — no assignment.
+		st, beadID, ok := d.WorkerInfo("w-err")
+		if !ok {
+			t.Fatal("expected worker w-err to be tracked")
+		}
+		if st != protocol.WorkerIdle {
+			t.Fatalf("expected worker to remain idle, got state=%s beadID=%s", st, beadID)
+		}
+		if beadID != "" {
+			t.Fatalf("expected no bead assignment, got beadID=%s", beadID)
+		}
+
+		// No worktree should have been created.
+		wtMgr.mu.Lock()
+		createdCount := len(wtMgr.created)
+		wtMgr.mu.Unlock()
+		if createdCount != 0 {
+			t.Fatalf("expected 0 worktrees created, got %d", createdCount)
+		}
+
+		// No ASSIGN should be sent.
+		msg, gotMsg := readMsg(t, conn, 100*time.Millisecond)
+		if gotMsg && msg.Type == protocol.MsgAssign {
+			t.Fatal("received unexpected ASSIGN message when Ready() returned error")
+		}
+	})
 }
