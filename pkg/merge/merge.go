@@ -73,13 +73,15 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.abortMu.Lock()
-	c.activeWorktree = opts.Worktree
-	c.abortMu.Unlock()
+	func() {
+		c.abortMu.Lock()
+		defer c.abortMu.Unlock()
+		c.activeWorktree = opts.Worktree
+	}()
 	defer func() {
 		c.abortMu.Lock()
+		defer c.abortMu.Unlock()
 		c.activeWorktree = ""
-		c.abortMu.Unlock()
 	}()
 
 	// Step 1: Rebase branch onto main
@@ -133,9 +135,12 @@ func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts Opts, rebase
 // Safe to call concurrently with Merge — uses a separate lock and a fresh
 // context (since the caller's context is typically cancelled at shutdown time).
 func (c *Coordinator) Abort() {
-	c.abortMu.Lock()
-	wt := c.activeWorktree
-	c.abortMu.Unlock()
+	var wt string
+	func() {
+		c.abortMu.Lock()
+		defer c.abortMu.Unlock()
+		wt = c.activeWorktree
+	}()
 
 	if wt == "" {
 		return

@@ -765,6 +765,80 @@ func TestCoordinatorAbortOnCancel(t *testing.T) {
 	}
 }
 
+func TestAbortMu_PanicSafety(t *testing.T) {
+	// If a panic occurs inside Merge() after abortMu has been locked,
+	// all abortMu.Lock() calls must use defer abortMu.Unlock() so the
+	// mutex is released during panic unwinding. Without defer, the mutex
+	// stays locked and subsequent Abort() or Merge() calls deadlock.
+	//
+	// We verify this by injecting a panic during the merge operation
+	// (inside git.Run, which runs while the deferred cleanup holding
+	// abortMu is pending) and confirming that both Abort() and a fresh
+	// Merge() still work after recovery.
+
+	callCount := atomic.Int32{}
+
+	runner := &funcGitRunner{fn: func(_ context.Context, _ string, args ...string) (string, string, error) {
+		n := callCount.Add(1)
+		// First call (rebase in first Merge): panic
+		if n == 1 && len(args) >= 1 && args[0] == "rebase" {
+			panic("simulated crash during merge operation")
+		}
+		// Subsequent calls succeed (for the second Merge)
+		if len(args) >= 1 && args[0] == "rev-parse" {
+			return "abc123\n", "", nil
+		}
+		return "", "", nil
+	}}
+
+	coord := NewCoordinator(runner)
+
+	// --- Phase 1: Merge panics, we recover ---
+	recovered := make(chan struct{})
+	go func() {
+		defer func() {
+			_ = recover() // swallow the expected panic
+			close(recovered)
+		}()
+		_, _ = coord.Merge(context.Background(), Opts{
+			Branch:   "bead/panic",
+			Worktree: "/tmp/wt-panic",
+			BeadID:   "oro-panic",
+		})
+	}()
+	<-recovered
+
+	// --- Phase 2: Abort() must not deadlock ---
+	abortDone := make(chan struct{})
+	go func() {
+		coord.Abort()
+		close(abortDone)
+	}()
+	select {
+	case <-abortDone:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Abort() deadlocked — abortMu was not released after panic")
+	}
+
+	// --- Phase 3: A new Merge() must not deadlock ---
+	mergeDone := make(chan struct{})
+	go func() {
+		_, _ = coord.Merge(context.Background(), Opts{
+			Branch:   "bead/after-panic",
+			Worktree: "/tmp/wt-after",
+			BeadID:   "oro-after",
+		})
+		close(mergeDone)
+	}()
+	select {
+	case <-mergeDone:
+		// success — both mu and abortMu were properly released
+	case <-time.After(2 * time.Second):
+		t.Fatal("Merge() deadlocked — mu or abortMu was not released after panic")
+	}
+}
+
 func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
 	mock := &mockGitRunner{}
 	coord := NewCoordinator(mock)
