@@ -75,7 +75,7 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		sendDirective(t, d.cfg.SocketPath, "start")
 		waitForState(t, d, StateRunning, 1*time.Second)
 
-		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Stuck leak test", Priority: 1, Type: "task"}})
+		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Stuck leak test", Priority: 1, Type: "task", Model: protocol.ModelOpus}})
 
 		// Drain initial ASSIGN.
 		readMsg(t, conn, 2*time.Second)
@@ -135,7 +135,7 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		sendDirective(t, d.cfg.SocketPath, "start")
 		waitForState(t, d, StateRunning, 1*time.Second)
 
-		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "QG cap leak", Priority: 1, Type: "task"}})
+		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "QG cap leak", Priority: 1, Type: "task", Model: protocol.ModelOpus}})
 		readMsg(t, conn, 2*time.Second)
 
 		// Seed maps that won't interfere with QG retry logic.

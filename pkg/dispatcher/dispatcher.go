@@ -660,6 +660,13 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 		d.mu.Unlock()
 		return
 	}
+
+	// Escalate to opus if not already opus.
+	if w.model != protocol.ModelOpus {
+		w.model = protocol.ModelOpus
+		d.attemptCounts[beadID] = 0 // Reset so opus gets fresh retries
+	}
+
 	_ = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{

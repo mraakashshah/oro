@@ -3161,7 +3161,7 @@ func TestQualityGatePassed_NormalMergeFlow(t *testing.T) {
 	}
 }
 
-func TestQualityGateRetry_ModelPreserved(t *testing.T) {
+func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -3175,17 +3175,17 @@ func TestQualityGateRetry_ModelPreserved(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Assign bead with explicit model
+	// Assign bead with explicit sonnet model
 	beadSrc.SetBeads([]protocol.Bead{{
 		ID: "bead-qg-model", Title: "QG model", Priority: 1,
-		Model: "claude-sonnet-4-5-20250929",
+		Model: protocol.ModelSonnet,
 	}})
 	assignMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != "claude-sonnet-4-5-20250929" {
-		t.Fatalf("initial ASSIGN should have model claude-sonnet-4-5-20250929, got %q", assignMsg.Assign.Model)
+	if assignMsg.Assign.Model != protocol.ModelSonnet {
+		t.Fatalf("initial ASSIGN should have model %q, got %q", protocol.ModelSonnet, assignMsg.Assign.Model)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -3194,8 +3194,8 @@ func TestQualityGateRetry_ModelPreserved(t *testing.T) {
 	if !ok {
 		t.Fatal("expected worker to be tracked")
 	}
-	if model != "claude-sonnet-4-5-20250929" {
-		t.Fatalf("expected stored model claude-sonnet-4-5-20250929, got %q", model)
+	if model != protocol.ModelSonnet {
+		t.Fatalf("expected stored model %q, got %q", protocol.ModelSonnet, model)
 	}
 
 	// Send DONE with quality gate failed
@@ -3208,7 +3208,7 @@ func TestQualityGateRetry_ModelPreserved(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN with the same model preserved
+	// Worker should receive re-ASSIGN escalated to opus
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -3216,12 +3216,30 @@ func TestQualityGateRetry_ModelPreserved(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "claude-sonnet-4-5-20250929" {
-		t.Fatalf("re-ASSIGN should preserve model claude-sonnet-4-5-20250929, got %q", retryMsg.Assign.Model)
+	if retryMsg.Assign.Model != protocol.ModelOpus {
+		t.Fatalf("re-ASSIGN should escalate to opus %q, got %q", protocol.ModelOpus, retryMsg.Assign.Model)
+	}
+
+	// Verify the worker's stored model was updated to opus
+	model, ok = d.WorkerModel("w1")
+	if !ok {
+		t.Fatal("expected worker to be tracked after retry")
+	}
+	if model != protocol.ModelOpus {
+		t.Fatalf("expected stored model %q after escalation, got %q", protocol.ModelOpus, model)
+	}
+
+	// Verify attempt counter was reset to 0 (the retry incremented it to 1,
+	// then escalation reset it to 0, so current value should be 0).
+	d.mu.Lock()
+	count := d.attemptCounts["bead-qg-model"]
+	d.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("expected attempt count reset to 0 after escalation, got %d", count)
 	}
 }
 
-func TestQualityGateRetry_DefaultModelPreserved(t *testing.T) {
+func TestQualityGateRetry_DefaultModelEscalatedToOpus(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -3235,7 +3253,7 @@ func TestQualityGateRetry_DefaultModelPreserved(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Assign bead with no model (should resolve to default)
+	// Assign bead with no model (should resolve to default = sonnet)
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-defmodel", Title: "QG default model", Priority: 1}})
 	assignMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
@@ -3256,13 +3274,72 @@ func TestQualityGateRetry_DefaultModelPreserved(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN with the default model preserved
+	// Worker should receive re-ASSIGN escalated to opus (default model is sonnet)
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
 	}
-	if retryMsg.Assign.Model != protocol.DefaultModel {
-		t.Fatalf("re-ASSIGN should preserve default model %q, got %q", protocol.DefaultModel, retryMsg.Assign.Model)
+	if retryMsg.Assign.Model != protocol.ModelOpus {
+		t.Fatalf("re-ASSIGN should escalate default model to opus %q, got %q", protocol.ModelOpus, retryMsg.Assign.Model)
+	}
+}
+
+func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Assign bead with explicit opus model
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID: "bead-qg-opus", Title: "QG opus stays", Priority: 1,
+		Model: protocol.ModelOpus,
+	}})
+	assignMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if assignMsg.Assign.Model != protocol.ModelOpus {
+		t.Fatalf("initial ASSIGN should have model %q, got %q", protocol.ModelOpus, assignMsg.Assign.Model)
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with quality gate failed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-opus",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+		},
+	})
+
+	// Worker should receive re-ASSIGN with model still opus
+	retryMsg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after quality gate failure")
+	}
+	if retryMsg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
+	}
+	if retryMsg.Assign.Model != protocol.ModelOpus {
+		t.Fatalf("re-ASSIGN should keep opus model %q, got %q", protocol.ModelOpus, retryMsg.Assign.Model)
+	}
+
+	// Verify attempt counter was NOT reset (should be 1 since no escalation happened)
+	d.mu.Lock()
+	count := d.attemptCounts["bead-qg-opus"]
+	d.mu.Unlock()
+	if count != 1 {
+		t.Fatalf("expected attempt count 1 (not reset) for opus worker, got %d", count)
 	}
 }
 
