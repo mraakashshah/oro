@@ -595,10 +595,12 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		jitter := time.Duration(rand.Int64N(int64(2*reconnectJitter))) - reconnectJitter //nolint:gosec // jitter doesn't need crypto rand
 		wait := baseInterval + jitter
 
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return fmt.Errorf("worker reconnect: %w", ctx.Err())
-		case <-time.After(wait):
+		case <-timer.C:
 		}
 
 		conn, err := net.Dial("unix", w.socketPath) //nolint:noctx // UDS reconnect is instant

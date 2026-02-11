@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -3266,4 +3267,92 @@ func TestHandleAssign_KillsOldSubprocess(t *testing.T) {
 
 	cancel()
 	<-errCh
+}
+
+func TestReconnect_TimerCleanup(t *testing.T) {
+	t.Parallel()
+
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-timer-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	acceptCh := make(chan net.Conn, 5)
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			acceptCh <- c
+		}
+	}()
+
+	spawner := newMockSpawner()
+	w, err := worker.New("w-timer", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Use a long reconnect interval so the timer is alive when we cancel.
+	w.SetReconnectInterval(10 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	// Accept the initial connection.
+	var dispConn net.Conn
+	select {
+	case dispConn = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for connection")
+	}
+
+	// Drain initial heartbeat.
+	_ = readMessage(t, dispConn)
+
+	// Close listener so reconnect dials will fail, then close the connection
+	// to trigger the reconnect loop.
+	_ = listener.Close()
+	_ = dispConn.Close()
+
+	// Give the worker time to detect the disconnect and enter the reconnect
+	// sleep (the 10s timer).
+	time.Sleep(300 * time.Millisecond)
+
+	// Snapshot goroutine count before cancellation.
+	before := runtime.NumGoroutine()
+
+	// Cancel context during the reconnect sleep — this should stop the timer
+	// cleanly without leaking a goroutine.
+	cancel()
+
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not exit after cancel during reconnect")
+	}
+
+	// Allow background goroutines to wind down.
+	time.Sleep(200 * time.Millisecond)
+	runtime.GC()
+	time.Sleep(100 * time.Millisecond)
+
+	after := runtime.NumGoroutine()
+
+	// With the leak, a long-lived timer goroutine would still be present.
+	// Allow a small delta for runtime jitter but reject any growth.
+	if after > before {
+		t.Errorf("goroutine leak: before cancel=%d, after=%d (delta=+%d)",
+			before, after, after-before)
+	}
 }
