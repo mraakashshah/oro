@@ -32,6 +32,12 @@ const defaultReadyTimeout = 60 * time.Second
 // pollInterval is the time between capture-pane readiness checks.
 const pollInterval = 500 * time.Millisecond
 
+// sendKeysDebounceMs is the delay between pasting text and pressing Enter.
+// Claude Code's Ink TUI needs time to process pasted text before Enter.
+// Must be long enough for Ink's render loop to process the input in detached
+// sessions (where SIGWINCH timing adds latency). 2000ms is conservative.
+const sendKeysDebounceMs = 2000
+
 // defaultBeaconTimeout is the default time to wait for beacon verification.
 const defaultBeaconTimeout = 60 * time.Second
 
@@ -92,36 +98,16 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		return fmt.Errorf("tmux set-option manager color: %w", err)
 	}
 
-	// Launch interactive claude with role env vars in architect window.
-	architectCmd := roleEnvCmd("architect")
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":architect", architectCmd, "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys architect launch: %w", err)
-	}
-
-	// Launch interactive claude with role env vars in manager window.
-	managerCmd := roleEnvCmd("manager")
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":manager", managerCmd, "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys manager launch: %w", err)
-	}
-
-	// Poll both windows until Claude is ready (prompt appears).
-	architectPane := s.Name + ":architect"
-	if err := s.PaneReady(architectPane); err != nil {
-		return fmt.Errorf("wait for architect window ready: %w", err)
-	}
-	managerPane := s.Name + ":manager"
-	if err := s.PaneReady(managerPane); err != nil {
-		return fmt.Errorf("wait for manager window ready: %w", err)
-	}
-
-	// Inject short architect nudge into architect window.
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":architect", architectNudge, "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys architect nudge: %w", err)
-	}
-
-	// Inject short manager nudge into manager window.
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", s.Name+":manager", managerNudge, "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys manager nudge: %w", err)
+	// Launch Claude in both windows, wait for readiness, and inject nudges.
+	for _, w := range []struct {
+		role, nudge string
+	}{
+		{"architect", architectNudge},
+		{"manager", managerNudge},
+	} {
+		if err := s.launchAndNudge(w.role, w.nudge); err != nil {
+			return err
+		}
 	}
 
 	// Verify manager received nudge (look for bd stats execution).
@@ -134,6 +120,26 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
 	}
 
+	return nil
+}
+
+// launchAndNudge launches interactive Claude in a window, waits for it to be
+// ready (process started + prompt visible), then sends the nudge message.
+func (s *TmuxSession) launchAndNudge(role, nudge string) error {
+	pane := s.Name + ":" + role
+	cmd := roleEnvCmd(role)
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", pane, cmd, "Enter"); err != nil {
+		return fmt.Errorf("tmux send-keys %s launch: %w", role, err)
+	}
+	if err := s.PaneReady(pane); err != nil {
+		return fmt.Errorf("wait for %s ready: %w", role, err)
+	}
+	if err := s.WaitForPrompt(pane); err != nil {
+		return fmt.Errorf("wait for %s prompt: %w", role, err)
+	}
+	if err := s.SendKeys(pane, nudge); err != nil {
+		return fmt.Errorf("%s nudge: %w", role, err)
+	}
 	return nil
 }
 
@@ -179,6 +185,32 @@ func (s *TmuxSession) PaneReady(paneTarget string) error {
 	return s.WaitForCommand(paneTarget)
 }
 
+// promptIndicator is the Unicode character Claude Code uses for its input prompt.
+const promptIndicator = "❯"
+
+// WaitForPrompt polls the pane content until Claude Code's prompt indicator (❯)
+// appears, indicating the Ink TUI is rendered and ready for input. This must be
+// called after PaneReady (process started) and before sending nudges, because
+// Claude Code takes time to render the welcome screen and process SessionStart hooks.
+func (s *TmuxSession) WaitForPrompt(paneTarget string) error {
+	timeout := s.ReadyTimeout
+	if timeout == 0 {
+		timeout = defaultReadyTimeout
+	}
+	deadline := time.Now().Add(timeout)
+
+	for {
+		out, err := s.Runner.Run("tmux", "capture-pane", "-p", "-t", paneTarget)
+		if err == nil && strings.Contains(out, promptIndicator) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("claude prompt %q not found in pane %s within %v", promptIndicator, paneTarget, timeout)
+		}
+		s.sleep(pollInterval)
+	}
+}
+
 // VerifyBeaconReceived polls the pane content via tmux capture-pane until the
 // given indicator string appears, confirming the Claude session received and
 // started processing the beacon. It polls every 1s and returns an error with
@@ -211,6 +243,58 @@ func (s *TmuxSession) sleep(d time.Duration) {
 		return
 	}
 	time.Sleep(d)
+}
+
+// SendKeys sends text to a Claude Code tmux pane and presses Enter.
+// Uses set-buffer + paste-buffer (same as TmuxEscalator) for reliable delivery
+// to Claude Code's Ink TUI, then sends Enter separately with retry.
+// Finishes with a SIGWINCH wake for detached sessions.
+//
+// Shell commands should use Runner.Run("tmux", "send-keys", ...) directly;
+// this method is for sending input to an already-running Claude session.
+func (s *TmuxSession) SendKeys(paneTarget, text string) error {
+	// 1. Send text using literal mode (-l) to handle special chars.
+	if _, err := s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "-l", text); err != nil {
+		return fmt.Errorf("tmux send-keys -l to %s: %w", paneTarget, err)
+	}
+
+	// 2. Wake the pane so Ink processes the text in detached sessions.
+	// Without SIGWINCH, Ink's render loop may not see the input,
+	// causing Enter to act on an empty input field.
+	s.wakeIfDetached(paneTarget)
+
+	// 3. Wait for text to be processed by Ink's render loop.
+	s.sleep(time.Duration(sendKeysDebounceMs) * time.Millisecond)
+
+	// 4. Send Enter with retry — critical for message submission.
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			s.sleep(200 * time.Millisecond)
+		}
+		if _, err := s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "Enter"); err != nil {
+			lastErr = err
+			continue
+		}
+		// 6. Wake again so Ink processes the Enter in detached sessions.
+		s.wakeIfDetached(paneTarget)
+		return nil
+	}
+	return fmt.Errorf("failed to send Enter to %s after 3 attempts: %w", paneTarget, lastErr)
+}
+
+// wakeIfDetached triggers a SIGWINCH by resizing the pane if no clients are
+// attached. This wakes Claude Code's Ink render loop in detached sessions.
+func (s *TmuxSession) wakeIfDetached(paneTarget string) {
+	// Check if any client is attached to this session.
+	out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", paneTarget, "#{session_attached}")
+	if err == nil && strings.TrimSpace(out) != "0" {
+		return // attached, no wake needed
+	}
+	// Resize pane down then up by 1 row — triggers SIGWINCH without changing size.
+	_, _ = s.Runner.Run("tmux", "resize-pane", "-t", paneTarget, "-y", "-1")
+	s.sleep(50 * time.Millisecond)
+	_, _ = s.Runner.Run("tmux", "resize-pane", "-t", paneTarget, "-y", "+1")
 }
 
 // Kill destroys the named tmux session.
