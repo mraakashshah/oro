@@ -3419,3 +3419,105 @@ func TestReconnect_TimerCleanup(t *testing.T) {
 			before, after, after-before)
 	}
 }
+
+func TestSubprocessHealthCheck(t *testing.T) {
+	t.Parallel()
+
+	// Create stdout pipe for the mock subprocess
+	pr, pw := io.Pipe()
+
+	spawner := newMockSpawner()
+	spawner.stdout = pr
+
+	// Create a mock process that will not exit on its own (stays alive)
+	proc := newMockProcess()
+	spawner.process = proc
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-health", workerConn, spawner)
+	// Use a short poll interval so health checks happen quickly
+	w.SetContextPollInterval(100 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// Create a temp worktree with a quality_gate.sh
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	// Send ASSIGN to spawn a subprocess
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-health",
+			Worktree: tmpDir,
+		},
+	})
+
+	// Drain the STATUS message
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus {
+		t.Fatalf("expected STATUS, got %s", msg.Type)
+	}
+
+	// Give the worker time to set up the subprocess monitoring goroutine
+	time.Sleep(50 * time.Millisecond)
+
+	// Simulate subprocess death: close stdout and waitCh to make subprocess exit
+	// WITHOUT the worker explicitly killing it (simulating unexpected death)
+	_ = pw.Close()
+	proc.mu.Lock()
+	close(proc.waitCh)
+	proc.mu.Unlock()
+
+	// Worker should detect the dead subprocess within contextPollInterval
+	// and send DONE(false) with an error message
+	doneReceived := false
+	timeout := time.After(3 * time.Second)
+	for !doneReceived {
+		select {
+		case <-timeout:
+			t.Fatal("timeout waiting for DONE message after subprocess death")
+		default:
+			if err := dispatcherConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+				t.Fatalf("set read deadline: %v", err)
+			}
+			scanner := bufio.NewScanner(dispatcherConn)
+			if !scanner.Scan() {
+				// Timeout or error, continue waiting
+				continue
+			}
+			var msg protocol.Message
+			if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+				continue
+			}
+
+			if msg.Type == protocol.MsgDone {
+				doneReceived = true
+				if msg.Done.QualityGatePassed {
+					t.Error("expected QualityGatePassed=false when subprocess dies unexpectedly")
+				}
+				if msg.Done.QGOutput == "" {
+					t.Error("expected error message in QGOutput when subprocess dies")
+				}
+				if !strings.Contains(msg.Done.QGOutput, "subprocess") && !strings.Contains(msg.Done.QGOutput, "died") {
+					t.Errorf("expected error message about subprocess death, got: %q", msg.Done.QGOutput)
+				}
+			}
+			// Ignore other message types (like HEARTBEAT)
+		}
+	}
+
+	cancel()
+	<-errCh
+}

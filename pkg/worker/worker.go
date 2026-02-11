@@ -97,6 +97,10 @@ type Worker struct {
 	outputWg            sync.WaitGroup // tracks processOutput goroutine completion
 	reconnectDialHook   func(net.Conn) // test hook: called after dial, before sendMessage
 	pendingQGOutput     string         // QG output stored while awaiting review result
+	subprocExitCh       chan struct{}  // closed when subprocess exits
+	subprocExitClosed   bool           // true if subprocExitCh has been closed
+	handleExitClaimed   bool           // true if a handler claimed subprocess exit handling
+	subprocKilledByUs   bool           // true if we intentionally killed the subprocess
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -355,6 +359,10 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.proc = proc
 	w.model = model
 	w.compacted = false
+	w.subprocExitCh = make(chan struct{})
+	w.subprocExitClosed = false
+	w.handleExitClaimed = false
+	w.subprocKilledByUs = false
 	w.mu.Unlock()
 
 	// Pipe subprocess stdout through memory marker extraction.
@@ -368,21 +376,71 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 		return err
 	}
 
-	// Start context file watcher
+	// Start subprocess exit monitor
+	go w.monitorSubprocessExit(proc)
+
+	// Start context file watcher (also monitors subprocess health)
 	go w.watchContext(ctx)
 
 	// Wait for subprocess completion, run quality gate, and send DONE.
-	go w.awaitSubprocessAndReport(ctx, proc)
+	go w.awaitSubprocessAndReport(ctx)
 
 	return nil
+}
+
+// monitorSubprocessExit waits for the subprocess to exit and signals the exit channel.
+func (w *Worker) monitorSubprocessExit(proc Process) {
+	_ = proc.Wait()
+	w.mu.Lock()
+	if w.subprocExitCh != nil && !w.subprocExitClosed {
+		close(w.subprocExitCh)
+		w.subprocExitClosed = true
+	}
+	w.mu.Unlock()
 }
 
 // awaitSubprocessAndReport waits for the subprocess to exit, ensures stdout
 // processing is complete, runs the quality gate, and either sends DONE (on
 // failure) or READY_FOR_REVIEW (on pass) so the dispatcher can run an ops
 // review before the worker signals completion.
-func (w *Worker) awaitSubprocessAndReport(ctx context.Context, proc Process) {
-	_ = proc.Wait()
+func (w *Worker) awaitSubprocessAndReport(ctx context.Context) {
+	// Wait for subprocess to exit (signaled by subprocExitCh closing)
+	w.mu.Lock()
+	exitCh := w.subprocExitCh
+	pollInterval := w.contextPollInterval
+	w.mu.Unlock()
+
+	if exitCh != nil {
+		<-exitCh
+	}
+
+	// Give watchContext a chance to detect unexpected death.
+	// Wait 2x the poll interval before claiming (watchContext needs 2 ticks to detect),
+	// but cap at 250ms to avoid slowing down normal subprocess completion.
+	delay := 2 * pollInterval
+	if delay > 250*time.Millisecond {
+		delay = 250 * time.Millisecond
+	}
+	timer := time.NewTimer(delay)
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		timer.Stop()
+		return
+	}
+
+	// Claim responsibility for handling the subprocess exit.
+	w.mu.Lock()
+	if !w.handleExitClaimed {
+		w.handleExitClaimed = true
+	}
+	claimed := w.handleExitClaimed
+	w.mu.Unlock()
+
+	// If watchContext already claimed it (unexpected death), exit.
+	if !claimed {
+		return
+	}
 
 	// Wait for processOutput to finish so all stdout is captured.
 	w.outputWg.Wait()
@@ -492,6 +550,9 @@ func BuildPrompt(beadID, worktree, memoryContext string) string {
 // a two-stage response when context usage exceeds the model-specific threshold:
 //  1. First breach: send /compact to subprocess stdin, create .oro/compacted flag
 //  2. Second breach: send HANDOFF and kill subprocess (ralph handoff)
+//
+// It also monitors subprocess health: if the subprocess dies unexpectedly
+// (subprocess exits and remains unclaimed for one poll interval), send DONE(false) with error.
 func (w *Worker) watchContext(ctx context.Context) {
 	w.mu.Lock()
 	interval := w.contextPollInterval
@@ -505,55 +566,99 @@ func (w *Worker) watchContext(ctx context.Context) {
 	th := LoadThresholds(wt)
 	threshold := th.For(modelFamily(model))
 
+	var subprocExitDetectedAt time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Check for unexpected subprocess death
+			if w.checkSubprocessHealth(ctx, &subprocExitDetectedAt) {
+				return
+			}
+
 			w.mu.Lock()
 			wt = w.worktree
 			w.mu.Unlock()
 
-			if wt == "" {
-				continue
+			// Check context percentage and handle threshold breaches
+			if w.handleContextThreshold(ctx, wt, threshold) {
+				return
 			}
-
-			pctPath := filepath.Join(wt, ".oro", "context_pct")
-			data, err := os.ReadFile(pctPath) //nolint:gosec // path is constructed internally, not user input
-			if err != nil {
-				continue
-			}
-
-			pct, err := strconv.Atoi(strings.TrimSpace(string(data)))
-			if err != nil {
-				continue
-			}
-
-			if pct <= threshold {
-				continue
-			}
-
-			w.mu.Lock()
-			alreadyCompacted := w.compacted
-			w.mu.Unlock()
-
-			if !alreadyCompacted {
-				// First breach: wait for Claude's auto-compaction to reduce context.
-				w.mu.Lock()
-				w.compacted = true
-				w.mu.Unlock()
-				oroDir := filepath.Join(wt, ".oro")
-				_ = os.MkdirAll(oroDir, 0o700) //nolint:gosec // runtime directory
-				_ = os.WriteFile(filepath.Join(oroDir, "compacted"), []byte("1"), 0o600)
-				continue
-			}
-
-			// Second breach: auto-compact didn't help enough — handoff
-			_ = w.SendHandoff(ctx)
-			w.killProc()
-			return
 		}
 	}
+}
+
+// handleContextThreshold checks context percentage and handles threshold breaches.
+// Returns true if handoff was triggered (caller should return).
+func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshold int) bool {
+	if wt == "" {
+		return false
+	}
+
+	pctPath := filepath.Join(wt, ".oro", "context_pct")
+	data, err := os.ReadFile(pctPath) //nolint:gosec // path is constructed internally, not user input
+	if err != nil {
+		return false
+	}
+
+	pct, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pct <= threshold {
+		return false
+	}
+
+	w.mu.Lock()
+	alreadyCompacted := w.compacted
+	w.mu.Unlock()
+
+	if !alreadyCompacted {
+		// First breach: wait for Claude's auto-compaction to reduce context.
+		w.mu.Lock()
+		w.compacted = true
+		w.mu.Unlock()
+		oroDir := filepath.Join(wt, ".oro")
+		_ = os.MkdirAll(oroDir, 0o700) //nolint:gosec // runtime directory
+		_ = os.WriteFile(filepath.Join(oroDir, "compacted"), []byte("1"), 0o600)
+		return false
+	}
+
+	// Second breach: auto-compact didn't help enough — handoff
+	_ = w.SendHandoff(ctx)
+	w.killProc()
+	return true
+}
+
+// checkSubprocessHealth checks if the subprocess has died unexpectedly.
+// Returns true if unexpected death was detected and DONE was sent.
+func (w *Worker) checkSubprocessHealth(ctx context.Context, detectedAt *time.Time) bool {
+	w.mu.Lock()
+	exitClosed := w.subprocExitClosed
+	claimed := w.handleExitClaimed
+	w.mu.Unlock()
+
+	if !exitClosed || claimed {
+		return false
+	}
+
+	// Subprocess has exited but hasn't been claimed yet
+	if detectedAt.IsZero() {
+		// First time detecting this - record the time
+		*detectedAt = time.Now()
+		return false
+	}
+
+	// Subprocess was dead on previous tick and still not claimed.
+	// This is unexpected death - report it.
+	w.mu.Lock()
+	if !w.handleExitClaimed {
+		w.handleExitClaimed = true
+		w.mu.Unlock()
+		_ = w.SendDone(ctx, false, "subprocess died unexpectedly")
+		return true
+	}
+	w.mu.Unlock()
+	return false
 }
 
 // modelFamily extracts the model family name (opus, sonnet, haiku) from a full model ID.
@@ -574,6 +679,7 @@ func (w *Worker) killProc() {
 	if w.proc != nil {
 		_ = w.proc.Kill()
 		w.proc = nil
+		w.subprocKilledByUs = true
 	}
 }
 
