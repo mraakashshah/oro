@@ -595,3 +595,76 @@ func TestForget(t *testing.T) {
 		}
 	})
 }
+
+func TestRecallByID(t *testing.T) {
+	db := setupTestMemoryDB(t)
+	store := memory.NewStore(db)
+	ctx := context.Background()
+
+	// Insert a memory
+	id, err := store.Insert(ctx, memory.InsertParams{
+		Content:    "Full detailed memory content for recall by ID test",
+		Type:       "lesson",
+		Tags:       []string{"test", "recall"},
+		Source:     "self_report",
+		Confidence: 0.85,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	t.Run("recall by id returns full memory content", func(t *testing.T) {
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--id", fmt.Sprintf("%d", id)})
+
+		err := cmd.Execute()
+		if err != nil {
+			t.Fatalf("recall --id execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, "Full detailed memory content for recall by ID test") {
+			t.Errorf("expected full memory content, got: %s", output)
+		}
+		if !strings.Contains(output, "[lesson]") {
+			t.Errorf("expected type label, got: %s", output)
+		}
+		if !strings.Contains(output, "0.85") {
+			t.Errorf("expected confidence 0.85, got: %s", output)
+		}
+	})
+
+	t.Run("recall by id with nonexistent id returns error", func(t *testing.T) {
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"--id", "99999"})
+
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error for nonexistent ID")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("expected 'not found' error, got: %v", err)
+		}
+	})
+
+	t.Run("recall cannot use both query and id", func(t *testing.T) {
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"--id", fmt.Sprintf("%d", id), "some query"})
+
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected error when using both --id and query")
+		}
+		if !strings.Contains(err.Error(), "cannot use both") {
+			t.Errorf("expected 'cannot use both' error, got: %v", err)
+		}
+	})
+}

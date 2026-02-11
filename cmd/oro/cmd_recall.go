@@ -36,14 +36,36 @@ func formatCreatedAt(createdAt string) string {
 // newRecallCmdWithStore creates the "oro recall" subcommand wired to a memory.Store.
 func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 	var filePath string
+	var memoryID int64
 	cmd := &cobra.Command{
 		Use:   "recall <query>",
 		Short: "Search memories",
-		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.",
-		Args:  cobra.MinimumNArgs(1),
+		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.\nUse --id to fetch a single memory by ID.",
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			query := strings.Join(args, " ")
+			// Check for conflicting usage
+			if memoryID > 0 && len(args) > 0 {
+				return fmt.Errorf("cannot use both --id and query arguments")
+			}
 
+			// Fetch by ID if specified
+			if memoryID > 0 {
+				mem, err := store.GetByID(context.Background(), memoryID)
+				if err != nil {
+					return fmt.Errorf("recall: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s\n", mem.Type, mem.Content)
+				fmt.Fprintf(cmd.OutOrStdout(), "confidence: %.2f | source: %s | created: %s\n",
+					mem.Confidence, mem.Source, formatCreatedAt(mem.CreatedAt))
+				return nil
+			}
+
+			// Otherwise, search by query
+			if len(args) == 0 {
+				return fmt.Errorf("recall: query required (or use --id)")
+			}
+
+			query := strings.Join(args, " ")
 			results, err := store.Search(context.Background(), query, memory.SearchOpts{Limit: 5, FilePath: filePath})
 			if err != nil {
 				return fmt.Errorf("recall: %w", err)
@@ -54,6 +76,7 @@ func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&filePath, "file", "", "filter memories by file path")
+	cmd.Flags().Int64Var(&memoryID, "id", 0, "fetch memory by ID")
 	return cmd
 }
 
@@ -61,18 +84,41 @@ func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 // In production, it creates a store from the default DB path.
 func newRecallCmd() *cobra.Command {
 	var filePath string
+	var memoryID int64
 	cmd := &cobra.Command{
 		Use:   "recall <query>",
 		Short: "Search memories",
-		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.",
-		Args:  cobra.MinimumNArgs(1),
+		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.\nUse --id to fetch a single memory by ID.",
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := defaultMemoryStore()
 			if err != nil {
 				return fmt.Errorf("recall: %w", err)
 			}
-			query := strings.Join(args, " ")
 
+			// Check for conflicting usage
+			if memoryID > 0 && len(args) > 0 {
+				return fmt.Errorf("cannot use both --id and query arguments")
+			}
+
+			// Fetch by ID if specified
+			if memoryID > 0 {
+				mem, err := store.GetByID(context.Background(), memoryID)
+				if err != nil {
+					return fmt.Errorf("recall: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "[%s] %s\n", mem.Type, mem.Content)
+				fmt.Fprintf(cmd.OutOrStdout(), "confidence: %.2f | source: %s | created: %s\n",
+					mem.Confidence, mem.Source, formatCreatedAt(mem.CreatedAt))
+				return nil
+			}
+
+			// Otherwise, search by query
+			if len(args) == 0 {
+				return fmt.Errorf("recall: query required (or use --id)")
+			}
+
+			query := strings.Join(args, " ")
 			results, searchErr := store.Search(context.Background(), query, memory.SearchOpts{Limit: 5, FilePath: filePath})
 			if searchErr != nil {
 				return fmt.Errorf("recall: %w", searchErr)
@@ -83,5 +129,6 @@ func newRecallCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&filePath, "file", "", "filter memories by file path")
+	cmd.Flags().Int64Var(&memoryID, "id", 0, "fetch memory by ID")
 	return cmd
 }

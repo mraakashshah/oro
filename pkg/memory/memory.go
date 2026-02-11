@@ -627,6 +627,35 @@ func scanMemory(rows *sql.Rows) (protocol.Memory, error) {
 	return m, nil
 }
 
+// GetByID retrieves a single memory by its ID.
+func (s *Store) GetByID(ctx context.Context, id int64) (protocol.Memory, error) {
+	q := `SELECT id, content, type, tags, source,
+	       COALESCE(bead_id, '') AS bead_id,
+	       COALESCE(worker_id, '') AS worker_id,
+	       confidence, created_at, embedding,
+	       COALESCE(files_read, '[]') AS files_read,
+	       COALESCE(files_modified, '[]') AS files_modified
+	FROM memories WHERE id = ?`
+
+	var m protocol.Memory
+	var embedding sql.NullString
+	err := s.db.QueryRowContext(ctx, q, id).Scan(
+		&m.ID, &m.Content, &m.Type, &m.Tags, &m.Source,
+		&m.BeadID, &m.WorkerID, &m.Confidence, &m.CreatedAt,
+		&embedding, &m.FilesRead, &m.FilesModified,
+	)
+	if err == sql.ErrNoRows {
+		return m, fmt.Errorf("memory %d not found", id)
+	}
+	if err != nil {
+		return m, fmt.Errorf("memory get by id: %w", err)
+	}
+	if embedding.Valid {
+		m.Embedding = []byte(embedding.String)
+	}
+	return m, nil
+}
+
 // Delete removes a memory by ID.
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, id)
@@ -763,16 +792,13 @@ func ExtractImplicit(text string) []InsertParams {
 // Per search spec: 5 memories max, but token budget is the binding constraint.
 const maxInjectedMemories = 5
 
-// defaultTokenBudget is the default token budget for prompt injection (500 tokens).
-const defaultTokenBudget = 500
-
 // ForPrompt retrieves the most relevant memories for a bead and formats them
-// as a markdown section suitable for injection into the worker prompt.
+// as a compact index table suitable for injection into the worker prompt.
+// Returns a markdown table with ID, Type, and Title (truncated content).
+// Workers can fetch full details with 'oro recall --id=N'.
 // Token estimation uses len(content)/4 (~4 chars per token for English).
 func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc string, maxTokens int) (string, error) {
-	if maxTokens <= 0 {
-		maxTokens = defaultTokenBudget
-	}
+	_ = maxTokens // reserved for future token budget enforcement in compact mode
 
 	if beadDesc == "" {
 		return "", nil
@@ -790,33 +816,38 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 		return "", nil
 	}
 
-	// Build output with token budget enforcement.
-	// Token estimate: len(text) / 4 (~4 chars per token for English).
-	header := "## Relevant Memories"
-	tokenBudget := maxTokens - estimateTokens(header)
-	var lines []string
-	lines = append(lines, header)
-	count := 0
+	// Build compact table format.
+	lines := []string{
+		"## Relevant Memories",
+		"| ID | Type | Title | Tokens |",
+		"|----|------|-------|--------|",
+	}
 
+	count := 0
 	for _, m := range results {
 		if count >= maxInjectedMemories {
 			break
 		}
-		age := formatAge(m.CreatedAt)
-		line := fmt.Sprintf("- [%s] %s (%s, confidence: %.2f)",
-			m.Type, m.Content, age, m.Confidence)
-		cost := estimateTokens(line)
-		if tokenBudget-cost < 0 && count > 0 {
-			break
+
+		// Truncate content to create a title (max 50 chars)
+		title := m.Content
+		if len(title) > 50 {
+			title = title[:47] + "..."
 		}
+
+		// Estimate token count for full content
+		tokens := estimateTokens(m.Content)
+
+		line := fmt.Sprintf("| %d | %s | %s | ~%d |", m.ID, m.Type, title, tokens)
 		lines = append(lines, line)
-		tokenBudget -= cost
 		count++
 	}
 
 	if count == 0 {
 		return "", nil
 	}
+
+	lines = append(lines, "", "Use `oro recall --id=N` to fetch full memory content.")
 
 	return strings.Join(lines, "\n"), nil
 }

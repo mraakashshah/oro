@@ -666,8 +666,11 @@ func TestForPrompt(t *testing.T) {
 	if !strings.Contains(result, "ruff") {
 		t.Error("expected ruff memory in output")
 	}
-	if !strings.Contains(result, "[gotcha]") {
-		t.Error("expected [gotcha] type label")
+	if !strings.Contains(result, "gotcha") {
+		t.Error("expected gotcha type in table")
+	}
+	if !strings.Contains(result, "oro recall --id=") {
+		t.Error("expected instruction to use oro recall --id")
 	}
 }
 
@@ -688,24 +691,18 @@ func TestForPrompt_TokenCap(t *testing.T) {
 		}
 	}
 
-	// Request with small token cap — should include fewer memories than available
+	// Request with small token cap — compact format should still show results
 	result, err := ForPrompt(ctx, store, nil, "searchable_term", 50)
 	if err != nil {
 		t.Fatalf("for prompt: %v", err)
 	}
 
-	// With ~50 tokens budget, only 1 memory should fit (each line is ~110 chars = ~27 tokens)
-	lineCount := 0
-	for _, line := range strings.Split(result, "\n") {
-		if strings.HasPrefix(line, "- [") {
-			lineCount++
-		}
+	// Compact table format is efficient, should still include memories
+	if !strings.Contains(result, "## Relevant Memories") {
+		t.Error("expected markdown header")
 	}
-	if lineCount > 2 {
-		t.Errorf("expected token cap to limit memories, got %d memory lines", lineCount)
-	}
-	if lineCount == 0 {
-		t.Error("expected at least one memory in output")
+	if !strings.Contains(result, "| ID |") {
+		t.Error("expected table format")
 	}
 }
 
@@ -1599,8 +1596,8 @@ func TestForPromptIncludesSummaries(t *testing.T) {
 	if output == "" {
 		t.Fatal("expected non-empty ForPrompt output")
 	}
-	if !strings.Contains(output, "[summary]") {
-		t.Errorf("expected ForPrompt output to contain [summary] label, got: %s", output)
+	if !strings.Contains(output, "summary") {
+		t.Errorf("expected ForPrompt output to contain summary type, got: %s", output)
 	}
 	if !strings.Contains(output, "implement auth") {
 		t.Errorf("expected ForPrompt output to contain summary content, got: %s", output)
@@ -1646,5 +1643,115 @@ func TestSummaryMemorySearchable(t *testing.T) {
 	}
 	if listed[0].Type != "summary" {
 		t.Errorf("expected listed type=summary, got %q", listed[0].Type)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Progressive disclosure tests (oro-jtw.5)
+// ---------------------------------------------------------------------------
+
+func TestForPrompt_CompactIndex(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert 10 memories with varied content
+	for i := 0; i < 10; i++ {
+		_, err := store.Insert(ctx, InsertParams{
+			Content:    fmt.Sprintf("Memory %d: searchable_progressive_disclosure content about learning %d", i, i),
+			Type:       "lesson",
+			Source:     "self_report",
+			Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	// Call ForPrompt with default token budget
+	result, err := ForPrompt(ctx, store, nil, "searchable_progressive_disclosure", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt: %v", err)
+	}
+
+	// Should be compact index format, not full content
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+
+	// Check that output is compact (< 200 tokens for 10 memories)
+	tokenCount := estimateTokens(result)
+	if tokenCount >= 200 {
+		t.Errorf("expected compact index < 200 tokens, got ~%d tokens\nOutput:\n%s", tokenCount, result)
+	}
+
+	// Verify it contains index-style format with IDs
+	if !strings.Contains(result, "## Relevant Memories") {
+		t.Error("expected markdown header")
+	}
+
+	// Count memory entries (should show multiple entries compactly)
+	lines := strings.Split(result, "\n")
+	entryCount := 0
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "|") && !strings.Contains(line, "ID") && !strings.Contains(line, "--") {
+			entryCount++
+		}
+	}
+	if entryCount == 0 {
+		t.Error("expected at least one memory entry in compact index")
+	}
+}
+
+func TestStore_GetByID(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a memory
+	id, err := store.Insert(ctx, InsertParams{
+		Content:    "Test memory content for GetByID",
+		Type:       "lesson",
+		Tags:       []string{"test", "recall"},
+		Source:     "self_report",
+		Confidence: 0.85,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Retrieve by ID
+	mem, err := store.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+
+	// Verify content
+	if mem.ID != id {
+		t.Errorf("expected ID %d, got %d", id, mem.ID)
+	}
+	if mem.Content != "Test memory content for GetByID" {
+		t.Errorf("expected content 'Test memory content for GetByID', got %q", mem.Content)
+	}
+	if mem.Type != "lesson" {
+		t.Errorf("expected type 'lesson', got %q", mem.Type)
+	}
+	if mem.Confidence != 0.85 {
+		t.Errorf("expected confidence 0.85, got %f", mem.Confidence)
+	}
+}
+
+func TestStore_GetByID_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Try to retrieve non-existent ID
+	_, err := store.GetByID(ctx, 99999)
+	if err == nil {
+		t.Fatal("expected error for non-existent ID")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' error, got: %v", err)
 	}
 }
