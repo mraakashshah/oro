@@ -60,9 +60,18 @@ func NewTmuxEscalator(sessionName, paneTarget string, runner CommandRunner) *Tmu
 
 // Escalate sends msg to the Manager's tmux pane via `tmux send-keys`.
 // The message is sanitized to prevent shell injection through tmux.
+// Before sending, it verifies the tmux session exists to prevent silent failures.
 func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
+	// Verify the tmux session exists before attempting to send keys.
+	// If the session is dead, tmux send-keys fails silently, leaving
+	// escalations undelivered and beads stuck forever.
+	_, err := e.runner.Run(ctx, "tmux", "has-session", "-t", e.sessionName)
+	if err != nil {
+		return fmt.Errorf("tmux session %s not found: %w", e.sessionName, err)
+	}
+
 	sanitized := sanitizeForTmux(msg)
-	_, err := e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, sanitized, "Enter")
+	_, err = e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, sanitized, "Enter")
 	if err != nil {
 		return fmt.Errorf("tmux escalate to %s: %w", e.paneTarget, err)
 	}

@@ -621,8 +621,8 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	if d.isQGStuck(beadID, qgOutput) {
 		_ = d.logEvent(ctx, "qg_stuck_detected", workerID, beadID, workerID,
 			fmt.Sprintf(`{"repeated_count":%d}`, maxStuckCount))
-		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
-			fmt.Sprintf("QG output repeated %d times — worker stuck", maxStuckCount), qgOutput))
+		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+			fmt.Sprintf("QG output repeated %d times — worker stuck", maxStuckCount), qgOutput), beadID, workerID)
 		d.clearBeadTracking(beadID)
 		return
 	}
@@ -635,8 +635,8 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		d.mu.Unlock()
 		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
 			fmt.Sprintf(`{"attempts":%d}`, attempt))
-		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
-			fmt.Sprintf("quality gate failed %d times", attempt), qgOutput))
+		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+			fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
 		d.clearBeadTracking(beadID)
 		return
 	}
@@ -719,7 +719,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 			return
 		}
 		// Non-conflict merge failure — escalate
-		_ = d.escalator.Escalate(ctx, FormatEscalation(EscMergeConflict, beadID, "merge failed", err.Error()))
+		d.escalate(ctx, FormatEscalation(EscMergeConflict, beadID, "merge failed", err.Error()), beadID, workerID)
 		_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, err.Error())
 		return
 	}
@@ -745,8 +745,8 @@ func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, work
 		default:
 			// Resolution failed or unknown verdict — escalate.
 			_ = d.logEvent(ctx, "merge_conflict_failed", "ops", beadID, workerID, result.Feedback)
-			_ = d.escalator.Escalate(ctx, FormatEscalation(EscMergeConflict, beadID,
-				"merge conflict resolution failed", result.Feedback))
+			d.escalate(ctx, FormatEscalation(EscMergeConflict, beadID,
+				"merge conflict resolution failed", result.Feedback), beadID, workerID)
 		}
 	}
 }
@@ -843,16 +843,16 @@ func (d *Dispatcher) handleDiagnosisResult(ctx context.Context, beadID, workerID
 			// Diagnosis failed — escalate to manager.
 			_ = d.logEvent(ctx, "diagnosis_escalated", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, result.Err.Error()))
-			_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
-				"diagnosis failed", result.Err.Error()))
+			d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+				"diagnosis failed", result.Err.Error()), beadID, workerID)
 			d.clearBeadTracking(beadID)
 			return
 		}
 
 		// Diagnosis succeeded — log feedback and escalate with diagnosis context.
 		_ = d.logEvent(ctx, "diagnosis_complete", "dispatcher", beadID, workerID, result.Feedback)
-		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
-			"diagnosis complete", result.Feedback))
+		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+			"diagnosis complete", result.Feedback), beadID, workerID)
 		d.clearBeadTracking(beadID)
 	}
 }
@@ -963,7 +963,7 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
 			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, result.Feedback)
-			_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID, "review failed", result.Feedback))
+			d.escalate(ctx, FormatEscalation(EscStuck, beadID, "review failed", result.Feedback), beadID, workerID)
 			d.clearBeadTracking(beadID)
 		}
 	}
@@ -984,8 +984,8 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		d.mu.Unlock()
 		_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
 			fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, feedback))
-		_ = d.escalator.Escalate(ctx, FormatEscalation(EscStuck, beadID,
-			fmt.Sprintf("review rejected %d times", count), feedback))
+		d.escalate(ctx, FormatEscalation(EscStuck, beadID,
+			fmt.Sprintf("review rejected %d times", count), feedback), beadID, workerID)
 		d.clearBeadTracking(beadID)
 		return
 	}
@@ -1646,7 +1646,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 
 	// Escalate outside the lock and clear tracking maps for abandoned beads.
 	for _, dw := range deadWorkers {
-		_ = d.escalator.Escalate(ctx, FormatEscalation(EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID))
+		d.escalate(ctx, FormatEscalation(EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
 		if dw.beadID != "" {
 			d.clearBeadTracking(dw.beadID)
 		}
@@ -1675,6 +1675,16 @@ func (d *Dispatcher) logEventLocked(ctx context.Context, evType, source, beadID,
 		return fmt.Errorf("log event: %w", err)
 	}
 	return nil
+}
+
+// escalate sends a message to the Manager via the escalator and logs any
+// delivery failures to the events table. This prevents silent failures when
+// the tmux session is dead.
+func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string) {
+	if err := d.escalator.Escalate(ctx, msg); err != nil {
+		_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"message":%q}`, err.Error(), msg))
+	}
 }
 
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) error {
