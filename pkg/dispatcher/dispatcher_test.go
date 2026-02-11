@@ -4987,7 +4987,7 @@ func TestDispatcherBuffering(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
-	d := New(Config{
+	d, _ := New(Config{
 		SocketPath:       sockPath,
 		DBPath:           ":memory:",
 		HeartbeatTimeout: 500 * time.Millisecond,

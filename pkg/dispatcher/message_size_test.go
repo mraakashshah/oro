@@ -36,7 +36,7 @@ func TestOversizeMessage(t *testing.T) {
 		HeartbeatTimeout: 10 * time.Second,
 		PollInterval:     1 * time.Second,
 	}
-	d := New(cfg, db, merge.NewCoordinator(nil), ops.NewSpawner(nil),
+	d, _ := New(cfg, db, merge.NewCoordinator(nil), ops.NewSpawner(nil),
 		&mockBeadSource{}, &mockWorktreeManager{}, &mockEscalator{})
 
 	go func() { _ = d.Run(ctx) }()
