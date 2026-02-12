@@ -111,7 +111,7 @@ type pendingHandoff struct {
 type Config struct {
 	SocketPath           string        // UDS socket path.
 	DBPath               string        // SQLite database path.
-	MaxWorkers           int           // Worker pool size (default 5).
+	MaxWorkers           int           // Worker pool size (default 10).
 	HeartbeatTimeout     time.Duration // Worker heartbeat timeout (default 45s).
 	PollInterval         time.Duration // bd ready poll interval (default 10s).
 	FallbackPollInterval time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
@@ -122,7 +122,7 @@ type Config struct {
 func (c *Config) withDefaults() Config {
 	out := *c
 	if out.MaxWorkers == 0 {
-		out.MaxWorkers = 5
+		out.MaxWorkers = 10
 	}
 	if out.HeartbeatTimeout == 0 {
 		out.HeartbeatTimeout = 45 * time.Second

@@ -1362,8 +1362,8 @@ func TestExtractWorkerID(t *testing.T) {
 func TestConfig_Defaults(t *testing.T) {
 	cfg := Config{SocketPath: "/tmp/test.sock", DBPath: ":memory:"}
 	resolved := cfg.withDefaults()
-	if resolved.MaxWorkers != 5 {
-		t.Fatalf("MaxWorkers: got %d, want 5", resolved.MaxWorkers)
+	if resolved.MaxWorkers != 10 {
+		t.Fatalf("MaxWorkers: got %d, want 10", resolved.MaxWorkers)
 	}
 	if resolved.HeartbeatTimeout != 45*time.Second {
 		t.Fatalf("HeartbeatTimeout: got %v, want 45s", resolved.HeartbeatTimeout)

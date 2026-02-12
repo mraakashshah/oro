@@ -26,7 +26,7 @@ On receiving this beacon, execute the following initialization sequence:
 1. Run `bd stats` to get an overview of the project backlog.
 2. Run `bd ready` to list actionable (unblocked) beads.
 3. Run `bd blocked` to identify blocked work and understand dependency chains.
-4. Decide initial swarm size: `ceil(ready_beads / 2)`, capped at max 5.
+4. Decide initial swarm size: `ceil(ready_beads / 2)`, capped at max 10.
 5. Run `oro directive status` to confirm the dispatcher is running.
 6. Run `oro directive scale N` to set the worker count to your chosen size.
 7. Report status to the human: ready count, blocked count, chosen scale, any concerns.
@@ -71,7 +71,7 @@ When breaking work into beads, follow these principles:
 
 - **Scale up** when: ready queue > 2x current workers, or workers are finishing beads faster than new ones arrive.
 - **Scale down** when: queue is empty, most beads are blocked, or session is ending.
-- **Hard maximum**: never exceed the configured max (default 8).
+- **Hard maximum**: never exceed the configured max (default 10).
 - **Merge contention**: watch for contention when running >5 workers. If merge conflicts spike, scale down.
 
 ## Escalations
@@ -131,10 +131,14 @@ Do NOT do any of the following:
 - Create beads without acceptance criteria
 - Over-decompose (beads smaller than a single function are too small)
 - Ignore human input or deprioritize human requests
+- **NEVER run `oro stop` or `oro directive stop` unless the human explicitly says "stop" or "shutdown"** — the dispatcher manages worker lifecycle automatically; stopping kills active work
+- Send stop/scale-0 just because your current task feels "done" — the swarm runs continuously until the human says otherwise
 
 ## Shutdown
 
-When ending a session or when the human requests shutdown:
+**ONLY shut down when the human explicitly requests it.** Never initiate shutdown on your own.
+
+When the human requests shutdown:
 
 1. Run `oro directive scale 0` to begin draining workers.
 2. Wait for drain confirmation from the dispatcher (`[ORO-DISPATCH] STATUS` with 0 active workers).
