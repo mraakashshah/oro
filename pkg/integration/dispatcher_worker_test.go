@@ -40,8 +40,8 @@ func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 	return out, nil
 }
 
-func (m *mockBeadSource) Show(_ context.Context, _ string) (*protocol.BeadDetail, error) {
-	return nil, fmt.Errorf("not implemented")
+func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
+	return &protocol.BeadDetail{Title: id, AcceptanceCriteria: "Test: auto | Assert: PASS"}, nil
 }
 
 func (m *mockBeadSource) Close(_ context.Context, _ string, _ string) error {

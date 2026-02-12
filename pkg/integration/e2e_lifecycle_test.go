@@ -35,8 +35,8 @@ func (m *trackingBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 	return out, nil
 }
 
-func (m *trackingBeadSource) Show(_ context.Context, _ string) (*protocol.BeadDetail, error) {
-	return nil, fmt.Errorf("not implemented")
+func (m *trackingBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
+	return &protocol.BeadDetail{Title: id, AcceptanceCriteria: "Test: auto | Assert: PASS"}, nil
 }
 
 func (m *trackingBeadSource) Close(_ context.Context, id string, _ string) error {
