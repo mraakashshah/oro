@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"oro/pkg/codesearch"
@@ -186,6 +187,101 @@ func Main() {}
 func writeGoFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	writeFile(t, dir, name, content)
+}
+
+func TestFTS5Search(t *testing.T) {
+	// Create a temp directory with Go source files.
+	rootDir := t.TempDir()
+	writeGoFile(t, rootDir, "main.go", `package main
+
+func main() {
+	handleAuth()
+}
+
+func handleAuth() {
+	// authentication logic
+}
+`)
+	writeGoFile(t, rootDir, "server.go", `package main
+
+type Server struct {
+	Port int
+}
+
+func (s *Server) Start() error {
+	return nil
+}
+
+func (s *Server) Stop() {
+}
+`)
+
+	dbPath := filepath.Join(t.TempDir(), "fts5_test_index.db")
+
+	idx, err := codesearch.NewCodeIndex(dbPath)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	ctx := context.Background()
+
+	// Build the index.
+	if _, err := idx.Build(ctx, rootDir); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	t.Run("query authentication returns handleAuth chunk", func(t *testing.T) {
+		results, err := idx.FTS5Search(ctx, "authentication", 10)
+		if err != nil {
+			t.Fatalf("FTS5Search: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected at least 1 result for 'authentication', got 0")
+		}
+		// Verify that at least one result contains "handleAuth"
+		found := false
+		for _, chunk := range results {
+			if strings.Contains(chunk.Content, "handleAuth") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected result containing 'handleAuth', got none")
+		}
+	})
+
+	t.Run("query Server returns Server type chunk", func(t *testing.T) {
+		results, err := idx.FTS5Search(ctx, "Server", 10)
+		if err != nil {
+			t.Fatalf("FTS5Search: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected at least 1 result for 'Server', got 0")
+		}
+		// Verify that at least one result contains "Server"
+		found := false
+		for _, chunk := range results {
+			if strings.Contains(chunk.Content, "Server") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected result containing 'Server', got none")
+		}
+	})
+
+	t.Run("empty query returns empty results", func(t *testing.T) {
+		results, err := idx.FTS5Search(ctx, "", 10)
+		if err != nil {
+			t.Fatalf("FTS5Search with empty query: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected 0 results for empty query, got %d", len(results))
+		}
+	})
 }
 
 func writeFile(t *testing.T, dir, name, content string) {

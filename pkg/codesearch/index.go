@@ -43,6 +43,27 @@ CREATE TABLE IF NOT EXISTS chunks (
 	updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
+
+-- FTS5 full-text index over chunks for BM25-ranked search
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+	content,
+	content=chunks,
+	content_rowid=id
+);
+
+-- Triggers to keep FTS index in sync with chunks table
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+	INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+	INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES ('delete', old.id, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+	INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES ('delete', old.id, old.content);
+	INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+END;
 `
 
 // NewCodeIndex opens or creates a code index at the given database path.
@@ -98,6 +119,11 @@ func (ci *CodeIndex) Build(ctx context.Context, rootDir string) (BuildStats, err
 	// Clear existing data for full rebuild.
 	if _, err := ci.db.ExecContext(ctx, "DELETE FROM chunks"); err != nil {
 		return BuildStats{}, fmt.Errorf("clear chunks: %w", err)
+	}
+
+	// Rebuild FTS5 index (triggers don't fire on external content tables).
+	if _, err := ci.db.ExecContext(ctx, "INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')"); err != nil {
+		return BuildStats{}, fmt.Errorf("rebuild fts5 index: %w", err)
 	}
 
 	var stats BuildStats
@@ -197,4 +223,75 @@ func (ci *CodeIndex) insertChunk(ctx context.Context, chunk Chunk) error {
 func (ci *CodeIndex) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
 	// Return empty results. This will be replaced with FTS5-based search.
 	return []SearchResult{}, nil
+}
+
+// FTS5Search performs full-text search over indexed chunks using SQLite FTS5.
+// Returns chunks ranked by BM25 relevance. Empty query returns nil, nil.
+//
+//oro:testonly
+func (ci *CodeIndex) FTS5Search(ctx context.Context, query string, limit int) ([]Chunk, error) {
+	// Empty query: return empty results per acceptance criteria.
+	if query == "" {
+		return nil, nil
+	}
+
+	// Sanitize query to prevent FTS5 operator interpretation.
+	sanitized := sanitizeFTS5Query(query)
+
+	// Query FTS5 virtual table and join with chunks table for full data.
+	q := `
+		SELECT c.id, c.file_path, c.name, c.kind, c.start_line, c.end_line, c.content
+		FROM chunks_fts
+		JOIN chunks c ON chunks_fts.rowid = c.id
+		WHERE chunks_fts MATCH ?
+		ORDER BY rank
+		LIMIT ?
+	`
+
+	rows, err := ci.db.QueryContext(ctx, q, sanitized, limit)
+	if err != nil {
+		return nil, fmt.Errorf("fts5 search query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []Chunk
+	for rows.Next() {
+		var c Chunk
+		var id int64
+		var kind string
+		if err := rows.Scan(&id, &c.FilePath, &c.Name, &kind, &c.StartLine, &c.EndLine, &c.Content); err != nil {
+			return nil, fmt.Errorf("scan chunk: %w", err)
+		}
+		c.Kind = ChunkKind(kind)
+		results = append(results, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fts5 search rows: %w", err)
+	}
+
+	return results, nil
+}
+
+// sanitizeFTS5Query wraps each term in double quotes to prevent FTS5 operator
+// interpretation (e.g., "and", "or", "not" are FTS5 operators) and joins them
+// with OR for broader recall. Pattern from pkg/memory/memory.go.
+func sanitizeFTS5Query(query string) string {
+	words := strings.Fields(query)
+	if len(words) == 0 {
+		return query
+	}
+	quoted := make([]string, 0, len(words))
+	for _, w := range words {
+		// Strip non-alphanumeric characters that break FTS5 quoting
+		clean := strings.Map(func(r rune) rune {
+			if r == '"' {
+				return -1
+			}
+			return r
+		}, w)
+		if clean != "" {
+			quoted = append(quoted, `"`+clean+`"`)
+		}
+	}
+	return strings.Join(quoted, " OR ")
 }
