@@ -23,6 +23,11 @@ type BeadDetail struct {
 	Title              string `json:"title"`
 	AcceptanceCriteria string `json:"acceptance_criteria"`
 	Model              string `json:"model,omitempty"`
+	WorkerID           string `json:"worker_id,omitempty"`
+	ContextPercent     int    `json:"context_percent,omitempty"`
+	LastHeartbeat      string `json:"last_heartbeat,omitempty"`
+	GitDiff            string `json:"git_diff,omitempty"`
+	Memory             string `json:"memory,omitempty"`
 }
 
 // Model constants for routing.

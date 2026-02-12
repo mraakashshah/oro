@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -114,14 +115,45 @@ func (d DetailModel) renderOverviewTab() string {
 	return strings.Join(lines, "\n")
 }
 
-// renderWorkerTab renders the Worker tab (placeholder for now).
+// renderWorkerTab renders the Worker tab with worker context %, heartbeat.
 func (d DetailModel) renderWorkerTab() string {
-	return "Worker tab - not yet implemented"
+	theme := DefaultTheme()
+
+	// Edge case: no worker assigned → show 'Unassigned'
+	if d.bead.WorkerID == "" {
+		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		return dimStyle.Render("Unassigned")
+	}
+
+	var lines []string
+
+	// Worker ID
+	lines = append(lines, "Worker: "+d.bead.WorkerID)
+
+	// Context percentage
+	if d.bead.ContextPercent > 0 {
+		lines = append(lines, "Context: "+fmt.Sprintf("%d", d.bead.ContextPercent)+" %")
+	}
+
+	// Last heartbeat
+	if d.bead.LastHeartbeat != "" {
+		lines = append(lines, "Last Heartbeat: "+d.bead.LastHeartbeat)
+	}
+
+	return strings.Join(lines, "\n")
 }
 
-// renderDiffTab renders the Diff tab (placeholder for now).
+// renderDiffTab renders the Diff tab with git diff output.
 func (d DetailModel) renderDiffTab() string {
-	return "Diff tab - not yet implemented"
+	theme := DefaultTheme()
+
+	// Edge case: no diff → show 'No changes'
+	if d.bead.GitDiff == "" {
+		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		return dimStyle.Render("No changes")
+	}
+
+	return d.bead.GitDiff
 }
 
 // renderDepsTab renders the Deps tab with dependency information.
@@ -134,7 +166,15 @@ func (d DetailModel) renderDepsTab() string {
 	return dimStyle.Render("No dependencies")
 }
 
-// renderMemoryTab renders the Memory tab (placeholder for now).
+// renderMemoryTab renders the Memory tab with injected context.
 func (d DetailModel) renderMemoryTab() string {
-	return "Memory tab - not yet implemented"
+	theme := DefaultTheme()
+
+	// Edge case: no memory → show 'No context'
+	if d.bead.Memory == "" {
+		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		return dimStyle.Render("No context")
+	}
+
+	return d.bead.Memory
 }
