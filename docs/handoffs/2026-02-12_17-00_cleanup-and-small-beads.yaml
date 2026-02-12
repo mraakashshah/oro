@@ -1,0 +1,92 @@
+---
+date: 2026-02-12
+status: partial
+---
+
+goal: >
+  Completed 4 beads and closed 2 more (1 epic, 1 investigation). Fixed tmux
+  status bar color switching, auto-build search hook, make install target,
+  and langprofile type definitions.
+
+now: >
+  Continue with ready beads. oro-9hd (architect forwards commands, P2) needs
+  acceptance criteria from user before it can proceed. oro-js7.2/js7.3
+  (language profiles) are unblocked by js7.1. oro-jmil.6/jmil.7 are P4 YAGNI.
+
+test: go test -race -count=1 ./cmd/oro/ ./pkg/codesearch/ ./pkg/langprofile/ -timeout 120s
+
+done_this_session:
+  - task: "oro-3ah: Tmux status bar color per active window"
+    files: [cmd/oro/tmux.go, cmd/oro/tmux_test.go]
+    details: >
+      Added set-option status-style bg=colour46 (green) as initial color.
+      Added set-hook after-select-window with if-shell to switch between
+      colour46 (architect) and colour208 (manager) on window change.
+
+  - task: "oro-0ro: Auto-build oro-search-hook binary on oro start"
+    files: [cmd/oro/preflight.go, cmd/oro/preflight_test.go, .gitignore]
+    details: >
+      ensureSearchHook(binPath, srcDir) checks binary exists and is newer
+      than source files; rebuilds via go build if stale. Fail-open on build
+      errors. isStale() uses filepath.WalkDir to compare mod times.
+      Gitignored .claude/hooks/oro-search-hook.
+
+  - task: "oro-cag: Install oro globally"
+    files: [Makefile]
+    details: >
+      Added make install target: go install $(LDFLAGS) ./cmd/oro.
+      Verified: oro --version prints commit hash.
+
+  - task: "oro-js7.1: Define LangProfile and Tool types"
+    files: [pkg/langprofile/types.go, pkg/langprofile/types_test.go]
+    details: >
+      Tool struct (Name, Cmd, DetectCmd, InstallHint). LangProfile struct
+      (Language, Detect func, Formatters, Linters, TestCmd, optional
+      TypeCheck, Security, CodingRules, CoverageCmd, CoverageMin).
+      Validate() checks required: Language, Detect, TestCmd.
+
+  - task: "oro-noc epic: Closed (all 7 children done)"
+    details: "FTS5+Claude reranker fully replaces Ollama."
+
+  - task: "oro-47g: Closed as addressed by exec-env (oro-jmil.8)"
+    details: "exec-env eliminated WaitForCommand polling (~10-15s/pane)."
+
+decisions:
+  - tmux_hook_approach: >
+      Used tmux set-hook after-select-window with if-shell rather than
+      per-window status options (status-style is session-level, not window-level)
+  - ensureSearchHook_repo_root: >
+      Derive repo root as two levels up from srcDir (cmd/oro-search-hook).
+      Compute relative package path for go build.
+
+worked:
+  - "Worktree-per-bead workflow with ff-only merge"
+  - "go -C <worktree> for all commands (never cd into worktrees)"
+  - "nolint:gosec for internally-constructed exec.CommandContext args"
+
+failed:
+  - "go build with absolute srcDir as package path — needs relative path from repo root"
+  - "replace_all on type names in test files — clobbered function names containing the type"
+
+next:
+  - "oro-js7.2: Implement Go and Python language profiles (unblocked by js7.1)"
+  - "oro-js7.3: Implement TypeScript and JavaScript language profiles"
+  - "oro-9hd: Needs user input on acceptance criteria before proceeding"
+  - "oro-jmil.6/jmil.7: P4 YAGNI, low priority"
+  - "Flaky test: TestReconnect_TimerCleanup goroutine leak (pkg/worker) — not our bug, intermittent"
+
+files:
+  created:
+    - pkg/langprofile/types.go
+    - pkg/langprofile/types_test.go
+  modified:
+    - cmd/oro/tmux.go
+    - cmd/oro/tmux_test.go
+    - cmd/oro/preflight.go
+    - cmd/oro/preflight_test.go
+    - .gitignore
+    - Makefile
+
+beads:
+  completed: [oro-3ah, oro-0ro, oro-cag, oro-js7.1, oro-noc (epic), oro-47g]
+  remaining: [oro-9hd, oro-js7.2, oro-js7.3, oro-jmil.6, oro-jmil.7]
