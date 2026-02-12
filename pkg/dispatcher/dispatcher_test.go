@@ -4892,6 +4892,73 @@ func TestTryAssignSkipsEpics(t *testing.T) {
 	}
 }
 
+func TestTryAssignSkipsBeadAfterWorktreeFailure(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect a worker.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Make worktree creation fail for bead-bad.
+	wtMgr.mu.Lock()
+	wtMgr.createFn = func(_ context.Context, beadID string) (string, string, error) {
+		if beadID == "bead-bad" {
+			return "", "", fmt.Errorf("fatal: a branch named 'agent/bead-bad' already exists")
+		}
+		path := "/tmp/worktree-" + beadID
+		branch := "agent/" + beadID
+		wtMgr.created[beadID] = path
+		return path, branch, nil
+	}
+	wtMgr.mu.Unlock()
+
+	// Provide both beads — bead-bad will fail worktree creation, bead-good will succeed.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-bad", Title: "Bad bead", Priority: 1, Type: "task"},
+		{ID: "bead-good", Title: "Good bead", Priority: 2, Type: "task"},
+	})
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Read the ASSIGN message — must be for bead-good, not bead-bad.
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN for bead-good but got nothing")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "bead-good" {
+		t.Fatalf("expected bead-good to be assigned, got %s", msg.Assign.BeadID)
+	}
+
+	// Verify bead-bad was NOT assigned — worktree creation count should be
+	// limited (not infinite retries).
+	wtMgr.mu.Lock()
+	badCreateCalls := 0
+	for _, c := range wtMgr.created {
+		if c == "bead-bad" {
+			badCreateCalls++
+		}
+	}
+	wtMgr.mu.Unlock()
+
+	// The dispatcher should have tried bead-bad at most a small number of
+	// times, not the infinite loop we observed in production.
+	if badCreateCalls > 3 {
+		t.Fatalf("expected bead-bad worktree creation attempts to be limited, got %d", badCreateCalls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Structured session summary tests (oro-jtw.7)
 // ---------------------------------------------------------------------------

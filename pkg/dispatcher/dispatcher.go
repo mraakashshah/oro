@@ -241,12 +241,13 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			workers: make(map[string]*trackedWorker),
 		},
 		BeadTracker: BeadTracker{
-			rejectionCounts: make(map[string]int),
-			handoffCounts:   make(map[string]int),
-			attemptCounts:   make(map[string]int),
-			pendingHandoffs: make(map[string]*pendingHandoff),
-			qgStuckTracker:  make(map[string]*qgHistory),
-			escalatedBeads:  make(map[string]bool),
+			rejectionCounts:  make(map[string]int),
+			handoffCounts:    make(map[string]int),
+			attemptCounts:    make(map[string]int),
+			pendingHandoffs:  make(map[string]*pendingHandoff),
+			qgStuckTracker:   make(map[string]*qgHistory),
+			escalatedBeads:   make(map[string]bool),
+			worktreeFailures: make(map[string]time.Time),
 		},
 		beadsDir:  protocol.BeadsDir,
 		nowFunc:   time.Now,
@@ -1328,13 +1329,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
-	// Filter out epic beads — workers can only execute leaf tasks.
-	beads := make([]protocol.Bead, 0, len(allBeads))
-	for _, b := range allBeads {
-		if b.Type != "epic" {
-			beads = append(beads, b)
-		}
-	}
+	beads := d.filterAssignable(allBeads)
 
 	// Sort by focused epic first (if set), then by priority (P0 first, P3 last).
 	d.mu.Lock()
@@ -1365,6 +1360,33 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		}
 		d.assignBead(ctx, idle[i], bead)
 	}
+}
+
+// filterAssignable returns beads eligible for assignment: excludes epics and
+// beads with recent worktree creation failures (within cooldown window).
+func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead {
+	now := d.nowFunc()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	out := make([]protocol.Bead, 0, len(allBeads))
+	for _, b := range allBeads {
+		if b.Type == "epic" {
+			continue
+		}
+		if failedAt, ok := d.worktreeFailures[b.ID]; ok && now.Sub(failedAt) < worktreeFailureCooldown {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// recordWorktreeFailure marks a bead as having failed worktree creation.
+func (d *Dispatcher) recordWorktreeFailure(beadID string) {
+	d.mu.Lock()
+	d.worktreeFailures[beadID] = d.nowFunc()
+	d.mu.Unlock()
 }
 
 // checkPriorityContention escalates P0 beads that are queued while all workers
@@ -1412,6 +1434,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	worktree, branch, err := d.worktrees.Create(ctx, bead.ID)
 	if err != nil {
 		_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())
+		d.recordWorktreeFailure(bead.ID)
 		return
 	}
 

@@ -3,7 +3,13 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"time"
 )
+
+// worktreeFailureCooldown is the minimum time before retrying worktree
+// creation for a bead that previously failed. Prevents infinite retry loops
+// when a stale branch or locked worktree cannot be cleaned up.
+const worktreeFailureCooldown = 60 * time.Second
 
 // BeadTracker manages bead-to-worker mapping and per-bead counters
 // (attempts, handoffs, rejections, pending handoffs, QG stuck history).
@@ -11,12 +17,13 @@ import (
 // is promoted, keeping existing call-sites and tests unchanged.
 // Synchronisation is provided by the Dispatcher-level mu.
 type BeadTracker struct {
-	rejectionCounts map[string]int             // bead ID -> review rejection count
-	handoffCounts   map[string]int             // bead ID -> ralph handoff count
-	attemptCounts   map[string]int             // bead ID -> QG retry attempt count
-	pendingHandoffs map[string]*pendingHandoff // bead ID -> pending handoff info
-	qgStuckTracker  map[string]*qgHistory      // bead ID -> consecutive QG output hashes
-	escalatedBeads  map[string]bool            // bead ID -> true if PRIORITY_CONTENTION escalated
+	rejectionCounts  map[string]int             // bead ID -> review rejection count
+	handoffCounts    map[string]int             // bead ID -> ralph handoff count
+	attemptCounts    map[string]int             // bead ID -> QG retry attempt count
+	pendingHandoffs  map[string]*pendingHandoff // bead ID -> pending handoff info
+	qgStuckTracker   map[string]*qgHistory      // bead ID -> consecutive QG output hashes
+	escalatedBeads   map[string]bool            // bead ID -> true if PRIORITY_CONTENTION escalated
+	worktreeFailures map[string]time.Time       // bead ID -> last worktree creation failure time
 }
 
 // --- Bead tracking helpers ---
@@ -32,6 +39,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.pendingHandoffs, beadID)
 	delete(d.qgStuckTracker, beadID)
 	delete(d.escalatedBeads, beadID)
+	delete(d.worktreeFailures, beadID)
 	d.mu.Unlock()
 }
 
@@ -104,6 +112,7 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 		delete(d.pendingHandoffs, beadID)
 		delete(d.qgStuckTracker, beadID)
 		delete(d.escalatedBeads, beadID)
+		delete(d.worktreeFailures, beadID)
 	}
 	return len(orphaned)
 }
@@ -128,6 +137,9 @@ func (d *Dispatcher) allTrackingKeys() []string {
 		seen[id] = true
 	}
 	for id := range d.escalatedBeads {
+		seen[id] = true
+	}
+	for id := range d.worktreeFailures {
 		seen[id] = true
 	}
 	keys := make([]string, 0, len(seen))

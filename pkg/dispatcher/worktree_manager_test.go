@@ -275,17 +275,18 @@ func TestWorktreeManager_PrunesStaleBeforeCreate(t *testing.T) {
 		t.Fatalf("branch: got %q, want %q", branch, wantBranch)
 	}
 
-	// Expect 4 calls:
+	// Expect 5 calls:
 	// 1. git worktree add (fails - branch already exists)
-	// 2. git worktree prune
-	// 3. git branch -D agent/oro-stale
-	// 4. git worktree add (succeeds)
-	if len(runner.calls) != 4 {
+	// 2. git worktree remove <path> --force
+	// 3. git worktree prune
+	// 4. git branch -D agent/oro-stale
+	// 5. git worktree add (succeeds)
+	if len(runner.calls) != 5 {
 		var callDescs []string
 		for i, c := range runner.calls {
 			callDescs = append(callDescs, fmt.Sprintf("  [%d] %s %s", i, c.Name, strings.Join(c.Args, " ")))
 		}
-		t.Fatalf("expected 4 command calls, got %d:\n%s", len(runner.calls), strings.Join(callDescs, "\n"))
+		t.Fatalf("expected 5 command calls, got %d:\n%s", len(runner.calls), strings.Join(callDescs, "\n"))
 	}
 
 	// Call 1: initial worktree add (fails)
@@ -294,22 +295,28 @@ func TestWorktreeManager_PrunesStaleBeforeCreate(t *testing.T) {
 		t.Fatalf("call[0] should be git worktree add, got: %s %v", c1.Name, c1.Args)
 	}
 
-	// Call 2: git worktree prune
+	// Call 2: git worktree remove --force
 	c2 := runner.calls[1]
-	if c2.Name != "git" || !containsAll(c2.Args, "worktree", "prune") {
-		t.Fatalf("call[1] should be git worktree prune, got: %s %v", c2.Name, c2.Args)
+	if c2.Name != "git" || !containsAll(c2.Args, "worktree", "remove", "--force") {
+		t.Fatalf("call[1] should be git worktree remove --force, got: %s %v", c2.Name, c2.Args)
 	}
 
-	// Call 3: git branch -D agent/oro-stale
+	// Call 3: git worktree prune
 	c3 := runner.calls[2]
-	if c3.Name != "git" || !containsAll(c3.Args, "branch", "-D", "agent/oro-stale") {
-		t.Fatalf("call[2] should be git branch -D agent/oro-stale, got: %s %v", c3.Name, c3.Args)
+	if c3.Name != "git" || !containsAll(c3.Args, "worktree", "prune") {
+		t.Fatalf("call[2] should be git worktree prune, got: %s %v", c3.Name, c3.Args)
 	}
 
-	// Call 4: retry worktree add (succeeds)
+	// Call 4: git branch -D agent/oro-stale
 	c4 := runner.calls[3]
-	if c4.Name != "git" || !containsAll(c4.Args, "worktree", "add") {
-		t.Fatalf("call[3] should be git worktree add (retry), got: %s %v", c4.Name, c4.Args)
+	if c4.Name != "git" || !containsAll(c4.Args, "branch", "-D", "agent/oro-stale") {
+		t.Fatalf("call[3] should be git branch -D agent/oro-stale, got: %s %v", c4.Name, c4.Args)
+	}
+
+	// Call 5: retry worktree add (succeeds)
+	c5 := runner.calls[4]
+	if c5.Name != "git" || !containsAll(c5.Args, "worktree", "add") {
+		t.Fatalf("call[4] should be git worktree add (retry), got: %s %v", c5.Name, c5.Args)
 	}
 }
 
@@ -321,6 +328,78 @@ func containsAll(haystack []string, needles ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
+	// When a worktree is locked (e.g., from a crash), pruneStale must:
+	// 1. Remove the worktree directory via `git worktree remove --force`
+	// 2. Prune stale worktree metadata
+	// 3. Delete the branch
+	// This ensures that a locked worktree with stale git metadata doesn't
+	// block branch deletion, causing an infinite retry loop.
+	callCount := 0
+	runner := &mockCommandRunner{
+		callFn: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			callCount++
+			// First call: git worktree add fails with "already exists"
+			if callCount == 1 {
+				return nil, fmt.Errorf("fatal: a branch named 'agent/oro-locked' already exists")
+			}
+			// All subsequent calls succeed
+			return nil, nil
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", runner)
+
+	path, branch, err := mgr.Create(context.Background(), "oro-locked")
+	if err != nil {
+		t.Fatalf("expected Create to succeed after stale cleanup, got: %v", err)
+	}
+
+	wantPath := "/repo/root/.worktrees/oro-locked"
+	if path != wantPath {
+		t.Fatalf("path: got %q, want %q", path, wantPath)
+	}
+	wantBranch := "agent/oro-locked"
+	if branch != wantBranch {
+		t.Fatalf("branch: got %q, want %q", branch, wantBranch)
+	}
+
+	// Verify the cleanup sequence includes worktree remove --force before prune.
+	// Expected calls:
+	// 1. git worktree add (fails)
+	// 2. git worktree remove <path> --force (new!)
+	// 3. git worktree prune
+	// 4. git branch -D <branch>
+	// 5. git worktree add (succeeds)
+	if len(runner.calls) != 5 {
+		var callDescs []string
+		for i, c := range runner.calls {
+			callDescs = append(callDescs, fmt.Sprintf("  [%d] %s %s", i, c.Name, strings.Join(c.Args, " ")))
+		}
+		t.Fatalf("expected 5 command calls, got %d:\n%s", len(runner.calls), strings.Join(callDescs, "\n"))
+	}
+
+	// Call 2: git worktree remove <path> --force
+	c2 := runner.calls[1]
+	if c2.Name != "git" || !containsAll(c2.Args, "worktree", "remove", "--force") {
+		t.Fatalf("call[1] should be git worktree remove --force, got: %s %v", c2.Name, c2.Args)
+	}
+	if !containsAll(c2.Args, wantPath) {
+		t.Fatalf("call[1] should include worktree path %q, got: %v", wantPath, c2.Args)
+	}
+
+	// Call 3: git worktree prune
+	c3 := runner.calls[2]
+	if c3.Name != "git" || !containsAll(c3.Args, "worktree", "prune") {
+		t.Fatalf("call[2] should be git worktree prune, got: %s %v", c3.Name, c3.Args)
+	}
+
+	// Call 4: git branch -D <branch>
+	c4 := runner.calls[3]
+	if c4.Name != "git" || !containsAll(c4.Args, "branch", "-D", wantBranch) {
+		t.Fatalf("call[3] should be git branch -D, got: %s %v", c4.Name, c4.Args)
+	}
 }
 
 func TestGitWorktreeManager_Create_InvalidBeadID(t *testing.T) {

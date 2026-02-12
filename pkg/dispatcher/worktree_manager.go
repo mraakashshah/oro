@@ -46,7 +46,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 		// If the branch already exists from a previous crashed run,
 		// prune stale worktree state and delete the branch, then retry once.
 		if strings.Contains(err.Error(), "already exists") {
-			g.pruneStale(ctx, branch)
+			g.pruneStale(ctx, path, branch)
 
 			_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
 				"worktree", "add", path, "-b", branch, "main",
@@ -63,8 +63,14 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 }
 
 // pruneStale cleans up a stale worktree and branch left by a previous crash.
-func (g *GitWorktreeManager) pruneStale(ctx context.Context, branch string) {
+// It force-removes the worktree directory first (handles locked worktrees),
+// then prunes stale git metadata, then deletes the branch.
+func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string) {
+	// Force-remove worktree reference (handles locked or stale worktrees).
+	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "remove", path, "--force")
+	// Prune stale worktree metadata from git's internal tracking.
 	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune")
+	// Delete the stale branch now that it's no longer checked out.
 	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-D", branch)
 }
 
