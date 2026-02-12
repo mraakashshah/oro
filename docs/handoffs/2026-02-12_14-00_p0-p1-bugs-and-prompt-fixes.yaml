@@ -1,0 +1,75 @@
+---
+date: 2026-02-12
+status: partial
+---
+
+goal: >
+  Closed 1 P0 and 2 P1 bugs: stop-all human approval guard (oro-2yi9),
+  worktree removal after merge (oro-amzz), and worker wrong-bead prevention
+  via feedback in retry prompt + acceptance criteria enforcement (oro-v4m9).
+
+now: >
+  Continue with remaining ready beads. Next by priority: oro-noc.5 (wire
+  two-phase search, 5 min est), oro-jmil.8 (exec-env startup, 5 min est),
+  oro-3ah (tmux status bar color, P3).
+
+test: go test -race -count=1 ./cmd/oro/ ./pkg/dispatcher/ ./pkg/worker/ -timeout 120s
+
+done_this_session:
+  - task: "oro-2yi9 (P0): Reject stop directive without human approval"
+    files: [pkg/protocol/message.go, pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go, cmd/oro/cmd_directive.go]
+    details: >
+      Added HumanApproved bool to DirectivePayload. applyDirective rejects
+      DirectiveStop unless HumanApproved=true. CLI sendDirective sets it
+      automatically. Test helper also sets it for integration tests.
+
+  - task: "oro-amzz (P1): Remove worktree after successful merge"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    details: >
+      Added d.worktrees.Remove() call in mergeAndComplete() after successful
+      merge/close. Prevents worktree accumulation during long runs. Safe
+      because QG runs before DONE is sent.
+
+  - task: "oro-v4m9 (P1): Worker wrong-bead prevention"
+    files: [pkg/worker/prompt.go, pkg/worker/prompt_test.go, pkg/worker/worker.go, pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go, pkg/dispatcher/qg_retry_test.go]
+    details: >
+      Three fixes: (1) Added Feedback field to PromptParams, included
+      rejection/QG output in retry prompt with git clean instruction.
+      (2) Pass Attempt and Feedback from AssignPayload through handleAssign
+      to AssemblePrompt via new buildAssignPrompt helper. (3) Added
+      rejectMissingAcceptance guard in assignBead — skips beads without
+      acceptance criteria. Updated mock BeadSource.Show to return default
+      acceptance for tests.
+
+decisions:
+  - acceptance_guard_in_assignBead: >
+      Guard rejects beads at assignment time rather than at bead creation.
+      This catches beads that existed before the guard was added.
+  - worktree_cleanup_in_mergeAndComplete: >
+      Cleanup happens after merge succeeds, not in handleDone. This ensures
+      merge operations complete before the worktree directory is removed.
+  - prompt_level_git_clean: >
+      Worktree reset on retry is handled via prompt instruction (git checkout
+      . && git clean -fd) rather than code-level WorktreeManager.Clean().
+      Keeps interface simple; worker subprocess handles it.
+
+next:
+  - "oro-noc.5: Wire two-phase search FTS5 + Claude rerank (5 min est)"
+  - "oro-jmil.8: Adopt exec-env startup pattern (5 min est)"
+  - "oro-3ah: Tmux status bar color fix (P3)"
+  - "oro-47g: Investigate slow oro start (already in_progress)"
+
+beads:
+  completed: [oro-2yi9, oro-amzz, oro-v4m9]
+  remaining: [oro-noc.5, oro-jmil.8, oro-3ah, oro-47g, oro-9hd]
+
+files:
+  modified:
+    - pkg/protocol/message.go
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - pkg/dispatcher/qg_retry_test.go
+    - pkg/worker/prompt.go
+    - pkg/worker/prompt_test.go
+    - pkg/worker/worker.go
+    - cmd/oro/cmd_directive.go
