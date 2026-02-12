@@ -58,6 +58,19 @@ func NewOroProcessManager(socketPath string) *ExecProcessManager {
 	return pm
 }
 
+// NewExecProcessManagerWithFactory creates an ExecProcessManager with a
+// custom command factory. Useful for tests that need to control the
+// subprocess (e.g., to verify process group isolation).
+//
+//oro:testonly
+func NewExecProcessManagerWithFactory(socketPath string, factory func(id string) *exec.Cmd) *ExecProcessManager {
+	return &ExecProcessManager{
+		socketPath: socketPath,
+		procs:      make(map[string]*os.Process),
+		cmdFactory: factory,
+	}
+}
+
 // CmdForWorker returns the exec.Cmd that would be used to spawn a worker
 // with the given ID, without actually starting it. Useful for testing.
 //
@@ -67,10 +80,13 @@ func (pm *ExecProcessManager) CmdForWorker(id string) *exec.Cmd {
 }
 
 // Spawn starts a new worker process with the given ID and tracks it.
+// Each worker gets its own process group (Setpgid) so Kill can terminate
+// the entire tree (worker + claude + node + bash descendants).
 func (pm *ExecProcessManager) Spawn(id string) (*os.Process, error) {
 	cmd := pm.cmdFactory(id)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn worker %s: %w", id, err)
@@ -101,9 +117,11 @@ func (pm *ExecProcessManager) Kill(id string) error {
 	delete(pm.procs, id)
 	pm.mu.Unlock()
 
-	// Send SIGTERM for graceful shutdown.
+	// Send SIGTERM to the entire process group (negative PID) so that
+	// descendant processes (claude, node, bash) are also terminated.
 	// If SIGTERM fails (process already exited), force-kill as best-effort.
-	termErr := proc.Signal(syscall.SIGTERM)
+	pgid := proc.Pid
+	termErr := syscall.Kill(-pgid, syscall.SIGTERM)
 	if termErr != nil {
 		_ = proc.Kill()
 		return nil //nolint:nilerr // SIGTERM failure means process already exited; not an error
@@ -120,8 +138,8 @@ func (pm *ExecProcessManager) Kill(id string) error {
 	case <-done:
 		// Exited gracefully.
 	case <-time.After(3 * time.Second):
-		// Grace period expired; force-kill.
-		_ = proc.Kill()
+		// Grace period expired; force-kill the entire process group.
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		<-done
 	}
 

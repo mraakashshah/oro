@@ -3,6 +3,8 @@ package dispatcher_test
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -188,5 +190,50 @@ func TestExecProcessManager_Kill_AfterKillRemovesFromTracking(t *testing.T) {
 	// Second kill should return error (not tracked anymore).
 	if err := pm.Kill("w-double-kill"); err == nil {
 		t.Fatal("expected error on second Kill, got nil")
+	}
+}
+
+// TestExecProcessManager_Kill_KillsProcessGroup verifies that Kill sends
+// SIGTERM to the entire process group, not just the direct child. This
+// prevents orphaned grandchild processes (e.g., claude spawning node/bash).
+func TestExecProcessManager_Kill_KillsProcessGroup(t *testing.T) {
+	pm := dispatcher.NewExecProcessManagerWithFactory("/tmp/test.sock", func(_ string) *exec.Cmd {
+		// Shell spawns a background sleep, then waits. This creates a
+		// process tree: sh → sleep. Without process group kill, the
+		// sleep survives after sh is killed.
+		return exec.Command("sh", "-c", "sleep 3600 & wait")
+	})
+
+	proc, err := pm.Spawn("w-pgid")
+	if err != nil {
+		t.Fatalf("Spawn returned error: %v", err)
+	}
+	parentPID := proc.Pid
+
+	// Give the shell time to spawn its child.
+	time.Sleep(200 * time.Millisecond)
+
+	// Find the grandchild (sleep 3600) by parent PID via pgrep.
+	out, pgrepErr := exec.Command("pgrep", "-P", fmt.Sprintf("%d", parentPID)).Output() //nolint:gosec // test-only: PID from our own subprocess
+	if pgrepErr != nil {
+		t.Fatalf("pgrep failed (no child of PID %d): %v", parentPID, pgrepErr)
+	}
+	var grandchildPID int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &grandchildPID); err != nil {
+		t.Fatalf("parse grandchild PID from %q: %v", out, err)
+	}
+
+	// Kill should terminate the entire process group.
+	if err := pm.Kill("w-pgid"); err != nil {
+		t.Fatalf("Kill returned error: %v", err)
+	}
+
+	// Give processes time to die.
+	time.Sleep(200 * time.Millisecond)
+
+	// Grandchild should be dead.
+	p, _ := os.FindProcess(grandchildPID)
+	if err := p.Signal(syscall.Signal(0)); err == nil {
+		t.Errorf("grandchild process %d should be dead after Kill, but signal 0 succeeded", grandchildPID)
 	}
 }
