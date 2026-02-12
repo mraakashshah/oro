@@ -125,7 +125,8 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 }
 
 // launchAndNudge launches interactive Claude in a window, waits for it to be
-// ready (process started + prompt visible), then sends the nudge message.
+// ready (process started + prompt visible), then sends the nudge message with
+// verified delivery (retries with C-u clear if text doesn't appear in pane).
 func (s *TmuxSession) launchAndNudge(role, nudge string) error {
 	pane := s.Name + ":" + role
 	cmd := roleEnvCmd(role)
@@ -138,7 +139,11 @@ func (s *TmuxSession) launchAndNudge(role, nudge string) error {
 	if err := s.WaitForPrompt(pane); err != nil {
 		return fmt.Errorf("wait for %s prompt: %w", role, err)
 	}
-	if err := s.SendKeys(pane, nudge); err != nil {
+	nudgeTimeout := s.ReadyTimeout
+	if nudgeTimeout == 0 {
+		nudgeTimeout = defaultReadyTimeout
+	}
+	if err := s.SendKeysVerified(pane, nudge, nudgeTimeout); err != nil {
 		return fmt.Errorf("%s nudge: %w", role, err)
 	}
 	return nil
@@ -282,6 +287,46 @@ func (s *TmuxSession) SendKeys(paneTarget, text string) error {
 		return nil
 	}
 	return fmt.Errorf("failed to send Enter to %s after 3 attempts: %w", paneTarget, lastErr)
+}
+
+// sendKeysVerifiedPollInterval is the interval between capture-pane checks
+// when verifying nudge text delivery.
+const sendKeysVerifiedPollInterval = 500 * time.Millisecond
+
+// SendKeysVerified sends text to a pane and verifies it appeared via
+// capture-pane. If the text doesn't appear, it clears the input (C-u)
+// and retries. Returns error if text never appears within timeout.
+func (s *TmuxSession) SendKeysVerified(paneTarget, text string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	firstAttempt := true
+
+	for {
+		if !firstAttempt {
+			// Clear any partial input before retrying.
+			_, _ = s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "C-u")
+			s.sleep(100 * time.Millisecond)
+		}
+		firstAttempt = false
+
+		if err := s.SendKeys(paneTarget, text); err != nil {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("nudge text %q not delivered to %s within %v: %w", text, paneTarget, timeout, err)
+			}
+			s.sleep(sendKeysVerifiedPollInterval)
+			continue
+		}
+
+		// Verify text appeared in pane content.
+		out, err := s.Runner.Run("tmux", "capture-pane", "-p", "-t", paneTarget)
+		if err == nil && strings.Contains(out, text) {
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("nudge text %q not visible in pane %s within %v", text, paneTarget, timeout)
+		}
+		s.sleep(sendKeysVerifiedPollInterval)
+	}
 }
 
 // wakeIfDetached triggers a SIGWINCH by resizing the pane if no clients are

@@ -55,12 +55,23 @@ func (f *fakeCmd) Run(name string, args ...string) (string, error) {
 
 // stubPaneReady sets up the fake so WaitForCommand sees "claude" as the
 // foreground process in both windows (i.e., Claude has started), and
-// WaitForPrompt sees the ❯ prompt indicator (i.e., Claude's TUI is ready).
-func stubPaneReady(fake *fakeCmd, sessionName string) {
+// WaitForPrompt sees the ❯ prompt indicator (i.e., Claude's TUI is ready),
+// and SendKeysVerified sees the nudge text in capture-pane output.
+// capture-pane is called sequentially: first by WaitForPrompt, then by
+// SendKeysVerified, so we use seqOut to return ❯ first, then nudge text.
+func stubPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge string) {
 	fake.output[key("tmux", "display-message", "-p", "-t", sessionName+":architect", "#{pane_current_command}")] = "claude"
 	fake.output[key("tmux", "display-message", "-p", "-t", sessionName+":manager", "#{pane_current_command}")] = "claude"
-	fake.output[key("tmux", "capture-pane", "-p", "-t", sessionName+":architect")] = "Welcome\n❯ \nstatus bar"
-	fake.output[key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")] = "Welcome\n❯ \nstatus bar"
+	archCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":architect")
+	mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
+	fake.seqOut[archCapture] = []string{
+		"Welcome\n❯ \nstatus bar",                       // WaitForPrompt
+		"Welcome\n❯ " + architectNudge + "\nstatus bar", // SendKeysVerified
+	}
+	fake.seqOut[mgrCapture] = []string{
+		"Welcome\n❯ \nstatus bar",                     // WaitForPrompt
+		"Welcome\n❯ " + managerNudge + "\nstatus bar", // SendKeysVerified
+	}
 }
 
 // findCall returns the first call matching the given tmux subcommand, or nil.
@@ -100,7 +111,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		// list-panes returns two panes after creation
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "architect beacon", "manager beacon")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
@@ -255,7 +266,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "architect nudge text", "manager nudge text")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge text", "manager nudge text")
@@ -281,7 +292,7 @@ func TestTmuxLayout(t *testing.T) {
 	t.Run("Create launches interactive claude with role env vars", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
@@ -343,7 +354,7 @@ func TestTmuxLayout(t *testing.T) {
 	t.Run("Create injects nudges via SendKeys (literal + wake + debounce + Enter)", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "architect nudge text here", "manager nudge text here")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge text here", "manager nudge text here")
@@ -443,7 +454,7 @@ func TestTmuxLayout(t *testing.T) {
 	t.Run("Create polls window readiness before injecting beacons", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "architect beacon", "manager beacon")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
@@ -684,17 +695,16 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 	t.Run("Create calls VerifyBeaconReceived for manager window after injection", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		// capture-pane is used by both WaitForPrompt (needs ❯) and
-		// VerifyBeaconReceived (needs "bd stats"). Use sequential outputs.
+		// capture-pane is used by WaitForPrompt (needs ❯), SendKeysVerified
+		// (needs nudge text), and VerifyBeaconReceived (needs "bd stats").
 		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[managerCapture] = []string{
-			"Welcome\n❯ \nstatus bar",      // WaitForPrompt
-			"bd stats\n❯ output visible\n", // VerifyBeaconReceived
+			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
+			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
+			"bd stats\n❯ output visible\n",         // VerifyBeaconReceived
 		}
-		// Delete the static output set by stubPaneReady so seqOut takes precedence.
-		delete(fake.output, managerCapture)
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
 		err := sess.Create("architect nudge", "manager nudge")
@@ -702,7 +712,7 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Verify that capture-pane was called for manager (WaitForPrompt + VerifyBeacon).
+		// Verify that capture-pane was called for manager (WaitForPrompt + SendKeysVerified + VerifyBeacon).
 		managerCaptureCount := 0
 		for _, call := range fake.calls {
 			joined := strings.Join(call, " ")
@@ -710,24 +720,24 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 				managerCaptureCount++
 			}
 		}
-		if managerCaptureCount < 2 {
-			t.Errorf("expected at least 2 capture-pane calls for manager (WaitForPrompt + VerifyBeacon), got %d", managerCaptureCount)
+		if managerCaptureCount < 3 {
+			t.Errorf("expected at least 3 capture-pane calls for manager (WaitForPrompt + SendKeysVerified + VerifyBeacon), got %d", managerCaptureCount)
 		}
 	})
 
 	t.Run("Create does not fail when nudge verification times out (warning only)", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		// capture-pane is used by WaitForPrompt (needs ❯) then VerifyBeaconReceived.
-		// Use sequential outputs: first has prompt, rest lack beacon indicator.
+		// capture-pane is used by WaitForPrompt (needs ❯), SendKeysVerified
+		// (needs nudge text), then VerifyBeaconReceived (beacon not found → timeout).
 		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[managerCapture] = []string{
-			"Welcome\n❯ \nstatus bar", // WaitForPrompt succeeds
-			"no nudge output",         // VerifyBeaconReceived times out
+			"Welcome\n❯ \nstatus bar",              // WaitForPrompt succeeds
+			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified succeeds
+			"no beacon output",                     // VerifyBeaconReceived times out
 		}
-		delete(fake.output, managerCapture)
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		// Create should succeed even if nudge verification fails — it's a warning
@@ -781,6 +791,75 @@ func TestRoleEnvCmd(t *testing.T) {
 		}
 		if strings.Contains(cmd, "claude -p") {
 			t.Errorf("expected interactive claude (not 'claude -p'), got: %s", cmd)
+		}
+	})
+}
+
+func TestSendKeysVerified(t *testing.T) {
+	t.Run("succeeds on first attempt when text appears in pane", func(t *testing.T) {
+		fake := newFakeCmd()
+		// capture-pane returns the nudge text on first check
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "some output\nmy nudge text\nprompt"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.SendKeysVerified("oro:architect", "my nudge text", 3*time.Second)
+		if err != nil {
+			t.Fatalf("SendKeysVerified returned error: %v", err)
+		}
+
+		// Should have called send-keys with -l (literal) for the text
+		var foundLiteral bool
+		for _, call := range fake.calls {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "send-keys") && strings.Contains(joined, "-l") && strings.Contains(joined, "my nudge text") {
+				foundLiteral = true
+			}
+		}
+		if !foundLiteral {
+			t.Error("expected send-keys -l with nudge text")
+		}
+	})
+
+	t.Run("retries with C-u clear when text does not appear", func(t *testing.T) {
+		fake := newFakeCmd()
+		captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
+		// First capture: text not there; second: still not there; third: text appeared
+		fake.seqOut[captureKey] = []string{
+			"empty prompt here",
+			"empty prompt here",
+			"my nudge text visible now",
+		}
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.SendKeysVerified("oro:manager", "my nudge text", 5*time.Second)
+		if err != nil {
+			t.Fatalf("SendKeysVerified returned error: %v", err)
+		}
+
+		// Should have sent C-u to clear input before retrying
+		var clearCount int
+		for _, call := range fake.calls {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "send-keys") && strings.Contains(joined, "C-u") {
+				clearCount++
+			}
+		}
+		if clearCount == 0 {
+			t.Error("expected at least one C-u clear before retry")
+		}
+	})
+
+	t.Run("times out when text never appears", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "nothing here"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.SendKeysVerified("oro:architect", "expected text", 50*time.Millisecond)
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		if !strings.Contains(err.Error(), "nudge text") {
+			t.Errorf("expected 'nudge text' in error, got: %v", err)
 		}
 	})
 }

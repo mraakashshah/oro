@@ -80,7 +80,7 @@ func TestFullStart(t *testing.T) {
 		fakeTmux := newFakeCmd()
 		// has-session returns error (session does not exist)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro")
+		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,
@@ -264,7 +264,7 @@ func TestCreateWithNudges(t *testing.T) {
 	t.Run("injects both nudges via send-keys to respective windows", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "You are a test architect.", "You are a test manager.")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("You are a test architect.", "You are a test manager.")
@@ -308,7 +308,7 @@ func TestCreateWithNudges(t *testing.T) {
 	t.Run("neither window uses claude -p", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
