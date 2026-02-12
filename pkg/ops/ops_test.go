@@ -456,6 +456,69 @@ func TestActiveTracking(t *testing.T) {
 	}
 }
 
+// --- Non-zero exit code with verdict in stdout ---
+
+func TestParseResultNonZeroExitApproved(t *testing.T) {
+	// Bug: claude -p sometimes exits non-zero even on successful review.
+	// When stdout contains APPROVED, we should trust the text verdict.
+	waitErr := errors.New("exit status 1")
+	result := parseResult(OpsReview, "oro-nz1", "Looking at code...\n\nAPPROVED\n\nAll good.", waitErr)
+
+	if result.Verdict != VerdictApproved {
+		t.Fatalf("expected VerdictApproved, got %q", result.Verdict)
+	}
+	if result.Type != OpsReview {
+		t.Fatalf("expected OpsReview, got %q", result.Type)
+	}
+	if result.BeadID != "oro-nz1" {
+		t.Fatalf("expected bead ID oro-nz1, got %q", result.BeadID)
+	}
+	// Err should still be set so callers know the exit was non-zero.
+	if result.Err == nil {
+		t.Fatal("expected non-nil Err to record the non-zero exit")
+	}
+}
+
+func TestParseResultNonZeroExitRejected(t *testing.T) {
+	// Non-zero exit with REJECTED in stdout should yield VerdictRejected.
+	waitErr := errors.New("exit status 1")
+	result := parseResult(OpsReview, "oro-nz2", "Code review...\n\nREJECTED: missing tests\n", waitErr)
+
+	if result.Verdict != VerdictRejected {
+		t.Fatalf("expected VerdictRejected, got %q", result.Verdict)
+	}
+	if result.Feedback == "" {
+		t.Fatal("expected non-empty feedback")
+	}
+	if result.Err == nil {
+		t.Fatal("expected non-nil Err to record the non-zero exit")
+	}
+}
+
+func TestParseResultNonZeroExitNoKeyword(t *testing.T) {
+	// Non-zero exit with no APPROVED/REJECTED keyword should still be VerdictFailed.
+	waitErr := errors.New("exit status 1")
+	result := parseResult(OpsReview, "oro-nz3", "Something went wrong\n", waitErr)
+
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed, got %q", result.Verdict)
+	}
+	if result.Err == nil {
+		t.Fatal("expected non-nil Err")
+	}
+}
+
+func TestParseResultNonZeroExitNonReviewStillFails(t *testing.T) {
+	// For non-review ops types (merge, diagnosis), non-zero exit should
+	// still produce VerdictFailed — only OpsReview gets the text-verdict override.
+	waitErr := errors.New("exit status 1")
+	result := parseResult(OpsMerge, "oro-nz4", "RESOLVED\n", waitErr)
+
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed for non-review ops type with non-zero exit, got %q", result.Verdict)
+	}
+}
+
 // --- Helpers ---
 
 func waitResult(t *testing.T, ch <-chan Result) Result {

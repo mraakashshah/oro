@@ -247,6 +247,18 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 	}
 
 	if waitErr != nil {
+		// For OpsReview, the text-based verdict (APPROVED/REJECTED) is the
+		// reviewer's actual decision. claude -p sometimes exits non-zero even
+		// on successful reviews, so we trust the parsed stdout over the exit code.
+		if opsType == OpsReview {
+			verdict, feedback := parseReviewOutput(stdout)
+			if verdict == VerdictApproved || verdict == VerdictRejected {
+				r.Verdict = verdict
+				r.Feedback = feedback
+				r.Err = fmt.Errorf("ops: process exited with error: %w", waitErr)
+				return r
+			}
+		}
 		r.Verdict = VerdictFailed
 		r.Err = fmt.Errorf("ops: process exited with error: %w", waitErr)
 		r.Feedback = stdout
