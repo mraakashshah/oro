@@ -39,7 +39,7 @@ func (s *Server) Stop() {
 
 	dbPath := filepath.Join(t.TempDir(), "test_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath)
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -68,7 +68,7 @@ func (s *Server) Stop() {
 func TestCodeIndex_SearchEmpty(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "empty_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath)
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -97,7 +97,7 @@ func F() {}
 
 	dbPath := filepath.Join(t.TempDir(), "topk_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath)
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -126,7 +126,7 @@ func OldFunction() {}
 
 	dbPath := filepath.Join(t.TempDir(), "rebuild_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath)
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -168,7 +168,7 @@ func Main() {}
 
 	dbPath := filepath.Join(t.TempDir(), "skip_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath)
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -187,6 +187,112 @@ func Main() {}
 func writeGoFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	writeFile(t, dir, name, content)
+}
+
+func TestCodeIndex_Search(t *testing.T) {
+	rootDir := t.TempDir()
+	writeGoFile(t, rootDir, "main.go", `package main
+
+func main() {
+	handleAuth()
+}
+
+func handleAuth() {
+	// authentication logic
+}
+`)
+	writeGoFile(t, rootDir, "server.go", `package main
+
+type Server struct {
+	Port int
+}
+
+func (s *Server) Start() error {
+	return nil
+}
+
+func (s *Server) Stop() {
+}
+`)
+
+	dbPath := filepath.Join(t.TempDir(), "search_test_index.db")
+
+	// Mock reranker that reverses chunk order and adds reasons.
+	spawner := &searchMockSpawner{}
+	reranker := codesearch.NewReranker(spawner)
+
+	idx, err := codesearch.NewCodeIndex(dbPath, reranker)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	ctx := context.Background()
+	if _, err := idx.Build(ctx, rootDir); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	t.Run("Search calls FTS5 then reranker", func(t *testing.T) {
+		results, err := idx.Search(ctx, "authentication", 3)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected results from Search, got 0")
+		}
+		// Verify results have Reason populated (from reranker).
+		for _, r := range results {
+			if r.Reason == "" {
+				t.Errorf("expected Reason populated for chunk %s, got empty", r.Chunk.Name)
+			}
+		}
+	})
+
+	t.Run("FTS5 returns 0 candidates skips reranker", func(t *testing.T) {
+		results, err := idx.Search(ctx, "xyznonexistent", 3)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("expected 0 results for no-match query, got %d", len(results))
+		}
+	})
+
+	t.Run("nil reranker uses FTS5 only", func(t *testing.T) {
+		dbPath2 := filepath.Join(t.TempDir(), "fts_only_index.db")
+		idx2, err := codesearch.NewCodeIndex(dbPath2, nil)
+		if err != nil {
+			t.Fatalf("NewCodeIndex: %v", err)
+		}
+		defer idx2.Close()
+
+		if _, err := idx2.Build(ctx, rootDir); err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+
+		results, err := idx2.Search(ctx, "authentication", 3)
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected FTS5-only results, got 0")
+		}
+		// FTS5-only results should have empty Reason.
+		for _, r := range results {
+			if r.Reason != "" {
+				t.Errorf("expected empty Reason for FTS5-only, got %q", r.Reason)
+			}
+		}
+	})
+}
+
+// searchMockSpawner returns a ranking that preserves order with reasons.
+type searchMockSpawner struct{}
+
+func (s *searchMockSpawner) Spawn(ctx context.Context, prompt string) (string, error) {
+	// Return IDs 1..N in order with reasons. We don't know how many chunks
+	// FTS5 will return, so generate enough entries.
+	return `[{"id":1,"reason":"best match"},{"id":2,"reason":"good match"},{"id":3,"reason":"ok match"},{"id":4,"reason":"partial match"},{"id":5,"reason":"weak match"},{"id":6,"reason":"marginal"},{"id":7,"reason":"marginal"},{"id":8,"reason":"marginal"},{"id":9,"reason":"marginal"},{"id":10,"reason":"marginal"}]`, nil
 }
 
 func TestFTS5Search(t *testing.T) {
@@ -218,7 +324,7 @@ func (s *Server) Stop() {
 
 	dbPath := filepath.Join(t.TempDir(), "fts5_test_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath)
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}

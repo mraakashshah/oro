@@ -80,7 +80,7 @@ func newIndexSearchCmd() *cobra.Command {
 
 // runIndexBuild is the core logic for building the index, separated for testability.
 func runIndexBuild(w io.Writer, rootDir, dbPath string) error {
-	idx, err := codesearch.NewCodeIndex(dbPath)
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
 	if err != nil {
 		return fmt.Errorf("open code index: %w", err)
 	}
@@ -103,7 +103,7 @@ func runIndexBuild(w io.Writer, rootDir, dbPath string) error {
 
 // runIndexSearch is the core logic for searching the index, separated for testability.
 func runIndexSearch(w io.Writer, query, dbPath string, topK int) error {
-	idx, err := codesearch.NewCodeIndex(dbPath)
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
 	if err != nil {
 		return fmt.Errorf("open code index: %w", err)
 	}

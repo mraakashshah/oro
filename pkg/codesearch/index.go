@@ -14,7 +14,8 @@ import (
 
 // CodeIndex is a SQLite-backed code search index.
 type CodeIndex struct {
-	db *sql.DB
+	db       *sql.DB
+	reranker *Reranker
 }
 
 // BuildStats reports what happened during an index build.
@@ -24,10 +25,11 @@ type BuildStats struct {
 	Duration       time.Duration
 }
 
-// SearchResult pairs a chunk with its cosine similarity score.
+// SearchResult pairs a chunk with its relevance score and optional rerank reason.
 type SearchResult struct {
-	Chunk Chunk
-	Score float64
+	Chunk  Chunk
+	Score  float64
+	Reason string
 }
 
 // indexSchemaDDL creates the chunks table for the code index.
@@ -67,7 +69,9 @@ END;
 `
 
 // NewCodeIndex opens or creates a code index at the given database path.
-func NewCodeIndex(dbPath string) (*CodeIndex, error) {
+// If reranker is non-nil, Search uses FTS5 pre-filter + Claude reranking.
+// If nil, Search returns FTS5-only results (for build-only or offline usage).
+func NewCodeIndex(dbPath string, reranker *Reranker) (*CodeIndex, error) {
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o750); err != nil {
 		return nil, fmt.Errorf("create index dir: %w", err)
@@ -100,7 +104,7 @@ func NewCodeIndex(dbPath string) (*CodeIndex, error) {
 		return nil, fmt.Errorf("apply code index schema: %w", err)
 	}
 
-	return &CodeIndex{db: db}, nil
+	return &CodeIndex{db: db, reranker: reranker}, nil
 }
 
 // Close closes the underlying database connection.
@@ -219,10 +223,48 @@ func (ci *CodeIndex) insertChunk(ctx context.Context, chunk Chunk) error {
 	return nil
 }
 
-// Search is a placeholder stub. Real search will be implemented in a later bead.
+// Search performs two-phase search: FTS5 pre-filter (limit=30) then optional
+// Claude reranking. If reranker is nil, returns FTS5-only results scored by
+// rank position. FTS5 returns 0 candidates → returns empty without calling reranker.
 func (ci *CodeIndex) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
-	// Return empty results. This will be replaced with FTS5-based search.
-	return []SearchResult{}, nil
+	candidates, err := ci.FTS5Search(ctx, query, 30)
+	if err != nil {
+		return nil, fmt.Errorf("search fts5 phase: %w", err)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	// If no reranker, return FTS5 results with positional scores.
+	if ci.reranker == nil {
+		results := make([]SearchResult, 0, min(len(candidates), topK))
+		for i, c := range candidates {
+			if i >= topK {
+				break
+			}
+			results = append(results, SearchResult{
+				Chunk: c,
+				Score: 1.0 / float64(i+1),
+			})
+		}
+		return results, nil
+	}
+
+	// Rerank candidates.
+	scored, err := ci.reranker.Rerank(ctx, query, candidates, topK)
+	if err != nil {
+		return nil, fmt.Errorf("search rerank phase: %w", err)
+	}
+
+	results := make([]SearchResult, len(scored))
+	for i, sc := range scored {
+		results[i] = SearchResult{
+			Chunk:  sc.Chunk,
+			Score:  1.0 / float64(sc.Rank),
+			Reason: sc.Reason,
+		}
+	}
+	return results, nil
 }
 
 // FTS5Search performs full-text search over indexed chunks using SQLite FTS5.
