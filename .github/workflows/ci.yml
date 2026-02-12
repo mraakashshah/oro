@@ -41,12 +41,15 @@ jobs:
           go-arch-lint check --project-path .
 
       # Tier 4: Testing + Coverage (90% minimum)
+      - name: Install ast-grep
+        run: npm install -g @ast-grep/cli
+
       - name: Test + Coverage
         run: |
           go test -race -shuffle=on -coverprofile=coverage.out ./internal/... ./pkg/...
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
-          awk "BEGIN {exit ($COVERAGE < 85)}"
+          awk "BEGIN {exit ($COVERAGE < 90)}"
 
       # Tier 5: Security
       - name: govulncheck
