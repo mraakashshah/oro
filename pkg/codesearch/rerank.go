@@ -25,6 +25,8 @@ type Reranker struct {
 }
 
 // NewReranker creates a reranker with the given spawner.
+//
+//oro:testonly
 func NewReranker(spawner RerankSpawner) *Reranker {
 	return &Reranker{spawner: spawner}
 }
