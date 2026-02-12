@@ -1,10 +1,13 @@
-.PHONY: build build-search-hook test lint fmt vet gate clean
+.PHONY: build build-search-hook install test lint fmt vet gate clean
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
 
 build:
 	go build $(LDFLAGS) ./cmd/oro
+
+install:
+	go install $(LDFLAGS) ./cmd/oro
 
 build-search-hook:
 	@mkdir -p .claude/hooks
