@@ -1,0 +1,79 @@
+---
+date: 2026-02-12
+status: partial
+---
+
+goal: >
+  Completed 3 beads: cherry-picked and committed FTS5 search (oro-noc.3),
+  implemented Claude reranker + wired two-phase search (oro-noc.4/noc.5),
+  and adopted exec-env startup pattern eliminating shell phase (oro-jmil.8).
+
+now: >
+  Continue with remaining ready beads. Next by priority: oro-noc.6 (wire
+  reranker in cmd_index.go, 5 min est), oro-9hd (architect forwards commands),
+  oro-47g (slow start investigation), oro-3ah (tmux status bar color, P3).
+
+test: go test -race -count=1 ./cmd/oro/ ./pkg/codesearch/ -timeout 120s
+
+done_this_session:
+  - task: "oro-noc.3: Cherry-pick FTS5 table for chunk content"
+    files: [pkg/codesearch/index.go, pkg/codesearch/index_test.go]
+    details: >
+      Cherry-picked from agent/oro-noc.3 branch (was unmerged). FTS5 virtual
+      table chunks_fts with sync triggers, FTS5Search method, sanitizeFTS5Query.
+
+  - task: "oro-noc.4 + oro-noc.5: Reranker + two-phase search wiring"
+    files: [pkg/codesearch/rerank.go, pkg/codesearch/rerank_test.go, pkg/codesearch/index.go, pkg/codesearch/index_test.go, cmd/oro/cmd_index.go, cmd/oro/cmd_index_test.go]
+    details: >
+      Created Reranker with RerankSpawner interface, ScoredChunk type,
+      BuildPrompt with XML-tagged chunks. Wired Search(): FTS5Search(limit=30)
+      → Rerank(topK). Nil reranker falls back to FTS5-only. Added Reason
+      field to SearchResult. NewCodeIndex now takes optional *Reranker.
+      Unskipped cmd search test. NewReranker marked //oro:testonly until
+      oro-noc.6 wires it from production code.
+
+  - task: "oro-jmil.8: Adopt exec-env startup pattern"
+    files: [cmd/oro/tmux.go, cmd/oro/tmux_test.go, cmd/oro/start_full_test.go]
+    details: >
+      Replaced roleEnvCmd (shell export) with execEnvCmd (exec env). Claude
+      IS the initial process — no send-keys launch, no WaitForCommand needed.
+      new-session and new-window receive exec env command as last arg.
+      Updated all tests (stubPaneReady, send-keys counts, nudge indices).
+
+decisions:
+  - noc3_cherry_pick: >
+      Cherry-picked noc.3 from diverged branch instead of merge — branch was
+      based on old main with conflicting changes in unrelated files.
+  - noc4_reimplemented: >
+      oro-noc.4 was marked closed but commit be215db was missing from all
+      branches. Reimplemented from scratch based on bead spec.
+  - newreranker_testonly: >
+      Marked NewReranker //oro:testonly to pass dead export check. Will be
+      unwired when oro-noc.6 adds production caller in cmd_index.go.
+
+worked:
+  - cherry-pick --no-commit for extracting codesearch changes from diverged branch
+  - implementing noc.4 and noc.5 together since noc.4 code was lost
+
+next:
+  - "oro-noc.6: Wire reranker in cmd_index.go (remove Ollama, add ClaudeRerankSpawner)"
+  - "oro-9hd: Architect forwards non-architect commands to manager"
+  - "oro-47g: Investigate slow oro start (tmux nudge delivery)"
+  - "oro-3ah: Tmux status bar color fix (P3)"
+
+beads:
+  completed: [oro-noc.5, oro-jmil.8]
+  remaining: [oro-noc.6, oro-9hd, oro-47g, oro-3ah, oro-js7.1, oro-jmil.6, oro-jmil.7]
+
+files:
+  created:
+    - pkg/codesearch/rerank.go
+    - pkg/codesearch/rerank_test.go
+  modified:
+    - pkg/codesearch/index.go
+    - pkg/codesearch/index_test.go
+    - cmd/oro/cmd_index.go
+    - cmd/oro/cmd_index_test.go
+    - cmd/oro/tmux.go
+    - cmd/oro/tmux_test.go
+    - cmd/oro/start_full_test.go
