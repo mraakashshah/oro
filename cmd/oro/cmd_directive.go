@@ -86,8 +86,9 @@ func sendDirective(conn net.Conn, op, opArgs string) error {
 	msg := protocol.Message{
 		Type: protocol.MsgDirective,
 		Directive: &protocol.DirectivePayload{
-			Op:   op,
-			Args: opArgs,
+			Op:            op,
+			Args:          opArgs,
+			HumanApproved: true, // CLI commands are always human-initiated
 		},
 	}
 

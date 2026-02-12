@@ -475,8 +475,9 @@ func sendDirective(t *testing.T, socketPath, directive string) {
 	msg := protocol.Message{
 		Type: protocol.MsgDirective,
 		Directive: &protocol.DirectivePayload{
-			Op:   directive,
-			Args: "",
+			Op:            directive,
+			Args:          "",
+			HumanApproved: true, // test helper simulates CLI (human-initiated)
 		},
 	}
 	data, err := json.Marshal(msg)
@@ -1377,21 +1378,48 @@ func TestApplyDirective(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
 	tests := []struct {
-		dir  protocol.Directive
-		args string
-		want State
+		dir           protocol.Directive
+		args          string
+		humanApproved bool
+		want          State
 	}{
-		{protocol.DirectiveStart, "", StateRunning},
-		{protocol.DirectivePause, "", StatePaused},
-		{protocol.DirectiveStop, "", StateStopping},
-		{protocol.DirectiveFocus, "epic-1", StateRunning},
+		{protocol.DirectiveStart, "", false, StateRunning},
+		{protocol.DirectivePause, "", false, StatePaused},
+		{protocol.DirectiveStop, "", true, StateStopping},
+		{protocol.DirectiveFocus, "epic-1", false, StateRunning},
 	}
 
 	for _, tt := range tests {
-		_, _ = d.applyDirective(tt.dir, tt.args)
+		_, _ = d.applyDirective(tt.dir, tt.args, tt.humanApproved)
 		if d.GetState() != tt.want {
 			t.Fatalf("after %s: got %s, want %s", tt.dir, d.GetState(), tt.want)
 		}
+	}
+}
+
+func TestApplyDirective_StopRequiresHumanApproval(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	// Stop without human approval should be rejected.
+	_, err := d.applyDirective(protocol.DirectiveStop, "", false)
+	if err == nil {
+		t.Fatal("expected error for stop without human approval")
+	}
+	if d.GetState() != StateRunning {
+		t.Fatalf("state should remain running, got %s", d.GetState())
+	}
+
+	// Stop with human approval should succeed.
+	detail, err := d.applyDirective(protocol.DirectiveStop, "", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if detail != "stopping" {
+		t.Fatalf("detail = %q, want %q", detail, "stopping")
+	}
+	if d.GetState() != StateStopping {
+		t.Fatalf("state = %s, want %s", d.GetState(), StateStopping)
 	}
 }
 
