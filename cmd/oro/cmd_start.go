@@ -239,6 +239,9 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
 	}
 
+	// Apply schema migrations for older databases (columns may already exist).
+	migrateStateDB(db)
+
 	// Get repo root for worktree manager.
 	repoRoot, err := os.Getwd()
 	if err != nil {

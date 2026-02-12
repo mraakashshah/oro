@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 
+	"oro/pkg/protocol"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -35,4 +37,14 @@ func openDB(path string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+// migrateStateDB applies schema migrations to the dispatcher state database.
+// Each migration uses ALTER TABLE which errors if the column already exists;
+// errors are intentionally ignored (try/ignore pattern).
+func migrateStateDB(db *sql.DB) {
+	ctx := context.Background()
+	_, _ = db.ExecContext(ctx, protocol.MigrateAssignmentCounts)
+	_, _ = db.ExecContext(ctx, protocol.MigrateFileTracking)
+	_, _ = db.ExecContext(ctx, protocol.MigratePinnedMemories)
 }

@@ -92,6 +92,57 @@ func TestOpenDB_ReturnsUsableDB(t *testing.T) {
 	}
 }
 
+// TestMigrationsAppliedOnStartup verifies that migrateStateDB adds missing
+// columns to an old-schema database. This simulates the case where state.db
+// was created with an older SchemaDDL that lacked attempt_count/handoff_count.
+func TestMigrationsAppliedOnStartup(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openDB(dbPath)
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Create old-schema assignments table WITHOUT attempt_count/handoff_count.
+	oldSchema := `CREATE TABLE IF NOT EXISTS assignments (
+		id INTEGER PRIMARY KEY,
+		bead_id TEXT NOT NULL,
+		worker_id TEXT NOT NULL,
+		worktree TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'active',
+		assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+		completed_at TEXT
+	)`
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatalf("create old schema: %v", err)
+	}
+
+	// Insert a row to verify migration preserves data.
+	if _, err := db.Exec(`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES ('b1', 'w1', '/tmp/wt')`); err != nil {
+		t.Fatalf("insert test row: %v", err)
+	}
+
+	// Run migrations — this is the function under test.
+	migrateStateDB(db)
+
+	// Verify attempt_count and handoff_count columns exist and have defaults.
+	var attemptCount, handoffCount int
+	err = db.QueryRow(`SELECT attempt_count, handoff_count FROM assignments WHERE bead_id='b1'`).
+		Scan(&attemptCount, &handoffCount)
+	if err != nil {
+		t.Fatalf("query migrated columns: %v", err)
+	}
+	if attemptCount != 0 {
+		t.Errorf("expected attempt_count=0, got %d", attemptCount)
+	}
+	if handoffCount != 0 {
+		t.Errorf("expected handoff_count=0, got %d", handoffCount)
+	}
+
+	// Running migrations again should be idempotent (no errors).
+	migrateStateDB(db)
+}
+
 // TestBuildDispatcher_UsesOpenDB verifies that buildDispatcher produces a
 // database with WAL mode and busy_timeout set (indirectly tests that it uses openDB).
 func TestBuildDispatcher_WALMode(t *testing.T) {
