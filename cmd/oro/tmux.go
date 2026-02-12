@@ -121,6 +121,21 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		return fmt.Errorf("tmux set-option manager color: %w", err)
 	}
 
+	// Set initial status bar color to architect (green) — architect is the active window after creation.
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-style", "bg=colour46,fg=black"); err != nil {
+		return fmt.Errorf("tmux set-option status-style: %w", err)
+	}
+
+	// Set hook to change status bar color when switching windows.
+	// Uses tmux if-shell with #{window_name} to detect the active window.
+	hookCmd := fmt.Sprintf(
+		`if-shell -F "#{==:#{window_name},architect}" "set-option -t %s status-style bg=colour46,fg=black" "set-option -t %s status-style bg=colour208,fg=black"`,
+		s.Name, s.Name,
+	)
+	if _, err := s.Runner.Run("tmux", "set-hook", "-t", s.Name, "after-select-window", hookCmd); err != nil {
+		return fmt.Errorf("tmux set-hook status-style: %w", err)
+	}
+
 	// Launch Claude in both windows, wait for readiness, and inject nudges.
 	for _, w := range []struct {
 		role, nudge string

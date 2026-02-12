@@ -1056,6 +1056,67 @@ func TestWakeIfDetached_UsesUpDownNotAbsoluteResize(t *testing.T) {
 	})
 }
 
+func TestTmuxStatusBarColor(t *testing.T) {
+	t.Run("Create sets initial status-style to architect color", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// Verify set-option was called to set status-style with architect color (green).
+		var foundStatusStyle bool
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "status-style") && strings.Contains(joined, "colour46") {
+					foundStatusStyle = true
+				}
+			}
+		}
+		if !foundStatusStyle {
+			t.Error("expected set-option for status-style with architect colour46 (green)")
+		}
+	})
+
+	t.Run("Create sets hook to change status-style when switching windows", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// Collect set-hook calls and find the after-select-window hook.
+		var hookArgs string
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-hook" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "after-select-window") {
+					hookArgs = joined
+					break
+				}
+			}
+		}
+		if hookArgs == "" {
+			t.Fatal("expected set-hook with after-select-window for status bar color switching")
+		}
+		if !strings.Contains(hookArgs, "colour46") {
+			t.Errorf("hook should reference architect colour46, got: %s", hookArgs)
+		}
+		if !strings.Contains(hookArgs, "colour208") {
+			t.Errorf("hook should reference manager colour208, got: %s", hookArgs)
+		}
+	})
+}
+
 func TestCreate_ExecEnvPattern(t *testing.T) {
 	// stubExecEnvReady stubs only WaitForPrompt + SendKeysVerified for exec-env
 	// pattern (no WaitForCommand needed since Claude IS the initial process).
