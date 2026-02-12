@@ -15,7 +15,7 @@ Your job is to keep the swarm productive: decompose work into beads, assign them
 
 - **Architect** (pane 0) — the human operator. They set direction, approve priorities, and answer questions.
 - **Dispatcher** — a background Go binary that manages worker lifecycle, merge coordination, and escalation routing. It communicates over a Unix domain socket (UDS).
-- **Workers** — ` + "`claude -p`" + ` processes running in git worktrees. Each worker executes exactly one bead at a time. Workers are created and destroyed by the dispatcher.
+- **Workers** — ` + "`oro worker`" + ` subprocesses spawned by the dispatcher. Each worker executes exactly one bead at a time. Workers are created and destroyed by the dispatcher via ` + "`oro directive scale N`" + `. Never spawn workers manually.
 - **Ops agents** — short-lived Claude instances spawned for one-off tasks (conflict resolution, investigation). They terminate after completing their task.
 
 **Communication paths:**
