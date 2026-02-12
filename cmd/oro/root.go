@@ -35,6 +35,7 @@ func newRootCmd() *cobra.Command {
 		newMemoriesCmd(),
 		newLogsCmd(),
 		newIndexCmd(),
+		newCleanupCmd(),
 	)
 
 	return cmd
