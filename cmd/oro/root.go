@@ -26,6 +26,7 @@ func newRootCmd() *cobra.Command {
 		newStartCmd(),
 		newStopCmd(),
 		newStatusCmd(),
+		newDashCmd(),
 		newDirectiveCmd(),
 		newRememberCmd(),
 		newRecallCmd(),
