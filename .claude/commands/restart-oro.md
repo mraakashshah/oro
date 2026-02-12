@@ -1,6 +1,6 @@
 # Restart Oro
 
-Nuke all oro processes, clean stale state, rebuild, relaunch, and monitor until healthy.
+Nuke all oro processes, clean stale state, rebuild, relaunch, then continuously monitor the swarm — catching errors, tracking bead progress, and filing P0 bugs.
 
 Execute these phases in order. Do NOT skip steps. Report status after each phase.
 
@@ -19,6 +19,7 @@ pkill -f "oro worker" 2>/dev/null || true
 ```
 
 Verify nothing remains:
+
 ```bash
 ps aux | grep -E '[o]ro (start|worker|dispatch)' | head -5
 tmux list-sessions 2>&1
@@ -65,26 +66,57 @@ sleep 5 && ./oro status 2>&1
 
 Confirm dispatcher is running before proceeding.
 
-## Phase 5: Monitor (3 observation cycles)
+## Phase 5: Continuous Monitoring
 
-Run 3 observation cycles, 20 seconds apart. In each cycle, collect:
+Run an **indefinite** monitoring loop. Each cycle is 30 seconds apart. Continue until the user says stop or context runs low.
+
+### Each cycle, collect
 
 ```bash
 ./oro status 2>&1
-./oro logs 2>&1 | tail -20
-tmux capture-pane -t oro:0 -p 2>&1 | tail -15
-tmux capture-pane -t oro:1 -p 2>&1 | tail -15
+./oro logs 2>&1 | tail -30
+tmux capture-pane -t oro:0 -p 2>&1 | tail -20
+tmux capture-pane -t oro:1 -p 2>&1 | tail -20
 ```
 
-**Watch for these failure patterns:**
-- `worktree_error` repeating in logs (infinite retry bug)
-- `missing_acceptance` repeating in logs (assignment spam)
-- Workers stuck at 0 after 60s
-- Dispatcher state not `running`
-- Any panic or fatal error in tmux panes
+### Failure patterns to watch for
 
-After 3 cycles, report:
-1. Dispatcher state and worker count
-2. Any errors or warnings observed
-3. What beads are assigned and making progress
-4. Overall verdict: HEALTHY or NEEDS ATTENTION (with details)
+| Pattern | Meaning |
+|---------|---------|
+| `worktree_error` repeating | Infinite retry bug — stale branch/worktree |
+| `missing_acceptance` repeating | Assignment spam — bead has no AC |
+| `qg_retry_escalated` | Quality gate exhausted — worker stuck |
+| `merge_conflict` without `merge_conflict_resolved` | Unresolved merge conflict |
+| `escalation_failed` | Manager unreachable — tmux pane may be dead |
+| Workers stuck at 0 for >60s | Workers not spawning or connecting |
+| Dispatcher state not `running` | Dispatcher crashed or stopped |
+| Panic/fatal in tmux panes | Agent crash |
+| Same bead assigned >3 times in logs | Assignment loop |
+| `heartbeat` stops for a worker | Worker process died |
+
+### What to do when you find issues
+
+1. **Log spam (repeating errors):** Count occurrences and report the pattern. If >5 of the same error in one cycle, flag it prominently.
+2. **Stuck workers:** Report which worker and bead are stuck, how long, and what the last log entry was.
+3. **Crashes/panics:** Capture the full error from the tmux pane. Report immediately — don't wait for next cycle.
+4. **Bead progress:** Track which beads are assigned, which complete (watch for `merged` events), and which are stuck. Report progress deltas between cycles.
+5. **P0 bugs:** If you observe a new systemic issue (not a one-off), create a bead: `bd create --title="P0: <description>" --type=bug --priority=0`
+
+### Reporting
+
+Every cycle, give a **brief** status line (one line unless there's a problem):
+
+```
+[cycle N] OK — 2 workers, oro-js7.4 in progress, oro-jmil.6 merged
+```
+
+Expand only when something changes or goes wrong:
+
+```
+[cycle N] ISSUE — worktree_error for oro-abc repeated 8 times in 30s
+  Action: filed P0 bead oro-xyz
+```
+
+### Context management
+
+At 40% context usage, switch to **summary mode**: only report changes and errors, skip routine OK cycles. At 60%, create a handoff and stop monitoring.
