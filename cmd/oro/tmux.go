@@ -305,6 +305,10 @@ func (s *TmuxSession) SendKeys(paneTarget, text string) error {
 	// 3.5. Send Escape to exit any vim-mode INSERT state before Enter.
 	// Harmless when vim mode is off; critical when it's on.
 	_, _ = s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "Escape")
+	// Wake so Ink processes the Escape before Enter arrives.
+	// Without this, both keystrokes queue up and Escape can swallow Enter
+	// in detached sessions.
+	s.wakeIfDetached(paneTarget)
 	s.sleep(100 * time.Millisecond)
 
 	// 4. Send Enter with retry — critical for message submission.
@@ -380,20 +384,22 @@ func (s *TmuxSession) SendKeysVerified(paneTarget, text string, timeout time.Dur
 	}
 }
 
-// wakeIfDetached triggers a SIGWINCH by resizing the pane if no clients are
+// wakeIfDetached sends SIGWINCH to the pane's process when no clients are
 // attached. This wakes Claude Code's Ink render loop in detached sessions.
+// Uses direct kill -WINCH via the pane PID rather than resize, which is
+// more reliable at delivering the signal to Node.js/Ink.
 func (s *TmuxSession) wakeIfDetached(paneTarget string) {
 	// Check if any client is attached to this session.
 	out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", paneTarget, "#{session_attached}")
 	if err == nil && strings.TrimSpace(out) != "0" {
 		return // attached, no wake needed
 	}
-	// Resize pane up then down by 1 row — triggers SIGWINCH without changing size.
-	// Uses -U/-D (relative) instead of -y (absolute) to avoid sending invalid
-	// negative values that can destabilize tmux server on repeated calls.
-	_, _ = s.Runner.Run("tmux", "resize-pane", "-t", paneTarget, "-U", "1")
-	s.sleep(50 * time.Millisecond)
-	_, _ = s.Runner.Run("tmux", "resize-pane", "-t", paneTarget, "-D", "1")
+	// Get the pane's child PID and send SIGWINCH directly.
+	pidStr, err := s.Runner.Run("tmux", "display-message", "-p", "-t", paneTarget, "#{pane_pid}")
+	if err != nil {
+		return
+	}
+	_, _ = s.Runner.Run("kill", "-WINCH", strings.TrimSpace(pidStr))
 }
 
 // Kill destroys the named tmux session.

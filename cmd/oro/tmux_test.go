@@ -1006,51 +1006,88 @@ func TestSendKeys_SendsEscapeBeforeEnter(t *testing.T) {
 	}
 }
 
-func TestWakeIfDetached_UsesUpDownNotAbsoluteResize(t *testing.T) {
-	t.Run("detached session uses -U and -D flags", func(t *testing.T) {
+func TestSendKeys_WakesAfterEscapeInDetachedSession(t *testing.T) {
+	fake := newFakeCmd()
+	// Session is detached — wakeIfDetached should send SIGWINCH.
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
+
+	sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+	err := sess.SendKeys("oro:architect", "hello world")
+	if err != nil {
+		t.Fatalf("SendKeys returned error: %v", err)
+	}
+
+	// Find indices of: Escape send-keys, the kill -WINCH calls after Escape
+	// (wake after Escape), and Enter send-keys.
+	var escapeIdx, enterIdx int
+	escapeIdx, enterIdx = -1, -1
+	for i, call := range fake.calls {
+		if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
+			lastArg := call[len(call)-1]
+			if lastArg == "Escape" {
+				escapeIdx = i
+			}
+			if lastArg == "Enter" && enterIdx == -1 {
+				enterIdx = i
+			}
+		}
+	}
+
+	if escapeIdx == -1 {
+		t.Fatal("expected Escape send-keys call")
+	}
+	if enterIdx == -1 {
+		t.Fatal("expected Enter send-keys call")
+	}
+
+	// There must be a kill -WINCH (SIGWINCH wake) between Escape and Enter
+	// so Ink processes Escape before Enter arrives.
+	var wakesBetween int
+	for i := escapeIdx + 1; i < enterIdx; i++ {
+		if len(fake.calls[i]) >= 2 && fake.calls[i][0] == "kill" && fake.calls[i][1] == "-WINCH" {
+			wakesBetween++
+		}
+	}
+	if wakesBetween == 0 {
+		t.Error("expected kill -WINCH between Escape and Enter in detached session")
+	}
+}
+
+func TestWakeIfDetached_SendsSIGWINCH(t *testing.T) {
+	t.Run("detached session sends kill -WINCH to pane PID", func(t *testing.T) {
 		fake := newFakeCmd()
-		// Session reports 0 attached clients → detached.
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
 		sess.wakeIfDetached("oro:architect")
 
-		// Should call resize-pane with -U 1 then -D 1, NOT -y.
-		var resizeCalls [][]string
+		// Should call kill -WINCH 12345.
+		var killCalls [][]string
 		for _, call := range fake.calls {
-			if len(call) > 1 && call[1] == "resize-pane" {
-				resizeCalls = append(resizeCalls, call)
+			if len(call) >= 2 && call[0] == "kill" && call[1] == "-WINCH" {
+				killCalls = append(killCalls, call)
 			}
 		}
-		if len(resizeCalls) != 2 {
-			t.Fatalf("expected 2 resize-pane calls, got %d: %v", len(resizeCalls), resizeCalls)
+		if len(killCalls) != 1 {
+			t.Fatalf("expected 1 kill -WINCH call, got %d: %v", len(killCalls), killCalls)
 		}
-		// First call should shrink up (-U 1).
-		first := strings.Join(resizeCalls[0], " ")
-		if !strings.Contains(first, "-U") || !strings.Contains(first, "1") {
-			t.Errorf("first resize should use -U 1, got: %s", first)
-		}
-		if strings.Contains(first, "-y") {
-			t.Errorf("first resize should NOT use -y flag, got: %s", first)
-		}
-		// Second call should grow down (-D 1).
-		second := strings.Join(resizeCalls[1], " ")
-		if !strings.Contains(second, "-D") || !strings.Contains(second, "1") {
-			t.Errorf("second resize should use -D 1, got: %s", second)
+		if killCalls[0][2] != "12345" {
+			t.Errorf("expected PID 12345, got %s", killCalls[0][2])
 		}
 	})
 
-	t.Run("attached session skips resize", func(t *testing.T) {
+	t.Run("attached session skips wake", func(t *testing.T) {
 		fake := newFakeCmd()
-		// Session reports 1 attached client → attached.
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
 		sess.wakeIfDetached("oro:architect")
 
 		for _, call := range fake.calls {
-			if len(call) > 1 && call[1] == "resize-pane" {
-				t.Error("should not call resize-pane when session is attached")
+			if len(call) >= 1 && call[0] == "kill" {
+				t.Error("should not call kill when session is attached")
 			}
 		}
 	})

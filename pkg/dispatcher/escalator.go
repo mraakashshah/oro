@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CommandRunner is defined in beadsource.go.
@@ -76,19 +77,46 @@ func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 		return fmt.Errorf("tmux paste-buffer to %s: %w", e.paneTarget, err)
 	}
 
+	// Wake Ink so it processes the pasted text before Escape arrives.
+	e.wakeIfDetached(ctx)
+	time.Sleep(100 * time.Millisecond)
+
 	// Step 2.5: Send Escape to exit any vim-mode INSERT state before Enter.
 	_, err = e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, "Escape")
 	if err != nil {
 		return fmt.Errorf("tmux send-keys Escape to %s: %w", e.paneTarget, err)
 	}
 
-	// Step 3: Send Enter key to display the message
+	// Wake so Ink processes Escape before Enter arrives.
+	e.wakeIfDetached(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	// Step 3: Send Enter key to submit the message
 	_, err = e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, "Enter")
 	if err != nil {
 		return fmt.Errorf("tmux send-keys Enter to %s: %w", e.paneTarget, err)
 	}
 
+	// Wake so Ink processes Enter in detached sessions.
+	e.wakeIfDetached(ctx)
+
 	return nil
+}
+
+// wakeIfDetached sends SIGWINCH to the pane's process when no clients are
+// attached. This wakes Claude Code's Ink render loop in detached sessions.
+// Uses direct kill -WINCH via the pane PID rather than resize, which is
+// more reliable at delivering the signal to Node.js/Ink.
+func (e *TmuxEscalator) wakeIfDetached(ctx context.Context) {
+	out, err := e.runner.Run(ctx, "tmux", "display-message", "-p", "-t", e.paneTarget, "#{session_attached}")
+	if err == nil && strings.TrimSpace(string(out)) != "0" {
+		return
+	}
+	pidOut, err := e.runner.Run(ctx, "tmux", "display-message", "-p", "-t", e.paneTarget, "#{pane_pid}")
+	if err != nil {
+		return
+	}
+	_, _ = e.runner.Run(ctx, "kill", "-WINCH", strings.TrimSpace(string(pidOut)))
 }
 
 // sanitizeForTmux prepares a message string for safe use with tmux load-buffer.
