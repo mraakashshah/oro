@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"oro/pkg/protocol"
 )
@@ -42,10 +43,29 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 		"worktree", "add", path, "-b", branch, "main",
 	)
 	if err != nil {
+		// If the branch already exists from a previous crashed run,
+		// prune stale worktree state and delete the branch, then retry once.
+		if strings.Contains(err.Error(), "already exists") {
+			g.pruneStale(ctx, branch)
+
+			_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
+				"worktree", "add", path, "-b", branch, "main",
+			)
+			if err != nil {
+				return "", "", fmt.Errorf("worktree add %s (after prune): %w", beadID, err)
+			}
+			return path, branch, nil
+		}
 		return "", "", fmt.Errorf("worktree add %s: %w", beadID, err)
 	}
 
 	return path, branch, nil
+}
+
+// pruneStale cleans up a stale worktree and branch left by a previous crash.
+func (g *GitWorktreeManager) pruneStale(ctx context.Context, branch string) {
+	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune")
+	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-D", branch)
 }
 
 // Remove runs `git worktree remove <path> --force`.
