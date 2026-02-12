@@ -3390,6 +3390,88 @@ func TestQualityGateRetry_UnknownWorker(t *testing.T) {
 	}
 }
 
+// deadConn is a net.Conn whose Write always returns an error.
+// Used to simulate a dead worker connection in tests.
+type deadConn struct {
+	net.Conn
+}
+
+func (deadConn) Write([]byte) (int, error) {
+	return 0, errors.New("connection dead")
+}
+
+func (deadConn) Close() error { return nil }
+
+func TestQGRetry_DeadWorker_RequeuesBead(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadID := "bead-dead-qg"
+	workerID := "w1"
+
+	// Manually register a worker with a dead connection (white-box).
+	// This guarantees sendToWorker will fail immediately.
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     deadConn{},
+		state:    protocol.WorkerBusy,
+		beadID:   beadID,
+		worktree: "/tmp/test-worktree",
+		model:    protocol.ModelSonnet,
+		lastSeen: time.Now(),
+	}
+	d.mu.Unlock()
+
+	// Create an active assignment in the DB so completeAssignment has
+	// something to mark as completed.
+	if err := d.createAssignment(ctx, beadID, workerID, "/tmp/test-worktree"); err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+
+	// Call handleDone with QualityGatePassed=false.
+	// The QG retry path will try to sendToWorker, which fails on the dead
+	// connection. The fix should log "qg_retry_send_failed", release the
+	// worker, complete the assignment, and clear bead tracking.
+	d.handleDone(ctx, workerID, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            beadID,
+			WorkerID:          workerID,
+			QualityGatePassed: false,
+		},
+	})
+
+	// 1. Verify "qg_retry_send_failed" event is logged
+	if eventCount(t, d.db, "qg_retry_send_failed") == 0 {
+		t.Fatal("expected 'qg_retry_send_failed' event when worker is dead")
+	}
+
+	// 2. Verify assignment is completed (bead returns to ready pool)
+	var status string
+	err := d.db.QueryRow(
+		`SELECT status FROM assignments WHERE bead_id=? ORDER BY id DESC LIMIT 1`,
+		beadID,
+	).Scan(&status)
+	if err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("expected assignment status 'completed', got %q", status)
+	}
+
+	// 3. Verify worker state is Idle (not Busy).
+	// Worker being removed from tracking is also acceptable for a dead worker.
+	st, wBead, ok := d.WorkerInfo(workerID)
+	if ok {
+		if st == protocol.WorkerBusy {
+			t.Fatalf("expected worker state Idle (not Busy), got %s with bead %s", st, wBead)
+		}
+		if wBead != "" {
+			t.Fatalf("expected worker beadID to be cleared, got %q", wBead)
+		}
+	}
+}
+
 // --- Resume, Status, Focus directive tests ---
 
 func TestDispatcher_ResumeDirective_WhenPaused(t *testing.T) {

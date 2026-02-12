@@ -693,7 +693,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 		d.attemptCounts[beadID] = 0 // Reset so opus gets fresh retries
 	}
 
-	_ = d.sendToWorker(w, protocol.Message{
+	if err := d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:        beadID,
@@ -703,7 +703,17 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 			Feedback:      qgOutput,
 			MemoryContext: memCtx,
 		},
-	})
+	}); err != nil {
+		// Worker is unreachable — release the bead back to the ready pool.
+		w.state = protocol.WorkerIdle
+		w.beadID = ""
+		d.mu.Unlock()
+		_ = d.logEvent(ctx, "qg_retry_send_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
+		_ = d.completeAssignment(ctx, beadID)
+		d.clearBeadTracking(beadID)
+		return
+	}
 	w.state = protocol.WorkerBusy
 	w.beadID = beadID
 	d.mu.Unlock()
