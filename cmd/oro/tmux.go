@@ -61,6 +61,22 @@ func (s *TmuxSession) Exists() bool {
 	return err == nil
 }
 
+// isHealthy checks whether Claude is running in both panes. Returns false
+// if either pane shows a shell (zombie session — Claude crashed back to shell).
+func (s *TmuxSession) isHealthy() bool {
+	for _, window := range []string{"architect", "manager"} {
+		pane := s.Name + ":" + window
+		out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
+		if err != nil {
+			return false
+		}
+		if isShell(strings.TrimSpace(out)) {
+			return false
+		}
+	}
+	return true
+}
+
 // roleEnvCmd builds a shell command that exports ORO_ROLE, BD_ACTOR, and
 // GIT_AUTHOR_NAME for the given role, then launches interactive claude with
 // a unique --session-id so each tmux window gets isolated input history.
@@ -76,7 +92,11 @@ func roleEnvCmd(role string) string {
 // If the session already exists, it is a no-op.
 func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	if s.Exists() {
-		return nil
+		if s.isHealthy() {
+			return nil
+		}
+		// Zombie session: Claude is not running. Kill and recreate.
+		_ = s.Kill()
 	}
 
 	// Create a detached session with first window named "architect".

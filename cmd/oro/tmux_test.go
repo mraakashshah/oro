@@ -901,6 +901,88 @@ func TestAttach(t *testing.T) {
 	})
 }
 
+func TestCreate_KillsZombieSession(t *testing.T) {
+	t.Run("kills and recreates session when both panes show shell", func(t *testing.T) {
+		fake := newFakeCmd()
+
+		// has-session succeeds (session exists).
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+
+		// isHealthy checks pane_current_command: first call returns shell (zombie),
+		// subsequent calls (WaitForCommand during recreation) return "claude".
+		fake.seqOut[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = []string{
+			"zsh",    // isHealthy → zombie
+			"claude", // WaitForCommand during recreation
+		}
+		fake.seqOut[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = []string{
+			"claude", // WaitForCommand (isHealthy short-circuits on architect)
+		}
+
+		// wakeIfDetached session_attached check.
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{session_attached}")] = "1"
+
+		// capture-pane for WaitForPrompt + SendKeysVerified + VerifyBeacon.
+		fake.seqOut[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = []string{
+			"Welcome\n❯ \nstatus bar",                // WaitForPrompt
+			"Welcome\n❯ architect nudge\nstatus bar", // SendKeysVerified
+		}
+		fake.seqOut[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = []string{
+			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
+			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
+			"bd stats\n❯ output\n",                 // VerifyBeaconReceived
+		}
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// Verify kill-session was called.
+		var killedSession bool
+		for _, call := range fake.calls {
+			if len(call) >= 3 && call[1] == "kill-session" && call[3] == "oro" {
+				killedSession = true
+				break
+			}
+		}
+		if !killedSession {
+			t.Error("expected kill-session to be called for zombie session")
+		}
+	})
+
+	t.Run("keeps session when Claude is running in panes", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Session exists.
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+
+		// Both panes show Claude (healthy session).
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = "claude"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// Verify kill-session was NOT called.
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[1] == "kill-session" {
+				t.Error("should NOT kill-session when Claude is running")
+			}
+		}
+
+		// Verify new-session was NOT called (reused existing).
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[1] == "new-session" {
+				t.Error("should NOT create new session when Claude is running")
+			}
+		}
+	})
+}
+
 func TestWakeIfDetached_UsesUpDownNotAbsoluteResize(t *testing.T) {
 	t.Run("detached session uses -U and -D flags", func(t *testing.T) {
 		fake := newFakeCmd()
