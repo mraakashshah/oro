@@ -293,11 +293,27 @@ func (s *TmuxSession) SendKeys(paneTarget, text string) error {
 // when verifying nudge text delivery.
 const sendKeysVerifiedPollInterval = 500 * time.Millisecond
 
+// verifyHintMaxLen is the max length of the text prefix used for
+// capture-pane verification. Long nudges may be wrapped/truncated by the
+// TUI, so we only check for a short prefix.
+const verifyHintMaxLen = 30
+
+// verifyHint returns a short prefix of text for capture-pane verification.
+func verifyHint(text string) string {
+	if len(text) <= verifyHintMaxLen {
+		return text
+	}
+	return text[:verifyHintMaxLen]
+}
+
 // SendKeysVerified sends text to a pane and verifies it appeared via
 // capture-pane. If the text doesn't appear, it clears the input (C-u)
 // and retries. Returns error if text never appears within timeout.
+// Only checks for a short prefix of the text since long nudges may be
+// wrapped or truncated by Claude Code's Ink TUI.
 func (s *TmuxSession) SendKeysVerified(paneTarget, text string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	hint := verifyHint(text)
 	firstAttempt := true
 
 	for {
@@ -310,20 +326,20 @@ func (s *TmuxSession) SendKeysVerified(paneTarget, text string, timeout time.Dur
 
 		if err := s.SendKeys(paneTarget, text); err != nil {
 			if time.Now().After(deadline) {
-				return fmt.Errorf("nudge text %q not delivered to %s within %v: %w", text, paneTarget, timeout, err)
+				return fmt.Errorf("nudge text %q not delivered to %s within %v: %w", hint, paneTarget, timeout, err)
 			}
 			s.sleep(sendKeysVerifiedPollInterval)
 			continue
 		}
 
-		// Verify text appeared in pane content.
+		// Verify text prefix appeared in pane content.
 		out, err := s.Runner.Run("tmux", "capture-pane", "-p", "-t", paneTarget)
-		if err == nil && strings.Contains(out, text) {
+		if err == nil && strings.Contains(out, hint) {
 			return nil
 		}
 
 		if time.Now().After(deadline) {
-			return fmt.Errorf("nudge text %q not visible in pane %s within %v", text, paneTarget, timeout)
+			return fmt.Errorf("nudge text %q not visible in pane %s within %v", hint, paneTarget, timeout)
 		}
 		s.sleep(sendKeysVerifiedPollInterval)
 	}
