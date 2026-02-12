@@ -344,14 +344,14 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 		return fmt.Errorf("assign message missing payload")
 	}
 
-	// Kill any existing subprocess from a previous assignment (e.g. QG retry
-	// re-ASSIGN) to prevent zombie process leaks.
+	// Kill any existing subprocess from a previous assignment to prevent zombie leaks.
 	w.killProc()
 
 	w.mu.Lock()
 	w.beadID = msg.Assign.BeadID
 	w.worktree = msg.Assign.Worktree
 	w.sessionText.Reset()
+	w.pendingQGOutput = ""
 	w.mu.Unlock()
 
 	var prompt string
@@ -403,8 +403,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	// Start context file watcher (also monitors subprocess health)
 	go w.watchContext(ctx)
 
-	// Wait for subprocess completion, run quality gate, and send DONE.
-	go w.awaitSubprocessAndReport(ctx)
+	go w.awaitSubprocessAndReport(ctx) // wait for exit, run QG, send DONE
 
 	return nil
 }
