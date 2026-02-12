@@ -55,6 +55,13 @@ func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 		return fmt.Errorf("tmux session %s not found: %w", e.sessionName, err)
 	}
 
+	// Step 0.5: Clear any pending input from a previous partial delivery.
+	// Without this, paste-buffer appends to leftover text, garbling the message.
+	_, err = e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, "C-u")
+	if err != nil {
+		return fmt.Errorf("tmux send-keys C-u to %s: %w", e.paneTarget, err)
+	}
+
 	sanitized := sanitizeForTmux(msg)
 
 	// Step 1: Set the message into a named tmux buffer
