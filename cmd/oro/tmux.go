@@ -77,11 +77,12 @@ func (s *TmuxSession) isHealthy() bool {
 	return true
 }
 
-// roleEnvCmd builds a shell command that exports ORO_ROLE, BD_ACTOR, and
-// GIT_AUTHOR_NAME for the given role, then launches interactive claude with
-// a unique --session-id so each tmux window gets isolated input history.
-func roleEnvCmd(role string) string {
-	return fmt.Sprintf("export ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude --session-id $(uuidgen)", role, role, role)
+// execEnvCmd builds an exec-env command that replaces the shell with Claude,
+// setting ORO_ROLE, BD_ACTOR, and GIT_AUTHOR_NAME for the given role.
+// Uses exec to eliminate the shell phase entirely — Claude IS the initial process.
+// The --session-id flag gives each tmux window isolated input history.
+func execEnvCmd(role string) string {
+	return fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s claude --session-id $(uuidgen)", role, role, role)
 }
 
 // Create creates the Oro tmux session with two windows (architect + manager).
@@ -100,12 +101,13 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	}
 
 	// Create a detached session with first window named "architect".
-	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", "architect"); err != nil {
+	// The exec-env command is the last arg — Claude IS the initial process (no shell phase).
+	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", "architect", execEnvCmd("architect")); err != nil {
 		return fmt.Errorf("tmux new-session: %w", err)
 	}
 
 	// Create second window named "manager".
-	if _, err := s.Runner.Run("tmux", "new-window", "-t", s.Name, "-n", "manager"); err != nil {
+	if _, err := s.Runner.Run("tmux", "new-window", "-t", s.Name, "-n", "manager", execEnvCmd("manager")); err != nil {
 		return fmt.Errorf("tmux new-window: %w", err)
 	}
 
@@ -144,18 +146,11 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	return nil
 }
 
-// launchAndNudge launches interactive Claude in a window, waits for it to be
-// ready (process started + prompt visible), then sends the nudge message with
-// verified delivery (retries with C-u clear if text doesn't appear in pane).
+// launchAndNudge waits for Claude to be ready in a window (already launched via
+// exec-env as the initial process), then sends the nudge message with verified
+// delivery. No send-keys launch or WaitForCommand needed — Claude IS the process.
 func (s *TmuxSession) launchAndNudge(role, nudge string) error {
 	pane := s.Name + ":" + role
-	cmd := roleEnvCmd(role)
-	if _, err := s.Runner.Run("tmux", "send-keys", "-t", pane, cmd, "Enter"); err != nil {
-		return fmt.Errorf("tmux send-keys %s launch: %w", role, err)
-	}
-	if err := s.PaneReady(pane); err != nil {
-		return fmt.Errorf("wait for %s ready: %w", role, err)
-	}
 	if err := s.WaitForPrompt(pane); err != nil {
 		return fmt.Errorf("wait for %s prompt: %w", role, err)
 	}

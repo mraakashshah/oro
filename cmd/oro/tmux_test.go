@@ -53,15 +53,13 @@ func (f *fakeCmd) Run(name string, args ...string) (string, error) {
 	return f.output[k], nil
 }
 
-// stubPaneReady sets up the fake so WaitForCommand sees "claude" as the
-// foreground process in both windows (i.e., Claude has started), and
-// WaitForPrompt sees the ❯ prompt indicator (i.e., Claude's TUI is ready),
-// and SendKeysVerified sees the nudge text in capture-pane output.
-// capture-pane is called sequentially: first by WaitForPrompt, then by
-// SendKeysVerified, so we use seqOut to return ❯ first, then nudge text.
+// stubPaneReady sets up the fake so WaitForPrompt sees the ❯ prompt indicator
+// (i.e., Claude's TUI is ready) and SendKeysVerified sees the nudge text in
+// capture-pane output. With exec-env, no WaitForCommand stubs are needed since
+// Claude IS the initial process. capture-pane is called sequentially: first by
+// WaitForPrompt, then by SendKeysVerified, so we use seqOut to return ❯ first,
+// then nudge text.
 func stubPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge string) {
-	fake.output[key("tmux", "display-message", "-p", "-t", sessionName+":architect", "#{pane_current_command}")] = "claude"
-	fake.output[key("tmux", "display-message", "-p", "-t", sessionName+":manager", "#{pane_current_command}")] = "claude"
 	archCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":architect")
 	mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
 	fake.seqOut[archCapture] = []string{
@@ -274,22 +272,22 @@ func TestTmuxLayout(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Verify send-keys was called for both windows:
-		// - architect: launch (1), then nudge literal + Escape + Enter (3)
-		// - manager: launch (1), then nudge literal + Escape + Enter (3)
-		// That's 8 send-keys calls total (2 launch + 2×3 nudge).
+		// Verify send-keys was called for both windows (nudge only, no launch):
+		// - architect: nudge literal + Escape + Enter (3)
+		// - manager: nudge literal + Escape + Enter (3)
+		// That's 6 send-keys calls total (2×3 nudge). No launch send-keys with exec-env.
 		sendKeysCount := 0
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				sendKeysCount++
 			}
 		}
-		if sendKeysCount < 8 {
-			t.Errorf("expected at least 8 send-keys calls (2 launch + 2×3 nudge), got %d", sendKeysCount)
+		if sendKeysCount < 6 {
+			t.Errorf("expected at least 6 send-keys calls (2×3 nudge), got %d", sendKeysCount)
 		}
 	})
 
-	t.Run("Create launches interactive claude with role env vars", func(t *testing.T) {
+	t.Run("Create launches interactive claude with role env vars via exec env", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
@@ -300,54 +298,40 @@ func TestTmuxLayout(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Collect all send-keys calls targeting each window.
-		var architectCalls, managerCalls [][]string
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:architect") {
-					architectCalls = append(architectCalls, call)
-				}
-				if strings.Contains(joined, "oro:manager") {
-					managerCalls = append(managerCalls, call)
-				}
-			}
+		// Architect: verify new-session command has exec env with role env vars.
+		newSessionCall := findCall(fake.calls, "new-session")
+		if newSessionCall == nil {
+			t.Fatal("expected tmux new-session to be called")
 		}
-
-		// Architect window: first send-keys should launch claude with all role env vars
-		if len(architectCalls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to architect window, got %d", len(architectCalls))
-		}
-		archLaunch := strings.Join(architectCalls[0], " ")
+		archCmd := newSessionCall[len(newSessionCall)-1]
 		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
-			if !strings.Contains(archLaunch, envVar) {
-				t.Errorf("architect window launch should set %s, got: %s", envVar, archLaunch)
+			if !strings.Contains(archCmd, envVar) {
+				t.Errorf("new-session command should set %s, got: %s", envVar, archCmd)
 			}
 		}
-		if !strings.Contains(archLaunch, "claude") {
-			t.Errorf("architect window launch should run claude, got: %s", archLaunch)
+		if !strings.Contains(archCmd, "claude") {
+			t.Errorf("new-session command should run claude, got: %s", archCmd)
 		}
-		// Must NOT use claude -p
-		if strings.Contains(archLaunch, "claude -p") {
-			t.Errorf("architect window should use interactive claude, not 'claude -p', got: %s", archLaunch)
+		if strings.Contains(archCmd, "claude -p") {
+			t.Errorf("should use interactive claude, not 'claude -p', got: %s", archCmd)
 		}
 
-		// Manager window: first send-keys should launch claude with all role env vars
-		if len(managerCalls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to manager window, got %d", len(managerCalls))
+		// Manager: verify new-window command has exec env with role env vars.
+		newWindowCall := findCall(fake.calls, "new-window")
+		if newWindowCall == nil {
+			t.Fatal("expected tmux new-window to be called")
 		}
-		mgrLaunch := strings.Join(managerCalls[0], " ")
+		mgrCmd := newWindowCall[len(newWindowCall)-1]
 		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
-			if !strings.Contains(mgrLaunch, envVar) {
-				t.Errorf("manager window launch should set %s, got: %s", envVar, mgrLaunch)
+			if !strings.Contains(mgrCmd, envVar) {
+				t.Errorf("new-window command should set %s, got: %s", envVar, mgrCmd)
 			}
 		}
-		if !strings.Contains(mgrLaunch, "claude") {
-			t.Errorf("manager window launch should run claude, got: %s", mgrLaunch)
+		if !strings.Contains(mgrCmd, "claude") {
+			t.Errorf("new-window command should run claude, got: %s", mgrCmd)
 		}
-		// Must NOT use claude -p
-		if strings.Contains(mgrLaunch, "claude -p") {
-			t.Errorf("manager window should use interactive claude, not 'claude -p', got: %s", mgrLaunch)
+		if strings.Contains(mgrCmd, "claude -p") {
+			t.Errorf("should use interactive claude, not 'claude -p', got: %s", mgrCmd)
 		}
 	})
 
@@ -376,42 +360,42 @@ func TestTmuxLayout(t *testing.T) {
 			}
 		}
 
-		// Architect: launch (1) + literal -l (2) + Escape (3) + Enter (4) = 4 send-keys calls.
-		if len(architectCalls) < 4 {
-			t.Fatalf("expected at least 4 send-keys to architect window, got %d", len(architectCalls))
+		// Architect: literal -l (0) + Escape (1) + Enter (2) = 3 send-keys calls (no launch).
+		if len(architectCalls) < 3 {
+			t.Fatalf("expected at least 3 send-keys to architect window, got %d", len(architectCalls))
 		}
-		archNudge := strings.Join(architectCalls[1], " ")
+		archNudge := strings.Join(architectCalls[0], " ")
 		if !strings.Contains(archNudge, "-l") {
 			t.Errorf("architect nudge should use literal mode (-l), got: %s", archNudge)
 		}
 		if !strings.Contains(archNudge, "architect nudge text here") {
 			t.Errorf("architect nudge should contain nudge text, got: %s", archNudge)
 		}
-		archEscape := strings.Join(architectCalls[2], " ")
+		archEscape := strings.Join(architectCalls[1], " ")
 		if !strings.Contains(archEscape, "Escape") {
 			t.Errorf("architect nudge should send Escape before Enter, got: %s", archEscape)
 		}
-		archEnter := strings.Join(architectCalls[3], " ")
+		archEnter := strings.Join(architectCalls[2], " ")
 		if !strings.Contains(archEnter, "Enter") {
 			t.Errorf("architect nudge should send Enter separately, got: %s", archEnter)
 		}
 
-		// Manager: launch (1) + literal -l (2) + Escape (3) + Enter (4) = 4 send-keys calls.
-		if len(managerCalls) < 4 {
-			t.Fatalf("expected at least 4 send-keys to manager window, got %d", len(managerCalls))
+		// Manager: literal -l (0) + Escape (1) + Enter (2) = 3 send-keys calls (no launch).
+		if len(managerCalls) < 3 {
+			t.Fatalf("expected at least 3 send-keys to manager window, got %d", len(managerCalls))
 		}
-		mgrNudge := strings.Join(managerCalls[1], " ")
+		mgrNudge := strings.Join(managerCalls[0], " ")
 		if !strings.Contains(mgrNudge, "-l") {
 			t.Errorf("manager nudge should use literal mode (-l), got: %s", mgrNudge)
 		}
 		if !strings.Contains(mgrNudge, "manager nudge text here") {
 			t.Errorf("manager nudge should contain nudge text, got: %s", mgrNudge)
 		}
-		mgrEscape := strings.Join(managerCalls[2], " ")
+		mgrEscape := strings.Join(managerCalls[1], " ")
 		if !strings.Contains(mgrEscape, "Escape") {
 			t.Errorf("manager nudge should send Escape before Enter, got: %s", mgrEscape)
 		}
-		mgrEnter := strings.Join(managerCalls[3], " ")
+		mgrEnter := strings.Join(managerCalls[2], " ")
 		if !strings.Contains(mgrEnter, "Enter") {
 			t.Errorf("manager nudge should send Enter separately, got: %s", mgrEnter)
 		}
@@ -459,7 +443,7 @@ func TestTmuxLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("Create polls window readiness before injecting beacons", func(t *testing.T) {
+	t.Run("Create polls prompt readiness before injecting beacons", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect beacon", "manager beacon")
@@ -470,39 +454,38 @@ func TestTmuxLayout(t *testing.T) {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
-		// Verify display-message was called to check pane_current_command for both windows.
+		// Verify capture-pane was called for both windows (WaitForPrompt).
 		var checkedArchitect, checkedManager bool
 		for _, call := range fake.calls {
 			joined := strings.Join(call, " ")
-			if strings.Contains(joined, "display-message") && strings.Contains(joined, "oro:architect") {
+			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:architect") {
 				checkedArchitect = true
 			}
-			if strings.Contains(joined, "display-message") && strings.Contains(joined, "oro:manager") {
+			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:manager") {
 				checkedManager = true
 			}
 		}
 		if !checkedArchitect {
-			t.Error("expected display-message to be called for architect window")
+			t.Error("expected capture-pane to be called for architect window")
 		}
 		if !checkedManager {
-			t.Error("expected display-message to be called for manager window")
+			t.Error("expected capture-pane to be called for manager window")
 		}
 	})
 
-	t.Run("Create times out when Claude never becomes ready", func(t *testing.T) {
+	t.Run("Create times out when Claude prompt never appears", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		// display-message returns shell name — Claude never starts
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = "zsh"
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "zsh"
+		// capture-pane never shows prompt indicator — Claude never becomes ready.
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "loading..."
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
 		}
-		if !strings.Contains(err.Error(), "did not start") {
-			t.Errorf("expected 'did not start' in error, got: %v", err)
+		if !strings.Contains(err.Error(), "prompt") {
+			t.Errorf("expected 'prompt' in error, got: %v", err)
 		}
 	})
 }
@@ -756,46 +739,48 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 	})
 }
 
-func TestRoleEnvCmd(t *testing.T) {
+func TestExecEnvCmd(t *testing.T) {
 	t.Run("architect role sets all three env vars", func(t *testing.T) {
-		cmd := roleEnvCmd("architect")
+		cmd := execEnvCmd("architect")
 		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
 			if !strings.Contains(cmd, envVar) {
-				t.Errorf("expected roleEnvCmd to contain %s, got: %s", envVar, cmd)
+				t.Errorf("expected execEnvCmd to contain %s, got: %s", envVar, cmd)
 			}
 		}
-		if !strings.Contains(cmd, "&& claude") {
-			t.Errorf("expected roleEnvCmd to end with '&& claude', got: %s", cmd)
+		if !strings.HasPrefix(cmd, "exec env") {
+			t.Errorf("expected execEnvCmd to start with 'exec env', got: %s", cmd)
 		}
 	})
 
 	t.Run("manager role sets all three env vars", func(t *testing.T) {
-		cmd := roleEnvCmd("manager")
+		cmd := execEnvCmd("manager")
 		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
 			if !strings.Contains(cmd, envVar) {
-				t.Errorf("expected roleEnvCmd to contain %s, got: %s", envVar, cmd)
+				t.Errorf("expected execEnvCmd to contain %s, got: %s", envVar, cmd)
 			}
 		}
-		if !strings.Contains(cmd, "&& claude") {
-			t.Errorf("expected roleEnvCmd to end with '&& claude', got: %s", cmd)
+		if !strings.HasPrefix(cmd, "exec env") {
+			t.Errorf("expected execEnvCmd to start with 'exec env', got: %s", cmd)
 		}
 	})
 
-	t.Run("uses export for env vars", func(t *testing.T) {
-		cmd := roleEnvCmd("worker")
-		if !strings.Contains(cmd, "export") {
-			t.Errorf("expected roleEnvCmd to use export, got: %s", cmd)
+	t.Run("uses exec env (not export)", func(t *testing.T) {
+		cmd := execEnvCmd("worker")
+		if !strings.Contains(cmd, "exec env") {
+			t.Errorf("expected execEnvCmd to use 'exec env', got: %s", cmd)
+		}
+		if strings.Contains(cmd, "export") {
+			t.Errorf("expected execEnvCmd to NOT use 'export', got: %s", cmd)
 		}
 	})
 
 	t.Run("includes --session-id for history isolation", func(t *testing.T) {
-		cmd := roleEnvCmd("architect")
+		cmd := execEnvCmd("architect")
 		if !strings.Contains(cmd, "--session-id") {
-			t.Errorf("expected roleEnvCmd to contain --session-id, got: %s", cmd)
+			t.Errorf("expected execEnvCmd to contain --session-id, got: %s", cmd)
 		}
-		// Must still launch interactive claude (not claude -p)
 		if !strings.Contains(cmd, "claude") {
-			t.Errorf("expected roleEnvCmd to contain 'claude', got: %s", cmd)
+			t.Errorf("expected execEnvCmd to contain 'claude', got: %s", cmd)
 		}
 		if strings.Contains(cmd, "claude -p") {
 			t.Errorf("expected interactive claude (not 'claude -p'), got: %s", cmd)
@@ -916,15 +901,8 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 		// has-session succeeds (session exists).
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
 
-		// isHealthy checks pane_current_command: first call returns shell (zombie),
-		// subsequent calls (WaitForCommand during recreation) return "claude".
-		fake.seqOut[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = []string{
-			"zsh",    // isHealthy → zombie
-			"claude", // WaitForCommand during recreation
-		}
-		fake.seqOut[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = []string{
-			"claude", // WaitForCommand (isHealthy short-circuits on architect)
-		}
+		// isHealthy checks pane_current_command: returns shell (zombie).
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = "zsh"
 
 		// wakeIfDetached session_attached check.
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
@@ -1073,6 +1051,107 @@ func TestWakeIfDetached_UsesUpDownNotAbsoluteResize(t *testing.T) {
 		for _, call := range fake.calls {
 			if len(call) > 1 && call[1] == "resize-pane" {
 				t.Error("should not call resize-pane when session is attached")
+			}
+		}
+	})
+}
+
+func TestCreate_ExecEnvPattern(t *testing.T) {
+	// stubExecEnvReady stubs only WaitForPrompt + SendKeysVerified for exec-env
+	// pattern (no WaitForCommand needed since Claude IS the initial process).
+	stubExecEnvReady := func(fake *fakeCmd, sessionName, architectNudge, managerNudge string) {
+		archCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":architect")
+		mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
+		fake.seqOut[archCapture] = []string{
+			"Welcome\n❯ \nstatus bar",                       // WaitForPrompt
+			"Welcome\n❯ " + architectNudge + "\nstatus bar", // SendKeysVerified
+		}
+		fake.seqOut[mgrCapture] = []string{
+			"Welcome\n❯ \nstatus bar",                     // WaitForPrompt
+			"Welcome\n❯ " + managerNudge + "\nstatus bar", // SendKeysVerified
+		}
+	}
+
+	t.Run("new-session receives exec env command as last arg", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubExecEnvReady(fake, "oro", "architect nudge", "manager nudge")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// Verify new-session has exec env command as last arg.
+		newSessionCall := findCall(fake.calls, "new-session")
+		if newSessionCall == nil {
+			t.Fatal("expected tmux new-session to be called")
+		}
+		lastArg := newSessionCall[len(newSessionCall)-1]
+		if !strings.Contains(lastArg, "exec env") {
+			t.Errorf("new-session last arg should contain 'exec env', got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "ORO_ROLE=architect") {
+			t.Errorf("new-session command should set ORO_ROLE=architect, got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "claude") {
+			t.Errorf("new-session command should launch claude, got: %s", lastArg)
+		}
+
+		// Verify new-window also has exec env command as last arg.
+		newWindowCall := findCall(fake.calls, "new-window")
+		if newWindowCall == nil {
+			t.Fatal("expected tmux new-window to be called")
+		}
+		lastArg = newWindowCall[len(newWindowCall)-1]
+		if !strings.Contains(lastArg, "exec env") {
+			t.Errorf("new-window last arg should contain 'exec env', got: %s", lastArg)
+		}
+		if !strings.Contains(lastArg, "ORO_ROLE=manager") {
+			t.Errorf("new-window command should set ORO_ROLE=manager, got: %s", lastArg)
+		}
+	})
+
+	t.Run("no send-keys for launch (exec env eliminates shell phase)", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubExecEnvReady(fake, "oro", "arch nudge", "mgr nudge")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("arch nudge", "mgr nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// No send-keys should contain export or execEnvCmd patterns.
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "export ORO_ROLE") {
+					t.Errorf("should not send-keys with shell export command (exec env eliminates this), got: %s", joined)
+				}
+			}
+		}
+	})
+
+	t.Run("no WaitForCommand polling (Claude is initial process)", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubExecEnvReady(fake, "oro", "arch nudge", "mgr nudge")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("arch nudge", "mgr nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// No display-message calls for pane_current_command during Create
+		// (isHealthy check is only on pre-existing sessions, not fresh creation).
+		for _, call := range fake.calls {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "display-message") && strings.Contains(joined, "pane_current_command") {
+				t.Errorf("should not poll pane_current_command during fresh Create with exec env, got: %s", joined)
 			}
 		}
 	})

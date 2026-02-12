@@ -129,46 +129,53 @@ func TestFullStart(t *testing.T) {
 			}
 		}
 
-		// Architect window: should have launch + nudge injection.
-		if len(architectCalls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to architect window, got %d", len(architectCalls))
-		}
-		archLaunch := strings.Join(architectCalls[0], " ")
+		// With exec-env, launch happens via new-session/new-window args (not send-keys).
+		// Verify new-session has exec env with architect role.
+		archCmd := newSessionCall[len(newSessionCall)-1]
 		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
-			if !strings.Contains(archLaunch, envVar) {
-				t.Errorf("architect window should set %s, got: %s", envVar, archLaunch)
+			if !strings.Contains(archCmd, envVar) {
+				t.Errorf("new-session command should set %s, got: %s", envVar, archCmd)
 			}
 		}
-		if !strings.Contains(archLaunch, "claude") {
-			t.Errorf("architect window should launch claude, got: %s", archLaunch)
+		if !strings.Contains(archCmd, "claude") {
+			t.Errorf("new-session command should launch claude, got: %s", archCmd)
 		}
-		if strings.Contains(archLaunch, "claude -p") {
-			t.Errorf("architect window should use interactive claude, not 'claude -p', got: %s", archLaunch)
+		if strings.Contains(archCmd, "claude -p") {
+			t.Errorf("should use interactive claude, not 'claude -p', got: %s", archCmd)
 		}
-		// Verify architect nudge is injected (short, not the full beacon).
-		archNudge := strings.Join(architectCalls[1], " ")
+
+		// Verify architect nudge is injected (first send-keys is nudge literal).
+		if len(architectCalls) < 1 {
+			t.Fatalf("expected at least 1 send-keys to architect window, got %d", len(architectCalls))
+		}
+		archNudge := strings.Join(architectCalls[0], " ")
 		if !strings.Contains(archNudge, "oro architect") {
 			t.Errorf("architect window nudge should contain 'oro architect', got: %s", archNudge)
 		}
 
-		// Manager window: should have launch + nudge injection.
-		if len(managerCalls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to manager window, got %d", len(managerCalls))
+		// Verify new-window has exec env with manager role.
+		newWindowCall := findCall(fakeTmux.calls, "new-window")
+		if newWindowCall == nil {
+			t.Fatal("expected tmux new-window to be called")
 		}
-		mgrLaunch := strings.Join(managerCalls[0], " ")
+		mgrCmd := newWindowCall[len(newWindowCall)-1]
 		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
-			if !strings.Contains(mgrLaunch, envVar) {
-				t.Errorf("manager window should set %s, got: %s", envVar, mgrLaunch)
+			if !strings.Contains(mgrCmd, envVar) {
+				t.Errorf("new-window command should set %s, got: %s", envVar, mgrCmd)
 			}
 		}
-		if !strings.Contains(mgrLaunch, "claude") {
-			t.Errorf("manager window should launch claude, got: %s", mgrLaunch)
+		if !strings.Contains(mgrCmd, "claude") {
+			t.Errorf("new-window command should launch claude, got: %s", mgrCmd)
 		}
-		if strings.Contains(mgrLaunch, "claude -p") {
-			t.Errorf("manager window should use interactive claude, not 'claude -p', got: %s", mgrLaunch)
+		if strings.Contains(mgrCmd, "claude -p") {
+			t.Errorf("should use interactive claude, not 'claude -p', got: %s", mgrCmd)
 		}
-		// Verify manager nudge is injected (short, not the full beacon).
-		mgrNudge := strings.Join(managerCalls[1], " ")
+
+		// Verify manager nudge is injected (first send-keys is nudge literal).
+		if len(managerCalls) < 1 {
+			t.Fatalf("expected at least 1 send-keys to manager window, got %d", len(managerCalls))
+		}
+		mgrNudge := strings.Join(managerCalls[0], " ")
 		if !strings.Contains(mgrNudge, "oro manager") {
 			t.Errorf("manager window nudge should contain 'oro manager', got: %s", mgrNudge)
 		}
@@ -286,20 +293,20 @@ func TestCreateWithNudges(t *testing.T) {
 			}
 		}
 
-		// Architect window: nudge injection (second send-keys) should contain architect nudge.
-		if len(architectCalls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to architect window, got %d", len(architectCalls))
+		// Architect window: first send-keys is nudge literal (no launch send-keys with exec-env).
+		if len(architectCalls) < 1 {
+			t.Fatalf("expected at least 1 send-keys to architect window, got %d", len(architectCalls))
 		}
-		archNudge := strings.Join(architectCalls[1], " ")
+		archNudge := strings.Join(architectCalls[0], " ")
 		if !strings.Contains(archNudge, "You are a test architect.") {
 			t.Errorf("architect window nudge should contain architect text, got: %s", archNudge)
 		}
 
-		// Manager window: nudge injection (second send-keys) should contain manager nudge.
-		if len(managerCalls) < 2 {
-			t.Fatalf("expected at least 2 send-keys to manager window, got %d", len(managerCalls))
+		// Manager window: first send-keys is nudge literal.
+		if len(managerCalls) < 1 {
+			t.Fatalf("expected at least 1 send-keys to manager window, got %d", len(managerCalls))
 		}
-		mgrNudge := strings.Join(managerCalls[1], " ")
+		mgrNudge := strings.Join(managerCalls[0], " ")
 		if !strings.Contains(mgrNudge, "You are a test manager.") {
 			t.Errorf("manager window nudge should contain manager text, got: %s", mgrNudge)
 		}
