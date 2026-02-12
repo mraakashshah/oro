@@ -462,3 +462,23 @@ func TestAssemblePrompt_AttemptPositive_IncludesRetryNote(t *testing.T) {
 		t.Error("expected quality gate has failed note")
 	}
 }
+
+func TestAssemblePrompt_FeedbackIncludedInRetry(t *testing.T) {
+	t.Parallel()
+	params := worker.PromptParams{
+		BeadID:             "bead-fb",
+		Title:              "Fix bug",
+		AcceptanceCriteria: "Tests pass",
+		WorktreePath:       "/tmp/wt-fb",
+		Model:              "claude-opus-4-6",
+		Attempt:            1,
+		Feedback:           "FAIL: TestFoo expected 42 got 0",
+	}
+	prompt := worker.AssemblePrompt(params)
+	if !strings.Contains(prompt, "FAIL: TestFoo expected 42 got 0") {
+		t.Errorf("expected feedback in prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Previous Feedback") {
+		t.Error("expected 'Previous Feedback' section header")
+	}
+}

@@ -59,7 +59,11 @@ func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetai
 	if d, ok := m.shown[id]; ok {
 		return d, nil
 	}
-	return nil, fmt.Errorf("bead %s not found", id)
+	// Default: return detail with acceptance criteria so assignBead doesn't skip.
+	return &protocol.BeadDetail{
+		Title:              id,
+		AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+	}, nil
 }
 
 func (m *mockBeadSource) Close(_ context.Context, id string, reason string) error {
@@ -773,6 +777,40 @@ func TestDispatcher_AssignBead(t *testing.T) {
 
 	// Verify worker state changed to busy
 	waitForWorkerState(t, d, "w1", protocol.WorkerBusy, 1*time.Second)
+}
+
+func TestDispatcher_AssignBead_SkipsBeadWithoutAcceptance(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Provide a bead with explicitly empty acceptance criteria
+	beadSrc.mu.Lock()
+	beadSrc.shown = map[string]*protocol.BeadDetail{
+		"bead-no-ac": {Title: "No acceptance", AcceptanceCriteria: ""},
+	}
+	beadSrc.mu.Unlock()
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-no-ac", Title: "No acceptance", Priority: 1}})
+
+	// Should NOT receive ASSIGN (bead lacks acceptance criteria)
+	_, ok := readMsg(t, conn, 500*time.Millisecond)
+	if ok {
+		t.Fatal("should not assign bead without acceptance criteria")
+	}
+
+	// Verify escalation was logged
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "missing_acceptance") > 0
+	}, 1*time.Second)
 }
 
 func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {

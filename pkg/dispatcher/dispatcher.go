@@ -1420,6 +1420,9 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
 
 	title, acceptance := d.lookupBeadDetail(ctx, bead.ID, w.id)
+	if d.rejectMissingAcceptance(ctx, bead.ID, w, worktree, acceptance) {
+		return
+	}
 
 	// Retrieve relevant memories for this bead (best-effort).
 	var memCtx string
@@ -1457,6 +1460,22 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.worktrees.Remove(ctx, worktree)
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
+}
+
+// rejectMissingAcceptance cleans up and returns true if acceptance is empty.
+func (d *Dispatcher) rejectMissingAcceptance(ctx context.Context, beadID string, w *trackedWorker, worktree, acceptance string) bool {
+	if acceptance != "" {
+		return false
+	}
+	_ = d.worktrees.Remove(ctx, worktree)
+	_ = d.logEvent(ctx, "missing_acceptance", "dispatcher", beadID, w.id,
+		"bead has no acceptance criteria — skipping assignment")
+	d.mu.Lock()
+	w.state = protocol.WorkerIdle
+	w.beadID = ""
+	w.worktree = ""
+	d.mu.Unlock()
+	return true
 }
 
 // lookupBeadDetail retrieves the title and acceptance criteria for a bead (best-effort).

@@ -235,8 +235,9 @@ func TestHandleDone_QGFailReassignIncludesMemories(t *testing.T) {
 	// Register bead detail so Show() returns a title for FTS5 matching.
 	beadSrc.mu.Lock()
 	beadSrc.shown["bead-qgmem"] = &protocol.BeadDetail{
-		ID:    "bead-qgmem",
-		Title: "QG memory bead",
+		ID:                 "bead-qgmem",
+		Title:              "QG memory bead",
+		AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
 	}
 	beadSrc.mu.Unlock()
 

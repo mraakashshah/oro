@@ -354,23 +354,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.pendingQGOutput = ""
 	w.mu.Unlock()
 
-	var prompt string
-	if msg.Assign.Title != "" {
-		prompt = AssemblePrompt(PromptParams{
-			BeadID:             msg.Assign.BeadID,
-			Title:              msg.Assign.Title,
-			AcceptanceCriteria: msg.Assign.AcceptanceCriteria,
-			MemoryContext:      msg.Assign.MemoryContext,
-			WorktreePath:       msg.Assign.Worktree,
-			Model:              msg.Assign.Model,
-		})
-	} else {
-		prompt = BuildPrompt(msg.Assign.BeadID, msg.Assign.Worktree, msg.Assign.MemoryContext)
-	}
-	model := msg.Assign.Model
-	if model == "" {
-		model = protocol.DefaultModel
-	}
+	prompt, model := buildAssignPrompt(msg.Assign)
 	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
@@ -406,6 +390,29 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	go w.awaitSubprocessAndReport(ctx) // wait for exit, run QG, send DONE
 
 	return nil
+}
+
+// buildAssignPrompt constructs the prompt and resolves the model from an ASSIGN payload.
+func buildAssignPrompt(a *protocol.AssignPayload) (prompt, model string) {
+	if a.Title != "" {
+		prompt = AssemblePrompt(PromptParams{
+			BeadID:             a.BeadID,
+			Title:              a.Title,
+			AcceptanceCriteria: a.AcceptanceCriteria,
+			MemoryContext:      a.MemoryContext,
+			WorktreePath:       a.Worktree,
+			Model:              a.Model,
+			Attempt:            a.Attempt,
+			Feedback:           a.Feedback,
+		})
+	} else {
+		prompt = BuildPrompt(a.BeadID, a.Worktree, a.MemoryContext)
+	}
+	model = a.Model
+	if model == "" {
+		model = protocol.DefaultModel
+	}
+	return prompt, model
 }
 
 // monitorSubprocessExit waits for the subprocess to exit and signals the exit channel.
