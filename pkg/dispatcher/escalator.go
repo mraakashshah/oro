@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // CommandRunner is defined in beadsource.go.
@@ -14,6 +15,7 @@ import (
 // tmux pane via `tmux send-keys`. This is the production mechanism for
 // notifying the human Manager of events that require attention.
 type TmuxEscalator struct {
+	mu          sync.Mutex
 	sessionName string
 	paneTarget  string
 	runner      CommandRunner
@@ -40,6 +42,11 @@ func NewTmuxEscalator(sessionName, paneTarget string, runner CommandRunner) *Tmu
 // preventing shell injection through tmux.
 // Before sending, it verifies the tmux session exists to prevent silent failures.
 func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
+	// Serialize escalations to prevent interleaved set-buffer/paste-buffer
+	// calls from corrupting each other's messages (shared buffer name).
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	// Verify the tmux session exists before attempting to send.
 	// If the session is dead, tmux send-keys fails silently, leaving
 	// escalations undelivered and beads stuck forever.

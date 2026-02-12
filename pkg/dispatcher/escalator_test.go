@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"oro/pkg/dispatcher"
@@ -201,6 +202,70 @@ func TestTmuxEscalator_CustomPaneTarget(t *testing.T) {
 	}
 	if !foundPane {
 		t.Fatalf("expected custom pane myapp:1.2 in paste-buffer call, got args: %v", pasteCall.args)
+	}
+}
+
+// threadSafeEscRunner is a concurrency-safe mock that records call sequences per goroutine.
+type threadSafeEscRunner struct {
+	mu    sync.Mutex
+	calls []escCall
+}
+
+func (m *threadSafeEscRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	m.mu.Lock()
+	m.calls = append(m.calls, escCall{name: name, args: args})
+	m.mu.Unlock()
+	return nil, nil
+}
+
+func TestTmuxEscalator_ConcurrentEscalateSerializes(t *testing.T) {
+	runner := &threadSafeEscRunner{}
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			_ = esc.Escalate(context.Background(), fmt.Sprintf("msg-%d", i))
+		}(i)
+	}
+	wg.Wait()
+
+	// Each Escalate call produces exactly 4 tmux calls:
+	// has-session, set-buffer, paste-buffer, send-keys.
+	// With mutex serialization, calls must appear in groups of 4.
+	runner.mu.Lock()
+	calls := runner.calls
+	runner.mu.Unlock()
+
+	if len(calls) != n*4 {
+		t.Fatalf("expected %d calls (%d escalations × 4), got %d", n*4, n, len(calls))
+	}
+
+	// Verify calls appear in correct 4-call groups (no interleaving).
+	for i := 0; i < len(calls); i += 4 {
+		group := calls[i : i+4]
+		if group[0].args[0] != "has-session" {
+			t.Errorf("call %d: expected has-session, got %s", i, group[0].args[0])
+		}
+		if group[1].args[0] != "set-buffer" {
+			t.Errorf("call %d: expected set-buffer, got %s", i+1, group[1].args[0])
+		}
+		if group[2].args[0] != "paste-buffer" {
+			t.Errorf("call %d: expected paste-buffer, got %s", i+2, group[2].args[0])
+		}
+		if group[3].args[0] != "send-keys" {
+			t.Errorf("call %d: expected send-keys, got %s", i+3, group[3].args[0])
+		}
+
+		// The buffer name in set-buffer and paste-buffer must match within the group.
+		setBuf := strings.Join(group[1].args, " ")
+		pasteBuf := strings.Join(group[2].args, " ")
+		if !strings.Contains(setBuf, "oro-escalate") || !strings.Contains(pasteBuf, "oro-escalate") {
+			t.Errorf("group %d: buffer name mismatch, set=%s paste=%s", i/4, setBuf, pasteBuf)
+		}
 	}
 }
 
