@@ -2,10 +2,19 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"oro/pkg/protocol"
 )
+
+// tickMsg is sent by Bubble Tea on every tick interval.
+// Used to trigger periodic data refresh from bd CLI and dispatcher state.
+//
+//nolint:unused // Will be used when tick-based refresh is implemented
+type tickMsg time.Time
 
 // ViewType represents different views in the dashboard.
 type ViewType int
@@ -22,6 +31,20 @@ type Model struct {
 	workerCount     int
 	openCount       int
 	inProgressCount int
+
+	// Data fetched from external sources
+	//nolint:unused // Will be used when board view integrates FetchBeads
+	beads []protocol.Bead
+	//nolint:unused // Will be used when workers view integrates FetchWorkers
+	workers []WorkerStatus
+
+	// UI state
+	//nolint:unused // Will be used for responsive layout
+	width int
+	//nolint:unused // Will be used for responsive layout
+	height int
+	//nolint:unused // Will be used for error display
+	err error
 }
 
 // newModel creates a new Model initialized with BoardView active.
