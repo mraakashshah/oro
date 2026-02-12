@@ -178,6 +178,23 @@ func TestStop_UDSFailContinues(t *testing.T) {
 	}
 }
 
+// TestStop_RefusedWhenAgentRole verifies that oro stop refuses to run
+// when ORO_ROLE is set (i.e., called from an agent, not a human).
+func TestStop_RefusedWhenAgentRole(t *testing.T) {
+	t.Setenv("ORO_ROLE", "manager")
+
+	root := newRootCmd()
+	root.SetArgs([]string{"stop"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error when ORO_ROLE is set, got nil")
+	}
+	if !strings.Contains(err.Error(), "agent") && !strings.Contains(err.Error(), "human") {
+		t.Errorf("expected error about agent/human restriction, got: %v", err)
+	}
+}
+
 // runMockStopDispatcher listens on a UDS, accepts one connection,
 // reads a directive, records its op, and sends an ACK.
 func runMockStopDispatcher(ctx context.Context, t *testing.T, sockPath string, ops chan<- string, ready chan<- struct{}) {

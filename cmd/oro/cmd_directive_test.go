@@ -181,6 +181,67 @@ func runMockDispatcher(ctx context.Context, t *testing.T, sockPath string, recei
 	}
 }
 
+// TestDirectiveCmd_HumanApproved_TrueWhenNoRole verifies that directives from a
+// human terminal (no ORO_ROLE) set HumanApproved=true.
+func TestDirectiveCmd_HumanApproved_TrueWhenNoRole(t *testing.T) {
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	mockDone := make(chan protocol.DirectivePayload, 1)
+	go runMockDispatcher(ctx, t, sockPath, mockDone)
+	waitForSocket(t, sockPath, 2*time.Second)
+
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	// ORO_ROLE is not set (human context)
+	t.Setenv("ORO_ROLE", "")
+
+	root := newRootCmd()
+	root.SetArgs([]string{"directive", "stop"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("directive command failed: %v", err)
+	}
+
+	select {
+	case got := <-mockDone:
+		if !got.HumanApproved {
+			t.Error("expected HumanApproved=true when ORO_ROLE is empty")
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for directive")
+	}
+}
+
+// TestDirectiveCmd_HumanApproved_FalseWhenAgentRole verifies that directives from
+// an agent (ORO_ROLE=manager) set HumanApproved=false.
+func TestDirectiveCmd_HumanApproved_FalseWhenAgentRole(t *testing.T) {
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	mockDone := make(chan protocol.DirectivePayload, 1)
+	go runMockDispatcher(ctx, t, sockPath, mockDone)
+	waitForSocket(t, sockPath, 2*time.Second)
+
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_ROLE", "manager")
+
+	root := newRootCmd()
+	root.SetArgs([]string{"directive", "stop"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("directive command failed: %v", err)
+	}
+
+	select {
+	case got := <-mockDone:
+		if got.HumanApproved {
+			t.Error("expected HumanApproved=false when ORO_ROLE=manager")
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for directive")
+	}
+}
+
 // TestDirectiveCmd_NoSocket tests error handling when socket doesn't exist.
 func TestDirectiveCmd_NoSocket(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-test-noexist-%d.sock", time.Now().UnixNano())

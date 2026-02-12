@@ -35,6 +35,9 @@ func newStopCmd() *cobra.Command {
 		Short: "Graceful shutdown of the Oro swarm",
 		Long:  "Sends a stop directive to the dispatcher, waits for workers to finish,\nkills the tmux session, and runs bd sync.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if role := os.Getenv("ORO_ROLE"); role != "" {
+				return fmt.Errorf("oro stop can only be run by a human (ORO_ROLE=%s indicates agent context)", role)
+			}
 			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 			if err != nil {
 				return fmt.Errorf("get pid path: %w", err)
