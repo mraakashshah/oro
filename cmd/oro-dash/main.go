@@ -11,8 +11,11 @@ import (
 
 // Bead represents a bead/issue.
 type Bead struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Priority int    `json:"priority"`
+	Type     string `json:"type"`
 }
 
 // WorkerStatus represents worker status.
