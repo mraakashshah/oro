@@ -292,6 +292,11 @@ func (s *TmuxSession) SendKeys(paneTarget, text string) error {
 	// 3. Wait for text to be processed by Ink's render loop.
 	s.sleep(time.Duration(sendKeysDebounceMs) * time.Millisecond)
 
+	// 3.5. Send Escape to exit any vim-mode INSERT state before Enter.
+	// Harmless when vim mode is off; critical when it's on.
+	_, _ = s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "Escape")
+	s.sleep(100 * time.Millisecond)
+
 	// 4. Send Enter with retry — critical for message submission.
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {

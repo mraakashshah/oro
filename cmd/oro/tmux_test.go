@@ -275,17 +275,17 @@ func TestTmuxLayout(t *testing.T) {
 		}
 
 		// Verify send-keys was called for both windows:
-		// - architect: launch (1), then nudge literal + Enter (2)
-		// - manager: launch (1), then nudge literal + Enter (2)
-		// That's 6 send-keys calls total (2 launch + 2×2 nudge).
+		// - architect: launch (1), then nudge literal + Escape + Enter (3)
+		// - manager: launch (1), then nudge literal + Escape + Enter (3)
+		// That's 8 send-keys calls total (2 launch + 2×3 nudge).
 		sendKeysCount := 0
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				sendKeysCount++
 			}
 		}
-		if sendKeysCount < 6 {
-			t.Errorf("expected at least 6 send-keys calls (2 launch + 2×2 nudge), got %d", sendKeysCount)
+		if sendKeysCount < 8 {
+			t.Errorf("expected at least 8 send-keys calls (2 launch + 2×3 nudge), got %d", sendKeysCount)
 		}
 	})
 
@@ -376,9 +376,9 @@ func TestTmuxLayout(t *testing.T) {
 			}
 		}
 
-		// Architect: launch (1) + literal -l (2) + Enter (3) = 3 send-keys calls.
-		if len(architectCalls) < 3 {
-			t.Fatalf("expected at least 3 send-keys to architect window, got %d", len(architectCalls))
+		// Architect: launch (1) + literal -l (2) + Escape (3) + Enter (4) = 4 send-keys calls.
+		if len(architectCalls) < 4 {
+			t.Fatalf("expected at least 4 send-keys to architect window, got %d", len(architectCalls))
 		}
 		archNudge := strings.Join(architectCalls[1], " ")
 		if !strings.Contains(archNudge, "-l") {
@@ -387,14 +387,18 @@ func TestTmuxLayout(t *testing.T) {
 		if !strings.Contains(archNudge, "architect nudge text here") {
 			t.Errorf("architect nudge should contain nudge text, got: %s", archNudge)
 		}
-		archEnter := strings.Join(architectCalls[2], " ")
+		archEscape := strings.Join(architectCalls[2], " ")
+		if !strings.Contains(archEscape, "Escape") {
+			t.Errorf("architect nudge should send Escape before Enter, got: %s", archEscape)
+		}
+		archEnter := strings.Join(architectCalls[3], " ")
 		if !strings.Contains(archEnter, "Enter") {
 			t.Errorf("architect nudge should send Enter separately, got: %s", archEnter)
 		}
 
-		// Manager: launch (1) + literal -l (2) + Enter (3) = 3 send-keys calls.
-		if len(managerCalls) < 3 {
-			t.Fatalf("expected at least 3 send-keys to manager window, got %d", len(managerCalls))
+		// Manager: launch (1) + literal -l (2) + Escape (3) + Enter (4) = 4 send-keys calls.
+		if len(managerCalls) < 4 {
+			t.Fatalf("expected at least 4 send-keys to manager window, got %d", len(managerCalls))
 		}
 		mgrNudge := strings.Join(managerCalls[1], " ")
 		if !strings.Contains(mgrNudge, "-l") {
@@ -403,7 +407,11 @@ func TestTmuxLayout(t *testing.T) {
 		if !strings.Contains(mgrNudge, "manager nudge text here") {
 			t.Errorf("manager nudge should contain nudge text, got: %s", mgrNudge)
 		}
-		mgrEnter := strings.Join(managerCalls[2], " ")
+		mgrEscape := strings.Join(managerCalls[2], " ")
+		if !strings.Contains(mgrEscape, "Escape") {
+			t.Errorf("manager nudge should send Escape before Enter, got: %s", mgrEscape)
+		}
+		mgrEnter := strings.Join(managerCalls[3], " ")
 		if !strings.Contains(mgrEnter, "Enter") {
 			t.Errorf("manager nudge should send Enter separately, got: %s", mgrEnter)
 		}
@@ -981,6 +989,43 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestSendKeys_SendsEscapeBeforeEnter(t *testing.T) {
+	fake := newFakeCmd()
+	// wakeIfDetached: session is attached (no resize needed)
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
+
+	sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+	err := sess.SendKeys("oro:architect", "hello world")
+	if err != nil {
+		t.Fatalf("SendKeys returned error: %v", err)
+	}
+
+	// Find the Escape and Enter send-keys calls (not the literal text one)
+	var escapeIdx, enterIdx int
+	escapeIdx, enterIdx = -1, -1
+	for i, call := range fake.calls {
+		if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
+			lastArg := call[len(call)-1]
+			if lastArg == "Escape" {
+				escapeIdx = i
+			}
+			if lastArg == "Enter" && enterIdx == -1 {
+				enterIdx = i
+			}
+		}
+	}
+
+	if escapeIdx == -1 {
+		t.Fatal("expected Escape send-keys call, got none")
+	}
+	if enterIdx == -1 {
+		t.Fatal("expected Enter send-keys call, got none")
+	}
+	if escapeIdx >= enterIdx {
+		t.Errorf("Escape (call %d) should come before Enter (call %d)", escapeIdx, enterIdx)
+	}
 }
 
 func TestWakeIfDetached_UsesUpDownNotAbsoluteResize(t *testing.T) {

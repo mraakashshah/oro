@@ -76,6 +76,12 @@ func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 		return fmt.Errorf("tmux paste-buffer to %s: %w", e.paneTarget, err)
 	}
 
+	// Step 2.5: Send Escape to exit any vim-mode INSERT state before Enter.
+	_, err = e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, "Escape")
+	if err != nil {
+		return fmt.Errorf("tmux send-keys Escape to %s: %w", e.paneTarget, err)
+	}
+
 	// Step 3: Send Enter key to display the message
 	_, err = e.runner.Run(ctx, "tmux", "send-keys", "-t", e.paneTarget, "Enter")
 	if err != nil {

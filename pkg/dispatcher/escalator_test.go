@@ -46,9 +46,9 @@ func TestEscalator_ClearsInputBeforePaste(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should now be 5 calls: has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Enter
-	if len(runner.calls) != 5 {
-		t.Fatalf("expected 5 calls (has-session + C-u + set-buffer + paste-buffer + Enter), got %d", len(runner.calls))
+	// Should now be 6 calls: has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Escape, send-keys Enter
+	if len(runner.calls) != 6 {
+		t.Fatalf("expected 6 calls (has-session + C-u + set-buffer + paste-buffer + Escape + Enter), got %d", len(runner.calls))
 	}
 
 	// Call 1 (index 1): send-keys C-u
@@ -67,6 +67,33 @@ func TestEscalator_ClearsInputBeforePaste(t *testing.T) {
 	}
 }
 
+func TestEscalator_SendsEscapeBeforeEnter(t *testing.T) {
+	runner := &mockEscRunner{}
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test message")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should now be 6 calls: has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Escape, send-keys Enter
+	if len(runner.calls) != 6 {
+		t.Fatalf("expected 6 calls (has-session + C-u + set-buffer + paste-buffer + Escape + Enter), got %d", len(runner.calls))
+	}
+
+	// Call 4 (index 4): send-keys Escape
+	escCall := runner.calls[4]
+	if escCall.args[0] != "send-keys" || escCall.args[len(escCall.args)-1] != "Escape" {
+		t.Errorf("call 4 should be send-keys Escape, got: %v", escCall.args)
+	}
+
+	// Call 5 (index 5): send-keys Enter
+	enterCall := runner.calls[5]
+	if enterCall.args[0] != "send-keys" || enterCall.args[len(enterCall.args)-1] != "Enter" {
+		t.Errorf("call 5 should be send-keys Enter, got: %v", enterCall.args)
+	}
+}
+
 func TestTmuxEscalator_Escalate_BasicMessage(t *testing.T) {
 	runner := &mockEscRunner{}
 	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
@@ -76,9 +103,9 @@ func TestTmuxEscalator_Escalate_BasicMessage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// 5 calls: has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Enter
-	if len(runner.calls) != 5 {
-		t.Fatalf("expected 5 calls (has-session + C-u + set-buffer + paste-buffer + send-keys), got %d", len(runner.calls))
+	// 6 calls: has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Escape, send-keys Enter
+	if len(runner.calls) != 6 {
+		t.Fatalf("expected 6 calls (has-session + C-u + set-buffer + paste-buffer + Escape + Enter), got %d", len(runner.calls))
 	}
 
 	// First call: has-session
@@ -111,8 +138,17 @@ func TestTmuxEscalator_Escalate_BasicMessage(t *testing.T) {
 		t.Fatalf("expected paste-buffer, got %s", pasteCall.args[0])
 	}
 
-	// Fifth call: send-keys Enter
-	enterCall := runner.calls[4]
+	// Fifth call: send-keys Escape
+	escapeCall := runner.calls[4]
+	if escapeCall.args[0] != "send-keys" {
+		t.Fatalf("expected send-keys, got %s", escapeCall.args[0])
+	}
+	if escapeCall.args[len(escapeCall.args)-1] != "Escape" {
+		t.Fatalf("expected Escape as last arg, got %s", escapeCall.args[len(escapeCall.args)-1])
+	}
+
+	// Sixth call: send-keys Enter
+	enterCall := runner.calls[5]
 	if enterCall.args[0] != "send-keys" {
 		t.Fatalf("expected send-keys, got %s", enterCall.args[0])
 	}
@@ -144,8 +180,8 @@ func TestTmuxEscalator_DefaultSessionAndPane(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 5 {
-		t.Fatalf("expected 5 calls, got %d", len(runner.calls))
+	if len(runner.calls) != 6 {
+		t.Fatalf("expected 6 calls, got %d", len(runner.calls))
 	}
 
 	// First call: has-session with default session name
@@ -157,7 +193,7 @@ func TestTmuxEscalator_DefaultSessionAndPane(t *testing.T) {
 		t.Fatalf("expected default session oro, got %s", call0.args[2])
 	}
 
-	// Check paste-buffer call for default window target (now index 3)
+	// Check paste-buffer call for default window target (index 3)
 	pasteCall := runner.calls[3]
 	foundPane := false
 	for i, arg := range pasteCall.args {
@@ -196,11 +232,11 @@ func TestTmuxEscalator_EnterSuffix(t *testing.T) {
 
 	_ = esc.Escalate(context.Background(), "test")
 
-	// The fifth call should be send-keys with Enter
-	if len(runner.calls) < 5 {
-		t.Fatalf("expected at least 5 calls, got %d", len(runner.calls))
+	// The sixth call should be send-keys with Enter (after Escape at index 4)
+	if len(runner.calls) < 6 {
+		t.Fatalf("expected at least 6 calls, got %d", len(runner.calls))
 	}
-	enterCall := runner.calls[4]
+	enterCall := runner.calls[5]
 	lastArg := enterCall.args[len(enterCall.args)-1]
 	if lastArg != "Enter" {
 		t.Fatalf("last arg should be Enter, got %s", lastArg)
@@ -218,8 +254,8 @@ func TestTmuxEscalator_CustomPaneTarget(t *testing.T) {
 
 	_ = esc.Escalate(context.Background(), "custom pane")
 
-	if len(runner.calls) != 5 {
-		t.Fatalf("expected 5 calls, got %d", len(runner.calls))
+	if len(runner.calls) != 6 {
+		t.Fatalf("expected 6 calls, got %d", len(runner.calls))
 	}
 
 	// Check has-session call (first call)
@@ -228,7 +264,7 @@ func TestTmuxEscalator_CustomPaneTarget(t *testing.T) {
 		t.Fatalf("expected custom session myapp, got %s", call0.args[2])
 	}
 
-	// Check paste-buffer call for pane target (now index 3)
+	// Check paste-buffer call for pane target (index 3)
 	pasteCall := runner.calls[3]
 	foundPane := false
 	for i, arg := range pasteCall.args {
@@ -272,20 +308,20 @@ func TestTmuxEscalator_ConcurrentEscalateSerializes(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Each Escalate call produces exactly 5 tmux calls:
-	// has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Enter.
-	// With mutex serialization, calls must appear in groups of 5.
+	// Each Escalate call produces exactly 6 tmux calls:
+	// has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Escape, send-keys Enter.
+	// With mutex serialization, calls must appear in groups of 6.
 	runner.mu.Lock()
 	calls := runner.calls
 	runner.mu.Unlock()
 
-	if len(calls) != n*5 {
-		t.Fatalf("expected %d calls (%d escalations × 5), got %d", n*5, n, len(calls))
+	if len(calls) != n*6 {
+		t.Fatalf("expected %d calls (%d escalations × 6), got %d", n*6, n, len(calls))
 	}
 
-	// Verify calls appear in correct 5-call groups (no interleaving).
-	for i := 0; i < len(calls); i += 5 {
-		group := calls[i : i+5]
+	// Verify calls appear in correct 6-call groups (no interleaving).
+	for i := 0; i < len(calls); i += 6 {
+		group := calls[i : i+6]
 		if group[0].args[0] != "has-session" {
 			t.Errorf("call %d: expected has-session, got %s", i, group[0].args[0])
 		}
@@ -298,15 +334,18 @@ func TestTmuxEscalator_ConcurrentEscalateSerializes(t *testing.T) {
 		if group[3].args[0] != "paste-buffer" {
 			t.Errorf("call %d: expected paste-buffer, got %s", i+3, group[3].args[0])
 		}
-		if group[4].args[0] != "send-keys" {
-			t.Errorf("call %d: expected send-keys (Enter), got %s", i+4, group[4].args[0])
+		if group[4].args[0] != "send-keys" || group[4].args[len(group[4].args)-1] != "Escape" {
+			t.Errorf("call %d: expected send-keys Escape, got %v", i+4, group[4].args)
+		}
+		if group[5].args[0] != "send-keys" || group[5].args[len(group[5].args)-1] != "Enter" {
+			t.Errorf("call %d: expected send-keys Enter, got %v", i+5, group[5].args)
 		}
 
 		// The buffer name in set-buffer and paste-buffer must match within the group.
 		setBuf := strings.Join(group[2].args, " ")
 		pasteBuf := strings.Join(group[3].args, " ")
 		if !strings.Contains(setBuf, "oro-escalate") || !strings.Contains(pasteBuf, "oro-escalate") {
-			t.Errorf("group %d: buffer name mismatch, set=%s paste=%s", i/5, setBuf, pasteBuf)
+			t.Errorf("group %d: buffer name mismatch, set=%s paste=%s", i/6, setBuf, pasteBuf)
 		}
 	}
 }
@@ -419,9 +458,9 @@ func TestEscalation_NoInjection(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			// 5 calls: has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Enter
-			if len(runner.calls) != 5 {
-				t.Fatalf("expected 5 calls (has-session + C-u + set-buffer + paste-buffer + send-keys), got %d", len(runner.calls))
+			// 6 calls: has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Escape, send-keys Enter
+			if len(runner.calls) != 6 {
+				t.Fatalf("expected 6 calls (has-session + C-u + set-buffer + paste-buffer + Escape + Enter), got %d", len(runner.calls))
 			}
 
 			// Verify set-buffer is used (third call, after has-session and C-u)
@@ -436,8 +475,14 @@ func TestEscalation_NoInjection(t *testing.T) {
 				t.Errorf("SECURITY: Not using paste-buffer for literal insertion. Got %s. %s", pasteCall.args[0], tt.desc)
 			}
 
-			// Verify send-keys is only used for Enter (fifth call)
-			enterCall := runner.calls[4]
+			// Verify send-keys Escape (fifth call)
+			escapeCall := runner.calls[4]
+			if escapeCall.args[0] != "send-keys" || escapeCall.args[len(escapeCall.args)-1] != "Escape" {
+				t.Errorf("SECURITY: call 4 should be send-keys Escape, got %v. %s", escapeCall.args, tt.desc)
+			}
+
+			// Verify send-keys is only used for Enter (sixth call)
+			enterCall := runner.calls[5]
 			if enterCall.args[0] == "send-keys" {
 				for _, arg := range enterCall.args {
 					if strings.Contains(arg, "$") || strings.Contains(arg, "`") || strings.Contains(arg, ";") {
@@ -460,8 +505,8 @@ func TestEscalation_ComplexPayload(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 5 {
-		t.Fatalf("expected 5 calls, got %d", len(runner.calls))
+	if len(runner.calls) != 6 {
+		t.Fatalf("expected 6 calls, got %d", len(runner.calls))
 	}
 
 	// Third call should be set-buffer with the payload (after has-session and C-u)
@@ -476,8 +521,14 @@ func TestEscalation_ComplexPayload(t *testing.T) {
 		t.Error("SECURITY: Expected paste-buffer for literal insertion")
 	}
 
-	// Fifth call should be send-keys with only Enter
-	enterCall := runner.calls[4]
+	// Fifth call should be send-keys Escape
+	escapeCall := runner.calls[4]
+	if escapeCall.args[0] != "send-keys" || escapeCall.args[len(escapeCall.args)-1] != "Escape" {
+		t.Error("SECURITY: Expected send-keys Escape before Enter")
+	}
+
+	// Sixth call should be send-keys with only Enter
+	enterCall := runner.calls[5]
 	if enterCall.args[0] == "send-keys" {
 		argsStr := strings.Join(enterCall.args, " ")
 		if strings.Contains(argsStr, "$(") || strings.Contains(argsStr, "`") {
