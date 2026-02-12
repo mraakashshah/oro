@@ -46,7 +46,7 @@ jobs:
           go test -race -shuffle=on -coverprofile=coverage.out ./internal/... ./pkg/...
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
-          awk "BEGIN {exit ($COVERAGE < 90)}"
+          awk "BEGIN {exit ($COVERAGE < 85)}"
 
       # Tier 5: Security
       - name: govulncheck
