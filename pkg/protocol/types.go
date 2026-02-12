@@ -69,6 +69,7 @@ type EscalationType string
 const (
 	EscMergeConflict      EscalationType = "MERGE_CONFLICT"
 	EscStuck              EscalationType = "STUCK"
+	EscStuckWorker        EscalationType = "STUCK_WORKER"
 	EscPriorityContention EscalationType = "PRIORITY_CONTENTION"
 	EscWorkerCrash        EscalationType = "WORKER_CRASH"
 	EscStatus             EscalationType = "STATUS"

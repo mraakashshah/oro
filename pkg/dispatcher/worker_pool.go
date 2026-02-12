@@ -54,6 +54,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		w.beadID = h.beadID
 		w.worktree = h.worktree
 		w.model = h.model
+		w.lastProgress = d.nowFunc()
 
 		// Retrieve relevant memories (best-effort, outside lock).
 		// We need to unlock before calling memory.ForPrompt.
@@ -130,6 +131,16 @@ func (d *Dispatcher) WorkerModel(id string) (model string, ok bool) {
 	return w.model, true
 }
 
+// touchProgress updates lastProgress for a worker to the current time.
+// Called on meaningful events: DONE, READY_FOR_REVIEW, QG result, STATUS.
+func (d *Dispatcher) touchProgress(workerID string) {
+	d.mu.Lock()
+	if w, ok := d.workers[workerID]; ok {
+		w.lastProgress = d.nowFunc()
+	}
+	d.mu.Unlock()
+}
+
 // --- Heartbeat monitoring ---
 
 // heartbeatLoop checks for workers that have exceeded the heartbeat timeout
@@ -153,14 +164,27 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// checkHeartbeats finds workers that have timed out and marks them dead.
+// checkHeartbeats finds workers that have timed out (liveness) or stalled
+// (no progress within ProgressTimeout) and handles them appropriately.
+// Dead workers (heartbeat timeout) are removed and escalated as WORKER_CRASH.
+// Stuck workers (progress timeout) are killed and escalated as STUCK_WORKER.
 func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	now := d.nowFunc()
 	d.mu.Lock()
 	var dead []string
+	var stuck []string
 	for id, w := range d.workers {
-		if w.state != protocol.WorkerIdle && w.state != protocol.WorkerReserved && now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
+		if w.state == protocol.WorkerIdle || w.state == protocol.WorkerReserved {
+			continue
+		}
+		// Liveness check: heartbeat timeout.
+		if now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
 			dead = append(dead, id)
+			continue
+		}
+		// Progress check: worker is busy but has not made meaningful progress.
+		if w.state == protocol.WorkerBusy && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > d.cfg.ProgressTimeout {
+			stuck = append(stuck, id)
 		}
 	}
 	// Remove dead workers and collect info for escalation after unlock.
@@ -176,6 +200,16 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 		_ = w.conn.Close()
 		delete(d.workers, id)
 	}
+	// Kill stuck workers and collect info for escalation after unlock.
+	stuckWorkers := make([]deadInfo, 0, len(stuck))
+	for _, id := range stuck {
+		w := d.workers[id]
+		stuckWorkers = append(stuckWorkers, deadInfo{workerID: id, beadID: w.beadID})
+		_ = d.logEventLocked(ctx, "progress_timeout", "dispatcher", w.beadID, id,
+			fmt.Sprintf(`{"last_progress_ago":%q}`, now.Sub(w.lastProgress).Round(time.Second)))
+		_ = w.conn.Close()
+		delete(d.workers, id)
+	}
 	d.mu.Unlock()
 
 	// Escalate outside the lock and clear tracking maps for abandoned beads.
@@ -183,6 +217,13 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
 		if dw.beadID != "" {
 			d.clearBeadTracking(dw.beadID)
+		}
+	}
+	for _, sw := range stuckWorkers {
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
+			"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
+		if sw.beadID != "" {
+			d.clearBeadTracking(sw.beadID)
 		}
 	}
 }

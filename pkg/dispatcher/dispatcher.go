@@ -91,6 +91,7 @@ type trackedWorker struct {
 	worktree       string
 	model          string // resolved model for the current bead assignment
 	lastSeen       time.Time
+	lastProgress   time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
 	encoder        *json.Encoder
 	pendingMsgs    []protocol.Message // buffered messages for disconnected worker
 	shutdownCancel context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
@@ -113,6 +114,7 @@ type Config struct {
 	DBPath               string        // SQLite database path.
 	MaxWorkers           int           // Worker pool size (default 10).
 	HeartbeatTimeout     time.Duration // Worker heartbeat timeout (default 45s).
+	ProgressTimeout      time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
 	PollInterval         time.Duration // bd ready poll interval (default 10s).
 	FallbackPollInterval time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
 	ShutdownTimeout      time.Duration // Graceful shutdown timeout (default 10s).
@@ -126,6 +128,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.HeartbeatTimeout == 0 {
 		out.HeartbeatTimeout = 45 * time.Second
+	}
+	if out.ProgressTimeout == 0 {
+		out.ProgressTimeout = 15 * time.Minute
 	}
 	if out.PollInterval == 0 {
 		out.PollInterval = 10 * time.Second
@@ -150,6 +155,9 @@ func (c Config) validate() error {
 	}
 	if c.HeartbeatTimeout <= 0 {
 		return fmt.Errorf("HeartbeatTimeout must be positive, got %v", c.HeartbeatTimeout)
+	}
+	if c.ProgressTimeout <= 0 {
+		return fmt.Errorf("ProgressTimeout must be positive, got %v", c.ProgressTimeout)
 	}
 	if c.PollInterval <= 0 {
 		return fmt.Errorf("PollInterval must be positive, got %v", c.PollInterval)
@@ -560,6 +568,7 @@ func (d *Dispatcher) handleStatus(ctx context.Context, workerID string, msg prot
 	if msg.Status == nil {
 		return
 	}
+	d.touchProgress(workerID)
 	_ = d.logEvent(ctx, "status", workerID, msg.Status.BeadID, workerID,
 		fmt.Sprintf(`{"state":%q,"result":%q}`, msg.Status.State, msg.Status.Result))
 }
@@ -570,6 +579,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	}
 	beadID := msg.Done.BeadID
 
+	d.touchProgress(workerID)
 	_ = d.logEvent(ctx, "done", workerID, beadID, workerID, "")
 
 	// Reject merge if quality gate did not pass — retry or escalate.
@@ -609,6 +619,8 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 // (repeated identical outputs), increments the attempt counter, escalates if
 // either cap is reached, or re-assigns with feedback.
 func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) {
+	d.touchProgress(workerID)
+
 	// Create typed QualityGateError for logging and potential error discrimination
 	qgErr := &protocol.QualityGateError{
 		BeadID:   beadID,
@@ -716,6 +728,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 	}
 	w.state = protocol.WorkerBusy
 	w.beadID = beadID
+	w.lastProgress = d.nowFunc()
 	d.mu.Unlock()
 }
 
@@ -994,6 +1007,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	}
 	beadID := msg.ReadyForReview.BeadID
 
+	d.touchProgress(workerID)
 	_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
 
 	d.mu.Lock()
@@ -1107,6 +1121,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	w, ok := d.workers[workerID]
 	if ok && w.state == protocol.WorkerReserved {
 		w.state = protocol.WorkerBusy
+		w.lastProgress = d.nowFunc()
 		_ = d.sendToWorker(w, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
@@ -1142,6 +1157,7 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 		switch msg.Reconnect.State {
 		case "running":
 			w.state = protocol.WorkerBusy
+			w.lastProgress = d.nowFunc()
 		default:
 			w.state = protocol.WorkerIdle
 		}
@@ -1404,6 +1420,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.beadID = bead.ID
 	w.worktree = worktree
 	w.model = bead.ResolveModel()
+	w.lastProgress = d.nowFunc()
 	err = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
