@@ -1115,7 +1115,12 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	}
 	d.mu.Unlock()
 
-	// Re-assign with reviewer feedback.
+	// Retrieve relevant memories for the retry prompt (outside lock).
+	if d.testUnlockHook != nil {
+		d.testUnlockHook()
+	}
+	memCtx := d.fetchBeadMemories(ctx, beadID)
+
 	d.mu.Lock()
 	// Phase 2: Verify reservation still valid, then transition to Busy.
 	w, ok := d.workers[workerID]
@@ -1125,9 +1130,11 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		_ = d.sendToWorker(w, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
-				BeadID:   beadID,
-				Worktree: w.worktree,
-				Feedback: feedback,
+				BeadID:        beadID,
+				Worktree:      w.worktree,
+				Feedback:      feedback,
+				MemoryContext: memCtx,
+				Attempt:       count,
 			},
 		})
 	}

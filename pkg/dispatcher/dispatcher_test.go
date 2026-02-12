@@ -4057,6 +4057,41 @@ func TestDispatcher_ReviewRejection_FeedbackForwarded(t *testing.T) {
 	if !strings.Contains(msg.Assign.Feedback, "missing edge case tests") {
 		t.Fatalf("expected feedback to contain reviewer comment, got: %s", msg.Assign.Feedback)
 	}
+
+	// Rejection re-ASSIGN must include Attempt counter (1-based rejection count).
+	if msg.Assign.Attempt != 1 {
+		t.Fatalf("expected Attempt=1 after first rejection, got %d", msg.Assign.Attempt)
+	}
+}
+
+func TestDispatcher_ReviewRejection_AttemptIncrementsOnEachRejection(t *testing.T) {
+	_, conn, _, _ := setupReviewRejection(t)
+
+	// First rejection → Attempt=1
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+	msg1, ok := readMsg(t, conn, 3*time.Second)
+	if !ok || msg1.Type != protocol.MsgAssign {
+		t.Fatal("expected ASSIGN after 1st rejection")
+	}
+	if msg1.Assign.Attempt != 1 {
+		t.Fatalf("expected Attempt=1, got %d", msg1.Assign.Attempt)
+	}
+
+	// Second rejection → Attempt=2
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+	msg2, ok := readMsg(t, conn, 3*time.Second)
+	if !ok || msg2.Type != protocol.MsgAssign {
+		t.Fatal("expected ASSIGN after 2nd rejection")
+	}
+	if msg2.Assign.Attempt != 2 {
+		t.Fatalf("expected Attempt=2, got %d", msg2.Assign.Attempt)
+	}
 }
 
 func TestDispatcher_ReviewRejection_EscalatesAfterTwoRejections(t *testing.T) {
