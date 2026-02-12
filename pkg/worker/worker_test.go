@@ -3446,3 +3446,61 @@ func TestSubprocessHealthCheck(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+func TestWatchContext_SendsPeriodicHeartbeats(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-hb", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+	w.SetHeartbeatInterval(50 * time.Millisecond)
+
+	tmpDir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// Send ASSIGN — worker spawns claude -p and starts watchContext loop
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-hb",
+			Worktree: tmpDir,
+		},
+	})
+
+	// Drain STATUS message from handleAssign
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus {
+		t.Fatalf("expected STATUS, got %s", msg.Type)
+	}
+
+	// Collect messages for up to 500ms (should get multiple heartbeats at 50ms intervals)
+	_ = dispatcherConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	scanner := bufio.NewScanner(dispatcherConn)
+	var heartbeats int
+	for scanner.Scan() {
+		var m protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &m); err != nil {
+			continue
+		}
+		if m.Type == protocol.MsgHeartbeat && m.Heartbeat != nil && m.Heartbeat.BeadID == "bead-hb" {
+			heartbeats++
+			if heartbeats >= 3 {
+				break
+			}
+		}
+	}
+
+	if heartbeats < 3 {
+		t.Fatalf("expected at least 3 periodic heartbeats, got %d", heartbeats)
+	}
+
+	cancel()
+	<-errCh
+}

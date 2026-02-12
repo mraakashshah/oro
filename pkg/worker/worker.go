@@ -36,6 +36,10 @@ type Process interface {
 // DefaultContextPollInterval controls how often the context watcher polls <worktree>/.oro/context_pct.
 const DefaultContextPollInterval = 5 * time.Second
 
+// DefaultHeartbeatInterval controls the minimum time between periodic heartbeats
+// sent to the dispatcher. Must be well under the dispatcher's HeartbeatTimeout (45s).
+const DefaultHeartbeatInterval = 10 * time.Second
+
 // DefaultThreshold is the fallback context percentage when thresholds.json is missing or model unknown.
 const DefaultThreshold = 50
 
@@ -101,6 +105,8 @@ type Worker struct {
 	subprocExitClosed   bool           // true if subprocExitCh has been closed
 	handleExitClaimed   bool           // true if a handler claimed subprocess exit handling
 	subprocKilledByUs   bool           // true if we intentionally killed the subprocess
+	connWriteMu         sync.Mutex     // serializes conn writes so heartbeat deadlines don't leak
+	heartbeatInterval   time.Duration  // minimum time between periodic heartbeats
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -141,6 +147,15 @@ func (w *Worker) SetContextPollInterval(d time.Duration) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.contextPollInterval = d
+}
+
+// SetHeartbeatInterval overrides the minimum time between periodic heartbeats (for testing).
+//
+//oro:testonly
+func (w *Worker) SetHeartbeatInterval(d time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.heartbeatInterval = d
 }
 
 // SetReconnectInterval overrides the base reconnect retry interval (for testing).
@@ -564,7 +579,11 @@ func (w *Worker) watchContext(ctx context.Context) {
 	interval := w.contextPollInterval
 	wt := w.worktree
 	model := w.model
+	hbInterval := w.heartbeatInterval
 	w.mu.Unlock()
+	if hbInterval == 0 {
+		hbInterval = DefaultHeartbeatInterval
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -573,12 +592,20 @@ func (w *Worker) watchContext(ctx context.Context) {
 	threshold := th.For(modelFamily(model))
 
 	var subprocExitDetectedAt time.Time
+	lastHeartbeat := time.Now() // start counting from now; first heartbeat after hbInterval
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Keep dispatcher alive — send periodic heartbeats so the
+			// dispatcher doesn't declare us dead while claude -p runs.
+			if time.Since(lastHeartbeat) >= hbInterval {
+				w.trySendHeartbeat(ctx)
+				lastHeartbeat = time.Now()
+			}
+
 			// Check for unexpected subprocess death
 			if w.checkSubprocessHealth(ctx, &subprocExitDetectedAt) {
 				return
@@ -779,10 +806,49 @@ func (w *Worker) sendMessage(msg protocol.Message) error {
 	conn := w.conn
 	w.mu.Unlock()
 
-	if _, err := conn.Write(data); err != nil {
+	w.connWriteMu.Lock()
+	_, err = conn.Write(data)
+	w.connWriteMu.Unlock()
+
+	if err != nil {
 		return fmt.Errorf("write message: %w", err)
 	}
 	return nil
+}
+
+// trySendHeartbeat sends a best-effort heartbeat with a short write deadline.
+// The connWriteMu ensures the deadline+write+clear is atomic with respect to
+// other writers, preventing deadline leakage. If the write doesn't complete
+// within 200ms (e.g. blocked net.Pipe in tests), it gives up rather than
+// stalling the context watcher. Production UDS writes complete in microseconds.
+func (w *Worker) trySendHeartbeat(_ context.Context) {
+	w.mu.Lock()
+	beadID := w.beadID
+	conn := w.conn
+	disconnected := w.disconnected
+	w.mu.Unlock()
+
+	if disconnected {
+		return
+	}
+
+	data, err := json.Marshal(protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			BeadID:   beadID,
+			WorkerID: w.ID,
+		},
+	})
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+
+	w.connWriteMu.Lock()
+	_ = conn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _ = conn.Write(data)
+	_ = conn.SetWriteDeadline(time.Time{})
+	w.connWriteMu.Unlock()
 }
 
 // SendHeartbeat sends a HEARTBEAT message to the Dispatcher.
