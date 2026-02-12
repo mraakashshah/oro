@@ -1,0 +1,86 @@
+---
+date: 2026-02-12
+status: partial
+---
+
+goal: >
+  Fixed two beads (oro-1he, oro-uij), discovered critical tmux instability,
+  created P0 for cleanup CLI. Oro swarm started twice but tmux server died
+  both times within minutes, orphaning beads.
+
+now: >
+  Fix tmux stability before restarting swarm. Priority order:
+  1. oro-r50m: Fix wakeIfDetached resize bug (-y -1 is invalid, use -U/-D)
+  2. oro-eoqk: Build oro cleanup CLI for crash recovery
+  3. Then restart swarm and monitor
+
+test: go test -race -count=1 ./cmd/oro/ -run 'TestTmux|TestWaitForCommand|TestCreateVerifies|TestSendKeysVerified|TestRoleEnvCmd|TestFullStart|TestCreateWithNudges'
+
+done_this_session:
+  - task: "oro-1he: Add --session-id to claude launches for history isolation"
+    files: [cmd/oro/tmux.go, cmd/oro/tmux_test.go]
+    details: >
+      Appended '--session-id $(uuidgen)' to roleEnvCmd so each tmux window
+      gets isolated Claude Code input history. Previously all windows shared
+      up-arrow history because they run in the same working directory.
+
+  - task: "oro-uij: Retry SendKeys nudge with capture-pane verification"
+    files: [cmd/oro/tmux.go, cmd/oro/tmux_test.go, cmd/oro/start_full_test.go]
+    details: >
+      Added SendKeysVerified method that sends text, capture-panes to verify
+      it appeared, and retries with C-u clear if not. Uses 30-char prefix
+      verification (verifyHint) since long nudges get wrapped/truncated by
+      Ink TUI. launchAndNudge now uses SendKeysVerified instead of plain
+      SendKeys. Updated stubPaneReady to accept nudge text args for seqOut
+      stubs (WaitForPrompt + SendKeysVerified capture-pane sequence).
+
+  - task: "Discovered tmux server dying silently during oro sessions"
+    details: >
+      Tmux server died twice within minutes of starting, orphaning all beads.
+      No crash in DiagnosticReports. Suspect wakeIfDetached sends invalid
+      'resize-pane -y -1' (should be -U 1 / -D 1). Created oro-r50m (P1)
+      and oro-eoqk (P0 cleanup CLI).
+
+decisions:
+  - prefix_verification: >
+      Full nudge text won't appear in capture-pane because Ink TUI wraps/
+      truncates long input. Use first 30 chars as verification hint instead.
+  - sendkeys_verified_in_launch_only: >
+      Only launchAndNudge uses SendKeysVerified. Regular SendKeys unchanged
+      for other callers (TmuxEscalator etc) to avoid breaking them.
+
+findings:
+  - wakeIfDetached_invalid_resize: >
+      resize-pane -y -1 is invalid (absolute height can't be negative).
+      Should use -U 1 / -D 1 for relative adjustment. Errors silently
+      swallowed but may destabilize tmux server on repeated calls.
+  - tmux_server_fragile: >
+      Tmux server died twice in one session with no crash log. All processes
+      (dispatcher, workers, manager, architect) gone. Beads left orphaned
+      in_progress with no recovery mechanism.
+
+failed:
+  - "Full text verification in SendKeysVerified — long nudges aren't visible in capture-pane"
+  - "Trusting tmux server to stay alive — needs monitoring/health check"
+
+worked:
+  - "30-char prefix hint for capture-pane verification"
+  - "C-u clear before retry in SendKeysVerified"
+  - "seqOut stubs for multi-phase capture-pane (WaitForPrompt → SendKeysVerified → VerifyBeacon)"
+
+next:
+  - "Fix wakeIfDetached: replace resize-pane -y -1/+1 with -U 1 / -D 1 (oro-r50m)"
+  - "Build oro cleanup CLI: kill all, reset beads, clean worktrees (oro-eoqk)"
+  - "Consider adding tmux health check polling to dispatcher"
+  - "Then restart swarm and take remaining beads"
+
+files:
+  modified:
+    - cmd/oro/tmux.go
+    - cmd/oro/tmux_test.go
+    - cmd/oro/start_full_test.go
+
+beads:
+  completed: [oro-1he, oro-uij]
+  created: [oro-r50m, oro-eoqk]
+  remaining: [oro-eou, oro-eoqk, oro-r50m, oro-noc, oro-nqi.7, oro-9hd, oro-47g]
