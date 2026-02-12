@@ -64,7 +64,7 @@ func handleAuthentication() error {
 
 	// Now search.
 	var searchBuf bytes.Buffer
-	err := runIndexSearch(&searchBuf, "authentication", dbPath, 5)
+	err := runIndexSearch(&searchBuf, "authentication", dbPath, 5, nil)
 	if err != nil {
 		t.Fatalf("runIndexSearch: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestIndexSearchCommand_EmptyIndex(t *testing.T) {
 	dbPath := filepath.Join(dbDir, "empty_index.db")
 
 	var buf bytes.Buffer
-	err := runIndexSearch(&buf, "anything", dbPath, 5)
+	err := runIndexSearch(&buf, "anything", dbPath, 5, nil)
 	if err != nil {
 		t.Fatalf("runIndexSearch: %v", err)
 	}
