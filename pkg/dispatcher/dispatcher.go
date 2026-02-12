@@ -1072,12 +1072,26 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	count := d.rejectionCounts[beadID]
 
 	if count > maxReviewRejections {
+		// Reset worker to Idle so it can receive new work instead of
+		// remaining stuck in WorkerReviewing with a stale beadID.
+		if w, wOK := d.workers[workerID]; wOK {
+			w.state = protocol.WorkerIdle
+			w.beadID = ""
+			w.worktree = ""
+			w.model = ""
+		}
 		d.mu.Unlock()
+
 		_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
 			fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, feedback))
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 			fmt.Sprintf("review rejected %d times", count), feedback), beadID, workerID)
 		d.clearBeadTracking(beadID)
+
+		// Kill the worker subprocess so a fresh process can take over.
+		if d.procMgr != nil {
+			_ = d.procMgr.Kill(workerID)
+		}
 		return
 	}
 

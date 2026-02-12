@@ -4108,6 +4108,92 @@ func TestDispatcher_ReviewRejection_EscalatesAfterTwoRejections(t *testing.T) {
 	}
 }
 
+func TestDispatcher_ReviewRejection_WorkerIdleAfterMaxRejections(t *testing.T) {
+	d, conn, _, _ := setupReviewRejection(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	// First rejection cycle — worker gets re-ASSIGN
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+	_, ok := readMsg(t, conn, 3*time.Second) // consume re-ASSIGN
+	if !ok {
+		t.Fatal("expected re-ASSIGN after 1st rejection")
+	}
+
+	// Second rejection cycle — worker gets re-ASSIGN
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+	_, ok = readMsg(t, conn, 3*time.Second) // consume re-ASSIGN
+	if !ok {
+		t.Fatal("expected re-ASSIGN after 2nd rejection")
+	}
+
+	// Third rejection cycle — should escalate, NOT re-assign
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+
+	// Wait for escalation event to confirm the escalation path was taken
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "review_escalated") > 0
+	}, 3*time.Second)
+
+	// AC1: Worker must transition to Idle within one assign cycle
+	waitFor(t, func() bool {
+		state, _, ok := d.WorkerInfo("w1")
+		return ok && state == protocol.WorkerIdle
+	}, 3*time.Second)
+
+	// AC3: Worker's beadID must be empty
+	state, beadID, ok := d.WorkerInfo("w1")
+	if !ok {
+		t.Fatal("worker w1 not found after max rejections")
+	}
+	if state != protocol.WorkerIdle {
+		t.Fatalf("expected worker state Idle, got %s", state)
+	}
+	if beadID != "" {
+		t.Fatalf("expected empty beadID, got %q", beadID)
+	}
+
+	// Verify tracking maps are cleared
+	d.mu.Lock()
+	_, rejExists := d.rejectionCounts["bead-rej"]
+	_, attExists := d.attemptCounts["bead-rej"]
+	d.mu.Unlock()
+	if rejExists {
+		t.Fatal("expected rejection count cleared for bead-rej")
+	}
+	if attExists {
+		t.Fatal("expected attempt count cleared for bead-rej")
+	}
+
+	// Verify procMgr.Kill was called for the worker
+	pm.mu.Lock()
+	killed := make([]string, len(pm.killed))
+	copy(killed, pm.killed)
+	pm.mu.Unlock()
+	if len(killed) == 0 {
+		t.Fatal("expected procMgr.Kill to be called for the zombie worker")
+	}
+	foundKill := false
+	for _, id := range killed {
+		if id == "w1" {
+			foundKill = true
+			break
+		}
+	}
+	if !foundKill {
+		t.Fatalf("expected Kill('w1'), got kills: %v", killed)
+	}
+}
+
 // --- Ralph handoff tests (oro-vuw) ---
 
 func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
