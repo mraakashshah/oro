@@ -783,11 +783,16 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		return
 	}
 
-	// Clean merge — close bead and complete assignment
+	// Clean merge — close bead, complete assignment, remove worktree.
 	_ = d.beads.Close(ctx, beadID, fmt.Sprintf("Merged: %s", result.CommitSHA))
 	_ = d.completeAssignment(ctx, beadID)
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
+
+	// Remove worktree after merge — safe because QG already ran before DONE.
+	if err := d.worktrees.Remove(ctx, worktree); err != nil {
+		_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+	}
 
 	// Trigger memory consolidation after every N bead completions.
 	d.mu.Lock()

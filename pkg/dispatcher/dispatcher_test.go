@@ -876,6 +876,60 @@ func TestDispatcher_WorkerDone_MergesClean(t *testing.T) {
 	}
 }
 
+func TestDispatcher_WorkerDone_RemovesWorktreeAfterMerge(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-wt-rm", Title: "WT remove test", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE with QG passed
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{BeadID: "bead-wt-rm", WorkerID: "w1", QualityGatePassed: true},
+	})
+
+	// Wait for merge + worktree removal
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "merged") > 0
+	}, 2*time.Second)
+
+	// Verify worktree was removed after merge
+	waitFor(t, func() bool {
+		wtMgr.mu.Lock()
+		defer wtMgr.mu.Unlock()
+		return len(wtMgr.removed) > 0
+	}, 1*time.Second)
+
+	wtMgr.mu.Lock()
+	expectedPath := "/tmp/worktree-bead-wt-rm"
+	found := false
+	for _, p := range wtMgr.removed {
+		if p == expectedPath {
+			found = true
+			break
+		}
+	}
+	wtMgr.mu.Unlock()
+	if !found {
+		t.Fatalf("expected worktree %q to be removed, removed: %v", expectedPath, wtMgr.removed)
+	}
+}
+
 func TestDispatcher_WorkerDone_MergeConflict_SpawnsOpsAgent(t *testing.T) {
 	d, beadSrc, _, _, gitRunner, _ := newTestDispatcher(t)
 	// Configure git runner to return conflict on rebase
