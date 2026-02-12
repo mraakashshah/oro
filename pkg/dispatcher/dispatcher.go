@@ -1382,8 +1382,10 @@ func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead 
 	return out
 }
 
-// recordWorktreeFailure marks a bead as having failed worktree creation.
-func (d *Dispatcher) recordWorktreeFailure(beadID string) {
+// recordAssignmentFailure marks a bead as having failed assignment (worktree
+// creation error, missing acceptance criteria, etc). The bead will be skipped
+// for worktreeFailureCooldown to prevent infinite retry loops.
+func (d *Dispatcher) recordAssignmentFailure(beadID string) {
 	d.mu.Lock()
 	d.worktreeFailures[beadID] = d.nowFunc()
 	d.mu.Unlock()
@@ -1434,7 +1436,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	worktree, branch, err := d.worktrees.Create(ctx, bead.ID)
 	if err != nil {
 		_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())
-		d.recordWorktreeFailure(bead.ID)
+		d.recordAssignmentFailure(bead.ID)
 		return
 	}
 
@@ -1493,6 +1495,7 @@ func (d *Dispatcher) rejectMissingAcceptance(ctx context.Context, beadID string,
 	_ = d.worktrees.Remove(ctx, worktree)
 	_ = d.logEvent(ctx, "missing_acceptance", "dispatcher", beadID, w.id,
 		"bead has no acceptance criteria — skipping assignment")
+	d.recordAssignmentFailure(beadID)
 	d.mu.Lock()
 	w.state = protocol.WorkerIdle
 	w.beadID = ""
