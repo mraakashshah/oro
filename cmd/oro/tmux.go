@@ -353,10 +353,12 @@ func (s *TmuxSession) wakeIfDetached(paneTarget string) {
 	if err == nil && strings.TrimSpace(out) != "0" {
 		return // attached, no wake needed
 	}
-	// Resize pane down then up by 1 row — triggers SIGWINCH without changing size.
-	_, _ = s.Runner.Run("tmux", "resize-pane", "-t", paneTarget, "-y", "-1")
+	// Resize pane up then down by 1 row — triggers SIGWINCH without changing size.
+	// Uses -U/-D (relative) instead of -y (absolute) to avoid sending invalid
+	// negative values that can destabilize tmux server on repeated calls.
+	_, _ = s.Runner.Run("tmux", "resize-pane", "-t", paneTarget, "-U", "1")
 	s.sleep(50 * time.Millisecond)
-	_, _ = s.Runner.Run("tmux", "resize-pane", "-t", paneTarget, "-y", "+1")
+	_, _ = s.Runner.Run("tmux", "resize-pane", "-t", paneTarget, "-D", "1")
 }
 
 // Kill destroys the named tmux session.

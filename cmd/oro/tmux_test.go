@@ -900,3 +900,53 @@ func TestAttach(t *testing.T) {
 		}
 	})
 }
+
+func TestWakeIfDetached_UsesUpDownNotAbsoluteResize(t *testing.T) {
+	t.Run("detached session uses -U and -D flags", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Session reports 0 attached clients → detached.
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess.wakeIfDetached("oro:architect")
+
+		// Should call resize-pane with -U 1 then -D 1, NOT -y.
+		var resizeCalls [][]string
+		for _, call := range fake.calls {
+			if len(call) > 1 && call[1] == "resize-pane" {
+				resizeCalls = append(resizeCalls, call)
+			}
+		}
+		if len(resizeCalls) != 2 {
+			t.Fatalf("expected 2 resize-pane calls, got %d: %v", len(resizeCalls), resizeCalls)
+		}
+		// First call should shrink up (-U 1).
+		first := strings.Join(resizeCalls[0], " ")
+		if !strings.Contains(first, "-U") || !strings.Contains(first, "1") {
+			t.Errorf("first resize should use -U 1, got: %s", first)
+		}
+		if strings.Contains(first, "-y") {
+			t.Errorf("first resize should NOT use -y flag, got: %s", first)
+		}
+		// Second call should grow down (-D 1).
+		second := strings.Join(resizeCalls[1], " ")
+		if !strings.Contains(second, "-D") || !strings.Contains(second, "1") {
+			t.Errorf("second resize should use -D 1, got: %s", second)
+		}
+	})
+
+	t.Run("attached session skips resize", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Session reports 1 attached client → attached.
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess.wakeIfDetached("oro:architect")
+
+		for _, call := range fake.calls {
+			if len(call) > 1 && call[1] == "resize-pane" {
+				t.Error("should not call resize-pane when session is attached")
+			}
+		}
+	})
+}
