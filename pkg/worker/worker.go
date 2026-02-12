@@ -995,7 +995,16 @@ func (w *Worker) SendReadyForReview(_ context.Context) error {
 func RunQualityGate(ctx context.Context, worktree string) (passed bool, output string, err error) {
 	scriptPath := filepath.Join(worktree, "quality_gate.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
-		return false, "", fmt.Errorf("quality gate script not found: %w", err)
+		// Agent may have deleted quality_gate.sh — try restoring from git.
+		restoreCmd := exec.CommandContext(ctx, "git", "checkout", "HEAD", "--", "quality_gate.sh")
+		restoreCmd.Dir = worktree
+		if restoreErr := restoreCmd.Run(); restoreErr != nil {
+			return false, "", fmt.Errorf("quality gate script not found: %w (restore failed: %w)", err, restoreErr)
+		}
+		// Verify restoration succeeded.
+		if _, err := os.Stat(scriptPath); err != nil {
+			return false, "", fmt.Errorf("quality gate script not found after restore: %w", err)
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input

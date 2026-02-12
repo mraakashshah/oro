@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -486,6 +487,73 @@ func TestRunQualityGate_CapturesOutput(t *testing.T) {
 			t.Errorf("expected empty output on missing script, got: %q", output)
 		}
 	})
+}
+
+func TestRunQualityGate_RestoresDeletedScript(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp dir with a git repo containing quality_gate.sh.
+	tmpDir := t.TempDir()
+	scriptPath := filepath.Join(tmpDir, "quality_gate.sh")
+	scriptContent := []byte("#!/bin/sh\necho 'restored ok'\nexit 0\n")
+	if err := os.WriteFile(scriptPath, scriptContent, 0o755); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+
+	// Initialize a git repo and commit quality_gate.sh so it can be restored.
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"add", "quality_gate.sh"},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...) //nolint:gosec // test helper with fixed args
+		cmd.Dir = tmpDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	// Delete the script (simulates agent deletion).
+	if err := os.Remove(scriptPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// RunQualityGate should restore from git and succeed.
+	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Errorf("expected quality gate to pass after restore, output: %q", output)
+	}
+
+	// Verify the script was actually restored on disk.
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Errorf("expected quality_gate.sh to exist after restore: %v", err)
+	}
+}
+
+func TestRunQualityGate_RestoreFails_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp dir with NO git repo and NO quality_gate.sh.
+	tmpDir := t.TempDir()
+
+	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir)
+	if err == nil {
+		t.Fatal("expected error when quality_gate.sh is missing and restore fails")
+	}
+	if passed {
+		t.Error("expected quality gate to fail")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected error to mention 'not found', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "restore failed") {
+		t.Errorf("expected error to mention 'restore failed', got: %v", err)
+	}
 }
 
 func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {
