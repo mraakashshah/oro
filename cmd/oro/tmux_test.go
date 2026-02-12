@@ -769,6 +769,20 @@ func TestRoleEnvCmd(t *testing.T) {
 			t.Errorf("expected roleEnvCmd to use export, got: %s", cmd)
 		}
 	})
+
+	t.Run("includes --session-id for history isolation", func(t *testing.T) {
+		cmd := roleEnvCmd("architect")
+		if !strings.Contains(cmd, "--session-id") {
+			t.Errorf("expected roleEnvCmd to contain --session-id, got: %s", cmd)
+		}
+		// Must still launch interactive claude (not claude -p)
+		if !strings.Contains(cmd, "claude") {
+			t.Errorf("expected roleEnvCmd to contain 'claude', got: %s", cmd)
+		}
+		if strings.Contains(cmd, "claude -p") {
+			t.Errorf("expected interactive claude (not 'claude -p'), got: %s", cmd)
+		}
+	})
 }
 
 func TestAttach(t *testing.T) {

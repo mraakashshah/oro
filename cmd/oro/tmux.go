@@ -62,9 +62,10 @@ func (s *TmuxSession) Exists() bool {
 }
 
 // roleEnvCmd builds a shell command that exports ORO_ROLE, BD_ACTOR, and
-// GIT_AUTHOR_NAME for the given role, then launches interactive claude.
+// GIT_AUTHOR_NAME for the given role, then launches interactive claude with
+// a unique --session-id so each tmux window gets isolated input history.
 func roleEnvCmd(role string) string {
-	return fmt.Sprintf("export ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude", role, role, role)
+	return fmt.Sprintf("export ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s && claude --session-id $(uuidgen)", role, role, role)
 }
 
 // Create creates the Oro tmux session with two windows (architect + manager).
