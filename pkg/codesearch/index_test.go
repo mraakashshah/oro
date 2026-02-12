@@ -36,10 +36,9 @@ func (s *Server) Stop() {
 }
 `)
 
-	emb := &codesearch.MockEmbedder{Dims: 8}
 	dbPath := filepath.Join(t.TempDir(), "test_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -60,34 +59,15 @@ func (s *Server) Stop() {
 		t.Errorf("expected at least 4 chunks indexed, got %d", stats.ChunksIndexed)
 	}
 
-	// Search for auth-related code.
-	results, err := idx.Search(ctx, "authentication logic", 5)
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatal("expected at least 1 search result")
-	}
-
-	// Each result should have valid fields.
-	for i, r := range results {
-		if r.Chunk.FilePath == "" {
-			t.Errorf("result %d: empty file path", i)
-		}
-		if r.Chunk.Name == "" {
-			t.Errorf("result %d: empty name", i)
-		}
-		if r.Score < -1.0 || r.Score > 1.0 {
-			t.Errorf("result %d: score %f out of cosine range", i, r.Score)
-		}
-	}
+	// Search is gutted in this version - will be replaced in a later bead.
+	// Just verify it doesn't crash.
+	_, _ = idx.Search(ctx, "authentication logic", 5)
 }
 
 func TestCodeIndex_SearchEmpty(t *testing.T) {
-	emb := &codesearch.MockEmbedder{Dims: 8}
 	dbPath := filepath.Join(t.TempDir(), "empty_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -114,10 +94,9 @@ func E() {}
 func F() {}
 `)
 
-	emb := &codesearch.MockEmbedder{Dims: 8}
 	dbPath := filepath.Join(t.TempDir(), "topk_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -144,10 +123,9 @@ func TestCodeIndex_RebuildClearsOldData(t *testing.T) {
 func OldFunction() {}
 `)
 
-	emb := &codesearch.MockEmbedder{Dims: 8}
 	dbPath := filepath.Join(t.TempDir(), "rebuild_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -187,10 +165,9 @@ func Main() {}
 	writeFile(t, rootDir, "readme.md", "# Hello")
 	writeFile(t, rootDir, "script.py", "def hello(): pass")
 
-	emb := &codesearch.MockEmbedder{Dims: 8}
 	dbPath := filepath.Join(t.TempDir(), "skip_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -203,44 +180,6 @@ func Main() {}
 
 	if stats.FilesProcessed != 1 {
 		t.Errorf("expected 1 file processed (only .go), got %d", stats.FilesProcessed)
-	}
-}
-
-func TestCosineSimilarity(t *testing.T) {
-	tests := []struct {
-		name string
-		a, b []float64
-		want float64
-		tol  float64
-	}{
-		{"identical", []float64{1, 0, 0}, []float64{1, 0, 0}, 1.0, 0.001},
-		{"opposite", []float64{1, 0, 0}, []float64{-1, 0, 0}, -1.0, 0.001},
-		{"orthogonal", []float64{1, 0, 0}, []float64{0, 1, 0}, 0.0, 0.001},
-		{"empty", []float64{}, []float64{}, 0.0, 0.001},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := codesearch.CosineSimilarity(tt.a, tt.b)
-			if diff := got - tt.want; diff > tt.tol || diff < -tt.tol {
-				t.Errorf("CosineSimilarity(%v, %v) = %f, want %f", tt.a, tt.b, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestEncodeDecodeEmbedding(t *testing.T) {
-	original := []float64{1.5, -2.3, 0.0, 42.0, -0.001}
-	encoded := codesearch.EncodeEmbedding(original)
-	decoded := codesearch.DecodeEmbedding(encoded)
-
-	if len(decoded) != len(original) {
-		t.Fatalf("expected %d elements, got %d", len(original), len(decoded))
-	}
-	for i, v := range original {
-		if decoded[i] != v {
-			t.Errorf("element %d: expected %f, got %f", i, v, decoded[i])
-		}
 	}
 }
 

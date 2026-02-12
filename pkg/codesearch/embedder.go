@@ -23,6 +23,8 @@ type OllamaEmbedder struct {
 }
 
 // NewOllamaEmbedder creates an embedder that calls the Ollama API at baseURL.
+//
+//oro:testonly
 func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 	return &OllamaEmbedder{
 		baseURL: baseURL,

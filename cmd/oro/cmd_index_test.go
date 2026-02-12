@@ -23,7 +23,7 @@ func Hello() string {
 	}
 
 	var buf bytes.Buffer
-	err := runIndexBuild(&buf, rootDir, dbPath, true)
+	err := runIndexBuild(&buf, rootDir, dbPath)
 	if err != nil {
 		t.Fatalf("runIndexBuild: %v", err)
 	}
@@ -58,13 +58,13 @@ func handleAuthentication() error {
 
 	// Build the index first.
 	var buildBuf bytes.Buffer
-	if err := runIndexBuild(&buildBuf, rootDir, dbPath, true); err != nil {
+	if err := runIndexBuild(&buildBuf, rootDir, dbPath); err != nil {
 		t.Fatalf("runIndexBuild: %v", err)
 	}
 
 	// Now search.
 	var searchBuf bytes.Buffer
-	err := runIndexSearch(&searchBuf, "authentication", dbPath, 5, true)
+	err := runIndexSearch(&searchBuf, "authentication", dbPath, 5)
 	if err != nil {
 		t.Fatalf("runIndexSearch: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestIndexSearchCommand_EmptyIndex(t *testing.T) {
 	dbPath := filepath.Join(dbDir, "empty_index.db")
 
 	var buf bytes.Buffer
-	err := runIndexSearch(&buf, "anything", dbPath, 5, true)
+	err := runIndexSearch(&buf, "anything", dbPath, 5)
 	if err != nil {
 		t.Fatalf("runIndexSearch: %v", err)
 	}

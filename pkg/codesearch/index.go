@@ -3,22 +3,18 @@ package codesearch
 import (
 	"context"
 	"database/sql"
-	"encoding/binary"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver for database/sql
 )
 
-// CodeIndex is a SQLite-backed vector store for semantic code search.
+// CodeIndex is a SQLite-backed code search index.
 type CodeIndex struct {
-	db  *sql.DB
-	emb Embedder
+	db *sql.DB
 }
 
 // BuildStats reports what happened during an index build.
@@ -44,14 +40,13 @@ CREATE TABLE IF NOT EXISTS chunks (
 	start_line INTEGER NOT NULL,
 	end_line INTEGER NOT NULL,
 	content TEXT NOT NULL,
-	embedding BLOB NOT NULL,
 	updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
 `
 
 // NewCodeIndex opens or creates a code index at the given database path.
-func NewCodeIndex(dbPath string, emb Embedder) (*CodeIndex, error) {
+func NewCodeIndex(dbPath string) (*CodeIndex, error) {
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o750); err != nil {
 		return nil, fmt.Errorf("create index dir: %w", err)
@@ -84,7 +79,7 @@ func NewCodeIndex(dbPath string, emb Embedder) (*CodeIndex, error) {
 		return nil, fmt.Errorf("apply code index schema: %w", err)
 	}
 
-	return &CodeIndex{db: db, emb: emb}, nil
+	return &CodeIndex{db: db}, nil
 }
 
 // Close closes the underlying database connection.
@@ -173,12 +168,7 @@ func (ci *CodeIndex) indexFile(ctx context.Context, path, rootDir string, stats 
 			return fmt.Errorf("context cancelled: %w", err)
 		}
 
-		vec, err := ci.emb.Embed(ctx, chunk.Content)
-		if err != nil {
-			return fmt.Errorf("embed chunk %s/%s: %w", chunk.FilePath, chunk.Name, err)
-		}
-
-		if err := ci.insertChunk(ctx, chunk, vec); err != nil {
+		if err := ci.insertChunk(ctx, chunk); err != nil {
 			return fmt.Errorf("insert chunk %s/%s: %w", chunk.FilePath, chunk.Name, err)
 		}
 
@@ -188,14 +178,14 @@ func (ci *CodeIndex) indexFile(ctx context.Context, path, rootDir string, stats 
 	return nil
 }
 
-// insertChunk stores a single chunk with its embedding in the database.
-func (ci *CodeIndex) insertChunk(ctx context.Context, chunk Chunk, embedding []float64) error {
+// insertChunk stores a single chunk in the database.
+func (ci *CodeIndex) insertChunk(ctx context.Context, chunk Chunk) error {
 	_, err := ci.db.ExecContext(ctx,
-		`INSERT INTO chunks (file_path, name, kind, start_line, end_line, content, embedding, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO chunks (file_path, name, kind, start_line, end_line, content, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		chunk.FilePath, chunk.Name, string(chunk.Kind),
 		chunk.StartLine, chunk.EndLine, chunk.Content,
-		EncodeEmbedding(embedding), time.Now().UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return fmt.Errorf("exec insert chunk: %w", err)
@@ -203,112 +193,8 @@ func (ci *CodeIndex) insertChunk(ctx context.Context, chunk Chunk, embedding []f
 	return nil
 }
 
-// Search embeds the query and returns the top-K most similar chunks by cosine similarity.
+// Search is a placeholder stub. Real search will be implemented in a later bead.
 func (ci *CodeIndex) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
-	queryVec, err := ci.emb.Embed(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("embed query: %w", err)
-	}
-
-	rows, err := ci.db.QueryContext(ctx,
-		`SELECT file_path, name, kind, start_line, end_line, content, embedding FROM chunks`)
-	if err != nil {
-		return nil, fmt.Errorf("query chunks: %w", err)
-	}
-	defer rows.Close()
-
-	var results []SearchResult
-
-	for rows.Next() {
-		var (
-			filePath     string
-			name         string
-			kind         string
-			startLine    int
-			endLine      int
-			content      string
-			embeddingBuf []byte
-		)
-
-		if err := rows.Scan(&filePath, &name, &kind, &startLine, &endLine, &content, &embeddingBuf); err != nil {
-			return nil, fmt.Errorf("scan chunk row: %w", err)
-		}
-
-		chunkVec := DecodeEmbedding(embeddingBuf)
-		score := CosineSimilarity(queryVec, chunkVec)
-
-		results = append(results, SearchResult{
-			Chunk: Chunk{
-				FilePath:  filePath,
-				Name:      name,
-				Kind:      ChunkKind(kind),
-				StartLine: startLine,
-				EndLine:   endLine,
-				Content:   content,
-			},
-			Score: score,
-		})
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate chunk rows: %w", err)
-	}
-
-	// Sort by score descending.
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
-	})
-
-	// Limit to topK.
-	if len(results) > topK {
-		results = results[:topK]
-	}
-
-	return results, nil
-}
-
-// EncodeEmbedding serializes a float64 slice to a binary blob (little-endian).
-func EncodeEmbedding(vec []float64) []byte {
-	buf := make([]byte, len(vec)*8)
-	for i, v := range vec {
-		binary.LittleEndian.PutUint64(buf[i*8:], math.Float64bits(v))
-	}
-	return buf
-}
-
-// DecodeEmbedding deserializes a binary blob back to a float64 slice.
-func DecodeEmbedding(buf []byte) []float64 {
-	n := len(buf) / 8
-	vec := make([]float64, n)
-	for i := range n {
-		vec[i] = math.Float64frombits(binary.LittleEndian.Uint64(buf[i*8:]))
-	}
-	return vec
-}
-
-// CosineSimilarity computes the cosine similarity between two vectors.
-// Returns 0 for zero-length or zero-magnitude vectors.
-func CosineSimilarity(a, b []float64) float64 {
-	if len(a) == 0 || len(b) == 0 {
-		return 0
-	}
-
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-
-	var dot, normA, normB float64
-	for i := range n {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-
-	denom := math.Sqrt(normA) * math.Sqrt(normB)
-	if denom == 0 {
-		return 0
-	}
-
-	return dot / denom
+	// Return empty results. This will be replaced with FTS5-based search.
+	return []SearchResult{}, nil
 }

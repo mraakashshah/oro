@@ -13,12 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultOllamaURL is the default Ollama API base URL.
-const defaultOllamaURL = "http://localhost:11434"
-
-// defaultEmbedModel is the default embedding model for Ollama.
-const defaultEmbedModel = "nomic-embed-text"
-
 // newIndexCmd creates the "oro index" subcommand with build and search subcommands.
 func newIndexCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -54,7 +48,7 @@ func newIndexBuildCmd() *cobra.Command {
 
 			dbPath := defaultIndexDBPath()
 			w := cmd.OutOrStdout()
-			return runIndexBuild(w, rootDir, dbPath, false)
+			return runIndexBuild(w, rootDir, dbPath)
 		},
 	}
 
@@ -75,7 +69,7 @@ func newIndexSearchCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dbPath := defaultIndexDBPath()
 			w := cmd.OutOrStdout()
-			return runIndexSearch(w, args[0], dbPath, topK, false)
+			return runIndexSearch(w, args[0], dbPath, topK)
 		},
 	}
 
@@ -85,11 +79,8 @@ func newIndexSearchCmd() *cobra.Command {
 }
 
 // runIndexBuild is the core logic for building the index, separated for testability.
-// When useMock is true, it uses a MockEmbedder instead of Ollama (for tests).
-func runIndexBuild(w io.Writer, rootDir, dbPath string, useMock bool) error {
-	emb := makeEmbedder(useMock)
-
-	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+func runIndexBuild(w io.Writer, rootDir, dbPath string) error {
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		return fmt.Errorf("open code index: %w", err)
 	}
@@ -111,10 +102,8 @@ func runIndexBuild(w io.Writer, rootDir, dbPath string, useMock bool) error {
 }
 
 // runIndexSearch is the core logic for searching the index, separated for testability.
-func runIndexSearch(w io.Writer, query, dbPath string, topK int, useMock bool) error {
-	emb := makeEmbedder(useMock)
-
-	idx, err := codesearch.NewCodeIndex(dbPath, emb)
+func runIndexSearch(w io.Writer, query, dbPath string, topK int) error {
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		return fmt.Errorf("open code index: %w", err)
 	}
@@ -139,18 +128,6 @@ func runIndexSearch(w io.Writer, query, dbPath string, topK int, useMock bool) e
 	}
 
 	return nil
-}
-
-// makeEmbedder creates the appropriate Embedder based on useMock flag.
-func makeEmbedder(useMock bool) codesearch.Embedder {
-	if useMock {
-		return &codesearch.MockEmbedder{Dims: 768}
-	}
-	ollamaURL := os.Getenv("OLLAMA_HOST")
-	if ollamaURL == "" {
-		ollamaURL = defaultOllamaURL
-	}
-	return codesearch.NewOllamaEmbedder(ollamaURL, defaultEmbedModel)
 }
 
 // defaultIndexDBPath returns the default path for the code index database.
