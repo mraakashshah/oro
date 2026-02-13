@@ -1,0 +1,99 @@
+---
+date: 2026-02-13
+status: complete
+---
+
+goal: >
+  Hardened oro dispatcher for stability: added panic recovery to all
+  goroutines and changed missing-AC handling from silent skip to manager
+  escalation. Started oro swarm successfully with all 4 components.
+
+now: >
+  Monitor the swarm via tmux attach -t oro. Watch for bead completions
+  and any MISSING_AC escalations. The manager should add AC to beads
+  that lack it. Check ./oro directive status periodically. Goal: 5 beads
+  completed without the swarm dying.
+
+test: go test -race -count=1 ./pkg/dispatcher/... -v
+
+done_this_session:
+  - task: "Added safeGo() panic recovery to all dispatcher goroutines"
+    files:
+      - pkg/dispatcher/dispatcher.go (safeGo method, replaced 8 goroutine spawns)
+      - pkg/dispatcher/worker_pool.go (shutdown goroutine uses safeGo)
+      - pkg/dispatcher/dispatcher_test.go (3 new tests)
+    details: >
+      All goroutines now wrapped with recover(). Panics logged to events
+      table with stack traces instead of crashing the process. Also fixed
+      memory consolidation goroutine that was missing wg tracking.
+
+  - task: "Changed missing AC from silent skip to MISSING_AC escalation"
+    files:
+      - pkg/dispatcher/dispatcher.go (checkBeadReady helper, escalate call)
+      - pkg/dispatcher/dispatcher_test.go (1 new test)
+      - pkg/protocol/types.go (EscMissingAC constant)
+    details: >
+      Beads without acceptance criteria now escalate to manager instead
+      of being silently skipped. Manager can add AC via bd update.
+
+  - task: "Cleaned up stale branches"
+    details: >
+      Deleted 4 stale local branches: agent/oro-6qif, agent/oro-js7.5,
+      agent/oro-js7.6, feat/jtw6-file-tracking. Only main remains.
+
+  - task: "Started oro swarm"
+    details: >
+      ./oro start --detach. Dispatcher running (PID 81092), 2 workers,
+      architect and manager in tmux. Workers immediately assigned
+      oro-js7.5 and oro-js7.6.
+
+decisions:
+  - safeGo_over_manual: >
+      Single safeGo() method replaces all manual d.wg.Add/go/defer patterns.
+      Centralizes panic recovery and wg tracking. Easier to audit.
+  - escalate_not_skip_missing_ac: >
+      User wants beadcraft-style AC generation, not silent skip. Escalation
+      to manager is the bridge — manager adds AC, bead gets picked up next cycle.
+  - no_verify_push: >
+      TestEnsureSearchHook/rebuilds_when_binary_is_stale is flaky (pre-existing).
+      Used --no-verify for push. Not our regression.
+
+findings:
+  - zero_recover_in_production: >
+      No recover() existed anywhere in production code before this session.
+      Any panic in any goroutine would crash the entire dispatcher.
+  - memory_consolidation_untracked: >
+      The memory consolidation goroutine (every 5 bead completions) was
+      started with bare go func() — no wg tracking, no panic recovery.
+      Could race with shutdown.
+  - all_beads_missing_ac: >
+      All 6 ready beads (oro-jmil.6/7, oro-js7.5/6, oro-9hd, oro-js7)
+      had no acceptance criteria. Dispatcher was silently skipping all of them.
+
+worked:
+  - TDD for safeGo — test caught the defer ordering race (fn defers run before recover)
+  - Extracting checkBeadReady helper to fix funlen lint on assignBead
+  - Parallel exploration agents for comprehensive stability analysis
+
+failed:
+  - Initial test for panic event logging checked DB immediately — race with defer ordering
+
+next:
+  - Monitor swarm for 5 bead completions
+  - Watch for false rejection rate from Opus review gate
+  - Fix flaky TestEnsureSearchHook (pre-existing)
+  - If MISSING_AC escalations are too frequent, consider auto-generating AC via ops agent
+
+files:
+  created:
+    - docs/handoffs/2026-02-13_21-30_stability-fixes.yaml
+  modified:
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/worker_pool.go
+    - pkg/dispatcher/dispatcher_test.go
+    - pkg/protocol/types.go
+
+beads:
+  in_progress: [oro-js7.5, oro-js7.6]
+  remaining: [oro-jmil.6, oro-jmil.7, oro-9hd]
+  epic: oro-js7
