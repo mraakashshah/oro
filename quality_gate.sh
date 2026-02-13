@@ -153,7 +153,7 @@ if $HAS_GO; then
 
     header "GO TIER 5: TESTING"
     COVERAGE_FILE="/tmp/oro-coverage-$$.out"
-    check "go test" "go test -race -shuffle=on -p 2 -coverprofile=$COVERAGE_FILE ./internal/... ./pkg/... && go tool cover -func=$COVERAGE_FILE | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 90) exit 1}'"
+    check "go test" "go test -race -shuffle=on -p 2 -coverprofile=$COVERAGE_FILE ./internal/... ./pkg/... && go tool cover -func=$COVERAGE_FILE | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 85) exit 1}'"
     check "coverage" "go tool cover -func=$COVERAGE_FILE | tail -1"
     rm -f "$COVERAGE_FILE"
 

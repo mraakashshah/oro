@@ -36,13 +36,26 @@ type ExecDaemonSpawner struct{}
 // without receiving SIGHUP from the parent's process group.
 func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers int) (int, error) {
 	child := exec.CommandContext(context.Background(), os.Args[0], "start", "--daemon-only", "--workers", strconv.Itoa(workers)) //nolint:gosec // intentionally re-executing self
-	child.Stdout = os.Stdout
-	child.Stderr = os.Stderr
+
+	// Redirect daemon stdout/stderr to a log file. Inheriting the parent's
+	// stdout/stderr causes SIGPIPE when the parent exits (broken pipe),
+	// silently killing the daemon.
+	logPath := filepath.Join(os.TempDir(), "oro-daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // log path is deterministic
+	if err != nil {
+		return 0, fmt.Errorf("open daemon log %s: %w", logPath, err)
+	}
+	child.Stdout = logFile
+	child.Stderr = logFile
+
 	child.Env = cleanEnvForDaemon(os.Environ())
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := child.Start(); err != nil {
+		_ = logFile.Close()
 		return 0, fmt.Errorf("spawn daemon: %w", err)
 	}
+	// logFile fd is inherited by the child; parent can close its copy.
+	_ = logFile.Close()
 	return child.Process.Pid, nil
 }
 

@@ -118,8 +118,12 @@ func StopDaemon(pidPath string) error {
 // SetupSignalHandler installs a SIGTERM/SIGINT handler that cancels the
 // returned context when a signal is received. It also returns a cleanup
 // function that removes the PID file — callers should defer it.
+// SIGPIPE is explicitly ignored so the daemon survives broken stdout/stderr
+// pipes after the parent process exits.
 func SetupSignalHandler(parent context.Context, pidPath string) (shutdownCtx context.Context, cleanup func()) {
 	ctx, cancel := context.WithCancel(parent)
+
+	signal.Ignore(syscall.SIGPIPE)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
