@@ -79,6 +79,7 @@ const (
 	EscWorkerCrash        EscalationType = "WORKER_CRASH"
 	EscStatus             EscalationType = "STATUS"
 	EscDrainComplete      EscalationType = "DRAIN_COMPLETE"
+	EscMissingAC          EscalationType = "MISSING_AC"
 )
 
 // FormatEscalation produces a structured escalation message in the form:

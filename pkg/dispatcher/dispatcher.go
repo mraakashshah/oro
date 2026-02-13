@@ -1473,18 +1473,31 @@ func (d *Dispatcher) checkPriorityContention(ctx context.Context, beads []protoc
 // assignBead creates a worktree and sends ASSIGN to the worker.
 // If memories exist for the bead's description, they are included in the
 // AssignPayload.MemoryContext field for cross-session continuity.
-func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) {
+// checkBeadReady validates bead ID and acceptance criteria. Returns title,
+// acceptance, and true if the bead is ready for assignment. Escalates to
+// manager if AC is missing.
+func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, workerID string) (title, acceptance string, ok bool) {
 	if err := protocol.ValidateBeadID(bead.ID); err != nil {
-		_ = d.logEvent(ctx, "invalid_bead_id", "dispatcher", bead.ID, w.id,
+		_ = d.logEvent(ctx, "invalid_bead_id", "dispatcher", bead.ID, workerID,
 			fmt.Sprintf(`{"error":%q}`, err.Error()))
-		return
+		return "", "", false
 	}
-
-	title, acceptance := d.lookupBeadDetail(ctx, bead.ID, w.id)
+	title, acceptance = d.lookupBeadDetail(ctx, bead.ID, workerID)
 	if acceptance == "" {
-		_ = d.logEvent(ctx, "missing_acceptance", "dispatcher", bead.ID, w.id,
-			"bead has no acceptance criteria — skipping assignment")
+		_ = d.logEvent(ctx, "missing_acceptance", "dispatcher", bead.ID, workerID,
+			"bead has no acceptance criteria — escalating to manager")
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMissingAC, bead.ID,
+			"bead has no acceptance criteria — please add AC via bd update",
+			fmt.Sprintf("title: %s", title)), bead.ID, workerID)
 		d.recordAssignmentFailure(bead.ID)
+		return title, "", false
+	}
+	return title, acceptance, true
+}
+
+func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) {
+	title, acceptance, ok := d.checkBeadReady(ctx, bead, w.id)
+	if !ok {
 		return
 	}
 

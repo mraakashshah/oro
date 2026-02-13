@@ -7157,6 +7157,59 @@ func TestFilterAssignableSkipsExhaustedBeads(t *testing.T) {
 	}
 }
 
+// --- missing acceptance criteria escalation tests ---
+
+func TestAssignBead_MissingAcceptanceEscalatesToManager(t *testing.T) {
+	d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	d.setState(StateRunning)
+
+	// Set up a bead with no acceptance criteria.
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-no-ac"] = &protocol.BeadDetail{
+		Title:              "Test bead without AC",
+		AcceptanceCriteria: "", // empty = no AC
+	}
+	beadSrc.mu.Unlock()
+
+	// Connect a worker.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1"},
+	})
+	waitForWorkers(t, d, 1, 2*time.Second)
+
+	// Attempt to assign the bead.
+	w := &trackedWorker{id: "w1", conn: conn, state: protocol.WorkerIdle}
+	d.assignBead(context.Background(), w, protocol.Bead{ID: "bead-no-ac", Title: "Test bead without AC", Type: "task"})
+
+	// Verify escalation was sent (not silent skip).
+	esc.mu.Lock()
+	escalated := len(esc.messages) > 0
+	var escMsg string
+	if escalated {
+		escMsg = esc.messages[len(esc.messages)-1]
+	}
+	esc.mu.Unlock()
+
+	if !escalated {
+		t.Fatal("expected escalation for missing acceptance criteria")
+	}
+	if !strings.Contains(escMsg, "bead-no-ac") {
+		t.Fatalf("escalation should mention bead ID, got: %s", escMsg)
+	}
+
+	// Verify worktree was NOT created (no assignment should happen).
+	wtMgr.mu.Lock()
+	_, created := wtMgr.created["bead-no-ac"]
+	wtMgr.mu.Unlock()
+	if created {
+		t.Fatal("worktree should not be created for bead without AC")
+	}
+}
+
 // --- safeGo panic recovery tests ---
 
 func TestSafeGo_NormalCompletion(t *testing.T) {
