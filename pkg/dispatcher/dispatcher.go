@@ -249,6 +249,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			qgStuckTracker:   make(map[string]*qgHistory),
 			escalatedBeads:   make(map[string]bool),
 			worktreeFailures: make(map[string]time.Time),
+			exhaustedBeads:   make(map[string]bool),
 		},
 		beadsDir:  protocol.BeadsDir,
 		nowFunc:   time.Now,
@@ -670,6 +671,11 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 			fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
 		d.clearBeadTracking(beadID)
+
+		// Mark bead as exhausted so filterAssignable blocks re-assignment.
+		d.mu.Lock()
+		d.exhaustedBeads[beadID] = true
+		d.mu.Unlock()
 		return
 	}
 
@@ -1373,12 +1379,26 @@ func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Collect bead IDs already assigned to busy/reserved workers.
+	activeBeads := make(map[string]bool)
+	for _, w := range d.workers {
+		if w.beadID != "" && w.state != protocol.WorkerIdle {
+			activeBeads[w.beadID] = true
+		}
+	}
+
 	out := make([]protocol.Bead, 0, len(allBeads))
 	for _, b := range allBeads {
 		if b.Type == "epic" {
 			continue
 		}
 		if failedAt, ok := d.worktreeFailures[b.ID]; ok && now.Sub(failedAt) < worktreeFailureCooldown {
+			continue
+		}
+		if activeBeads[b.ID] {
+			continue
+		}
+		if d.exhaustedBeads[b.ID] {
 			continue
 		}
 		out = append(out, b)
@@ -1425,14 +1445,20 @@ func (d *Dispatcher) checkPriorityContention(ctx context.Context, beads []protoc
 // If memories exist for the bead's description, they are included in the
 // AssignPayload.MemoryContext field for cross-session continuity.
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) {
-	// Validate bead ID before creating worktree (defense in depth).
 	if err := protocol.ValidateBeadID(bead.ID); err != nil {
 		_ = d.logEvent(ctx, "invalid_bead_id", "dispatcher", bead.ID, w.id,
 			fmt.Sprintf(`{"error":%q}`, err.Error()))
 		return
 	}
 
-	// Clear priority contention escalation flag when bead is assigned.
+	title, acceptance := d.lookupBeadDetail(ctx, bead.ID, w.id)
+	if acceptance == "" {
+		_ = d.logEvent(ctx, "missing_acceptance", "dispatcher", bead.ID, w.id,
+			"bead has no acceptance criteria — skipping assignment")
+		d.recordAssignmentFailure(bead.ID)
+		return
+	}
+
 	d.mu.Lock()
 	delete(d.escalatedBeads, bead.ID)
 	d.mu.Unlock()
@@ -1447,18 +1473,10 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	_ = d.createAssignment(ctx, bead.ID, w.id, worktree)
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
-
-	title, acceptance := d.lookupBeadDetail(ctx, bead.ID, w.id)
-	if d.rejectMissingAcceptance(ctx, bead.ID, w, worktree, acceptance) {
-		return
-	}
-
-	// Retrieve relevant memories for this bead (best-effort).
 	var memCtx string
 	if d.memories != nil {
 		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, bead.Title, 0)
 	}
-
 	d.mu.Lock()
 	w.state = protocol.WorkerBusy
 	w.beadID = bead.ID
@@ -1477,35 +1495,16 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		},
 	})
 	if err != nil {
-		// Revert worker to Idle so it is not permanently stuck in Busy.
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
 		w.worktree = ""
 		w.model = ""
 	}
 	d.mu.Unlock()
-
 	if err != nil {
 		_ = d.worktrees.Remove(ctx, worktree)
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
-}
-
-// rejectMissingAcceptance cleans up and returns true if acceptance is empty.
-func (d *Dispatcher) rejectMissingAcceptance(ctx context.Context, beadID string, w *trackedWorker, worktree, acceptance string) bool {
-	if acceptance != "" {
-		return false
-	}
-	_ = d.worktrees.Remove(ctx, worktree)
-	_ = d.logEvent(ctx, "missing_acceptance", "dispatcher", beadID, w.id,
-		"bead has no acceptance criteria — skipping assignment")
-	d.recordAssignmentFailure(beadID)
-	d.mu.Lock()
-	w.state = protocol.WorkerIdle
-	w.beadID = ""
-	w.worktree = ""
-	d.mu.Unlock()
-	return true
 }
 
 // lookupBeadDetail retrieves the title and acceptance criteria for a bead (best-effort).

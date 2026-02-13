@@ -24,6 +24,7 @@ type BeadTracker struct {
 	qgStuckTracker   map[string]*qgHistory      // bead ID -> consecutive QG output hashes
 	escalatedBeads   map[string]bool            // bead ID -> true if PRIORITY_CONTENTION escalated
 	worktreeFailures map[string]time.Time       // bead ID -> last worktree creation failure time
+	exhaustedBeads   map[string]bool            // bead ID -> true if QG retries exhausted (blocks re-assignment)
 }
 
 // --- Bead tracking helpers ---

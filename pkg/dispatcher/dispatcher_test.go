@@ -6931,3 +6931,228 @@ func TestProgressTimeoutConfigValidation(t *testing.T) {
 		t.Errorf("expected error to mention ProgressTimeout, got %q", err.Error())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Bug fix tests (oro-sjpe, oro-c8rq)
+// ---------------------------------------------------------------------------
+
+// TestTryAssignNoDuplicateBeadAssignment verifies that when two workers are
+// idle, each gets a different bead — not the same bead assigned to both.
+func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect two workers.
+	conn1, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w2",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 2, 1*time.Second)
+
+	// Provide two beads.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-a", Title: "Task A", Priority: 1, Type: "task"},
+		{ID: "bead-b", Title: "Task B", Priority: 2, Type: "task"},
+	})
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Read assignment messages from both workers.
+	msg1, ok1 := readMsg(t, conn1, 2*time.Second)
+	msg2, ok2 := readMsg(t, conn2, 2*time.Second)
+
+	if !ok1 || !ok2 {
+		t.Fatal("expected both workers to receive ASSIGN messages")
+	}
+	if msg1.Type != protocol.MsgAssign || msg2.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN messages, got %s and %s", msg1.Type, msg2.Type)
+	}
+
+	// The two workers must have different bead IDs.
+	if msg1.Assign.BeadID == msg2.Assign.BeadID {
+		t.Fatalf("both workers assigned same bead %q — expected different beads", msg1.Assign.BeadID)
+	}
+}
+
+// TestFilterAssignableSkipsActiveBeads verifies that filterAssignable excludes
+// beads that are currently assigned to a busy worker.
+func TestFilterAssignableSkipsActiveBeads(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Simulate a worker busy on bead-active.
+	d.mu.Lock()
+	d.workers["w1"] = &trackedWorker{
+		id:     "w1",
+		state:  protocol.WorkerBusy,
+		beadID: "bead-active",
+	}
+	d.mu.Unlock()
+
+	beads := []protocol.Bead{
+		{ID: "bead-active", Title: "Active bead", Priority: 1, Type: "task"},
+		{ID: "bead-free", Title: "Free bead", Priority: 2, Type: "task"},
+	}
+
+	result := d.filterAssignable(beads)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 assignable bead, got %d", len(result))
+	}
+	if result[0].ID != "bead-free" {
+		t.Fatalf("expected bead-free, got %s", result[0].ID)
+	}
+}
+
+// TestQGExhaustionPreventsReassignment verifies that after QG retry exhaustion,
+// the bead is NOT re-assigned to a worker on subsequent cycles.
+func TestQGExhaustionPreventsReassignment(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect a worker.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Provide one bead — use Opus model so no model escalation reset.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-exh", Title: "Will exhaust QG", Priority: 1, Type: "task", Model: protocol.ModelOpus},
+	})
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Read and discard the initial ASSIGN.
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok || msg.Type != protocol.MsgAssign {
+		t.Fatal("expected initial ASSIGN")
+	}
+
+	// Seed attemptCounts so the next QG failure triggers exhaustion.
+	d.mu.Lock()
+	d.attemptCounts["bead-exh"] = maxQGRetries - 1
+	d.mu.Unlock()
+
+	// Send a QG failure via MsgDone (how workers report QG results).
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-exh",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+			QGOutput:          "FAIL: coverage too low",
+		},
+	})
+
+	// Wait for the dispatcher to process exhaustion and release the worker.
+	time.Sleep(200 * time.Millisecond)
+
+	// The bead should now be in exhaustedBeads and NOT re-assigned.
+	// Try to read another message — should NOT be an ASSIGN for bead-exh.
+	msg2, ok2 := readMsg(t, conn, 1*time.Second)
+	if ok2 && msg2.Type == protocol.MsgAssign && msg2.Assign.BeadID == "bead-exh" {
+		t.Fatal("exhausted bead was re-assigned — should be blocked from re-assignment")
+	}
+
+	// Verify exhaustedBeads contains the bead.
+	d.mu.Lock()
+	exhausted := d.exhaustedBeads["bead-exh"]
+	d.mu.Unlock()
+	if !exhausted {
+		t.Fatal("bead-exh should be in exhaustedBeads after QG exhaustion")
+	}
+}
+
+// TestAssignBeadSkipsMissingAcceptanceBeforeWorktree verifies that beads
+// without acceptance criteria are rejected BEFORE creating a worktree.
+func TestAssignBeadSkipsMissingAcceptanceBeforeWorktree(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect a worker.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Configure bead with empty acceptance criteria.
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-noac"] = &protocol.BeadDetail{
+		Title:              "No AC bead",
+		AcceptanceCriteria: "",
+	}
+	beadSrc.mu.Unlock()
+
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-noac", Title: "No AC bead", Priority: 1, Type: "task"},
+	})
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Wait for the assign cycle to process.
+	time.Sleep(300 * time.Millisecond)
+
+	// No worktree should have been created for bead-noac.
+	wtMgr.mu.Lock()
+	_, created := wtMgr.created["bead-noac"]
+	wtMgr.mu.Unlock()
+
+	if created {
+		t.Fatal("worktree was created for bead without acceptance criteria — should be rejected before worktree creation")
+	}
+
+	// Worker should NOT receive an ASSIGN.
+	msg, ok := readMsg(t, conn, 500*time.Millisecond)
+	if ok && msg.Type == protocol.MsgAssign && msg.Assign.BeadID == "bead-noac" {
+		t.Fatal("bead without acceptance criteria was assigned to worker")
+	}
+}
+
+// TestFilterAssignableSkipsExhaustedBeads verifies that filterAssignable
+// excludes beads marked as QG-exhausted.
+func TestFilterAssignableSkipsExhaustedBeads(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	d.mu.Lock()
+	d.exhaustedBeads["bead-stuck"] = true
+	d.mu.Unlock()
+
+	beads := []protocol.Bead{
+		{ID: "bead-stuck", Title: "Exhausted", Priority: 1, Type: "task"},
+		{ID: "bead-ok", Title: "Available", Priority: 2, Type: "task"},
+	}
+
+	result := d.filterAssignable(beads)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 assignable bead, got %d", len(result))
+	}
+	if result[0].ID != "bead-ok" {
+		t.Fatalf("expected bead-ok, got %s", result[0].ID)
+	}
+}
