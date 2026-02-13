@@ -1222,7 +1222,7 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 		ack.OK = false
 		ack.Detail = "invalid directive"
 	} else {
-		detail, err := d.applyDirective(dir, args, msg.Directive.HumanApproved)
+		detail, err := d.applyDirective(dir, args)
 		if err != nil {
 			ack.OK = false
 			ack.Detail = err.Error()
@@ -1530,7 +1530,7 @@ type statusResponse struct {
 
 // applyDirective transitions the dispatcher state machine and returns a detail
 // string for the ACK response. Returns an error for invalid args (e.g. scale).
-func (d *Dispatcher) applyDirective(dir protocol.Directive, args string, humanApproved bool) (string, error) {
+func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string, error) {
 	if dir == protocol.DirectiveScale {
 		return d.applyScaleDirective(args)
 	}
@@ -1539,11 +1539,7 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string, humanAp
 		d.setState(StateRunning)
 		return "started", nil
 	case protocol.DirectiveStop:
-		if !humanApproved {
-			return "", fmt.Errorf("stop directive requires human approval")
-		}
-		d.setState(StateStopping)
-		return "stopping", nil
+		return "", fmt.Errorf("stop directive disabled; use 'oro stop' for graceful shutdown")
 	case protocol.DirectivePause:
 		d.setState(StatePaused)
 		return "paused", nil

@@ -479,9 +479,8 @@ func sendDirective(t *testing.T, socketPath, directive string) {
 	msg := protocol.Message{
 		Type: protocol.MsgDirective,
 		Directive: &protocol.DirectivePayload{
-			Op:            directive,
-			Args:          "",
-			HumanApproved: true, // test helper simulates CLI (human-initiated)
+			Op:   directive,
+			Args: "",
 		},
 	}
 	data, err := json.Marshal(msg)
@@ -1264,31 +1263,23 @@ func TestDispatcher_Reconnect_ResumesWorker(t *testing.T) {
 	}, 1*time.Second)
 }
 
-func TestDispatcher_StopDirective_FinishesCurrent(t *testing.T) {
-	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+func TestDispatcher_StopDirective_AlwaysRejected(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
-	// Start, then stop
+	// Start the dispatcher
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
+	// Stop directive should be rejected — dispatcher stays running.
+	// (P0 fix: only SIGTERM via 'oro stop' can stop the swarm.)
 	sendDirective(t, d.cfg.SocketPath, "stop")
-	waitForState(t, d, StateStopping, 1*time.Second)
 
-	// Connect a worker — it should NOT receive assignments in stopping state
-	conn, _ := connectWorker(t, d.cfg.SocketPath)
-	sendMsg(t, conn, protocol.Message{
-		Type:      protocol.MsgHeartbeat,
-		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-stop", ContextPct: 5},
-	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	// Give a moment for the directive to be processed
+	time.Sleep(50 * time.Millisecond)
 
-	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-noassign", Title: "Should not be assigned", Priority: 1}})
-
-	// Wait a couple poll cycles — no ASSIGN should arrive
-	_, ok := readMsg(t, conn, 400*time.Millisecond)
-	if ok {
-		t.Fatal("should not receive ASSIGN in stopping state")
+	if d.GetState() != StateRunning {
+		t.Fatalf("dispatcher should remain running after stop directive, got %s", d.GetState())
 	}
 }
 
@@ -1470,48 +1461,35 @@ func TestApplyDirective(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
 	tests := []struct {
-		dir           protocol.Directive
-		args          string
-		humanApproved bool
-		want          State
+		dir  protocol.Directive
+		args string
+		want State
 	}{
-		{protocol.DirectiveStart, "", false, StateRunning},
-		{protocol.DirectivePause, "", false, StatePaused},
-		{protocol.DirectiveStop, "", true, StateStopping},
-		{protocol.DirectiveFocus, "epic-1", false, StateRunning},
+		{protocol.DirectiveStart, "", StateRunning},
+		{protocol.DirectivePause, "", StatePaused},
+		{protocol.DirectiveFocus, "epic-1", StateRunning},
 	}
 
 	for _, tt := range tests {
-		_, _ = d.applyDirective(tt.dir, tt.args, tt.humanApproved)
+		_, _ = d.applyDirective(tt.dir, tt.args)
 		if d.GetState() != tt.want {
 			t.Fatalf("after %s: got %s, want %s", tt.dir, d.GetState(), tt.want)
 		}
 	}
 }
 
-func TestApplyDirective_StopRequiresHumanApproval(t *testing.T) {
+func TestApplyDirective_StopAlwaysRejected(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)
 
-	// Stop without human approval should be rejected.
-	_, err := d.applyDirective(protocol.DirectiveStop, "", false)
+	// Stop directive is unconditionally rejected (P0 fix: only SIGTERM via
+	// 'oro stop' can stop the swarm — no directive can do it).
+	_, err := d.applyDirective(protocol.DirectiveStop, "")
 	if err == nil {
-		t.Fatal("expected error for stop without human approval")
+		t.Fatal("expected error for stop directive")
 	}
 	if d.GetState() != StateRunning {
-		t.Fatalf("state should remain running, got %s", d.GetState())
-	}
-
-	// Stop with human approval should succeed.
-	detail, err := d.applyDirective(protocol.DirectiveStop, "", true)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if detail != "stopping" {
-		t.Fatalf("detail = %q, want %q", detail, "stopping")
-	}
-	if d.GetState() != StateStopping {
-		t.Fatalf("state = %s, want %s", d.GetState(), StateStopping)
+		t.Fatalf("state should remain running after stop directive, got %s", d.GetState())
 	}
 }
 

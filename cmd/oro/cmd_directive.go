@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 
 	"oro/pkg/protocol"
@@ -87,9 +86,8 @@ func sendDirective(conn net.Conn, op, opArgs string) error {
 	msg := protocol.Message{
 		Type: protocol.MsgDirective,
 		Directive: &protocol.DirectivePayload{
-			Op:            op,
-			Args:          opArgs,
-			HumanApproved: os.Getenv("ORO_ROLE") == "", // only human (no role) can approve destructive ops
+			Op:   op,
+			Args: opArgs,
 		},
 	}
 

@@ -1,19 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"oro/pkg/protocol"
 )
 
 func TestStopGraceful(t *testing.T) {
@@ -22,23 +15,6 @@ func TestStopGraceful(t *testing.T) {
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
 		t.Fatalf("setup PID: %v", err)
-	}
-
-	// Setup: mock UDS dispatcher that records directives.
-	sockPath := fmt.Sprintf("/tmp/oro-stop-%d.sock", time.Now().UnixNano())
-	defer os.Remove(sockPath)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	ops := make(chan string, 10)
-	ready := make(chan struct{})
-	go runMockStopDispatcher(ctx, t, sockPath, ops, ready)
-
-	select {
-	case <-ready:
-	case <-ctx.Done():
-		t.Fatal("timeout waiting for mock dispatcher")
 	}
 
 	// Setup: fakeCmd to record tmux and bd calls.
@@ -50,7 +26,6 @@ func TestStopGraceful(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := &stopConfig{
 		pidPath:  pidFile,
-		sockPath: sockPath,
 		tmuxName: "oro",
 		runner:   fake,
 		w:        &buf,
@@ -58,21 +33,11 @@ func TestStopGraceful(t *testing.T) {
 		aliveFn:  func(pid int) bool { return false }, // process "exits" immediately
 	}
 
-	if err := runStopSequence(ctx, cfg); err != nil {
+	if err := runStopSequence(context.Background(), cfg); err != nil {
 		t.Fatalf("runStopSequence: %v", err)
 	}
 
-	// Assert: UDS "stop" directive was sent.
-	select {
-	case op := <-ops:
-		if op != "stop" {
-			t.Errorf("directive op = %q, want \"stop\"", op)
-		}
-	default:
-		t.Fatal("no directive received by mock dispatcher")
-	}
-
-	// Assert: SIGTERM was sent.
+	// Assert: SIGTERM was sent (this is the only shutdown mechanism now).
 	if !signaled {
 		t.Error("expected signalFn to be called")
 	}
@@ -141,43 +106,6 @@ func TestStop_Stale(t *testing.T) {
 	}
 }
 
-func TestStop_UDSFailContinues(t *testing.T) {
-	// When UDS connection fails, stop should still signal the process and continue.
-	tmpDir := t.TempDir()
-	pidFile := filepath.Join(tmpDir, "oro.pid")
-	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
-		t.Fatalf("setup PID: %v", err)
-	}
-
-	fake := newFakeCmd()
-	signaled := false
-
-	var buf bytes.Buffer
-	cfg := &stopConfig{
-		pidPath:  pidFile,
-		sockPath: filepath.Join(tmpDir, "nonexistent.sock"), // will fail to connect
-		tmuxName: "oro",
-		runner:   fake,
-		w:        &buf,
-		signalFn: func(pid int) error { signaled = true; return nil },
-		aliveFn:  func(pid int) bool { return false },
-	}
-
-	if err := runStopSequence(context.Background(), cfg); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should still signal and continue.
-	if !signaled {
-		t.Error("expected signalFn to be called even when UDS fails")
-	}
-
-	// Should still kill tmux.
-	if killCall := findCall(fake.calls, "kill-session"); killCall == nil {
-		t.Error("tmux kill-session not called")
-	}
-}
-
 // TestStop_RefusedWhenAgentRole verifies that oro stop refuses to run
 // when ORO_ROLE is set (i.e., called from an agent, not a human).
 func TestStop_RefusedWhenAgentRole(t *testing.T) {
@@ -192,62 +120,5 @@ func TestStop_RefusedWhenAgentRole(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "agent") && !strings.Contains(err.Error(), "human") {
 		t.Errorf("expected error about agent/human restriction, got: %v", err)
-	}
-}
-
-// runMockStopDispatcher listens on a UDS, accepts one connection,
-// reads a directive, records its op, and sends an ACK.
-func runMockStopDispatcher(ctx context.Context, t *testing.T, sockPath string, ops chan<- string, ready chan<- struct{}) {
-	t.Helper()
-
-	ln, err := net.Listen("unix", sockPath)
-	if err != nil {
-		t.Errorf("mock stop dispatcher listen: %v", err)
-		return
-	}
-	defer ln.Close()
-	defer os.Remove(sockPath)
-
-	close(ready)
-
-	connCh := make(chan net.Conn, 1)
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		connCh <- conn
-	}()
-
-	select {
-	case conn := <-connCh:
-		defer conn.Close()
-
-		scanner := bufio.NewScanner(conn)
-		if !scanner.Scan() {
-			t.Error("mock stop dispatcher: no data")
-			return
-		}
-
-		var msg protocol.Message
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			t.Errorf("mock stop dispatcher unmarshal: %v", err)
-			return
-		}
-
-		if msg.Directive != nil {
-			ops <- msg.Directive.Op
-		}
-
-		ack := protocol.Message{
-			Type: protocol.MsgACK,
-			ACK:  &protocol.ACKPayload{OK: true, Detail: "stopping"},
-		}
-		data, _ := json.Marshal(ack)
-		data = append(data, '\n')
-		_, _ = conn.Write(data)
-
-	case <-ctx.Done():
-		return
 	}
 }

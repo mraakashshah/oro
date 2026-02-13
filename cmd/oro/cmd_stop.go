@@ -14,7 +14,6 @@ import (
 // stopConfig holds injectable dependencies for the graceful shutdown sequence.
 type stopConfig struct {
 	pidPath  string
-	sockPath string
 	tmuxName string
 	runner   CmdRunner
 	w        io.Writer
@@ -42,14 +41,9 @@ func newStopCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("get pid path: %w", err)
 			}
-			sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
-			if err != nil {
-				return fmt.Errorf("get socket path: %w", err)
-			}
 
 			cfg := &stopConfig{
 				pidPath:  pidPath,
-				sockPath: sockPath,
 				tmuxName: "oro",
 				runner:   &ExecRunner{},
 				w:        cmd.OutOrStdout(),
@@ -96,14 +90,8 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 		return RemovePIDFile(cfg.pidPath)
 	}
 
-	// 1. Send "stop" directive via UDS. Best-effort — if socket is gone,
-	//    SIGTERM alone still triggers the dispatcher's graceful shutdown.
-	fmt.Fprintf(cfg.w, "sending stop directive to dispatcher (PID %d)\n", pid)
-	if derr := sendStopDirective(ctx, cfg.sockPath); derr != nil {
-		fmt.Fprintf(cfg.w, "warning: could not send stop directive: %v\n", derr)
-	}
-
-	// 2. Signal the dispatcher process.
+	// 1. Signal the dispatcher process (SIGTERM triggers graceful drain).
+	fmt.Fprintf(cfg.w, "sending SIGTERM to dispatcher (PID %d)\n", pid)
 	if err := cfg.signalFn(pid); err != nil {
 		return fmt.Errorf("signal dispatcher: %w", err)
 	}
@@ -129,25 +117,6 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 	_ = RemovePIDFile(cfg.pidPath)
 
 	fmt.Fprintln(cfg.w, "shutdown complete")
-	return nil
-}
-
-// sendStopDirective connects to the dispatcher UDS and sends a "stop" directive.
-func sendStopDirective(ctx context.Context, sockPath string) error {
-	conn, err := dialDispatcher(ctx, sockPath)
-	if err != nil {
-		return fmt.Errorf("dial dispatcher: %w", err)
-	}
-	defer conn.Close()
-
-	if err := sendDirective(conn, "stop", ""); err != nil {
-		return fmt.Errorf("send stop directive: %w", err)
-	}
-
-	if _, err := readACK(conn); err != nil {
-		return fmt.Errorf("read ack: %w", err)
-	}
-
 	return nil
 }
 
