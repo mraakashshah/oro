@@ -7156,3 +7156,93 @@ func TestFilterAssignableSkipsExhaustedBeads(t *testing.T) {
 		t.Fatalf("expected bead-ok, got %s", result[0].ID)
 	}
 }
+
+// --- safeGo panic recovery tests ---
+
+func TestSafeGo_NormalCompletion(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	done := make(chan struct{})
+	d.safeGo(func() {
+		close(done)
+	})
+
+	select {
+	case <-done:
+		// Success — goroutine ran to completion.
+	case <-time.After(2 * time.Second):
+		t.Fatal("safeGo goroutine did not complete")
+	}
+}
+
+func TestSafeGo_PanicRecovery(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	// Transition to running so we can verify dispatcher stays alive.
+	d.setState(StateRunning)
+
+	// Launch a goroutine that panics.
+	panicked := make(chan struct{})
+	d.safeGo(func() {
+		defer close(panicked)
+		panic("test panic in safeGo")
+	})
+
+	// Wait for the goroutine to complete (via recovery).
+	select {
+	case <-panicked:
+		// Goroutine's defer ran after recovery — good.
+	case <-time.After(2 * time.Second):
+		t.Fatal("panicking goroutine did not complete")
+	}
+
+	// Verify dispatcher is still alive by checking state.
+	if got := d.GetState(); got != StateRunning {
+		t.Fatalf("dispatcher should still be running, got %s", got)
+	}
+
+	// Verify the panic was logged to the events table.
+	// The recover defer runs after fn's defers, so poll briefly.
+	waitFor(t, func() bool {
+		var count int
+		_ = d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type='goroutine_panic'`).Scan(&count)
+		return count > 0
+	}, 2*time.Second)
+}
+
+func TestSafeGo_PanicDoesNotLeakWaitGroup(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Launch multiple goroutines, some of which panic.
+	const total = 5
+	var completed atomic.Int32
+	for i := 0; i < total; i++ {
+		shouldPanic := i%2 == 0
+		d.safeGo(func() {
+			completed.Add(1)
+			if shouldPanic {
+				panic("boom")
+			}
+		})
+	}
+
+	// Wait for all goroutines to finish via WaitGroup.
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All goroutines completed (including panicking ones).
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitGroup not drained — safeGo leaked a goroutine")
+	}
+
+	if got := completed.Load(); got != total {
+		t.Fatalf("expected %d completions, got %d", total, got)
+	}
+}

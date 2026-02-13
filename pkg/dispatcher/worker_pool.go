@@ -303,13 +303,11 @@ func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Durati
 	d.mu.Unlock()
 
 	// Spawn background goroutine to wait for approval or timeout
-	d.wg.Add(1)
-	go d.shutdownWaitLoop(ctx, cancel, workerID)
+	d.safeGo(func() { d.shutdownWaitLoop(ctx, cancel, workerID) })
 }
 
 // shutdownWaitLoop polls for worker approval or timeout (extracted for complexity).
 func (d *Dispatcher) shutdownWaitLoop(shutdownCtx context.Context, cancelFunc context.CancelFunc, workerID string) {
-	defer d.wg.Done()
 	defer cancelFunc() // Clean up context when goroutine exits
 
 	ticker := time.NewTicker(50 * time.Millisecond)

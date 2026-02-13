@@ -19,6 +19,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"sync"
@@ -258,6 +259,24 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	}, nil
 }
 
+// safeGo runs fn in a tracked goroutine with panic recovery. If fn panics,
+// the panic and stack trace are logged to the events table and the goroutine
+// exits cleanly instead of crashing the process. The goroutine is tracked
+// by d.wg for graceful shutdown.
+func (d *Dispatcher) safeGo(fn func()) {
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				_ = d.logEvent(context.Background(), "goroutine_panic", "dispatcher", "", "",
+					fmt.Sprintf(`{"panic":%q,"stack":%q}`, fmt.Sprint(r), string(debug.Stack())))
+			}
+		}()
+		fn()
+	}()
+}
+
 // GetState returns the current dispatcher state.
 func (d *Dispatcher) GetState() State {
 	d.mu.Lock()
@@ -319,25 +338,13 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	d.mu.Unlock()
 
 	// Accept connections
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.acceptLoop(ctx, ln)
-	}()
+	d.safeGo(func() { d.acceptLoop(ctx, ln) })
 
 	// Bead assignment loop
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.assignLoop(ctx)
-	}()
+	d.safeGo(func() { d.assignLoop(ctx) })
 
 	// Heartbeat monitor
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.heartbeatLoop(ctx)
-	}()
+	d.safeGo(func() { d.heartbeatLoop(ctx) })
 
 	<-ctx.Done()
 
@@ -409,12 +416,10 @@ func (d *Dispatcher) acceptLoop(ctx context.Context, ln net.Listener) {
 		// Acquire semaphore slot before spawning handler
 		select {
 		case d.acceptSem <- struct{}{}:
-			d.wg.Add(1)
-			go func() {
-				defer d.wg.Done()
+			d.safeGo(func() {
 				defer func() { <-d.acceptSem }() // Release semaphore slot
 				d.handleConn(ctx, conn)
-			}()
+			})
 		case <-ctx.Done():
 			_ = conn.Close()
 			return
@@ -612,11 +617,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	d.clearBeadTracking(beadID)
 
 	// Merge in background
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
-	}()
+	d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch) })
 }
 
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
@@ -777,11 +778,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 				Worktree:      worktree,
 				ConflictFiles: conflictErr.Files,
 			})
-			d.wg.Add(1)
-			go func() {
-				defer d.wg.Done()
-				d.handleMergeConflictResult(ctx, beadID, workerID, worktree, resultCh)
-			}()
+			d.safeGo(func() { d.handleMergeConflictResult(ctx, beadID, workerID, worktree, resultCh) })
 			_ = d.logEvent(ctx, "merge_conflict", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"files":%q}`, conflictErr.Files))
 			return
@@ -813,7 +810,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	d.mu.Unlock()
 
 	if shouldConsolidate {
-		go func() {
+		d.safeGo(func() {
 			merged, pruned, err := memory.Consolidate(ctx, d.memories, memory.ConsolidateOpts{})
 			if err != nil {
 				_ = d.logEvent(ctx, "memory_consolidation_failed", "dispatcher", "", "",
@@ -822,7 +819,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 			}
 			_ = d.logEvent(ctx, "memory_consolidation", "dispatcher", "", "",
 				fmt.Sprintf(`{"merged":%d,"pruned":%d}`, merged, pruned))
-		}()
+		})
 	}
 }
 
@@ -899,11 +896,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 			Worktree: worktree,
 			Symptom:  fmt.Sprintf("worker stuck after %d ralph handoffs", handoffCount),
 		})
-		d.wg.Add(1)
-		go func() {
-			defer d.wg.Done()
-			d.handleDiagnosisResult(ctx, beadID, workerID, resultCh)
-		}()
+		d.safeGo(func() { d.handleDiagnosisResult(ctx, beadID, workerID, resultCh) })
 
 		// Create a continuation bead to capture remaining work from the exhausted handoff.
 		contTitle := fmt.Sprintf("Continue: %s (handoff exhausted)", beadID)
@@ -1051,11 +1044,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	})
 
 	// Handle review result asynchronously
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.handleReviewResult(ctx, workerID, beadID, resultCh)
-	}()
+	d.safeGo(func() { d.handleReviewResult(ctx, workerID, beadID, resultCh) })
 }
 
 // maxReviewRejections is the number of rejection cycles before escalating to
