@@ -1312,6 +1312,9 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
+	// Reconcile worker pool size (spawns/removes workers to match target).
+	d.reconcileScale()
+
 	// Find idle workers and count total workers.
 	d.mu.Lock()
 	var idle []*trackedWorker

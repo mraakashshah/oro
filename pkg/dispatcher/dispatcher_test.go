@@ -3925,6 +3925,30 @@ func TestDispatcher_ScaleDirective_StoresTarget(t *testing.T) {
 	}
 }
 
+// TestDispatcher_AutoScaleOnStartup verifies that the assign loop automatically
+// calls reconcileScale, spawning workers up to targetWorkers without needing a
+// scale directive.
+func TestDispatcher_AutoScaleOnStartup(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	startDispatcher(t, d)
+
+	// Send start directive so dispatcher enters Running state
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// targetWorkers should be MaxWorkers=5 from New()
+	if got := d.TargetWorkers(); got != 5 {
+		t.Fatalf("expected targetWorkers=5, got %d", got)
+	}
+
+	// Wait for assign loop to call reconcileScale and spawn workers
+	waitFor(t, func() bool {
+		return len(pm.SpawnedIDs()) >= 5
+	}, 3*time.Second)
+}
+
 // TestDispatcher_ReconcileScale_SpawnsWorkers verifies that reconcileScale
 // spawns the correct number of worker processes when under target.
 func TestDispatcher_ReconcileScale_SpawnsWorkers(t *testing.T) {
