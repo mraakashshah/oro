@@ -1,0 +1,82 @@
+---
+date: 2026-02-13
+status: partial
+---
+
+goal: >
+  Diagnosed oro start failure when launched from Claude Code (no TTY),
+  designed detach mode, created bead for implementation.
+
+now: >
+  Pick up oro-6qif (detach mode). Single bead, ~5min. TDD in
+  cmd/oro/cmd_start.go and cmd/oro/start_test.go. Then restart oro
+  with detach mode working.
+
+test: go test -race -count=1 ./cmd/oro/... -run "TestIsDetached|TestRunFullStart_Detached" -v
+
+done_this_session:
+  - task: "Diagnosed oro start TTY failure"
+    details: >
+      oro start exits code 1 when launched from Claude Code Bash tool.
+      Root cause: AttachInteractive() requires real TTY on stdin.
+      Secondary issue: CLAUDECODE env var leaks into worker subprocesses,
+      blocking nested claude -p for review. Fix for CLAUDECODE: unset before
+      launch. Fix for TTY: detach mode (oro-6qif).
+
+  - task: "Wrote detach mode design spec"
+    files: [docs/plans/2026-02-13-detach-mode-design.md]
+    details: >
+      Auto-detect TTY via go-isatty (already indirect dep). Add --detach/-D
+      flag. Skip AttachInteractive when detached, print instructions, exit 0.
+      Daemon already survives parent exit (Setsid: true).
+
+  - task: "Created bead oro-6qif"
+    details: >
+      Full anatomy: Test/Cmd/Assert, Read list, Signatures, Edges.
+      Single worker-sized bead (2 files, 5min estimate).
+
+decisions:
+  - auto_detect_tty: >
+      Use go-isatty for TTY detection rather than explicit flag only.
+      Rationale: zero friction for CI/scripts/Claude Code. Flag exists
+      as explicit override.
+  - exit_immediately: >
+      In detach mode, exit 0 after setup rather than staying alive.
+      Rationale: daemon is Setsid, tmux session persists — parent
+      process has no purpose after setup.
+
+findings:
+  - claudecode_env_leak: >
+      CLAUDECODE env var set by Claude Code leaks into oro subprocesses
+      via Bash tool inheritance. Workers that try to spawn claude -p for
+      review get blocked by nested session detection. Workaround: unset
+      CLAUDECODE before ./oro start. Permanent fix: oro should clear
+      CLAUDECODE from child process env in SpawnDaemon.
+  - dispatcher_survives_parent: >
+      ExecDaemonSpawner uses Setsid: true, so dispatcher PID survives
+      parent oro start exit. But the error exit code is misleading.
+
+worked:
+  - "unset CLAUDECODE && ./oro start — workers can spawn claude -p"
+  - "Dispatcher runs fine headless, tmux creates fine with -d flag"
+
+failed:
+  - "Running ./oro start from Claude Code Bash tool — AttachInteractive needs TTY"
+  - "First restart attempt with CLAUDECODE still set — review_failed on all beads"
+
+next:
+  - "Execute oro-6qif: TDD detach mode in cmd/oro/cmd_start.go"
+  - "Consider permanent fix for CLAUDECODE leak in SpawnDaemon (separate bead)"
+  - "Restart oro after detach mode lands — should work cleanly from Claude Code"
+
+files:
+  created:
+    - docs/plans/2026-02-13-detach-mode-design.md
+    - docs/handoffs/2026-02-13_15-50_detach-mode-design.yaml
+  modified:
+    - .beads/issues.jsonl
+
+beads:
+  created: [oro-6qif]
+  in_progress: [oro-9hd, oro-js7.4, oro-js7.7]
+  remaining: [oro-6qif, oro-jmil.6, oro-jmil.7, oro-js7.4, oro-js7.5, oro-js7.6, oro-js7.7]
