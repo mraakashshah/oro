@@ -1478,6 +1478,15 @@ func TestApplyDirective(t *testing.T) {
 	}
 }
 
+func TestNew_TargetWorkersDefaultsToMaxWorkers(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	// newTestDispatcher sets MaxWorkers=5, so targetWorkers should default to 5
+	// (auto-scale to max on startup instead of waiting for a scale directive).
+	if got := d.TargetWorkers(); got != 5 {
+		t.Fatalf("expected targetWorkers=MaxWorkers=5, got %d", got)
+	}
+}
+
 func TestApplyDirective_StopAlwaysRejected(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)

@@ -228,15 +228,16 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	return &Dispatcher{
-		cfg:       resolved,
-		db:        db,
-		merger:    merger,
-		ops:       opsSpawner,
-		beads:     beads,
-		worktrees: wt,
-		escalator: esc,
-		memories:  memory.NewStore(db),
-		state:     StateInert,
+		cfg:           resolved,
+		db:            db,
+		merger:        merger,
+		ops:           opsSpawner,
+		beads:         beads,
+		worktrees:     wt,
+		escalator:     esc,
+		memories:      memory.NewStore(db),
+		state:         StateInert,
+		targetWorkers: resolved.MaxWorkers,
 		WorkerPool: WorkerPool{
 			workers: make(map[string]*trackedWorker),
 		},
