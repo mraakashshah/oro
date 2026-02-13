@@ -102,3 +102,110 @@ func detectPython(projectRoot string) bool {
 	}
 	return false
 }
+
+// TypeScriptProfile returns the language profile for TypeScript projects.
+//
+//oro:testonly
+func TypeScriptProfile() LangProfile {
+	return LangProfile{
+		Language: "typescript",
+		Detect:   detectTypeScript,
+		Formatters: []Tool{
+			{
+				Name:        "biome",
+				Cmd:         "biome format --write .",
+				DetectCmd:   "biome --version",
+				InstallHint: "npm install -g @biomejs/biome",
+			},
+		},
+		Linters: []Tool{
+			{
+				Name:        "biome",
+				Cmd:         "biome check .",
+				DetectCmd:   "biome --version",
+				InstallHint: "npm install -g @biomejs/biome",
+			},
+		},
+		TestCmd: "vitest",
+		TypeCheck: &Tool{
+			Name:        "tsc",
+			Cmd:         "tsc --noEmit",
+			DetectCmd:   "tsc --version",
+			InstallHint: "npm install -g typescript",
+		},
+		CodingRules: []string{
+			"Use biome for consistent formatting and linting",
+			"Run tsc --noEmit for type checking",
+			"Prefer functional patterns and immutability",
+			"Pure core (business logic), impure edges (I/O)",
+		},
+	}
+}
+
+// detectTypeScript returns true if the given directory contains tsconfig.json.
+func detectTypeScript(projectRoot string) bool {
+	tsconfigPath := filepath.Join(projectRoot, "tsconfig.json")
+	_, err := os.Stat(tsconfigPath)
+	return err == nil
+}
+
+// JavaScriptProfile returns the language profile for JavaScript projects.
+//
+//oro:testonly
+func JavaScriptProfile() LangProfile {
+	return LangProfile{
+		Language: "javascript",
+		Detect:   detectJavaScript,
+		Formatters: []Tool{
+			{
+				Name:        "biome",
+				Cmd:         "biome format --write .",
+				DetectCmd:   "biome --version",
+				InstallHint: "npm install -g @biomejs/biome",
+			},
+		},
+		Linters: []Tool{
+			{
+				Name:        "biome",
+				Cmd:         "biome check .",
+				DetectCmd:   "biome --version",
+				InstallHint: "npm install -g @biomejs/biome",
+			},
+		},
+		TestCmd: "vitest",
+		CodingRules: []string{
+			"Use biome for consistent formatting and linting",
+			"Prefer functional patterns and immutability",
+			"Pure core (business logic), impure edges (I/O)",
+		},
+	}
+}
+
+// detectJavaScript returns true if the given directory contains package.json
+// but NOT tsconfig.json (TypeScript takes precedence).
+func detectJavaScript(projectRoot string) bool {
+	packageJSONPath := filepath.Join(projectRoot, "package.json")
+	tsconfigPath := filepath.Join(projectRoot, "tsconfig.json")
+
+	// Has package.json
+	if _, err := os.Stat(packageJSONPath); err != nil {
+		return false
+	}
+
+	// Does NOT have tsconfig.json (that would be TypeScript)
+	if _, err := os.Stat(tsconfigPath); err == nil {
+		return false
+	}
+
+	return true
+}
+
+// AllProfiles returns all available language profiles.
+func AllProfiles() []LangProfile {
+	return []LangProfile{
+		GoProfile(),
+		PythonProfile(),
+		TypeScriptProfile(),
+		JavaScriptProfile(),
+	}
+}

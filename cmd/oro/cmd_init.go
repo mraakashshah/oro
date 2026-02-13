@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+
+	"oro/pkg/langprofile"
 
 	"github.com/spf13/cobra"
 )
@@ -200,36 +204,44 @@ func runInstall(w io.Writer, def toolDef) error {
 // newInitCmd creates the "oro init" subcommand.
 func newInitCmd() *cobra.Command {
 	var (
-		checkOnly bool
-		quiet     bool
+		checkOnly   bool
+		quiet       bool
+		projectRoot string
+		force       bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Bootstrap all oro dependencies",
-		Long: `Checks for and installs all tools required by the oro agent swarm.
+		Short: "Bootstrap all oro dependencies and generate config",
+		Long: `Checks for and installs all tools required by the oro agent swarm,
+then generates .oro/config.yaml based on detected languages.
 
 Phase 1: System prerequisites (Go, Python, Node, npm, Homebrew)
 Phase 2: Go tools (gofumpt, goimports, golangci-lint, etc.)
 Phase 3: Python tools (uv, ruff, pyright)
 Phase 4: System tools (tmux, shellcheck, biome, jq, ast-grep, bd)
+Phase 5: Generate .oro/config.yaml with language-specific tool profiles
 
 Use --check to verify without installing (exits non-zero if any tool is missing).
-Use --quiet to suppress all output (useful for CI scripts).`,
+Use --quiet to suppress all output (useful for CI scripts).
+Use --project-root to specify a different project directory (default: current directory).
+Use --force to overwrite existing .oro/config.yaml.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
-			return runInit(w, checkOnly, quiet)
+			return runInit(w, checkOnly, quiet, projectRoot, force)
 		},
 	}
 
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "verify tools without installing (exit 1 if any missing)")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress output, just exit code")
+	cmd.Flags().StringVar(&projectRoot, "project-root", ".", "project root directory for config generation")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing .oro/config.yaml")
 
 	return cmd
 }
 
 // runInit is the core logic for the init command, separated for testability.
-func runInit(w io.Writer, checkOnly, quiet bool) error {
+func runInit(w io.Writer, checkOnly, quiet bool, projectRoot string, force bool) error {
 	results := checkAllTools(defaultToolDefs)
 
 	if quiet {
@@ -255,11 +267,13 @@ func runInit(w io.Writer, checkOnly, quiet bool) error {
 		}
 	}
 
+	// Early return if no missing tools
 	if len(missing) == 0 {
 		formatInitTable(w, results)
-		return nil
+		return generateProjectConfig(w, projectRoot, force)
 	}
 
+	// Install missing tools
 	fmt.Fprintf(w, "Found %d missing tools. Installing...\n\n", len(missing))
 
 	for _, def := range missing {
@@ -280,6 +294,47 @@ func runInit(w io.Writer, checkOnly, quiet bool) error {
 
 	if !allToolsPresent(results) {
 		return fmt.Errorf("%d tools still missing after install", countMissing(results))
+	}
+
+	// Generate .oro/config.yaml
+	return generateProjectConfig(w, projectRoot, force)
+}
+
+// generateProjectConfig scans the project root for languages and generates .oro/config.yaml.
+func generateProjectConfig(w io.Writer, projectRoot string, force bool) error {
+	configPath := filepath.Join(projectRoot, ".oro", "config.yaml")
+
+	// Check if config already exists
+	if _, err := os.Stat(configPath); err == nil && !force {
+		errMsg := fmt.Sprintf("config already exists at %s (use --force to overwrite)", configPath)
+		fmt.Fprintln(w, errMsg)
+		return fmt.Errorf("%s", errMsg)
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Generating config at %s...\n", configPath)
+
+	// Generate config from detected languages
+	profiles := langprofile.AllProfiles()
+	cfg, err := langprofile.GenerateConfig(projectRoot, profiles)
+	if err != nil {
+		return fmt.Errorf("generate config: %w", err)
+	}
+
+	// Write config to file
+	if err := langprofile.WriteConfig(configPath, cfg); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	if len(cfg.Languages) == 0 {
+		fmt.Fprintln(w, "No languages detected. Empty config created.")
+	} else {
+		fmt.Fprintf(w, "Detected %d language(s): ", len(cfg.Languages))
+		langs := []string{}
+		for lang := range cfg.Languages {
+			langs = append(langs, lang)
+		}
+		fmt.Fprintln(w, strings.Join(langs, ", "))
 	}
 
 	return nil

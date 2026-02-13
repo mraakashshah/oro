@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -322,4 +324,165 @@ func TestCountMissing(t *testing.T) {
 	if got := countMissing(results); got != 2 {
 		t.Errorf("countMissing = %d, want 2", got)
 	}
+}
+
+// --- Config generation tests ---
+
+func TestInitCommand_GeneratesConfig(t *testing.T) {
+	t.Run("generates config for Go project", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create a go.mod file to simulate a Go project
+		goModPath := filepath.Join(tmpDir, "go.mod")
+		if err := os.WriteFile(goModPath, []byte("module example.com/test\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("failed to create go.mod: %v", err)
+		}
+
+		// Run init command
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetArgs([]string{"init", "--project-root", tmpDir})
+
+		if err := root.Execute(); err != nil {
+			t.Fatalf("init command failed: %v", err)
+		}
+
+		// Verify .oro/config.yaml was created
+		configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
+		if _, err := os.Stat(configPath); err != nil {
+			t.Fatalf("config file not created: %v", err)
+		}
+
+		// Verify config contains Go language profile
+		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("failed to read config: %v", err)
+		}
+
+		config := string(data)
+		if !strings.Contains(config, "go:") {
+			t.Errorf("config should contain 'go:' section, got:\n%s", config)
+		}
+		if !strings.Contains(config, "gofumpt") {
+			t.Errorf("config should contain 'gofumpt' tool, got:\n%s", config)
+		}
+		if !strings.Contains(config, "golangci-lint") {
+			t.Errorf("config should contain 'golangci-lint' tool, got:\n%s", config)
+		}
+	})
+
+	t.Run("generates empty config when no languages detected", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Run init command on empty directory
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetArgs([]string{"init", "--project-root", tmpDir})
+
+		if err := root.Execute(); err != nil {
+			t.Fatalf("init command failed: %v", err)
+		}
+
+		// Verify .oro/config.yaml was created with comment
+		configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
+		if _, err := os.Stat(configPath); err != nil {
+			t.Fatalf("config file not created: %v", err)
+		}
+
+		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("failed to read config: %v", err)
+		}
+
+		config := string(data)
+		if !strings.Contains(config, "#") || !strings.Contains(config, "no languages detected") {
+			t.Errorf("config should contain comment about no languages, got:\n%s", config)
+		}
+	})
+
+	t.Run("warns when config already exists", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create existing config
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // test directory
+			t.Fatalf("failed to create .oro dir: %v", err)
+		}
+		configPath := filepath.Join(oroDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("existing config\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("failed to create existing config: %v", err)
+		}
+
+		// Run init command without --force
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetErr(&buf)
+		root.SetArgs([]string{"init", "--project-root", tmpDir})
+
+		if err := root.Execute(); err == nil {
+			t.Fatal("init should fail when config exists without --force")
+		}
+
+		// Verify original config is unchanged
+		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("failed to read config: %v", err)
+		}
+		if string(data) != "existing config\n" {
+			t.Errorf("config should be unchanged, got:\n%s", string(data))
+		}
+
+		// Verify warning message
+		output := buf.String()
+		if !strings.Contains(output, "exists") || !strings.Contains(output, "--force") {
+			t.Errorf("output should warn about existing config and mention --force, got:\n%s", output)
+		}
+	})
+
+	t.Run("overwrites config with --force", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create a go.mod file
+		goModPath := filepath.Join(tmpDir, "go.mod")
+		if err := os.WriteFile(goModPath, []byte("module example.com/test\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("failed to create go.mod: %v", err)
+		}
+
+		// Create existing config
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // test directory
+			t.Fatalf("failed to create .oro dir: %v", err)
+		}
+		configPath := filepath.Join(oroDir, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("existing config\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("failed to create existing config: %v", err)
+		}
+
+		// Run init command with --force
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetArgs([]string{"init", "--project-root", tmpDir, "--force"})
+
+		if err := root.Execute(); err != nil {
+			t.Fatalf("init --force command failed: %v", err)
+		}
+
+		// Verify config was overwritten
+		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("failed to read config: %v", err)
+		}
+
+		config := string(data)
+		if strings.Contains(config, "existing config") {
+			t.Errorf("config should be overwritten, still contains old content:\n%s", config)
+		}
+		if !strings.Contains(config, "go:") {
+			t.Errorf("new config should contain 'go:' section, got:\n%s", config)
+		}
+	})
 }
