@@ -35,7 +35,10 @@ type ExecDaemonSpawner struct{}
 // The child is placed in its own session (Setsid) so it survives parent exit
 // without receiving SIGHUP from the parent's process group.
 func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers int) (int, error) {
-	child := exec.CommandContext(context.Background(), os.Args[0], "start", "--daemon-only", "--workers", strconv.Itoa(workers)) //nolint:gosec // intentionally re-executing self
+	// Use exec.Command (not CommandContext) — the daemon is a long-lived child
+	// that must survive parent exit. CommandContext starts an internal goroutine
+	// tied to the parent process lifecycle; plain Command avoids this entirely.
+	child := exec.Command(os.Args[0], "start", "--daemon-only", "--workers", strconv.Itoa(workers)) //nolint:gosec,noctx // intentionally re-executing self; no context — daemon must outlive parent
 
 	// Redirect daemon stdout/stderr to a log file. Inheriting the parent's
 	// stdout/stderr causes SIGPIPE when the parent exits (broken pipe),

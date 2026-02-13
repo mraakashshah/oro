@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -130,7 +131,10 @@ func SetupSignalHandler(parent context.Context, pidPath string) (shutdownCtx con
 
 	go func() {
 		select {
-		case <-sigCh:
+		case sig := <-sigCh:
+			fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
+			// Snapshot running processes to help identify signal sender.
+			dumpProcessSnapshot()
 			cancel()
 		case <-ctx.Done():
 		}
@@ -143,4 +147,21 @@ func SetupSignalHandler(parent context.Context, pidPath string) (shutdownCtx con
 	}
 
 	return ctx, cleanup
+}
+
+// dumpProcessSnapshot logs all oro-related processes at signal receipt time.
+// This helps identify which process sent the fatal signal.
+func dumpProcessSnapshot() {
+	out, err := exec.Command("ps", "axo", "pid,ppid,pgid,command").CombinedOutput() //nolint:gosec,noctx // diagnostic snapshot, no context needed
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SIGNAL-SNAPSHOT: ps failed: %v\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "SIGNAL-SNAPSHOT: process list at signal time:")
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "oro") || strings.Contains(line, "kill") ||
+			strings.Contains(line, "pkill") || strings.Contains(line, "PID") {
+			fmt.Fprintf(os.Stderr, "  %s\n", line)
+		}
+	}
 }
