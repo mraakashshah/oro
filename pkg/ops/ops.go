@@ -45,7 +45,7 @@ func (t Type) Model() string {
 	case OpsMerge, OpsDiagnosis:
 		return "claude-opus-4-6" // judgment-heavy
 	case OpsReview:
-		return "claude-sonnet-4-5-20250929" // mechanical
+		return "claude-opus-4-6" // full code review requires judgment
 	default:
 		return "claude-sonnet-4-5-20250929"
 	}
@@ -88,8 +88,11 @@ type Agent struct {
 // ReviewOpts configures a review agent.
 type ReviewOpts struct {
 	BeadID             string
+	BeadTitle          string
 	Worktree           string
 	AcceptanceCriteria string
+	BaseBranch         string // defaults to "main" if empty
+	ProjectRoot        string // for reading CLAUDE.md, .claude/rules/, .claude/review-patterns.md
 }
 
 // MergeOpts configures a merge conflict agent.
@@ -317,19 +320,7 @@ func extractFeedback(stdout, keyword string) string {
 }
 
 // --- Prompt builders ---
-
-func buildReviewPrompt(opts ReviewOpts) string {
-	var b strings.Builder
-	b.WriteString("Review the changes in this worktree against the acceptance criteria.\n")
-	b.WriteString("Run: git diff main\n")
-	if opts.AcceptanceCriteria != "" {
-		b.WriteString("Check: ")
-		b.WriteString(opts.AcceptanceCriteria)
-		b.WriteString("\n")
-	}
-	b.WriteString("Respond with APPROVED or REJECTED with feedback.\n")
-	return b.String()
-}
+// buildReviewPrompt is in review_prompt.go
 
 func buildMergePrompt(opts MergeOpts) string {
 	var b strings.Builder

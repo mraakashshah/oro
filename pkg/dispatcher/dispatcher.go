@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
@@ -1036,10 +1037,17 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 		return
 	}
 
+	// Look up bead details for the reviewer
+	title, acceptance := d.lookupBeadDetail(ctx, beadID, workerID)
+
 	// Spawn review ops agent
 	resultCh := d.ops.Review(ctx, ops.ReviewOpts{
-		BeadID:   beadID,
-		Worktree: worktree,
+		BeadID:             beadID,
+		BeadTitle:          title,
+		Worktree:           worktree,
+		AcceptanceCriteria: acceptance,
+		BaseBranch:         "main",
+		ProjectRoot:        worktree, // worktree is a full checkout with CLAUDE.md
 	})
 
 	// Handle review result asynchronously
@@ -1064,6 +1072,13 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 		case ops.VerdictApproved:
 			_ = d.logEvent(ctx, "review_approved", "ops", beadID, workerID, result.Feedback)
 			d.clearRejectionCount(beadID)
+
+			// Capture anti-patterns from reviewer output
+			patterns := ops.ExtractPatterns(result.Feedback)
+			if len(patterns) > 0 {
+				d.appendReviewPatterns(patterns)
+			}
+
 			// Notify worker to proceed to DONE.
 			d.mu.Lock()
 			w, ok := d.workers[workerID]
@@ -1145,6 +1160,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 			Assign: &protocol.AssignPayload{
 				BeadID:        beadID,
 				Worktree:      w.worktree,
+				Model:         "claude-opus-4-6", // escalate to Opus after review rejection
 				Feedback:      feedback,
 				MemoryContext: memCtx,
 				Attempt:       count,
@@ -1152,6 +1168,30 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		})
 	}
 	d.mu.Unlock()
+}
+
+// appendReviewPatterns appends captured anti-patterns to .claude/review-patterns.md
+// in the main repository root. Best-effort — errors are silently ignored.
+func (d *Dispatcher) appendReviewPatterns(patterns []string) {
+	// Derive project root from beadsDir (which is the repo root's .beads/)
+	root := filepath.Dir(d.beadsDir)
+	patternsFile := filepath.Join(root, ".claude", "review-patterns.md")
+
+	// Ensure .claude/ directory exists
+	claudeDir := filepath.Dir(patternsFile)
+	//nolint:gosec // directory permissions for project config
+	_ = os.MkdirAll(claudeDir, 0o755)
+
+	//nolint:gosec // patternsFile is derived from trusted beadsDir
+	f, err := os.OpenFile(patternsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	for _, p := range patterns {
+		_, _ = f.WriteString(p + "\n")
+	}
 }
 
 // clearRejectionCount, clearHandoffCount, clearBeadTracking, pruneStaleTracking → bead_tracker.go
