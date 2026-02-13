@@ -152,8 +152,10 @@ if $HAS_GO; then
     check "go-arch-lint" "go-arch-lint check --project-path ."
 
     header "GO TIER 5: TESTING"
-    check "go test" "go test -race -shuffle=on -p 2 -coverprofile=coverage.out ./internal/... ./pkg/... && go tool cover -func=coverage.out | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 90) exit 1}'"
-    check "coverage" "go tool cover -func=coverage.out | tail -1"
+    COVERAGE_FILE="/tmp/oro-coverage-$$.out"
+    check "go test" "go test -race -shuffle=on -p 2 -coverprofile=$COVERAGE_FILE ./internal/... ./pkg/... && go tool cover -func=$COVERAGE_FILE | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 90) exit 1}'"
+    check "coverage" "go tool cover -func=$COVERAGE_FILE | tail -1"
+    rm -f "$COVERAGE_FILE"
 
     header "GO TIER 6: SECURITY"
     check "govulncheck" "govulncheck ./..."
