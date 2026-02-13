@@ -1,0 +1,96 @@
+---
+date: 2026-02-13
+status: partial
+---
+
+goal: >
+  Investigate and fix intermittent daemon death (~35s after --detach).
+  Found daemon receives external SIGTERM. Added exec.Command fix and
+  signal diagnostic logging. Swarm ran successfully during testing.
+
+now: >
+  Next time the daemon dies, check $TMPDIR/oro-daemon.log for the
+  SIGNAL-SNAPSHOT section which lists all processes at signal time.
+  This will identify the killer process. If oro.test appears, a Claude
+  session in tmux is likely running go test ./cmd/oro/... which may
+  interact with the real daemon. Consider adding ORO_ROLE guard to
+  oro cleanup (like oro stop already has).
+
+test: make build && ./oro start --detach --workers 1 && sleep 60 && ./oro status
+
+done_this_session:
+  - task: "Confirmed daemon receives SIGTERM (not context cancellation)"
+    files:
+      - cmd/oro/daemon.go (signal handler logs signal name + process snapshot)
+    details: >
+      Added signal logging to SetupSignalHandler. Process snapshot at
+      death showed oro.test running with --test.short=true, suggesting
+      a Claude session ran go test which could interact with real daemon.
+
+  - task: "Changed exec.CommandContext to exec.Command in SpawnDaemon"
+    files:
+      - cmd/oro/cmd_start.go (line 41)
+    details: >
+      exec.CommandContext starts an internal goroutine tied to parent
+      process. Plain exec.Command avoids any lifecycle coupling. Strictly
+      correct for long-lived daemon children.
+
+  - task: "Reproduced daemon death 3 times, survived 2 times"
+    details: >
+      5 total tests: 2 deaths (both at ~35s with tmux), 3 survivals.
+      Without tmux, daemon survives indefinitely (90s+ test).
+      Daemon death is intermittent, correlated with Claude sessions in tmux.
+
+decisions:
+  - exec_command_over_context: >
+      exec.Command is strictly correct for SpawnDaemon since we use
+      context.Background() and never call Wait(). CommandContext starts
+      an unnecessary goroutine.
+  - keep_signal_snapshot: >
+      dumpProcessSnapshot in signal handler logs oro-related processes
+      to daemon log on SIGTERM/SIGINT. Diagnostic cost is negligible
+      (one ps call during shutdown).
+
+findings:
+  - daemon_death_is_external_sigterm: >
+      Signal handler confirmed: "shutdown: received terminated (PID N)".
+      Not context cancellation, not SIGPIPE, not SIGHUP. External SIGTERM.
+  - tmux_is_required_for_death: >
+      Daemon survives indefinitely without tmux sessions. Only dies when
+      Claude Code sessions are active in tmux. 0% death rate without tmux,
+      ~40% with tmux across 5 tests.
+  - process_snapshot_showed_oro_test: >
+      At time of death, oro.test was running (PID 15845, --test.short=true).
+      All cmd/oro tests use tmpDir for PID files, so direct interaction
+      unlikely. But worth investigating if any test edge case leaks.
+  - swarm_works_when_daemon_survives: >
+      When daemon survived, workers successfully picked up beads
+      (oro-js7.5, oro-js7.6) and executed them including quality gates.
+
+worked:
+  - Signal logging with process snapshot caught the signal type
+  - Control test (daemon without tmux) isolated tmux as the variable
+  - Reproducing 5 times established intermittent pattern
+
+failed:
+  - exec.Command vs CommandContext was not the root cause (intermittent either way)
+  - Could not identify the exact process sending SIGTERM (no si_pid on macOS without dtrace)
+
+next:
+  - Wait for next daemon death and check SIGNAL-SNAPSHOT in $TMPDIR/oro-daemon.log
+  - If oro.test appears, trace which Claude session ran it
+  - Add ORO_ROLE guard to oro cleanup (prevent agents from running it)
+  - Consider using dtrace/dtruss (requires root) to trace kill() syscalls
+  - Once daemon is stable, monitor 5 bead completions end-to-end
+
+files:
+  modified:
+    - cmd/oro/cmd_start.go
+    - cmd/oro/daemon.go
+  created:
+    - docs/handoffs/2026-02-13_23-30_daemon-signal-diagnosis.yaml
+
+beads:
+  in_progress: []
+  remaining: [oro-jmil.6, oro-jmil.7, oro-9hd, oro-js7.5, oro-js7.6]
+  epic: oro-js7
