@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -36,11 +38,26 @@ func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers int) (int, error
 	child := exec.CommandContext(context.Background(), os.Args[0], "start", "--daemon-only", "--workers", strconv.Itoa(workers)) //nolint:gosec // intentionally re-executing self
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
+	child.Env = cleanEnvForDaemon(os.Environ())
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := child.Start(); err != nil {
 		return 0, fmt.Errorf("spawn daemon: %w", err)
 	}
 	return child.Process.Pid, nil
+}
+
+// cleanEnvForDaemon returns a copy of env with vars that should not leak
+// into the daemon subprocess removed. CLAUDECODE causes nested Claude Code
+// session detection which blocks workers from spawning claude -p.
+func cleanEnvForDaemon(env []string) []string {
+	cleaned := make([]string, 0, len(env))
+	for _, e := range env {
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			continue
+		}
+		cleaned = append(cleaned, e)
+	}
+	return cleaned
 }
 
 // socketPollTimeout is the maximum time to wait for the dispatcher socket.
@@ -49,12 +66,19 @@ const socketPollTimeout = 5 * time.Second
 // socketPollInterval is how often to check for the socket file.
 const socketPollInterval = 50 * time.Millisecond
 
+// isDetached returns true when oro start should skip interactive attach.
+// This happens when the --detach flag is set or stdin is not a terminal.
+func isDetached(flag bool) bool {
+	return flag || !isatty.IsTerminal(os.Stdin.Fd())
+}
+
 // runFullStart implements the non-daemon start flow:
 // 1. Spawn daemon subprocess
 // 2. Wait for socket file to appear
 // 3. Create tmux session with both beacons
 // 4. Print status
-func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration) error {
+// 5. Attach interactively (or print instructions if detached)
+func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
 	pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 	if err != nil {
 		return fmt.Errorf("get pid path: %w", err)
@@ -96,7 +120,11 @@ func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner,
 	// 4. Print status.
 	fmt.Fprintf(w, "oro swarm started (PID %d, workers=%d, model=%s)\n", pid, workers, model)
 
-	// 5. Attach to the tmux session interactively.
+	// 5. Attach interactively, or print instructions if detached.
+	if detach {
+		fmt.Fprintln(w, "detached — attach with: tmux attach -t oro")
+		return nil
+	}
 	if err := sess.AttachInteractive(); err != nil {
 		return fmt.Errorf("attach to tmux session: %w", err)
 	}
@@ -109,6 +137,7 @@ func newStartCmd() *cobra.Command {
 	var (
 		workers    int
 		daemonOnly bool
+		detach     bool
 		model      string
 	)
 
@@ -117,6 +146,10 @@ func newStartCmd() *cobra.Command {
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
 		Long:  "Creates a tmux session with the full Oro layout and begins autonomous execution.\nStarts the dispatcher daemon and worker pool in the background.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Clear CLAUDECODE early — it leaks from Claude Code's Bash tool
+			// and blocks nested claude sessions in tmux panes and workers.
+			os.Unsetenv("CLAUDECODE")
+
 			// Run preflight checks before attempting to start.
 			if err := runPreflightChecks(); err != nil {
 				return fmt.Errorf("preflight checks failed: %w", err)
@@ -157,13 +190,14 @@ func newStartCmd() *cobra.Command {
 				return runDaemonOnly(cmd, pidPath, workers)
 			}
 
-			return runFullStart(cmd.OutOrStdout(), workers, model, &ExecDaemonSpawner{}, &ExecRunner{}, socketPollTimeout, nil, 0)
+			return runFullStart(cmd.OutOrStdout(), workers, model, &ExecDaemonSpawner{}, &ExecRunner{}, socketPollTimeout, nil, 0, isDetached(detach))
 		},
 	}
 
 	cmd.Flags().IntVarP(&workers, "workers", "w", 2, "number of workers to spawn")
 	cmd.Flags().BoolVarP(&daemonOnly, "daemon-only", "d", false, "start dispatcher without tmux/sessions (for CI or testing)")
 	cmd.Flags().StringVar(&model, "model", "sonnet", "model for manager session")
+	cmd.Flags().BoolVarP(&detach, "detach", "D", false, "start in detached mode (don't attach to tmux session)")
 
 	return cmd
 }
