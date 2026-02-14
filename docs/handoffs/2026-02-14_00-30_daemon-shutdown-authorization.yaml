@@ -1,0 +1,95 @@
+---
+date: 2026-02-14
+status: complete
+---
+
+goal: >
+  Make the daemon immune to accidental `kill $(cat ~/.oro/oro.pid)` while
+  `oro stop` still works. Implemented authorize-then-signal protocol using
+  the existing UDS socket.
+
+now: >
+  Integration test: start daemon with --detach, run `kill $(cat ~/.oro/oro.pid)`,
+  verify it survives, then `oro stop` to confirm clean shutdown. Check
+  $TMPDIR/oro-daemon.log for "ignoring SIGTERM — not authorized" message.
+
+test: |
+  make build && go test -race ./pkg/protocol/... ./pkg/dispatcher/... && \
+  go test -race ./cmd/oro/... -run "TestDaemon|TestStop|TestCleanup"
+
+done_this_session:
+  - task: "Add DirectiveShutdown to protocol"
+    files: [pkg/protocol/directive.go, pkg/protocol/directive_test.go]
+
+  - task: "Add shutdown fields to Dispatcher (shutdownCh, shutdownAuthorized, shutdownOnce)"
+    files: [pkg/dispatcher/dispatcher.go]
+
+  - task: "Handle DirectiveShutdown in applyDirective with idempotency (sync.Once)"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+
+  - task: "Run() and all loops select on shutdownCh for clean exit"
+    files:
+      - pkg/dispatcher/dispatcher.go (Run, assignLoop, assignLoopPoll, acceptLoop)
+      - pkg/dispatcher/worker_pool.go (heartbeatLoop)
+
+  - task: "Signal handler gates SIGTERM on atomic.Bool authorization flag"
+    files: [cmd/oro/daemon.go, cmd/oro/daemon_test.go]
+    details: >
+      4 test cases: nil backward-compat, unauthorized ignored, authorized honored,
+      SIGINT always works. Handler now loops to receive multiple signals.
+
+  - task: "Wire ShutdownAuthorized() in runDaemonOnly"
+    files: [cmd/oro/cmd_start.go]
+    details: >
+      Reordered: build dispatcher first, then setup signal handler with
+      d.ShutdownAuthorized() so the flag is shared.
+
+  - task: "oro stop sends shutdown directive before signal"
+    files: [cmd/oro/cmd_stop.go, cmd/oro/cmd_stop_test.go]
+    details: >
+      New flow: directive -> wait for exit -> SIGKILL fallback if directive
+      fails and process won't die. Added shutdownFn, killFn to stopConfig.
+
+  - task: "oro cleanup: ORO_ROLE guard + shutdown directive"
+    files: [cmd/oro/cmd_cleanup.go, cmd/oro/cmd_cleanup_test.go]
+    details: >
+      ORO_ROLE guard prevents agents from running cleanup (same pattern as
+      cmd_stop.go). Sends shutdown directive before SIGTERM fallback.
+
+decisions:
+  - authorize_then_signal: >
+      Rather than changing SIGTERM to always be ignored, we use an atomic
+      Bool flag set by the shutdown directive. This preserves backward
+      compat (nil flag = always honor) and allows SIGINT for humans.
+  - sigkill_fallback: >
+      If directive fails (socket dead) AND process won't exit, oro stop
+      sends SIGKILL as last resort. This handles the case where the
+      daemon is stuck but not receiving directives.
+  - acceptloop_net_errclosed: >
+      acceptLoop now checks errors.Is(err, net.ErrClosed) in addition to
+      ctx.Err() to prevent infinite spin when listener is closed via
+      shutdownCh (without cancelling the context).
+
+worked:
+  - "sync.Once for shutdownCh prevents double-close panic on idempotent directives"
+  - "All goroutine loops (assign, heartbeat, accept) select on shutdownCh for prompt exit"
+  - "TDD workflow caught the acceptLoop spin bug before it reached production"
+
+files:
+  modified:
+    - pkg/protocol/directive.go
+    - pkg/protocol/directive_test.go
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - pkg/dispatcher/worker_pool.go
+    - cmd/oro/daemon.go
+    - cmd/oro/daemon_test.go
+    - cmd/oro/cmd_start.go
+    - cmd/oro/cmd_stop.go
+    - cmd/oro/cmd_stop_test.go
+    - cmd/oro/cmd_cleanup.go
+    - cmd/oro/cmd_cleanup_test.go
+
+commits:
+  - e4c7984: "feat(daemon): add shutdown authorization to prevent accidental SIGTERM death"
+  - 9608836: "feat(stop,cleanup): send shutdown directive before signal"
