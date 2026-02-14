@@ -1526,7 +1526,7 @@ func TestApplyDirective_ShutdownRejected(t *testing.T) {
 	}
 }
 
-func TestRun_ExitsOnShutdownDirective(t *testing.T) {
+func TestRun_RejectsShutdownDirective(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1544,23 +1544,31 @@ func TestRun_ExitsOnShutdownDirective(t *testing.T) {
 		return d.listener != nil
 	}, 2*time.Second)
 
-	// Send shutdown directive via UDS.
+	// Send shutdown directive via UDS — should be rejected.
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgDirective,
 		Directive: &protocol.DirectivePayload{Op: "shutdown"},
 	})
 
-	// Run should exit without needing to cancel ctx.
-	// Allow up to 10s for the full shutdown sequence (2*ShutdownTimeout + wg.Wait).
+	// Read ACK — should indicate failure.
+	ack, _ := readMsg(t, conn, 5*time.Second)
+	if ack.ACK == nil {
+		t.Fatal("expected ACK response")
+	}
+	if ack.ACK.OK {
+		t.Fatal("expected shutdown directive to be rejected (OK=false)")
+	}
+
+	// Run should still be alive — cancel to clean up.
+	cancel()
 	select {
 	case err := <-errCh:
 		if err != nil {
 			t.Fatalf("Run returned error: %v", err)
 		}
-	case <-time.After(10 * time.Second):
-		cancel() // unblock Run so test can clean up
-		t.Fatal("Run did not exit after shutdown directive")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not exit after context cancel")
 	}
 }
 
