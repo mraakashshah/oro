@@ -1445,4 +1445,46 @@ func TestBuildPaneDiedHookContent(t *testing.T) {
 			t.Errorf("manager hook should mention manager pane, got: %s", hook)
 		}
 	})
+
+	t.Run("does not double-quote escapeForShell output", func(t *testing.T) {
+		// escapeForShell already wraps in single quotes ('...')
+		// The format string must not add another layer like '%s' which produces ''...''
+		hook := buildPaneDiedHook("architect", "oro")
+
+		// Check for the problematic pattern: ''...''. In shell, '' is an empty string,
+		// so this would leave the content unquoted and [ORO-DISPATCH] becomes a glob.
+		// We should have single-quoted content, not double single-quoted.
+
+		// The hook should contain the message wrapped in single quotes exactly once.
+		// escapeForShell produces 'content', so the format string should use %s not '%s'.
+		// Look for the pattern: set-buffer -b oro-pane-died 'content'
+		// NOT: set-buffer -b oro-pane-died ''content''
+
+		if strings.Contains(hook, "''") {
+			t.Errorf("hook should not contain double single-quotes (''), got: %s", hook)
+		}
+
+		// Verify that the escaped message appears exactly once between single quotes
+		// The message should be properly quoted as a single shell argument
+		if !strings.Contains(hook, "set-buffer -b oro-pane-died '") {
+			t.Errorf("hook should have single-quoted message after set-buffer, got: %s", hook)
+		}
+	})
+
+	t.Run("paste-buffer uses -d flag consistent with TmuxEscalator pattern", func(t *testing.T) {
+		// TmuxEscalator.Escalate() uses paste-buffer with -d flag to delete the buffer after paste
+		// buildPaneDiedHook should follow the same pattern for consistency
+		hook := buildPaneDiedHook("architect", "oro")
+
+		// The hook should contain: paste-buffer -b oro-pane-died -t <pane> -d
+		if !strings.Contains(hook, "paste-buffer -b oro-pane-died") {
+			t.Errorf("hook should use paste-buffer with named buffer, got: %s", hook)
+		}
+
+		// Verify -d flag is present
+		if !strings.Contains(hook, "paste-buffer -b oro-pane-died -t oro:manager -d") &&
+			!strings.Contains(hook, "paste-buffer -b oro-pane-died -t oro:architect -d") {
+			t.Errorf("hook should use -d flag on paste-buffer (consistent with TmuxEscalator), got: %s", hook)
+		}
+	})
 }

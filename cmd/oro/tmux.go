@@ -478,8 +478,10 @@ func (s *TmuxSession) RegisterPaneDiedHooks() error {
 }
 
 // buildPaneDiedHook constructs a tmux hook command for pane-died events.
-// The hook sends an escalation message to the surviving pane and logs the event.
-// Since the dying pane triggers the hook, the message goes to the other pane.
+// The hook sends an escalation message to the surviving pane. The [ORO-DISPATCH]
+// prefix in the message serves as the logging mechanism — the manager receives
+// and can act on the crash notification. Since the dying pane triggers the hook,
+// the message goes to the other pane (architect→manager or manager→architect).
 func buildPaneDiedHook(dyingRole, sessionName string) string {
 	// Determine the surviving role and pane
 	survivingRole := "manager"
@@ -492,8 +494,9 @@ func buildPaneDiedHook(dyingRole, sessionName string) string {
 	escalationMsg := fmt.Sprintf("[ORO-DISPATCH] PANE_DIED: %s pane crashed — oro swarm compromised.", dyingRole)
 
 	// Use tmux send-keys with set-buffer/paste-buffer for reliable delivery (like TmuxEscalator)
+	// Note: escapeForShell already wraps output in single quotes, so we use %s not '%s'
 	hook := fmt.Sprintf(
-		"run-shell \"tmux set-buffer -b oro-pane-died '%s'; tmux paste-buffer -b oro-pane-died -t %s; tmux send-keys -t %s Enter\"",
+		"run-shell \"tmux set-buffer -b oro-pane-died %s; tmux paste-buffer -b oro-pane-died -t %s -d; tmux send-keys -t %s Enter\"",
 		escapeForShell(sanitizeForTmuxHook(escalationMsg)),
 		survivingPane,
 		survivingPane,
