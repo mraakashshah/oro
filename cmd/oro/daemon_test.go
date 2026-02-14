@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -161,7 +162,7 @@ func TestDaemonLifecycle(t *testing.T) {
 		}
 	})
 
-	t.Run("SIGTERM handler cancels context and cleans PID", func(t *testing.T) {
+	t.Run("SIGTERM with nil authorized honored (backward compat)", func(t *testing.T) {
 		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
@@ -169,35 +170,96 @@ func TestDaemonLifecycle(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile)
+		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, nil)
 
-		// Verify context is not cancelled yet.
-		select {
-		case <-shutdownCtx.Done():
-			t.Fatal("context should not be cancelled before signal")
-		default:
-			// OK
-		}
-
-		// Send SIGTERM to ourselves.
 		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 			t.Fatalf("sending SIGTERM: %v", err)
 		}
 
-		// Wait for context cancellation.
 		select {
 		case <-shutdownCtx.Done():
-			// OK — context was cancelled by signal handler.
+			// OK — context was cancelled by signal handler (nil = always honor).
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for signal handler to cancel context")
 		}
 
-		// Run cleanup (would normally happen in deferred call in daemon main).
 		cleanupFn()
-
-		// Verify PID file was removed.
 		if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
 			t.Error("PID file should be cleaned up after SIGTERM")
+		}
+	})
+
+	t.Run("SIGTERM ignored when not authorized", func(t *testing.T) {
+		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var authorized atomic.Bool // defaults to false
+		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized)
+		defer cleanupFn()
+
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Fatalf("sending SIGTERM: %v", err)
+		}
+
+		// Context should NOT be cancelled — SIGTERM is unauthorized.
+		select {
+		case <-shutdownCtx.Done():
+			t.Fatal("context should not be cancelled when SIGTERM is unauthorized")
+		case <-time.After(200 * time.Millisecond):
+			// OK — SIGTERM was ignored.
+		}
+	})
+
+	t.Run("SIGTERM honored when authorized", func(t *testing.T) {
+		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var authorized atomic.Bool
+		authorized.Store(true)
+		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized)
+		defer cleanupFn()
+
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Fatalf("sending SIGTERM: %v", err)
+		}
+
+		select {
+		case <-shutdownCtx.Done():
+			// OK — authorized SIGTERM was honored.
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for authorized SIGTERM to cancel context")
+		}
+	})
+
+	t.Run("SIGINT always honored regardless of authorization", func(t *testing.T) {
+		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var authorized atomic.Bool // false — but SIGINT should still work
+		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized)
+		defer cleanupFn()
+
+		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+			t.Fatalf("sending SIGINT: %v", err)
+		}
+
+		select {
+		case <-shutdownCtx.Done():
+			// OK — SIGINT always honored.
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for SIGINT to cancel context")
 		}
 	})
 

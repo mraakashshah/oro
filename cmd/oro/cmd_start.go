@@ -225,15 +225,18 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
 		return fmt.Errorf("write pid file: %w", err)
 	}
 
-	ctx := cmd.Context()
-	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath)
-	defer cleanup()
-
+	// Build dispatcher first so we can wire its shutdown authorization flag
+	// into the signal handler. This makes the daemon immune to raw SIGTERM
+	// until the "shutdown" directive authorizes it.
 	d, db, err := buildDispatcher(workers)
 	if err != nil {
 		return fmt.Errorf("build dispatcher: %w", err)
 	}
 	defer db.Close()
+
+	ctx := cmd.Context()
+	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized())
+	defer cleanup()
 
 	if err := d.Run(shutdownCtx); err != nil {
 		return fmt.Errorf("dispatcher: %w", err)

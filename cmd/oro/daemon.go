@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"oro/pkg/protocol"
@@ -119,9 +120,16 @@ func StopDaemon(pidPath string) error {
 // SetupSignalHandler installs a SIGTERM/SIGINT handler that cancels the
 // returned context when a signal is received. It also returns a cleanup
 // function that removes the PID file — callers should defer it.
+//
+// The authorized flag gates SIGTERM handling:
+//   - nil: SIGTERM always honored (backward compatibility)
+//   - false: SIGTERM logged and ignored (not authorized by shutdown directive)
+//   - true: SIGTERM honored (authorized by shutdown directive)
+//
+// SIGINT is always honored regardless of authorization (human Ctrl+C).
 // SIGPIPE is explicitly ignored so the daemon survives broken stdout/stderr
 // pipes after the parent process exits.
-func SetupSignalHandler(parent context.Context, pidPath string) (shutdownCtx context.Context, cleanup func()) {
+func SetupSignalHandler(parent context.Context, pidPath string, authorized *atomic.Bool) (shutdownCtx context.Context, cleanup func()) {
 	ctx, cancel := context.WithCancel(parent)
 
 	signal.Ignore(syscall.SIGPIPE)
@@ -130,15 +138,31 @@ func SetupSignalHandler(parent context.Context, pidPath string) (shutdownCtx con
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
-		select {
-		case sig := <-sigCh:
-			fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
-			// Snapshot running processes to help identify signal sender.
-			dumpProcessSnapshot()
-			cancel()
-		case <-ctx.Done():
+		for {
+			select {
+			case sig := <-sigCh:
+				// SIGINT: always honor (human Ctrl+C).
+				if sig == syscall.SIGINT {
+					fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
+					cancel()
+					signal.Stop(sigCh)
+					return
+				}
+				// SIGTERM: check authorization.
+				if authorized != nil && !authorized.Load() {
+					fmt.Fprintf(os.Stderr, "shutdown: ignoring %v — not authorized (use 'oro stop'); PID %d\n", sig, os.Getpid())
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
+				dumpProcessSnapshot()
+				cancel()
+				signal.Stop(sigCh)
+				return
+			case <-ctx.Done():
+				signal.Stop(sigCh)
+				return
+			}
 		}
-		signal.Stop(sigCh)
 	}()
 
 	cleanup = func() {

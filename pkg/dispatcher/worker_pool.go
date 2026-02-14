@@ -156,6 +156,8 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-d.shutdownCh:
+			return
 		case <-ticker.C:
 			d.checkHeartbeats(ctx)
 		case <-pruneTicker.C:

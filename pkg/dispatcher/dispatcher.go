@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"oro/pkg/memory"
@@ -215,6 +216,13 @@ type Dispatcher struct {
 	// deletion occurs during the unlock window.
 	testUnlockHook func()
 
+	// shutdownCh is closed when a shutdown directive is received, causing Run() to exit.
+	shutdownCh chan struct{}
+	// shutdownAuthorized gates whether SIGTERM is honored by the signal handler.
+	shutdownAuthorized atomic.Bool
+	// shutdownOnce prevents double-close of shutdownCh.
+	shutdownOnce sync.Once
+
 	// wg tracks all goroutines spawned by Run() to ensure graceful shutdown
 	wg sync.WaitGroup
 
@@ -253,9 +261,10 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			worktreeFailures: make(map[string]time.Time),
 			exhaustedBeads:   make(map[string]bool),
 		},
-		beadsDir:  protocol.BeadsDir,
-		nowFunc:   time.Now,
-		acceptSem: make(chan struct{}, 100), // limit to 100 concurrent connection handlers
+		shutdownCh: make(chan struct{}),
+		beadsDir:   protocol.BeadsDir,
+		nowFunc:    time.Now,
+		acceptSem:  make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
 }
 
@@ -289,6 +298,12 @@ func (d *Dispatcher) setState(s State) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.state = s
+}
+
+// ShutdownAuthorized returns the atomic flag that gates SIGTERM handling.
+// The signal handler checks this flag to decide whether to honor SIGTERM.
+func (d *Dispatcher) ShutdownAuthorized() *atomic.Bool {
+	return &d.shutdownAuthorized
 }
 
 // Run starts the Dispatcher event loop. It:
@@ -346,7 +361,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	// Heartbeat monitor
 	d.safeGo(func() { d.heartbeatLoop(ctx) })
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-d.shutdownCh:
+	}
 
 	// Close listener first so acceptLoop will exit
 	_ = ln.Close()
@@ -408,7 +426,7 @@ func (d *Dispatcher) acceptLoop(ctx context.Context, ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return
 			}
 			continue
@@ -1311,6 +1329,8 @@ func (d *Dispatcher) assignLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-d.shutdownCh:
+			return
 		case <-watcher.Events:
 			// File changed in .beads/ directory
 			d.tryAssign(ctx)
@@ -1333,6 +1353,8 @@ func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-d.shutdownCh:
 			return
 		case <-ticker.C:
 			d.tryAssign(ctx)
@@ -1607,6 +1629,11 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 			return "focus cleared", nil
 		}
 		return fmt.Sprintf("focused on %s", args), nil
+	case protocol.DirectiveShutdown:
+		d.shutdownAuthorized.Store(true)
+		d.setState(StateStopping)
+		d.shutdownOnce.Do(func() { close(d.shutdownCh) })
+		return "shutdown authorized", nil
 	default:
 		return fmt.Sprintf("applied %s", dir), nil
 	}

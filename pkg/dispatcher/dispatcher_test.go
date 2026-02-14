@@ -1502,6 +1502,79 @@ func TestApplyDirective_StopAlwaysRejected(t *testing.T) {
 	}
 }
 
+func TestShutdownAuthorized_DefaultsFalse(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if d.ShutdownAuthorized().Load() {
+		t.Fatal("shutdownAuthorized should default to false")
+	}
+}
+
+func TestApplyDirective_Shutdown(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	detail, err := d.applyDirective(protocol.DirectiveShutdown, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if detail != "shutdown authorized" {
+		t.Fatalf("detail = %q, want %q", detail, "shutdown authorized")
+	}
+	if !d.ShutdownAuthorized().Load() {
+		t.Fatal("shutdownAuthorized should be true after shutdown directive")
+	}
+	if d.GetState() != StateStopping {
+		t.Fatalf("state = %s, want %s", d.GetState(), StateStopping)
+	}
+
+	// Idempotency: second call should not panic (double close).
+	detail2, err2 := d.applyDirective(protocol.DirectiveShutdown, "")
+	if err2 != nil {
+		t.Fatalf("second shutdown unexpected error: %v", err2)
+	}
+	if detail2 != "shutdown authorized" {
+		t.Fatalf("second detail = %q, want %q", detail2, "shutdown authorized")
+	}
+}
+
+func TestRun_ExitsOnShutdownDirective(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- d.Run(ctx)
+	}()
+
+	// Wait for listener to be ready.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.listener != nil
+	}, 2*time.Second)
+
+	// Send shutdown directive via UDS.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgDirective,
+		Directive: &protocol.DirectivePayload{Op: "shutdown"},
+	})
+
+	// Run should exit without needing to cancel ctx.
+	// Allow up to 10s for the full shutdown sequence (2*ShutdownTimeout + wg.Wait).
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		cancel() // unblock Run so test can clean up
+		t.Fatal("Run did not exit after shutdown directive")
+	}
+}
+
 func TestState_Constants(t *testing.T) {
 	// Verify state string values for clarity
 	if StateInert != "inert" {
