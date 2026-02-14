@@ -5,6 +5,12 @@
 
 set -euo pipefail
 
+# Unset git hook env vars that leak into test subprocesses.
+# When called from pre-push/pre-commit hooks, git sets GIT_DIR and
+# GIT_WORK_TREE which cause test-created git repos to reference the
+# parent repo instead of their own .git directories.
+unset GIT_DIR GIT_WORK_TREE
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
