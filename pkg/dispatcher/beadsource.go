@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"oro/pkg/protocol"
 )
@@ -46,18 +47,46 @@ func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDeta
 	}
 
 	// bd show --json returns an array; try array first, fall back to object.
+	var detail *protocol.BeadDetail
 	var arr []protocol.BeadDetail
 	if err := json.Unmarshal(out, &arr); err == nil {
 		if len(arr) == 0 {
 			return nil, fmt.Errorf("bead %s not found", id)
 		}
-		return &arr[0], nil
+		detail = &arr[0]
+	} else {
+		var obj protocol.BeadDetail
+		if err := json.Unmarshal(out, &obj); err != nil {
+			return nil, fmt.Errorf("parse bd show output: %w", err)
+		}
+		detail = &obj
 	}
-	var detail protocol.BeadDetail
-	if err := json.Unmarshal(out, &detail); err != nil {
-		return nil, fmt.Errorf("parse bd show output: %w", err)
+
+	// bd show --json has no separate acceptance_criteria field; AC is embedded
+	// as markdown in the description under "## Acceptance Criteria". Extract it.
+	if detail.AcceptanceCriteria == "" && detail.Description != "" {
+		detail.AcceptanceCriteria = extractACFromDescription(detail.Description)
 	}
-	return &detail, nil
+	return detail, nil
+}
+
+// extractACFromDescription extracts the acceptance criteria section from a
+// markdown description. It looks for a "## Acceptance Criteria" header and
+// returns everything after it up to the next H2 header or end of string.
+func extractACFromDescription(desc string) string {
+	const header = "## Acceptance Criteria"
+	idx := strings.Index(desc, header)
+	if idx < 0 {
+		return ""
+	}
+	body := desc[idx+len(header):]
+	// Trim leading newlines.
+	body = strings.TrimLeft(body, "\r\n")
+	// Stop at the next H2 header if present.
+	if next := strings.Index(body, "\n## "); next >= 0 {
+		body = body[:next]
+	}
+	return strings.TrimSpace(body)
 }
 
 // Close runs `bd close <id> --reason="<reason>"`.

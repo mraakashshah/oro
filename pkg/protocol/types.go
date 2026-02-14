@@ -21,6 +21,7 @@ type Bead struct {
 type BeadDetail struct {
 	ID                 string `json:"id"`
 	Title              string `json:"title"`
+	Description        string `json:"description,omitempty"`
 	AcceptanceCriteria string `json:"acceptance_criteria"`
 	Model              string `json:"model,omitempty"`
 	WorkerID           string `json:"worker_id,omitempty"`

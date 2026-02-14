@@ -523,6 +523,108 @@ func TestCLIBeadSource_Create(t *testing.T) {
 	})
 }
 
+func TestExtractACFromDescription(t *testing.T) {
+	tests := []struct {
+		name string
+		desc string
+		want string
+	}{
+		{
+			name: "extracts AC section",
+			desc: "Some description.\n\n## Acceptance Criteria\n- [ ] First criterion\n- [ ] Second criterion",
+			want: "- [ ] First criterion\n- [ ] Second criterion",
+		},
+		{
+			name: "stops at next H2 header",
+			desc: "Description.\n\n## Acceptance Criteria\n- [ ] Do the thing\n\n## Fix\nSome fix details.",
+			want: "- [ ] Do the thing",
+		},
+		{
+			name: "no AC section returns empty",
+			desc: "Just a plain description with no acceptance criteria.",
+			want: "",
+		},
+		{
+			name: "empty description returns empty",
+			desc: "",
+			want: "",
+		},
+		{
+			name: "AC section with content before it",
+			desc: "## Fix\nDo X.\n\n## Acceptance Criteria\n- [ ] Widget renders\n- [ ] Tests pass",
+			want: "- [ ] Widget renders\n- [ ] Tests pass",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractACFromDescription(tt.desc)
+			if got != tt.want {
+				t.Errorf("extractACFromDescription():\ngot:  %q\nwant: %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCLIBeadSource_Show_ExtractsACFromDescription(t *testing.T) {
+	// Simulate real bd show --json output: no acceptance_criteria field,
+	// AC embedded in description markdown.
+	raw := `[{"id":"oro-k9lk","title":"Fix AC parsing","description":"Some context.\n\n## Acceptance Criteria\n- [ ] Parser works\n- [ ] Tests pass","status":"open","priority":0}]`
+
+	runner := &mockCommandRunner{output: []byte(raw)}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Show(context.Background(), "oro-k9lk")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.AcceptanceCriteria == "" {
+		t.Fatal("expected AcceptanceCriteria to be extracted from description, got empty")
+	}
+	if !strings.Contains(got.AcceptanceCriteria, "Parser works") {
+		t.Errorf("AcceptanceCriteria missing expected content, got: %q", got.AcceptanceCriteria)
+	}
+}
+
+func TestCLIBeadSource_Show_NoACInDescription(t *testing.T) {
+	raw := `[{"id":"oro-abc","title":"No AC bead","description":"Just a plain description.","status":"open","priority":2}]`
+
+	runner := &mockCommandRunner{output: []byte(raw)}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Show(context.Background(), "oro-abc")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.AcceptanceCriteria != "" {
+		t.Errorf("expected empty AcceptanceCriteria for bead without AC section, got: %q", got.AcceptanceCriteria)
+	}
+}
+
+func TestCLIBeadSource_Show_ExplicitACFieldTakesPrecedence(t *testing.T) {
+	// If the JSON already has acceptance_criteria populated, don't override it.
+	detail := protocol.BeadDetail{
+		ID:                 "abc.1",
+		Title:              "Has explicit AC",
+		Description:        "Desc.\n\n## Acceptance Criteria\n- [ ] From description",
+		AcceptanceCriteria: "Explicit AC value",
+	}
+	data, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	runner := &mockCommandRunner{output: data}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Show(context.Background(), "abc.1")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.AcceptanceCriteria != "Explicit AC value" {
+		t.Errorf("expected explicit AC to take precedence, got: %q", got.AcceptanceCriteria)
+	}
+}
+
 func TestCLIBeadSource_ImplementsBeadSource(t *testing.T) {
 	// Compile-time check that CLIBeadSource implements BeadSource.
 	var _ BeadSource = (*CLIBeadSource)(nil)
