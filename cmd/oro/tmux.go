@@ -81,9 +81,10 @@ func (s *TmuxSession) isHealthy() bool {
 // setting ORO_ROLE, BD_ACTOR, and GIT_AUTHOR_NAME for the given role.
 // Uses exec to eliminate the shell phase entirely — Claude IS the initial process.
 // The --session-id flag gives each tmux window isolated input history.
+// Session IDs are deterministic (oro-<role>) to preserve conversation history across restarts.
 // The --ide flag enables IDE integration for inline code suggestions.
 func execEnvCmd(role string) string {
-	return fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s claude --session-id $(uuidgen) --ide", role, role, role)
+	return fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s claude --session-id oro-%s --ide", role, role, role, role)
 }
 
 // Create creates the Oro tmux session with two windows (architect + manager).

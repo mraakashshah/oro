@@ -777,6 +777,58 @@ func TestExecEnvCmd(t *testing.T) {
 	})
 }
 
+func TestExecEnvCmdDeterministicSessionID(t *testing.T) {
+	t.Run("architect produces oro-architect session ID", func(t *testing.T) {
+		cmd := execEnvCmd("architect")
+		if !strings.Contains(cmd, "--session-id oro-architect") {
+			t.Errorf("expected execEnvCmd to contain '--session-id oro-architect', got: %s", cmd)
+		}
+	})
+
+	t.Run("manager produces oro-manager session ID", func(t *testing.T) {
+		cmd := execEnvCmd("manager")
+		if !strings.Contains(cmd, "--session-id oro-manager") {
+			t.Errorf("expected execEnvCmd to contain '--session-id oro-manager', got: %s", cmd)
+		}
+	})
+
+	t.Run("different roles get different session IDs", func(t *testing.T) {
+		architectCmd := execEnvCmd("architect")
+		managerCmd := execEnvCmd("manager")
+
+		// Extract session IDs from commands
+		architectHasOroArchitect := strings.Contains(architectCmd, "oro-architect")
+		managerHasOroManager := strings.Contains(managerCmd, "oro-manager")
+
+		if !architectHasOroArchitect || !managerHasOroManager {
+			t.Errorf("roles should have different session IDs: architect=%v, manager=%v", architectHasOroArchitect, managerHasOroManager)
+		}
+
+		// Verify they're different
+		if strings.Contains(architectCmd, "oro-manager") {
+			t.Error("architect should not use manager session ID")
+		}
+		if strings.Contains(managerCmd, "oro-architect") {
+			t.Error("manager should not use architect session ID")
+		}
+	})
+
+	t.Run("session IDs are deterministic", func(t *testing.T) {
+		// Call multiple times and verify same output
+		architect1 := execEnvCmd("architect")
+		architect2 := execEnvCmd("architect")
+		manager1 := execEnvCmd("manager")
+		manager2 := execEnvCmd("manager")
+
+		if architect1 != architect2 {
+			t.Errorf("architect session ID should be deterministic, got different results:\n%s\nvs\n%s", architect1, architect2)
+		}
+		if manager1 != manager2 {
+			t.Errorf("manager session ID should be deterministic, got different results:\n%s\nvs\n%s", manager1, manager2)
+		}
+	})
+}
+
 func TestSendKeysVerified(t *testing.T) {
 	t.Run("succeeds on first attempt when text appears in pane", func(t *testing.T) {
 		fake := newFakeCmd()
