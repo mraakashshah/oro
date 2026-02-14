@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Test harness for quality_gate.sh config-driven behavior
+# =============================================================================
+
+set -euo pipefail
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+PASS=0
+FAIL=0
+
+test_case() {
+    local name="$1"
+    local test_fn="$2"
+
+    printf '%b▶%b %-50s' "$BLUE" "$NC" "$name"
+
+    set +e
+    $test_fn
+    local result=$?
+    set -e
+
+    if [ $result -eq 0 ]; then
+        printf '%b✓ PASS%b\n' "$GREEN" "$NC"
+        PASS=$((PASS + 1))
+    else
+        printf '%b✗ FAIL%b\n' "$RED" "$NC"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# Test 1: quality_gate.sh reads .oro/config.yaml when present
+# shellcheck disable=SC2329
+test_reads_config_when_present() {
+    local tmpdir oldpwd
+    tmpdir=$(mktemp -d)
+    oldpwd="$PWD"
+
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmpdir'" RETURN
+
+    cd "$tmpdir"
+
+    # Create minimal Go project with only one formatter in config
+    cat > go.mod <<'EOF'
+module test
+go 1.22
+EOF
+
+    mkdir -p .oro
+    cat > .oro/config.yaml <<'EOF'
+languages:
+  go:
+    formatters:
+      - gofumpt
+EOF
+
+    # Copy quality_gate.sh
+    cp "$oldpwd/quality_gate.sh" .
+
+    # Run and capture output
+    output=$(./quality_gate.sh 2>&1 || true)
+
+    # Verify it's reading from config
+    # When reading config, it should ONLY run gofumpt (not goimports)
+    # The current hardcoded version runs both gofumpt and goimports
+    if echo "$output" | grep -q "gofumpt" && ! echo "$output" | grep -q "goimports"; then
+        cd "$oldpwd"
+        return 0
+    else
+        echo "Expected quality_gate.sh to read from .oro/config.yaml and only run gofumpt"
+        echo "Output should have gofumpt but NOT goimports"
+        cd "$oldpwd"
+        return 1
+    fi
+}
+
+# Test 2: quality_gate.sh falls back to hardcoded when config missing
+# shellcheck disable=SC2329
+test_fallback_when_config_missing() {
+    local tmpdir oldpwd
+    tmpdir=$(mktemp -d)
+    oldpwd="$PWD"
+
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmpdir'" RETURN
+
+    cd "$tmpdir"
+
+    # Create minimal Go project (no .oro/config.yaml)
+    cat > go.mod <<'EOF'
+module test
+go 1.22
+EOF
+
+    # Copy quality_gate.sh
+    cp "$oldpwd/quality_gate.sh" .
+
+    # Run and verify it works with hardcoded checks
+    output=$(./quality_gate.sh 2>&1 || true)
+
+    # Should still detect Go and run both formatters (hardcoded behavior)
+    if echo "$output" | grep -q "Detected: Go project" && echo "$output" | grep -q "gofumpt" && echo "$output" | grep -q "goimports"; then
+        cd "$oldpwd"
+        return 0
+    else
+        echo "Expected quality_gate.sh to fall back to hardcoded detection with both formatters"
+        cd "$oldpwd"
+        return 1
+    fi
+}
+
+# Test 3: Tool not installed results in SKIP with warning
+# shellcheck disable=SC2329
+test_skip_when_tool_missing() {
+    local tmpdir oldpwd
+    tmpdir=$(mktemp -d)
+    oldpwd="$PWD"
+
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmpdir'" RETURN
+
+    cd "$tmpdir"
+
+    # Create config with non-existent tool alongside existing tool
+    mkdir -p .oro
+    cat > .oro/config.yaml <<'EOF'
+languages:
+  go:
+    formatters:
+      - gofumpt
+      - nonexistent-formatter-xyz
+EOF
+
+    cat > go.mod <<'EOF'
+module test
+go 1.22
+EOF
+
+    # Copy quality_gate.sh
+    cp "$oldpwd/quality_gate.sh" .
+
+    # Run and verify SKIP behavior
+    output=$(./quality_gate.sh 2>&1 || true)
+
+    # Should show SKIP for missing tool (doesn't matter if gate passes/fails due to other checks)
+    # The important thing is: missing tool shows SKIP, not FAIL
+    if echo "$output" | grep -q "nonexistent-formatter-xyz.*SKIP"; then
+        cd "$oldpwd"
+        return 0
+    else
+        echo "Expected SKIP when tool not installed"
+        echo "Output did not contain 'nonexistent-formatter-xyz.*SKIP'"
+        cd "$oldpwd"
+        return 1
+    fi
+}
+
+# Run tests
+echo "Testing quality_gate.sh config-driven behavior"
+echo "=============================================="
+
+test_case "Reads config when present" test_reads_config_when_present
+test_case "Falls back when config missing" test_fallback_when_config_missing
+test_case "Skips when tool missing" test_skip_when_tool_missing
+
+echo ""
+printf '%bPassed:%b %d\n' "$GREEN" "$NC" "$PASS"
+printf '%bFailed:%b %d\n' "$RED" "$NC" "$FAIL"
+
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
+
+exit 0

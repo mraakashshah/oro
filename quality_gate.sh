@@ -33,6 +33,72 @@ check() {
     fi
 }
 
+check_skip() {
+    local name="$1"
+    local tool="$2"
+
+    printf '%b▶%b %-30s' "$BLUE" "$NC" "$name"
+
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        printf '%b⊘ SKIP%b (tool not installed)\n' "$YELLOW" "$NC"
+        return 1
+    fi
+    return 0
+}
+
+parse_config() {
+    local lang="$1"
+    local key="$2"
+
+    if [ ! -f ".oro/config.yaml" ]; then
+        return 1
+    fi
+
+    # Extract tools from config using grep and sed
+    # Example: languages.go.formatters -> ["gofumpt", "goimports"]
+    local in_section=false
+    local in_lang=false
+    local tools=()
+
+    while IFS= read -r line; do
+        # Check if we're in the target language section
+        if echo "$line" | grep -qE "^  ${lang}:"; then
+            in_lang=true
+            continue
+        fi
+
+        # If we were in the target language and hit a new language, exit
+        if $in_lang && echo "$line" | grep -qE "^  [a-z]+:"; then
+            break
+        fi
+
+        # Check if we're in the target key section
+        if $in_lang && echo "$line" | grep -qE "^    ${key}:"; then
+            in_section=true
+            continue
+        fi
+
+        # If we were in the section and hit a new key, exit
+        if $in_section && echo "$line" | grep -qE "^    [a-z_]+:"; then
+            break
+        fi
+
+        # Extract tool names (lines starting with "      - ")
+        if $in_section && echo "$line" | grep -qE "^      - "; then
+            local tool
+            tool=$(echo "$line" | sed -E 's/^      - //')
+            tools+=("$tool")
+        fi
+    done < ".oro/config.yaml"
+
+    # Print tools separated by space
+    if [ ${#tools[@]} -gt 0 ]; then
+        printf '%s\n' "${tools[@]}"
+        return 0
+    fi
+    return 1
+}
+
 header() {
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
@@ -69,12 +135,60 @@ if $HAS_GO; then
 
     GO_DIRS="cmd internal pkg"
 
+    # Read formatters from config or use defaults
+    formatters=()
+    if parse_config "go" "formatters" > /tmp/formatters.txt 2>/dev/null; then
+        while IFS= read -r tool; do
+            formatters+=("$tool")
+        done < /tmp/formatters.txt
+        rm -f /tmp/formatters.txt
+    else
+        # Fallback to hardcoded defaults
+        formatters=("gofumpt" "goimports")
+    fi
+
+    # Read linters from config or use defaults
+    linters=()
+    if parse_config "go" "linters" > /tmp/linters.txt 2>/dev/null; then
+        while IFS= read -r tool; do
+            linters+=("$tool")
+        done < /tmp/linters.txt
+        rm -f /tmp/linters.txt
+    else
+        # Fallback to hardcoded defaults
+        linters=("golangci-lint")
+    fi
+
     header "GO TIER 1: FORMATTING"
-    check "gofumpt" "test -z \"\$(gofumpt -l $GO_DIRS 2>/dev/null)\""
-    check "goimports" "test -z \"\$(goimports -l $GO_DIRS 2>/dev/null)\""
+    for formatter in "${formatters[@]}"; do
+        if check_skip "$formatter" "$formatter"; then
+            case "$formatter" in
+                gofumpt)
+                    check "gofumpt" "test -z \"\$(gofumpt -l $GO_DIRS 2>/dev/null)\""
+                    ;;
+                goimports)
+                    check "goimports" "test -z \"\$(goimports -l $GO_DIRS 2>/dev/null)\""
+                    ;;
+                *)
+                    check "$formatter" "command -v $formatter >/dev/null && $formatter check $GO_DIRS"
+                    ;;
+            esac
+        fi
+    done
 
     header "GO TIER 2: LINTING"
-    check "golangci-lint" "golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
+    for linter in "${linters[@]}"; do
+        if check_skip "$linter" "$linter"; then
+            case "$linter" in
+                golangci-lint)
+                    check "golangci-lint" "golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
+                    ;;
+                *)
+                    check "$linter" "command -v $linter >/dev/null && $linter ./..."
+                    ;;
+            esac
+        fi
+    done
 
     header "GO TIER 3: DEAD CODE"
     # Detect exported functions in pkg/ and internal/ only referenced from test files.
