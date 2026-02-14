@@ -464,3 +464,64 @@ func TestCleanup_KillsWorkerProcesses(t *testing.T) {
 		t.Errorf("expected output to mention worker processes, got: %s", out)
 	}
 }
+
+func TestCleanup_RefusedWhenAgentRole(t *testing.T) {
+	t.Setenv("ORO_ROLE", "worker")
+
+	root := newRootCmd()
+	root.SetArgs([]string{"cleanup"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error when ORO_ROLE is set, got nil")
+	}
+	if !strings.Contains(err.Error(), "agent") && !strings.Contains(err.Error(), "human") {
+		t.Errorf("expected error about agent/human restriction, got: %v", err)
+	}
+}
+
+func TestCleanup_SendsDirectiveBeforeSignal(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+
+	tmpDir := t.TempDir()
+	pidPath := filepath.Join(tmpDir, "oro.pid")
+	if err := os.WriteFile(pidPath, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	directiveSent := false
+	signaled := false
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:   fake,
+		w:        &buf,
+		tmuxName: "oro",
+		pidPath:  pidPath,
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		shutdownFn: func() error {
+			directiveSent = true
+			return nil
+		},
+		signalFn: func(pid int) error { signaled = true; return nil },
+		aliveFn: func(pid int) bool {
+			return pid == 12345 && !directiveSent // dies after directive
+		},
+	}
+
+	err := runCleanup(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !directiveSent {
+		t.Error("expected shutdownFn to be called before signal")
+	}
+	// Signal should NOT be sent when directive succeeds and process exits.
+	if signaled {
+		t.Error("expected signal NOT to be sent when directive succeeds")
+	}
+}

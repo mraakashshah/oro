@@ -3,24 +3,24 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestStopGraceful(t *testing.T) {
-	// Setup: PID file with our own PID (so DaemonStatus returns "running").
+func TestStop_DirectiveSucceeds(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
 		t.Fatalf("setup PID: %v", err)
 	}
 
-	// Setup: fakeCmd to record tmux and bd calls.
 	fake := newFakeCmd()
 
-	// Track whether signal was sent.
+	directiveSent := false
 	signaled := false
 
 	var buf bytes.Buffer
@@ -29,33 +29,68 @@ func TestStopGraceful(t *testing.T) {
 		tmuxName: "oro",
 		runner:   fake,
 		w:        &buf,
+		shutdownFn: func() error {
+			directiveSent = true
+			return nil
+		},
 		signalFn: func(pid int) error { signaled = true; return nil },
-		aliveFn:  func(pid int) bool { return false }, // process "exits" immediately
+		aliveFn:  func(pid int) bool { return false }, // process exits after directive
 	}
 
 	if err := runStopSequence(context.Background(), cfg); err != nil {
 		t.Fatalf("runStopSequence: %v", err)
 	}
 
-	// Assert: SIGTERM was sent (this is the only shutdown mechanism now).
-	if !signaled {
-		t.Error("expected signalFn to be called")
+	if !directiveSent {
+		t.Error("expected shutdownFn to be called")
 	}
-
-	// Assert: tmux kill-session was called.
+	// SIGTERM should NOT be sent when directive succeeds and process exits.
+	if signaled {
+		t.Error("expected signalFn NOT to be called when directive succeeds")
+	}
 	if killCall := findCall(fake.calls, "kill-session"); killCall == nil {
 		t.Errorf("tmux kill-session not called; calls = %v", fake.calls)
 	}
+}
 
-	// Assert: bd sync was called.
-	bdSynced := false
-	for _, call := range fake.calls {
-		if len(call) >= 2 && call[0] == "bd" && call[1] == "sync" {
-			bdSynced = true
-		}
+func TestStop_DirectiveFailsFallsBackToSIGKILL(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
 	}
-	if !bdSynced {
-		t.Errorf("bd sync not called; calls = %v", fake.calls)
+
+	fake := newFakeCmd()
+
+	var killedWith int
+	var buf bytes.Buffer
+	// Use a short-lived context so waitForExit times out quickly.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	cfg := &stopConfig{
+		pidPath:  pidFile,
+		tmuxName: "oro",
+		runner:   fake,
+		w:        &buf,
+		shutdownFn: func() error {
+			return fmt.Errorf("connection refused") // socket dead
+		},
+		signalFn: func(pid int) error { return nil },
+		aliveFn:  func(pid int) bool { return true }, // process won't die
+		killFn:   func(pid int) error { killedWith = pid; return nil },
+	}
+
+	if err := runStopSequence(ctx, cfg); err != nil {
+		t.Fatalf("runStopSequence: %v", err)
+	}
+
+	if killedWith == 0 {
+		t.Error("expected killFn (SIGKILL) to be called when directive fails")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "shutdown directive failed") {
+		t.Errorf("expected warning about directive failure, got: %s", out)
 	}
 }
 

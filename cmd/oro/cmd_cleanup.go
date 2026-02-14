@@ -15,13 +15,14 @@ import (
 
 // cleanupConfig holds injectable dependencies for the cleanup command.
 type cleanupConfig struct {
-	runner   CmdRunner
-	w        io.Writer
-	tmuxName string
-	pidPath  string
-	sockPath string
-	signalFn func(int) error // sends SIGTERM; injectable for testing
-	aliveFn  func(int) bool  // checks process liveness; injectable for testing
+	runner     CmdRunner
+	w          io.Writer
+	tmuxName   string
+	pidPath    string
+	sockPath   string
+	shutdownFn func() error    // sends shutdown directive via UDS; injectable for testing
+	signalFn   func(int) error // sends SIGTERM; injectable for testing
+	aliveFn    func(int) bool  // checks process liveness; injectable for testing
 }
 
 // newCleanupCmd creates the "oro cleanup" subcommand.
@@ -35,6 +36,10 @@ deletes agent/* branches; and resets orphaned in_progress beads to open.
 
 Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if role := os.Getenv("ORO_ROLE"); role != "" {
+				return fmt.Errorf("oro cleanup can only be run by a human (ORO_ROLE=%s indicates agent context)", role)
+			}
+
 			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 			if err != nil {
 				return fmt.Errorf("get pid path: %w", err)
@@ -45,13 +50,14 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 			}
 
 			cfg := &cleanupConfig{
-				runner:   &ExecRunner{},
-				w:        cmd.OutOrStdout(),
-				tmuxName: "oro",
-				pidPath:  pidPath,
-				sockPath: sockPath,
-				signalFn: defaultSignal,
-				aliveFn:  IsProcessAlive,
+				runner:     &ExecRunner{},
+				w:          cmd.OutOrStdout(),
+				tmuxName:   "oro",
+				pidPath:    pidPath,
+				sockPath:   sockPath,
+				shutdownFn: func() error { return sendShutdownDirective(sockPath) },
+				signalFn:   defaultSignal,
+				aliveFn:    IsProcessAlive,
 			}
 
 			return runCleanup(cmd.Context(), cfg)
@@ -130,6 +136,7 @@ func cleanupTmux(cfg *cleanupConfig) bool {
 }
 
 // cleanupDispatcher signals the dispatcher process if running. Returns true if something was cleaned.
+// Tries the shutdown directive first (which authorizes SIGTERM), then falls back to raw SIGTERM.
 func cleanupDispatcher(cfg *cleanupConfig) bool {
 	pid, err := ReadPIDFile(cfg.pidPath)
 	if err != nil {
@@ -142,9 +149,29 @@ func cleanupDispatcher(cfg *cleanupConfig) bool {
 		return false
 	}
 
+	// Try shutdown directive first (authorizes SIGTERM in the daemon).
+	directiveOK := trySendShutdownDirective(cfg, pid)
+	if directiveOK && !cfg.aliveFn(pid) {
+		return true // Directive succeeded and process already exited.
+	}
+
+	// Fallback: send SIGTERM (may be ignored if directive didn't reach daemon).
 	fmt.Fprintf(cfg.w, "killing dispatcher (PID %d)\n", pid)
 	if err := cfg.signalFn(pid); err != nil {
 		fmt.Fprintf(cfg.w, "warning: signal dispatcher PID %d: %v\n", pid, err)
+	}
+	return true
+}
+
+// trySendShutdownDirective attempts to send the shutdown directive. Returns true if successful.
+func trySendShutdownDirective(cfg *cleanupConfig, pid int) bool {
+	if cfg.shutdownFn == nil {
+		return false
+	}
+	fmt.Fprintf(cfg.w, "sending shutdown directive to dispatcher (PID %d)\n", pid)
+	if err := cfg.shutdownFn(); err != nil {
+		fmt.Fprintf(cfg.w, "warning: shutdown directive failed: %v\n", err)
+		return false
 	}
 	return true
 }
