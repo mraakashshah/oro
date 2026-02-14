@@ -1,0 +1,92 @@
+---
+date: 2026-02-14
+status: partial
+---
+
+goal: >
+  Harden daemon against agent-initiated shutdowns. Manager was repeatedly
+  killing the swarm by sending shutdown directives or running oro stop.
+  Implemented 3-layer defense but one bypass remains.
+
+now: >
+  Fix oro-0g8y: agents can still run "oro stop" which sends SIGINT (always
+  honored). Best fix: add interactive confirmation prompt to oro stop that
+  agents can't bypass. See bead description for options.
+
+test: |
+  go test -race ./cmd/oro/... ./pkg/dispatcher/...
+
+done_this_session:
+  - task: "Restart oro swarm and monitor"
+    details: >
+      Phases 1-5 of restart-oro. P0 bug oro-k9lk identified as swarm-stopper
+      (AC parsing broken, missing_acceptance on all beads).
+
+  - task: "P0 fix landed by manager agent (oro-k9lk)"
+    files: [pkg/dispatcher/beadsource.go, pkg/dispatcher/beadsource_test.go, pkg/protocol/types.go]
+    details: >
+      Manager identified and fixed AC extraction from description markdown.
+      Committed as 5419f3a. Required daemon restart to take effect.
+
+  - task: "Block shutdown directive in oro directive command"
+    files: [cmd/oro/cmd_directive.go, cmd/oro/cmd_directive_test.go]
+    details: >
+      Unconditionally reject "shutdown" op in runDirective. Initially tried
+      ORO_ROLE guard but env doesn't propagate to Claude Code Bash.
+
+  - task: "Update manager beacon to forbid oro directive shutdown"
+    files: [cmd/oro/manager.go, cmd/oro/manager_test.go]
+
+  - task: "Reject shutdown directive at dispatcher level"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    details: >
+      applyDirective returns error for DirectiveShutdown. Removed shutdownOnce
+      field (now unused). This is the strongest guard — even if CLI guards
+      are bypassed, dispatcher rejects the directive.
+
+  - task: "Switch oro stop and cleanup from shutdown directive+SIGTERM to SIGINT"
+    files: [cmd/oro/cmd_stop.go, cmd/oro/cmd_stop_test.go, cmd/oro/cmd_cleanup.go, cmd/oro/cmd_cleanup_test.go]
+    details: >
+      Removed sendShutdownDirective, shutdownFn from stopConfig/cleanupConfig.
+      New flow: SIGINT → wait → SIGKILL fallback. Renamed defaultSignal to
+      defaultSignalINT. Updated all tests.
+
+decisions:
+  - shutdown_via_sigint: >
+      SIGINT is always honored by daemon (like Ctrl+C). This avoids the UDS
+      directive path entirely. Tradeoff: any process sending SIGINT can kill
+      daemon, but agents are unlikely to try kill -INT directly.
+  - unconditional_directive_block: >
+      Initially tried ORO_ROLE-conditional guard, but Claude Code Bash doesn't
+      inherit parent env vars. Switched to unconditional block since oro stop
+      has its own code path and doesn't need oro directive.
+
+failed:
+  - "ORO_ROLE env guard: Claude Code Bash tool initializes from user shell profile, not parent env. ORO_ROLE set via exec env in tmux is NOT inherited by Bash tool subprocesses."
+  - "Conditional ORO_ROLE check in runDirective: same env propagation issue"
+  - "Dispatcher-level shutdown directive rejection: works for directives but manager switched to oro stop → SIGINT"
+
+worked:
+  - "Unconditional rejection of shutdown in oro directive command"
+  - "Dispatcher-level applyDirective rejection as defense-in-depth"
+  - "Manager agent successfully fixed P0 AC parsing bug autonomously"
+
+next:
+  - "Fix oro-0g8y: prevent agents from running oro stop (interactive confirmation is best option)"
+  - "Restart swarm after fixing oro-0g8y"
+  - "Monitor for successful bead completions"
+
+beads:
+  completed: [oro-k9lk]
+  filed: [oro-0g8y]
+  in_progress: [oro-js7.5.1, oro-ssli, oro-9hd]
+
+learnings:
+  undocumented:
+    - "Claude Code Bash tool does not inherit parent process env vars — ORO_ROLE guards ineffective (oro-0g8y, tags: claude-code, env)"
+  proposed_codification:
+    - type: rule
+      target: .claude/rules/standards.md
+      content: "Never rely on env var propagation for security guards in agent contexts — Claude Code Bash initializes from user profile"
+      frequency: 1
+      tag: claude-code
