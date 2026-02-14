@@ -465,18 +465,26 @@ func TestCleanup_KillsWorkerProcesses(t *testing.T) {
 	}
 }
 
-func TestCleanup_RefusedWhenAgentRole(t *testing.T) {
-	t.Setenv("ORO_ROLE", "worker")
+func TestCleanup_RefusedWhenNotTTY(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidPath := filepath.Join(tmpDir, "oro.pid")
 
-	root := newRootCmd()
-	root.SetArgs([]string{"cleanup"})
-
-	err := root.Execute()
-	if err == nil {
-		t.Fatal("expected error when ORO_ROLE is set, got nil")
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:   newFakeCmd(),
+		w:        &buf,
+		tmuxName: "oro",
+		pidPath:  pidPath,
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		isTTY:    func() bool { return false },
 	}
-	if !strings.Contains(err.Error(), "agent") && !strings.Contains(err.Error(), "human") {
-		t.Errorf("expected error about agent/human restriction, got: %v", err)
+
+	err := runCleanup(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error when stdin is not a TTY, got nil")
+	}
+	if !strings.Contains(err.Error(), "TTY") {
+		t.Errorf("expected TTY error, got: %v", err)
 	}
 }
 

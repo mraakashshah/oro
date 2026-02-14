@@ -1254,3 +1254,195 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		}
 	})
 }
+
+func TestPaneDiedHooks(t *testing.T) {
+	t.Run("RegisterPaneDiedHooks registers hooks for both panes", func(t *testing.T) {
+		fake := newFakeCmd()
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+
+		err := sess.RegisterPaneDiedHooks()
+		if err != nil {
+			t.Fatalf("RegisterPaneDiedHooks returned error: %v", err)
+		}
+
+		// Verify set-hook was called for architect pane
+		var architectHookSet bool
+		var managerHookSet bool
+		for _, call := range fake.calls {
+			if len(call) >= 6 && call[0] == "tmux" && call[1] == "set-hook" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "oro:architect") && strings.Contains(joined, "pane-died") {
+					architectHookSet = true
+				}
+				if strings.Contains(joined, "oro:manager") && strings.Contains(joined, "pane-died") {
+					managerHookSet = true
+				}
+			}
+		}
+		if !architectHookSet {
+			t.Error("expected set-hook to be called for architect pane")
+		}
+		if !managerHookSet {
+			t.Error("expected set-hook to be called for manager pane")
+		}
+	})
+
+	t.Run("buildPaneDiedHook generates valid hook command", func(t *testing.T) {
+		hook := buildPaneDiedHook("architect", "oro")
+
+		// Hook should contain run-shell, set-buffer, paste-buffer, and reference to manager pane
+		if !strings.Contains(hook, "run-shell") {
+			t.Errorf("hook should use run-shell, got: %s", hook)
+		}
+		if !strings.Contains(hook, "set-buffer") {
+			t.Errorf("hook should use set-buffer, got: %s", hook)
+		}
+		if !strings.Contains(hook, "paste-buffer") {
+			t.Errorf("hook should use paste-buffer, got: %s", hook)
+		}
+		if !strings.Contains(hook, "oro:manager") {
+			t.Errorf("hook should reference surviving manager pane, got: %s", hook)
+		}
+		if !strings.Contains(hook, "PANE_DIED") {
+			t.Errorf("hook should mention PANE_DIED escalation, got: %s", hook)
+		}
+		if !strings.Contains(hook, "architect") {
+			t.Errorf("hook should mention dying architect role, got: %s", hook)
+		}
+	})
+
+	t.Run("buildPaneDiedHook references correct surviving pane", func(t *testing.T) {
+		// When architect dies, message goes to manager
+		architectHook := buildPaneDiedHook("architect", "oro")
+		if !strings.Contains(architectHook, "oro:manager") {
+			t.Errorf("architect hook should send to manager, got: %s", architectHook)
+		}
+
+		// When manager dies, message goes to architect
+		managerHook := buildPaneDiedHook("manager", "oro")
+		if !strings.Contains(managerHook, "oro:architect") {
+			t.Errorf("manager hook should send to architect, got: %s", managerHook)
+		}
+	})
+
+	t.Run("sanitizeForTmuxHook removes newlines", func(t *testing.T) {
+		input := "line1\nline2\rline3"
+		output := sanitizeForTmuxHook(input)
+
+		if strings.Contains(output, "\n") || strings.Contains(output, "\r") {
+			t.Errorf("sanitizeForTmuxHook should remove newlines, got: %q", output)
+		}
+		if !strings.Contains(output, "line1") || !strings.Contains(output, "line2") || !strings.Contains(output, "line3") {
+			t.Errorf("sanitizeForTmuxHook should preserve content, got: %q", output)
+		}
+	})
+
+	t.Run("escapeForShell wraps with single quotes and escapes internal quotes", func(t *testing.T) {
+		input := "hello 'world'"
+		output := escapeForShell(input)
+
+		// Should start and end with single quotes
+		if !strings.HasPrefix(output, "'") || !strings.HasSuffix(output, "'") {
+			t.Errorf("escapeForShell should wrap with single quotes, got: %q", output)
+		}
+
+		// Should escape internal single quotes as '\''
+		if !strings.Contains(output, "'\\''") {
+			t.Errorf("escapeForShell should escape internal quotes as '\\'\\'', got: %q", output)
+		}
+	})
+
+	t.Run("CleanupPaneDiedHooks unregisters hooks for both panes", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Session exists
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+
+		err := sess.CleanupPaneDiedHooks()
+		if err != nil {
+			t.Fatalf("CleanupPaneDiedHooks returned error: %v", err)
+		}
+
+		// Verify set-hook -u was called for both panes
+		var architectHookUnset bool
+		var managerHookUnset bool
+		for _, call := range fake.calls {
+			if len(call) >= 6 && call[0] == "tmux" && call[1] == "set-hook" && call[2] == "-u" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "oro:architect") && strings.Contains(joined, "pane-died") {
+					architectHookUnset = true
+				}
+				if strings.Contains(joined, "oro:manager") && strings.Contains(joined, "pane-died") {
+					managerHookUnset = true
+				}
+			}
+		}
+		if !architectHookUnset {
+			t.Error("expected set-hook -u to be called for architect pane")
+		}
+		if !managerHookUnset {
+			t.Error("expected set-hook -u to be called for manager pane")
+		}
+	})
+
+	t.Run("CleanupPaneDiedHooks skips cleanup when session does not exist", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Session does not exist
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+
+		err := sess.CleanupPaneDiedHooks()
+		if err != nil {
+			t.Fatalf("CleanupPaneDiedHooks should not fail when session doesn't exist, got: %v", err)
+		}
+
+		// Should not have called set-hook
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-hook" {
+				t.Error("should not call set-hook when session doesn't exist")
+			}
+		}
+	})
+
+	t.Run("pane-died hook escapes special characters", func(t *testing.T) {
+		// Test hook generation with special characters that need escaping
+		hook := buildPaneDiedHook("architect", "test-session")
+
+		// Should be a valid shell command (starts with run-shell)
+		if !strings.Contains(hook, "run-shell") {
+			t.Errorf("hook should use run-shell, got: %s", hook)
+		}
+
+		// Should properly escape quotes for shell safety
+		if strings.Count(hook, "'") < 2 {
+			t.Errorf("hook should have proper quoting, got: %s", hook)
+		}
+	})
+}
+
+func TestBuildPaneDiedHookContent(t *testing.T) {
+	t.Run("hook message format matches escalation pattern", func(t *testing.T) {
+		hook := buildPaneDiedHook("architect", "oro")
+
+		// Message should start with [ORO-DISPATCH] and include PANE_DIED
+		if !strings.Contains(hook, "[ORO-DISPATCH] PANE_DIED") {
+			t.Errorf("hook message should follow escalation format, got: %s", hook)
+		}
+	})
+
+	t.Run("hook for architect references architect as dying role", func(t *testing.T) {
+		hook := buildPaneDiedHook("architect", "oro")
+		if !strings.Contains(hook, "architect pane crashed") {
+			t.Errorf("architect hook should mention architect pane, got: %s", hook)
+		}
+	})
+
+	t.Run("hook for manager references manager as dying role", func(t *testing.T) {
+		hook := buildPaneDiedHook("manager", "oro")
+		if !strings.Contains(hook, "manager pane crashed") {
+			t.Errorf("manager hook should mention manager pane, got: %s", hook)
+		}
+	})
+}

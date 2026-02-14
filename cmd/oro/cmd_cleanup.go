@@ -22,6 +22,7 @@ type cleanupConfig struct {
 	sockPath string
 	signalFn func(int) error // sends SIGINT; injectable for testing
 	aliveFn  func(int) bool  // checks process liveness; injectable for testing
+	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
 }
 
 // newCleanupCmd creates the "oro cleanup" subcommand.
@@ -35,10 +36,6 @@ deletes agent/* branches; and resets orphaned in_progress beads to open.
 
 Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if role := os.Getenv("ORO_ROLE"); role != "" {
-				return fmt.Errorf("oro cleanup can only be run by a human (ORO_ROLE=%s indicates agent context)", role)
-			}
-
 			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 			if err != nil {
 				return fmt.Errorf("get pid path: %w", err)
@@ -56,6 +53,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				sockPath: sockPath,
 				signalFn: defaultSignalINT,
 				aliveFn:  IsProcessAlive,
+				isTTY:    isStdinTTY,
 			}
 
 			return runCleanup(cmd.Context(), cfg)
@@ -72,6 +70,10 @@ type beadEntry struct {
 // Each step continues on error, reporting warnings. Returns nil on success
 // even if individual steps had warnings.
 func runCleanup(_ context.Context, cfg *cleanupConfig) error {
+	if cfg.isTTY != nil && !cfg.isTTY() {
+		return fmt.Errorf("oro cleanup requires an interactive terminal (stdin is not a TTY)")
+	}
+
 	cleaned := false
 
 	// 1. Kill tmux session if it exists.

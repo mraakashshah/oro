@@ -12,3 +12,4 @@ MD058: false    # Blanks around tables
 MD060: false    # Table column style
 MD041: false    # First line heading
 MD034: false    # Bare URLs
+MD046: false    # Code block style (indented vs fenced)

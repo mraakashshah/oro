@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+// ttyStop returns a stopConfig that passes TTY confirmation (simulates interactive terminal).
+func ttyStop(pidFile string, fake *fakeCmd, buf *bytes.Buffer) *stopConfig {
+	return &stopConfig{
+		pidPath:  pidFile,
+		tmuxName: "oro",
+		runner:   fake,
+		w:        buf,
+		stdin:    strings.NewReader("YES\n"),
+		signalFn: func(pid int) error { return nil },
+		aliveFn:  func(pid int) bool { return false },
+		killFn:   func(pid int) error { return nil },
+		isTTY:    func() bool { return true },
+	}
+}
+
 func TestStop_SIGINTSucceeds(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
@@ -21,14 +36,8 @@ func TestStop_SIGINTSucceeds(t *testing.T) {
 	signaled := false
 
 	var buf bytes.Buffer
-	cfg := &stopConfig{
-		pidPath:  pidFile,
-		tmuxName: "oro",
-		runner:   fake,
-		w:        &buf,
-		signalFn: func(pid int) error { signaled = true; return nil },
-		aliveFn:  func(pid int) bool { return false }, // process exits after SIGINT
-	}
+	cfg := ttyStop(pidFile, fake, &buf)
+	cfg.signalFn = func(pid int) error { signaled = true; return nil }
 
 	if err := runStopSequence(context.Background(), cfg); err != nil {
 		t.Fatalf("runStopSequence: %v", err)
@@ -56,15 +65,10 @@ func TestStop_SIGINTFailsFallsBackToSIGKILL(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	cfg := &stopConfig{
-		pidPath:  pidFile,
-		tmuxName: "oro",
-		runner:   fake,
-		w:        &buf,
-		signalFn: func(pid int) error { return nil },
-		aliveFn:  func(pid int) bool { return true }, // process won't die
-		killFn:   func(pid int) error { killedWith = pid; return nil },
-	}
+	cfg := ttyStop(pidFile, fake, &buf)
+	cfg.signalFn = func(pid int) error { return nil }
+	cfg.aliveFn = func(pid int) bool { return true } // process won't die
+	cfg.killFn = func(pid int) error { killedWith = pid; return nil }
 
 	if err := runStopSequence(ctx, cfg); err != nil {
 		t.Fatalf("runStopSequence: %v", err)
@@ -122,19 +126,99 @@ func TestStop_Stale(t *testing.T) {
 	}
 }
 
-// TestStop_RefusedWhenAgentRole verifies that oro stop refuses to run
-// when ORO_ROLE is set (i.e., called from an agent, not a human).
-func TestStop_RefusedWhenAgentRole(t *testing.T) {
-	t.Setenv("ORO_ROLE", "manager")
+func TestStop_RefusedWhenNotTTY(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
 
-	root := newRootCmd()
-	root.SetArgs([]string{"stop"})
+	var buf bytes.Buffer
+	cfg := &stopConfig{
+		pidPath:  pidFile,
+		tmuxName: "oro",
+		runner:   newFakeCmd(),
+		w:        &buf,
+		stdin:    strings.NewReader(""),
+		isTTY:    func() bool { return false }, // not a terminal
+	}
 
-	err := root.Execute()
+	err := runStopSequence(context.Background(), cfg)
 	if err == nil {
-		t.Fatal("expected error when ORO_ROLE is set, got nil")
+		t.Fatal("expected error when stdin is not a TTY")
 	}
-	if !strings.Contains(err.Error(), "agent") && !strings.Contains(err.Error(), "human") {
-		t.Errorf("expected error about agent/human restriction, got: %v", err)
+	if !strings.Contains(err.Error(), "not a TTY") {
+		t.Errorf("expected TTY error, got: %v", err)
 	}
+}
+
+func TestStop_RefusedWhenConfirmationNotYES(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &stopConfig{
+		pidPath:  pidFile,
+		tmuxName: "oro",
+		runner:   newFakeCmd(),
+		w:        &buf,
+		stdin:    strings.NewReader("no\n"),
+		isTTY:    func() bool { return true },
+	}
+
+	err := runStopSequence(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error when confirmation is not YES")
+	}
+	if !strings.Contains(err.Error(), "aborted") {
+		t.Errorf("expected aborted error, got: %v", err)
+	}
+}
+
+func TestStop_ForceRequiresEnvVar(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
+
+	t.Run("force without env var fails", func(t *testing.T) {
+		t.Setenv("ORO_HUMAN_CONFIRMED", "")
+
+		var buf bytes.Buffer
+		cfg := &stopConfig{
+			pidPath:  pidFile,
+			tmuxName: "oro",
+			runner:   newFakeCmd(),
+			w:        &buf,
+			force:    true,
+			isTTY:    func() bool { return false },
+		}
+
+		err := runStopSequence(context.Background(), cfg)
+		if err == nil {
+			t.Fatal("expected error when --force used without ORO_HUMAN_CONFIRMED")
+		}
+		if !strings.Contains(err.Error(), "ORO_HUMAN_CONFIRMED") {
+			t.Errorf("expected ORO_HUMAN_CONFIRMED error, got: %v", err)
+		}
+	})
+
+	t.Run("force with env var succeeds", func(t *testing.T) {
+		t.Setenv("ORO_HUMAN_CONFIRMED", "1")
+
+		fake := newFakeCmd()
+		var buf bytes.Buffer
+		cfg := ttyStop(pidFile, fake, &buf)
+		cfg.force = true
+		cfg.isTTY = func() bool { return false } // doesn't matter with --force
+
+		err := runStopSequence(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("unexpected error with --force and ORO_HUMAN_CONFIRMED=1: %v", err)
+		}
+	})
 }

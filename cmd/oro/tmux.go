@@ -158,6 +158,12 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
 	}
 
+	// Register pane-died hooks for crash detection.
+	if err := s.RegisterPaneDiedHooks(); err != nil {
+		// Warning only — don't fail startup.
+		fmt.Fprintf(os.Stderr, "warning: failed to register pane-died hooks: %v\n", err)
+	}
+
 	return nil
 }
 
@@ -447,5 +453,92 @@ func (s *TmuxSession) AttachInteractive() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("tmux attach-session: %w", err)
 	}
+	return nil
+}
+
+// RegisterPaneDiedHooks registers pane-died hooks for both architect and manager
+// panes to detect when either pane crashes or closes. Each hook sends an escalation
+// message to the surviving pane and logs the event to the dispatcher log.
+func (s *TmuxSession) RegisterPaneDiedHooks() error {
+	// Register hook for architect pane
+	architectPane := s.Name + ":architect"
+	architectHook := buildPaneDiedHook("architect", s.Name)
+	if _, err := s.Runner.Run("tmux", "set-hook", "-t", architectPane, "pane-died", architectHook); err != nil {
+		return fmt.Errorf("register pane-died hook for architect: %w", err)
+	}
+
+	// Register hook for manager pane
+	managerPane := s.Name + ":manager"
+	managerHook := buildPaneDiedHook("manager", s.Name)
+	if _, err := s.Runner.Run("tmux", "set-hook", "-t", managerPane, "pane-died", managerHook); err != nil {
+		return fmt.Errorf("register pane-died hook for manager: %w", err)
+	}
+
+	return nil
+}
+
+// buildPaneDiedHook constructs a tmux hook command for pane-died events.
+// The hook sends an escalation message to the surviving pane and logs the event.
+// Since the dying pane triggers the hook, the message goes to the other pane.
+func buildPaneDiedHook(dyingRole, sessionName string) string {
+	// Determine the surviving role and pane
+	survivingRole := "manager"
+	if dyingRole == "manager" {
+		survivingRole = "architect"
+	}
+	survivingPane := sessionName + ":" + survivingRole
+
+	// Build an escalation-style message for the surviving pane
+	escalationMsg := fmt.Sprintf("[ORO-DISPATCH] PANE_DIED: %s pane crashed — oro swarm compromised.", dyingRole)
+
+	// Use tmux send-keys with set-buffer/paste-buffer for reliable delivery (like TmuxEscalator)
+	hook := fmt.Sprintf(
+		"run-shell \"tmux set-buffer -b oro-pane-died '%s'; tmux paste-buffer -b oro-pane-died -t %s; tmux send-keys -t %s Enter\"",
+		escapeForShell(sanitizeForTmuxHook(escalationMsg)),
+		survivingPane,
+		survivingPane,
+	)
+	return hook
+}
+
+// sanitizeForTmuxHook prepares a message for safe use in a tmux hook shell command.
+// Strips newlines and replaces problematic characters.
+func sanitizeForTmuxHook(msg string) string {
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	msg = strings.ReplaceAll(msg, "\r", " ")
+	return msg
+}
+
+// escapeForShell escapes a string for safe use in a shell command within a tmux hook.
+// Wraps with single quotes and escapes any single quotes in the content.
+func escapeForShell(s string) string {
+	// Replace single quotes with '\'' (end quote, escaped quote, start quote)
+	escaped := strings.ReplaceAll(s, "'", "'\\''")
+	return "'" + escaped + "'"
+}
+
+// CleanupPaneDiedHooks removes the pane-died hooks from both architect and manager panes.
+//
+//nolint:unparam // error return kept for interface consistency; errors are logged not propagated
+func (s *TmuxSession) CleanupPaneDiedHooks() error {
+	// Only attempt cleanup if session exists
+	if !s.Exists() {
+		return nil
+	}
+
+	// Remove hook from architect pane
+	architectPane := s.Name + ":architect"
+	if _, err := s.Runner.Run("tmux", "set-hook", "-u", "-t", architectPane, "pane-died"); err != nil {
+		// Non-fatal — hook may not have been registered
+		fmt.Fprintf(os.Stderr, "warning: failed to unregister pane-died hook for architect: %v\n", err)
+	}
+
+	// Remove hook from manager pane
+	managerPane := s.Name + ":manager"
+	if _, err := s.Runner.Run("tmux", "set-hook", "-u", "-t", managerPane, "pane-died"); err != nil {
+		// Non-fatal — hook may not have been registered
+		fmt.Fprintf(os.Stderr, "warning: failed to unregister pane-died hook for manager: %v\n", err)
+	}
+
 	return nil
 }
