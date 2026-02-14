@@ -197,6 +197,23 @@ func TestDirectiveCmd_NoHumanApprovedInPayload(t *testing.T) {
 	}
 }
 
+// TestDirectiveCmd_ShutdownBlocked verifies that the shutdown directive is
+// unconditionally blocked via "oro directive shutdown" — use "oro stop" instead.
+func TestDirectiveCmd_ShutdownBlocked(t *testing.T) {
+	t.Setenv("ORO_SOCKET_PATH", "/tmp/oro-test-unused.sock")
+
+	root := newRootCmd()
+	root.SetArgs([]string{"directive", "shutdown"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("expected error when sending shutdown via directive, got nil")
+	}
+	if !strings.Contains(err.Error(), "oro stop") {
+		t.Errorf("expected error to suggest 'oro stop', got: %v", err)
+	}
+}
+
 // TestDirectiveCmd_NoSocket tests error handling when socket doesn't exist.
 func TestDirectiveCmd_NoSocket(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-test-noexist-%d.sock", time.Now().UnixNano())

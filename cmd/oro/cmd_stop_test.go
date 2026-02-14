@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +10,7 @@ import (
 	"time"
 )
 
-func TestStop_DirectiveSucceeds(t *testing.T) {
+func TestStop_SIGINTSucceeds(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
@@ -19,8 +18,6 @@ func TestStop_DirectiveSucceeds(t *testing.T) {
 	}
 
 	fake := newFakeCmd()
-
-	directiveSent := false
 	signaled := false
 
 	var buf bytes.Buffer
@@ -29,31 +26,23 @@ func TestStop_DirectiveSucceeds(t *testing.T) {
 		tmuxName: "oro",
 		runner:   fake,
 		w:        &buf,
-		shutdownFn: func() error {
-			directiveSent = true
-			return nil
-		},
 		signalFn: func(pid int) error { signaled = true; return nil },
-		aliveFn:  func(pid int) bool { return false }, // process exits after directive
+		aliveFn:  func(pid int) bool { return false }, // process exits after SIGINT
 	}
 
 	if err := runStopSequence(context.Background(), cfg); err != nil {
 		t.Fatalf("runStopSequence: %v", err)
 	}
 
-	if !directiveSent {
-		t.Error("expected shutdownFn to be called")
-	}
-	// SIGTERM should NOT be sent when directive succeeds and process exits.
-	if signaled {
-		t.Error("expected signalFn NOT to be called when directive succeeds")
+	if !signaled {
+		t.Error("expected signalFn (SIGINT) to be called")
 	}
 	if killCall := findCall(fake.calls, "kill-session"); killCall == nil {
 		t.Errorf("tmux kill-session not called; calls = %v", fake.calls)
 	}
 }
 
-func TestStop_DirectiveFailsFallsBackToSIGKILL(t *testing.T) {
+func TestStop_SIGINTFailsFallsBackToSIGKILL(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
@@ -64,7 +53,6 @@ func TestStop_DirectiveFailsFallsBackToSIGKILL(t *testing.T) {
 
 	var killedWith int
 	var buf bytes.Buffer
-	// Use a short-lived context so waitForExit times out quickly.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -73,9 +61,6 @@ func TestStop_DirectiveFailsFallsBackToSIGKILL(t *testing.T) {
 		tmuxName: "oro",
 		runner:   fake,
 		w:        &buf,
-		shutdownFn: func() error {
-			return fmt.Errorf("connection refused") // socket dead
-		},
 		signalFn: func(pid int) error { return nil },
 		aliveFn:  func(pid int) bool { return true }, // process won't die
 		killFn:   func(pid int) error { killedWith = pid; return nil },
@@ -86,11 +71,7 @@ func TestStop_DirectiveFailsFallsBackToSIGKILL(t *testing.T) {
 	}
 
 	if killedWith == 0 {
-		t.Error("expected killFn (SIGKILL) to be called when directive fails")
-	}
-	out := buf.String()
-	if !strings.Contains(out, "shutdown directive failed") {
-		t.Errorf("expected warning about directive failure, got: %s", out)
+		t.Error("expected killFn (SIGKILL) to be called when process won't exit")
 	}
 }
 

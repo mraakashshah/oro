@@ -178,6 +178,12 @@ func TestManagerBeacon(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("anti-patterns include oro directive shutdown", func(t *testing.T) {
+		if !strings.Contains(beacon, "oro directive shutdown") {
+			t.Error("expected anti-patterns to explicitly forbid 'oro directive shutdown'")
+		}
+	})
 }
 
 func TestManagerNudge(t *testing.T) {

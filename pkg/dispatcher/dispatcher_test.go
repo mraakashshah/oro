@@ -1509,31 +1509,20 @@ func TestShutdownAuthorized_DefaultsFalse(t *testing.T) {
 	}
 }
 
-func TestApplyDirective_Shutdown(t *testing.T) {
+func TestApplyDirective_ShutdownRejected(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)
 
-	detail, err := d.applyDirective(protocol.DirectiveShutdown, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := d.applyDirective(protocol.DirectiveShutdown, "")
+	if err == nil {
+		t.Fatal("expected shutdown directive to be rejected")
 	}
-	if detail != "shutdown authorized" {
-		t.Fatalf("detail = %q, want %q", detail, "shutdown authorized")
+	if !strings.Contains(err.Error(), "oro stop") {
+		t.Errorf("expected error to mention 'oro stop', got: %v", err)
 	}
-	if !d.ShutdownAuthorized().Load() {
-		t.Fatal("shutdownAuthorized should be true after shutdown directive")
-	}
-	if d.GetState() != StateStopping {
-		t.Fatalf("state = %s, want %s", d.GetState(), StateStopping)
-	}
-
-	// Idempotency: second call should not panic (double close).
-	detail2, err2 := d.applyDirective(protocol.DirectiveShutdown, "")
-	if err2 != nil {
-		t.Fatalf("second shutdown unexpected error: %v", err2)
-	}
-	if detail2 != "shutdown authorized" {
-		t.Fatalf("second detail = %q, want %q", detail2, "shutdown authorized")
+	// State should NOT change to stopping.
+	if d.GetState() != StateRunning {
+		t.Fatalf("state = %s, want %s (shutdown should be rejected)", d.GetState(), StateRunning)
 	}
 }
 

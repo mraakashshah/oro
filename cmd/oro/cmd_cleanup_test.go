@@ -480,7 +480,7 @@ func TestCleanup_RefusedWhenAgentRole(t *testing.T) {
 	}
 }
 
-func TestCleanup_SendsDirectiveBeforeSignal(t *testing.T) {
+func TestCleanup_SendsSIGINTToDispatcher(t *testing.T) {
 	fake := newFakeCmd()
 	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
@@ -493,7 +493,6 @@ func TestCleanup_SendsDirectiveBeforeSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	directiveSent := false
 	signaled := false
 	var buf bytes.Buffer
 	cfg := &cleanupConfig{
@@ -502,14 +501,8 @@ func TestCleanup_SendsDirectiveBeforeSignal(t *testing.T) {
 		tmuxName: "oro",
 		pidPath:  pidPath,
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
-		shutdownFn: func() error {
-			directiveSent = true
-			return nil
-		},
 		signalFn: func(pid int) error { signaled = true; return nil },
-		aliveFn: func(pid int) bool {
-			return pid == 12345 && !directiveSent // dies after directive
-		},
+		aliveFn:  func(pid int) bool { return pid == 12345 },
 	}
 
 	err := runCleanup(context.Background(), cfg)
@@ -517,11 +510,7 @@ func TestCleanup_SendsDirectiveBeforeSignal(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !directiveSent {
-		t.Error("expected shutdownFn to be called before signal")
-	}
-	// Signal should NOT be sent when directive succeeds and process exits.
-	if signaled {
-		t.Error("expected signal NOT to be sent when directive succeeds")
+	if !signaled {
+		t.Error("expected SIGINT to be sent to dispatcher")
 	}
 }

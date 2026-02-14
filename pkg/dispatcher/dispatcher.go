@@ -220,8 +220,6 @@ type Dispatcher struct {
 	shutdownCh chan struct{}
 	// shutdownAuthorized gates whether SIGTERM is honored by the signal handler.
 	shutdownAuthorized atomic.Bool
-	// shutdownOnce prevents double-close of shutdownCh.
-	shutdownOnce sync.Once
 
 	// wg tracks all goroutines spawned by Run() to ensure graceful shutdown
 	wg sync.WaitGroup
@@ -1630,10 +1628,10 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		}
 		return fmt.Sprintf("focused on %s", args), nil
 	case protocol.DirectiveShutdown:
-		d.shutdownAuthorized.Store(true)
-		d.setState(StateStopping)
-		d.shutdownOnce.Do(func() { close(d.shutdownCh) })
-		return "shutdown authorized", nil
+		// Reject shutdown via UDS directive — agents can bypass ORO_ROLE guards.
+		// Legitimate shutdown uses SIGINT (oro stop) which the daemon always honors.
+		return "", fmt.Errorf("shutdown directive rejected; use 'oro stop' (sends SIGINT)")
+
 	default:
 		return fmt.Sprintf("applied %s", dir), nil
 	}

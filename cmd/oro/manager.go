@@ -136,7 +136,7 @@ Do NOT do any of the following:
 - Create beads without acceptance criteria
 - Over-decompose (beads smaller than a single function are too small)
 - Ignore human input or deprioritize human requests
-- **NEVER run ` + "`oro stop`" + ` or ` + "`oro directive stop`" + ` unless the human explicitly says "stop" or "shutdown"** — the dispatcher manages worker lifecycle automatically; stopping kills active work
+- **NEVER run ` + "`oro stop`" + `, ` + "`oro directive stop`" + `, or ` + "`oro directive shutdown`" + ` unless the human explicitly says "stop" or "shutdown"** — the dispatcher manages worker lifecycle automatically; stopping kills active work
 - Send stop/scale-0 just because your current task feels "done" — the swarm runs continuously until the human says otherwise
 
 ## Shutdown

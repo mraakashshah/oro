@@ -42,6 +42,14 @@ Supported operations:
 // runDirective sends a directive to the dispatcher and prints the result.
 func runDirective(ctx context.Context, w io.Writer, args []string) error {
 	op := args[0]
+
+	// Block shutdown directive entirely from "oro directive" — use "oro stop"
+	// instead, which has ORO_ROLE guard and proper drain/signal sequence.
+	// This prevents agents from bypassing "oro stop" guards via "oro directive shutdown".
+	if protocol.Directive(op) == protocol.DirectiveShutdown {
+		return fmt.Errorf("shutdown is not available via 'oro directive'; use 'oro stop' instead")
+	}
+
 	var opArgs string
 	if len(args) > 1 {
 		opArgs = strings.Join(args[1:], " ")

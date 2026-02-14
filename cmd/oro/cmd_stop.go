@@ -13,14 +13,13 @@ import (
 
 // stopConfig holds injectable dependencies for the graceful shutdown sequence.
 type stopConfig struct {
-	pidPath    string
-	tmuxName   string
-	runner     CmdRunner
-	w          io.Writer
-	shutdownFn func() error    // sends shutdown directive via UDS; injectable for testing
-	signalFn   func(int) error // sends SIGTERM; injectable for testing
-	aliveFn    func(int) bool  // checks process liveness; injectable for testing
-	killFn     func(int) error // sends SIGKILL; injectable for testing
+	pidPath  string
+	tmuxName string
+	runner   CmdRunner
+	w        io.Writer
+	signalFn func(int) error // sends SIGINT; injectable for testing
+	aliveFn  func(int) bool  // checks process liveness; injectable for testing
+	killFn   func(int) error // sends SIGKILL; injectable for testing
 }
 
 // drainTimeout is how long to wait for the dispatcher to exit after SIGTERM.
@@ -44,20 +43,14 @@ func newStopCmd() *cobra.Command {
 				return fmt.Errorf("get pid path: %w", err)
 			}
 
-			sockPath, sockErr := oroPath("ORO_SOCKET_PATH", "oro.sock")
-			if sockErr != nil {
-				return fmt.Errorf("get socket path: %w", sockErr)
-			}
-
 			cfg := &stopConfig{
-				pidPath:    pidPath,
-				tmuxName:   "oro",
-				runner:     &ExecRunner{},
-				w:          cmd.OutOrStdout(),
-				shutdownFn: func() error { return sendShutdownDirective(sockPath) },
-				signalFn:   defaultSignal,
-				aliveFn:    IsProcessAlive,
-				killFn:     defaultKill,
+				pidPath:  pidPath,
+				tmuxName: "oro",
+				runner:   &ExecRunner{},
+				w:        cmd.OutOrStdout(),
+				signalFn: defaultSignalINT,
+				aliveFn:  IsProcessAlive,
+				killFn:   defaultKill,
 			}
 
 			return runStopSequence(cmd.Context(), cfg)
@@ -65,14 +58,17 @@ func newStopCmd() *cobra.Command {
 	}
 }
 
-// defaultSignal sends SIGTERM to the given PID.
-func defaultSignal(pid int) error {
+// defaultSignalINT sends SIGINT to the given PID.
+// SIGINT is always honored by the daemon (like Ctrl+C), unlike SIGTERM which
+// requires prior authorization via shutdown directive. This avoids the UDS
+// directive path which agents can abuse.
+func defaultSignalINT(pid int) error {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("find process %d: %w", pid, err)
 	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		return fmt.Errorf("send SIGTERM to PID %d: %w", pid, err)
+	if err := proc.Signal(syscall.SIGINT); err != nil {
+		return fmt.Errorf("send SIGINT to PID %d: %w", pid, err)
 	}
 	return nil
 }
@@ -89,28 +85,10 @@ func defaultKill(pid int) error {
 	return nil
 }
 
-// sendShutdownDirective connects to the dispatcher UDS and sends a "shutdown"
-// directive so the signal handler will honor the subsequent SIGTERM.
-func sendShutdownDirective(sockPath string) error {
-	conn, err := dialDispatcher(context.Background(), sockPath)
-	if err != nil {
-		return fmt.Errorf("connect to dispatcher: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	if err := sendDirective(conn, "shutdown", ""); err != nil {
-		return fmt.Errorf("send shutdown directive: %w", err)
-	}
-	if _, err := readACK(conn); err != nil {
-		return fmt.Errorf("read shutdown ack: %w", err)
-	}
-	return nil
-}
-
 // runStopSequence performs the full graceful shutdown:
-//  1. Send "shutdown" directive via UDS (authorizes SIGTERM, triggers internal drain)
+//  1. Send SIGINT to the dispatcher (always honored, triggers graceful drain)
 //  2. Wait for the dispatcher process to exit
-//  3. If directive fails or process won't exit: SIGKILL as emergency fallback
+//  3. If process won't exit: SIGKILL as emergency fallback
 //  4. Kill the tmux session
 //  5. Run bd sync
 //  6. Remove PID file
@@ -129,23 +107,18 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 		return RemovePIDFile(cfg.pidPath)
 	}
 
-	// 1. Send shutdown directive (authorizes SIGTERM and triggers drain).
-	directiveOK := false
-	if cfg.shutdownFn != nil {
-		fmt.Fprintf(cfg.w, "sending shutdown directive to dispatcher (PID %d)\n", pid)
-		if err := cfg.shutdownFn(); err != nil {
-			fmt.Fprintf(cfg.w, "warning: shutdown directive failed: %v\n", err)
-		} else {
-			directiveOK = true
-		}
+	// 1. Send SIGINT (always honored by daemon, like Ctrl+C).
+	fmt.Fprintf(cfg.w, "sending SIGINT to dispatcher (PID %d)\n", pid)
+	if err := cfg.signalFn(pid); err != nil {
+		fmt.Fprintf(cfg.w, "warning: SIGINT failed: %v\n", err)
 	}
 
 	// 2. Wait for the dispatcher to exit.
 	fmt.Fprintln(cfg.w, "waiting for dispatcher to drain and exit...")
 	if err := waitForExit(ctx, pid, cfg.aliveFn); err != nil {
 		fmt.Fprintf(cfg.w, "warning: %v\n", err)
-		// 3. Emergency fallback: SIGKILL if directive failed and process won't exit.
-		if !directiveOK && cfg.killFn != nil {
+		// 3. Emergency fallback: SIGKILL if process won't exit.
+		if cfg.killFn != nil {
 			fmt.Fprintf(cfg.w, "sending SIGKILL to dispatcher (PID %d)\n", pid)
 			if killErr := cfg.killFn(pid); killErr != nil {
 				fmt.Fprintf(cfg.w, "warning: SIGKILL failed: %v\n", killErr)
