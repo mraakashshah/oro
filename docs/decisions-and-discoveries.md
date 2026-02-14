@@ -1,5 +1,13 @@
 # Decisions and Discoveries
 
+## 2026-02-14: GIT_DIR/GIT_WORK_TREE env leak from git hooks corrupted main branch
+**Tags:** #git #hooks #env-leak #testing #root-cause #quality-gate
+**Context:** Investigated suspicious commits on main with author `test@test.com`, vague messages ("initial", "init"), a 14MB binary, and 346 deleted files. The architecture review agent, manager, quality gate, and commit skills appeared to have been completely bypassed.
+**Discovery:** The commits were NOT made by Claude agents. They were made by Go test suites (`worker_test.go`, `exec_runner_test.go`, `merge_test.go`) whose git operations were accidentally redirected to the real repository. Root cause: when `quality_gate.sh` runs inside a git pre-push hook, git sets `GIT_DIR` and `GIT_WORK_TREE` environment variables. These leaked into `go test` subprocesses. Tests that create git repos in temp dirs (e.g., `TestRunQualityGate_RestoresDeletedScript` with `git config user.email test@test.com` and `git commit -m "initial"`) had their git operations hit the real repo instead of the temp dir. The corrupted branch was then merged to main by the merge coordinator, deleting 72,701 lines across 346 files.
+**Evidence chain:** (1) Reflog showed direct `commit:` entries, not `cherry-pick:` or `merge:` from the worker pipeline. (2) Author `test@test.com` matched `worker_test.go:506` exactly; `test@example.com` matched `exec_runner_test.go:66`. (3) Branch names `agent/test-merged` and `agent/unmerged` came from merge test fixtures. (4) All bad commits happened in a 53-second burst — a single `go test` run. (5) Fix commit `7461500` confirmed the mechanism: `unset GIT_DIR GIT_WORK_TREE` at the top of `quality_gate.sh`.
+**Fix:** Added `unset GIT_DIR GIT_WORK_TREE` to the top of `quality_gate.sh` (commit `7461500`).
+**Implications:** Any script that runs inside a git hook and spawns subprocesses that use git MUST unset `GIT_DIR` and `GIT_WORK_TREE`. This is not optional — leaked env vars silently redirect all git operations to the parent repo. Go tests with `t.TempDir()` and `cmd.Dir = tmpDir` are NOT sufficient isolation when `GIT_DIR` overrides the directory. Consider also adding `unset GIT_DIR GIT_WORK_TREE` to individual test helpers that create git repos, as defense in depth.
+
 ## 2026-02-08: Never cd into worktrees — bash dies when worktree is removed
 **Tags:** #worktree #bash #cwd #session-killer
 **Context:** During work-bead execution, a `cd` into `.worktrees/bead-oro-by8/` was followed by `git worktree remove`. This deleted the shell's cwd. On macOS, a process whose cwd is deleted cannot execute any commands — every bash call silently returns exit code 1 with no output. The session became unrecoverable.
