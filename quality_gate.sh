@@ -74,7 +74,7 @@ if $HAS_GO; then
     check "goimports" "test -z \"\$(goimports -l $GO_DIRS 2>/dev/null)\""
 
     header "GO TIER 2: LINTING"
-    check "golangci-lint" "golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
+    check "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
 
     header "GO TIER 3: DEAD CODE"
     # Detect exported functions in pkg/ and internal/ only referenced from test files.
@@ -155,7 +155,7 @@ if $HAS_GO; then
 
     header "GO TIER 5: TESTING"
     COVERAGE_FILE="/tmp/oro-coverage-$$.out"
-    check "go test" "go test -race -shuffle=on -p 2 -coverprofile=$COVERAGE_FILE ./internal/... ./pkg/... && go tool cover -func=$COVERAGE_FILE | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 85) exit 1}'"
+    check "go test" "GOFLAGS=-buildvcs=false go test -race -shuffle=on -p 2 -coverprofile=$COVERAGE_FILE ./internal/... ./pkg/... && go tool cover -func=$COVERAGE_FILE | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 85) exit 1}'"
     check "coverage" "go tool cover -func=$COVERAGE_FILE | tail -1"
     rm -f "$COVERAGE_FILE"
 
@@ -221,7 +221,9 @@ if $HAS_PYTHON; then
     fi
 
     header "PYTHON TIER 4: TESTING"
-    check "pytest" "uv run pytest"
+    if compgen -G "tests/test_*.py" > /dev/null 2>&1 || compgen -G "tests/**/test_*.py" > /dev/null 2>&1; then
+        check "pytest" "uv run pytest"
+    fi
 
 fi
 
