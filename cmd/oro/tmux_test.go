@@ -144,32 +144,14 @@ func TestTmuxLayout(t *testing.T) {
 			t.Error("new-window should name the window 'manager'")
 		}
 
-		// Verify: set-option was called for architect window color
-		var foundArchitectColor bool
+		// Verify: window-style should NOT be set (use default/white text color)
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
 				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:architect") && strings.Contains(joined, "colour46") {
-					foundArchitectColor = true
+				if strings.Contains(joined, "window-style") {
+					t.Errorf("window-style should not be set (use default/white text), got: %s", joined)
 				}
 			}
-		}
-		if !foundArchitectColor {
-			t.Error("expected set-option for architect window with colour46")
-		}
-
-		// Verify: set-option was called for manager window color
-		var foundManagerColor bool
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
-				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:manager") && strings.Contains(joined, "colour208") {
-					foundManagerColor = true
-				}
-			}
-		}
-		if !foundManagerColor {
-			t.Error("expected set-option for manager window with colour208")
 		}
 	})
 
@@ -784,6 +766,13 @@ func TestExecEnvCmd(t *testing.T) {
 		}
 		if strings.Contains(cmd, "claude -p") {
 			t.Errorf("expected interactive claude (not 'claude -p'), got: %s", cmd)
+		}
+	})
+
+	t.Run("includes --ide flag for IDE integration", func(t *testing.T) {
+		cmd := execEnvCmd("architect")
+		if !strings.Contains(cmd, "--ide") {
+			t.Errorf("expected execEnvCmd to contain --ide flag for IDE integration, got: %s", cmd)
 		}
 	})
 }

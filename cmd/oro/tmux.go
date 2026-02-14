@@ -81,8 +81,9 @@ func (s *TmuxSession) isHealthy() bool {
 // setting ORO_ROLE, BD_ACTOR, and GIT_AUTHOR_NAME for the given role.
 // Uses exec to eliminate the shell phase entirely — Claude IS the initial process.
 // The --session-id flag gives each tmux window isolated input history.
+// The --ide flag enables IDE integration for inline code suggestions.
 func execEnvCmd(role string) string {
-	return fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s claude --session-id $(uuidgen)", role, role, role)
+	return fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s claude --session-id $(uuidgen) --ide", role, role, role)
 }
 
 // Create creates the Oro tmux session with two windows (architect + manager).
@@ -109,16 +110,6 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	// Create second window named "manager".
 	if _, err := s.Runner.Run("tmux", "new-window", "-t", s.Name, "-n", "manager", execEnvCmd("manager")); err != nil {
 		return fmt.Errorf("tmux new-window: %w", err)
-	}
-
-	// Apply color theming to architect window (bright green).
-	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name+":architect", "window-style", "fg=colour46,bold"); err != nil {
-		return fmt.Errorf("tmux set-option architect color: %w", err)
-	}
-
-	// Apply color theming to manager window (orange).
-	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name+":manager", "window-style", "fg=colour208,bold"); err != nil {
-		return fmt.Errorf("tmux set-option manager color: %w", err)
 	}
 
 	// Set initial status bar color to architect (green) — architect is the active window after creation.
