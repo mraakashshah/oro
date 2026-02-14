@@ -3922,6 +3922,28 @@ func TestDispatcher_NoFocus_PriorityOnly(t *testing.T) {
 	}
 }
 
+func TestBuildStatusJSON_ContainsPID(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "status", "")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(ack.Detail), &status); err != nil {
+		t.Fatalf("failed to parse status JSON: %v, raw: %s", err, ack.Detail)
+	}
+
+	if status.PID != os.Getpid() {
+		t.Errorf("expected PID %d in status response, got %d", os.Getpid(), status.PID)
+	}
+}
+
 // --- Scale directive tests ---
 
 // mockProcessManager records Spawn and Kill calls for testing.

@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 func TestDaemonLifecycle(t *testing.T) {
@@ -121,7 +127,8 @@ func TestDaemonLifecycle(t *testing.T) {
 		}
 		defer os.Remove(pidFile)
 
-		status, gotPID, err := DaemonStatus(pidFile)
+		noSock := filepath.Join(tmpDir, "nonexistent.sock")
+		status, gotPID, err := DaemonStatus(pidFile, noSock)
 		if err != nil {
 			t.Fatalf("DaemonStatus failed: %v", err)
 		}
@@ -134,7 +141,8 @@ func TestDaemonLifecycle(t *testing.T) {
 	})
 
 	t.Run("DaemonStatus reports stopped when no PID file", func(t *testing.T) {
-		status, pid, err := DaemonStatus(filepath.Join(tmpDir, "nope.pid"))
+		noSock := filepath.Join(tmpDir, "nonexistent.sock")
+		status, pid, err := DaemonStatus(filepath.Join(tmpDir, "nope.pid"), noSock)
 		if err != nil {
 			t.Fatalf("DaemonStatus failed: %v", err)
 		}
@@ -153,7 +161,8 @@ func TestDaemonLifecycle(t *testing.T) {
 		}
 		defer os.Remove(pidFile)
 
-		status, _, err := DaemonStatus(pidFile)
+		noSock := filepath.Join(tmpDir, "nonexistent.sock")
+		status, _, err := DaemonStatus(pidFile, noSock)
 		if err != nil {
 			t.Fatalf("DaemonStatus failed: %v", err)
 		}
@@ -295,4 +304,156 @@ func TestDaemonLifecycle(t *testing.T) {
 			t.Fatal("expected error when PID file does not exist")
 		}
 	})
+}
+
+func TestDaemonStatus_SocketFirst(t *testing.T) {
+	// Socket responds with PID, no PID file → StatusRunning via socket.
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "nonexistent.pid") // no PID file
+
+	// Use /tmp for socket to stay under macOS 104-char UDS path limit.
+	sockPath := fmt.Sprintf("/tmp/oro-ds-%d.sock", time.Now().UnixNano())
+	defer os.Remove(sockPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Mock UDS server returns our own PID so IsProcessAlive succeeds.
+	myPID := os.Getpid()
+	statusJSON := fmt.Sprintf(`{"state":"running","pid":%d,"worker_count":2,"queue_depth":0,"assignments":{}}`, myPID)
+
+	ready := make(chan struct{})
+	go runMockPIDDispatcher(ctx, t, sockPath, statusJSON, ready)
+
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for mock dispatcher")
+	}
+
+	status, gotPID, err := DaemonStatus(pidFile, sockPath)
+	if err != nil {
+		t.Fatalf("DaemonStatus failed: %v", err)
+	}
+	if status != StatusRunning {
+		t.Errorf("DaemonStatus = %q, want %q", status, StatusRunning)
+	}
+	if gotPID != myPID {
+		t.Errorf("DaemonStatus PID = %d, want %d", gotPID, myPID)
+	}
+}
+
+func TestDaemonStatus_FallbackToPIDFile(t *testing.T) {
+	// No socket, PID file exists with live process → StatusRunning from fallback.
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	noSock := filepath.Join(tmpDir, "nonexistent.sock")
+
+	pid := os.Getpid()
+	if err := WritePIDFile(pidFile, pid); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	defer os.Remove(pidFile)
+
+	status, gotPID, err := DaemonStatus(pidFile, noSock)
+	if err != nil {
+		t.Fatalf("DaemonStatus failed: %v", err)
+	}
+	if status != StatusRunning {
+		t.Errorf("DaemonStatus = %q, want %q", status, StatusRunning)
+	}
+	if gotPID != pid {
+		t.Errorf("DaemonStatus PID = %d, want %d", gotPID, pid)
+	}
+}
+
+func TestDaemonStatus_BothMissing(t *testing.T) {
+	// No socket, no PID file → StatusStopped.
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "nonexistent.pid")
+	noSock := filepath.Join(tmpDir, "nonexistent.sock")
+
+	status, pid, err := DaemonStatus(pidFile, noSock)
+	if err != nil {
+		t.Fatalf("DaemonStatus failed: %v", err)
+	}
+	if status != StatusStopped {
+		t.Errorf("DaemonStatus = %q, want %q", status, StatusStopped)
+	}
+	if pid != 0 {
+		t.Errorf("DaemonStatus PID = %d, want 0", pid)
+	}
+}
+
+func TestProbeSocket_NonExistent(t *testing.T) {
+	// Non-existent socket path → returns 0.
+	tmpDir := t.TempDir()
+	noSock := filepath.Join(tmpDir, "nonexistent.sock")
+
+	pid := probeSocket(noSock)
+	if pid != 0 {
+		t.Errorf("probeSocket = %d, want 0 for non-existent socket", pid)
+	}
+}
+
+// runMockPIDDispatcher starts a UDS listener that accepts one connection,
+// reads a DIRECTIVE message with op=status, and sends an ACK with the given
+// status JSON (which includes a PID field) as the detail.
+func runMockPIDDispatcher(ctx context.Context, t *testing.T, sockPath, statusJSON string, ready chan<- struct{}) {
+	t.Helper()
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Errorf("mock dispatcher listen: %v", err)
+		return
+	}
+	defer ln.Close()
+	defer os.Remove(sockPath)
+
+	close(ready)
+
+	connCh := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		connCh <- conn
+	}()
+
+	select {
+	case conn := <-connCh:
+		defer conn.Close()
+
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() {
+			t.Error("failed to read line from connection")
+			return
+		}
+
+		var msg protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			t.Errorf("unmarshal message: %v", err)
+			return
+		}
+
+		if msg.Type != protocol.MsgDirective || msg.Directive == nil || msg.Directive.Op != "status" {
+			t.Errorf("expected status directive, got: %+v", msg)
+			return
+		}
+
+		ack := protocol.Message{
+			Type: protocol.MsgACK,
+			ACK: &protocol.ACKPayload{
+				OK:     true,
+				Detail: statusJSON,
+			},
+		}
+		data, _ := json.Marshal(ack)
+		data = append(data, '\n')
+		_, _ = conn.Write(data)
+
+	case <-ctx.Done():
+		return
+	}
 }

@@ -148,6 +148,53 @@ func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner,
 	return nil
 }
 
+// preflightAndCheckRunning runs preflight checks, bootstraps the oro dir,
+// and checks if the daemon is already running. Returns the pidPath on success,
+// or "" if the daemon is already running (caller should return nil).
+func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
+	// Clear CLAUDECODE early — it leaks from Claude Code's Bash tool
+	// and blocks nested claude sessions in tmux panes and workers.
+	os.Unsetenv("CLAUDECODE")
+
+	if err := runPreflightChecks(); err != nil {
+		return "", fmt.Errorf("preflight checks failed: %w", err)
+	}
+
+	oroDir, err := defaultOroDir()
+	if err != nil {
+		return "", fmt.Errorf("get oro dir: %w", err)
+	}
+	if err := bootstrapOroDir(oroDir); err != nil {
+		return "", fmt.Errorf("bootstrap oro dir: %w", err)
+	}
+
+	pidPath, err = oroPath("ORO_PID_PATH", "oro.pid")
+	if err != nil {
+		return "", fmt.Errorf("get pid path: %w", err)
+	}
+	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
+	if err != nil {
+		return "", fmt.Errorf("get socket path: %w", err)
+	}
+
+	status, pid, err := DaemonStatus(pidPath, sockPath)
+	if err != nil {
+		return "", fmt.Errorf("get daemon status: %w", err)
+	}
+
+	switch status {
+	case StatusRunning:
+		fmt.Fprintf(w, "dispatcher already running (PID %d)\n", pid)
+		return "", nil
+	case StatusStale:
+		_ = RemovePIDFile(pidPath)
+	case StatusStopped:
+		// Good to go.
+	}
+
+	return pidPath, nil
+}
+
 // newStartCmd creates the "oro start" subcommand.
 func newStartCmd() *cobra.Command {
 	var (
@@ -162,44 +209,12 @@ func newStartCmd() *cobra.Command {
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
 		Long:  "Creates a tmux session with the full Oro layout and begins autonomous execution.\nStarts the dispatcher daemon and worker pool in the background.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Clear CLAUDECODE early — it leaks from Claude Code's Bash tool
-			// and blocks nested claude sessions in tmux panes and workers.
-			os.Unsetenv("CLAUDECODE")
-
-			// Run preflight checks before attempting to start.
-			if err := runPreflightChecks(); err != nil {
-				return fmt.Errorf("preflight checks failed: %w", err)
-			}
-
-			// Bootstrap ~/.oro/ directory if it doesn't exist.
-			oroDir, err := defaultOroDir()
+			pidPath, err := preflightAndCheckRunning(cmd.OutOrStdout())
 			if err != nil {
-				return fmt.Errorf("get oro dir: %w", err)
+				return err
 			}
-			if err := bootstrapOroDir(oroDir); err != nil {
-				return fmt.Errorf("bootstrap oro dir: %w", err)
-			}
-
-			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
-			if err != nil {
-				return fmt.Errorf("get pid path: %w", err)
-			}
-
-			// Check if already running.
-			status, pid, err := DaemonStatus(pidPath)
-			if err != nil {
-				return fmt.Errorf("get daemon status: %w", err)
-			}
-
-			switch status {
-			case StatusRunning:
-				fmt.Fprintf(cmd.OutOrStdout(), "dispatcher already running (PID %d)\n", pid)
-				return nil
-			case StatusStale:
-				// Clean up stale PID file before starting fresh.
-				_ = RemovePIDFile(pidPath)
-			case StatusStopped:
-				// Good to go.
+			if pidPath == "" {
+				return nil // already running
 			}
 
 			if daemonOnly {

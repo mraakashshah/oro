@@ -1587,6 +1587,7 @@ func (d *Dispatcher) lookupBeadDetail(ctx context.Context, beadID, workerID stri
 // statusResponse is the JSON structure returned by the status directive.
 type statusResponse struct {
 	State       string            `json:"state"`
+	PID         int               `json:"pid"`
 	WorkerCount int               `json:"worker_count"`
 	QueueDepth  int               `json:"queue_depth"`
 	Assignments map[string]string `json:"assignments"`
@@ -1653,6 +1654,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 
 	resp := statusResponse{
 		State:       string(state),
+		PID:         os.Getpid(),
 		WorkerCount: workerCount,
 		QueueDepth:  0, // bd ready count not cached; zero for now
 		Assignments: assignments,

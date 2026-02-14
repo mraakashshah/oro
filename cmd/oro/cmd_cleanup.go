@@ -137,11 +137,15 @@ func cleanupTmux(cfg *cleanupConfig) bool {
 
 // cleanupDispatcher signals the dispatcher process if running. Returns true if something was cleaned.
 // Sends SIGINT (always honored by daemon) for graceful shutdown.
+// Falls back to socket probe when PID file is missing.
 func cleanupDispatcher(cfg *cleanupConfig) bool {
 	pid, err := ReadPIDFile(cfg.pidPath)
 	if err != nil {
-		// No PID file or unreadable — nothing to do.
-		return false
+		// No PID file — try socket probe to discover PID.
+		pid = probeSocket(cfg.sockPath)
+		if pid == 0 {
+			return false
+		}
 	}
 
 	if !cfg.aliveFn(pid) {

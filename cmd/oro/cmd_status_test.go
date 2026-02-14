@@ -20,6 +20,7 @@ func TestStatusCmd_Stopped(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "nonexistent.sock"))
 
 	root := newRootCmd()
 	var buf bytes.Buffer
@@ -40,6 +41,7 @@ func TestStatusCmd_Stale(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "nonexistent.sock"))
 
 	// Write a PID that doesn't correspond to a running process.
 	if err := WritePIDFile(pidFile, 4000000); err != nil {
@@ -319,9 +321,9 @@ func TestParseStatusFromACK(t *testing.T) {
 	}
 }
 
-// runMockStatusDispatcher starts a UDS listener that accepts one connection,
+// runMockStatusDispatcher starts a UDS listener that accepts multiple connections,
 // reads a DIRECTIVE message with op=status, and sends an ACK with the given
-// status JSON as the detail.
+// status JSON as the detail. Handles multiple connections (probeSocket + queryDispatcherStatus).
 func runMockStatusDispatcher(ctx context.Context, t *testing.T, sockPath, statusJSON string, ready chan<- struct{}) {
 	t.Helper()
 
@@ -336,54 +338,49 @@ func runMockStatusDispatcher(ctx context.Context, t *testing.T, sockPath, status
 	// Signal that the socket is ready.
 	close(ready)
 
-	connCh := make(chan net.Conn, 1)
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
+	for {
+		connCh := make(chan net.Conn, 1)
+		go func() {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			connCh <- conn
+		}()
+
+		select {
+		case conn := <-connCh:
+			func() {
+				defer conn.Close()
+
+				scanner := bufio.NewScanner(conn)
+				if !scanner.Scan() {
+					return
+				}
+
+				var msg protocol.Message
+				if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+					return
+				}
+
+				if msg.Type != protocol.MsgDirective || msg.Directive == nil || msg.Directive.Op != "status" {
+					return
+				}
+
+				ack := protocol.Message{
+					Type: protocol.MsgACK,
+					ACK: &protocol.ACKPayload{
+						OK:     true,
+						Detail: statusJSON,
+					},
+				}
+				data, _ := json.Marshal(ack)
+				data = append(data, '\n')
+				_, _ = conn.Write(data)
+			}()
+
+		case <-ctx.Done():
 			return
 		}
-		connCh <- conn
-	}()
-
-	select {
-	case conn := <-connCh:
-		defer conn.Close()
-
-		scanner := bufio.NewScanner(conn)
-		if !scanner.Scan() {
-			t.Error("failed to read line from connection")
-			return
-		}
-
-		var msg protocol.Message
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			t.Errorf("unmarshal message: %v", err)
-			return
-		}
-
-		if msg.Type != protocol.MsgDirective {
-			t.Errorf("unexpected message type: %s", msg.Type)
-			return
-		}
-
-		if msg.Directive == nil || msg.Directive.Op != "status" {
-			t.Errorf("expected status directive, got: %+v", msg.Directive)
-			return
-		}
-
-		// Send ACK with status JSON as detail.
-		ack := protocol.Message{
-			Type: protocol.MsgACK,
-			ACK: &protocol.ACKPayload{
-				OK:     true,
-				Detail: statusJSON,
-			},
-		}
-		data, _ := json.Marshal(ack)
-		data = append(data, '\n')
-		_, _ = conn.Write(data)
-
-	case <-ctx.Done():
-		return
 	}
 }

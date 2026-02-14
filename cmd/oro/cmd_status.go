@@ -15,6 +15,7 @@ import (
 // Defined here to avoid coupling the CLI to the dispatcher package internals.
 type statusResponse struct {
 	State       string            `json:"state"`
+	PID         int               `json:"pid"`
 	WorkerCount int               `json:"worker_count"`
 	QueueDepth  int               `json:"queue_depth"`
 	Assignments map[string]string `json:"assignments"`
@@ -35,10 +36,14 @@ func newStatusCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("get pid path: %w", err)
 			}
+			sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
+			if err != nil {
+				return fmt.Errorf("get socket path: %w", err)
+			}
 
 			w := cmd.OutOrStdout()
 
-			status, pid, err := DaemonStatus(pidPath)
+			status, pid, err := DaemonStatus(pidPath, sockPath)
 			if err != nil {
 				return fmt.Errorf("get daemon status: %w", err)
 			}

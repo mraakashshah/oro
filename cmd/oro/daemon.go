@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -82,9 +84,49 @@ func IsProcessAlive(pid int) bool {
 	return err == nil
 }
 
-// DaemonStatus checks the daemon PID file and process liveness.
+// probeSocket connects to the dispatcher UDS, sends a status directive,
+// and extracts the PID from the response. Returns 0 on any failure.
+func probeSocket(sockPath string) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	conn, err := dialDispatcher(ctx, sockPath)
+	if err != nil {
+		return 0
+	}
+	defer conn.Close()
+
+	if err := sendDirective(conn, "status", ""); err != nil {
+		return 0
+	}
+
+	ack, err := readACK(conn)
+	if err != nil {
+		return 0
+	}
+
+	var resp struct {
+		PID int `json:"pid"`
+	}
+	if err := json.Unmarshal([]byte(ack.Detail), &resp); err != nil {
+		return 0
+	}
+	return resp.PID
+}
+
+// DaemonStatus checks daemon liveness using socket-first with PID file fallback.
+// The socket is the authoritative liveness signal; the PID file covers the
+// startup race (socket not ready yet) and legacy scenarios.
 // Returns the status, the PID (0 if stopped), and any unexpected error.
-func DaemonStatus(pidPath string) (status DaemonStatusValue, pid int, err error) {
+func DaemonStatus(pidPath, sockPath string) (status DaemonStatusValue, pid int, err error) {
+	// 1. Try socket probe first — this is the real liveness signal.
+	if sockPID := probeSocket(sockPath); sockPID > 0 {
+		if IsProcessAlive(sockPID) {
+			return StatusRunning, sockPID, nil
+		}
+	}
+
+	// 2. Fall back to PID file (covers startup race: socket not ready yet).
 	pid, err = ReadPIDFile(pidPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -14,6 +14,7 @@ import (
 func ttyStop(pidFile string, fake *fakeCmd, buf *bytes.Buffer) *stopConfig {
 	return &stopConfig{
 		pidPath:  pidFile,
+		sockPath: filepath.Join(filepath.Dir(pidFile), "nonexistent.sock"),
 		tmuxName: "oro",
 		runner:   fake,
 		w:        buf,
@@ -85,8 +86,9 @@ func TestStop_NotRunning(t *testing.T) {
 
 	var buf bytes.Buffer
 	cfg := &stopConfig{
-		pidPath: pidFile,
-		w:       &buf,
+		pidPath:  pidFile,
+		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
+		w:        &buf,
 	}
 
 	if err := runStopSequence(context.Background(), cfg); err != nil {
@@ -108,8 +110,9 @@ func TestStop_Stale(t *testing.T) {
 
 	var buf bytes.Buffer
 	cfg := &stopConfig{
-		pidPath: pidFile,
-		w:       &buf,
+		pidPath:  pidFile,
+		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
+		w:        &buf,
 	}
 
 	if err := runStopSequence(context.Background(), cfg); err != nil {
@@ -136,6 +139,7 @@ func TestStop_RefusedWhenNotTTY(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := &stopConfig{
 		pidPath:  pidFile,
+		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
 		tmuxName: "oro",
 		runner:   newFakeCmd(),
 		w:        &buf,
@@ -162,6 +166,7 @@ func TestStop_RefusedWhenConfirmationNotYES(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := &stopConfig{
 		pidPath:  pidFile,
+		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
 		tmuxName: "oro",
 		runner:   newFakeCmd(),
 		w:        &buf,
@@ -191,6 +196,7 @@ func TestStop_ForceRequiresEnvVar(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := &stopConfig{
 			pidPath:  pidFile,
+			sockPath: filepath.Join(filepath.Dir(pidFile), "nonexistent.sock"),
 			tmuxName: "oro",
 			runner:   newFakeCmd(),
 			w:        &buf,

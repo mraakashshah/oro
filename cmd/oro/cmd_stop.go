@@ -16,6 +16,7 @@ import (
 // stopConfig holds injectable dependencies for the graceful shutdown sequence.
 type stopConfig struct {
 	pidPath  string
+	sockPath string
 	tmuxName string
 	runner   CmdRunner
 	w        io.Writer
@@ -54,9 +55,14 @@ func newStopCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("get pid path: %w", err)
 			}
+			sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
+			if err != nil {
+				return fmt.Errorf("get socket path: %w", err)
+			}
 
 			cfg := &stopConfig{
 				pidPath:  pidPath,
+				sockPath: sockPath,
 				tmuxName: "oro",
 				runner:   &ExecRunner{},
 				w:        cmd.OutOrStdout(),
@@ -140,7 +146,7 @@ func confirmStop(cfg *stopConfig) error {
 //  6. Run bd sync
 //  7. Remove PID file
 func runStopSequence(ctx context.Context, cfg *stopConfig) error {
-	status, pid, err := DaemonStatus(cfg.pidPath)
+	status, pid, err := DaemonStatus(cfg.pidPath, cfg.sockPath)
 	if err != nil {
 		return fmt.Errorf("get daemon status: %w", err)
 	}
