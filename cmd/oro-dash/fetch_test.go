@@ -7,10 +7,12 @@ import (
 	"oro/pkg/protocol"
 )
 
-func TestParseBeadsOutput_ParsesJSONL(t *testing.T) {
-	input := `{"id":"oro-abc","title":"Fix login bug","priority":1,"issue_type":"bug"}
-{"id":"oro-def","title":"Add dashboard","priority":2,"issue_type":"feature","epic":"oro-epic1"}
-{"id":"oro-ghi","title":"Refactor auth","priority":3,"issue_type":"task","estimated_minutes":30}`
+func TestParseBeadsOutput_ParsesJSONArray(t *testing.T) {
+	input := `[
+		{"id":"oro-abc","title":"Fix login bug","priority":1,"issue_type":"bug"},
+		{"id":"oro-def","title":"Add dashboard","priority":2,"issue_type":"feature","epic":"oro-epic1"},
+		{"id":"oro-ghi","title":"Refactor auth","priority":3,"issue_type":"task","estimated_minutes":30}
+	]`
 
 	beads, err := parseBeadsOutput(input)
 	if err != nil {
@@ -46,24 +48,8 @@ func TestParseBeadsOutput_ParsesJSONL(t *testing.T) {
 	}
 }
 
-func TestParseBeadsOutput_SkipsEmptyLines(t *testing.T) {
-	input := `{"id":"oro-abc","title":"First","priority":1}
-
-{"id":"oro-def","title":"Second","priority":2}
-`
-
-	beads, err := parseBeadsOutput(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(beads) != 2 {
-		t.Fatalf("expected 2 beads, got %d", len(beads))
-	}
-}
-
-func TestParseBeadsOutput_EmptyInput(t *testing.T) {
-	beads, err := parseBeadsOutput("")
+func TestParseBeadsOutput_EmptyArray(t *testing.T) {
+	beads, err := parseBeadsOutput("[]")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -72,10 +58,18 @@ func TestParseBeadsOutput_EmptyInput(t *testing.T) {
 	}
 }
 
+func TestParseBeadsOutput_EmptyInput(t *testing.T) {
+	beads, err := parseBeadsOutput("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if beads != nil {
+		t.Fatalf("expected nil beads, got %v", beads)
+	}
+}
+
 func TestParseBeadsOutput_MalformedJSON(t *testing.T) {
-	input := `{"id":"oro-abc","title":"Good","priority":1}
-not valid json
-{"id":"oro-def","title":"Also good","priority":2}`
+	input := `not valid json`
 
 	_, err := parseBeadsOutput(input)
 	if err == nil {

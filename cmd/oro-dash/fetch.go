@@ -17,31 +17,27 @@ import (
 // fetchTimeout is how long to wait for bd CLI or dispatcher socket round-trip.
 const fetchTimeout = 5 * time.Second
 
-// parseBeadsOutput parses JSONL output (one JSON object per line) into a slice
-// of protocol.Bead. Empty lines are skipped. Returns an error for malformed JSON.
+// parseBeadsOutput parses JSON array output from `bd list --json` into a slice
+// of protocol.Bead. Returns an error for malformed JSON.
 func parseBeadsOutput(output string) ([]protocol.Bead, error) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return nil, nil
+	}
 	var beads []protocol.Bead
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var b protocol.Bead
-		if err := json.Unmarshal([]byte(line), &b); err != nil {
-			return nil, fmt.Errorf("parse bead JSON: %w", err)
-		}
-		beads = append(beads, b)
+	if err := json.Unmarshal([]byte(output), &beads); err != nil {
+		return nil, fmt.Errorf("parse beads JSON: %w", err)
 	}
 	return beads, nil
 }
 
-// fetchBeads runs `bd list --format=jsonl` and parses the output into beads.
+// fetchBeads runs `bd list --json` and parses the output into beads.
 // Returns an empty slice on exec errors (bd not found, non-zero exit, etc).
 func fetchBeads(ctx context.Context) ([]protocol.Bead, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bd", "list", "--format=jsonl")
+	cmd := exec.CommandContext(ctx, "bd", "list", "--json")
 	out, err := cmd.Output()
 	if err != nil {
 		// bd not installed, not in PATH, or returned non-zero — not an error
