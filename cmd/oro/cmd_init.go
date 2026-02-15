@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,41 +209,86 @@ func newInitCmd() *cobra.Command {
 		checkOnly   bool
 		quiet       bool
 		projectRoot string
-		force       bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Bootstrap all oro dependencies and generate config",
+		Use:   "init [project-name]",
+		Short: "Bootstrap oro dependencies, generate config, and extract assets",
 		Long: `Checks for and installs all tools required by the oro agent swarm,
-then generates .oro/config.yaml based on detected languages.
+creates .oro/config.yaml with project identity, generates per-project
+settings.json with hook paths, and extracts embedded assets to ~/.oro/.
 
 Phase 1: System prerequisites (Go, Python, Node, npm, Homebrew)
 Phase 2: Go tools (gofumpt, goimports, golangci-lint, etc.)
 Phase 3: Python tools (uv, ruff, pyright)
 Phase 4: System tools (tmux, shellcheck, biome, jq, ast-grep, bd)
-Phase 5: Generate .oro/config.yaml with language-specific tool profiles
+Phase 5: Bootstrap project (config anchor, settings, embedded assets)
+
+The project name is taken from the first argument, or defaults to the
+directory name of --project-root.
 
 Use --check to verify without installing (exits non-zero if any tool is missing).
 Use --quiet to suppress all output (useful for CI scripts).
 Use --project-root to specify a different project directory (default: current directory).
 Use --force to overwrite existing .oro/config.yaml.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
-			return runInit(w, checkOnly, quiet, projectRoot, force)
+			projectName := ""
+			if len(args) > 0 {
+				projectName = args[0]
+			}
+			return runInit(w, checkOnly, quiet, projectRoot, projectName)
 		},
 	}
 
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "verify tools without installing (exit 1 if any missing)")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress output, just exit code")
 	cmd.Flags().StringVar(&projectRoot, "project-root", ".", "project root directory for config generation")
-	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing .oro/config.yaml")
 
 	return cmd
 }
 
 // runInit is the core logic for the init command, separated for testability.
-func runInit(w io.Writer, checkOnly, quiet bool, projectRoot string, force bool) error {
+func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string) error {
+	if err := ensureTools(w, checkOnly, quiet); err != nil {
+		return err
+	}
+	if checkOnly || quiet {
+		return nil
+	}
+
+	name, err := resolveProjectName(projectRoot, projectName)
+	if err != nil {
+		return err
+	}
+
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		return err
+	}
+
+	subAssets, err := fs.Sub(EmbeddedAssets, "_assets")
+	if err != nil {
+		return fmt.Errorf("access embedded assets: %w", err)
+	}
+
+	if err := bootstrapProject(projectRoot, name, oroHome, subAssets); err != nil {
+		return fmt.Errorf("bootstrap project: %w", err)
+	}
+
+	fmt.Fprintf(w, "\n✓ Initialized project %q\n", name)
+	fmt.Fprintf(w, "  Local anchor: %s/.oro/config.yaml\n", projectRoot)
+	fmt.Fprintf(w, "  Project dir:  %s/projects/%s/\n", oroHome, name)
+	fmt.Fprintf(w, "  Settings:     %s/projects/%s/settings.json\n", oroHome, name)
+	fmt.Fprintf(w, "\nRun 'oro start' to launch agents.\n")
+
+	return nil
+}
+
+// ensureTools checks for required tools, optionally installing missing ones.
+// Returns nil on success. In check-only or quiet mode, returns an error if tools are missing.
+func ensureTools(w io.Writer, checkOnly, quiet bool) error {
 	results := checkAllTools(defaultToolDefs)
 
 	if quiet {
@@ -259,7 +306,11 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot string, force bool)
 		return nil
 	}
 
-	// Full install mode: install missing tools, then re-verify.
+	return installMissingTools(w, results)
+}
+
+// installMissingTools installs any missing tools and re-verifies.
+func installMissingTools(w io.Writer, results []toolResult) error {
 	missing := []toolDef{}
 	for i, r := range results {
 		if r.Status != statusOK {
@@ -267,15 +318,12 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot string, force bool)
 		}
 	}
 
-	// Early return if no missing tools
 	if len(missing) == 0 {
 		formatInitTable(w, results)
-		return generateProjectConfig(w, projectRoot, force)
+		return nil
 	}
 
-	// Install missing tools
 	fmt.Fprintf(w, "Found %d missing tools. Installing...\n\n", len(missing))
-
 	for _, def := range missing {
 		if def.InstallCmd == "" {
 			fmt.Fprintf(w, "%-20s no auto-install available (install manually)\n", def.Name)
@@ -286,7 +334,6 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot string, force bool)
 		}
 	}
 
-	// Re-verify after install.
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Verifying...")
 	results = checkAllTools(defaultToolDefs)
@@ -295,46 +342,272 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot string, force bool)
 	if !allToolsPresent(results) {
 		return fmt.Errorf("%d tools still missing after install", countMissing(results))
 	}
-
-	// Generate .oro/config.yaml
-	return generateProjectConfig(w, projectRoot, force)
+	return nil
 }
 
-// generateProjectConfig scans the project root for languages and generates .oro/config.yaml.
-func generateProjectConfig(w io.Writer, projectRoot string, force bool) error {
-	configPath := filepath.Join(projectRoot, ".oro", "config.yaml")
+// resolveProjectName returns the project name from the argument or derives it from the directory.
+func resolveProjectName(projectRoot, projectName string) (string, error) {
+	if projectName != "" {
+		return projectName, nil
+	}
+	absRoot, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve project root: %w", err)
+	}
+	return filepath.Base(absRoot), nil
+}
 
-	// Check if config already exists
-	if _, err := os.Stat(configPath); err == nil && !force {
-		errMsg := fmt.Sprintf("config already exists at %s (use --force to overwrite)", configPath)
-		fmt.Fprintln(w, errMsg)
-		return fmt.Errorf("%s", errMsg)
+// resolveOroHome returns the oro home directory from ORO_HOME env var or ~/.oro.
+func resolveOroHome() (string, error) {
+	if v := os.Getenv("ORO_HOME"); v != "" {
+		return v, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	return filepath.Join(home, ".oro"), nil
+}
+
+// bootstrapProject orchestrates project initialization for externalized config.
+// It creates the local anchor (.oro/config.yaml), manages .gitignore, generates
+// per-project settings.json, creates handoffs dir, and extracts embedded assets.
+func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) error {
+	// 1. Create local anchor: .oro/config.yaml with project name.
+	if err := createProjectAnchor(projectRoot, projectName); err != nil {
+		return fmt.Errorf("create project anchor: %w", err)
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "Generating config at %s...\n", configPath)
+	// 2. Add .oro/ to .gitignore if not present.
+	if err := ensureGitignore(projectRoot, ".oro/"); err != nil {
+		return fmt.Errorf("update gitignore: %w", err)
+	}
 
-	// Generate config from detected languages
+	// 3. Create per-project directory structure under oroHome.
+	projectDir := filepath.Join(oroHome, "projects", projectName)
+	handoffsDir := filepath.Join(projectDir, "handoffs")
+	if err := os.MkdirAll(handoffsDir, 0o755); err != nil { //nolint:gosec // project dir needs to be readable
+		return fmt.Errorf("create project dir: %w", err)
+	}
+
+	// 4. Generate settings.json (always overwrite — idempotent).
+	settingsData, err := generateSettings("$HOME/.oro")
+	if err != nil {
+		return fmt.Errorf("generate settings: %w", err)
+	}
+	settingsPath := filepath.Join(projectDir, "settings.json")
+	if err := os.WriteFile(settingsPath, settingsData, 0o644); err != nil { //nolint:gosec // settings file needs to be readable
+		return fmt.Errorf("write settings: %w", err)
+	}
+
+	// 5. Extract embedded assets to oroHome.
+	if err := extractAssets(oroHome, assets); err != nil {
+		return fmt.Errorf("extract assets: %w", err)
+	}
+
+	return nil
+}
+
+// createProjectAnchor writes the .oro/config.yaml anchor file in the project root.
+// It includes the project name and detected language profiles.
+func createProjectAnchor(projectRoot, projectName string) error {
+	oroDir := filepath.Join(projectRoot, ".oro")
+	if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // config dir needs to be readable
+		return fmt.Errorf("create .oro dir: %w", err)
+	}
+
+	var buf strings.Builder
+	buf.WriteString(fmt.Sprintf("project: %s\n", projectName))
+
+	// Detect languages and append profile config.
 	profiles := langprofile.AllProfiles()
 	cfg, err := langprofile.GenerateConfig(projectRoot, profiles)
-	if err != nil {
-		return fmt.Errorf("generate config: %w", err)
-	}
-
-	// Write config to file
-	if err := langprofile.WriteConfig(configPath, cfg); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	if len(cfg.Languages) == 0 {
-		fmt.Fprintln(w, "No languages detected. Empty config created.")
-	} else {
-		fmt.Fprintf(w, "Detected %d language(s): ", len(cfg.Languages))
-		langs := []string{}
-		for lang := range cfg.Languages {
-			langs = append(langs, lang)
+	if err == nil {
+		langYAML := langprofile.BuildYAML(cfg)
+		if langYAML != "" {
+			buf.WriteString(langYAML)
 		}
-		fmt.Fprintln(w, strings.Join(langs, ", "))
+	}
+
+	configPath := filepath.Join(oroDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // config file needs to be readable
+		return fmt.Errorf("write config.yaml: %w", err)
+	}
+	return nil
+}
+
+// ensureGitignore adds entry to .gitignore if not already present.
+// Creates .gitignore if it doesn't exist.
+func ensureGitignore(projectRoot, entry string) error {
+	gitignorePath := filepath.Join(projectRoot, ".gitignore")
+
+	existing, err := os.ReadFile(gitignorePath) //nolint:gosec // path constructed from trusted projectRoot
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read .gitignore: %w", err)
+	}
+
+	// Check if entry already present (line-by-line match).
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return nil // already present
+		}
+	}
+
+	// Append entry. Ensure existing content ends with newline.
+	var buf strings.Builder
+	if len(existing) > 0 {
+		buf.Write(existing)
+		if !strings.HasSuffix(string(existing), "\n") {
+			buf.WriteByte('\n')
+		}
+	}
+	buf.WriteString(entry)
+	buf.WriteByte('\n')
+
+	if err := os.WriteFile(gitignorePath, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // gitignore needs to be readable
+		return fmt.Errorf("write .gitignore: %w", err)
+	}
+	return nil
+}
+
+// hookEntry is a single hook command in settings.json.
+type hookEntry struct {
+	Type          string `json:"type"`
+	Command       string `json:"command"`
+	Timeout       int    `json:"timeout,omitempty"`
+	StatusMessage string `json:"statusMessage,omitempty"`
+}
+
+// hookGroup is a matcher + list of hooks for one lifecycle phase.
+type hookGroup struct {
+	Matcher string      `json:"matcher"`
+	Hooks   []hookEntry `json:"hooks"`
+}
+
+// buildHookConfig returns the full hooks map for settings.json.
+// hooksDir is the absolute path prefix for hook scripts (e.g. "$HOME/.oro/hooks").
+func buildHookConfig(hooksDir string) map[string][]hookGroup {
+	py := func(s string) string { return "python3 " + hooksDir + "/" + s }
+	sh := func(s string) string { return hooksDir + "/" + s }
+
+	return map[string][]hookGroup{
+		"SessionStart": {{
+			Matcher: "",
+			Hooks: []hookEntry{
+				{Type: "command", Command: sh("enforce-skills.sh")},
+				{Type: "command", Command: py("session_start_extras.py"), StatusMessage: "Loading project context..."},
+			},
+		}},
+		"PreToolUse": {
+			{Matcher: "", Hooks: []hookEntry{
+				{Type: "command", Command: py("inject_context_usage.py")},
+			}},
+			{Matcher: "Bash", Hooks: []hookEntry{
+				{Type: "command", Command: py("architect_router.py")},
+				{Type: "command", Command: py("worktree_guard.py")},
+				{Type: "command", Command: py("no_cd_guard.py")},
+				{Type: "command", Command: py("rebase_worktree_guard.py")},
+			}},
+			{Matcher: "Read", Hooks: []hookEntry{
+				{Type: "command", Command: sh("oro-search-hook"), Timeout: 5000, StatusMessage: "Searching codebase..."},
+			}},
+			{Matcher: "Task", Hooks: []hookEntry{
+				{Type: "command", Command: py("enforce_worktree.py")},
+			}},
+		},
+		"PostToolUse": {
+			{Matcher: "Read|WebFetch|Bash", Hooks: []hookEntry{
+				{Type: "command", Command: py("prompt_injection_guard.py")},
+			}},
+			{Matcher: "Edit|Write", Hooks: []hookEntry{
+				{Type: "command", Command: sh("auto-format.sh")},
+			}},
+			{Matcher: "Bash", Hooks: []hookEntry{
+				{Type: "command", Command: py("memory_capture.py")},
+				{Type: "command", Command: py("learning_reminder.py")},
+				{Type: "command", Command: py("bd_create_notifier.py")},
+			}},
+			{Matcher: "Task", Hooks: []hookEntry{
+				{Type: "command", Command: py("validate_agent_completion.py")},
+			}},
+		},
+		"Stop": {{
+			Matcher: "",
+			Hooks: []hookEntry{
+				{Type: "command", Command: sh("stop-checklist.sh")},
+			},
+		}},
+	}
+}
+
+// generateSettings produces a settings.json with hook commands using absolute
+// paths under oroHome. Shell variable $HOME is used for portability.
+func generateSettings(oroHome string) ([]byte, error) {
+	settings := struct {
+		Hooks map[string][]hookGroup `json:"hooks"`
+	}{
+		Hooks: buildHookConfig(oroHome + "/hooks"),
+	}
+
+	data, err := json.MarshalIndent(settings, "", "\t")
+	if err != nil {
+		return nil, fmt.Errorf("marshal settings: %w", err)
+	}
+	return data, nil
+}
+
+// assetMapping maps source directory names in the embedded FS to their
+// destination paths relative to oroHome.
+var assetMapping = map[string]string{ //nolint:gochecknoglobals // static config
+	"skills":   filepath.Join(".claude", "skills"),
+	"hooks":    "hooks",
+	"beacons":  "beacons",
+	"commands": filepath.Join(".claude", "commands"),
+}
+
+// extractAssets walks the embedded FS and copies files to oroHome.
+// Directory mapping: skills → .claude/skills/, hooks → hooks/, beacons → beacons/,
+// commands → .claude/commands/, CLAUDE.md → .claude/CLAUDE.md.
+func extractAssets(dest string, assets fs.FS) error {
+	// Handle CLAUDE.md specially (single file, not a directory).
+	if data, err := fs.ReadFile(assets, "CLAUDE.md"); err == nil {
+		claudeDir := filepath.Join(dest, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o755); err != nil { //nolint:gosec // needs to be readable
+			return fmt.Errorf("create .claude dir: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), data, 0o644); err != nil { //nolint:gosec // needs to be readable
+			return fmt.Errorf("write CLAUDE.md: %w", err)
+		}
+	}
+
+	// Walk each mapped directory.
+	for srcDir, destDir := range assetMapping {
+		srcFS, err := fs.Sub(assets, srcDir)
+		if err != nil {
+			continue // directory not present in assets, skip
+		}
+
+		err = fs.WalkDir(srcFS, ".", func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+
+			destPath := filepath.Join(dest, destDir, path)
+
+			if d.IsDir() {
+				return os.MkdirAll(destPath, 0o755) //nolint:gosec // needs to be readable
+			}
+
+			data, err := fs.ReadFile(srcFS, path)
+			if err != nil {
+				return fmt.Errorf("read %s/%s: %w", srcDir, path, err)
+			}
+
+			return os.WriteFile(destPath, data, 0o644) //nolint:gosec // needs to be readable
+		})
+		if err != nil {
+			return fmt.Errorf("extract %s: %w", srcDir, err)
+		}
 	}
 
 	return nil

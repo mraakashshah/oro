@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // --- ToolChecker unit tests ---
@@ -329,7 +331,7 @@ func TestCountMissing(t *testing.T) {
 // --- Config generation tests ---
 
 func TestInitCommand_GeneratesConfig(t *testing.T) {
-	t.Run("generates config for Go project", func(t *testing.T) {
+	t.Run("generates config with project name and Go profile", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		// Create a go.mod file to simulate a Go project
@@ -338,11 +340,11 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 			t.Fatalf("failed to create go.mod: %v", err)
 		}
 
-		// Run init command
+		// Run init command with project name
 		root := newRootCmd()
 		var buf bytes.Buffer
 		root.SetOut(&buf)
-		root.SetArgs([]string{"init", "--project-root", tmpDir})
+		root.SetArgs([]string{"init", "testproj", "--project-root", tmpDir})
 
 		if err := root.Execute(); err != nil {
 			t.Fatalf("init command failed: %v", err)
@@ -350,32 +352,74 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 
 		// Verify .oro/config.yaml was created
 		configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
-		if _, err := os.Stat(configPath); err != nil {
+		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
+		if err != nil {
 			t.Fatalf("config file not created: %v", err)
 		}
 
-		// Verify config contains Go language profile
-		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
-		if err != nil {
-			t.Fatalf("failed to read config: %v", err)
-		}
-
 		config := string(data)
+		if !strings.Contains(config, "project: testproj") {
+			t.Errorf("config should contain project name, got:\n%s", config)
+		}
 		if !strings.Contains(config, "go:") {
 			t.Errorf("config should contain 'go:' section, got:\n%s", config)
 		}
 		if !strings.Contains(config, "gofumpt") {
 			t.Errorf("config should contain 'gofumpt' tool, got:\n%s", config)
 		}
-		if !strings.Contains(config, "golangci-lint") {
-			t.Errorf("config should contain 'golangci-lint' tool, got:\n%s", config)
+	})
+
+	t.Run("generates config with project name when no languages detected", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetArgs([]string{"init", "emptyproj", "--project-root", tmpDir})
+
+		if err := root.Execute(); err != nil {
+			t.Fatalf("init command failed: %v", err)
+		}
+
+		configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
+		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("config file not created: %v", err)
+		}
+
+		config := string(data)
+		if !strings.Contains(config, "project: emptyproj") {
+			t.Errorf("config should contain project name, got:\n%s", config)
 		}
 	})
 
-	t.Run("generates empty config when no languages detected", func(t *testing.T) {
+	t.Run("idempotent re-run succeeds", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Run init command on empty directory
+		// First run
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetArgs([]string{"init", "myproj", "--project-root", tmpDir})
+
+		if err := root.Execute(); err != nil {
+			t.Fatalf("first init failed: %v", err)
+		}
+
+		// Second run (idempotent — should not error)
+		root2 := newRootCmd()
+		var buf2 bytes.Buffer
+		root2.SetOut(&buf2)
+		root2.SetArgs([]string{"init", "myproj", "--project-root", tmpDir})
+
+		if err := root2.Execute(); err != nil {
+			t.Fatalf("second init should succeed (idempotent), got: %v", err)
+		}
+	})
+
+	t.Run("derives project name from directory when not provided", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
 		root := newRootCmd()
 		var buf bytes.Buffer
 		root.SetOut(&buf)
@@ -385,104 +429,309 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 			t.Fatalf("init command failed: %v", err)
 		}
 
-		// Verify .oro/config.yaml was created with comment
 		configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
-		if _, err := os.Stat(configPath); err != nil {
+		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
+		if err != nil {
 			t.Fatalf("config file not created: %v", err)
 		}
 
-		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
-		if err != nil {
-			t.Fatalf("failed to read config: %v", err)
-		}
-
+		// Project name should be derived from tmpDir basename
 		config := string(data)
-		if !strings.Contains(config, "#") || !strings.Contains(config, "no languages detected") {
-			t.Errorf("config should contain comment about no languages, got:\n%s", config)
+		if !strings.Contains(config, "project:") {
+			t.Errorf("config should contain project: field, got:\n%s", config)
 		}
 	})
+}
 
-	t.Run("warns when config already exists", func(t *testing.T) {
-		tmpDir := t.TempDir()
+// testAssets returns a minimal fstest.MapFS that simulates embedded oro assets.
+func testAssets() fstest.MapFS {
+	return fstest.MapFS{
+		"skills/brainstorming/SKILL.md":           &fstest.MapFile{Data: []byte("# Brainstorming\n")},
+		"skills/test-driven-development/SKILL.md": &fstest.MapFile{Data: []byte("# TDD\n")},
+		"hooks/enforce-skills.sh":                 &fstest.MapFile{Data: []byte("#!/bin/bash\necho ok\n")},
+		"hooks/session_start_extras.py":           &fstest.MapFile{Data: []byte("# session start\n")},
+		"beacons/architect.md":                    &fstest.MapFile{Data: []byte("# Architect\n")},
+		"beacons/manager.md":                      &fstest.MapFile{Data: []byte("# Manager\n")},
+		"commands/restart-oro/prompt.md":          &fstest.MapFile{Data: []byte("restart\n")},
+		"CLAUDE.md":                               &fstest.MapFile{Data: []byte("# Oro Instructions\n")},
+	}
+}
 
-		// Create existing config
-		oroDir := filepath.Join(tmpDir, ".oro")
-		if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // test directory
-			t.Fatalf("failed to create .oro dir: %v", err)
+// --- Project bootstrapping tests (oro-etu3.2) ---
+
+func TestOroInit(t *testing.T) {
+	assets := testAssets()
+
+	t.Run("creates config with project name", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
 		}
-		configPath := filepath.Join(oroDir, "config.yaml")
-		if err := os.WriteFile(configPath, []byte("existing config\n"), 0o644); err != nil { //nolint:gosec // test file
-			t.Fatalf("failed to create existing config: %v", err)
-		}
 
-		// Run init command without --force
-		root := newRootCmd()
-		var buf bytes.Buffer
-		root.SetOut(&buf)
-		root.SetErr(&buf)
-		root.SetArgs([]string{"init", "--project-root", tmpDir})
-
-		if err := root.Execute(); err == nil {
-			t.Fatal("init should fail when config exists without --force")
-		}
-
-		// Verify original config is unchanged
+		configPath := filepath.Join(projectDir, ".oro", "config.yaml")
 		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
 		if err != nil {
-			t.Fatalf("failed to read config: %v", err)
-		}
-		if string(data) != "existing config\n" {
-			t.Errorf("config should be unchanged, got:\n%s", string(data))
+			t.Fatalf("config not created: %v", err)
 		}
 
-		// Verify warning message
-		output := buf.String()
-		if !strings.Contains(output, "exists") || !strings.Contains(output, "--force") {
-			t.Errorf("output should warn about existing config and mention --force, got:\n%s", output)
+		content := string(data)
+		if !strings.Contains(content, "project: myproject") {
+			t.Errorf("config should contain project name, got:\n%s", content)
 		}
 	})
 
-	t.Run("overwrites config with --force", func(t *testing.T) {
-		tmpDir := t.TempDir()
+	t.Run("adds .oro/ to .gitignore if not present", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
 
-		// Create a go.mod file
-		goModPath := filepath.Join(tmpDir, "go.mod")
-		if err := os.WriteFile(goModPath, []byte("module example.com/test\n"), 0o644); err != nil { //nolint:gosec // test file
-			t.Fatalf("failed to create go.mod: %v", err)
-		}
-
-		// Create existing config
-		oroDir := filepath.Join(tmpDir, ".oro")
-		if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // test directory
-			t.Fatalf("failed to create .oro dir: %v", err)
-		}
-		configPath := filepath.Join(oroDir, "config.yaml")
-		if err := os.WriteFile(configPath, []byte("existing config\n"), 0o644); err != nil { //nolint:gosec // test file
-			t.Fatalf("failed to create existing config: %v", err)
-		}
-
-		// Run init command with --force
-		root := newRootCmd()
-		var buf bytes.Buffer
-		root.SetOut(&buf)
-		root.SetArgs([]string{"init", "--project-root", tmpDir, "--force"})
-
-		if err := root.Execute(); err != nil {
-			t.Fatalf("init --force command failed: %v", err)
-		}
-
-		// Verify config was overwritten
-		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
-			t.Fatalf("failed to read config: %v", err)
+			t.Fatalf("bootstrapProject failed: %v", err)
 		}
 
-		config := string(data)
-		if strings.Contains(config, "existing config") {
-			t.Errorf("config should be overwritten, still contains old content:\n%s", config)
+		gitignorePath := filepath.Join(projectDir, ".gitignore")
+		data, err := os.ReadFile(gitignorePath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf(".gitignore not created: %v", err)
 		}
-		if !strings.Contains(config, "go:") {
-			t.Errorf("new config should contain 'go:' section, got:\n%s", config)
+
+		if !strings.Contains(string(data), ".oro/") {
+			t.Errorf(".gitignore should contain .oro/, got:\n%s", string(data))
 		}
 	})
+
+	t.Run("skips .gitignore if .oro/ already present", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// Pre-create .gitignore with .oro/ already in it
+		existing := "node_modules/\n.oro/\n.env\n"
+		if err := os.WriteFile(filepath.Join(projectDir, ".gitignore"), []byte(existing), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("write .gitignore: %v", err)
+		}
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(projectDir, ".gitignore")) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("read .gitignore: %v", err)
+		}
+
+		// Should not duplicate .oro/
+		if strings.Count(string(data), ".oro/") != 1 {
+			t.Errorf(".gitignore should contain .oro/ exactly once, got:\n%s", string(data))
+		}
+	})
+
+	t.Run("creates settings.json with absolute hook paths", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		settingsPath := filepath.Join(oroHome, "projects", "myproject", "settings.json")
+		data, err := os.ReadFile(settingsPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("settings.json not created: %v", err)
+		}
+
+		// Verify it's valid JSON
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("settings.json is not valid JSON: %v", err)
+		}
+
+		content := string(data)
+		// All hook commands should use $HOME/.oro/hooks/ prefix
+		if !strings.Contains(content, "$HOME/.oro/hooks/") {
+			t.Errorf("settings.json should use $HOME/.oro/hooks/ paths, got:\n%s", content)
+		}
+		// Should have hooks section
+		if _, ok := parsed["hooks"]; !ok {
+			t.Errorf("settings.json should contain hooks key, got:\n%s", content)
+		}
+	})
+
+	t.Run("creates handoffs directory", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		handoffsDir := filepath.Join(oroHome, "projects", "myproject", "handoffs")
+		info, err := os.Stat(handoffsDir)
+		if err != nil {
+			t.Fatalf("handoffs dir not created: %v", err)
+		}
+		if !info.IsDir() {
+			t.Errorf("handoffs should be a directory")
+		}
+	})
+
+	t.Run("extracts embedded skills", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		// Skills go to ~/.oro/.claude/skills/
+		skillPath := filepath.Join(oroHome, ".claude", "skills", "brainstorming", "SKILL.md")
+		data, err := os.ReadFile(skillPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("skill not extracted: %v", err)
+		}
+		if !strings.Contains(string(data), "Brainstorming") {
+			t.Errorf("skill content mismatch, got: %s", string(data))
+		}
+	})
+
+	t.Run("extracts embedded hooks", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		// Hooks go to ~/.oro/hooks/
+		hookPath := filepath.Join(oroHome, "hooks", "enforce-skills.sh")
+		data, err := os.ReadFile(hookPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("hook not extracted: %v", err)
+		}
+		if !strings.Contains(string(data), "echo ok") {
+			t.Errorf("hook content mismatch, got: %s", string(data))
+		}
+	})
+
+	t.Run("extracts beacons", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		// Beacons go to ~/.oro/beacons/
+		beaconPath := filepath.Join(oroHome, "beacons", "architect.md")
+		data, err := os.ReadFile(beaconPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("beacon not extracted: %v", err)
+		}
+		if !strings.Contains(string(data), "Architect") {
+			t.Errorf("beacon content mismatch, got: %s", string(data))
+		}
+	})
+
+	t.Run("idempotent re-run updates settings without wiping handoffs", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// First run
+		if err := bootstrapProject(projectDir, "myproject", oroHome, assets); err != nil {
+			t.Fatalf("first bootstrapProject failed: %v", err)
+		}
+
+		// Create a handoff file to verify it survives re-run
+		handoffFile := filepath.Join(oroHome, "projects", "myproject", "handoffs", "session-001.yaml")
+		if err := os.WriteFile(handoffFile, []byte("session: 001\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("write handoff: %v", err)
+		}
+
+		// Second run (idempotent)
+		if err := bootstrapProject(projectDir, "myproject", oroHome, assets); err != nil {
+			t.Fatalf("second bootstrapProject failed: %v", err)
+		}
+
+		// Handoff file should still exist
+		if _, err := os.Stat(handoffFile); err != nil {
+			t.Errorf("handoff file should survive re-run: %v", err)
+		}
+
+		// Settings.json should still be valid
+		settingsPath := filepath.Join(oroHome, "projects", "myproject", "settings.json")
+		data, err := os.ReadFile(settingsPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("settings.json missing after re-run: %v", err)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("settings.json invalid after re-run: %v", err)
+		}
+	})
+}
+
+func TestGenerateSettings(t *testing.T) {
+	data, err := generateSettings("$HOME/.oro")
+	if err != nil {
+		t.Fatalf("generateSettings failed: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, string(data))
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "$HOME/.oro/hooks/") {
+		t.Errorf("should contain $HOME/.oro/hooks/ paths, got:\n%s", content)
+	}
+
+	// Should have all four lifecycle phases
+	for _, phase := range []string{"SessionStart", "PreToolUse", "PostToolUse", "Stop"} {
+		if !strings.Contains(content, phase) {
+			t.Errorf("should contain %s phase, got:\n%s", phase, content)
+		}
+	}
+}
+
+func TestExtractAssets(t *testing.T) {
+	assets := testAssets()
+	dest := t.TempDir()
+
+	if err := extractAssets(dest, assets); err != nil {
+		t.Fatalf("extractAssets failed: %v", err)
+	}
+
+	// skills → .claude/skills/
+	if _, err := os.Stat(filepath.Join(dest, ".claude", "skills", "brainstorming", "SKILL.md")); err != nil {
+		t.Errorf("skills not extracted: %v", err)
+	}
+
+	// hooks → hooks/
+	if _, err := os.Stat(filepath.Join(dest, "hooks", "enforce-skills.sh")); err != nil {
+		t.Errorf("hooks not extracted: %v", err)
+	}
+
+	// beacons → beacons/
+	if _, err := os.Stat(filepath.Join(dest, "beacons", "architect.md")); err != nil {
+		t.Errorf("beacons not extracted: %v", err)
+	}
+
+	// commands → .claude/commands/
+	if _, err := os.Stat(filepath.Join(dest, ".claude", "commands", "restart-oro", "prompt.md")); err != nil {
+		t.Errorf("commands not extracted: %v", err)
+	}
+
+	// CLAUDE.md → .claude/CLAUDE.md
+	if _, err := os.Stat(filepath.Join(dest, ".claude", "CLAUDE.md")); err != nil {
+		t.Errorf("CLAUDE.md not extracted: %v", err)
+	}
 }

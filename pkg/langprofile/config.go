@@ -2,8 +2,6 @@ package langprofile
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -63,28 +61,8 @@ func GenerateConfig(projectRoot string, profiles []LangProfile) (*Config, error)
 	return cfg, nil
 }
 
-// WriteConfig writes the config to a YAML file at the given path.
-// If no languages are detected, writes a comment explaining this.
-func WriteConfig(path string, cfg *Config) error {
-	// Ensure parent directory exists
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // config directory needs to be readable
-		return fmt.Errorf("create config directory: %w", err)
-	}
-
-	// Generate YAML content
-	content := buildYAMLContent(cfg)
-
-	// Write to file
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil { //nolint:gosec // config file needs to be readable
-		return fmt.Errorf("write config file: %w", err)
-	}
-
-	return nil
-}
-
-// buildYAMLContent generates YAML content from the config.
-func buildYAMLContent(cfg *Config) string {
+// BuildYAML generates YAML content from the config.
+func BuildYAML(cfg *Config) string {
 	var content strings.Builder
 
 	if len(cfg.Languages) == 0 {
