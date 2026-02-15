@@ -154,3 +154,70 @@ class TestSendToManagerPane:
     def test_returns_false_when_tmux_not_found(self, _mock_run):
         result = architect_router.send_to_manager_pane("oro status")
         assert result is False
+
+
+class TestNotifyOnBeadCreate:
+    """Test PostToolUse notification when architect creates beads."""
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane", return_value=True)
+    def test_notifies_manager_on_bd_create(self, mock_send):
+        """When architect runs bd create, manager pane gets notification."""
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "bd create --title='test task' --type=task"},
+            "tool_output": "Created issue: oro-xyz123",
+        }
+        result = architect_router.notify_on_bead_create(hook_input)
+
+        assert result is not None
+        assert "additionalContext" in result
+        mock_send.assert_called_once()
+
+        # Verify the notification message content
+        call_args = mock_send.call_args[0]
+        assert "[NEW WORK]" in call_args[0]
+        assert "Check bd ready" in call_args[0]
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane", return_value=True)
+    def test_no_notification_for_non_bd_create_commands(self, mock_send):
+        """Only bd create triggers notification, not other bd commands."""
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "bd ready"},
+            "tool_output": "No beads ready",
+        }
+        result = architect_router.notify_on_bead_create(hook_input)
+
+        assert result is None
+        mock_send.assert_not_called()
+
+    @patch.dict(os.environ, {"ORO_ROLE": "manager"})
+    @patch("architect_router.send_to_manager_pane", return_value=True)
+    def test_no_notification_when_not_architect(self, mock_send):
+        """Manager doesn't notify itself."""
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "bd create --title='test'"},
+            "tool_output": "Created issue: oro-xyz",
+        }
+        result = architect_router.notify_on_bead_create(hook_input)
+
+        assert result is None
+        mock_send.assert_not_called()
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane", return_value=False)
+    def test_notification_fails_gracefully_on_tmux_error(self, mock_send):
+        """If tmux send-keys fails, don't block or error."""
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "bd create --title='test'"},
+            "tool_output": "Created issue: oro-xyz",
+        }
+        result = architect_router.notify_on_bead_create(hook_input)
+
+        # Should return None (fail open) when tmux fails
+        assert result is None
+        mock_send.assert_called_once()

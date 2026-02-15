@@ -72,19 +72,22 @@ class TestBdCreateNotifier(unittest.TestCase):
             self.assertFalse(bd_create_notifier.should_notify(hook_input))
 
     @patch("subprocess.run")
-    def test_notify_manager_sends_tmux_display_message(self, mock_run):
-        """Test that notify_manager calls tmux display-message."""
+    def test_notify_manager_sends_tmux_send_keys(self, mock_run):
+        """Test that notify_manager calls tmux send-keys."""
         mock_run.return_value = MagicMock(returncode=0)
         result = bd_create_notifier.notify_manager("Test message", "oro")
 
         self.assertTrue(result)
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
-        self.assertEqual(args[0], "tmux")
-        self.assertEqual(args[1], "display-message")
-        self.assertEqual(args[2], "-t")
-        self.assertEqual(args[3], "oro:manager")
-        self.assertEqual(args[4], "Test message")
+        # send-keys makes 2 calls: one for text (-l flag), one for Enter
+        self.assertEqual(mock_run.call_count, 2)
+
+        # First call: send text with literal flag
+        first_call = mock_run.call_args_list[0][0][0]
+        self.assertEqual(first_call, ["tmux", "send-keys", "-t", "oro:manager", "-l", "Test message"])
+
+        # Second call: send Enter
+        second_call = mock_run.call_args_list[1][0][0]
+        self.assertEqual(second_call, ["tmux", "send-keys", "-t", "oro:manager", "Enter"])
 
     @patch("subprocess.run")
     def test_notify_manager_returns_false_on_error(self, mock_run):

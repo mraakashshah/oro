@@ -126,6 +126,44 @@ def build_decision(hook_input: dict) -> dict | None:
     }
 
 
+def notify_on_bead_create(hook_input: dict) -> dict | None:
+    """Send notification to manager when architect creates a bead.
+
+    This is a PostToolUse hook that triggers after bd create commands.
+    Returns additionalContext to notify the agent, or None if no notification needed.
+    """
+    # Only notify when running as architect
+    if get_oro_role() != "architect":
+        return None
+
+    if hook_input.get("tool_name") != "Bash":
+        return None
+
+    tool_input = hook_input.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+
+    command = tool_input.get("command", "").strip()
+    if not command.startswith("bd create"):
+        return None
+
+    # Send notification to manager pane
+    notification = "[NEW WORK] Architect created a bead. Check bd ready."
+    send_success = send_to_manager_pane(notification)
+
+    if not send_success:
+        # Fail open: if tmux send-keys fails, don't block
+        return None
+
+    # Return additionalContext to inform the agent (but don't block)
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+        },
+        "additionalContext": "✓ Manager notified of new bead",
+    }
+
+
 def main() -> None:
     try:
         hook_input = json.loads(sys.stdin.read())

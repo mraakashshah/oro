@@ -2,7 +2,7 @@
 """PostToolUse Bash hook: notify manager when architect creates beads.
 
 When ORO_ROLE=architect and a 'bd create' command is executed, sends a
-notification to the manager pane via tmux display-message to alert them
+notification to the manager pane via tmux send-keys to alert them
 that new work is available.
 
 This is a PostToolUse hook — it runs AFTER the command completes, so the
@@ -14,8 +14,10 @@ Output: None (hook doesn't modify behavior, just sends notification)
 
 import json
 import os
-import subprocess
 import sys
+
+# Import send_to_manager_pane from architect_router
+from architect_router import send_to_manager_pane
 
 
 def get_oro_role() -> str:
@@ -24,22 +26,14 @@ def get_oro_role() -> str:
 
 
 def notify_manager(message: str, session_name: str = "oro") -> bool:
-    """Send a notification to the manager pane via tmux display-message.
+    """Send a notification to the manager pane via tmux send-keys.
+
+    Uses send_to_manager_pane from architect_router which sends the message
+    as actual keystrokes to the manager pane.
 
     Returns True if successful, False otherwise.
     """
-    manager_pane = f"{session_name}:manager"
-
-    try:
-        subprocess.run(
-            ["tmux", "display-message", "-t", manager_pane, message],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+    return send_to_manager_pane(message, session_name)
 
 
 def should_notify(hook_input: dict) -> bool:
