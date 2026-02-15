@@ -32,14 +32,16 @@ type createCall struct {
 }
 
 type mockBeadSource struct {
-	mu       sync.Mutex
-	beads    []protocol.Bead
-	shown    map[string]*protocol.BeadDetail
-	closed   []string
-	created  []createCall
-	createID string // ID returned by Create; defaults to "oro-new1"
-	synced   bool
-	readyErr error // if set, Ready() returns this error
+	mu                   sync.Mutex
+	beads                []protocol.Bead
+	shown                map[string]*protocol.BeadDetail
+	closed               []string
+	created              []createCall
+	createID             string // ID returned by Create; defaults to "oro-new1"
+	synced               bool
+	readyErr             error           // if set, Ready() returns this error
+	allChildrenClosedMap map[string]bool // epicID -> allClosed
+	allChildrenClosedErr error           // if set, AllChildrenClosed() returns this error
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -89,6 +91,21 @@ func (m *mockBeadSource) Create(_ context.Context, title, beadType string, prior
 		id = m.createID
 	}
 	return id, nil
+}
+
+func (m *mockBeadSource) AllChildrenClosed(_ context.Context, epicID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.allChildrenClosedErr != nil {
+		return false, m.allChildrenClosedErr
+	}
+	if m.allChildrenClosedMap != nil {
+		if result, ok := m.allChildrenClosedMap[epicID]; ok {
+			return result, nil
+		}
+	}
+	// Default: return false (epic has open children or is not an epic)
+	return false, nil
 }
 
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
@@ -7390,4 +7407,173 @@ func TestSafeGo_PanicDoesNotLeakWaitGroup(t *testing.T) {
 	if got := completed.Load(); got != total {
 		t.Fatalf("expected %d completions, got %d", total, got)
 	}
+}
+
+func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
+	t.Run("epic auto-closed when last child merges", func(t *testing.T) {
+		d, beadSource, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		// Init schema so logEvent works.
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		// Set up an epic with one child bead.
+		epicID := "epic-123"
+		childID := "child-1"
+		workerID := "worker-1"
+		worktree := "/tmp/worktree-" + childID
+		branch := "agent/" + childID
+
+		// Configure mock: after the child closes, AllChildrenClosed returns true.
+		beadSource.allChildrenClosedMap = map[string]bool{
+			epicID: true,
+		}
+
+		// Manually set up a tracked worker with the child bead and epicID.
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			epicID:  epicID, // parent epic for auto-close
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil), // dummy encoder
+		}
+		d.mu.Unlock()
+
+		// Trigger merge and complete (white-box test).
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
+
+		// Wait for async auto-close goroutine.
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify the child bead was closed.
+		beadSource.mu.Lock()
+		childClosed := false
+		for _, id := range beadSource.closed {
+			if id == childID {
+				childClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+
+		if !childClosed {
+			t.Error("expected child bead to be closed")
+		}
+
+		// Verify the epic was auto-closed with reason "All children completed".
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+
+		if !epicClosed {
+			t.Error("expected epic to be auto-closed when all children completed")
+		}
+	})
+
+	t.Run("epic NOT auto-closed when children still open", func(t *testing.T) {
+		d, beadSource, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-456"
+		childID := "child-2"
+		workerID := "worker-2"
+		worktree := "/tmp/worktree-" + childID
+		branch := "agent/" + childID
+
+		// Configure mock: AllChildrenClosed returns false (open children exist).
+		beadSource.allChildrenClosedMap = map[string]bool{
+			epicID: false,
+		}
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			epicID:  epicID, // parent epic
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
+
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify the child was closed but the epic was NOT closed.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+
+		if epicClosed {
+			t.Error("epic should NOT be auto-closed when children are still open")
+		}
+	})
+
+	t.Run("bd CLI error does not block merge flow", func(t *testing.T) {
+		d, beadSource, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		childID := "child-3"
+		workerID := "worker-3"
+		worktree := "/tmp/worktree-" + childID
+		branch := "agent/" + childID
+
+		// Configure mock: AllChildrenClosed returns an error.
+		beadSource.allChildrenClosedErr = fmt.Errorf("bd list failed")
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		// mergeAndComplete should complete successfully even if AllChildrenClosed errors.
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
+
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify the child bead was still closed (merge flow not blocked).
+		beadSource.mu.Lock()
+		childClosed := false
+		for _, id := range beadSource.closed {
+			if id == childID {
+				childClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+
+		if !childClosed {
+			t.Error("child bead should be closed even if AllChildrenClosed errors")
+		}
+	})
 }

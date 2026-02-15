@@ -60,6 +60,7 @@ type BeadSource interface {
 	Close(ctx context.Context, id string, reason string) error
 	Create(ctx context.Context, title, beadType string, priority int, description, parent string) (string, error)
 	Sync(ctx context.Context) error
+	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
 }
 
 // WorktreeManager creates and removes git worktrees.
@@ -91,6 +92,7 @@ type trackedWorker struct {
 	conn           net.Conn
 	state          protocol.WorkerState
 	beadID         string
+	epicID         string // parent epic ID if the assigned bead is a child of an epic
 	worktree       string
 	model          string // resolved model for the current bead assignment
 	lastSeen       time.Time
@@ -622,6 +624,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 		branch = protocol.BranchPrefix + beadID
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
+		w.epicID = ""
 	}
 	d.mu.Unlock()
 
@@ -745,6 +748,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 		// Worker is unreachable — release the bead back to the ready pool.
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
+		w.epicID = ""
 		d.mu.Unlock()
 		_ = d.logEvent(ctx, "qg_retry_send_failed", workerID, beadID, workerID,
 			fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
@@ -811,6 +815,9 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
 
+	// Auto-close parent epic if all children are completed.
+	d.autoCloseEpicIfComplete(ctx, workerID)
+
 	// Remove worktree after merge — safe because QG already ran before DONE.
 	if err := d.worktrees.Remove(ctx, worktree); err != nil {
 		_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
@@ -835,6 +842,32 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 			}
 			_ = d.logEvent(ctx, "memory_consolidation", "dispatcher", "", "",
 				fmt.Sprintf(`{"merged":%d,"pruned":%d}`, merged, pruned))
+		})
+	}
+}
+
+// autoCloseEpicIfComplete checks if the worker's bead has a parent epic and
+// auto-closes the epic if all children are completed. Runs in a goroutine.
+func (d *Dispatcher) autoCloseEpicIfComplete(ctx context.Context, workerID string) {
+	d.mu.Lock()
+	var epicID string
+	if w, ok := d.workers[workerID]; ok {
+		epicID = w.epicID
+	}
+	d.mu.Unlock()
+
+	if epicID != "" {
+		d.safeGo(func() {
+			allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
+			if err != nil {
+				_ = d.logEvent(ctx, "epic_auto_close_check_failed", "dispatcher", epicID, workerID,
+					fmt.Sprintf(`{"error":%q}`, err.Error()))
+				return
+			}
+			if allClosed {
+				_ = d.beads.Close(ctx, epicID, "All children completed")
+				_ = d.logEvent(ctx, "epic_auto_closed", "dispatcher", epicID, workerID, "")
+			}
 		})
 	}
 }
@@ -896,6 +929,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
 		w.beadID = ""
+		w.epicID = ""
 	}
 	d.mu.Unlock()
 
@@ -1124,6 +1158,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		if w, wOK := d.workers[workerID]; wOK {
 			w.state = protocol.WorkerIdle
 			w.beadID = ""
+			w.epicID = ""
 			w.worktree = ""
 			w.model = ""
 		}
@@ -1255,6 +1290,7 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
+		w.epicID = ""
 	}
 	d.mu.Unlock()
 }
@@ -1542,6 +1578,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	d.mu.Lock()
 	w.state = protocol.WorkerBusy
 	w.beadID = bead.ID
+	w.epicID = bead.Epic // store parent epic ID for auto-close on merge
 	w.worktree = worktree
 	w.model = bead.ResolveModel()
 	w.lastProgress = d.nowFunc()
@@ -1559,6 +1596,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if err != nil {
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
+		w.epicID = ""
 		w.worktree = ""
 		w.model = ""
 	}

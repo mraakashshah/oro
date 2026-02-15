@@ -630,6 +630,82 @@ func TestCLIBeadSource_ImplementsBeadSource(t *testing.T) {
 	var _ BeadSource = (*CLIBeadSource)(nil)
 }
 
+func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
+	t.Run("returns true when no open children", func(t *testing.T) {
+		// bd list --parent=epic-123 --status=open --json returns []
+		runner := &mockCommandRunner{output: []byte("[]")}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.AllChildrenClosed(context.Background(), "epic-123")
+		if err != nil {
+			t.Fatalf("AllChildrenClosed: %v", err)
+		}
+		if !got {
+			t.Errorf("AllChildrenClosed: got false, want true (no open children)")
+		}
+
+		// Verify correct command.
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "list") {
+			t.Errorf("expected 'list' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--parent=epic-123") {
+			t.Errorf("expected '--parent=epic-123' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--status=open") {
+			t.Errorf("expected '--status=open' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--json") {
+			t.Errorf("expected '--json' in args, got %v", call.Args)
+		}
+	})
+
+	t.Run("returns false when open children exist", func(t *testing.T) {
+		// bd list returns a non-empty list of open children
+		openChildren := []protocol.Bead{
+			{ID: "child-1", Title: "Child task 1", Priority: 2},
+			{ID: "child-2", Title: "Child task 2", Priority: 2},
+		}
+		data, _ := json.Marshal(openChildren)
+		runner := &mockCommandRunner{output: data}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.AllChildrenClosed(context.Background(), "epic-456")
+		if err != nil {
+			t.Fatalf("AllChildrenClosed: %v", err)
+		}
+		if got {
+			t.Errorf("AllChildrenClosed: got true, want false (open children exist)")
+		}
+	})
+
+	t.Run("returns error on command failure", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("bd list failed")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.AllChildrenClosed(context.Background(), "epic-789")
+		if err == nil {
+			t.Fatal("expected error from AllChildrenClosed when command fails")
+		}
+	})
+
+	t.Run("returns error on invalid JSON", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("not json")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.AllChildrenClosed(context.Background(), "epic-999")
+		if err == nil {
+			t.Fatal("expected error from AllChildrenClosed when output is invalid JSON")
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {

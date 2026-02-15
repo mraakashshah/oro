@@ -136,3 +136,21 @@ func (s *CLIBeadSource) Sync(ctx context.Context) error {
 	}
 	return nil
 }
+
+// AllChildrenClosed checks whether all children of the given epic are closed.
+// Returns true if the epic has no open children (all children are closed),
+// false if there are open children or the bead is not an epic.
+func (s *CLIBeadSource) AllChildrenClosed(ctx context.Context, epicID string) (bool, error) {
+	out, err := s.runner.Run(ctx, "bd", "list", "--parent="+epicID, "--status=open", "--json")
+	if err != nil {
+		return false, fmt.Errorf("bd list --parent=%s --status=open: %w", epicID, err)
+	}
+
+	var openChildren []protocol.Bead
+	if err := json.Unmarshal(out, &openChildren); err != nil {
+		return false, fmt.Errorf("parse bd list output: %w", err)
+	}
+
+	// If the list is empty, all children are closed.
+	return len(openChildren) == 0, nil
+}
