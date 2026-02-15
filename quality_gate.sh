@@ -75,6 +75,9 @@ if $HAS_GO; then
 
     GO_DIRS="cmd internal pkg"
 
+    # Stage embedded assets (go:embed in cmd/oro requires _assets/ dir)
+    make stage-assets 2>/dev/null || true
+
     header "GO TIER 1: FORMATTING"
     check "gofumpt" "test -z \"\$(gofumpt -l $GO_DIRS 2>/dev/null)\""
     check "goimports" "test -z \"\$(goimports -l $GO_DIRS 2>/dev/null)\""
@@ -171,6 +174,9 @@ if $HAS_GO; then
     header "GO TIER 7: BUILD"
     check "go build" "go build -buildvcs=false ./..."
     check "go vet" "go vet ./..."
+
+    # Clean staged embedded assets
+    make clean-assets 2>/dev/null || true
 
 fi
 
