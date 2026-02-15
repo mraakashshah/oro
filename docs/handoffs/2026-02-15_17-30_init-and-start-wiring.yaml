@@ -1,0 +1,78 @@
+---
+date: 2026-02-15
+status: complete
+---
+
+goal: >
+  Implemented oro init project bootstrapping (oro-etu3.2) and wired project
+  identity through oro start (oro-etu3.5). Two of the remaining config
+  externalization beads are now closed.
+
+now: >
+  Pick up oro-etu3.7 (Migrate oro repo to externalized config) — the last
+  child bead before the epic can close. Then close oro-etu3 epic.
+
+test: make stage-assets && go test ./cmd/oro/... -v
+
+done_this_session:
+  - task: "Implement oro init project bootstrapping (oro-etu3.2)"
+    files: [cmd/oro/cmd_init.go, cmd/oro/cmd_init_test.go, pkg/langprofile/config.go]
+    details: >
+      Added bootstrapProject, generateSettings, extractAssets, createProjectAnchor,
+      ensureGitignore functions. oro init now accepts [project-name] positional arg,
+      creates .oro/config.yaml anchor with project name + language profiles, adds
+      .oro/ to .gitignore, generates per-project settings.json under ~/.oro/projects/
+      with $HOME/.oro/hooks/ absolute paths, creates handoffs/ dir, and extracts
+      embedded skills/hooks/beacons/commands/CLAUDE.md to ~/.oro/. Fully idempotent.
+      Refactored runInit into ensureTools/installMissingTools/resolveProjectName/
+      resolveOroHome to satisfy complexity lints. Removed dead generateProjectConfig
+      and langprofile.WriteConfig. Exported langprofile.BuildYAML.
+
+  - task: "Wire project identity through oro start (oro-etu3.5)"
+    files: [cmd/oro/cmd_start.go, cmd/oro/cmd_start_test.go, cmd/oro/start_test.go, cmd/oro/start_full_test.go]
+    details: >
+      Added readProjectConfig(dir) that parses project name from .oro/config.yaml.
+      Updated newStartCmd RunE to read config, set ORO_PROJECT and ORO_HOME env vars,
+      and pass project name to runFullStart. runFullStart now takes project param and
+      sets TmuxSession.Project so execEnvCmd adds --add-dir/--settings flags.
+      Backward compatible: missing config returns empty project.
+
+decisions:
+  - config_format_combined: >
+      .oro/config.yaml now contains both project name AND language profiles
+      (previously only had language profiles). Project name is first line.
+  - idempotent_by_default: >
+      Removed --force flag. oro init is always idempotent — re-running overwrites
+      settings.json but preserves handoffs/ and other user data.
+  - simple_yaml_parsing: >
+      readProjectConfig uses line-based string parsing instead of a YAML library
+      to avoid adding a dependency for reading one field.
+
+findings:
+  - quality_gate_dead_exports: >
+      Removing generateProjectConfig made langprofile.WriteConfig dead code.
+      The dead exports check caught it immediately.
+
+worked:
+  - TDD cycle with fstest.MapFS for testing extractAssets without real embedded assets
+  - Refactoring runInit into small functions to pass cognitive complexity lint
+
+next:
+  - Pick up oro-etu3.7 (Migrate oro repo to externalized config)
+  - Close oro-etu3 epic after all children complete
+
+files:
+  created:
+    - cmd/oro/cmd_start_test.go
+  modified:
+    - cmd/oro/cmd_init.go
+    - cmd/oro/cmd_init_test.go
+    - cmd/oro/cmd_start.go
+    - cmd/oro/start_test.go
+    - cmd/oro/start_full_test.go
+    - pkg/langprofile/config.go
+
+beads:
+  completed: [oro-etu3.2, oro-etu3.5]
+  remaining: [oro-etu3.7]
+  epic: oro-etu3
