@@ -815,6 +815,9 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
 
+	// Extract learnings from event payloads for this bead (async, non-blocking).
+	d.safeGo(func() { d.extractAndStoreLearnings(ctx, beadID) })
+
 	// Auto-close parent epic if all children are completed.
 	d.autoCloseEpicIfComplete(ctx, workerID)
 
