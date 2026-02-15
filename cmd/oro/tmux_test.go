@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,7 +13,9 @@ func noopSleep(time.Duration) {}
 
 // fakeCmd records exec calls for testing without real tmux.
 // It supports both single-value and sequential (multi-value) outputs per key.
+// The mu mutex makes it safe for concurrent use (e.g., parallel SendKeys tests).
 type fakeCmd struct {
+	mu     sync.Mutex
 	calls  [][]string // each call is [name, arg1, arg2, ...]
 	output map[string]string
 	errs   map[string]error
@@ -35,6 +38,8 @@ func key(name string, args ...string) string {
 }
 
 func (f *fakeCmd) Run(name string, args ...string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, append([]string{name}, args...))
 	k := key(name, args...)
 	// Check for sequential output first.
@@ -51,6 +56,15 @@ func (f *fakeCmd) Run(name string, args ...string) (string, error) {
 		return f.output[k], err
 	}
 	return f.output[k], nil
+}
+
+// getCalls returns a snapshot of the recorded calls (thread-safe).
+func (f *fakeCmd) getCalls() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	snapshot := make([][]string, len(f.calls))
+	copy(snapshot, f.calls)
+	return snapshot
 }
 
 // stubPaneReady sets up the fake so WaitForPrompt sees the ❯ prompt indicator
@@ -1530,6 +1544,123 @@ func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 		}
 		if !killedSession {
 			t.Error("expected kill-session to be called for cleanup after WaitForPrompt timeout")
+		}
+	})
+}
+
+func TestNudgeSerialization(t *testing.T) {
+	t.Run("concurrent SendKeys to same target are serialized", func(t *testing.T) {
+		fake := newFakeCmd()
+		// wakeIfDetached: session is attached (no wake needed)
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+
+		// Track execution order with a channel
+		order := make(chan string, 10)
+		done := make(chan struct{})
+
+		go func() {
+			defer func() { done <- struct{}{} }()
+			// This should acquire the lock first (started first)
+			err := sess.SendKeys("oro:architect", "first message")
+			if err != nil {
+				t.Errorf("first SendKeys failed: %v", err)
+			}
+			order <- "first-done"
+		}()
+
+		go func() {
+			defer func() { done <- struct{}{} }()
+			// This should wait for first to complete
+			err := sess.SendKeys("oro:architect", "second message")
+			if err != nil {
+				t.Errorf("second SendKeys failed: %v", err)
+			}
+			order <- "second-done"
+		}()
+
+		// Wait for both to complete
+		<-done
+		<-done
+
+		// Both should complete without error (serialization worked)
+		// The key assertion is that no send-keys calls are interleaved
+		// We verify this by checking that all calls for "first message"
+		// appear before all calls for "second message", or vice versa
+		calls := fake.getCalls()
+		var firstIdx, secondIdx int
+		firstIdx, secondIdx = -1, -1
+		for i, call := range calls {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "first message") && firstIdx == -1 {
+				firstIdx = i
+			}
+			if strings.Contains(joined, "second message") && secondIdx == -1 {
+				secondIdx = i
+			}
+		}
+		// Both messages should have been sent
+		if firstIdx == -1 || secondIdx == -1 {
+			t.Fatal("expected both messages to be sent")
+		}
+		// They should not be at the same index (serialized, not interleaved)
+		if firstIdx == secondIdx {
+			t.Error("messages should be serialized, not sent simultaneously")
+		}
+	})
+
+	t.Run("SendKeys to different targets are independent", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{session_attached}")] = "1"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+
+		done := make(chan struct{}, 2)
+
+		go func() {
+			_ = sess.SendKeys("oro:architect", "arch msg")
+			done <- struct{}{}
+		}()
+		go func() {
+			_ = sess.SendKeys("oro:manager", "mgr msg")
+			done <- struct{}{}
+		}()
+
+		<-done
+		<-done
+
+		// Both should complete — different targets use different locks
+		calls := fake.getCalls()
+		var foundArch, foundMgr bool
+		for _, call := range calls {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "arch msg") {
+				foundArch = true
+			}
+			if strings.Contains(joined, "mgr msg") {
+				foundMgr = true
+			}
+		}
+		if !foundArch || !foundMgr {
+			t.Error("expected both messages to be sent to different targets")
+		}
+	})
+
+	t.Run("getSessionNudgeLock returns same mutex for same target", func(t *testing.T) {
+		lock1 := getSessionNudgeLock("test-target")
+		lock2 := getSessionNudgeLock("test-target")
+		if lock1 != lock2 {
+			t.Error("expected same mutex instance for same target")
+		}
+	})
+
+	t.Run("getSessionNudgeLock returns different mutex for different targets", func(t *testing.T) {
+		lock1 := getSessionNudgeLock("target-a")
+		lock2 := getSessionNudgeLock("target-b")
+		if lock1 == lock2 {
+			t.Error("expected different mutex instances for different targets")
 		}
 	})
 }

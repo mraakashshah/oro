@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,6 +41,21 @@ const sendKeysDebounceMs = 2000
 
 // defaultBeaconTimeout is the default time to wait for beacon verification.
 const defaultBeaconTimeout = 60 * time.Second
+
+// sessionNudgeLocks provides per-target mutexes to serialize concurrent nudges.
+// Prevents interleaved send-keys when multiple goroutines nudge the same pane.
+var sessionNudgeLocks sync.Map //nolint:gochecknoglobals // process-wide lock registry for pane targets
+
+// getSessionNudgeLock returns the mutex for serializing nudges to a target.
+// Creates a new mutex if one doesn't exist for this target.
+func getSessionNudgeLock(target string) *sync.Mutex {
+	actual, _ := sessionNudgeLocks.LoadOrStore(target, &sync.Mutex{})
+	mu, ok := actual.(*sync.Mutex)
+	if !ok {
+		panic("sessionNudgeLocks: unexpected type in sync.Map")
+	}
+	return mu
+}
 
 // TmuxSession manages a tmux session with the Oro layout.
 type TmuxSession struct {
@@ -288,6 +304,11 @@ func (s *TmuxSession) sleep(d time.Duration) {
 // Shell commands should use Runner.Run("tmux", "send-keys", ...) directly;
 // this method is for sending input to an already-running Claude session.
 func (s *TmuxSession) SendKeys(paneTarget, text string) error {
+	// Serialize nudges to this target to prevent interleaving
+	lock := getSessionNudgeLock(paneTarget)
+	lock.Lock()
+	defer lock.Unlock()
+
 	// 1. Send text using literal mode (-l) to handle special chars.
 	if _, err := s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "-l", text); err != nil {
 		return fmt.Errorf("tmux send-keys -l to %s: %w", paneTarget, err)
