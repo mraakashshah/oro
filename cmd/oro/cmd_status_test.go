@@ -236,7 +236,7 @@ func TestFormatStatusResponse(t *testing.T) {
 			checks: []string{
 				"state:       running",
 				"workers:     3",
-				"queue depth: 2",
+				"queue:       2 ready",
 				"focus:       epic-42",
 				"worker-1",
 				"oro-abc",
@@ -253,7 +253,7 @@ func TestFormatStatusResponse(t *testing.T) {
 			checks: []string{
 				"state:       paused",
 				"workers:     1",
-				"queue depth: 0",
+				"queue:       0 ready",
 			},
 		},
 	}
@@ -318,6 +318,152 @@ func TestParseStatusFromACK(t *testing.T) {
 				tt.check(t, resp)
 			}
 		})
+	}
+}
+
+func TestFormatStatusResponse_DefaultWithAlerts(t *testing.T) {
+	resp := statusResponse{
+		State:       "running",
+		PID:         1234,
+		WorkerCount: 3,
+		QueueDepth:  5,
+		Assignments: map[string]string{
+			"worker-1": "oro-abc",
+			"worker-3": "oro-xyz",
+		},
+		FocusedEpic: "epic-42",
+		Workers: []workerStatus{
+			{ID: "worker-1", State: "busy", BeadID: "oro-abc", LastProgressSecs: 120},
+			{ID: "worker-2", State: "idle", BeadID: "", LastProgressSecs: 0},
+			{ID: "worker-3", State: "busy", BeadID: "oro-xyz", LastProgressSecs: 900}, // exceeds half of 15min=900s
+		},
+		ActiveCount:         2,
+		IdleCount:           1,
+		TargetCount:         5,
+		UptimeSeconds:       3600,
+		PendingHandoffCount: 0,
+		AttemptCounts:       map[string]int{"oro-xyz": 3},
+		ProgressTimeoutSecs: 900, // 15 minutes
+	}
+
+	var buf bytes.Buffer
+	formatStatusResponse(&buf, &resp)
+	got := buf.String()
+
+	// Should have ALERTS section for stuck worker (900s >= 900/2=450)
+	if !strings.Contains(got, "ALERTS") {
+		t.Errorf("expected ALERTS section, got:\n%s", got)
+	}
+	if !strings.Contains(got, "worker-3") {
+		t.Errorf("expected stuck worker alert for worker-3, got:\n%s", got)
+	}
+
+	// Should have QG failure alert for oro-xyz (3 attempts)
+	if !strings.Contains(got, "oro-xyz") && !strings.Contains(got, "QG") {
+		t.Errorf("expected QG failure alert for oro-xyz, got:\n%s", got)
+	}
+
+	// Should show worker summary with active/idle/target
+	if !strings.Contains(got, "2 active") {
+		t.Errorf("expected '2 active' in worker summary, got:\n%s", got)
+	}
+	if !strings.Contains(got, "1 idle") {
+		t.Errorf("expected '1 idle' in worker summary, got:\n%s", got)
+	}
+	if !strings.Contains(got, "target: 5") {
+		t.Errorf("expected 'target: 5' in worker summary, got:\n%s", got)
+	}
+
+	// Should show queue depth
+	if !strings.Contains(got, "5") {
+		t.Errorf("expected queue depth '5', got:\n%s", got)
+	}
+}
+
+func TestFormatStatusResponse_JSONFlag(t *testing.T) {
+	resp := statusResponse{
+		State:       "running",
+		PID:         1234,
+		WorkerCount: 2,
+		QueueDepth:  3,
+		Assignments: map[string]string{"worker-1": "oro-abc"},
+		Workers: []workerStatus{
+			{ID: "worker-1", State: "busy", BeadID: "oro-abc", LastProgressSecs: 30},
+		},
+		ActiveCount:         1,
+		IdleCount:           1,
+		TargetCount:         5,
+		UptimeSeconds:       600,
+		ProgressTimeoutSecs: 900,
+	}
+
+	var buf bytes.Buffer
+	formatStatusJSON(&buf, &resp)
+	got := buf.String()
+
+	// Must be valid JSON
+	var parsed statusResponse
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\nraw: %s", err, got)
+	}
+
+	// Verify key fields survived round-trip
+	if parsed.State != "running" {
+		t.Errorf("expected state 'running', got %q", parsed.State)
+	}
+	if parsed.ActiveCount != 1 {
+		t.Errorf("expected active_count=1, got %d", parsed.ActiveCount)
+	}
+	if len(parsed.Workers) != 1 {
+		t.Errorf("expected 1 worker in JSON, got %d", len(parsed.Workers))
+	}
+}
+
+func TestFormatStatusResponse_VerboseFlag(t *testing.T) {
+	resp := statusResponse{
+		State:       "running",
+		PID:         1234,
+		WorkerCount: 2,
+		QueueDepth:  1,
+		Assignments: map[string]string{"worker-1": "oro-abc"},
+		Workers: []workerStatus{
+			{ID: "worker-1", State: "busy", BeadID: "oro-abc", LastProgressSecs: 45},
+			{ID: "worker-2", State: "idle", BeadID: "", LastProgressSecs: 0},
+		},
+		ActiveCount:         1,
+		IdleCount:           1,
+		TargetCount:         5,
+		UptimeSeconds:       1800,
+		PendingHandoffCount: 1,
+		AttemptCounts:       map[string]int{"oro-abc": 2},
+		ProgressTimeoutSecs: 900,
+	}
+
+	var buf bytes.Buffer
+	formatStatusVerbose(&buf, &resp)
+	got := buf.String()
+
+	// Should include worker health table with IDs and states
+	if !strings.Contains(got, "worker-1") {
+		t.Errorf("expected worker-1 in verbose output, got:\n%s", got)
+	}
+	if !strings.Contains(got, "worker-2") {
+		t.Errorf("expected worker-2 in verbose output, got:\n%s", got)
+	}
+
+	// Should show attempt counts
+	if !strings.Contains(got, "oro-abc") {
+		t.Errorf("expected attempt count for oro-abc, got:\n%s", got)
+	}
+
+	// Should show uptime
+	if !strings.Contains(got, "30m") || !strings.Contains(got, "uptime") {
+		t.Errorf("expected uptime '30m' in verbose output, got:\n%s", got)
+	}
+
+	// Should show pending handoffs
+	if !strings.Contains(got, "handoff") {
+		t.Errorf("expected pending handoff info in verbose output, got:\n%s", got)
 	}
 }
 
