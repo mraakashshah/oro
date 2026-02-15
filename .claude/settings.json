@@ -70,6 +70,15 @@
 		],
 		"PostToolUse": [
 			{
+				"matcher": "Read|WebFetch|Bash",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/prompt_injection_guard.py"
+					}
+				]
+			},
+			{
 				"matcher": "Edit|Write",
 				"hooks": [
 					{
