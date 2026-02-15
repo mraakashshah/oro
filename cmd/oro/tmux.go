@@ -107,11 +107,13 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 
 	// Create second window named "manager".
 	if _, err := s.Runner.Run("tmux", "new-window", "-t", s.Name, "-n", "manager", execEnvCmd("manager")); err != nil {
+		_ = s.Kill() // cleanup on partial creation failure
 		return fmt.Errorf("tmux new-window: %w", err)
 	}
 
 	// Set initial status bar color to architect (green) — architect is the active window after creation.
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-style", "bg=colour46,fg=black"); err != nil {
+		_ = s.Kill() // cleanup on partial creation failure
 		return fmt.Errorf("tmux set-option status-style: %w", err)
 	}
 
@@ -122,6 +124,7 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		s.Name, s.Name,
 	)
 	if _, err := s.Runner.Run("tmux", "set-hook", "-t", s.Name, "after-select-window", hookCmd); err != nil {
+		_ = s.Kill() // cleanup on partial creation failure
 		return fmt.Errorf("tmux set-hook status-style: %w", err)
 	}
 
@@ -133,6 +136,7 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		{"manager", managerNudge},
 	} {
 		if err := s.launchAndNudge(w.role, w.nudge); err != nil {
+			_ = s.Kill() // cleanup on partial creation failure
 			return err
 		}
 	}

@@ -1477,3 +1477,59 @@ func TestBuildPaneDiedHookContent(t *testing.T) {
 		}
 	})
 }
+
+func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
+	t.Run("when new-window fails, kill-session is called", func(t *testing.T) {
+		fake := newFakeCmd()
+		// has-session returns error (no session exists)
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		// new-session succeeds (default: no error)
+		// new-window fails
+		fake.errs[key("tmux", "new-window", "-t", "oro", "-n", "manager", execEnvCmd("manager"))] = fmt.Errorf("new-window failed")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err == nil {
+			t.Fatal("expected error from Create when new-window fails, got nil")
+		}
+
+		// Verify kill-session was called to clean up the half-created session.
+		var killedSession bool
+		for _, call := range fake.calls {
+			if len(call) >= 4 && call[0] == "tmux" && call[1] == "kill-session" && call[2] == "-t" && call[3] == "oro" {
+				killedSession = true
+				break
+			}
+		}
+		if !killedSession {
+			t.Error("expected kill-session to be called for cleanup after new-window failure")
+		}
+	})
+
+	t.Run("when WaitForPrompt fails, kill-session is called", func(t *testing.T) {
+		fake := newFakeCmd()
+		// has-session returns error (no session exists)
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		// new-session and new-window succeed (default: no error)
+		// capture-pane never shows prompt indicator — WaitForPrompt times out.
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "loading..."
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err == nil {
+			t.Fatal("expected error from Create when WaitForPrompt times out, got nil")
+		}
+
+		// Verify kill-session was called to clean up the session.
+		var killedSession bool
+		for _, call := range fake.calls {
+			if len(call) >= 4 && call[0] == "tmux" && call[1] == "kill-session" && call[2] == "-t" && call[3] == "oro" {
+				killedSession = true
+				break
+			}
+		}
+		if !killedSession {
+			t.Error("expected kill-session to be called for cleanup after WaitForPrompt timeout")
+		}
+	})
+}
