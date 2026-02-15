@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -104,12 +105,17 @@ func runCleanup(_ context.Context, cfg *cleanupConfig) error {
 	// 6. Prune git worktrees.
 	cleanupWorktrees(cfg)
 
-	// 7. Delete agent/* branches.
+	// 7. Remove .worktrees/ directory.
+	if cleanedWorktreeDir := cleanupWorktreeDir(cfg); cleanedWorktreeDir {
+		cleaned = true
+	}
+
+	// 8. Delete agent/* branches.
 	if cleanedBranches := cleanupAgentBranches(cfg); cleanedBranches {
 		cleaned = true
 	}
 
-	// 8. Reset in_progress beads back to open.
+	// 9. Reset in_progress beads back to open.
 	if cleanedBeads := cleanupBeads(cfg); cleanedBeads {
 		cleaned = true
 	}
@@ -232,6 +238,19 @@ func cleanupWorktrees(cfg *cleanupConfig) {
 	if _, err := cfg.runner.Run("git", "worktree", "prune"); err != nil {
 		fmt.Fprintf(cfg.w, "warning: git worktree prune: %v\n", err)
 	}
+}
+
+// cleanupWorktreeDir force-removes the .worktrees/ directory. Returns true if directory was removed.
+func cleanupWorktreeDir(cfg *cleanupConfig) bool {
+	dir := filepath.Join(".", ".worktrees")
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	fmt.Fprintf(cfg.w, "removing .worktrees/ directory\n")
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Fprintf(cfg.w, "warning: remove .worktrees/: %v\n", err)
+	}
+	return true
 }
 
 // cleanupAgentBranches deletes local agent/* branches. Returns true if branches were deleted.

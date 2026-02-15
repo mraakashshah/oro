@@ -25,23 +25,14 @@ ps aux | grep -E '[o]ro (start|worker|dispatch)' | head -5
 tmux list-sessions 2>&1
 ```
 
-## Phase 2: Clean Stale State
+## Phase 2: Verify Clean State
+
+All cleanup is handled by `oro cleanup` in Phase 1. This phase only verifies.
 
 ```bash
-# Remove stale worktree references
-git worktree prune
-
-# Delete ALL agent/* branches (safe — they're ephemeral worker branches)
-for b in $(git branch | grep 'agent/' | tr -d ' +'); do
-  git branch -D "$b" 2>&1
-done
-
-# Remove leftover worktree directories
-rm -rf .worktrees/
-
-# Verify clean
 git worktree list
 git branch | grep agent/ || echo "No stale agent branches"
+ls .worktrees/ 2>/dev/null || echo "No worktree directory"
 ```
 
 ## Phase 3: Build

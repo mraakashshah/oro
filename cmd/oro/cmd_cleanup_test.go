@@ -522,3 +522,112 @@ func TestCleanup_SendsSIGINTToDispatcher(t *testing.T) {
 		t.Error("expected SIGINT to be sent to dispatcher")
 	}
 }
+
+func TestCleanupWorktreeDir(t *testing.T) {
+	t.Run("removes .worktrees directory when it exists", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+		fake.output[key("git", "branch", "--list", "agent/*")] = ""
+		fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+
+		tmpDir := t.TempDir()
+		worktreeDir := filepath.Join(tmpDir, ".worktrees")
+
+		// Create .worktrees directory with a file
+		if err := os.MkdirAll(worktreeDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(worktreeDir, "test.txt"), []byte("test"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Change to tmpDir so cleanup looks for .worktrees in the right place
+		origDir, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := os.Chdir(origDir); err != nil {
+				t.Error(err)
+			}
+		}()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:   fake,
+			w:        &buf,
+			tmuxName: "oro",
+			pidPath:  filepath.Join(tmpDir, "oro.pid"),
+			sockPath: filepath.Join(tmpDir, "oro.sock"),
+			signalFn: func(int) error { return nil },
+			aliveFn:  func(int) bool { return false },
+		}
+
+		err = runCleanup(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Verify .worktrees directory was removed
+		if _, err := os.Stat(worktreeDir); !os.IsNotExist(err) {
+			t.Error("expected .worktrees directory to be removed")
+		}
+
+		// Check output
+		out := buf.String()
+		if !strings.Contains(out, "removing .worktrees/ directory") {
+			t.Errorf("expected output to contain %q, got: %s", "removing .worktrees/ directory", out)
+		}
+	})
+
+	t.Run("no error when directory doesn't exist", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+		fake.output[key("git", "branch", "--list", "agent/*")] = ""
+		fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+
+		tmpDir := t.TempDir()
+
+		// Change to tmpDir (no .worktrees directory exists)
+		origDir, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := os.Chdir(origDir); err != nil {
+				t.Error(err)
+			}
+		}()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:   fake,
+			w:        &buf,
+			tmuxName: "oro",
+			pidPath:  filepath.Join(tmpDir, "oro.pid"),
+			sockPath: filepath.Join(tmpDir, "oro.sock"),
+			signalFn: func(int) error { return nil },
+			aliveFn:  func(int) bool { return false },
+		}
+
+		err = runCleanup(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Should complete without error even when directory doesn't exist
+		// Output should be "nothing to clean" since nothing needed cleanup
+		out := buf.String()
+		if !strings.Contains(out, "nothing to clean") {
+			t.Errorf("expected 'nothing to clean' in output, got: %s", out)
+		}
+	})
+}
