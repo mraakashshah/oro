@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"oro/pkg/protocol"
 )
 
 // TestStatusBar verifies the status bar shows daemon health + worker count + aggregate stats.
@@ -19,12 +22,12 @@ func TestStatusBar(t *testing.T) {
 		wantContains    []string
 	}{
 		{
-			name:            "daemon offline shows red offline",
+			name:            "daemon offline shows offline and bead counts",
 			daemonHealthy:   false,
 			workerCount:     0,
 			openCount:       5,
 			inProgressCount: 2,
-			wantContains:    []string{"offline"},
+			wantContains:    []string{"offline", "5", "2"},
 		},
 		{
 			name:            "daemon online shows worker count and stats",
@@ -178,5 +181,111 @@ func TestModel_ViewRenders(t *testing.T) {
 	}
 	if !strings.Contains(view, "Workers") {
 		t.Errorf("View() missing 'Workers', got: %s", view)
+	}
+}
+
+// TestModel_BeadsMsgUpdatesModel verifies that receiving a beadsMsg updates beads and counts.
+func TestModel_BeadsMsgUpdatesModel(t *testing.T) {
+	m := newModel()
+	beads := []protocol.Bead{
+		{ID: "b-1", Title: "Fix bug", Status: "open"},
+		{ID: "b-2", Title: "Add feature", Status: "in_progress"},
+		{ID: "b-3", Title: "Blocked task", Status: "blocked"},
+		{ID: "b-4", Title: "Another open", Status: "open"},
+	}
+
+	updated, _ := m.Update(beadsMsg(beads))
+	model, ok := updated.(Model)
+	if !ok {
+		t.Fatal("Update() did not return Model")
+	}
+
+	if len(model.beads) != 4 {
+		t.Fatalf("expected 4 beads, got %d", len(model.beads))
+	}
+	if model.openCount != 2 {
+		t.Errorf("openCount = %d, want 2", model.openCount)
+	}
+	if model.inProgressCount != 1 {
+		t.Errorf("inProgressCount = %d, want 1", model.inProgressCount)
+	}
+}
+
+// TestModel_WorkersMsgUpdatesModel verifies that receiving a workersMsg updates workers and daemon health.
+func TestModel_WorkersMsgUpdatesModel(t *testing.T) {
+	m := newModel()
+	workers := []WorkerStatus{
+		{ID: "w-1", Status: "active"},
+		{ID: "w-2", Status: "idle"},
+	}
+
+	updated, _ := m.Update(workersMsg(workers))
+	model, ok := updated.(Model)
+	if !ok {
+		t.Fatal("Update() did not return Model")
+	}
+
+	if !model.daemonHealthy {
+		t.Error("daemonHealthy should be true when workers received")
+	}
+	if model.workerCount != 2 {
+		t.Errorf("workerCount = %d, want 2", model.workerCount)
+	}
+}
+
+// TestModel_WorkersMsgNilMeansDaemonOffline verifies nil workersMsg marks daemon as offline.
+func TestModel_WorkersMsgNilMeansDaemonOffline(t *testing.T) {
+	m := Model{daemonHealthy: true, workerCount: 3}
+
+	updated, _ := m.Update(workersMsg(nil))
+	model, ok := updated.(Model)
+	if !ok {
+		t.Fatal("Update() did not return Model")
+	}
+
+	if model.daemonHealthy {
+		t.Error("daemonHealthy should be false when nil workers received")
+	}
+	if model.workerCount != 0 {
+		t.Errorf("workerCount = %d, want 0", model.workerCount)
+	}
+}
+
+// TestModel_TickMsgReturnsFetchCommands verifies that tickMsg triggers data fetching.
+func TestModel_TickMsgReturnsFetchCommands(t *testing.T) {
+	m := newModel()
+	_, cmd := m.Update(tickMsg(time.Now()))
+
+	if cmd == nil {
+		t.Fatal("tickMsg should return a non-nil command")
+	}
+}
+
+// TestModel_InitReturnsFetchCommands verifies that Init triggers data fetching.
+func TestModel_InitReturnsFetchCommands(t *testing.T) {
+	m := newModel()
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init() should return a non-nil command")
+	}
+}
+
+// TestStatusBar_ShowsBeadCountsWhenDaemonOffline verifies bead counts show even without daemon.
+func TestStatusBar_ShowsBeadCountsWhenDaemonOffline(t *testing.T) {
+	m := Model{
+		daemonHealthy:   false,
+		openCount:       5,
+		inProgressCount: 2,
+	}
+
+	bar := m.renderStatusBar()
+	if !strings.Contains(bar, "5") {
+		t.Errorf("status bar should show open count 5 when daemon offline, got: %s", bar)
+	}
+	if !strings.Contains(bar, "2") {
+		t.Errorf("status bar should show in-progress count 2 when daemon offline, got: %s", bar)
+	}
+	if !strings.Contains(bar, "offline") {
+		t.Errorf("status bar should still indicate daemon is offline, got: %s", bar)
 	}
 }

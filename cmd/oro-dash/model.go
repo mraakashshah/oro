@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,11 +17,47 @@ import (
 // Used to trigger periodic data refresh from bd CLI and dispatcher state.
 type tickMsg time.Time
 
+// beadsMsg carries fetched beads from the bd CLI.
+type beadsMsg []protocol.Bead
+
+// workersMsg carries fetched worker status from the dispatcher.
+// nil means the daemon is offline.
+type workersMsg []WorkerStatus
+
 // tickCmd returns a command that sends a tickMsg after 2 seconds.
 func tickCmd() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// fetchBeadsCmd returns a tea.Cmd that fetches beads from the bd CLI.
+func fetchBeadsCmd() tea.Cmd {
+	return func() tea.Msg {
+		beads, _ := fetchBeads(context.Background())
+		return beadsMsg(beads)
+	}
+}
+
+// fetchWorkersCmd returns a tea.Cmd that fetches worker status from the dispatcher.
+func fetchWorkersCmd() tea.Cmd {
+	return func() tea.Msg {
+		socketPath := defaultSocketPath()
+		workers, _ := fetchWorkerStatus(context.Background(), socketPath)
+		return workersMsg(workers)
+	}
+}
+
+// defaultSocketPath returns the dispatcher socket path from env or default.
+func defaultSocketPath() string {
+	if v := os.Getenv("ORO_SOCKET_PATH"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, protocol.OroDir, "oro.sock")
 }
 
 // ViewType represents different views in the dashboard.
@@ -38,8 +77,7 @@ type Model struct {
 	inProgressCount int
 
 	// Data fetched from external sources
-	beads []protocol.Bead
-	//nolint:unused // Will be used when workers view integrates FetchWorkers
+	beads   []protocol.Bead
 	workers []WorkerStatus
 
 	// UI state
@@ -58,7 +96,7 @@ func newModel() Model {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tickCmd()
+	return tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), tickCmd())
 }
 
 // Update implements tea.Model.
@@ -74,8 +112,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+	case beadsMsg:
+		m.beads = []protocol.Bead(msg)
+		m.openCount = 0
+		m.inProgressCount = 0
+		for _, b := range m.beads {
+			switch b.Status {
+			case "open":
+				m.openCount++
+			case "in_progress":
+				m.inProgressCount++
+			}
+		}
+
+	case workersMsg:
+		if msg == nil {
+			m.daemonHealthy = false
+			m.workerCount = 0
+		} else {
+			m.daemonHealthy = true
+			m.workers = []WorkerStatus(msg)
+			m.workerCount = len(m.workers)
+		}
+
 	case tickMsg:
-		return m, tickCmd()
+		return m, tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), tickCmd())
 	}
 
 	return m, nil
@@ -91,14 +152,17 @@ func (m Model) View() string {
 func (m Model) renderStatusBar() string {
 	theme := DefaultTheme()
 
-	if !m.daemonHealthy {
-		offlineStyle := lipgloss.NewStyle().Foreground(theme.Error)
-		return offlineStyle.Render("offline")
+	var daemonStatus string
+	if m.daemonHealthy {
+		daemonStatus = lipgloss.NewStyle().Foreground(theme.Success).Render("daemon: online")
+	} else {
+		daemonStatus = lipgloss.NewStyle().Foreground(theme.Error).Render("daemon: offline")
 	}
 
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		lipgloss.NewStyle().Render("Workers: "),
+		daemonStatus,
+		lipgloss.NewStyle().Render(" | Workers: "),
 		lipgloss.NewStyle().Foreground(theme.Primary).Render(fmt.Sprintf("%d", m.workerCount)),
 		lipgloss.NewStyle().Render(" | Open: "),
 		lipgloss.NewStyle().Foreground(theme.Warning).Render(fmt.Sprintf("%d", m.openCount)),

@@ -37,8 +37,6 @@ func parseBeadsOutput(output string) ([]protocol.Bead, error) {
 
 // fetchBeads runs `bd list --format=jsonl` and parses the output into beads.
 // Returns an empty slice on exec errors (bd not found, non-zero exit, etc).
-//
-//nolint:unused // Will be used when tick-based refresh integrates bead fetching
 func fetchBeads(ctx context.Context) ([]protocol.Bead, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
