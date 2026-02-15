@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // TestStatusBar verifies the status bar shows daemon health + worker count + aggregate stats.
@@ -128,5 +130,53 @@ func TestRobotMode(t *testing.T) {
 				t.Errorf("robotMode() JSON missing 'workers' field")
 			}
 		})
+	}
+}
+
+// TestModel_KeyboardQuit verifies that pressing 'q' or 'ctrl+c' returns tea.Quit.
+func TestModel_KeyboardQuit(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  tea.KeyMsg
+	}{
+		{
+			name: "q key quits",
+			msg:  tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")},
+		},
+		{
+			name: "ctrl+c quits",
+			msg:  tea.KeyMsg{Type: tea.KeyCtrlC},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newModel()
+			_, cmd := m.Update(tt.msg)
+			if cmd == nil {
+				t.Fatal("Update() returned nil cmd, want tea.Quit")
+			}
+			// tea.Quit returns a special quit message; execute the cmd to verify
+			msg := cmd()
+			if _, ok := msg.(tea.QuitMsg); !ok {
+				t.Errorf("Update() cmd produced %T, want tea.QuitMsg", msg)
+			}
+		})
+	}
+}
+
+// TestModel_ViewRenders verifies that View() returns non-empty output containing status bar info.
+func TestModel_ViewRenders(t *testing.T) {
+	m := Model{
+		daemonHealthy: true,
+		workerCount:   3,
+	}
+
+	view := m.View()
+	if view == "" {
+		t.Fatal("View() returned empty string, want non-empty output")
+	}
+	if !strings.Contains(view, "Workers") {
+		t.Errorf("View() missing 'Workers', got: %s", view)
 	}
 }

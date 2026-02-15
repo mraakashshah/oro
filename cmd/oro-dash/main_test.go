@@ -13,9 +13,9 @@ func TestDashModel_Init(t *testing.T) {
 		t.Errorf("expected activeView to be BoardView, got %v", m.activeView)
 	}
 
-	// Init should return nil (no initial commands)
+	// Init should return a tick command for periodic refresh
 	cmd := m.Init()
-	if cmd != nil {
-		t.Errorf("expected Init() to return nil, got %v", cmd)
+	if cmd == nil {
+		t.Error("expected Init() to return a tick command, got nil")
 	}
 }

@@ -12,9 +12,14 @@ import (
 
 // tickMsg is sent by Bubble Tea on every tick interval.
 // Used to trigger periodic data refresh from bd CLI and dispatcher state.
-//
-//nolint:unused // Will be used when tick-based refresh is implemented
 type tickMsg time.Time
+
+// tickCmd returns a command that sends a tickMsg after 2 seconds.
+func tickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
 
 // ViewType represents different views in the dashboard.
 type ViewType int
@@ -39,9 +44,7 @@ type Model struct {
 	workers []WorkerStatus
 
 	// UI state
-	//nolint:unused // Will be used for responsive layout
-	width int
-	//nolint:unused // Will be used for responsive layout
+	width  int
 	height int
 	//nolint:unused // Will be used for error display
 	err error
@@ -56,17 +59,32 @@ func newModel() Model {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return nil
+	return tickCmd()
 }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		}
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+	case tickMsg:
+		return m, tickCmd()
+	}
+
 	return m, nil
 }
 
 // View implements tea.Model.
 func (m Model) View() string {
-	return ""
+	return m.renderStatusBar()
 }
 
 // renderStatusBar renders the status bar with daemon health, worker count, and aggregate stats.
