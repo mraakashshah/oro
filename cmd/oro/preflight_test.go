@@ -74,12 +74,13 @@ func TestEnsureSearchHook(t *testing.T) {
 		binPath := filepath.Join(tmpDir, "oro-search-hook")
 		srcDir := filepath.Join(repoRoot(t), "cmd", "oro-search-hook")
 
-		// Create a stale binary (old mod time).
+		// Create a stale binary with mod time at the Unix epoch, guaranteeing
+		// it is older than any source file regardless of when they were last touched.
 		if err := os.WriteFile(binPath, []byte("old"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		past := time.Now().Add(-24 * time.Hour)
-		if err := os.Chtimes(binPath, past, past); err != nil {
+		epoch := time.Unix(0, 0)
+		if err := os.Chtimes(binPath, epoch, epoch); err != nil {
 			t.Fatal(err)
 		}
 
