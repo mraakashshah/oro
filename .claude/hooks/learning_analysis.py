@@ -7,10 +7,30 @@ Entry format: {key, type, content, bead, tags, ts}
 """
 
 import json
+import os
 from collections import Counter
 from pathlib import Path
 
 from memory_capture import slugify
+
+
+def oro_home():
+    """Return ORO_HOME or default ~/.oro."""
+    return os.environ.get("ORO_HOME", os.path.expanduser("~/.oro"))
+
+
+def oro_project_dir():
+    """Return $ORO_HOME/projects/$ORO_PROJECT or None if ORO_PROJECT not set."""
+    home = oro_home()
+    project = os.environ.get("ORO_PROJECT", "")
+    if not project:
+        return None
+    return os.path.join(home, "projects", project)
+
+
+DECISIONS_FILE = (
+    os.path.join(oro_project_dir(), "decisions.md") if oro_project_dir() else "docs/decisions-and-discoveries.md"
+)
 
 
 def load_knowledge(path: Path) -> list[dict]:

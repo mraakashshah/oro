@@ -23,9 +23,24 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+
+def oro_home():
+    """Return ORO_HOME or default ~/.oro."""
+    return os.environ.get("ORO_HOME", os.path.expanduser("~/.oro"))
+
+
+def oro_project_dir():
+    """Return $ORO_HOME/projects/$ORO_PROJECT or None if ORO_PROJECT not set."""
+    home = oro_home()
+    project = os.environ.get("ORO_PROJECT", "")
+    if not project:
+        return None
+    return os.path.join(home, "projects", project)
+
+
 KNOWLEDGE_FILE = ".beads/memory/knowledge.jsonl"
 WORKTREES_DIR = ".worktrees"
-BEACONS_DIR = ".claude/hooks/beacons"
+BEACONS_DIR = os.path.join(oro_home(), "beacons") if os.environ.get("ORO_PROJECT") else ".claude/hooks/beacons"
 
 _SUPERPOWERS = """\
 # Superpowers — How You Operate
@@ -283,7 +298,7 @@ def session_banner(closed: list[dict], ready: list[dict]) -> str:
     return "\n".join(lines)
 
 
-HANDOFFS_DIR = "docs/handoffs"
+HANDOFFS_DIR = os.path.join(oro_project_dir(), "handoffs") if oro_project_dir() else "docs/handoffs"
 
 
 def latest_handoff(handoffs_dir: str) -> str:
