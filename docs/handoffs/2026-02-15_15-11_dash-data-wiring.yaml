@@ -1,0 +1,57 @@
+---
+date: 2026-02-15
+status: complete
+---
+
+goal: >
+  Fixed oro dash showing blank screen by wiring up data fetching into the
+  Bubble Tea update loop and correcting the bd CLI JSON flag.
+
+now: >
+  Pick up remaining P1 work: oro-etu3.2 (oro init command) is the last blocker
+  for the config externalization epic (oro-etu3).
+
+test: go test ./cmd/oro-dash/ -v
+
+done_this_session:
+  - task: Wire fetchBeads and fetchWorkerStatus into Bubble Tea update loop
+    files: [cmd/oro-dash/model.go, cmd/oro-dash/model_test.go]
+    details: >
+      Added beadsMsg/workersMsg types, fetchBeadsCmd/fetchWorkersCmd tea.Cmd
+      wrappers, defaultSocketPath helper. Init() and tickMsg now trigger
+      tea.Batch(fetchBeadsCmd, fetchWorkersCmd, tickCmd). Status bar always
+      shows bead counts regardless of daemon health. 7 new test cases.
+
+  - task: Fix bd list JSON parsing (--json not --format=jsonl)
+    files: [cmd/oro-dash/fetch.go, cmd/oro-dash/fetch_test.go]
+    details: >
+      bd list --format=jsonl was never a valid flag. Changed to --json which
+      outputs a JSON array. Updated parseBeadsOutput from line-by-line JSONL
+      parsing to json.Unmarshal of array. Updated 4 test cases.
+
+decisions:
+  - status_bar_always_shows_counts: >
+      Beads come from bd CLI (always available), workers from dispatcher
+      (may be offline). Status bar now shows both daemon status indicator
+      AND bead counts, rather than gating everything behind daemonHealthy.
+
+findings:
+  - dash_had_two_independent_bugs: >
+      (1) fetch functions existed but never called from Init/Update loop,
+      (2) wrong CLI flag --format=jsonl vs --json. Both needed fixing for
+      the dashboard to show any data.
+
+worked:
+  - Systematic debugging approach identified root cause quickly from code reading
+  - TDD caught the type assertion lint issue before push
+
+next:
+  - Pick up oro-etu3.2 (oro init command)
+  - Consider adding keyboard navigation to dash board columns
+
+files:
+  modified:
+    - cmd/oro-dash/model.go
+    - cmd/oro-dash/model_test.go
+    - cmd/oro-dash/fetch.go
+    - cmd/oro-dash/fetch_test.go
