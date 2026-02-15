@@ -34,7 +34,7 @@ test_case() {
 }
 
 # Test 1: quality_gate.sh reads .oro/config.yaml when present
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 test_reads_config_when_present() {
     local tmpdir oldpwd
     tmpdir=$(mktemp -d)
@@ -80,7 +80,7 @@ EOF
 }
 
 # Test 2: quality_gate.sh falls back to hardcoded when config missing
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 test_fallback_when_config_missing() {
     local tmpdir oldpwd
     tmpdir=$(mktemp -d)
@@ -115,7 +115,7 @@ EOF
 }
 
 # Test 3: Tool not installed results in SKIP with warning
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 test_skip_when_tool_missing() {
     local tmpdir oldpwd
     tmpdir=$(mktemp -d)
