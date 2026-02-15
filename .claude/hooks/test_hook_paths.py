@@ -31,11 +31,13 @@ def test_with_env_vars():
         assert beacons_dir == "/tmp/test-oro/beacons"
 
         # HANDOFFS_DIR should resolve via oro_project_dir()
-        handoffs_dir = os.path.join(oro_project_dir(), "handoffs")
+        proj_dir = oro_project_dir()
+        assert proj_dir is not None
+        handoffs_dir = os.path.join(proj_dir, "handoffs")
         assert handoffs_dir == "/tmp/test-oro/projects/testproj/handoffs"
 
         # DECISIONS_FILE should resolve via oro_project_dir()
-        decisions_file = os.path.join(oro_project_dir(), "decisions.md")
+        decisions_file = os.path.join(proj_dir, "decisions.md")
         assert decisions_file == "/tmp/test-oro/projects/testproj/decisions.md"
     finally:
         os.environ.pop("ORO_HOME", None)
@@ -54,12 +56,12 @@ def test_without_env_vars():
     beacons_dir = os.path.join(oro_home(), "beacons") if os.environ.get("ORO_PROJECT") else ".claude/hooks/beacons"
     assert beacons_dir == ".claude/hooks/beacons"
 
-    handoffs_dir = os.path.join(oro_project_dir(), "handoffs") if oro_project_dir() else "docs/handoffs"
+    _pd = oro_project_dir()
+    handoffs_dir = os.path.join(_pd, "handoffs") if _pd else "docs/handoffs"
     assert handoffs_dir == "docs/handoffs"
 
-    decisions_file = (
-        os.path.join(oro_project_dir(), "decisions.md") if oro_project_dir() else "docs/decisions-and-discoveries.md"
-    )
+    _pd2 = oro_project_dir()
+    decisions_file = os.path.join(_pd2, "decisions.md") if _pd2 else "docs/decisions-and-discoveries.md"
     assert decisions_file == "docs/decisions-and-discoveries.md"
 
 
@@ -93,7 +95,8 @@ def test_session_start_extras_constants_with_env():
     try:
         # Simulate the constant resolution pattern from session_start_extras.py
         beacons = os.path.join(oro_home(), "beacons") if os.environ.get("ORO_PROJECT") else ".claude/hooks/beacons"
-        handoffs = os.path.join(oro_project_dir(), "handoffs") if oro_project_dir() else "docs/handoffs"
+        _pd = oro_project_dir()
+        handoffs = os.path.join(_pd, "handoffs") if _pd else "docs/handoffs"
         assert beacons == "/tmp/test-oro/beacons"
         assert handoffs == "/tmp/test-oro/projects/myproject/handoffs"
     finally:
@@ -107,11 +110,9 @@ def test_learning_analysis_constant_with_env():
     os.environ["ORO_PROJECT"] = "myproject"
 
     try:
-        decisions = (
-            os.path.join(oro_project_dir(), "decisions.md")
-            if oro_project_dir()
-            else "docs/decisions-and-discoveries.md"
-        )
+        _pd = oro_project_dir()
+        assert _pd is not None
+        decisions = os.path.join(_pd, "decisions.md")
         assert decisions == "/tmp/test-oro/projects/myproject/decisions.md"
     finally:
         os.environ.pop("ORO_HOME", None)

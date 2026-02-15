@@ -298,7 +298,8 @@ def session_banner(closed: list[dict], ready: list[dict]) -> str:
     return "\n".join(lines)
 
 
-HANDOFFS_DIR = os.path.join(oro_project_dir(), "handoffs") if oro_project_dir() else "docs/handoffs"
+_project_dir = oro_project_dir()
+HANDOFFS_DIR = os.path.join(_project_dir, "handoffs") if _project_dir else "docs/handoffs"
 
 
 def latest_handoff(handoffs_dir: str) -> str:
