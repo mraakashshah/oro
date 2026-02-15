@@ -7725,3 +7725,130 @@ func TestAutoScaleDisabledWhenMaxWorkersZero(t *testing.T) {
 		t.Errorf("expected 0 workers spawned when MaxWorkers=0, got %d", len(spawned))
 	}
 }
+
+// --- Enriched status tests (oro-vii8.1) ---
+
+func TestBuildStatusJSON_EnrichedFields(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Connect a worker and assign it a bead.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-enr1", Title: "Enriched test", Priority: 1},
+	})
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-enr1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Query status
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "status", "")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(ack.Detail), &status); err != nil {
+		t.Fatalf("failed to parse status JSON: %v, raw: %s", err, ack.Detail)
+	}
+
+	// Workers detail array
+	if len(status.Workers) == 0 {
+		t.Fatal("expected non-empty workers array")
+	}
+	found := false
+	for _, ws := range status.Workers {
+		if ws.ID == "w-enr1" {
+			found = true
+			if ws.BeadID != "bead-enr1" {
+				t.Errorf("expected worker bead_id 'bead-enr1', got %q", ws.BeadID)
+			}
+			if ws.State != string(protocol.WorkerBusy) {
+				t.Errorf("expected worker state 'busy', got %q", ws.State)
+			}
+			if ws.LastProgressSecs < 0 {
+				t.Errorf("expected non-negative last_progress_secs, got %f", ws.LastProgressSecs)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("worker w-enr1 not found in workers array")
+	}
+
+	// Worker counts
+	if status.ActiveCount != 1 {
+		t.Errorf("expected active_count=1, got %d", status.ActiveCount)
+	}
+	if status.TargetCount != 5 { // MaxWorkers=5 in newTestDispatcher
+		t.Errorf("expected target_count=5, got %d", status.TargetCount)
+	}
+
+	// Uptime
+	if status.UptimeSeconds <= 0 {
+		t.Errorf("expected uptime_seconds > 0, got %f", status.UptimeSeconds)
+	}
+
+	// Progress timeout config
+	if status.ProgressTimeoutSecs <= 0 {
+		t.Errorf("expected progress_timeout_secs > 0, got %f", status.ProgressTimeoutSecs)
+	}
+}
+
+func TestBuildStatusJSON_CachedQueueDepth(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Set 3 beads ready — the assign loop should cache the depth.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-q1", Title: "Queue 1", Priority: 1},
+		{ID: "bead-q2", Title: "Queue 2", Priority: 2},
+		{ID: "bead-q3", Title: "Queue 3", Priority: 3},
+	})
+
+	// Connect a worker so the assign loop runs and caches depth.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-q1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+
+	// Wait a tick for the cached depth to be updated.
+	time.Sleep(150 * time.Millisecond)
+
+	// Query status
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "status", "")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(ack.Detail), &status); err != nil {
+		t.Fatalf("failed to parse status JSON: %v, raw: %s", err, ack.Detail)
+	}
+
+	// After assigning bead-q1, 2 beads should remain in queue.
+	// The cached depth should be > 0 (not hardcoded 0).
+	if status.QueueDepth < 1 {
+		t.Errorf("expected queue_depth >= 1 (cached from assign loop), got %d", status.QueueDepth)
+	}
+}

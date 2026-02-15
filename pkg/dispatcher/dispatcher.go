@@ -209,6 +209,12 @@ type Dispatcher struct {
 	// beadsDir is the directory to watch for bead changes (defaults to protocol.BeadsDir)
 	beadsDir string
 
+	// startTime records when Run() was called (for uptime).
+	startTime time.Time
+
+	// cachedQueueDepth stores the last-known count from beads.Ready() in the assign loop.
+	cachedQueueDepth int
+
 	// nowFunc allows tests to control time.
 	nowFunc func() time.Time
 
@@ -314,6 +320,10 @@ func (d *Dispatcher) ShutdownAuthorized() *atomic.Bool {
 //
 // Run blocks until ctx is cancelled.
 func (d *Dispatcher) Run(ctx context.Context) error {
+	d.mu.Lock()
+	d.startTime = d.nowFunc()
+	d.mu.Unlock()
+
 	// Init schema
 	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
 		return fmt.Errorf("init schema: %w", err)
@@ -1427,6 +1437,11 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
+	// Cache queue depth for status reporting.
+	d.mu.Lock()
+	d.cachedQueueDepth = len(allBeads)
+	d.mu.Unlock()
+
 	beads := d.filterAssignable(allBeads)
 
 	// Sort by focused epic first (if set), then by priority (P0 first, P3 last).
@@ -1628,6 +1643,14 @@ func (d *Dispatcher) lookupBeadDetail(ctx context.Context, beadID, workerID stri
 	return "", ""
 }
 
+// workerStatus holds per-worker health info for the enriched status response.
+type workerStatus struct {
+	ID               string  `json:"id"`
+	State            string  `json:"state"`
+	BeadID           string  `json:"bead_id,omitempty"`
+	LastProgressSecs float64 `json:"last_progress_secs"`
+}
+
 // statusResponse is the JSON structure returned by the status directive.
 type statusResponse struct {
 	State       string            `json:"state"`
@@ -1636,6 +1659,16 @@ type statusResponse struct {
 	QueueDepth  int               `json:"queue_depth"`
 	Assignments map[string]string `json:"assignments"`
 	FocusedEpic string            `json:"focused_epic,omitempty"`
+
+	// Enriched fields (oro-vii8.1)
+	Workers             []workerStatus `json:"workers"`
+	ActiveCount         int            `json:"active_count"`
+	IdleCount           int            `json:"idle_count"`
+	TargetCount         int            `json:"target_count"`
+	UptimeSeconds       float64        `json:"uptime_seconds"`
+	PendingHandoffCount int            `json:"pending_handoff_count"`
+	AttemptCounts       map[string]int `json:"attempt_counts,omitempty"`
+	ProgressTimeoutSecs float64        `json:"progress_timeout_secs"`
 }
 
 // applyDirective transitions the dispatcher state machine and returns a detail
@@ -1683,27 +1716,67 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 }
 
 // buildStatusJSON constructs the status response JSON string.
-func (d *Dispatcher) buildStatusJSON() string {
-	d.mu.Lock()
-	state := d.state
-	workerCount := len(d.workers)
-	assignments := make(map[string]string, len(d.workers))
+// snapshotWorkers builds the per-worker status slice, assignments map, and
+// active/idle counts. Caller must hold d.mu.
+func (d *Dispatcher) snapshotWorkers(now time.Time) (workers []workerStatus, assignments map[string]string, active, idle int) {
+	assignments = make(map[string]string, len(d.workers))
+	workers = make([]workerStatus, 0, len(d.workers))
 	for id, w := range d.workers {
 		if w.beadID != "" {
 			assignments[id] = w.beadID
 		}
+		var progressSecs float64
+		if !w.lastProgress.IsZero() {
+			progressSecs = now.Sub(w.lastProgress).Seconds()
+		}
+		workers = append(workers, workerStatus{
+			ID:               id,
+			State:            string(w.state),
+			BeadID:           w.beadID,
+			LastProgressSecs: progressSecs,
+		})
+		if w.state == protocol.WorkerBusy || w.state == protocol.WorkerReserved {
+			active++
+		} else {
+			idle++
+		}
 	}
-	epic := d.focusedEpic
-	d.mu.Unlock()
+	return workers, assignments, active, idle
+}
+
+func (d *Dispatcher) buildStatusJSON() string {
+	now := d.nowFunc()
+
+	d.mu.Lock()
+	workers, assignments, activeCount, idleCount := d.snapshotWorkers(now)
+
+	// Copy attempt counts.
+	var attemptCounts map[string]int
+	if len(d.attemptCounts) > 0 {
+		attemptCounts = make(map[string]int, len(d.attemptCounts))
+		for k, v := range d.attemptCounts {
+			attemptCounts[k] = v
+		}
+	}
 
 	resp := statusResponse{
-		State:       string(state),
-		PID:         os.Getpid(),
-		WorkerCount: workerCount,
-		QueueDepth:  0, // bd ready count not cached; zero for now
-		Assignments: assignments,
-		FocusedEpic: epic,
+		State:               string(d.state),
+		PID:                 os.Getpid(),
+		WorkerCount:         len(d.workers),
+		QueueDepth:          d.cachedQueueDepth,
+		Assignments:         assignments,
+		FocusedEpic:         d.focusedEpic,
+		Workers:             workers,
+		ActiveCount:         activeCount,
+		IdleCount:           idleCount,
+		TargetCount:         d.targetWorkers,
+		UptimeSeconds:       now.Sub(d.startTime).Seconds(),
+		PendingHandoffCount: len(d.pendingHandoffs),
+		AttemptCounts:       attemptCounts,
+		ProgressTimeoutSecs: d.cfg.ProgressTimeout.Seconds(),
 	}
+	d.mu.Unlock()
+
 	data, err := json.Marshal(resp)
 	if err != nil {
 		return fmt.Sprintf(`{"error":%q}`, err.Error())
