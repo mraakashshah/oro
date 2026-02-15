@@ -1200,6 +1200,20 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 			t.Errorf("new-session command should launch claude, got: %s", lastArg)
 		}
 
+		// Verify fixed execEnvCmd: no --session-id, no --ide
+		if strings.Contains(lastArg, "--session-id") {
+			t.Errorf("new-session command should NOT contain --session-id (was removed), got: %s", lastArg)
+		}
+		if strings.Contains(lastArg, "--ide") {
+			t.Errorf("new-session command should NOT contain --ide (was removed), got: %s", lastArg)
+		}
+
+		// Verify exact format: exec env ORO_ROLE=<role> BD_ACTOR=<role> GIT_AUTHOR_NAME=<role> claude
+		expectedArch := execEnvCmd("architect")
+		if lastArg != expectedArch {
+			t.Errorf("new-session exec env command mismatch:\nwant: %s\ngot:  %s", expectedArch, lastArg)
+		}
+
 		// Verify new-window also has exec env command as last arg.
 		newWindowCall := findCall(fake.calls, "new-window")
 		if newWindowCall == nil {
@@ -1211,6 +1225,20 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		}
 		if !strings.Contains(lastArg, "ORO_ROLE=manager") {
 			t.Errorf("new-window command should set ORO_ROLE=manager, got: %s", lastArg)
+		}
+
+		// Verify fixed execEnvCmd: no --session-id, no --ide
+		if strings.Contains(lastArg, "--session-id") {
+			t.Errorf("new-window command should NOT contain --session-id (was removed), got: %s", lastArg)
+		}
+		if strings.Contains(lastArg, "--ide") {
+			t.Errorf("new-window command should NOT contain --ide (was removed), got: %s", lastArg)
+		}
+
+		// Verify exact format: exec env ORO_ROLE=<role> BD_ACTOR=<role> GIT_AUTHOR_NAME=<role> claude
+		expectedMgr := execEnvCmd("manager")
+		if lastArg != expectedMgr {
+			t.Errorf("new-window exec env command mismatch:\nwant: %s\ngot:  %s", expectedMgr, lastArg)
 		}
 	})
 
