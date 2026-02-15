@@ -146,6 +146,12 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		return fmt.Errorf("tmux set-hook status-style: %w", err)
 	}
 
+	// Enable remain-on-exit so panes survive process crashes.
+	// Dead panes show "[Exited]" and can be respawned without recreating the session.
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("tmux set-option remain-on-exit: %w", err)
+	}
+
 	// Launch Claude in both windows, wait for readiness, and inject nudges.
 	for _, w := range []struct {
 		role, nudge string
@@ -500,6 +506,16 @@ func (s *TmuxSession) Kill() error {
 	return nil
 }
 
+// RespawnPane kills all processes in a pane and starts a new command.
+// Used for crash recovery — restarts Claude in-place without recreating the session.
+func (s *TmuxSession) RespawnPane(paneTarget, command string) error {
+	_, err := s.Runner.Run("tmux", "respawn-pane", "-k", "-t", paneTarget, command)
+	if err != nil {
+		return fmt.Errorf("tmux respawn-pane: %w", err)
+	}
+	return nil
+}
+
 // ListPanes returns the pane indices for the named session.
 func (s *TmuxSession) ListPanes() ([]string, error) {
 	out, err := s.Runner.Run("tmux", "list-panes", "-t", s.Name, "-F", "#{pane_index}")
@@ -561,11 +577,15 @@ func (s *TmuxSession) RegisterPaneDiedHooks() error {
 }
 
 // buildPaneDiedHook constructs a tmux hook command for pane-died events.
-// The hook sends an escalation message to the surviving pane. The [ORO-DISPATCH]
+// The hook respawns the dead pane with the same exec-env command (crash recovery),
+// then sends an escalation message to the surviving pane. The [ORO-DISPATCH]
 // prefix in the message serves as the logging mechanism — the manager receives
 // and can act on the crash notification. Since the dying pane triggers the hook,
 // the message goes to the other pane (architect→manager or manager→architect).
 func buildPaneDiedHook(dyingRole, sessionName string) string {
+	respawnCmd := execEnvCmd(dyingRole)
+	dyingPane := sessionName + ":" + dyingRole
+
 	// Determine the surviving role and pane
 	survivingRole := "manager"
 	if dyingRole == "manager" {
@@ -574,12 +594,14 @@ func buildPaneDiedHook(dyingRole, sessionName string) string {
 	survivingPane := sessionName + ":" + survivingRole
 
 	// Build an escalation-style message for the surviving pane
-	escalationMsg := fmt.Sprintf("[ORO-DISPATCH] PANE_DIED: %s pane crashed — oro swarm compromised.", dyingRole)
+	escalationMsg := fmt.Sprintf("[ORO-DISPATCH] PANE_RESPAWNED: %s pane crashed and was respawned.", dyingRole)
 
-	// Use tmux send-keys with set-buffer/paste-buffer for reliable delivery (like TmuxEscalator)
+	// Respawn the dead pane with the same command, plus notify surviving pane
 	// Note: escapeForShell already wraps output in single quotes, so we use %s not '%s'
 	hook := fmt.Sprintf(
-		"run-shell \"tmux set-buffer -b oro-pane-died %s; tmux paste-buffer -b oro-pane-died -t %s -d; tmux send-keys -t %s Enter\"",
+		"run-shell \"tmux respawn-pane -k -t %s %s; tmux set-buffer -b oro-pane-died %s; tmux paste-buffer -b oro-pane-died -t %s -d; tmux send-keys -t %s Enter\"",
+		dyingPane,
+		escapeForShell(respawnCmd),
 		escapeForShell(sanitizeForTmuxHook(escalationMsg)),
 		survivingPane,
 		survivingPane,

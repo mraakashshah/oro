@@ -1293,9 +1293,12 @@ func TestPaneDiedHooks(t *testing.T) {
 	t.Run("buildPaneDiedHook generates valid hook command", func(t *testing.T) {
 		hook := buildPaneDiedHook("architect", "oro")
 
-		// Hook should contain run-shell, set-buffer, paste-buffer, and reference to manager pane
+		// Hook should contain run-shell, respawn-pane, set-buffer, paste-buffer, and reference to manager pane
 		if !strings.Contains(hook, "run-shell") {
 			t.Errorf("hook should use run-shell, got: %s", hook)
+		}
+		if !strings.Contains(hook, "respawn-pane") {
+			t.Errorf("hook should use respawn-pane for crash recovery, got: %s", hook)
 		}
 		if !strings.Contains(hook, "set-buffer") {
 			t.Errorf("hook should use set-buffer, got: %s", hook)
@@ -1306,8 +1309,8 @@ func TestPaneDiedHooks(t *testing.T) {
 		if !strings.Contains(hook, "oro:manager") {
 			t.Errorf("hook should reference surviving manager pane, got: %s", hook)
 		}
-		if !strings.Contains(hook, "PANE_DIED") {
-			t.Errorf("hook should mention PANE_DIED escalation, got: %s", hook)
+		if !strings.Contains(hook, "PANE_RESPAWNED") {
+			t.Errorf("hook should mention PANE_RESPAWNED escalation, got: %s", hook)
 		}
 		if !strings.Contains(hook, "architect") {
 			t.Errorf("hook should mention dying architect role, got: %s", hook)
@@ -1429,23 +1432,23 @@ func TestBuildPaneDiedHookContent(t *testing.T) {
 	t.Run("hook message format matches escalation pattern", func(t *testing.T) {
 		hook := buildPaneDiedHook("architect", "oro")
 
-		// Message should start with [ORO-DISPATCH] and include PANE_DIED
-		if !strings.Contains(hook, "[ORO-DISPATCH] PANE_DIED") {
-			t.Errorf("hook message should follow escalation format, got: %s", hook)
+		// Message should start with [ORO-DISPATCH] and include PANE_RESPAWNED
+		if !strings.Contains(hook, "[ORO-DISPATCH] PANE_RESPAWNED") {
+			t.Errorf("hook message should follow escalation format with PANE_RESPAWNED, got: %s", hook)
 		}
 	})
 
 	t.Run("hook for architect references architect as dying role", func(t *testing.T) {
 		hook := buildPaneDiedHook("architect", "oro")
-		if !strings.Contains(hook, "architect pane crashed") {
-			t.Errorf("architect hook should mention architect pane, got: %s", hook)
+		if !strings.Contains(hook, "architect pane crashed and was respawned") {
+			t.Errorf("architect hook should mention architect pane crashed and was respawned, got: %s", hook)
 		}
 	})
 
 	t.Run("hook for manager references manager as dying role", func(t *testing.T) {
 		hook := buildPaneDiedHook("manager", "oro")
-		if !strings.Contains(hook, "manager pane crashed") {
-			t.Errorf("manager hook should mention manager pane, got: %s", hook)
+		if !strings.Contains(hook, "manager pane crashed and was respawned") {
+			t.Errorf("manager hook should mention manager pane crashed and was respawned, got: %s", hook)
 		}
 	})
 
@@ -1731,6 +1734,66 @@ func TestKillWithProcessCleanup(t *testing.T) {
 		}
 		if !killedSession {
 			t.Error("expected kill-session even when PID lookup fails")
+		}
+	})
+}
+
+func TestRemainOnExit(t *testing.T) {
+	t.Run("Create sets remain-on-exit=on", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		// Verify remain-on-exit was set
+		var found bool
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "remain-on-exit") && strings.Contains(joined, "on") {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Error("expected set-option remain-on-exit on to be called during Create")
+		}
+	})
+
+	t.Run("pane-died hook calls respawn-pane", func(t *testing.T) {
+		hook := buildPaneDiedHook("architect", "oro")
+		if !strings.Contains(hook, "respawn-pane") {
+			t.Errorf("pane-died hook should use respawn-pane for crash recovery, got: %s", hook)
+		}
+		if !strings.Contains(hook, "oro:architect") {
+			t.Errorf("hook should respawn the dying architect pane, got: %s", hook)
+		}
+	})
+
+	t.Run("RespawnPane calls tmux respawn-pane", func(t *testing.T) {
+		fake := newFakeCmd()
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.RespawnPane("oro:architect", "exec env ORO_ROLE=architect claude")
+		if err != nil {
+			t.Fatalf("RespawnPane returned error: %v", err)
+		}
+
+		var found bool
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "respawn-pane" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "-k") && strings.Contains(joined, "oro:architect") {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Error("expected tmux respawn-pane -k to be called")
 		}
 	})
 }
