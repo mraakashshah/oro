@@ -146,6 +146,12 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		return fmt.Errorf("tmux set-hook status-style: %w", err)
 	}
 
+	// Add role labels and session info to status bar.
+	if err := s.configureStatusLabels(); err != nil {
+		_ = s.Kill()
+		return err
+	}
+
 	// Enable remain-on-exit so panes survive process crashes.
 	// Dead panes show "[Exited]" and can be respawned without recreating the session.
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "remain-on-exit", "on"); err != nil {
@@ -181,6 +187,23 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to register pane-died hooks: %v\n", err)
 	}
 
+	return nil
+}
+
+// configureStatusLabels sets status-left (role label) and status-right (session info)
+// on the tmux session. Called during Create after the status-style/hook setup.
+func (s *TmuxSession) configureStatusLabels() error {
+	statusLeft := `#[bold] #{window_name} `
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-left", statusLeft); err != nil {
+		return fmt.Errorf("tmux set-option status-left: %w", err)
+	}
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-left-length", "20"); err != nil {
+		return fmt.Errorf("tmux set-option status-left-length: %w", err)
+	}
+	statusRight := `#[default] oro | %H:%M`
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-right", statusRight); err != nil {
+		return fmt.Errorf("tmux set-option status-right: %w", err)
+	}
 	return nil
 }
 

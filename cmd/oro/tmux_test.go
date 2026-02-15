@@ -1766,6 +1766,44 @@ func TestKillWithProcessCleanup(t *testing.T) {
 	})
 }
 
+func TestStatusBarLabels(t *testing.T) {
+	t.Run("Create sets status-left with window name", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		var foundStatusLeft, foundStatusLeftLen, foundStatusRight bool
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "status-left-length") && strings.Contains(joined, "20") {
+					foundStatusLeftLen = true
+				} else if strings.Contains(joined, "status-left") && strings.Contains(joined, "window_name") {
+					foundStatusLeft = true
+				}
+				if strings.Contains(joined, "status-right") && strings.Contains(joined, "oro") {
+					foundStatusRight = true
+				}
+			}
+		}
+		if !foundStatusLeft {
+			t.Error("expected set-option status-left containing #{window_name}")
+		}
+		if !foundStatusLeftLen {
+			t.Error("expected set-option status-left-length 20")
+		}
+		if !foundStatusRight {
+			t.Error("expected set-option status-right containing 'oro'")
+		}
+	})
+}
+
 func TestRemainOnExit(t *testing.T) {
 	t.Run("Create sets remain-on-exit=on", func(t *testing.T) {
 		fake := newFakeCmd()
