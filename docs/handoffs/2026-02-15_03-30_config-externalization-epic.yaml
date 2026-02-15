@@ -1,0 +1,77 @@
+---
+date: 2026-02-15
+status: complete
+---
+
+goal: >
+  Design and decompose oro config externalization. Produced approved design
+  spec (oro-jzpq) and implementation epic with 7 child beads (oro-etu3).
+
+now: >
+  Pick up implementation. 4 beads are ready in parallel: oro-etu3.1 (go:embed),
+  oro-etu3.3 (execEnvCmd flags), oro-etu3.4 (ClaudeSpawner flags),
+  oro-etu3.6 (hook path resolution). Use dispatching-parallel-agents skill.
+
+test: |
+  go test -race ./cmd/oro/... ./pkg/worker/...
+
+done_this_session:
+  - task: "Design spec for config externalization (oro-jzpq)"
+    files: [docs/plans/2026-02-15-config-externalization-design.md]
+    details: >
+      387 lines. Covers directory structure, agent launch, hook path resolution,
+      oro init flow, 3-phase migration plan, worktree access, what stays vs moves.
+      Premortem resolved with mitigations. User approved all 7 sections.
+
+  - task: "Implementation epic decomposition (oro-etu3)"
+    details: >
+      7 child beads with Rule-of-Five acceptance criteria, dependency graph,
+      and size-checked estimates. Total ~41 minutes estimated work.
+
+  - task: "Filed P4 for beads externalization (oro-6v9z)"
+    details: >
+      Descoped from oro-jzpq. Depends on oro-etu3 completion.
+
+decisions:
+  - approach_a_chosen: >
+      --add-dir + --settings injection at launch time. Rejected ~/.claude/ user-wide
+      approach (less isolated, name collision risk with project's own .claude/).
+  - beads_stay_local: >
+      .beads/ stays in target repo for now. Descoped to oro-6v9z (P4).
+      bd CLI auto-discovery depends on CWD-based .beads/ resolution.
+  - fallback_first: >
+      All hook path changes include fallback to current relative paths.
+      This means old oro start, new oro start, and manual claude all work.
+  - gitignored_anchor: >
+      Target repo gets gitignored .oro/config.yaml (3 lines). Everything else
+      lives under ~/.oro/.
+
+findings:
+  - claude_code_no_parent_walk: >
+      Claude Code does NOT walk parent directories for .claude/settings.json
+      (GitHub issue #12962 exists but unimplemented). Gas Town parent-dir
+      approach doesn't work.
+  - add_dir_discovers_skills: >
+      --add-dir discovers .claude/skills/ and .claude/commands/ from additional dirs.
+      With CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1, also loads CLAUDE.md.
+  - settings_additive_merge: >
+      --settings does additive merge over project settings. Hook arrays are appended.
+
+next:
+  - "Execute 4 parallel beads: oro-etu3.1, .3, .4, .6"
+  - "After .1 completes, unblocks .2 (oro init)"
+  - "After .2, .3, .4 complete, unblocks .5 (oro start config)"
+  - "After .5 and .6 complete, unblocks .7 (migration)"
+
+files:
+  created:
+    - docs/plans/2026-02-15-config-externalization-design.md
+    - docs/handoffs/2026-02-15_03-30_config-externalization-epic.yaml
+  modified:
+    - .beads/issues.jsonl
+
+beads:
+  completed: [oro-jzpq]
+  in_progress: []
+  remaining: [oro-etu3.1, oro-etu3.2, oro-etu3.3, oro-etu3.4, oro-etu3.5, oro-etu3.6, oro-etu3.7]
+  epic: oro-etu3
