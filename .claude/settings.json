@@ -91,7 +91,7 @@
 					},
 					{
 						"type": "command",
-						"command": "python3 .claude/hooks/notify_manager_on_bead_create.py"
+						"command": "python3 .claude/hooks/bd_create_notifier.py"
 					}
 				]
 			},

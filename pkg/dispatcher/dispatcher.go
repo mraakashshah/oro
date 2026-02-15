@@ -1460,9 +1460,6 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	}
 }
 
-// autoScale increases targetWorkers when assignable beads exist but no idle
-// workers are available. Scales up to MaxWorkers, then calls reconcileScale
-// to spawn new worker processes.
 // filterAssignable returns beads eligible for assignment: excludes epics and
 // beads with recent worktree creation failures (within cooldown window).
 func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead {
