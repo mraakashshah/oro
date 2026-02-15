@@ -1,0 +1,94 @@
+---
+date: 2026-02-15
+status: complete
+---
+
+goal: >
+  Shipped 6 beads in parallel: 5 dispatched simultaneously via worktree-isolated
+  agents (ubwz, 9lhw, uzqp, rbmj, el4i), plus 1 flaky test fix (4p65).
+
+now: >
+  Pick up remaining P1 work: oro-etu3.2 (oro init command) is the last blocker
+  for the config externalization epic (oro-etu3). oro-9lhw.1 is a continuation
+  bead that may be closable since oro-9lhw was completed this session.
+
+test: make test
+
+done_this_session:
+  - task: "Fix tmux green text (oro-ubwz)"
+    files: [cmd/oro/tmux.go, cmd/oro/tmux_test.go]
+    details: >
+      Removed alternate-screen off from configureSessionOptions(). Ink TUI
+      expects alternate screen for proper ANSI color rendering. Test updated
+      to assert alternate-screen off is NOT set.
+
+  - task: "Daemon learning extraction (oro-9lhw)"
+    files: [pkg/dispatcher/extractor.go, pkg/dispatcher/extractor_test.go, pkg/dispatcher/dispatcher.go]
+    details: >
+      New ExtractLearnings() pure function with 10 regex patterns (I learned,
+      Note, Gotcha, TIL, etc). Wired into dispatcher mergeAndComplete via
+      safeGo (async, non-blocking). 4 test functions, content-level dedup.
+
+  - task: "Isolate history per role (oro-uzqp)"
+    files: [cmd/oro/tmux.go, cmd/oro/tmux_test.go]
+    details: >
+      Per-role CLAUDE_CONFIG_DIR at ~/.claude/roles/<role>/. Shared config
+      symlinked from base dir, history.jsonl excluded. 16 new test cases.
+      Functions: claudeConfigBase(), roleConfigDir(), setupRoleConfigDir().
+
+  - task: "Add oro help command (oro-rbmj)"
+    files: [cmd/oro/cmd_help.go, cmd/oro/cmd_help_test.go, cmd/oro/root.go]
+    details: >
+      Categorized help output: Lifecycle, Monitoring, Memory, Control, Search.
+      Falls through to cobra per-command help for `oro help <cmd>`.
+
+  - task: "Wire learning synthesis triggers (oro-el4i)"
+    files:
+      - .claude/hooks/learning_reminder.py
+      - .claude/hooks/test_learning_reminder.py
+      - .claude/skills/context-checkpoint/SKILL.md
+      - .claude/skills/create-handoff/SKILL.md
+    details: >
+      Wired all 3 triggers to use learning_analysis.py functions.
+      Trigger 1 (context-checkpoint): scan + frequency analysis.
+      Trigger 2 (create-handoff): cross_reference_docs + learnings YAML field.
+      Trigger 3 (learning_reminder.py): codification proposals at 3+ frequency.
+
+  - task: "Fix flaky TestEnsureSearchHook (oro-4p65)"
+    files: [cmd/oro/preflight_test.go]
+    details: >
+      Root cause: test set binary mtime to 24h ago but source files were
+      untouched for days (Feb 8-10). isStale() returned false, build was
+      skipped, 3-byte dummy stayed. Fix: use Unix epoch instead of relative
+      24h offset.
+
+decisions:
+  - parallel_dispatch: >
+      Used dispatching-parallel-agents skill with 5 worktrees. Merged in
+      conflict-risk order: el4i (Python only) -> rbmj (new files) ->
+      9lhw (new Go files) -> ubwz (small tmux.go change) -> uzqp (larger
+      tmux.go change). Zero conflicts.
+  - uzqp_approach: >
+      Used CLAUDE_CONFIG_DIR env var to isolate history per role. Symlinks
+      shared config items (settings, auth, projects, rules) but excludes
+      history.jsonl and roles/ directory.
+
+worked:
+  - Parallel 5-agent dispatch with worktree isolation — zero conflicts
+  - Merge ordering by conflict risk (Python-only first, overlapping files last)
+  - Epoch time for stale binary tests — immune to source file age
+
+beads:
+  completed: [oro-ubwz, oro-9lhw, oro-uzqp, oro-rbmj, oro-el4i, oro-4p65]
+  remaining:
+    - oro-etu3.2 (P1, oro init command — last epic blocker)
+    - oro-9lhw.1 (P1, continuation bead — may be closable)
+    - oro-vii8 (P2, oro status dashboard)
+    - oro-0x52 (P3, README)
+    - oro-tlq3 (P3, verify oro dash)
+  epic: oro-etu3
+
+next:
+  - Close oro-9lhw.1 if parent oro-9lhw work is sufficient
+  - Implement oro-etu3.2 (oro init command) to complete the config externalization epic
+  - Consider oro-vii8 (status dashboard) as next P2 target
