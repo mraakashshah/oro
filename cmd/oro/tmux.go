@@ -217,11 +217,9 @@ func (s *TmuxSession) configureSessionOptions() error {
 		return fmt.Errorf("tmux set-option remain-on-exit: %w", err)
 	}
 
-	// Enable scrollback: disable alternate screen so Claude output flows into
-	// tmux's scrollback buffer, and set generous history limit.
-	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "alternate-screen", "off"); err != nil {
-		return fmt.Errorf("tmux set-option alternate-screen: %w", err)
-	}
+	// Set generous scrollback history limit.
+	// NOTE: alternate-screen is intentionally left at default (on) so that
+	// TUI apps like Ink (used by Claude Code) render colors correctly.
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "history-limit", "50000"); err != nil {
 		return fmt.Errorf("tmux set-option history-limit: %w", err)
 	}

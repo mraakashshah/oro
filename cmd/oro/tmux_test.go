@@ -1908,7 +1908,7 @@ func TestStatusBarLabels(t *testing.T) {
 }
 
 func TestScrollbackConfiguration(t *testing.T) {
-	t.Run("Create sets alternate-screen off and history-limit", func(t *testing.T) {
+	t.Run("Create sets history-limit and does not set alternate-screen off", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
@@ -1931,8 +1931,8 @@ func TestScrollbackConfiguration(t *testing.T) {
 				}
 			}
 		}
-		if !foundAlternateScreen {
-			t.Error("expected set-option alternate-screen off to be called during Create")
+		if foundAlternateScreen {
+			t.Error("alternate-screen off should NOT be set (breaks Ink TUI color rendering)")
 		}
 		if !foundHistoryLimit {
 			t.Error("expected set-option history-limit 50000 to be called during Create")
