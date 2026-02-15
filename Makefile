@@ -1,4 +1,4 @@
-.PHONY: build build-search-hook install test lint fmt vet gate clean stage-assets clean-assets
+.PHONY: build build-dash build-search-hook install test lint fmt vet gate clean stage-assets clean-assets
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -24,6 +24,9 @@ build: stage-assets
 install: stage-assets
 	go install $(LDFLAGS) ./cmd/oro
 	@$(MAKE) clean-assets
+
+build-dash:
+	go build $(LDFLAGS) -o oro-dash ./cmd/oro-dash
 
 build-search-hook:
 	@mkdir -p .claude/hooks
