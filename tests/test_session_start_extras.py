@@ -2,13 +2,15 @@
 
 import importlib.util
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-# Load the hook module directly from .claude/hooks/ (not a package)
+# Load the hook module from ORO_HOME/hooks/ (externalized config)
+_oro_home = Path(os.environ.get("ORO_HOME", Path.home() / ".oro"))
 _spec = importlib.util.spec_from_file_location(
     "session_start_extras",
-    Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "session_start_extras.py",
+    _oro_home / "hooks" / "session_start_extras.py",
 )
 _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
@@ -380,9 +382,8 @@ class TestRoleBeacon:
         assert result == ""
 
     def test_real_beacon_files_exist(self):
-        """Verify the actual beacon files shipped with the repo are loadable."""
-        repo_root = Path(__file__).resolve().parent.parent
-        beacons_dir = repo_root / ".claude" / "hooks" / "beacons"
+        """Verify the actual beacon files in ORO_HOME are loadable."""
+        beacons_dir = _oro_home / "beacons"
 
         architect = role_beacon("architect", beacons_dir=str(beacons_dir))
         assert len(architect) > 500, "architect beacon should be substantial"

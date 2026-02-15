@@ -2,13 +2,15 @@
 
 import importlib.util
 import json
+import os
 import tempfile
 from pathlib import Path
 
-# Load the hook module directly from .claude/hooks/ (not a package)
+# Load the hook module from ORO_HOME/hooks/ (externalized config)
+_oro_home = Path(os.environ.get("ORO_HOME", Path.home() / ".oro"))
 _spec = importlib.util.spec_from_file_location(
     "inject_context_usage",
-    Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "inject_context_usage.py",
+    _oro_home / "hooks" / "inject_context_usage.py",
 )
 _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
