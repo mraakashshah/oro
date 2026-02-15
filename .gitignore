@@ -27,6 +27,7 @@ docs/alternative-architecture-analysis/reference/
 coverage.out
 __pycache__/
 .claude/hooks/oro-search-hook
+cmd/oro/_assets/
 
 # Local config
 .claude/settings.local.json
