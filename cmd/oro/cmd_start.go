@@ -94,7 +94,7 @@ func isDetached(flag bool) bool {
 // 3. Create tmux session with both beacons
 // 4. Print status
 // 5. Attach interactively (or print instructions if detached)
-func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
+func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
 	pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
 	if err != nil {
 		return fmt.Errorf("get pid path: %w", err)
@@ -128,7 +128,7 @@ func runFullStart(w io.Writer, workers int, model string, spawner DaemonSpawner,
 	}
 
 	// 3. Create tmux session with short nudges (full role context injected by SessionStart hook).
-	sess := &TmuxSession{Name: "oro", Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
+	sess := &TmuxSession{Name: "oro", Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
 	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
 		return fmt.Errorf("create tmux session: %w", err)
 	}
@@ -221,7 +221,27 @@ func newStartCmd() *cobra.Command {
 				return runDaemonOnly(cmd, pidPath, workers)
 			}
 
-			return runFullStart(cmd.OutOrStdout(), workers, model, &ExecDaemonSpawner{}, &ExecRunner{}, socketPollTimeout, nil, 0, isDetached(detach))
+			// Read project identity from .oro/config.yaml (if present).
+			project, err := readProjectConfig(".")
+			if err != nil {
+				return fmt.Errorf("read project config: %w", err)
+			}
+
+			// Set ORO_PROJECT and ORO_HOME for child processes (daemon inherits env).
+			if project != "" {
+				if err := os.Setenv("ORO_PROJECT", project); err != nil {
+					return fmt.Errorf("set ORO_PROJECT: %w", err)
+				}
+			}
+			oroHome, err := resolveOroHome()
+			if err != nil {
+				return err
+			}
+			if err := os.Setenv("ORO_HOME", oroHome); err != nil {
+				return fmt.Errorf("set ORO_HOME: %w", err)
+			}
+
+			return runFullStart(cmd.OutOrStdout(), workers, model, project, &ExecDaemonSpawner{}, &ExecRunner{}, socketPollTimeout, nil, 0, isDetached(detach))
 		},
 	}
 
@@ -337,6 +357,26 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	}
 	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath))
 	return d, db, nil
+}
+
+// readProjectConfig reads the project name from .oro/config.yaml in the given directory.
+// Returns empty string (no error) if the file doesn't exist (backward compat).
+func readProjectConfig(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, ".oro", "config.yaml")) //nolint:gosec // path from trusted dir
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read .oro/config.yaml: %w", err)
+	}
+	// Simple line-based parsing — avoid YAML dependency for one field.
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "project:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "project:")), nil
+		}
+	}
+	return "", nil
 }
 
 // sendStartDirective connects to the dispatcher UDS and sends a "start"
