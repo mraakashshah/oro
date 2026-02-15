@@ -16,6 +16,9 @@ yap/
 .DS_Store
 Thumbs.db
 
+# Beads (local-only, not tracked in git)
+.beads/
+
 # bv (beads viewer) local config and caches
 .bv/
 
