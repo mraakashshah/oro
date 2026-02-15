@@ -12,6 +12,109 @@ Quality is not optional. Every bead goes through TDD (red-green-refactor), an au
 
 Memory persists across sessions. Workers emit learnings during execution, the dispatcher extracts patterns from logs, and a FTS5-backed memory store surfaces relevant context to future workers. Decisions, gotchas, and patterns accumulate over time — the swarm gets smarter as it works.
 
+## How Oro Creates Software
+
+Oro enforces a disciplined pipeline from idea to merged code. Every phase has a specific purpose, and no phase can be skipped — the system is designed so that cutting corners is harder than doing it right.
+
+```
+ Idea
+  │
+  ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  1. BRAINSTORM                                          │
+ │  Research prior art in codebase and docs. Explore 2-3   │
+ │  approaches with trade-offs. One question at a time.    │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  2. PREMORTEM                                           │
+ │  Stress-test every design decision before committing.   │
+ │  Tigers (likely + severe), elephants (ignored obvious    │
+ │  problems), paper tigers (fears that aren't real).      │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  3. SPEC                                                │
+ │  Write validated design to docs/plans/. Includes        │
+ │  resolved premortems, architecture, data flow, error    │
+ │  handling, and testing strategy.                        │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  4. PLAN                                                │
+ │  Break spec into bite-sized implementation steps        │
+ │  (2-5 min each). Exact file paths, code snippets,      │
+ │  review checkpoints between tasks.                      │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  5. BEAD CRAFT                                          │
+ │  Decompose plan into beads — atomic work items with     │
+ │  testable acceptance criteria, dependencies, and        │
+ │  priority. Each bead answers: "how do I know this is    │
+ │  done?" with a runnable test command.                   │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  6. OBSERVE                                             │
+ │  Before touching code, check actual system state.       │
+ │  Read real outputs, run real commands. Mark confidence:  │
+ │  VERIFIED / INFERRED / UNCERTAIN. No assumptions.       │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  7. TDD (Red → Green → Refactor)                        │
+ │  Write failing test from acceptance criteria. Watch it   │
+ │  fail for the right reason. Write minimal code to pass.  │
+ │  Refactor while green. No production code without a     │
+ │  failing test first.                                    │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  8. QUALITY GATE (19 checks)                            │
+ │  go test -race · golangci-lint · gofumpt · goimports ·  │
+ │  go vet · govulncheck · shellcheck · ruff · pyright ·   │
+ │  markdownlint · yamllint · biome. All must pass.        │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  9. CODE REVIEW                                         │
+ │  Ops agent reviews against acceptance criteria and      │
+ │  spec. Feedback triaged as Critical / Important /       │
+ │  Minor. Critical blocks merge. Up to 2 review cycles    │
+ │  before escalation to Manager.                          │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  10. VERIFY                                             │
+ │  Run verification fresh. Read output. Check exit code.  │
+ │  Evidence-based assertions only — no "should work."     │
+ └─────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │  11. MERGE + PUSH                                       │
+ │  Rebase onto main. Fast-forward merge (linear history). │
+ │  Push. Clean up worktree and branch. Document learnings.│
+ └─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+                    Code on main
+```
+
+This pipeline is encoded as skills — reusable process definitions that agents follow. The architect orchestrates the early phases (brainstorm through bead craft), while workers execute the later phases (observe through merge) autonomously. The dispatcher enforces the quality gate and review gates mechanically — a worker cannot merge without passing both.
+
+The key insight: autonomous agents are only as trustworthy as their process. Oro doesn't trust agents to "do the right thing" — it structures the work so that the right thing is the only path forward.
+
 ## Architecture
 
 ```
