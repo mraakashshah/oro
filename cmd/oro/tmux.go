@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +63,7 @@ func getSessionNudgeLock(target string) *sync.Mutex {
 // TmuxSession manages a tmux session with the Oro layout.
 type TmuxSession struct {
 	Name          string
+	Project       string // optional project name; when set, adds --add-dir/--settings to Claude launch
 	Runner        CmdRunner
 	Sleeper       func(time.Duration) // optional; overrides time.Sleep for testing
 	ReadyTimeout  time.Duration       // timeout for Claude readiness polling; 0 means defaultReadyTimeout
@@ -98,8 +100,21 @@ func (s *TmuxSession) isHealthy() bool {
 // execEnvCmd builds an exec-env command that replaces the shell with Claude,
 // setting ORO_ROLE, BD_ACTOR, and GIT_AUTHOR_NAME for the given role.
 // Uses exec to eliminate the shell phase entirely — Claude IS the initial process.
-func execEnvCmd(role string) string {
-	return fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s claude", role, role, role)
+// When project is non-empty, adds --add-dir and --settings flags pointing to
+// the project's ORO_HOME directory and settings.json file.
+func execEnvCmd(role, project string) string {
+	base := fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s", role, role, role)
+	if project == "" {
+		return base + " claude"
+	}
+	oroHome := os.Getenv("ORO_HOME")
+	if oroHome == "" {
+		home, _ := os.UserHomeDir()
+		oroHome = filepath.Join(home, ".oro")
+	}
+	settingsPath := filepath.Join(oroHome, "projects", project, "settings.json")
+	return fmt.Sprintf("%s ORO_PROJECT=%s CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 claude --add-dir %s --settings %s",
+		base, project, oroHome, settingsPath)
 }
 
 // Create creates the Oro tmux session with two windows (architect + manager).
@@ -119,12 +134,12 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 
 	// Create a detached session with first window named "architect".
 	// The exec-env command is the last arg — Claude IS the initial process (no shell phase).
-	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", "architect", execEnvCmd("architect")); err != nil {
+	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", "architect", execEnvCmd("architect", s.Project)); err != nil {
 		return fmt.Errorf("tmux new-session: %w", err)
 	}
 
 	// Create second window named "manager".
-	if _, err := s.Runner.Run("tmux", "new-window", "-t", s.Name, "-n", "manager", execEnvCmd("manager")); err != nil {
+	if _, err := s.Runner.Run("tmux", "new-window", "-t", s.Name, "-n", "manager", execEnvCmd("manager", s.Project)); err != nil {
 		_ = s.Kill() // cleanup on partial creation failure
 		return fmt.Errorf("tmux new-window: %w", err)
 	}
@@ -599,14 +614,14 @@ func (s *TmuxSession) AttachInteractive() error {
 func (s *TmuxSession) RegisterPaneDiedHooks() error {
 	// Register hook for architect pane
 	architectPane := s.Name + ":architect"
-	architectHook := buildPaneDiedHook("architect", s.Name)
+	architectHook := buildPaneDiedHook("architect", s.Name, s.Project)
 	if _, err := s.Runner.Run("tmux", "set-hook", "-t", architectPane, "pane-died", architectHook); err != nil {
 		return fmt.Errorf("register pane-died hook for architect: %w", err)
 	}
 
 	// Register hook for manager pane
 	managerPane := s.Name + ":manager"
-	managerHook := buildPaneDiedHook("manager", s.Name)
+	managerHook := buildPaneDiedHook("manager", s.Name, s.Project)
 	if _, err := s.Runner.Run("tmux", "set-hook", "-t", managerPane, "pane-died", managerHook); err != nil {
 		return fmt.Errorf("register pane-died hook for manager: %w", err)
 	}
@@ -620,8 +635,8 @@ func (s *TmuxSession) RegisterPaneDiedHooks() error {
 // prefix in the message serves as the logging mechanism — the manager receives
 // and can act on the crash notification. Since the dying pane triggers the hook,
 // the message goes to the other pane (architect→manager or manager→architect).
-func buildPaneDiedHook(dyingRole, sessionName string) string {
-	respawnCmd := execEnvCmd(dyingRole)
+func buildPaneDiedHook(dyingRole, sessionName, project string) string {
+	respawnCmd := execEnvCmd(dyingRole, project)
 	dyingPane := sessionName + ":" + dyingRole
 
 	// Determine the surviving role and pane

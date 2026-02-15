@@ -737,7 +737,7 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 
 func TestExecEnvCmd(t *testing.T) {
 	t.Run("architect role sets all three env vars", func(t *testing.T) {
-		cmd := execEnvCmd("architect")
+		cmd := execEnvCmd("architect", "")
 		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
 			if !strings.Contains(cmd, envVar) {
 				t.Errorf("expected execEnvCmd to contain %s, got: %s", envVar, cmd)
@@ -749,7 +749,7 @@ func TestExecEnvCmd(t *testing.T) {
 	})
 
 	t.Run("manager role sets all three env vars", func(t *testing.T) {
-		cmd := execEnvCmd("manager")
+		cmd := execEnvCmd("manager", "")
 		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
 			if !strings.Contains(cmd, envVar) {
 				t.Errorf("expected execEnvCmd to contain %s, got: %s", envVar, cmd)
@@ -761,7 +761,7 @@ func TestExecEnvCmd(t *testing.T) {
 	})
 
 	t.Run("uses exec env (not export)", func(t *testing.T) {
-		cmd := execEnvCmd("worker")
+		cmd := execEnvCmd("worker", "")
 		if !strings.Contains(cmd, "exec env") {
 			t.Errorf("expected execEnvCmd to use 'exec env', got: %s", cmd)
 		}
@@ -771,7 +771,7 @@ func TestExecEnvCmd(t *testing.T) {
 	})
 
 	t.Run("does not include --session-id", func(t *testing.T) {
-		cmd := execEnvCmd("architect")
+		cmd := execEnvCmd("architect", "")
 		if strings.Contains(cmd, "--session-id") {
 			t.Errorf("expected execEnvCmd to NOT contain --session-id, got: %s", cmd)
 		}
@@ -784,9 +784,112 @@ func TestExecEnvCmd(t *testing.T) {
 	})
 
 	t.Run("does not include --ide", func(t *testing.T) {
-		cmd := execEnvCmd("architect")
+		cmd := execEnvCmd("architect", "")
 		if strings.Contains(cmd, "--ide") {
 			t.Errorf("expected execEnvCmd to NOT contain --ide flag, got: %s", cmd)
+		}
+	})
+}
+
+func TestExecEnvCmdWithProject(t *testing.T) {
+	t.Run("includes add-dir and settings when project is provided", func(t *testing.T) {
+		// Set ORO_HOME for deterministic test output
+		t.Setenv("ORO_HOME", "/tmp/test-oro-home")
+
+		cmd := execEnvCmd("architect", "myproject")
+
+		if !strings.Contains(cmd, "--add-dir") {
+			t.Errorf("expected --add-dir flag when project is provided, got: %s", cmd)
+		}
+		if !strings.Contains(cmd, "--settings") {
+			t.Errorf("expected --settings flag when project is provided, got: %s", cmd)
+		}
+		if !strings.Contains(cmd, "ORO_PROJECT=myproject") {
+			t.Errorf("expected ORO_PROJECT=myproject env var, got: %s", cmd)
+		}
+		if !strings.Contains(cmd, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1") {
+			t.Errorf("expected CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 env var, got: %s", cmd)
+		}
+		// --add-dir should point to ORO_HOME
+		if !strings.Contains(cmd, "--add-dir /tmp/test-oro-home") {
+			t.Errorf("expected --add-dir to point to ORO_HOME, got: %s", cmd)
+		}
+		// --settings should point to projects/<project>/settings.json
+		expectedSettings := "/tmp/test-oro-home/projects/myproject/settings.json"
+		if !strings.Contains(cmd, "--settings "+expectedSettings) {
+			t.Errorf("expected --settings %s, got: %s", expectedSettings, cmd)
+		}
+	})
+
+	t.Run("uses default ORO_HOME when env var is not set", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "")
+
+		cmd := execEnvCmd("manager", "testproj")
+
+		if !strings.Contains(cmd, "--add-dir") {
+			t.Errorf("expected --add-dir flag, got: %s", cmd)
+		}
+		if !strings.Contains(cmd, "--settings") {
+			t.Errorf("expected --settings flag, got: %s", cmd)
+		}
+		// Should fall back to ~/.oro
+		if !strings.Contains(cmd, "projects/testproj/settings.json") {
+			t.Errorf("expected settings path to include projects/testproj/settings.json, got: %s", cmd)
+		}
+	})
+
+	t.Run("still starts with exec env prefix", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "/tmp/test-oro-home")
+
+		cmd := execEnvCmd("architect", "myproject")
+
+		if !strings.HasPrefix(cmd, "exec env") {
+			t.Errorf("expected command to start with 'exec env', got: %s", cmd)
+		}
+	})
+
+	t.Run("includes role env vars when project is provided", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "/tmp/test-oro-home")
+
+		cmd := execEnvCmd("architect", "myproject")
+
+		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
+			if !strings.Contains(cmd, envVar) {
+				t.Errorf("expected %s in command, got: %s", envVar, cmd)
+			}
+		}
+	})
+}
+
+func TestExecEnvCmdBackwardCompat(t *testing.T) {
+	t.Run("empty project produces same output as before", func(t *testing.T) {
+		cmd := execEnvCmd("architect", "")
+
+		// Should end with just "claude" (no --add-dir, no --settings)
+		if strings.Contains(cmd, "--add-dir") {
+			t.Errorf("expected no --add-dir when project is empty, got: %s", cmd)
+		}
+		if strings.Contains(cmd, "--settings") {
+			t.Errorf("expected no --settings when project is empty, got: %s", cmd)
+		}
+		if strings.Contains(cmd, "ORO_PROJECT") {
+			t.Errorf("expected no ORO_PROJECT when project is empty, got: %s", cmd)
+		}
+		if strings.Contains(cmd, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD") {
+			t.Errorf("expected no CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD when project is empty, got: %s", cmd)
+		}
+		if !strings.HasSuffix(cmd, " claude") {
+			t.Errorf("expected command to end with ' claude' when project is empty, got: %s", cmd)
+		}
+	})
+
+	t.Run("all roles work with empty project", func(t *testing.T) {
+		for _, role := range []string{"architect", "manager", "worker"} {
+			cmd := execEnvCmd(role, "")
+			expected := fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s claude", role, role, role)
+			if cmd != expected {
+				t.Errorf("execEnvCmd(%q, \"\") = %q, want %q", role, cmd, expected)
+			}
 		}
 	})
 }
@@ -1209,7 +1312,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		}
 
 		// Verify exact format: exec env ORO_ROLE=<role> BD_ACTOR=<role> GIT_AUTHOR_NAME=<role> claude
-		expectedArch := execEnvCmd("architect")
+		expectedArch := execEnvCmd("architect", "")
 		if lastArg != expectedArch {
 			t.Errorf("new-session exec env command mismatch:\nwant: %s\ngot:  %s", expectedArch, lastArg)
 		}
@@ -1236,7 +1339,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		}
 
 		// Verify exact format: exec env ORO_ROLE=<role> BD_ACTOR=<role> GIT_AUTHOR_NAME=<role> claude
-		expectedMgr := execEnvCmd("manager")
+		expectedMgr := execEnvCmd("manager", "")
 		if lastArg != expectedMgr {
 			t.Errorf("new-window exec env command mismatch:\nwant: %s\ngot:  %s", expectedMgr, lastArg)
 		}
@@ -1319,7 +1422,7 @@ func TestPaneDiedHooks(t *testing.T) {
 	})
 
 	t.Run("buildPaneDiedHook generates valid hook command", func(t *testing.T) {
-		hook := buildPaneDiedHook("architect", "oro")
+		hook := buildPaneDiedHook("architect", "oro", "")
 
 		// Hook should contain run-shell, respawn-pane, set-buffer, paste-buffer, and reference to manager pane
 		if !strings.Contains(hook, "run-shell") {
@@ -1347,13 +1450,13 @@ func TestPaneDiedHooks(t *testing.T) {
 
 	t.Run("buildPaneDiedHook references correct surviving pane", func(t *testing.T) {
 		// When architect dies, message goes to manager
-		architectHook := buildPaneDiedHook("architect", "oro")
+		architectHook := buildPaneDiedHook("architect", "oro", "")
 		if !strings.Contains(architectHook, "oro:manager") {
 			t.Errorf("architect hook should send to manager, got: %s", architectHook)
 		}
 
 		// When manager dies, message goes to architect
-		managerHook := buildPaneDiedHook("manager", "oro")
+		managerHook := buildPaneDiedHook("manager", "oro", "")
 		if !strings.Contains(managerHook, "oro:architect") {
 			t.Errorf("manager hook should send to architect, got: %s", managerHook)
 		}
@@ -1442,7 +1545,7 @@ func TestPaneDiedHooks(t *testing.T) {
 
 	t.Run("pane-died hook escapes special characters", func(t *testing.T) {
 		// Test hook generation with special characters that need escaping
-		hook := buildPaneDiedHook("architect", "test-session")
+		hook := buildPaneDiedHook("architect", "test-session", "")
 
 		// Should be a valid shell command (starts with run-shell)
 		if !strings.Contains(hook, "run-shell") {
@@ -1458,7 +1561,7 @@ func TestPaneDiedHooks(t *testing.T) {
 
 func TestBuildPaneDiedHookContent(t *testing.T) {
 	t.Run("hook message format matches escalation pattern", func(t *testing.T) {
-		hook := buildPaneDiedHook("architect", "oro")
+		hook := buildPaneDiedHook("architect", "oro", "")
 
 		// Message should start with [ORO-DISPATCH] and include PANE_RESPAWNED
 		if !strings.Contains(hook, "[ORO-DISPATCH] PANE_RESPAWNED") {
@@ -1467,14 +1570,14 @@ func TestBuildPaneDiedHookContent(t *testing.T) {
 	})
 
 	t.Run("hook for architect references architect as dying role", func(t *testing.T) {
-		hook := buildPaneDiedHook("architect", "oro")
+		hook := buildPaneDiedHook("architect", "oro", "")
 		if !strings.Contains(hook, "architect pane crashed and was respawned") {
 			t.Errorf("architect hook should mention architect pane crashed and was respawned, got: %s", hook)
 		}
 	})
 
 	t.Run("hook for manager references manager as dying role", func(t *testing.T) {
-		hook := buildPaneDiedHook("manager", "oro")
+		hook := buildPaneDiedHook("manager", "oro", "")
 		if !strings.Contains(hook, "manager pane crashed and was respawned") {
 			t.Errorf("manager hook should mention manager pane crashed and was respawned, got: %s", hook)
 		}
@@ -1483,7 +1586,7 @@ func TestBuildPaneDiedHookContent(t *testing.T) {
 	t.Run("does not double-quote escapeForShell output", func(t *testing.T) {
 		// escapeForShell already wraps in single quotes ('...')
 		// The format string must not add another layer like '%s' which produces ''...''
-		hook := buildPaneDiedHook("architect", "oro")
+		hook := buildPaneDiedHook("architect", "oro", "")
 
 		// Check for the problematic pattern: ''...''. In shell, '' is an empty string,
 		// so this would leave the content unquoted and [ORO-DISPATCH] becomes a glob.
@@ -1508,7 +1611,7 @@ func TestBuildPaneDiedHookContent(t *testing.T) {
 	t.Run("paste-buffer uses -d flag consistent with TmuxEscalator pattern", func(t *testing.T) {
 		// TmuxEscalator.Escalate() uses paste-buffer with -d flag to delete the buffer after paste
 		// buildPaneDiedHook should follow the same pattern for consistency
-		hook := buildPaneDiedHook("architect", "oro")
+		hook := buildPaneDiedHook("architect", "oro", "")
 
 		// The hook should contain: paste-buffer -b oro-pane-died -t <pane> -d
 		if !strings.Contains(hook, "paste-buffer -b oro-pane-died") {
@@ -1530,7 +1633,7 @@ func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		// new-session succeeds (default: no error)
 		// new-window fails
-		fake.errs[key("tmux", "new-window", "-t", "oro", "-n", "manager", execEnvCmd("manager"))] = fmt.Errorf("new-window failed")
+		fake.errs[key("tmux", "new-window", "-t", "oro", "-n", "manager", execEnvCmd("manager", ""))] = fmt.Errorf("new-window failed")
 
 		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.Create("architect nudge", "manager nudge")
@@ -1898,7 +2001,7 @@ func TestRemainOnExit(t *testing.T) {
 	})
 
 	t.Run("pane-died hook calls respawn-pane", func(t *testing.T) {
-		hook := buildPaneDiedHook("architect", "oro")
+		hook := buildPaneDiedHook("architect", "oro", "")
 		if !strings.Contains(hook, "respawn-pane") {
 			t.Errorf("pane-died hook should use respawn-pane for crash recovery, got: %s", hook)
 		}
