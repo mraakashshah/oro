@@ -129,7 +129,7 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		return fmt.Errorf("tmux new-window: %w", err)
 	}
 
-	// Configure session options (status bar, labels, remain-on-exit, mouse, clipboard).
+	// Configure session options (status bar, labels, remain-on-exit, scrollback, mouse, clipboard).
 	if err := s.configureSessionOptions(); err != nil {
 		_ = s.Kill()
 		return err
@@ -168,9 +168,9 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 }
 
 // configureSessionOptions sets tmux session options: status bar color with
-// window-switch hook, role labels, remain-on-exit for crash recovery, mouse mode, and clipboard.
+// window-switch hook, role labels, remain-on-exit, scrollback, mouse mode, and clipboard.
 func (s *TmuxSession) configureSessionOptions() error {
-	// Set initial status bar color to architect (green) — architect is the active window after creation.
+	// Set initial status bar color to architect (green).
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-style", "bg=colour46,fg=black"); err != nil {
 		return fmt.Errorf("tmux set-option status-style: %w", err)
 	}
@@ -200,6 +200,15 @@ func (s *TmuxSession) configureSessionOptions() error {
 	// Enable remain-on-exit so panes survive process crashes.
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("tmux set-option remain-on-exit: %w", err)
+	}
+
+	// Enable scrollback: disable alternate screen so Claude output flows into
+	// tmux's scrollback buffer, and set generous history limit.
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "alternate-screen", "off"); err != nil {
+		return fmt.Errorf("tmux set-option alternate-screen: %w", err)
+	}
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "history-limit", "50000"); err != nil {
+		return fmt.Errorf("tmux set-option history-limit: %w", err)
 	}
 
 	// Enable mouse mode and clipboard integration (following Gastown pattern).
