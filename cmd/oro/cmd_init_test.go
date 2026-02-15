@@ -678,6 +678,135 @@ func TestOroInit(t *testing.T) {
 	})
 }
 
+// --- Beads symlink tests (oro-6v9z) ---
+
+func TestSetupBeadsSymlink(t *testing.T) {
+	t.Run("creates symlink from project .beads to oroHome beads dir", func(t *testing.T) {
+		projectDir := t.TempDir()
+		beadsTarget := filepath.Join(t.TempDir(), "beads")
+
+		err := setupBeadsSymlink(projectDir, beadsTarget)
+		if err != nil {
+			t.Fatalf("setupBeadsSymlink failed: %v", err)
+		}
+
+		// Target directory should exist
+		info, err := os.Stat(beadsTarget)
+		if err != nil {
+			t.Fatalf("beads target dir not created: %v", err)
+		}
+		if !info.IsDir() {
+			t.Error("beads target should be a directory")
+		}
+
+		// .beads in project should be a symlink
+		linkPath := filepath.Join(projectDir, ".beads")
+		linkTarget, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf(".beads should be a symlink: %v", err)
+		}
+		if linkTarget != beadsTarget {
+			t.Errorf("symlink target = %q, want %q", linkTarget, beadsTarget)
+		}
+	})
+
+	t.Run("idempotent when symlink already correct", func(t *testing.T) {
+		projectDir := t.TempDir()
+		beadsTarget := filepath.Join(t.TempDir(), "beads")
+
+		// First call
+		if err := setupBeadsSymlink(projectDir, beadsTarget); err != nil {
+			t.Fatalf("first call failed: %v", err)
+		}
+
+		// Put a file in the beads dir to verify it survives
+		testFile := filepath.Join(beadsTarget, "issues.jsonl")
+		if err := os.WriteFile(testFile, []byte(`{"id":"test"}`), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("write test file: %v", err)
+		}
+
+		// Second call (idempotent)
+		if err := setupBeadsSymlink(projectDir, beadsTarget); err != nil {
+			t.Fatalf("second call failed: %v", err)
+		}
+
+		// File should survive
+		if _, err := os.Stat(testFile); err != nil {
+			t.Errorf("test file should survive idempotent re-run: %v", err)
+		}
+	})
+
+	t.Run("skips when .beads is a real directory", func(t *testing.T) {
+		projectDir := t.TempDir()
+		beadsTarget := filepath.Join(t.TempDir(), "beads")
+
+		// Pre-create .beads as a real directory with data
+		realBeads := filepath.Join(projectDir, ".beads")
+		if err := os.Mkdir(realBeads, 0o750); err != nil { //nolint:gosec // test directory
+			t.Fatalf("mkdir .beads: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(realBeads, "issues.jsonl"), []byte("data"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("write file: %v", err)
+		}
+
+		// Should not error — just skip
+		if err := setupBeadsSymlink(projectDir, beadsTarget); err != nil {
+			t.Fatalf("should not error on existing real dir: %v", err)
+		}
+
+		// .beads should still be a real directory, not a symlink
+		_, err := os.Readlink(realBeads)
+		if err == nil {
+			t.Error(".beads should remain a real directory, not become a symlink")
+		}
+	})
+}
+
+func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
+	assets := testAssets()
+
+	t.Run("bootstrapProject creates beads symlink", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		// .beads should be a symlink pointing to oroHome/projects/myproject/beads
+		linkPath := filepath.Join(projectDir, ".beads")
+		linkTarget, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf(".beads should be a symlink: %v", err)
+		}
+
+		expectedTarget := filepath.Join(oroHome, "projects", "myproject", "beads")
+		if linkTarget != expectedTarget {
+			t.Errorf("symlink target = %q, want %q", linkTarget, expectedTarget)
+		}
+	})
+
+	t.Run("bootstrapProject adds .beads to gitignore", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(projectDir, ".gitignore")) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("read .gitignore: %v", err)
+		}
+
+		if !strings.Contains(string(data), ".beads") {
+			t.Errorf(".gitignore should contain .beads, got:\n%s", string(data))
+		}
+	})
+}
+
 func TestGenerateSettings(t *testing.T) {
 	data, err := generateSettings("$HOME/.oro")
 	if err != nil {

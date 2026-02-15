@@ -378,9 +378,12 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) er
 		return fmt.Errorf("create project anchor: %w", err)
 	}
 
-	// 2. Add .oro/ to .gitignore if not present.
+	// 2. Add .oro/ and .beads to .gitignore if not present.
 	if err := ensureGitignore(projectRoot, ".oro/"); err != nil {
 		return fmt.Errorf("update gitignore: %w", err)
+	}
+	if err := ensureGitignore(projectRoot, ".beads"); err != nil {
+		return fmt.Errorf("update gitignore for .beads: %w", err)
 	}
 
 	// 3. Create per-project directory structure under oroHome.
@@ -390,7 +393,13 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) er
 		return fmt.Errorf("create project dir: %w", err)
 	}
 
-	// 4. Generate settings.json (always overwrite — idempotent).
+	// 4. Set up beads symlink: .beads → oroHome/projects/<name>/beads/
+	beadsTarget := filepath.Join(projectDir, "beads")
+	if err := setupBeadsSymlink(projectRoot, beadsTarget); err != nil {
+		return fmt.Errorf("setup beads symlink: %w", err)
+	}
+
+	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
 	if err != nil {
 		return fmt.Errorf("generate settings: %w", err)
@@ -400,7 +409,7 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) er
 		return fmt.Errorf("write settings: %w", err)
 	}
 
-	// 5. Extract embedded assets to oroHome.
+	// 6. Extract embedded assets to oroHome.
 	if err := extractAssets(oroHome, assets); err != nil {
 		return fmt.Errorf("extract assets: %w", err)
 	}
@@ -466,6 +475,51 @@ func ensureGitignore(projectRoot, entry string) error {
 
 	if err := os.WriteFile(gitignorePath, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // gitignore needs to be readable
 		return fmt.Errorf("write .gitignore: %w", err)
+	}
+	return nil
+}
+
+// setupBeadsSymlink creates a beads data directory under oroHome and symlinks
+// <projectRoot>/.beads to it. This keeps beads data centralized in ~/.oro/
+// rather than polluting the target project.
+//
+// If .beads already exists as a real directory (not a symlink), it is left
+// alone to avoid data loss during migration.
+func setupBeadsSymlink(projectRoot, beadsTarget string) error {
+	// Ensure the target directory exists.
+	if err := os.MkdirAll(beadsTarget, 0o755); err != nil { //nolint:gosec // needs to be readable
+		return fmt.Errorf("create beads dir: %w", err)
+	}
+
+	linkPath := filepath.Join(projectRoot, ".beads")
+
+	// Nothing exists yet — create the symlink.
+	fi, err := os.Lstat(linkPath)
+	if err != nil {
+		if err := os.Symlink(beadsTarget, linkPath); err != nil {
+			return fmt.Errorf("create .beads symlink: %w", err)
+		}
+		return nil
+	}
+
+	// It's a real directory — don't clobber it.
+	if fi.IsDir() {
+		return nil
+	}
+
+	// It's already the correct symlink — no-op.
+	if fi.Mode()&os.ModeSymlink != 0 {
+		if target, readErr := os.Readlink(linkPath); readErr == nil && target == beadsTarget {
+			return nil
+		}
+		// Wrong target — remove stale symlink and recreate.
+		if err := os.Remove(linkPath); err != nil {
+			return fmt.Errorf("remove stale symlink: %w", err)
+		}
+	}
+
+	if err := os.Symlink(beadsTarget, linkPath); err != nil {
+		return fmt.Errorf("create .beads symlink: %w", err)
 	}
 	return nil
 }
