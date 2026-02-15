@@ -97,13 +97,87 @@ func (s *TmuxSession) isHealthy() bool {
 	return true
 }
 
+// claudeConfigBase returns the base Claude Code config directory.
+// Respects CLAUDE_CONFIG_DIR if already set, otherwise defaults to ~/.claude.
+func claudeConfigBase() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude")
+}
+
+// roleConfigDir returns the role-scoped Claude config directory path.
+// Each role gets its own directory under <base>/roles/<role>/ so that
+// input history (history.jsonl) is isolated per role.
+func roleConfigDir(base, role string) string {
+	return filepath.Join(base, "roles", role)
+}
+
+// roleHistoryExclusions lists items in the Claude config directory that should
+// NOT be symlinked into role directories. Each role gets its own copy of these.
+var roleHistoryExclusions = map[string]bool{ //nolint:gochecknoglobals // constant set
+	"history.jsonl": true, // input history — the whole point of role isolation
+	"roles":         true, // the roles directory itself (avoid recursion)
+}
+
+// setupRoleConfigDir creates a role-scoped Claude config directory and symlinks
+// shared config items from the base directory. Items in roleHistoryExclusions
+// are skipped so each role maintains its own copy (e.g., history.jsonl).
+// Idempotent: safe to call multiple times.
+func setupRoleConfigDir(baseDir, roleDir string) error {
+	if err := os.MkdirAll(roleDir, 0o750); err != nil {
+		return fmt.Errorf("create role config dir: %w", err)
+	}
+
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return fmt.Errorf("read claude config dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if roleHistoryExclusions[name] {
+			continue
+		}
+
+		linkPath := filepath.Join(roleDir, name)
+		targetPath := filepath.Join(baseDir, name)
+
+		// Skip if symlink already exists and points to the right target.
+		if existing, err := os.Readlink(linkPath); err == nil {
+			if existing == targetPath {
+				continue
+			}
+			// Points elsewhere — remove and recreate.
+			_ = os.Remove(linkPath)
+		}
+
+		// Skip if something (non-symlink) already exists at linkPath.
+		if _, err := os.Lstat(linkPath); err == nil {
+			continue
+		}
+
+		if err := os.Symlink(targetPath, linkPath); err != nil {
+			return fmt.Errorf("symlink %s -> %s: %w", linkPath, targetPath, err)
+		}
+	}
+
+	return nil
+}
+
 // execEnvCmd builds an exec-env command that replaces the shell with Claude,
-// setting ORO_ROLE, BD_ACTOR, and GIT_AUTHOR_NAME for the given role.
-// Uses exec to eliminate the shell phase entirely — Claude IS the initial process.
+// setting ORO_ROLE, BD_ACTOR, GIT_AUTHOR_NAME, and CLAUDE_CONFIG_DIR for the
+// given role. Uses exec to eliminate the shell phase entirely — Claude IS the
+// initial process. CLAUDE_CONFIG_DIR is set per role so that each role maintains
+// its own input history (history.jsonl) while sharing all other config via symlinks.
 // When project is non-empty, adds --add-dir and --settings flags pointing to
 // the project's ORO_HOME directory and settings.json file.
 func execEnvCmd(role, project string) string {
-	base := fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s", role, role, role)
+	configBase := claudeConfigBase()
+	configDir := roleConfigDir(configBase, role)
+	base := fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s CLAUDE_CONFIG_DIR=%s",
+		role, role, role, configDir)
 	if project == "" {
 		return base + " claude"
 	}
@@ -130,6 +204,16 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		}
 		// Zombie session: Claude is not running. Kill and recreate.
 		_ = s.Kill()
+	}
+
+	// Set up role-scoped Claude config directories so each role gets isolated
+	// input history (history.jsonl) while sharing all other config via symlinks.
+	configBase := claudeConfigBase()
+	for _, role := range []string{"architect", "manager"} {
+		roleDir := roleConfigDir(configBase, role)
+		if err := setupRoleConfigDir(configBase, roleDir); err != nil {
+			return fmt.Errorf("setup %s config dir: %w", role, err)
+		}
 	}
 
 	// Create a detached session with first window named "architect".

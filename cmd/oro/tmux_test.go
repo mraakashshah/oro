@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -886,10 +888,242 @@ func TestExecEnvCmdBackwardCompat(t *testing.T) {
 	t.Run("all roles work with empty project", func(t *testing.T) {
 		for _, role := range []string{"architect", "manager", "worker"} {
 			cmd := execEnvCmd(role, "")
-			expected := fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s claude", role, role, role)
-			if cmd != expected {
-				t.Errorf("execEnvCmd(%q, \"\") = %q, want %q", role, cmd, expected)
+			if !strings.HasPrefix(cmd, "exec env") {
+				t.Errorf("execEnvCmd(%q, \"\") should start with 'exec env', got: %s", role, cmd)
 			}
+			if !strings.Contains(cmd, fmt.Sprintf("ORO_ROLE=%s", role)) {
+				t.Errorf("execEnvCmd(%q, \"\") should contain ORO_ROLE=%s, got: %s", role, role, cmd)
+			}
+			if !strings.Contains(cmd, fmt.Sprintf("BD_ACTOR=%s", role)) {
+				t.Errorf("execEnvCmd(%q, \"\") should contain BD_ACTOR=%s, got: %s", role, role, cmd)
+			}
+			if !strings.Contains(cmd, fmt.Sprintf("GIT_AUTHOR_NAME=%s", role)) {
+				t.Errorf("execEnvCmd(%q, \"\") should contain GIT_AUTHOR_NAME=%s, got: %s", role, role, cmd)
+			}
+			if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+				t.Errorf("execEnvCmd(%q, \"\") should contain CLAUDE_CONFIG_DIR=, got: %s", role, cmd)
+			}
+			if !strings.HasSuffix(cmd, " claude") {
+				t.Errorf("execEnvCmd(%q, \"\") should end with ' claude', got: %s", role, cmd)
+			}
+		}
+	})
+}
+
+func TestExecEnvCmdRoleHistory(t *testing.T) {
+	t.Run("different roles get different CLAUDE_CONFIG_DIR", func(t *testing.T) {
+		archCmd := execEnvCmd("architect", "")
+		mgrCmd := execEnvCmd("manager", "")
+
+		// Extract CLAUDE_CONFIG_DIR values from both commands.
+		archDir := extractEnvValue(archCmd, "CLAUDE_CONFIG_DIR")
+		mgrDir := extractEnvValue(mgrCmd, "CLAUDE_CONFIG_DIR")
+
+		if archDir == "" {
+			t.Fatal("architect command should contain CLAUDE_CONFIG_DIR")
+		}
+		if mgrDir == "" {
+			t.Fatal("manager command should contain CLAUDE_CONFIG_DIR")
+		}
+		if archDir == mgrDir {
+			t.Errorf("architect and manager should have different CLAUDE_CONFIG_DIR, both got: %s", archDir)
+		}
+	})
+
+	t.Run("CLAUDE_CONFIG_DIR contains role name", func(t *testing.T) {
+		cmd := execEnvCmd("architect", "")
+		dir := extractEnvValue(cmd, "CLAUDE_CONFIG_DIR")
+		if !strings.Contains(dir, "architect") {
+			t.Errorf("CLAUDE_CONFIG_DIR should contain role name 'architect', got: %s", dir)
+		}
+	})
+
+	t.Run("CLAUDE_CONFIG_DIR is under claude config base", func(t *testing.T) {
+		cmd := execEnvCmd("architect", "")
+		dir := extractEnvValue(cmd, "CLAUDE_CONFIG_DIR")
+		if !strings.Contains(dir, ".claude") {
+			t.Errorf("CLAUDE_CONFIG_DIR should be under .claude directory, got: %s", dir)
+		}
+		if !strings.Contains(dir, "roles") {
+			t.Errorf("CLAUDE_CONFIG_DIR should be under roles/ subdirectory, got: %s", dir)
+		}
+	})
+
+	t.Run("CLAUDE_CONFIG_DIR persists across stop/start (deterministic path)", func(t *testing.T) {
+		// Call twice and verify same path (deterministic, not random).
+		cmd1 := execEnvCmd("architect", "")
+		cmd2 := execEnvCmd("architect", "")
+		dir1 := extractEnvValue(cmd1, "CLAUDE_CONFIG_DIR")
+		dir2 := extractEnvValue(cmd2, "CLAUDE_CONFIG_DIR")
+		if dir1 != dir2 {
+			t.Errorf("CLAUDE_CONFIG_DIR should be deterministic, got %s and %s", dir1, dir2)
+		}
+	})
+
+	t.Run("project mode also includes CLAUDE_CONFIG_DIR", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "/tmp/test-oro-home")
+		cmd := execEnvCmd("architect", "myproject")
+		if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+			t.Errorf("project mode should also include CLAUDE_CONFIG_DIR, got: %s", cmd)
+		}
+		dir := extractEnvValue(cmd, "CLAUDE_CONFIG_DIR")
+		if !strings.Contains(dir, "architect") {
+			t.Errorf("project mode CLAUDE_CONFIG_DIR should contain role name, got: %s", dir)
+		}
+	})
+}
+
+// extractEnvValue extracts the value of KEY=VALUE from a command string.
+func extractEnvValue(cmd, key string) string {
+	prefix := key + "="
+	idx := strings.Index(cmd, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := cmd[idx+len(prefix):]
+	// Value ends at next space.
+	spaceIdx := strings.Index(rest, " ")
+	if spaceIdx < 0 {
+		return rest
+	}
+	return rest[:spaceIdx]
+}
+
+func TestSetupRoleConfigDir(t *testing.T) {
+	t.Run("creates role directory with symlinks to shared config", func(t *testing.T) {
+		// Create a fake ~/.claude structure in a temp dir.
+		tmpBase := t.TempDir()
+		fakeClaudeDir := filepath.Join(tmpBase, ".claude")
+		if err := os.MkdirAll(fakeClaudeDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create shared config items that should be symlinked.
+		sharedItems := []string{"settings.json", "CLAUDE.md", "__store.db", "projects", "plugins", "rules", "statsig", "cache"}
+		for _, item := range sharedItems {
+			path := filepath.Join(fakeClaudeDir, item)
+			if strings.Contains(item, ".") {
+				// File
+				if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				// Directory
+				if err := os.MkdirAll(path, 0o750); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+
+		// Create history.jsonl which should NOT be symlinked.
+		if err := os.WriteFile(filepath.Join(fakeClaudeDir, "history.jsonl"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		roleDir := filepath.Join(fakeClaudeDir, "roles", "architect")
+		err := setupRoleConfigDir(fakeClaudeDir, roleDir)
+		if err != nil {
+			t.Fatalf("setupRoleConfigDir returned error: %v", err)
+		}
+
+		// Role directory should exist.
+		if _, err := os.Stat(roleDir); os.IsNotExist(err) {
+			t.Fatal("role directory should exist after setup")
+		}
+
+		// Shared items should be symlinked.
+		for _, item := range sharedItems {
+			link := filepath.Join(roleDir, item)
+			fi, err := os.Lstat(link)
+			if err != nil {
+				t.Errorf("expected symlink for %s, got error: %v", item, err)
+				continue
+			}
+			if fi.Mode()&os.ModeSymlink == 0 {
+				t.Errorf("expected %s to be a symlink, got mode: %s", item, fi.Mode())
+			}
+			// Verify symlink target points to the original.
+			target, err := os.Readlink(link)
+			if err != nil {
+				t.Errorf("failed to read symlink %s: %v", item, err)
+				continue
+			}
+			expected := filepath.Join(fakeClaudeDir, item)
+			if target != expected {
+				t.Errorf("symlink %s points to %s, want %s", item, target, expected)
+			}
+		}
+
+		// history.jsonl should NOT be symlinked (each role gets its own).
+		histLink := filepath.Join(roleDir, "history.jsonl")
+		_, err = os.Lstat(histLink)
+		if err == nil {
+			t.Error("history.jsonl should NOT be symlinked into role directory")
+		}
+	})
+
+	t.Run("idempotent: second call does not error", func(t *testing.T) {
+		tmpBase := t.TempDir()
+		fakeClaudeDir := filepath.Join(tmpBase, ".claude")
+		if err := os.MkdirAll(fakeClaudeDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fakeClaudeDir, "settings.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		roleDir := filepath.Join(fakeClaudeDir, "roles", "architect")
+		// First call
+		if err := setupRoleConfigDir(fakeClaudeDir, roleDir); err != nil {
+			t.Fatalf("first setupRoleConfigDir returned error: %v", err)
+		}
+		// Second call (idempotent)
+		if err := setupRoleConfigDir(fakeClaudeDir, roleDir); err != nil {
+			t.Fatalf("second setupRoleConfigDir returned error: %v", err)
+		}
+	})
+
+	t.Run("does not symlink roles directory itself", func(t *testing.T) {
+		tmpBase := t.TempDir()
+		fakeClaudeDir := filepath.Join(tmpBase, ".claude")
+		if err := os.MkdirAll(fakeClaudeDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		// Pre-create roles dir (it will exist after first role setup).
+		if err := os.MkdirAll(filepath.Join(fakeClaudeDir, "roles"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fakeClaudeDir, "settings.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		roleDir := filepath.Join(fakeClaudeDir, "roles", "manager")
+		if err := setupRoleConfigDir(fakeClaudeDir, roleDir); err != nil {
+			t.Fatalf("setupRoleConfigDir returned error: %v", err)
+		}
+
+		// "roles" should NOT be symlinked inside the role dir.
+		rolesLink := filepath.Join(roleDir, "roles")
+		if _, err := os.Lstat(rolesLink); err == nil {
+			t.Error("roles/ directory should NOT be symlinked into role directory (would cause recursion)")
+		}
+	})
+}
+
+func TestRoleConfigDir(t *testing.T) {
+	t.Run("returns path under claude base with role name", func(t *testing.T) {
+		dir := roleConfigDir("/home/user/.claude", "architect")
+		if dir != "/home/user/.claude/roles/architect" {
+			t.Errorf("unexpected roleConfigDir: %s", dir)
+		}
+	})
+
+	t.Run("different roles yield different paths", func(t *testing.T) {
+		base := "/home/user/.claude"
+		arch := roleConfigDir(base, "architect")
+		mgr := roleConfigDir(base, "manager")
+		if arch == mgr {
+			t.Errorf("different roles should have different paths, both: %s", arch)
 		}
 	})
 }
