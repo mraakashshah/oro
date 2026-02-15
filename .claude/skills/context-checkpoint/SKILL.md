@@ -36,24 +36,37 @@ Trust the hook messages and act on them immediately.
 
 ## Learning Checkpoint
 
-After completing a bead and before checking context zones, scan for learnings:
+After completing a bead and before checking context zones, scan for learnings using `learning_analysis.py` (`.claude/hooks/learning_analysis.py`):
 
 1. **Scan knowledge.jsonl** for entries where `bead` matches the just-completed bead ID:
-   ```bash
-   cat .beads/memory/knowledge.jsonl | grep '"bead":"<completed-bead-id>"'
+   ```python
+   # Uses learning_analysis.py functions
+   from learning_analysis import load_knowledge, filter_by_bead, tag_frequency, frequency_level
+   entries = load_knowledge(Path(".beads/memory/knowledge.jsonl"))
+   matched = filter_by_bead(entries, "<completed-bead-id>")
    ```
 
-2. **Check tag frequency** across ALL entries (not just this bead):
-   - Count occurrences of each tag from the matched entries
-   - If any tag appears 3+ times total: flag for codification
+2. **Check tag frequency** across ALL entries (not just this bead) using `tag_frequency()`:
+   ```python
+   global_freq = tag_frequency(entries)  # all entries, not just matched
+   # Check tags from this bead's entries against global frequency
+   for tag in bead_tags:
+       level = frequency_level(global_freq.get(tag, 0))
+   ```
+
+   | Count | Level | Action |
+   |-------|-------|--------|
+   | 1 | `note` | Already surfaced at session start. No additional action. |
+   | 2 | `consider` | Note: "this has come up before" -- include previous occurrence. |
+   | 3+ | `create` | Propose specific codification target (see decision tree below). |
 
 3. **Propose actions** (if learnings found):
    - Learnings only in knowledge.jsonl (not in memory store): suggest `oro remember "<content>"` to promote
-   - Tag at 3+ frequency: propose codification per decision tree:
-     - Repeatable sequence → **skill** (`.claude/skills/`)
-     - Event-triggered → **hook** (`.claude/hooks/`)
-     - Heuristic/constraint → **rule** (`.claude/rules/`)
-     - Solved problem → **solution doc** (`docs/decisions-and-discoveries.md`)
+   - Tag at 3+ frequency (`frequency_level() == "create"`): propose codification per decision tree:
+     - Repeatable sequence --> **skill** (`.claude/skills/`)
+     - Event-triggered --> **hook** (`.claude/hooks/`)
+     - Heuristic/constraint --> **rule** (`.claude/rules/`)
+     - Solved problem --> **solution doc** (`docs/decisions-and-discoveries.md`)
    - Format proposals as a brief `## Learning Checkpoint` note (3-5 lines max)
 
 4. **If no learnings**: Skip silently. Don't add noise.

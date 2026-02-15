@@ -212,3 +212,54 @@ def test_missing_knowledge_file(tmp_path: Path) -> None:
 
     output = _run_hook(hook_input, str(knowledge_file))
     assert output is None
+
+
+def test_frequency_codification_proposal(tmp_path: Path) -> None:
+    """When a tag appears 3+ times in knowledge.jsonl, additionalContext includes codification proposal."""
+    knowledge_file = tmp_path / "knowledge.jsonl"
+    # Create entries where "git" tag appears 3 times total across different beads
+    entries = [
+        {
+            "key": "learned-git-worktree-paths",
+            "type": "learned",
+            "content": "Use absolute paths when working with git worktrees",
+            "bead": "oro-aaa",
+            "tags": ["git", "cli"],
+            "ts": "2026-02-07T10:00:00+00:00",
+        },
+        {
+            "key": "learned-git-rebase-worktree",
+            "type": "learned",
+            "content": "Git rebase fails if branch is checked out in any worktree",
+            "bead": "oro-bbb",
+            "tags": ["git"],
+            "ts": "2026-02-08T10:00:00+00:00",
+        },
+        {
+            "key": "learned-git-stash-worktree",
+            "type": "learned",
+            "content": "Git stash does not work across worktrees",
+            "bead": "oro-ccc",
+            "tags": ["git"],
+            "ts": "2026-02-09T10:00:00+00:00",
+        },
+    ]
+    _write_knowledge(knowledge_file, entries)
+
+    hook_input = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": 'git commit -m "fix(worktree): handle stash edge case (bd-ccc)"',
+        },
+    }
+
+    output = _run_hook(hook_input, str(knowledge_file))
+
+    assert output is not None
+    context = output["hookSpecificOutput"]["additionalContext"]
+    # Must mention the bead's undocumented learnings
+    assert "oro-ccc" in context
+    # Must include a codification proposal for the high-frequency tag
+    assert "codif" in context.lower()  # "codification" or "codify"
+    assert "git" in context  # the tag that hit 3+
+    assert "3" in context  # the frequency count

@@ -85,29 +85,54 @@ beads:
 
 ### 4. Scan for Undocumented Learnings
 
-Before writing the handoff, scan for learnings that should be documented:
+Before writing the handoff, scan for learnings using `.claude/hooks/learning_analysis.py`:
 
-1. **Read knowledge.jsonl**: `cat .beads/memory/knowledge.jsonl | jq -s '.'`
-2. **Filter to this session**: Look at entries whose `bead` field matches beads you worked on this session
-3. **Cross-reference**: Check if each learning already appears in `docs/decisions-and-discoveries.md`
-4. **Check frequency**: Count how many times each tag appears across ALL entries (not just this session)
-5. **Detect cross-bead patterns**: If the same tag or similar content appears across multiple beads worked this session, note it
+1. **Load and filter entries** using the analysis library:
+   ```python
+   from learning_analysis import load_knowledge, filter_by_bead, tag_frequency, frequency_level, cross_reference_docs, content_similarity
+   from pathlib import Path
 
-**Frequency thresholds:**
+   entries = load_knowledge(Path(".beads/memory/knowledge.jsonl"))
+   # Filter to beads worked this session
+   session_entries = []
+   for bead_id in beads_worked_this_session:
+       session_entries.extend(filter_by_bead(entries, bead_id))
+   ```
+
+2. **Cross-reference with docs** using `cross_reference_docs()`:
+   ```python
+   undocumented = cross_reference_docs(session_entries, Path("docs/decisions-and-discoveries.md"))
+   ```
+
+3. **Check tag frequency** across ALL entries using `tag_frequency()`:
+   ```python
+   global_freq = tag_frequency(entries)  # all entries, not just this session
+   # For each tag in session entries, check frequency_level()
+   for tag, count in global_freq.items():
+       level = frequency_level(count)  # "note", "consider", or "create"
+   ```
+
+4. **Detect cross-bead patterns** using `content_similarity()`:
+   ```python
+   clusters = content_similarity(session_entries)
+   # Clusters with entries from multiple beads indicate cross-bead patterns
+   ```
+
+**Frequency thresholds** (from `frequency_level()`):
 
 | Count | Level | Action |
 |-------|-------|--------|
-| 1 | Note | Already surfaced at session start. No additional action. |
-| 2 | Consider | Note: "this has come up before" — include previous occurrence |
-| 3+ | Create | Propose specific codification target (see decision tree below) |
+| 1 | `note` | Already surfaced at session start. No additional action. |
+| 2 | `consider` | Note: "this has come up before" -- include previous occurrence. |
+| 3+ | `create` | Propose specific codification target (see decision tree below). |
 
 **Decision tree for 3+ frequency:**
-- Repeatable sequence of steps → Propose a **skill** (`.claude/skills/<name>/SKILL.md`)
-- Triggered by specific event → Propose a **hook** (`.claude/hooks/<name>.py`)
-- Heuristic or constraint → Propose a **rule** (`.claude/rules/<file>.md`)
-- Solved problem with context → Propose a **solution doc** (`docs/decisions-and-discoveries.md` entry)
+- Repeatable sequence of steps --> Propose a **skill** (`.claude/skills/<name>/SKILL.md`)
+- Triggered by specific event --> Propose a **hook** (`.claude/hooks/<name>.py`)
+- Heuristic or constraint --> Propose a **rule** (`.claude/rules/<file>.md`)
+- Solved problem with context --> Propose a **solution doc** (`docs/decisions-and-discoveries.md` entry)
 
-**Add to handoff YAML** (after `next:` section):
+**Add `learnings:` field to handoff YAML** (after `next:` section):
 
 ```yaml
 learnings:
