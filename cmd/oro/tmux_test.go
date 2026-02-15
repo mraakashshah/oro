@@ -1664,3 +1664,73 @@ func TestNudgeSerialization(t *testing.T) {
 		}
 	})
 }
+
+func TestKillWithProcessCleanup(t *testing.T) {
+	t.Run("Kill gets pane PID and calls kill-session", func(t *testing.T) {
+		fake := newFakeCmd()
+		// display-message returns PID for both panes
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_pid}")] = "12346"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.Kill()
+		if err != nil {
+			t.Fatalf("Kill returned error: %v", err)
+		}
+
+		// Verify display-message was called to get pane PIDs
+		var gotArchPid, gotMgrPid bool
+		for _, call := range fake.calls {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "display-message") && strings.Contains(joined, "pane_pid") {
+				if strings.Contains(joined, "oro:architect") {
+					gotArchPid = true
+				}
+				if strings.Contains(joined, "oro:manager") {
+					gotMgrPid = true
+				}
+			}
+		}
+		if !gotArchPid {
+			t.Error("expected display-message for architect pane PID")
+		}
+		if !gotMgrPid {
+			t.Error("expected display-message for manager pane PID")
+		}
+
+		// Verify kill-session was still called
+		var killedSession bool
+		for _, call := range fake.calls {
+			if len(call) >= 3 && call[0] == "tmux" && call[1] == "kill-session" {
+				killedSession = true
+			}
+		}
+		if !killedSession {
+			t.Error("expected kill-session to be called after process cleanup")
+		}
+	})
+
+	t.Run("Kill succeeds even when pane PID lookup fails", func(t *testing.T) {
+		fake := newFakeCmd()
+		// display-message fails (panes don't exist)
+		fake.errs[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = fmt.Errorf("no pane")
+		fake.errs[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_pid}")] = fmt.Errorf("no pane")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		err := sess.Kill()
+		if err != nil {
+			t.Fatalf("Kill should succeed even when PID lookup fails: %v", err)
+		}
+
+		// Should still call kill-session
+		var killedSession bool
+		for _, call := range fake.calls {
+			if len(call) >= 3 && call[0] == "tmux" && call[1] == "kill-session" {
+				killedSession = true
+			}
+		}
+		if !killedSession {
+			t.Error("expected kill-session even when PID lookup fails")
+		}
+	})
+}

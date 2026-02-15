@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -422,8 +424,75 @@ func (s *TmuxSession) wakeIfDetached(paneTarget string) {
 	_, _ = s.Runner.Run("kill", "-WINCH", strings.TrimSpace(pidStr))
 }
 
-// Kill destroys the named tmux session.
+// processKillGracePeriod is the time to wait between SIGTERM and SIGKILL.
+const processKillGracePeriod = 2 * time.Second
+
+// getProcessGroupID returns the process group ID for a given PID.
+func getProcessGroupID(pid string) string {
+	out, err := exec.CommandContext(context.Background(), "ps", "-o", "pgid=", "-p", pid).Output() //nolint:gosec // pid comes from tmux pane_pid, not user input
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// getAllDescendants recursively finds all descendant PIDs of a process.
+// Returns PIDs in deepest-first order so killing them doesn't orphan grandchildren.
+func getAllDescendants(pid string) []string {
+	var result []string
+	out, err := exec.CommandContext(context.Background(), "pgrep", "-P", pid).Output() //nolint:gosec // pid comes from tmux pane_pid, not user input
+	if err != nil {
+		return result
+	}
+	children := strings.Fields(strings.TrimSpace(string(out)))
+	for _, child := range children {
+		result = append(result, getAllDescendants(child)...)
+		result = append(result, child)
+	}
+	return result
+}
+
+// Kill destroys the named tmux session after cleaning up descendant processes.
+// Walks the process tree to prevent orphaned Claude/node processes.
 func (s *TmuxSession) Kill() error {
+	// Get pane PIDs before killing session
+	for _, window := range []string{"architect", "manager"} {
+		pane := s.Name + ":" + window
+		pidStr, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_pid}")
+		if err != nil {
+			continue // pane may not exist
+		}
+		pid := strings.TrimSpace(pidStr)
+		if pid == "" || pid == "0" {
+			continue
+		}
+
+		// Kill process group
+		pgid := getProcessGroupID(pid)
+		if pgid != "" && pgid != "0" && pgid != "1" {
+			pgidInt, err := strconv.Atoi(pgid)
+			if err == nil {
+				_ = syscall.Kill(-pgidInt, syscall.SIGTERM)
+			}
+		}
+
+		// Walk descendants
+		descendants := getAllDescendants(pid)
+		for _, dpid := range descendants {
+			_ = exec.CommandContext(context.Background(), "kill", "-TERM", dpid).Run() //nolint:gosec // dpid comes from pgrep of tmux pane_pid
+		}
+
+		// Grace period
+		s.sleep(processKillGracePeriod)
+
+		// SIGKILL remaining
+		for _, dpid := range descendants {
+			_ = exec.CommandContext(context.Background(), "kill", "-KILL", dpid).Run() //nolint:gosec // dpid comes from pgrep of tmux pane_pid
+		}
+		_ = exec.CommandContext(context.Background(), "kill", "-KILL", pid).Run() //nolint:gosec // pid comes from tmux pane_pid
+	}
+
+	// Finally kill the tmux session
 	_, err := s.Runner.Run("tmux", "kill-session", "-t", s.Name)
 	if err != nil {
 		return fmt.Errorf("tmux kill-session: %w", err)
