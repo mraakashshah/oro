@@ -1032,6 +1032,34 @@ func RunQualityGate(ctx context.Context, worktree string) (passed bool, output s
 // ClaudeSpawner is the production StreamingSpawner that invokes `claude -p`.
 type ClaudeSpawner struct{}
 
+// buildClaudeArgs constructs the argument slice for the claude command.
+// When both ORO_HOME and ORO_PROJECT env vars are set, it appends
+// --add-dir and --settings flags to point claude at the shared oro config.
+func buildClaudeArgs(model, prompt string) []string {
+	args := []string{"-p", prompt, "--model", model}
+
+	oroHome := os.Getenv("ORO_HOME")
+	oroProject := os.Getenv("ORO_PROJECT")
+	if oroHome != "" && oroProject != "" {
+		args = append(args, "--add-dir", oroHome, "--settings", filepath.Join(oroHome, "projects", oroProject, "settings.json"))
+	}
+
+	return args
+}
+
+// buildClaudeEnv returns the environment slice for the claude subprocess.
+// When ORO_PROJECT is set, it inherits the current environment and adds
+// CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 so claude picks up
+// CLAUDE.md from directories added via --add-dir.
+// Returns nil when ORO_PROJECT is not set, which causes exec.Cmd to
+// inherit the parent environment unchanged.
+func buildClaudeEnv() []string {
+	if os.Getenv("ORO_PROJECT") == "" {
+		return nil
+	}
+	return append(os.Environ(), "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
+}
+
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.
 // Returns the process, stdout reader, stdin writer (nil), and any error.
 //
@@ -1041,9 +1069,11 @@ type ClaudeSpawner struct{}
 // stdin to /dev/null avoids this. The trade-off: sendCompact() becomes a no-op,
 // so context overflow triggers handoff instead of in-place compaction.
 func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, io.ReadCloser, io.WriteCloser, error) {
-	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", model)
+	args := buildClaudeArgs(model, prompt)
+	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args are constructed internally by buildClaudeArgs, not user input
 	cmd.Dir = workdir
 	cmd.Stderr = os.Stderr
+	cmd.Env = buildClaudeEnv()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
