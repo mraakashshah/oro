@@ -38,7 +38,6 @@ type Model struct {
 	inProgressCount int
 
 	// Data fetched from external sources
-	//nolint:unused // Will be used when board view integrates FetchBeads
 	beads []protocol.Bead
 	//nolint:unused // Will be used when workers view integrates FetchWorkers
 	workers []WorkerStatus
@@ -84,7 +83,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements tea.Model.
 func (m Model) View() string {
-	return m.renderStatusBar()
+	board := NewBoardModel(m.beads)
+	return m.renderStatusBar() + "\n" + board.Render()
 }
 
 // renderStatusBar renders the status bar with daemon health, worker count, and aggregate stats.

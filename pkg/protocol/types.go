@@ -9,6 +9,7 @@ import (
 type Bead struct {
 	ID                 string `json:"id"`
 	Title              string `json:"title"`
+	Status             string `json:"status,omitempty"` // open, in_progress, blocked, closed
 	Priority           int    `json:"priority"`
 	Epic               string `json:"epic,omitempty"`                // parent epic ID for focus filtering
 	Type               string `json:"issue_type,omitempty"`          // task, bug, feature, epic
