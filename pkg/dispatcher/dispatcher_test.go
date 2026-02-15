@@ -7577,3 +7577,87 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		}
 	})
 }
+
+func TestAutoScaleOnQueueDepth(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Override MaxWorkers to 3 for this test
+	d.cfg.MaxWorkers = 3
+	// Start with targetWorkers=0 to test auto-scaling
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	startDispatcher(t, d)
+
+	// Start the dispatcher
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Provide 3 assignable beads
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-1", Title: "Task 1", Priority: 2, Type: "task"},
+		{ID: "bead-2", Title: "Task 2", Priority: 2, Type: "task"},
+		{ID: "bead-3", Title: "Task 3", Priority: 2, Type: "task"},
+	})
+
+	// Wait for tryAssign to detect beads and auto-scale
+	// PollInterval is 50ms, give it a few cycles
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify targetWorkers auto-increased to min(3, MaxWorkers)
+	d.mu.Lock()
+	target := d.targetWorkers
+	d.mu.Unlock()
+
+	if target != 3 {
+		t.Errorf("expected targetWorkers=3 after auto-scale, got %d", target)
+	}
+
+	// Verify reconcileScale was called (workers should be spawned)
+	// Wait for workers to actually connect (they won't in this test, but reconcileScale should be called)
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestAutoScaleRespectsMaxWorkers(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Override MaxWorkers to 2
+	d.cfg.MaxWorkers = 2
+	// Start with targetWorkers=0 to test auto-scaling
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	startDispatcher(t, d)
+
+	// Start the dispatcher
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Provide 5 assignable beads (more than MaxWorkers)
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-1", Title: "Task 1", Priority: 2, Type: "task"},
+		{ID: "bead-2", Title: "Task 2", Priority: 2, Type: "task"},
+		{ID: "bead-3", Title: "Task 3", Priority: 2, Type: "task"},
+		{ID: "bead-4", Title: "Task 4", Priority: 2, Type: "task"},
+		{ID: "bead-5", Title: "Task 5", Priority: 2, Type: "task"},
+	})
+
+	// Wait for tryAssign to detect beads and auto-scale
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify targetWorkers never exceeds MaxWorkers
+	d.mu.Lock()
+	target := d.targetWorkers
+	d.mu.Unlock()
+
+	if target > 2 {
+		t.Errorf("expected targetWorkers <= MaxWorkers (2), got %d", target)
+	}
+
+	// Should have scaled to exactly MaxWorkers
+	if target != 2 {
+		t.Errorf("expected targetWorkers=2 (MaxWorkers), got %d", target)
+	}
+}

@@ -1442,11 +1442,8 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return beads[i].Priority < beads[j].Priority
 	})
 
-	// Auto-scale: if we have assignable beads but no idle workers, and current
-	// targetWorkers < MaxWorkers, increase targetWorkers to handle the queue.
-	if len(beads) > 0 && len(idle) == 0 {
-		d.autoScale(ctx, len(beads))
-	}
+	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.
+	d.maybeAutoScale(ctx, len(beads), len(idle))
 
 	// Check for P0 beads when all workers are busy (priority contention).
 	if len(idle) == 0 && totalWorkers > 0 {
@@ -1466,34 +1463,6 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 // autoScale increases targetWorkers when assignable beads exist but no idle
 // workers are available. Scales up to MaxWorkers, then calls reconcileScale
 // to spawn new worker processes.
-func (d *Dispatcher) autoScale(ctx context.Context, queueDepth int) {
-	d.mu.Lock()
-	currentTarget := d.targetWorkers
-	maxWorkers := d.cfg.MaxWorkers
-	d.mu.Unlock()
-
-	if currentTarget >= maxWorkers {
-		return // already at max
-	}
-
-	// Scale up to handle available beads, capped at MaxWorkers
-	newTarget := currentTarget + queueDepth
-	if newTarget > maxWorkers {
-		newTarget = maxWorkers
-	}
-
-	d.mu.Lock()
-	d.targetWorkers = newTarget
-	d.mu.Unlock()
-
-	// Reconcile immediately to spawn new workers
-	d.reconcileScale()
-
-	_ = d.logEvent(ctx, "auto_scale", "dispatcher", "", "",
-		fmt.Sprintf("scaled from %d to %d workers (queue depth: %d, max: %d)",
-			currentTarget, newTarget, queueDepth, maxWorkers))
-}
-
 // filterAssignable returns beads eligible for assignment: excludes epics and
 // beads with recent worktree creation failures (within cooldown window).
 func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead {
@@ -1763,6 +1732,38 @@ func (d *Dispatcher) applyScaleDirective(args string) (string, error) {
 		detail = fmt.Sprintf("target=%d, current=%d, no change", target, connected)
 	}
 	return detail, nil
+}
+
+// maybeAutoScale increases targetWorkers when assignable beads exist but no
+// idle workers are available. Scales up to min(queue depth, MaxWorkers).
+func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount int) {
+	if queueDepth == 0 || idleCount > 0 {
+		return
+	}
+
+	d.mu.Lock()
+	currentTarget := d.targetWorkers
+	maxWorkers := d.cfg.MaxWorkers
+	d.mu.Unlock()
+
+	if currentTarget >= maxWorkers {
+		return
+	}
+
+	// Scale to min(queue depth, MaxWorkers)
+	newTarget := queueDepth
+	if newTarget > maxWorkers {
+		newTarget = maxWorkers
+	}
+
+	if newTarget > currentTarget {
+		d.mu.Lock()
+		d.targetWorkers = newTarget
+		d.mu.Unlock()
+		d.reconcileScale()
+		_ = d.logEvent(ctx, "auto_scale", "dispatcher", "", "",
+			fmt.Sprintf("scaled to %d workers (queue depth: %d)", newTarget, queueDepth))
+	}
 }
 
 // reconcileScale compares target vs connected workers and spawns or shuts down
