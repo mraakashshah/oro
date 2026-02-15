@@ -1442,6 +1442,12 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return beads[i].Priority < beads[j].Priority
 	})
 
+	// Auto-scale: if we have assignable beads but no idle workers, and current
+	// targetWorkers < MaxWorkers, increase targetWorkers to handle the queue.
+	if len(beads) > 0 && len(idle) == 0 {
+		d.autoScale(ctx, len(beads))
+	}
+
 	// Check for P0 beads when all workers are busy (priority contention).
 	if len(idle) == 0 && totalWorkers > 0 {
 		d.checkPriorityContention(ctx, beads, totalWorkers)
@@ -1455,6 +1461,37 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		}
 		d.assignBead(ctx, idle[i], bead)
 	}
+}
+
+// autoScale increases targetWorkers when assignable beads exist but no idle
+// workers are available. Scales up to MaxWorkers, then calls reconcileScale
+// to spawn new worker processes.
+func (d *Dispatcher) autoScale(ctx context.Context, queueDepth int) {
+	d.mu.Lock()
+	currentTarget := d.targetWorkers
+	maxWorkers := d.cfg.MaxWorkers
+	d.mu.Unlock()
+
+	if currentTarget >= maxWorkers {
+		return // already at max
+	}
+
+	// Scale up to handle available beads, capped at MaxWorkers
+	newTarget := currentTarget + queueDepth
+	if newTarget > maxWorkers {
+		newTarget = maxWorkers
+	}
+
+	d.mu.Lock()
+	d.targetWorkers = newTarget
+	d.mu.Unlock()
+
+	// Reconcile immediately to spawn new workers
+	d.reconcileScale()
+
+	_ = d.logEvent(ctx, "auto_scale", "dispatcher", "", "",
+		fmt.Sprintf("scaled from %d to %d workers (queue depth: %d, max: %d)",
+			currentTarget, newTarget, queueDepth, maxWorkers))
 }
 
 // filterAssignable returns beads eligible for assignment: excludes epics and
