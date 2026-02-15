@@ -129,33 +129,10 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		return fmt.Errorf("tmux new-window: %w", err)
 	}
 
-	// Set initial status bar color to architect (green) — architect is the active window after creation.
-	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-style", "bg=colour46,fg=black"); err != nil {
-		_ = s.Kill() // cleanup on partial creation failure
-		return fmt.Errorf("tmux set-option status-style: %w", err)
-	}
-
-	// Set hook to change status bar color when switching windows.
-	// Uses tmux if-shell with #{window_name} to detect the active window.
-	hookCmd := fmt.Sprintf(
-		`if-shell -F "#{==:#{window_name},architect}" "set-option -t %s status-style bg=colour46,fg=black" "set-option -t %s status-style bg=colour208,fg=black"`,
-		s.Name, s.Name,
-	)
-	if _, err := s.Runner.Run("tmux", "set-hook", "-t", s.Name, "after-select-window", hookCmd); err != nil {
-		_ = s.Kill() // cleanup on partial creation failure
-		return fmt.Errorf("tmux set-hook status-style: %w", err)
-	}
-
-	// Add role labels and session info to status bar.
-	if err := s.configureStatusLabels(); err != nil {
+	// Configure session options (status bar, labels, remain-on-exit, mouse, clipboard).
+	if err := s.configureSessionOptions(); err != nil {
 		_ = s.Kill()
 		return err
-	}
-
-	// Enable remain-on-exit so panes survive process crashes.
-	// Dead panes show "[Exited]" and can be respawned without recreating the session.
-	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "remain-on-exit", "on"); err != nil {
-		return fmt.Errorf("tmux set-option remain-on-exit: %w", err)
 	}
 
 	// Launch Claude in both windows, wait for readiness, and inject nudges.
@@ -190,9 +167,24 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	return nil
 }
 
-// configureStatusLabels sets status-left (role label) and status-right (session info)
-// on the tmux session. Called during Create after the status-style/hook setup.
-func (s *TmuxSession) configureStatusLabels() error {
+// configureSessionOptions sets tmux session options: status bar color with
+// window-switch hook, role labels, remain-on-exit for crash recovery, mouse mode, and clipboard.
+func (s *TmuxSession) configureSessionOptions() error {
+	// Set initial status bar color to architect (green) — architect is the active window after creation.
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-style", "bg=colour46,fg=black"); err != nil {
+		return fmt.Errorf("tmux set-option status-style: %w", err)
+	}
+
+	// Set hook to change status bar color when switching windows.
+	hookCmd := fmt.Sprintf(
+		`if-shell -F "#{==:#{window_name},architect}" "set-option -t %s status-style bg=colour46,fg=black" "set-option -t %s status-style bg=colour208,fg=black"`,
+		s.Name, s.Name,
+	)
+	if _, err := s.Runner.Run("tmux", "set-hook", "-t", s.Name, "after-select-window", hookCmd); err != nil {
+		return fmt.Errorf("tmux set-hook status-style: %w", err)
+	}
+
+	// Add role labels to status bar.
 	statusLeft := `#[bold] #{window_name} `
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-left", statusLeft); err != nil {
 		return fmt.Errorf("tmux set-option status-left: %w", err)
@@ -204,6 +196,20 @@ func (s *TmuxSession) configureStatusLabels() error {
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-right", statusRight); err != nil {
 		return fmt.Errorf("tmux set-option status-right: %w", err)
 	}
+
+	// Enable remain-on-exit so panes survive process crashes.
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("tmux set-option remain-on-exit: %w", err)
+	}
+
+	// Enable mouse mode and clipboard integration (following Gastown pattern).
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "mouse", "on"); err != nil {
+		return fmt.Errorf("tmux set-option mouse: %w", err)
+	}
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "set-clipboard", "on"); err != nil {
+		return fmt.Errorf("tmux set-option set-clipboard: %w", err)
+	}
+
 	return nil
 }
 

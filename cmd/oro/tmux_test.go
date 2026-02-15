@@ -1804,6 +1804,39 @@ func TestStatusBarLabels(t *testing.T) {
 	})
 }
 
+func TestMouseModeEnabled(t *testing.T) {
+	t.Run("Create enables mouse mode and clipboard", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		var foundMouse, foundClipboard bool
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
+				joined := strings.Join(call, " ")
+				if strings.Contains(joined, "mouse") && strings.Contains(joined, "on") && !strings.Contains(joined, "set-clipboard") {
+					foundMouse = true
+				}
+				if strings.Contains(joined, "set-clipboard") && strings.Contains(joined, "on") {
+					foundClipboard = true
+				}
+			}
+		}
+		if !foundMouse {
+			t.Error("expected set-option mouse on to be called during Create")
+		}
+		if !foundClipboard {
+			t.Error("expected set-option set-clipboard on to be called during Create")
+		}
+	})
+}
+
 func TestRemainOnExit(t *testing.T) {
 	t.Run("Create sets remain-on-exit=on", func(t *testing.T) {
 		fake := newFakeCmd()
