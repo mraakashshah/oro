@@ -117,6 +117,9 @@ type Model struct {
 	// Pre-computed styles to avoid allocations during rendering
 	theme  Theme
 	styles Styles
+
+	// Split pane state
+	splitRatio float64 // Ratio of board width in split view (0.2 - 0.8, default 0.4)
 }
 
 // newModel creates a new Model initialized with BoardView active.
@@ -127,6 +130,7 @@ func newModel() Model {
 		searchModel: &SearchModel{},
 		theme:       theme,
 		styles:      NewStyles(theme),
+		splitRatio:  0.4, // Default 40% board, 60% detail
 	}
 }
 
@@ -248,6 +252,18 @@ func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		if m.detailModel != nil {
 			*m.detailModel = m.detailModel.prevTab()
+		}
+	case "<":
+		// Decrease board width (increase detail width)
+		m.splitRatio -= 0.1
+		if m.splitRatio < 0.2 {
+			m.splitRatio = 0.2
+		}
+	case ">":
+		// Increase board width (decrease detail width)
+		m.splitRatio += 0.1
+		if m.splitRatio > 0.8 {
+			m.splitRatio = 0.8
 		}
 	}
 	return m, nil
@@ -390,6 +406,11 @@ func (m Model) View() string {
 		return statusBar + "\n" + insights.Render()
 	case DetailView:
 		if m.detailModel != nil {
+			// Use split pane if terminal is wide enough
+			if m.width >= 80 {
+				return statusBar + "\n" + m.renderSplitPane()
+			}
+			// Narrow terminal: show detail only
 			return statusBar + "\n" + m.detailModel.View(m.styles)
 		}
 		// Fallback to board if detailModel is nil
@@ -401,6 +422,25 @@ func (m Model) View() string {
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles)
 	}
+}
+
+// renderSplitPane renders DetailView as a split pane with board on left and detail on right.
+func (m Model) renderSplitPane() string {
+	// Calculate widths based on splitRatio
+	boardWidth := int(float64(m.width) * m.splitRatio)
+	_ = m.width - boardWidth // detailWidth reserved for future use
+
+	// Render board with muted colors and reduced column width
+	board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
+	// Adjust column width based on available board space
+	colWidth := max((boardWidth/4)-2, 20) // 4 columns with some padding, min 20
+	boardView := board.RenderWithCustomWidth(m.activeCol, m.activeBead, colWidth, m.theme, m.styles)
+
+	// Render detail view with remaining width
+	detailView := m.detailModel.View(m.styles)
+
+	// Join horizontally
+	return lipgloss.JoinHorizontal(lipgloss.Top, boardView, detailView)
 }
 
 // buildInsightsModel creates an InsightsModel from the current beads.

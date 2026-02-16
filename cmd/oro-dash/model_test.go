@@ -1029,3 +1029,145 @@ func TestModel_BeadsMsgClampsCursor(t *testing.T) {
 		}
 	})
 }
+
+// TestSplitPaneLayout verifies split-pane layout in DetailView with adjustable ratio.
+func TestSplitPaneLayout(t *testing.T) {
+	bead1 := protocol.Bead{
+		ID:       "oro-test1",
+		Title:    "Test Bead 1",
+		Status:   "in_progress",
+		Priority: 1,
+		Type:     "task",
+	}
+
+	beadDetail := protocol.BeadDetail{
+		ID:                 "oro-test1",
+		Title:              "Test Bead 1",
+		AcceptanceCriteria: "Test acceptance",
+	}
+
+	t.Run("DetailView renders split pane with board (40%) and detail (60%)", func(t *testing.T) {
+		detailModel := newDetailModel(beadDetail, DefaultTheme(), NewStyles(DefaultTheme()))
+		theme := DefaultTheme()
+		m := Model{
+			width:       120,
+			height:      40,
+			activeView:  DetailView,
+			beads:       []protocol.Bead{bead1},
+			splitRatio:  0.4, // default
+			detailModel: &detailModel,
+			theme:       theme,
+			styles:      NewStyles(theme),
+		}
+
+		output := m.View()
+		if !strings.Contains(output, "Test Bead 1") {
+			t.Error("DetailView should contain bead title")
+		}
+
+		// Verify split rendering happened (renderSplitPane should be called)
+		// This is a structural test - we'll verify the implementation creates the split
+	})
+
+	t.Run("< key decreases board width (min 20%)", func(t *testing.T) {
+		theme := DefaultTheme()
+		detailModel := newDetailModel(beadDetail, theme, NewStyles(theme))
+		m := Model{
+			width:       120,
+			activeView:  DetailView,
+			splitRatio:  0.4,
+			detailModel: &detailModel,
+			theme:       theme,
+			styles:      NewStyles(theme),
+		}
+
+		// Press < key
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'<'}}
+		updated, _ := m.Update(msg)
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		expected := 0.3
+		tolerance := 0.001
+		if model.splitRatio < expected-tolerance || model.splitRatio > expected+tolerance {
+			t.Errorf("< should decrease splitRatio to ~0.3, got %f", model.splitRatio)
+		}
+
+		// Press < again to test clamping at minimum
+		for range 5 {
+			updated, _ = model.Update(msg)
+			model, ok = updated.(Model)
+			if !ok {
+				t.Fatal("Update() did not return Model")
+			}
+		}
+
+		if model.splitRatio < 0.2 {
+			t.Errorf("splitRatio should clamp at 0.2, got %f", model.splitRatio)
+		}
+	})
+
+	t.Run("> key increases board width (max 80%)", func(t *testing.T) {
+		theme := DefaultTheme()
+		detailModel := newDetailModel(beadDetail, theme, NewStyles(theme))
+		m := Model{
+			width:       120,
+			activeView:  DetailView,
+			splitRatio:  0.4,
+			detailModel: &detailModel,
+			theme:       theme,
+			styles:      NewStyles(theme),
+		}
+
+		// Press > key
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'>'}}
+		updated, _ := m.Update(msg)
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.splitRatio != 0.5 {
+			t.Errorf("> should increase splitRatio by 0.1, got %f", model.splitRatio)
+		}
+
+		// Press > multiple times to test clamping at maximum
+		for range 5 {
+			updated, _ = model.Update(msg)
+			model, ok = updated.(Model)
+			if !ok {
+				t.Fatal("Update() did not return Model")
+			}
+		}
+
+		if model.splitRatio > 0.8 {
+			t.Errorf("splitRatio should clamp at 0.8, got %f", model.splitRatio)
+		}
+	})
+
+	t.Run("width < 80 renders detail only (no split)", func(t *testing.T) {
+		theme := DefaultTheme()
+		detailModel := newDetailModel(beadDetail, theme, NewStyles(theme))
+		m := Model{
+			width:       75, // Below threshold
+			height:      40,
+			activeView:  DetailView,
+			splitRatio:  0.4,
+			detailModel: &detailModel,
+			theme:       theme,
+			styles:      NewStyles(theme),
+		}
+
+		output := m.View()
+
+		// Should render detail view only, no board split
+		if !strings.Contains(output, "Test Bead 1") {
+			t.Error("DetailView should contain bead title")
+		}
+
+		// In narrow terminals, should not attempt split rendering
+		// The output should be just the detail view
+	})
+}

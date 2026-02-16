@@ -93,8 +93,11 @@ func (bm BoardModel) Render(theme Theme, styles Styles) string {
 
 // RenderWithCursor renders the board with a highlighted cursor at the specified column and bead.
 func (bm BoardModel) RenderWithCursor(activeCol, activeBead int, theme Theme, styles Styles) string {
-	colWidth := 30
+	return bm.RenderWithCustomWidth(activeCol, activeBead, 30, theme, styles)
+}
 
+// RenderWithCustomWidth renders the board with a custom column width.
+func (bm BoardModel) RenderWithCustomWidth(activeCol, activeBead, colWidth int, theme Theme, styles Styles) string {
 	rendered := make([]string, 0, len(bm.columns))
 	for colIdx, col := range bm.columns {
 		full := bm.renderColumn(col, colIdx, activeCol, activeBead, colWidth, theme, styles)
