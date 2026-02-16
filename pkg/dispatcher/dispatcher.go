@@ -957,30 +957,34 @@ func (d *Dispatcher) autoCloseEpicIfComplete(ctx context.Context, workerID strin
 		return
 	}
 
-	d.safeGo(func() {
-		allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
-		if err != nil {
-			_ = d.logEvent(ctx, "epic_auto_close_check_failed", "dispatcher", epicID, workerID,
-				fmt.Sprintf(`{"error":%q}`, err.Error()))
-			return
-		}
-		if !allClosed {
-			return
-		}
+	d.safeGo(func() { d.tryCloseEpic(ctx, epicID, workerID) })
+}
 
-		_ = d.beads.Close(ctx, epicID, "All children completed")
-		_ = d.logEvent(ctx, "epic_auto_closed", "dispatcher", epicID, workerID, "")
+// tryCloseEpic checks if all children of the epic are closed, and if so, closes the
+// epic and alerts the manager when it's the focused epic.
+func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) {
+	allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_auto_close_check_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return
+	}
+	if !allClosed {
+		return
+	}
 
-		// Alert the manager if the completed epic is the focused epic.
-		d.mu.Lock()
-		focused := d.focusedEpic
-		d.mu.Unlock()
-		if focused == epicID {
-			d.escalate(ctx, protocol.FormatEscalation(protocol.EscEpicComplete, epicID,
-				"all children completed",
-				`Run: oro directive focus "" to clear`), epicID, workerID)
-		}
-	})
+	_ = d.beads.Close(ctx, epicID, "All children completed")
+	_ = d.logEvent(ctx, "epic_auto_closed", "dispatcher", epicID, workerID, "")
+
+	// Alert the manager if the completed epic is the focused epic.
+	d.mu.Lock()
+	focused := d.focusedEpic
+	d.mu.Unlock()
+	if focused == epicID {
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscEpicComplete, epicID,
+			"all children completed",
+			`Run: oro directive focus "" to clear`), epicID, workerID)
+	}
 }
 
 // handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
