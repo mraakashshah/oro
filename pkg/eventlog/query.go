@@ -80,6 +80,7 @@ func (r *Reader) Close() error {
 		if err := r.db.Close(); err != nil {
 			return fmt.Errorf("close database: %w", err)
 		}
+		r.db = nil
 	}
 	return nil
 }
