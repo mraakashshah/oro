@@ -27,6 +27,7 @@ Thumbs.db
 docs/alternative-architecture-analysis/reference/
 
 # Build artifacts
+oro-dash
 coverage.out
 __pycache__/
 .claude/hooks/oro-search-hook
