@@ -20,8 +20,10 @@ func TestDetailModel_TabSwitch(t *testing.T) {
 			AcceptanceCriteria: "Test acceptance",
 		}
 
-		model := newDetailModel(bead)
-		view := model.View()
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		view := model.View(styles)
 
 		expectedTabs := []string{"Overview", "Worker", "Diff", "Deps", "Memory"}
 		for _, tab := range expectedTabs {
@@ -38,7 +40,9 @@ func TestDetailModel_TabSwitch(t *testing.T) {
 			AcceptanceCriteria: "Test acceptance",
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 
 		// Start on Overview (tab 0)
 		if model.activeTab != 0 {
@@ -86,10 +90,12 @@ func TestDetailModel_TabSwitch(t *testing.T) {
 		// Note: BeadDetail doesn't have dependency fields yet,
 		// but we'll add them when needed. For now, test the structure.
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 3 // Deps tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// The deps tab should render content related to dependencies
 		if !strings.Contains(view, "Deps") {
@@ -103,10 +109,12 @@ func TestDetailModel_TabSwitch(t *testing.T) {
 			Title: "Bead without dependencies",
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 3 // Deps tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Edge case: bead has no deps → show 'No dependencies'
 		if !strings.Contains(view, "No dependencies") && !strings.Contains(view, "no dependencies") {
@@ -122,10 +130,12 @@ func TestDetailModel_TabSwitch(t *testing.T) {
 			// No Description field - it's missing from BeadDetail in protocol
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 0 // Overview tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// The overview should render even with minimal data
 		if !strings.Contains(view, "oro-test.5") {
@@ -149,10 +159,12 @@ func TestDetailModel_WorkerTab(t *testing.T) {
 			LastHeartbeat:  "2026-02-12T10:30:00Z",
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 1 // Worker tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Assert: worker tab shows context %, heartbeat
 		if !strings.Contains(view, "42") {
@@ -173,10 +185,12 @@ func TestDetailModel_WorkerTab(t *testing.T) {
 			WorkerID: "", // Edge: no worker assigned
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 1 // Worker tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Edge: no worker assigned → show 'Unassigned'
 		if !strings.Contains(view, "Unassigned") {
@@ -202,10 +216,12 @@ index abc123..def456 100644
  func main() {}`,
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2 // Diff tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Assert: diff tab renders git diff
 		if !strings.Contains(view, "diff --git") {
@@ -226,10 +242,12 @@ index abc123..def456 100644
 			GitDiff: "", // Edge: no diff
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2 // Diff tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Edge: no diff → show 'No changes'
 		if !strings.Contains(view, "No changes") {
@@ -250,10 +268,12 @@ func TestDetailModel_MemoryTab(t *testing.T) {
 - Refactored Y`,
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 4 // Memory tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Assert: memory tab shows injected context
 		if !strings.Contains(view, "Previous attempt context") {
@@ -271,10 +291,12 @@ func TestDetailModel_MemoryTab(t *testing.T) {
 			Memory: "", // Edge: no memory
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 4 // Memory tab
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Edge: no memory → show 'No context'
 		if !strings.Contains(view, "No context") {
@@ -294,7 +316,9 @@ func TestDetailModel_AsyncWorkerEvents(t *testing.T) {
 		}
 
 		// newDetailModel should return immediately without blocking on I/O
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 
 		// Initial state: worker events should be empty (not yet fetched)
 		if len(model.workerEvents) != 0 {
@@ -325,11 +349,13 @@ func TestDetailModel_AsyncWorkerEvents(t *testing.T) {
 			WorkerID: "worker-loading",
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 1 // Worker tab
 		model.loadingEvents = true
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Loading state should be visible
 		if !strings.Contains(view, "Loading") && !strings.Contains(view, "loading") {
@@ -344,12 +370,14 @@ func TestDetailModel_AsyncWorkerEvents(t *testing.T) {
 			WorkerID: "worker-error",
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 1 // Worker tab
 		model.loadingEvents = false
 		model.eventError = fmt.Errorf("timeout fetching events")
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Error message should be visible
 		if !strings.Contains(view, "Error") && !strings.Contains(view, "error") {
@@ -374,12 +402,14 @@ func TestDetailViewportScrolling(t *testing.T) {
 			GitDiff: longContent,
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2 // Diff tab
 		model.width = 80
 		model.height = 30 // Small height to force scrolling
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Viewport should be initialized and showing content
 		// The viewport should not show all 100 lines at once (height constraint)
@@ -404,20 +434,22 @@ func TestDetailViewportScrolling(t *testing.T) {
 			GitDiff: longContent,
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2
 		model.width = 80
 		model.height = 30
 
 		// Initial view should show "Line 0"
-		viewBefore := model.View()
+		viewBefore := model.View(styles)
 		if !strings.Contains(viewBefore, "Line 0") {
 			t.Errorf("expected initial view to contain 'Line 0', got:\n%s", viewBefore)
 		}
 
 		// Simulate PageDown key
 		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-		viewAfter := model.View()
+		viewAfter := model.View(styles)
 
 		// After PageDown, should show later lines (not Line 0)
 		if strings.Contains(viewAfter, "Line 0") {
@@ -441,7 +473,9 @@ func TestDetailViewportScrolling(t *testing.T) {
 			GitDiff: longContent,
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2
 		model.width = 80
 		model.height = 30
@@ -449,7 +483,7 @@ func TestDetailViewportScrolling(t *testing.T) {
 		// Scroll down first (multiple times to get far down)
 		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
-		viewScrolled := model.View()
+		viewScrolled := model.View(styles)
 
 		// Should not show Line 0 after scrolling down
 		if strings.Contains(viewScrolled, "Line 0") {
@@ -458,7 +492,7 @@ func TestDetailViewportScrolling(t *testing.T) {
 
 		// Then scroll up
 		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgUp})
-		viewAfterUp := model.View()
+		viewAfterUp := model.View(styles)
 
 		// After PageUp, should show earlier lines
 		// (We can't guarantee Line 0 without knowing exact page size, but should show earlier lines)
@@ -479,13 +513,15 @@ func TestDetailViewportScrolling(t *testing.T) {
 			GitDiff: longContent,
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2
 		model.width = 80
 		model.height = 30
 
 		// Initial view should show Line 0
-		viewBefore := model.View()
+		viewBefore := model.View(styles)
 		if !strings.Contains(viewBefore, "Line 0") {
 			t.Errorf("expected initial view to contain 'Line 0'")
 		}
@@ -494,7 +530,7 @@ func TestDetailViewportScrolling(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 		}
-		viewAfterJ := model.View()
+		viewAfterJ := model.View(styles)
 
 		// After scrolling down, Line 0 should no longer be visible
 		if strings.Contains(viewAfterJ, "Line 0") {
@@ -505,7 +541,7 @@ func TestDetailViewportScrolling(t *testing.T) {
 		for i := 0; i < 5; i++ {
 			model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 		}
-		viewAfterK := model.View()
+		viewAfterK := model.View(styles)
 
 		// After scrolling back up, should show Line 0 again
 		if !strings.Contains(viewAfterK, "Line 0") {
@@ -521,7 +557,9 @@ func TestDetailViewportScrolling(t *testing.T) {
 			GitDiff: longContent,
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2
 		model.width = 80
 		model.height = 30
@@ -540,7 +578,7 @@ func TestDetailViewportScrolling(t *testing.T) {
 		}
 
 		// Viewport should now show more content (larger height)
-		view := model.View()
+		view := model.View(styles)
 		lineCount := strings.Count(view, "Line of text")
 		if lineCount <= 20 {
 			t.Errorf("expected more visible lines after resize to height=50, got %d", lineCount)
@@ -556,7 +594,9 @@ func TestDetailViewportScrolling(t *testing.T) {
 			Memory:  longContent, // Both tabs have long content
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2 // Diff tab
 		model.width = 80
 		model.height = 30
@@ -569,7 +609,7 @@ func TestDetailViewportScrolling(t *testing.T) {
 		model = model.nextTab() // 3 (Deps)
 		model = model.nextTab() // 4 (Memory)
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Viewport should be reset to top (showing early content)
 		// We can verify by checking that we're not seeing content from middle/end
@@ -580,7 +620,7 @@ func TestDetailViewportScrolling(t *testing.T) {
 
 		// Switch back to Diff tab and verify scroll was reset
 		model.activeTab = 2
-		view = model.View()
+		view = model.View(styles)
 		if !strings.Contains(view, "Line of text") {
 			t.Errorf("expected viewport to show content on Diff tab")
 		}
@@ -593,12 +633,14 @@ func TestDetailViewportScrolling(t *testing.T) {
 			GitDiff: "", // No content
 		}
 
-		model := newDetailModel(bead)
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
 		model.activeTab = 2 // Diff tab
 		model.width = 80
 		model.height = 30
 
-		view := model.View()
+		view := model.View(styles)
 
 		// Should show "No changes" placeholder instead of empty viewport
 		if !strings.Contains(view, "No changes") {

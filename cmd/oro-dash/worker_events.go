@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"oro/pkg/eventlog"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // WorkerEvent represents a worker event for display purposes.
@@ -56,15 +54,13 @@ func fetchWorkerEvents(ctx context.Context, workerID string, limit int) ([]Worke
 }
 
 // renderWorkerEvents renders worker event history as a table.
-func renderWorkerEvents(events []WorkerEvent, theme Theme) string {
+func renderWorkerEvents(events []WorkerEvent, _ Theme, styles Styles) string {
 	if len(events) == 0 {
-		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-		return dimStyle.Render("No events")
+		return styles.DetailDimItalic.Render("No events")
 	}
 
 	var lines []string
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
-	lines = append(lines, headerStyle.Render("Recent Events:"), "")
+	lines = append(lines, styles.Primary.Bold(true).Render("Recent Events:"), "")
 
 	// Column widths
 	const timeWidth = 8
@@ -77,7 +73,7 @@ func renderWorkerEvents(events []WorkerEvent, theme Theme) string {
 		typeWidth, "Event",
 		beadWidth, "Bead")
 	lines = append(lines,
-		lipgloss.NewStyle().Bold(true).Render(header),
+		styles.Bold.Render(header),
 		strings.Repeat("─", 50))
 
 	// Events

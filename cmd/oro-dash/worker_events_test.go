@@ -30,7 +30,7 @@ func TestFetchWorkerEvents_MissingDatabase(t *testing.T) {
 
 func TestRenderWorkerEvents_EmptySlice(t *testing.T) {
 	theme := DefaultTheme()
-	result := renderWorkerEvents(nil, theme)
+	result := renderWorkerEvents(nil, theme, NewStyles(theme))
 	if result == "" {
 		t.Error("expected non-empty result for empty events")
 	}
@@ -50,7 +50,7 @@ func TestRenderWorkerEvents_WithEvents(t *testing.T) {
 		{Type: "assign", Timestamp: "12:34:57", BeadID: "beads-def"},
 	}
 
-	result := renderWorkerEvents(events, theme)
+	result := renderWorkerEvents(events, theme, NewStyles(theme))
 	if result == "" {
 		t.Error("expected non-empty result for events")
 	}

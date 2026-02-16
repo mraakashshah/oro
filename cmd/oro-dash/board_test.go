@@ -17,7 +17,8 @@ func TestBoardView_ColumnsRendered(t *testing.T) {
 	}
 
 	board := NewBoardModel(beads)
-	output := board.Render()
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
 
 	for _, header := range []string{"Ready", "In Progress", "Blocked"} {
 		if !strings.Contains(output, header) {
@@ -36,7 +37,8 @@ func TestBoardView_BeadInCorrectColumn(t *testing.T) {
 	}
 
 	board := NewBoardModel(beads)
-	output := board.Render()
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
 
 	// Each bead title and ID should appear in the output.
 	for _, b := range beads {
@@ -70,7 +72,8 @@ func TestBoardView_BeadInCorrectColumn(t *testing.T) {
 // and still shows column headers.
 func TestBoardView_EmptyBeads(t *testing.T) {
 	board := NewBoardModel(nil)
-	output := board.Render()
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
 
 	for _, header := range []string{"Ready", "In Progress", "Blocked"} {
 		if !strings.Contains(output, header) {
@@ -100,7 +103,8 @@ func TestDoneColumn_MostRecent(t *testing.T) {
 	}, closedBeads...)
 
 	board := NewBoardModel(beads)
-	output := board.Render()
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
 
 	// 1. Verify "Done" column header exists
 	if !strings.Contains(output, "Done") {
@@ -159,7 +163,8 @@ func TestCardRendering_PriorityBadges(t *testing.T) {
 	}
 
 	board := NewBoardModel(beads)
-	output := board.Render()
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
 
 	// Verify each priority badge appears in output
 	for _, expected := range []string{"[P0]", "[P1]", "[P2]", "[P3]", "[P4]"} {
@@ -179,7 +184,8 @@ func TestCardRendering_TypeIndicators(t *testing.T) {
 	}
 
 	board := NewBoardModel(beads)
-	output := board.Render()
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
 
 	// Verify type indicators appear in output (using emoji or short codes)
 	typeIndicators := map[string]string{
@@ -218,7 +224,8 @@ func TestCardRendering_InProgressWorkerInfo(t *testing.T) {
 	}
 
 	board := NewBoardModelWithWorkers(beads, workers, assignments)
-	output := board.RenderWithCursor(-1, -1)
+	theme := DefaultTheme()
+	output := board.RenderWithCursor(-1, -1, theme, NewStyles(theme))
 
 	// Verify worker IDs appear in the output for in-progress cards
 	if !strings.Contains(output, "worker-abc") {
@@ -244,7 +251,8 @@ func TestCardRendering_BlockedBeadDependencies(t *testing.T) {
 	}
 
 	board := NewBoardModel(beads)
-	output := board.Render()
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
 
 	// Verify blocker IDs appear in the output
 	if !strings.Contains(output, "b-blocker1") {
@@ -273,7 +281,8 @@ func TestCardRendering_NoOverflow(t *testing.T) {
 	}
 
 	board := NewBoardModel(beads)
-	output := board.Render()
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
 
 	// Basic sanity check: output should contain the bead
 	if !strings.Contains(output, "b-long") {
@@ -305,7 +314,8 @@ func TestCardRendering_WorkerHealthBadge_Green(t *testing.T) {
 	}
 
 	board := NewBoardModelWithWorkers(beads, workers, assignments)
-	output := board.RenderWithCursor(-1, -1)
+	theme := DefaultTheme()
+	output := board.RenderWithCursor(-1, -1, theme, NewStyles(theme))
 
 	// Verify worker ID appears
 	if !strings.Contains(output, "worker-healthy") {
@@ -334,7 +344,8 @@ func TestCardRendering_WorkerHealthBadge_Amber(t *testing.T) {
 	}
 
 	board := NewBoardModelWithWorkers(beads, workers, assignments)
-	output := board.RenderWithCursor(-1, -1)
+	theme := DefaultTheme()
+	output := board.RenderWithCursor(-1, -1, theme, NewStyles(theme))
 
 	// Verify worker ID appears
 	if !strings.Contains(output, "worker-stale") {
@@ -363,7 +374,8 @@ func TestCardRendering_WorkerHealthBadge_Red(t *testing.T) {
 	}
 
 	board := NewBoardModelWithWorkers(beads, workers, assignments)
-	output := board.RenderWithCursor(-1, -1)
+	theme := DefaultTheme()
+	output := board.RenderWithCursor(-1, -1, theme, NewStyles(theme))
 
 	// Verify worker ID appears
 	if !strings.Contains(output, "worker-stuck") {
@@ -392,7 +404,8 @@ func TestCardRendering_ContextPercentage(t *testing.T) {
 	}
 
 	board := NewBoardModelWithWorkers(beads, workers, assignments)
-	output := board.RenderWithCursor(-1, -1)
+	theme := DefaultTheme()
+	output := board.RenderWithCursor(-1, -1, theme, NewStyles(theme))
 
 	// Verify context percentage appears
 	if !strings.Contains(output, "42%") {
@@ -409,7 +422,8 @@ func TestCardRendering_NoWorkerAssignment(t *testing.T) {
 
 	// No workers or assignments
 	board := NewBoardModelWithWorkers(beads, nil, nil)
-	output := board.RenderWithCursor(-1, -1)
+	theme := DefaultTheme()
+	output := board.RenderWithCursor(-1, -1, theme, NewStyles(theme))
 
 	// Verify bead renders without panic
 	if !strings.Contains(output, "b-wip") {
@@ -434,7 +448,8 @@ func TestCardRendering_WorkerNotInList(t *testing.T) {
 	}
 
 	board := NewBoardModelWithWorkers(beads, nil, assignments)
-	output := board.RenderWithCursor(-1, -1)
+	theme := DefaultTheme()
+	output := board.RenderWithCursor(-1, -1, theme, NewStyles(theme))
 
 	// Verify bead renders without panic
 	if !strings.Contains(output, "b-wip") {

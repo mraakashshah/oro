@@ -113,13 +113,20 @@ type Model struct {
 	searchQuery         string // Current search query
 	searchSelectedIndex int    // Index of the selected search result
 	searchModel         *SearchModel
+
+	// Pre-computed styles to avoid allocations during rendering
+	theme  Theme
+	styles Styles
 }
 
 // newModel creates a new Model initialized with BoardView active.
 func newModel() Model {
+	theme := DefaultTheme()
 	return Model{
 		activeView:  BoardView,
 		searchModel: &SearchModel{},
+		theme:       theme,
+		styles:      NewStyles(theme),
 	}
 }
 
@@ -301,7 +308,7 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 				AcceptanceCriteria: selectedBead.AcceptanceCriteria,
 				Model:              selectedBead.Model,
 			}
-			dm := newDetailModel(beadDetail)
+			dm := newDetailModel(beadDetail, m.theme, m.styles)
 			m.detailModel = &dm
 			m.activeView = DetailView
 			// Initiate async worker events fetch
@@ -383,16 +390,16 @@ func (m Model) View() string {
 		return statusBar + "\n" + insights.Render()
 	case DetailView:
 		if m.detailModel != nil {
-			return statusBar + "\n" + m.detailModel.View()
+			return statusBar + "\n" + m.detailModel.View(m.styles)
 		}
 		// Fallback to board if detailModel is nil
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
-		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
+		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles)
 	case SearchView:
 		return statusBar + "\n" + m.renderSearchOverlay()
 	default:
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
-		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
+		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles)
 	}
 }
 
@@ -422,81 +429,69 @@ func (m Model) buildInsightsModel() *InsightsModel {
 
 // renderStatusBar renders the status bar with daemon health, worker count, and aggregate stats.
 func (m Model) renderStatusBar() string {
-	theme := DefaultTheme()
-
 	var daemonStatus string
 	if m.daemonHealthy {
-		daemonStatus = lipgloss.NewStyle().Foreground(theme.Success).Render("daemon: online")
+		daemonStatus = m.styles.DaemonOnline.Render("daemon: online")
 	} else {
-		daemonStatus = lipgloss.NewStyle().Foreground(theme.Error).Render("daemon: offline")
+		daemonStatus = m.styles.DaemonOffline.Render("daemon: offline")
 	}
 
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,
 		daemonStatus,
-		lipgloss.NewStyle().Render(" | Workers: "),
-		lipgloss.NewStyle().Foreground(theme.Primary).Render(fmt.Sprintf("%d", m.workerCount)),
-		lipgloss.NewStyle().Render(" | Open: "),
-		lipgloss.NewStyle().Foreground(theme.Warning).Render(fmt.Sprintf("%d", m.openCount)),
-		lipgloss.NewStyle().Render(" | In Progress: "),
-		lipgloss.NewStyle().Foreground(theme.Success).Render(fmt.Sprintf("%d", m.inProgressCount)),
+		m.styles.StatusLabel.Render(" | Workers: "),
+		m.styles.StatusPrimary.Render(fmt.Sprintf("%d", m.workerCount)),
+		m.styles.StatusLabel.Render(" | Open: "),
+		m.styles.StatusWarning.Render(fmt.Sprintf("%d", m.openCount)),
+		m.styles.StatusLabel.Render(" | In Progress: "),
+		m.styles.StatusSuccess.Render(fmt.Sprintf("%d", m.inProgressCount)),
 	)
 }
 
 // renderSearchOverlay renders the search overlay with text input and filtered results.
 func (m Model) renderSearchOverlay() string {
-	theme := DefaultTheme()
-	title := m.renderSearchTitle(theme)
-	searchInput := m.renderSearchInput(theme)
-	helpText := m.renderSearchHelp(theme)
-	results := m.renderSearchResults(theme)
+	title := m.renderSearchTitle()
+	searchInput := m.renderSearchInput()
+	helpText := m.renderSearchHelp()
+	results := m.renderSearchResults()
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, searchInput, helpText, results)
 }
 
 // renderSearchTitle renders the search overlay title.
-func (m Model) renderSearchTitle(theme Theme) string {
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Padding(1, 0)
-	return titleStyle.Render("Search Beads")
+func (m Model) renderSearchTitle() string {
+	return m.styles.SearchTitle.Render("Search Beads")
 }
 
 // renderSearchInput renders the search input field with current query.
-func (m Model) renderSearchInput(theme Theme) string {
-	inputStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Primary).
-		Padding(0, 1).
-		Width(60)
+func (m Model) renderSearchInput() string {
 	searchPrompt := "Query: " + m.searchQuery + "▌"
-	return inputStyle.Render(searchPrompt)
+	return m.styles.SearchInput.Render(searchPrompt)
 }
 
 // renderSearchHelp renders the help text for search overlay.
-func (m Model) renderSearchHelp(theme Theme) string {
-	helpStyle := lipgloss.NewStyle().Foreground(theme.Muted).Padding(1, 0)
-	return helpStyle.Render("Use p:N, s:STATUS, t:TYPE filters or fuzzy search. ↑↓ navigate, Enter to view, Esc to cancel")
+func (m Model) renderSearchHelp() string {
+	return m.styles.SearchHelp.Render("Use p:N, s:STATUS, t:TYPE filters or fuzzy search. ↑↓ navigate, Enter to view, Esc to cancel")
 }
 
 // renderSearchResults renders the list of filtered search results.
-func (m Model) renderSearchResults(theme Theme) string {
+func (m Model) renderSearchResults() string {
 	filtered := m.filterBeads()
-	resultsStyle := lipgloss.NewStyle().Padding(1, 0)
 
 	if len(filtered) == 0 {
-		return m.renderNoResults(theme, resultsStyle)
+		return m.renderNoResults()
 	}
 
-	return m.renderResultsList(theme, filtered, resultsStyle)
+	return m.renderResultsList(filtered)
 }
 
 // renderNoResults renders the "no results" message.
-func (m Model) renderNoResults(theme Theme, resultsStyle lipgloss.Style) string {
-	noResultsStyle := lipgloss.NewStyle().Foreground(theme.Muted)
-	return resultsStyle.Render(noResultsStyle.Render("No matching beads"))
+func (m Model) renderNoResults() string {
+	return m.styles.SearchResults.Render(m.styles.NoResults.Render("No matching beads"))
 }
 
 // renderResultsList renders the list of search results with highlighting.
-func (m Model) renderResultsList(theme Theme, filtered []protocol.Bead, resultsStyle lipgloss.Style) string {
+func (m Model) renderResultsList(filtered []protocol.Bead) string {
 	const maxResults = 10
 	totalCount := len(filtered)
 
@@ -506,31 +501,24 @@ func (m Model) renderResultsList(theme Theme, filtered []protocol.Bead, resultsS
 
 	var resultsBuilder strings.Builder
 	for i, bead := range filtered {
-		resultsBuilder.WriteString(m.renderSearchResultLine(theme, i, bead))
+		resultsBuilder.WriteString(m.renderSearchResultLine(i, bead))
 		resultsBuilder.WriteString("\n")
 	}
 
 	if totalCount > maxResults {
-		moreStyle := lipgloss.NewStyle().Foreground(theme.Muted)
-		resultsBuilder.WriteString(moreStyle.Render(fmt.Sprintf("  ... and %d more", totalCount-maxResults)))
+		resultsBuilder.WriteString(m.styles.Muted.Render(fmt.Sprintf("  ... and %d more", totalCount-maxResults)))
 	}
 
-	return resultsStyle.Render(resultsBuilder.String())
+	return m.styles.SearchResults.Render(resultsBuilder.String())
 }
 
 // renderSearchResultLine renders a single search result line with optional highlighting.
-func (m Model) renderSearchResultLine(theme Theme, index int, bead protocol.Bead) string {
+func (m Model) renderSearchResultLine(index int, bead protocol.Bead) string {
 	if index == m.searchSelectedIndex {
-		highlightStyle := lipgloss.NewStyle().
-			Background(theme.Primary).
-			Foreground(lipgloss.Color("#ffffff")).
-			Bold(true).
-			Padding(0, 1)
-		return highlightStyle.Render(fmt.Sprintf("▸ %s - %s", bead.ID, bead.Title))
+		return m.styles.Highlight.Render(fmt.Sprintf("▸ %s - %s", bead.ID, bead.Title))
 	}
 
-	idStyle := lipgloss.NewStyle().Foreground(theme.Muted)
-	return fmt.Sprintf("  %s - %s", idStyle.Render(bead.ID), bead.Title)
+	return fmt.Sprintf("  %s - %s", m.styles.IDMuted.Render(bead.ID), bead.Title)
 }
 
 // moveToNextColumn moves the cursor to the next non-empty column (wraps/clamps at boundary).
@@ -705,7 +693,7 @@ func (m Model) drillDownToDetail() (Model, tea.Cmd) {
 
 	// Create detail model
 	m.detailModel = &DetailModel{}
-	*m.detailModel = newDetailModel(beadDetail)
+	*m.detailModel = newDetailModel(beadDetail, m.theme, m.styles)
 	m.activeView = DetailView
 
 	// Initiate async worker events fetch

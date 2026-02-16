@@ -90,57 +90,37 @@ func getViewName(view ViewType) string {
 
 // renderHelpOverlay renders the help overlay panel.
 func (m Model) renderHelpOverlay() string {
-	theme := DefaultTheme()
-
-	title := m.renderHelpTitle(theme)
-	content := m.renderHelpContent(theme)
-	footer := m.renderHelpFooter(theme)
+	title := m.renderHelpTitle()
+	content := m.renderHelpContent()
+	footer := m.renderHelpFooter()
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, content, footer)
 }
 
 // renderHelpTitle renders the help overlay title.
-func (m Model) renderHelpTitle(theme Theme) string {
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(theme.Primary).
-		Padding(1, 0)
-
+func (m Model) renderHelpTitle() string {
 	viewName := getViewName(m.previousView)
-	return titleStyle.Render("Help - " + viewName)
+	return m.styles.HelpTitle.Render("Help - " + viewName)
 }
 
 // renderHelpContent renders the key bindings list.
-func (m Model) renderHelpContent(theme Theme) string {
+func (m Model) renderHelpContent() string {
 	bindings := getHelpBindingsForView(m.previousView)
 
 	var contentBuilder strings.Builder
-	keyStyle := lipgloss.NewStyle().
-		Foreground(theme.Primary).
-		Bold(true).
-		Width(20)
-	descStyle := lipgloss.NewStyle().Foreground(theme.ColorFg)
+	keyStyle := m.styles.HelpKey.Width(20)
 
 	for _, binding := range bindings {
 		key := keyStyle.Render(binding.key)
-		desc := descStyle.Render(binding.desc)
+		desc := m.styles.HelpDesc.Render(binding.desc)
 		contentBuilder.WriteString(lipgloss.JoinHorizontal(lipgloss.Left, key, desc))
 		contentBuilder.WriteString("\n")
 	}
 
-	contentStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Primary).
-		Padding(1, 2)
-
-	return contentStyle.Render(contentBuilder.String())
+	return m.styles.HelpContent.Render(contentBuilder.String())
 }
 
 // renderHelpFooter renders the help overlay footer with dismissal instructions.
-func (m Model) renderHelpFooter(theme Theme) string {
-	footerStyle := lipgloss.NewStyle().
-		Foreground(theme.Muted).
-		Padding(1, 0)
-
-	return footerStyle.Render("Press ? or Esc to close")
+func (m Model) renderHelpFooter() string {
+	return m.styles.HelpFooter.Render("Press ? or Esc to close")
 }

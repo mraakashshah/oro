@@ -31,6 +31,8 @@ type DetailModel struct {
 	viewportActiveTab int            // Track which tab content is currently in viewport
 	width             int            // Terminal width
 	height            int            // Terminal height
+	theme             Theme          // Pre-computed theme for render methods
+	styles            Styles         // Pre-computed styles for render methods
 }
 
 // fetchWorkerEventsCmd returns a tea.Cmd that fetches worker events asynchronously.
@@ -52,7 +54,7 @@ func fetchWorkerEventsCmd(workerID string) tea.Cmd {
 
 // newDetailModel creates a new DetailModel for the given bead.
 // Worker events are fetched asynchronously - use fetchWorkerEventsCmd to initiate the fetch.
-func newDetailModel(bead protocol.BeadDetail) DetailModel {
+func newDetailModel(bead protocol.BeadDetail, theme Theme, styles Styles) DetailModel {
 	// Mark as loading if worker is assigned (events will be fetched asynchronously)
 	loading := bead.WorkerID != ""
 
@@ -70,6 +72,8 @@ func newDetailModel(bead protocol.BeadDetail) DetailModel {
 		viewportActiveTab: 0,
 		width:             80,
 		height:            24,
+		theme:             theme,
+		styles:            styles,
 	}
 
 	// Set initial viewport content
@@ -140,38 +144,31 @@ func (d *DetailModel) setViewportContent(content string) {
 func (d DetailModel) getActiveTabContent() string {
 	switch d.activeTab {
 	case 0:
-		return d.renderOverviewTab()
+		return d.renderOverviewTab(d.styles)
 	case 1:
-		return d.renderWorkerTab()
+		return d.renderWorkerTab(d.theme, d.styles)
 	case 2:
-		return d.renderDiffTab()
+		return d.renderDiffTab(d.styles)
 	case 3:
-		return d.renderDepsTab()
+		return d.renderDepsTab(d.styles)
 	case 4:
-		return d.renderMemoryTab()
+		return d.renderMemoryTab(d.styles)
 	default:
 		return "Unknown tab"
 	}
 }
 
 // View renders the detail view with tabs.
-func (d DetailModel) View() string {
-	theme := DefaultTheme()
-
+func (d DetailModel) View(styles Styles) string {
 	// Render tab headers
 	var tabHeaders []string
 	for i, tab := range d.tabs {
 		if i == d.activeTab {
 			// Active tab - highlighted
-			style := lipgloss.NewStyle().
-				Foreground(theme.Primary).
-				Bold(true)
-			tabHeaders = append(tabHeaders, style.Render("["+tab+"]"))
+			tabHeaders = append(tabHeaders, styles.Primary.Bold(true).Render("["+tab+"]"))
 		} else {
 			// Inactive tab - dimmed
-			style := lipgloss.NewStyle().
-				Foreground(theme.Muted)
-			tabHeaders = append(tabHeaders, style.Render(tab))
+			tabHeaders = append(tabHeaders, styles.Muted.Render(tab))
 		}
 	}
 
@@ -210,15 +207,12 @@ func (d DetailModel) View() string {
 }
 
 // renderOverviewTab renders the Overview tab with bead details.
-func (d DetailModel) renderOverviewTab() string {
-	theme := DefaultTheme()
-
+func (d DetailModel) renderOverviewTab(styles Styles) string {
 	var lines []string
 
 	// Title and ID
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
 	lines = append(lines,
-		titleStyle.Render("Title: ")+d.bead.Title,
+		styles.DetailTitle.Render("Title: ")+d.bead.Title,
 		"ID: "+d.bead.ID,
 	)
 
@@ -231,7 +225,7 @@ func (d DetailModel) renderOverviewTab() string {
 	if d.bead.AcceptanceCriteria != "" {
 		lines = append(lines,
 			"",
-			lipgloss.NewStyle().Bold(true).Render("Acceptance Criteria:"),
+			styles.DetailBold.Render("Acceptance Criteria:"),
 			d.bead.AcceptanceCriteria,
 		)
 	}
@@ -240,13 +234,10 @@ func (d DetailModel) renderOverviewTab() string {
 }
 
 // renderWorkerTab renders the Worker tab with worker context %, heartbeat, and event history.
-func (d DetailModel) renderWorkerTab() string {
-	theme := DefaultTheme()
-
+func (d DetailModel) renderWorkerTab(theme Theme, styles Styles) string {
 	// Edge case: no worker assigned → show 'Unassigned'
 	if d.bead.WorkerID == "" {
-		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-		return dimStyle.Render("Unassigned")
+		return styles.DetailDimItalic.Render("Unassigned")
 	}
 
 	var lines []string
@@ -267,49 +258,38 @@ func (d DetailModel) renderWorkerTab() string {
 	// Worker event history - show loading state or error
 	switch {
 	case d.loadingEvents:
-		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-		lines = append(lines, "", dimStyle.Render("Loading events..."))
+		lines = append(lines, "", styles.DetailDimItalic.Render("Loading events..."))
 	case d.eventError != nil:
-		errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
-		lines = append(lines, "", errorStyle.Render("Error loading events: "+d.eventError.Error()))
+		lines = append(lines, "", styles.DetailError.Render("Error loading events: "+d.eventError.Error()))
 	default:
-		lines = append(lines, "", renderWorkerEvents(d.workerEvents, theme))
+		lines = append(lines, "", renderWorkerEvents(d.workerEvents, theme, styles))
 	}
 
 	return strings.Join(lines, "\n")
 }
 
 // renderDiffTab renders the Diff tab with git diff output.
-func (d DetailModel) renderDiffTab() string {
-	theme := DefaultTheme()
-
+func (d DetailModel) renderDiffTab(styles Styles) string {
 	// Edge case: no diff → show 'No changes'
 	if d.bead.GitDiff == "" {
-		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-		return dimStyle.Render("No changes")
+		return styles.DetailDimItalic.Render("No changes")
 	}
 
 	return d.bead.GitDiff
 }
 
 // renderDepsTab renders the Deps tab with dependency information.
-func (d DetailModel) renderDepsTab() string {
-	theme := DefaultTheme()
-
+func (d DetailModel) renderDepsTab(styles Styles) string {
 	// Edge case: bead has no deps → show 'No dependencies'
 	// For now, BeadDetail doesn't have dependency fields, so always show placeholder
-	dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-	return dimStyle.Render("No dependencies")
+	return styles.DetailDimItalic.Render("No dependencies")
 }
 
 // renderMemoryTab renders the Memory tab with injected context.
-func (d DetailModel) renderMemoryTab() string {
-	theme := DefaultTheme()
-
+func (d DetailModel) renderMemoryTab(styles Styles) string {
 	// Edge case: no memory → show 'No context'
 	if d.bead.Memory == "" {
-		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
-		return dimStyle.Render("No context")
+		return styles.DetailDimItalic.Render("No context")
 	}
 
 	return d.bead.Memory
