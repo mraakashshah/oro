@@ -68,30 +68,13 @@ func AssemblePrompt(params PromptParams) string {
 		section(&b, "Relevant Code", params.CodeSearchContext)
 	}
 
-	appendStaticSections(&b, params.WorktreePath, params.BeadID)
-
-	// 11. Failure
-	section(&b, "Failure", strings.Join([]string{
-		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
-		"  `bd create --title=\"P0: <bead-title> test failure\" --type=bug --priority=0 --description=\"QG output: <paste error>\"`",
-		"- Bead too big: decompose with `bd create`, then exit.",
-		"  `bd create --title=\"<subtask>\" --type=task --parent=<bead-id>` for each piece",
-		"- Context limit reached: create handoff beads, then exit.",
-		"  `bd create --title=\"Continue: <bead-title>\" --type=task --description=\"Remaining: <what's left>\"`",
-		"- Blocked: create a blocker bead, then declare the dependency and exit.",
-		"  `bd create --title=\"Blocker: <what's blocking>\" --type=bug --priority=0`",
-		"  then `bd dep add <this-bead> <blocker-bead>`",
-	}, "\n"))
-
-	// 12. Exit
-	b.WriteString("## Exit\n\n")
-	b.WriteString("When acceptance criteria pass and quality gate is green, exit.\n")
+	appendStaticSections(&b, params)
 
 	return b.String()
 }
 
-// appendStaticSections writes the invariant sections (4-10) of the worker prompt.
-func appendStaticSections(b *strings.Builder, worktreePath, beadID string) {
+// appendStaticSections writes the invariant sections (4-10) and Failure/Exit sections of the worker prompt.
+func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Coding Rules", strings.Join([]string{
 		"- Functional first: pure functions, immutability, early returns",
 		"- Pure core (business logic), impure edges (I/O, CLI)",
@@ -101,7 +84,7 @@ func appendStaticSections(b *strings.Builder, worktreePath, beadID string) {
 	section(b, "TDD", "Write tests FIRST. Red-green-refactor. Every feature/fix needs a test.")
 	section(b, "Quality Gate", "Before completing, run `./quality_gate.sh` and ensure it passes.")
 	section(b, "Worktree", fmt.Sprintf(
-		"You are in `%s`. Commit to branch `%s%s`.", worktreePath, protocol.BranchPrefix, beadID,
+		"You are in `%s`. Commit to branch `%s%s`.", params.WorktreePath, protocol.BranchPrefix, params.BeadID,
 	))
 	section(b, "Git", "Use conventional commits (`feat(scope): msg`, `fix(scope): msg`, `test(scope): msg`).\nNo amend, new commits only.")
 	section(b, "Beads Tools", strings.Join([]string{
@@ -114,4 +97,21 @@ func appendStaticSections(b *strings.Builder, worktreePath, beadID string) {
 		"- Do not modify files outside your worktree",
 		"- Do not modify the main branch",
 	}, "\n"))
+
+	// 11. Failure
+	section(b, "Failure", strings.Join([]string{
+		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
+		"  `bd create --title=\"P0: <bead-title> test failure\" --type=bug --priority=0 --description=\"QG output: <paste error>\"`",
+		"- Bead too big: decompose with `bd create`, then exit.",
+		"  `bd create --title=\"<subtask>\" --type=task --parent=<bead-id>` for each piece",
+		"- Context limit reached: create handoff beads, then exit.",
+		fmt.Sprintf("  `bd create --title=\"Continue: <bead-title>\" --type=task --parent=%s --acceptance-criteria=\"<copy same acceptance criteria from above>\" --description=\"Remaining: <what's left>\"`", params.BeadID),
+		"- Blocked: create a blocker bead, then declare the dependency and exit.",
+		"  `bd create --title=\"Blocker: <what's blocking>\" --type=bug --priority=0`",
+		"  then `bd dep add <this-bead> <blocker-bead>`",
+	}, "\n"))
+
+	// 12. Exit
+	b.WriteString("## Exit\n\n")
+	b.WriteString("When acceptance criteria pass and quality gate is green, exit.\n")
 }

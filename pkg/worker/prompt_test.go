@@ -550,3 +550,47 @@ func TestAssemblePrompt_CodeSearchContext_Present(t *testing.T) {
 		t.Error("expected '## Relevant Code' section to appear before '## Coding Rules' section")
 	}
 }
+
+func TestPromptHandoffTemplate(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "oro-xyz123",
+		Title:              "Large task requiring handoff",
+		Description:        "Test description",
+		AcceptanceCriteria: "- [ ] Feature A works\n- [ ] Feature B works",
+		MemoryContext:      "",
+		WorktreePath:       "/tmp/wt-handoff",
+		Model:              "claude-opus-4-6",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract Failure section for focused assertions
+	failStart := strings.Index(prompt, "## Failure")
+	if failStart == -1 {
+		t.Fatal("expected prompt to contain ## Failure section")
+	}
+	failEnd := strings.Index(prompt[failStart+1:], "## ")
+	var failureSection string
+	if failEnd == -1 {
+		failureSection = prompt[failStart:]
+	} else {
+		failureSection = prompt[failStart : failStart+1+failEnd]
+	}
+
+	// Check that handoff template contains --parent flag with actual bead-id (not placeholder)
+	if !strings.Contains(failureSection, "--parent=oro-xyz123") {
+		t.Error("expected handoff template to contain --parent=oro-xyz123 (actual bead-id, not placeholder)")
+	}
+
+	// Check that handoff template contains --acceptance-criteria flag
+	if !strings.Contains(failureSection, "--acceptance-criteria") {
+		t.Error("expected handoff template to contain --acceptance-criteria flag")
+	}
+
+	// Check that handoff template instructs agent to copy AC from assignment context
+	if !strings.Contains(failureSection, "copy") && !strings.Contains(failureSection, "same acceptance criteria") {
+		t.Error("expected handoff template to instruct agent to copy AC from assignment context")
+	}
+}
