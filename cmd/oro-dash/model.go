@@ -154,6 +154,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.inProgressCount++
 			}
 		}
+		// Clamp cursor position to ensure it's valid after bead data refresh
+		m = m.clampCursor()
 
 	case workersMsg:
 		if msg == nil {
@@ -624,6 +626,52 @@ func (m Model) moveToPrevBead() Model {
 	// Clamp at first bead
 	if m.activeBead > 0 {
 		m.activeBead--
+	}
+
+	return m
+}
+
+// clampCursor ensures cursor position is valid after bead data refresh.
+// If current column is empty, moves to first non-empty column.
+// Clamps activeBead to valid range within the current column.
+func (m Model) clampCursor() Model {
+	board := NewBoardModel(m.beads)
+
+	// Validate activeCol is within bounds
+	if m.activeCol >= len(board.columns) {
+		m.activeCol = 0
+	}
+
+	// Check if current column is empty
+	if len(board.columns[m.activeCol].beads) == 0 {
+		// Find first non-empty column
+		foundNonEmpty := false
+		for i, col := range board.columns {
+			if len(col.beads) > 0 {
+				m.activeCol = i
+				m.activeBead = 0
+				foundNonEmpty = true
+				break
+			}
+		}
+		// If all columns empty, stay at current column and reset activeBead
+		if !foundNonEmpty {
+			m.activeBead = 0
+			return m
+		}
+	}
+
+	// Clamp activeBead to valid range [0, len(beads)-1]
+	columnBeads := board.columns[m.activeCol].beads
+	if len(columnBeads) > 0 {
+		if m.activeBead >= len(columnBeads) {
+			m.activeBead = len(columnBeads) - 1
+		}
+		if m.activeBead < 0 {
+			m.activeBead = 0
+		}
+	} else {
+		m.activeBead = 0
 	}
 
 	return m

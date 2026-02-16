@@ -981,3 +981,156 @@ func TestModel_SearchResultNavigation(t *testing.T) {
 		}
 	})
 }
+
+// TestModel_BeadsMsgClampsCursor verifies that activeBead is clamped when beads refresh shrinks column.
+func TestModel_BeadsMsgClampsCursor(t *testing.T) {
+	t.Run("activeBead clamped when column shrinks below cursor position", func(t *testing.T) {
+		// Setup: model with cursor on 5th bead in Ready column
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "b-1", Status: "open"},
+			{ID: "b-2", Status: "open"},
+			{ID: "b-3", Status: "open"},
+			{ID: "b-4", Status: "open"},
+			{ID: "b-5", Status: "open"},
+			{ID: "b-6", Status: "open"},
+		}
+		m.activeCol = 0  // Ready column
+		m.activeBead = 5 // 6th bead (0-indexed)
+
+		// Refresh with only 2 beads
+		refreshedBeads := []protocol.Bead{
+			{ID: "b-1", Status: "open"},
+			{ID: "b-2", Status: "open"},
+		}
+
+		updated, _ := m.Update(beadsMsg(refreshedBeads))
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// activeBead should be clamped to max valid index (1)
+		if model.activeBead != 1 {
+			t.Errorf("activeBead should be clamped to 1, got %d", model.activeBead)
+		}
+	})
+
+	t.Run("activeBead clamped to 0 when column becomes empty", func(t *testing.T) {
+		// Setup: model with cursor on bead in Ready column
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "b-1", Status: "open"},
+			{ID: "b-2", Status: "open"},
+		}
+		m.activeCol = 0  // Ready column
+		m.activeBead = 1 // 2nd bead
+
+		// Refresh with all beads in different column
+		refreshedBeads := []protocol.Bead{
+			{ID: "b-1", Status: "in_progress"},
+			{ID: "b-2", Status: "in_progress"},
+		}
+
+		updated, _ := m.Update(beadsMsg(refreshedBeads))
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// activeBead should be clamped to 0 (even though column is empty)
+		if model.activeBead != 0 {
+			t.Errorf("activeBead should be clamped to 0 when column is empty, got %d", model.activeBead)
+		}
+	})
+
+	t.Run("activeCol validated when becomes empty", func(t *testing.T) {
+		// Setup: model with cursor on bead in Ready column
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "b-1", Status: "open"},
+			{ID: "b-2", Status: "in_progress"},
+		}
+		m.activeCol = 0
+		m.activeBead = 0
+
+		// Refresh with Ready column now empty, but In Progress has beads
+		refreshedBeads := []protocol.Bead{
+			{ID: "b-2", Status: "in_progress"},
+			{ID: "b-3", Status: "in_progress"},
+		}
+
+		updated, _ := m.Update(beadsMsg(refreshedBeads))
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// activeCol should move to first non-empty column (In Progress = 1)
+		if model.activeCol != 1 {
+			t.Errorf("activeCol should move to first non-empty column (1), got %d", model.activeCol)
+		}
+		// activeBead should be reset to 0
+		if model.activeBead != 0 {
+			t.Errorf("activeBead should be reset to 0, got %d", model.activeBead)
+		}
+	})
+
+	t.Run("cursor unchanged when still valid after refresh", func(t *testing.T) {
+		// Setup: model with cursor on 2nd bead
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "b-1", Status: "open"},
+			{ID: "b-2", Status: "open"},
+			{ID: "b-3", Status: "open"},
+		}
+		m.activeCol = 0
+		m.activeBead = 1
+
+		// Refresh with more beads
+		refreshedBeads := []protocol.Bead{
+			{ID: "b-1", Status: "open"},
+			{ID: "b-2", Status: "open"},
+			{ID: "b-3", Status: "open"},
+			{ID: "b-4", Status: "open"},
+		}
+
+		updated, _ := m.Update(beadsMsg(refreshedBeads))
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// Cursor should remain unchanged
+		if model.activeCol != 0 {
+			t.Errorf("activeCol should remain 0, got %d", model.activeCol)
+		}
+		if model.activeBead != 1 {
+			t.Errorf("activeBead should remain 1, got %d", model.activeBead)
+		}
+	})
+
+	t.Run("no panic when all columns empty after refresh", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "b-1", Status: "open"},
+		}
+		m.activeCol = 0
+		m.activeBead = 0
+
+		// Refresh with no beads
+		updated, _ := m.Update(beadsMsg([]protocol.Bead{}))
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// Should clamp to safe defaults
+		if model.activeCol != 0 {
+			t.Errorf("activeCol should be 0, got %d", model.activeCol)
+		}
+		if model.activeBead != 0 {
+			t.Errorf("activeBead should be 0, got %d", model.activeBead)
+		}
+	})
+}
