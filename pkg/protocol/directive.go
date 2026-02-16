@@ -14,12 +14,13 @@ const (
 	DirectiveStatus     Directive = "status"      // Query dispatcher state.
 	DirectiveShutdown   Directive = "shutdown"    // Authorize SIGTERM and initiate graceful shutdown.
 	DirectiveKillWorker Directive = "kill-worker" // Terminate a specific worker and return its bead to queue.
+	DirectiveSpawnFor   Directive = "spawn-for"   // Spawn a worker for a specific bead.
 )
 
 // Valid reports whether d is one of the known directive values.
 func (d Directive) Valid() bool {
 	switch d {
-	case DirectiveStart, DirectiveStop, DirectivePause, DirectiveResume, DirectiveScale, DirectiveFocus, DirectiveStatus, DirectiveShutdown, DirectiveKillWorker:
+	case DirectiveStart, DirectiveStop, DirectivePause, DirectiveResume, DirectiveScale, DirectiveFocus, DirectiveStatus, DirectiveShutdown, DirectiveKillWorker, DirectiveSpawnFor:
 		return true
 	default:
 		return false

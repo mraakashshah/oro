@@ -1642,6 +1642,79 @@ func TestApplyDirective_KillWorker_EmptyArgs(t *testing.T) {
 	}
 }
 
+func TestApplyDirective_SpawnFor(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.targetWorkers = 1
+
+	detail, err := d.applyDirective(protocol.DirectiveSpawnFor, "oro-test-bead")
+	if err != nil {
+		t.Fatalf("applyDirective(spawn-for) failed: %v", err)
+	}
+	if !strings.Contains(detail, "spawned") {
+		t.Errorf("expected detail to mention 'spawned', got: %s", detail)
+	}
+	if !strings.Contains(detail, "oro-test-bead") {
+		t.Errorf("expected detail to mention bead ID, got: %s", detail)
+	}
+
+	// Assert: target count incremented
+	d.mu.Lock()
+	targetCount := d.targetWorkers
+	hasPriority := d.priorityBeads["oro-test-bead"]
+	d.mu.Unlock()
+	if targetCount != 2 {
+		t.Errorf("targetWorkers = %d, want 2 (incremented from 1)", targetCount)
+	}
+	if !hasPriority {
+		t.Error("expected bead to be in priorityBeads")
+	}
+
+	// Assert: a worker was spawned
+	pm.mu.Lock()
+	spawnCount := len(pm.spawned)
+	pm.mu.Unlock()
+	if spawnCount != 1 {
+		t.Errorf("expected 1 worker spawned, got %d", spawnCount)
+	}
+}
+
+func TestApplyDirective_SpawnFor_AlreadyAssigned(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Register worker with assigned bead
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+	d.registerWorker("existing-worker", conn1)
+	d.mu.Lock()
+	d.workers["existing-worker"].beadID = "oro-taken"
+	d.mu.Unlock()
+
+	_, err := d.applyDirective(protocol.DirectiveSpawnFor, "oro-taken")
+	if err == nil {
+		t.Fatal("expected error for already-assigned bead")
+	}
+	if !strings.Contains(err.Error(), "already assigned") {
+		t.Errorf("expected error to mention 'already assigned', got: %v", err)
+	}
+}
+
+func TestApplyDirective_SpawnFor_EmptyArgs(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	_, err := d.applyDirective(protocol.DirectiveSpawnFor, "")
+	if err == nil {
+		t.Fatal("expected error for empty args")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Errorf("expected error to mention 'required', got: %v", err)
+	}
+}
+
 func TestRun_RejectsShutdownDirective(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 

@@ -264,6 +264,10 @@ type Dispatcher struct {
 	// deletion occurs during the unlock window.
 	testUnlockHook func()
 
+	// priorityBeads holds bead IDs that should be assigned before normal queue ordering.
+	// Used by spawn-for directive to guarantee a specific bead gets the next idle worker.
+	priorityBeads map[string]bool
+
 	// shutdownCh is closed when a shutdown directive is received, causing Run() to exit.
 	shutdownCh chan struct{}
 	// shutdownAuthorized gates whether SIGTERM is honored by the signal handler.
@@ -309,6 +313,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			worktreeFailures: make(map[string]time.Time),
 			exhaustedBeads:   make(map[string]bool),
 		},
+		priorityBeads: make(map[string]bool),
 		shutdownCh:    make(chan struct{}),
 		beadsDir:      protocol.BeadsDir,
 		panesDir:      filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
@@ -1494,6 +1499,35 @@ func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 	}
 }
 
+// sortBeadsByPriority sorts beads: spawn-for beads first, then focused epic,
+// then by priority (P0 first). Returns a snapshot of priorityBeads for cleanup.
+func (d *Dispatcher) sortBeadsByPriority(beads []protocol.Bead) map[string]bool {
+	d.mu.Lock()
+	epic := d.focusedEpic
+	pbSnapshot := make(map[string]bool, len(d.priorityBeads))
+	for id := range d.priorityBeads {
+		pbSnapshot[id] = true
+	}
+	d.mu.Unlock()
+
+	sort.SliceStable(beads, func(i, j int) bool {
+		iPriority := pbSnapshot[beads[i].ID]
+		jPriority := pbSnapshot[beads[j].ID]
+		if iPriority != jPriority {
+			return iPriority
+		}
+		if epic != "" {
+			iMatch := beads[i].Epic == epic
+			jMatch := beads[j].Epic == epic
+			if iMatch != jMatch {
+				return iMatch
+			}
+		}
+		return beads[i].Priority < beads[j].Priority
+	})
+	return pbSnapshot
+}
+
 // tryAssign attempts to assign ready beads to idle workers.
 func (d *Dispatcher) tryAssign(ctx context.Context) {
 	// Only assign in running state.
@@ -1529,21 +1563,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	beads := d.filterAssignable(allBeads)
 
-	// Sort by focused epic first (if set), then by priority (P0 first, P3 last).
-	d.mu.Lock()
-	epic := d.focusedEpic
-	d.mu.Unlock()
-
-	sort.SliceStable(beads, func(i, j int) bool {
-		if epic != "" {
-			iMatch := beads[i].Epic == epic
-			jMatch := beads[j].Epic == epic
-			if iMatch != jMatch {
-				return iMatch // focused epic beads come first
-			}
-		}
-		return beads[i].Priority < beads[j].Priority
-	})
+	pbSnapshot := d.sortBeadsByPriority(beads)
 
 	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.
 	d.maybeAutoScale(ctx, len(beads), len(idle))
@@ -1560,6 +1580,12 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 			break
 		}
 		d.assignBead(ctx, idle[i], bead)
+		// Clean up priority bead after assignment.
+		if pbSnapshot[bead.ID] {
+			d.mu.Lock()
+			delete(d.priorityBeads, bead.ID)
+			d.mu.Unlock()
+		}
 	}
 }
 
@@ -1774,6 +1800,9 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	if dir == protocol.DirectiveKillWorker {
 		return d.applyKillWorker(args)
 	}
+	if dir == protocol.DirectiveSpawnFor {
+		return d.applySpawnFor(args)
+	}
 	switch dir {
 	case protocol.DirectiveStart:
 		d.setState(StateRunning)
@@ -1944,6 +1973,47 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 	}
 
 	return fmt.Sprintf("worker %s killed", workerID), nil
+}
+
+// applySpawnFor spawns a dedicated worker for a specific bead. The bead is
+// added to priorityBeads so tryAssign assigns it before normal queue ordering.
+func (d *Dispatcher) applySpawnFor(args string) (string, error) {
+	if args == "" {
+		return "", fmt.Errorf("bead ID required")
+	}
+	beadID := args
+
+	d.mu.Lock()
+	for _, w := range d.workers {
+		if w.beadID == beadID {
+			workerID := w.id
+			d.mu.Unlock()
+			return "", fmt.Errorf("bead %s already assigned to %s", beadID, workerID)
+		}
+	}
+	d.priorityBeads[beadID] = true
+	d.targetWorkers++
+	d.mu.Unlock()
+
+	if d.procMgr == nil {
+		d.mu.Lock()
+		delete(d.priorityBeads, beadID)
+		d.targetWorkers--
+		d.mu.Unlock()
+		return "", fmt.Errorf("no process manager configured")
+	}
+
+	newID := fmt.Sprintf("worker-spawnfor-%d", d.nowFunc().UnixNano())
+	if _, err := d.procMgr.Spawn(newID); err != nil {
+		d.mu.Lock()
+		delete(d.priorityBeads, beadID)
+		d.targetWorkers--
+		d.mu.Unlock()
+		return "", fmt.Errorf("spawn failed: %w", err)
+	}
+
+	_ = d.logEvent(context.Background(), "spawn_for", "dispatcher", beadID, newID, "")
+	return fmt.Sprintf("spawned worker %s for bead %s", newID, beadID), nil
 }
 
 // maybeAutoScale increases targetWorkers when assignable beads exist but no
