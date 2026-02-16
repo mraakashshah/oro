@@ -545,7 +545,6 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 		if logWriter != nil {
 			_, _ = logWriter.WriteString(line)
 			_, _ = logWriter.WriteString("\n")
-			_ = logWriter.Flush() // flush each line to ensure real-time visibility
 		}
 
 		// Extract [MEMORY] markers in real-time.
@@ -557,6 +556,13 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 			}
 		}
 	}
+
+	// Flush buffered log writes after processing all output
+	w.mu.Lock()
+	if w.logWriter != nil {
+		_ = w.logWriter.Flush()
+	}
+	w.mu.Unlock()
 
 	// Subprocess stdout closed — extract implicit memories so learnings from
 	// failed attempts (e.g. QG failure) are persisted regardless of outcome.
