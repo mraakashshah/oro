@@ -747,6 +747,73 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 	})
 }
 
+func TestCLIBeadSource_CreateWithAcceptanceCriteria(t *testing.T) {
+	t.Run("adds_ac_flag_when_non_empty", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test"}`)}
+		src := NewCLIBeadSource(runner)
+
+		id, err := src.Create(context.Background(), "Fix bug", "bug", 1, "Bug description", "", "Test passes and verified")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if id != "oro-test" {
+			t.Errorf("ID: got %q, want %q", id, "oro-test")
+		}
+
+		// Verify --acceptance-criteria flag is present with the AC value.
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if !sliceContains(call.Args, "--acceptance-criteria=Test passes and verified") {
+			t.Errorf("expected '--acceptance-criteria=Test passes and verified' in args, got %v", call.Args)
+		}
+	})
+
+	t.Run("omits_ac_flag_when_empty", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test2"}`)}
+		src := NewCLIBeadSource(runner)
+
+		id, err := src.Create(context.Background(), "Fix bug", "bug", 1, "Bug description", "", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if id != "oro-test2" {
+			t.Errorf("ID: got %q, want %q", id, "oro-test2")
+		}
+
+		// Verify --acceptance-criteria flag is NOT present when empty.
+		call := runner.calls[0]
+		for _, arg := range call.Args {
+			if strings.HasPrefix(arg, "--acceptance-criteria=") {
+				t.Errorf("expected no --acceptance-criteria arg when AC is empty, got %v", call.Args)
+			}
+		}
+	})
+
+	t.Run("includes_ac_with_parent", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test3"}`)}
+		src := NewCLIBeadSource(runner)
+
+		id, err := src.Create(context.Background(), "Subtask", "task", 2, "Task desc", "oro-parent", "Subtask completed")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if id != "oro-test3" {
+			t.Errorf("ID: got %q, want %q", id, "oro-test3")
+		}
+
+		// Verify both --parent and --acceptance-criteria are present.
+		call := runner.calls[0]
+		if !sliceContains(call.Args, "--parent=oro-parent") {
+			t.Errorf("expected '--parent=oro-parent' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--acceptance-criteria=Subtask completed") {
+			t.Errorf("expected '--acceptance-criteria=Subtask completed' in args, got %v", call.Args)
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {
