@@ -518,3 +518,80 @@ func TestKeyboardNavigation(t *testing.T) {
 		}
 	})
 }
+
+// TestModel_ViewSwitching verifies i key toggles to InsightsView and Esc returns to BoardView.
+func TestModel_ViewSwitching(t *testing.T) {
+	tests := []struct {
+		name         string
+		initialView  ViewType
+		key          string
+		expectedView ViewType
+		expectedQuit bool
+	}{
+		{
+			name:         "i key switches from BoardView to InsightsView",
+			initialView:  BoardView,
+			key:          "i",
+			expectedView: InsightsView,
+			expectedQuit: false,
+		},
+		{
+			name:         "Esc key switches from InsightsView to BoardView",
+			initialView:  InsightsView,
+			key:          "esc",
+			expectedView: BoardView,
+			expectedQuit: false,
+		},
+		{
+			name:         "Esc key on BoardView does nothing",
+			initialView:  BoardView,
+			key:          "esc",
+			expectedView: BoardView,
+			expectedQuit: false,
+		},
+		{
+			name:         "i key on InsightsView stays on InsightsView",
+			initialView:  InsightsView,
+			key:          "i",
+			expectedView: InsightsView,
+			expectedQuit: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newModel()
+			m.activeView = tt.initialView
+
+			var msg tea.Msg
+			if tt.key == "esc" {
+				msg = tea.KeyMsg{Type: tea.KeyEsc}
+			} else {
+				msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)}
+			}
+
+			updated, cmd := m.Update(msg)
+			model, ok := updated.(Model)
+			if !ok {
+				t.Fatal("Update() did not return Model")
+			}
+
+			if model.activeView != tt.expectedView {
+				t.Errorf("activeView = %v, want %v", model.activeView, tt.expectedView)
+			}
+
+			// Check for quit command
+			if tt.expectedQuit && cmd == nil {
+				t.Error("expected quit command but got nil")
+			}
+			if !tt.expectedQuit && cmd != nil {
+				// Execute cmd to check if it's a quit message
+				if msg := cmd(); msg != nil {
+					if _, isQuit := msg.(tea.QuitMsg); isQuit {
+						t.Error("unexpected quit command")
+					}
+				}
+			}
+		})
+	}
+}

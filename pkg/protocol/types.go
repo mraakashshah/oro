@@ -5,17 +5,25 @@ import (
 	"strings"
 )
 
+// Dependency represents a dependency relationship between beads.
+type Dependency struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"` // "blocks", "parent-child", etc.
+}
+
 // Bead represents a ready work item from the bead source.
 type Bead struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	Status             string `json:"status,omitempty"` // open, in_progress, blocked, closed
-	Priority           int    `json:"priority"`
-	Epic               string `json:"epic,omitempty"`                // parent epic ID for focus filtering
-	Type               string `json:"issue_type,omitempty"`          // task, bug, feature, epic
-	Model              string `json:"model,omitempty"`               // claude model override; empty = auto-route by estimate
-	EstimatedMinutes   int    `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
-	AcceptanceCriteria string `json:"acceptance_criteria,omitempty"` // acceptance criteria text
+	ID                 string       `json:"id"`
+	Title              string       `json:"title"`
+	Status             string       `json:"status,omitempty"` // open, in_progress, blocked, closed
+	Priority           int          `json:"priority"`
+	Epic               string       `json:"epic,omitempty"`                // parent epic ID for focus filtering
+	Type               string       `json:"issue_type,omitempty"`          // task, bug, feature, epic
+	Model              string       `json:"model,omitempty"`               // claude model override; empty = auto-route by estimate
+	EstimatedMinutes   int          `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
+	AcceptanceCriteria string       `json:"acceptance_criteria,omitempty"` // acceptance criteria text
+	Dependencies       []Dependency `json:"dependencies,omitempty"`        // dependency relationships
 }
 
 // BeadDetail holds extended information about a single bead.

@@ -66,6 +66,8 @@ type ViewType int
 const (
 	// BoardView shows the bead board.
 	BoardView ViewType = iota
+	// InsightsView shows dependency graph analysis.
+	InsightsView
 )
 
 // Model is the Bubble Tea model for the oro dashboard.
@@ -160,14 +162,54 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m = m.moveToNextBead()
 	case "k", "up":
 		m = m.moveToPrevBead()
+	case "i":
+		m.activeView = InsightsView
+		return m, nil
+	case "esc":
+		if m.activeView == InsightsView {
+			m.activeView = BoardView
+		}
+		return m, nil
 	}
 	return m, nil
 }
 
 // View implements tea.Model.
 func (m Model) View() string {
-	board := NewBoardModel(m.beads)
-	return m.renderStatusBar() + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
+	statusBar := m.renderStatusBar()
+
+	switch m.activeView {
+	case InsightsView:
+		insights := m.buildInsightsModel()
+		return statusBar + "\n" + insights.Render()
+	default:
+		board := NewBoardModel(m.beads)
+		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
+	}
+}
+
+// buildInsightsModel creates an InsightsModel from the current beads.
+func (m Model) buildInsightsModel() *InsightsModel {
+	beadsWithDeps := make([]BeadWithDeps, len(m.beads))
+	for i, b := range m.beads {
+		// Extract DependsOn IDs from Dependencies
+		var dependsOn []string
+		for _, dep := range b.Dependencies {
+			// Only include "blocks" type dependencies
+			if dep.Type == "blocks" {
+				dependsOn = append(dependsOn, dep.DependsOnID)
+			}
+		}
+
+		beadsWithDeps[i] = BeadWithDeps{
+			ID:              b.ID,
+			Priority:        b.Priority,
+			Type:            b.Type,
+			DaysSinceUpdate: 0, // TODO: calculate from updated timestamp
+			DependsOn:       dependsOn,
+		}
+	}
+	return NewInsightsModel(beadsWithDeps)
 }
 
 // renderStatusBar renders the status bar with daemon health, worker count, and aggregate stats.
