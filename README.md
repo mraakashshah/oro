@@ -2,7 +2,13 @@
 
 **Autonomous agent swarm orchestrator for software engineering.**
 
-Oro (from *ouroboros* — the serpent that eats its own tail) is a self-managing multi-agent system that coordinates AI workers to execute software engineering tasks. An architect designs, a manager judges, a dispatcher orchestrates, and workers write code — all running concurrently in isolated git worktrees with TDD, quality gates, and code review baked into every cycle.
+Oro is a self-managing multi-agent system that coordinates AI workers to execute software engineering tasks. An architect designs, a manager judges, a dispatcher orchestrates, and workers write code — all running concurrently in isolated git worktrees with TDD, quality gates, and code review baked into every cycle.
+
+## Why "Oro"?
+
+*Oro* is Spanish for **gold** — because that's what we're doing: mining. Sifting through the infinite possibility space of code, specs, and designs to extract the nuggets that actually work. Every bead is a dig site. Every memory is a vein worth returning to.
+
+It's also the heart of ***ouro*boros** — the serpent that eats its own tail. Workers consume their own context, write a handoff, and a fresh worker picks up where they left off. The loop never ends. The serpent never stops eating. Context is finite; the work is not.
 
 ## Philosophy
 
@@ -11,6 +17,28 @@ Oro exists because single-agent coding sessions don't scale. One agent hits cont
 Quality is not optional. Every bead goes through TDD (red-green-refactor), an automated quality gate (tests + lint + format), and ops-agent code review before merging to main. Failed reviews get feedback and retry. Merge conflicts get an ops agent. Stuck workers get diagnosed. The system is opinionated about correctness because autonomous agents must earn trust through process, not promises.
 
 Memory persists across sessions. Workers emit learnings during execution, the dispatcher extracts patterns from logs, and a FTS5-backed memory store surfaces relevant context to future workers. Decisions, gotchas, and patterns accumulate over time — the swarm gets smarter as it works.
+
+## Principles
+
+### 1. Less Context, Better Work
+
+Agents produce better output when they see less. A worker that receives a tightly scoped bead — clear acceptance criteria, relevant memories, no noise — outperforms one drowning in an entire codebase. Oro decomposes work into atomic beads, assigns each to a worker in a clean worktree, and injects only the memories that match. Context is a budget: spend it on signal, not surface area.
+
+### 2. Compound Learnings
+
+Every session leaves the system smarter. Workers emit learnings during execution. The dispatcher extracts patterns from logs. Memory consolidation deduplicates and scores entries over time. High-frequency patterns get proposed for codification — a recurring workaround becomes a rule, a repeated sequence becomes a skill, a solved problem becomes a documented decision. Knowledge compounds; the swarm never re-learns the same lesson.
+
+### 3. Loop Until Done
+
+The ouroboros isn't a metaphor — it's the architecture. When a worker exhausts its context window, it writes a handoff and a fresh worker continues. When a bead fails review, it gets feedback and retries. When a merge conflicts, an ops agent resolves it. The system loops — handoff loops, review loops, retry loops — until the work is done or explicitly abandoned. No work is lost to context limits, flaky failures, or transient state.
+
+### 4. Better Specs, Better Outcomes
+
+The most leveraged investment is upstream. Oro spends tokens on brainstorming alternatives, stress-testing designs with premortems, and writing validated specs — before a single line of production code is written. A spec that resolves ambiguity, handles edge cases, and includes a testing strategy produces better code on the first pass. The pipeline is front-loaded by design: cheap tokens early prevent expensive rework later.
+
+### 5. Guards Over Trust
+
+Autonomous agents earn trust through mechanism, not promises. Oro wraps every bead in guards: TDD (failing test before code), a 19-check quality gate (tests, lint, format, type-check, vulnerability scan), ops-agent code review, and evidence-based verification. These guards aren't overhead — they're what let the system execute fearlessly. When correctness is enforced mechanically, you stop worrying about whether the agent "did the right thing" and start compounding velocity.
 
 ## How Oro Creates Software
 
@@ -181,9 +209,6 @@ claude --version
 
 # Beads issue tracker
 brew install beads
-
-# Dolt (beads backend)
-brew install dolt
 
 # Linter
 brew install golangci-lint

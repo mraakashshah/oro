@@ -22,6 +22,8 @@ type knowledgeEntry struct {
 // IngestKnowledge reads JSONL entries from r, maps them to InsertParams,
 // and inserts into the store. Deduplicates by key prefix stored in source field.
 // Returns the count of newly inserted entries (skipping duplicates).
+//
+//oro:testonly — wired into production by oro-o84l (oro ingest CLI command)
 func IngestKnowledge(ctx context.Context, store *Store, r io.Reader) (int, error) {
 	scanner := bufio.NewScanner(r)
 	newCount := 0
