@@ -186,14 +186,46 @@ Installing tools...
 
 #### Phase 4: Build companion binaries
 
-Only when run from the oro source repo (detected by `cmd/oro-search-hook/` existing):
+`oro` ships two companion binaries that are currently separate build targets:
 
-1. Build `oro-search-hook` → `~/.oro/hooks/oro-search-hook`
-2. Build `oro-dash` → `~/.oro/bin/oro-dash`
+| Binary | Purpose | Without it |
+|--------|---------|------------|
+| `oro-search-hook` | PreToolUse:Read hook — structural code search via ast-grep | Every Read tool call hits 5s timeout silently. No error shown. |
+| `oro-dash` | TUI dashboard for swarm status | `oro dash` command unavailable |
 
-When run from a user's project (not the oro repo), skip this phase.
-The search hook binary should eventually be distributed with the oro binary
-or built into it.
+**Current problem:** Both require `make build-search-hook` / `make build-dash`
+from the oro source repo. Users of arbitrary projects can't build them. This
+means code search is silently broken for anyone who didn't manually run make.
+
+**Solution — build during `make install`:**
+
+Update Makefile so `make install` builds all three binaries:
+
+<!-- markdownlint-disable MD010 -->
+
+```makefile
+install: stage-assets
+	go install $(LDFLAGS) ./cmd/oro
+	go build $(LDFLAGS) -o $(ORO_HOME)/hooks/oro-search-hook ./cmd/oro-search-hook
+	go build $(LDFLAGS) -o $(ORO_HOME)/bin/oro-dash ./cmd/oro-dash
+	@$(MAKE) clean-assets
+```
+
+<!-- markdownlint-enable MD010 -->
+
+`oro setup` then verifies the binaries exist in Phase 6 (doctor check) and
+prints actionable errors if missing.
+
+**Future — bundle into main binary:**
+
+For the `brew install oro` path (no source repo), companion binaries should
+either be:
+1. Subcommands of `oro` itself (`oro search-hook`, `oro dash`) — single binary
+2. Separate binaries in the GoReleaser release archive — multi-binary install
+3. Built from embedded source at `oro setup` time (requires Go toolchain)
+
+Option 1 (subcommands) is cleanest — one binary, no deployment coordination.
+This is a separate bead.
 
 #### Phase 5: Wire Claude Code
 
@@ -272,6 +304,7 @@ wire Claude + doctor.
 | brew auto-update latency | MEDIUM | Batch all brew installs. `HOMEBREW_NO_AUTO_UPDATE=1`. |
 | Test files mixed with production hooks | LOW | Separate: `assets/hooks/` (production), `tests/hooks/` (tests). |
 | `oro setup` in wrong directory | LOW | Skip companion binary build if `cmd/oro-search-hook/` absent. |
+| Companion binaries silently missing | HIGH | `make install` builds all 3 binaries. Doctor check verifies they exist. |
 
 ---
 
@@ -281,7 +314,7 @@ wire Claude + doctor.
 |------|--------|
 | `assets/` (new dir) | Production hooks, skills, beacons, commands, CLAUDE.md |
 | `tests/hooks/` (new dir) | Hook test files (moved from `~/.oro/hooks/test_*.py`) |
-| `Makefile` | `stage-assets` reads from `assets/`; add `dev-sync` target |
+| `Makefile` | `stage-assets` reads from `assets/`; `install` builds all 3 binaries; add `dev-sync` target |
 | `cmd/oro/cmd_setup.go` (new) | The `oro setup` command |
 | `cmd/oro/cmd_init.go` | Extract shared functions for reuse by setup |
 | `cmd/oro/tools.go` (new) | Tiered tool manifest, version manager detection |

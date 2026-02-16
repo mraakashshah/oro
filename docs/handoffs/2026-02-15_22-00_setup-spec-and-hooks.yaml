@@ -1,0 +1,126 @@
+---
+date: 2026-02-15
+status: complete
+---
+
+goal: >
+  Designed oro setup one-command bootstrap and hooks migration strategy.
+  Evaluated TOON format adoption (decided against). Created 5 new beads
+  for installation, hooks, and dispatcher improvements.
+
+now: >
+  Commit uncommitted files (architect can't commit due to hook restrictions).
+  Then pick up oro-zjxg (hooks migration) or oro-tfcx (architect commit perms)
+  as first implementation targets.
+
+test: go test ./... && bd stats
+
+done_this_session:
+  - task: "Evaluated TOON format for oro adoption"
+    files: []
+    details: >
+      Researched TOON spec v3.0, toon-go implementation, benchmarks.
+      Decided against: oro's LLM-facing data is prose/YAML not tabular arrays.
+      40% token savings on 3-4K tokens = <1% of 200K context. Not worth it.
+      Decision logged in decisions&discoveries.md.
+
+  - task: "Wrote oro setup one-command bootstrap spec"
+    files: [docs/plans/2026-02-15-oro-setup-design.md]
+    details: >
+      Two-tier tool manifest: Tier 1 (user, 4 tools: tmux/python3/jq/bd) vs
+      Tier 2 (developer, 16 tools via --dev flag). Version manager detection
+      (mise/asdf/fnm/nvm/pyenv) with brew fallback. Assets checked into repo
+      at assets/ to solve chicken-and-egg build problem. Absolute paths in
+      settings.json via os.UserHomeDir() not $HOME literals. Companion binaries
+      (oro-search-hook, oro-dash) built during make install. Doctor check with
+      actionable errors. Three premortems performed.
+
+  - task: "Designed hooks migration (Approach B: conftest)"
+    files: []
+    details: >
+      Deep-analyzed 3 approaches x 3 passes each. Chose Approach B: production
+      hooks in hooks/ at repo root, tests in tests/hooks/ with conftest.py
+      adding hooks/ to sys.path. Currently zero hook tests run in CI (5 in
+      tests/ all skipped, 10 in ~/.oro/hooks/ not in git, 3 hooks untested).
+      One overlap: test_inject_context_usage.py exists in both locations
+      testing different functions. Cross-import constraint: 3 hooks import
+      from each other (learning_reminder->learning_analysis, bd_create_notifier
+      ->architect_router, learning_analysis->memory_capture). Must keep flat dir.
+
+  - task: "Identified dispatcher fire-and-forget escalation gap"
+    files: []
+    details: >
+      Observed in production: dispatcher sent escalation to manager via tmux
+      paste-buffer, manager got interrupted, message lost. Dispatcher has no
+      ACK, no retry, no persistence for escalations. Filed oro-swcx with
+      3 design options (SQLite queue, file-based queue, hybrid).
+
+  - task: "Identified companion binary silent failure"
+    files: [docs/plans/2026-02-15-oro-setup-design.md]
+    details: >
+      oro-search-hook and oro-dash require manual make targets. Without
+      oro-search-hook, every Read tool call silently times out at 5s.
+      Updated spec: make install should build all 3 binaries. Future:
+      bundle as subcommands of oro binary for single-binary distribution.
+
+decisions:
+  - toon_rejected: >
+      TOON format doesn't fit oro. Wrong data shape (prose not tabular),
+      marginal savings (<1% of context), immature spec (v3.0 working draft),
+      LLMs have minimal training data on TOON.
+  - hooks_approach_b: >
+      Separate dirs with conftest beats flat-dir (no deploy filtering needed)
+      and package approach (fights standalone script execution model).
+  - two_tier_tools: >
+      Users need 4 tools to RUN oro. 16 more only for DEVELOPING oro.
+      --dev flag separates them. Most users already have python3 and git.
+  - absolute_paths: >
+      settings.json must use os.UserHomeDir() not $HOME. Eliminates shell
+      expansion dependency. Current $HOME literal is a silent total failure
+      if Claude Code doesn't expand it.
+
+findings:
+  - hooks_zero_ci_coverage: >
+      Zero hook tests run in CI. 5 in tests/ are all --ignore'd. 10 in
+      ~/.oro/hooks/ are not version controlled. 3 hooks completely untested.
+  - dispatcher_fire_and_forget: >
+      All dispatcher->manager escalations are one-way via tmux paste-buffer.
+      No ACK, no retry, no persistence. Manager->dispatcher has ACKs via UDS.
+  - companion_binary_gap: >
+      oro-search-hook requires manual make build-search-hook from source repo.
+      Users on arbitrary projects have silently broken code search.
+  - bd_install_url_wrong: >
+      cmd/oro/cmd_init.go:74 has github.com/aarontravass/bd@latest.
+      Beads project is github.com/steveyegge/beads. May install wrong tool.
+
+worked:
+  - Three-pass adversarial premortem caught real issues ($HOME literal, npm EACCES, bd URL)
+  - Tier split dramatically simplified the user install (20+ tools -> 4)
+  - Deep hook test mapping revealed the full scope of CI coverage gap
+
+failed:
+  - First premortem mitigations were lazy ("accept for now") — needed pushback
+  - Symlink approach for assets was attractive but creates migration hazards and dual-path maintenance
+
+next:
+  - Commit uncommitted spec and docs (human or manager must do this)
+  - Pick up oro-zjxg (hooks into repo) — high impact, enables CI coverage
+  - Pick up oro-09ws (fix bd install URL) — quick P1 bug fix
+  - Pick up oro-tfcx (architect commit perms) — unblocks architect workflow
+
+files:
+  created:
+    - docs/plans/2026-02-15-oro-setup-design.md
+    - docs/handoffs/2026-02-15_22-00_setup-spec-and-hooks.yaml
+  modified:
+    - ~/.oro/projects/oro/decisions&discoveries.md (TOON decision added)
+
+beads:
+  created:
+    - oro-intj (P2 task, verify GitHub CI)
+    - oro-09ws (P1 bug, fix bd install URL)
+    - oro-zjxg (P1 feature, hooks into repo)
+    - oro-tfcx (P1 feature, architect commit perms)
+    - oro-swcx (P1 feature, persistent escalation queue)
+  in_progress: []
+  remaining: [oro-intj, oro-09ws, oro-zjxg, oro-tfcx, oro-swcx]
