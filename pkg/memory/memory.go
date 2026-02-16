@@ -362,6 +362,10 @@ func maxHybridCandidates(limit int) int {
 	return n
 }
 
+// maxVectorCandidates is the maximum number of candidate rows loaded from the
+// database for vector similarity scoring, to bound memory usage.
+const maxVectorCandidates = 1000
+
 // vectorSearch retrieves memories and ranks them by cosine similarity to queryVec.
 //
 //nolint:funlen // extra lines from file tracking columns in SELECT
@@ -370,7 +374,7 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 		return nil, nil
 	}
 
-	// Fetch all memories that have embeddings.
+	// Fetch recent memories that have embeddings, bounded by maxVectorCandidates.
 	q := `SELECT id, content, type, tags, source,
 	       COALESCE(bead_id, '') AS bead_id,
 	       COALESCE(worker_id, '') AS worker_id,
@@ -386,6 +390,9 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 		q += " AND type = ?"
 		args = append(args, typeFilter)
 	}
+
+	q += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, maxVectorCandidates)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
