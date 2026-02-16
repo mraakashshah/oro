@@ -11,7 +11,9 @@ import (
 
 // BoardModel holds the kanban-style board state with bead columns.
 type BoardModel struct {
-	columns []boardColumn
+	columns     []boardColumn
+	workers     []WorkerStatus
+	assignments map[string]string // bead ID -> worker ID
 }
 
 // boardColumn represents a single column in the board view.
@@ -41,6 +43,11 @@ func columnForStatus(status string) string {
 //   - "Blocked"     = status "blocked"
 //   - "Done"        = status "closed" (limited to most recent 10)
 func NewBoardModel(beads []protocol.Bead) BoardModel {
+	return NewBoardModelWithWorkers(beads, nil, nil)
+}
+
+// NewBoardModelWithWorkers creates a board model with worker assignment information.
+func NewBoardModelWithWorkers(beads []protocol.Bead, workers []WorkerStatus, assignments map[string]string) BoardModel {
 	buckets := map[string][]protocol.Bead{
 		"Ready":       {},
 		"In Progress": {},
@@ -72,7 +79,11 @@ func NewBoardModel(beads []protocol.Bead) BoardModel {
 		})
 	}
 
-	return BoardModel{columns: columns}
+	return BoardModel{
+		columns:     columns,
+		workers:     workers,
+		assignments: assignments,
+	}
 }
 
 // Render renders the board columns side-by-side using lipgloss.
@@ -107,9 +118,6 @@ func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead
 		BorderForeground(theme.Primary).
 		Background(lipgloss.Color("#3a3a3a"))
 
-	idStyle := lipgloss.NewStyle().
-		Foreground(theme.Muted)
-
 	columnStyle := lipgloss.NewStyle().
 		Width(colWidth).
 		Padding(0, 1)
@@ -124,9 +132,8 @@ func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead
 			style = activeCardStyle
 		}
 
-		card := style.Render(
-			fmt.Sprintf("%s\n%s", b.Title, idStyle.Render(b.ID)),
-		)
+		cardContent := bm.renderCardContent(b, theme)
+		card := style.Render(cardContent)
 		cardsBuilder.WriteString(card)
 		cardsBuilder.WriteString("\n")
 	}
@@ -159,4 +166,114 @@ func (bm BoardModel) renderColumnHeader(col boardColumn, colWidth int, theme The
 	}
 
 	return headerStyle.Render(headerText)
+}
+
+// renderCardContent renders the content of a single card with enriched metadata.
+func (bm BoardModel) renderCardContent(b protocol.Bead, theme Theme) string {
+	var parts []string
+
+	// Line 1: Priority badge + Type indicator + Title (truncated if needed)
+	headerLine := bm.renderCardHeader(b, theme)
+	parts = append(parts, headerLine)
+
+	// Line 2: Dimmed bead ID
+	idStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	parts = append(parts, idStyle.Render(b.ID))
+
+	// Line 3 (conditional): Worker info for in-progress cards
+	if b.Status == "in_progress" && bm.assignments != nil {
+		if workerID, ok := bm.assignments[b.ID]; ok {
+			workerLine := bm.renderWorkerInfo(workerID, theme)
+			parts = append(parts, workerLine)
+		}
+	}
+
+	// Line 3/4 (conditional): Blocker IDs for blocked cards
+	if b.Status == "blocked" && len(b.Dependencies) > 0 {
+		blockerLine := bm.renderBlockerInfo(b, theme)
+		parts = append(parts, blockerLine)
+	}
+
+	return strings.Join(parts, "\n")
+}
+
+// renderCardHeader renders the first line of a card: priority badge + type icon + title.
+func (bm BoardModel) renderCardHeader(b protocol.Bead, theme Theme) string {
+	headerParts := make([]string, 0, 3)
+
+	// Priority badge with color
+	priorityBadge := bm.renderPriorityBadge(b.Priority, theme)
+
+	// Type indicator icon
+	typeIcon := bm.renderTypeIndicator(b.Type)
+
+	// Title (will be truncated by card style if too long)
+	headerParts = append(headerParts, priorityBadge, typeIcon, b.Title)
+
+	return strings.Join(headerParts, " ")
+}
+
+// renderPriorityBadge returns a colored priority badge [P0]-[P4].
+func (bm BoardModel) renderPriorityBadge(priority int, theme Theme) string {
+	badge := fmt.Sprintf("[P%d]", priority)
+
+	var color lipgloss.Color
+	switch priority {
+	case 0:
+		color = theme.ColorP0
+	case 1:
+		color = theme.ColorP1
+	case 2:
+		color = theme.ColorP2
+	case 3:
+		color = theme.ColorP3
+	case 4:
+		color = theme.ColorP4
+	default:
+		color = theme.Muted
+	}
+
+	return lipgloss.NewStyle().Foreground(color).Bold(true).Render(badge)
+}
+
+// renderTypeIndicator returns an icon for the bead type.
+func (bm BoardModel) renderTypeIndicator(beadType string) string {
+	switch beadType {
+	case "task":
+		return "□"
+	case "bug":
+		return "⚠"
+	case "feature":
+		return "✦"
+	case "epic":
+		return "◈"
+	default:
+		return "•"
+	}
+}
+
+// renderWorkerInfo renders worker ID and context percentage for in-progress cards.
+func (bm BoardModel) renderWorkerInfo(workerID string, theme Theme) string {
+	// For now, we don't have context percentage in the data, so just show worker ID
+	// Format: "👷 worker-abc"
+	workerStyle := lipgloss.NewStyle().Foreground(theme.ColorInProgress)
+	return workerStyle.Render(fmt.Sprintf("👷 %s", workerID))
+}
+
+// renderBlockerInfo renders blocker bead IDs for blocked cards.
+func (bm BoardModel) renderBlockerInfo(b protocol.Bead, theme Theme) string {
+	var blockerIDs []string
+	for _, dep := range b.Dependencies {
+		if dep.Type == "blocks" {
+			blockerIDs = append(blockerIDs, dep.DependsOnID)
+		}
+	}
+
+	if len(blockerIDs) == 0 {
+		return ""
+	}
+
+	blockerStyle := lipgloss.NewStyle().Foreground(theme.ColorBlocked)
+	blockerText := "🚧 " + strings.Join(blockerIDs, ", ")
+	return blockerStyle.Render(blockerText)
 }

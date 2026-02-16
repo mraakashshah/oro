@@ -145,3 +145,144 @@ func TestDoneColumn(t *testing.T) {
 		}
 	}
 }
+
+// TestCardRendering_PriorityBadges verifies that cards display priority badges with correct colors.
+func TestCardRendering_PriorityBadges(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-p0", Title: "Critical bug", Status: "open", Priority: 0},
+		{ID: "b-p1", Title: "High priority", Status: "open", Priority: 1},
+		{ID: "b-p2", Title: "Medium task", Status: "open", Priority: 2},
+		{ID: "b-p3", Title: "Low priority", Status: "open", Priority: 3},
+		{ID: "b-p4", Title: "Backlog item", Status: "open", Priority: 4},
+	}
+
+	board := NewBoardModel(beads)
+	output := board.Render()
+
+	// Verify each priority badge appears in output
+	for _, expected := range []string{"[P0]", "[P1]", "[P2]", "[P3]", "[P4]"} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("Render() missing priority badge %q\ngot:\n%s", expected, output)
+		}
+	}
+}
+
+// TestCardRendering_TypeIndicators verifies that cards display type indicators.
+func TestCardRendering_TypeIndicators(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-task", Title: "Do task", Status: "open", Type: "task"},
+		{ID: "b-bug", Title: "Fix bug", Status: "open", Type: "bug"},
+		{ID: "b-feat", Title: "New feature", Status: "open", Type: "feature"},
+		{ID: "b-epic", Title: "Big epic", Status: "open", Type: "epic"},
+	}
+
+	board := NewBoardModel(beads)
+	output := board.Render()
+
+	// Verify type indicators appear in output (using emoji or short codes)
+	typeIndicators := map[string]string{
+		"task":    "□", // or "TSK" or similar
+		"bug":     "⚠", // or "BUG"
+		"feature": "✦", // or "FTR"
+		"epic":    "◈", // or "EPC"
+	}
+
+	for beadType, indicator := range typeIndicators {
+		if !strings.Contains(output, indicator) {
+			t.Errorf("Render() missing type indicator %q for type %q\ngot:\n%s",
+				indicator, beadType, output)
+		}
+	}
+}
+
+// TestCardRendering_InProgressWorkerInfo verifies that in-progress cards show worker ID.
+func TestCardRendering_InProgressWorkerInfo(t *testing.T) {
+	// Create a board model with worker assignments
+	beads := []protocol.Bead{
+		{ID: "b-wip1", Title: "Task in progress", Status: "in_progress"},
+		{ID: "b-wip2", Title: "Another WIP", Status: "in_progress"},
+	}
+
+	// Create worker assignments map
+	workers := []WorkerStatus{
+		{ID: "worker-abc", Status: "busy"},
+		{ID: "worker-xyz", Status: "busy"},
+	}
+
+	// Create assignments map (bead ID -> worker ID)
+	assignments := map[string]string{
+		"b-wip1": "worker-abc",
+		"b-wip2": "worker-xyz",
+	}
+
+	board := NewBoardModelWithWorkers(beads, workers, assignments)
+	output := board.RenderWithCursor(-1, -1)
+
+	// Verify worker IDs appear in the output for in-progress cards
+	if !strings.Contains(output, "worker-abc") {
+		t.Errorf("Render() missing worker ID 'worker-abc' for in-progress bead\ngot:\n%s", output)
+	}
+	if !strings.Contains(output, "worker-xyz") {
+		t.Errorf("Render() missing worker ID 'worker-xyz' for in-progress bead\ngot:\n%s", output)
+	}
+}
+
+// TestCardRendering_BlockedBeadDependencies verifies that blocked cards show blocker IDs.
+func TestCardRendering_BlockedBeadDependencies(t *testing.T) {
+	beads := []protocol.Bead{
+		{
+			ID:     "b-blocked",
+			Title:  "Blocked task",
+			Status: "blocked",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "b-blocked", DependsOnID: "b-blocker1", Type: "blocks"},
+				{IssueID: "b-blocked", DependsOnID: "b-blocker2", Type: "blocks"},
+			},
+		},
+	}
+
+	board := NewBoardModel(beads)
+	output := board.Render()
+
+	// Verify blocker IDs appear in the output
+	if !strings.Contains(output, "b-blocker1") {
+		t.Errorf("Render() missing blocker ID 'b-blocker1' for blocked bead\ngot:\n%s", output)
+	}
+	if !strings.Contains(output, "b-blocker2") {
+		t.Errorf("Render() missing blocker ID 'b-blocker2' for blocked bead\ngot:\n%s", output)
+	}
+}
+
+// TestCardRendering_NoOverflow verifies that enriched cards don't break column layout.
+func TestCardRendering_NoOverflow(t *testing.T) {
+	beads := []protocol.Bead{
+		{
+			ID:       "b-long",
+			Title:    "This is a very long title that should not break the column layout or cause overflow issues",
+			Status:   "blocked",
+			Priority: 0,
+			Type:     "feature",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "b-long", DependsOnID: "b-blocker1", Type: "blocks"},
+				{IssueID: "b-long", DependsOnID: "b-blocker2", Type: "blocks"},
+				{IssueID: "b-long", DependsOnID: "b-blocker3", Type: "blocks"},
+			},
+		},
+	}
+
+	board := NewBoardModel(beads)
+	output := board.Render()
+
+	// Basic sanity check: output should contain the bead
+	if !strings.Contains(output, "b-long") {
+		t.Errorf("Render() missing bead ID 'b-long'\ngot:\n%s", output)
+	}
+
+	// Verify card content is present
+	if !strings.Contains(output, "[P0]") {
+		t.Errorf("Render() missing priority badge for bead")
+	}
+	if !strings.Contains(output, "b-blocker1") {
+		t.Errorf("Render() missing blocker ID in card")
+	}
+}

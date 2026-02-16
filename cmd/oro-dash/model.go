@@ -25,6 +25,12 @@ type beadsMsg []protocol.Bead
 // nil means the daemon is offline.
 type workersMsg []WorkerStatus
 
+// workerDataMsg carries both worker status and assignments from the dispatcher.
+type workerDataMsg struct {
+	workers     []WorkerStatus
+	assignments map[string]string
+}
+
 // tickCmd returns a command that sends a tickMsg after 2 seconds.
 func tickCmd() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
@@ -40,12 +46,15 @@ func fetchBeadsCmd() tea.Cmd {
 	}
 }
 
-// fetchWorkersCmd returns a tea.Cmd that fetches worker status from the dispatcher.
+// fetchWorkersCmd returns a tea.Cmd that fetches worker status and assignments from the dispatcher.
 func fetchWorkersCmd() tea.Cmd {
 	return func() tea.Msg {
 		socketPath := defaultSocketPath()
-		workers, _ := fetchWorkerStatus(context.Background(), socketPath)
-		return workersMsg(workers)
+		workers, assignments, _ := fetchWorkerStatus(context.Background(), socketPath)
+		return workerDataMsg{
+			workers:     workers,
+			assignments: assignments,
+		}
 	}
 }
 
@@ -87,8 +96,9 @@ type Model struct {
 	inProgressCount int
 
 	// Data fetched from external sources
-	beads   []protocol.Bead
-	workers []WorkerStatus
+	beads       []protocol.Bead
+	workers     []WorkerStatus
+	assignments map[string]string // bead ID -> worker ID
 
 	// UI state
 	width  int
@@ -153,6 +163,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.daemonHealthy = true
 			m.workers = []WorkerStatus(msg)
 			m.workerCount = len(m.workers)
+		}
+
+	case workerDataMsg:
+		if msg.workers == nil {
+			m.daemonHealthy = false
+			m.workerCount = 0
+			m.assignments = nil
+		} else {
+			m.daemonHealthy = true
+			m.workers = msg.workers
+			m.workerCount = len(msg.workers)
+			m.assignments = msg.assignments
 		}
 
 	case tickMsg:
@@ -363,12 +385,12 @@ func (m Model) View() string {
 			return statusBar + "\n" + m.detailModel.View()
 		}
 		// Fallback to board if detailModel is nil
-		board := NewBoardModel(m.beads)
+		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
 	case SearchView:
 		return statusBar + "\n" + m.renderSearchOverlay()
 	default:
-		board := NewBoardModel(m.beads)
+		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
 	}
 }

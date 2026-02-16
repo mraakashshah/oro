@@ -79,12 +79,15 @@ func TestParseBeadsOutput_MalformedJSON(t *testing.T) {
 
 func TestFetchWorkers_Offline(t *testing.T) {
 	ctx := context.Background()
-	workers, err := fetchWorkerStatus(ctx, "/nonexistent/socket/path.sock")
+	workers, assignments, err := fetchWorkerStatus(ctx, "/nonexistent/socket/path.sock")
 	if err != nil {
 		t.Fatalf("expected no error for offline dispatcher, got: %v", err)
 	}
 	if len(workers) != 0 {
 		t.Fatalf("expected empty slice for offline dispatcher, got %d workers", len(workers))
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("expected empty map for offline dispatcher, got %d assignments", len(assignments))
 	}
 }
 
