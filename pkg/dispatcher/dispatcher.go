@@ -709,7 +709,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
 // (repeated identical outputs), increments the attempt counter, escalates if
 // either cap is reached, or re-assigns with feedback.
-func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) {
+func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) { //nolint:funlen // orchestration logic, splitting would obscure flow
 	d.touchProgress(workerID)
 
 	// Create typed QualityGateError for logging and potential error discrimination
@@ -738,7 +738,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	attempt := d.attemptCounts[beadID]
 	qgErr.Attempt = attempt
 
-	if attempt >= maxQGRetries {
+	if attempt >= maxQGRetries { //nolint:nestif // escalation path needs sequential steps
 		d.mu.Unlock()
 		d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
 
@@ -888,7 +888,7 @@ func (d *Dispatcher) fetchBeadMemories(ctx context.Context, beadID string) strin
 }
 
 // mergeAndComplete runs merge.Coordinator.Merge and handles the result.
-func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch string) {
+func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch string) { //nolint:funlen // orchestration logic, splitting would obscure flow
 	result, err := d.merger.Merge(ctx, merge.Opts{
 		Branch:   branch,
 		Worktree: worktree,
@@ -1747,7 +1747,7 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 	return title, acceptance, true
 }
 
-func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) {
+func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) { //nolint:funlen // orchestration logic, splitting would obscure flow
 	title, acceptance, ok := d.checkBeadReady(ctx, bead, w.id)
 	if !ok {
 		return
