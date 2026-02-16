@@ -112,6 +112,17 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	}, "\n"))
 
 	// 12. Exit
-	b.WriteString("## Exit\n\n")
-	b.WriteString("When acceptance criteria pass and quality gate is green, exit.\n")
+	section(b, "Exit", strings.Join([]string{
+		"**CRITICAL**: A bead is NOT complete until your commit is on the main branch.",
+		"",
+		"When acceptance criteria pass and quality gate is green:",
+		"1. Determine main repo path: `MAIN_REPO=$(git rev-parse --show-toplevel | sed 's/\\.worktrees\\/[^/]*$//')` (removes .worktrees/<bead-id>)",
+		"2. Switch to main: `cd \"$MAIN_REPO\" && git checkout main`",
+		"3. Merge your changes: `git merge --no-ff agent/" + params.BeadID + "`",
+		"4. If merge succeeds: `bd close " + params.BeadID + "`",
+		"5. If merge fails due to unrelated test failures:",
+		"   - Create a P0 blocker bead: `bd create --title=\"P0: <describe test failure>\" --type=bug --priority=0`",
+		"   - Link it as a blocker: `bd dep add " + params.BeadID + " <new-blocker-id>`",
+		"   - DO NOT close this bead until the blocker is resolved and merge succeeds",
+	}, "\n"))
 }

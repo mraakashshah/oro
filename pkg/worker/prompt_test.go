@@ -594,3 +594,67 @@ func TestPromptHandoffTemplate(t *testing.T) {
 		t.Error("expected handoff template to instruct agent to copy AC from assignment context")
 	}
 }
+
+func TestAssemblePrompt_ExitSection_RequiresMergeToMain(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "oro-test-exit",
+		Title:              "Test merge requirement",
+		Description:        "Test description",
+		AcceptanceCriteria: "Tests pass",
+		WorktreePath:       "/tmp/wt-exit-test",
+		Model:              "claude-opus-4-6",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract Exit section for focused assertions
+	exitStart := strings.Index(prompt, "## Exit")
+	if exitStart == -1 {
+		t.Fatal("expected prompt to contain ## Exit section")
+	}
+	// Exit is the last section, so take everything from exitStart to end
+	exitSection := prompt[exitStart:]
+
+	// Exit section must require merge to main before closing
+	if !strings.Contains(exitSection, "main branch") {
+		t.Error("expected Exit section to mention 'main branch'")
+	}
+	if !strings.Contains(exitSection, "merge") {
+		t.Error("expected Exit section to mention 'merge'")
+	}
+	if !strings.Contains(exitSection, "bd close") {
+		t.Error("expected Exit section to mention 'bd close'")
+	}
+}
+
+func TestAssemblePrompt_ExitSection_HandlesUnrelatedTestFailures(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "oro-test-blocker",
+		Title:              "Test blocker handling",
+		Description:        "Test description",
+		AcceptanceCriteria: "Tests pass",
+		WorktreePath:       "/tmp/wt-blocker-test",
+		Model:              "claude-opus-4-6",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract Exit section
+	exitStart := strings.Index(prompt, "## Exit")
+	if exitStart == -1 {
+		t.Fatal("expected prompt to contain ## Exit section")
+	}
+	exitSection := prompt[exitStart:]
+
+	// Exit section must handle unrelated test failures
+	if !strings.Contains(exitSection, "test") || !strings.Contains(exitSection, "fail") {
+		t.Error("expected Exit section to mention handling test failures")
+	}
+	if !strings.Contains(exitSection, "blocker") || !strings.Contains(exitSection, "P0") {
+		t.Error("expected Exit section to mention creating blocker or P0 bead")
+	}
+}
