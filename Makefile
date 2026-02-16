@@ -1,4 +1,4 @@
-.PHONY: build build-dash build-search-hook install test lint fmt vet gate clean stage-assets clean-assets
+.PHONY: build build-dash build-search-hook install test lint fmt vet gate clean stage-assets clean-assets dev-sync
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -21,6 +21,33 @@ stage-assets:
 
 clean-assets:
 	@rm -rf cmd/oro/_assets
+
+# dev-sync copies assets/ to ~/.oro/ for local development.
+# Path mapping (NOT 1:1):
+#   assets/hooks/     -> ~/.oro/hooks/
+#   assets/skills/    -> ~/.oro/.claude/skills/
+#   assets/beacons/   -> ~/.oro/beacons/
+#   assets/commands/  -> ~/.oro/.claude/commands/
+#   assets/CLAUDE.md  -> ~/.oro/.claude/CLAUDE.md
+dev-sync:
+	@if [ ! -d assets ]; then \
+		echo "Error: Run from oro repo root (assets/ not found)"; \
+		exit 1; \
+	fi
+	@echo "Syncing assets/ to ~/.oro/..."
+	@mkdir -p ~/.oro/hooks ~/.oro/.claude/skills ~/.oro/beacons ~/.oro/.claude/commands
+	@cp -r assets/hooks/* ~/.oro/hooks/ && echo "  ✓ hooks"
+	@cp -r assets/skills/* ~/.oro/.claude/skills/ && echo "  ✓ skills"
+	@cp -r assets/beacons/* ~/.oro/beacons/ && echo "  ✓ beacons"
+	@cp -r assets/commands/* ~/.oro/.claude/commands/ && echo "  ✓ commands"
+	@cp assets/CLAUDE.md ~/.oro/.claude/CLAUDE.md && echo "  ✓ CLAUDE.md"
+	@echo "Sanity check..."
+	@test -f ~/.oro/hooks/enforce-skills.sh && echo "  ✓ ~/.oro/hooks/ ok" || (echo "  ✗ ~/.oro/hooks/ FAILED" && exit 1)
+	@test -d ~/.oro/.claude/skills/test-driven-development && echo "  ✓ ~/.oro/.claude/skills/ ok" || (echo "  ✗ ~/.oro/.claude/skills/ FAILED" && exit 1)
+	@test -d ~/.oro/beacons && echo "  ✓ ~/.oro/beacons/ ok" || (echo "  ✗ ~/.oro/beacons/ FAILED" && exit 1)
+	@test -d ~/.oro/.claude/commands && echo "  ✓ ~/.oro/.claude/commands/ ok" || (echo "  ✗ ~/.oro/.claude/commands/ FAILED" && exit 1)
+	@test -f ~/.oro/.claude/CLAUDE.md && echo "  ✓ ~/.oro/.claude/CLAUDE.md ok" || (echo "  ✗ ~/.oro/.claude/CLAUDE.md FAILED" && exit 1)
+	@echo "✓ dev-sync complete"
 
 build: stage-assets
 	go build $(LDFLAGS) ./cmd/oro
