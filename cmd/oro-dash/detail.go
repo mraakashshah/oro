@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -20,12 +21,16 @@ type workerEventsMsg struct {
 
 // DetailModel represents the detail drilldown view for a single bead.
 type DetailModel struct {
-	bead          protocol.BeadDetail
-	activeTab     int
-	tabs          []string
-	workerEvents  []WorkerEvent // Cached worker events for Worker tab
-	loadingEvents bool          // True while events are being fetched asynchronously
-	eventError    error         // Error from async worker events fetch
+	bead              protocol.BeadDetail
+	activeTab         int
+	tabs              []string
+	workerEvents      []WorkerEvent  // Cached worker events for Worker tab
+	loadingEvents     bool           // True while events are being fetched asynchronously
+	eventError        error          // Error from async worker events fetch
+	tabViewport       viewport.Model // Viewport for scrollable tab content
+	viewportActiveTab int            // Track which tab content is currently in viewport
+	width             int            // Terminal width
+	height            int            // Terminal height
 }
 
 // fetchWorkerEventsCmd returns a tea.Cmd that fetches worker events asynchronously.
@@ -51,26 +56,102 @@ func newDetailModel(bead protocol.BeadDetail) DetailModel {
 	// Mark as loading if worker is assigned (events will be fetched asynchronously)
 	loading := bead.WorkerID != ""
 
-	return DetailModel{
-		bead:          bead,
-		activeTab:     0,
-		tabs:          []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
-		workerEvents:  nil,
-		loadingEvents: loading,
-		eventError:    nil,
+	// Initialize viewport with default dimensions
+	vp := viewport.New(80, 20)
+
+	d := DetailModel{
+		bead:              bead,
+		activeTab:         0,
+		tabs:              []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
+		workerEvents:      nil,
+		loadingEvents:     loading,
+		eventError:        nil,
+		tabViewport:       vp,
+		viewportActiveTab: 0,
+		width:             80,
+		height:            24,
 	}
+
+	// Set initial viewport content
+	d.tabViewport.SetContent(d.getActiveTabContent())
+
+	return d
 }
 
 // nextTab moves to the next tab, wrapping around to the first tab if at the end.
 func (d DetailModel) nextTab() DetailModel {
 	d.activeTab = (d.activeTab + 1) % len(d.tabs)
+	d.setViewportContent(d.getActiveTabContent())
 	return d
 }
 
 // prevTab moves to the previous tab, wrapping around to the last tab if at the start.
 func (d DetailModel) prevTab() DetailModel {
 	d.activeTab = (d.activeTab - 1 + len(d.tabs)) % len(d.tabs)
+	d.setViewportContent(d.getActiveTabContent())
 	return d
+}
+
+// Update handles messages for DetailModel, including viewport scrolling and window resize.
+//
+//nolint:unparam // tea.Cmd return required by Bubble Tea Update interface
+func (d DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
+	var cmd tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// Update dimensions
+		d.width = msg.Width
+		d.height = msg.Height
+
+		// Resize viewport (accounting for tab bar and status bar)
+		statusBarHeight := 2
+		tabBarHeight := 2
+		viewportHeight := msg.Height - statusBarHeight - tabBarHeight
+		if viewportHeight < 1 {
+			viewportHeight = 1
+		}
+		d.tabViewport.Width = msg.Width
+		d.tabViewport.Height = viewportHeight
+
+	case tea.KeyMsg:
+		// Sync viewport content if tab changed (direct activeTab assignment)
+		if d.viewportActiveTab != d.activeTab {
+			d.tabViewport.SetContent(d.getActiveTabContent())
+			d.tabViewport.GotoTop()
+			d.viewportActiveTab = d.activeTab
+		}
+
+		// Handle viewport scrolling keys
+		d.tabViewport, cmd = d.tabViewport.Update(msg)
+	}
+
+	return d, cmd
+}
+
+// setViewportContent updates the viewport with new content and resets scroll to top.
+func (d *DetailModel) setViewportContent(content string) {
+	d.tabViewport.SetContent(content)
+	d.tabViewport.GotoTop()
+	d.viewportActiveTab = d.activeTab
+}
+
+// getActiveTabContent returns the content for the currently active tab.
+func (d DetailModel) getActiveTabContent() string {
+	switch d.activeTab {
+	case 0:
+		return d.renderOverviewTab()
+	case 1:
+		return d.renderWorkerTab()
+	case 2:
+		return d.renderDiffTab()
+	case 3:
+		return d.renderDepsTab()
+	case 4:
+		return d.renderMemoryTab()
+	default:
+		return "Unknown tab"
+	}
 }
 
 // View renders the detail view with tabs.
@@ -96,28 +177,35 @@ func (d DetailModel) View() string {
 
 	header := strings.Join(tabHeaders, " ")
 
-	// Render active tab content
-	var content string
-	switch d.activeTab {
-	case 0:
-		content = d.renderOverviewTab()
-	case 1:
-		content = d.renderWorkerTab()
-	case 2:
-		content = d.renderDiffTab()
-	case 3:
-		content = d.renderDepsTab()
-	case 4:
-		content = d.renderMemoryTab()
-	default:
-		content = "Unknown tab"
+	// Prepare viewport for rendering
+	vp := d.tabViewport
+
+	// Sync viewport dimensions with model (for tests that set width/height directly)
+	statusBarHeight := 2
+	tabBarHeight := 2
+	viewportHeight := d.height - statusBarHeight - tabBarHeight
+	if viewportHeight < 1 {
+		viewportHeight = 1
 	}
+	if vp.Width != d.width || vp.Height != viewportHeight {
+		vp.Width = d.width
+		vp.Height = viewportHeight
+	}
+
+	if d.viewportActiveTab != d.activeTab {
+		// Tab was changed directly (e.g., in tests) - sync viewport content
+		vp.SetContent(d.getActiveTabContent())
+		vp.GotoTop()
+	}
+
+	// Render viewport content
+	viewportContent := vp.View()
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
 		"",
-		content,
+		viewportContent,
 	)
 }
 
