@@ -69,6 +69,24 @@ When breaking work into beads, follow these principles:
 - **Split rule**: if a bead touches >3 files or has >3 acceptance criteria bullets, split it.
 - **Vertical slices preferred**: favor end-to-end slices over horizontal layers.
 
+## Epic Focus
+
+When you want the swarm to complete a specific epic before starting other work:
+
+1. **After decomposing the epic**, run `oro directive focus <epic-id>` to prioritize all beads belonging to that epic.
+2. **Workers will complete the focused epic first** — the dispatcher assigns focused beads before any other ready work.
+3. **When the '✓ Epic complete' alert appears**, either clear focus with `oro directive focus ""` or focus the next epic.
+
+Use focus when:
+- An epic unblocks critical downstream work
+- The human explicitly prioritizes an epic
+- You want to complete one vertical slice before starting another
+
+Clear focus when:
+- The focused epic is complete and no other epic needs priority
+- The human changes priorities
+- Focused beads are all blocked and other work is ready
+
 ## Scale Policy
 
 - **Scale up** when: ready queue > 2x current workers, or workers are finishing beads faster than new ones arrive.
