@@ -68,6 +68,8 @@ const (
 	BoardView ViewType = iota
 	// InsightsView shows dependency graph analysis.
 	InsightsView
+	// DetailView shows detailed information about a single bead.
+	DetailView
 )
 
 // Model is the Bubble Tea model for the oro dashboard.
@@ -91,6 +93,9 @@ type Model struct {
 	// Kanban navigation state
 	activeCol  int // Index of the active column (0-3: Ready, In Progress, Blocked, Done)
 	activeBead int // Index of the active bead within the current column
+
+	// Detail view state
+	detailModel *DetailModel // Set when drilling down into a bead
 }
 
 // newModel creates a new Model initialized with BoardView active.
@@ -147,9 +152,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKeyPress processes keyboard input and returns updated model with optional command.
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c", "q":
+	key := msg.String()
+
+	// Global keys (work in all views)
+	if key == "ctrl+c" || key == "q" {
 		return m, tea.Quit
+	}
+
+	// View-specific key handling
+	switch m.activeView {
+	case DetailView:
+		return m.handleDetailViewKeys(key)
+	case InsightsView:
+		return m.handleInsightsViewKeys(key)
+	default: // BoardView
+		return m.handleBoardViewKeys(key)
+	}
+}
+
+// handleDetailViewKeys processes keyboard input in DetailView.
+func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc", "backspace":
+		m.activeView = BoardView
+		m.detailModel = nil
+	case "tab":
+		if m.detailModel != nil {
+			*m.detailModel = m.detailModel.nextTab()
+		}
+	case "shift+tab":
+		if m.detailModel != nil {
+			*m.detailModel = m.detailModel.prevTab()
+		}
+	}
+	return m, nil
+}
+
+// handleInsightsViewKeys processes keyboard input in InsightsView.
+func (m Model) handleInsightsViewKeys(key string) (tea.Model, tea.Cmd) {
+	if key == "esc" {
+		m.activeView = BoardView
+	}
+	return m, nil
+}
+
+// handleBoardViewKeys processes keyboard input in BoardView.
+func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "enter":
+		m = m.drillDownToDetail()
 	case "h":
 		m = m.moveToPrevColumn()
 	case "l":
@@ -164,12 +215,6 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m = m.moveToPrevBead()
 	case "i":
 		m.activeView = InsightsView
-		return m, nil
-	case "esc":
-		if m.activeView == InsightsView {
-			m.activeView = BoardView
-		}
-		return m, nil
 	}
 	return m, nil
 }
@@ -182,6 +227,13 @@ func (m Model) View() string {
 	case InsightsView:
 		insights := m.buildInsightsModel()
 		return statusBar + "\n" + insights.Render()
+	case DetailView:
+		if m.detailModel != nil {
+			return statusBar + "\n" + m.detailModel.View()
+		}
+		// Fallback to board if detailModel is nil
+		board := NewBoardModel(m.beads)
+		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
 	default:
 		board := NewBoardModel(m.beads)
 		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
@@ -328,6 +380,40 @@ func (m Model) moveToPrevBead() Model {
 	if m.activeBead > 0 {
 		m.activeBead--
 	}
+
+	return m
+}
+
+// drillDownToDetail transitions to DetailView for the selected bead.
+// Returns unchanged model if no bead is selected (empty column).
+func (m Model) drillDownToDetail() Model {
+	board := NewBoardModel(m.beads)
+	if m.activeCol >= len(board.columns) {
+		return m
+	}
+
+	col := board.columns[m.activeCol]
+	if len(col.beads) == 0 || m.activeBead >= len(col.beads) {
+		// No beads in column or invalid bead index
+		return m
+	}
+
+	// Get the selected bead
+	selectedBead := col.beads[m.activeBead]
+
+	// Convert protocol.Bead to protocol.BeadDetail
+	beadDetail := protocol.BeadDetail{
+		ID:                 selectedBead.ID,
+		Title:              selectedBead.Title,
+		AcceptanceCriteria: selectedBead.AcceptanceCriteria,
+		Model:              selectedBead.Model,
+		// Other fields would be populated from fetched data in a real implementation
+	}
+
+	// Create detail model
+	m.detailModel = &DetailModel{}
+	*m.detailModel = newDetailModel(beadDetail)
+	m.activeView = DetailView
 
 	return m
 }

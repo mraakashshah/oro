@@ -595,3 +595,145 @@ func TestModel_ViewSwitching(t *testing.T) {
 		})
 	}
 }
+
+// TestModel_DetailViewDrilldown verifies Enter key transitions to detail view.
+func TestModel_DetailViewDrilldown(t *testing.T) {
+	t.Run("Enter on selected card transitions to DetailView", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "b-1", Title: "Test bead", Status: "open"},
+		}
+
+		m := newModel()
+		m.beads = beads
+		m.activeView = BoardView
+		m.activeCol = 0
+		m.activeBead = 0
+
+		// Press Enter
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.activeView != DetailView {
+			t.Errorf("after Enter, activeView = %v, want DetailView", model.activeView)
+		}
+
+		// Verify detail model was created
+		if model.detailModel == nil {
+			t.Error("detailModel should be set after pressing Enter")
+		}
+	})
+
+	t.Run("Enter with no beads in column does not panic", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{} // No beads
+		m.activeView = BoardView
+
+		// This should not panic
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// Should stay on BoardView
+		if model.activeView != BoardView {
+			t.Errorf("with no beads, should stay on BoardView, got %v", model.activeView)
+		}
+	})
+
+	t.Run("Esc from DetailView returns to BoardView with cursor preserved", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "b-1", Title: "Test bead 1", Status: "open"},
+			{ID: "b-2", Title: "Test bead 2", Status: "open"},
+		}
+
+		m := newModel()
+		m.beads = beads
+		m.activeView = DetailView
+		m.activeCol = 0
+		m.activeBead = 1 // Second bead
+		m.detailModel = &DetailModel{}
+
+		// Press Esc
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.activeView != BoardView {
+			t.Errorf("after Esc, activeView = %v, want BoardView", model.activeView)
+		}
+
+		// Verify cursor position preserved
+		if model.activeCol != 0 {
+			t.Errorf("cursor column should be preserved, got %d, want 0", model.activeCol)
+		}
+		if model.activeBead != 1 {
+			t.Errorf("cursor bead should be preserved, got %d, want 1", model.activeBead)
+		}
+	})
+
+	t.Run("Backspace from DetailView returns to BoardView", func(t *testing.T) {
+		m := newModel()
+		m.activeView = DetailView
+		m.detailModel = &DetailModel{}
+
+		// Press Backspace
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.activeView != BoardView {
+			t.Errorf("after Backspace, activeView = %v, want BoardView", model.activeView)
+		}
+	})
+}
+
+// TestModel_DetailViewTabNavigation verifies Tab/Shift-Tab in DetailView cycle tabs.
+func TestModel_DetailViewTabNavigation(t *testing.T) {
+	t.Run("Tab in DetailView cycles to next tab", func(t *testing.T) {
+		m := newModel()
+		m.activeView = DetailView
+		m.detailModel = &DetailModel{
+			activeTab: 0,
+			tabs:      []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
+		}
+
+		// Press Tab
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.detailModel.activeTab != 1 {
+			t.Errorf("after Tab, activeTab = %d, want 1", model.detailModel.activeTab)
+		}
+	})
+
+	t.Run("Shift-Tab in DetailView cycles to previous tab", func(t *testing.T) {
+		m := newModel()
+		m.activeView = DetailView
+		m.detailModel = &DetailModel{
+			activeTab: 1,
+			tabs:      []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
+		}
+
+		// Press Shift-Tab
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.detailModel.activeTab != 0 {
+			t.Errorf("after Shift-Tab, activeTab = %d, want 0", model.detailModel.activeTab)
+		}
+	})
+}
