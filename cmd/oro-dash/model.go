@@ -163,8 +163,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
-	// Global keys (work in all views)
-	if key == "ctrl+c" || key == "q" {
+	// Global keys (work in all views except SearchView where text input is active)
+	if key == "ctrl+c" {
+		return m, tea.Quit
+	}
+	if key == "q" && m.activeView != SearchView {
 		return m, tea.Quit
 	}
 
@@ -252,8 +255,8 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 				AcceptanceCriteria: selectedBead.AcceptanceCriteria,
 				Model:              selectedBead.Model,
 			}
-			m.detailModel = &DetailModel{}
-			*m.detailModel = newDetailModel(beadDetail)
+			dm := newDetailModel(beadDetail)
+			m.detailModel = &dm
 			m.activeView = DetailView
 		}
 	case "down", "j":
@@ -267,7 +270,8 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 		}
 	case "backspace":
 		if m.searchQuery != "" {
-			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+			runes := []rune(m.searchQuery)
+			m.searchQuery = string(runes[:len(runes)-1])
 			// Reset selection when query changes
 			m.searchSelectedIndex = 0
 		}
@@ -283,15 +287,18 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 }
 
 // filterBeads filters beads based on the current search query.
-// Converts protocol.Bead to local Bead type for SearchModel.Filter.
+// Converts protocol.Bead to local Bead type for SearchModel.Filter,
+// then maps results back via ID index for O(n) lookup.
 func (m Model) filterBeads() []protocol.Bead {
 	if m.searchQuery == "" {
 		return m.beads
 	}
 
-	// Convert protocol.Bead to local Bead type for search
+	// Build index and local slice in one pass
+	index := make(map[string]protocol.Bead, len(m.beads))
 	localBeads := make([]Bead, len(m.beads))
 	for i, pb := range m.beads {
+		index[pb.ID] = pb
 		localBeads[i] = Bead{
 			ID:       pb.ID,
 			Title:    pb.Title,
@@ -304,15 +311,11 @@ func (m Model) filterBeads() []protocol.Bead {
 	// Filter using SearchModel
 	filtered := m.searchModel.Filter(localBeads, m.searchQuery)
 
-	// Convert back to protocol.Bead
+	// Map back via index — O(n) not O(n*m)
 	result := make([]protocol.Bead, 0, len(filtered))
 	for _, fb := range filtered {
-		// Find the original protocol.Bead
-		for _, pb := range m.beads {
-			if pb.ID == fb.ID {
-				result = append(result, pb)
-				break
-			}
+		if pb, ok := index[fb.ID]; ok {
+			result = append(result, pb)
 		}
 	}
 
