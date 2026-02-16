@@ -996,8 +996,49 @@ func mergePair(ctx context.Context, store *Store, a, b protocol.Memory) error {
 	return nil
 }
 
+// processSimilarMemories merges similar memories and updates the deletion map.
+// Returns the number of merges performed and any error encountered.
+func processSimilarMemories(
+	ctx context.Context,
+	store *Store,
+	current protocol.Memory,
+	similar []ScoredMemory,
+	threshold float64,
+	dryRun bool,
+	deleted map[int64]bool,
+	maxMerges int,
+	currentMerged int,
+) (int, error) {
+	merged := 0
+	for _, s := range similar {
+		if s.ID == current.ID || deleted[s.ID] || s.Score < threshold {
+			continue
+		}
+
+		if !dryRun {
+			if err := mergePair(ctx, store, current, s.Memory); err != nil {
+				return merged, err
+			}
+		}
+
+		merged++
+		deleted[s.ID] = true
+
+		// Early termination after reaching max merges
+		if currentMerged+merged >= maxMerges {
+			break
+		}
+	}
+	return merged, nil
+}
+
 func mergeDuplicates(ctx context.Context, store *Store, threshold float64, dryRun bool) (int, error) {
-	all, err := store.List(ctx, ListOpts{Limit: 1000})
+	const (
+		batchSize = 100
+		maxMerges = 50
+	)
+
+	all, err := store.List(ctx, ListOpts{Limit: batchSize})
 	if err != nil {
 		return 0, fmt.Errorf("merge duplicates list: %w", err)
 	}
@@ -1006,7 +1047,7 @@ func mergeDuplicates(ctx context.Context, store *Store, threshold float64, dryRu
 	deleted := make(map[int64]bool)
 
 	for i := range all {
-		if deleted[all[i].ID] {
+		if deleted[all[i].ID] || merged >= maxMerges {
 			continue
 		}
 
@@ -1015,19 +1056,14 @@ func mergeDuplicates(ctx context.Context, store *Store, threshold float64, dryRu
 			continue
 		}
 
-		for _, s := range similar {
-			if s.ID == all[i].ID || deleted[s.ID] || s.Score < threshold {
-				continue
-			}
+		count, err := processSimilarMemories(ctx, store, all[i], similar, threshold, dryRun, deleted, maxMerges, merged)
+		if err != nil {
+			return merged, err
+		}
+		merged += count
 
-			if !dryRun {
-				if err := mergePair(ctx, store, all[i], s.Memory); err != nil {
-					return merged, err
-				}
-			}
-
-			merged++
-			deleted[s.ID] = true
+		if merged >= maxMerges {
+			break
 		}
 	}
 

@@ -1986,6 +1986,69 @@ func TestPinFlag(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// mergeDuplicates batch limit tests (oro-rgux.10)
+// ---------------------------------------------------------------------------
+
+func TestMergeDuplicates_BatchLimit(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert 120 highly similar memories to test batch size limit
+	// We use direct SQL to bypass write-time dedup
+	for i := 0; i < 120; i++ {
+		content := fmt.Sprintf("similar memory about batch testing %d", i)
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, tags, source, confidence)
+			 VALUES (?, ?, ?, ?, ?)`,
+			content, "lesson", `["test"]`, "self_report", 0.5+float64(i)*0.001,
+		)
+		if err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	// Verify all were inserted
+	var count int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&count)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 120 {
+		t.Fatalf("expected 120 memories, got %d", count)
+	}
+
+	// Run mergeDuplicates with a low threshold so duplicates are found
+	merged, err := mergeDuplicates(ctx, store, 0.01, false)
+	if err != nil {
+		t.Fatalf("mergeDuplicates: %v", err)
+	}
+
+	// Key assertions:
+	// 1. Batch size is 100, so only first 100 memories are processed
+	// 2. Early termination happens at 50 merges
+	// So we expect merged <= 50
+	if merged > 50 {
+		t.Errorf("expected merged <= 50 (early termination), got %d", merged)
+	}
+
+	// We should have merged at least some memories
+	if merged == 0 {
+		t.Error("expected at least some merges with low threshold")
+	}
+
+	// Verify that some memories remain (not all 120 were processed)
+	err = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&count)
+	if err != nil {
+		t.Fatalf("count after merge: %v", err)
+	}
+	// With 120 inserted and merged <= 50, we should have >= 70 remaining
+	if count < 70 {
+		t.Errorf("expected at least 70 memories remaining (120 - max 50 merged), got %d", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Vector search memory bounds tests (oro-rgux.2)
 // ---------------------------------------------------------------------------
 
