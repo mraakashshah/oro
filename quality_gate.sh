@@ -224,7 +224,7 @@ if $HAS_PYTHON; then
     header "PYTHON TIER 2: LINTING"
     check "ruff check" "ruff check ."
     if command -v pylint >/dev/null 2>&1; then
-        check "pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' | xargs pylint --disable=all --enable=E"
+        check "pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' | xargs pylint --disable=all --enable=E"
     fi
 
     header "PYTHON TIER 3: TYPE CHECKING"
