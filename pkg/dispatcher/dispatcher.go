@@ -709,7 +709,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
 // (repeated identical outputs), increments the attempt counter, escalates if
 // either cap is reached, or re-assigns with feedback.
-func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) { //nolint:funlen // orchestration logic, splitting would obscure flow
+func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) {
 	d.touchProgress(workerID)
 
 	// Create typed QualityGateError for logging and potential error discrimination
@@ -738,42 +738,9 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	attempt := d.attemptCounts[beadID]
 	qgErr.Attempt = attempt
 
-	if attempt >= maxQGRetries { //nolint:nestif // escalation path needs sequential steps
+	if attempt >= maxQGRetries {
 		d.mu.Unlock()
-		d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
-
-		// Create a P0 bug bead so the failure is tracked as actionable work.
-		p0Title := fmt.Sprintf("P0: QG exhausted for %s", beadID)
-		p0Desc := fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput)
-		newID, createErr := d.beads.Create(ctx, p0Title, "bug", 0, p0Desc, beadID, "")
-		if createErr != nil {
-			_ = d.logEvent(ctx, "p0_bead_create_failed", workerID, beadID, workerID, createErr.Error())
-		} else {
-			_ = d.logEvent(ctx, "p0_bead_created", workerID, beadID, workerID,
-				fmt.Sprintf(`{"new_bead_id":%q}`, newID))
-		}
-
-		_ = d.completeAssignment(ctx, beadID)
-
-		// Cancel any in-flight ops agents for this bead to prevent stale escalations.
-		if n, err := d.ops.CancelForBead(beadID); n > 0 {
-			_ = d.logEvent(ctx, "ops_agents_cancelled", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"count":%d,"reason":"qg_exhausted"}`, n))
-			if err != nil {
-				_ = d.logEvent(ctx, "ops_cancel_error", "dispatcher", beadID, workerID, err.Error())
-			}
-		}
-
-		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
-			fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
-			fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
-		d.clearBeadTracking(beadID)
-
-		// Mark bead as exhausted so filterAssignable blocks re-assignment.
-		d.mu.Lock()
-		d.exhaustedBeads[beadID] = true
-		d.mu.Unlock()
+		d.handleQGExhausted(ctx, workerID, beadID, qgOutput, attempt, qgErr)
 		return
 	}
 
@@ -888,7 +855,7 @@ func (d *Dispatcher) fetchBeadMemories(ctx context.Context, beadID string) strin
 }
 
 // mergeAndComplete runs merge.Coordinator.Merge and handles the result.
-func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch string) { //nolint:funlen // orchestration logic, splitting would obscure flow
+func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch string) {
 	result, err := d.merger.Merge(ctx, merge.Opts{
 		Branch:   branch,
 		Worktree: worktree,
@@ -919,13 +886,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	_ = d.completeAssignment(ctx, beadID)
 
 	// Cancel any in-flight ops agents for this bead to prevent stale escalations.
-	if n, err := d.ops.CancelForBead(beadID); n > 0 {
-		_ = d.logEvent(ctx, "ops_agents_cancelled", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"count":%d,"reason":"bead_merged"}`, n))
-		if err != nil {
-			_ = d.logEvent(ctx, "ops_cancel_error", "dispatcher", beadID, workerID, err.Error())
-		}
-	}
+	d.cancelOpsAgents(ctx, beadID, workerID, "bead_merged")
 
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
@@ -2701,6 +2662,50 @@ func (d *Dispatcher) shutdownRemoveWorktrees(paths []string) {
 	} else {
 		_ = d.logEvent(ctx, "bead_synced", "dispatcher", "", "", "")
 	}
+}
+
+// cancelOpsAgents cancels all in-flight ops agents for the given bead and logs the result.
+func (d *Dispatcher) cancelOpsAgents(ctx context.Context, beadID, workerID, reason string) {
+	if n, err := d.ops.CancelForBead(beadID); n > 0 {
+		_ = d.logEvent(ctx, "ops_agents_cancelled", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"count":%d,"reason":%q}`, n, reason))
+		if err != nil {
+			_ = d.logEvent(ctx, "ops_cancel_error", "dispatcher", beadID, workerID, err.Error())
+		}
+	}
+}
+
+// handleQGExhausted handles the case when quality gate retries are exhausted.
+// It creates a P0 bug bead, completes the assignment, and escalates to the manager.
+func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
+	d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
+
+	// Create a P0 bug bead so the failure is tracked as actionable work.
+	p0Title := fmt.Sprintf("P0: QG exhausted for %s", beadID)
+	p0Desc := fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput)
+	newID, createErr := d.beads.Create(ctx, p0Title, "bug", 0, p0Desc, beadID, "")
+	if createErr != nil {
+		_ = d.logEvent(ctx, "p0_bead_create_failed", workerID, beadID, workerID, createErr.Error())
+	} else {
+		_ = d.logEvent(ctx, "p0_bead_created", workerID, beadID, workerID,
+			fmt.Sprintf(`{"new_bead_id":%q}`, newID))
+	}
+
+	_ = d.completeAssignment(ctx, beadID)
+
+	// Cancel any in-flight ops agents for this bead to prevent stale escalations.
+	d.cancelOpsAgents(ctx, beadID, workerID, "qg_exhausted")
+
+	_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
+		fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
+		fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
+	d.clearBeadTracking(beadID)
+
+	// Mark bead as exhausted so filterAssignable blocks re-assignment.
+	d.mu.Lock()
+	d.exhaustedBeads[beadID] = true
+	d.mu.Unlock()
 }
 
 // formatCodeChunks formats code search results into markdown for prompt injection.
