@@ -52,6 +52,10 @@ func (m *mockBeadSource) Create(_ context.Context, _, _ string, _ int, _, _, _ s
 	return "", nil
 }
 
+func (m *mockBeadSource) Update(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *mockBeadSource) Sync(_ context.Context) error {
 	return nil
 }
