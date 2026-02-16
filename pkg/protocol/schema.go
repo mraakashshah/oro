@@ -55,6 +55,20 @@ CREATE TABLE IF NOT EXISTS memories (
     pinned INTEGER DEFAULT 0
 );
 
+-- Persistent escalation queue: dispatcher writes, manager acks
+CREATE TABLE IF NOT EXISTS escalations (
+    id INTEGER PRIMARY KEY,
+    type TEXT NOT NULL,
+    bead_id TEXT,
+    worker_id TEXT,
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    acked_at TEXT,
+    retry_count INTEGER DEFAULT 0,
+    last_retry_at TEXT
+);
+
 -- FTS5 full-text index over memories for BM25-ranked search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,

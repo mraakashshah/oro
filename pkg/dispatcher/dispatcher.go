@@ -423,6 +423,9 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	// Pane context monitor
 	d.safeGo(func() { d.paneMonitorLoop(ctx) })
 
+	// Escalation retry loop — re-deliver unacked escalations every 2 minutes.
+	d.safeGo(func() { d.escalationRetryLoop(ctx) })
+
 	select {
 	case <-ctx.Done():
 	case <-d.shutdownCh:
@@ -1794,19 +1797,19 @@ type statusResponse struct {
 // applyDirective transitions the dispatcher state machine and returns a detail
 // string for the ACK response. Returns an error for invalid args (e.g. scale).
 func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string, error) {
-	if dir == protocol.DirectiveScale {
-		return d.applyScaleDirective(args)
-	}
-	if dir == protocol.DirectiveKillWorker {
-		return d.applyKillWorker(args)
-	}
-	if dir == protocol.DirectiveSpawnFor {
-		return d.applySpawnFor(args)
-	}
-	if dir == protocol.DirectiveRestartWorker {
-		return d.applyRestartWorker(args)
-	}
 	switch dir {
+	case protocol.DirectiveScale:
+		return d.applyScaleDirective(args)
+	case protocol.DirectiveKillWorker:
+		return d.applyKillWorker(args)
+	case protocol.DirectiveSpawnFor:
+		return d.applySpawnFor(args)
+	case protocol.DirectiveRestartWorker:
+		return d.applyRestartWorker(args)
+	case protocol.DirectivePendingEscalations:
+		return d.applyPendingEscalations()
+	case protocol.DirectiveAckEscalation:
+		return d.applyAckEscalation(args)
 	case protocol.DirectiveStart:
 		d.setState(StateRunning)
 		return "started", nil
@@ -1816,32 +1819,41 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		d.setState(StatePaused)
 		return "paused", nil
 	case protocol.DirectiveResume:
-		if d.GetState() == StateRunning {
-			return "already running", nil
-		}
-		d.setState(StateRunning)
-		return "resumed", nil
+		return d.applyResume()
 	case protocol.DirectiveStatus:
 		return d.buildStatusJSON(), nil
 	case protocol.DirectiveFocus:
-		d.mu.Lock()
-		d.focusedEpic = args
-		d.mu.Unlock()
-		if d.GetState() != StateRunning {
-			d.setState(StateRunning)
-		}
-		if args == "" {
-			return "focus cleared", nil
-		}
-		return fmt.Sprintf("focused on %s", args), nil
+		return d.applyFocus(args)
 	case protocol.DirectiveShutdown:
 		// Reject shutdown via UDS directive — agents can bypass ORO_ROLE guards.
 		// Legitimate shutdown uses SIGINT (oro stop) which the daemon always honors.
 		return "", fmt.Errorf("shutdown directive rejected; use 'oro stop' (sends SIGINT)")
-
 	default:
 		return fmt.Sprintf("applied %s", dir), nil
 	}
+}
+
+// applyResume transitions the dispatcher from paused to running.
+func (d *Dispatcher) applyResume() (string, error) {
+	if d.GetState() == StateRunning {
+		return "already running", nil
+	}
+	d.setState(StateRunning)
+	return "resumed", nil
+}
+
+// applyFocus sets the focused epic and resumes the dispatcher if paused.
+func (d *Dispatcher) applyFocus(args string) (string, error) {
+	d.mu.Lock()
+	d.focusedEpic = args
+	d.mu.Unlock()
+	if d.GetState() != StateRunning {
+		d.setState(StateRunning)
+	}
+	if args == "" {
+		return "focus cleared", nil
+	}
+	return fmt.Sprintf("focused on %s", args), nil
 }
 
 // buildStatusJSON constructs the status response JSON string.
@@ -2205,6 +2217,15 @@ func (d *Dispatcher) logEventLocked(ctx context.Context, evType, source, beadID,
 // PRIORITY_CONTENTION, MISSING_AC), it also spawns a one-shot claude -p
 // agent to take corrective action autonomously.
 func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string) {
+	// Persist escalation to SQLite before attempting tmux delivery.
+	escType := ""
+	if t := parseEscalationType(msg); t != "" {
+		escType = t
+	}
+	_, _ = d.db.ExecContext(ctx,
+		`INSERT INTO escalations (type, bead_id, worker_id, message) VALUES (?, ?, ?, ?)`,
+		escType, beadID, workerID, msg)
+
 	if err := d.escalator.Escalate(ctx, msg); err != nil {
 		_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"error":%q,"message":%q}`, err.Error(), msg))
@@ -2212,9 +2233,93 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 
 	// Spawn one-shot manager agent for actionable escalation types.
 	if d.ops != nil {
-		if escType := parseEscalationType(msg); escType != "" {
+		if escType != "" {
 			d.spawnEscalationOneShot(ctx, escType, beadID, workerID, msg)
 		}
+	}
+}
+
+// applyPendingEscalations returns all unacked escalations as JSON.
+func (d *Dispatcher) applyPendingEscalations() (string, error) {
+	rows, err := d.db.QueryContext(context.Background(),
+		`SELECT id, type, bead_id, worker_id, message, status, created_at, retry_count
+		 FROM escalations WHERE status = 'pending' ORDER BY id`)
+	if err != nil {
+		return "", fmt.Errorf("query pending escalations: %w", err)
+	}
+	defer rows.Close()
+
+	var escs []protocol.Escalation
+	for rows.Next() {
+		var e protocol.Escalation
+		if err := rows.Scan(&e.ID, &e.Type, &e.BeadID, &e.WorkerID, &e.Message, &e.Status, &e.CreatedAt, &e.RetryCount); err != nil {
+			return "", fmt.Errorf("scan escalation: %w", err)
+		}
+		escs = append(escs, e)
+	}
+
+	b, err := json.Marshal(escs)
+	if err != nil {
+		return "", fmt.Errorf("marshal escalations: %w", err)
+	}
+	return string(b), nil
+}
+
+// applyAckEscalation marks an escalation as acknowledged by ID.
+func (d *Dispatcher) applyAckEscalation(args string) (string, error) {
+	id := strings.TrimSpace(args)
+	if id == "" {
+		return "", fmt.Errorf("ack-escalation requires an escalation ID")
+	}
+
+	res, err := d.db.ExecContext(context.Background(),
+		`UPDATE escalations SET status = 'acked', acked_at = datetime('now') WHERE id = ? AND status = 'pending'`,
+		id)
+	if err != nil {
+		return "", fmt.Errorf("ack escalation: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Sprintf("escalation %s not found or already acked", id), nil
+	}
+	return fmt.Sprintf("acked escalation %s", id), nil
+}
+
+// escalationRetryLoop periodically re-delivers unacked escalations via tmux.
+// Runs every 2 minutes, retries up to 5 times with exponential backoff.
+func (d *Dispatcher) escalationRetryLoop(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.retryPendingEscalations(ctx)
+		}
+	}
+}
+
+func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, message FROM escalations
+		 WHERE status = 'pending' AND retry_count < 5
+		 ORDER BY id`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int64
+		var msg string
+		if err := rows.Scan(&id, &msg); err != nil {
+			continue
+		}
+		_ = d.escalator.Escalate(ctx, msg)
+		_, _ = d.db.ExecContext(ctx,
+			`UPDATE escalations SET retry_count = retry_count + 1, last_retry_at = datetime('now') WHERE id = ?`,
+			id)
 	}
 }
 

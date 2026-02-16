@@ -36,6 +36,21 @@ type CommandRow struct {
 	ProcessedAt string `json:"processed_at"`
 }
 
+// Escalation represents a row in the escalations SQLite table.
+// Persistent queue: dispatcher writes pending escalations, manager acks them.
+type Escalation struct {
+	ID          int64  `json:"id"`
+	Type        string `json:"type"`
+	BeadID      string `json:"bead_id"`
+	WorkerID    string `json:"worker_id"`
+	Message     string `json:"message"`
+	Status      string `json:"status"` // pending, acked, dismissed
+	CreatedAt   string `json:"created_at"`
+	AckedAt     string `json:"acked_at"`
+	RetryCount  int    `json:"retry_count"`
+	LastRetryAt string `json:"last_retry_at"`
+}
+
 // Memory represents a row in the memories SQLite table.
 // Cross-session project memory: learnings, decisions, gotchas, patterns.
 type Memory struct {
