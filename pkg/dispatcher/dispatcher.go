@@ -1036,31 +1036,43 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 
 	// On 2nd+ handoff for the same bead, spawn diagnosis agent instead of respawning.
 	if handoffCount >= maxHandoffsBeforeDiagnosis {
-		_ = d.logEvent(ctx, "diagnosis_spawned", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"handoff_count":%d}`, handoffCount))
-		resultCh := d.ops.Diagnose(ctx, ops.DiagOpts{
-			BeadID:   beadID,
-			Worktree: worktree,
-			Symptom:  fmt.Sprintf("worker stuck after %d ralph handoffs", handoffCount),
-		})
-		d.safeGo(func() { d.handleDiagnosisResult(ctx, beadID, workerID, resultCh) })
-
-		// Create a continuation bead to capture remaining work from the exhausted handoff.
-		contTitle := fmt.Sprintf("Continue: %s (handoff exhausted)", beadID)
-		contDesc := fmt.Sprintf("Handoff exhausted after %d handoffs for %s.\n\nContext from last handoff:\n%s",
-			handoffCount, beadID, msg.Handoff.ContextSummary)
-		newID, createErr := d.beads.Create(ctx, contTitle, "task", 1, contDesc, beadID, "")
-		if createErr != nil {
-			_ = d.logEvent(ctx, "continuation_bead_create_failed", "dispatcher", beadID, workerID, createErr.Error())
-		} else {
-			_ = d.logEvent(ctx, "continuation_bead_created", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"new_bead_id":%q}`, newID))
-		}
-
+		d.handleHandoffExhaustion(ctx, beadID, workerID, handoffCount, worktree, msg)
 		return
 	}
 
 	d.respawnWorker(ctx, beadID, worktree, model)
+}
+
+// handleHandoffExhaustion spawns a diagnosis agent and creates a continuation bead
+// when a bead exhausts its handoff limit.
+func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, workerID string, handoffCount int, worktree string, msg protocol.Message) {
+	_ = d.logEvent(ctx, "diagnosis_spawned", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"handoff_count":%d}`, handoffCount))
+	resultCh := d.ops.Diagnose(ctx, ops.DiagOpts{
+		BeadID:   beadID,
+		Worktree: worktree,
+		Symptom:  fmt.Sprintf("worker stuck after %d ralph handoffs", handoffCount),
+	})
+	d.safeGo(func() { d.handleDiagnosisResult(ctx, beadID, workerID, resultCh) })
+
+	// Fetch parent bead details to inherit AC and title.
+	var parentTitle, parentAC string
+	if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil {
+		parentTitle = detail.Title
+		parentAC = detail.AcceptanceCriteria
+	}
+
+	// Create a continuation bead to capture remaining work from the exhausted handoff.
+	contTitle := fmt.Sprintf("Continue: %s (handoff exhausted)", beadID)
+	contDesc := fmt.Sprintf("Handoff exhausted after %d handoffs for %s (%s).\n\nContext from last handoff:\n%s",
+		handoffCount, beadID, parentTitle, msg.Handoff.ContextSummary)
+	newID, createErr := d.beads.Create(ctx, contTitle, "task", 1, contDesc, beadID, parentAC)
+	if createErr != nil {
+		_ = d.logEvent(ctx, "continuation_bead_create_failed", "dispatcher", beadID, workerID, createErr.Error())
+	} else {
+		_ = d.logEvent(ctx, "continuation_bead_created", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"new_bead_id":%q}`, newID))
+	}
 }
 
 // respawnWorker stores a pending handoff and spawns a fresh worker process.
