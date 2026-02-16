@@ -1543,6 +1543,105 @@ func TestApplyDirective_ShutdownRejected(t *testing.T) {
 	}
 }
 
+func TestApplyDirective_KillWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	ctx := context.Background()
+
+	// Init schema
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	// Register worker and assign a bead
+	workerID := "test-worker"
+	beadID := "oro-test"
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+
+	d.registerWorker(workerID, conn1)
+
+	// Assign bead to worker
+	d.mu.Lock()
+	w := d.workers[workerID]
+	w.state = protocol.WorkerBusy
+	w.beadID = beadID
+	w.worktree = "/fake/worktree"
+	d.targetWorkers = 1
+	d.mu.Unlock()
+
+	// Create assignment in DB
+	_, err = d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, workerID, "/fake/worktree")
+	if err != nil {
+		t.Fatalf("failed to create assignment: %v", err)
+	}
+
+	// Test: kill the worker
+	detail, err := d.applyDirective(protocol.DirectiveKillWorker, workerID)
+	if err != nil {
+		t.Fatalf("applyDirective(kill-worker) failed: %v", err)
+	}
+	if !strings.Contains(detail, "killed") {
+		t.Errorf("expected detail to mention 'killed', got: %s", detail)
+	}
+
+	// Assert: worker removed from pool
+	d.mu.Lock()
+	_, exists := d.workers[workerID]
+	targetCount := d.targetWorkers
+	d.mu.Unlock()
+	if exists {
+		t.Errorf("worker %s should be removed from pool", workerID)
+	}
+
+	// Assert: target count decremented
+	if targetCount != 0 {
+		t.Errorf("targetWorkers = %d, want 0 (decremented from 1)", targetCount)
+	}
+
+	// Assert: bead returned to queue (assignment marked completed)
+	var status string
+	err = d.db.QueryRow(
+		`SELECT status FROM assignments WHERE bead_id = ? AND worker_id = ?`,
+		beadID, workerID).Scan(&status)
+	if err != nil {
+		t.Fatalf("failed to query assignment: %v", err)
+	}
+	if status != "completed" {
+		t.Errorf("assignment status = %s, want 'completed' (bead returned to queue)", status)
+	}
+}
+
+func TestApplyDirective_KillWorker_UnknownWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Test: kill unknown worker
+	_, err := d.applyDirective(protocol.DirectiveKillWorker, "unknown-worker")
+	if err == nil {
+		t.Fatal("expected error for unknown worker")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected error to mention 'not found', got: %v", err)
+	}
+}
+
+func TestApplyDirective_KillWorker_EmptyArgs(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Test: empty args
+	_, err := d.applyDirective(protocol.DirectiveKillWorker, "")
+	if err == nil {
+		t.Fatal("expected error for empty args")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Errorf("expected error to mention 'required', got: %v", err)
+	}
+}
+
 func TestRun_RejectsShutdownDirective(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 

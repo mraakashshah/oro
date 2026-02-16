@@ -1771,6 +1771,9 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	if dir == protocol.DirectiveScale {
 		return d.applyScaleDirective(args)
 	}
+	if dir == protocol.DirectiveKillWorker {
+		return d.applyKillWorker(args)
+	}
 	switch dir {
 	case protocol.DirectiveStart:
 		d.setState(StateRunning)
@@ -1900,6 +1903,47 @@ func (d *Dispatcher) applyScaleDirective(args string) (string, error) {
 		detail = fmt.Sprintf("target=%d, current=%d, no change", target, connected)
 	}
 	return detail, nil
+}
+
+// applyKillWorker terminates a specific worker, returns its bead to the ready
+// queue, and decrements targetWorkers. Returns an error if args is empty or
+// the worker ID is not found.
+func (d *Dispatcher) applyKillWorker(args string) (string, error) {
+	if args == "" {
+		return "", fmt.Errorf("worker ID required")
+	}
+
+	workerID := args
+	ctx := context.Background()
+
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		d.mu.Unlock()
+		return "", fmt.Errorf("worker not found")
+	}
+
+	// Capture bead ID before removing worker
+	beadID := w.beadID
+
+	// Close connection and remove worker from pool
+	_ = w.conn.Close()
+	delete(d.workers, workerID)
+
+	// Decrement target count
+	if d.targetWorkers > 0 {
+		d.targetWorkers--
+	}
+	d.mu.Unlock()
+
+	// Return bead to queue by completing the assignment
+	if beadID != "" {
+		_ = d.completeAssignment(ctx, beadID)
+		_ = d.logEvent(ctx, "worker_killed", "dispatcher", beadID, workerID,
+			`{"reason":"kill-worker directive"}`)
+	}
+
+	return fmt.Sprintf("worker %s killed", workerID), nil
 }
 
 // maybeAutoScale increases targetWorkers when assignable beads exist but no
