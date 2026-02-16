@@ -541,11 +541,13 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 		logWriter := w.logWriter
 		w.mu.Unlock()
 
-		// Tee line to log file (best-effort; don't block on I/O errors)
+		// Tee line to log file (best-effort; don't block on I/O errors).
+		// NOTE: No Flush() here — flushing every line blocks on disk I/O and
+		// deadlocks the pipe when the buffer fills (root cause of oro-jyvo).
+		// closeLogFile() flushes once when the subprocess exits.
 		if logWriter != nil {
 			_, _ = logWriter.WriteString(line)
 			_, _ = logWriter.WriteString("\n")
-			_ = logWriter.Flush() // flush each line to ensure real-time visibility
 		}
 
 		// Extract [MEMORY] markers in real-time.
@@ -557,6 +559,15 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 			}
 		}
 	}
+
+	// Flush log buffer once after all lines are processed (not per-line).
+	// Per-line Flush() was the root cause of oro-jyvo: it blocked on disk I/O
+	// and deadlocked the pipe when the OS buffer filled.
+	w.mu.Lock()
+	if w.logWriter != nil {
+		_ = w.logWriter.Flush()
+	}
+	w.mu.Unlock()
 
 	// Subprocess stdout closed — extract implicit memories so learnings from
 	// failed attempts (e.g. QG failure) are persisted regardless of outcome.
