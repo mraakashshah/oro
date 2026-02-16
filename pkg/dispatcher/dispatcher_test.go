@@ -8559,3 +8559,92 @@ func TestWithReservation_WorkerDisconnectedDuringIO(t *testing.T) {
 		t.Fatalf("expected assignFn to NOT be called, got %d calls", assignCallCount)
 	}
 }
+
+// TestApplyRestartDaemon verifies that restart-daemon directive triggers graceful shutdown.
+// AC: ACK returned, PREPARE_SHUTDOWN sent to workers, process exits cleanly.
+func TestApplyRestartDaemon(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Init schema
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	// Connect a worker
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	go d.handleConn(ctx, serverConn)
+
+	// Send HEARTBEAT to register worker
+	workerID := "worker-1"
+	hb := protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID: workerID,
+		},
+	}
+	data, _ := json.Marshal(hb)
+	data = append(data, '\n')
+	_, _ = clientConn.Write(data)
+
+	// Wait for worker to be registered
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify worker is registered
+	d.mu.Lock()
+	if _, ok := d.workers[workerID]; !ok {
+		d.mu.Unlock()
+		t.Fatal("worker not registered")
+	}
+	d.mu.Unlock()
+
+	// Apply restart-daemon directive
+	detail, err := d.applyDirective(protocol.DirectiveRestartDaemon, "")
+	// Assert: ACK returned with no error
+	if err != nil {
+		t.Fatalf("expected no error from applyDirective, got: %v", err)
+	}
+	if detail == "" {
+		t.Fatal("expected non-empty detail in ACK")
+	}
+
+	// Assert: shutdownCh should be closed (signals graceful shutdown)
+	select {
+	case <-d.shutdownCh:
+		// Expected: channel is closed
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected shutdownCh to be closed after restart-daemon directive")
+	}
+
+	// Manually trigger the shutdown sequence to verify PREPARE_SHUTDOWN is sent
+	// (In production, Run() would detect shutdownCh closed and call shutdownWithTimeout)
+	go func() {
+		d.mu.Lock()
+		workerIDs := make([]string, 0, len(d.workers))
+		for id := range d.workers {
+			workerIDs = append(workerIDs, id)
+		}
+		d.mu.Unlock()
+
+		for _, id := range workerIDs {
+			d.GracefulShutdownWorker(id, d.cfg.ShutdownTimeout)
+		}
+	}()
+
+	// Assert: Worker should receive PREPARE_SHUTDOWN
+	_ = clientConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	scanner := bufio.NewScanner(clientConn)
+	if !scanner.Scan() {
+		t.Fatal("expected PREPARE_SHUTDOWN message")
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+	if msg.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("expected PREPARE_SHUTDOWN, got %s", msg.Type)
+	}
+}

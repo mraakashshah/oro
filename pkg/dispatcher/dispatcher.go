@@ -1834,6 +1834,8 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		// Reject shutdown via UDS directive — agents can bypass ORO_ROLE guards.
 		// Legitimate shutdown uses SIGINT (oro stop) which the daemon always honors.
 		return "", fmt.Errorf("shutdown directive rejected; use 'oro stop' (sends SIGINT)")
+	case protocol.DirectiveRestartDaemon:
+		return d.applyRestartDaemon()
 	default:
 		return fmt.Sprintf("applied %s", dir), nil
 	}
@@ -1846,6 +1848,20 @@ func (d *Dispatcher) applyResume() (string, error) {
 	}
 	d.setState(StateRunning)
 	return "resumed", nil
+}
+
+// applyRestartDaemon initiates graceful shutdown for daemon restart.
+// It closes shutdownCh to trigger the graceful shutdown sequence in Run(),
+// which sends PREPARE_SHUTDOWN to all workers and exits cleanly.
+func (d *Dispatcher) applyRestartDaemon() (string, error) {
+	select {
+	case <-d.shutdownCh:
+		// Already closed
+		return "restart already in progress", nil
+	default:
+		close(d.shutdownCh)
+		return "restarting daemon", nil
+	}
 }
 
 // applyFocus sets the focused epic and resumes the dispatcher if paused.
