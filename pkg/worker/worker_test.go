@@ -2924,6 +2924,9 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		_ = pw.Close()
 		close(proc.waitCh)
 
+		// Drain STATUS awaiting_review (sent after subprocess exit)
+		_ = readMessage(t, dispatcherConn)
+
 		// After QG passes, worker must send READY_FOR_REVIEW (not DONE)
 		msg := readMessage(t, dispatcherConn)
 		if msg.Type != protocol.MsgReadyForReview {
@@ -3003,6 +3006,9 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		_ = pw.Close()
 		close(proc.waitCh)
 
+		// Drain STATUS awaiting_review (sent after subprocess exit)
+		_ = readMessage(t, dispatcherConn)
+
 		// QG fails -> worker should send DONE immediately (no review)
 		msg := readMessage(t, dispatcherConn)
 		if msg.Type != protocol.MsgDone {
@@ -3058,6 +3064,9 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		_, _ = pw.Write([]byte("done\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
+
+		// Drain STATUS awaiting_review (sent after subprocess exit)
+		_ = readMessage(t, dispatcherConn)
 
 		// QG passes -> READY_FOR_REVIEW
 		msg := readMessage(t, dispatcherConn)
@@ -3141,6 +3150,9 @@ func TestSubprocessExit_RunsQGAndSendsDone(t *testing.T) {
 		_ = pw.Close()
 		close(proc.waitCh)
 
+		// Drain STATUS awaiting_review (sent after subprocess exit)
+		_ = readMessage(t, dispatcherConn)
+
 		// Worker should send READY_FOR_REVIEW (not DONE) after QG passes
 		msg := readMessage(t, dispatcherConn)
 		if msg.Type != protocol.MsgReadyForReview {
@@ -3222,6 +3234,9 @@ func TestSubprocessExit_RunsQGAndSendsDone(t *testing.T) {
 		_, _ = pw.Write([]byte("doing work...\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
+
+		// Drain STATUS awaiting_review (sent after subprocess exit)
+		_ = readMessage(t, dispatcherConn)
 
 		// Worker should send DONE with QualityGatePassed=false and QGOutput populated
 		msg := readMessage(t, dispatcherConn)

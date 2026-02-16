@@ -482,6 +482,11 @@ func (w *Worker) awaitSubprocessAndReport(ctx context.Context) {
 		return
 	}
 
+	// Send STATUS update to indicate subprocess has exited and worker is
+	// transitioning to quality gate phase. This ensures the dispatcher knows
+	// the subprocess is no longer running.
+	_ = w.SendStatus(ctx, "awaiting_review", "")
+
 	w.mu.Lock()
 	wt := w.worktree
 	w.mu.Unlock()
