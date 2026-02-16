@@ -2,6 +2,7 @@ package dispatcher //nolint:testpackage // needs internal access to tracking map
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -504,4 +505,102 @@ func TestQGHistoryCap(t *testing.T) {
 		}
 	}
 	d.mu.Unlock()
+}
+
+// TestPruneStaleTracking_ClosedBeadsInSource verifies that beads with
+// attemptCounts but closed in the bead source are pruned from tracking maps
+// within one heartbeat cycle.
+func TestPruneStaleTracking_ClosedBeadsInSource(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	closedBead := "oro-closed"
+	readyBead := "oro-ready"
+
+	// Seed tracking maps for both beads.
+	seedTrackingMaps(d, closedBead)
+	seedTrackingMaps(d, readyBead)
+
+	// Set beadSrc to only return readyBead (closedBead is implicitly closed).
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: readyBead, Title: "Ready bead", Priority: 1, Type: "task"},
+	})
+
+	// Run pruneStaleTracking.
+	ctx := context.Background()
+	d.pruneStaleTracking(ctx)
+
+	// Verify closed bead entries are cleared.
+	assertTrackingMapsEmpty(t, d, closedBead)
+
+	// Verify ready bead entries are preserved (it's in the ready queue).
+	d.mu.Lock()
+	if d.attemptCounts[readyBead] != 1 {
+		t.Errorf("ready bead attemptCounts should be preserved, got %d", d.attemptCounts[readyBead])
+	}
+	d.mu.Unlock()
+}
+
+// TestBuildStatusJSON_FiltersStaleAttemptCounts verifies that buildStatusJSON
+// does not include attempt counts for beads not in ready queue and not assigned
+// to any worker.
+func TestBuildStatusJSON_FiltersStaleAttemptCounts(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	activeBeadID := "oro-active"
+	queuedBeadID := "oro-queued"
+	staleBeadID := "oro-stale"
+
+	// Set up beadSrc to return only queuedBeadID in ready queue.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: queuedBeadID, Title: "Queued bead", Priority: 1, Type: "task"},
+	})
+
+	// Create a worker and assign activeBeadID.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	d.mu.Lock()
+	w := d.workers["w1"]
+	w.state = protocol.WorkerBusy
+	w.beadID = activeBeadID
+	d.mu.Unlock()
+
+	// Seed attemptCounts for all three beads.
+	d.mu.Lock()
+	d.attemptCounts[activeBeadID] = 2
+	d.attemptCounts[queuedBeadID] = 3
+	d.attemptCounts[staleBeadID] = 5 // This should NOT appear in status.
+	d.mu.Unlock()
+
+	// Build status JSON.
+	statusJSON := d.buildStatusJSON()
+
+	// Parse the JSON to verify attemptCounts.
+	var status struct {
+		AttemptCounts map[string]int `json:"attempt_counts"`
+	}
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		t.Fatalf("failed to parse status JSON: %v", err)
+	}
+
+	// Verify activeBeadID and queuedBeadID are present.
+	if status.AttemptCounts[activeBeadID] != 2 {
+		t.Errorf("activeBeadID attempt count: got %d, want 2", status.AttemptCounts[activeBeadID])
+	}
+	if status.AttemptCounts[queuedBeadID] != 3 {
+		t.Errorf("queuedBeadID attempt count: got %d, want 3", status.AttemptCounts[queuedBeadID])
+	}
+
+	// Verify staleBeadID is NOT present.
+	if count, exists := status.AttemptCounts[staleBeadID]; exists {
+		t.Errorf("staleBeadID should not be in attempt counts, got %d", count)
+	}
 }
