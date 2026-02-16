@@ -28,10 +28,23 @@ build: stage-assets
 
 install: stage-assets
 	go install $(LDFLAGS) ./cmd/oro
+	@if [ -d cmd/oro-search-hook ]; then \
+		mkdir -p $(ORO_HOME)/hooks && \
+		go build -o $(ORO_HOME)/hooks/oro-search-hook ./cmd/oro-search-hook; \
+	else \
+		echo "Warning: cmd/oro-search-hook/ not found, skipping oro-search-hook build"; \
+	fi
+	@if [ -d cmd/oro-dash ]; then \
+		mkdir -p $(ORO_HOME)/bin && \
+		go build $(LDFLAGS) -o $(ORO_HOME)/bin/oro-dash ./cmd/oro-dash; \
+	else \
+		echo "Warning: cmd/oro-dash/ not found, skipping oro-dash build"; \
+	fi
 	@$(MAKE) clean-assets
 
 build-dash:
-	go build $(LDFLAGS) -o oro-dash ./cmd/oro-dash
+	@mkdir -p $(ORO_HOME)/bin
+	go build $(LDFLAGS) -o $(ORO_HOME)/bin/oro-dash ./cmd/oro-dash
 
 build-search-hook:
 	@mkdir -p $(ORO_HOME)/hooks
