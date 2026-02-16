@@ -536,7 +536,6 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 		"SessionStart": {{
 			Matcher: "",
 			Hooks: []hookEntry{
-				{Type: "command", Command: sh("enforce-skills.sh")},
 				{Type: "command", Command: py("session_start_extras.py"), StatusMessage: "Loading project context..."},
 			},
 		}},

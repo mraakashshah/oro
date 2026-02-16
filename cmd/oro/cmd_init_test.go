@@ -481,7 +481,6 @@ func testAssets() fstest.MapFS {
 	return fstest.MapFS{
 		"skills/brainstorming/SKILL.md":           &fstest.MapFile{Data: []byte("# Brainstorming\n")},
 		"skills/test-driven-development/SKILL.md": &fstest.MapFile{Data: []byte("# TDD\n")},
-		"hooks/enforce-skills.sh":                 &fstest.MapFile{Data: []byte("#!/bin/bash\necho ok\n")},
 		"hooks/session_start_extras.py":           &fstest.MapFile{Data: []byte("# session start\n")},
 		"beacons/architect.md":                    &fstest.MapFile{Data: []byte("# Architect\n")},
 		"beacons/manager.md":                      &fstest.MapFile{Data: []byte("# Manager\n")},
@@ -643,12 +642,12 @@ func TestOroInit(t *testing.T) {
 		}
 
 		// Hooks go to ~/.oro/hooks/
-		hookPath := filepath.Join(oroHome, "hooks", "enforce-skills.sh")
+		hookPath := filepath.Join(oroHome, "hooks", "session_start_extras.py")
 		data, err := os.ReadFile(hookPath) //nolint:gosec // test-created file
 		if err != nil {
 			t.Fatalf("hook not extracted: %v", err)
 		}
-		if !strings.Contains(string(data), "echo ok") {
+		if !strings.Contains(string(data), "session start") {
 			t.Errorf("hook content mismatch, got: %s", string(data))
 		}
 	})
@@ -878,7 +877,7 @@ func TestExtractAssets(t *testing.T) {
 	}
 
 	// hooks → hooks/
-	if _, err := os.Stat(filepath.Join(dest, "hooks", "enforce-skills.sh")); err != nil {
+	if _, err := os.Stat(filepath.Join(dest, "hooks", "session_start_extras.py")); err != nil {
 		t.Errorf("hooks not extracted: %v", err)
 	}
 
