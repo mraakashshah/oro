@@ -18,8 +18,10 @@ import contextlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -43,6 +45,7 @@ def oro_project_dir():
 KNOWLEDGE_FILE = ".beads/memory/knowledge.jsonl"
 WORKTREES_DIR = ".worktrees"
 BEACONS_DIR = os.path.join(oro_home(), "beacons") if os.environ.get("ORO_PROJECT") else ".claude/hooks/beacons"
+STATE_DB = os.path.join(oro_home(), "state.db")
 
 _SUPERPOWERS = """\
 # Superpowers — How You Operate
@@ -352,6 +355,27 @@ def latest_handoff(handoffs_dir: str) -> str:
         return ""
 
 
+def update_pane_activity(role: str, state_db: str = STATE_DB) -> None:
+    """Update pane_activity table with current timestamp for the given role.
+
+    Best-effort: logs warning on error, doesn't block session.
+    Skips update if role is empty (not in oro context).
+    """
+    if not role:
+        return
+
+    try:
+        conn = sqlite3.connect(state_db, timeout=1.0)
+        try:
+            ts = int(time.time())
+            conn.execute("INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)", (role, ts))
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        print(f"warning: could not update pane_activity: {e}", file=sys.stderr)
+
+
 def auto_load_skills(skills_file: str) -> str:
     """Load skill content from the given file path.
 
@@ -491,20 +515,23 @@ def main() -> None:
     # 3. Recent learnings
     learnings = recent_learnings(KNOWLEDGE_FILE)
 
-    # 4. Latest handoff + project state (skip if .no-reprime exists, unless /clear)
+    # 4. Update pane activity (if ORO_ROLE is set)
+    oro_role = os.environ.get("ORO_ROLE", "")
+    update_pane_activity(oro_role)
+
+    # 5. Latest handoff + project state (skip if .no-reprime exists, unless /clear)
     handoff = ""
     state = ""
-    oro_role = os.environ.get("ORO_ROLE", "")
     is_priming = not Path(".no-reprime").is_file() or session_source == "clear"
     if is_priming:
         # Per-role pane handoff takes priority over directory handoff
         handoff = pane_handoff(oro_role) or latest_handoff(HANDOFFS_DIR)
         state = project_state()
 
-    # 5. Role-specific beacon injection (ORO_ROLE env var set by oro start)
+    # 6. Role-specific beacon injection (ORO_ROLE env var set by oro start)
     beacon = role_beacon(oro_role)
 
-    # 6. Auto-load skills (inject using-skills content between Superpowers and Role Beacon)
+    # 7. Auto-load skills (inject using-skills content between Superpowers and Role Beacon)
     skills_file = Path(".claude/skills/using-skills.md")
     auto_skills = auto_load_skills(str(skills_file))
 
@@ -527,7 +554,7 @@ def main() -> None:
         }
     }
 
-    # 7. User-visible banner (only when priming)
+    # 8. User-visible banner (only when priming)
     if is_priming:
         closed = recently_closed_beads(limit=3)
         ready = ready_beads(limit=4)
