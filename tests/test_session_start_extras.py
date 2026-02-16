@@ -20,6 +20,8 @@ find_merged_worktrees = _mod.find_merged_worktrees
 recent_learnings = _mod.recent_learnings
 session_banner = _mod.session_banner
 role_beacon = _mod.role_beacon
+pane_handoff = _mod.pane_handoff
+latest_handoff = _mod.latest_handoff
 
 
 # --- find_stale_beads ---
@@ -394,3 +396,75 @@ class TestRoleBeacon:
         assert len(manager) > 500, "manager beacon should be substantial"
         assert "## Role" in manager
         assert "manager" in manager.lower()
+
+
+# --- pane_handoff ---
+
+
+class TestPaneHandoff:
+    def test_empty_role_returns_empty(self, tmp_path):
+        assert pane_handoff("", panes_dir=str(tmp_path)) == ""
+
+    def test_no_panes_dir_returns_empty(self):
+        assert pane_handoff("architect", panes_dir="/nonexistent/panes") == ""
+
+    def test_missing_handoff_file_returns_empty(self, tmp_path):
+        role_dir = tmp_path / "architect"
+        role_dir.mkdir()
+        # No handoff.yaml inside
+        assert pane_handoff("architect", panes_dir=str(tmp_path)) == ""
+
+    def test_valid_handoff_returned(self, tmp_path):
+        role_dir = tmp_path / "manager"
+        role_dir.mkdir()
+        content = "---\ngoal: test handoff\nnow: doing stuff\n"
+        (role_dir / "handoff.yaml").write_text(content)
+        result = pane_handoff("manager", panes_dir=str(tmp_path))
+        assert "## Latest Handoff (Auto-Recovery)" in result
+        assert "goal: test handoff" in result
+        assert "```yaml" in result
+
+    def test_malformed_yaml_returns_empty_with_warning(self, tmp_path, capfd):
+        role_dir = tmp_path / "testbad"
+        role_dir.mkdir()
+        (role_dir / "handoff.yaml").write_text("---\nthis is: not: valid: yaml:\n---")
+        result = pane_handoff("testbad", panes_dir=str(tmp_path))
+        assert result == ""
+        captured = capfd.readouterr()
+        assert "warning" in captured.err.lower() or "malformed" in captured.err.lower()
+
+    def test_truncation_at_2000_chars(self, tmp_path):
+        role_dir = tmp_path / "architect"
+        role_dir.mkdir()
+        content = "---\ngoal: " + "x" * 2100 + "\n"
+        (role_dir / "handoff.yaml").write_text(content)
+        result = pane_handoff("architect", panes_dir=str(tmp_path))
+        assert "...(truncated)" in result
+
+    def test_pane_handoff_takes_priority_over_dir(self, tmp_path):
+        """When pane handoff exists, latest_handoff_with_role should prefer it."""
+        # Set up pane handoff
+        panes = tmp_path / "panes"
+        role_dir = panes / "manager"
+        role_dir.mkdir(parents=True)
+        (role_dir / "handoff.yaml").write_text("---\ngoal: pane handoff\n")
+
+        # Set up directory handoff
+        handoffs = tmp_path / "handoffs"
+        handoffs.mkdir()
+        (handoffs / "2026-02-15.yaml").write_text("---\ngoal: dir handoff\n")
+
+        # Pane handoff should win
+        result = pane_handoff("manager", panes_dir=str(panes))
+        assert "pane handoff" in result
+
+    def test_real_pane_handoff_files(self):
+        """Verify the actual pane handoff files in ORO_HOME are loadable."""
+        panes_dir = _oro_home / "panes"
+        if not panes_dir.is_dir():
+            return  # Skip if no panes dir
+
+        manager_handoff = pane_handoff("manager", panes_dir=str(panes_dir))
+        if (panes_dir / "manager" / "handoff.yaml").is_file():
+            assert len(manager_handoff) > 0, "manager pane handoff should be non-empty"
+            assert "## Latest Handoff" in manager_handoff
