@@ -378,6 +378,79 @@ func TestDonePayload_QualityGatePassed_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestAssignPayload_Validate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload protocol.AssignPayload
+		wantErr bool
+	}{
+		{
+			name: "valid_payload",
+			payload: protocol.AssignPayload{
+				BeadID:   "oro-1nf",
+				Worktree: "/tmp/worktree",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid_with_all_fields",
+			payload: protocol.AssignPayload{
+				BeadID:             "oro-1nf.1",
+				Worktree:           "/tmp/worktree",
+				Model:              "claude-sonnet-4-5",
+				MemoryContext:      "context",
+				CodeSearchContext:  "code",
+				Feedback:           "feedback",
+				Title:              "title",
+				Description:        "desc",
+				AcceptanceCriteria: "ac",
+				Attempt:            1,
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty_bead_id",
+			payload: protocol.AssignPayload{
+				BeadID:   "",
+				Worktree: "/tmp/worktree",
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty_worktree",
+			payload: protocol.AssignPayload{
+				BeadID:   "oro-1nf",
+				Worktree: "",
+			},
+			wantErr: true,
+		},
+		{
+			name: "both_empty",
+			payload: protocol.AssignPayload{
+				BeadID:   "",
+				Worktree: "",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.payload.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("Validate() = nil, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate() = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestValidateBeadID(t *testing.T) {
 	t.Parallel()
 

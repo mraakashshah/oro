@@ -1740,7 +1740,7 @@ func TestContextWatcher_EmptyWorktree_NoCrash(t *testing.T) {
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
-	// Send ASSIGN with empty worktree — triggers wt == "" path in watchContext
+	// Send ASSIGN with empty worktree — should be rejected by validation
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
@@ -1749,19 +1749,19 @@ func TestContextWatcher_EmptyWorktree_NoCrash(t *testing.T) {
 		},
 	})
 
-	// Drain STATUS
-	_ = readMessage(t, dispatcherConn)
-
-	// Wait for several poll cycles — watcher should hit wt == "" and continue
-	justWait(300 * time.Millisecond)
-
-	// Should not crash
-	if spawner.process.Killed() {
-		t.Error("subprocess should not be killed with empty worktree")
+	// Worker should exit with validation error
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "invalid assign payload") && !strings.Contains(errMsg, "worktree cannot be empty") {
+			t.Errorf("expected validation error, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after invalid assign")
 	}
-
-	cancel()
-	<-errCh
 }
 
 func TestContextWatcher_Below70_NoHandoff(t *testing.T) {

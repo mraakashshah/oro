@@ -76,6 +76,18 @@ type AssignPayload struct {
 	Attempt            int    `json:"attempt,omitempty"`
 }
 
+// Validate checks that the AssignPayload has required fields populated.
+// Returns an error if BeadID or Worktree is empty.
+func (a *AssignPayload) Validate() error {
+	if a.BeadID == "" {
+		return fmt.Errorf("bead ID cannot be empty")
+	}
+	if a.Worktree == "" {
+		return fmt.Errorf("worktree cannot be empty")
+	}
+	return nil
+}
+
 // HeartbeatPayload is sent by a worker to report liveness and context usage.
 type HeartbeatPayload struct {
 	BeadID     string `json:"bead_id"`

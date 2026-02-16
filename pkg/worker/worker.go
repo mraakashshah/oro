@@ -344,6 +344,11 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 		return fmt.Errorf("assign message missing payload")
 	}
 
+	// Validate the payload before processing.
+	if err := msg.Assign.Validate(); err != nil {
+		return fmt.Errorf("invalid assign payload: %w", err)
+	}
+
 	// Kill any existing subprocess from a previous assignment to prevent zombie leaks.
 	w.killProc()
 
