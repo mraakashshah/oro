@@ -8154,6 +8154,177 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 	})
 }
 
+func TestEpicCompletionAlert(t *testing.T) {
+	t.Run("focused epic completion escalates alert", func(t *testing.T) {
+		d, beadSource, _, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-focus-1"
+		childID := "child-f1"
+		workerID := "worker-f1"
+		worktree := "/tmp/worktree-" + childID
+		branch := "agent/" + childID
+
+		// Set the focused epic.
+		d.mu.Lock()
+		d.focusedEpic = epicID
+		d.mu.Unlock()
+
+		// Configure mock: AllChildrenClosed returns true.
+		beadSource.allChildrenClosedMap = map[string]bool{
+			epicID: true,
+		}
+
+		// Set up tracked worker with the child bead and epic.
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			epicID:  epicID,
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
+
+		// Wait for async auto-close goroutine.
+		time.Sleep(200 * time.Millisecond)
+
+		// Verify escalation message was sent with epic completion alert.
+		msgs := esc.Messages()
+		found := false
+		for _, msg := range msgs {
+			if strings.Contains(msg, "EPIC_COMPLETE") && strings.Contains(msg, epicID) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected EPIC_COMPLETE escalation for %s, got messages: %v", epicID, msgs)
+		}
+
+		// Verify message includes the clear instruction.
+		for _, msg := range msgs {
+			if strings.Contains(msg, "EPIC_COMPLETE") {
+				if !strings.Contains(msg, `oro directive focus ""`) {
+					t.Errorf("expected escalation to include clear instruction, got: %s", msg)
+				}
+			}
+		}
+	})
+
+	t.Run("non-focused epic completion does not escalate", func(t *testing.T) {
+		d, beadSource, _, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-other-1"
+		childID := "child-o1"
+		workerID := "worker-o1"
+		worktree := "/tmp/worktree-" + childID
+		branch := "agent/" + childID
+
+		// Set focused epic to something DIFFERENT.
+		d.mu.Lock()
+		d.focusedEpic = "epic-different"
+		d.mu.Unlock()
+
+		beadSource.allChildrenClosedMap = map[string]bool{
+			epicID: true,
+		}
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			epicID:  epicID,
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
+
+		time.Sleep(200 * time.Millisecond)
+
+		// Verify NO epic completion escalation was sent.
+		msgs := esc.Messages()
+		for _, msg := range msgs {
+			if strings.Contains(msg, "EPIC_COMPLETE") {
+				t.Errorf("should not escalate EPIC_COMPLETE for non-focused epic, got: %s", msg)
+			}
+		}
+	})
+
+	t.Run("no focused epic means no alert", func(t *testing.T) {
+		d, beadSource, _, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-nofocus"
+		childID := "child-nf1"
+		workerID := "worker-nf1"
+		worktree := "/tmp/worktree-" + childID
+		branch := "agent/" + childID
+
+		// No focused epic set (default empty string).
+
+		beadSource.allChildrenClosedMap = map[string]bool{
+			epicID: true,
+		}
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			epicID:  epicID,
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
+
+		time.Sleep(200 * time.Millisecond)
+
+		// Epic should still be auto-closed.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if !epicClosed {
+			t.Error("expected epic to be auto-closed even without focus")
+		}
+
+		// But NO EPIC_COMPLETE escalation should be sent.
+		msgs := esc.Messages()
+		for _, msg := range msgs {
+			if strings.Contains(msg, "EPIC_COMPLETE") {
+				t.Errorf("should not escalate EPIC_COMPLETE when no focused epic, got: %s", msg)
+			}
+		}
+	})
+}
+
 // --- Auto-scale on queue depth tests (oro-r8rl) ---
 
 // TestAutoScaleOnQueueDepth verifies that when tryAssign finds assignable beads
