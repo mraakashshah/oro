@@ -37,3 +37,4 @@ cmd/oro/_assets/
 .claude/settings.local.json
 .perles/
 uv.lock
+.beads

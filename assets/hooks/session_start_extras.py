@@ -352,6 +352,36 @@ def latest_handoff(handoffs_dir: str) -> str:
         return ""
 
 
+def auto_load_skills(skills_file: str) -> str:
+    """Load skill content from the given file path.
+
+    Returns formatted content with header when file is valid and non-empty.
+    Returns empty string and logs warning when file is missing.
+    Returns empty string when file is empty.
+    """
+    skills_path = Path(skills_file)
+
+    # Check if file exists
+    if not skills_path.is_file():
+        print(f"warning: skills file not found: {skills_file}", file=sys.stderr)
+        return ""
+
+    # Read file content
+    try:
+        content = skills_path.read_text().strip()
+    except OSError as e:
+        print(f"warning: could not read skills file {skills_file}: {e}", file=sys.stderr)
+        return ""
+
+    # Return empty string if content is empty
+    if not content:
+        return ""
+
+    # Format and return content with header
+    skill_name = skills_path.stem
+    return f"# Auto-loaded Skill: {skill_name}\n\n{content}"
+
+
 def project_state() -> str:
     """Gather bd ready, git status, git log, and current.md into a context string."""
     sections = []

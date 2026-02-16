@@ -468,3 +468,43 @@ class TestPaneHandoff:
         if (panes_dir / "manager" / "handoff.yaml").is_file():
             assert len(manager_handoff) > 0, "manager pane handoff should be non-empty"
             assert "## Latest Handoff" in manager_handoff
+
+
+# --- auto_load_skills ---
+
+
+auto_load_skills = _mod.auto_load_skills
+
+
+class TestAutoLoadSkills:
+    def test_valid_file_returns_formatted_content(self, tmp_path):
+        """Valid file should return formatted content with header."""
+        skills_file = tmp_path / "using-skills.md"
+        skills_file.write_text("# Skill Content\n\nThis is skill documentation.")
+
+        result = auto_load_skills(str(skills_file))
+
+        assert result != ""
+        assert "# Skill Content" in result
+        assert "This is skill documentation." in result
+        # Should have a header/label indicating it's auto-loaded
+        assert "using-skills" in result.lower() or "skill" in result.lower()
+
+    def test_missing_file_returns_empty_and_logs_warning(self, tmp_path, capfd):
+        """Missing file should return empty string and log warning."""
+        nonexistent = tmp_path / "nonexistent.md"
+
+        result = auto_load_skills(str(nonexistent))
+
+        assert result == ""
+        captured = capfd.readouterr()
+        assert "warning" in captured.err.lower() or "not found" in captured.err.lower()
+
+    def test_empty_file_returns_empty(self, tmp_path):
+        """Empty file should return empty string."""
+        empty_file = tmp_path / "empty.md"
+        empty_file.write_text("")
+
+        result = auto_load_skills(str(empty_file))
+
+        assert result == ""
