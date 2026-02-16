@@ -101,6 +101,9 @@ type Styles struct {
 	HealthRed    lipgloss.Style
 	WorkerStyle  lipgloss.Style
 	BlockerStyle lipgloss.Style
+
+	// Health view styles
+	SectionTitle lipgloss.Style
 }
 
 // DefaultTheme returns the default theme for oro dash.
@@ -219,4 +222,5 @@ func (s *Styles) initBadgeStyles(theme Theme) {
 	s.HealthRed = lipgloss.NewStyle().Foreground(theme.ColorStale)
 	s.WorkerStyle = lipgloss.NewStyle().Foreground(theme.ColorInProgress)
 	s.BlockerStyle = lipgloss.NewStyle().Foreground(theme.ColorBlocked)
+	s.SectionTitle = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Padding(1, 0)
 }
