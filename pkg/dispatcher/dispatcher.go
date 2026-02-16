@@ -140,6 +140,8 @@ type Config struct {
 	FallbackPollInterval time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
 	ShutdownTimeout      time.Duration // Graceful shutdown timeout (default 10s).
 	ConsolidateAfterN    int           // Trigger context consolidation after N completed beads (default 5).
+	PaneContextThreshold int           // Context percentage threshold for pane handoff (default 60).
+	PaneMonitorInterval  time.Duration // Pane context_pct poll interval (default 5s).
 }
 
 func (c *Config) withDefaults() Config {
@@ -164,6 +166,12 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.ConsolidateAfterN == 0 {
 		out.ConsolidateAfterN = 5
+	}
+	if out.PaneContextThreshold == 0 {
+		out.PaneContextThreshold = 60
+	}
+	if out.PaneMonitorInterval == 0 {
+		out.PaneMonitorInterval = 5 * time.Second
 	}
 	return out
 }
@@ -226,6 +234,12 @@ type Dispatcher struct {
 	// beadsDir is the directory to watch for bead changes (defaults to protocol.BeadsDir)
 	beadsDir string
 
+	// panesDir is the directory to watch for pane context_pct files (defaults to ~/.oro/panes)
+	panesDir string
+
+	// signaledPanes tracks which panes have been signaled to avoid re-signaling
+	signaledPanes map[string]bool
+
 	// startTime records when Run() was called (for uptime).
 	startTime time.Time
 
@@ -286,10 +300,12 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			worktreeFailures: make(map[string]time.Time),
 			exhaustedBeads:   make(map[string]bool),
 		},
-		shutdownCh: make(chan struct{}),
-		beadsDir:   protocol.BeadsDir,
-		nowFunc:    time.Now,
-		acceptSem:  make(chan struct{}, 100), // limit to 100 concurrent connection handlers
+		shutdownCh:    make(chan struct{}),
+		beadsDir:      protocol.BeadsDir,
+		panesDir:      filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
+		signaledPanes: make(map[string]bool),
+		nowFunc:       time.Now,
+		acceptSem:     make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
 }
 
@@ -389,6 +405,9 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 	// Heartbeat monitor
 	d.safeGo(func() { d.heartbeatLoop(ctx) })
+
+	// Pane context monitor
+	d.safeGo(func() { d.paneMonitorLoop(ctx) })
 
 	select {
 	case <-ctx.Done():
