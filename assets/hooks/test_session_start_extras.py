@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from unittest import mock
 
-import pytest
+import pytest  # type: ignore[import-untyped]
 from session_start_extras import main
 
 
