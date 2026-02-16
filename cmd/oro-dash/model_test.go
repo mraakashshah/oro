@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -67,70 +66,6 @@ func TestStatusBar(t *testing.T) {
 			// Verify offline is shown in red when daemon is not healthy
 			if !tt.daemonHealthy && !strings.Contains(statusBar, "offline") {
 				t.Errorf("renderStatusBar() should show 'offline' when daemon is unhealthy")
-			}
-		})
-	}
-}
-
-// TestRobotMode verifies --json flag outputs valid JSON snapshot.
-func TestRobotMode(t *testing.T) {
-	tests := []struct {
-		name    string
-		beads   []Bead
-		workers []WorkerStatus
-		wantErr bool
-	}{
-		{
-			name: "valid beads and workers produces valid JSON",
-			beads: []Bead{
-				{ID: "bead-1", Status: "open"},
-				{ID: "bead-2", Status: "in_progress"},
-			},
-			workers: []WorkerStatus{
-				{ID: "worker-1", Status: "active"},
-			},
-			wantErr: false,
-		},
-		{
-			name:    "empty beads and workers produces valid JSON",
-			beads:   []Bead{},
-			workers: []WorkerStatus{},
-			wantErr: false,
-		},
-		{
-			name: "only beads produces valid JSON",
-			beads: []Bead{
-				{ID: "bead-1", Status: "open"},
-			},
-			workers: []WorkerStatus{},
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			jsonBytes, err := robotMode(tt.beads, tt.workers)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("robotMode() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if err != nil {
-				return
-			}
-
-			// Verify the output is valid JSON
-			var result map[string]any
-			if err := json.Unmarshal(jsonBytes, &result); err != nil {
-				t.Errorf("robotMode() output is not valid JSON: %v\nOutput: %s", err, string(jsonBytes))
-			}
-
-			// Verify JSON contains expected fields
-			if _, ok := result["beads"]; !ok {
-				t.Errorf("robotMode() JSON missing 'beads' field")
-			}
-			if _, ok := result["workers"]; !ok {
-				t.Errorf("robotMode() JSON missing 'workers' field")
 			}
 		})
 	}
@@ -208,46 +143,6 @@ func TestModel_BeadsMsgUpdatesModel(t *testing.T) {
 	}
 	if model.inProgressCount != 1 {
 		t.Errorf("inProgressCount = %d, want 1", model.inProgressCount)
-	}
-}
-
-// TestModel_WorkersMsgUpdatesModel verifies that receiving a workersMsg updates workers and daemon health.
-func TestModel_WorkersMsgUpdatesModel(t *testing.T) {
-	m := newModel()
-	workers := []WorkerStatus{
-		{ID: "w-1", Status: "active"},
-		{ID: "w-2", Status: "idle"},
-	}
-
-	updated, _ := m.Update(workersMsg(workers))
-	model, ok := updated.(Model)
-	if !ok {
-		t.Fatal("Update() did not return Model")
-	}
-
-	if !model.daemonHealthy {
-		t.Error("daemonHealthy should be true when workers received")
-	}
-	if model.workerCount != 2 {
-		t.Errorf("workerCount = %d, want 2", model.workerCount)
-	}
-}
-
-// TestModel_WorkersMsgNilMeansDaemonOffline verifies nil workersMsg marks daemon as offline.
-func TestModel_WorkersMsgNilMeansDaemonOffline(t *testing.T) {
-	m := Model{daemonHealthy: true, workerCount: 3}
-
-	updated, _ := m.Update(workersMsg(nil))
-	model, ok := updated.(Model)
-	if !ok {
-		t.Fatal("Update() did not return Model")
-	}
-
-	if model.daemonHealthy {
-		t.Error("daemonHealthy should be false when nil workers received")
-	}
-	if model.workerCount != 0 {
-		t.Errorf("workerCount = %d, want 0", model.workerCount)
 	}
 }
 

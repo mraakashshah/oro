@@ -2,7 +2,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -25,19 +24,6 @@ type WorkerStatus struct {
 	BeadID           string  `json:"bead_id,omitempty"`
 	LastProgressSecs float64 `json:"last_progress_secs"`
 	ContextPct       int     `json:"context_pct"`
-}
-
-// robotMode outputs a JSON snapshot of beads and workers.
-func robotMode(beads []Bead, workers []WorkerStatus) ([]byte, error) {
-	snapshot := map[string]any{
-		"beads":   beads,
-		"workers": workers,
-	}
-	data, err := json.Marshal(snapshot)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal snapshot: %w", err)
-	}
-	return data, nil
 }
 
 func main() {

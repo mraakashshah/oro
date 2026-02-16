@@ -21,10 +21,6 @@ type tickMsg time.Time
 // beadsMsg carries fetched beads from the bd CLI.
 type beadsMsg []protocol.Bead
 
-// workersMsg carries fetched worker status from the dispatcher.
-// nil means the daemon is offline.
-type workersMsg []WorkerStatus
-
 // workerDataMsg carries both worker status and assignments from the dispatcher.
 type workerDataMsg struct {
 	workers     []WorkerStatus
@@ -156,16 +152,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Clamp cursor position to ensure it's valid after bead data refresh
 		m = m.clampCursor()
-
-	case workersMsg:
-		if msg == nil {
-			m.daemonHealthy = false
-			m.workerCount = 0
-		} else {
-			m.daemonHealthy = true
-			m.workers = []WorkerStatus(msg)
-			m.workerCount = len(m.workers)
-		}
 
 	case workerDataMsg:
 		if msg.workers == nil {
