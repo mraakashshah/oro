@@ -864,3 +864,66 @@ func TestExtractAssets(t *testing.T) {
 		t.Errorf("CLAUDE.md not extracted: %v", err)
 	}
 }
+
+// --- Executable bits test (oro-l9gw) ---
+
+func TestExtractAssets_ExecutableBits(t *testing.T) {
+	assets := fstest.MapFS{
+		"hooks/auto-format.sh":          &fstest.MapFile{Data: []byte("#!/bin/bash\necho formatting\n")},
+		"hooks/session_start_extras.py": &fstest.MapFile{Data: []byte("#!/usr/bin/env python3\nprint('start')\n")},
+		"skills/test/SKILL.md":          &fstest.MapFile{Data: []byte("# Test Skill\n")},
+		"beacons/guide.yaml":            &fstest.MapFile{Data: []byte("key: value\n")},
+		"commands/test/prompt.md":       &fstest.MapFile{Data: []byte("test command\n")},
+		"CLAUDE.md":                     &fstest.MapFile{Data: []byte("# Instructions\n")},
+	}
+
+	dest := t.TempDir()
+
+	if err := extractAssets(dest, assets); err != nil {
+		t.Fatalf("extractAssets failed: %v", err)
+	}
+
+	// .sh file should have executable permission (0o755)
+	shPath := filepath.Join(dest, "hooks", "auto-format.sh")
+	shInfo, err := os.Stat(shPath)
+	if err != nil {
+		t.Fatalf("shell script not extracted: %v", err)
+	}
+	shMode := shInfo.Mode()
+	if shMode.Perm() != 0o755 {
+		t.Errorf("shell script should have mode 0o755, got %#o", shMode.Perm())
+	}
+
+	// .py file should have executable permission (0o755)
+	pyPath := filepath.Join(dest, "hooks", "session_start_extras.py")
+	pyInfo, err := os.Stat(pyPath)
+	if err != nil {
+		t.Fatalf("python script not extracted: %v", err)
+	}
+	pyMode := pyInfo.Mode()
+	if pyMode.Perm() != 0o755 {
+		t.Errorf("python script should have mode 0o755, got %#o", pyMode.Perm())
+	}
+
+	// .md file should remain 0o644
+	mdPath := filepath.Join(dest, ".claude", "skills", "test", "SKILL.md")
+	mdInfo, err := os.Stat(mdPath)
+	if err != nil {
+		t.Fatalf("markdown file not extracted: %v", err)
+	}
+	mdMode := mdInfo.Mode()
+	if mdMode.Perm() != 0o644 {
+		t.Errorf("markdown file should have mode 0o644, got %#o", mdMode.Perm())
+	}
+
+	// .yaml file should remain 0o644
+	yamlPath := filepath.Join(dest, "beacons", "guide.yaml")
+	yamlInfo, err := os.Stat(yamlPath)
+	if err != nil {
+		t.Fatalf("yaml file not extracted: %v", err)
+	}
+	yamlMode := yamlInfo.Mode()
+	if yamlMode.Perm() != 0o644 {
+		t.Errorf("yaml file should have mode 0o644, got %#o", yamlMode.Perm())
+	}
+}

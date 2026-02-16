@@ -619,6 +619,16 @@ var assetMapping = map[string]string{ //nolint:gochecknoglobals // static config
 	"commands": filepath.Join(".claude", "commands"),
 }
 
+// filePermForAsset returns the appropriate file permission mode for an asset file.
+// Shell (.sh) and Python (.py) scripts get executable permissions (0o755),
+// all other files get standard read/write permissions (0o644).
+func filePermForAsset(path string) os.FileMode {
+	if strings.HasSuffix(path, ".sh") || strings.HasSuffix(path, ".py") {
+		return 0o755
+	}
+	return 0o644
+}
+
 // extractAssets walks the embedded FS and copies files to oroHome.
 // Directory mapping: skills → .claude/skills/, hooks → hooks/, beacons → beacons/,
 // commands → .claude/commands/, CLAUDE.md → .claude/CLAUDE.md.
@@ -657,7 +667,7 @@ func extractAssets(dest string, assets fs.FS) error {
 				return fmt.Errorf("read %s/%s: %w", srcDir, path, err)
 			}
 
-			return os.WriteFile(destPath, data, 0o644) //nolint:gosec // needs to be readable
+			return os.WriteFile(destPath, data, filePermForAsset(path)) //nolint:gosec // needs to be readable
 		})
 		if err != nil {
 			return fmt.Errorf("extract %s: %w", srcDir, err)
