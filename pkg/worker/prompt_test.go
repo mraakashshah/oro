@@ -482,3 +482,71 @@ func TestAssemblePrompt_FeedbackIncludedInRetry(t *testing.T) {
 		t.Error("expected 'Previous Feedback' section header")
 	}
 }
+
+func TestAssemblePrompt_CodeSearchContext_Empty(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-no-code",
+		Title:              "Test with no code search",
+		Description:        "Test description",
+		AcceptanceCriteria: "Tests pass",
+		MemoryContext:      "Some memory",
+		CodeSearchContext:  "", // No code search results
+		WorktreePath:       "/tmp/wt-no-code",
+		Model:              "claude-opus-4-6",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Should NOT contain Relevant Code section when CodeSearchContext is empty
+	if strings.Contains(prompt, "## Relevant Code") {
+		t.Error("prompt should NOT contain '## Relevant Code' section when CodeSearchContext is empty")
+	}
+}
+
+func TestAssemblePrompt_CodeSearchContext_Present(t *testing.T) {
+	t.Parallel()
+
+	codeSearchCtx := "### pkg/foo/bar.go:10-20\n```go\nfunc Example() {\n\treturn nil\n}\n```"
+
+	params := worker.PromptParams{
+		BeadID:             "bead-with-code",
+		Title:              "Test with code search",
+		Description:        "Test description",
+		AcceptanceCriteria: "Tests pass",
+		MemoryContext:      "Some memory",
+		CodeSearchContext:  codeSearchCtx,
+		WorktreePath:       "/tmp/wt-with-code",
+		Model:              "claude-opus-4-6",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Should contain Relevant Code section
+	if !strings.Contains(prompt, "## Relevant Code") {
+		t.Error("expected prompt to contain '## Relevant Code' section when CodeSearchContext is provided")
+	}
+
+	// Should contain the actual code search results
+	if !strings.Contains(prompt, "pkg/foo/bar.go:10-20") {
+		t.Error("expected prompt to contain code search file path")
+	}
+
+	if !strings.Contains(prompt, "func Example()") {
+		t.Error("expected prompt to contain code search content")
+	}
+
+	// Relevant Code should appear AFTER Memory section
+	memIdx := strings.Index(prompt, "## Memory")
+	codeIdx := strings.Index(prompt, "## Relevant Code")
+	if memIdx == -1 || codeIdx == -1 || codeIdx <= memIdx {
+		t.Error("expected '## Relevant Code' section to appear after '## Memory' section")
+	}
+
+	// Relevant Code should appear BEFORE Coding Rules section
+	rulesIdx := strings.Index(prompt, "## Coding Rules")
+	if rulesIdx == -1 || codeIdx >= rulesIdx {
+		t.Error("expected '## Relevant Code' section to appear before '## Coding Rules' section")
+	}
+}

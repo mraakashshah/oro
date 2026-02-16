@@ -370,7 +370,7 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		DBPath:     dbPath,
 	}
 
-	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}

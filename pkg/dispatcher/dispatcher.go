@@ -22,6 +22,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,6 +81,21 @@ type Escalator interface {
 type ProcessManager interface {
 	Spawn(id string) (*os.Process, error)
 	Kill(id string) error
+}
+
+// CodeIndex provides FTS5 code search for injecting relevant code into prompts.
+type CodeIndex interface {
+	FTS5Search(ctx context.Context, query string, limit int) ([]CodeChunk, error)
+}
+
+// CodeChunk represents a code search result.
+type CodeChunk struct {
+	FilePath  string
+	Name      string
+	Kind      string
+	StartLine int
+	EndLine   int
+	Content   string
 }
 
 // --- Worker tracking ---
@@ -192,6 +208,7 @@ type Dispatcher struct {
 	worktrees WorktreeManager
 	escalator Escalator
 	memories  *memory.Store
+	codeIndex CodeIndex // interface for FTS5 code search (nil means no search)
 	procMgr   ProcessManager
 
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
@@ -238,7 +255,8 @@ type Dispatcher struct {
 
 // New creates a Dispatcher. It does NOT start listening or polling — call Run().
 // Returns nil and an error if the Config is invalid after applying defaults.
-func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spawner, beads BeadSource, wt WorktreeManager, esc Escalator) (*Dispatcher, error) {
+// codeIdx may be nil to disable code search context injection.
+func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spawner, beads BeadSource, wt WorktreeManager, esc Escalator, codeIdx CodeIndex) (*Dispatcher, error) {
 	resolved := cfg.withDefaults()
 	if err := resolved.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -252,6 +270,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		worktrees:     wt,
 		escalator:     esc,
 		memories:      memory.NewStore(db),
+		codeIndex:     codeIdx,
 		state:         StateInert,
 		targetWorkers: resolved.MaxWorkers,
 		WorkerPool: WorkerPool{
@@ -1596,6 +1615,13 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if d.memories != nil {
 		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, bead.Title, 0)
 	}
+	var codeCtx string
+	if d.codeIndex != nil {
+		chunks, err := d.codeIndex.FTS5Search(ctx, bead.Title, 5)
+		if err == nil && len(chunks) > 0 {
+			codeCtx = formatCodeChunks(chunks)
+		}
+	}
 	d.mu.Lock()
 	w.state = protocol.WorkerBusy
 	w.beadID = bead.ID
@@ -1610,6 +1636,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			Worktree:           worktree,
 			Model:              bead.ResolveModel(),
 			MemoryContext:      memCtx,
+			CodeSearchContext:  codeCtx,
 			Title:              title,
 			AcceptanceCriteria: acceptance,
 		},
@@ -2118,6 +2145,17 @@ func (d *Dispatcher) shutdownRemoveWorktrees(paths []string) {
 	} else {
 		_ = d.logEvent(ctx, "bead_synced", "dispatcher", "", "", "")
 	}
+}
+
+// formatCodeChunks formats code search results into markdown for prompt injection.
+func formatCodeChunks(chunks []CodeChunk) string {
+	var b strings.Builder
+	for _, chunk := range chunks {
+		fmt.Fprintf(&b, "### %s:%d-%d\n```%s\n%s\n```\n\n",
+			chunk.FilePath, chunk.StartLine, chunk.EndLine,
+			"", chunk.Content) // Empty lang specifier for now
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // ConnectedWorkers, TargetWorkers, WorkerInfo, WorkerModel → worker_pool.go

@@ -14,6 +14,7 @@ type PromptParams struct {
 	Description        string
 	AcceptanceCriteria string
 	MemoryContext      string // may be empty
+	CodeSearchContext  string // formatted code search results from FTS5Search
 	WorktreePath       string
 	Model              string
 	Attempt            int    // QG retry attempt (0 = first attempt)
@@ -61,6 +62,11 @@ func AssemblePrompt(params PromptParams) string {
 
 	// 3. Memory
 	section(&b, "Memory", memoryBody(params.MemoryContext))
+
+	// 3b. Relevant Code (only if CodeSearchContext is non-empty)
+	if params.CodeSearchContext != "" {
+		section(&b, "Relevant Code", params.CodeSearchContext)
+	}
 
 	appendStaticSections(&b, params.WorktreePath, params.BeadID)
 

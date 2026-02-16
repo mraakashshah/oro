@@ -109,7 +109,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 		ShutdownTimeout:      2 * time.Second,
 	}
 
-	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("dispatcher.New: %v", err)
 	}

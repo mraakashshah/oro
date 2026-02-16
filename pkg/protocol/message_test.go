@@ -42,6 +42,37 @@ func TestMessageTypes(t *testing.T) {
 	}
 }
 
+func TestAssignPayload_CodeSearchContext(t *testing.T) {
+	t.Parallel()
+
+	// Verify AssignPayload includes CodeSearchContext field and it
+	// marshals/unmarshals correctly through JSON round-trip.
+	original := protocol.AssignPayload{
+		BeadID:             "oro-test",
+		Worktree:           "/tmp/worktree",
+		Model:              "claude-sonnet-4-5",
+		MemoryContext:      "some memory context",
+		CodeSearchContext:  "## Relevant Code\n\n### file.go:10-20\n```go\nfunc Example() {}\n```",
+		Title:              "Test Bead",
+		Description:        "Test description",
+		AcceptanceCriteria: "Test AC",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	var decoded protocol.AssignPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if decoded.CodeSearchContext != original.CodeSearchContext {
+		t.Errorf("CodeSearchContext mismatch: got %q, want %q", decoded.CodeSearchContext, original.CodeSearchContext)
+	}
+}
+
 func TestHandoffPayloadFields(t *testing.T) {
 	t.Parallel()
 

@@ -289,7 +289,7 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 		ShutdownTimeout:      2 * time.Second,
 	}
 
-	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("dispatcher.New failed: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestDispatcherWorker_GracefulShutdown(t *testing.T) {
 		ShutdownTimeout:      2 * time.Second,
 	}
 
-	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("dispatcher.New failed: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestDispatcherWorker_Heartbeat(t *testing.T) {
 		ShutdownTimeout:      1 * time.Second,
 	}
 
-	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("dispatcher.New failed: %v", err)
 	}

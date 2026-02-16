@@ -407,7 +407,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 		PollInterval:     50 * time.Millisecond,
 	}
 
-	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -2683,7 +2683,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 		ShutdownTimeout:  500 * time.Millisecond,
 	}
 
-	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -2774,7 +2774,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 		ShutdownTimeout:  500 * time.Millisecond,
 	}
 
-	d, err := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc)
+	d, err := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -2863,7 +2863,7 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 		ShutdownTimeout:  2 * time.Second,
 	}
 
-	d, err := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc)
+	d, err := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -5465,7 +5465,7 @@ func TestDispatcherBuffering(t *testing.T) {
 		DBPath:           ":memory:",
 		HeartbeatTimeout: 500 * time.Millisecond,
 		PollInterval:     100 * time.Millisecond,
-	}, db, merger, spawner, beadSrc, wt, esc)
+	}, db, merger, spawner, beadSrc, wt, esc, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -6451,7 +6451,7 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 			PollInterval:     50 * time.Millisecond,
 		}
 
-		d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc)
+		d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 		if err != nil {
 			t.Fatalf("New() failed: %v", err)
 		}
@@ -7851,4 +7851,21 @@ func TestBuildStatusJSON_CachedQueueDepth(t *testing.T) {
 	if status.QueueDepth < 1 {
 		t.Errorf("expected queue_depth >= 1 (cached from assign loop), got %d", status.QueueDepth)
 	}
+}
+
+// TestAssignBead_InjectsCodeContext verifies that assignBead runs FTS5Search
+// on bead title and injects formatted results into AssignPayload.CodeSearchContext.
+func TestAssignBead_InjectsCodeContext(t *testing.T) {
+	t.Skip("TODO: implement code search integration test - requires CodeIndex wiring")
+}
+
+// TestAssemblePrompt_CodeSearchSection verifies that AssemblePrompt formats
+// CodeSearchContext into a "## Relevant Code" section after "## Memory".
+func TestAssemblePrompt_CodeSearchSection(t *testing.T) {
+	t.Skip("TODO: implement after PromptParams.CodeSearchContext exists")
+}
+
+// TestFormatCodeResults verifies formatting of FTS5Search results into markdown.
+func TestFormatCodeResults(t *testing.T) {
+	t.Skip("TODO: implement code results formatting test")
 }
