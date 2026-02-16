@@ -79,14 +79,19 @@ These are what you need to RUN oro — manage a Claude Code swarm.
 | Tool | Why needed | Install method |
 |------|-----------|----------------|
 | `tmux` | Session management (architect + manager panes) | `brew install tmux` |
-| `python3` | Hook scripts are Python | Version manager or `brew install python3` |
+| `python3` | Hook scripts are Python | `uv` manages via `.python-version` |
 | `jq` | auto-format.sh hook uses it | `brew install jq` |
+| `rg` | Claude Code Grep tool, hook scripts | `brew install ripgrep` |
+| `uv` | Python toolchain, venv, dependency management | `brew install uv` |
+| `agent-browser` | Browser automation for agents | `brew install agent-browser` + `agent-browser install` |
 | `bd` | Issue tracking for beads | `brew install beads` or `go install` |
 | `git` | Worktree management, sync | Pre-installed (verify only) |
 
 Claude Code (`claude`) is a prerequisite — verified, not installed.
 
-**That's 4-5 tools.** Not 20+. Most users already have python3 and git.
+**That's 7 tools.** Not 20+. Most users already have python3 and git.
+`uv` owns Python — it downloads the interpreter, creates `.venv/`, and installs
+hook dependencies via `uv sync`. No reliance on system python3.
 
 #### Tier 2: Developer tools (installed by `oro setup --dev`)
 
@@ -94,11 +99,14 @@ These are what you need to DEVELOP oro or run the quality gate on target project
 
 | Tool | Category | Install method |
 |------|----------|----------------|
+| `direnv` | Per-project env vars | `brew install direnv` |
+| `ruff` | Python lint/format | `uv tool install ruff` |
+| `pyright` | Python type checking | `uv tool install pyright` |
+| `pytest` | Python testing | `uv sync --group dev` (project dep) |
+| `yamllint` | YAML linting | `uv tool install yamllint` |
+| `markdownlint` | Doc linting | `brew install markdownlint-cli` |
 | `go` | Runtime | Version manager or brew |
 | `node`/`npm` | Runtime | Version manager or brew |
-| `uv` | Python toolchain | `brew install uv` |
-| `ruff` | Python lint/format | `uv tool install ruff` |
-| `pyright` | Python type checking | `npm install -g pyright` |
 | `biome` | JS/JSON lint/format | `brew install biome` |
 | `ast-grep` | Code search | `npm install -g @ast-grep/cli` |
 | `typescript` | TS type checking | `npm install -g typescript` |
@@ -108,8 +116,6 @@ These are what you need to DEVELOP oro or run the quality gate on target project
 | `go-arch-lint` | Architecture rules | `go install github.com/fe3dback/go-arch-lint/v4@latest` |
 | `govulncheck` | Security scanning | `go install golang.org/x/vuln/cmd/govulncheck@latest` |
 | `shellcheck` | Shell linting | `brew install shellcheck` |
-| `markdownlint` | Doc linting | `npm install -g markdownlint-cli` |
-| `yamllint` | YAML linting | `uv tool install yamllint` |
 
 `oro setup --dev` installs Tier 1 + Tier 2.
 
