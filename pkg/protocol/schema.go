@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS memories (
     pinned INTEGER DEFAULT 0
 );
 
+-- Architect/manager pane SessionStart activity tracking
+CREATE TABLE IF NOT EXISTS pane_activity (
+    pane TEXT PRIMARY KEY,  -- 'architect' | 'manager'
+    last_seen INTEGER       -- unix timestamp (seconds since epoch)
+);
+
 -- Persistent escalation queue: dispatcher writes, manager acks
 CREATE TABLE IF NOT EXISTS escalations (
     id INTEGER PRIMARY KEY,
