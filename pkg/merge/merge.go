@@ -63,10 +63,13 @@ func NewCoordinator(git GitRunner) *Coordinator {
 	return &Coordinator{git: git}
 }
 
-// Merge performs a sequential rebase-merge:
-//  1. git rebase main <branch>
-//  2. If clean: git checkout main && git merge --ff-only <branch>
+// Merge performs a sequential rebase-merge using cherry-pick:
+//  1. git rebase main <branch> (in worktree)
+//  2. If clean: cherry-pick commits from branch onto main (in primary repo)
 //  3. If conflict: git rebase --abort, return *ConflictError
+//
+// This approach avoids "git checkout main" which fails when main is already
+// checked out in the primary worktree (common in multi-worktree setups).
 //
 // Only one Merge runs at a time (mutex-protected).
 func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
@@ -95,27 +98,61 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 		return nil, c.handleRebaseFailure(ctx, opts, stderr)
 	}
 
-	// Step 2: Checkout main
-	_, _, err = c.git.Run(ctx, opts.Worktree, "checkout", "main")
+	// Step 2-5: Cherry-pick commits from branch onto main in primary repo
+	return c.cherryPickToMain(ctx, opts)
+}
+
+// cherryPickToMain applies commits from the rebased branch onto main in the primary repo.
+func (c *Coordinator) cherryPickToMain(ctx context.Context, opts Opts) (*Result, error) {
+	// Get the primary repository path
+	commonDir, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "--git-common-dir")
 	if err != nil {
-		return nil, fmt.Errorf("checkout main failed in %s: %w", opts.Worktree, err)
+		return nil, fmt.Errorf("failed to get git common dir: %w", err)
+	}
+	commonDir = strings.TrimSpace(commonDir)
+
+	primaryRepo, _, err := c.git.Run(ctx, commonDir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get primary repo path: %w", err)
+	}
+	primaryRepo = strings.TrimSpace(primaryRepo)
+
+	// Get commits to cherry-pick
+	commitRange, _, err := c.git.Run(ctx, opts.Worktree, "rev-list", "--reverse", "main.."+opts.Branch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get commit range: %w", err)
+	}
+	commitRange = strings.TrimSpace(commitRange)
+
+	if commitRange == "" {
+		// No commits to merge - branch is already up to date
+		stdout, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", "main")
+		if err != nil {
+			return nil, fmt.Errorf("rev-parse main failed: %w", err)
+		}
+		return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
 	}
 
-	// Step 3: Fast-forward merge
-	_, _, err = c.git.Run(ctx, opts.Worktree, "merge", "--ff-only", opts.Branch)
-	if err != nil {
-		return nil, fmt.Errorf("ff-only merge of %s failed: %w", opts.Branch, err)
+	// Cherry-pick each commit onto main
+	commits := strings.Split(commitRange, "\n")
+	for _, commit := range commits {
+		commit = strings.TrimSpace(commit)
+		if commit == "" {
+			continue
+		}
+		_, _, err = c.git.Run(ctx, primaryRepo, "cherry-pick", commit)
+		if err != nil {
+			_, _, _ = c.git.Run(ctx, primaryRepo, "cherry-pick", "--abort")
+			return nil, fmt.Errorf("cherry-pick of %s failed: %w", commit, err)
+		}
 	}
 
-	// Step 4: Get the merge commit SHA
-	stdout, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "HEAD")
+	// Get the final commit SHA
+	stdout, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("rev-parse HEAD failed: %w", err)
 	}
-
-	return &Result{
-		CommitSHA: strings.TrimSpace(stdout),
-	}, nil
+	return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
 }
 
 // handleRebaseFailure aborts the in-progress rebase and returns a ConflictError

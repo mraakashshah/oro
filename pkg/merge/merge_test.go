@@ -61,11 +61,17 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 		results: []mockResult{
 			// 1. git rebase main bead/abc — success
 			{Stdout: "", Stderr: "", Err: nil},
-			// 2. git checkout main — success
+			// 2. git rev-parse --git-common-dir
+			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+			// 3. git rev-parse --show-toplevel (from common dir)
+			{Stdout: "/repo\n", Stderr: "", Err: nil},
+			// 4. git rev-list --reverse main..bead/abc
+			{Stdout: "commit1\ncommit2\n", Stderr: "", Err: nil},
+			// 5. git cherry-pick commit1 (in primary repo)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 3. git merge --ff-only bead/abc — success
+			// 6. git cherry-pick commit2 (in primary repo)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 4. git rev-parse HEAD — returns commit SHA
+			// 7. git rev-parse HEAD (in primary repo)
 			{Stdout: "abc123def456\n", Stderr: "", Err: nil},
 		},
 	}
@@ -87,18 +93,24 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 
 	// Verify the git commands issued
 	calls := mock.getCalls()
-	if len(calls) != 4 {
-		t.Fatalf("expected 4 git calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 7 {
+		t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
 	}
 
 	// Call 1: rebase
 	assertArgs(t, calls[0], "/tmp/wt-abc", "rebase", "main", "bead/abc")
-	// Call 2: checkout main
-	assertArgs(t, calls[1], "/tmp/wt-abc", "checkout", "main")
-	// Call 3: merge --ff-only
-	assertArgs(t, calls[2], "/tmp/wt-abc", "merge", "--ff-only", "bead/abc")
-	// Call 4: rev-parse HEAD
-	assertArgs(t, calls[3], "/tmp/wt-abc", "rev-parse", "HEAD")
+	// Call 2: rev-parse --git-common-dir
+	assertArgs(t, calls[1], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
+	// Call 3: rev-parse --show-toplevel
+	assertArgs(t, calls[2], "/repo/.git", "rev-parse", "--show-toplevel")
+	// Call 4: rev-list
+	assertArgs(t, calls[3], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
+	// Call 5: cherry-pick commit1
+	assertArgs(t, calls[4], "/repo", "cherry-pick", "commit1")
+	// Call 6: cherry-pick commit2
+	assertArgs(t, calls[5], "/repo", "cherry-pick", "commit2")
+	// Call 7: rev-parse HEAD
+	assertArgs(t, calls[6], "/repo", "rev-parse", "HEAD")
 }
 
 func TestMerge_RebaseConflict_ReturnsConflictError(t *testing.T) {
@@ -162,21 +174,27 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 	var firstMergeStarted atomic.Bool
 	unblockFirst := make(chan struct{})
 
-	// A blocking GitRunner for the first merge
+	// A blocking GitRunner for the first merge - updated for cherry-pick flow
 	blockingRunner := &blockingGitRunner{
 		onFirstCall: func() {
 			firstMergeStarted.Store(true)
 			<-unblockFirst // block until signaled
 		},
 		results: []mockResult{
-			{Stdout: "", Stderr: "", Err: nil},       // rebase
-			{Stdout: "", Stderr: "", Err: nil},       // checkout
-			{Stdout: "", Stderr: "", Err: nil},       // merge
-			{Stdout: "sha1\n", Stderr: "", Err: nil}, // rev-parse
-			{Stdout: "", Stderr: "", Err: nil},       // rebase (second merge)
-			{Stdout: "", Stderr: "", Err: nil},       // checkout
-			{Stdout: "", Stderr: "", Err: nil},       // merge
-			{Stdout: "sha2\n", Stderr: "", Err: nil}, // rev-parse
+			// First merge (7 calls)
+			{Stdout: "", Stderr: "", Err: nil},             // rebase
+			{Stdout: "/repo/.git\n", Stderr: "", Err: nil}, // rev-parse --git-common-dir
+			{Stdout: "/repo\n", Stderr: "", Err: nil},      // rev-parse --show-toplevel
+			{Stdout: "c1\n", Stderr: "", Err: nil},         // rev-list
+			{Stdout: "", Stderr: "", Err: nil},             // cherry-pick
+			{Stdout: "sha1\n", Stderr: "", Err: nil},       // rev-parse HEAD
+			// Second merge (6 calls - skipping rebase in count)
+			{Stdout: "", Stderr: "", Err: nil},             // rebase
+			{Stdout: "/repo/.git\n", Stderr: "", Err: nil}, // rev-parse --git-common-dir
+			{Stdout: "/repo\n", Stderr: "", Err: nil},      // rev-parse --show-toplevel
+			{Stdout: "c2\n", Stderr: "", Err: nil},         // rev-list
+			{Stdout: "", Stderr: "", Err: nil},             // cherry-pick
+			{Stdout: "sha2\n", Stderr: "", Err: nil},       // rev-parse HEAD
 		},
 	}
 
@@ -226,19 +244,19 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 	wg.Wait()
 
 	// The second merge must have started its git operations after the first finished
-	// Verify all 8 git calls happened sequentially (4 per merge)
+	// Verify all 12 git calls happened sequentially (6 per merge)
 	calls := blockingRunner.getCalls()
-	if len(calls) != 8 {
-		t.Fatalf("expected 8 git calls, got %d", len(calls))
+	if len(calls) != 12 {
+		t.Fatalf("expected 12 git calls, got %d", len(calls))
 	}
 
-	// First 4 calls should be for bead/first
+	// First call should be for bead/first
 	if !containsArg(calls[0].Args, "bead/first") {
 		t.Errorf("expected first call to be for bead/first, got %v", calls[0].Args)
 	}
-	// Last 4 calls should be for bead/second (rebase call)
-	if !containsArg(calls[4].Args, "bead/second") {
-		t.Errorf("expected fifth call to be for bead/second, got %v", calls[4].Args)
+	// 7th call (second merge's rebase) should be for bead/second
+	if !containsArg(calls[6].Args, "bead/second") {
+		t.Errorf("expected seventh call to be for bead/second, got %v", calls[6].Args)
 	}
 }
 
@@ -375,15 +393,21 @@ func TestMerge_RebaseAbortFails(t *testing.T) {
 }
 
 func TestMerge_FFOnlyMergeFails(t *testing.T) {
-	// Rebase succeeds but merge --ff-only fails (main moved)
+	// Updated for cherry-pick flow - test cherry-pick failure
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// 1. git rebase — success
 			{Stdout: "", Stderr: "", Err: nil},
-			// 2. git checkout main — success
+			// 2. git rev-parse --git-common-dir — success
+			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+			// 3. git rev-parse --show-toplevel — success
+			{Stdout: "/repo\n", Stderr: "", Err: nil},
+			// 4. git rev-list — success
+			{Stdout: "commit1\n", Stderr: "", Err: nil},
+			// 5. git cherry-pick — fails (e.g., main moved, conflict)
+			{Stdout: "", Stderr: "error: could not apply commit1", Err: fmt.Errorf("exit status 1")},
+			// 6. git cherry-pick --abort (cleanup)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 3. git merge --ff-only — fails
-			{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
 		},
 	}
 
@@ -395,22 +419,27 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error on ff-only failure, got nil")
+		t.Fatal("expected error on cherry-pick failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "cherry-pick") {
+		t.Errorf("expected 'cherry-pick' in error, got: %v", err)
 	}
 	// Should NOT be a ConflictError — this is a different kind of failure
 	var conflictErr3 *ConflictError
 	if errors.As(err, &conflictErr3) {
-		t.Error("ff-only failure should not produce ConflictError")
+		t.Error("cherry-pick failure should not produce ConflictError")
 	}
 }
 
 func TestMerge_CheckoutMainFails(t *testing.T) {
+	// This test is now obsolete since we no longer checkout main.
+	// Instead, test that rev-parse --git-common-dir failure is handled.
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// 1. git rebase — success
 			{Stdout: "", Stderr: "", Err: nil},
-			// 2. git checkout main — fails
-			{Stdout: "", Stderr: "error: pathspec 'main' did not match", Err: fmt.Errorf("exit status 1")},
+			// 2. git rev-parse --git-common-dir — fails
+			{Stdout: "", Stderr: "fatal: not a git repository", Err: fmt.Errorf("exit status 128")},
 		},
 	}
 
@@ -422,32 +451,30 @@ func TestMerge_CheckoutMainFails(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error on checkout failure, got nil")
+		t.Fatal("expected error on rev-parse failure, got nil")
 	}
-	if !strings.Contains(err.Error(), "checkout main failed") {
-		t.Errorf("expected 'checkout main failed' in error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "/tmp/wt-chk") {
-		t.Errorf("expected worktree path in error, got: %v", err)
+	if !strings.Contains(err.Error(), "failed to get git common dir") {
+		t.Errorf("expected 'failed to get git common dir' in error, got: %v", err)
 	}
 	// Should NOT be a ConflictError
 	var conflictErr *ConflictError
 	if errors.As(err, &conflictErr) {
-		t.Error("checkout failure should not produce ConflictError")
+		t.Error("rev-parse failure should not produce ConflictError")
 	}
 }
 
 func TestMerge_RevParseFails(t *testing.T) {
+	// Updated for cherry-pick flow - test rev-list failure
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// 1. git rebase — success
 			{Stdout: "", Stderr: "", Err: nil},
-			// 2. git checkout main — success
-			{Stdout: "", Stderr: "", Err: nil},
-			// 3. git merge --ff-only — success
-			{Stdout: "", Stderr: "", Err: nil},
-			// 4. git rev-parse HEAD — fails
-			{Stdout: "", Stderr: "fatal: bad default revision", Err: fmt.Errorf("exit status 128")},
+			// 2. git rev-parse --git-common-dir — success
+			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+			// 3. git rev-parse --show-toplevel — success
+			{Stdout: "/repo\n", Stderr: "", Err: nil},
+			// 4. git rev-list — fails
+			{Stdout: "", Stderr: "fatal: bad revision", Err: fmt.Errorf("exit status 128")},
 		},
 	}
 
@@ -459,15 +486,15 @@ func TestMerge_RevParseFails(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error on rev-parse failure, got nil")
+		t.Fatal("expected error on rev-list failure, got nil")
 	}
-	if !strings.Contains(err.Error(), "rev-parse HEAD failed") {
-		t.Errorf("expected 'rev-parse HEAD failed' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "failed to get commit range") {
+		t.Errorf("expected 'failed to get commit range' in error, got: %v", err)
 	}
 	// Should NOT be a ConflictError
 	var conflictErr *ConflictError
 	if errors.As(err, &conflictErr) {
-		t.Error("rev-parse failure should not produce ConflictError")
+		t.Error("rev-list failure should not produce ConflictError")
 	}
 }
 
