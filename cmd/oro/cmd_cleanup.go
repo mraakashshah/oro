@@ -37,21 +37,17 @@ deletes agent/* branches; and resets orphaned in_progress beads to open.
 
 Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
+			paths, err := ResolvePaths()
 			if err != nil {
-				return fmt.Errorf("get pid path: %w", err)
-			}
-			sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
-			if err != nil {
-				return fmt.Errorf("get socket path: %w", err)
+				return fmt.Errorf("resolve paths: %w", err)
 			}
 
 			cfg := &cleanupConfig{
 				runner:   &ExecRunner{},
 				w:        cmd.OutOrStdout(),
 				tmuxName: "oro",
-				pidPath:  pidPath,
-				sockPath: sockPath,
+				pidPath:  paths.PIDPath,
+				sockPath: paths.SocketPath,
 				signalFn: defaultSignalINT,
 				aliveFn:  IsProcessAlive,
 				isTTY:    isStdinTTY,

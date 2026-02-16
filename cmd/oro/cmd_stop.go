@@ -51,18 +51,14 @@ func newStopCmd() *cobra.Command {
 		Short: "Graceful shutdown of the Oro swarm",
 		Long:  "Sends a stop directive to the dispatcher, waits for workers to finish,\nkills the tmux session, and runs bd sync.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
+			paths, err := ResolvePaths()
 			if err != nil {
-				return fmt.Errorf("get pid path: %w", err)
-			}
-			sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
-			if err != nil {
-				return fmt.Errorf("get socket path: %w", err)
+				return fmt.Errorf("resolve paths: %w", err)
 			}
 
 			cfg := &stopConfig{
-				pidPath:  pidPath,
-				sockPath: sockPath,
+				pidPath:  paths.PIDPath,
+				sockPath: paths.SocketPath,
 				tmuxName: "oro",
 				runner:   &ExecRunner{},
 				w:        cmd.OutOrStdout(),

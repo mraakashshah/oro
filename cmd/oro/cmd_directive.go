@@ -55,10 +55,11 @@ func runDirective(ctx context.Context, w io.Writer, args []string) error {
 		opArgs = strings.Join(args[1:], " ")
 	}
 
-	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
+	paths, err := ResolvePaths()
 	if err != nil {
-		return fmt.Errorf("get socket path: %w", err)
+		return fmt.Errorf("resolve paths: %w", err)
 	}
+	sockPath := paths.SocketPath
 
 	conn, err := dialDispatcher(ctx, sockPath)
 	if err != nil {

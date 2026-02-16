@@ -26,12 +26,12 @@ func newLogsCmd() *cobra.Command {
 		Long:  "Displays events from the dispatcher event log.\nOptionally filter by worker-id and follow new events.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dbPath, err := oroPath("ORO_DB_PATH", "state.db")
+			paths, err := ResolvePaths()
 			if err != nil {
-				return fmt.Errorf("get db path: %w", err)
+				return fmt.Errorf("resolve paths: %w", err)
 			}
 
-			db, err := openDB(dbPath)
+			db, err := openDB(paths.StateDBPath)
 			if err != nil {
 				return fmt.Errorf("open db: %w", err)
 			}

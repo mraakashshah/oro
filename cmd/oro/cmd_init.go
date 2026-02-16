@@ -357,18 +357,6 @@ func resolveProjectName(projectRoot, projectName string) (string, error) {
 	return filepath.Base(absRoot), nil
 }
 
-// resolveOroHome returns the oro home directory from ORO_HOME env var or ~/.oro.
-func resolveOroHome() (string, error) {
-	if v := os.Getenv("ORO_HOME"); v != "" {
-		return v, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
-	}
-	return filepath.Join(home, ".oro"), nil
-}
-
 // bootstrapProject orchestrates project initialization for externalized config.
 // It creates the local anchor (.oro/config.yaml), manages .gitignore, generates
 // per-project settings.json, creates handoffs dir, and extracts embedded assets.

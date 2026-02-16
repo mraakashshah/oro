@@ -56,9 +56,9 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 	}
 
 	// Wire memory store so [MEMORY] markers and implicit patterns are captured.
-	dbPath, err := oroPath("ORO_DB_PATH", "state.db")
-	if err == nil {
-		db, dbErr := openDB(dbPath)
+	paths, pathsErr := ResolvePaths()
+	if pathsErr == nil {
+		db, dbErr := openDB(paths.StateDBPath)
 		if dbErr == nil {
 			defer func() { _ = db.Close() }()
 			w.SetMemoryStore(openWorkerMemoryStore(db))

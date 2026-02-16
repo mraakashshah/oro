@@ -50,18 +50,14 @@ func newStatusCmd() *cobra.Command {
 		Short: "Show current swarm state",
 		Long:  "Displays dispatcher status, worker count and active beads,\nmanager state, and bead summary.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
+			paths, err := ResolvePaths()
 			if err != nil {
-				return fmt.Errorf("get pid path: %w", err)
-			}
-			sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
-			if err != nil {
-				return fmt.Errorf("get socket path: %w", err)
+				return fmt.Errorf("resolve paths: %w", err)
 			}
 
 			w := cmd.OutOrStdout()
 
-			status, pid, err := DaemonStatus(pidPath, sockPath)
+			status, pid, err := DaemonStatus(paths.PIDPath, paths.SocketPath)
 			if err != nil {
 				return fmt.Errorf("get daemon status: %w", err)
 			}
@@ -85,11 +81,12 @@ func newStatusCmd() *cobra.Command {
 // directive, and prints the parsed response. On any failure it prints a
 // graceful fallback message instead of returning an error.
 func queryDispatcherStatus(ctx context.Context, w io.Writer) {
-	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
+	paths, err := ResolvePaths()
 	if err != nil {
 		fmt.Fprintln(w, "  dispatcher detail unavailable")
 		return
 	}
+	sockPath := paths.SocketPath
 
 	ctx, cancel := context.WithTimeout(ctx, statusSocketTimeout)
 	defer cancel()

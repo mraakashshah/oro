@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
@@ -13,14 +11,11 @@ import (
 // defaultMemoryStore opens (or creates) the default SQLite memory store at
 // ~/.oro/memories.db and ensures the schema is applied.
 func defaultMemoryStore() (*memory.Store, error) {
-	dbPath := os.Getenv("ORO_MEMORY_DB")
-	if dbPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("resolve home dir: %w", err)
-		}
-		dbPath = filepath.Join(home, protocol.OroDir, "memories.db")
+	paths, err := ResolvePaths()
+	if err != nil {
+		return nil, fmt.Errorf("resolve paths: %w", err)
 	}
+	dbPath := paths.MemoryDBPath
 
 	db, err := openDB(dbPath)
 	if err != nil {

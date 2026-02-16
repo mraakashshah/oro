@@ -6,11 +6,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"oro/pkg/codesearch"
-	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
@@ -61,9 +59,12 @@ func newIndexBuildCmd() *cobra.Command {
 				rootDir = cwd
 			}
 
-			dbPath := defaultIndexDBPath()
+			paths, err := ResolvePaths()
+			if err != nil {
+				return fmt.Errorf("resolve paths: %w", err)
+			}
 			w := cmd.OutOrStdout()
-			return runIndexBuild(w, rootDir, dbPath)
+			return runIndexBuild(w, rootDir, paths.CodeIndexDBPath)
 		},
 	}
 
@@ -82,9 +83,12 @@ func newIndexSearchCmd() *cobra.Command {
 		Long:  "Search the code index using FTS5 full-text search with Claude reranking.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dbPath := defaultIndexDBPath()
+			paths, err := ResolvePaths()
+			if err != nil {
+				return fmt.Errorf("resolve paths: %w", err)
+			}
 			w := cmd.OutOrStdout()
-			return runIndexSearch(w, args[0], dbPath, topK, &ClaudeRerankSpawner{})
+			return runIndexSearch(w, args[0], paths.CodeIndexDBPath, topK, &ClaudeRerankSpawner{})
 		},
 	}
 
@@ -152,18 +156,4 @@ func runIndexSearch(w io.Writer, query, dbPath string, topK int, spawner codesea
 	}
 
 	return nil
-}
-
-// defaultIndexDBPath returns the default path for the code index database.
-// Respects ORO_HOME env var if set.
-func defaultIndexDBPath() string {
-	// Check ORO_HOME first (for tests and custom installations).
-	if oroHome := os.Getenv("ORO_HOME"); oroHome != "" {
-		return filepath.Join(oroHome, "code_index.db")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(protocol.OroDir, "code_index.db")
-	}
-	return filepath.Join(home, protocol.OroDir, "code_index.db")
 }

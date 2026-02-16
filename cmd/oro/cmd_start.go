@@ -19,7 +19,6 @@ import (
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
-	"oro/pkg/protocol"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -97,14 +96,12 @@ func isDetached(flag bool) bool {
 // 4. Print status
 // 5. Attach interactively (or print instructions if detached)
 func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
-	pidPath, err := oroPath("ORO_PID_PATH", "oro.pid")
+	paths, err := ResolvePaths()
 	if err != nil {
-		return fmt.Errorf("get pid path: %w", err)
+		return fmt.Errorf("resolve paths: %w", err)
 	}
-	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
-	if err != nil {
-		return fmt.Errorf("get socket path: %w", err)
-	}
+	pidPath := paths.PIDPath
+	sockPath := paths.SocketPath
 
 	// 1. Spawn the daemon subprocess.
 	pid, err := spawner.SpawnDaemon(pidPath, workers)
@@ -162,22 +159,17 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 		return "", fmt.Errorf("preflight checks failed: %w", err)
 	}
 
-	oroDir, err := defaultOroDir()
+	paths, err := ResolvePaths()
 	if err != nil {
-		return "", fmt.Errorf("get oro dir: %w", err)
+		return "", fmt.Errorf("resolve paths: %w", err)
 	}
-	if err := bootstrapOroDir(oroDir); err != nil {
+
+	if err := bootstrapOroDir(paths.OroHome); err != nil {
 		return "", fmt.Errorf("bootstrap oro dir: %w", err)
 	}
 
-	pidPath, err = oroPath("ORO_PID_PATH", "oro.pid")
-	if err != nil {
-		return "", fmt.Errorf("get pid path: %w", err)
-	}
-	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
-	if err != nil {
-		return "", fmt.Errorf("get socket path: %w", err)
-	}
+	pidPath = paths.PIDPath
+	sockPath := paths.SocketPath
 
 	status, pid, err := DaemonStatus(pidPath, sockPath)
 	if err != nil {
@@ -282,15 +274,6 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
 	return nil
 }
 
-// defaultOroDir returns the default ~/.oro directory path.
-func defaultOroDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
-	}
-	return filepath.Join(home, protocol.OroDir), nil
-}
-
 // bootstrapOroDir creates the oro state directory with 0700 permissions.
 // It is idempotent — calling it on an existing directory is a no-op.
 func bootstrapOroDir(dir string) error {
@@ -300,29 +283,16 @@ func bootstrapOroDir(dir string) error {
 	return nil
 }
 
-// oroDir returns the resolved path, respecting ORO_*_PATH env overrides.
-func oroPath(envKey, defaultSuffix string) (string, error) {
-	if v := os.Getenv(envKey); v != "" {
-		return v, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
-	}
-	return filepath.Join(home, protocol.OroDir, defaultSuffix), nil
-}
-
 // buildDispatcher constructs a Dispatcher with all production dependencies.
 // The caller owns the returned *sql.DB and must close it.
 func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
-	sockPath, err := oroPath("ORO_SOCKET_PATH", "oro.sock")
+	paths, err := ResolvePaths()
 	if err != nil {
 		return nil, nil, err
 	}
-	dbPath, err := oroPath("ORO_DB_PATH", "state.db")
-	if err != nil {
-		return nil, nil, err
-	}
+
+	sockPath := paths.SocketPath
+	dbPath := paths.StateDBPath
 
 	db, err := openDB(dbPath)
 	if err != nil {
@@ -346,7 +316,7 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	// dispatcher can serve queries on any previously-built index data.
 	// Build runs in the background to refresh the index without blocking startup.
 	var codeIdx dispatcher.CodeIndex
-	idx, idxErr := codesearch.NewCodeIndex(defaultIndexDBPath(), nil)
+	idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath, nil)
 	if idxErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to open code index: %v\n", idxErr)
 	} else {
