@@ -3,17 +3,21 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
 
-# stage-assets copies oro config assets into cmd/oro/_assets/ so that
-# go:embed can bundle them into the binary. Assets live in ~/.oro/ after
-# externalization (see docs/plans/2026-02-15-config-externalization-design.md).
-ORO_HOME ?= $(HOME)/.oro
+# stage-assets copies oro config assets from the repo's assets/ directory into
+# cmd/oro/_assets/ so that go:embed can bundle them into the binary.
+# The assets/ directory is the canonical source for embedded resources.
 stage-assets:
+	@if [ ! -d assets ]; then \
+		echo "Error: assets/ directory not found. Cannot stage assets for embedding."; \
+		exit 1; \
+	fi
 	@mkdir -p cmd/oro/_assets/skills cmd/oro/_assets/hooks cmd/oro/_assets/beacons cmd/oro/_assets/commands
-	@cp -r $(ORO_HOME)/.claude/skills/* cmd/oro/_assets/skills/ 2>/dev/null || true
-	@cp $(ORO_HOME)/hooks/*.py $(ORO_HOME)/hooks/*.sh cmd/oro/_assets/hooks/ 2>/dev/null || true
-	@cp -r $(ORO_HOME)/beacons/* cmd/oro/_assets/beacons/ 2>/dev/null || true
-	@test -d $(ORO_HOME)/.claude/commands && cp -r $(ORO_HOME)/.claude/commands/* cmd/oro/_assets/commands/ 2>/dev/null || true
-	@test -f $(ORO_HOME)/.claude/CLAUDE.md && cp $(ORO_HOME)/.claude/CLAUDE.md cmd/oro/_assets/ || true
+	@cp -r assets/skills/* cmd/oro/_assets/skills/ 2>/dev/null || true
+	@cp assets/hooks/*.py assets/hooks/*.sh cmd/oro/_assets/hooks/ 2>/dev/null || true
+	@cp -r assets/beacons/* cmd/oro/_assets/beacons/ 2>/dev/null || true
+	@test -d assets/commands && cp -r assets/commands/* cmd/oro/_assets/commands/ 2>/dev/null || true
+	@test -f assets/CLAUDE.md && cp assets/CLAUDE.md cmd/oro/_assets/ || true
+	@test -f assets/.test-marker && cp assets/.test-marker cmd/oro/_assets/ || true
 
 clean-assets:
 	@rm -rf cmd/oro/_assets
