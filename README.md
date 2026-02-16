@@ -61,7 +61,7 @@ Oro enforces a disciplined pipeline from idea to merged code. Every phase has a 
  ┌─────────────────────────────────────────────────────────┐
  │  2. PREMORTEM                                           │
  │  Stress-test every design decision before committing.   │
- │  Tigers (likely + severe), elephants (ignored obvious    │
+ │  Tigers (likely + severe), elephants (ignored obvious   │
  │  problems), paper tigers (fears that aren't real).      │
  └─────────────────────────┬───────────────────────────────┘
                            │
@@ -77,7 +77,7 @@ Oro enforces a disciplined pipeline from idea to merged code. Every phase has a 
  ┌─────────────────────────────────────────────────────────┐
  │  4. PLAN                                                │
  │  Break spec into bite-sized implementation steps        │
- │  (2-5 min each). Exact file paths, code snippets,      │
+ │  (2-5 min each). Exact file paths, code snippets,       │
  │  review checkpoints between tasks.                      │
  └─────────────────────────┬───────────────────────────────┘
                            │
@@ -94,15 +94,15 @@ Oro enforces a disciplined pipeline from idea to merged code. Every phase has a 
  ┌─────────────────────────────────────────────────────────┐
  │  6. OBSERVE                                             │
  │  Before touching code, check actual system state.       │
- │  Read real outputs, run real commands. Mark confidence:  │
+ │  Read real outputs, run real commands. Mark confidence: │
  │  VERIFIED / INFERRED / UNCERTAIN. No assumptions.       │
  └─────────────────────────┬───────────────────────────────┘
                            │
                            ▼
  ┌─────────────────────────────────────────────────────────┐
  │  7. TDD (Red → Green → Refactor)                        │
- │  Write failing test from acceptance criteria. Watch it   │
- │  fail for the right reason. Write minimal code to pass.  │
+ │  Write failing test from acceptance criteria. Watch it  │
+ │  fail for the right reason. Write minimal code to pass. │
  │  Refactor while green. No production code without a     │
  │  failing test first.                                    │
  └─────────────────────────┬───────────────────────────────┘
@@ -150,13 +150,13 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
 
 ```
  ┌─────────────────────────────────────────────────────────┐
- │                    tmux session "oro"                    │
+ │                    tmux session "oro"                   │
  │  ┌──────────────────────┐  ┌──────────────────────────┐ │
  │  │  Architect (pane 0)  │  │  Manager (pane 1)        │ │
- │  │  Designs specs,      │  │  Judgment calls,          │ │
- │  │  creates beads,      │  │  merge conflicts,         │ │
- │  │  sets priorities     │  │  stuck workers,           │ │
- │  │                      │  │  scales swarm             │ │
+ │  │  Designs specs,      │  │  Judgment calls,         │ │
+ │  │  creates beads,      │  │  merge conflicts,        │ │
+ │  │  sets priorities     │  │  stuck workers,          │ │
+ │  │                      │  │  scales swarm            │ │
  │  └──────────────────────┘  └──────────────────────────┘ │
  └─────────────────────────────────────────────────────────┘
                           │
@@ -164,7 +164,7 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
                           │
                           ▼
  ┌─────────────────────────────────────────────────────────┐
- │              Dispatcher (background daemon)              │
+ │              Dispatcher (background daemon)             │
  │  Polls ready beads → assigns to idle workers → merges   │
  │  UDS socket · SQLite state · heartbeat monitoring       │
  └────────┬──────────┬──────────┬──────────┬───────────────┘
