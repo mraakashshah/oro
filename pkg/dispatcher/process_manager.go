@@ -18,6 +18,7 @@ type ExecProcessManager struct {
 	socketPath string
 	mu         sync.Mutex
 	procs      map[string]*os.Process
+	wg         sync.WaitGroup
 
 	// cmdFactory builds the exec.Cmd for a given worker ID.
 	// Defaults to spawning `oro worker --socket <socketPath> --id <id>`.
@@ -99,7 +100,11 @@ func (pm *ExecProcessManager) Spawn(id string) (*os.Process, error) {
 	pm.mu.Unlock()
 
 	// Reap the child process in the background to avoid zombies.
-	go func() { _ = cmd.Wait() }()
+	pm.wg.Add(1)
+	go func() {
+		defer pm.wg.Done()
+		_ = cmd.Wait()
+	}()
 
 	return proc, nil
 }
@@ -144,6 +149,12 @@ func (pm *ExecProcessManager) Kill(id string) error {
 	}
 
 	return nil
+}
+
+// Wait blocks until all zombie reaper goroutines have completed.
+// This is useful for testing and for ensuring clean shutdown.
+func (pm *ExecProcessManager) Wait() {
+	pm.wg.Wait()
 }
 
 // SetProcessManager sets the ProcessManager on a Dispatcher.

@@ -237,3 +237,36 @@ func TestExecProcessManager_Kill_KillsProcessGroup(t *testing.T) {
 		t.Errorf("grandchild process %d should be dead after Kill, but signal 0 succeeded", grandchildPID)
 	}
 }
+
+// TestSpawn_ReaperTracked verifies that the zombie reaper goroutine is
+// tracked via a WaitGroup, allowing Wait() to block until all reapers finish.
+func TestSpawn_ReaperTracked(t *testing.T) {
+	// Use a short-lived process factory so the reaper completes quickly.
+	pm := dispatcher.NewExecProcessManagerWithFactory("/tmp/test.sock", func(_ string) *exec.Cmd {
+		return exec.Command("sleep", "0.1")
+	})
+
+	// Spawn a worker, triggering the reaper goroutine.
+	proc, err := pm.Spawn("w-reaper")
+	if err != nil {
+		t.Fatalf("Spawn returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("Spawn returned nil process")
+	}
+
+	// Wait should block until the reaper goroutine calls cmd.Wait().
+	// The process exits after 0.1s, so Wait should return shortly after.
+	done := make(chan struct{})
+	go func() {
+		pm.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: Wait returned, meaning the reaper goroutine finished.
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wait() did not return within 3 seconds; reaper goroutine not tracked")
+	}
+}
