@@ -641,6 +641,46 @@ func (s *TmuxSession) Kill() error {
 	return nil
 }
 
+// KillPane kills all processes in a specific pane without destroying the pane.
+// Walks the process tree to clean up descendant processes.
+func (s *TmuxSession) KillPane(paneTarget string) error {
+	// Get pane PID
+	pidStr, err := s.Runner.Run("tmux", "display-message", "-p", "-t", paneTarget, "#{pane_pid}")
+	if err != nil {
+		return fmt.Errorf("get pane pid: %w", err)
+	}
+	pid := strings.TrimSpace(pidStr)
+	if pid == "" || pid == "0" {
+		return nil // No process to kill
+	}
+
+	// Kill process group
+	pgid := getProcessGroupID(pid)
+	if pgid != "" && pgid != "0" && pgid != "1" {
+		pgidInt, err := strconv.Atoi(pgid)
+		if err == nil {
+			_ = syscall.Kill(-pgidInt, syscall.SIGTERM)
+		}
+	}
+
+	// Walk descendants
+	descendants := getAllDescendants(pid)
+	for _, dpid := range descendants {
+		_ = exec.CommandContext(context.Background(), "kill", "-TERM", dpid).Run() //nolint:gosec // dpid comes from pgrep of tmux pane_pid
+	}
+
+	// Grace period
+	s.sleep(processKillGracePeriod)
+
+	// SIGKILL remaining
+	for _, dpid := range descendants {
+		_ = exec.CommandContext(context.Background(), "kill", "-KILL", dpid).Run() //nolint:gosec // dpid comes from pgrep of tmux pane_pid
+	}
+	_ = exec.CommandContext(context.Background(), "kill", "-KILL", pid).Run() //nolint:gosec // pid comes from tmux pane_pid
+
+	return nil
+}
+
 // RespawnPane kills all processes in a pane and starts a new command.
 // Used for crash recovery — restarts Claude in-place without recreating the session.
 func (s *TmuxSession) RespawnPane(paneTarget, command string) error {

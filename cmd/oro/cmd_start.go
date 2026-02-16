@@ -348,8 +348,20 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}
-	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath))
+	wireDependencies(d, sockPath)
 	return d, db, nil
+}
+
+// wireDependencies attaches process manager and tmux session to the dispatcher.
+func wireDependencies(d *dispatcher.Dispatcher, sockPath string) {
+	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath))
+
+	// Wire up tmux session for pane restart on handoff completion
+	tmuxSession := &TmuxSession{
+		Name:   "oro",
+		Runner: &ExecRunner{},
+	}
+	d.SetTmuxSession(tmuxSession)
 }
 
 // readProjectConfig reads the project name from .oro/config.yaml in the given directory.
