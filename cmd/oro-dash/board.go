@@ -69,7 +69,7 @@ func NewBoardModelWithWorkers(beads []protocol.Bead, workers []WorkerStatus, ass
 
 		// Limit Done column to most recent 10 beads
 		if t == "Done" && len(beadsInCol) > 10 {
-			beadsInCol = beadsInCol[:10]
+			beadsInCol = beadsInCol[len(beadsInCol)-10:]
 		}
 
 		columns = append(columns, boardColumn{

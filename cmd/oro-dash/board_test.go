@@ -79,11 +79,11 @@ func TestBoardView_EmptyBeads(t *testing.T) {
 	}
 }
 
-// TestDoneColumn verifies that the Done column is rendered as the 4th column,
-// shows only the most recent 10 closed beads, uses Success (green) color,
-// and displays visible/total count in the header.
-func TestDoneColumn(t *testing.T) {
-	// Create 15 closed beads with different IDs to simulate recency
+// TestDoneColumn_MostRecent verifies that the Done column shows the 10 most
+// recently closed beads, not the oldest ones.
+func TestDoneColumn_MostRecent(t *testing.T) {
+	// Create 15 closed beads in order from oldest (a) to newest (o)
+	// We assume beads come from bd in chronological order (oldest first)
 	closedBeads := make([]protocol.Bead, 15)
 	for i := range 15 {
 		closedBeads[i] = protocol.Bead{
@@ -127,20 +127,22 @@ func TestDoneColumn(t *testing.T) {
 		t.Errorf("Done column header should show 'Done (10/15)'\ngot:\n%s", output)
 	}
 
-	// 4. Verify only first 10 closed beads are shown (last 5 should be missing)
-	// We expect beads a-j (first 10) to be shown, k-o (last 5) to be hidden
-	for i := range 10 {
+	// 4. Verify only the LAST 10 closed beads are shown (most recent)
+	// We expect beads f-o (indices 5-14, the most recent) to be shown
+	// Beads a-e (indices 0-4, the oldest) should be hidden
+	for i := 5; i < 15; i++ {
 		expectedTitle := "Closed task " + string(rune('A'+i))
 		if !strings.Contains(output, expectedTitle) {
-			t.Errorf("Done column should show first 10 closed beads, missing %q\ngot:\n%s",
+			t.Errorf("Done column should show most recent 10 closed beads, missing %q\ngot:\n%s",
 				expectedTitle, output)
 		}
 	}
 
-	for i := range 5 {
-		hiddenTitle := "Closed task " + string(rune('A'+i+10))
+	// Verify oldest 5 beads are NOT shown
+	for i := 0; i < 5; i++ {
+		hiddenTitle := "Closed task " + string(rune('A'+i))
 		if strings.Contains(output, hiddenTitle) {
-			t.Errorf("Done column should NOT show beads beyond first 10, found %q\ngot:\n%s",
+			t.Errorf("Done column should NOT show oldest beads, found %q\ngot:\n%s",
 				hiddenTitle, output)
 		}
 	}
