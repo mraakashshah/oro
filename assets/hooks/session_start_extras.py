@@ -5,7 +5,7 @@ Also injects role-specific beacon context when ORO_ROLE is set (architect/manage
 The full role prompt is loaded from .claude/hooks/beacons/{role}.md, so send-keys
 only needs to send a short nudge — the hook handles the heavy context injection.
 
-Companion to enforce-skills.sh. Outputs additionalContext on SessionStart.
+Outputs additionalContext on SessionStart.
 
 Pure functions for testability:
   - find_stale_beads(bd_output, days_threshold=3)
