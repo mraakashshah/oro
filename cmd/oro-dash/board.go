@@ -190,8 +190,9 @@ func (bm BoardModel) renderCardContent(b protocol.Bead, theme Theme) string {
 
 	// Line 3/4 (conditional): Blocker IDs for blocked cards
 	if b.Status == "blocked" && len(b.Dependencies) > 0 {
-		blockerLine := bm.renderBlockerInfo(b, theme)
-		parts = append(parts, blockerLine)
+		if blockerLine := bm.renderBlockerInfo(b, theme); blockerLine != "" {
+			parts = append(parts, blockerLine)
+		}
 	}
 
 	return strings.Join(parts, "\n")

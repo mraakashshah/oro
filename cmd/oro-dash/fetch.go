@@ -153,5 +153,15 @@ func fetchWorkerStatus(ctx context.Context, socketPath string) ([]WorkerStatus, 
 		})
 	}
 
-	return workers, resp.Assignments, nil
+	return workers, invertAssignments(resp.Assignments), nil
+}
+
+// invertAssignments flips workerID→beadID to beadID→workerID
+// so BoardModel can look up worker by bead ID.
+func invertAssignments(m map[string]string) map[string]string {
+	inv := make(map[string]string, len(m))
+	for k, v := range m {
+		inv[v] = k
+	}
+	return inv
 }
