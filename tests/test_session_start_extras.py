@@ -481,8 +481,10 @@ auto_load_skills = _mod.auto_load_skills
 
 class TestAutoLoadSkills:
     def test_valid_file_returns_formatted_content(self, tmp_path):
-        """Valid file should return formatted content with header."""
-        skills_file = tmp_path / "using-skills.md"
+        """Valid SKILL.md should return formatted content with skill name from parent dir."""
+        skill_dir = tmp_path / "using-skills"
+        skill_dir.mkdir()
+        skills_file = skill_dir / "SKILL.md"
         skills_file.write_text("# Skill Content\n\nThis is skill documentation.")
 
         result = auto_load_skills(str(skills_file))
@@ -490,8 +492,17 @@ class TestAutoLoadSkills:
         assert result != ""
         assert "# Skill Content" in result
         assert "This is skill documentation." in result
-        # Should have a header/label indicating it's auto-loaded
-        assert "using-skills" in result.lower() or "skill" in result.lower()
+        # Skill name should come from parent directory, not file stem
+        assert "# Auto-loaded Skill: using-skills" in result
+
+    def test_flat_md_file_uses_stem_as_name(self, tmp_path):
+        """Non-SKILL.md file should use file stem as skill name (backward compat)."""
+        skills_file = tmp_path / "my-skill.md"
+        skills_file.write_text("# My Skill")
+
+        result = auto_load_skills(str(skills_file))
+
+        assert "# Auto-loaded Skill: my-skill" in result
 
     def test_missing_file_returns_empty_and_logs_warning(self, tmp_path, capfd):
         """Missing file should return empty string and log warning."""
@@ -522,10 +533,11 @@ class TestMainIntegration:
         import io
         import sys
 
-        # Set up a fake skills file
-        skills_dir = tmp_path / ".claude" / "skills"
+        # Set up a fake skills file under ORO_HOME/.claude/skills/using-skills/SKILL.md
+        oro_home = tmp_path / ".oro"
+        skills_dir = oro_home / ".claude" / "skills" / "using-skills"
         skills_dir.mkdir(parents=True)
-        using_skills_file = skills_dir / "using-skills.md"
+        using_skills_file = skills_dir / "SKILL.md"
         using_skills_file.write_text("# Using Skills\n\nAlways check for skills first.")
 
         # Monkeypatch to inject the skills directory into main()
