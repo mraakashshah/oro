@@ -6,6 +6,10 @@ import (
 
 func TestBuildClaudeArgs(t *testing.T) {
 	t.Run("base args without env vars", func(t *testing.T) {
+		// Ensure env vars are not set
+		t.Setenv("ORO_HOME", "")
+		t.Setenv("ORO_PROJECT", "")
+
 		args := buildClaudeArgs("claude-sonnet-4-20250514", "do the thing")
 		expected := []string{"-p", "do the thing", "--model", "claude-sonnet-4-20250514"}
 		if len(args) != len(expected) {
@@ -42,7 +46,7 @@ func TestBuildClaudeArgs(t *testing.T) {
 
 	t.Run("no flags when only ORO_HOME set", func(t *testing.T) {
 		t.Setenv("ORO_HOME", "/home/user/.oro")
-		// ORO_PROJECT not set
+		t.Setenv("ORO_PROJECT", "") // Explicitly unset
 
 		args := buildClaudeArgs("claude-sonnet-4-20250514", "do the thing")
 		expected := []string{"-p", "do the thing", "--model", "claude-sonnet-4-20250514"}
@@ -52,8 +56,8 @@ func TestBuildClaudeArgs(t *testing.T) {
 	})
 
 	t.Run("no flags when only ORO_PROJECT set", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "") // Explicitly unset
 		t.Setenv("ORO_PROJECT", "myproj")
-		// ORO_HOME not set
 
 		args := buildClaudeArgs("claude-sonnet-4-20250514", "do the thing")
 		expected := []string{"-p", "do the thing", "--model", "claude-sonnet-4-20250514"}
@@ -65,7 +69,7 @@ func TestBuildClaudeArgs(t *testing.T) {
 
 func TestBuildClaudeEnv(t *testing.T) {
 	t.Run("returns nil when ORO_PROJECT not set", func(t *testing.T) {
-		// Ensure ORO_PROJECT is not set
+		t.Setenv("ORO_PROJECT", "") // Explicitly unset
 		env := buildClaudeEnv()
 		if env != nil {
 			t.Errorf("expected nil env, got %v", env)

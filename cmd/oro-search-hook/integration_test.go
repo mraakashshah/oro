@@ -117,11 +117,28 @@ func TestHookEndToEnd(t *testing.T) {
 	})
 
 	t.Run("settings_json_registration", func(t *testing.T) {
-		root := projectRoot(t)
-		settingsPath := filepath.Join(root, ".claude", "settings.json")
-		data, err := os.ReadFile(settingsPath) //nolint:gosec // test reads known project file
+		// This test requires ORO_PROJECT to be set (via oro start or test setup).
+		// Skip if not present — settings.json lives in ~/.oro/projects/<name>/.
+		oroProject := os.Getenv("ORO_PROJECT")
+		if oroProject == "" {
+			t.Skip("ORO_PROJECT not set, skipping settings.json registration check")
+		}
+
+		// Resolve ORO_HOME (defaults to ~/.oro if not set).
+		oroHome := os.Getenv("ORO_HOME")
+		if oroHome == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				t.Fatalf("failed to get home dir: %v", err)
+			}
+			oroHome = filepath.Join(home, ".oro")
+		}
+
+		// Construct path to settings.json.
+		settingsPath := filepath.Join(oroHome, "projects", oroProject, "settings.json")
+		data, err := os.ReadFile(settingsPath) //nolint:gosec // test reads project-specific settings
 		if err != nil {
-			t.Fatalf("failed to read settings.json: %v", err)
+			t.Fatalf("failed to read settings.json at %s: %v", settingsPath, err)
 		}
 
 		var settings map[string]any
