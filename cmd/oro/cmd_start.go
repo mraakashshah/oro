@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
@@ -336,6 +337,24 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("get working dir: %w", err)
 	}
+
+	// Launch best-effort code index build in background (non-blocking).
+	go func() {
+		ctx := context.Background()
+		idx, idxErr := codesearch.NewCodeIndex(defaultIndexDBPath(), nil)
+		if idxErr != nil {
+			// Log error but don't block startup.
+			fmt.Fprintf(os.Stderr, "warning: failed to create code index: %v\n", idxErr)
+			return
+		}
+		defer func() { _ = idx.Close() }()
+
+		_, buildErr := idx.Build(ctx, repoRoot)
+		if buildErr != nil {
+			// Log error but don't block startup.
+			fmt.Fprintf(os.Stderr, "warning: code index build failed: %v\n", buildErr)
+		}
+	}()
 
 	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := dispatcher.NewCLIBeadSource(runner)

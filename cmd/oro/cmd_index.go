@@ -155,7 +155,12 @@ func runIndexSearch(w io.Writer, query, dbPath string, topK int, spawner codesea
 }
 
 // defaultIndexDBPath returns the default path for the code index database.
+// Respects ORO_HOME env var if set.
 func defaultIndexDBPath() string {
+	// Check ORO_HOME first (for tests and custom installations).
+	if oroHome := os.Getenv("ORO_HOME"); oroHome != "" {
+		return filepath.Join(oroHome, "code_index.db")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(protocol.OroDir, "code_index.db")
