@@ -402,7 +402,8 @@ def auto_load_skills(skills_file: str) -> str:
         return ""
 
     # Format and return content with header
-    skill_name = skills_path.stem
+    # Skills use <name>/SKILL.md convention — derive name from parent dir
+    skill_name = skills_path.parent.name if skills_path.name == "SKILL.md" else skills_path.stem
     return f"# Auto-loaded Skill: {skill_name}\n\n{content}"
 
 
@@ -539,7 +540,7 @@ def main() -> None:
     beacon = role_beacon(oro_role)
 
     # 7. Auto-load skills (inject using-skills content between Superpowers and Role Beacon)
-    skills_file = Path(".claude/skills/using-skills.md")
+    skills_file = Path(oro_home()) / ".claude" / "skills" / "using-skills" / "SKILL.md"
     auto_skills = auto_load_skills(str(skills_file))
 
     # Always inject superpowers + auto-loaded skills + role beacon + project state + any findings
