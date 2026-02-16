@@ -1714,26 +1714,49 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		return
 	}
 
+	// Atomically claim this bead for assignment (oro-ptp2: prevents race condition).
+	// If another concurrent assignBead call already claimed it, abort.
 	d.mu.Lock()
+	if d.assigningBeads[bead.ID] {
+		// Another assignment is already in progress for this bead
+		d.mu.Unlock()
+		_ = d.logEvent(ctx, "assignment_race_detected", "dispatcher", bead.ID, w.id,
+			"bead already being assigned by another worker")
+		return
+	}
+	if d.assigningBeads == nil {
+		d.assigningBeads = make(map[string]bool)
+	}
+	d.assigningBeads[bead.ID] = true
 	delete(d.escalatedBeads, bead.ID)
 	d.mu.Unlock()
+
+	// Mark bead as in_progress BEFORE worktree creation.
+	// This updates external state so other dispatchers see the bead is claimed.
+	if err := d.beads.Update(ctx, bead.ID, "in_progress"); err != nil {
+		_ = d.logEvent(ctx, "update_status_failed", "dispatcher", bead.ID, w.id, err.Error())
+		d.recordAssignmentFailure(bead.ID)
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		return
+	}
 
 	worktree, branch, err := d.worktrees.Create(ctx, bead.ID)
 	if err != nil {
 		_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())
 		d.recordAssignmentFailure(bead.ID)
+		// Revert status since assignment failed
+		_ = d.beads.Update(ctx, bead.ID, "ready")
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
 		return
 	}
 
 	_ = d.createAssignment(ctx, bead.ID, w.id, worktree)
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
-
-	// Mark bead as in_progress (oro-p3wd)
-	if err := d.beads.Update(ctx, bead.ID, "in_progress"); err != nil {
-		_ = d.logEvent(ctx, "update_status_failed", "dispatcher", bead.ID, w.id, err.Error())
-		// Log but do not block assignment on update failure
-	}
 
 	var memCtx string
 	if d.memories != nil {
@@ -1772,6 +1795,8 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		w.worktree = ""
 		w.model = ""
 	}
+	// Clear assignment-in-progress flag now that worker state is updated (oro-ptp2).
+	delete(d.assigningBeads, bead.ID)
 	d.mu.Unlock()
 	if err != nil {
 		_ = d.worktrees.Remove(ctx, worktree)
