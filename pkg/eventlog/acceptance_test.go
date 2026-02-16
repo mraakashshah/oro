@@ -28,7 +28,7 @@ func TestAcceptanceCriteria_QuerySupport(t *testing.T) {
 	}
 
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("failed to init schema: %v", err)
 	}
 
@@ -40,7 +40,7 @@ func TestAcceptanceCriteria_QuerySupport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to insert event: %v", err)
 	}
-	db.Close()
+	_ = db.Close()
 
 	// Verify: oro-dash can query event log
 	reader, err := eventlog.NewReader(dbPath)
@@ -76,7 +76,7 @@ func TestAcceptanceCriteria_FilterSupport(t *testing.T) {
 	}
 
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("failed to init schema: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestAcceptanceCriteria_FilterSupport(t *testing.T) {
 			t.Fatalf("failed to insert event: %v", err)
 		}
 	}
-	db.Close()
+	_ = db.Close()
 
 	reader, err := eventlog.NewReader(dbPath)
 	if err != nil {
@@ -179,7 +179,7 @@ func TestAcceptanceCriteria_StructuredData(t *testing.T) {
 	}
 
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("failed to init schema: %v", err)
 	}
 
@@ -191,7 +191,7 @@ func TestAcceptanceCriteria_StructuredData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to insert event: %v", err)
 	}
-	db.Close()
+	_ = db.Close()
 
 	reader, err := eventlog.NewReader(dbPath)
 	if err != nil {
@@ -243,16 +243,16 @@ func TestAcceptanceCriteria_ReadOnlyWAL(t *testing.T) {
 	}
 
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("failed to init schema: %v", err)
 	}
 
 	// Enable WAL mode
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("failed to enable WAL: %v", err)
 	}
-	db.Close()
+	_ = db.Close()
 
 	// Verify: Reader opens in read-only mode with WAL
 	reader, err := eventlog.NewReader(dbPath)
@@ -297,10 +297,10 @@ func TestAcceptanceCriteria_GracefulHandling(t *testing.T) {
 		}
 
 		if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-			db.Close()
+			_ = db.Close()
 			t.Fatalf("failed to init schema: %v", err)
 		}
-		db.Close()
+		_ = db.Close()
 
 		reader, err := eventlog.NewReader(dbPath)
 		if err != nil {
@@ -332,7 +332,7 @@ func TestAcceptanceCriteria_GracefulHandling(t *testing.T) {
 		}
 
 		if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-			db.Close()
+			_ = db.Close()
 			t.Fatalf("failed to init schema: %v", err)
 		}
 
@@ -342,10 +342,10 @@ func TestAcceptanceCriteria_GracefulHandling(t *testing.T) {
 			"heartbeat", "worker-1", "", "worker-1", "",
 		)
 		if err != nil {
-			db.Close()
+			_ = db.Close()
 			t.Fatalf("failed to insert event: %v", err)
 		}
-		db.Close()
+		_ = db.Close()
 
 		reader, err := eventlog.NewReader(dbPath)
 		if err != nil {

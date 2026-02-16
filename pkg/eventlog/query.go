@@ -64,8 +64,9 @@ func NewReader(dbPath string) (*Reader, error) {
 	}
 
 	// Test the connection
-	if err := db.Ping(); err != nil {
-		db.Close()
+	ctx := context.Background()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
@@ -76,7 +77,9 @@ func NewReader(dbPath string) (*Reader, error) {
 // Safe to call multiple times.
 func (r *Reader) Close() error {
 	if r.db != nil {
-		return r.db.Close()
+		if err := r.db.Close(); err != nil {
+			return fmt.Errorf("close database: %w", err)
+		}
 	}
 	return nil
 }
@@ -134,12 +137,11 @@ func (r *Reader) QueryWorkerEvents(ctx context.Context, opts QueryOpts) ([]Event
 }
 
 // buildQuery constructs the SQL query and arguments from QueryOpts.
-func buildQuery(opts QueryOpts) (string, []any) {
+func buildQuery(opts QueryOpts) (query string, args []any) {
 	var conditions []string
-	var args []any
 
 	// Base query
-	query := "SELECT id, type, source, bead_id, worker_id, payload, created_at FROM events WHERE 1=1"
+	query = "SELECT id, type, source, bead_id, worker_id, payload, created_at FROM events WHERE 1=1"
 
 	// Filter by worker ID
 	if opts.WorkerID != "" {

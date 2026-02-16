@@ -64,8 +64,7 @@ func renderWorkerEvents(events []WorkerEvent, theme Theme) string {
 
 	var lines []string
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
-	lines = append(lines, headerStyle.Render("Recent Events:"))
-	lines = append(lines, "")
+	lines = append(lines, headerStyle.Render("Recent Events:"), "")
 
 	// Column widths
 	const timeWidth = 8
@@ -77,10 +76,9 @@ func renderWorkerEvents(events []WorkerEvent, theme Theme) string {
 		timeWidth, "Time",
 		typeWidth, "Event",
 		beadWidth, "Bead")
-	lines = append(lines, lipgloss.NewStyle().Bold(true).Render(header))
-
-	// Separator
-	lines = append(lines, strings.Repeat("─", 50))
+	lines = append(lines,
+		lipgloss.NewStyle().Bold(true).Render(header),
+		strings.Repeat("─", 50))
 
 	// Events
 	for _, e := range events {

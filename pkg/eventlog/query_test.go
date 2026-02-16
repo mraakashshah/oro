@@ -82,7 +82,7 @@ func TestNewReader_MissingDB(t *testing.T) {
 		t.Fatal("expected error for missing database")
 	}
 	if reader != nil {
-		reader.Close()
+		_ = reader.Close()
 		t.Fatal("expected nil reader for missing database")
 	}
 }
@@ -237,10 +237,10 @@ func TestQueryWorkerEvents_EmptyDBPath(t *testing.T) {
 	}
 	// Initialize schema but don't insert any events
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("failed to init schema: %v", err)
 	}
-	db.Close()
+	_ = db.Close()
 
 	reader, err := eventlog.NewReader(emptyDBPath)
 	if err != nil {

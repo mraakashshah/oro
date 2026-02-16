@@ -32,7 +32,7 @@ func TestIntegration_WorkerHistoryQuery(t *testing.T) {
 
 	// Initialize dispatcher schema
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatalf("failed to init schema: %v", err)
 	}
 
@@ -69,7 +69,7 @@ func TestIntegration_WorkerHistoryQuery(t *testing.T) {
 			t.Fatalf("failed to insert event: %v", err)
 		}
 	}
-	db.Close()
+	_ = db.Close()
 
 	// Test: Open read-only connection with WAL mode
 	reader, err := eventlog.NewReader(dbPath)

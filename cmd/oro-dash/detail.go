@@ -151,8 +151,7 @@ func (d DetailModel) renderWorkerTab() string {
 	}
 
 	// Worker event history
-	lines = append(lines, "")
-	lines = append(lines, renderWorkerEvents(d.workerEvents, theme))
+	lines = append(lines, "", renderWorkerEvents(d.workerEvents, theme))
 
 	return strings.Join(lines, "\n")
 }
