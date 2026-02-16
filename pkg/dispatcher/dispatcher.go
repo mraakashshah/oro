@@ -60,6 +60,7 @@ type BeadSource interface {
 	Show(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	Close(ctx context.Context, id string, reason string) error
 	Create(ctx context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error)
+	Update(ctx context.Context, id, status string) error
 	Sync(ctx context.Context) error
 	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
 }
@@ -161,7 +162,7 @@ func (c *Config) withDefaults() Config {
 		out.HeartbeatTimeout = 45 * time.Second
 	}
 	if out.ProgressTimeout == 0 {
-		out.ProgressTimeout = 15 * time.Minute
+		out.ProgressTimeout = 10 * time.Minute
 	}
 	if out.PollInterval == 0 {
 		out.PollInterval = 10 * time.Second
@@ -1736,6 +1737,13 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	_ = d.createAssignment(ctx, bead.ID, w.id, worktree)
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
+
+	// Mark bead as in_progress (oro-p3wd)
+	if err := d.beads.Update(ctx, bead.ID, "in_progress"); err != nil {
+		_ = d.logEvent(ctx, "update_status_failed", "dispatcher", bead.ID, w.id, err.Error())
+		// Log but do not block assignment on update failure
+	}
+
 	var memCtx string
 	if d.memories != nil {
 		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, bead.Title, 0)

@@ -343,14 +343,14 @@ func TestFormatStatusResponse_DefaultWithAlerts(t *testing.T) {
 		UptimeSeconds:       3600,
 		PendingHandoffCount: 0,
 		AttemptCounts:       map[string]int{"oro-xyz": 3},
-		ProgressTimeoutSecs: 900, // 15 minutes
+		ProgressTimeoutSecs: 600, // 10 minutes
 	}
 
 	var buf bytes.Buffer
 	formatStatusResponse(&buf, &resp)
 	got := buf.String()
 
-	// Should have ALERTS section for stuck worker (900s >= 900/2=450)
+	// Should have ALERTS section for stuck worker (600s >= 600/2=300)
 	if !strings.Contains(got, "ALERTS") {
 		t.Errorf("expected ALERTS section, got:\n%s", got)
 	}
@@ -394,7 +394,7 @@ func TestFormatStatusResponse_JSONFlag(t *testing.T) {
 		IdleCount:           1,
 		TargetCount:         5,
 		UptimeSeconds:       600,
-		ProgressTimeoutSecs: 900,
+		ProgressTimeoutSecs: 600,
 	}
 
 	var buf bytes.Buffer
@@ -436,7 +436,7 @@ func TestFormatStatusResponse_VerboseFlag(t *testing.T) {
 		UptimeSeconds:       1800,
 		PendingHandoffCount: 1,
 		AttemptCounts:       map[string]int{"oro-abc": 2},
-		ProgressTimeoutSecs: 900,
+		ProgressTimeoutSecs: 600,
 	}
 
 	var buf bytes.Buffer

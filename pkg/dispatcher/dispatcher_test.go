@@ -78,6 +78,7 @@ type mockBeadSource struct {
 	beads                []protocol.Bead
 	shown                map[string]*protocol.BeadDetail
 	closed               []string
+	updated              map[string]string // beadID -> status
 	created              []createCall
 	createID             string // ID returned by Create; defaults to "oro-new1"
 	synced               bool
@@ -114,6 +115,16 @@ func (m *mockBeadSource) Close(_ context.Context, id string, reason string) erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closed = append(m.closed, id)
+	return nil
+}
+
+func (m *mockBeadSource) Update(_ context.Context, id, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.updated == nil {
+		m.updated = make(map[string]string)
+	}
+	m.updated[id] = status
 	return nil
 }
 
@@ -927,6 +938,46 @@ func TestDispatcher_AssignBead_DefaultModel(t *testing.T) {
 	}
 	if msg.Assign.Model != protocol.DefaultModel {
 		t.Fatalf("expected default model %q, got %q", protocol.DefaultModel, msg.Assign.Model)
+	}
+}
+
+func TestDispatcher_AssignBead_MarksInProgress(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect worker first
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Start + provide beads
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "oro-test1", Title: "Test bead", Priority: 1}})
+
+	// Read ASSIGN
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	// Verify bead was marked in_progress (oro-p3wd)
+	beadSrc.mu.Lock()
+	status := beadSrc.updated["oro-test1"]
+	beadSrc.mu.Unlock()
+
+	if status != "in_progress" {
+		t.Fatalf("expected bead oro-test1 to be marked in_progress, got %q", status)
 	}
 }
 
@@ -7590,12 +7641,12 @@ func TestProgressUpdatedOnMeaningfulEvents(t *testing.T) {
 	})
 }
 
-// TestProgressTimeoutDefaultConfig verifies the default ProgressTimeout is 15 minutes.
+// TestProgressTimeoutDefaultConfig verifies the default ProgressTimeout is 10 minutes.
 func TestProgressTimeoutDefaultConfig(t *testing.T) {
 	cfg := Config{}
 	resolved := cfg.withDefaults()
-	if resolved.ProgressTimeout != 15*time.Minute {
-		t.Errorf("expected default ProgressTimeout=15m, got %v", resolved.ProgressTimeout)
+	if resolved.ProgressTimeout != 10*time.Minute {
+		t.Errorf("expected default ProgressTimeout=10m, got %v", resolved.ProgressTimeout)
 	}
 }
 

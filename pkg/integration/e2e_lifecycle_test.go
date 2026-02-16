@@ -50,6 +50,8 @@ func (m *trackingBeadSource) Create(_ context.Context, _, _ string, _ int, _, _,
 	return "", nil
 }
 
+func (m *trackingBeadSource) Update(_ context.Context, _, _ string) error { return nil }
+
 func (m *trackingBeadSource) Sync(_ context.Context) error { return nil }
 
 func (m *trackingBeadSource) AllChildrenClosed(_ context.Context, _ string) (bool, error) {
