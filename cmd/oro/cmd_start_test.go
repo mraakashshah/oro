@@ -50,3 +50,44 @@ func TestStartReadsProjectConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestDaemonStartupCleansWorkerLogs(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", tmpDir)
+
+	// Create workers dir with some files to simulate stale logs.
+	workersDir := tmpDir + "/workers"
+	if err := os.MkdirAll(workersDir, 0o700); err != nil {
+		t.Fatalf("setup workers dir: %v", err)
+	}
+	staleLog := workersDir + "/worker-123.log"
+	if err := os.WriteFile(staleLog, []byte("stale log content"), 0o600); err != nil {
+		t.Fatalf("create stale log: %v", err)
+	}
+
+	// cleanWorkerLogs should wipe the directory and recreate it empty.
+	cleanWorkerLogs(tmpDir)
+
+	// Assert: workers dir exists but is empty.
+	entries, err := os.ReadDir(workersDir)
+	if err != nil {
+		t.Fatalf("ReadDir workers: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected workers dir to be empty, got %d entries", len(entries))
+	}
+}
+
+func TestDaemonStartupCleansWorkerLogs_MissingDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", tmpDir)
+
+	// cleanWorkerLogs should not fail when workers dir doesn't exist yet.
+	cleanWorkerLogs(tmpDir)
+
+	// workers dir should be created.
+	workersDir := tmpDir + "/workers"
+	if _, err := os.Stat(workersDir); err != nil {
+		t.Errorf("expected workers dir to be created, got: %v", err)
+	}
+}

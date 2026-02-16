@@ -247,12 +247,30 @@ func newStartCmd() *cobra.Command {
 	return cmd
 }
 
+// cleanWorkerLogs wipes and recreates the workers log directory at oroHome/workers.
+// Errors are logged as warnings and do not block startup.
+func cleanWorkerLogs(oroHome string) {
+	dir := filepath.Join(oroHome, "workers")
+	if err := os.RemoveAll(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cleanWorkerLogs: remove %s: %v\n", dir, err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cleanWorkerLogs: mkdir %s: %v\n", dir, err)
+	}
+}
+
 // runDaemonOnly runs the dispatcher in the foreground (used for testing/CI).
 func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
 	if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
 	}
+
+	paths, err := ResolvePaths()
+	if err != nil {
+		return fmt.Errorf("resolve paths: %w", err)
+	}
+	cleanWorkerLogs(paths.OroHome)
 
 	// Build dispatcher first so we can wire its shutdown authorization flag
 	// into the signal handler. This makes the daemon immune to raw SIGTERM
