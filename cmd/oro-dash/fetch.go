@@ -80,9 +80,13 @@ type statusResponse struct {
 }
 
 // workerEntry represents a single worker in the dispatcher status response.
+// Mirrors pkg/dispatcher/dispatcher.go workerStatus structure.
 type workerEntry struct {
-	ID    string `json:"id"`
-	State string `json:"state"`
+	ID               string  `json:"id"`
+	State            string  `json:"state"`
+	BeadID           string  `json:"bead_id,omitempty"`
+	LastProgressSecs float64 `json:"last_progress_secs"`
+	ContextPct       int     `json:"context_pct"`
 }
 
 // fetchWorkerStatus connects to the dispatcher UDS, sends a status directive,
@@ -144,16 +148,23 @@ func fetchWorkerStatus(ctx context.Context, socketPath string) ([]WorkerStatus, 
 		return nil, nil, nil
 	}
 
-	// Convert to WorkerStatus slice.
-	workers := make([]WorkerStatus, 0, len(resp.Workers))
-	for _, w := range resp.Workers {
+	return convertWorkerEntries(resp.Workers), invertAssignments(resp.Assignments), nil
+}
+
+// convertWorkerEntries converts workerEntry slice to WorkerStatus slice,
+// mapping all enriched fields from the dispatcher response.
+func convertWorkerEntries(entries []workerEntry) []WorkerStatus {
+	workers := make([]WorkerStatus, 0, len(entries))
+	for _, w := range entries {
 		workers = append(workers, WorkerStatus{
-			ID:     w.ID,
-			Status: w.State,
+			ID:               w.ID,
+			Status:           w.State,
+			BeadID:           w.BeadID,
+			LastProgressSecs: w.LastProgressSecs,
+			ContextPct:       w.ContextPct,
 		})
 	}
-
-	return workers, invertAssignments(resp.Assignments), nil
+	return workers
 }
 
 // invertAssignments flips workerID→beadID to beadID→workerID

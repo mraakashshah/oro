@@ -18,10 +18,13 @@ type Bead struct {
 	Type     string `json:"type"`
 }
 
-// WorkerStatus represents worker status.
+// WorkerStatus represents worker status with enriched fields.
 type WorkerStatus struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID               string  `json:"id"`
+	Status           string  `json:"status"`
+	BeadID           string  `json:"bead_id,omitempty"`
+	LastProgressSecs float64 `json:"last_progress_secs"`
+	ContextPct       int     `json:"context_pct"`
 }
 
 // robotMode outputs a JSON snapshot of beads and workers.
