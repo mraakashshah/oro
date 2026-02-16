@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -238,4 +240,173 @@ func TestFormatEvent(t *testing.T) {
 	if !strings.Contains(output, "test payload") {
 		t.Errorf("output missing payload")
 	}
+}
+
+func TestLogsRawFlag(t *testing.T) {
+	t.Run("reads from output.log file", func(t *testing.T) {
+		// Create temporary worker directory with output.log
+		tmpDir := t.TempDir()
+		workerID := "test-worker-1"
+		workerDir := tmpDir + "/workers/" + workerID
+
+		if err := os.MkdirAll(workerDir, 0o755); err != nil { //nolint:gosec // test directory, safe
+			t.Fatalf("create worker dir: %v", err)
+		}
+
+		logPath := workerDir + "/output.log"
+		logContent := "line 1\nline 2\nline 3\nline 4\nline 5\n"
+		if err := os.WriteFile(logPath, []byte(logContent), 0o644); err != nil { //nolint:gosec // test file, safe
+			t.Fatalf("write log file: %v", err)
+		}
+
+		// Set ORO_HOME to tmpDir for test
+		t.Setenv("ORO_HOME", tmpDir)
+
+		var buf bytes.Buffer
+		err := printRawLogs(&buf, workerID, 3)
+		if err != nil {
+			t.Fatalf("printRawLogs failed: %v", err)
+		}
+
+		output := buf.String()
+
+		// Should show last 3 lines
+		if !strings.Contains(output, "line 3") {
+			t.Errorf("output missing line 3")
+		}
+		if !strings.Contains(output, "line 4") {
+			t.Errorf("output missing line 4")
+		}
+		if !strings.Contains(output, "line 5") {
+			t.Errorf("output missing line 5")
+		}
+		if strings.Contains(output, "line 1") {
+			t.Errorf("output should not contain line 1 with tail=3")
+		}
+	})
+
+	t.Run("returns error when log file is missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_HOME", tmpDir)
+
+		var buf bytes.Buffer
+		err := printRawLogs(&buf, "nonexistent-worker", 10)
+		if err == nil {
+			t.Fatal("expected error for missing log file, got nil")
+		}
+
+		expectedMsg := "no output file for worker nonexistent-worker"
+		if !strings.Contains(err.Error(), expectedMsg) {
+			t.Errorf("expected error message %q, got: %v", expectedMsg, err)
+		}
+	})
+
+	t.Run("follow detects new lines", func(t *testing.T) {
+		// Create temporary worker directory with output.log
+		tmpDir := t.TempDir()
+		workerID := "test-worker-2"
+		workerDir := tmpDir + "/workers/" + workerID
+
+		if err := os.MkdirAll(workerDir, 0o755); err != nil { //nolint:gosec // test directory, safe
+			t.Fatalf("create worker dir: %v", err)
+		}
+
+		logPath := workerDir + "/output.log"
+		initialContent := "initial line\n"
+		if err := os.WriteFile(logPath, []byte(initialContent), 0o644); err != nil { //nolint:gosec // test file, safe
+			t.Fatalf("write log file: %v", err)
+		}
+
+		t.Setenv("ORO_HOME", tmpDir)
+
+		// Start following in a goroutine with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		var buf bytes.Buffer
+		errCh := make(chan error, 1)
+
+		go func() {
+			errCh <- followRawLogsWithContext(ctx, &buf, workerID)
+		}()
+
+		// Give it time to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Append new content to the file
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec // test file, safe
+		if err != nil {
+			t.Fatalf("open log file: %v", err)
+		}
+		if _, err := f.WriteString("new line\n"); err != nil {
+			_ = f.Close()
+			t.Fatalf("append to log: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("close log file: %v", err)
+		}
+
+		// Wait for context timeout or error
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("followRawLogs failed: %v", err)
+			}
+		case <-ctx.Done():
+			// Expected - timeout is normal for follow
+		}
+
+		output := buf.String()
+
+		// Should eventually see the new line
+		if !strings.Contains(output, "new line") {
+			t.Errorf("follow did not detect new line: %s", output)
+		}
+	})
+
+	t.Run("file disappears during follow exits cleanly", func(t *testing.T) {
+		// Create temporary worker directory with output.log
+		tmpDir := t.TempDir()
+		workerID := "test-worker-3"
+		workerDir := tmpDir + "/workers/" + workerID
+
+		if err := os.MkdirAll(workerDir, 0o755); err != nil { //nolint:gosec // test directory, safe
+			t.Fatalf("create worker dir: %v", err)
+		}
+
+		logPath := workerDir + "/output.log"
+		if err := os.WriteFile(logPath, []byte("content\n"), 0o644); err != nil { //nolint:gosec // test file, safe
+			t.Fatalf("write log file: %v", err)
+		}
+
+		t.Setenv("ORO_HOME", tmpDir)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		var buf bytes.Buffer
+		errCh := make(chan error, 1)
+
+		go func() {
+			errCh <- followRawLogsWithContext(ctx, &buf, workerID)
+		}()
+
+		// Give it time to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Remove the file
+		if err := os.Remove(logPath); err != nil {
+			t.Fatalf("remove log file: %v", err)
+		}
+
+		// Should exit without error (or with context.DeadlineExceeded)
+		select {
+		case err := <-errCh:
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "no such file") {
+				t.Fatalf("followRawLogs should exit cleanly, got: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("followRawLogs did not exit after file removal")
+		}
+	})
 }
