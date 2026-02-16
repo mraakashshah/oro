@@ -504,9 +504,15 @@ def main() -> None:
     # 5. Role-specific beacon injection (ORO_ROLE env var set by oro start)
     beacon = role_beacon(oro_role)
 
-    # Always inject superpowers + role beacon + project state + any findings
+    # 6. Auto-load skills (inject using-skills content between Superpowers and Role Beacon)
+    skills_file = Path(".claude/skills/using-skills.md")
+    auto_skills = auto_load_skills(str(skills_file))
+
+    # Always inject superpowers + auto-loaded skills + role beacon + project state + any findings
     situational = _format_output(stale, merged, learnings)
     parts = [_SUPERPOWERS]
+    if auto_skills:
+        parts.append(auto_skills)
     if beacon:
         parts.append(f"# Role Beacon ({oro_role})\n\n{beacon}")
     for section in (handoff, state, situational):
@@ -521,7 +527,7 @@ def main() -> None:
         }
     }
 
-    # 6. User-visible banner (only when priming)
+    # 7. User-visible banner (only when priming)
     if is_priming:
         closed = recently_closed_beads(limit=3)
         ready = ready_beads(limit=4)

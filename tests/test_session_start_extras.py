@@ -6,14 +6,17 @@ import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-# Load the hook module from ORO_HOME/hooks/ (externalized config)
-_oro_home = Path(os.environ.get("ORO_HOME", Path.home() / ".oro"))
+# Load the hook module from source (assets/hooks/) for testing
+_repo_root = Path(__file__).parent.parent
 _spec = importlib.util.spec_from_file_location(
     "session_start_extras",
-    _oro_home / "hooks" / "session_start_extras.py",
+    _repo_root / "assets" / "hooks" / "session_start_extras.py",
 )
 _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+
+# Also keep reference to ORO_HOME for real file tests
+_oro_home = Path(os.environ.get("ORO_HOME", Path.home() / ".oro"))
 
 find_stale_beads = _mod.find_stale_beads
 find_merged_worktrees = _mod.find_merged_worktrees
@@ -508,3 +511,48 @@ class TestAutoLoadSkills:
         result = auto_load_skills(str(empty_file))
 
         assert result == ""
+
+
+# --- main() integration ---
+
+
+class TestMainIntegration:
+    def test_auto_load_skills_injected_into_additional_context(self, tmp_path, monkeypatch):
+        """Verify main() calls auto_load_skills and injects content into additionalContext."""
+        import io
+        import sys
+
+        # Set up a fake skills file
+        skills_dir = tmp_path / ".claude" / "skills"
+        skills_dir.mkdir(parents=True)
+        using_skills_file = skills_dir / "using-skills.md"
+        using_skills_file.write_text("# Using Skills\n\nAlways check for skills first.")
+
+        # Monkeypatch to inject the skills directory into main()
+        # We'll need to mock the call or set environment so main() uses our test skills
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ORO_HOME", str(tmp_path / ".oro"))
+
+        # Create empty stdin
+        mock_stdin = io.StringIO("{}")
+        monkeypatch.setattr(sys, "stdin", mock_stdin)
+
+        # Capture stdout
+        mock_stdout = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", mock_stdout)
+
+        # Run main()
+        _mod.main()
+
+        # Parse JSON output
+        output = json.loads(mock_stdout.getvalue())
+        additional_context = output["hookSpecificOutput"]["additionalContext"]
+
+        # Verify auto-loaded skills content appears
+        assert "# Auto-loaded Skill: using-skills" in additional_context
+        assert "Always check for skills first." in additional_context
+
+        # Verify order: Superpowers should come before auto-loaded skills
+        superpowers_idx = additional_context.find("# Superpowers")
+        skills_idx = additional_context.find("# Auto-loaded Skill: using-skills")
+        assert superpowers_idx < skills_idx, "Superpowers should come before auto-loaded skills"
