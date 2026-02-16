@@ -754,6 +754,16 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		}
 
 		_ = d.completeAssignment(ctx, beadID)
+
+		// Cancel any in-flight ops agents for this bead to prevent stale escalations.
+		if n, err := d.ops.CancelForBead(beadID); n > 0 {
+			_ = d.logEvent(ctx, "ops_agents_cancelled", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"count":%d,"reason":"qg_exhausted"}`, n))
+			if err != nil {
+				_ = d.logEvent(ctx, "ops_cancel_error", "dispatcher", beadID, workerID, err.Error())
+			}
+		}
+
 		_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
 			fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
@@ -907,6 +917,16 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	// Clean merge — close bead, complete assignment, remove worktree.
 	_ = d.beads.Close(ctx, beadID, fmt.Sprintf("Merged: %s", result.CommitSHA))
 	_ = d.completeAssignment(ctx, beadID)
+
+	// Cancel any in-flight ops agents for this bead to prevent stale escalations.
+	if n, err := d.ops.CancelForBead(beadID); n > 0 {
+		_ = d.logEvent(ctx, "ops_agents_cancelled", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"count":%d,"reason":"bead_merged"}`, n))
+		if err != nil {
+			_ = d.logEvent(ctx, "ops_cancel_error", "dispatcher", beadID, workerID, err.Error())
+		}
+	}
+
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
 
@@ -975,6 +995,16 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 	}
 
 	_ = d.beads.Close(ctx, epicID, "All children completed")
+
+	// Cancel any in-flight ops agents for this epic to prevent stale escalations.
+	if n, err := d.ops.CancelForBead(epicID); n > 0 {
+		_ = d.logEvent(ctx, "ops_agents_cancelled", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"count":%d,"reason":"epic_completed"}`, n))
+		if err != nil {
+			_ = d.logEvent(ctx, "ops_cancel_error", "dispatcher", epicID, workerID, err.Error())
+		}
+	}
+
 	_ = d.logEvent(ctx, "epic_auto_closed", "dispatcher", epicID, workerID, "")
 
 	// Alert the manager if the completed epic is the focused epic.

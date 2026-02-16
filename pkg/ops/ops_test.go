@@ -90,6 +90,24 @@ func (m *mockBatchSpawner) getCalls() []spawnCall {
 	return out
 }
 
+// multiProcessSpawner returns different processes on each Spawn call.
+type multiProcessSpawner struct {
+	mu        sync.Mutex
+	processes []*mockProcess
+	index     int
+}
+
+func (m *multiProcessSpawner) Spawn(_ context.Context, model, prompt, workdir string) (Process, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.index >= len(m.processes) {
+		return nil, errors.New("no more processes configured")
+	}
+	proc := m.processes[m.index]
+	m.index++
+	return proc, nil
+}
+
 // --- Tests ---
 
 func TestReviewApproved(t *testing.T) {
@@ -453,6 +471,84 @@ func TestActiveTracking(t *testing.T) {
 	active := s.Active()
 	if len(active) != 2 {
 		t.Fatalf("expected 2 active agents, got %d", len(active))
+	}
+}
+
+func TestCancelForBeadKillsMatchingAgents(t *testing.T) {
+	// Create separate blocking processes.
+	procs := []*mockProcess{
+		newMockProcess("", nil), // oro-target review
+		newMockProcess("", nil), // oro-target diagnosis
+		newMockProcess("", nil), // oro-other review
+	}
+
+	// Create a multi-process spawner that returns different processes on each call.
+	spawner := &multiProcessSpawner{processes: procs}
+	s := NewSpawner(spawner)
+
+	// Spawn agents for the same bead (oro-target) with different ops types.
+	_ = s.Review(context.Background(), ReviewOpts{BeadID: "oro-target", Worktree: "/tmp/wt1"})
+	_ = s.Diagnose(context.Background(), DiagOpts{BeadID: "oro-target", Worktree: "/tmp/wt2", Symptom: "stuck"})
+	// Spawn an agent for a different bead.
+	_ = s.Review(context.Background(), ReviewOpts{BeadID: "oro-other", Worktree: "/tmp/wt3"})
+
+	waitActive(t, s, 3)
+
+	// Verify the BeadIDs are correctly set by checking the active agents.
+	// We expect 2 agents with "oro-target" and 1 with "oro-other".
+	s.mu.Lock()
+	targetCount := 0
+	otherCount := 0
+	for _, agent := range s.active {
+		if agent.BeadID == "oro-target" {
+			targetCount++
+		} else if agent.BeadID == "oro-other" {
+			otherCount++
+		}
+	}
+	s.mu.Unlock()
+
+	if targetCount != 2 {
+		t.Fatalf("expected 2 agents with BeadID=oro-target, got %d", targetCount)
+	}
+	if otherCount != 1 {
+		t.Fatalf("expected 1 agent with BeadID=oro-other, got %d", otherCount)
+	}
+
+	// Cancel all agents for oro-target.
+	count, err := s.CancelForBead("oro-target")
+	if err != nil {
+		t.Fatalf("CancelForBead returned error: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 agents cancelled, got %d", count)
+	}
+
+	// Both oro-target processes should be killed, oro-other should still run.
+	if !procs[0].wasKilled() {
+		t.Fatal("expected procs[0] (oro-target review) to be killed")
+	}
+	if !procs[1].wasKilled() {
+		t.Fatal("expected procs[1] (oro-target diagnosis) to be killed")
+	}
+	if procs[2].wasKilled() {
+		t.Fatal("expected procs[2] (oro-other) to still be running")
+	}
+
+	// Wait for cleanup of killed agents (active count should drop to 1).
+	waitActive(t, s, 1)
+}
+
+func TestCancelForBeadNonExistentBead(t *testing.T) {
+	s := NewSpawner(&mockBatchSpawner{})
+
+	// Cancelling a bead with no agents should return count=0, no error.
+	count, err := s.CancelForBead("oro-nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 agents cancelled, got %d", count)
 	}
 }
 

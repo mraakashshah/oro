@@ -176,6 +176,27 @@ func (s *Spawner) Cancel(taskID string) error {
 	return nil
 }
 
+// CancelForBead kills all running ops agents for the given bead ID.
+// Returns the number of agents cancelled and any error from the first kill failure.
+func (s *Spawner) CancelForBead(beadID string) (int, error) {
+	s.mu.Lock()
+	var toCancel []*Agent
+	for _, agent := range s.active {
+		if agent.BeadID == beadID {
+			toCancel = append(toCancel, agent)
+		}
+	}
+	s.mu.Unlock()
+
+	var firstErr error
+	for _, agent := range toCancel {
+		if err := agent.proc.Kill(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("ops: kill agent %q for bead %q: %w", agent.ID, beadID, err)
+		}
+	}
+	return len(toCancel), firstErr
+}
+
 // Active returns the task IDs of all currently running ops agents.
 func (s *Spawner) Active() []string {
 	s.mu.Lock()
