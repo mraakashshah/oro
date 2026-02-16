@@ -107,6 +107,8 @@ type Worker struct {
 	subprocKilledByUs   bool           // true if we intentionally killed the subprocess
 	connWriteMu         sync.Mutex     // serializes conn writes so heartbeat deadlines don't leak
 	heartbeatInterval   time.Duration  // minimum time between periodic heartbeats
+	logFile             *os.File       // per-worker output log file at ~/.oro/workers/<ID>/output.log
+	logWriter           *bufio.Writer  // buffered writer for logFile to prevent blocking
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -359,6 +361,10 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.pendingQGOutput = ""
 	w.mu.Unlock()
 
+	// Truncate log file for new assignment (best-effort; continue if fails)
+	w.closeLogFile()
+	_ = w.openLogFile()
+
 	prompt, model := buildAssignPrompt(msg.Assign)
 	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
@@ -532,7 +538,15 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 		store := w.memStore
 		workerID := w.ID
 		beadID := w.beadID
+		logWriter := w.logWriter
 		w.mu.Unlock()
+
+		// Tee line to log file (best-effort; don't block on I/O errors)
+		if logWriter != nil {
+			_, _ = logWriter.WriteString(line)
+			_, _ = logWriter.WriteString("\n")
+			_ = logWriter.Flush() // flush each line to ensure real-time visibility
+		}
 
 		// Extract [MEMORY] markers in real-time.
 		if store != nil {
@@ -568,6 +582,45 @@ func (w *Worker) extractImplicitMemories(ctx context.Context) {
 		results[i].WorkerID = workerID
 		results[i].BeadID = beadID
 		_, _ = store.Insert(ctx, results[i]) // best-effort
+	}
+}
+
+// openLogFile creates or truncates ~/.oro/workers/<ID>/output.log and
+// opens it for writing. If directory creation or file open fails, returns
+// error but caller should continue without logging (best-effort).
+func (w *Worker) openLogFile() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home dir: %w", err)
+	}
+
+	logDir := filepath.Join(home, ".oro", "workers", w.ID)
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+
+	logPath := filepath.Join(logDir, "output.log")
+	// O_TRUNC ensures we start fresh on each assignment
+	// #nosec G304 -- logPath is constructed from home dir and worker ID, not user input
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("open log file: %w", err)
+	}
+
+	w.logFile = f
+	w.logWriter = bufio.NewWriter(f)
+	return nil
+}
+
+// closeLogFile flushes and closes the log file. Safe to call multiple times.
+func (w *Worker) closeLogFile() {
+	if w.logWriter != nil {
+		_ = w.logWriter.Flush()
+		w.logWriter = nil
+	}
+	if w.logFile != nil {
+		_ = w.logFile.Close()
+		w.logFile = nil
 	}
 }
 
