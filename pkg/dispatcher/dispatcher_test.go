@@ -25,6 +25,47 @@ import (
 
 // --- Mock implementations ---
 
+// mockConn is a simple net.Conn implementation that captures writes.
+type mockConn struct {
+	written [][]byte
+	closed  bool
+	mu      sync.Mutex
+}
+
+func newMockConn() *mockConn {
+	return &mockConn{written: make([][]byte, 0)}
+}
+
+func (m *mockConn) Write(b []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return 0, net.ErrClosed
+	}
+	// Copy the bytes since caller may reuse the slice
+	copied := make([]byte, len(b))
+	copy(copied, b)
+	m.written = append(m.written, copied)
+	return len(b), nil
+}
+
+func (m *mockConn) Read(b []byte) (int, error) {
+	return 0, net.ErrClosed // Not implementing reads for this test
+}
+
+func (m *mockConn) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closed = true
+	return nil
+}
+
+func (m *mockConn) LocalAddr() net.Addr                { return nil }
+func (m *mockConn) RemoteAddr() net.Addr               { return nil }
+func (m *mockConn) SetDeadline(t time.Time) error      { return nil }
+func (m *mockConn) SetReadDeadline(t time.Time) error  { return nil }
+func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }
+
 type createCall struct {
 	title, beadType     string
 	priority            int
@@ -1966,6 +2007,105 @@ func TestApplyDirective_RestartWorker_EmptyArgs(t *testing.T) {
 
 	// Test: empty args
 	_, err := d.applyDirective(protocol.DirectiveRestartWorker, "")
+	if err == nil {
+		t.Fatal("expected error for empty args")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Errorf("expected error to mention 'required', got: %v", err)
+	}
+}
+
+func TestApplyDirective_Preempt(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Setup: create worker with active assignment
+	workerID := "worker-preempt-test"
+	beadID := "oro-preempt-bead"
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn,
+		state:    protocol.WorkerBusy,
+		beadID:   beadID,
+		worktree: "/fake/worktree",
+		encoder:  json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	// Create assignment in DB
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, workerID, "/fake/worktree")
+	if err != nil {
+		t.Fatalf("failed to create assignment: %v", err)
+	}
+
+	// Test: preempt the worker
+	detail, err := d.applyDirective(protocol.DirectivePreempt, workerID)
+	if err != nil {
+		t.Fatalf("applyDirective(preempt) failed: %v", err)
+	}
+	if !strings.Contains(detail, "preempted") {
+		t.Errorf("expected detail to mention 'preempted', got: %s", detail)
+	}
+
+	// Assert: worker still in pool but marked for preemption
+	d.mu.Lock()
+	w, exists := d.workers[workerID]
+	d.mu.Unlock()
+	if !exists {
+		t.Errorf("worker %s should still be in pool during graceful preemption", workerID)
+	}
+	if w.state != protocol.WorkerPreempting {
+		t.Errorf("worker state = %v, want %v (WorkerPreempting)", w.state, protocol.WorkerPreempting)
+	}
+
+	// Assert: PREEMPT message sent to worker
+	if len(conn.written) == 0 {
+		t.Fatalf("expected PREEMPT message to be sent to worker")
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(conn.written[0], &msg); err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+	if msg.Type != protocol.MsgPreempt {
+		t.Errorf("message type = %v, want %v (MsgPreempt)", msg.Type, protocol.MsgPreempt)
+	}
+
+	// Assert: bead NOT immediately requeued (graceful, worker handles it)
+	var status string
+	err = d.db.QueryRow(
+		`SELECT status FROM assignments WHERE bead_id = ? AND worker_id = ?`,
+		beadID, workerID).Scan(&status)
+	if err != nil {
+		t.Fatalf("failed to query assignment: %v", err)
+	}
+	if status != "active" {
+		t.Errorf("assignment status = %s, want 'active' (not requeued yet, worker will do gracefully)", status)
+	}
+}
+
+func TestApplyDirective_Preempt_UnknownWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Test: preempt unknown worker
+	_, err := d.applyDirective(protocol.DirectivePreempt, "unknown-worker")
+	if err == nil {
+		t.Fatal("expected error for unknown worker")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected error to mention 'not found', got: %v", err)
+	}
+}
+
+func TestApplyDirective_Preempt_EmptyArgs(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Test: empty args
+	_, err := d.applyDirective(protocol.DirectivePreempt, "")
 	if err == nil {
 		t.Fatal("expected error for empty args")
 	}

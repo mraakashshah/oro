@@ -23,14 +23,16 @@ func newDirectiveCmd() *cobra.Command {
 waits for ACK, then disconnects.
 
 Supported operations:
-  start           - Begin pulling and assigning ready work
-  stop            - Finish current work, don't assign new beads
-  pause           - Hold new assignments, workers keep running
-  resume          - Resume from paused state
-  scale N         - Set target worker pool size to N
-  focus <epic>    - Prioritize beads from specific epic
-  status          - Query dispatcher state
-  worker-logs <worker-id> [N] - Read last N lines from worker output.log (default 20)`,
+  start                    - Begin pulling and assigning ready work
+  stop                     - Finish current work, don't assign new beads
+  pause                    - Hold new assignments, workers keep running
+  resume                   - Resume from paused state
+  scale N                  - Set target worker pool size to N
+  focus <epic>             - Prioritize beads from specific epic
+  status                   - Query dispatcher state
+  restart-worker <id>      - Kill and respawn a worker, requeue its bead
+  preempt <id>             - Gracefully preempt a worker for higher-priority work
+  worker-logs <id> [N]     - Read last N lines from worker output.log (default 20)`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDirective(cmd.Context(), cmd.OutOrStdout(), args)

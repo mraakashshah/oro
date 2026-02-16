@@ -42,6 +42,8 @@ These commands control the swarm. All connect to the dispatcher via UDS.
 - `oro directive scale N` — set the target worker count to N
 - `oro directive focus <epic>` — prioritize beads belonging to the given epic
 - `oro directive status` — display current swarm state (workers, queue depth, active beads)
+- `oro directive restart-worker <id>` — kill and respawn a worker, requeue its bead
+- `oro directive preempt <id>` — gracefully preempt a worker for higher-priority work
 
 ## Beads CLI
 
@@ -93,6 +95,9 @@ When the dispatcher sends an escalation, respond with the appropriate playbook:
 1. Review the competing priorities.
 2. Consult the human if the priorities conflict with stated goals.
 3. Use `oro directive focus` to set the winning priority.
+4. If a high-priority bead is blocked by workers on lower-priority work:
+   - Use `oro directive preempt <worker-id>` to gracefully stop lower-priority work
+   - Or use `oro directive restart-worker <worker-id>` to immediately free capacity
 
 ### WORKER_CRASH
 1. Note the crashed worker and its bead.

@@ -74,6 +74,7 @@ const (
 	WorkerBusy         WorkerState = "busy"
 	WorkerReserved     WorkerState = "reserved" // transient: I/O in progress, heartbeat checker must skip
 	WorkerReviewing    WorkerState = "reviewing"
+	WorkerPreempting   WorkerState = "preempting"    // transient: PREEMPT sent, waiting for worker to gracefully stop
 	WorkerShuttingDown WorkerState = "shutting_down" // transient: handoff SHUTDOWN sent, not yet disconnected
 )
 

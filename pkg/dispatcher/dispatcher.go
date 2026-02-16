@@ -1808,6 +1808,8 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applySpawnFor(args)
 	case protocol.DirectiveRestartWorker:
 		return d.applyRestartWorker(args)
+	case protocol.DirectivePreempt:
+		return d.applyPreempt(args)
 	case protocol.DirectivePendingEscalations:
 		return d.applyPendingEscalations()
 	case protocol.DirectiveAckEscalation:
@@ -2101,6 +2103,48 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	}
 
 	return fmt.Sprintf("worker %s restarted", workerID), nil
+}
+
+// applyPreempt gracefully preempts a worker for higher-priority work.
+// Unlike restart-worker, this sends a PREEMPT message to allow the worker
+// to complete its current operation cleanly before stopping.
+func (d *Dispatcher) applyPreempt(args string) (string, error) {
+	if args == "" {
+		return "", fmt.Errorf("worker ID required")
+	}
+
+	workerID := args
+	ctx := context.Background()
+
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		d.mu.Unlock()
+		return "", fmt.Errorf("worker not found")
+	}
+
+	// Mark worker as preempting
+	w.state = protocol.WorkerPreempting
+
+	// Send PREEMPT message to worker
+	msg := protocol.Message{
+		Type: protocol.MsgPreempt,
+	}
+	if err := w.encoder.Encode(msg); err != nil {
+		d.mu.Unlock()
+		return "", fmt.Errorf("send preempt message: %w", err)
+	}
+
+	beadID := w.beadID
+	d.mu.Unlock()
+
+	// Log the preemption event
+	if beadID != "" {
+		_ = d.logEvent(ctx, "worker_preempted", "dispatcher", beadID, workerID,
+			`{"reason":"preempt directive"}`)
+	}
+
+	return fmt.Sprintf("worker %s preempted", workerID), nil
 }
 
 // maybeAutoScale increases targetWorkers when assignable beads exist but no

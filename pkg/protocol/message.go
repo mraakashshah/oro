@@ -20,6 +20,7 @@ const (
 	MsgAssign          MessageType = "ASSIGN"
 	MsgShutdown        MessageType = "SHUTDOWN"
 	MsgPrepareShutdown MessageType = "PREPARE_SHUTDOWN"
+	MsgPreempt         MessageType = "PREEMPT"
 	MsgACK             MessageType = "ACK"
 	MsgReviewResult    MessageType = "REVIEW_RESULT"
 )
