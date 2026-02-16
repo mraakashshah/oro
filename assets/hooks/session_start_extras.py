@@ -519,6 +519,13 @@ def main() -> None:
     oro_role = os.environ.get("ORO_ROLE", "")
     update_pane_activity(oro_role)
 
+    # 4a. Clean stale handoff_requested signal from previous session
+    if oro_role:
+        panes_dir = os.path.join(oro_home(), "panes")
+        signal_file = Path(panes_dir) / oro_role / "handoff_requested"
+        with contextlib.suppress(OSError):
+            signal_file.unlink(missing_ok=True)
+
     # 5. Latest handoff + project state (skip if .no-reprime exists, unless /clear)
     handoff = ""
     state = ""

@@ -556,3 +556,38 @@ class TestMainIntegration:
         superpowers_idx = additional_context.find("# Superpowers")
         skills_idx = additional_context.find("# Auto-loaded Skill: using-skills")
         assert superpowers_idx < skills_idx, "Superpowers should come before auto-loaded skills"
+
+    def test_main_cleans_up_handoff_requested_signal(self, tmp_path, monkeypatch):
+        """Verify main() deletes stale handoff_requested signal on SessionStart."""
+        import io
+        import sys
+
+        # Set up panes directory with a role
+        oro_home = tmp_path / ".oro"
+        panes_dir = oro_home / "panes"
+        role_dir = panes_dir / "test-worker"
+        role_dir.mkdir(parents=True)
+
+        # Create stale handoff_requested signal
+        signal_file = role_dir / "handoff_requested"
+        signal_file.touch()
+        assert signal_file.exists(), "Signal should exist before main()"
+
+        # Set environment
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ORO_HOME", str(oro_home))
+        monkeypatch.setenv("ORO_ROLE", "test-worker")
+
+        # Create empty stdin
+        mock_stdin = io.StringIO("{}")
+        monkeypatch.setattr(sys, "stdin", mock_stdin)
+
+        # Capture stdout
+        mock_stdout = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", mock_stdout)
+
+        # Run main()
+        _mod.main()
+
+        # Verify signal was deleted
+        assert not signal_file.exists(), "Signal should be deleted after main()"

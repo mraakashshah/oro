@@ -42,8 +42,17 @@ def main() -> None:
     if not _check_signal(role):
         return
 
-    # Signal present: inject system reminder
+    # Defense in depth: check context_pct to prevent stale signal fires
     panes_dir = _get_panes_dir()
+    context_pct_file = panes_dir / role / "context_pct"
+    try:
+        pct = int(context_pct_file.read_text().strip())
+        if pct < 40:
+            return  # Signal is stale, context is fresh
+    except (OSError, ValueError):
+        return  # Can't read pct, don't fire
+
+    # Signal present and context is high: inject system reminder
     handoff_path = panes_dir / role / "handoff.yaml"
 
     context = (
