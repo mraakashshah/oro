@@ -6449,6 +6449,7 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 			MaxWorkers:       5,
 			HeartbeatTimeout: 2 * time.Second,
 			PollInterval:     50 * time.Millisecond,
+			ShutdownTimeout:  500 * time.Millisecond,
 		}
 
 		d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
