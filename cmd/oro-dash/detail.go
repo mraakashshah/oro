@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -11,17 +12,26 @@ import (
 
 // DetailModel represents the detail drilldown view for a single bead.
 type DetailModel struct {
-	bead      protocol.BeadDetail
-	activeTab int
-	tabs      []string
+	bead         protocol.BeadDetail
+	activeTab    int
+	tabs         []string
+	workerEvents []WorkerEvent // Cached worker events for Worker tab
 }
 
 // newDetailModel creates a new DetailModel for the given bead.
 func newDetailModel(bead protocol.BeadDetail) DetailModel {
+	// Fetch worker events if worker is assigned
+	var events []WorkerEvent
+	if bead.WorkerID != "" {
+		// Best-effort fetch (ignores errors, returns nil on failure)
+		events, _ = fetchWorkerEvents(context.Background(), bead.WorkerID, 10)
+	}
+
 	return DetailModel{
-		bead:      bead,
-		activeTab: 0,
-		tabs:      []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
+		bead:         bead,
+		activeTab:    0,
+		tabs:         []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
+		workerEvents: events,
 	}
 }
 
@@ -115,7 +125,7 @@ func (d DetailModel) renderOverviewTab() string {
 	return strings.Join(lines, "\n")
 }
 
-// renderWorkerTab renders the Worker tab with worker context %, heartbeat.
+// renderWorkerTab renders the Worker tab with worker context %, heartbeat, and event history.
 func (d DetailModel) renderWorkerTab() string {
 	theme := DefaultTheme()
 
@@ -139,6 +149,10 @@ func (d DetailModel) renderWorkerTab() string {
 	if d.bead.LastHeartbeat != "" {
 		lines = append(lines, "Last Heartbeat: "+d.bead.LastHeartbeat)
 	}
+
+	// Worker event history
+	lines = append(lines, "")
+	lines = append(lines, renderWorkerEvents(d.workerEvents, theme))
 
 	return strings.Join(lines, "\n")
 }
