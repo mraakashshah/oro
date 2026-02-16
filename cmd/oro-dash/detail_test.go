@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -276,6 +277,84 @@ func TestDetailModel_MemoryTab(t *testing.T) {
 		// Edge: no memory → show 'No context'
 		if !strings.Contains(view, "No context") {
 			t.Errorf("expected 'No context' when no memory exists, got:\n%s", view)
+		}
+	})
+}
+
+// TestDetailModel_AsyncWorkerEvents verifies that worker events are fetched
+// asynchronously instead of blocking during model creation.
+func TestDetailModel_AsyncWorkerEvents(t *testing.T) {
+	t.Run("newDetailModel returns immediately without blocking", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:       "oro-test.16",
+			Title:    "Async test bead",
+			WorkerID: "worker-async",
+		}
+
+		// newDetailModel should return immediately without blocking on I/O
+		model := newDetailModel(bead)
+
+		// Initial state: worker events should be empty (not yet fetched)
+		if len(model.workerEvents) != 0 {
+			t.Errorf("expected workerEvents to be empty initially, got %d events", len(model.workerEvents))
+		}
+
+		// Worker events should be in loading state
+		if !model.loadingEvents {
+			t.Errorf("expected loadingEvents to be true initially")
+		}
+	})
+
+	t.Run("fetchWorkerEventsCmd returns a tea.Cmd", func(t *testing.T) {
+		workerID := "worker-test"
+
+		// fetchWorkerEventsCmd should return a command (not nil)
+		cmd := fetchWorkerEventsCmd(workerID)
+
+		if cmd == nil {
+			t.Errorf("expected fetchWorkerEventsCmd to return a non-nil tea.Cmd")
+		}
+	})
+
+	t.Run("worker tab shows loading state while events are being fetched", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:       "oro-test.17",
+			Title:    "Loading state test",
+			WorkerID: "worker-loading",
+		}
+
+		model := newDetailModel(bead)
+		model.activeTab = 1 // Worker tab
+		model.loadingEvents = true
+
+		view := model.View()
+
+		// Loading state should be visible
+		if !strings.Contains(view, "Loading") && !strings.Contains(view, "loading") {
+			t.Errorf("expected 'Loading' indicator in worker tab while events are being fetched, got:\n%s", view)
+		}
+	})
+
+	t.Run("worker tab displays error when events fetch fails", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:       "oro-test.18",
+			Title:    "Error state test",
+			WorkerID: "worker-error",
+		}
+
+		model := newDetailModel(bead)
+		model.activeTab = 1 // Worker tab
+		model.loadingEvents = false
+		model.eventError = fmt.Errorf("timeout fetching events")
+
+		view := model.View()
+
+		// Error message should be visible
+		if !strings.Contains(view, "Error") && !strings.Contains(view, "error") {
+			t.Errorf("expected error message in worker tab when fetch fails, got:\n%s", view)
+		}
+		if !strings.Contains(view, "timeout") {
+			t.Errorf("expected error details in worker tab, got:\n%s", view)
 		}
 	})
 }

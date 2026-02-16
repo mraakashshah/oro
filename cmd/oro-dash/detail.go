@@ -4,34 +4,60 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"oro/pkg/protocol"
 )
 
+// workerEventsMsg carries the result of async worker events fetch.
+type workerEventsMsg struct {
+	events []WorkerEvent
+	err    error
+}
+
 // DetailModel represents the detail drilldown view for a single bead.
 type DetailModel struct {
-	bead         protocol.BeadDetail
-	activeTab    int
-	tabs         []string
-	workerEvents []WorkerEvent // Cached worker events for Worker tab
+	bead          protocol.BeadDetail
+	activeTab     int
+	tabs          []string
+	workerEvents  []WorkerEvent // Cached worker events for Worker tab
+	loadingEvents bool          // True while events are being fetched asynchronously
+	eventError    error         // Error from async worker events fetch
+}
+
+// fetchWorkerEventsCmd returns a tea.Cmd that fetches worker events asynchronously.
+// Fetches with a 2-second timeout to prevent indefinite hang.
+func fetchWorkerEventsCmd(workerID string) tea.Cmd {
+	return func() tea.Msg {
+		if workerID == "" {
+			return workerEventsMsg{events: nil, err: nil}
+		}
+
+		// Create context with timeout to prevent indefinite hang
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		events, err := fetchWorkerEvents(ctx, workerID, 10)
+		return workerEventsMsg{events: events, err: err}
+	}
 }
 
 // newDetailModel creates a new DetailModel for the given bead.
+// Worker events are fetched asynchronously - use fetchWorkerEventsCmd to initiate the fetch.
 func newDetailModel(bead protocol.BeadDetail) DetailModel {
-	// Fetch worker events if worker is assigned
-	var events []WorkerEvent
-	if bead.WorkerID != "" {
-		// Best-effort fetch (ignores errors, returns nil on failure)
-		events, _ = fetchWorkerEvents(context.Background(), bead.WorkerID, 10)
-	}
+	// Mark as loading if worker is assigned (events will be fetched asynchronously)
+	loading := bead.WorkerID != ""
 
 	return DetailModel{
-		bead:         bead,
-		activeTab:    0,
-		tabs:         []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
-		workerEvents: events,
+		bead:          bead,
+		activeTab:     0,
+		tabs:          []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
+		workerEvents:  nil,
+		loadingEvents: loading,
+		eventError:    nil,
 	}
 }
 
@@ -150,8 +176,17 @@ func (d DetailModel) renderWorkerTab() string {
 		lines = append(lines, "Last Heartbeat: "+d.bead.LastHeartbeat)
 	}
 
-	// Worker event history
-	lines = append(lines, "", renderWorkerEvents(d.workerEvents, theme))
+	// Worker event history - show loading state or error
+	switch {
+	case d.loadingEvents:
+		dimStyle := lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
+		lines = append(lines, "", dimStyle.Render("Loading events..."))
+	case d.eventError != nil:
+		errorStyle := lipgloss.NewStyle().Foreground(theme.Error)
+		lines = append(lines, "", errorStyle.Render("Error loading events: "+d.eventError.Error()))
+	default:
+		lines = append(lines, "", renderWorkerEvents(d.workerEvents, theme))
+	}
 
 	return strings.Join(lines, "\n")
 }

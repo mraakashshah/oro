@@ -165,6 +165,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.assignments = msg.assignments
 		}
 
+	case workerEventsMsg:
+		// Update detail model with fetched worker events
+		if m.detailModel != nil {
+			m.detailModel.workerEvents = msg.events
+			m.detailModel.eventError = msg.err
+			m.detailModel.loadingEvents = false
+		}
+
 	case tickMsg:
 		return m, tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), tickCmd())
 	}
@@ -248,9 +256,10 @@ func (m Model) handleInsightsViewKeys(key string) (tea.Model, tea.Cmd) {
 
 // handleBoardViewKeys processes keyboard input in BoardView.
 func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
 	switch key {
 	case "enter":
-		m = m.drillDownToDetail()
+		m, cmd = m.drillDownToDetail()
 	case "h":
 		m = m.moveToPrevColumn()
 	case "l":
@@ -270,7 +279,7 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.searchQuery = ""
 		m.searchSelectedIndex = 0
 	}
-	return m, nil
+	return m, cmd
 }
 
 // handleSearchViewKeys processes keyboard input in SearchView.
@@ -280,6 +289,7 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 		m.activeView = BoardView
 		m.searchQuery = ""
 		m.searchSelectedIndex = 0
+		return m, nil
 	case "enter":
 		// Navigate to detail view for selected search result
 		filtered := m.filterBeads()
@@ -294,7 +304,10 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 			dm := newDetailModel(beadDetail)
 			m.detailModel = &dm
 			m.activeView = DetailView
+			// Initiate async worker events fetch
+			return m, fetchWorkerEventsCmd(beadDetail.WorkerID)
 		}
+		return m, nil
 	case "down", "j":
 		filtered := m.filterBeads()
 		if len(filtered) > 0 && m.searchSelectedIndex < len(filtered)-1 {
@@ -665,16 +678,17 @@ func (m Model) clampCursor() Model {
 
 // drillDownToDetail transitions to DetailView for the selected bead.
 // Returns unchanged model if no bead is selected (empty column).
-func (m Model) drillDownToDetail() Model {
+// Also returns a tea.Cmd to initiate async worker events fetch.
+func (m Model) drillDownToDetail() (Model, tea.Cmd) {
 	board := NewBoardModel(m.beads)
 	if m.activeCol >= len(board.columns) {
-		return m
+		return m, nil
 	}
 
 	col := board.columns[m.activeCol]
 	if len(col.beads) == 0 || m.activeBead >= len(col.beads) {
 		// No beads in column or invalid bead index
-		return m
+		return m, nil
 	}
 
 	// Get the selected bead
@@ -694,5 +708,6 @@ func (m Model) drillDownToDetail() Model {
 	*m.detailModel = newDetailModel(beadDetail)
 	m.activeView = DetailView
 
-	return m
+	// Initiate async worker events fetch
+	return m, fetchWorkerEventsCmd(beadDetail.WorkerID)
 }
