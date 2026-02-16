@@ -73,11 +73,14 @@ const (
 	DetailView
 	// SearchView shows the search overlay.
 	SearchView
+	// HelpView shows the help overlay.
+	HelpView
 )
 
 // Model is the Bubble Tea model for the oro dashboard.
 type Model struct {
 	activeView      ViewType
+	previousView    ViewType // View to return to when help is dismissed
 	daemonHealthy   bool
 	workerCount     int
 	openCount       int
@@ -167,12 +170,27 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key == "ctrl+c" {
 		return m, tea.Quit
 	}
-	if key == "q" && m.activeView != SearchView {
+	if key == "q" && m.activeView != SearchView && m.activeView != HelpView {
 		return m, tea.Quit
+	}
+
+	// Toggle help with ? (except in SearchView where it's text input)
+	if key == "?" && m.activeView != SearchView {
+		if m.activeView == HelpView {
+			// Dismiss help, return to previous view
+			m.activeView = m.previousView
+			return m, nil
+		}
+		// Open help, save current view
+		m.previousView = m.activeView
+		m.activeView = HelpView
+		return m, nil
 	}
 
 	// View-specific key handling
 	switch m.activeView {
+	case HelpView:
+		return m.handleHelpViewKeys(key)
 	case DetailView:
 		return m.handleDetailViewKeys(key)
 	case InsightsView:
@@ -182,6 +200,14 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default: // BoardView
 		return m.handleBoardViewKeys(key)
 	}
+}
+
+// handleHelpViewKeys processes keyboard input in HelpView.
+func (m Model) handleHelpViewKeys(key string) (tea.Model, tea.Cmd) {
+	if key == "esc" {
+		m.activeView = m.previousView
+	}
+	return m, nil
 }
 
 // handleDetailViewKeys processes keyboard input in DetailView.
@@ -327,6 +353,8 @@ func (m Model) View() string {
 	statusBar := m.renderStatusBar()
 
 	switch m.activeView {
+	case HelpView:
+		return statusBar + "\n" + m.renderHelpOverlay()
 	case InsightsView:
 		insights := m.buildInsightsModel()
 		return statusBar + "\n" + insights.Render()
