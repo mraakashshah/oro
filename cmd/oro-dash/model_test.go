@@ -289,3 +289,232 @@ func TestStatusBar_ShowsBeadCountsWhenDaemonOffline(t *testing.T) {
 		t.Errorf("status bar should still indicate daemon is offline, got: %s", bar)
 	}
 }
+
+// TestKeyboardNavigation verifies keyboard navigation across columns and beads.
+func TestKeyboardNavigation(t *testing.T) {
+	// Setup test beads across all columns
+	beads := []protocol.Bead{
+		{ID: "b-1", Title: "Ready task 1", Status: "open"},
+		{ID: "b-2", Title: "Ready task 2", Status: "open"},
+		{ID: "b-3", Title: "WIP task 1", Status: "in_progress"},
+		{ID: "b-4", Title: "WIP task 2", Status: "in_progress"},
+		{ID: "b-5", Title: "Blocked task", Status: "blocked"},
+	}
+
+	t.Run("initial state starts at first column first bead", func(t *testing.T) {
+		m := newModel()
+		m.beads = beads
+
+		if m.activeCol != 0 {
+			t.Errorf("initial activeCol = %d, want 0", m.activeCol)
+		}
+		if m.activeBead != 0 {
+			t.Errorf("initial activeBead = %d, want 0", m.activeBead)
+		}
+	})
+
+	t.Run("h/l navigate between columns", func(t *testing.T) {
+		m := newModel()
+		m.beads = beads
+
+		// l moves to next column (Ready -> In Progress)
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+		var ok bool
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeCol != 1 {
+			t.Errorf("after 'l' activeCol = %d, want 1", m.activeCol)
+		}
+		if m.activeBead != 0 {
+			t.Errorf("after 'l' activeBead = %d, want 0 (reset to first bead)", m.activeBead)
+		}
+
+		// h moves back (In Progress -> Ready)
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeCol != 0 {
+			t.Errorf("after 'h' activeCol = %d, want 0", m.activeCol)
+		}
+	})
+
+	t.Run("Tab/Shift-Tab navigate between columns", func(t *testing.T) {
+		m := newModel()
+		m.beads = beads
+
+		// Tab moves to next column
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		var ok bool
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeCol != 1 {
+			t.Errorf("after Tab activeCol = %d, want 1", m.activeCol)
+		}
+
+		// Shift-Tab moves back
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeCol != 0 {
+			t.Errorf("after Shift-Tab activeCol = %d, want 0", m.activeCol)
+		}
+	})
+
+	t.Run("j/k navigate within column", func(t *testing.T) {
+		m := newModel()
+		m.beads = beads
+		m.activeCol = 0 // Ready column has 2 beads
+
+		// j moves down
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		var ok bool
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeBead != 1 {
+			t.Errorf("after 'j' activeBead = %d, want 1", m.activeBead)
+		}
+
+		// k moves up
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeBead != 0 {
+			t.Errorf("after 'k' activeBead = %d, want 0", m.activeBead)
+		}
+	})
+
+	t.Run("arrow keys navigate within column", func(t *testing.T) {
+		m := newModel()
+		m.beads = beads
+		m.activeCol = 0
+
+		// down arrow moves down
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		var ok bool
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeBead != 1 {
+			t.Errorf("after Down arrow activeBead = %d, want 1", m.activeBead)
+		}
+
+		// up arrow moves up
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeBead != 0 {
+			t.Errorf("after Up arrow activeBead = %d, want 0", m.activeBead)
+		}
+	})
+
+	t.Run("cursor clamps at column boundaries", func(t *testing.T) {
+		m := newModel()
+		m.beads = beads
+		m.activeCol = 0
+
+		// h at first column stays at first column
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+		var ok bool
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeCol != 0 {
+			t.Errorf("h at first column should clamp, activeCol = %d, want 0", m.activeCol)
+		}
+
+		// Navigate to last column (Done column is index 3)
+		m.activeCol = 3
+
+		// l at last column stays at last column
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeCol != 3 {
+			t.Errorf("l at last column should clamp, activeCol = %d, want 3", m.activeCol)
+		}
+	})
+
+	t.Run("cursor clamps at bead boundaries", func(t *testing.T) {
+		m := newModel()
+		m.beads = beads
+		m.activeCol = 0 // Ready column has 2 beads
+		m.activeBead = 0
+
+		// k at first bead stays at first bead
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		var ok bool
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeBead != 0 {
+			t.Errorf("k at first bead should clamp, activeBead = %d, want 0", m.activeBead)
+		}
+
+		// Navigate to last bead
+		m.activeBead = 1
+
+		// j at last bead stays at last bead
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeBead != 1 {
+			t.Errorf("j at last bead should clamp, activeBead = %d, want 1", m.activeBead)
+		}
+	})
+
+	t.Run("empty columns are skipped", func(t *testing.T) {
+		// Create beads with gap - no blocked beads
+		beadsWithGap := []protocol.Bead{
+			{ID: "b-1", Title: "Ready task", Status: "open"},
+			{ID: "b-2", Title: "WIP task", Status: "in_progress"},
+			// No blocked beads
+			{ID: "b-3", Title: "Done task", Status: "closed"},
+		}
+
+		m := newModel()
+		m.beads = beadsWithGap
+		m.activeCol = 1 // In Progress column
+
+		// l should skip empty Blocked column and go to Done
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+		var ok bool
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeCol != 3 {
+			t.Errorf("l should skip empty Blocked column, activeCol = %d, want 3 (Done)", m.activeCol)
+		}
+
+		// h should skip empty Blocked column and go back to In Progress
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+		m, ok = updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if m.activeCol != 1 {
+			t.Errorf("h should skip empty Blocked column, activeCol = %d, want 1 (In Progress)", m.activeCol)
+		}
+	})
+}

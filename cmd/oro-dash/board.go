@@ -77,13 +77,35 @@ func NewBoardModel(beads []protocol.Bead) BoardModel {
 
 // Render renders the board columns side-by-side using lipgloss.
 func (bm BoardModel) Render() string {
-	theme := DefaultTheme()
+	return bm.RenderWithCursor(-1, -1)
+}
 
+// RenderWithCursor renders the board with a highlighted cursor at the specified column and bead.
+func (bm BoardModel) RenderWithCursor(activeCol, activeBead int) string {
+	theme := DefaultTheme()
 	colWidth := 30
 
+	rendered := make([]string, 0, len(bm.columns))
+	for colIdx, col := range bm.columns {
+		full := bm.renderColumn(col, colIdx, activeCol, activeBead, colWidth, theme)
+		rendered = append(rendered, full)
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+}
+
+// renderColumn renders a single column with its header and cards.
+func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead, colWidth int, theme Theme) string {
 	cardStyle := lipgloss.NewStyle().
 		Width(colWidth-2).
 		Padding(0, 1)
+
+	activeCardStyle := lipgloss.NewStyle().
+		Width(colWidth-2).
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Primary).
+		Background(lipgloss.Color("#3a3a3a"))
 
 	idStyle := lipgloss.NewStyle().
 		Foreground(theme.Muted)
@@ -92,44 +114,49 @@ func (bm BoardModel) Render() string {
 		Width(colWidth).
 		Padding(0, 1)
 
-	rendered := make([]string, 0, len(bm.columns))
-	for _, col := range bm.columns {
-		// Use Success (green) color for Done column, Primary (blue) for others
-		headerColor := theme.Primary
-		if col.title == "Done" {
-			headerColor = theme.Success
+	header := bm.renderColumnHeader(col, colWidth, theme)
+
+	var cardsBuilder strings.Builder
+	for beadIdx, b := range col.beads {
+		// Use activeCardStyle if this is the active card
+		style := cardStyle
+		if colIdx == activeCol && beadIdx == activeBead {
+			style = activeCardStyle
 		}
 
-		headerStyle := lipgloss.NewStyle().
-			Bold(true).
-			Foreground(headerColor).
-			Width(colWidth).
-			Align(lipgloss.Center).
-			BorderBottom(true).
-			BorderStyle(lipgloss.NormalBorder())
+		card := style.Render(
+			fmt.Sprintf("%s\n%s", b.Title, idStyle.Render(b.ID)),
+		)
+		cardsBuilder.WriteString(card)
+		cardsBuilder.WriteString("\n")
+	}
+	cards := cardsBuilder.String()
 
-		// Format header with visible/total count for Done column
-		headerText := col.title
-		if col.title == "Done" && col.totalCount > 0 {
-			visibleCount := len(col.beads)
-			headerText = fmt.Sprintf("%s (%d/%d)", col.title, visibleCount, col.totalCount)
-		}
+	return columnStyle.Render(header + "\n" + cards)
+}
 
-		header := headerStyle.Render(headerText)
-
-		var cardsBuilder strings.Builder
-		for _, b := range col.beads {
-			card := cardStyle.Render(
-				fmt.Sprintf("%s\n%s", b.Title, idStyle.Render(b.ID)),
-			)
-			cardsBuilder.WriteString(card)
-			cardsBuilder.WriteString("\n")
-		}
-		cards := cardsBuilder.String()
-
-		full := columnStyle.Render(header + "\n" + cards)
-		rendered = append(rendered, full)
+// renderColumnHeader renders a column header with title and optional count.
+func (bm BoardModel) renderColumnHeader(col boardColumn, colWidth int, theme Theme) string {
+	// Use Success (green) color for Done column, Primary (blue) for others
+	headerColor := theme.Primary
+	if col.title == "Done" {
+		headerColor = theme.Success
 	}
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+	headerStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(headerColor).
+		Width(colWidth).
+		Align(lipgloss.Center).
+		BorderBottom(true).
+		BorderStyle(lipgloss.NormalBorder())
+
+	// Format header with visible/total count for Done column
+	headerText := col.title
+	if col.title == "Done" && col.totalCount > 0 {
+		visibleCount := len(col.beads)
+		headerText = fmt.Sprintf("%s (%d/%d)", col.title, visibleCount, col.totalCount)
+	}
+
+	return headerStyle.Render(headerText)
 }

@@ -85,6 +85,10 @@ type Model struct {
 	height int
 	//nolint:unused // Will be used for error display
 	err error
+
+	// Kanban navigation state
+	activeCol  int // Index of the active column (0-3: Ready, In Progress, Blocked, Done)
+	activeBead int // Index of the active bead within the current column
 }
 
 // newModel creates a new Model initialized with BoardView active.
@@ -103,10 +107,7 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
-		}
+		return m.handleKeyPress(msg)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -142,10 +143,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleKeyPress processes keyboard input and returns updated model with optional command.
+func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "h":
+		m = m.moveToPrevColumn()
+	case "l":
+		m = m.moveToNextColumn()
+	case "tab":
+		m = m.moveToNextColumn()
+	case "shift+tab":
+		m = m.moveToPrevColumn()
+	case "j", "down":
+		m = m.moveToNextBead()
+	case "k", "up":
+		m = m.moveToPrevBead()
+	}
+	return m, nil
+}
+
 // View implements tea.Model.
 func (m Model) View() string {
 	board := NewBoardModel(m.beads)
-	return m.renderStatusBar() + "\n" + board.Render()
+	return m.renderStatusBar() + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
 }
 
 // renderStatusBar renders the status bar with daemon health, worker count, and aggregate stats.
@@ -169,4 +191,101 @@ func (m Model) renderStatusBar() string {
 		lipgloss.NewStyle().Render(" | In Progress: "),
 		lipgloss.NewStyle().Foreground(theme.Success).Render(fmt.Sprintf("%d", m.inProgressCount)),
 	)
+}
+
+// moveToNextColumn moves the cursor to the next non-empty column (wraps/clamps at boundary).
+func (m Model) moveToNextColumn() Model {
+	board := NewBoardModel(m.beads)
+	startCol := m.activeCol
+
+	// Try to find next non-empty column
+	for i := 1; i <= len(board.columns); i++ {
+		nextCol := m.activeCol + i
+		if nextCol >= len(board.columns) {
+			// Clamp at last column
+			return m
+		}
+
+		if len(board.columns[nextCol].beads) > 0 {
+			m.activeCol = nextCol
+			m.activeBead = 0 // Reset to first bead in new column
+			return m
+		}
+	}
+
+	// All remaining columns are empty, stay at current position
+	if startCol == m.activeCol && len(board.columns[startCol].beads) == 0 {
+		// Current column is also empty, stay put
+		return m
+	}
+
+	return m
+}
+
+// moveToPrevColumn moves the cursor to the previous non-empty column (wraps/clamps at boundary).
+func (m Model) moveToPrevColumn() Model {
+	board := NewBoardModel(m.beads)
+
+	// Clamp at first column
+	if m.activeCol <= 0 {
+		return m
+	}
+
+	// Try to find previous non-empty column
+	for i := 1; i <= m.activeCol; i++ {
+		prevCol := m.activeCol - i
+		if prevCol < 0 {
+			// Clamp at first column
+			return m
+		}
+
+		if len(board.columns[prevCol].beads) > 0 {
+			m.activeCol = prevCol
+			m.activeBead = 0 // Reset to first bead in new column
+			return m
+		}
+	}
+
+	// All previous columns are empty, stay at current position
+	return m
+}
+
+// moveToNextBead moves the cursor to the next bead in the current column (clamps at boundary).
+func (m Model) moveToNextBead() Model {
+	board := NewBoardModel(m.beads)
+	if m.activeCol >= len(board.columns) {
+		return m
+	}
+
+	col := board.columns[m.activeCol]
+	if len(col.beads) == 0 {
+		return m
+	}
+
+	// Clamp at last bead
+	if m.activeBead < len(col.beads)-1 {
+		m.activeBead++
+	}
+
+	return m
+}
+
+// moveToPrevBead moves the cursor to the previous bead in the current column (clamps at boundary).
+func (m Model) moveToPrevBead() Model {
+	board := NewBoardModel(m.beads)
+	if m.activeCol >= len(board.columns) {
+		return m
+	}
+
+	col := board.columns[m.activeCol]
+	if len(col.beads) == 0 {
+		return m
+	}
+
+	// Clamp at first bead
+	if m.activeBead > 0 {
+		m.activeBead--
+	}
+
+	return m
 }
