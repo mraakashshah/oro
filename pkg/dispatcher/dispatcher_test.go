@@ -8069,3 +8069,61 @@ func TestAppendReviewPatterns_LogsErrorWhenUnwritable(t *testing.T) {
 		t.Fatalf("expected 1 append_review_patterns_failed event, got %d", count)
 	}
 }
+
+// TestWithReservation_WorkerDisconnectedDuringIO verifies that withReservation
+// handles the case where a worker is deleted from the map during the I/O phase
+// (between Phase 1 reservation and Phase 2 completion).
+func TestWithReservation_WorkerDisconnectedDuringIO(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Connect a worker
+	workerID := "worker-1"
+	conn1, _ := net.Pipe()
+	defer conn1.Close()
+	d.registerWorker(workerID, conn1)
+
+	// Set up initial worker state with beadID and worktree
+	d.mu.Lock()
+	w := d.workers[workerID]
+	w.state = protocol.WorkerBusy
+	w.beadID = "test-bead"
+	w.worktree = "/tmp/test-worktree"
+	d.mu.Unlock()
+
+	// Track whether I/O and assign functions were called
+	var ioCallCount, assignCallCount int
+
+	// I/O function simulates memory retrieval
+	ioFn := func() string {
+		ioCallCount++
+		// Simulate the worker being disconnected during I/O phase
+		d.mu.Lock()
+		delete(d.workers, workerID)
+		d.mu.Unlock()
+		return "memory-context"
+	}
+
+	// Assign function should not be called if worker is gone
+	assignFn := func(w *trackedWorker, memCtx string) bool {
+		assignCallCount++
+		return true
+	}
+
+	// Execute withReservation
+	success := d.withReservation(workerID, ioFn, assignFn)
+
+	// Assert: withReservation returns false (worker was disconnected)
+	if success {
+		t.Fatal("expected withReservation to return false when worker disconnected during I/O")
+	}
+
+	// Assert: I/O was called
+	if ioCallCount != 1 {
+		t.Fatalf("expected ioFn to be called once, got %d", ioCallCount)
+	}
+
+	// Assert: assign was NOT called (worker disconnected during I/O)
+	if assignCallCount != 0 {
+		t.Fatalf("expected assignFn to NOT be called, got %d calls", assignCallCount)
+	}
+}

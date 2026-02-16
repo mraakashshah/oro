@@ -758,56 +758,84 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	d.qgRetryWithReservation(ctx, workerID, beadID, qgOutput, attempt)
 }
 
+// withReservation executes a two-phase reservation pattern for worker re-assignment:
+// Phase 1 (caller): Reserve the worker (set state to WorkerReserved) under lock.
+// Phase 2 (this helper): Run ioFn outside lock, then verify reservation still valid
+// and call assignFn under lock. The worker must already be in WorkerReserved state
+// before calling this helper.
+//
+// ioFn performs I/O operations (e.g., memory retrieval) and returns context string.
+// assignFn receives the worker and I/O result, updates state, and sends ASSIGN message.
+// assignFn returns true if the assignment succeeded, false if it failed.
+//
+// Returns true if assignment succeeded, false if worker was disconnected or assignment failed.
+func (d *Dispatcher) withReservation(workerID string, ioFn func() string, assignFn func(w *trackedWorker, memCtx string) bool) bool {
+	// I/O phase: run outside lock to avoid blocking other operations.
+	if d.testUnlockHook != nil {
+		d.testUnlockHook()
+	}
+	memCtx := ioFn()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Phase 2: Verify reservation still valid, then call assignFn.
+	w, ok := d.workers[workerID]
+	if !ok || w.state != protocol.WorkerReserved {
+		return false
+	}
+
+	return assignFn(w, memCtx)
+}
+
 // qgRetryWithReservation performs the I/O phase (memory retrieval) and
 // completes the two-phase reservation for a QG retry. The worker must already
 // be in protocol.WorkerReserved state before this is called.
 func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadID, qgOutput string, attempt int) {
-	// Retrieve relevant memories for retry prompt (best-effort, outside lock).
-	if d.testUnlockHook != nil {
-		d.testUnlockHook()
-	}
-	memCtx := d.fetchBeadMemories(ctx, beadID)
-
-	d.mu.Lock()
-	// Phase 2: Verify reservation still valid, then transition to Busy.
-	w, ok := d.workers[workerID]
-	if !ok || w.state != protocol.WorkerReserved {
-		d.mu.Unlock()
-		return
-	}
-
-	// Escalate to opus if not already opus.
-	if w.model != protocol.ModelOpus {
-		w.model = protocol.ModelOpus
-		d.attemptCounts[beadID] = 0 // Reset so opus gets fresh retries
-	}
-
-	if err := d.sendToWorker(w, protocol.Message{
-		Type: protocol.MsgAssign,
-		Assign: &protocol.AssignPayload{
-			BeadID:        beadID,
-			Worktree:      w.worktree,
-			Model:         w.model,
-			Attempt:       attempt,
-			Feedback:      qgOutput,
-			MemoryContext: memCtx,
+	success := d.withReservation(workerID,
+		// I/O function: fetch memories outside lock
+		func() string {
+			return d.fetchBeadMemories(ctx, beadID)
 		},
-	}); err != nil {
-		// Worker is unreachable — release the bead back to the ready pool.
-		w.state = protocol.WorkerIdle
-		w.beadID = ""
-		w.epicID = ""
-		d.mu.Unlock()
-		_ = d.logEvent(ctx, "qg_retry_send_failed", workerID, beadID, workerID,
-			fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
-		_ = d.completeAssignment(ctx, beadID)
+		// Assign function: update state and send message under lock
+		func(w *trackedWorker, memCtx string) bool {
+			// Escalate to opus if not already opus.
+			if w.model != protocol.ModelOpus {
+				w.model = protocol.ModelOpus
+				d.attemptCounts[beadID] = 0 // Reset so opus gets fresh retries
+			}
+
+			if err := d.sendToWorker(w, protocol.Message{
+				Type: protocol.MsgAssign,
+				Assign: &protocol.AssignPayload{
+					BeadID:        beadID,
+					Worktree:      w.worktree,
+					Model:         w.model,
+					Attempt:       attempt,
+					Feedback:      qgOutput,
+					MemoryContext: memCtx,
+				},
+			}); err != nil {
+				// Worker is unreachable — release the bead back to the ready pool.
+				w.state = protocol.WorkerIdle
+				w.beadID = ""
+				w.epicID = ""
+				_ = d.logEvent(ctx, "qg_retry_send_failed", workerID, beadID, workerID,
+					fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
+				_ = d.completeAssignment(ctx, beadID)
+				return false
+			}
+			w.state = protocol.WorkerBusy
+			w.beadID = beadID
+			w.lastProgress = d.nowFunc()
+			return true
+		},
+	)
+
+	// If assignment failed, clean up tracking state outside the lock.
+	if !success {
 		d.clearBeadTracking(beadID)
-		return
 	}
-	w.state = protocol.WorkerBusy
-	w.beadID = beadID
-	w.lastProgress = d.nowFunc()
-	d.mu.Unlock()
 }
 
 // fetchBeadMemories retrieves relevant memories for a bead (best-effort).
@@ -1237,31 +1265,29 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	}
 	d.mu.Unlock()
 
-	// Retrieve relevant memories for the retry prompt (outside lock).
-	if d.testUnlockHook != nil {
-		d.testUnlockHook()
-	}
-	memCtx := d.fetchBeadMemories(ctx, beadID)
-
-	d.mu.Lock()
-	// Phase 2: Verify reservation still valid, then transition to Busy.
-	w, ok := d.workers[workerID]
-	if ok && w.state == protocol.WorkerReserved {
-		w.state = protocol.WorkerBusy
-		w.lastProgress = d.nowFunc()
-		_ = d.sendToWorker(w, protocol.Message{
-			Type: protocol.MsgAssign,
-			Assign: &protocol.AssignPayload{
-				BeadID:        beadID,
-				Worktree:      w.worktree,
-				Model:         "claude-opus-4-6", // escalate to Opus after review rejection
-				Feedback:      feedback,
-				MemoryContext: memCtx,
-				Attempt:       count,
-			},
-		})
-	}
-	d.mu.Unlock()
+	d.withReservation(workerID,
+		// I/O function: fetch memories outside lock
+		func() string {
+			return d.fetchBeadMemories(ctx, beadID)
+		},
+		// Assign function: update state and send message under lock
+		func(w *trackedWorker, memCtx string) bool {
+			w.state = protocol.WorkerBusy
+			w.lastProgress = d.nowFunc()
+			_ = d.sendToWorker(w, protocol.Message{
+				Type: protocol.MsgAssign,
+				Assign: &protocol.AssignPayload{
+					BeadID:        beadID,
+					Worktree:      w.worktree,
+					Model:         "claude-opus-4-6", // escalate to Opus after review rejection
+					Feedback:      feedback,
+					MemoryContext: memCtx,
+					Attempt:       count,
+				},
+			})
+			return true
+		},
+	)
 }
 
 // appendReviewPatterns appends captured anti-patterns to .claude/review-patterns.md
