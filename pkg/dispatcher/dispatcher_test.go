@@ -1460,6 +1460,54 @@ func TestEscalateDoesNotSpawnForNonTargetTypes(t *testing.T) {
 	}, 500*time.Millisecond)
 }
 
+func TestOneShotTimeoutEscalatesToPersistentManager(t *testing.T) {
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+
+	// Provide bead detail for context.
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-timeout"] = &protocol.BeadDetail{
+		ID:          "bead-timeout",
+		Title:       "Timeout test bead",
+		Description: "Testing one-shot timeout escalation",
+	}
+	beadSrc.mu.Unlock()
+
+	// Simulate a timeout by making the spawn return an error.
+	// In reality, the timeout happens in ops.Spawner, but we simulate it here.
+	spawnMock.mu.Lock()
+	spawnMock.spawnErr = fmt.Errorf("ops: process exceeded 5m0s timeout")
+	spawnMock.mu.Unlock()
+
+	ctx := context.Background()
+
+	// Trigger escalation with a STUCK_WORKER message.
+	msg := protocol.FormatEscalation(protocol.EscStuckWorker, "bead-timeout", "worker stalled", "no progress")
+	d.escalate(ctx, msg, "bead-timeout", "w1")
+
+	// The initial tmux escalation should be sent.
+	msgs := esc.Messages()
+	if len(msgs) < 1 {
+		t.Fatalf("expected at least 1 escalation message, got %d", len(msgs))
+	}
+
+	// Wait for the async one-shot goroutine to process the timeout.
+	// After timeout, it should escalate again to the persistent manager.
+	waitFor(t, func() bool {
+		return len(esc.Messages()) >= 2 // initial + timeout escalation
+	}, 2*time.Second)
+
+	msgs = esc.Messages()
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 escalation messages (initial + timeout), got %d", len(msgs))
+	}
+
+	// The second message should mention the one-shot failure.
+	secondMsg := msgs[1]
+	if !containsIgnoreCase(secondMsg, "one-shot") && !containsIgnoreCase(secondMsg, "timeout") {
+		t.Fatalf("second escalation should mention one-shot failure or timeout, got: %q", secondMsg)
+	}
+}
+
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -2635,6 +2683,10 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func containsIgnoreCase(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {

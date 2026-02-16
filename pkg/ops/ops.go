@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -121,6 +122,7 @@ type Spawner struct {
 	mu      sync.Mutex
 	active  map[string]*Agent
 	spawner BatchSpawner
+	timeout time.Duration // one-shot process timeout (defaults to 5 minutes)
 }
 
 // NewSpawner creates a Spawner backed by the given BatchSpawner.
@@ -128,6 +130,7 @@ func NewSpawner(sp BatchSpawner) *Spawner {
 	return &Spawner{
 		active:  make(map[string]*Agent),
 		spawner: sp,
+		timeout: 5 * time.Minute,
 	}
 }
 
@@ -222,25 +225,10 @@ func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, promp
 		s.active[taskID] = agent
 		s.mu.Unlock()
 
-		// Wait for process to finish, or context cancellation.
-		done := make(chan error, 1)
-		go func() {
-			done <- proc.Wait()
-		}()
-
-		var waitErr error
-		select {
-		case waitErr = <-done:
-			// Process exited.
-		case <-ctx.Done():
-			_ = proc.Kill()
-			ch <- Result{
-				Type:    opsType,
-				BeadID:  beadID,
-				Verdict: VerdictFailed,
-				Err:     ctx.Err(),
-			}
-			return
+		// Wait for process to finish, with timeout and context cancellation.
+		completed, waitErr := s.waitForProcess(ctx, proc, opsType, beadID, ch)
+		if !completed {
+			return // Timeout or context cancelled, result already sent.
 		}
 
 		stdout, _ := proc.Output()
@@ -249,6 +237,42 @@ func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, promp
 	}()
 
 	return ch
+}
+
+// waitForProcess waits for a process to complete with timeout and context cancellation.
+// Returns (true, waitErr) if the process exited normally (waitErr may be nil for success).
+// Returns (false, nil) if timeout/cancelled (result already sent on ch).
+func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type, beadID string, ch chan<- Result) (bool, error) {
+	done := make(chan error, 1)
+	go func() {
+		done <- proc.Wait()
+	}()
+
+	timer := time.NewTimer(s.timeout)
+	defer timer.Stop()
+
+	select {
+	case waitErr := <-done:
+		return true, waitErr
+	case <-timer.C:
+		_ = proc.Kill()
+		ch <- Result{
+			Type:    opsType,
+			BeadID:  beadID,
+			Verdict: VerdictFailed,
+			Err:     fmt.Errorf("ops: process exceeded %v timeout", s.timeout),
+		}
+		return false, nil
+	case <-ctx.Done():
+		_ = proc.Kill()
+		ch <- Result{
+			Type:    opsType,
+			BeadID:  beadID,
+			Verdict: VerdictFailed,
+			Err:     ctx.Err(),
+		}
+		return false, nil
+	}
 }
 
 // --- Result parsing ---

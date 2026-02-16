@@ -519,6 +519,42 @@ func TestParseResultNonZeroExitNonReviewStillFails(t *testing.T) {
 	}
 }
 
+// --- Timeout tests ---
+
+func TestOneShotTimeout(t *testing.T) {
+	// Process that never completes (blocks forever).
+	proc := newMockProcess("", nil)
+	mock := &mockBatchSpawner{process: proc}
+	s := NewSpawner(mock)
+	// Use a short timeout for testing (100ms instead of 5 minutes).
+	s.timeout = 100 * time.Millisecond
+
+	ctx := context.Background()
+	ch := s.Escalate(ctx, EscalationOpts{
+		EscalationType: "STUCK_WORKER",
+		BeadID:         "oro-timeout",
+		Workdir:        ".",
+	})
+
+	result := waitResult(t, ch)
+
+	// After timeout, the process should be killed and a failure result returned.
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed after timeout, got %q", result.Verdict)
+	}
+	if result.Err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !containsSubstring(result.Err.Error(), "timeout") {
+		t.Fatalf("expected timeout error message, got: %v", result.Err)
+	}
+
+	// Verify the process was killed.
+	if !proc.wasKilled() {
+		t.Fatal("expected process to be killed after timeout")
+	}
+}
+
 // --- Helpers ---
 
 func waitResult(t *testing.T, ch <-chan Result) Result {

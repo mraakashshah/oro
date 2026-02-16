@@ -2268,11 +2268,21 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escType, beadID
 }
 
 // handleEscalationResult logs the one-shot escalation agent's outcome.
+// If the one-shot fails (timeout, error, or non-zero exit), it escalates
+// to the persistent manager for manual intervention.
 func (d *Dispatcher) handleEscalationResult(ctx context.Context, escType, beadID, workerID string, resultCh <-chan ops.Result) {
 	result := <-resultCh
 	if result.Err != nil {
 		_ = d.logEvent(ctx, "oneshot_escalation_failed", "ops", beadID, workerID,
 			fmt.Sprintf(`{"type":%q,"error":%q}`, escType, result.Err.Error()))
+
+		// Escalate to persistent manager when one-shot fails.
+		failMsg := fmt.Sprintf("[ORO-DISPATCH] ONESHOT_FAILED: %s — One-shot %s agent failed: %v",
+			beadID, escType, result.Err)
+		if err := d.escalator.Escalate(ctx, failMsg); err != nil {
+			_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q,"message":%q}`, err.Error(), failMsg))
+		}
 		return
 	}
 	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
