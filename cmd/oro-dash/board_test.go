@@ -254,11 +254,11 @@ func TestCardRendering_BlockedBeadDependencies(t *testing.T) {
 	theme := DefaultTheme()
 	output := board.Render(theme, NewStyles(theme))
 
-	// Verify blocker IDs appear in the output
-	if !strings.Contains(output, "b-blocker1") {
+	// Verify blocker IDs appear in the output (with non-breaking hyphens to prevent wrapping)
+	if !strings.Contains(output, "b\u2011blocker1") {
 		t.Errorf("Render() missing blocker ID 'b-blocker1' for blocked bead\ngot:\n%s", output)
 	}
-	if !strings.Contains(output, "b-blocker2") {
+	if !strings.Contains(output, "b\u2011blocker2") {
 		t.Errorf("Render() missing blocker ID 'b-blocker2' for blocked bead\ngot:\n%s", output)
 	}
 }
@@ -293,7 +293,7 @@ func TestCardRendering_NoOverflow(t *testing.T) {
 	if !strings.Contains(output, "[P0]") {
 		t.Errorf("Render() missing priority badge for bead")
 	}
-	if !strings.Contains(output, "b-blocker1") {
+	if !strings.Contains(output, "b\u2011blocker1") {
 		t.Errorf("Render() missing blocker ID in card")
 	}
 }
