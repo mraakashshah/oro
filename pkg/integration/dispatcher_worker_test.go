@@ -48,7 +48,7 @@ func (m *mockBeadSource) Close(_ context.Context, _ string, _ string) error {
 	return nil
 }
 
-func (m *mockBeadSource) Create(_ context.Context, _, _ string, _ int, _, _ string) (string, error) {
+func (m *mockBeadSource) Create(_ context.Context, _, _ string, _ int, _, _, _ string) (string, error) {
 	return "", nil
 }
 

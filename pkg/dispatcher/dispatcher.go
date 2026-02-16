@@ -59,7 +59,7 @@ type BeadSource interface {
 	Ready(ctx context.Context) ([]protocol.Bead, error)
 	Show(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	Close(ctx context.Context, id string, reason string) error
-	Create(ctx context.Context, title, beadType string, priority int, description, parent string) (string, error)
+	Create(ctx context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error)
 	Sync(ctx context.Context) error
 	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
 }
@@ -744,7 +744,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		// Create a P0 bug bead so the failure is tracked as actionable work.
 		p0Title := fmt.Sprintf("P0: QG exhausted for %s", beadID)
 		p0Desc := fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput)
-		newID, createErr := d.beads.Create(ctx, p0Title, "bug", 0, p0Desc, beadID)
+		newID, createErr := d.beads.Create(ctx, p0Title, "bug", 0, p0Desc, beadID, "")
 		if createErr != nil {
 			_ = d.logEvent(ctx, "p0_bead_create_failed", workerID, beadID, workerID, createErr.Error())
 		} else {
@@ -1049,7 +1049,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		contTitle := fmt.Sprintf("Continue: %s (handoff exhausted)", beadID)
 		contDesc := fmt.Sprintf("Handoff exhausted after %d handoffs for %s.\n\nContext from last handoff:\n%s",
 			handoffCount, beadID, msg.Handoff.ContextSummary)
-		newID, createErr := d.beads.Create(ctx, contTitle, "task", 1, contDesc, beadID)
+		newID, createErr := d.beads.Create(ctx, contTitle, "task", 1, contDesc, beadID, "")
 		if createErr != nil {
 			_ = d.logEvent(ctx, "continuation_bead_create_failed", "dispatcher", beadID, workerID, createErr.Error())
 		} else {

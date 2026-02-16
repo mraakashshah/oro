@@ -442,7 +442,7 @@ func TestCLIBeadSource_Create(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-abc"}`)}
 		src := NewCLIBeadSource(runner)
 
-		id, err := src.Create(context.Background(), "Fix login bug", "bug", 1, "Login fails on retry", "oro-parent")
+		id, err := src.Create(context.Background(), "Fix login bug", "bug", 1, "Login fails on retry", "oro-parent", "")
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -485,7 +485,7 @@ func TestCLIBeadSource_Create(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-xyz"}`)}
 		src := NewCLIBeadSource(runner)
 
-		id, err := src.Create(context.Background(), "Add feature", "task", 2, "New feature desc", "")
+		id, err := src.Create(context.Background(), "Add feature", "task", 2, "New feature desc", "", "")
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -506,7 +506,7 @@ func TestCLIBeadSource_Create(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd create failed")}
 		src := NewCLIBeadSource(runner)
 
-		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "")
+		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "")
 		if err == nil {
 			t.Fatal("expected error from Create when command fails")
 		}
@@ -516,9 +516,50 @@ func TestCLIBeadSource_Create(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not json")}
 		src := NewCLIBeadSource(runner)
 
-		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "")
+		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "")
 		if err == nil {
 			t.Fatal("expected error from Create when output is invalid JSON")
+		}
+	})
+
+	t.Run("with_acceptance_criteria", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test"}`)}
+		src := NewCLIBeadSource(runner)
+
+		ac := "- [ ] Test passes\n- [ ] Code compiles"
+		id, err := src.Create(context.Background(), "Test task", "task", 2, "Test description", "", ac)
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if id != "oro-test" {
+			t.Errorf("ID: got %q, want %q", id, "oro-test")
+		}
+
+		// Verify --acceptance-criteria flag is present.
+		call := runner.calls[0]
+		if !sliceContains(call.Args, "--acceptance-criteria="+ac) {
+			t.Errorf("expected '--acceptance-criteria=%s' in args, got %v", ac, call.Args)
+		}
+	})
+
+	t.Run("empty_acceptance_criteria_omitted", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test2"}`)}
+		src := NewCLIBeadSource(runner)
+
+		id, err := src.Create(context.Background(), "Test task", "task", 2, "Test description", "", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if id != "oro-test2" {
+			t.Errorf("ID: got %q, want %q", id, "oro-test2")
+		}
+
+		// Verify --acceptance-criteria flag is NOT in args when empty.
+		call := runner.calls[0]
+		for _, arg := range call.Args {
+			if strings.HasPrefix(arg, "--acceptance-criteria=") {
+				t.Errorf("expected no --acceptance-criteria arg when AC is empty, got %v", call.Args)
+			}
 		}
 	})
 }

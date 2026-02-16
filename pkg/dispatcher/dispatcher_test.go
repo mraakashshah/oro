@@ -29,6 +29,7 @@ type createCall struct {
 	title, beadType     string
 	priority            int
 	description, parent string
+	acceptanceCriteria  string
 }
 
 type mockBeadSource struct {
@@ -82,10 +83,10 @@ func (m *mockBeadSource) Sync(_ context.Context) error {
 	return nil
 }
 
-func (m *mockBeadSource) Create(_ context.Context, title, beadType string, priority int, description, parent string) (string, error) {
+func (m *mockBeadSource) Create(_ context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.created = append(m.created, createCall{title, beadType, priority, description, parent})
+	m.created = append(m.created, createCall{title, beadType, priority, description, parent, acceptanceCriteria})
 	id := "oro-new1"
 	if m.createID != "" {
 		id = m.createID

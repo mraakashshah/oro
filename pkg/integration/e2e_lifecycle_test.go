@@ -46,7 +46,7 @@ func (m *trackingBeadSource) Close(_ context.Context, id string, _ string) error
 	return nil
 }
 
-func (m *trackingBeadSource) Create(_ context.Context, _, _ string, _ int, _, _ string) (string, error) {
+func (m *trackingBeadSource) Create(_ context.Context, _, _ string, _ int, _, _, _ string) (string, error) {
 	return "", nil
 }
 

@@ -99,9 +99,10 @@ func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
 }
 
 // Create runs `bd create --title=... --type=... --priority=N --description=... --json`
-// and optionally `--parent=...` if parent is non-empty. It parses the JSON output
-// to extract and return the new bead ID.
-func (s *CLIBeadSource) Create(ctx context.Context, title, beadType string, priority int, description, parent string) (string, error) {
+// and optionally `--parent=...` if parent is non-empty and `--acceptance-criteria=...`
+// if acceptanceCriteria is non-empty. It parses the JSON output to extract and return
+// the new bead ID.
+func (s *CLIBeadSource) Create(ctx context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error) {
 	args := []string{
 		"create",
 		"--title=" + title,
@@ -111,6 +112,9 @@ func (s *CLIBeadSource) Create(ctx context.Context, title, beadType string, prio
 	}
 	if parent != "" {
 		args = append(args, "--parent="+parent)
+	}
+	if acceptanceCriteria != "" {
+		args = append(args, "--acceptance-criteria="+acceptanceCriteria)
 	}
 	args = append(args, "--json")
 
