@@ -500,9 +500,10 @@ func TestCancelForBeadKillsMatchingAgents(t *testing.T) {
 	targetCount := 0
 	otherCount := 0
 	for _, agent := range s.active {
-		if agent.BeadID == "oro-target" {
+		switch agent.BeadID { //nolint:gocritic // test helper, switch overkill
+		case "oro-target":
 			targetCount++
-		} else if agent.BeadID == "oro-other" {
+		case "oro-other":
 			otherCount++
 		}
 	}
