@@ -1,9 +1,10 @@
 """pytest configuration for oro tests."""
+# pylint: disable=import-error
 
 import os
 from pathlib import Path
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 
 def pytest_collection_modifyitems(config, items):
