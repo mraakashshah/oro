@@ -120,6 +120,7 @@ type trackedWorker struct {
 	model          string // resolved model for the current bead assignment
 	lastSeen       time.Time
 	lastProgress   time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
+	contextPct     int       // context usage percentage from last heartbeat (0-100)
 	encoder        *json.Encoder
 	pendingMsgs    []protocol.Message // buffered messages for disconnected worker
 	shutdownCancel context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
@@ -641,6 +642,7 @@ func (d *Dispatcher) handleHeartbeat(ctx context.Context, workerID string, msg p
 	d.mu.Lock()
 	if w, ok := d.workers[workerID]; ok {
 		w.lastSeen = d.nowFunc()
+		w.contextPct = msg.Heartbeat.ContextPct
 	}
 	d.mu.Unlock()
 
@@ -1740,6 +1742,7 @@ type workerStatus struct {
 	State            string  `json:"state"`
 	BeadID           string  `json:"bead_id,omitempty"`
 	LastProgressSecs float64 `json:"last_progress_secs"`
+	ContextPct       int     `json:"context_pct"`
 }
 
 // statusResponse is the JSON structure returned by the status directive.
@@ -1825,6 +1828,7 @@ func (d *Dispatcher) snapshotWorkers(now time.Time) (workers []workerStatus, ass
 			State:            string(w.state),
 			BeadID:           w.beadID,
 			LastProgressSecs: progressSecs,
+			ContextPct:       w.contextPct,
 		})
 		if w.state == protocol.WorkerBusy || w.state == protocol.WorkerReserved {
 			active++
