@@ -303,6 +303,12 @@ func (bm BoardModel) renderBlockerInfo(b protocol.Bead, styles Styles) string {
 		return ""
 	}
 
-	blockerText := "🚧 " + strings.Join(blockerIDs, ", ")
+	// Replace hyphens with non-breaking hyphens to prevent word wrapping within IDs
+	for i, id := range blockerIDs {
+		blockerIDs[i] = strings.ReplaceAll(id, "-", "\u2011")
+	}
+
+	// Join with non-breaking spaces after commas
+	blockerText := "🚧 " + strings.Join(blockerIDs, ",\u00A0")
 	return styles.BlockerStyle.Render(blockerText)
 }
