@@ -18,12 +18,14 @@ const (
 	DirectiveRestartWorker      Directive = "restart-worker"      // Kill a specific worker and spawn a new one, requeue bead.
 	DirectivePendingEscalations Directive = "pending-escalations" // List unacked escalations.
 	DirectiveAckEscalation      Directive = "ack-escalation"      // Acknowledge an escalation by ID.
+	DirectiveHealth             Directive = "health"              // Query swarm health status.
+	DirectiveRestartDaemon      Directive = "restart-daemon"      // Manual daemon restart.
 )
 
 // Valid reports whether d is one of the known directive values.
 func (d Directive) Valid() bool {
 	switch d {
-	case DirectiveStart, DirectiveStop, DirectivePause, DirectiveResume, DirectiveScale, DirectiveFocus, DirectiveStatus, DirectiveShutdown, DirectiveKillWorker, DirectiveSpawnFor, DirectiveRestartWorker, DirectivePendingEscalations, DirectiveAckEscalation:
+	case DirectiveStart, DirectiveStop, DirectivePause, DirectiveResume, DirectiveScale, DirectiveFocus, DirectiveStatus, DirectiveShutdown, DirectiveKillWorker, DirectiveSpawnFor, DirectiveRestartWorker, DirectivePendingEscalations, DirectiveAckEscalation, DirectiveHealth, DirectiveRestartDaemon:
 		return true
 	default:
 		return false

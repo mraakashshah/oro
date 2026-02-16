@@ -26,7 +26,7 @@ func TestDirectiveConstants(t *testing.T) {
 }
 
 func TestDirectiveValid(t *testing.T) {
-	valid := []protocol.Directive{protocol.DirectiveStart, protocol.DirectiveStop, protocol.DirectivePause, protocol.DirectiveFocus, protocol.DirectiveShutdown}
+	valid := []protocol.Directive{protocol.DirectiveStart, protocol.DirectiveStop, protocol.DirectivePause, protocol.DirectiveFocus, protocol.DirectiveShutdown, protocol.DirectiveHealth, protocol.DirectiveRestartDaemon}
 	for _, d := range valid {
 		if !d.Valid() {
 			t.Errorf("expected %q to be valid", d)
