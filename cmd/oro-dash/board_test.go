@@ -286,3 +286,161 @@ func TestCardRendering_NoOverflow(t *testing.T) {
 		t.Errorf("Render() missing blocker ID in card")
 	}
 }
+
+// TestCardRendering_WorkerHealthBadge_Green verifies that in-progress cards show
+// green health badge when heartbeat age is less than 5 seconds.
+func TestCardRendering_WorkerHealthBadge_Green(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-wip", Title: "Task in progress", Status: "in_progress"},
+	}
+
+	workers := []WorkerStatus{
+		{ID: "worker-healthy", Status: "busy", LastProgressSecs: 2.5},
+	}
+
+	assignments := map[string]string{
+		"b-wip": "worker-healthy",
+	}
+
+	board := NewBoardModelWithWorkers(beads, workers, assignments)
+	output := board.RenderWithCursor(-1, -1)
+
+	// Verify worker ID appears
+	if !strings.Contains(output, "worker-healthy") {
+		t.Errorf("Render() missing worker ID 'worker-healthy'\ngot:\n%s", output)
+	}
+
+	// Verify health badge appears (green indicator: ●)
+	if !strings.Contains(output, "●") {
+		t.Errorf("Render() missing health badge for worker\ngot:\n%s", output)
+	}
+}
+
+// TestCardRendering_WorkerHealthBadge_Amber verifies that in-progress cards show
+// amber health badge when heartbeat age is between 5-15 seconds.
+func TestCardRendering_WorkerHealthBadge_Amber(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-wip", Title: "Task in progress", Status: "in_progress"},
+	}
+
+	workers := []WorkerStatus{
+		{ID: "worker-stale", Status: "busy", LastProgressSecs: 8.0},
+	}
+
+	assignments := map[string]string{
+		"b-wip": "worker-stale",
+	}
+
+	board := NewBoardModelWithWorkers(beads, workers, assignments)
+	output := board.RenderWithCursor(-1, -1)
+
+	// Verify worker ID appears
+	if !strings.Contains(output, "worker-stale") {
+		t.Errorf("Render() missing worker ID 'worker-stale'\ngot:\n%s", output)
+	}
+
+	// Verify health badge appears (amber indicator: ●)
+	if !strings.Contains(output, "●") {
+		t.Errorf("Render() missing health badge for worker\ngot:\n%s", output)
+	}
+}
+
+// TestCardRendering_WorkerHealthBadge_Red verifies that in-progress cards show
+// red health badge when heartbeat age is greater than 15 seconds.
+func TestCardRendering_WorkerHealthBadge_Red(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-wip", Title: "Task in progress", Status: "in_progress"},
+	}
+
+	workers := []WorkerStatus{
+		{ID: "worker-stuck", Status: "busy", LastProgressSecs: 20.0},
+	}
+
+	assignments := map[string]string{
+		"b-wip": "worker-stuck",
+	}
+
+	board := NewBoardModelWithWorkers(beads, workers, assignments)
+	output := board.RenderWithCursor(-1, -1)
+
+	// Verify worker ID appears
+	if !strings.Contains(output, "worker-stuck") {
+		t.Errorf("Render() missing worker ID 'worker-stuck'\ngot:\n%s", output)
+	}
+
+	// Verify health badge appears (red indicator: ●)
+	if !strings.Contains(output, "●") {
+		t.Errorf("Render() missing health badge for worker\ngot:\n%s", output)
+	}
+}
+
+// TestCardRendering_ContextPercentage verifies that in-progress cards show
+// context percentage when available.
+func TestCardRendering_ContextPercentage(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-wip", Title: "Task in progress", Status: "in_progress"},
+	}
+
+	workers := []WorkerStatus{
+		{ID: "worker-abc", Status: "busy", ContextPct: 42},
+	}
+
+	assignments := map[string]string{
+		"b-wip": "worker-abc",
+	}
+
+	board := NewBoardModelWithWorkers(beads, workers, assignments)
+	output := board.RenderWithCursor(-1, -1)
+
+	// Verify context percentage appears
+	if !strings.Contains(output, "42%") {
+		t.Errorf("Render() missing context percentage '42%%'\ngot:\n%s", output)
+	}
+}
+
+// TestCardRendering_NoWorkerAssignment verifies that in-progress cards without
+// worker assignment show no badge and don't panic.
+func TestCardRendering_NoWorkerAssignment(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-wip", Title: "Task in progress", Status: "in_progress"},
+	}
+
+	// No workers or assignments
+	board := NewBoardModelWithWorkers(beads, nil, nil)
+	output := board.RenderWithCursor(-1, -1)
+
+	// Verify bead renders without panic
+	if !strings.Contains(output, "b-wip") {
+		t.Errorf("Render() missing bead ID 'b-wip'\ngot:\n%s", output)
+	}
+
+	// Verify bead title renders
+	if !strings.Contains(output, "Task in progress") {
+		t.Errorf("Render() missing bead title\ngot:\n%s", output)
+	}
+}
+
+// TestCardRendering_WorkerNotInList verifies that cards handle missing worker data gracefully.
+func TestCardRendering_WorkerNotInList(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-wip", Title: "Task in progress", Status: "in_progress"},
+	}
+
+	// Assignment exists but worker not in workers list
+	assignments := map[string]string{
+		"b-wip": "worker-missing",
+	}
+
+	board := NewBoardModelWithWorkers(beads, nil, assignments)
+	output := board.RenderWithCursor(-1, -1)
+
+	// Verify bead renders without panic
+	if !strings.Contains(output, "b-wip") {
+		t.Errorf("Render() missing bead ID 'b-wip'\ngot:\n%s", output)
+	}
+
+	// Worker ID should still appear (just without health badge/context)
+	if !strings.Contains(output, "worker-missing") {
+		t.Errorf("Render() missing worker ID 'worker-missing'\ngot:\n%s", output)
+	}
+}

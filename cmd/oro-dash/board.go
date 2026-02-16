@@ -253,12 +253,51 @@ func (bm BoardModel) renderTypeIndicator(beadType string) string {
 	}
 }
 
-// renderWorkerInfo renders worker ID and context percentage for in-progress cards.
+// renderWorkerInfo renders worker ID, health badge, and context percentage for in-progress cards.
 func (bm BoardModel) renderWorkerInfo(workerID string, theme Theme) string {
-	// For now, we don't have context percentage in the data, so just show worker ID
-	// Format: "👷 worker-abc"
+	// Find worker in workers list
+	var worker *WorkerStatus
+	for i := range bm.workers {
+		if bm.workers[i].ID == workerID {
+			worker = &bm.workers[i]
+			break
+		}
+	}
+
+	// If worker not found in list, just show worker ID (no health badge/context)
+	if worker == nil {
+		workerStyle := lipgloss.NewStyle().Foreground(theme.ColorInProgress)
+		return workerStyle.Render(fmt.Sprintf("👷 %s", workerID))
+	}
+
+	// Determine health color based on heartbeat age
+	healthColor := bm.healthColorForWorker(*worker, theme)
+	healthBadge := lipgloss.NewStyle().Foreground(healthColor).Render("●")
+
+	// Build worker info line: health badge, worker ID, context percentage
+	parts := []string{healthBadge, workerID}
+
+	// Add context percentage if available
+	if worker.ContextPct > 0 {
+		contextStr := fmt.Sprintf("%d%%", worker.ContextPct)
+		parts = append(parts, contextStr)
+	}
+
 	workerStyle := lipgloss.NewStyle().Foreground(theme.ColorInProgress)
-	return workerStyle.Render(fmt.Sprintf("👷 %s", workerID))
+	return workerStyle.Render(fmt.Sprintf("👷 %s", strings.Join(parts, " ")))
+}
+
+// healthColorForWorker returns the health badge color based on heartbeat age.
+// Green (<5s), Amber (5-15s), Red (>15s).
+func (bm BoardModel) healthColorForWorker(worker WorkerStatus, theme Theme) lipgloss.Color {
+	switch {
+	case worker.LastProgressSecs < 5.0:
+		return theme.Success // Green
+	case worker.LastProgressSecs <= 15.0:
+		return theme.Warning // Amber
+	default:
+		return theme.Error // Red
+	}
 }
 
 // renderBlockerInfo renders blocker bead IDs for blocked cards.
