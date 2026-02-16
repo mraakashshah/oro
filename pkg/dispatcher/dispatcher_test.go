@@ -8026,3 +8026,46 @@ func TestFormatCodeResults(t *testing.T) {
 		}
 	})
 }
+
+// TestAppendReviewPatterns_LogsErrorWhenUnwritable verifies that appendReviewPatterns
+// returns an error when the file cannot be written and that the error is logged.
+func TestAppendReviewPatterns_LogsErrorWhenUnwritable(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Create .claude directory and a read-only review-patterns.md file
+	beadsDir := t.TempDir()
+	root := beadsDir
+	claudeDir := root + "/.claude"
+	//nolint:gosec // test fixture: intentional directory permission
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("failed to create .claude dir: %v", err)
+	}
+
+	patternsFile := claudeDir + "/review-patterns.md"
+	//nolint:gosec // test fixture: intentional file permission to simulate read-only file
+	if err := os.WriteFile(patternsFile, []byte("existing content\n"), 0o444); err != nil {
+		t.Fatalf("failed to create read-only patterns file: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore write permission for cleanup
+		//nolint:gosec // test cleanup: restoring write permission
+		_ = os.Chmod(patternsFile, 0o644)
+	})
+
+	d.beadsDir = beadsDir + "/.beads"
+
+	patterns := []string{"anti-pattern: avoid X", "anti-pattern: prefer Y"}
+	err := d.appendReviewPatterns(ctx, "test-bead", "test-worker", patterns)
+
+	// Assert: appendReviewPatterns returns an error
+	if err == nil {
+		t.Fatal("expected appendReviewPatterns to return error for unwritable file")
+	}
+
+	// Assert: the error was logged via logEvent
+	count := eventCount(t, d.db, "append_review_patterns_failed")
+	if count != 1 {
+		t.Fatalf("expected 1 append_review_patterns_failed event, got %d", count)
+	}
+}

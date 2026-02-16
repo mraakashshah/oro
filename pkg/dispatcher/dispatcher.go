@@ -1147,7 +1147,10 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			// Capture anti-patterns from reviewer output
 			patterns := ops.ExtractPatterns(result.Feedback)
 			if len(patterns) > 0 {
-				d.appendReviewPatterns(patterns)
+				if err := d.appendReviewPatterns(ctx, beadID, workerID, patterns); err != nil {
+					// Non-blocking: log the error but continue
+					_ = d.logEvent(ctx, "append_review_patterns_failed", "ops", beadID, workerID, err.Error())
+				}
 			}
 
 			// Notify worker to proceed to DONE.
@@ -1243,8 +1246,8 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 }
 
 // appendReviewPatterns appends captured anti-patterns to .claude/review-patterns.md
-// in the main repository root. Best-effort — errors are silently ignored.
-func (d *Dispatcher) appendReviewPatterns(patterns []string) {
+// in the main repository root. Returns error if directory is unwritable or file cannot be opened.
+func (d *Dispatcher) appendReviewPatterns(ctx context.Context, beadID, workerID string, patterns []string) error {
 	// Derive project root from beadsDir (which is the repo root's .beads/)
 	root := filepath.Dir(d.beadsDir)
 	patternsFile := filepath.Join(root, ".claude", "review-patterns.md")
@@ -1252,18 +1255,26 @@ func (d *Dispatcher) appendReviewPatterns(patterns []string) {
 	// Ensure .claude/ directory exists
 	claudeDir := filepath.Dir(patternsFile)
 	//nolint:gosec // directory permissions for project config
-	_ = os.MkdirAll(claudeDir, 0o755)
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		_ = d.logEvent(ctx, "append_review_patterns_failed", "ops", beadID, workerID, fmt.Sprintf("mkdir failed: %v", err))
+		return fmt.Errorf("create .claude directory: %w", err)
+	}
 
 	//nolint:gosec // patternsFile is derived from trusted beadsDir
 	f, err := os.OpenFile(patternsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return
+		_ = d.logEvent(ctx, "append_review_patterns_failed", "ops", beadID, workerID, fmt.Sprintf("open file failed: %v", err))
+		return fmt.Errorf("open review-patterns.md: %w", err)
 	}
 	defer f.Close()
 
 	for _, p := range patterns {
-		_, _ = f.WriteString(p + "\n")
+		if _, err := f.WriteString(p + "\n"); err != nil {
+			_ = d.logEvent(ctx, "append_review_patterns_failed", "ops", beadID, workerID, fmt.Sprintf("write failed: %v", err))
+			return fmt.Errorf("write pattern: %w", err)
+		}
 	}
+	return nil
 }
 
 // clearRejectionCount, clearHandoffCount, clearBeadTracking, pruneStaleTracking → bead_tracker.go
