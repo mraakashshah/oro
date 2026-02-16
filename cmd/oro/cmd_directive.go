@@ -29,7 +29,8 @@ Supported operations:
   resume          - Resume from paused state
   scale N         - Set target worker pool size to N
   focus <epic>    - Prioritize beads from specific epic
-  status          - Query dispatcher state`,
+  status          - Query dispatcher state
+  worker-logs <worker-id> [N] - Read last N lines from worker output.log (default 20)`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDirective(cmd.Context(), cmd.OutOrStdout(), args)

@@ -1796,6 +1796,8 @@ type statusResponse struct {
 
 // applyDirective transitions the dispatcher state machine and returns a detail
 // string for the ACK response. Returns an error for invalid args (e.g. scale).
+//
+//nolint:gocyclo // dispatcher routing function - complexity is inherent to the pattern
 func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string, error) {
 	switch dir {
 	case protocol.DirectiveScale:
@@ -1812,6 +1814,8 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applyAckEscalation(args)
 	case protocol.DirectiveHealth:
 		return d.applyHealth()
+	case protocol.DirectiveWorkerLogs:
+		return d.applyWorkerLogs(args)
 	case protocol.DirectiveStart:
 		d.setState(StateRunning)
 		return "started", nil
