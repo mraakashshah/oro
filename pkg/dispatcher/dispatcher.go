@@ -2200,11 +2200,83 @@ func (d *Dispatcher) logEventLocked(ctx context.Context, evType, source, beadID,
 // escalate sends a message to the Manager via the escalator and logs any
 // delivery failures to the events table. This prevents silent failures when
 // the tmux session is dead.
+//
+// For escalation types that have playbooks (STUCK_WORKER, MERGE_CONFLICT,
+// PRIORITY_CONTENTION, MISSING_AC), it also spawns a one-shot claude -p
+// agent to take corrective action autonomously.
 func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string) {
 	if err := d.escalator.Escalate(ctx, msg); err != nil {
 		_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"error":%q,"message":%q}`, err.Error(), msg))
 	}
+
+	// Spawn one-shot manager agent for actionable escalation types.
+	if d.ops != nil {
+		if escType := parseEscalationType(msg); escType != "" {
+			d.spawnEscalationOneShot(ctx, escType, beadID, workerID, msg)
+		}
+	}
+}
+
+// parseEscalationType extracts the escalation type from a formatted
+// [ORO-DISPATCH] message. Returns empty string if not a recognized type
+// that has a one-shot playbook.
+func parseEscalationType(msg string) string {
+	// Format: [ORO-DISPATCH] TYPE: bead-id — summary.
+	const prefix = "[ORO-DISPATCH] "
+	_, after, found := strings.Cut(msg, prefix)
+	if !found {
+		return ""
+	}
+	escType, _, found := strings.Cut(after, ":")
+	if !found {
+		return ""
+	}
+	switch protocol.EscalationType(escType) {
+	case protocol.EscStuckWorker, protocol.EscMergeConflict,
+		protocol.EscPriorityContention, protocol.EscMissingAC:
+		return escType
+	default:
+		return ""
+	}
+}
+
+// spawnEscalationOneShot launches a one-shot claude -p process to handle
+// the escalation. The result is logged asynchronously.
+func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escType, beadID, workerID, msg string) {
+	// Look up bead details for context (best-effort).
+	var beadTitle, beadContext string
+	if beadID != "" {
+		if detail, err := d.beads.Show(ctx, beadID); err == nil && detail != nil {
+			beadTitle = detail.Title
+			beadContext = detail.Description
+		}
+	}
+
+	resultCh := d.ops.Escalate(ctx, ops.EscalationOpts{
+		EscalationType: escType,
+		BeadID:         beadID,
+		BeadTitle:      beadTitle,
+		BeadContext:    beadContext,
+		RecentHistory:  msg,
+		Workdir:        ".",
+	})
+
+	d.safeGo(func() {
+		d.handleEscalationResult(ctx, escType, beadID, workerID, resultCh)
+	})
+}
+
+// handleEscalationResult logs the one-shot escalation agent's outcome.
+func (d *Dispatcher) handleEscalationResult(ctx context.Context, escType, beadID, workerID string, resultCh <-chan ops.Result) {
+	result := <-resultCh
+	if result.Err != nil {
+		_ = d.logEvent(ctx, "oneshot_escalation_failed", "ops", beadID, workerID,
+			fmt.Sprintf(`{"type":%q,"error":%q}`, escType, result.Err.Error()))
+		return
+	}
+	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
+		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
 }
 
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) error {

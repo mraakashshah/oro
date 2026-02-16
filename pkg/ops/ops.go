@@ -34,9 +34,10 @@ type Type string
 
 // Known ops task types.
 const (
-	OpsReview    Type = "review"
-	OpsMerge     Type = "merge_conflict"
-	OpsDiagnosis Type = "diagnosis"
+	OpsReview     Type = "review"
+	OpsMerge      Type = "merge_conflict"
+	OpsDiagnosis  Type = "diagnosis"
+	OpsEscalation Type = "escalation"
 )
 
 // Model returns the preferred Claude model for this ops type.
@@ -46,6 +47,8 @@ func (t Type) Model() string {
 		return "claude-opus-4-6" // judgment-heavy
 	case OpsReview:
 		return "claude-opus-4-6" // full code review requires judgment
+	case OpsEscalation:
+		return "claude-sonnet-4-5-20250929" // one-shot triage is fast, not judgment-heavy
 	default:
 		return "claude-sonnet-4-5-20250929"
 	}
@@ -145,6 +148,14 @@ func (s *Spawner) ResolveMergeConflict(ctx context.Context, opts MergeOpts) <-ch
 func (s *Spawner) Diagnose(ctx context.Context, opts DiagOpts) <-chan Result {
 	prompt := buildDiagnosisPrompt(opts)
 	return s.run(ctx, OpsDiagnosis, opts.BeadID, opts.Worktree, prompt)
+}
+
+// Escalate spawns a one-shot manager agent to handle a dispatcher escalation.
+// The agent receives the escalation type, bead context, and recent history,
+// then takes corrective action (e.g. restart worker, add AC, resolve conflict).
+func (s *Spawner) Escalate(ctx context.Context, opts EscalationOpts) <-chan Result {
+	prompt := buildEscalationPrompt(opts)
+	return s.run(ctx, OpsEscalation, opts.BeadID, opts.Workdir, prompt)
 }
 
 // Cancel kills a running ops agent by task ID.
@@ -276,6 +287,8 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 	case OpsDiagnosis:
 		// Diagnosis has no verdict parsing — the whole output is the feedback.
 		r.Feedback = stdout
+	case OpsEscalation:
+		r.Verdict, r.Feedback = parseEscalationOutput(stdout)
 	}
 
 	return r
@@ -343,8 +356,8 @@ func buildMergePrompt(opts MergeOpts) string {
 
 func buildDiagnosisPrompt(opts DiagOpts) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Diagnose why bead %s is stuck.\n", opts.BeadID))
-	b.WriteString(fmt.Sprintf("Symptom: %s\n", opts.Symptom))
+	fmt.Fprintf(&b, "Diagnose why bead %s is stuck.\n", opts.BeadID)
+	fmt.Fprintf(&b, "Symptom: %s\n", opts.Symptom)
 	b.WriteString("Check: test output, recent commits, worktree state.\n")
 	return b.String()
 }

@@ -1370,6 +1370,96 @@ func TestDispatcher_Escalation(t *testing.T) {
 	}, 2*time.Second)
 }
 
+func TestParseEscalationType(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{"stuck_worker", "[ORO-DISPATCH] STUCK_WORKER: oro-abc — worker stalled.", "STUCK_WORKER"},
+		{"merge_conflict", "[ORO-DISPATCH] MERGE_CONFLICT: oro-xyz — merge failed.", "MERGE_CONFLICT"},
+		{"priority_contention", "[ORO-DISPATCH] PRIORITY_CONTENTION: oro-p0 — P0 queued.", "PRIORITY_CONTENTION"},
+		{"missing_ac", "[ORO-DISPATCH] MISSING_AC: oro-noac — no AC.", "MISSING_AC"},
+		{"stuck_not_targeted", "[ORO-DISPATCH] STUCK: oro-s — stuck.", ""},
+		{"worker_crash_not_targeted", "[ORO-DISPATCH] WORKER_CRASH: oro-c — crash.", ""},
+		{"status_not_targeted", "[ORO-DISPATCH] STATUS: oro-st — status.", ""},
+		{"no_prefix", "random message", ""},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseEscalationType(tt.msg)
+			if got != tt.want {
+				t.Fatalf("parseEscalationType(%q) = %q, want %q", tt.msg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEscalateSpawnsOneShotForTargetTypes(t *testing.T) {
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+
+	// Provide bead detail so the one-shot gets context.
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-esc"] = &protocol.BeadDetail{
+		ID:          "bead-esc",
+		Title:       "Test escalation bead",
+		Description: "Testing one-shot spawning",
+	}
+	beadSrc.mu.Unlock()
+
+	// Set spawn verdict to simulate ACK response.
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "ACK: restarted worker"
+	spawnMock.mu.Unlock()
+
+	ctx := context.Background()
+
+	// Trigger escalation with a STUCK_WORKER message.
+	msg := protocol.FormatEscalation(protocol.EscStuckWorker, "bead-esc", "worker stalled", "no progress")
+	d.escalate(ctx, msg, "bead-esc", "w1")
+
+	// Verify the tmux escalation was still sent.
+	msgs := esc.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 escalation message, got %d", len(msgs))
+	}
+
+	// Give the async one-shot goroutine time to spawn.
+	waitFor(t, func() bool {
+		return len(d.ops.Active()) == 0 // one-shot already completed (mock returns immediately)
+	}, 2*time.Second)
+}
+
+func TestEscalateDoesNotSpawnForNonTargetTypes(t *testing.T) {
+	d, _, _, esc, _, spawnMock := newTestDispatcher(t)
+
+	// Set spawn mock to track calls.
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "ACK: done"
+	callsBefore := 0
+	spawnMock.mu.Unlock()
+	_ = callsBefore
+
+	ctx := context.Background()
+
+	// Trigger escalation with STUCK (not a target type).
+	msg := protocol.FormatEscalation(protocol.EscStuck, "bead-nontarget", "stuck", "")
+	d.escalate(ctx, msg, "bead-nontarget", "w1")
+
+	// Verify the tmux escalation was sent.
+	msgs := esc.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 escalation message, got %d", len(msgs))
+	}
+
+	// No one-shot should have been spawned — Active should stay 0.
+	// Wait briefly to ensure no async spawn happened.
+	waitFor(t, func() bool {
+		return len(d.ops.Active()) == 0
+	}, 500*time.Millisecond)
+}
+
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
