@@ -71,7 +71,7 @@ var defaultToolDefs = []toolDef{ //nolint:gochecknoglobals // mutable for test i
 	{Name: "biome", Category: "system", CheckCmd: "biome", CheckArgs: []string{"--version"}, InstallCmd: "npm", InstallArgs: []string{"install", "-g", "@biomejs/biome"}},
 	{Name: "jq", Category: "system", CheckCmd: "jq", CheckArgs: []string{"--version"}, BrewName: "jq", InstallCmd: "apt-get", InstallArgs: []string{"install", "-y", "jq"}},
 	{Name: "ast-grep", Category: "system", CheckCmd: "ast-grep", CheckArgs: []string{"--version"}, InstallCmd: "npm", InstallArgs: []string{"install", "-g", "@ast-grep/cli"}},
-	{Name: "bd", Category: "system", CheckCmd: "bd", CheckArgs: []string{"--version"}, InstallCmd: "go", InstallArgs: []string{"install", "github.com/aarontravass/bd@latest"}},
+	{Name: "bd", Category: "system", CheckCmd: "bd", CheckArgs: []string{"--version"}, InstallCmd: "go", InstallArgs: []string{"install", "github.com/steveyegge/beads/cmd/bd@latest"}},
 }
 
 // checkTool runs the version check for a single tool definition and returns the result.

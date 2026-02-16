@@ -247,6 +247,39 @@ func TestDefaultToolDefs_HasCategories(t *testing.T) {
 	}
 }
 
+func TestDefaultToolDefs_BdInstallURL(t *testing.T) {
+	// Find the bd tool definition
+	var bdTool *toolDef
+	for i, d := range defaultToolDefs {
+		if d.Name == "bd" {
+			bdTool = &defaultToolDefs[i]
+			break
+		}
+	}
+
+	if bdTool == nil {
+		t.Fatal("bd tool not found in defaultToolDefs")
+	}
+
+	// Verify it has the correct install command
+	expectedCmd := "go"
+	expectedArgs := []string{"install", "github.com/steveyegge/beads/cmd/bd@latest"}
+
+	if bdTool.InstallCmd != expectedCmd {
+		t.Errorf("bd InstallCmd = %q, want %q", bdTool.InstallCmd, expectedCmd)
+	}
+
+	if len(bdTool.InstallArgs) != len(expectedArgs) {
+		t.Fatalf("bd InstallArgs length = %d, want %d", len(bdTool.InstallArgs), len(expectedArgs))
+	}
+
+	for i, arg := range expectedArgs {
+		if bdTool.InstallArgs[i] != arg {
+			t.Errorf("bd InstallArgs[%d] = %q, want %q", i, bdTool.InstallArgs[i], arg)
+		}
+	}
+}
+
 // --- Install command helpers ---
 
 func TestInstallCommandForTool(t *testing.T) {
