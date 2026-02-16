@@ -1803,6 +1803,9 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	if dir == protocol.DirectiveSpawnFor {
 		return d.applySpawnFor(args)
 	}
+	if dir == protocol.DirectiveRestartWorker {
+		return d.applyRestartWorker(args)
+	}
 	switch dir {
 	case protocol.DirectiveStart:
 		d.setState(StateRunning)
@@ -2014,6 +2017,56 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 
 	_ = d.logEvent(context.Background(), "spawn_for", "dispatcher", beadID, newID, "")
 	return fmt.Sprintf("spawned worker %s for bead %s", newID, beadID), nil
+}
+
+// applyRestartWorker terminates a specific worker, returns its bead to the
+// ready queue, spawns a new worker with the same ID, and keeps targetWorkers
+// unchanged. Returns an error if args is empty, the worker ID is not found,
+// or spawning the new worker fails.
+func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
+	if args == "" {
+		return "", fmt.Errorf("worker ID required")
+	}
+
+	workerID := args
+	ctx := context.Background()
+
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		d.mu.Unlock()
+		return "", fmt.Errorf("worker not found")
+	}
+
+	// Capture bead ID before removing worker
+	beadID := w.beadID
+
+	// Close connection and remove worker from pool
+	_ = w.conn.Close()
+	delete(d.workers, workerID)
+
+	// Target count remains unchanged (unlike kill-worker)
+	procMgr := d.procMgr
+	d.mu.Unlock()
+
+	// Return bead to queue by completing the assignment
+	if beadID != "" {
+		_ = d.completeAssignment(ctx, beadID)
+		_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
+			`{"reason":"restart-worker directive"}`)
+	}
+
+	// Spawn new worker process with same ID
+	if procMgr != nil {
+		_, err := procMgr.Spawn(workerID)
+		if err != nil {
+			_ = d.logEvent(ctx, "worker_spawn_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+			return "", fmt.Errorf("spawn new worker: %w", err)
+		}
+	}
+
+	return fmt.Sprintf("worker %s restarted", workerID), nil
 }
 
 // maybeAutoScale increases targetWorkers when assignable beads exist but no
