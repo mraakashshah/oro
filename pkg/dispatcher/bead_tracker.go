@@ -72,18 +72,29 @@ func (d *Dispatcher) consumePendingHandoff() *pendingHandoff {
 }
 
 // pruneStaleTracking removes orphaned entries from all tracking maps.
-// An entry is orphaned if its bead ID is not currently assigned to any worker.
-// This runs periodically in heartbeatLoop to prevent unbounded map growth from
-// worker crashes that occur before escalation.
+// An entry is orphaned if its bead ID is not currently assigned to any worker
+// AND is not in the ready queue. This runs periodically in heartbeatLoop to
+// prevent unbounded map growth from worker crashes and closed beads.
 func (d *Dispatcher) pruneStaleTracking(ctx context.Context) {
+	// Fetch ready beads from bead source (outside lock to avoid blocking).
+	readyBeads, err := d.beads.Ready(ctx)
+	if err != nil {
+		// If we can't fetch ready beads, skip pruning this cycle to avoid
+		// incorrectly deleting entries for queued beads.
+		return
+	}
+
 	d.mu.Lock()
 
-	// Collect all active bead IDs from workers.
+	// Collect all active bead IDs (assigned to workers OR in ready queue).
 	activeBeads := make(map[string]bool)
 	for _, w := range d.workers {
 		if w.beadID != "" {
 			activeBeads[w.beadID] = true
 		}
+	}
+	for _, bead := range readyBeads {
+		activeBeads[bead.ID] = true
 	}
 
 	// Find and delete orphaned bead IDs across all tracking maps.

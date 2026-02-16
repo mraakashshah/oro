@@ -1942,15 +1942,35 @@ func (d *Dispatcher) snapshotWorkers(now time.Time) (workers []workerStatus, ass
 func (d *Dispatcher) buildStatusJSON() string {
 	now := d.nowFunc()
 
+	// Fetch ready beads to determine which attempt counts are valid.
+	ctx := context.Background()
+	readyBeads, err := d.beads.Ready(ctx)
+	if err != nil {
+		readyBeads = nil // Continue with empty ready list on error.
+	}
+
 	d.mu.Lock()
 	workers, assignments, activeCount, idleCount := d.snapshotWorkers(now)
 
-	// Copy attempt counts.
+	// Build set of active bead IDs (assigned to workers OR in ready queue).
+	activeBeadIDs := make(map[string]bool)
+	for _, w := range d.workers {
+		if w.beadID != "" {
+			activeBeadIDs[w.beadID] = true
+		}
+	}
+	for _, bead := range readyBeads {
+		activeBeadIDs[bead.ID] = true
+	}
+
+	// Filter attempt counts to only include active beads.
 	var attemptCounts map[string]int
 	if len(d.attemptCounts) > 0 {
-		attemptCounts = make(map[string]int, len(d.attemptCounts))
-		for k, v := range d.attemptCounts {
-			attemptCounts[k] = v
+		attemptCounts = make(map[string]int)
+		for beadID, count := range d.attemptCounts {
+			if activeBeadIDs[beadID] {
+				attemptCounts[beadID] = count
+			}
 		}
 	}
 
