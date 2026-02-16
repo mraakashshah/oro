@@ -10,6 +10,9 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
 
 It's also the heart of ***ouro*boros** — the serpent that eats its own tail. Workers consume their own context, write a handoff, and a fresh worker picks up where they left off. The loop never ends. The serpent never stops eating. Context is finite; the work is not.
 
+Also, our cute mascot is Oro, the *oro* ouroboros !
+![Oro, the *oro* ouroboros](oro-mascot.png)
+
 ## Philosophy
 
 Oro exists because single-agent coding sessions don't scale. One agent hits context limits, loses track of prior decisions, and can't parallelize. Oro solves this with a swarm: multiple workers execute beads (tracked work items) simultaneously, each in an isolated worktree, each with access to cross-session memory. When a worker exhausts its context window, it writes a handoff and a fresh worker picks up where it left off — the serpent eats its tail.
