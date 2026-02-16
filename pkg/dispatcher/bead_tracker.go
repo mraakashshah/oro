@@ -25,6 +25,7 @@ type BeadTracker struct {
 	escalatedBeads   map[string]bool            // bead ID -> true if PRIORITY_CONTENTION escalated
 	worktreeFailures map[string]time.Time       // bead ID -> last worktree creation failure time
 	exhaustedBeads   map[string]bool            // bead ID -> true if QG retries exhausted (blocks re-assignment)
+	assigningBeads   map[string]bool            // bead ID -> true if assignment in progress (oro-ptp2: prevents concurrent assignment)
 }
 
 // --- Bead tracking helpers ---
@@ -41,6 +42,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.qgStuckTracker, beadID)
 	delete(d.escalatedBeads, beadID)
 	delete(d.worktreeFailures, beadID)
+	delete(d.assigningBeads, beadID)
 	d.mu.Unlock()
 }
 
