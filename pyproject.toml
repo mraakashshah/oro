@@ -20,3 +20,6 @@ exclude = ["references", "yap", "archive", ".worktrees", ".venv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "requires_oro_home: tests that require ~/.oro/ directory structure"
+]
