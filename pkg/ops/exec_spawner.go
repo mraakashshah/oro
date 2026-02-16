@@ -31,6 +31,19 @@ type opsProcess struct {
 	output *strings.Builder
 }
 
-func (p *opsProcess) Wait() error             { return fmt.Errorf("wait: %w", p.cmd.Wait()) }         //nolint:revive // interface impl
-func (p *opsProcess) Kill() error             { return fmt.Errorf("kill: %w", p.cmd.Process.Kill()) } //nolint:revive // interface impl
-func (p *opsProcess) Output() (string, error) { return p.output.String(), nil }                       //nolint:revive // interface impl
+// Wait waits for the subprocess to exit.
+func (p *opsProcess) Wait() error {
+	if err := p.cmd.Wait(); err != nil {
+		return fmt.Errorf("wait: %w", err)
+	}
+	return nil
+}
+
+// Kill sends SIGKILL to the subprocess.
+func (p *opsProcess) Kill() error {
+	if err := p.cmd.Process.Kill(); err != nil {
+		return fmt.Errorf("kill: %w", err)
+	}
+	return nil
+}
+func (p *opsProcess) Output() (string, error) { return p.output.String(), nil } //nolint:revive // interface impl
