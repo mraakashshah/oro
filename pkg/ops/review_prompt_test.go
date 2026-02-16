@@ -216,3 +216,71 @@ func TestReviewModelIsOpus(t *testing.T) {
 		t.Fatalf("OpsReview.Model() = %q, want %q", got, want)
 	}
 }
+
+func TestBuildReviewPrompt_ProhibitsTaskOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := ReviewOpts{
+		BeadID:      "oro-test",
+		Worktree:    tmpDir,
+		BaseBranch:  "main",
+		ProjectRoot: tmpDir,
+	}
+
+	prompt := buildReviewPrompt(opts)
+
+	// Check for TaskOutput prohibition
+	if !strings.Contains(prompt, "MUST NOT use the TaskOutput tool") {
+		t.Error("prompt missing TaskOutput prohibition")
+	}
+	if !strings.Contains(prompt, "use the Read tool") {
+		t.Error("prompt missing Read tool instruction")
+	}
+	if !strings.Contains(prompt, "foreground") {
+		t.Error("prompt missing foreground instruction")
+	}
+}
+
+func TestBuildMergePrompt_ProhibitsTaskOutput(t *testing.T) {
+	opts := MergeOpts{
+		ConflictFiles: []string{"file1.go", "file2.go"},
+	}
+
+	prompt := buildMergePrompt(opts)
+
+	// Check for TaskOutput prohibition
+	if !strings.Contains(prompt, "Do NOT use TaskOutput") {
+		t.Error("prompt missing TaskOutput prohibition")
+	}
+	if !strings.Contains(prompt, "run tasks in the background") {
+		t.Error("prompt missing background prohibition")
+	}
+	if !strings.Contains(prompt, "Use the Read tool") {
+		t.Error("prompt missing Read tool instruction")
+	}
+	if !strings.Contains(prompt, "foreground") {
+		t.Error("prompt missing foreground instruction")
+	}
+}
+
+func TestBuildDiagnosisPrompt_ProhibitsTaskOutput(t *testing.T) {
+	opts := DiagOpts{
+		BeadID:  "oro-test",
+		Symptom: "Tests failing",
+	}
+
+	prompt := buildDiagnosisPrompt(opts)
+
+	// Check for TaskOutput prohibition
+	if !strings.Contains(prompt, "Do NOT use TaskOutput") {
+		t.Error("prompt missing TaskOutput prohibition")
+	}
+	if !strings.Contains(prompt, "run tasks in the background") {
+		t.Error("prompt missing background prohibition")
+	}
+	if !strings.Contains(prompt, "Use the Read tool") {
+		t.Error("prompt missing Read tool instruction")
+	}
+	if !strings.Contains(prompt, "foreground") {
+		t.Error("prompt missing foreground instruction")
+	}
+}

@@ -361,6 +361,8 @@ func extractFeedback(stdout, keyword string) string {
 
 func buildMergePrompt(opts MergeOpts) string {
 	var b strings.Builder
+	b.WriteString("CRITICAL: Do NOT use TaskOutput or run tasks in the background.\n")
+	b.WriteString("Use the Read tool to check output files. Run all commands in foreground.\n\n")
 	b.WriteString("Resolve merge conflicts in: ")
 	b.WriteString(strings.Join(opts.ConflictFiles, ", "))
 	b.WriteString("\n")
@@ -380,6 +382,8 @@ func buildMergePrompt(opts MergeOpts) string {
 
 func buildDiagnosisPrompt(opts DiagOpts) string {
 	var b strings.Builder
+	b.WriteString("CRITICAL: Do NOT use TaskOutput or run tasks in the background.\n")
+	b.WriteString("Use the Read tool to check output files. Run all commands in foreground.\n\n")
 	fmt.Fprintf(&b, "Diagnose why bead %s is stuck.\n", opts.BeadID)
 	fmt.Fprintf(&b, "Symptom: %s\n", opts.Symptom)
 	b.WriteString("Check: test output, recent commits, worktree state.\n")

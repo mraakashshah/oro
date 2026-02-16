@@ -29,6 +29,10 @@ func writeHeader(b *strings.Builder, base string) {
 	b.WriteString(".\n")
 	b.WriteString("The quality gate already passed. Do NOT check formatting, linting,\n")
 	b.WriteString("compilation, or test pass/fail. Focus on what automated tools miss.\n\n")
+	b.WriteString("CRITICAL: You MUST NOT use the TaskOutput tool or run tasks in the\n")
+	b.WriteString("background. TaskOutput uses 'tail -f' internally which hangs indefinitely\n")
+	b.WriteString("on completed tasks. To check task output, use the Read tool on output files.\n")
+	b.WriteString("All commands must run in the foreground.\n\n")
 }
 
 func writeContext(b *strings.Builder, opts ReviewOpts) {

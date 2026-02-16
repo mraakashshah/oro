@@ -38,6 +38,8 @@ func writeEscalationHeader(b *strings.Builder, opts EscalationOpts) {
 	b.WriteString("You are a one-shot manager agent handling an escalation from the oro dispatcher.\n")
 	fmt.Fprintf(b, "Escalation type: %s\n", opts.EscalationType)
 	b.WriteString("Your job: diagnose the situation, take corrective action, and report what you did.\n\n")
+	b.WriteString("CRITICAL: Do NOT use TaskOutput or run tasks in the background.\n")
+	b.WriteString("Use the Read tool to check output files. Run all commands in foreground.\n\n")
 }
 
 func writeEscalationContext(b *strings.Builder, opts EscalationOpts) {
