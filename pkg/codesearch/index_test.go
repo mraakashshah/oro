@@ -390,6 +390,79 @@ func (s *Server) Stop() {
 	})
 }
 
+func TestBuild_AtomicRebuild(t *testing.T) {
+	rootDir := t.TempDir()
+	writeGoFile(t, rootDir, "main.go", `package main
+
+func TestFunc() {
+	// test content
+}
+`)
+
+	dbPath := filepath.Join(t.TempDir(), "atomic_index.db")
+
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	ctx := context.Background()
+
+	// First build.
+	if _, err := idx.Build(ctx, rootDir); err != nil {
+		t.Fatalf("Build 1: %v", err)
+	}
+
+	// Verify initial data exists.
+	initialResults, err := idx.FTS5Search(ctx, "TestFunc", 10)
+	if err != nil {
+		t.Fatalf("FTS5Search before rebuild: %v", err)
+	}
+	if len(initialResults) == 0 {
+		t.Fatal("expected initial data, got 0 results")
+	}
+
+	// Create a directory that will cause filepath.Walk to fail (unreadable directory).
+	restrictedDir := filepath.Join(rootDir, "restricted")
+	if err := os.Mkdir(restrictedDir, 0o000); err != nil {
+		t.Fatalf("create restricted dir: %v", err)
+	}
+	defer func() {
+		_ = os.Chmod(restrictedDir, 0o755) //nolint:gosec // test cleanup, needs write permissions
+	}()
+
+	// Attempt rebuild - should fail on restricted directory.
+	_, err = idx.Build(ctx, rootDir)
+	if err == nil {
+		t.Fatal("expected Build to fail on restricted directory, got nil")
+	}
+
+	// Verify original data is still searchable (transaction rolled back).
+	resultsAfterFailedRebuild, err := idx.FTS5Search(ctx, "TestFunc", 10)
+	if err != nil {
+		t.Fatalf("FTS5Search after failed rebuild: %v", err)
+	}
+	if len(resultsAfterFailedRebuild) == 0 {
+		t.Error("expected original data preserved after failed rebuild, got 0 results")
+	}
+
+	// Also verify on a separate connection to ensure atomicity across connections.
+	idx2, err := codesearch.NewCodeIndex(dbPath, nil)
+	if err != nil {
+		t.Fatalf("NewCodeIndex for separate connection: %v", err)
+	}
+	defer idx2.Close()
+
+	results2, err := idx2.FTS5Search(ctx, "TestFunc", 10)
+	if err != nil {
+		t.Fatalf("FTS5Search on separate connection: %v", err)
+	}
+	if len(results2) == 0 {
+		t.Error("expected original data visible on separate connection after failed rebuild")
+	}
+}
+
 func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)

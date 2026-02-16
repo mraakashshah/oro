@@ -18,6 +18,11 @@ type CodeIndex struct {
 	reranker *Reranker
 }
 
+// dbExecer abstracts database operations to support both *sql.DB and *sql.Tx.
+type dbExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // BuildStats reports what happened during an index build.
 type BuildStats struct {
 	FilesProcessed int
@@ -117,22 +122,37 @@ func (ci *CodeIndex) Close() error {
 
 // Build walks rootDir, chunks all Go files, embeds them, and stores in SQLite.
 // This is a full rebuild: existing data is cleared first.
+// Uses a transaction to ensure atomicity - if build fails, old data is preserved.
 func (ci *CodeIndex) Build(ctx context.Context, rootDir string) (BuildStats, error) {
 	start := time.Now()
 
+	// Begin transaction for atomic rebuild.
+	tx, err := ci.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BuildStats{}, fmt.Errorf("begin transaction: %w", err)
+	}
+
+	// Ensure rollback on error, commit on success.
+	var committed bool
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
 	// Clear existing data for full rebuild.
-	if _, err := ci.db.ExecContext(ctx, "DELETE FROM chunks"); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM chunks"); err != nil {
 		return BuildStats{}, fmt.Errorf("clear chunks: %w", err)
 	}
 
 	// Rebuild FTS5 index (triggers don't fire on external content tables).
-	if _, err := ci.db.ExecContext(ctx, "INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')"); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')"); err != nil {
 		return BuildStats{}, fmt.Errorf("rebuild fts5 index: %w", err)
 	}
 
 	var stats BuildStats
 
-	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, walkErr error) error {
+	err = filepath.Walk(rootDir, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("walk error at %s: %w", path, walkErr)
 		}
@@ -141,11 +161,17 @@ func (ci *CodeIndex) Build(ctx context.Context, rootDir string) (BuildStats, err
 			return ci.shouldSkipDir(path, rootDir)
 		}
 
-		return ci.indexFile(ctx, path, rootDir, &stats)
+		return ci.indexFile(ctx, tx, path, rootDir, &stats)
 	})
 	if err != nil {
 		return stats, fmt.Errorf("walk %s: %w", rootDir, err)
 	}
+
+	// Commit transaction.
+	if err := tx.Commit(); err != nil {
+		return stats, fmt.Errorf("commit transaction: %w", err)
+	}
+	committed = true
 
 	stats.Duration = time.Since(start)
 	return stats, nil
@@ -164,7 +190,7 @@ func (ci *CodeIndex) shouldSkipDir(path, rootDir string) error {
 }
 
 // indexFile processes a single file: reads, chunks, embeds, and stores.
-func (ci *CodeIndex) indexFile(ctx context.Context, path, rootDir string, stats *BuildStats) error {
+func (ci *CodeIndex) indexFile(ctx context.Context, exec dbExecer, path, rootDir string, stats *BuildStats) error {
 	// Only process Go files for now.
 	if !strings.HasSuffix(path, ".go") {
 		return nil
@@ -198,7 +224,7 @@ func (ci *CodeIndex) indexFile(ctx context.Context, path, rootDir string, stats 
 			return fmt.Errorf("context cancelled: %w", err)
 		}
 
-		if err := ci.insertChunk(ctx, chunk); err != nil {
+		if err := ci.insertChunk(ctx, exec, chunk); err != nil {
 			return fmt.Errorf("insert chunk %s/%s: %w", chunk.FilePath, chunk.Name, err)
 		}
 
@@ -209,8 +235,8 @@ func (ci *CodeIndex) indexFile(ctx context.Context, path, rootDir string, stats 
 }
 
 // insertChunk stores a single chunk in the database.
-func (ci *CodeIndex) insertChunk(ctx context.Context, chunk Chunk) error {
-	_, err := ci.db.ExecContext(ctx,
+func (ci *CodeIndex) insertChunk(ctx context.Context, exec dbExecer, chunk Chunk) error {
+	_, err := exec.ExecContext(ctx,
 		`INSERT INTO chunks (file_path, name, kind, start_line, end_line, content, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		chunk.FilePath, chunk.Name, string(chunk.Kind),
