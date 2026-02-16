@@ -1,0 +1,128 @@
+---
+date: 2026-02-15
+status: partial
+---
+
+goal: >
+  Managed swarm through dashboard Wave 1 epic (oro-cjas, 8 beads) and pane lifecycle
+  epic (oro-zays) to completion. Merged 20+ beads to main including worker tracking
+  (oro-wj85, 4/5 done), CI fix (oro-intj), bd URL fix (oro-09ws). Deep-audited oro-dash
+  code and filed 8 bug/improvement beads. Handled merge conflicts via cherry-pick,
+  resolved real conflicts (cjas.4 insights + cjas.1 navigation), fixed review findings
+  (cjas.3 search, cjas.7 cards, wj85.5 eventlog).
+
+now: >
+  Monitor remaining beads: oro-wj85.3 (workers table — stalled once, reassigned),
+  oro-zjxg (hooks into repo), oro-tfcx (architect commit), oro-swcx (escalation queue).
+  Close oro-wj85 epic when .3 lands. Workers should pick up the 8 new dash bugs filed.
+
+test: make stage-assets && go test ./... && bd stats
+
+done_this_session:
+  - task: "Merged oro-cjas Wave 1 — all 8 beads"
+    files: [cmd/oro-dash/model.go, cmd/oro-dash/board.go, cmd/oro-dash/detail.go,
+            cmd/oro-dash/help.go, cmd/oro-dash/theme.go, cmd/oro-dash/fetch.go,
+            cmd/oro-dash/worker_events.go, cmd/oro-dash/insights.go]
+    details: >
+      .1 navigation (8fe842e), .2 detail drilldown (a9e7b31), .3 search overlay
+      (a89fbf8+a1e8267 fixes), .4 insights view (f0045ca conflict resolution),
+      .5 Done column (prior session), .6 help overlay (fcf403a), .7 enriched cards
+      (730990d+a8ccd91 fixes), .8 hex theme (85b3abb)
+
+  - task: "Closed oro-zays epic — pane lifecycle complete"
+    details: "Merged .5 SessionStart hook (1cab290), closed epic"
+
+  - task: "Merged 4/5 oro-wj85 worker tracking beads"
+    files: [pkg/dispatcher/heartbeat_context_test.go, pkg/eventlog/query.go,
+            cmd/oro-dash/main.go, cmd/oro-dash/fetch.go, cmd/oro-dash/board.go]
+    details: >
+      .1 heartbeat context_pct (a8c705c), .2 enriched WorkerStatus (116154f manual),
+      .4 health badges (cf9edeb), .5 event query (13cb045+994a95a+c93daa8)
+
+  - task: "Merged oro-intj CI pipeline fix (e73e9c3, 040b709)"
+  - task: "Merged oro-09ws bd install URL fix (096cbd1)"
+  - task: "Committed specs: codesearch-gaps, knowledge-ingest, oro-setup-design (3ad9df3)"
+
+  - task: "Deep code audit of oro-dash — filed 8 bugs"
+    details: >
+      Critical: cursor not clamped on refresh (oro-e285), inverted dep graph (oro-wm6x).
+      Important: Done column oldest-first (oro-2nvf), blocking I/O (oro-dzmt),
+      styles every frame (oro-yiic). Minor: dead code (oro-ah12), fixed widths (oro-yoov),
+      DaysSinceUpdate always 0 (oro-pj9s).
+
+decisions:
+  - manual_wj85_2_merge: >
+      Worker's cjas.7 commit removed workerDataMsg and assignments map, reverting
+      card enrichment from cjas.7. Aborted cherry-pick and manually applied only the
+      WorkerStatus struct enrichment, preserving assignments flow.
+  - review_false_positives_pattern: >
+      cjas.8 and cjas.7 review rejections were false positives from stale branch diffs.
+      cjas.3 and wj85.5 had legitimate findings that needed fixing. Pattern: check
+      git show --stat on the actual commit before trusting review findings.
+
+findings:
+  - real_merge_conflict_resolution: >
+      cjas.4 (insights) had a real conflict with cjas.1 (navigation) in model.go.
+      Both modified Update() and View(). Resolution: keep handleKeyPress refactor from
+      cjas.1, add i/esc keys into it for insights, use RenderWithCursor in board branch.
+  - wj85_2_scope_creep: >
+      Worker removed workerDataMsg/assignments/NewBoardModelWithWorkers, breaking card
+      enrichment. Had to abort cherry-pick and manually apply only the struct changes.
+
+worked:
+  - Cherry-pick pattern for all worktree merges (consistent, reliable)
+  - Checking git show --stat before trusting review findings
+  - Manual application when cherry-pick would introduce regressions
+  - Deep code audit with explore agent for thorough bug discovery
+
+failed:
+  - Blindly cherry-picking wj85.2 — it would have reverted card enrichment
+
+next:
+  - Monitor oro-wj85.3 (workers table — stalled, reassigned)
+  - Close oro-wj85 epic when .3 lands
+  - Monitor oro-zjxg (hooks into repo), oro-tfcx (architect commit), oro-swcx (escalation queue)
+  - Workers should auto-pick up the 8 new dash bugs
+  - Consider decomposing oro-ycjj (Wave 2) when Wave 1 bugs are fixed
+  - Clean up stale worktrees
+
+beads:
+  completed:
+    - oro-cjas (epic, all 8 children)
+    - oro-zays (epic, .5 was last)
+    - oro-intj
+    - oro-09ws
+    - oro-wj85.1, oro-wj85.2, oro-wj85.4, oro-wj85.5
+  in_progress:
+    - oro-wj85.3 (workers table — stalled, reassigned)
+    - oro-zjxg (hooks into repo)
+    - oro-tfcx (architect commit markdown)
+    - oro-swcx (escalation queue)
+  remaining:
+    - oro-wj85.6 (worker detail drilldown, blocked on .3)
+    - oro-ycjj (Wave 2, unblocked now)
+    - oro-owx0 (Wave 3, blocked on ycjj)
+    - "8 new dash bugs: oro-e285, oro-wm6x, oro-2nvf, oro-dzmt, oro-yiic, oro-ah12, oro-yoov, oro-pj9s"
+
+files:
+  created:
+    - cmd/oro-dash/help.go
+    - cmd/oro-dash/help_test.go
+    - cmd/oro-dash/theme_test.go
+    - cmd/oro-dash/worker_events.go
+    - cmd/oro-dash/worker_events_test.go
+    - pkg/eventlog/query.go
+    - pkg/eventlog/query_test.go
+    - pkg/eventlog/acceptance_test.go
+    - pkg/eventlog/integration_test.go
+    - pkg/dispatcher/heartbeat_context_test.go
+    - docs/plans/2026-02-15-oro-setup-design.md
+    - docs/plans/2026-02-15-codesearch-gaps-spec.md
+    - docs/plans/2026-02-15-knowledge-ingest-spec.md
+    - tests/conftest.py
+  modified:
+    - cmd/oro-dash/model.go, board.go, detail.go, fetch.go, main.go, theme.go, insights.go
+    - cmd/oro/cmd_init.go
+    - pkg/eventlog/query.go
+    - .gitignore
+    - .github/workflows/ci.yml
