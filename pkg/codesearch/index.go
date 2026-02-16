@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/protocol"
+
 	_ "modernc.org/sqlite" // SQLite driver for database/sql
 )
 
@@ -304,7 +306,7 @@ func (ci *CodeIndex) FTS5Search(ctx context.Context, query string, limit int) ([
 	}
 
 	// Sanitize query to prevent FTS5 operator interpretation.
-	sanitized := sanitizeFTS5Query(query)
+	sanitized := protocol.SanitizeFTS5Query(query)
 
 	// Query FTS5 virtual table and join with chunks table for full data.
 	q := `
@@ -338,28 +340,4 @@ func (ci *CodeIndex) FTS5Search(ctx context.Context, query string, limit int) ([
 	}
 
 	return results, nil
-}
-
-// sanitizeFTS5Query wraps each term in double quotes to prevent FTS5 operator
-// interpretation (e.g., "and", "or", "not" are FTS5 operators) and joins them
-// with OR for broader recall. Pattern from pkg/memory/memory.go.
-func sanitizeFTS5Query(query string) string {
-	words := strings.Fields(query)
-	if len(words) == 0 {
-		return query
-	}
-	quoted := make([]string, 0, len(words))
-	for _, w := range words {
-		// Strip non-alphanumeric characters that break FTS5 quoting
-		clean := strings.Map(func(r rune) rune {
-			if r == '"' {
-				return -1
-			}
-			return r
-		}, w)
-		if clean != "" {
-			quoted = append(quoted, `"`+clean+`"`)
-		}
-	}
-	return strings.Join(quoted, " OR ")
 }

@@ -1280,27 +1280,6 @@ func TestMergePair_KeepHigherConfidence(t *testing.T) {
 	}
 }
 
-func TestSanitizeFTS5Query_EmptyAndSpecialChars(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"empty", "", ""},
-		{"single word", "hello", `"hello"`},
-		{"strips quotes", `he"llo wo"rld`, `"hello" OR "world"`},
-		{"multiple words", "hello world", `"hello" OR "world"`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeFTS5Query(tt.input)
-			if got != tt.want {
-				t.Errorf("sanitizeFTS5Query(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestListSQL_WithTagFilter(t *testing.T) {
 	// Exercise the tag-filtering branch in listSQL
 	q, args := listSQL(ListOpts{Tag: "python", Type: "lesson", Limit: 5, Offset: 10}, 5)
