@@ -737,3 +737,247 @@ func TestModel_DetailViewTabNavigation(t *testing.T) {
 		}
 	})
 }
+
+// TestModel_SearchOverlay verifies / key opens search overlay and Esc closes it.
+func TestModel_SearchOverlay(t *testing.T) {
+	t.Run("/ key in BoardView opens search overlay", func(t *testing.T) {
+		m := newModel()
+		m.activeView = BoardView
+
+		// Press /
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.activeView != SearchView {
+			t.Errorf("after /, activeView = %v, want SearchView", model.activeView)
+		}
+	})
+
+	t.Run("Esc from SearchView returns to BoardView", func(t *testing.T) {
+		m := newModel()
+		m.activeView = SearchView
+
+		// Press Esc
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.activeView != BoardView {
+			t.Errorf("after Esc, activeView = %v, want BoardView", model.activeView)
+		}
+	})
+
+	t.Run("Search overlay does not interfere with detail view", func(t *testing.T) {
+		m := newModel()
+		m.activeView = DetailView
+
+		// Press / in DetailView - should not open search
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.activeView != DetailView {
+			t.Errorf("/ in DetailView should not open search, activeView = %v, want DetailView", model.activeView)
+		}
+	})
+
+	t.Run("Search overlay does not interfere with insights view", func(t *testing.T) {
+		m := newModel()
+		m.activeView = InsightsView
+
+		// Press / in InsightsView - should not open search
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.activeView != InsightsView {
+			t.Errorf("/ in InsightsView should not open search, activeView = %v, want InsightsView", model.activeView)
+		}
+	})
+}
+
+// TestModel_SearchLiveFilter verifies typing in search field filters beads.
+func TestModel_SearchLiveFilter(t *testing.T) {
+	t.Run("typing in search field updates search query", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc.1", Title: "Fix authentication bug", Status: "open", Priority: 0, Type: "bug"},
+			{ID: "oro-abc.2", Title: "Add user dashboard", Status: "in_progress", Priority: 1, Type: "feature"},
+		}
+		m.activeView = SearchView
+		m.searchQuery = "auth"
+
+		// Verify filtered beads contains only matching beads
+		filtered := m.filterBeads()
+		if len(filtered) != 1 {
+			t.Errorf("filterBeads() returned %d beads, want 1", len(filtered))
+		}
+		if len(filtered) > 0 && filtered[0].ID != "oro-abc.1" {
+			t.Errorf("filterBeads() returned wrong bead, got %s, want oro-abc.1", filtered[0].ID)
+		}
+	})
+
+	t.Run("empty search query shows all beads", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc.1", Title: "Fix bug", Status: "open"},
+			{ID: "oro-abc.2", Title: "Add feature", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchQuery = ""
+
+		filtered := m.filterBeads()
+		if len(filtered) != 2 {
+			t.Errorf("empty query should return all beads, got %d, want 2", len(filtered))
+		}
+	})
+}
+
+// TestModel_SearchNavigateToDetail verifies Enter on search result navigates to detail view.
+func TestModel_SearchNavigateToDetail(t *testing.T) {
+	t.Run("Enter on search result navigates to DetailView", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc.1", Title: "Fix authentication bug", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchQuery = "auth"
+		m.searchSelectedIndex = 0
+
+		// Press Enter
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.activeView != DetailView {
+			t.Errorf("after Enter on search result, activeView = %v, want DetailView", model.activeView)
+		}
+
+		if model.detailModel == nil {
+			t.Error("detailModel should be set after Enter on search result")
+		}
+	})
+
+	t.Run("Enter with no search results does not navigate", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc.1", Title: "Fix bug", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchQuery = "nonexistent"
+		m.searchSelectedIndex = 0
+
+		// Press Enter
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// Should stay on SearchView
+		if model.activeView != SearchView {
+			t.Errorf("with no results, should stay on SearchView, got %v", model.activeView)
+		}
+	})
+}
+
+// TestModel_SearchResultNavigation verifies up/down keys navigate search results.
+func TestModel_SearchResultNavigation(t *testing.T) {
+	t.Run("down key moves to next search result", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc.1", Title: "Fix auth bug", Status: "open"},
+			{ID: "oro-abc.2", Title: "Add auth feature", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchQuery = "auth"
+		m.searchSelectedIndex = 0
+
+		// Press down
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.searchSelectedIndex != 1 {
+			t.Errorf("after down, searchSelectedIndex = %d, want 1", model.searchSelectedIndex)
+		}
+	})
+
+	t.Run("up key moves to previous search result", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc.1", Title: "Fix auth bug", Status: "open"},
+			{ID: "oro-abc.2", Title: "Add auth feature", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchQuery = "auth"
+		m.searchSelectedIndex = 1
+
+		// Press up
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.searchSelectedIndex != 0 {
+			t.Errorf("after up, searchSelectedIndex = %d, want 0", model.searchSelectedIndex)
+		}
+	})
+
+	t.Run("down key clamps at last result", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc.1", Title: "Fix auth bug", Status: "open"},
+			{ID: "oro-abc.2", Title: "Add auth feature", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchQuery = "auth"
+		m.searchSelectedIndex = 1
+
+		// Press down at last result
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.searchSelectedIndex != 1 {
+			t.Errorf("down at last result should clamp, searchSelectedIndex = %d, want 1", model.searchSelectedIndex)
+		}
+	})
+
+	t.Run("up key clamps at first result", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc.1", Title: "Fix auth bug", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchQuery = "auth"
+		m.searchSelectedIndex = 0
+
+		// Press up at first result
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.searchSelectedIndex != 0 {
+			t.Errorf("up at first result should clamp, searchSelectedIndex = %d, want 0", model.searchSelectedIndex)
+		}
+	})
+}

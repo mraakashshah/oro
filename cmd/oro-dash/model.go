@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -70,6 +71,8 @@ const (
 	InsightsView
 	// DetailView shows detailed information about a single bead.
 	DetailView
+	// SearchView shows the search overlay.
+	SearchView
 )
 
 // Model is the Bubble Tea model for the oro dashboard.
@@ -96,12 +99,18 @@ type Model struct {
 
 	// Detail view state
 	detailModel *DetailModel // Set when drilling down into a bead
+
+	// Search view state
+	searchQuery         string // Current search query
+	searchSelectedIndex int    // Index of the selected search result
+	searchModel         *SearchModel
 }
 
 // newModel creates a new Model initialized with BoardView active.
 func newModel() Model {
 	return Model{
-		activeView: BoardView,
+		activeView:  BoardView,
+		searchModel: &SearchModel{},
 	}
 }
 
@@ -165,6 +174,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDetailViewKeys(key)
 	case InsightsView:
 		return m.handleInsightsViewKeys(key)
+	case SearchView:
+		return m.handleSearchViewKeys(key, msg)
 	default: // BoardView
 		return m.handleBoardViewKeys(key)
 	}
@@ -215,8 +226,97 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m = m.moveToPrevBead()
 	case "i":
 		m.activeView = InsightsView
+	case "/":
+		m.activeView = SearchView
+		m.searchQuery = ""
+		m.searchSelectedIndex = 0
 	}
 	return m, nil
+}
+
+// handleSearchViewKeys processes keyboard input in SearchView.
+func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		m.activeView = BoardView
+		m.searchQuery = ""
+		m.searchSelectedIndex = 0
+	case "enter":
+		// Navigate to detail view for selected search result
+		filtered := m.filterBeads()
+		if len(filtered) > 0 && m.searchSelectedIndex < len(filtered) {
+			selectedBead := filtered[m.searchSelectedIndex]
+			beadDetail := protocol.BeadDetail{
+				ID:                 selectedBead.ID,
+				Title:              selectedBead.Title,
+				AcceptanceCriteria: selectedBead.AcceptanceCriteria,
+				Model:              selectedBead.Model,
+			}
+			m.detailModel = &DetailModel{}
+			*m.detailModel = newDetailModel(beadDetail)
+			m.activeView = DetailView
+		}
+	case "down", "j":
+		filtered := m.filterBeads()
+		if len(filtered) > 0 && m.searchSelectedIndex < len(filtered)-1 {
+			m.searchSelectedIndex++
+		}
+	case "up", "k":
+		if m.searchSelectedIndex > 0 {
+			m.searchSelectedIndex--
+		}
+	case "backspace":
+		if m.searchQuery != "" {
+			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+			// Reset selection when query changes
+			m.searchSelectedIndex = 0
+		}
+	default:
+		// Handle text input
+		if len(msg.Runes) > 0 {
+			m.searchQuery += string(msg.Runes)
+			// Reset selection when query changes
+			m.searchSelectedIndex = 0
+		}
+	}
+	return m, nil
+}
+
+// filterBeads filters beads based on the current search query.
+// Converts protocol.Bead to local Bead type for SearchModel.Filter.
+func (m Model) filterBeads() []protocol.Bead {
+	if m.searchQuery == "" {
+		return m.beads
+	}
+
+	// Convert protocol.Bead to local Bead type for search
+	localBeads := make([]Bead, len(m.beads))
+	for i, pb := range m.beads {
+		localBeads[i] = Bead{
+			ID:       pb.ID,
+			Title:    pb.Title,
+			Status:   pb.Status,
+			Priority: pb.Priority,
+			Type:     pb.Type,
+		}
+	}
+
+	// Filter using SearchModel
+	filtered := m.searchModel.Filter(localBeads, m.searchQuery)
+
+	// Convert back to protocol.Bead
+	result := make([]protocol.Bead, 0, len(filtered))
+	for _, fb := range filtered {
+		// Find the original protocol.Bead
+		for _, pb := range m.beads {
+			if pb.ID == fb.ID {
+				result = append(result, pb)
+				break
+			}
+		}
+	}
+
+	return result
 }
 
 // View implements tea.Model.
@@ -234,6 +334,8 @@ func (m Model) View() string {
 		// Fallback to board if detailModel is nil
 		board := NewBoardModel(m.beads)
 		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
+	case SearchView:
+		return statusBar + "\n" + m.renderSearchOverlay()
 	default:
 		board := NewBoardModel(m.beads)
 		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead)
@@ -285,6 +387,96 @@ func (m Model) renderStatusBar() string {
 		lipgloss.NewStyle().Render(" | In Progress: "),
 		lipgloss.NewStyle().Foreground(theme.Success).Render(fmt.Sprintf("%d", m.inProgressCount)),
 	)
+}
+
+// renderSearchOverlay renders the search overlay with text input and filtered results.
+func (m Model) renderSearchOverlay() string {
+	theme := DefaultTheme()
+	title := m.renderSearchTitle(theme)
+	searchInput := m.renderSearchInput(theme)
+	helpText := m.renderSearchHelp(theme)
+	results := m.renderSearchResults(theme)
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, searchInput, helpText, results)
+}
+
+// renderSearchTitle renders the search overlay title.
+func (m Model) renderSearchTitle(theme Theme) string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Padding(1, 0)
+	return titleStyle.Render("Search Beads")
+}
+
+// renderSearchInput renders the search input field with current query.
+func (m Model) renderSearchInput(theme Theme) string {
+	inputStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Primary).
+		Padding(0, 1).
+		Width(60)
+	searchPrompt := "Query: " + m.searchQuery + "▌"
+	return inputStyle.Render(searchPrompt)
+}
+
+// renderSearchHelp renders the help text for search overlay.
+func (m Model) renderSearchHelp(theme Theme) string {
+	helpStyle := lipgloss.NewStyle().Foreground(theme.Muted).Padding(1, 0)
+	return helpStyle.Render("Use p:N, s:STATUS, t:TYPE filters or fuzzy search. ↑↓ navigate, Enter to view, Esc to cancel")
+}
+
+// renderSearchResults renders the list of filtered search results.
+func (m Model) renderSearchResults(theme Theme) string {
+	filtered := m.filterBeads()
+	resultsStyle := lipgloss.NewStyle().Padding(1, 0)
+
+	if len(filtered) == 0 {
+		return m.renderNoResults(theme, resultsStyle)
+	}
+
+	return m.renderResultsList(theme, filtered, resultsStyle)
+}
+
+// renderNoResults renders the "no results" message.
+func (m Model) renderNoResults(theme Theme, resultsStyle lipgloss.Style) string {
+	noResultsStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	return resultsStyle.Render(noResultsStyle.Render("No matching beads"))
+}
+
+// renderResultsList renders the list of search results with highlighting.
+func (m Model) renderResultsList(theme Theme, filtered []protocol.Bead, resultsStyle lipgloss.Style) string {
+	const maxResults = 10
+	totalCount := len(filtered)
+
+	if len(filtered) > maxResults {
+		filtered = filtered[:maxResults]
+	}
+
+	var resultsBuilder strings.Builder
+	for i, bead := range filtered {
+		resultsBuilder.WriteString(m.renderSearchResultLine(theme, i, bead))
+		resultsBuilder.WriteString("\n")
+	}
+
+	if totalCount > maxResults {
+		moreStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+		resultsBuilder.WriteString(moreStyle.Render(fmt.Sprintf("  ... and %d more", totalCount-maxResults)))
+	}
+
+	return resultsStyle.Render(resultsBuilder.String())
+}
+
+// renderSearchResultLine renders a single search result line with optional highlighting.
+func (m Model) renderSearchResultLine(theme Theme, index int, bead protocol.Bead) string {
+	if index == m.searchSelectedIndex {
+		highlightStyle := lipgloss.NewStyle().
+			Background(theme.Primary).
+			Foreground(lipgloss.Color("#ffffff")).
+			Bold(true).
+			Padding(0, 1)
+		return highlightStyle.Render(fmt.Sprintf("▸ %s - %s", bead.ID, bead.Title))
+	}
+
+	idStyle := lipgloss.NewStyle().Foreground(theme.Muted)
+	return fmt.Sprintf("  %s - %s", idStyle.Render(bead.ID), bead.Title)
 }
 
 // moveToNextColumn moves the cursor to the next non-empty column (wraps/clamps at boundary).
