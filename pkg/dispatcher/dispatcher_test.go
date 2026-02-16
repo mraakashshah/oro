@@ -7853,19 +7853,176 @@ func TestBuildStatusJSON_CachedQueueDepth(t *testing.T) {
 	}
 }
 
+// mockCodeIndex implements CodeIndex for testing.
+type mockCodeIndex struct {
+	mu      sync.Mutex
+	chunks  []CodeChunk
+	err     error
+	queries []string // captured queries for assertion
+}
+
+func (m *mockCodeIndex) FTS5Search(_ context.Context, query string, _ int) ([]CodeChunk, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.queries = append(m.queries, query)
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.chunks, nil
+}
+
 // TestAssignBead_InjectsCodeContext verifies that assignBead runs FTS5Search
 // on bead title and injects formatted results into AssignPayload.CodeSearchContext.
 func TestAssignBead_InjectsCodeContext(t *testing.T) {
-	t.Skip("TODO: implement code search integration test - requires CodeIndex wiring")
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Inject a mock code index with test chunks.
+	codeIdx := &mockCodeIndex{
+		chunks: []CodeChunk{
+			{FilePath: "pkg/foo/bar.go", Name: "DoStuff", Kind: "function", StartLine: 10, EndLine: 20, Content: "func DoStuff() {}"},
+		},
+	}
+	d.codeIndex = codeIdx
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	d.setState(StateRunning)
+
+	// Configure bead source with a titled bead.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-code1", Title: "Add code search", Priority: 1, Type: "task"},
+	})
+
+	// Connect a worker and trigger assignment.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-code1"},
+	})
+	waitForWorkers(t, d, 1, 2*time.Second)
+
+	// Read the ASSIGN message.
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN message")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	// Verify CodeSearchContext is populated.
+	if msg.Assign.CodeSearchContext == "" {
+		t.Fatal("expected non-empty CodeSearchContext in ASSIGN payload")
+	}
+	if !strings.Contains(msg.Assign.CodeSearchContext, "pkg/foo/bar.go") {
+		t.Errorf("expected CodeSearchContext to contain file path, got: %s", msg.Assign.CodeSearchContext)
+	}
+	if !strings.Contains(msg.Assign.CodeSearchContext, "func DoStuff() {}") {
+		t.Errorf("expected CodeSearchContext to contain chunk content, got: %s", msg.Assign.CodeSearchContext)
+	}
+
+	// Verify FTS5Search was called with the bead title.
+	codeIdx.mu.Lock()
+	queries := codeIdx.queries
+	codeIdx.mu.Unlock()
+	if len(queries) == 0 {
+		t.Fatal("expected FTS5Search to be called")
+	}
+	if queries[0] != "Add code search" {
+		t.Errorf("expected FTS5Search query to be bead title %q, got %q", "Add code search", queries[0])
+	}
 }
 
-// TestAssemblePrompt_CodeSearchSection verifies that AssemblePrompt formats
-// CodeSearchContext into a "## Relevant Code" section after "## Memory".
-func TestAssemblePrompt_CodeSearchSection(t *testing.T) {
-	t.Skip("TODO: implement after PromptParams.CodeSearchContext exists")
+// TestAssignBead_InjectsCodeContext_NilIndex verifies that assignBead handles
+// nil codeIndex gracefully (no panic, no CodeSearchContext).
+func TestAssignBead_InjectsCodeContext_NilIndex(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// codeIndex is nil by default from newTestDispatcher — verify that.
+	if d.codeIndex != nil {
+		t.Fatal("expected codeIndex to be nil in default test dispatcher")
+	}
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	d.setState(StateRunning)
+
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-nilcode", Title: "Test nil code index", Priority: 1, Type: "task"},
+	})
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-nilcode"},
+	})
+	waitForWorkers(t, d, 1, 2*time.Second)
+
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN message")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	// CodeSearchContext should be empty when codeIndex is nil.
+	if msg.Assign.CodeSearchContext != "" {
+		t.Errorf("expected empty CodeSearchContext when codeIndex is nil, got: %s", msg.Assign.CodeSearchContext)
+	}
 }
 
 // TestFormatCodeResults verifies formatting of FTS5Search results into markdown.
 func TestFormatCodeResults(t *testing.T) {
-	t.Skip("TODO: implement code results formatting test")
+	t.Parallel()
+
+	t.Run("single chunk", func(t *testing.T) {
+		t.Parallel()
+		chunks := []CodeChunk{
+			{FilePath: "pkg/foo/bar.go", StartLine: 10, EndLine: 20, Content: "func Hello() {}"},
+		}
+		result := formatCodeChunks(chunks)
+		if !strings.Contains(result, "### pkg/foo/bar.go:10-20") {
+			t.Errorf("expected header with file:line range, got: %s", result)
+		}
+		if !strings.Contains(result, "func Hello() {}") {
+			t.Errorf("expected chunk content, got: %s", result)
+		}
+		if !strings.Contains(result, "```") {
+			t.Errorf("expected markdown code fence, got: %s", result)
+		}
+	})
+
+	t.Run("multiple chunks", func(t *testing.T) {
+		t.Parallel()
+		chunks := []CodeChunk{
+			{FilePath: "a.go", StartLine: 1, EndLine: 5, Content: "package a"},
+			{FilePath: "b.go", StartLine: 10, EndLine: 15, Content: "package b"},
+		}
+		result := formatCodeChunks(chunks)
+		if !strings.Contains(result, "### a.go:1-5") {
+			t.Errorf("expected first chunk header, got: %s", result)
+		}
+		if !strings.Contains(result, "### b.go:10-15") {
+			t.Errorf("expected second chunk header, got: %s", result)
+		}
+		if !strings.Contains(result, "package a") {
+			t.Errorf("expected first chunk content, got: %s", result)
+		}
+		if !strings.Contains(result, "package b") {
+			t.Errorf("expected second chunk content, got: %s", result)
+		}
+	})
+
+	t.Run("empty chunks", func(t *testing.T) {
+		t.Parallel()
+		result := formatCodeChunks(nil)
+		if result != "" {
+			t.Errorf("expected empty string for nil chunks, got: %s", result)
+		}
+		result = formatCodeChunks([]CodeChunk{})
+		if result != "" {
+			t.Errorf("expected empty string for empty chunks, got: %s", result)
+		}
+	})
 }

@@ -338,23 +338,23 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		return nil, nil, fmt.Errorf("get working dir: %w", err)
 	}
 
-	// Launch best-effort code index build in background (non-blocking).
-	go func() {
-		ctx := context.Background()
-		idx, idxErr := codesearch.NewCodeIndex(defaultIndexDBPath(), nil)
-		if idxErr != nil {
-			// Log error but don't block startup.
-			fmt.Fprintf(os.Stderr, "warning: failed to create code index: %v\n", idxErr)
-			return
-		}
-		defer func() { _ = idx.Close() }()
-
-		_, buildErr := idx.Build(ctx, repoRoot)
-		if buildErr != nil {
-			// Log error but don't block startup.
-			fmt.Fprintf(os.Stderr, "warning: code index build failed: %v\n", buildErr)
-		}
-	}()
+	// Open code index eagerly (fast — just opens SQLite DB) so the
+	// dispatcher can serve queries on any previously-built index data.
+	// Build runs in the background to refresh the index without blocking startup.
+	var codeIdx dispatcher.CodeIndex
+	idx, idxErr := codesearch.NewCodeIndex(defaultIndexDBPath(), nil)
+	if idxErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to open code index: %v\n", idxErr)
+	} else {
+		codeIdx = &codeIndexAdapter{idx: idx}
+		// Launch best-effort code index build in background (non-blocking).
+		go func() {
+			_, buildErr := idx.Build(context.Background(), repoRoot)
+			if buildErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: code index build failed: %v\n", buildErr)
+			}
+		}()
+	}
 
 	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := dispatcher.NewCLIBeadSource(runner)
@@ -370,7 +370,7 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		DBPath:     dbPath,
 	}
 
-	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}
@@ -396,6 +396,31 @@ func readProjectConfig(dir string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// codeIndexAdapter wraps *codesearch.CodeIndex to satisfy dispatcher.CodeIndex.
+// It converts []codesearch.Chunk to []dispatcher.CodeChunk.
+type codeIndexAdapter struct {
+	idx *codesearch.CodeIndex
+}
+
+func (a *codeIndexAdapter) FTS5Search(ctx context.Context, query string, limit int) ([]dispatcher.CodeChunk, error) {
+	chunks, err := a.idx.FTS5Search(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("code index search: %w", err)
+	}
+	out := make([]dispatcher.CodeChunk, len(chunks))
+	for i, c := range chunks {
+		out[i] = dispatcher.CodeChunk{
+			FilePath:  c.FilePath,
+			Name:      c.Name,
+			Kind:      string(c.Kind),
+			StartLine: c.StartLine,
+			EndLine:   c.EndLine,
+			Content:   c.Content,
+		}
+	}
+	return out, nil
 }
 
 // sendStartDirective connects to the dispatcher UDS and sends a "start"
