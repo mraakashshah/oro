@@ -1810,6 +1810,8 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applyPendingEscalations()
 	case protocol.DirectiveAckEscalation:
 		return d.applyAckEscalation(args)
+	case protocol.DirectiveHealth:
+		return d.applyHealth()
 	case protocol.DirectiveStart:
 		d.setState(StateRunning)
 		return "started", nil
