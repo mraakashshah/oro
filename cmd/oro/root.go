@@ -31,6 +31,7 @@ func newRootCmd() *cobra.Command {
 		newRememberCmd(),
 		newRecallCmd(),
 		newForgetCmd(),
+		newIngestCmd(),
 		newWorkerCmd(),
 		newMemoriesCmd(),
 		newLogsCmd(),
