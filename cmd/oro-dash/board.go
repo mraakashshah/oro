@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -15,8 +16,9 @@ type BoardModel struct {
 
 // boardColumn represents a single column in the board view.
 type boardColumn struct {
-	title string
-	beads []protocol.Bead
+	title      string
+	beads      []protocol.Bead
+	totalCount int // Total count of beads (may exceed len(beads) if limited)
 }
 
 // columnForStatus returns the board column title for a given bead status.
@@ -26,20 +28,24 @@ func columnForStatus(status string) string {
 		return "In Progress"
 	case "blocked":
 		return "Blocked"
+	case "closed":
+		return "Done"
 	default:
 		return "Ready"
 	}
 }
 
-// NewBoardModel groups beads into 3 columns by status:
+// NewBoardModel groups beads into 4 columns by status:
 //   - "Ready"       = status "open"
 //   - "In Progress" = status "in_progress"
 //   - "Blocked"     = status "blocked"
+//   - "Done"        = status "closed" (limited to most recent 10)
 func NewBoardModel(beads []protocol.Bead) BoardModel {
 	buckets := map[string][]protocol.Bead{
 		"Ready":       {},
 		"In Progress": {},
 		"Blocked":     {},
+		"Done":        {},
 	}
 
 	for _, b := range beads {
@@ -47,13 +53,22 @@ func NewBoardModel(beads []protocol.Bead) BoardModel {
 		buckets[col] = append(buckets[col], b)
 	}
 
-	// Preserve column ordering: Ready, In Progress, Blocked.
-	titles := []string{"Ready", "In Progress", "Blocked"}
+	// Preserve column ordering: Ready, In Progress, Blocked, Done.
+	titles := []string{"Ready", "In Progress", "Blocked", "Done"}
 	columns := make([]boardColumn, 0, len(titles))
 	for _, t := range titles {
+		beadsInCol := buckets[t]
+		totalCount := len(beadsInCol)
+
+		// Limit Done column to most recent 10 beads
+		if t == "Done" && len(beadsInCol) > 10 {
+			beadsInCol = beadsInCol[:10]
+		}
+
 		columns = append(columns, boardColumn{
-			title: t,
-			beads: buckets[t],
+			title:      t,
+			beads:      beadsInCol,
+			totalCount: totalCount,
 		})
 	}
 
@@ -65,14 +80,6 @@ func (bm BoardModel) Render() string {
 	theme := DefaultTheme()
 
 	colWidth := 30
-
-	headerStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(theme.Primary).
-		Width(colWidth).
-		Align(lipgloss.Center).
-		BorderBottom(true).
-		BorderStyle(lipgloss.NormalBorder())
 
 	cardStyle := lipgloss.NewStyle().
 		Width(colWidth-2).
@@ -87,15 +94,38 @@ func (bm BoardModel) Render() string {
 
 	rendered := make([]string, 0, len(bm.columns))
 	for _, col := range bm.columns {
-		header := headerStyle.Render(col.title)
+		// Use Success (green) color for Done column, Primary (blue) for others
+		headerColor := theme.Primary
+		if col.title == "Done" {
+			headerColor = theme.Success
+		}
 
-		cards := ""
+		headerStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(headerColor).
+			Width(colWidth).
+			Align(lipgloss.Center).
+			BorderBottom(true).
+			BorderStyle(lipgloss.NormalBorder())
+
+		// Format header with visible/total count for Done column
+		headerText := col.title
+		if col.title == "Done" && col.totalCount > 0 {
+			visibleCount := len(col.beads)
+			headerText = fmt.Sprintf("%s (%d/%d)", col.title, visibleCount, col.totalCount)
+		}
+
+		header := headerStyle.Render(headerText)
+
+		var cardsBuilder strings.Builder
 		for _, b := range col.beads {
 			card := cardStyle.Render(
 				fmt.Sprintf("%s\n%s", b.Title, idStyle.Render(b.ID)),
 			)
-			cards += card + "\n"
+			cardsBuilder.WriteString(card)
+			cardsBuilder.WriteString("\n")
 		}
+		cards := cardsBuilder.String()
 
 		full := columnStyle.Render(header + "\n" + cards)
 		rendered = append(rendered, full)

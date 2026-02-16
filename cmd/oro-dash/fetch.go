@@ -31,21 +31,43 @@ func parseBeadsOutput(output string) ([]protocol.Bead, error) {
 	return beads, nil
 }
 
-// fetchBeads runs `bd list --json` and parses the output into beads.
+// fetchBeadsWithStatus fetches beads with a specific status filter.
+func fetchBeadsWithStatus(ctx context.Context, status string) ([]protocol.Bead, error) {
+	var cmd *exec.Cmd
+	if status == "" {
+		cmd = exec.CommandContext(ctx, "bd", "list", "--json")
+	} else {
+		cmd = exec.CommandContext(ctx, "bd", "list", "--status", status, "--json")
+	}
+
+	out, err := cmd.Output()
+	if err != nil {
+		// bd not installed, not in PATH, or returned non-zero
+		return nil, fmt.Errorf("bd list: %w", err)
+	}
+
+	return parseBeadsOutput(string(out))
+}
+
+// fetchBeads fetches beads across all statuses (open, in_progress, blocked, closed).
 // Returns an empty slice on exec errors (bd not found, non-zero exit, etc).
 func fetchBeads(ctx context.Context) ([]protocol.Bead, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bd", "list", "--json")
-	out, err := cmd.Output()
-	if err != nil {
-		// bd not installed, not in PATH, or returned non-zero — not an error
-		// condition for the dashboard; just means no bead data available.
-		return nil, nil
+	// Fetch beads for each status
+	statuses := []string{"open", "in_progress", "blocked", "closed"}
+	var allBeads []protocol.Bead
+
+	for _, status := range statuses {
+		beads, err := fetchBeadsWithStatus(ctx, status)
+		if err != nil {
+			continue // Skip status on error
+		}
+		allBeads = append(allBeads, beads...)
 	}
 
-	return parseBeadsOutput(string(out))
+	return allBeads, nil
 }
 
 // statusResponse mirrors the dispatcher's enriched status JSON structure.
