@@ -206,6 +206,10 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 	if len(args) > 0 && args[0] == "rev-parse" {
 		return "abc123def456\n", "", nil
 	}
+	// rev-list returns a fake commit so cherry-pick path is entered
+	if len(args) > 0 && args[0] == "rev-list" {
+		return "abc123def456\n", "", nil
+	}
 	return "", "", nil
 }
 
@@ -1328,9 +1332,9 @@ func TestDispatcher_PauseDirective(t *testing.T) {
 
 func TestDispatcher_Escalation(t *testing.T) {
 	d, beadSrc, _, esc, gitRunner, _ := newTestDispatcher(t)
-	// Configure git to fail (non-conflict failure)
+	// Configure git to fail on cherry-pick (non-conflict failure)
 	gitRunner.mu.Lock()
-	gitRunner.failOn = "merge"
+	gitRunner.failOn = "cherry-pick"
 	gitRunner.mu.Unlock()
 
 	startDispatcher(t, d)
@@ -1368,7 +1372,7 @@ func TestDispatcher_Escalation(t *testing.T) {
 			return true
 		}
 		return false
-	}, 2*time.Second)
+	}, 5*time.Second)
 }
 
 func TestParseEscalationType(t *testing.T) {

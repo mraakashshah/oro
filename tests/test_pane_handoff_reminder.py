@@ -1,9 +1,10 @@
 """Tests for the pane_handoff_reminder PreToolUse hook."""
+# pylint: disable=import-error
 
 import importlib.util
 from pathlib import Path
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 # Load the hook module from source (assets/hooks/) for testing
 _repo_root = Path(__file__).parent.parent
