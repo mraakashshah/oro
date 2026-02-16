@@ -139,6 +139,11 @@ func newModel() Model {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
+	// Start watching .beads/ directory for changes (falls back to polling if unavailable)
+	watchCmd := watchBeadsDir(".beads")
+	if watchCmd != nil {
+		return tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), tickCmd(), watchCmd)
+	}
 	return tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), tickCmd())
 }
 
@@ -189,6 +194,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		return m, tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), tickCmd())
+
+	case fsChangeMsg:
+		// File change detected in .beads/ - fetch immediately instead of waiting for tick
+		return m, fetchBeadsCmd()
 	}
 
 	return m, nil
