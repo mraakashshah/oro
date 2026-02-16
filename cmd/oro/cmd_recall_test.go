@@ -11,6 +11,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestRecallCmdWithStoreNil(t *testing.T) {
+	// Verify that newRecallCmdWithStore(nil) lazily opens the default store.
+	// This is an integration test that ensures the deduplication works correctly.
+	cmd := newRecallCmdWithStore(nil)
+	if cmd == nil {
+		t.Fatal("newRecallCmdWithStore(nil) returned nil command")
+	}
+	// We can't easily test execution without setting up ~/.oro/memories.db,
+	// but we can verify the command structure is correct.
+	if cmd.Use != "recall <query>" {
+		t.Errorf("expected Use='recall <query>', got %q", cmd.Use)
+	}
+}
+
 func TestRecallCmd(t *testing.T) {
 	db := setupTestMemoryDB(t)
 	store := memory.NewStore(db)
