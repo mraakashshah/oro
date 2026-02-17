@@ -46,7 +46,7 @@ func TestIntegration_WorkerHistoryQuery(t *testing.T) {
 	}{
 		// Worker 1 timeline
 		{"heartbeat", "worker-1", "", "worker-1", ""},
-		{"assign", "dispatcher", "beads-abc", "worker-1", `{"worktree":"/tmp/wt1","model":"claude-sonnet-4-5"}`},
+		{"assign", "dispatcher", "beads-abc", "worker-1", `{"worktree":"/tmp/wt1","model":"sonnet"}`},
 		{"heartbeat", "worker-1", "beads-abc", "worker-1", ""},
 		{"status", "worker-1", "beads-abc", "worker-1", `{"state":"running","result":"in_progress"}`},
 		{"heartbeat", "worker-1", "beads-abc", "worker-1", ""},
@@ -54,7 +54,7 @@ func TestIntegration_WorkerHistoryQuery(t *testing.T) {
 		{"merged", "dispatcher", "beads-abc", "worker-1", `{"sha":"abc123def456"}`},
 		// Worker 2 timeline
 		{"heartbeat", "worker-2", "", "worker-2", ""},
-		{"assign", "dispatcher", "beads-xyz", "worker-2", `{"worktree":"/tmp/wt2","model":"claude-opus-4-6"}`},
+		{"assign", "dispatcher", "beads-xyz", "worker-2", `{"worktree":"/tmp/wt2","model":"opus"}`},
 		{"heartbeat", "worker-2", "beads-xyz", "worker-2", ""},
 	}
 

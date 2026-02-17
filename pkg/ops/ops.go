@@ -45,13 +45,13 @@ const (
 func (t Type) Model() string {
 	switch t {
 	case OpsMerge, OpsDiagnosis:
-		return "claude-opus-4-6" // judgment-heavy
+		return "opus" // judgment-heavy
 	case OpsReview:
-		return "claude-opus-4-6" // full code review requires judgment
+		return "opus" // full code review requires judgment
 	case OpsEscalation:
-		return "claude-sonnet-4-5-20250929" // one-shot triage is fast, not judgment-heavy
+		return "sonnet" // one-shot triage is fast, not judgment-heavy
 	default:
-		return "claude-sonnet-4-5-20250929"
+		return "sonnet"
 	}
 }
 

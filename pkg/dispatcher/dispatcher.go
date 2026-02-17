@@ -1321,7 +1321,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 				Assign: &protocol.AssignPayload{
 					BeadID:        beadID,
 					Worktree:      w.worktree,
-					Model:         "claude-opus-4-6", // escalate to Opus after review rejection
+					Model:         "opus", // escalate to Opus after review rejection
 					Feedback:      feedback,
 					MemoryContext: memCtx,
 					Attempt:       count,

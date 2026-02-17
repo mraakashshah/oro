@@ -55,7 +55,7 @@ func TestWorkerOversizeMessage(t *testing.T) {
 				BeadID:   "bead-1",
 				Worktree: "/tmp/wt",
 				Title:    oversizePrompt,
-				Model:    "claude-opus-4-6",
+				Model:    "opus",
 			},
 		}
 

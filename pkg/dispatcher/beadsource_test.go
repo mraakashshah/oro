@@ -82,8 +82,8 @@ func TestCLIBeadSource_Ready_ParsesJSON(t *testing.T) {
 
 func TestCLIBeadSource_Ready_ParsesModelField(t *testing.T) {
 	beads := []protocol.Bead{
-		{ID: "abc.1", Title: "Opus task", Priority: 1, Model: "claude-opus-4-6"},
-		{ID: "def.2", Title: "Sonnet task", Priority: 2, Model: "claude-sonnet-4-5-20250929"},
+		{ID: "abc.1", Title: "Opus task", Priority: 1, Model: "opus"},
+		{ID: "def.2", Title: "Sonnet task", Priority: 2, Model: "sonnet"},
 		{ID: "ghi.3", Title: "Default task", Priority: 3}, // no model
 	}
 	data, err := json.Marshal(beads)
@@ -98,11 +98,11 @@ func TestCLIBeadSource_Ready_ParsesModelField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready: %v", err)
 	}
-	if got[0].Model != "claude-opus-4-6" {
-		t.Errorf("bead[0].Model: got %q, want %q", got[0].Model, "claude-opus-4-6")
+	if got[0].Model != "opus" {
+		t.Errorf("bead[0].Model: got %q, want %q", got[0].Model, "opus")
 	}
-	if got[1].Model != "claude-sonnet-4-5-20250929" {
-		t.Errorf("bead[1].Model: got %q, want %q", got[1].Model, "claude-sonnet-4-5-20250929")
+	if got[1].Model != "sonnet" {
+		t.Errorf("bead[1].Model: got %q, want %q", got[1].Model, "sonnet")
 	}
 	if got[2].Model != "" {
 		t.Errorf("bead[2].Model: got %q, want empty", got[2].Model)
@@ -114,7 +114,7 @@ func TestCLIBeadSource_Show_ParsesModelField(t *testing.T) {
 		ID:                 "abc.1",
 		Title:              "Sonnet task",
 		AcceptanceCriteria: "Widget renders",
-		Model:              "claude-sonnet-4-5-20250929",
+		Model:              "sonnet",
 	}
 	data, err := json.Marshal(detail)
 	if err != nil {
@@ -128,8 +128,8 @@ func TestCLIBeadSource_Show_ParsesModelField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Show: %v", err)
 	}
-	if got.Model != "claude-sonnet-4-5-20250929" {
-		t.Errorf("Model: got %q, want %q", got.Model, "claude-sonnet-4-5-20250929")
+	if got.Model != "sonnet" {
+		t.Errorf("Model: got %q, want %q", got.Model, "sonnet")
 	}
 }
 
@@ -399,14 +399,14 @@ func TestBead_ResolveModel_ByEstimate(t *testing.T) {
 }
 
 func TestModelConstants(t *testing.T) {
-	if protocol.ModelOpus != "claude-opus-4-6" {
-		t.Errorf("protocol.ModelOpus = %q, want %q", protocol.ModelOpus, "claude-opus-4-6")
+	if protocol.ModelOpus != "opus" {
+		t.Errorf("protocol.ModelOpus = %q, want %q", protocol.ModelOpus, "opus")
 	}
-	if protocol.ModelSonnet != "claude-sonnet-4-5-20250929" {
-		t.Errorf("protocol.ModelSonnet = %q, want %q", protocol.ModelSonnet, "claude-sonnet-4-5-20250929")
+	if protocol.ModelSonnet != "sonnet" {
+		t.Errorf("protocol.ModelSonnet = %q, want %q", protocol.ModelSonnet, "sonnet")
 	}
-	if protocol.ModelHaiku != "claude-haiku-4-5-20251001" {
-		t.Errorf("protocol.ModelHaiku = %q, want %q", protocol.ModelHaiku, "claude-haiku-4-5-20251001")
+	if protocol.ModelHaiku != "haiku" {
+		t.Errorf("protocol.ModelHaiku = %q, want %q", protocol.ModelHaiku, "haiku")
 	}
 	if protocol.DefaultModel != protocol.ModelSonnet {
 		t.Errorf("protocol.DefaultModel = %q, want %q (same as protocol.ModelSonnet)", protocol.DefaultModel, protocol.ModelSonnet)

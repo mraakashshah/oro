@@ -288,10 +288,10 @@ func TestModelRouting(t *testing.T) {
 		opsType Type
 		want    string
 	}{
-		{OpsReview, "claude-opus-4-6"},
-		{OpsMerge, "claude-opus-4-6"},
-		{OpsDiagnosis, "claude-opus-4-6"},
-		{Type("unknown"), "claude-sonnet-4-5-20250929"},
+		{OpsReview, "opus"},
+		{OpsMerge, "opus"},
+		{OpsDiagnosis, "opus"},
+		{Type("unknown"), "sonnet"},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.opsType), func(t *testing.T) {

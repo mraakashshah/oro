@@ -33,7 +33,7 @@ func TestAssemblePrompt_AllSectionHeadersPresent(t *testing.T) {
 		AcceptanceCriteria: "All 12 sections present",
 		MemoryContext:      "Prior session learned X",
 		WorktreePath:       "/tmp/wt-123",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -55,7 +55,7 @@ func TestAssemblePrompt_BeadDetailsInjected(t *testing.T) {
 		AcceptanceCriteria: "foo returns correct output for all inputs",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-abc",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -84,7 +84,7 @@ func TestAssemblePrompt_EmptyMemoryContext(t *testing.T) {
 		AcceptanceCriteria: "Tests pass",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-nomem",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -111,7 +111,7 @@ func TestAssemblePrompt_NonEmptyMemoryContext(t *testing.T) {
 		AcceptanceCriteria: "Tests pass",
 		MemoryContext:      memCtx,
 		WorktreePath:       "/tmp/wt-withmem",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -137,7 +137,7 @@ func TestAssemblePrompt_WorktreeAndBeadIDInterpolated(t *testing.T) {
 		AcceptanceCriteria: "Paths correct",
 		MemoryContext:      "",
 		WorktreePath:       "/home/user/.worktrees/bead-wt-42",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -162,7 +162,7 @@ func TestAssemblePrompt_ValidOutput(t *testing.T) {
 		AcceptanceCriteria: "Non-empty, reasonable length",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-valid",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -190,7 +190,7 @@ func TestAssemblePrompt_SectionOrder(t *testing.T) {
 		AcceptanceCriteria: "Sections in correct order",
 		MemoryContext:      "Some memory context",
 		WorktreePath:       "/tmp/wt-order",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -220,7 +220,7 @@ func TestAssemblePrompt_RoleContent(t *testing.T) {
 		AcceptanceCriteria: "Role text present",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-role",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -243,7 +243,7 @@ func TestAssemblePrompt_TDDContent(t *testing.T) {
 		AcceptanceCriteria: "TDD text present",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-tdd",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -266,7 +266,7 @@ func TestAssemblePrompt_QualityGateContent(t *testing.T) {
 		AcceptanceCriteria: "Quality gate command present",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-qg",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -286,7 +286,7 @@ func TestAssemblePrompt_ConstraintsContent(t *testing.T) {
 		AcceptanceCriteria: "Constraints present",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-constraints",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -306,7 +306,7 @@ func TestAssemblePrompt_FailureContent(t *testing.T) {
 		AcceptanceCriteria: "Failure protocols present",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-failure",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -329,7 +329,7 @@ func TestAssemblePrompt_ExitContent(t *testing.T) {
 		AcceptanceCriteria: "Exit text present",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-exit",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -352,7 +352,7 @@ func TestAssemblePrompt_BeadsToolsContent(t *testing.T) {
 		AcceptanceCriteria: "Tools commands present",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-tools",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -381,7 +381,7 @@ func TestAssemblePrompt_BeadsToolsDoesNotContainBdClose(t *testing.T) {
 		Description:        "Workers must not close beads",
 		AcceptanceCriteria: "Tests pass",
 		WorktreePath:       "/tmp/wt-no-close",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -414,7 +414,7 @@ func TestAssemblePrompt_GitContent(t *testing.T) {
 		AcceptanceCriteria: "Git instructions present",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-git",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -440,7 +440,7 @@ func TestAssemblePrompt_FailureSectionHasBdCreateExamples(t *testing.T) {
 		AcceptanceCriteria: "bd create examples present in Failure section",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-fail-ex",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -480,7 +480,7 @@ func TestAssemblePrompt_FailureSectionHasBdCreateExamples(t *testing.T) {
 
 func TestAssemblePrompt_AttemptZero_NoRetryNote(t *testing.T) {
 	t.Parallel()
-	params := worker.PromptParams{BeadID: "bead-no-retry", Title: "No retry", Description: "First attempt", AcceptanceCriteria: "Tests pass", WorktreePath: "/tmp/wt-no-retry", Model: "claude-opus-4-6", Attempt: 0}
+	params := worker.PromptParams{BeadID: "bead-no-retry", Title: "No retry", Description: "First attempt", AcceptanceCriteria: "Tests pass", WorktreePath: "/tmp/wt-no-retry", Model: "opus", Attempt: 0}
 	prompt := worker.AssemblePrompt(params)
 	if strings.Contains(prompt, "Retry attempt") {
 		t.Error("prompt should NOT contain Retry attempt when Attempt=0")
@@ -489,7 +489,7 @@ func TestAssemblePrompt_AttemptZero_NoRetryNote(t *testing.T) {
 
 func TestAssemblePrompt_AttemptPositive_IncludesRetryNote(t *testing.T) {
 	t.Parallel()
-	params := worker.PromptParams{BeadID: "bead-retry", Title: "Retry", Description: "Second attempt", AcceptanceCriteria: "Tests pass", WorktreePath: "/tmp/wt-retry", Model: "claude-opus-4-6", Attempt: 2}
+	params := worker.PromptParams{BeadID: "bead-retry", Title: "Retry", Description: "Second attempt", AcceptanceCriteria: "Tests pass", WorktreePath: "/tmp/wt-retry", Model: "opus", Attempt: 2}
 	prompt := worker.AssemblePrompt(params)
 	if !strings.Contains(prompt, "Retry attempt 2") {
 		t.Error("expected Retry attempt 2")
@@ -506,7 +506,7 @@ func TestAssemblePrompt_FeedbackIncludedInRetry(t *testing.T) {
 		Title:              "Fix bug",
 		AcceptanceCriteria: "Tests pass",
 		WorktreePath:       "/tmp/wt-fb",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 		Attempt:            1,
 		Feedback:           "FAIL: TestFoo expected 42 got 0",
 	}
@@ -530,7 +530,7 @@ func TestAssemblePrompt_CodeSearchContext_Empty(t *testing.T) {
 		MemoryContext:      "Some memory",
 		CodeSearchContext:  "", // No code search results
 		WorktreePath:       "/tmp/wt-no-code",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -554,7 +554,7 @@ func TestAssemblePrompt_CodeSearchContext_Present(t *testing.T) {
 		MemoryContext:      "Some memory",
 		CodeSearchContext:  codeSearchCtx,
 		WorktreePath:       "/tmp/wt-with-code",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -597,7 +597,7 @@ func TestPromptHandoffTemplate(t *testing.T) {
 		AcceptanceCriteria: "- [ ] Feature A works\n- [ ] Feature B works",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-handoff",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -640,7 +640,7 @@ func TestAssemblePrompt_ExitSection_RequiresMergeToMain(t *testing.T) {
 		Description:        "Test description",
 		AcceptanceCriteria: "Tests pass",
 		WorktreePath:       "/tmp/wt-exit-test",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -675,7 +675,7 @@ func TestAssemblePrompt_ExitSection_HandlesUnrelatedTestFailures(t *testing.T) {
 		Description:        "Test description",
 		AcceptanceCriteria: "Tests pass",
 		WorktreePath:       "/tmp/wt-blocker-test",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
