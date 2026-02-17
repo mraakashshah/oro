@@ -401,3 +401,14 @@ oro/
 ├── quality_gate.sh
 └── go.mod
 ```
+
+## References
+
+Oro builds on foundational work and ideas from the AI coding agent community:
+
+- **[Continuous Claude v3](https://github.com/parcadei/Continuous-Claude-v3)** — Context management pattern for persistent agent workflows using ledgers and handoffs
+- **[Steve Yegge - Beads](https://github.com/steveyegge/beads)** — Git-backed issue tracker designed as external memory for coding agents
+- **[Steve Yegge - Gastown](https://github.com/steveyegge/gastown)** — Multi-agent orchestration system with hierarchical roles and parallel execution
+- **[Obra - Superpowers](https://github.com/obra/superpowers)** — Agentic skills framework and software development methodology with composable workflows
+- **[Teresa Torres - Context Rot](https://www.producttalk.org/context-rot/)** — Why institutional knowledge decays and how to prevent it
+- **[Every's Compound Engineering](https://every.to/guides/compound-engineering)** — Making each unit of work compound into the next through systematic learning loops
