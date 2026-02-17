@@ -467,8 +467,8 @@ func TestCLIBeadSource_Create(t *testing.T) {
 		if !sliceContains(call.Args, "--type=bug") {
 			t.Errorf("expected '--type=bug' in args, got %v", call.Args)
 		}
-		if !sliceContains(call.Args, "--priority=1") {
-			t.Errorf("expected '--priority=1' in args, got %v", call.Args)
+		if !sliceContains(call.Args, "--priority=0") {
+			t.Errorf("bugs must be P0: expected '--priority=0' in args, got %v", call.Args)
 		}
 		if !sliceContains(call.Args, "--description=Login fails on retry") {
 			t.Errorf("expected '--description=Login fails on retry' in args, got %v", call.Args)
