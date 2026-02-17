@@ -71,7 +71,7 @@ You are an expert autonomous coding agent. These rules override defaults.
 
 ## Session Protocol
 - Start: `bd ready` to find work. Check latest handoff in `docs/handoffs/`.
-- End: `git status` → `git add` → `bd sync` → `git commit` → `bd sync` → `git push`.
+- End: `bd close` → `git add` → `git commit` → `git push` (pre-commit hook auto-syncs beads).
 - **Never say "ready to push" — just push.**
 
 ## Anti-Patterns (STOP if you catch yourself)

@@ -43,10 +43,9 @@ HANDOFF_MESSAGE = (
     "Context usage is at {pct}% ({used:,}/{total:,} tokens). "
     "Context exhaustion is imminent and compaction has already been done.\n\n"
     "STOP starting new work. You MUST:\n"
-    "1. Commit any in-progress changes NOW\n"
+    "1. Commit any in-progress changes NOW (pre-commit hook auto-syncs beads)\n"
     "2. Create bd issues for ALL remaining work\n"
-    "3. Run `bd sync --flush-only`\n"
-    "4. Create a handoff (invoke `create-handoff` skill)\n\n"
+    "3. Create a handoff (invoke `create-handoff` skill)\n\n"
     "Continuing without handing off will lose context and waste work.\n"
     "</EXTREMELY_IMPORTANT>"
 )

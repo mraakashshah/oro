@@ -151,9 +151,10 @@ If merge conflict: resolve in worktree, re-run gate, then merge.
 ### Step 11: PUSH
 
 ```bash
-bd sync --flush-only
 git push
 ```
+
+Note: `bd sync --flush-only` is not needed here — the pre-commit hook runs it automatically on every commit.
 
 If push fails (no remote): report. Commit is local.
 
