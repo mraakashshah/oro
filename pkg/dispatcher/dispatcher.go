@@ -858,6 +858,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 			// Spawn ops agent to resolve conflict
 			resultCh := d.ops.ResolveMergeConflict(ctx, ops.MergeOpts{
 				BeadID:        beadID,
+				Branch:        branch,
 				Worktree:      worktree,
 				ConflictFiles: conflictErr.Files,
 			})

@@ -102,6 +102,7 @@ type ReviewOpts struct {
 // MergeOpts configures a merge conflict agent.
 type MergeOpts struct {
 	BeadID           string
+	Branch           string
 	Worktree         string
 	ConflictFiles    []string
 	OurBeadContext   string
@@ -384,9 +385,24 @@ func buildMergePrompt(opts MergeOpts) string {
 	var b strings.Builder
 	b.WriteString("CRITICAL: Do NOT use TaskOutput or run tasks in the background.\n")
 	b.WriteString("Use the Read tool to check output files. Run all commands in foreground.\n\n")
-	b.WriteString("Resolve merge conflicts in: ")
+
+	branch := opts.Branch
+	if branch == "" {
+		branch = "your branch"
+	}
+
+	b.WriteString("You are resolving a rebase conflict on branch ")
+	b.WriteString(branch)
+	b.WriteString(".\n\n")
+	b.WriteString("To resolve:\n")
+	b.WriteString("1. Check conflict markers in files: ")
 	b.WriteString(strings.Join(opts.ConflictFiles, ", "))
 	b.WriteString("\n")
+	b.WriteString("2. Edit files to resolve conflicts\n")
+	b.WriteString("3. Stage resolved files: git add <files>\n")
+	b.WriteString("4. Continue rebase: git rebase --continue\n")
+	b.WriteString("5. If rebase completes, run: git rebase main\n\n")
+
 	if opts.OurBeadContext != "" {
 		b.WriteString("Our side: ")
 		b.WriteString(opts.OurBeadContext)
@@ -397,7 +413,7 @@ func buildMergePrompt(opts MergeOpts) string {
 		b.WriteString(opts.TheirBeadContext)
 		b.WriteString("\n")
 	}
-	b.WriteString("Resolve conflicts, run tests, commit.\n")
+	b.WriteString("\nResolve conflicts, run tests, commit.\n")
 	return b.String()
 }
 

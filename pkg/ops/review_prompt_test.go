@@ -284,3 +284,26 @@ func TestBuildDiagnosisPrompt_ProhibitsTaskOutput(t *testing.T) {
 		t.Error("prompt missing foreground instruction")
 	}
 }
+
+func TestBuildMergePrompt_IncludesRebaseInstructions(t *testing.T) {
+	opts := MergeOpts{
+		Branch:        "agent/oro-test",
+		ConflictFiles: []string{"file1.go", "file2.go"},
+	}
+
+	prompt := buildMergePrompt(opts)
+
+	// Check for rebase instructions
+	if !strings.Contains(prompt, "git rebase main") {
+		t.Error("prompt missing 'git rebase main' instruction")
+	}
+	if !strings.Contains(prompt, "agent/oro-test") {
+		t.Error("prompt missing branch name")
+	}
+	if !strings.Contains(prompt, "git add") {
+		t.Error("prompt missing 'git add' instruction")
+	}
+	if !strings.Contains(prompt, "git rebase --continue") {
+		t.Error("prompt missing 'git rebase --continue' instruction")
+	}
+}
