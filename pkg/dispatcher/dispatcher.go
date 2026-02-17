@@ -1593,9 +1593,13 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.
 	d.maybeAutoScale(ctx, len(beads), len(idle))
 
-	// Check for P0 beads when all workers are busy (priority contention).
-	if len(idle) == 0 && totalWorkers > 0 {
-		d.checkPriorityContention(ctx, beads, totalWorkers)
+	// Priority contention is now handled by the preemption system (oro-wofg).
+	// Escalating to the manager is noisy and unhelpful.
+	// if len(idle) == 0 && totalWorkers > 0 {
+	// 	d.checkPriorityContention(ctx, beads, totalWorkers)
+	// 	return
+	// }
+	if len(idle) == 0 {
 		return
 	}
 
@@ -1657,31 +1661,8 @@ func (d *Dispatcher) recordAssignmentFailure(beadID string) {
 	d.mu.Unlock()
 }
 
-// checkPriorityContention escalates P0 beads that are queued while all workers
-// are busy. Each bead is only escalated once (tracked by escalatedBeads).
-func (d *Dispatcher) checkPriorityContention(ctx context.Context, beads []protocol.Bead, totalWorkers int) {
-	for _, bead := range beads {
-		if bead.Priority != 0 {
-			continue
-		}
-		d.mu.Lock()
-		alreadyEscalated := d.escalatedBeads[bead.ID]
-		if !alreadyEscalated {
-			d.escalatedBeads[bead.ID] = true
-		}
-		d.mu.Unlock()
-
-		if !alreadyEscalated {
-			msg := protocol.FormatEscalation(protocol.EscPriorityContention,
-				bead.ID,
-				fmt.Sprintf("P0 bead queued but all %d workers busy", totalWorkers),
-				"")
-			d.escalate(ctx, msg, bead.ID, "")
-			_ = d.logEvent(ctx, "priority_contention", "dispatcher", bead.ID, "",
-				fmt.Sprintf(`{"total_workers":%d}`, totalWorkers))
-		}
-	}
-}
+// checkPriorityContention is no longer used. Priority contention is now handled
+// by the preemption system (oro-wofg). Removed in oro-721i.
 
 // assignBead creates a worktree and sends ASSIGN to the worker.
 // If memories exist for the bead's description, they are included in the
@@ -2354,8 +2335,8 @@ func (d *Dispatcher) logEventLocked(ctx context.Context, evType, source, beadID,
 // the tmux session is dead.
 //
 // For escalation types that have playbooks (STUCK_WORKER, MERGE_CONFLICT,
-// PRIORITY_CONTENTION, MISSING_AC), it also spawns a one-shot claude -p
-// agent to take corrective action autonomously.
+// MISSING_AC), it also spawns a one-shot claude -p agent to take corrective
+// action autonomously.
 func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string) {
 	// Persist escalation to SQLite before attempting tmux delivery.
 	escType := ""
