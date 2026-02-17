@@ -118,6 +118,7 @@ type trackedWorker struct {
 	encoder        *json.Encoder
 	pendingMsgs    []protocol.Message // buffered messages for disconnected worker
 	shutdownCancel context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
+	managed        bool               // true if spawned by the dispatcher (vs externally connected)
 }
 
 // pendingHandoff holds context for a bead whose worker has been shut down
@@ -260,6 +261,11 @@ type Dispatcher struct {
 	// Used by spawn-for directive to guarantee a specific bead gets the next idle worker.
 	priorityBeads map[string]bool
 
+	// pendingManagedIDs tracks worker IDs spawned by the dispatcher that have not yet
+	// connected. When the worker connects and calls registerWorker, the ID is consumed
+	// from this set and the trackedWorker.managed flag is set to true.
+	pendingManagedIDs map[string]bool
+
 	// shutdownCh is closed when a shutdown directive is received, causing Run() to exit.
 	shutdownCh chan struct{}
 	// shutdownAuthorized gates whether SIGTERM is honored by the signal handler.
@@ -305,13 +311,14 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			worktreeFailures: make(map[string]time.Time),
 			exhaustedBeads:   make(map[string]bool),
 		},
-		priorityBeads: make(map[string]bool),
-		shutdownCh:    make(chan struct{}),
-		beadsDir:      protocol.BeadsDir,
-		panesDir:      filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
-		signaledPanes: make(map[string]bool),
-		nowFunc:       time.Now,
-		acceptSem:     make(chan struct{}, 100), // limit to 100 concurrent connection handlers
+		priorityBeads:     make(map[string]bool),
+		pendingManagedIDs: make(map[string]bool),
+		shutdownCh:        make(chan struct{}),
+		beadsDir:          protocol.BeadsDir,
+		panesDir:          filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
+		signaledPanes:     make(map[string]bool),
+		nowFunc:           time.Now,
+		acceptSem:         make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
 }
 
@@ -2145,6 +2152,10 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 		return "", fmt.Errorf("spawn failed: %w", err)
 	}
 
+	d.mu.Lock()
+	d.pendingManagedIDs[newID] = true
+	d.mu.Unlock()
+
 	_ = d.logEvent(context.Background(), "spawn_for", "dispatcher", beadID, newID, "")
 	return fmt.Sprintf("spawned worker %s for bead %s", newID, beadID), nil
 }
@@ -2273,19 +2284,30 @@ func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount i
 	}
 }
 
-// reconcileScale compares target vs connected workers and spawns or shuts down
-// workers to reach the target. Returns a detail string describing the action taken.
+// reconcileScale compares target vs connected managed workers and spawns or
+// shuts down managed workers to reach the target. Unmanaged (externally
+// connected) workers are invisible to scaling in all modes.
+// When MaxWorkers=0, returns immediately as a no-op (manual mode).
 func (d *Dispatcher) reconcileScale() string {
 	d.mu.Lock()
+	if d.cfg.MaxWorkers == 0 {
+		d.mu.Unlock()
+		return ""
+	}
 	target := d.targetWorkers
-	connected := len(d.workers)
+	managedCount := 0
+	for _, w := range d.workers {
+		if w.managed {
+			managedCount++
+		}
+	}
 	d.mu.Unlock()
 
 	switch {
-	case connected < target:
-		return d.scaleUp(target, connected)
-	case connected > target:
-		return d.scaleDown(target, connected)
+	case managedCount < target:
+		return d.scaleUp(target, managedCount)
+	case managedCount > target:
+		return d.scaleDown(target, managedCount)
 	default:
 		return ""
 	}
@@ -2304,20 +2326,27 @@ func (d *Dispatcher) scaleUp(target, connected int) string {
 		if _, err := d.procMgr.Spawn(id); err != nil {
 			continue
 		}
+		// Record as managed so registerWorker sets managed=true when it connects.
+		d.mu.Lock()
+		d.pendingManagedIDs[id] = true
+		d.mu.Unlock()
 		spawned++
 	}
 	return fmt.Sprintf("target=%d, spawning %d", target, spawned)
 }
 
-// scaleDown initiates graceful shutdown for excess workers, preferring idle
-// workers first, then newest busy workers.
+// scaleDown initiates graceful shutdown for excess managed workers, preferring
+// idle workers first, then newest busy workers. Unmanaged workers are skipped.
 func (d *Dispatcher) scaleDown(target, connected int) string {
 	toRemove := connected - target
 
 	d.mu.Lock()
-	// Partition into idle and busy workers.
+	// Partition managed workers into idle and busy — unmanaged are excluded.
 	var idle, busy []string
 	for id, w := range d.workers {
+		if !w.managed {
+			continue
+		}
 		if w.state == protocol.WorkerIdle {
 			idle = append(idle, id)
 		} else {
