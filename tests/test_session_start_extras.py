@@ -569,8 +569,8 @@ class TestMainIntegration:
         skills_idx = additional_context.find("# Auto-loaded Skill: using-skills")
         assert superpowers_idx < skills_idx, "Superpowers should come before auto-loaded skills"
 
-    def test_main_cleans_up_handoff_requested_signal(self, tmp_path, monkeypatch):
-        """Verify main() deletes stale handoff_requested signal on SessionStart."""
+    def test_main_cleans_up_handoff_signals(self, tmp_path, monkeypatch):
+        """Verify main() deletes stale handoff_requested and handoff_complete signals on SessionStart."""
         import io
         import sys
 
@@ -580,10 +580,13 @@ class TestMainIntegration:
         role_dir = panes_dir / "test-worker"
         role_dir.mkdir(parents=True)
 
-        # Create stale handoff_requested signal
-        signal_file = role_dir / "handoff_requested"
-        signal_file.touch()
-        assert signal_file.exists(), "Signal should exist before main()"
+        # Create stale handoff signals
+        requested_file = role_dir / "handoff_requested"
+        complete_file = role_dir / "handoff_complete"
+        requested_file.touch()
+        complete_file.touch()
+        assert requested_file.exists(), "handoff_requested should exist before main()"
+        assert complete_file.exists(), "handoff_complete should exist before main()"
 
         # Set environment
         monkeypatch.chdir(tmp_path)
@@ -601,5 +604,6 @@ class TestMainIntegration:
         # Run main()
         _mod.main()
 
-        # Verify signal was deleted
-        assert not signal_file.exists(), "Signal should be deleted after main()"
+        # Verify both signals were deleted
+        assert not requested_file.exists(), "handoff_requested should be deleted after main()"
+        assert not complete_file.exists(), "handoff_complete should be deleted after main()"

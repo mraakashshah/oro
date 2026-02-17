@@ -165,12 +165,3 @@ func (d *Dispatcher) SetProcessManager(pm ProcessManager) {
 	defer d.mu.Unlock()
 	d.procMgr = pm
 }
-
-// SetTmuxSession sets the TmuxSession on a Dispatcher.
-// This is used by cmd/oro to wire up the production TmuxSession
-// after constructing the Dispatcher.
-func (d *Dispatcher) SetTmuxSession(ts TmuxSession) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.tmuxSession = ts
-}
