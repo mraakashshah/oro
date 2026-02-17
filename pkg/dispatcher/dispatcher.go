@@ -2179,12 +2179,19 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 		return "", fmt.Errorf("worker not found")
 	}
 
-	// Capture bead ID before removing worker
+	// Capture bead ID and managed flag before removing worker.
 	beadID := w.beadID
+	wasManaged := w.managed
 
 	// Close connection and remove worker from pool
 	_ = w.conn.Close()
 	delete(d.workers, workerID)
+
+	// If the original worker was managed, record the ID so registerWorker
+	// sets managed=true when the respawned process connects.
+	if wasManaged {
+		d.pendingManagedIDs[workerID] = true
+	}
 
 	// Target count remains unchanged (unlike kill-worker)
 	procMgr := d.procMgr
