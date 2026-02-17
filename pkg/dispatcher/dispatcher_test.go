@@ -4743,9 +4743,13 @@ func TestDispatcher_ReconcileScale_ScaleDown(t *testing.T) {
 	d.cfg.ShutdownTimeout = 200 * time.Millisecond
 	startDispatcher(t, d)
 
-	// Connect 5 workers — 3 idle, 2 busy
+	// Connect 5 managed workers — 3 idle, 2 busy.
+	// Pre-register IDs as pending managed so registerWorker sets managed=true.
 	for i := 0; i < 5; i++ {
 		wid := fmt.Sprintf("w-scale-%d", i)
+		d.mu.Lock()
+		d.pendingManagedIDs[wid] = true
+		d.mu.Unlock()
 		conn, _ := connectWorker(t, d.cfg.SocketPath)
 		sendMsg(t, conn, protocol.Message{
 			Type:      protocol.MsgHeartbeat,

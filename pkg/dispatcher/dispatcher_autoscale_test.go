@@ -1,7 +1,9 @@
 package dispatcher //nolint:testpackage // internal white-box tests need access to unexported fields
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"testing"
 	"time"
 
@@ -261,6 +263,93 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 		_ = result
 	})
 
+	t.Run("scaleDown only kills managed workers", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.cfg.MaxWorkers = 3
+
+		connManaged1 := newMockConn()
+		connManaged2 := newMockConn()
+		connManaged3 := newMockConn()
+		connUnmanaged := newMockConn()
+
+		d.mu.Lock()
+		d.workers["managed-1"] = &trackedWorker{
+			id:      "managed-1",
+			conn:    connManaged1,
+			state:   protocol.WorkerIdle,
+			managed: true,
+			encoder: json.NewEncoder(connManaged1),
+		}
+		d.workers["managed-2"] = &trackedWorker{
+			id:      "managed-2",
+			conn:    connManaged2,
+			state:   protocol.WorkerIdle,
+			managed: true,
+			encoder: json.NewEncoder(connManaged2),
+		}
+		d.workers["managed-3"] = &trackedWorker{
+			id:      "managed-3",
+			conn:    connManaged3,
+			state:   protocol.WorkerBusy,
+			managed: true,
+			encoder: json.NewEncoder(connManaged3),
+		}
+		d.workers["unmanaged-1"] = &trackedWorker{
+			id:      "unmanaged-1",
+			conn:    connUnmanaged,
+			state:   protocol.WorkerIdle,
+			managed: false,
+			encoder: json.NewEncoder(connUnmanaged),
+		}
+		// 3 managed, target 1 → scaleDown should remove 2 managed (idle first)
+		d.targetWorkers = 1
+		d.mu.Unlock()
+
+		result := d.reconcileScale()
+
+		if result == "" {
+			t.Error("expected non-empty result from scaleDown")
+		}
+
+		// Unmanaged worker must NOT receive PREPARE_SHUTDOWN.
+		connUnmanaged.mu.Lock()
+		unmanagedWrites := len(connUnmanaged.written)
+		connUnmanaged.mu.Unlock()
+		if unmanagedWrites > 0 {
+			t.Errorf("unmanaged worker received %d message(s), expected 0", unmanagedWrites)
+		}
+
+		// The 2 idle managed workers should be targeted (idle preferred over busy).
+		connManaged1.mu.Lock()
+		m1 := len(connManaged1.written)
+		connManaged1.mu.Unlock()
+		connManaged2.mu.Lock()
+		m2 := len(connManaged2.written)
+		connManaged2.mu.Unlock()
+		connManaged3.mu.Lock()
+		m3 := len(connManaged3.written)
+		connManaged3.mu.Unlock()
+		// Exactly 2 of the 3 managed workers should get messages.
+		// Idle workers (managed-1, managed-2) should be preferred over busy (managed-3).
+		messaged := 0
+		if m1 > 0 {
+			messaged++
+		}
+		if m2 > 0 {
+			messaged++
+		}
+		if m3 > 0 {
+			messaged++
+		}
+		if messaged != 2 {
+			t.Errorf("expected 2 managed workers to receive shutdown, got %d (m1=%d m2=%d m3=%d)", messaged, m1, m2, m3)
+		}
+		// Busy worker should be preserved (idle first policy).
+		if m3 > 0 && (m1 > 0 && m2 > 0) {
+			t.Error("busy managed worker was shut down even though 2 idle workers were available")
+		}
+	})
+
 	t.Run("MaxWorkers=0 is no-op", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		d.cfg.MaxWorkers = 0
@@ -302,4 +391,71 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 			t.Errorf("MaxWorkers=0: expected empty result string, got %q", result)
 		}
 	})
+}
+
+// TestApplyRestartWorker_PreservesManagedFlag verifies that restarting a managed
+// worker records the new worker ID as pending-managed, so that when the respawned
+// process connects via registerWorker the managed flag is set to true.
+func TestApplyRestartWorker_PreservesManagedFlag(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	// Register a managed worker.
+	workerID := "managed-worker-1"
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+
+	d.mu.Lock()
+	d.pendingManagedIDs[workerID] = true
+	d.mu.Unlock()
+	d.registerWorker(workerID, conn1)
+
+	// Verify it's managed.
+	d.mu.Lock()
+	if !d.workers[workerID].managed {
+		t.Fatal("worker should be managed after registration with pending ID")
+	}
+	d.targetWorkers = 1
+	d.mu.Unlock()
+
+	// Restart the worker.
+	_, err = d.applyRestartWorker(workerID)
+	if err != nil {
+		t.Fatalf("applyRestartWorker failed: %v", err)
+	}
+
+	// After restart, the worker ID should be in pendingManagedIDs so that when
+	// the respawned process connects, registerWorker sets managed=true.
+	d.mu.Lock()
+	pending := d.pendingManagedIDs[workerID]
+	d.mu.Unlock()
+
+	if !pending {
+		t.Errorf("expected workerID %q in pendingManagedIDs after restart, but it was absent", workerID)
+	}
+
+	// Simulate the respawned worker connecting.
+	conn3, conn4 := net.Pipe()
+	defer conn3.Close()
+	defer conn4.Close()
+	d.registerWorker(workerID, conn3)
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	isManaged := w != nil && w.managed
+	d.mu.Unlock()
+
+	if !isManaged {
+		t.Errorf("respawned worker %q should be managed after reconnect, but managed=%v", workerID, isManaged)
+	}
 }
