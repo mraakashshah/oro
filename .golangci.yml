@@ -165,6 +165,21 @@ linters:
           - gochecknoinits
           - gochecknoglobals
 
+      # CLI tools legitimately exec subprocesses and write user-supplied
+      # paths to stdout — not a web context.
+      - path: exec_runner\.go
+        linters:
+          - gosec
+      - path: exec_spawner\.go
+        linters:
+          - gosec
+      - path: cmd_ingest\.go
+        linters:
+          - gosec
+      - path: drain\.go
+        linters:
+          - gosec
+
 formatters:
   enable:
     - goimports
