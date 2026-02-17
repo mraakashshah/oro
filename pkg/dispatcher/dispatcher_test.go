@@ -4709,10 +4709,14 @@ func TestDispatcher_ReconcileScale_SpawnsWorkers(t *testing.T) {
 	pm := &mockProcessManager{}
 	d.procMgr = pm
 
-	// Simulate 2 connected workers
+	// Simulate 2 connected managed workers (dispatcher-spawned).
 	for _, id := range []string{"w-existing-1", "w-existing-2"} {
 		s, c := net.Pipe()
 		t.Cleanup(func() { _ = s.Close(); _ = c.Close() })
+		// Mark as pending managed so registerWorker sets managed=true.
+		d.mu.Lock()
+		d.pendingManagedIDs[id] = true
+		d.mu.Unlock()
 		d.registerWorker(id, s)
 	}
 
@@ -4806,8 +4810,12 @@ func TestDispatcher_ScaleDirective_ACKIncludesDetail(t *testing.T) {
 	d.procMgr = pm
 	startDispatcher(t, d)
 
-	// Connect 2 workers so reconcile knows current count
+	// Connect 2 managed workers so reconcile counts them toward the target.
 	for _, wid := range []string{"w-ack-1", "w-ack-2"} {
+		// Pre-register as pending managed so registerWorker sets managed=true.
+		d.mu.Lock()
+		d.pendingManagedIDs[wid] = true
+		d.mu.Unlock()
 		conn, _ := connectWorker(t, d.cfg.SocketPath)
 		sendMsg(t, conn, protocol.Message{
 			Type:      protocol.MsgHeartbeat,

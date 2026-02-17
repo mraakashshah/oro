@@ -23,8 +23,11 @@ type WorkerPool struct {
 
 // registerWorker adds or updates a tracked worker. If a pending handoff exists,
 // the worker is immediately assigned that bead+worktree (ralph respawn).
-func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
-	d.mu.Lock()
+// upsertWorker adds a new trackedWorker for id or refreshes its connection
+// fields on reconnect. managed is true when the worker was spawned by the
+// dispatcher (consumed from pendingManagedIDs by the caller). Must be called
+// with d.mu held.
+func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 	if _, exists := d.workers[id]; !exists {
 		d.workers[id] = &trackedWorker{
 			id:       id,
@@ -32,12 +35,27 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 			state:    protocol.WorkerIdle,
 			lastSeen: d.nowFunc(),
 			encoder:  json.NewEncoder(conn),
+			managed:  managed,
 		}
 	} else {
 		d.workers[id].conn = conn
 		d.workers[id].lastSeen = d.nowFunc()
 		d.workers[id].encoder = json.NewEncoder(conn)
+		// Preserve managed flag if already set (e.g. reconnect of a spawned worker).
+		if managed {
+			d.workers[id].managed = true
+		}
 	}
+}
+
+func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
+	d.mu.Lock()
+	// Consume the pending managed ID if present.
+	managed := d.pendingManagedIDs[id]
+	if managed {
+		delete(d.pendingManagedIDs, id)
+	}
+	d.upsertWorker(id, conn, managed)
 
 	// Check for pending ralph handoffs — assign immediately if one exists.
 	var h *pendingHandoff
