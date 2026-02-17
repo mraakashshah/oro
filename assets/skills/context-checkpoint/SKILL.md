@@ -99,8 +99,8 @@ Follow the hook's instruction:
 2. For in-progress work: `bd update <id> --notes "Partial: <what's done, what remains>"`
 3. Verify remaining work exists as beads (create if needed)
 4. Use `create-handoff` skill with `beads:` section
-5. `bd sync --flush-only`
-6. `git pull --rebase && git push`
+5. `git pull --rebase && git push`
+   - Note: The pre-commit hook automatically runs `bd sync --flush-only`, so manual sync is not needed
 
 ## Handoff Template Addition
 

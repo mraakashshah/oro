@@ -171,5 +171,6 @@ When the human requests shutdown:
 1. Run `oro directive scale 0` to begin draining workers.
 2. Wait for drain confirmation from the dispatcher (`[ORO-DISPATCH] STATUS` with 0 active workers).
 3. Run `oro stop` to shut down the dispatcher.
-4. Run `bd sync` to ensure the backlog state is persisted.
-5. Report final status to the human: beads completed, beads remaining, any issues encountered.
+4. Report final status to the human: beads completed, beads remaining, any issues encountered.
+
+Note: `bd sync` is not needed — the pre-commit hook automatically runs `bd sync --flush-only` and stages `.beads/issues.jsonl` on every commit.

@@ -43,7 +43,8 @@ Git-backed issue tracker that survives conversation compaction. Provides persist
 3. `bd update <id> --status in_progress` — Claim work
 4. Work, adding notes as you go (critical for compaction survival)
 5. `bd close <id> --reason "..."` — Complete task
-6. `bd sync` — Persist to git (mandatory at session end)
+6. Commit and push your code changes
+   - Note: The pre-commit git hook automatically runs `bd sync --flush-only` and stages `.beads/issues.jsonl`, so manual `bd sync` is not needed before commits
 
 ## Key Commands
 
@@ -55,7 +56,7 @@ Git-backed issue tracker that survives conversation compaction. Provides persist
 | Update fields | `bd update <id> --status/--title/--notes/--description` |
 | Add dependency | `bd dep add <issue> <depends-on>` |
 | Close | `bd close <id> --reason "..."` |
-| Sync to git | `bd sync` |
+| Manual sync | `bd sync --flush-only` (rarely needed; pre-commit hook handles this) |
 
 **Never use `bd edit`** — it opens `$EDITOR` which agents cannot use. Use `bd update` with flags.
 
@@ -86,7 +87,8 @@ Run `bd prime` for full details on:
 
 ## Red Flags
 
-- Forgetting `bd sync` at session end (changes stay local)
+- Forgetting to commit and push changes (bead updates stay local)
+- Manually calling `bd sync` before commits (pre-commit hook handles this automatically)
 - Using `bd edit` (interactive editor, breaks agents)
 - Creating issues in production DB during testing (use `BEADS_DB=/tmp/test.db`)
 - Duplicating CLI docs in notes — point to `bd prime` instead

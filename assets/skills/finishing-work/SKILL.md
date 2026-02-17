@@ -94,7 +94,7 @@ After integration choice is executed:
 1. **File issues** — Create `bd` entries for remaining/discovered work
 2. **Quality gates** — Run `./quality_gate.sh` (Go) or `uv run pytest && ruff check . && ruff format --check .` (Python)
 3. **Commit** — Conventional Commits format
-4. **Push** — `git pull --rebase && bd sync && git push`
+4. **Push** — `git pull --rebase && git push` (pre-commit hook auto-syncs beads)
 5. **Verify** — `git status` shows "up to date with origin"
 
 ## Quick Reference
