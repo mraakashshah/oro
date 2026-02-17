@@ -1325,6 +1325,101 @@ func TestSearchTextInput(t *testing.T) {
 	})
 }
 
+// TestDaysSinceUpdateCalculation verifies DaysSinceUpdate is calculated from bead UpdatedAt timestamp.
+func TestDaysSinceUpdateCalculation(t *testing.T) {
+	tests := []struct {
+		name                string
+		updatedAt           string
+		wantDaysSinceUpdate int
+	}{
+		{
+			name:                "updated today shows 0 days",
+			updatedAt:           time.Now().Format(time.RFC3339),
+			wantDaysSinceUpdate: 0,
+		},
+		{
+			name:                "updated 8 days ago shows 8 days",
+			updatedAt:           time.Now().AddDate(0, 0, -8).Format(time.RFC3339),
+			wantDaysSinceUpdate: 8,
+		},
+		{
+			name:                "updated 3 days ago shows 3 days",
+			updatedAt:           time.Now().AddDate(0, 0, -3).Format(time.RFC3339),
+			wantDaysSinceUpdate: 3,
+		},
+		{
+			name:                "empty UpdatedAt shows 0 days",
+			updatedAt:           "",
+			wantDaysSinceUpdate: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newModel()
+			m.beads = []protocol.Bead{
+				{ID: "b-1", Title: "Test", Status: "open", Priority: 0, Type: "bug", UpdatedAt: tt.updatedAt},
+			}
+
+			// Convert beads to BeadsWithDeps (simulating what buildInsightsModel does)
+			insights := m.buildInsightsModel()
+			beadsWithDeps := insights.graph.beads
+
+			if len(beadsWithDeps) != 1 {
+				t.Fatalf("expected 1 bead, got %d", len(beadsWithDeps))
+			}
+
+			got := beadsWithDeps[0].DaysSinceUpdate
+			if got != tt.wantDaysSinceUpdate {
+				t.Errorf("DaysSinceUpdate = %d, want %d", got, tt.wantDaysSinceUpdate)
+			}
+		})
+	}
+}
+
+// TestTriageFlagFiresForStaleP0 verifies stale P0 triage flag uses calculated DaysSinceUpdate.
+func TestTriageFlagFiresForStaleP0(t *testing.T) {
+	m := newModel()
+	m.beads = []protocol.Bead{
+		{
+			ID:        "b-1",
+			Title:     "Stale P0 Bug",
+			Status:    "open",
+			Priority:  0,
+			Type:      "bug",
+			UpdatedAt: time.Now().AddDate(0, 0, -10).Format(time.RFC3339), // 10 days ago
+		},
+		{
+			ID:        "b-2",
+			Title:     "Recent P0 Bug",
+			Status:    "open",
+			Priority:  0,
+			Type:      "bug",
+			UpdatedAt: time.Now().Format(time.RFC3339), // today
+		},
+	}
+
+	insights := m.buildInsightsModel()
+	flags := insights.graph.TriageFlags()
+
+	// Should have exactly 1 flag for the stale P0
+	if len(flags) != 1 {
+		t.Fatalf("expected 1 triage flag for stale P0, got %d", len(flags))
+	}
+
+	if flags[0].BeadID != "b-1" {
+		t.Errorf("triage flag should be for b-1, got %s", flags[0].BeadID)
+	}
+
+	if flags[0].Severity != "high" {
+		t.Errorf("triage flag severity should be 'high', got %s", flags[0].Severity)
+	}
+
+	if !strings.Contains(flags[0].Reason, "stale P0") {
+		t.Errorf("triage flag reason should mention 'stale P0', got %s", flags[0].Reason)
+	}
+}
+
 // TestStatusBarBottom verifies status bar is at bottom of View() output, includes help hints,
 // and handles narrow/short terminal edge cases.
 func TestStatusBarBottom(t *testing.T) {

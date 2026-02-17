@@ -24,6 +24,7 @@ type Bead struct {
 	EstimatedMinutes   int          `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
 	AcceptanceCriteria string       `json:"acceptance_criteria,omitempty"` // acceptance criteria text
 	Dependencies       []Dependency `json:"dependencies,omitempty"`        // dependency relationships
+	UpdatedAt          string       `json:"updated_at,omitempty"`          // RFC3339 timestamp of last update
 }
 
 // BeadDetail holds extended information about a single bead.
