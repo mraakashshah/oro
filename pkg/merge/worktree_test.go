@@ -18,16 +18,15 @@ func TestMergeToMain(t *testing.T) {
 				// 1. git rebase main bead/abc — success
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. git rev-parse --git-common-dir — returns common git dir
+				//    primaryRepo derived by stripping /.git suffix
 				{Stdout: "/path/to/repo/.git\n", Stderr: "", Err: nil},
-				// 3. git rev-parse --show-toplevel (from common dir) — returns primary repo
-				{Stdout: "/path/to/repo\n", Stderr: "", Err: nil},
-				// 4. git rev-list --reverse main..bead/abc — returns commit SHAs
+				// 3. git rev-list --reverse main..bead/abc — returns commit SHAs
 				{Stdout: "commit1\ncommit2\n", Stderr: "", Err: nil},
-				// 5. git cherry-pick commit1 (in primary repo) — success
+				// 4. git cherry-pick commit1 (in primary repo) — success
 				{Stdout: "", Stderr: "", Err: nil},
-				// 6. git cherry-pick commit2 (in primary repo) — success
+				// 5. git cherry-pick commit2 (in primary repo) — success
 				{Stdout: "", Stderr: "", Err: nil},
-				// 7. git rev-parse HEAD (in primary repo) — returns final SHA
+				// 6. git rev-parse HEAD (in primary repo) — returns final SHA
 				{Stdout: "finalsha123\n", Stderr: "", Err: nil},
 			},
 		}
@@ -50,8 +49,8 @@ func TestMergeToMain(t *testing.T) {
 
 		// Verify the sequence of git commands
 		calls := mock.getCalls()
-		if len(calls) != 8 {
-			t.Fatalf("expected 8 git calls, got %d: %+v", len(calls), calls)
+		if len(calls) != 7 {
+			t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
 		}
 
 		// Verify already-merged check
@@ -60,15 +59,13 @@ func TestMergeToMain(t *testing.T) {
 		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 		// Verify rev-parse --git-common-dir
 		assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
-		// Verify rev-parse --show-toplevel from common dir
-		assertArgs(t, calls[3], "/path/to/repo/.git", "rev-parse", "--show-toplevel")
-		// Verify rev-list to get commits
-		assertArgs(t, calls[4], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
+		// Verify rev-list to get commits (primaryRepo derived from commonDir, no --show-toplevel call)
+		assertArgs(t, calls[3], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
 		// Verify cherry-picks happened in primary repo
-		assertArgs(t, calls[5], "/path/to/repo", "cherry-pick", "commit1")
-		assertArgs(t, calls[6], "/path/to/repo", "cherry-pick", "commit2")
+		assertArgs(t, calls[4], "/path/to/repo", "cherry-pick", "commit1")
+		assertArgs(t, calls[5], "/path/to/repo", "cherry-pick", "commit2")
 		// Verify final rev-parse in primary repo
-		assertArgs(t, calls[7], "/path/to/repo", "rev-parse", "HEAD")
+		assertArgs(t, calls[6], "/path/to/repo", "rev-parse", "HEAD")
 	})
 
 	t.Run("commits from agent branch land on main", func(t *testing.T) {
@@ -80,13 +77,11 @@ func TestMergeToMain(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. git rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// 3. git rev-parse --show-toplevel
-				{Stdout: "/repo\n", Stderr: "", Err: nil},
-				// 4. git rev-list --reverse main..bead/xyz
+				// 3. git rev-list --reverse main..bead/xyz
 				{Stdout: "abc123\n", Stderr: "", Err: nil},
-				// 5. git cherry-pick abc123
+				// 4. git cherry-pick abc123
 				{Stdout: "", Stderr: "", Err: nil},
-				// 6. git rev-parse HEAD
+				// 5. git rev-parse HEAD
 				{Stdout: "abc123\n", Stderr: "", Err: nil},
 			},
 		}

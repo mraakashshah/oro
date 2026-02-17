@@ -110,18 +110,26 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 
 // cherryPickToMain applies commits from the rebased branch onto main in the primary repo.
 func (c *Coordinator) cherryPickToMain(ctx context.Context, opts Opts) (*Result, error) {
-	// Get the primary repository path
+	// Get the primary repository path.
+	// --git-common-dir returns the shared .git dir (e.g., "/repo/.git").
+	// We derive the primary repo by stripping the "/.git" suffix rather than
+	// running rev-parse --show-toplevel inside .git (which fails — .git is not
+	// a working tree).
 	commonDir, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get git common dir: %w", err)
 	}
 	commonDir = strings.TrimSpace(commonDir)
 
-	primaryRepo, _, err := c.git.Run(ctx, commonDir, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get primary repo path: %w", err)
+	primaryRepo := strings.TrimSuffix(strings.TrimRight(commonDir, "/"), "/.git")
+	if primaryRepo == commonDir {
+		// Fallback: commonDir didn't end with /.git — ask the worktree instead.
+		primaryRepo, _, err = c.git.Run(ctx, opts.Worktree, "rev-parse", "--show-toplevel")
+		if err != nil {
+			return nil, fmt.Errorf("failed to get primary repo path: %w", err)
+		}
+		primaryRepo = strings.TrimSpace(primaryRepo)
 	}
-	primaryRepo = strings.TrimSpace(primaryRepo)
 
 	// Get commits to cherry-pick
 	commitRange, _, err := c.git.Run(ctx, opts.Worktree, "rev-list", "--reverse", "main.."+opts.Branch)

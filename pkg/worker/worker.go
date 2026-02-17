@@ -1131,7 +1131,13 @@ func buildClaudeEnv() []string {
 	if os.Getenv("ORO_PROJECT") == "" {
 		return nil
 	}
-	return append(os.Environ(), "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "CLAUDECODE=") {
+			env = append(env, e)
+		}
+	}
+	return append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
 }
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.

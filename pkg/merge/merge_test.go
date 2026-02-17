@@ -63,17 +63,15 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 			{Stdout: "2\n", Stderr: "", Err: nil},
 			// 1. git rebase main bead/abc — success
 			{Stdout: "", Stderr: "", Err: nil},
-			// 2. git rev-parse --git-common-dir
+			// 2. git rev-parse --git-common-dir → primaryRepo derived by stripping /.git
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git rev-parse --show-toplevel (from common dir)
-			{Stdout: "/repo\n", Stderr: "", Err: nil},
-			// 4. git rev-list --reverse main..bead/abc
+			// 3. git rev-list --reverse main..bead/abc
 			{Stdout: "commit1\ncommit2\n", Stderr: "", Err: nil},
-			// 5. git cherry-pick commit1 (in primary repo)
+			// 4. git cherry-pick commit1 (in primary repo)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 6. git cherry-pick commit2 (in primary repo)
+			// 5. git cherry-pick commit2 (in primary repo)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 7. git rev-parse HEAD (in primary repo)
+			// 6. git rev-parse HEAD (in primary repo)
 			{Stdout: "abc123def456\n", Stderr: "", Err: nil},
 		},
 	}
@@ -95,8 +93,8 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 
 	// Verify the git commands issued
 	calls := mock.getCalls()
-	if len(calls) != 8 {
-		t.Fatalf("expected 8 git calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 7 {
+		t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
 	}
 
 	// Call 0: isBranchMerged check
@@ -105,16 +103,14 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 	assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 	// Call 2: rev-parse --git-common-dir
 	assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
-	// Call 3: rev-parse --show-toplevel
-	assertArgs(t, calls[3], "/repo/.git", "rev-parse", "--show-toplevel")
-	// Call 4: rev-list
-	assertArgs(t, calls[4], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
-	// Call 5: cherry-pick commit1
-	assertArgs(t, calls[5], "/repo", "cherry-pick", "commit1")
-	// Call 6: cherry-pick commit2
-	assertArgs(t, calls[6], "/repo", "cherry-pick", "commit2")
-	// Call 7: rev-parse HEAD
-	assertArgs(t, calls[7], "/repo", "rev-parse", "HEAD")
+	// Call 3: rev-list (no more rev-parse --show-toplevel — primaryRepo derived from commonDir)
+	assertArgs(t, calls[3], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
+	// Call 4: cherry-pick commit1
+	assertArgs(t, calls[4], "/repo", "cherry-pick", "commit1")
+	// Call 5: cherry-pick commit2
+	assertArgs(t, calls[5], "/repo", "cherry-pick", "commit2")
+	// Call 6: rev-parse HEAD
+	assertArgs(t, calls[6], "/repo", "rev-parse", "HEAD")
 }
 
 func TestMerge_RebaseConflict_ReturnsConflictError(t *testing.T) {
@@ -188,19 +184,17 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 			<-unblockFirst // block until signaled
 		},
 		results: []mockResult{
-			// First merge (8 calls)
+			// First merge (6 calls — no rev-parse --show-toplevel)
 			{Stdout: "1\n", Stderr: "", Err: nil},          // rev-list --count (not merged)
 			{Stdout: "", Stderr: "", Err: nil},             // rebase
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil}, // rev-parse --git-common-dir
-			{Stdout: "/repo\n", Stderr: "", Err: nil},      // rev-parse --show-toplevel
 			{Stdout: "c1\n", Stderr: "", Err: nil},         // rev-list
 			{Stdout: "", Stderr: "", Err: nil},             // cherry-pick
 			{Stdout: "sha1\n", Stderr: "", Err: nil},       // rev-parse HEAD
-			// Second merge (7 calls)
+			// Second merge (6 calls)
 			{Stdout: "1\n", Stderr: "", Err: nil},          // rev-list --count (not merged)
 			{Stdout: "", Stderr: "", Err: nil},             // rebase
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil}, // rev-parse --git-common-dir
-			{Stdout: "/repo\n", Stderr: "", Err: nil},      // rev-parse --show-toplevel
 			{Stdout: "c2\n", Stderr: "", Err: nil},         // rev-list
 			{Stdout: "", Stderr: "", Err: nil},             // cherry-pick
 			{Stdout: "sha2\n", Stderr: "", Err: nil},       // rev-parse HEAD
@@ -253,19 +247,19 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 	wg.Wait()
 
 	// The second merge must have started its git operations after the first finished
-	// Verify all 14 git calls happened sequentially (7 per merge)
+	// Verify all 12 git calls happened sequentially (6 per merge)
 	calls := blockingRunner.getCalls()
-	if len(calls) != 14 {
-		t.Fatalf("expected 14 git calls, got %d", len(calls))
+	if len(calls) != 12 {
+		t.Fatalf("expected 12 git calls, got %d", len(calls))
 	}
 
 	// Second call (rebase) should be for bead/first
 	if !containsArg(calls[1].Args, "bead/first") {
 		t.Errorf("expected second call (rebase) to be for bead/first, got %v", calls[1].Args)
 	}
-	// 9th call (second merge's rebase) should be for bead/second
-	if !containsArg(calls[8].Args, "bead/second") {
-		t.Errorf("expected ninth call (rebase) to be for bead/second, got %v", calls[8].Args)
+	// 8th call (second merge's rebase) should be for bead/second
+	if !containsArg(calls[7].Args, "bead/second") {
+		t.Errorf("expected eighth call (rebase) to be for bead/second, got %v", calls[7].Args)
 	}
 }
 
@@ -413,13 +407,11 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — success
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git rev-parse --show-toplevel — success
-			{Stdout: "/repo\n", Stderr: "", Err: nil},
-			// 4. git rev-list — success
+			// 3. git rev-list — success
 			{Stdout: "commit1\n", Stderr: "", Err: nil},
-			// 5. git cherry-pick — fails (e.g., main moved, conflict)
+			// 4. git cherry-pick — fails (e.g., main moved, conflict)
 			{Stdout: "", Stderr: "error: could not apply commit1", Err: fmt.Errorf("exit status 1")},
-			// 6. git cherry-pick --abort (cleanup)
+			// 5. git cherry-pick --abort (cleanup)
 			{Stdout: "", Stderr: "", Err: nil},
 		},
 	}
@@ -488,9 +480,7 @@ func TestMerge_RevParseFails(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — success
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git rev-parse --show-toplevel — success
-			{Stdout: "/repo\n", Stderr: "", Err: nil},
-			// 4. git rev-list — fails
+			// 3. git rev-list — fails
 			{Stdout: "", Stderr: "fatal: bad revision", Err: fmt.Errorf("exit status 128")},
 		},
 	}
@@ -720,8 +710,6 @@ func TestMerge_BranchAlreadyMerged_DiffCheck(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// rev-parse --show-toplevel
-				{Stdout: "/repo\n", Stderr: "", Err: nil},
 				// rev-list --reverse main..bead/diff-nonempty — one commit
 				{Stdout: "abc123\n", Stderr: "", Err: nil},
 				// cherry-pick abc123
@@ -760,8 +748,6 @@ func TestMerge_BranchAlreadyMerged_DiffCheck(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// rev-parse --show-toplevel
-				{Stdout: "/repo\n", Stderr: "", Err: nil},
 				// rev-list --reverse main..bead/diff-err — one commit
 				{Stdout: "def456\n", Stderr: "", Err: nil},
 				// cherry-pick def456
