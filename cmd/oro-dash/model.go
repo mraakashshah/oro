@@ -145,6 +145,36 @@ func newModel() Model {
 	}
 }
 
+// calculateColumnWidth returns the column width based on terminal width.
+// Divides terminal width by 4 (number of columns) with a minimum floor of 18.
+func (m Model) calculateColumnWidth() int {
+	const minWidth = 18
+	const numColumns = 4
+
+	colWidth := m.width / numColumns
+	if colWidth < minWidth {
+		return minWidth
+	}
+	return colWidth
+}
+
+// calculateSearchInputWidth returns the search input width based on terminal width.
+// Uses most of terminal width minus padding, with min/max constraints.
+func (m Model) calculateSearchInputWidth() int {
+	const minSearchWidth = 40
+	const maxSearchWidth = 120
+	const padding = 4
+
+	width := m.width - padding
+	if width < minSearchWidth {
+		return minSearchWidth
+	}
+	if width > maxSearchWidth {
+		return maxSearchWidth
+	}
+	return width
+}
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	// Start watching .beads/ directory for changes (falls back to polling if unavailable)
@@ -442,7 +472,8 @@ func (m Model) View() string {
 		}
 		// Fallback to board if detailModel is nil
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
-		return board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles) + "\n" + statusBar
+		colWidth := m.calculateColumnWidth()
+		return board.RenderWithCustomWidth(m.activeCol, m.activeBead, colWidth, m.theme, m.styles) + "\n" + statusBar
 	case SearchView:
 		return m.renderSearchOverlay() + "\n" + statusBar
 	case HealthView:
@@ -452,7 +483,8 @@ func (m Model) View() string {
 		return workersTable.View(m.theme, m.styles) + "\n" + statusBar
 	default:
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
-		return board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles) + "\n" + statusBar
+		colWidth := m.calculateColumnWidth()
+		return board.RenderWithCustomWidth(m.activeCol, m.activeBead, colWidth, m.theme, m.styles) + "\n" + statusBar
 	}
 }
 
@@ -594,7 +626,10 @@ func (m Model) renderSearchTitle() string {
 
 // renderSearchInput renders the search input field with current query.
 func (m Model) renderSearchInput() string {
-	return m.styles.SearchInput.Render("Query: " + m.searchInput.View())
+	// Use adaptive width based on terminal size
+	width := m.calculateSearchInputWidth()
+	style := m.styles.SearchInput.Width(width)
+	return style.Render("Query: " + m.searchInput.View())
 }
 
 // renderSearchHelp renders the help text for search overlay.
