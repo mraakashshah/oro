@@ -172,6 +172,14 @@ func (c *Coordinator) isBranchMerged(ctx context.Context, opts Opts) (merged boo
 	if strings.TrimSpace(out) != "0" {
 		return false, "", nil
 	}
+	// Verify no uncommitted diff between main and branch (fail-open: diff error → not merged).
+	diffOut, _, diffErr := c.git.Run(ctx, opts.Worktree, "diff", "main.."+opts.Branch)
+	if diffErr != nil {
+		return false, "", nil //nolint:nilerr // fail-open: diff error means proceed to rebase
+	}
+	if strings.TrimSpace(diffOut) != "" {
+		return false, "", nil
+	}
 	// Branch is fully merged — return main HEAD as the merge commit.
 	sha, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "main")
 	if err != nil {
