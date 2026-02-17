@@ -10,6 +10,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+# Debounce file path from inject_context_usage.py
+DEBOUNCE_FILE = Path("/tmp/oro-context-warn-ts")
+
 
 def test_calculates_percentage_with_1m_token_budget():
     """Hook should use actual budget (1M tokens) not hardcoded 200K.
@@ -18,6 +21,9 @@ def test_calculates_percentage_with_1m_token_budget():
     When: Hook calculates context percentage
     Then: Should report ~10% (98K/1M), not 53% (98K/200K)
     """
+    # Clean up debounce file to prevent test isolation issues
+    DEBOUNCE_FILE.unlink(missing_ok=True)
+
     # Create a mock transcript with 98K tokens used and 1M budget
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         transcript_path = f.name
@@ -61,6 +67,8 @@ def test_calculates_percentage_with_1m_token_budget():
 
     finally:
         Path(transcript_path).unlink(missing_ok=True)
+        # Clean up debounce file after test
+        DEBOUNCE_FILE.unlink(missing_ok=True)
 
 
 def test_warns_correctly_at_45_percent_with_1m_budget():
@@ -70,6 +78,9 @@ def test_warns_correctly_at_45_percent_with_1m_budget():
     When: Hook calculates context percentage
     Then: Should trigger warning at 45% threshold
     """
+    # Clean up debounce file to prevent test isolation issues
+    DEBOUNCE_FILE.unlink(missing_ok=True)
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         transcript_path = f.name
 
@@ -114,6 +125,8 @@ def test_warns_correctly_at_45_percent_with_1m_budget():
 
     finally:
         Path(transcript_path).unlink(missing_ok=True)
+        # Clean up debounce file after test
+        DEBOUNCE_FILE.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
