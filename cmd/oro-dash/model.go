@@ -82,6 +82,8 @@ const (
 	HelpView
 	// HealthView shows system health status.
 	HealthView
+	// WorkersView shows the workers table.
+	WorkersView
 )
 
 // Model is the Bubble Tea model for the oro dashboard.
@@ -240,6 +242,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSearchViewKeys(key, msg)
 	case HealthView:
 		return m.handleHealthViewKeys(key)
+	case WorkersView:
+		return m.handleWorkersViewKeys(key)
 	default: // BoardView
 		return m.handleBoardViewKeys(key)
 	}
@@ -315,6 +319,8 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.activeView = SearchView
 		m.searchQuery = ""
 		m.searchSelectedIndex = 0
+	case "w":
+		m.activeView = WorkersView
 	}
 	return m, cmd
 }
@@ -434,6 +440,9 @@ func (m Model) View() string {
 		return statusBar + "\n" + m.renderSearchOverlay()
 	case HealthView:
 		return statusBar + "\n" + m.renderHealthView()
+	case WorkersView:
+		workersTable := NewWorkersTableModel(m.workers, m.assignments)
+		return statusBar + "\n" + workersTable.View(m.theme, m.styles)
 	default:
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles)
