@@ -1,6 +1,7 @@
 package worker //nolint:testpackage // need access to buildClaudeArgs
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -67,12 +68,43 @@ func TestBuildClaudeArgs(t *testing.T) {
 	})
 }
 
-func TestBuildClaudeEnv(t *testing.T) {
-	t.Run("returns nil when ORO_PROJECT not set", func(t *testing.T) {
-		t.Setenv("ORO_PROJECT", "") // Explicitly unset
+func TestBuildClaudeEnvStripsClaudeCodeAlways(t *testing.T) {
+	t.Run("strips CLAUDECODE when ORO_PROJECT not set", func(t *testing.T) {
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("CLAUDECODE", "1")
 		env := buildClaudeEnv()
-		if env != nil {
-			t.Errorf("expected nil env, got %v", env)
+		// Must be non-nil: nil means exec.Cmd inherits parent env, leaking CLAUDECODE.
+		if env == nil {
+			t.Fatal("expected non-nil env when CLAUDECODE is set (nil would inherit parent env including CLAUDECODE)")
+		}
+		for _, e := range env {
+			if strings.HasPrefix(e, "CLAUDECODE=") {
+				t.Errorf("CLAUDECODE leaked into subprocess env: %s", e)
+			}
+		}
+	})
+
+	t.Run("strips CLAUDECODE when ORO_PROJECT set", func(t *testing.T) {
+		t.Setenv("ORO_PROJECT", "myproj")
+		t.Setenv("CLAUDECODE", "1")
+		env := buildClaudeEnv()
+		if env == nil {
+			t.Fatal("expected non-nil env")
+		}
+		for _, e := range env {
+			if strings.HasPrefix(e, "CLAUDECODE=") {
+				t.Errorf("CLAUDECODE leaked into subprocess env: %s", e)
+			}
+		}
+	})
+}
+
+func TestBuildClaudeEnv(t *testing.T) {
+	t.Run("returns non-nil env even when ORO_PROJECT not set", func(t *testing.T) {
+		t.Setenv("ORO_PROJECT", "")
+		env := buildClaudeEnv()
+		if env == nil {
+			t.Error("expected non-nil env (must always strip CLAUDECODE)")
 		}
 	})
 
