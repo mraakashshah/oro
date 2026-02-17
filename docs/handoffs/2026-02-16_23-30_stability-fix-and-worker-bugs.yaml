@@ -1,0 +1,120 @@
+---
+date: 2026-02-16
+status: partial
+---
+
+goal: >
+  Fixed recurring oro/tmux crash bug by removing dual-restart race condition.
+  Ran 4 beads through oro work pipeline. Fixed bugs found along the way.
+  Started fixing oro work merge-already-merged bug but ran out of context.
+
+now: >
+  Finish fixing pkg/merge/merge.go isBranchMerged feature. The code change is
+  done but merge_test.go needs updating — every mock that calls coord.Merge()
+  needs a rev-list --count mock result prepended as the first entry. Two test
+  files already fixed (worktree_test.go, RebaseNoConflictPattern in merge_test.go).
+  Remaining: ~10 other test functions in merge_test.go need the same treatment.
+  Then build, test, commit, push.
+
+test: go test ./pkg/merge/... && go test ./pkg/dispatcher/...
+
+done_this_session:
+  - task: "Fixed dual-restart crash loop (P0)"
+    files: [pkg/dispatcher/pane_monitor.go, pkg/dispatcher/dispatcher.go, pkg/dispatcher/process_manager.go, cmd/oro/cmd_start.go]
+    details: >
+      Removed dispatcher pane restart (fc581b9 feature) that raced with tmux
+      pane-died hooks. Deleted checkHandoffComplete, restartPane, buildExecEnvCmd,
+      TmuxSession interface, pane_restart_test.go. Extended SessionStart cleanup
+      to also delete stale handoff_complete files. Commit 7ed2212.
+  - task: "Enforced P0 for all bug beads"
+    files: [pkg/dispatcher/beadsource.go, pkg/dispatcher/beadsource_test.go]
+    details: >
+      CLIBeadSource.Create now forces priority=0 when type is "bug".
+      Commit d65852f.
+  - task: "Ran 4 beads through oro work pipeline"
+    details: >
+      oro-xhio (debounce test isolation) — APPROVED, merged to main.
+      oro-wee1 (filter in_progress beads) — merged to main.
+      oro-jdbh (pylint import-error fix) — APPROVED, merged to main.
+      oro-u74j (worker closes without merge) — partial fix only (prompt change).
+  - task: "Cleaned up 3 merged worktrees and reset beads to open"
+  - task: "Started isBranchMerged fix for oro work merge step"
+    files: [pkg/merge/merge.go, pkg/merge/merge_test.go, pkg/merge/worktree_test.go]
+    details: >
+      Added isBranchMerged() to Coordinator that checks rev-list --count before
+      attempting rebase+cherry-pick. If branch already merged, returns success
+      immediately. Code done, worktree_test.go fixed, most merge_test.go mocks
+      still need the prepended rev-list --count result.
+
+decisions:
+  - approach_a_for_stability: >
+      Chose to disable dispatcher pane restart entirely rather than coordinate
+      two mechanisms. Pane-died hooks are battle-tested and sufficient.
+  - bugs_always_p0: >
+      Convention: bugs are always P0. If not urgent, file as task or feature.
+      Enforced in CLIBeadSource.Create.
+  - oro_work_env: >
+      Must unset CLAUDECODE env var when launching oro work from inside Claude
+      Code, otherwise child claude processes refuse to start.
+
+findings:
+  - oro_work_merge_bug: >
+      Agents inside worktrees merge to main themselves (via git merge/cherry-pick).
+      Then oro work's merge step tries to do it again and fails. Two-part fix:
+      (1) isBranchMerged check in merge.go (in progress), (2) update worker
+      prompt to not merge (partially done by oro-u74j worker).
+  - oro_work_ac_required: >
+      oro work exits with code 3 if bead has no acceptance criteria.
+      Must add AC before launching.
+  - claudecode_env_blocks_nesting: >
+      Claude Code sets CLAUDECODE env var. Child claude processes detect it
+      and refuse to start. Workaround: unset CLAUDECODE before spawning.
+
+worked:
+  - oro work command for parallel bead execution (4 beads simultaneously)
+  - Quality gate + ops review pipeline catches real issues
+  - Systematic brainstorming before implementing stability fix
+
+failed:
+  - First oro work launch forgot to unset CLAUDECODE — all 4 workers failed
+  - oro-u74j worker only removed prompt text, didn't implement merge-before-close guard
+  - oro work merge step fails when agent already merged (fix in progress)
+
+next:
+  - Fix remaining merge_test.go mocks (prepend rev-list --count to each mock)
+  - Build, test, commit, push the isBranchMerged fix
+  - File a bead for the CLAUDECODE env var workaround (oro work should handle this)
+  - Consider updating worker prompt to explicitly say "don't merge to main"
+  - Monitor oro stability with the crash fix (start oro, watch for 10+ min)
+
+files:
+  created:
+    - docs/plans/2026-02-16-disable-dispatcher-pane-restart.md
+    - docs/handoffs/2026-02-16_23-30_stability-fix-and-worker-bugs.yaml
+  modified:
+    - pkg/dispatcher/pane_monitor.go (removed restart functions, -120 lines)
+    - pkg/dispatcher/dispatcher.go (removed TmuxSession interface)
+    - pkg/dispatcher/process_manager.go (removed SetTmuxSession)
+    - cmd/oro/cmd_start.go (removed SetTmuxSession wiring)
+    - assets/hooks/session_start_extras.py (cleanup handoff_complete too)
+    - tests/test_session_start_extras.py (test both signal cleanups)
+    - pkg/dispatcher/beadsource.go (P0 enforcement for bugs)
+    - pkg/dispatcher/beadsource_test.go (updated priority assertion)
+    - pkg/merge/merge.go (isBranchMerged — UNCOMMITTED)
+    - pkg/merge/merge_test.go (partial mock updates — UNCOMMITTED)
+    - pkg/merge/worktree_test.go (mock updates — UNCOMMITTED)
+  deleted:
+    - pkg/dispatcher/pane_restart_test.go
+
+beads:
+  completed_by_workers:
+    - oro-xhio (debounce test isolation)
+    - oro-wee1 (filter in_progress beads)
+    - oro-jdbh (pylint import-error fix)
+  completed_by_us:
+    - oro-d2tl (P0 enforcement for bugs)
+  open:
+    - oro-4lo7 (P0: stop test stdin error)
+    - oro-wee1 (reset to open — verify worker fix landed correctly)
+    - oro-u74j (worker closes without merge — needs real fix)
+    - oro-zbck (tmux hints)
