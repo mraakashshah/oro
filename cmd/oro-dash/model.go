@@ -22,10 +22,11 @@ type tickMsg time.Time
 // beadsMsg carries fetched beads from the bd CLI.
 type beadsMsg []protocol.Bead
 
-// workerDataMsg carries both worker status and assignments from the dispatcher.
+// workerDataMsg carries worker status, assignments, and focused epic from the dispatcher.
 type workerDataMsg struct {
 	workers     []WorkerStatus
 	assignments map[string]string
+	focusedEpic string
 }
 
 // tickCmd returns a command that sends a tickMsg after 2 seconds.
@@ -47,10 +48,11 @@ func fetchBeadsCmd() tea.Cmd {
 func fetchWorkersCmd() tea.Cmd {
 	return func() tea.Msg {
 		socketPath := defaultSocketPath()
-		workers, assignments, _ := fetchWorkerStatus(context.Background(), socketPath)
+		workers, assignments, focusedEpic, _ := fetchWorkerStatus(context.Background(), socketPath)
 		return workerDataMsg{
 			workers:     workers,
 			assignments: assignments,
+			focusedEpic: focusedEpic,
 		}
 	}
 }
@@ -101,6 +103,7 @@ type Model struct {
 	workers     []WorkerStatus
 	assignments map[string]string // bead ID -> worker ID
 	healthData  *HealthData       // Health data from dispatcher
+	focusedEpic string            // Epic ID currently focused by dispatcher
 
 	// UI state
 	width  int
@@ -215,11 +218,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.daemonHealthy = false
 			m.workerCount = 0
 			m.assignments = nil
+			m.focusedEpic = ""
 		} else {
 			m.daemonHealthy = true
 			m.workers = msg.workers
 			m.workerCount = len(msg.workers)
 			m.assignments = msg.assignments
+			m.focusedEpic = msg.focusedEpic
 		}
 
 	case workerEventsMsg:
@@ -587,8 +592,8 @@ func (m Model) renderStatusBar(width int) string {
 		daemonStatus = m.styles.DaemonOffline.Render("daemon: offline")
 	}
 
-	metrics := lipgloss.JoinHorizontal(
-		lipgloss.Left,
+	// Build base metrics
+	metricsComponents := []string{
 		daemonStatus,
 		m.styles.StatusLabel.Render(" | Workers: "),
 		m.styles.StatusPrimary.Render(fmt.Sprintf("%d", m.workerCount)),
@@ -596,7 +601,18 @@ func (m Model) renderStatusBar(width int) string {
 		m.styles.StatusWarning.Render(fmt.Sprintf("%d", m.openCount)),
 		m.styles.StatusLabel.Render(" | In Progress: "),
 		m.styles.StatusSuccess.Render(fmt.Sprintf("%d", m.inProgressCount)),
-	)
+	}
+
+	// Add epic progress if a focused epic exists
+	if m.focusedEpic != "" {
+		pct, total, done := GetEpicProgress(m.focusedEpic, m.beads)
+		metricsComponents = append(metricsComponents,
+			m.styles.StatusLabel.Render(" | Epic: "),
+			m.styles.StatusPrimary.Render(fmt.Sprintf("%s (%d/%d - %d%%)", m.focusedEpic, done, total, pct)),
+		)
+	}
+
+	metrics := lipgloss.JoinHorizontal(lipgloss.Left, metricsComponents...)
 
 	hints := helpHintsForView(m.activeView, width)
 	if hints == "" || m.height < 30 {
