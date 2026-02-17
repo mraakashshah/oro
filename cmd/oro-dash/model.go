@@ -475,6 +475,25 @@ func (m Model) renderSplitPane() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, boardView, detailView)
 }
 
+// calculateDaysSinceUpdate calculates days since the bead was last updated.
+// Returns 0 if updatedAt is empty or invalid.
+func calculateDaysSinceUpdate(updatedAt string) int {
+	if updatedAt == "" {
+		return 0
+	}
+
+	t, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return 0
+	}
+
+	days := int(time.Since(t).Hours() / 24)
+	if days < 0 {
+		return 0
+	}
+	return days
+}
+
 // buildInsightsModel creates an InsightsModel from the current beads.
 func (m Model) buildInsightsModel() *InsightsModel {
 	beadsWithDeps := make([]BeadWithDeps, len(m.beads))
@@ -492,7 +511,7 @@ func (m Model) buildInsightsModel() *InsightsModel {
 			ID:              b.ID,
 			Priority:        b.Priority,
 			Type:            b.Type,
-			DaysSinceUpdate: 0, // TODO: calculate from updated timestamp
+			DaysSinceUpdate: calculateDaysSinceUpdate(b.UpdatedAt),
 			DependsOn:       dependsOn,
 		}
 	}
