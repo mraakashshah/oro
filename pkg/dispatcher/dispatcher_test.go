@@ -5499,6 +5499,57 @@ func TestShutdownCleanup_CallsBeadSync(t *testing.T) {
 	}
 }
 
+// TestShutdownResetsInProgressBeads verifies that shutdownSequence resets all
+// beads with active assignments back to open status so they become re-assignable
+// on the next dispatcher start. This is phase 3b: between shutdownWaitForWorkers
+// and shutdownRemoveWorktrees.
+func TestShutdownResetsInProgressBeads(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Insert two active assignments directly into the DB.
+	for _, beadID := range []string{"bead-reset-a", "bead-reset-b"} {
+		_, err := d.db.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+			beadID, "w-test", "/tmp/worktree-"+beadID)
+		if err != nil {
+			t.Fatalf("insert assignment for %s: %v", beadID, err)
+		}
+	}
+
+	// Also insert a completed assignment — must NOT be reset to open.
+	_, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('bead-done', 'w-test', '/tmp/worktree-done', 'completed')`)
+	if err != nil {
+		t.Fatalf("insert completed assignment: %v", err)
+	}
+
+	// shutdownSequence has no connected workers, so phase 2 is a no-op and
+	// shutdownWaitForWorkers returns immediately. Phase 3b should then reset
+	// all active assignments to open.
+	d.shutdownSequence()
+
+	beadSrc.mu.Lock()
+	updated := beadSrc.updated
+	beadSrc.mu.Unlock()
+
+	for _, beadID := range []string{"bead-reset-a", "bead-reset-b"} {
+		status, ok := updated[beadID]
+		if !ok {
+			t.Errorf("expected beads.Update(%q, open) to be called, but it was not", beadID)
+			continue
+		}
+		if status != "open" {
+			t.Errorf("expected beads.Update(%q, open), got status=%q", beadID, status)
+		}
+	}
+
+	// Completed assignment must not be reset.
+	if status, ok := updated["bead-done"]; ok {
+		t.Errorf("expected completed bead to be left alone, but beads.Update was called with status=%q", status)
+	}
+}
+
 // TestMergeClosesBead verifies that after a successful merge, the dispatcher
 // calls beads.Close(beadID) so the bead doesn't get re-assigned.
 func TestMergeClosesBead(t *testing.T) {
