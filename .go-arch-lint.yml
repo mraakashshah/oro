@@ -6,6 +6,7 @@ excludeFiles:
   - "yap/.+"
   - "references/.+"
   - "\\.worktrees/.+"
+  - "readme_test\\.go"
 
 components:
   cmd:
