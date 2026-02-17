@@ -33,7 +33,7 @@ func TestHelpOutput(t *testing.T) {
 		}
 	}
 
-	// Verify all 14 subcommands are listed.
+	// Verify all 15 subcommands are listed (all commands except "help" itself).
 	subcommands := []string{
 		"init",
 		"start",
@@ -49,6 +49,8 @@ func TestHelpOutput(t *testing.T) {
 		"directive",
 		"index",
 		"worker",
+		"ingest",
+		"work",
 	}
 	for _, cmd := range subcommands {
 		if !strings.Contains(out, cmd) {
@@ -112,5 +114,40 @@ func TestHelpUnknownCommand(t *testing.T) {
 
 	if !hasUnknown {
 		t.Errorf("expected 'unknown' in output or error for unknown command, got output:\n%s\nerr: %v", out, err)
+	}
+}
+
+// TestHelpIncludesAllRegisteredCommands ensures that if a new command is added
+// to root.go, it must also be added to the help text. This prevents drift between
+// registered commands and the help output.
+func TestHelpIncludesAllRegisteredCommands(t *testing.T) {
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"help"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	helpOutput := buf.String()
+
+	// Collect all registered subcommands except "help" and auto-generated cobra commands.
+	var missing []string
+	for _, cmd := range root.Commands() {
+		cmdName := cmd.Name()
+		// Skip the help command itself - it shouldn't list itself.
+		// Skip auto-generated cobra commands like "completion".
+		if cmdName == "help" || cmdName == "completion" {
+			continue
+		}
+		if !strings.Contains(helpOutput, cmdName) {
+			missing = append(missing, cmdName)
+		}
+	}
+
+	if len(missing) > 0 {
+		t.Errorf("help text is missing %d registered command(s): %v\nPlease update helpText in cmd_help.go", len(missing), missing)
 	}
 }

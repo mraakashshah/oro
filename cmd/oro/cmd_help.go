@@ -25,12 +25,16 @@ Memory:
   recall     Search memories
   forget     Delete memories by ID
   memories   Browse and manage the memory store
+  ingest     Import knowledge from JSONL file into memory store
 
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
 
 Search:
   index      Semantic code search (build, search)
+
+Workflow:
+  work       Execute a bead through the full lifecycle
 
 Internal:
   worker     Run an oro worker process (used by the dispatcher)
