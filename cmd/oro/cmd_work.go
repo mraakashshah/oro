@@ -79,15 +79,31 @@ automatically. Exit code 0 means the bead landed on main.`,
 	return cmd
 }
 
+// merger abstracts merge operations for testability.
+type merger interface {
+	Merge(ctx context.Context, opts merge.Opts) (*merge.Result, error)
+}
+
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
-	beadSrc  dispatcher.BeadSource
-	wtMgr    dispatcher.WorktreeManager
-	spawner  worker.StreamingSpawner
-	opsMgr   *ops.Spawner
-	merger   *merge.Coordinator
-	repoRoot string
+	beadSrc    dispatcher.BeadSource
+	wtMgr      dispatcher.WorktreeManager
+	spawner    worker.StreamingSpawner
+	opsMgr     *ops.Spawner
+	merger     merger
+	repoRoot   string
+	hasNewWork func(repoRoot, branch string) bool                               // defaults to hasCommitsAhead
+	runQG      func(ctx context.Context, worktree string) (bool, string, error) // defaults to worker.RunQualityGate
 }
+
+// exitError carries an exit code through the normal error return path,
+// allowing deferred cleanup to run (unlike os.Exit).
+type exitError struct {
+	code int
+	msg  string
+}
+
+func (e *exitError) Error() string { return e.msg }
 
 // newProductionDeps creates real dependencies.
 func newProductionDeps() (*workDeps, error) {
@@ -97,12 +113,14 @@ func newProductionDeps() (*workDeps, error) {
 	}
 	runner := &dispatcher.ExecCommandRunner{}
 	return &workDeps{
-		beadSrc:  dispatcher.NewCLIBeadSource(runner),
-		wtMgr:    dispatcher.NewGitWorktreeManager(repoRoot, runner),
-		spawner:  &worker.ClaudeSpawner{},
-		opsMgr:   ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
-		merger:   merge.NewCoordinator(&merge.ExecGitRunner{}),
-		repoRoot: repoRoot,
+		beadSrc:    dispatcher.NewCLIBeadSource(runner),
+		wtMgr:      dispatcher.NewGitWorktreeManager(repoRoot, runner),
+		spawner:    &worker.ClaudeSpawner{},
+		opsMgr:     ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
+		merger:     merge.NewCoordinator(&merge.ExecGitRunner{}),
+		repoRoot:   repoRoot,
+		hasNewWork: hasCommitsAhead,
+		runQG:      worker.RunQualityGate,
 	}, nil
 }
 
@@ -117,7 +135,14 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 		return err
 	}
 
-	return executeWork(ctx, cfg, deps)
+	err = executeWork(ctx, cfg, deps)
+	var ee *exitError
+	if errors.As(err, &ee) {
+		stop() // release signal handler before exit
+		fmt.Fprintf(os.Stderr, "%s\n", ee.msg)
+		os.Exit(ee.code) //nolint:gocritic // stop() called above; defer is backup only
+	}
+	return err
 }
 
 // executeWork is the testable core of the work command.
@@ -125,14 +150,12 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	// Step 1: Load bead.
 	detail, err := deps.beadSrc.Show(ctx, cfg.beadID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(exitCodeBeadError)
+		return &exitError{code: exitCodeBeadError, msg: fmt.Sprintf("error: %v", err)}
 	}
 	cfg.bead = detail
 
 	if err := cfg.validate(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(exitCodeBeadError)
+		return &exitError{code: exitCodeBeadError, msg: fmt.Sprintf("error: %v", err)}
 	}
 	logStep("Loaded %s: %s", cfg.bead.ID, cfg.bead.Title)
 
@@ -142,8 +165,16 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		return nil
 	}
 
-	// Step 2: Mark in_progress.
+	// Step 2: Mark in_progress and set up deferred bead reset.
 	_ = deps.beadSrc.Update(ctx, cfg.beadID, "in_progress")
+	var merged bool
+	defer func() {
+		if !merged {
+			// Reset bead to open so it can be re-assigned.
+			// Use Background context because the parent ctx may be cancelled.
+			_ = deps.beadSrc.Update(context.Background(), cfg.beadID, "open")
+		}
+	}()
 
 	// Step 3: Create or resume worktree.
 	worktree, branch, err := setupWorktree(ctx, cfg, deps)
@@ -157,7 +188,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	var attempt int
 
 	// On --resume with commits ahead, skip first claude spawn.
-	skipClaude := cfg.resume && hasCommitsAhead(deps.repoRoot, branch)
+	skipClaude := cfg.resume && deps.hasNewWork(deps.repoRoot, branch)
 	if skipClaude {
 		logStep("Resuming — branch %s has commits, skipping to QG", branch)
 	}
@@ -173,11 +204,18 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 				return fmt.Errorf("claude spawn: %w", err)
 			}
 			logStep("Claude completed")
+
+			// Guard: bail out if claude produced no commits.
+			if !deps.hasNewWork(deps.repoRoot, branch) {
+				logStep("No commits on branch — claude produced no work")
+				_ = deps.wtMgr.Remove(ctx, worktree)
+				return fmt.Errorf("claude exited without producing commits on bead %s", cfg.beadID)
+			}
 		}
 		skipClaude = false // Only skip the first iteration.
 
 		logStep("Running quality gate...")
-		passed, qgOutput, qgErr := worker.RunQualityGate(ctx, worktree)
+		passed, qgOutput, qgErr := deps.runQG(ctx, worktree)
 		if qgErr != nil {
 			return fmt.Errorf("quality gate error: %w", qgErr)
 		}
@@ -198,8 +236,10 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 			attempt = 0
 		}
 		if attempt >= maxQGRetriesPerTier {
-			fmt.Fprintf(os.Stderr, "Quality gate failed %d times. Last output:\n%s\n", attempt, qgOutput)
-			os.Exit(exitCodeRetries)
+			return &exitError{
+				code: exitCodeRetries,
+				msg:  fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput),
+			}
 		}
 	}
 
@@ -215,9 +255,12 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	// Step 9: Merge to main.
 	mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch)
 	if mergeErr != nil {
-		fmt.Fprintf(os.Stderr, "Merge failed: %v\n", mergeErr)
-		os.Exit(exitCodeMergeFail)
+		return &exitError{
+			code: exitCodeMergeFail,
+			msg:  fmt.Sprintf("Merge failed: %v", mergeErr),
+		}
 	}
+	merged = true
 	logStep("Merged (commit %s)", mergeResult.CommitSHA)
 
 	// Step 10: Close bead.
@@ -327,8 +370,10 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree s
 			logStep("Review REJECTED (%d/%d): %s", rejects, maxReviewRejects, truncate(result.Feedback, 200))
 
 			if rejects >= maxReviewRejects {
-				fmt.Fprintf(os.Stderr, "Review rejected %d times. Last feedback:\n%s\n", rejects, result.Feedback)
-				os.Exit(exitCodeRetries)
+				return &exitError{
+					code: exitCodeRetries,
+					msg:  fmt.Sprintf("Review rejected %d times. Last feedback:\n%s", rejects, result.Feedback),
+				}
 			}
 
 			// Re-execute with review feedback.
@@ -343,13 +388,15 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree s
 
 			// Re-run QG before next review.
 			logStep("Re-running quality gate...")
-			passed, qgOutput, qgErr := worker.RunQualityGate(ctx, worktree)
+			passed, qgOutput, qgErr := deps.runQG(ctx, worktree)
 			if qgErr != nil {
 				return fmt.Errorf("quality gate error: %w", qgErr)
 			}
 			if !passed {
-				fmt.Fprintf(os.Stderr, "Quality gate failed after review fix:\n%s\n", qgOutput)
-				os.Exit(exitCodeRetries)
+				return &exitError{
+					code: exitCodeRetries,
+					msg:  fmt.Sprintf("Quality gate failed after review fix:\n%s", qgOutput),
+				}
 			}
 			logStep("Quality gate passed")
 
