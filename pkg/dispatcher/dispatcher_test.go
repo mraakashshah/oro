@@ -7872,6 +7872,58 @@ func TestFilterAssignableSkipsExhaustedBeads(t *testing.T) {
 	}
 }
 
+// TestFilterAssignableSkipsInProgressBeads verifies that filterAssignable
+// excludes beads with status="in_progress" (oro-wee1).
+func TestFilterAssignableSkipsInProgressBeads(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	beads := []protocol.Bead{
+		{ID: "bead-in-progress", Title: "Human working", Status: "in_progress", Priority: 0, Type: "task"},
+		{ID: "bead-open", Title: "Available", Status: "open", Priority: 1, Type: "task"},
+		{ID: "bead-blocked", Title: "Blocked", Status: "blocked", Priority: 2, Type: "task"},
+	}
+
+	result := d.filterAssignable(beads)
+
+	// Should only include the "open" bead; in_progress and blocked should be filtered
+	if len(result) != 1 {
+		t.Fatalf("expected 1 assignable bead, got %d", len(result))
+	}
+	if result[0].ID != "bead-open" {
+		t.Fatalf("expected bead-open, got %s", result[0].ID)
+	}
+}
+
+// TestFilterAssignableHonorsInProgressStatus verifies oro-wee1 fix:
+// beads with status=in_progress must not be assigned to workers, even if they
+// are high-priority P0 bugs. This prevents workers from duplicating human work.
+func TestFilterAssignableHonorsInProgressStatus(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Simulate oro-4lo7: a P0 bug that's in_progress (owned by human).
+	beads := []protocol.Bead{
+		{ID: "oro-4lo7", Title: "P0 bug", Status: "in_progress", Priority: 0, Type: "bug"},
+		{ID: "oro-other", Title: "Other work", Status: "open", Priority: 1, Type: "task"},
+	}
+
+	result := d.filterAssignable(beads)
+
+	// oro-4lo7 must NOT be in the candidate pool.
+	if len(result) != 1 {
+		t.Fatalf("expected 1 assignable bead, got %d", len(result))
+	}
+	if result[0].ID != "oro-other" {
+		t.Fatalf("expected oro-other, got %s", result[0].ID)
+	}
+
+	// Verify oro-4lo7 is explicitly excluded.
+	for _, b := range result {
+		if b.ID == "oro-4lo7" {
+			t.Fatal("oro-4lo7 (in_progress) should not be assignable")
+		}
+	}
+}
+
 // --- missing acceptance criteria escalation tests ---
 
 func TestAssignBead_MissingAcceptanceEscalatesToManager(t *testing.T) {

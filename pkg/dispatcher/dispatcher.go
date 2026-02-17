@@ -1610,7 +1610,8 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 }
 
 // filterAssignable returns beads eligible for assignment: excludes epics, closed beads,
-// and beads with recent worktree creation failures (within cooldown window).
+// beads with status in_progress or blocked, and beads with recent worktree creation
+// failures (within cooldown window).
 func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 	d.mu.Lock()
@@ -1630,6 +1631,11 @@ func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead 
 			continue
 		}
 		if b.Status == "closed" {
+			continue
+		}
+		// oro-wee1: Filter out beads with status in_progress (human-owned) or blocked.
+		// Only beads with status "open" or empty (defaulting to open) should be assignable.
+		if b.Status == "in_progress" || b.Status == "blocked" {
 			continue
 		}
 		if failedAt, ok := d.worktreeFailures[b.ID]; ok && now.Sub(failedAt) < worktreeFailureCooldown {
