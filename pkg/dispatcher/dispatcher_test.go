@@ -231,9 +231,11 @@ func (m *mockEscalator) Messages() []string {
 
 // mockGitRunner for merge.Coordinator — always succeeds unless configured otherwise.
 type mockGitRunner struct {
-	mu       sync.Mutex
-	failOn   string // if set, fail when this arg is in the command
-	conflict bool   // if true, rebase returns conflict error
+	mu           sync.Mutex
+	failOn       string     // if set, fail when this arg is in the command
+	conflict     bool       // if true, rebase returns conflict error
+	conflictOnce bool       // if true, fail on the first rebase only
+	rebaseCalls  [][]string // records args for each rebase invocation
 }
 
 func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string, string, error) {
@@ -247,11 +249,18 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 	}
 
 	// Check if this is a rebase and we should conflict
-	if m.conflict && len(args) > 0 && args[0] == "rebase" {
+	if len(args) > 0 && args[0] == "rebase" {
 		if len(args) > 1 && args[1] == "--abort" {
 			return "", "", nil // abort succeeds
 		}
-		return "", "CONFLICT (content): Merge conflict in file.go\n", fmt.Errorf("rebase failed")
+		// Record rebase call args (copy to avoid aliasing).
+		cp := make([]string, len(args))
+		copy(cp, args)
+		m.rebaseCalls = append(m.rebaseCalls, cp)
+		if m.conflict || m.conflictOnce {
+			m.conflictOnce = false // consume the one-shot flag
+			return "", "CONFLICT (content): Merge conflict in file.go\n", fmt.Errorf("rebase failed")
+		}
 	}
 
 	// rev-parse HEAD returns a fake SHA
@@ -263,6 +272,15 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 		return "abc123def456\n", "", nil
 	}
 	return "", "", nil
+}
+
+// RebaseCalls returns a snapshot of all rebase arg slices recorded so far.
+func (m *mockGitRunner) RebaseCalls() [][]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]string, len(m.rebaseCalls))
+	copy(out, m.rebaseCalls)
+	return out
 }
 
 // mockBatchSpawner for ops.Spawner
@@ -5940,6 +5958,68 @@ func TestMergeConflict_ResultChannelConsumed(t *testing.T) {
 	waitFor(t, func() bool {
 		return eventCount(t, d.db, "merge_conflict_resolved") > 0
 	}, 3*time.Second)
+}
+
+// TestMergeConflict_RetryUsesBeadBranch verifies that after ops VerdictResolved,
+// the retry merge uses the bead's own branch (agent/<beadID>), not "main".
+func TestMergeConflict_RetryUsesBeadBranch(t *testing.T) {
+	d, beadSrc, _, _, gitRunner, spawnMock := newTestDispatcher(t)
+
+	// Conflict only on the first rebase so the retry succeeds and doesn't loop.
+	gitRunner.mu.Lock()
+	gitRunner.conflictOnce = true
+	gitRunner.mu.Unlock()
+
+	// Configure ops agent to return RESOLVED.
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "Fixed conflicts.\n\nRESOLVED\n\nMerge completed."
+	spawnMock.mu.Unlock()
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	const beadID = "bead-rbr"
+	beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Retry branch check", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE — first merge conflicts, ops resolves, then retry merge runs.
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{BeadID: beadID, WorkerID: "w1", QualityGatePassed: true},
+	})
+
+	// Wait for the second rebase call (the retry after resolution).
+	waitFor(t, func() bool {
+		return len(gitRunner.RebaseCalls()) >= 2
+	}, 3*time.Second)
+
+	calls := gitRunner.RebaseCalls()
+	if len(calls) < 2 {
+		t.Fatalf("expected at least 2 rebase calls, got %d", len(calls))
+	}
+	// The retry rebase args are ["rebase", "<onto>", "<branch>"].
+	// args[2] is the branch being rebased; it must be "agent/<beadID>", not "main".
+	retryArgs := calls[1]
+	wantBranch := protocol.BranchPrefix + beadID
+	if len(retryArgs) < 3 {
+		t.Fatalf("retry rebase args too short: %v", retryArgs)
+	}
+	if gotBranch := retryArgs[2]; gotBranch != wantBranch {
+		t.Errorf("retry rebase branch = %q; want %q (args: %v)", gotBranch, wantBranch, retryArgs)
+	}
 }
 
 // TestMergeConflict_ResolutionFailed_Escalates verifies that when the merge

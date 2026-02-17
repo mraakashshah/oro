@@ -980,7 +980,7 @@ func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, work
 		case ops.VerdictResolved:
 			_ = d.logEvent(ctx, "merge_conflict_resolved", "ops", beadID, workerID, result.Feedback)
 			// Resolution succeeded — retry the merge.
-			d.mergeAndComplete(ctx, beadID, workerID, worktree, "main")
+			d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID)
 		default:
 			// Resolution failed or unknown verdict — escalate.
 			_ = d.logEvent(ctx, "merge_conflict_failed", "ops", beadID, workerID, result.Feedback)
