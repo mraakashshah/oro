@@ -50,7 +50,7 @@ func TestAssignPayload_CodeSearchContext(t *testing.T) {
 	original := protocol.AssignPayload{
 		BeadID:             "oro-test",
 		Worktree:           "/tmp/worktree",
-		Model:              "claude-sonnet-4-5",
+		Model:              "sonnet",
 		MemoryContext:      "some memory context",
 		CodeSearchContext:  "## Relevant Code\n\n### file.go:10-20\n```go\nfunc Example() {}\n```",
 		Title:              "Test Bead",
@@ -399,7 +399,7 @@ func TestAssignPayload_Validate(t *testing.T) {
 			payload: protocol.AssignPayload{
 				BeadID:             "oro-1nf.1",
 				Worktree:           "/tmp/worktree",
-				Model:              "claude-sonnet-4-5",
+				Model:              "sonnet",
 				MemoryContext:      "context",
 				CodeSearchContext:  "code",
 				Feedback:           "feedback",

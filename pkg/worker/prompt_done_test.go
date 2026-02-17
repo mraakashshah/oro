@@ -24,7 +24,7 @@ func TestAssemblePrompt_ExitDoesNotInstructWorkerToMerge(t *testing.T) {
 		AcceptanceCriteria: "Tests pass",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-test",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -79,7 +79,7 @@ func TestAssemblePrompt_ExitInstructsSendingDone(t *testing.T) {
 		AcceptanceCriteria: "Tests pass",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-test",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)

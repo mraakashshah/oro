@@ -211,7 +211,7 @@ func TestExtractPatternsEmpty(t *testing.T) {
 
 func TestReviewModelIsOpus(t *testing.T) {
 	got := OpsReview.Model()
-	want := "claude-opus-4-6"
+	want := "opus"
 	if got != want {
 		t.Fatalf("OpsReview.Model() = %q, want %q", got, want)
 	}

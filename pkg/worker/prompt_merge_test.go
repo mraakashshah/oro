@@ -19,7 +19,7 @@ func TestAssemblePrompt_ExitRequiresMergeToMain(t *testing.T) {
 		AcceptanceCriteria: "Tests pass",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-test",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -80,7 +80,7 @@ func TestAssemblePrompt_ExitMergeBlockerHandling(t *testing.T) {
 		AcceptanceCriteria: "Tests pass",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-blocker",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
@@ -122,7 +122,7 @@ func TestAssemblePrompt_ExitStepByStepLifecycle(t *testing.T) {
 		AcceptanceCriteria: "Tests pass",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-steps",
-		Model:              "claude-opus-4-6",
+		Model:              "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)

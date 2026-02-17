@@ -44,9 +44,9 @@ type BeadDetail struct {
 
 // Model constants for routing.
 const (
-	ModelOpus   = "claude-opus-4-6"
-	ModelSonnet = "claude-sonnet-4-5-20250929"
-	ModelHaiku  = "claude-haiku-4-5-20251001"
+	ModelOpus   = "opus"
+	ModelSonnet = "sonnet"
+	ModelHaiku  = "haiku"
 )
 
 // DefaultModel is used when a bead has no explicit model set and estimate-based

@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -14,6 +15,7 @@ type ClaudeOpsSpawner struct{}
 func (s *ClaudeOpsSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, error) {
 	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", model)
 	cmd.Dir = workdir
+	cmd.Env = filteredEnv()
 
 	var outBuf strings.Builder
 	cmd.Stdout = &outBuf
@@ -47,3 +49,15 @@ func (p *opsProcess) Kill() error {
 	return nil
 }
 func (p *opsProcess) Output() (string, error) { return p.output.String(), nil } //nolint:revive // interface impl
+
+// filteredEnv returns the current environment with CLAUDECODE stripped,
+// preventing the "nested Claude Code session" error when spawning ops agents.
+func filteredEnv() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "CLAUDECODE=") {
+			env = append(env, e)
+		}
+	}
+	return env
+}

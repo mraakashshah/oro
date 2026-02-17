@@ -921,15 +921,15 @@ func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	// Assign bead with explicit sonnet model
 	beadSrc.SetBeads([]protocol.Bead{{
 		ID: "bead-model", Title: "Model test", Priority: 1,
-		Model: "claude-sonnet-4-5-20250929",
+		Model: "sonnet",
 	}})
 
 	msg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if msg.Assign.Model != "claude-sonnet-4-5-20250929" {
-		t.Fatalf("expected model claude-sonnet-4-5-20250929, got %q", msg.Assign.Model)
+	if msg.Assign.Model != "sonnet" {
+		t.Fatalf("expected model claude-sonnet-4-5, got %q", msg.Assign.Model)
 	}
 }
 
@@ -6197,7 +6197,7 @@ func TestDispatcherBuffering(t *testing.T) {
 		state:    protocol.WorkerIdle,
 		beadID:   "bead1",
 		worktree: "/tmp/worktree-bead1",
-		model:    "claude-opus-4-6",
+		model:    "opus",
 		lastSeen: time.Now(),
 		encoder:  json.NewEncoder(brokenConn),
 	}
@@ -6210,7 +6210,7 @@ func TestDispatcherBuffering(t *testing.T) {
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead1",
 			Worktree: "/tmp/worktree-bead1",
-			Model:    "claude-opus-4-6",
+			Model:    "opus",
 		},
 	})
 	d.mu.Unlock()
@@ -6276,7 +6276,7 @@ func TestDispatcherBuffering(t *testing.T) {
 		state:    protocol.WorkerIdle,
 		beadID:   "bead2",
 		worktree: "/tmp/worktree-bead2",
-		model:    "claude-opus-4-6",
+		model:    "opus",
 		lastSeen: time.Now(),
 		encoder:  json.NewEncoder(brokenConn2),
 	}
@@ -6289,7 +6289,7 @@ func TestDispatcherBuffering(t *testing.T) {
 			Assign: &protocol.AssignPayload{
 				BeadID:   fmt.Sprintf("bead-%d", i),
 				Worktree: fmt.Sprintf("/tmp/worktree-bead-%d", i),
-				Model:    "claude-opus-4-6",
+				Model:    "opus",
 			},
 		})
 	}
