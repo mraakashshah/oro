@@ -2337,3 +2337,35 @@ func TestAttachInteractiveFocusesArchitectPane(t *testing.T) {
 		}
 	})
 }
+
+func TestStatusBarShowsQuitHint(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
+
+	sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+	err := sess.Create("architect nudge", "manager nudge")
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	// Check that status-right contains navigation hints instead of just 'oro | %H:%M'
+	var foundStatusRight bool
+	for _, call := range fake.calls {
+		if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-option" {
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "status-right") {
+				// Should contain navigation hints: ctrl-b, switch, detach, quit
+				if strings.Contains(joined, "ctrl-b") &&
+					strings.Contains(joined, "switch") &&
+					strings.Contains(joined, "detach") &&
+					strings.Contains(joined, "quit") {
+					foundStatusRight = true
+				}
+			}
+		}
+	}
+	if !foundStatusRight {
+		t.Error("expected status-right to contain navigation hints (ctrl-b, switch, detach, quit)")
+	}
+}

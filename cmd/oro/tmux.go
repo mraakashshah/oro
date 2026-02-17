@@ -291,7 +291,7 @@ func (s *TmuxSession) configureSessionOptions() error {
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-left-length", "20"); err != nil {
 		return fmt.Errorf("tmux set-option status-left-length: %w", err)
 	}
-	statusRight := `#[default] oro | %H:%M`
+	statusRight := `#[default] ctrl-b 0/1 switch | ctrl-b d detach | oro stop quit`
 	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-right", statusRight); err != nil {
 		return fmt.Errorf("tmux set-option status-right: %w", err)
 	}

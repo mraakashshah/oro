@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestStartReadsProjectConfig(t *testing.T) {
@@ -90,4 +94,84 @@ func TestDaemonStartupCleansWorkerLogs_MissingDir(t *testing.T) {
 	if _, err := os.Stat(workersDir); err != nil {
 		t.Errorf("expected workers dir to be created, got: %v", err)
 	}
+}
+
+func TestStartPrintsQuitHint(t *testing.T) {
+	t.Run("prints navigation hint when attaching (not detached)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := fmt.Sprintf("/tmp/oro-hint-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
+		dbPath := filepath.Join(tmpDir, "state.db")
+
+		t.Setenv("ORO_PID_PATH", pidFile)
+		t.Setenv("ORO_SOCKET_PATH", sockPath)
+		t.Setenv("ORO_DB_PATH", dbPath)
+
+		fakeTmux := newFakeCmd()
+		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+
+		spawner := &fakeSpawner{
+			returnPID:  99999,
+			socketPath: sockPath,
+		}
+
+		var stdout bytes.Buffer
+		// detach=false means attach, so hint should be printed
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false)
+		// Expect error because AttachInteractive tries to attach to real tmux
+		if err == nil {
+			t.Fatal("expected error from AttachInteractive in test environment")
+		}
+
+		// Verify hint was printed before attach attempt
+		out := stdout.String()
+		if !strings.Contains(out, "ctrl-b 0/1") {
+			t.Errorf("expected hint to contain 'ctrl-b 0/1', got: %s", out)
+		}
+		if !strings.Contains(out, "ctrl-b d") {
+			t.Errorf("expected hint to contain 'ctrl-b d', got: %s", out)
+		}
+		if !strings.Contains(out, "oro stop") {
+			t.Errorf("expected hint to contain 'oro stop', got: %s", out)
+		}
+	})
+
+	t.Run("does not print hint when detached", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := fmt.Sprintf("/tmp/oro-detach-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
+		dbPath := filepath.Join(tmpDir, "state.db")
+
+		t.Setenv("ORO_PID_PATH", pidFile)
+		t.Setenv("ORO_SOCKET_PATH", sockPath)
+		t.Setenv("ORO_DB_PATH", dbPath)
+
+		fakeTmux := newFakeCmd()
+		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+
+		spawner := &fakeSpawner{
+			returnPID:  88888,
+			socketPath: sockPath,
+		}
+
+		var stdout bytes.Buffer
+		// detach=true means no attach, so hint should NOT be printed
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true)
+		if err != nil {
+			t.Fatalf("runFullStart with detach should succeed, got: %v", err)
+		}
+
+		// Verify hint was NOT printed (only detach instructions)
+		out := stdout.String()
+		if strings.Contains(out, "ctrl-b 0/1") || strings.Contains(out, "switch panes") {
+			t.Errorf("hint should not be printed in detached mode, got: %s", out)
+		}
+		if !strings.Contains(out, "detached") {
+			t.Errorf("expected detached message, got: %s", out)
+		}
+	})
 }

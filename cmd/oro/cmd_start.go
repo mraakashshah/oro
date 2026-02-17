@@ -140,6 +140,7 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 		fmt.Fprintln(w, "detached — attach with: tmux attach -t oro")
 		return nil
 	}
+	fmt.Fprintln(w, "ctrl-b 0/1: switch panes | ctrl-b d: detach | oro stop: quit")
 	if err := sess.AttachInteractive(); err != nil {
 		return fmt.Errorf("attach to tmux session: %w", err)
 	}
