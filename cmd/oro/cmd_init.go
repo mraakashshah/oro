@@ -566,7 +566,6 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 			{Matcher: "Bash", Hooks: []hookEntry{
 				{Type: "command", Command: py("memory_capture.py")},
 				{Type: "command", Command: py("learning_reminder.py")},
-				{Type: "command", Command: py("bd_create_notifier.py")},
 			}},
 			{Matcher: "Task", Hooks: []hookEntry{
 				{Type: "command", Command: py("validate_agent_completion.py")},
