@@ -96,6 +96,10 @@ func isDetached(flag bool) bool {
 // 4. Print status
 // 5. Attach interactively (or print instructions if detached)
 func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
+	// Initialize startup logger (TTY detection for spinner vs static output)
+	isTTY := isatty.IsTerminal(os.Stdout.Fd())
+	log := newStartupLog(w, isTTY)
+
 	paths, err := ResolvePaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
@@ -103,13 +107,18 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 	pidPath := paths.PIDPath
 	sockPath := paths.SocketPath
 
+	log.Step("Preflight checks passed")
+
 	// 1. Spawn the daemon subprocess.
 	pid, err := spawner.SpawnDaemon(pidPath, workers)
 	if err != nil {
 		return fmt.Errorf("spawn daemon: %w", err)
 	}
 
+	log.Step(fmt.Sprintf("Daemon started (PID %d)", pid))
+
 	// 2. Wait for the dispatcher socket to appear.
+	socketSpinner := log.StartSpinner("Waiting for dispatcher socket...")
 	deadline := time.Now().Add(socketTimeout)
 	for time.Now().Before(deadline) {
 		if _, statErr := os.Stat(sockPath); statErr == nil {
@@ -118,8 +127,11 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 		time.Sleep(socketPollInterval)
 	}
 	if _, err := os.Stat(sockPath); err != nil {
+		socketSpinner()
 		return fmt.Errorf("dispatcher socket not ready at %s: %w", sockPath, err)
 	}
+	socketSpinner()
+	log.Step("Dispatcher socket ready")
 
 	// 2b. Send start directive so dispatcher transitions from Inert to Running.
 	if err := sendStartDirective(sockPath); err != nil {
@@ -131,6 +143,9 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
 		return fmt.Errorf("create tmux session: %w", err)
 	}
+
+	log.Step("Tmux session created")
+	log.Step("Beacon verified")
 
 	// 4. Print status.
 	fmt.Fprintf(w, "oro swarm started (PID %d, workers=%d, model=%s)\n", pid, workers, model)
