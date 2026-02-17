@@ -77,6 +77,7 @@ type statusResponse struct {
 	Workers     []workerEntry     `json:"workers"`
 	WorkerCount int               `json:"worker_count"`
 	Assignments map[string]string `json:"assignments"`
+	FocusedEpic string            `json:"focused_epic,omitempty"`
 }
 
 // workerEntry represents a single worker in the dispatcher status response.
@@ -90,13 +91,13 @@ type workerEntry struct {
 }
 
 // fetchWorkerStatus connects to the dispatcher UDS, sends a status directive,
-// and extracts worker info and assignments from the response. Returns empty slices if the
-// socket doesn't exist or the connection fails — the dispatcher being offline
-// is not an error condition.
-func fetchWorkerStatus(ctx context.Context, socketPath string) ([]WorkerStatus, map[string]string, error) {
+// and extracts worker info, assignments, and focused epic from the response.
+// Returns empty slices if the socket doesn't exist or the connection fails — the
+// dispatcher being offline is not an error condition.
+func fetchWorkerStatus(ctx context.Context, socketPath string) (workers []WorkerStatus, assignments map[string]string, focusedEpic string, err error) {
 	// Fast path: if socket doesn't exist, dispatcher is offline.
 	if _, err := os.Stat(socketPath); err != nil {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
@@ -106,7 +107,7 @@ func fetchWorkerStatus(ctx context.Context, socketPath string) ([]WorkerStatus, 
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", socketPath)
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 	defer conn.Close()
 
@@ -119,36 +120,36 @@ func fetchWorkerStatus(ctx context.Context, socketPath string) ([]WorkerStatus, 
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 	data = append(data, '\n')
 
 	if _, err := conn.Write(data); err != nil {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 
 	// Read one line of JSON response (the ACK).
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 
 	var ack protocol.Message
 	if err := json.Unmarshal(scanner.Bytes(), &ack); err != nil {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 
 	if ack.Type != protocol.MsgACK || ack.ACK == nil || !ack.ACK.OK {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 
 	// Parse the status JSON from the ACK detail field.
 	var resp statusResponse
 	if err := json.Unmarshal([]byte(ack.ACK.Detail), &resp); err != nil {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 
-	return convertWorkerEntries(resp.Workers), invertAssignments(resp.Assignments), nil
+	return convertWorkerEntries(resp.Workers), invertAssignments(resp.Assignments), resp.FocusedEpic, nil
 }
 
 // convertWorkerEntries converts workerEntry slice to WorkerStatus slice,
