@@ -693,3 +693,25 @@ func findSubstring(s, sub string) bool {
 	}
 	return false
 }
+
+func TestMergePromptContainsBranch(t *testing.T) {
+	proc := newReadyMockProcess("", nil)
+	mock := &mockBatchSpawner{process: proc}
+	s := NewSpawner(mock)
+
+	ch := s.ResolveMergeConflict(context.Background(), MergeOpts{
+		BeadID:        "oro-test",
+		Branch:        "agent/oro-xyz",
+		ConflictFiles: []string{"file.go"},
+	})
+
+	_ = waitResult(t, ch)
+
+	calls := mock.getCalls()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one spawn call")
+	}
+	if !containsSubstring(calls[0].prompt, "agent/oro-xyz") {
+		t.Errorf("merge prompt missing branch name 'agent/oro-xyz'")
+	}
+}
