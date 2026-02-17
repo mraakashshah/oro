@@ -356,4 +356,53 @@ func TestCreateWithNudges(t *testing.T) {
 			t.Errorf("ManagerNudge should be a short nudge (<500 chars), got %d chars", len(mgrNudge))
 		}
 	})
+
+	t.Run("prints startup progress with checkmarks", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := "/tmp/oro-test.sock" // Use short path to avoid socket path length limits
+		dbPath := filepath.Join(tmpDir, "state.db")
+		t.Setenv("ORO_PID_PATH", pidFile)
+		t.Setenv("ORO_SOCKET_PATH", sockPath)
+		t.Setenv("ORO_DB_PATH", dbPath)
+
+		// Clean up socket after test
+		t.Cleanup(func() {
+			_ = os.Remove(sockPath)
+		})
+
+		fakeTmux := newFakeCmd()
+		// has-session returns error (session does not exist)
+		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+
+		spawner := &fakeSpawner{
+			returnPID:  12345,
+			socketPath: sockPath,
+		}
+
+		var stdout bytes.Buffer
+		err := runFullStart(&stdout, 3, "sonnet", "", spawner, fakeTmux, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		output := stdout.String()
+
+		// Verify startup progress steps are logged
+		expectedSteps := []string{
+			"✓ Preflight checks passed",
+			"✓ Daemon started (PID 12345)",
+			"✓ Dispatcher socket ready",
+			"✓ Tmux session created",
+			"✓ Beacon verified",
+			"oro swarm started",
+		}
+
+		for _, step := range expectedSteps {
+			if !strings.Contains(output, step) {
+				t.Errorf("expected output to contain %q, got:\n%s", step, output)
+			}
+		}
+	})
 }
