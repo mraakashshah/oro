@@ -87,6 +87,12 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 		c.activeWorktree = ""
 	}()
 
+	// Step 0: Check if branch is already merged (agent may have merged inside worktree).
+	alreadyMerged, sha, checkErr := c.isBranchMerged(ctx, opts)
+	if checkErr == nil && alreadyMerged {
+		return &Result{CommitSHA: sha}, nil
+	}
+
 	// Step 1: Rebase branch onto main
 	_, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", "main", opts.Branch)
 	if err != nil {
@@ -153,6 +159,25 @@ func (c *Coordinator) cherryPickToMain(ctx context.Context, opts Opts) (*Result,
 		return nil, fmt.Errorf("rev-parse HEAD failed: %w", err)
 	}
 	return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
+}
+
+// isBranchMerged checks if all commits on branch are already reachable from main.
+// This handles the case where an agent merged to main inside the worktree.
+func (c *Coordinator) isBranchMerged(ctx context.Context, opts Opts) (merged bool, commitSHA string, err error) {
+	// Check if branch has any commits not on main.
+	out, _, err := c.git.Run(ctx, opts.Worktree, "rev-list", "--count", "main.."+opts.Branch)
+	if err != nil {
+		return false, "", fmt.Errorf("rev-list --count failed: %w", err)
+	}
+	if strings.TrimSpace(out) != "0" {
+		return false, "", nil
+	}
+	// Branch is fully merged — return main HEAD as the merge commit.
+	sha, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "main")
+	if err != nil {
+		return false, "", fmt.Errorf("rev-parse main failed: %w", err)
+	}
+	return true, strings.TrimSpace(sha), nil
 }
 
 // handleRebaseFailure aborts the in-progress rebase and returns a ConflictError
