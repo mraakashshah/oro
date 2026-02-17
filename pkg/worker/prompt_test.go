@@ -360,11 +360,47 @@ func TestAssemblePrompt_BeadsToolsContent(t *testing.T) {
 	if !strings.Contains(prompt, "bd create") {
 		t.Error("expected Beads Tools section to contain 'bd create'")
 	}
-	if !strings.Contains(prompt, "bd close") {
-		t.Error("expected Beads Tools section to contain 'bd close'")
-	}
 	if !strings.Contains(prompt, "bd dep add") {
 		t.Error("expected Beads Tools section to contain 'bd dep add'")
+	}
+}
+
+// TestAssemblePrompt_BeadsToolsDoesNotContainBdClose verifies that the Beads
+// Tools section does NOT list `bd close` as a worker tool. Workers must not
+// close beads — the dispatcher handles bead closure after merging to main.
+//
+// Context: oro-u74j bug — listing `bd close` in Beads Tools contradicts the
+// Exit section's instruction that the dispatcher handles closure, leading
+// workers to close beads without merging to main.
+func TestAssemblePrompt_BeadsToolsDoesNotContainBdClose(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-no-close",
+		Title:              "No bd close in tools",
+		Description:        "Workers must not close beads",
+		AcceptanceCriteria: "Tests pass",
+		WorktreePath:       "/tmp/wt-no-close",
+		Model:              "claude-opus-4-6",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract just the Beads Tools section
+	toolsStart := strings.Index(prompt, "## Beads Tools")
+	if toolsStart == -1 {
+		t.Fatal("expected prompt to contain ## Beads Tools section")
+	}
+	toolsEnd := strings.Index(prompt[toolsStart+1:], "## ")
+	var toolsSection string
+	if toolsEnd == -1 {
+		toolsSection = prompt[toolsStart:]
+	} else {
+		toolsSection = prompt[toolsStart : toolsStart+1+toolsEnd]
+	}
+
+	if strings.Contains(toolsSection, "bd close") {
+		t.Errorf("Beads Tools section must NOT contain 'bd close' — dispatcher handles bead closure (oro-u74j). Got:\n%s", toolsSection)
 	}
 }
 

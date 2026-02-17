@@ -87,11 +87,9 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"You are in `%s`. Commit to branch `%s%s`.", params.WorktreePath, protocol.BranchPrefix, params.BeadID,
 	))
 	section(b, "Git", "Use conventional commits (`feat(scope): msg`, `fix(scope): msg`, `test(scope): msg`).\nNo amend, new commits only.")
-	section(b, "Beads Tools", strings.Join([]string{
-		"- `bd create` — decompose a bead into smaller sub-beads",
-		"- `bd close` — mark a bead as done",
-		"- `bd dep add` — declare a blocker dependency",
-	}, "\n"))
+	section(b, "Beads Tools",
+		"- `bd create` — decompose a bead into smaller sub-beads\n"+
+			"- `bd dep add` — declare a blocker dependency")
 	section(b, "Constraints", strings.Join([]string{
 		"- Do no git push",
 		"- Do not modify files outside your worktree",
