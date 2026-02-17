@@ -2763,9 +2763,10 @@ func (d *Dispatcher) markCommandProcessed(ctx context.Context, id int64) error {
 
 // sendToWorker, maxPendingMessages → worker_pool.go
 
-// shutdownSequence orchestrates the three-phase graceful shutdown:
+// shutdownSequence orchestrates the four-phase graceful shutdown:
 //  1. Cancel ops agents and abort in-flight merges (safe before worker stop).
 //  2. Send PREPARE_SHUTDOWN to all workers, wait for drain or force-kill.
+//     3b. Reset all active assignments back to open so beads are re-assignable on restart.
 //  3. Remove worktrees and flush bead state (safe after workers are stopped).
 func (d *Dispatcher) shutdownSequence() {
 	// Phase 1: Cancel ops agents and abort in-flight merges.
@@ -2790,6 +2791,10 @@ func (d *Dispatcher) shutdownSequence() {
 	}
 
 	d.shutdownWaitForWorkers()
+
+	// Phase 3b: Reset in-progress beads to open so they become re-assignable
+	// on the next dispatcher start. Best-effort: log warnings on failure, continue.
+	d.shutdownResetActiveBeads()
 
 	// Phase 3: Workers are stopped — now safe to remove worktrees and flush state.
 	d.shutdownRemoveWorktrees(worktreePaths)
@@ -2827,6 +2832,33 @@ func (d *Dispatcher) shutdownRemoveWorktrees(paths []string) {
 		_ = d.logEvent(ctx, "bead_sync_failed", "dispatcher", "", "", err.Error())
 	} else {
 		_ = d.logEvent(ctx, "bead_synced", "dispatcher", "", "", "")
+	}
+}
+
+// shutdownResetActiveBeads queries active assignments and resets each bead to
+// "open" so it becomes re-assignable on next dispatcher start. Best-effort:
+// failures are logged but do not block shutdown.
+func (d *Dispatcher) shutdownResetActiveBeads() {
+	ctx := context.Background()
+	rows, err := d.db.QueryContext(ctx, `SELECT bead_id FROM assignments WHERE status='active'`)
+	if err != nil {
+		_ = d.logEvent(ctx, "shutdown_reset_query_failed", "dispatcher", "", "", err.Error())
+		return
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var beadID string
+		if scanErr := rows.Scan(&beadID); scanErr != nil {
+			_ = d.logEvent(ctx, "shutdown_reset_scan_failed", "dispatcher", "", "", scanErr.Error())
+			continue
+		}
+		if updateErr := d.beads.Update(ctx, beadID, "open"); updateErr != nil {
+			_ = d.logEvent(ctx, "shutdown_reset_bead_failed", "dispatcher", beadID, "", updateErr.Error())
+		}
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		_ = d.logEvent(ctx, "shutdown_reset_rows_failed", "dispatcher", "", "", rowsErr.Error())
 	}
 }
 
