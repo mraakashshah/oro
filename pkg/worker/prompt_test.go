@@ -617,15 +617,16 @@ func TestAssemblePrompt_ExitSection_RequiresMergeToMain(t *testing.T) {
 	// Exit is the last section, so take everything from exitStart to end
 	exitSection := prompt[exitStart:]
 
-	// Exit section must require merge to main before closing
-	if !strings.Contains(exitSection, "main branch") {
-		t.Error("expected Exit section to mention 'main branch'")
+	// Exit section must explain dispatcher handles merge and close (oro-u74j fix)
+	if !strings.Contains(exitSection, "dispatcher") {
+		t.Error("expected Exit section to mention 'dispatcher' handles merge")
 	}
 	if !strings.Contains(exitSection, "merge") {
-		t.Error("expected Exit section to mention 'merge'")
+		t.Error("expected Exit section to mention 'merge' process")
 	}
-	if !strings.Contains(exitSection, "bd close") {
-		t.Error("expected Exit section to mention 'bd close'")
+	// Worker should NOT be told to close bead themselves
+	if strings.Contains(exitSection, "bd close") {
+		t.Error("Exit section must NOT tell worker to run 'bd close' (dispatcher handles this)")
 	}
 }
 
@@ -650,11 +651,12 @@ func TestAssemblePrompt_ExitSection_HandlesUnrelatedTestFailures(t *testing.T) {
 	}
 	exitSection := prompt[exitStart:]
 
-	// Exit section must handle unrelated test failures
-	if !strings.Contains(exitSection, "test") || !strings.Contains(exitSection, "fail") {
-		t.Error("expected Exit section to mention handling test failures")
+	// Exit section should explain dispatcher escalates merge failures (oro-u74j)
+	// The worker no longer handles merge failures directly
+	if !strings.Contains(strings.ToLower(exitSection), "dispatcher") {
+		t.Error("expected Exit section to mention dispatcher handles merge process")
 	}
-	if !strings.Contains(exitSection, "blocker") || !strings.Contains(exitSection, "P0") {
-		t.Error("expected Exit section to mention creating blocker or P0 bead")
+	if !strings.Contains(strings.ToLower(exitSection), "merge") {
+		t.Error("expected Exit section to mention merge process")
 	}
 }
