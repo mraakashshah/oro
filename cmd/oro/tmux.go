@@ -719,7 +719,17 @@ func (s *TmuxSession) Attach() error {
 // AttachInteractive attaches to the named tmux session with real terminal I/O.
 // This bypasses the CmdRunner interface to connect stdin/stdout/stderr directly,
 // allowing interactive use. It blocks until the session is detached or exits.
+// Before attaching, it selects the architect window so the user lands on that pane.
 func (s *TmuxSession) AttachInteractive() error {
+	// Select the architect window before attaching so the session opens on that pane.
+	// Only attempt if Runner is set (for testability).
+	if s.Runner != nil {
+		if _, err := s.Runner.Run("tmux", "select-window", "-t", s.Name+":architect"); err != nil {
+			// Non-fatal: log warning and proceed with attach (session may be in unexpected state).
+			fmt.Fprintf(os.Stderr, "warning: failed to select architect window: %v\n", err)
+		}
+	}
+
 	cmd := exec.CommandContext(context.Background(), "tmux", "attach-session", "-t", s.Name) //nolint:gosec // s.Name is controlled by codebase, not user input
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
