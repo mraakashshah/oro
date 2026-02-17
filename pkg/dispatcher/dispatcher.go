@@ -1614,8 +1614,8 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	}
 }
 
-// filterAssignable returns beads eligible for assignment: excludes epics and
-// beads with recent worktree creation failures (within cooldown window).
+// filterAssignable returns beads eligible for assignment: excludes epics, closed beads,
+// and beads with recent worktree creation failures (within cooldown window).
 func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 	d.mu.Lock()
@@ -1632,6 +1632,9 @@ func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead 
 	out := make([]protocol.Bead, 0, len(allBeads))
 	for _, b := range allBeads {
 		if b.Type == "epic" {
+			continue
+		}
+		if b.Status == "closed" {
 			continue
 		}
 		if failedAt, ok := d.worktreeFailures[b.ID]; ok && now.Sub(failedAt) < worktreeFailureCooldown {
