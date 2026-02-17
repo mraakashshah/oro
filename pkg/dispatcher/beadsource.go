@@ -112,6 +112,10 @@ func (s *CLIBeadSource) Update(ctx context.Context, id, status string) error {
 // if acceptanceCriteria is non-empty. It parses the JSON output to extract and return
 // the new bead ID.
 func (s *CLIBeadSource) Create(ctx context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error) {
+	// Bugs are always P0 — if it's not urgent, it should be a task or feature.
+	if beadType == "bug" {
+		priority = 0
+	}
 	args := []string{
 		"create",
 		"--title=" + title,
