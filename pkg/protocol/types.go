@@ -33,6 +33,7 @@ type BeadDetail struct {
 	Title              string `json:"title"`
 	Description        string `json:"description,omitempty"`
 	AcceptanceCriteria string `json:"acceptance_criteria"`
+	Status             string `json:"status,omitempty"`
 	Model              string `json:"model,omitempty"`
 	WorkerID           string `json:"worker_id,omitempty"`
 	ContextPercent     int    `json:"context_percent,omitempty"`

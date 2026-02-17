@@ -9338,3 +9338,62 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 		t.Errorf("BeadTracker maps not cleared:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 }
+
+// TestAssignBeadSkipsClosedBead verifies that assignBead does not create a worktree
+// or send MsgAssign when BeadSource.Show returns a bead with status=closed.
+// This prevents the oro-yoov race: bead closed externally after bd ready but before assignment.
+func TestAssignBeadSkipsClosedBead(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+	beadID := "oro-closed-test"
+
+	// Configure mock to return a closed bead when Show is called
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Already Closed Bead",
+		AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+		Status:             "closed", // Bead is closed
+	}
+	beadSrc.mu.Unlock()
+
+	ctx := context.Background()
+
+	// Create a mock worker
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	d.registerWorker("w-test", server)
+
+	d.mu.Lock()
+	w := d.workers["w-test"]
+	d.mu.Unlock()
+
+	// Call assignBead with a bead that will be reported as closed by Show
+	bead := protocol.Bead{ID: beadID, Priority: 2}
+	d.assignBead(ctx, w, bead)
+
+	// Assert: No worktree was created
+	wtMgr.mu.Lock()
+	_, created := wtMgr.created[beadID]
+	wtMgr.mu.Unlock()
+
+	if created {
+		t.Errorf("expected no worktree for closed bead %s, but worktree was created", beadID)
+	}
+
+	// Assert: Bead status was not updated to in_progress
+	beadSrc.mu.Lock()
+	status, updated := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+
+	if updated {
+		t.Errorf("expected bead not to be updated, but status was set to %q", status)
+	}
+
+	// Assert: bead_closed_before_assign event was logged
+	if eventCount(t, d.db, "bead_closed_before_assign") == 0 {
+		t.Error("expected bead_closed_before_assign event to be logged, but it was not found")
+	}
+}

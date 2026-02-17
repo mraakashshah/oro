@@ -1202,7 +1202,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	}
 
 	// Look up bead details for the reviewer
-	title, acceptance := d.lookupBeadDetail(ctx, beadID, workerID)
+	title, acceptance, _ := d.lookupBeadDetail(ctx, beadID, workerID)
 
 	// Spawn review ops agent
 	resultCh := d.ops.Review(ctx, ops.ReviewOpts{
@@ -1687,7 +1687,12 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 			fmt.Sprintf(`{"error":%q}`, err.Error()))
 		return "", "", false
 	}
-	title, acceptance = d.lookupBeadDetail(ctx, bead.ID, workerID)
+	title, acceptance, status := d.lookupBeadDetail(ctx, bead.ID, workerID)
+	if status == "closed" {
+		_ = d.logEvent(ctx, "bead_closed_before_assign", "dispatcher", bead.ID, workerID,
+			"bead was closed externally before assignment could complete")
+		return title, acceptance, false
+	}
 	if acceptance == "" {
 		_ = d.logEvent(ctx, "missing_acceptance", "dispatcher", bead.ID, workerID,
 			"bead has no acceptance criteria — escalating to manager")
@@ -1796,19 +1801,19 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	}
 }
 
-// lookupBeadDetail retrieves the title and acceptance criteria for a bead (best-effort).
-func (d *Dispatcher) lookupBeadDetail(ctx context.Context, beadID, workerID string) (title, acceptance string) {
+// lookupBeadDetail retrieves the title, acceptance criteria, and status for a bead (best-effort).
+func (d *Dispatcher) lookupBeadDetail(ctx context.Context, beadID, workerID string) (title, acceptance, status string) {
 	detail, err := d.beads.Show(ctx, beadID)
 	if err != nil {
 		bnfErr := &protocol.BeadNotFoundError{BeadID: beadID}
 		_ = d.logEvent(ctx, "bead_lookup_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"error":%q}`, bnfErr.Error()))
-		return "", ""
+		return "", "", ""
 	}
 	if detail != nil {
-		return detail.Title, detail.AcceptanceCriteria
+		return detail.Title, detail.AcceptanceCriteria, detail.Status
 	}
-	return "", ""
+	return "", "", ""
 }
 
 // workerStatus holds per-worker health info for the enriched status response.
