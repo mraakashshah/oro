@@ -514,8 +514,18 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 		_ = conn.Close()
 		if workerID != "" {
 			d.mu.Lock()
+			// Capture beadID before deleting worker
+			var beadID string
+			if w, exists := d.workers[workerID]; exists {
+				beadID = w.beadID
+			}
 			delete(d.workers, workerID)
 			d.mu.Unlock()
+
+			// Clear tracking maps for the bead if it was assigned
+			if beadID != "" {
+				d.clearBeadTracking(beadID)
+			}
 		}
 	}()
 
