@@ -646,7 +646,9 @@ func TestMerge_BranchAlreadyMerged(t *testing.T) {
 		results: []mockResult{
 			// 0. git rev-list --count main..bead/done — already merged (0 commits ahead)
 			{Stdout: "0\n", Stderr: "", Err: nil},
-			// 1. git rev-parse main — return main HEAD SHA
+			// 1. git diff main..bead/done — empty (content matches main)
+			{Stdout: "", Stderr: "", Err: nil},
+			// 2. git rev-parse main — return main HEAD SHA
 			{Stdout: "mainsha456\n", Stderr: "", Err: nil},
 		},
 	}
@@ -664,13 +666,127 @@ func TestMerge_BranchAlreadyMerged(t *testing.T) {
 		t.Errorf("expected commit SHA mainsha456, got %q", result.CommitSHA)
 	}
 
-	// Only 2 git calls — no rebase, no cherry-pick
+	// Only 3 git calls — no rebase, no cherry-pick
 	calls := mock.getCalls()
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 git calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 git calls, got %d: %+v", len(calls), calls)
 	}
 	assertArgs(t, calls[0], "/tmp/wt-done", "rev-list", "--count", "main..bead/done")
-	assertArgs(t, calls[1], "/tmp/wt-done", "rev-parse", "main")
+	assertArgs(t, calls[1], "/tmp/wt-done", "diff", "main..bead/done")
+	assertArgs(t, calls[2], "/tmp/wt-done", "rev-parse", "main")
+}
+
+func TestMerge_BranchAlreadyMerged_DiffCheck(t *testing.T) {
+	t.Run("count=0 and diff empty → short-circuit success", func(t *testing.T) {
+		mock := &mockGitRunner{
+			results: []mockResult{
+				// rev-list --count: 0 commits ahead
+				{Stdout: "0\n", Stderr: "", Err: nil},
+				// git diff main..branch: empty (no diff)
+				{Stdout: "", Stderr: "", Err: nil},
+				// rev-parse main
+				{Stdout: "mainsha789\n", Stderr: "", Err: nil},
+			},
+		}
+		coord := NewCoordinator(mock)
+		result, err := coord.Merge(context.Background(), Opts{
+			Branch:   "bead/diff-empty",
+			Worktree: "/tmp/wt-diff-empty",
+			BeadID:   "oro-diff-empty",
+		})
+		if err != nil {
+			t.Fatalf("expected success for empty diff, got: %v", err)
+		}
+		if result.CommitSHA != "mainsha789" {
+			t.Errorf("expected mainsha789, got %q", result.CommitSHA)
+		}
+		calls := mock.getCalls()
+		if len(calls) != 3 {
+			t.Fatalf("expected 3 git calls, got %d: %+v", len(calls), calls)
+		}
+		assertArgs(t, calls[0], "/tmp/wt-diff-empty", "rev-list", "--count", "main..bead/diff-empty")
+		assertArgs(t, calls[1], "/tmp/wt-diff-empty", "diff", "main..bead/diff-empty")
+		assertArgs(t, calls[2], "/tmp/wt-diff-empty", "rev-parse", "main")
+	})
+
+	t.Run("count=0 and diff non-empty → proceed to rebase (no short-circuit)", func(t *testing.T) {
+		mock := &mockGitRunner{
+			results: []mockResult{
+				// rev-list --count: 0 commits ahead
+				{Stdout: "0\n", Stderr: "", Err: nil},
+				// git diff main..branch: non-empty diff
+				{Stdout: "diff --git a/foo.go b/foo.go\n+something\n", Stderr: "", Err: nil},
+				// rebase main bead/diff-nonempty — succeeds
+				{Stdout: "", Stderr: "", Err: nil},
+				// rev-parse --git-common-dir
+				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+				// rev-parse --show-toplevel
+				{Stdout: "/repo\n", Stderr: "", Err: nil},
+				// rev-list --reverse main..bead/diff-nonempty — one commit
+				{Stdout: "abc123\n", Stderr: "", Err: nil},
+				// cherry-pick abc123
+				{Stdout: "", Stderr: "", Err: nil},
+				// rev-parse HEAD
+				{Stdout: "rebasesha\n", Stderr: "", Err: nil},
+			},
+		}
+		coord := NewCoordinator(mock)
+		result, err := coord.Merge(context.Background(), Opts{
+			Branch:   "bead/diff-nonempty",
+			Worktree: "/tmp/wt-diff-nonempty",
+			BeadID:   "oro-diff-nonempty",
+		})
+		if err != nil {
+			t.Fatalf("expected rebase to succeed, got: %v", err)
+		}
+		if result.CommitSHA != "rebasesha" {
+			t.Errorf("expected rebasesha, got %q", result.CommitSHA)
+		}
+		calls := mock.getCalls()
+		// Should have proceeded past the isBranchMerged check to rebase
+		assertArgs(t, calls[0], "/tmp/wt-diff-nonempty", "rev-list", "--count", "main..bead/diff-nonempty")
+		assertArgs(t, calls[1], "/tmp/wt-diff-nonempty", "diff", "main..bead/diff-nonempty")
+		assertArgs(t, calls[2], "/tmp/wt-diff-nonempty", "rebase", "main", "bead/diff-nonempty")
+	})
+
+	t.Run("git diff error → proceed to rebase (fail-open)", func(t *testing.T) {
+		mock := &mockGitRunner{
+			results: []mockResult{
+				// rev-list --count: 0 commits ahead
+				{Stdout: "0\n", Stderr: "", Err: nil},
+				// git diff fails
+				{Stdout: "", Stderr: "error: diff failed", Err: fmt.Errorf("exit status 1")},
+				// rebase main bead/diff-err — succeeds
+				{Stdout: "", Stderr: "", Err: nil},
+				// rev-parse --git-common-dir
+				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+				// rev-parse --show-toplevel
+				{Stdout: "/repo\n", Stderr: "", Err: nil},
+				// rev-list --reverse main..bead/diff-err — one commit
+				{Stdout: "def456\n", Stderr: "", Err: nil},
+				// cherry-pick def456
+				{Stdout: "", Stderr: "", Err: nil},
+				// rev-parse HEAD
+				{Stdout: "errsha\n", Stderr: "", Err: nil},
+			},
+		}
+		coord := NewCoordinator(mock)
+		result, err := coord.Merge(context.Background(), Opts{
+			Branch:   "bead/diff-err",
+			Worktree: "/tmp/wt-diff-err",
+			BeadID:   "oro-diff-err",
+		})
+		if err != nil {
+			t.Fatalf("expected fail-open rebase to succeed, got: %v", err)
+		}
+		if result.CommitSHA != "errsha" {
+			t.Errorf("expected errsha, got %q", result.CommitSHA)
+		}
+		calls := mock.getCalls()
+		assertArgs(t, calls[0], "/tmp/wt-diff-err", "rev-list", "--count", "main..bead/diff-err")
+		assertArgs(t, calls[1], "/tmp/wt-diff-err", "diff", "main..bead/diff-err")
+		assertArgs(t, calls[2], "/tmp/wt-diff-err", "rebase", "main", "bead/diff-err")
+	})
 }
 
 func TestMerge_RebaseNoConflictPattern(t *testing.T) {
