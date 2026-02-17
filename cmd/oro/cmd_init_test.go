@@ -863,6 +863,19 @@ func TestGenerateSettings(t *testing.T) {
 	}
 }
 
+func TestGenerateSettings_NoBdCreateNotifier(t *testing.T) {
+	data, err := generateSettings("$HOME/.oro")
+	if err != nil {
+		t.Fatalf("generateSettings failed: %v", err)
+	}
+
+	content := string(data)
+	// bd_create_notifier hook should NOT be registered (oro-t0np)
+	if strings.Contains(content, "bd_create_notifier") {
+		t.Errorf("settings.json should NOT contain bd_create_notifier hook, got:\n%s", content)
+	}
+}
+
 func TestExtractAssets(t *testing.T) {
 	assets := testAssets()
 	dest := t.TempDir()
@@ -894,6 +907,12 @@ func TestExtractAssets(t *testing.T) {
 	// CLAUDE.md → .claude/CLAUDE.md
 	if _, err := os.Stat(filepath.Join(dest, ".claude", "CLAUDE.md")); err != nil {
 		t.Errorf("CLAUDE.md not extracted: %v", err)
+	}
+
+	// bd_create_notifier.py should NOT be extracted (oro-t0np)
+	bdCreateNotifierPath := filepath.Join(dest, "hooks", "bd_create_notifier.py")
+	if _, err := os.Stat(bdCreateNotifierPath); err == nil {
+		t.Errorf("bd_create_notifier.py should NOT be extracted, but found at: %s", bdCreateNotifierPath)
 	}
 }
 
