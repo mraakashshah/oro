@@ -1122,22 +1122,22 @@ func buildClaudeArgs(model, prompt string) []string {
 }
 
 // buildClaudeEnv returns the environment slice for the claude subprocess.
-// When ORO_PROJECT is set, it inherits the current environment and adds
-// CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 so claude picks up
-// CLAUDE.md from directories added via --add-dir.
-// Returns nil when ORO_PROJECT is not set, which causes exec.Cmd to
-// inherit the parent environment unchanged.
+// Always builds an explicit env (never nil) so that CLAUDECODE is stripped
+// unconditionally — a nil Env would cause exec.Cmd to inherit the parent
+// environment, leaking CLAUDECODE and triggering the nested-session guard.
+// When ORO_PROJECT is set, also appends CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1
+// so claude picks up CLAUDE.md from directories added via --add-dir.
 func buildClaudeEnv() []string {
-	if os.Getenv("ORO_PROJECT") == "" {
-		return nil
-	}
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, e := range os.Environ() {
 		if !strings.HasPrefix(e, "CLAUDECODE=") {
 			env = append(env, e)
 		}
 	}
-	return append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
+	if os.Getenv("ORO_PROJECT") != "" {
+		env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
+	}
+	return env
 }
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.
