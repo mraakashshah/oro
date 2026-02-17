@@ -19,6 +19,12 @@ type workerEventsMsg struct {
 	err    error
 }
 
+// workerOutputMsg carries the result of async worker output fetch.
+type workerOutputMsg struct {
+	output []string
+	err    error
+}
+
 // DetailModel represents the detail drilldown view for a single bead.
 type DetailModel struct {
 	bead              protocol.BeadDetail
@@ -27,6 +33,9 @@ type DetailModel struct {
 	workerEvents      []WorkerEvent  // Cached worker events for Worker tab
 	loadingEvents     bool           // True while events are being fetched asynchronously
 	eventError        error          // Error from async worker events fetch
+	workerOutput      []string       // Cached worker output for Output tab
+	loadingOutput     bool           // True while output is being fetched asynchronously
+	outputError       error          // Error from async worker output fetch
 	tabViewport       viewport.Model // Viewport for scrollable tab content
 	viewportActiveTab int            // Track which tab content is currently in viewport
 	width             int            // Terminal width
@@ -52,6 +61,23 @@ func fetchWorkerEventsCmd(workerID string) tea.Cmd {
 	}
 }
 
+// fetchWorkerOutputCmd returns a tea.Cmd that fetches worker output asynchronously.
+// Fetches with a 2-second timeout to prevent indefinite hang.
+func fetchWorkerOutputCmd(socketPath, workerID string) tea.Cmd {
+	return func() tea.Msg {
+		if workerID == "" {
+			return workerOutputMsg{output: nil, err: nil}
+		}
+
+		// Create context with timeout to prevent indefinite hang
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		output, err := fetchWorkerOutput(ctx, socketPath, workerID, 20)
+		return workerOutputMsg{output: output, err: err}
+	}
+}
+
 // newDetailModel creates a new DetailModel for the given bead.
 // Worker events are fetched asynchronously - use fetchWorkerEventsCmd to initiate the fetch.
 func newDetailModel(bead protocol.BeadDetail, theme Theme, styles Styles) DetailModel {
@@ -64,10 +90,13 @@ func newDetailModel(bead protocol.BeadDetail, theme Theme, styles Styles) Detail
 	d := DetailModel{
 		bead:              bead,
 		activeTab:         0,
-		tabs:              []string{"Overview", "Worker", "Diff", "Deps", "Memory"},
+		tabs:              []string{"Overview", "Worker", "Diff", "Deps", "Memory", "Output"},
 		workerEvents:      nil,
 		loadingEvents:     loading,
 		eventError:        nil,
+		workerOutput:      nil,
+		loadingOutput:     loading,
+		outputError:       nil,
 		tabViewport:       vp,
 		viewportActiveTab: 0,
 		width:             80,
@@ -153,6 +182,8 @@ func (d DetailModel) getActiveTabContent() string {
 		return d.renderDepsTab(d.styles)
 	case 4:
 		return d.renderMemoryTab(d.styles)
+	case 5:
+		return d.renderOutputTab(d.styles)
 	default:
 		return "Unknown tab"
 	}
@@ -293,4 +324,24 @@ func (d DetailModel) renderMemoryTab(styles Styles) string {
 	}
 
 	return d.bead.Memory
+}
+
+// renderOutputTab renders the Output tab with worker output logs.
+func (d DetailModel) renderOutputTab(styles Styles) string {
+	// Edge case: loading output → show 'Loading...'
+	if d.loadingOutput {
+		return styles.DetailDimItalic.Render("Loading output...")
+	}
+
+	// Edge case: error fetching output → show error message
+	if d.outputError != nil {
+		return styles.DetailError.Render("Error loading output: " + d.outputError.Error())
+	}
+
+	// Edge case: empty output → show 'no output available'
+	if len(d.workerOutput) == 0 {
+		return styles.DetailDimItalic.Render("no output available")
+	}
+
+	return strings.Join(d.workerOutput, "\n")
 }
