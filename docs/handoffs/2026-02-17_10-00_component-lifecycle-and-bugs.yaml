@@ -1,0 +1,112 @@
+---
+date: 2026-02-17
+status: complete
+---
+
+goal: >
+  Designed and decomposed two major work items: (1) three dispatcher stale-state
+  bugs, (2) component lifecycle epic for independent dispatcher/worker management.
+  All beads filed with full acceptance criteria, dependencies wired, spec written.
+
+now: >
+  Workers can pick up unblocked beads immediately. Four beads from the lifecycle
+  epic are parallelizable (oro-18c5.1, .2, .3, .4). Three standalone bugs are
+  also independent (oro-2piq, oro-bu85, oro-rmp0).
+
+done_this_session:
+  - task: "Filed 3 dispatcher stale-state bugs"
+    details: >
+      Explored dispatcher internals (handleConn cleanup, assignBead race,
+      escalation retry loop). Created beads with precise code references,
+      test names, and edge cases.
+    beads: [oro-2piq, oro-bu85, oro-rmp0]
+
+  - task: "Closed oro-etbo as superseded by oro-rmp0"
+    details: >
+      oro-etbo was MISSING_AC-only fix. oro-rmp0 implements per-type
+      pre-check for ALL escalation types. Supersedes oro-etbo entirely.
+
+  - task: "Designed component lifecycle system"
+    details: >
+      Brainstormed CLI surface (chose subcommand tree), designed managed vs
+      external worker tracking, identified kill-worker cleanup gaps (worktree
+      not removed, bead not reset, tracking not cleared), designed shutdown
+      bead reset phase. Wrote full spec.
+    files: [docs/plans/2026-02-17-component-lifecycle.md]
+
+  - task: "Decomposed lifecycle epic into 7 beads"
+    details: >
+      Created oro-18c5 epic with 7 children. Wired dependency graph:
+      .1/.2/.3/.4 parallel → .5 after .1 → .7 after .5, .6 after .2.
+      Total ~43min work, ~14min critical path.
+    beads: [oro-18c5, oro-18c5.1, oro-18c5.2, oro-18c5.3, oro-18c5.4, oro-18c5.5, oro-18c5.6, oro-18c5.7]
+
+  - task: "Filed notification batching bead"
+    beads: [oro-qla5]
+
+decisions:
+  - subcommand_tree: >
+      Chose oro dispatcher start/stop + oro worker launch/stop over flags
+      on existing commands or directive-only approach. Clean separation,
+      discoverable, no overlap with existing oro start/stop.
+
+  - managed_flag: >
+      Add managed bool to trackedWorker. reconcileScale only counts/kills
+      managed workers. MaxWorkers=0 makes reconcileScale a no-op (manual mode).
+      External workers are invisible to scaling in all modes.
+
+  - no_mixed_mode_restriction: >
+      Originally considered prohibiting mixed mode (managed + external workers).
+      User pointed out legitimate use case: auto-managed pool + dedicated
+      worker for specific bead. managed flag handles this cleanly.
+
+  - kill_worker_cleanup: >
+      applyKillWorker must add: worktree removal, bead reset to open,
+      clearBeadTracking. Also conditional targetWorkers decrement (only
+      if w.managed). Pre-existing bug, scoped into lifecycle epic.
+
+  - shutdown_bead_reset: >
+      shutdownSequence needs phase 3b: reset all in-progress beads to open
+      before removing worktrees. Ensures beads are re-assignable on restart.
+
+  - supersede_etbo: >
+      oro-rmp0 (all-type escalation pre-check) supersedes oro-etbo
+      (MISSING_AC only). Closed oro-etbo with reason.
+
+findings:
+  - handleconn_cleanup_gap: >
+      handleConn deferred cleanup (dispatcher.go:513) deletes worker from
+      d.workers but never calls clearBeadTracking. Tracking maps leak on
+      clean connection drops. checkHeartbeats can't catch it because worker
+      is already gone from map.
+
+  - assignbead_race: >
+      BeadDetail struct has no Status field. lookupBeadDetail only returns
+      title+acceptance. No fresh status check between bd ready snapshot and
+      assignment. Race window allows assigning closed beads.
+
+  - escalation_retry_blind: >
+      retryPendingEscalations SELECTs only id,message — doesn't read type
+      or bead_id columns already stored in table. Blindly re-fires all
+      pending escalations without checking if condition still holds.
+
+  - kill_worker_incomplete: >
+      applyKillWorker doesn't remove worktree, doesn't reset bead to open,
+      doesn't clear tracking maps. Bead stays in_progress forever after
+      worker is killed.
+
+next:
+  - Workers pick up parallel beads: oro-18c5.1, .2, .3, .4 and oro-2piq, oro-bu85, oro-rmp0
+  - After oro-18c5.1 lands → oro-18c5.5 unblocks → oro-18c5.7 unblocks
+  - After oro-18c5.2 lands → oro-18c5.6 unblocks
+  - Monitor oro-4lo7 (P0 stop test stdin bug, human-owned)
+
+files:
+  created:
+    - docs/plans/2026-02-17-component-lifecycle.md
+    - docs/handoffs/2026-02-17_10-00_component-lifecycle-and-bugs.yaml
+
+beads:
+  created: [oro-2piq, oro-bu85, oro-rmp0, oro-18c5, oro-18c5.1, oro-18c5.2, oro-18c5.3, oro-18c5.4, oro-18c5.5, oro-18c5.6, oro-18c5.7, oro-qla5]
+  closed: [oro-etbo]
+  epic: oro-18c5
