@@ -414,7 +414,7 @@ func createProjectAnchor(projectRoot, projectName string) error {
 	}
 
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("project: %s\n", projectName))
+	fmt.Fprintf(&buf, "project: %s\n", projectName)
 
 	// Detect languages and append profile config.
 	profiles := langprofile.AllProfiles()

@@ -11,6 +11,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+# Resolve the repo-local hooks directory so tests work on CI (no ~/.oro/hooks there)
+HOOKS_DIR = str(Path(__file__).resolve().parent.parent / "assets" / "hooks")
+
 
 def test_writes_correct_percentage_with_1m_budget():
     """Hook should write correct percentage based on actual budget.
@@ -69,7 +72,7 @@ context_pct_writer.main()
                 text=True,
                 timeout=5,
                 env=env,
-                cwd=str(Path.home() / ".oro/hooks"),
+                cwd=HOOKS_DIR,
             )
 
             assert result.returncode == 0, f"Hook failed: {result.stderr}"
@@ -134,7 +137,7 @@ context_pct_writer.main()
                 text=True,
                 timeout=5,
                 env=env,
-                cwd=str(Path.home() / ".oro/hooks"),
+                cwd=HOOKS_DIR,
             )
 
             assert result.returncode == 0, f"Hook failed: {result.stderr}"
