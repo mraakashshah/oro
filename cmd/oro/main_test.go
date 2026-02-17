@@ -88,6 +88,10 @@ func TestCLICommands(t *testing.T) {
 	})
 
 	t.Run("stop executes without error", func(t *testing.T) {
+		// Use isolated temp directory to avoid interfering with real dispatcher
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_HOME", tmpDir)
+
 		_, _, err := executeCommand("stop")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -105,6 +109,10 @@ func TestCLICommands(t *testing.T) {
 	})
 
 	t.Run("status executes without error", func(t *testing.T) {
+		// Use isolated temp directory to avoid interfering with real dispatcher
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_HOME", tmpDir)
+
 		_, _, err := executeCommand("status")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
