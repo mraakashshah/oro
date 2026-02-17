@@ -37,11 +37,14 @@ These commands control the swarm. All connect to the dispatcher via UDS.
 
 - `oro start` — launch the dispatcher daemon (used by the human to start the swarm, not by the manager)
 - `oro stop` — gracefully shut down the dispatcher and all workers
+- `oro status` — human-friendly status display with alerts and health indicators
 - `oro directive pause` — pause all worker execution (workers finish current bead, then idle)
 - `oro directive resume` — resume paused workers
 - `oro directive scale N` — set the target worker count to N
 - `oro directive focus <epic>` — prioritize beads belonging to the given epic
 - `oro directive status` — display current swarm state (workers, queue depth, active beads)
+- `oro directive kill-worker <id>` — terminate a specific worker and return its bead to queue
+- `oro directive spawn-for <bead-id>` — spawn a dedicated worker for a specific bead (doesn't change target count)
 - `oro directive restart-worker <id>` — kill and respawn a worker, requeue its bead
 - `oro directive preempt <id>` — gracefully preempt a worker for higher-priority work
 
@@ -93,6 +96,7 @@ Clear focus when:
 - **Scale down** when: queue is empty, most beads are blocked, or session is ending.
 - **Hard maximum**: never exceed the configured max (default 10).
 - **Merge contention**: watch for contention when running >5 workers. If merge conflicts spike, scale down.
+- **One-off priority work**: for P0 beads that need immediate attention without changing the target count, use `oro directive spawn-for <bead-id>` instead of scaling up.
 
 ## Escalations
 
@@ -107,7 +111,7 @@ When the dispatcher sends an escalation, respond with the appropriate playbook:
 ### STUCK_WORKER
 1. Check if the worker has been idle or looping for >5 minutes.
 2. If the bead is too large, split it and reassign.
-3. If the worker is truly stuck, kill it and reassign the bead.
+3. If the worker is truly stuck, use `oro directive restart-worker <id>` to kill and respawn it, requeuing the bead.
 
 ### PRIORITY_CONTENTION
 1. Review the competing priorities.
@@ -116,6 +120,7 @@ When the dispatcher sends an escalation, respond with the appropriate playbook:
 4. If a high-priority bead is blocked by workers on lower-priority work:
    - Use `oro directive preempt <worker-id>` to gracefully stop lower-priority work
    - Or use `oro directive restart-worker <worker-id>` to immediately free capacity
+   - For P0 beads that need immediate attention, use `oro directive spawn-for <bead-id>` to create a dedicated worker
 
 ### WORKER_CRASH
 1. Note the crashed worker and its bead.
