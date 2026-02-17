@@ -39,11 +39,11 @@ func TestAssemblePrompt_ExitRequiresMergeToMain(t *testing.T) {
 		exitSection = prompt[exitStart : exitStart+len("## Exit")+nextSectionStart]
 	}
 
-	// Exit section must explicitly state merge-to-main is required
+	// Exit section must explain dispatcher handles merge (oro-u74j fix)
+	// Worker should NOT be instructed to merge or close themselves
 	requiredPhrases := map[string][]string{
-		"main branch requirement": {"main branch", "on main", "to main"},
-		"merge instruction":       {"merge", "git merge"},
-		"close command":           {"bd close", "close"},
+		"dispatcher responsibility": {"dispatcher"},
+		"merge mention":             {"merge", "main"},
 	}
 
 	for category, phrases := range requiredPhrases {
@@ -55,7 +55,15 @@ func TestAssemblePrompt_ExitRequiresMergeToMain(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("Exit section must contain %s (one of %v) to enforce merge-before-close. Got:\n%s", category, phrases, exitSection)
+			t.Errorf("Exit section must contain %s (one of %v). Got:\n%s", category, phrases, exitSection)
+		}
+	}
+
+	// Worker should NOT be told to run merge or close commands themselves
+	prohibitedPhrases := []string{"git merge", "bd close", "checkout main"}
+	for _, phrase := range prohibitedPhrases {
+		if strings.Contains(strings.ToLower(exitSection), phrase) {
+			t.Errorf("Exit section must NOT instruct worker to run '%s' (dispatcher handles this). Got:\n%s", phrase, exitSection)
 		}
 	}
 }
@@ -91,23 +99,14 @@ func TestAssemblePrompt_ExitMergeBlockerHandling(t *testing.T) {
 		exitSection = prompt[exitStart : exitStart+len("## Exit")+nextSectionStart]
 	}
 
-	// Exit section should mention handling merge failures
-	blockingPhrases := []string{
-		"merge fails",
-		"test failures",
-		"report",
+	// Exit section should explain dispatcher handles merge failures (oro-u74j)
+	if !strings.Contains(strings.ToLower(exitSection), "dispatcher") {
+		t.Errorf("Exit section should mention dispatcher handles merge process. Got:\n%s", exitSection)
 	}
 
-	foundCount := 0
-	for _, phrase := range blockingPhrases {
-		if strings.Contains(strings.ToLower(exitSection), strings.ToLower(phrase)) {
-			foundCount++
-		}
-	}
-
-	// At least 2 of the 3 blocking-related phrases should be present
-	if foundCount < 2 {
-		t.Errorf("Exit section should mention merge failure handling (found %d/3 phrases). Got:\n%s", foundCount, exitSection)
+	// Worker should NOT be instructed to handle merge failures themselves
+	if strings.Contains(strings.ToLower(exitSection), "bd close") {
+		t.Errorf("Exit section must NOT instruct worker to close bead (dispatcher handles this). Got:\n%s", exitSection)
 	}
 }
 
@@ -142,26 +141,25 @@ func TestAssemblePrompt_ExitStepByStepLifecycle(t *testing.T) {
 		exitSection = prompt[exitStart : exitStart+len("## Exit")+nextSectionStart]
 	}
 
-	// Exit section should list steps in order
-	// Look for numbered steps (1., 2., 3.) or bullet points with sequential actions
-	hasSteps := strings.Contains(exitSection, "1.") || strings.Contains(exitSection, "- ")
+	// Exit section should list steps dispatcher will take (oro-u74j)
+	// Look for numbered steps describing dispatcher's actions
+	hasSteps := strings.Contains(exitSection, "1.") || strings.Contains(exitSection, "2.")
 
 	if !hasSteps {
-		t.Error("Exit section should contain a step-by-step procedure (numbered or bulleted)")
+		t.Error("Exit section should describe dispatcher's step-by-step process")
 	}
 
-	// Verify merge appears BEFORE bd close in the text
+	// Verify dispatcher and merge are mentioned
 	lowerExit := strings.ToLower(exitSection)
-	mergeIdx := strings.Index(lowerExit, "merge")
-	closeIdx := strings.Index(lowerExit, "bd close")
+	if !strings.Contains(lowerExit, "dispatcher") {
+		t.Error("Exit section must mention 'dispatcher' handles merge")
+	}
+	if !strings.Contains(lowerExit, "merge") {
+		t.Error("Exit section must mention 'merge' process")
+	}
 
-	if mergeIdx == -1 {
-		t.Error("Exit section must contain 'merge' instruction")
-	}
-	if closeIdx == -1 {
-		t.Error("Exit section must contain 'bd close' instruction")
-	}
-	if mergeIdx > closeIdx {
-		t.Error("Exit section must list merge BEFORE bd close (merge must happen first)")
+	// Worker should NOT be told to close bead themselves
+	if strings.Contains(lowerExit, "bd close") {
+		t.Error("Exit section must NOT tell worker to run 'bd close' (dispatcher handles this)")
 	}
 }
