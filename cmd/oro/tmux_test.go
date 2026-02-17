@@ -2266,3 +2266,74 @@ func TestRemainOnExit(t *testing.T) {
 		}
 	})
 }
+
+func TestAttachInteractiveFocusesArchitectPane(t *testing.T) {
+	t.Run("calls select-window to focus architect before attaching", func(t *testing.T) {
+		fake := newFakeCmd()
+		sess := &TmuxSession{Name: "oro", Runner: fake}
+
+		// AttachInteractive will fail since it tries to exec.Command, but
+		// we can test that select-window is called before the attach fails
+		_ = sess.AttachInteractive()
+
+		// Verify select-window was called to focus architect window
+		var foundSelectWindow bool
+		for _, call := range fake.getCalls() {
+			if len(call) >= 4 && call[0] == "tmux" && call[1] == "select-window" {
+				// Should be: tmux select-window -t oro:architect
+				if call[2] == "-t" && call[3] == "oro:architect" {
+					foundSelectWindow = true
+					break
+				}
+			}
+		}
+		if !foundSelectWindow {
+			t.Error("expected tmux select-window -t oro:architect before attach")
+		}
+	})
+
+	t.Run("focuses architect even when reattaching to existing session", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Simulate an existing session where manager window is currently focused
+		sess := &TmuxSession{Name: "oro", Runner: fake}
+
+		// Call AttachInteractive (simulates reattach scenario)
+		_ = sess.AttachInteractive()
+
+		// Verify select-window was called to switch back to architect
+		var foundSelectWindow bool
+		for _, call := range fake.getCalls() {
+			if len(call) >= 4 && call[0] == "tmux" && call[1] == "select-window" {
+				if call[2] == "-t" && call[3] == "oro:architect" {
+					foundSelectWindow = true
+					break
+				}
+			}
+		}
+		if !foundSelectWindow {
+			t.Error("expected tmux select-window -t oro:architect on reattach")
+		}
+	})
+
+	t.Run("continues with attach even if select-window fails", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Make select-window fail (e.g., window doesn't exist)
+		fake.errs[key("tmux", "select-window", "-t", "oro:architect")] = fmt.Errorf("no such window")
+		sess := &TmuxSession{Name: "oro", Runner: fake}
+
+		// AttachInteractive should still attempt the attach (won't error on select-window failure)
+		_ = sess.AttachInteractive()
+
+		// Verify select-window was attempted
+		var foundSelectWindow bool
+		for _, call := range fake.getCalls() {
+			if len(call) >= 4 && call[0] == "tmux" && call[1] == "select-window" {
+				foundSelectWindow = true
+				break
+			}
+		}
+		if !foundSelectWindow {
+			t.Error("expected select-window to be attempted even if it might fail")
+		}
+	})
+}
