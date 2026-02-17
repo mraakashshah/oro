@@ -709,7 +709,7 @@ func TestModel_SearchLiveFilter(t *testing.T) {
 			{ID: "oro-abc.2", Title: "Add user dashboard", Status: "in_progress", Priority: 1, Type: "feature"},
 		}
 		m.activeView = SearchView
-		m.searchQuery = "auth"
+		m.searchInput.SetValue("auth")
 
 		// Verify filtered beads contains only matching beads
 		filtered := m.filterBeads()
@@ -770,7 +770,7 @@ func TestModel_SearchNavigateToDetail(t *testing.T) {
 			{ID: "oro-abc.1", Title: "Fix bug", Status: "open"},
 		}
 		m.activeView = SearchView
-		m.searchQuery = "nonexistent"
+		m.searchInput.SetValue("nonexistent")
 		m.searchSelectedIndex = 0
 
 		// Press Enter
@@ -1169,5 +1169,158 @@ func TestSplitPaneLayout(t *testing.T) {
 
 		// In narrow terminals, should not attempt split rendering
 		// The output should be just the detail view
+	})
+}
+
+// TestSearchTextInput verifies that the search input uses bubbles textinput.Model
+// for proper character handling, cursor movement, and focus/blur behavior.
+func TestSearchTextInput(t *testing.T) {
+	t.Run("searchInput field exists and is textinput.Model", func(t *testing.T) {
+		m := newModel()
+		// Verify the field exists and has textinput methods (compile-time type check)
+		_ = m.searchInput.Value()
+		_ = m.searchInput.Focused()
+	})
+
+	t.Run("entering SearchView focuses textinput", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-test1", Title: "Test Bead 1", Status: "open"},
+		}
+
+		// Trigger search view
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+		m, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update did not return Model")
+		}
+
+		// Verify we're in SearchView
+		if m.activeView != SearchView {
+			t.Fatalf("expected SearchView, got %v", m.activeView)
+		}
+
+		// Verify textinput is focused
+		if !m.searchInput.Focused() {
+			t.Error("expected searchInput to be focused in SearchView")
+		}
+	})
+
+	t.Run("leaving SearchView blurs textinput", func(t *testing.T) {
+		m := newModel()
+		m.activeView = SearchView
+		m.searchInput.Focus()
+
+		// Press Esc to leave SearchView
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		m, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update did not return Model")
+		}
+
+		// Verify we're back in BoardView
+		if m.activeView != BoardView {
+			t.Fatalf("expected BoardView, got %v", m.activeView)
+		}
+
+		// Verify textinput is blurred
+		if m.searchInput.Focused() {
+			t.Error("expected searchInput to be blurred after leaving SearchView")
+		}
+	})
+
+	t.Run("character input updates searchInput value", func(t *testing.T) {
+		m := newModel()
+		m.activeView = SearchView
+		m.searchInput.Focus()
+
+		// Type 'a'
+		m.searchInput, _ = m.searchInput.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		if m.searchInput.Value() != "a" {
+			t.Errorf("expected searchInput value 'a', got '%s'", m.searchInput.Value())
+		}
+
+		// Type 'b'
+		m.searchInput, _ = m.searchInput.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+		if m.searchInput.Value() != "ab" {
+			t.Errorf("expected searchInput value 'ab', got '%s'", m.searchInput.Value())
+		}
+	})
+
+	t.Run("backspace removes character", func(t *testing.T) {
+		m := newModel()
+		m.activeView = SearchView
+		m.searchInput.Focus()
+		m.searchInput.SetValue("test")
+
+		// Press backspace
+		m.searchInput, _ = m.searchInput.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		if m.searchInput.Value() != "tes" {
+			t.Errorf("expected 'tes', got '%s'", m.searchInput.Value())
+		}
+	})
+
+	t.Run("search results update on keystroke via searchInput.Value()", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-abc1", Title: "Authentication Bug", Status: "open"},
+			{ID: "oro-xyz2", Title: "Dashboard Feature", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchInput.Focus()
+		m.searchInput.SetValue("auth")
+
+		// Filter should use searchInput.Value() instead of searchQuery
+		filtered := m.filterBeads()
+
+		if len(filtered) != 1 {
+			t.Errorf("expected 1 result for 'auth', got %d", len(filtered))
+		}
+		if len(filtered) > 0 && filtered[0].ID != "oro-abc1" {
+			t.Errorf("expected oro-abc1, got %s", filtered[0].ID)
+		}
+	})
+
+	t.Run("textinput handles cursor movement", func(t *testing.T) {
+		m := newModel()
+		m.activeView = SearchView
+		m.searchInput.Focus()
+		m.searchInput.SetValue("test")
+
+		// Move cursor left
+		m.searchInput, _ = m.searchInput.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		// Verify cursor moved (Position should be less than length)
+		if m.searchInput.Position() == 4 {
+			t.Error("expected cursor to move left from end position")
+		}
+
+		// Move cursor right
+		m.searchInput, _ = m.searchInput.Update(tea.KeyMsg{Type: tea.KeyRight})
+		// Cursor should move back
+		if m.searchInput.Position() != 4 {
+			t.Errorf("expected cursor at position 4, got %d", m.searchInput.Position())
+		}
+	})
+
+	t.Run("handleSearchViewKeys delegates to textinput for character input", func(t *testing.T) {
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-test1", Title: "Test", Status: "open"},
+		}
+		m.activeView = SearchView
+		m.searchInput.Focus()
+
+		// Send character input through handleSearchViewKeys
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}
+		updated, _ := m.handleSearchViewKeys(msg.String(), msg)
+		m, ok := updated.(Model)
+		if !ok {
+			t.Fatal("handleSearchViewKeys did not return Model")
+		}
+
+		// Verify the character was added via textinput
+		if m.searchInput.Value() != "x" {
+			t.Errorf("expected 'x', got '%s'", m.searchInput.Value())
+		}
 	})
 }

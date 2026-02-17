@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -115,8 +116,9 @@ type Model struct {
 	detailModel *DetailModel // Set when drilling down into a bead
 
 	// Search view state
-	searchQuery         string // Current search query
-	searchSelectedIndex int    // Index of the selected search result
+	searchInput         textinput.Model // Bubbles textinput for search query
+	searchQuery         string          // Current search query (deprecated, use searchInput.Value())
+	searchSelectedIndex int             // Index of the selected search result
 	searchModel         *SearchModel
 
 	// Pre-computed styles to avoid allocations during rendering
@@ -130,8 +132,12 @@ type Model struct {
 // newModel creates a new Model initialized with BoardView active.
 func newModel() Model {
 	theme := DefaultTheme()
+	ti := textinput.New()
+	ti.Placeholder = "Search by ID, title, or filter (p:0, s:open, t:bug)"
+	ti.CharLimit = 100
 	return Model{
 		activeView:  BoardView,
+		searchInput: ti,
 		searchModel: &SearchModel{},
 		theme:       theme,
 		styles:      NewStyles(theme),
@@ -317,6 +323,8 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.activeView = InsightsView
 	case "/":
 		m.activeView = SearchView
+		m.searchInput.Focus()
+		m.searchInput.SetValue("")
 		m.searchQuery = ""
 		m.searchSelectedIndex = 0
 	case "w":
@@ -327,9 +335,13 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 
 // handleSearchViewKeys processes keyboard input in SearchView.
 func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
 	switch key {
 	case "esc":
 		m.activeView = BoardView
+		m.searchInput.Blur()
+		m.searchInput.SetValue("")
 		m.searchQuery = ""
 		m.searchSelectedIndex = 0
 		return m, nil
@@ -360,29 +372,24 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 		if m.searchSelectedIndex > 0 {
 			m.searchSelectedIndex--
 		}
-	case "backspace":
-		if m.searchQuery != "" {
-			runes := []rune(m.searchQuery)
-			m.searchQuery = string(runes[:len(runes)-1])
-			// Reset selection when query changes
-			m.searchSelectedIndex = 0
-		}
 	default:
-		// Handle text input
-		if len(msg.Runes) > 0 {
-			m.searchQuery += string(msg.Runes)
-			// Reset selection when query changes
+		// Delegate all other input to textinput (handles character input, backspace, cursor movement, etc.)
+		oldValue := m.searchInput.Value()
+		m.searchInput, cmd = m.searchInput.Update(msg)
+		// Reset selection when query changes
+		if m.searchInput.Value() != oldValue {
 			m.searchSelectedIndex = 0
 		}
 	}
-	return m, nil
+	return m, cmd
 }
 
 // filterBeads filters beads based on the current search query.
 // Converts protocol.Bead to local Bead type for SearchModel.Filter,
 // then maps results back via ID index for O(n) lookup.
 func (m Model) filterBeads() []protocol.Bead {
-	if m.searchQuery == "" {
+	query := m.searchInput.Value()
+	if query == "" {
 		return m.beads
 	}
 
@@ -401,7 +408,7 @@ func (m Model) filterBeads() []protocol.Bead {
 	}
 
 	// Filter using SearchModel
-	filtered := m.searchModel.Filter(localBeads, m.searchQuery)
+	filtered := m.searchModel.Filter(localBeads, query)
 
 	// Map back via index — O(n) not O(n*m)
 	result := make([]protocol.Bead, 0, len(filtered))
@@ -530,8 +537,7 @@ func (m Model) renderSearchTitle() string {
 
 // renderSearchInput renders the search input field with current query.
 func (m Model) renderSearchInput() string {
-	searchPrompt := "Query: " + m.searchQuery + "▌"
-	return m.styles.SearchInput.Render(searchPrompt)
+	return m.styles.SearchInput.Render("Query: " + m.searchInput.View())
 }
 
 // renderSearchHelp renders the help text for search overlay.
