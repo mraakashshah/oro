@@ -2462,7 +2462,7 @@ func (d *Dispatcher) escalationRetryLoop(ctx context.Context) {
 
 func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT id, message FROM escalations
+		`SELECT id, type, bead_id, message FROM escalations
 		 WHERE status = 'pending' AND retry_count < 5
 		 ORDER BY id`)
 	if err != nil {
@@ -2470,16 +2470,117 @@ func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
 	}
 	defer rows.Close()
 
+	// Collect all escalations first (can't update while iterating)
+	type pendingEscalation struct {
+		id      int64
+		escType string
+		beadID  string
+		msg     string
+	}
+	var pending []pendingEscalation
+
 	for rows.Next() {
 		var id int64
-		var msg string
-		if err := rows.Scan(&id, &msg); err != nil {
+		var escType, msg string
+		var beadID sql.NullString
+		if err := rows.Scan(&id, &escType, &beadID, &msg); err != nil {
 			continue
 		}
-		_ = d.escalator.Escalate(ctx, msg)
+
+		beadIDStr := ""
+		if beadID.Valid {
+			beadIDStr = beadID.String
+		}
+		pending = append(pending, pendingEscalation{
+			id:      id,
+			escType: escType,
+			beadID:  beadIDStr,
+			msg:     msg,
+		})
+	}
+	_ = rows.Close() // #nosec G104 - defer handles cleanup on error
+
+	// Process escalations after closing the query
+	for _, esc := range pending {
+		// Check if the underlying condition is resolved
+		if !d.shouldRetryEscalation(ctx, esc.escType, esc.beadID) {
+			// Condition resolved - auto-ack the escalation
+			_, _ = d.db.ExecContext(ctx,
+				`UPDATE escalations SET status = 'acked', acked_at = datetime('now') WHERE id = ?`,
+				esc.id)
+			continue
+		}
+
+		// Condition still holds - retry the escalation
+		_ = d.escalator.Escalate(ctx, esc.msg)
 		_, _ = d.db.ExecContext(ctx,
 			`UPDATE escalations SET retry_count = retry_count + 1, last_retry_at = datetime('now') WHERE id = ?`,
-			id)
+			esc.id)
+	}
+}
+
+// shouldRetryEscalation checks if an escalation's underlying condition still
+// holds. Returns false if the condition is resolved (preventing spam), true
+// if the escalation should be retried.
+//
+// Edge cases:
+// - Empty beadID: always retry (no bead context to check)
+// - beads.Show error: always retry (don't suppress on error)
+// - Unknown escType: always retry (don't block future escalation types)
+func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID string) bool {
+	// Always retry if no bead context
+	if beadID == "" {
+		return true
+	}
+
+	// Check per-type conditions
+	switch protocol.EscalationType(escType) {
+	case protocol.EscMissingAC:
+		// Resolved if AC is now populated
+		detail, err := d.beads.Show(ctx, beadID)
+		if err != nil {
+			return true // Retry on error
+		}
+		return detail.AcceptanceCriteria == "" // Retry if still missing
+
+	case protocol.EscStuckWorker:
+		// Resolved if worker no longer exists
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		for _, w := range d.workers {
+			if w.beadID == beadID {
+				return true // Worker still exists, retry
+			}
+		}
+		return false // Worker gone, don't retry
+
+	case protocol.EscWorkerCrash, protocol.EscStuck:
+		// Resolved if bead no longer in_progress (re-queued or closed)
+		detail, err := d.beads.Show(ctx, beadID)
+		if err != nil {
+			return true // Retry on error
+		}
+		return detail.WorkerID != "" // Retry if still assigned
+
+	case protocol.EscMergeConflict:
+		// Resolved if bead is closed (merged successfully)
+		detail, err := d.beads.Show(ctx, beadID)
+		if err != nil {
+			return true // Retry on error
+		}
+		return detail.WorkerID != "" // Retry if not closed (still has worker)
+
+	case protocol.EscPriorityContention:
+		// Resolved if bead was picked up (has worker)
+		detail, err := d.beads.Show(ctx, beadID)
+		if err != nil {
+			return true // Retry on error
+		}
+		return detail.WorkerID == "" // Retry if still unassigned
+
+	default:
+		// Unknown type - always retry (don't block future types)
+		return true
 	}
 }
 
