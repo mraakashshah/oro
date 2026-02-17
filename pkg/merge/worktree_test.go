@@ -13,6 +13,8 @@ func TestMergeToMain(t *testing.T) {
 	t.Run("merge succeeds when main is checked out elsewhere", func(t *testing.T) {
 		mock := &mockGitRunner{
 			results: []mockResult{
+				// 0. git rev-list --count main..bead/abc — not merged yet
+				{Stdout: "2\n", Stderr: "", Err: nil},
 				// 1. git rebase main bead/abc — success
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. git rev-parse --git-common-dir — returns common git dir
@@ -48,28 +50,32 @@ func TestMergeToMain(t *testing.T) {
 
 		// Verify the sequence of git commands
 		calls := mock.getCalls()
-		if len(calls) != 7 {
-			t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
+		if len(calls) != 8 {
+			t.Fatalf("expected 8 git calls, got %d: %+v", len(calls), calls)
 		}
 
+		// Verify already-merged check
+		assertArgs(t, calls[0], "/tmp/wt-abc", "rev-list", "--count", "main..bead/abc")
 		// Verify rebase happened in worktree
-		assertArgs(t, calls[0], "/tmp/wt-abc", "rebase", "main", "bead/abc")
+		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 		// Verify rev-parse --git-common-dir
-		assertArgs(t, calls[1], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
+		assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
 		// Verify rev-parse --show-toplevel from common dir
-		assertArgs(t, calls[2], "/path/to/repo/.git", "rev-parse", "--show-toplevel")
+		assertArgs(t, calls[3], "/path/to/repo/.git", "rev-parse", "--show-toplevel")
 		// Verify rev-list to get commits
-		assertArgs(t, calls[3], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
+		assertArgs(t, calls[4], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
 		// Verify cherry-picks happened in primary repo
-		assertArgs(t, calls[4], "/path/to/repo", "cherry-pick", "commit1")
-		assertArgs(t, calls[5], "/path/to/repo", "cherry-pick", "commit2")
+		assertArgs(t, calls[5], "/path/to/repo", "cherry-pick", "commit1")
+		assertArgs(t, calls[6], "/path/to/repo", "cherry-pick", "commit2")
 		// Verify final rev-parse in primary repo
-		assertArgs(t, calls[6], "/path/to/repo", "rev-parse", "HEAD")
+		assertArgs(t, calls[7], "/path/to/repo", "rev-parse", "HEAD")
 	})
 
 	t.Run("commits from agent branch land on main", func(t *testing.T) {
 		mock := &mockGitRunner{
 			results: []mockResult{
+				// 0. git rev-list --count main..bead/xyz — not merged yet
+				{Stdout: "1\n", Stderr: "", Err: nil},
 				// 1. git rebase main bead/xyz — success
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. git rev-parse --git-common-dir

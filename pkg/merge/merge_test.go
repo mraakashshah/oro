@@ -59,6 +59,8 @@ func (m *mockGitRunner) getCalls() []call {
 func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 	mock := &mockGitRunner{
 		results: []mockResult{
+			// 0. git rev-list --count main..bead/abc — not merged yet
+			{Stdout: "2\n", Stderr: "", Err: nil},
 			// 1. git rebase main bead/abc — success
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir
@@ -93,24 +95,26 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 
 	// Verify the git commands issued
 	calls := mock.getCalls()
-	if len(calls) != 7 {
-		t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 8 {
+		t.Fatalf("expected 8 git calls, got %d: %+v", len(calls), calls)
 	}
 
+	// Call 0: isBranchMerged check
+	assertArgs(t, calls[0], "/tmp/wt-abc", "rev-list", "--count", "main..bead/abc")
 	// Call 1: rebase
-	assertArgs(t, calls[0], "/tmp/wt-abc", "rebase", "main", "bead/abc")
+	assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 	// Call 2: rev-parse --git-common-dir
-	assertArgs(t, calls[1], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
+	assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
 	// Call 3: rev-parse --show-toplevel
-	assertArgs(t, calls[2], "/repo/.git", "rev-parse", "--show-toplevel")
+	assertArgs(t, calls[3], "/repo/.git", "rev-parse", "--show-toplevel")
 	// Call 4: rev-list
-	assertArgs(t, calls[3], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
+	assertArgs(t, calls[4], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
 	// Call 5: cherry-pick commit1
-	assertArgs(t, calls[4], "/repo", "cherry-pick", "commit1")
+	assertArgs(t, calls[5], "/repo", "cherry-pick", "commit1")
 	// Call 6: cherry-pick commit2
-	assertArgs(t, calls[5], "/repo", "cherry-pick", "commit2")
+	assertArgs(t, calls[6], "/repo", "cherry-pick", "commit2")
 	// Call 7: rev-parse HEAD
-	assertArgs(t, calls[6], "/repo", "rev-parse", "HEAD")
+	assertArgs(t, calls[7], "/repo", "rev-parse", "HEAD")
 }
 
 func TestMerge_RebaseConflict_ReturnsConflictError(t *testing.T) {
@@ -122,6 +126,8 @@ CONFLICT (content): Merge conflict in pkg/util/helper.go
 `
 	mock := &mockGitRunner{
 		results: []mockResult{
+			// 0. git rev-list --count main..bead/xyz — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
 			// 1. git rebase main bead/xyz — conflict
 			{Stdout: "", Stderr: rebaseStderr, Err: fmt.Errorf("exit status 1")},
 			// 2. git rebase --abort — success
@@ -162,11 +168,12 @@ CONFLICT (content): Merge conflict in pkg/util/helper.go
 
 	// Verify rebase --abort was called
 	calls := mock.getCalls()
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 git calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 git calls, got %d: %+v", len(calls), calls)
 	}
-	assertArgs(t, calls[0], "/tmp/wt-xyz", "rebase", "main", "bead/xyz")
-	assertArgs(t, calls[1], "/tmp/wt-xyz", "rebase", "--abort")
+	assertArgs(t, calls[0], "/tmp/wt-xyz", "rev-list", "--count", "main..bead/xyz")
+	assertArgs(t, calls[1], "/tmp/wt-xyz", "rebase", "main", "bead/xyz")
+	assertArgs(t, calls[2], "/tmp/wt-xyz", "rebase", "--abort")
 }
 
 func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // concurrency test requires sequential setup
@@ -181,14 +188,16 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 			<-unblockFirst // block until signaled
 		},
 		results: []mockResult{
-			// First merge (7 calls)
+			// First merge (8 calls)
+			{Stdout: "1\n", Stderr: "", Err: nil},          // rev-list --count (not merged)
 			{Stdout: "", Stderr: "", Err: nil},             // rebase
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil}, // rev-parse --git-common-dir
 			{Stdout: "/repo\n", Stderr: "", Err: nil},      // rev-parse --show-toplevel
 			{Stdout: "c1\n", Stderr: "", Err: nil},         // rev-list
 			{Stdout: "", Stderr: "", Err: nil},             // cherry-pick
 			{Stdout: "sha1\n", Stderr: "", Err: nil},       // rev-parse HEAD
-			// Second merge (6 calls - skipping rebase in count)
+			// Second merge (7 calls)
+			{Stdout: "1\n", Stderr: "", Err: nil},          // rev-list --count (not merged)
 			{Stdout: "", Stderr: "", Err: nil},             // rebase
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil}, // rev-parse --git-common-dir
 			{Stdout: "/repo\n", Stderr: "", Err: nil},      // rev-parse --show-toplevel
@@ -244,19 +253,19 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 	wg.Wait()
 
 	// The second merge must have started its git operations after the first finished
-	// Verify all 12 git calls happened sequentially (6 per merge)
+	// Verify all 14 git calls happened sequentially (7 per merge)
 	calls := blockingRunner.getCalls()
-	if len(calls) != 12 {
-		t.Fatalf("expected 12 git calls, got %d", len(calls))
+	if len(calls) != 14 {
+		t.Fatalf("expected 14 git calls, got %d", len(calls))
 	}
 
-	// First call should be for bead/first
-	if !containsArg(calls[0].Args, "bead/first") {
-		t.Errorf("expected first call to be for bead/first, got %v", calls[0].Args)
+	// Second call (rebase) should be for bead/first
+	if !containsArg(calls[1].Args, "bead/first") {
+		t.Errorf("expected second call (rebase) to be for bead/first, got %v", calls[1].Args)
 	}
-	// 7th call (second merge's rebase) should be for bead/second
-	if !containsArg(calls[6].Args, "bead/second") {
-		t.Errorf("expected seventh call to be for bead/second, got %v", calls[6].Args)
+	// 9th call (second merge's rebase) should be for bead/second
+	if !containsArg(calls[8].Args, "bead/second") {
+		t.Errorf("expected ninth call (rebase) to be for bead/second, got %v", calls[8].Args)
 	}
 }
 
@@ -368,6 +377,8 @@ func TestMerge_RebaseAbortFails(t *testing.T) {
 	// Edge case: rebase fails AND abort fails
 	mock := &mockGitRunner{
 		results: []mockResult{
+			// 0. git rev-list --count — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
 			// 1. git rebase — conflict
 			{Stdout: "", Stderr: "CONFLICT (content): Merge conflict in x.go", Err: fmt.Errorf("exit status 1")},
 			// 2. git rebase --abort — also fails
@@ -396,6 +407,8 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 	// Updated for cherry-pick flow - test cherry-pick failure
 	mock := &mockGitRunner{
 		results: []mockResult{
+			// 0. git rev-list --count — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
 			// 1. git rebase — success
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — success
@@ -436,6 +449,8 @@ func TestMerge_CheckoutMainFails(t *testing.T) {
 	// Instead, test that rev-parse --git-common-dir failure is handled.
 	mock := &mockGitRunner{
 		results: []mockResult{
+			// 0. git rev-list --count — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
 			// 1. git rebase — success
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — fails
@@ -467,6 +482,8 @@ func TestMerge_RevParseFails(t *testing.T) {
 	// Updated for cherry-pick flow - test rev-list failure
 	mock := &mockGitRunner{
 		results: []mockResult{
+			// 0. git rev-list --count — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
 			// 1. git rebase — success
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — success
@@ -506,7 +523,9 @@ func TestMerge_ContextCancelledDuringRebase(t *testing.T) {
 
 	mock := &mockGitRunner{
 		results: []mockResult{
-			// git rebase fails because context is cancelled
+			// 0. git rev-list --count — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
+			// 1. git rebase fails because context is cancelled
 			{Stdout: "", Stderr: "signal: killed", Err: fmt.Errorf("signal: killed")},
 		},
 	}
@@ -620,10 +639,46 @@ CONFLICT (modify/delete): Merge conflict in c.go`,
 	}
 }
 
+func TestMerge_BranchAlreadyMerged(t *testing.T) {
+	// When the agent already merged to main inside the worktree,
+	// isBranchMerged returns true and we skip rebase+cherry-pick entirely.
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// 0. git rev-list --count main..bead/done — already merged (0 commits ahead)
+			{Stdout: "0\n", Stderr: "", Err: nil},
+			// 1. git rev-parse main — return main HEAD SHA
+			{Stdout: "mainsha456\n", Stderr: "", Err: nil},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	result, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/done",
+		Worktree: "/tmp/wt-done",
+		BeadID:   "oro-done",
+	})
+	if err != nil {
+		t.Fatalf("expected success for already-merged branch, got: %v", err)
+	}
+	if result.CommitSHA != "mainsha456" {
+		t.Errorf("expected commit SHA mainsha456, got %q", result.CommitSHA)
+	}
+
+	// Only 2 git calls — no rebase, no cherry-pick
+	calls := mock.getCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 git calls, got %d: %+v", len(calls), calls)
+	}
+	assertArgs(t, calls[0], "/tmp/wt-done", "rev-list", "--count", "main..bead/done")
+	assertArgs(t, calls[1], "/tmp/wt-done", "rev-parse", "main")
+}
+
 func TestMerge_RebaseNoConflictPattern(t *testing.T) {
 	// Rebase fails but stderr doesn't contain CONFLICT pattern
 	mock := &mockGitRunner{
 		results: []mockResult{
+			// git rev-list --count main..bead/noconf — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
 			// git rebase fails with non-conflict error
 			{Stdout: "", Stderr: "fatal: not a git repository", Err: fmt.Errorf("exit status 128")},
 			// git rebase --abort
@@ -816,8 +871,8 @@ func TestAbortMu_PanicSafety(t *testing.T) {
 
 	runner := &funcGitRunner{fn: func(_ context.Context, _ string, args ...string) (string, string, error) {
 		n := callCount.Add(1)
-		// First call (rebase in first Merge): panic
-		if n == 1 && len(args) >= 1 && args[0] == "rebase" {
+		// Second call (rebase in first Merge): panic — first call is rev-list --count
+		if n == 2 && len(args) >= 1 && args[0] == "rebase" {
 			panic("simulated crash during merge operation")
 		}
 		// Subsequent calls succeed (for the second Merge)
