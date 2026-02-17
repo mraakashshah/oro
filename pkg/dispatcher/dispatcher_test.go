@@ -9014,3 +9014,76 @@ func TestApplyRestartDaemon(t *testing.T) {
 		t.Fatalf("expected PREPARE_SHUTDOWN, got %s", msg.Type)
 	}
 }
+
+// TestDispatcher_FilterClosedBeads verifies that closed beads are never assigned,
+// even if they were open when Ready() was called (race condition).
+func TestDispatcher_FilterClosedBeads(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect a worker
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Start dispatcher
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Provide two open beads initially
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-open", Title: "Open bead", Status: "open", Priority: 2, Type: "task", AcceptanceCriteria: "Test: pass"},
+		{ID: "oro-closed", Title: "Will be closed", Status: "open", Priority: 2, Type: "task", AcceptanceCriteria: "Test: pass"},
+	})
+
+	// Read the first ASSIGN message
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected first ASSIGN message")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	// Now simulate the bead being closed externally (race condition):
+	// Update beadSrc so oro-closed has status=closed
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-open", Title: "Open bead", Status: "open", Priority: 2, Type: "task", AcceptanceCriteria: "Test: pass"},
+		{ID: "oro-closed", Title: "Now closed", Status: "closed", Priority: 2, Type: "task", AcceptanceCriteria: "Test: pass"},
+	})
+
+	// Connect a second worker to trigger another assignment cycle
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w2",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 2, 1*time.Second)
+
+	// Wait for assignment cycle
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify the closed bead was NOT assigned to worker 2
+	d.mu.Lock()
+	var closedBeadAssigned bool
+	for _, w := range d.workers {
+		if w.beadID == "oro-closed" {
+			closedBeadAssigned = true
+			break
+		}
+	}
+	d.mu.Unlock()
+
+	if closedBeadAssigned {
+		t.Fatal("closed bead oro-closed was assigned to a worker — closed beads must be filtered out")
+	}
+}
