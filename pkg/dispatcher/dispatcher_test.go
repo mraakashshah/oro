@@ -9253,3 +9253,88 @@ func TestDispatcher_FilterClosedBeads(t *testing.T) {
 		t.Fatal("closed bead oro-closed was assigned to a worker — closed beads must be filtered out")
 	}
 }
+
+// TestHandleConnCleanupPrunesBeadTracking verifies that when a worker connection
+// drops (scanner EOF), handleConn's deferred cleanup clears all BeadTracker maps
+// for the worker's assigned beadID.
+func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	// Provide a bead for assignment
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-test", Title: "Test bead", Status: "open", Priority: 2, Type: "task", AcceptanceCriteria: "Test: pass"},
+	})
+
+	// Start dispatcher
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Connect worker
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+
+	// Wait for worker to be registered and assigned
+	waitForWorkers(t, d, 1, 1*time.Second)
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify worker was assigned oro-test
+	d.mu.Lock()
+	w, exists := d.workers["w1"]
+	if !exists || w.beadID != "oro-test" {
+		d.mu.Unlock()
+		t.Fatalf("worker w1 not assigned oro-test: exists=%v, beadID=%v", exists, w.beadID)
+	}
+
+	// Populate tracking maps to simulate dispatcher activity
+	d.attemptCounts["oro-test"] = 1
+	d.qgStuckTracker["oro-test"] = &qgHistory{hashes: []string{"abc123"}}
+	d.escalatedBeads["oro-test"] = true
+	d.worktreeFailures["oro-test"] = time.Now()
+	d.assigningBeads["oro-test"] = true
+	d.mu.Unlock()
+
+	// Close connection to trigger handleConn's deferred cleanup
+	_ = conn.Close()
+
+	// Wait for cleanup to run
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify worker was removed from d.workers
+	d.mu.Lock()
+	_, stillExists := d.workers["w1"]
+	if stillExists {
+		d.mu.Unlock()
+		t.Fatal("worker w1 still exists after connection close")
+	}
+
+	// Assert: All BeadTracker maps should have zero entries for oro-test
+	var errs []string
+	if _, exists := d.attemptCounts["oro-test"]; exists {
+		errs = append(errs, "attemptCounts still has oro-test entry")
+	}
+	if _, exists := d.qgStuckTracker["oro-test"]; exists {
+		errs = append(errs, "qgStuckTracker still has oro-test entry")
+	}
+	if _, exists := d.escalatedBeads["oro-test"]; exists {
+		errs = append(errs, "escalatedBeads still has oro-test entry")
+	}
+	if _, exists := d.worktreeFailures["oro-test"]; exists {
+		errs = append(errs, "worktreeFailures still has oro-test entry")
+	}
+	if _, exists := d.assigningBeads["oro-test"]; exists {
+		errs = append(errs, "assigningBeads still has oro-test entry")
+	}
+	d.mu.Unlock()
+
+	if len(errs) > 0 {
+		t.Errorf("BeadTracker maps not cleared:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+}
