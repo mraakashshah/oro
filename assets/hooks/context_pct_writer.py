@@ -20,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-CONTEXT_WINDOW = 200_000
+DEFAULT_CONTEXT_WINDOW = 200_000  # Fallback if budget not provided
 PANES_DIR = os.path.expanduser("~/.oro/panes")
 
 
@@ -45,14 +45,22 @@ def get_last_usage(transcript_path: str) -> dict | None:
     return last_usage
 
 
-def calculate_context_pct(usage: dict) -> int:
-    """Return context percentage (0-100) from a usage dict."""
+def calculate_context_pct(usage: dict, budget: int) -> int:
+    """Return context percentage (0-100) from a usage dict.
+
+    Args:
+        usage: Usage dict from transcript with token counts
+        budget: Token budget limit (e.g., 200_000 or 1_000_000)
+
+    Returns:
+        Context percentage clamped to 0-100
+    """
     used = (
         usage.get("input_tokens", 0)
         + usage.get("cache_creation_input_tokens", 0)
         + usage.get("cache_read_input_tokens", 0)
     )
-    pct = int((used / CONTEXT_WINDOW) * 100)
+    pct = int((used / budget) * 100)
     return min(max(pct, 0), 100)  # clamp to 0-100
 
 
@@ -73,7 +81,10 @@ def main() -> None:
     if not usage:
         return
 
-    pct = calculate_context_pct(usage)
+    # Read budget from hook input, fallback to default if not provided
+    budget = hook_input.get("budget", DEFAULT_CONTEXT_WINDOW)
+
+    pct = calculate_context_pct(usage, budget)
 
     # Best-effort write to ~/.oro/panes/<role>/context_pct
     pane_dir = Path(PANES_DIR) / role
