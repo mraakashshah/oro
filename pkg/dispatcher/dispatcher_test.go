@@ -1475,8 +1475,8 @@ func TestParseEscalationType(t *testing.T) {
 	}{
 		{"stuck_worker", "[ORO-DISPATCH] STUCK_WORKER: oro-abc — worker stalled.", "STUCK_WORKER"},
 		{"merge_conflict", "[ORO-DISPATCH] MERGE_CONFLICT: oro-xyz — merge failed.", "MERGE_CONFLICT"},
-		{"priority_contention", "[ORO-DISPATCH] PRIORITY_CONTENTION: oro-p0 — P0 queued.", "PRIORITY_CONTENTION"},
 		{"missing_ac", "[ORO-DISPATCH] MISSING_AC: oro-noac — no AC.", "MISSING_AC"},
+		{"priority_contention_no_longer_targeted", "[ORO-DISPATCH] PRIORITY_CONTENTION: oro-p0 — P0 queued.", "PRIORITY_CONTENTION"},
 		{"stuck_not_targeted", "[ORO-DISPATCH] STUCK: oro-s — stuck.", ""},
 		{"worker_crash_not_targeted", "[ORO-DISPATCH] WORKER_CRASH: oro-c — crash.", ""},
 		{"status_not_targeted", "[ORO-DISPATCH] STATUS: oro-st — status.", ""},
@@ -6403,7 +6403,8 @@ func TestShutdownHardTimeout(t *testing.T) {
 }
 
 // TestPriorityContention verifies that when all workers are busy and a P0 bead
-// is queued, the dispatcher triggers an EscPriorityContention escalation exactly once.
+// is queued, the dispatcher does NOT trigger a PRIORITY_CONTENTION escalation.
+// The preemption system (oro-wofg) handles priority contention automatically.
 func TestPriorityContention(t *testing.T) {
 	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -6443,50 +6444,28 @@ func TestPriorityContention(t *testing.T) {
 	// Verify worker is busy
 	waitForWorkerState(t, d, "worker-1", protocol.WorkerBusy, 1*time.Second)
 
-	// Now add a P0 bead — all workers are busy, should trigger escalation
+	// Now add a P0 bead — all workers are busy, but should NOT trigger escalation
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1}, // still in queue (worker busy)
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
 
-	// Wait for escalation to fire (dispatcher polls every 50ms)
-	waitFor(t, func() bool {
-		messages := esc.Messages()
-		return len(messages) > 0
-	}, 2*time.Second)
-
-	// Verify escalation message content
-	messages := esc.Messages()
-	if len(messages) != 1 {
-		t.Fatalf("expected exactly 1 escalation, got %d: %v", len(messages), messages)
-	}
-
-	msg0 := messages[0]
-	if !strings.Contains(msg0, "PRIORITY_CONTENTION") {
-		t.Errorf("escalation should contain PRIORITY_CONTENTION, got: %s", msg0)
-	}
-	if !strings.Contains(msg0, "bead-p0") {
-		t.Errorf("escalation should contain bead-p0, got: %s", msg0)
-	}
-	if !strings.Contains(msg0, "all 1 workers busy") {
-		t.Errorf("escalation should contain 'all 1 workers busy', got: %s", msg0)
-	}
-
-	// Wait for a few more poll cycles (at least 200ms = 4 cycles at 50ms)
+	// Wait for a few poll cycles (at least 250ms = 5 cycles at 50ms)
+	// to ensure no escalation fires
 	time.Sleep(250 * time.Millisecond)
 
-	// Verify no duplicate escalations occurred
-	messages = esc.Messages()
-	if len(messages) != 1 {
-		t.Errorf("expected no duplicate escalations, but got %d total: %v", len(messages), messages)
+	// Verify NO escalation occurred
+	messages := esc.Messages()
+	if len(messages) != 0 {
+		t.Errorf("expected no PRIORITY_CONTENTION escalations, got %d: %v", len(messages), messages)
 	}
 
-	// Verify the escalation tracking flag is set
+	// Verify the escalation tracking flag is NOT set
 	d.mu.Lock()
 	escalated := d.escalatedBeads["bead-p0"]
 	d.mu.Unlock()
-	if !escalated {
-		t.Error("expected escalatedBeads flag to be set for bead-p0")
+	if escalated {
+		t.Error("expected escalatedBeads flag to NOT be set for bead-p0")
 	}
 
 	// Now free up the worker and verify the P0 gets assigned (and flag cleared)
