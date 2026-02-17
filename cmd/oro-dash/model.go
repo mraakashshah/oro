@@ -423,36 +423,36 @@ func (m Model) filterBeads() []protocol.Bead {
 
 // View implements tea.Model.
 func (m Model) View() string {
-	statusBar := m.renderStatusBar()
+	statusBar := m.renderStatusBar(m.width)
 
 	switch m.activeView {
 	case HelpView:
-		return statusBar + "\n" + m.renderHelpOverlay()
+		return m.renderHelpOverlay() + "\n" + statusBar
 	case InsightsView:
 		insights := m.buildInsightsModel()
-		return statusBar + "\n" + insights.Render()
+		return insights.Render() + "\n" + statusBar
 	case DetailView:
 		if m.detailModel != nil {
 			// Use split pane if terminal is wide enough
 			if m.width >= 80 {
-				return statusBar + "\n" + m.renderSplitPane()
+				return m.renderSplitPane() + "\n" + statusBar
 			}
 			// Narrow terminal: show detail only
-			return statusBar + "\n" + m.detailModel.View(m.styles)
+			return m.detailModel.View(m.styles) + "\n" + statusBar
 		}
 		// Fallback to board if detailModel is nil
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
-		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles)
+		return board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles) + "\n" + statusBar
 	case SearchView:
-		return statusBar + "\n" + m.renderSearchOverlay()
+		return m.renderSearchOverlay() + "\n" + statusBar
 	case HealthView:
-		return statusBar + "\n" + m.renderHealthView()
+		return m.renderHealthView() + "\n" + statusBar
 	case WorkersView:
 		workersTable := NewWorkersTableModel(m.workers, m.assignments)
-		return statusBar + "\n" + workersTable.View(m.theme, m.styles)
+		return workersTable.View(m.theme, m.styles) + "\n" + statusBar
 	default:
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
-		return statusBar + "\n" + board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles)
+		return board.RenderWithCursor(m.activeCol, m.activeBead, m.theme, m.styles) + "\n" + statusBar
 	}
 }
 
@@ -499,8 +499,36 @@ func (m Model) buildInsightsModel() *InsightsModel {
 	return NewInsightsModel(beadsWithDeps)
 }
 
-// renderStatusBar renders the status bar with daemon health, worker count, and aggregate stats.
-func (m Model) renderStatusBar() string {
+// helpHintsForView returns context-appropriate key hints for the given view.
+// Returns empty string when width < 60 (narrow terminal).
+func helpHintsForView(view ViewType, width int) string {
+	if width < 60 {
+		return ""
+	}
+	switch view {
+	case BoardView:
+		return "hjkl nav  enter detail  / search  i insights  w workers  ? help  q quit"
+	case DetailView:
+		return "esc back  ←→ resize  ? help  q quit"
+	case SearchView:
+		return "↑↓ select  enter open  esc cancel"
+	case HelpView:
+		return "esc close"
+	case InsightsView:
+		return "esc back  ? help  q quit"
+	case HealthView:
+		return "esc back  ? help  q quit"
+	case WorkersView:
+		return "esc back  ? help  q quit"
+	default:
+		return "? help  q quit"
+	}
+}
+
+// renderStatusBar renders the status bar with daemon health, worker count, aggregate stats,
+// and context-appropriate help hints. Accepts width to control hint display.
+// When m.height < 30, renders a condensed single-line bar with no separators.
+func (m Model) renderStatusBar(width int) string {
 	var daemonStatus string
 	if m.daemonHealthy {
 		daemonStatus = m.styles.DaemonOnline.Render("daemon: online")
@@ -508,7 +536,7 @@ func (m Model) renderStatusBar() string {
 		daemonStatus = m.styles.DaemonOffline.Render("daemon: offline")
 	}
 
-	return lipgloss.JoinHorizontal(
+	metrics := lipgloss.JoinHorizontal(
 		lipgloss.Left,
 		daemonStatus,
 		m.styles.StatusLabel.Render(" | Workers: "),
@@ -518,6 +546,16 @@ func (m Model) renderStatusBar() string {
 		m.styles.StatusLabel.Render(" | In Progress: "),
 		m.styles.StatusSuccess.Render(fmt.Sprintf("%d", m.inProgressCount)),
 	)
+
+	hints := helpHintsForView(m.activeView, width)
+	if hints == "" || m.height < 30 {
+		// Single line: metrics only
+		return metrics
+	}
+
+	// Wide bar: metrics left, hints right
+	hintsStyled := m.styles.StatusLabel.Render(hints)
+	return lipgloss.JoinHorizontal(lipgloss.Left, metrics, "  ", hintsStyled)
 }
 
 // renderSearchOverlay renders the search overlay with text input and filtered results.

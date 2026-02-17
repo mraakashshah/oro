@@ -55,7 +55,7 @@ func TestStatusBar(t *testing.T) {
 				inProgressCount: tt.inProgressCount,
 			}
 
-			statusBar := m.renderStatusBar()
+			statusBar := m.renderStatusBar(120)
 
 			for _, want := range tt.wantContains {
 				if !strings.Contains(statusBar, want) {
@@ -173,7 +173,7 @@ func TestStatusBar_ShowsBeadCountsWhenDaemonOffline(t *testing.T) {
 		inProgressCount: 2,
 	}
 
-	bar := m.renderStatusBar()
+	bar := m.renderStatusBar(120)
 	if !strings.Contains(bar, "5") {
 		t.Errorf("status bar should show open count 5 when daemon offline, got: %s", bar)
 	}
@@ -1321,6 +1321,105 @@ func TestSearchTextInput(t *testing.T) {
 		// Verify the character was added via textinput
 		if m.searchInput.Value() != "x" {
 			t.Errorf("expected 'x', got '%s'", m.searchInput.Value())
+		}
+	})
+}
+
+// TestStatusBarBottom verifies status bar is at bottom of View() output, includes help hints,
+// and handles narrow/short terminal edge cases.
+func TestStatusBarBottom(t *testing.T) {
+	t.Run("View renders content first then status bar", func(t *testing.T) {
+		m := Model{
+			daemonHealthy:   true,
+			workerCount:     2,
+			openCount:       3,
+			inProgressCount: 1,
+			activeView:      BoardView,
+			width:           120,
+			height:          40,
+		}
+		m.styles = NewStyles(m.theme)
+
+		view := m.View()
+		// status bar should be at the bottom (last line)
+		lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+		lastLine := lines[len(lines)-1]
+		if !strings.Contains(lastLine, "daemon") && !strings.Contains(lastLine, "Workers") {
+			t.Errorf("last line should be status bar, got: %q", lastLine)
+		}
+		// content should appear before the status bar — view should have more than 1 line
+		if len(lines) < 2 {
+			t.Errorf("View() should have content + status bar (>=2 lines), got %d lines", len(lines))
+		}
+	})
+
+	t.Run("status bar includes help hints on wide terminal", func(t *testing.T) {
+		m := Model{
+			daemonHealthy: true,
+			activeView:    BoardView,
+			width:         120,
+			height:        40,
+		}
+		m.styles = NewStyles(m.theme)
+
+		bar := m.renderStatusBar(120)
+		// should contain some key hints
+		if !strings.Contains(bar, "?") && !strings.Contains(bar, "q") {
+			t.Errorf("status bar should include help hints on wide terminal, got: %s", bar)
+		}
+	})
+
+	t.Run("width < 60 omits help hints", func(t *testing.T) {
+		m := Model{
+			daemonHealthy: true,
+			activeView:    BoardView,
+			width:         50,
+			height:        40,
+		}
+		m.styles = NewStyles(m.theme)
+
+		bar := m.renderStatusBar(50)
+		// Should have daemon status but no help hints like "? help"
+		if strings.Contains(bar, "? help") || strings.Contains(bar, "q quit") {
+			t.Errorf("status bar should omit help hints on narrow terminal (<60), got: %s", bar)
+		}
+		if !strings.Contains(bar, "daemon") {
+			t.Errorf("status bar should still show daemon status on narrow terminal, got: %s", bar)
+		}
+	})
+
+	t.Run("height < 30 produces single line bar", func(t *testing.T) {
+		m := Model{
+			daemonHealthy: true,
+			activeView:    BoardView,
+			width:         120,
+			height:        25,
+		}
+		m.styles = NewStyles(m.theme)
+
+		bar := m.renderStatusBar(120)
+		// single line: no newlines in the bar
+		if strings.Contains(bar, "\n") {
+			t.Errorf("status bar should be single line when height < 30, got: %s", bar)
+		}
+		if !strings.Contains(bar, "daemon") {
+			t.Errorf("status bar should still show daemon status on short terminal, got: %s", bar)
+		}
+	})
+
+	t.Run("context-appropriate hints for InsightsView", func(t *testing.T) {
+		m := Model{
+			daemonHealthy: true,
+			activeView:    InsightsView,
+			width:         120,
+			height:        40,
+		}
+		m.styles = NewStyles(m.theme)
+
+		bar := m.renderStatusBar(120)
+		// InsightsView should show esc to go back
+		if !strings.Contains(bar, "esc") {
+			t.Errorf("InsightsView status bar should contain 'esc' hint, got: %s", bar)
 		}
 	})
 }
