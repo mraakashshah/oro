@@ -84,13 +84,6 @@ type ProcessManager interface {
 	Kill(id string) error
 }
 
-// TmuxSession provides operations for managing tmux panes.
-// Used by pane monitor for restarting panes on handoff completion.
-type TmuxSession interface {
-	KillPane(paneTarget string) error
-	RespawnPane(paneTarget, command string) error
-}
-
 // CodeIndex provides FTS5 code search for injecting relevant code into prompts.
 type CodeIndex interface {
 	FTS5Search(ctx context.Context, query string, limit int) ([]CodeChunk, error)
@@ -217,18 +210,16 @@ func (c Config) validate() error {
 // directly (e.g. d.workers, d.attemptCounts). Both embedded structs share
 // the Dispatcher-level mu for synchronisation.
 type Dispatcher struct {
-	cfg         Config
-	db          *sql.DB
-	merger      *merge.Coordinator
-	ops         *ops.Spawner
-	beads       BeadSource
-	worktrees   WorktreeManager
-	escalator   Escalator
-	memories    *memory.Store
-	codeIndex   CodeIndex // interface for FTS5 code search (nil means no search)
-	procMgr     ProcessManager
-	tmuxSession TmuxSession // interface for tmux pane operations (nil means no pane restart)
-
+	cfg       Config
+	db        *sql.DB
+	merger    *merge.Coordinator
+	ops       *ops.Spawner
+	beads     BeadSource
+	worktrees WorktreeManager
+	escalator Escalator
+	memories  *memory.Store
+	codeIndex CodeIndex // interface for FTS5 code search (nil means no search)
+	procMgr   ProcessManager
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
 	WorkerPool
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
