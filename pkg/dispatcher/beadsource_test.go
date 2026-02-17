@@ -595,6 +595,26 @@ func TestExtractACFromDescription(t *testing.T) {
 			desc: "## Fix\nDo X.\n\n## Acceptance Criteria\n- [ ] Widget renders\n- [ ] Tests pass",
 			want: "- [ ] Widget renders\n- [ ] Tests pass",
 		},
+		{
+			name: "extracts lowercase 'acceptance criteria'",
+			desc: "## Context\nSome context.\n\n## Acceptance criteria\n- [ ] Works case-insensitively\n- [ ] Tests pass",
+			want: "- [ ] Works case-insensitively\n- [ ] Tests pass",
+		},
+		{
+			name: "extracts uppercase ACCEPTANCE CRITERIA without ##",
+			desc: "## Description\nSome description.\n\nACCEPTANCE CRITERIA\n- [ ] Uppercase works\n- [ ] No hash marks needed",
+			want: "- [ ] Uppercase works\n- [ ] No hash marks needed",
+		},
+		{
+			name: "extracts mixed case Acceptance Criteria",
+			desc: "## Context\nContext here.\n\n## acceptance Criteria\n- [ ] Mixed case works",
+			want: "- [ ] Mixed case works",
+		},
+		{
+			name: "extracts ACCEPTANCE CRITERIA with ##",
+			desc: "## ACCEPTANCE CRITERIA\n- [ ] All caps with hashes\n- [ ] Should work",
+			want: "- [ ] All caps with hashes\n- [ ] Should work",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -71,15 +71,29 @@ func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDeta
 }
 
 // extractACFromDescription extracts the acceptance criteria section from a
-// markdown description. It looks for a "## Acceptance Criteria" header and
-// returns everything after it up to the next H2 header or end of string.
+// markdown description. It looks for "Acceptance Criteria" headers (case-insensitive)
+// with or without "##" prefix, and returns everything after it up to the next H2 header
+// or end of string.
 func extractACFromDescription(desc string) string {
-	const header = "## Acceptance Criteria"
-	idx := strings.Index(desc, header)
+	descLower := strings.ToLower(desc)
+
+	// Try "## acceptance criteria" (with hashes) at start of line.
+	headerWithHash := "## acceptance criteria"
+	idx := findHeaderAtLineStart(descLower, headerWithHash)
+	headerLen := len(headerWithHash)
+
+	// If not found, try plain "acceptance criteria" at start of line (for bd show output).
+	if idx < 0 {
+		headerNoHash := "acceptance criteria"
+		idx = findHeaderAtLineStart(descLower, headerNoHash)
+		headerLen = len(headerNoHash)
+	}
+
 	if idx < 0 {
 		return ""
 	}
-	body := desc[idx+len(header):]
+
+	body := desc[idx+headerLen:]
 	// Trim leading newlines.
 	body = strings.TrimLeft(body, "\r\n")
 	// Stop at the next H2 header if present.
@@ -87,6 +101,21 @@ func extractACFromDescription(desc string) string {
 		body = body[:next]
 	}
 	return strings.TrimSpace(body)
+}
+
+// findHeaderAtLineStart finds the header text at the start of a line
+// (either at position 0 or after a newline).
+func findHeaderAtLineStart(text, header string) int {
+	// Check if it starts the text.
+	if strings.HasPrefix(text, header) {
+		return 0
+	}
+	// Check if it appears after a newline.
+	search := "\n" + header
+	if idx := strings.Index(text, search); idx >= 0 {
+		return idx + 1 // Return position after the newline
+	}
+	return -1
 }
 
 // Close runs `bd close <id> --reason="<reason>"`.
