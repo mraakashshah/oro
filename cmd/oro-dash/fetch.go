@@ -176,3 +176,69 @@ func invertAssignments(m map[string]string) map[string]string {
 	}
 	return inv
 }
+
+// fetchWorkerOutput connects to the dispatcher UDS, sends a worker-logs directive,
+// and returns the output lines. Returns nil if the socket doesn't exist or the
+// connection fails — the dispatcher being offline is not an error condition.
+func fetchWorkerOutput(ctx context.Context, socketPath, workerID string, count int) ([]string, error) {
+	// Fast path: if socket doesn't exist, dispatcher is offline.
+	if _, err := os.Stat(socketPath); err != nil {
+		return nil, fmt.Errorf("dispatcher not running")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+
+	// Connect to dispatcher UDS.
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to dispatcher")
+	}
+	defer conn.Close()
+
+	// Send worker-logs directive: {"type":"DIRECTIVE","directive":{"op":"worker-logs","args":"<workerID> <count>"}}
+	msg := protocol.Message{
+		Type: protocol.MsgDirective,
+		Directive: &protocol.DirectivePayload{
+			Op:   "worker-logs",
+			Args: fmt.Sprintf("%s %d", workerID, count),
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal directive: %w", err)
+	}
+	data = append(data, '\n')
+
+	if _, err := conn.Write(data); err != nil {
+		return nil, fmt.Errorf("send directive: %w", err)
+	}
+
+	// Read one line of JSON response (the ACK).
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("no response from dispatcher")
+	}
+
+	var ack protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &ack); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+
+	if ack.Type != protocol.MsgACK || ack.ACK == nil {
+		return nil, fmt.Errorf("invalid response type")
+	}
+
+	if !ack.ACK.OK {
+		return nil, fmt.Errorf("%s", ack.ACK.Detail)
+	}
+
+	// Parse the output from the ACK detail field.
+	output := strings.TrimSpace(ack.ACK.Detail)
+	if output == "" || output == "no output available" {
+		return []string{}, nil
+	}
+
+	return strings.Split(output, "\n"), nil
+}

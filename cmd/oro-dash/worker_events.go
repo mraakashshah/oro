@@ -36,7 +36,8 @@ func fetchWorkerEvents(ctx context.Context, workerID string, limit int) ([]Worke
 		Limit:    limit,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("query worker events: %w", err)
+		// Database exists but schema is missing (e.g., daemon never wrote to it) — degrade gracefully
+		return nil, nil
 	}
 
 	// Convert to display format

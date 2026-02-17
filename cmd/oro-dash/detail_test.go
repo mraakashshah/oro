@@ -13,7 +13,7 @@ import (
 // TestDetailModel_TabSwitch verifies that DetailModel renders 5 tabs,
 // tab switching works, and the deps tab shows blocker/blocked-by lists.
 func TestDetailModel_TabSwitch(t *testing.T) {
-	t.Run("renders 5 tabs", func(t *testing.T) {
+	t.Run("renders 6 tabs", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:                 "oro-test.1",
 			Title:              "Test bead",
@@ -25,7 +25,7 @@ func TestDetailModel_TabSwitch(t *testing.T) {
 		model := newDetailModel(bead, theme, styles)
 		view := model.View(styles)
 
-		expectedTabs := []string{"Overview", "Worker", "Diff", "Deps", "Memory"}
+		expectedTabs := []string{"Overview", "Worker", "Diff", "Deps", "Memory", "Output"}
 		for _, tab := range expectedTabs {
 			if !strings.Contains(view, tab) {
 				t.Errorf("expected view to contain tab %q, but it didn't\nView:\n%s", tab, view)
@@ -68,7 +68,7 @@ func TestDetailModel_TabSwitch(t *testing.T) {
 		}
 
 		// Wrap around from last to first
-		model.activeTab = 4 // Memory tab (last)
+		model.activeTab = 5 // Output tab (last)
 		model = model.nextTab()
 		if model.activeTab != 0 {
 			t.Errorf("after nextTab() from last tab, expected wrap to 0, got %d", model.activeTab)
@@ -77,8 +77,8 @@ func TestDetailModel_TabSwitch(t *testing.T) {
 		// Wrap around from first to last
 		model.activeTab = 0
 		model = model.prevTab()
-		if model.activeTab != 4 {
-			t.Errorf("after prevTab() from first tab, expected wrap to 4, got %d", model.activeTab)
+		if model.activeTab != 5 {
+			t.Errorf("after prevTab() from first tab, expected wrap to 5, got %d", model.activeTab)
 		}
 	})
 
@@ -645,6 +645,149 @@ func TestDetailViewportScrolling(t *testing.T) {
 		// Should show "No changes" placeholder instead of empty viewport
 		if !strings.Contains(view, "No changes") {
 			t.Errorf("expected 'No changes' placeholder for empty diff, got:\n%s", view)
+		}
+	})
+}
+
+// TestDetailOutputTab verifies the Output tab appears in the tab list,
+// fetches worker logs via the worker-logs directive, and displays output
+// lines in the viewport. Also tests edge cases: socket not found, empty output,
+// and directive errors.
+func TestDetailOutputTab(t *testing.T) {
+	t.Run("Output tab appears in tab list", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:       "oro-test.30",
+			Title:    "Output tab test",
+			WorkerID: "worker-output-test",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		view := model.View(styles)
+
+		// Assert: Output tab appears in tab list
+		if !strings.Contains(view, "Output") {
+			t.Errorf("expected 'Output' tab to appear in tab list, got:\n%s", view)
+		}
+	})
+
+	t.Run("fetchWorkerOutputCmd returns a tea.Cmd", func(t *testing.T) {
+		socketPath := "/tmp/oro-test.sock"
+		workerID := "worker-test"
+
+		// fetchWorkerOutputCmd should return a command (not nil)
+		cmd := fetchWorkerOutputCmd(socketPath, workerID)
+
+		if cmd == nil {
+			t.Errorf("expected fetchWorkerOutputCmd to return a non-nil tea.Cmd")
+		}
+	})
+
+	t.Run("Output tab displays output lines in viewport", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:       "oro-test.31",
+			Title:    "Output display test",
+			WorkerID: "worker-display",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+
+		// Simulate successful worker output fetch
+		model.workerOutput = []string{
+			"Line 1 of output",
+			"Line 2 of output",
+			"Line 3 of output",
+		}
+		model.loadingOutput = false
+		model.outputError = nil
+
+		// Switch to Output tab (index 5, after Overview/Worker/Diff/Deps/Memory)
+		model.activeTab = 5
+
+		view := model.View(styles)
+
+		// Assert: Output tab displays lines
+		if !strings.Contains(view, "Line 1 of output") {
+			t.Errorf("expected 'Line 1 of output' in Output tab, got:\n%s", view)
+		}
+		if !strings.Contains(view, "Line 2 of output") {
+			t.Errorf("expected 'Line 2 of output' in Output tab, got:\n%s", view)
+		}
+	})
+
+	t.Run("socket not found shows dispatcher not running", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:       "oro-test.32",
+			Title:    "Socket not found test",
+			WorkerID: "worker-no-socket",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+
+		// Simulate socket not found (output error)
+		model.loadingOutput = false
+		model.outputError = fmt.Errorf("dispatcher not running")
+		model.activeTab = 5 // Output tab
+
+		view := model.View(styles)
+
+		// Assert: shows error message
+		if !strings.Contains(view, "dispatcher not running") {
+			t.Errorf("expected 'dispatcher not running' error, got:\n%s", view)
+		}
+	})
+
+	t.Run("empty output shows no output available", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:       "oro-test.33",
+			Title:    "Empty output test",
+			WorkerID: "worker-empty",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+
+		// Simulate empty output
+		model.workerOutput = []string{}
+		model.loadingOutput = false
+		model.outputError = nil
+		model.activeTab = 5 // Output tab
+
+		view := model.View(styles)
+
+		// Assert: shows "no output available"
+		if !strings.Contains(view, "no output available") {
+			t.Errorf("expected 'no output available' placeholder, got:\n%s", view)
+		}
+	})
+
+	t.Run("directive error shows error in tab", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:       "oro-test.34",
+			Title:    "Directive error test",
+			WorkerID: "worker-error",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+
+		// Simulate directive error
+		model.loadingOutput = false
+		model.outputError = fmt.Errorf("worker worker-error not found")
+		model.activeTab = 5 // Output tab
+
+		view := model.View(styles)
+
+		// Assert: shows error message
+		if !strings.Contains(view, "Error") || !strings.Contains(view, "worker-error not found") {
+			t.Errorf("expected error message in Output tab, got:\n%s", view)
 		}
 	})
 }
