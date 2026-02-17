@@ -23,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-CONTEXT_WINDOW = 200_000
+DEFAULT_CONTEXT_WINDOW = 200_000  # Fallback if budget not provided
 DEBOUNCE_FILE = "/tmp/oro-context-warn-ts"
 DEBOUNCE_SECONDS = 60
 
@@ -134,14 +134,22 @@ def get_last_usage(transcript_path: str) -> dict | None:
     return last_usage
 
 
-def calculate_context_pct(usage: dict) -> tuple[int, int, float]:
-    """Return (used_tokens, total_window, percentage) from a usage dict."""
+def calculate_context_pct(usage: dict, budget: int) -> tuple[int, int, float]:
+    """Return (used_tokens, total_window, percentage) from a usage dict.
+
+    Args:
+        usage: Usage dict from transcript with token counts
+        budget: Token budget limit (e.g., 200_000 or 1_000_000)
+
+    Returns:
+        Tuple of (used_tokens, budget, percentage)
+    """
     used = (
         usage.get("input_tokens", 0)
         + usage.get("cache_creation_input_tokens", 0)
         + usage.get("cache_read_input_tokens", 0)
     )
-    return used, CONTEXT_WINDOW, used / CONTEXT_WINDOW
+    return used, budget, used / budget
 
 
 def main() -> None:
@@ -155,7 +163,10 @@ def main() -> None:
     if not usage:
         return
 
-    used, total, pct = calculate_context_pct(usage)
+    # Read budget from hook input, fallback to default if not provided
+    budget = hook_input.get("budget", DEFAULT_CONTEXT_WINDOW)
+
+    used, total, pct = calculate_context_pct(usage, budget)
 
     model = detect_model(transcript_path)
     project_root = _find_project_root()
