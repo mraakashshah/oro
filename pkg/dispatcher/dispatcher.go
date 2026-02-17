@@ -1945,6 +1945,26 @@ func (d *Dispatcher) snapshotWorkers(now time.Time) (workers []workerStatus, ass
 	return workers, assignments, active, idle
 }
 
+// calculateLiveQueueDepth returns the count of ready beads that are not assigned to workers.
+func calculateLiveQueueDepth(readyBeads []protocol.Bead, workers map[string]*trackedWorker) int {
+	// Build set of assigned bead IDs.
+	assignedBeadIDs := make(map[string]bool)
+	for _, w := range workers {
+		if w.beadID != "" {
+			assignedBeadIDs[w.beadID] = true
+		}
+	}
+
+	// Count ready beads that are not assigned.
+	queueDepth := 0
+	for _, bead := range readyBeads {
+		if !assignedBeadIDs[bead.ID] {
+			queueDepth++
+		}
+	}
+	return queueDepth
+}
+
 func (d *Dispatcher) buildStatusJSON() string {
 	now := d.nowFunc()
 
@@ -1957,6 +1977,9 @@ func (d *Dispatcher) buildStatusJSON() string {
 
 	d.mu.Lock()
 	workers, assignments, activeCount, idleCount := d.snapshotWorkers(now)
+
+	// Calculate live queue depth (ready beads minus assigned beads).
+	queueDepth := calculateLiveQueueDepth(readyBeads, d.workers)
 
 	// Build set of active bead IDs (assigned to workers OR in ready queue).
 	activeBeadIDs := make(map[string]bool)
@@ -1984,7 +2007,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 		State:               string(d.state),
 		PID:                 os.Getpid(),
 		WorkerCount:         len(d.workers),
-		QueueDepth:          d.cachedQueueDepth,
+		QueueDepth:          queueDepth,
 		Assignments:         assignments,
 		FocusedEpic:         d.focusedEpic,
 		Workers:             workers,

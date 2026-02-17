@@ -8682,6 +8682,61 @@ func TestBuildStatusJSON_CachedQueueDepth(t *testing.T) {
 	}
 }
 
+func TestBuildStatusJSON_LiveQueueDepth(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Initially set 2 beads ready.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-1", Title: "Bead 1", Priority: 1},
+		{ID: "bead-2", Title: "Bead 2", Priority: 2},
+	})
+
+	// Connect a worker to trigger assign loop (caches depth of 2).
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN (bead-1 assigned)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+
+	// Wait for assign loop to cache depth.
+	time.Sleep(150 * time.Millisecond)
+
+	// Now add 3 MORE beads (total 4 in source, 1 assigned, 3 ready).
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-1", Title: "Bead 1", Priority: 1}, // assigned
+		{ID: "bead-2", Title: "Bead 2", Priority: 2},
+		{ID: "bead-3", Title: "Bead 3", Priority: 3},
+		{ID: "bead-4", Title: "Bead 4", Priority: 4},
+	})
+
+	// Query status immediately — should show 3 ready beads (live count),
+	// NOT the stale cached value from before we added bead-3 and bead-4.
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "status", "")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(ack.Detail), &status); err != nil {
+		t.Fatalf("failed to parse status JSON: %v, raw: %s", err, ack.Detail)
+	}
+
+	// Status should reflect live queue depth (3 ready beads), not stale cache.
+	if status.QueueDepth != 3 {
+		t.Errorf("expected queue_depth=3 (live count after adding beads), got %d", status.QueueDepth)
+	}
+}
+
 // mockCodeIndex implements CodeIndex for testing.
 type mockCodeIndex struct {
 	mu      sync.Mutex
