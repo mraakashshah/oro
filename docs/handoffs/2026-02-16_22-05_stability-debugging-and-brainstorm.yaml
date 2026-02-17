@@ -1,0 +1,101 @@
+---
+date: 2026-02-16
+status: partial
+---
+
+goal: >
+  Diagnosed recurring oro/tmux crash bug. Found automated cycling script (PID 54325)
+  killing oro every 20 minutes — killed it. Discovered secondary crash pattern:
+  dispatcher+tmux dying after 3-10 minutes even without cycling script. Brainstormed
+  fix and decided on Approach A: disable dispatcher pane restart (fc581b9 feature)
+  while keeping tmux pane-died hooks for crash recovery. Not yet implemented.
+
+now: >
+  Implement Approach A: disable dispatcher pane restart by commenting out
+  checkHandoffComplete() call at pkg/dispatcher/pane_monitor.go:42. Then rebuild,
+  restart oro, and monitor for stability. If crashes persist, the root cause is
+  elsewhere (not the dual-restart conflict).
+
+test: go build ./cmd/oro && oro status
+
+done_this_session:
+  - task: "Killed automated cycling script (PID 54325)"
+    details: >
+      Found bash script running `while true; sleep 1200; oro stop --force; oro start`
+      that was killing tmux every 20 minutes. Killed it. Confirmed dead.
+  - task: "Diagnosed crash pattern"
+    details: >
+      After killing cycling script, oro still crashed after 3-10 minutes.
+      Dispatcher PID dies, tmux session dies, workers go to 0.
+      Pattern: start → runs 3-10 min → everything dies.
+  - task: "Root cause investigation"
+    files: [cmd/oro/tmux.go, pkg/dispatcher/pane_monitor.go]
+    details: >
+      Found two competing pane restart mechanisms:
+      1. Tmux pane-died hooks (cmd/oro/tmux.go:733-785) — older, battle-tested
+      2. Dispatcher pane restart on handoff (pkg/dispatcher/pane_monitor.go:112-221) — added Feb 15 (fc581b9)
+      Both can respawn panes, creating potential race conditions.
+  - task: "Brainstormed fix approaches"
+    details: >
+      3 approaches considered with premortems:
+      A (chosen): Disable dispatcher pane restart — keeps tmux hooks, removes newest code
+      B (rejected): Disable pane-died hooks — loses crash recovery entirely
+      C (rejected): Coordinate both — adds complexity for uncertain benefit
+
+decisions:
+  - approach_a_chosen: >
+      Disable dispatcher pane restart (fc581b9 feature) rather than pane-died hooks.
+      Rationale: pane-died hooks are older and provide essential crash recovery.
+      Dispatcher restart is newer (Feb 15) and correlates with crash reports.
+      Acceptable tradeoff: lose automated handoff restart (rare event).
+  - cycling_script_was_red_herring: >
+      Initial investigation blamed automated cycling script, but crashes persisted
+      after killing it. The cycling script masked the real bug by restarting oro
+      every 20 minutes before the crash pattern was obvious.
+
+findings:
+  - dual_restart_conflict: >
+      Two independent pane restart mechanisms (tmux hooks + dispatcher monitor)
+      can race. When one respawns a pane, the other may detect it as dead and
+      try to respawn again, potentially creating instability.
+  - stale_handoff_fix_existed: >
+      Commit 914dc56 (same day) already fixed stale handoff_requested signals.
+      This suggests the handoff/restart system has known edge cases.
+  - dispatcher_ignoring_terminate: >
+      Captured output "shutdown: ignoring terminated — not authorized" during
+      one crash, suggesting something was sending SIGTERM to the dispatcher
+      (possibly pane-died hook shell commands).
+
+worked:
+  - Systematic debugging process identified cycling script AND underlying bug
+  - Checking process list for background scripts (found cycling script)
+  - Starting oro in foreground captured "ignoring terminated" message
+
+failed:
+  - Initial assumption that cycling script was sole root cause (it masked deeper issue)
+  - Monitoring for 60 seconds was insufficient — crashes happen at 3-10 minutes
+
+next:
+  - Implement Approach A: comment out checkHandoffComplete() in pane_monitor.go:42
+  - Rebuild oro binary: go build ./cmd/oro
+  - Restart oro and monitor stability for 10+ minutes
+  - If crashes persist, investigate pane-died hooks or other mechanism
+  - Consider filing a bead for the stability fix
+  - Long-term: design proper coordination between restart mechanisms
+
+beads:
+  in_progress:
+    - oro-wee1 (P0 bug: dispatcher assigns in_progress beads)
+    - oro-4lo7 (P0 bug: stop test stdin error)
+    - oro-xhio (P0 bug: debounce file isolation)
+    - oro-z5oc.2 (dashboard epic progress)
+    - oro-zbck (tmux hints)
+  alerts:
+    - "oro-5srh.3: QG failed 2x"
+    - "oro-9hd: QG failed 2x"
+
+files:
+  created:
+    - docs/handoffs/2026-02-16_22-05_stability-debugging-and-brainstorm.yaml
+  to_modify:
+    - pkg/dispatcher/pane_monitor.go (line 42 — comment out checkHandoffComplete call)
