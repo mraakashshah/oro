@@ -118,7 +118,8 @@ func TestHelpViewFromInsightsView(t *testing.T) {
 func TestHelpDoesNotInterfereWithSearch(t *testing.T) {
 	m := newModel()
 	m.activeView = SearchView
-	m.searchQuery = "test"
+	m.searchInput.Focus()
+	m.searchInput.SetValue("test")
 
 	// Pressing ? in search should type '?' not open help
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
@@ -131,8 +132,8 @@ func TestHelpDoesNotInterfereWithSearch(t *testing.T) {
 	if m.activeView != SearchView {
 		t.Errorf("Expected to stay in SearchView when typing ?, got %v", m.activeView)
 	}
-	if !strings.Contains(m.searchQuery, "?") {
-		t.Errorf("Expected search query to contain '?', got %s", m.searchQuery)
+	if !strings.Contains(m.searchInput.Value(), "?") {
+		t.Errorf("Expected search query to contain '?', got %s", m.searchInput.Value())
 	}
 }
 
