@@ -228,30 +228,17 @@ func TestWorkerLaunchBeadFlag(t *testing.T) {
 	}
 }
 
-// TestGenerateWorkerID verifies the auto-generation logic.
-func TestGenerateWorkerID(t *testing.T) {
-	id1 := generateWorkerID(0)
-	id2 := generateWorkerID(1)
-	id3 := generateWorkerID(2)
-
-	for i, id := range []string{id1, id2, id3} {
-		if !strings.HasPrefix(id, "ext-") {
-			t.Errorf("ID[%d] %q does not have prefix 'ext-'", i, id)
+// TestWorkerLaunchCountValidation verifies that count < 1 returns an error.
+func TestWorkerLaunchCountValidation(t *testing.T) {
+	for _, count := range []int{0, -1, -100} {
+		spawner := &fakeWorkerSpawner{}
+		err := runWorkerLaunch(spawner, count, "", "")
+		if err == nil {
+			t.Errorf("count=%d: expected error, got nil", count)
 		}
-		parts := strings.Split(id, "-")
-		if len(parts) != 3 {
-			t.Errorf("ID[%d] %q: expected 3 parts (ext-<ts>-<i>), got %d", i, id, len(parts))
+		if len(spawner.calls) != 0 {
+			t.Errorf("count=%d: expected no spawn calls, got %d", count, len(spawner.calls))
 		}
-	}
-
-	// All IDs must be unique.
-	ids := map[string]bool{id1: true}
-	if ids[id2] {
-		t.Errorf("id1=%q and id2=%q are duplicate", id1, id2)
-	}
-	ids[id2] = true
-	if ids[id3] {
-		t.Errorf("id3=%q collides with earlier ID", id3)
 	}
 }
 
