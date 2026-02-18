@@ -19,7 +19,7 @@ func TestCleanup_NothingToClean(t *testing.T) {
 	// git branch --list returns empty (no agent branches)
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns empty JSON array
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
 	var buf bytes.Buffer
@@ -53,7 +53,7 @@ func TestCleanup_KillsRunningDispatcher(t *testing.T) {
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns empty
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
 
@@ -111,7 +111,7 @@ func TestCleanup_KillsTmux(t *testing.T) {
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns empty
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
 	var buf bytes.Buffer
@@ -150,7 +150,7 @@ func TestCleanup_RemovesStaleFiles(t *testing.T) {
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns empty
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
 
@@ -207,7 +207,7 @@ func TestCleanup_PrunesWorktrees(t *testing.T) {
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns empty
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
 	var buf bytes.Buffer
@@ -247,7 +247,7 @@ func TestCleanup_DeletesAgentBranches(t *testing.T) {
 	// git branch --list returns agent branches
 	fake.output[key("git", "branch", "--list", "agent/*")] = "  agent/cleanup-cli\n  agent/fix-bug\n"
 	// bd list returns empty
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
 	var buf bytes.Buffer
@@ -304,7 +304,7 @@ func TestCleanup_ResetsInProgressBeads(t *testing.T) {
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns beads in progress
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = `[{"id":"oro-abc1"},{"id":"oro-xyz2"}]`
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = `[{"id":"oro-abc1"},{"id":"oro-xyz2"}]`
 
 	tmpDir := t.TempDir()
 	var buf bytes.Buffer
@@ -364,7 +364,7 @@ func TestCleanup_ContinuesOnErrors(t *testing.T) {
 	// git branch --list fails
 	fake.errs[key("git", "branch", "--list", "agent/*")] = fmt.Errorf("branch list failed")
 	// bd list fails
-	fake.errs[key("bd", "list", "--status=in_progress", "--format=json")] = fmt.Errorf("bd failed")
+	fake.errs[key("bd", "list", "--status=in_progress", "--json")] = fmt.Errorf("bd failed")
 
 	tmpDir := t.TempDir()
 
@@ -424,7 +424,7 @@ func TestCleanup_KillsWorkerProcesses(t *testing.T) {
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns empty
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
 	var signaledPIDs []int
@@ -493,7 +493,7 @@ func TestCleanup_SendsSIGINTToDispatcher(t *testing.T) {
 	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
-	fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
 	pidPath := filepath.Join(tmpDir, "oro.pid")
@@ -529,7 +529,7 @@ func TestCleanupWorktreeDir(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 		fake.output[key("git", "branch", "--list", "agent/*")] = ""
-		fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 		tmpDir := t.TempDir()
 		worktreeDir := filepath.Join(tmpDir, ".worktrees")
@@ -589,7 +589,7 @@ func TestCleanupWorktreeDir(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 		fake.output[key("git", "branch", "--list", "agent/*")] = ""
-		fake.output[key("bd", "list", "--status=in_progress", "--format=json")] = "[]"
+		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 		tmpDir := t.TempDir()
 

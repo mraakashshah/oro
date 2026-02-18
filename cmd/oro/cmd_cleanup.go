@@ -287,7 +287,7 @@ func parseBranchNames(output string) []string {
 
 // cleanupBeads resets in_progress beads back to open. Returns true if beads were reset.
 func cleanupBeads(cfg *cleanupConfig) bool {
-	out, err := cfg.runner.Run("bd", "list", "--status=in_progress", "--format=json")
+	out, err := cfg.runner.Run("bd", "list", "--status=in_progress", "--json")
 	if err != nil {
 		fmt.Fprintf(cfg.w, "warning: list in_progress beads: %v\n", err)
 		return false
