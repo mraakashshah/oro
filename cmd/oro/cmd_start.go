@@ -460,7 +460,10 @@ func (a *codeIndexAdapter) Search(ctx context.Context, query string, topK int) (
 		return out, nil
 	}
 	// Reranker failed/timed out — fall back to FTS5 positional scores with no Reason.
-	chunks, ftsErr := a.idx.FTS5Search(ctx, query, topK)
+	// Use a fresh context: the original ctx may already be expired after the reranker timeout.
+	freshCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	chunks, ftsErr := a.idx.FTS5Search(freshCtx, query, topK)
 	if ftsErr != nil {
 		return nil, nil //nolint:nilerr // best-effort: suppress error, caller gets empty results
 	}
