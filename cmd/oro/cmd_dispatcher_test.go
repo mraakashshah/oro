@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -274,4 +275,176 @@ func TestDispatcherCmdStructure(t *testing.T) {
 	if fFlag == nil {
 		t.Fatal("expected --force flag on dispatcher start")
 	}
+
+	// Find the "stop" subcommand.
+	var stopCmd *cobra.Command
+	for _, sub := range cmd.Commands() {
+		if sub.Use == "stop" {
+			stopCmd = sub
+			break
+		}
+	}
+	if stopCmd == nil {
+		t.Fatal("expected 'stop' subcommand under 'dispatcher'")
+	}
+
+	// Verify --force flag exists on stop.
+	sfFlag := stopCmd.Flags().Lookup("force")
+	if sfFlag == nil {
+		t.Fatal("expected --force flag on dispatcher stop")
+	}
+}
+
+// TestDispatcherStopSendsSignalAndWaits is the acceptance-criteria test for oro-18c5.6.
+// It verifies that `oro dispatcher stop` sends SIGINT to the daemon PID, waits for exit,
+// runs bd sync, removes PID file, and does NOT call tmux kill-session.
+func TestDispatcherStopSendsSignalAndWaits(t *testing.T) {
+	t.Run("sends SIGINT, waits, runs bd sync, removes PID file, no tmux kill-session", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := filepath.Join(tmpDir, "nonexistent.sock")
+		dbPath := filepath.Join(tmpDir, "state.db")
+
+		t.Setenv("ORO_PID_PATH", pidFile)
+		t.Setenv("ORO_SOCKET_PATH", sockPath)
+		t.Setenv("ORO_DB_PATH", dbPath)
+
+		// Write a PID file pointing to the current process (alive).
+		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+			t.Fatalf("write PID file: %v", err)
+		}
+
+		fake := newFakeCmd()
+		signaled := false
+		var buf bytes.Buffer
+
+		cfg := &stopConfig{
+			pidPath:  pidFile,
+			sockPath: sockPath,
+			runner:   fake,
+			w:        &buf,
+			stdin:    strings.NewReader("YES\n"),
+			signalFn: func(pid int) error { signaled = true; return nil },
+			aliveFn:  func(pid int) bool { return false }, // exits immediately
+			killFn:   func(pid int) error { return nil },
+			isTTY:    func() bool { return true },
+		}
+
+		if err := runDispatcherStopSequence(context.Background(), cfg); err != nil {
+			t.Fatalf("runDispatcherStopSequence returned error: %v", err)
+		}
+
+		// 1. SIGINT must be sent.
+		if !signaled {
+			t.Error("expected signalFn (SIGINT) to be called")
+		}
+
+		// 2. bd sync must be called.
+		bdSyncCalled := false
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "bd" && call[1] == "sync" {
+				bdSyncCalled = true
+				break
+			}
+		}
+		if !bdSyncCalled {
+			t.Errorf("expected 'bd sync --flush-only' to be called; calls = %v", fake.calls)
+		}
+
+		// 3. PID file must be removed.
+		if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+			t.Error("expected PID file to be removed after stop")
+		}
+
+		// 4. tmux kill-session must NOT be called.
+		if killCall := findCall(fake.calls, "kill-session"); killCall != nil {
+			t.Errorf("dispatcher stop must NOT call tmux kill-session; calls = %v", fake.calls)
+		}
+	})
+
+	t.Run("dispatcher not running prints message and returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := filepath.Join(tmpDir, "nonexistent.sock")
+
+		var buf bytes.Buffer
+		cfg := &stopConfig{
+			pidPath:  pidFile,
+			sockPath: sockPath,
+			w:        &buf,
+		}
+
+		if err := runDispatcherStopSequence(context.Background(), cfg); err != nil {
+			t.Fatalf("unexpected error when dispatcher not running: %v", err)
+		}
+
+		if !strings.Contains(buf.String(), "not running") {
+			t.Errorf("expected 'not running' in output, got: %q", buf.String())
+		}
+	})
+
+	t.Run("drain timeout triggers SIGKILL fallback", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := filepath.Join(tmpDir, "nonexistent.sock")
+
+		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+			t.Fatalf("write PID file: %v", err)
+		}
+
+		fake := newFakeCmd()
+		var killedPID int
+		var buf bytes.Buffer
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		cfg := &stopConfig{
+			pidPath:  pidFile,
+			sockPath: sockPath,
+			runner:   fake,
+			w:        &buf,
+			stdin:    strings.NewReader("YES\n"),
+			signalFn: func(pid int) error { return nil },
+			aliveFn:  func(pid int) bool { return true }, // process never dies
+			killFn:   func(pid int) error { killedPID = pid; return nil },
+			isTTY:    func() bool { return true },
+		}
+
+		if err := runDispatcherStopSequence(ctx, cfg); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if killedPID == 0 {
+			t.Error("expected SIGKILL fallback when drain times out")
+		}
+	})
+
+	t.Run("requires --force or TTY confirmation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := filepath.Join(tmpDir, "nonexistent.sock")
+
+		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+			t.Fatalf("write PID file: %v", err)
+		}
+
+		var buf bytes.Buffer
+		cfg := &stopConfig{
+			pidPath:  pidFile,
+			sockPath: sockPath,
+			runner:   newFakeCmd(),
+			w:        &buf,
+			stdin:    strings.NewReader(""),
+			isTTY:    func() bool { return false }, // not a terminal
+		}
+
+		err := runDispatcherStopSequence(context.Background(), cfg)
+		if err == nil {
+			t.Fatal("expected error when stdin is not a TTY")
+		}
+		if !strings.Contains(err.Error(), "not a TTY") {
+			t.Errorf("expected TTY error, got: %v", err)
+		}
+	})
 }

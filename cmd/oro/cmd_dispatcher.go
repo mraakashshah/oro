@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -18,7 +19,107 @@ func newDispatcherCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newDispatcherStartCmd())
+	cmd.AddCommand(newDispatcherStopCmd())
 	return cmd
+}
+
+// newDispatcherStopCmd creates the "oro dispatcher stop" subcommand.
+// It sends SIGINT to the dispatcher daemon, waits for it to drain and exit,
+// runs bd sync --flush-only, and removes the PID file.
+// Unlike "oro stop", it does NOT kill the tmux session or clean up pane-died hooks.
+func newDispatcherStopCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the dispatcher daemon (no tmux kill)",
+		Long: `Stops the Oro dispatcher daemon by sending SIGINT and waiting for it to drain.
+Does NOT kill the tmux session or clean up pane-died hooks.
+Requires an interactive terminal (TTY) or --force with ORO_HUMAN_CONFIRMED=1.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			paths, err := ResolvePaths()
+			if err != nil {
+				return fmt.Errorf("resolve paths: %w", err)
+			}
+
+			cfg := &stopConfig{
+				pidPath:  paths.PIDPath,
+				sockPath: paths.SocketPath,
+				runner:   &ExecRunner{},
+				w:        cmd.OutOrStdout(),
+				stdin:    os.Stdin,
+				signalFn: defaultSignalINT,
+				aliveFn:  IsProcessAlive,
+				killFn:   defaultKill,
+				isTTY:    isStdinTTY,
+				force:    force,
+			}
+
+			return runDispatcherStopSequence(cmd.Context(), cfg)
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "skip interactive confirmation (requires ORO_HUMAN_CONFIRMED=1)")
+	return cmd
+}
+
+// runDispatcherStopSequence performs a dispatcher-only graceful shutdown:
+//  0. Confirm the caller is authorized (interactive TTY or --force)
+//  1. Send SIGINT to the dispatcher (triggers graceful drain)
+//  2. Wait for the dispatcher process to exit
+//  3. If process won't exit: SIGKILL as emergency fallback
+//  4. Run bd sync as a safety net
+//  5. Remove PID file
+//
+// Key difference from runStopSequence: does NOT kill the tmux session and
+// does NOT clean up pane-died hooks.
+func runDispatcherStopSequence(ctx context.Context, cfg *stopConfig) error {
+	status, pid, err := DaemonStatus(cfg.pidPath, cfg.sockPath)
+	if err != nil {
+		return fmt.Errorf("get daemon status: %w", err)
+	}
+
+	switch status {
+	case StatusStopped:
+		fmt.Fprintln(cfg.w, "dispatcher is not running")
+		return nil
+	case StatusStale:
+		fmt.Fprintln(cfg.w, "removing stale PID file (process already dead)")
+		return RemovePIDFile(cfg.pidPath)
+	}
+
+	// 0. Confirm authorization before proceeding.
+	if err := confirmStop(cfg); err != nil {
+		return err
+	}
+
+	// 1. Send SIGINT (always honored by daemon, like Ctrl+C).
+	fmt.Fprintf(cfg.w, "sending SIGINT to dispatcher (PID %d)\n", pid)
+	if err := cfg.signalFn(pid); err != nil {
+		fmt.Fprintf(cfg.w, "warning: SIGINT failed: %v\n", err)
+	}
+
+	// 2. Wait for the dispatcher to exit.
+	fmt.Fprintln(cfg.w, "waiting for dispatcher to drain and exit...")
+	if err := waitForExit(ctx, pid, cfg.aliveFn); err != nil {
+		fmt.Fprintf(cfg.w, "warning: %v\n", err)
+		// 3. Emergency fallback: SIGKILL if process won't exit.
+		if cfg.killFn != nil {
+			fmt.Fprintf(cfg.w, "sending SIGKILL to dispatcher (PID %d)\n", pid)
+			if killErr := cfg.killFn(pid); killErr != nil {
+				fmt.Fprintf(cfg.w, "warning: SIGKILL failed: %v\n", killErr)
+			}
+		}
+	}
+
+	// 4. Run bd sync as a safety net.
+	if _, err := cfg.runner.Run("bd", "sync", "--flush-only"); err != nil {
+		fmt.Fprintf(cfg.w, "warning: bd sync: %v\n", err)
+	}
+
+	// 5. Remove PID file (belt and suspenders — signal handler may have already done it).
+	_ = RemovePIDFile(cfg.pidPath)
+
+	fmt.Fprintln(cfg.w, "shutdown complete")
+	return nil
 }
 
 // newDispatcherStartCmd creates the "oro dispatcher start" subcommand.
