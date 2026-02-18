@@ -52,12 +52,6 @@ func (e *ExecWorkerSpawner) SpawnWorker(socketPath, workerID, logPath string) er
 	return nil
 }
 
-// generateWorkerID produces a unique external worker ID in the form ext-<unix-ts>-<i>.
-// The index i is used to differentiate workers spawned in the same batch.
-func generateWorkerID(i int) string {
-	return fmt.Sprintf("ext-%d-%d", time.Now().UnixNano(), i)
-}
-
 // newWorkerLaunchCmd creates the "oro worker launch" subcommand.
 func newWorkerLaunchCmd() *cobra.Command {
 	var (
@@ -92,6 +86,10 @@ spawning a worker targeted at that specific bead.`,
 // runWorkerLaunch implements the core logic for "oro worker launch".
 // It is extracted for testability (spawner is injected).
 func runWorkerLaunch(spawner WorkerSpawner, count int, workerID, beadID string) error {
+	if count < 1 {
+		return fmt.Errorf("--count must be at least 1, got %d", count)
+	}
+
 	paths, err := ResolvePaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
