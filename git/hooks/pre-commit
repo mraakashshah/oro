@@ -1,0 +1,121 @@
+#!/bin/sh
+# shellcheck disable=SC2086  # word splitting on staged file lists is intentional
+#
+# Pre-commit hook: bd flush + language-aware lint/format checks
+#
+# 1. Flushes bd issue changes to .beads/issues.jsonl
+# 2. Checks staged files: ruff (Python), gofmt/go vet (Go), sh, biome (JSON)
+
+# --- bd (beads) flush ---
+
+if command -v bd >/dev/null 2>&1; then
+    BEADS_DIR=""
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+        if [ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ]; then
+            MAIN_REPO_ROOT="$(git rev-parse --git-common-dir)"
+            MAIN_REPO_ROOT="$(dirname "$MAIN_REPO_ROOT")"
+            if [ -d "$MAIN_REPO_ROOT/.beads" ]; then
+                BEADS_DIR="$MAIN_REPO_ROOT/.beads"
+            fi
+        else
+            if [ -d .beads ]; then
+                BEADS_DIR=".beads"
+            fi
+        fi
+    fi
+
+    if [ -n "$BEADS_DIR" ]; then
+        if ! bd sync --flush-only >/dev/null 2>&1; then
+            echo "Error: Failed to flush bd changes to JSONL" >&2
+            echo "Run 'bd sync --flush-only' manually to diagnose" >&2
+            exit 1
+        fi
+
+        if [ -f "$BEADS_DIR/issues.jsonl" ]; then
+            if [ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ]; then
+                git add "$BEADS_DIR/issues.jsonl" 2>/dev/null || true
+            fi
+        fi
+    fi
+fi
+
+# --- Language-aware lint/format checks ---
+
+errors=0
+
+# Python: ruff format check + lint
+staged_py=$(git diff --cached --name-only --diff-filter=d -- '*.py')
+if [ -n "$staged_py" ] && command -v ruff >/dev/null 2>&1; then
+    if ! ruff format --check $staged_py 2>/dev/null; then
+        echo "Error: Python formatting issues. Run: ruff format <files>" >&2
+        errors=1
+    fi
+    if ! ruff check $staged_py 2>/dev/null; then
+        echo "Error: Python lint issues. Run: ruff check --fix <files>" >&2
+        errors=1
+    fi
+fi
+
+# Go: gofumpt + golangci-lint (staged files only)
+staged_go=$(git diff --cached --name-only --diff-filter=d -- '*.go')
+if [ -n "$staged_go" ]; then
+    if command -v gofumpt >/dev/null 2>&1; then
+        unformatted=$(gofumpt -l $staged_go 2>/dev/null)
+        if [ -n "$unformatted" ]; then
+            echo "Error: Go formatting issues (gofumpt) in:" >&2
+            echo "$unformatted" >&2
+            echo "Run: gofumpt -w <files>" >&2
+            errors=1
+        fi
+    fi
+    if command -v golangci-lint >/dev/null 2>&1; then
+        staged_go_dirs=$(echo "$staged_go" | xargs -n1 dirname | sort -u | sed 's|^|./|;s|$|/...|')
+        if ! golangci-lint run --timeout 2m $staged_go_dirs 2>/dev/null; then
+            echo "Error: golangci-lint issues found." >&2
+            errors=1
+        fi
+    fi
+fi
+
+# Shell: shellcheck
+staged_sh=$(git diff --cached --name-only --diff-filter=d -- '*.sh')
+if [ -n "$staged_sh" ] && command -v shellcheck >/dev/null 2>&1; then
+    if ! shellcheck $staged_sh 2>/dev/null; then
+        echo "Error: shellcheck issues found." >&2
+        errors=1
+    fi
+fi
+
+# JSON: biome check (format + lint)
+staged_json=$(git diff --cached --name-only --diff-filter=d -- '*.json')
+if [ -n "$staged_json" ] && command -v biome >/dev/null 2>&1; then
+    if ! biome check --files-ignore-unknown=true $staged_json 2>/dev/null; then
+        echo "Error: JSON issues found. Run: biome check --write <files>" >&2
+        errors=1
+    fi
+fi
+
+# Markdown: markdownlint
+staged_md=$(git diff --cached --name-only --diff-filter=d -- '*.md')
+if [ -n "$staged_md" ] && command -v markdownlint >/dev/null 2>&1; then
+    if ! markdownlint --config .markdownlint.yml $staged_md 2>/dev/null; then
+        echo "Error: markdownlint issues found." >&2
+        errors=1
+    fi
+fi
+
+# YAML: yamllint
+staged_yaml=$(git diff --cached --name-only --diff-filter=d -- '*.yml' '*.yaml')
+if [ -n "$staged_yaml" ] && command -v yamllint >/dev/null 2>&1; then
+    if ! yamllint -d relaxed --no-warnings $staged_yaml 2>/dev/null; then
+        echo "Error: yamllint issues found." >&2
+        errors=1
+    fi
+fi
+
+if [ "$errors" -ne 0 ]; then
+    echo "Pre-commit checks failed. Fix issues above or commit with --no-verify." >&2
+    exit 1
+fi
+
+exit 0

@@ -83,6 +83,19 @@ Download dependencies (once you have code):
 go mod tidy
 ```
 
+### Git Hooks
+
+Canonical git hooks live in `git/hooks/` (tracked by git). Install them after cloning:
+
+```bash
+make install-git-hooks
+```
+
+This symlinks `git/hooks/pre-commit` and `git/hooks/pre-push` into `.git/hooks/`.
+
+- **pre-commit**: Runs `bd sync --flush-only` and language-aware lint/format checks on staged files.
+- **pre-push**: Runs the full quality gate (`quality_gate.sh`) before allowing a push.
+
 ## Linting
 
 Run code linter:
