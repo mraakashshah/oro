@@ -2074,9 +2074,10 @@ func (d *Dispatcher) applyScaleDirective(args string) (string, error) {
 	return detail, nil
 }
 
-// applyKillWorker terminates a specific worker, returns its bead to the ready
-// queue, and decrements targetWorkers. Returns an error if args is empty or
-// the worker ID is not found.
+// applyKillWorker terminates a specific worker, cleans up its worktree,
+// resets its bead to open, and clears bead tracking. Decrements targetWorkers
+// only for managed workers. Returns an error if args is empty or the worker
+// ID is not found.
 func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 	if args == "" {
 		return "", fmt.Errorf("worker ID required")
@@ -2092,21 +2093,37 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 		return "", fmt.Errorf("worker not found")
 	}
 
-	// Capture bead ID before removing worker
+	// Capture fields before removing worker.
 	beadID := w.beadID
+	worktree := w.worktree
+	managed := w.managed
 
-	// Close connection and remove worker from pool
+	// Close connection and remove worker from pool.
 	_ = w.conn.Close()
 	delete(d.workers, workerID)
 
-	// Decrement target count
-	if d.targetWorkers > 0 {
+	// Decrement target count only for managed workers; external workers are
+	// not counted against targetWorkers.
+	if managed && d.targetWorkers > 0 {
 		d.targetWorkers--
 	}
 	d.mu.Unlock()
 
-	// Return bead to queue by completing the assignment
+	// Remove the worker's git worktree (best-effort: log warning on failure).
+	if worktree != "" {
+		if err := d.worktrees.Remove(ctx, worktree); err != nil {
+			_ = d.logEvent(ctx, "kill_worker_worktree_remove_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"worktree":%q,"error":%q}`, worktree, err.Error()))
+		}
+	}
+
+	// Reset bead to open so it can be reassigned.
 	if beadID != "" {
+		if err := d.beads.Update(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "kill_worker_bead_reset_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+		d.clearBeadTracking(beadID)
 		_ = d.completeAssignment(ctx, beadID)
 		_ = d.logEvent(ctx, "worker_killed", "dispatcher", beadID, workerID,
 			`{"reason":"kill-worker directive"}`)
