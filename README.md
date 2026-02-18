@@ -4,6 +4,41 @@
 
 Oro is a self-managing multi-agent system that coordinates AI workers to execute software engineering tasks. An architect designs, a manager judges, a dispatcher orchestrates, and workers write code — all running concurrently in isolated git worktrees with TDD, quality gates, and code review baked into every cycle.
 
+## Table of Contents
+
+- [Philosophy](#philosophy)
+- [Principles](#principles)
+  - [1. Less Context, Better Work](#1-less-context-better-work)
+  - [2. Compound Learnings](#2-compound-learnings)
+  - [3. Loop Until Done](#3-loop-until-done)
+  - [4. Better Specs, Better Outcomes](#4-better-specs-better-outcomes)
+  - [5. Guards Over Trust](#5-guards-over-trust)
+- [How Oro Creates Software](#how-oro-creates-software)
+- [Architecture](#architecture)
+  - [Memory System](#memory-system)
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [Install](#install)
+  - [Launch](#launch)
+  - [Basic Operations](#basic-operations)
+- [CLI Reference](#cli-reference)
+  - [Lifecycle](#lifecycle)
+  - [Monitoring](#monitoring)
+  - [Memory](#memory)
+  - [Control](#control)
+  - [Search](#search)
+  - [Internal](#internal)
+- [Key Concepts](#key-concepts)
+  - [Beads](#beads)
+  - [Epics](#epics)
+  - [Quality Gate](#quality-gate)
+  - [Worktrees](#worktrees)
+  - [Handoffs](#handoffs)
+  - [Ops Agents](#ops-agents)
+- [Development](#development)
+  - [Build](#build)
+  - [Project Structure](#project-structure)
+
 ## Why "Oro"?
 
 *Oro* is Spanish for **gold** — because that's what we're doing: mining. Sifting through the infinite possibility space of code, specs, and designs to extract the nuggets that actually work. Every bead is a dig site. Every memory is a vein worth returning to.
