@@ -41,6 +41,8 @@ This command is typically invoked by the dispatcher, not by humans.`,
 	cmd.Flags().StringVar(&socketPath, "socket", "", "path to dispatcher UDS socket (required)")
 	cmd.Flags().StringVar(&workerID, "id", "", "worker ID, e.g. w-01 (required)")
 
+	cmd.AddCommand(newWorkerLaunchCmd())
+
 	return cmd
 }
 
