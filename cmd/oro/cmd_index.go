@@ -5,26 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"strings"
 
 	"oro/pkg/codesearch"
 
 	"github.com/spf13/cobra"
 )
-
-// ClaudeRerankSpawner implements codesearch.RerankSpawner using claude -p.
-type ClaudeRerankSpawner struct{}
-
-// Spawn runs claude -p with the given prompt and returns stdout.
-func (s *ClaudeRerankSpawner) Spawn(ctx context.Context, prompt string) (string, error) {
-	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", "haiku", "--output-format", "json") //nolint:gosec // prompt is constructed internally
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("claude rerank: %w", err)
-	}
-	return strings.TrimSpace(string(out)), nil
-}
 
 // newIndexCmd creates the "oro index" subcommand with build and search subcommands.
 func newIndexCmd() *cobra.Command {
@@ -88,7 +73,7 @@ func newIndexSearchCmd() *cobra.Command {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
 			w := cmd.OutOrStdout()
-			return runIndexSearch(w, args[0], paths.CodeIndexDBPath, topK, &ClaudeRerankSpawner{})
+			return runIndexSearch(w, args[0], paths.CodeIndexDBPath, topK, &codesearch.ClaudeRerankSpawner{})
 		},
 	}
 
