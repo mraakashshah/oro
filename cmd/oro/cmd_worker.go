@@ -42,6 +42,7 @@ This command is typically invoked by the dispatcher, not by humans.`,
 	cmd.Flags().StringVar(&workerID, "id", "", "worker ID, e.g. w-01 (required)")
 
 	cmd.AddCommand(newWorkerLaunchCmd())
+	cmd.AddCommand(newWorkerStopCmd())
 
 	return cmd
 }
