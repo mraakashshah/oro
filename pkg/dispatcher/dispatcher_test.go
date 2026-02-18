@@ -8884,10 +8884,12 @@ func TestBuildStatusJSON_LiveQueueDepth(t *testing.T) {
 
 // mockCodeIndex implements CodeIndex for testing.
 type mockCodeIndex struct {
-	mu      sync.Mutex
-	chunks  []CodeChunk
-	err     error
-	queries []string // captured queries for assertion
+	mu            sync.Mutex
+	chunks        []CodeChunk    // returned by FTS5Search
+	searchResults []SearchResult // returned by Search
+	err           error
+	queries       []string // queries captured by FTS5Search
+	searchQueries []string // queries captured by Search
 }
 
 func (m *mockCodeIndex) FTS5Search(_ context.Context, query string, _ int) ([]CodeChunk, error) {
@@ -8900,15 +8902,25 @@ func (m *mockCodeIndex) FTS5Search(_ context.Context, query string, _ int) ([]Co
 	return m.chunks, nil
 }
 
-// TestAssignBead_InjectsCodeContext verifies that assignBead runs FTS5Search
+func (m *mockCodeIndex) Search(_ context.Context, query string, _ int) ([]SearchResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.searchQueries = append(m.searchQueries, query)
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.searchResults, nil
+}
+
+// TestAssignBead_InjectsCodeContext verifies that assignBead runs Search
 // on bead title and injects formatted results into AssignPayload.CodeSearchContext.
 func TestAssignBead_InjectsCodeContext(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
-	// Inject a mock code index with test chunks.
+	// Inject a mock code index with test search results.
 	codeIdx := &mockCodeIndex{
-		chunks: []CodeChunk{
-			{FilePath: "pkg/foo/bar.go", Name: "DoStuff", Kind: "function", StartLine: 10, EndLine: 20, Content: "func DoStuff() {}"},
+		searchResults: []SearchResult{
+			{CodeChunk: CodeChunk{FilePath: "pkg/foo/bar.go", Name: "DoStuff", Kind: "function", StartLine: 10, EndLine: 20, Content: "func DoStuff() {}"}, Score: 1.0},
 		},
 	}
 	d.codeIndex = codeIdx
@@ -8950,15 +8962,69 @@ func TestAssignBead_InjectsCodeContext(t *testing.T) {
 		t.Errorf("expected CodeSearchContext to contain chunk content, got: %s", msg.Assign.CodeSearchContext)
 	}
 
-	// Verify FTS5Search was called with the bead title.
+	// Verify Search was called with the bead title.
 	codeIdx.mu.Lock()
-	queries := codeIdx.queries
+	queries := codeIdx.searchQueries
 	codeIdx.mu.Unlock()
 	if len(queries) == 0 {
-		t.Fatal("expected FTS5Search to be called")
+		t.Fatal("expected Search to be called")
 	}
 	if queries[0] != "Add code search" {
-		t.Errorf("expected FTS5Search query to be bead title %q, got %q", "Add code search", queries[0])
+		t.Errorf("expected Search query to be bead title %q, got %q", "Add code search", queries[0])
+	}
+}
+
+// TestAssignBeadInjectsRerankedCodeContext verifies that when mock codeIndex.Search()
+// returns SearchResult with non-empty Reason, the assembled worker prompt contains that Reason string.
+func TestAssignBeadInjectsRerankedCodeContext(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Inject a mock code index whose Search() returns a result with a Reason.
+	const wantReason = "implements the core assignment algorithm"
+	codeIdx := &mockCodeIndex{
+		searchResults: []SearchResult{
+			{
+				CodeChunk: CodeChunk{
+					FilePath:  "pkg/dispatcher/dispatcher.go",
+					Name:      "assignBead",
+					Kind:      "function",
+					StartLine: 1700,
+					EndLine:   1810,
+					Content:   "func (d *Dispatcher) assignBead(...) {}",
+				},
+				Score:  0.95,
+				Reason: wantReason,
+			},
+		},
+	}
+	d.codeIndex = codeIdx
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	d.setState(StateRunning)
+
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-rerank1", Title: "Wire reranker into dispatcher", Priority: 1, Type: "task"},
+	})
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-rerank1"},
+	})
+	waitForWorkers(t, d, 1, 2*time.Second)
+
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN message")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	// Assert: CodeSearchContext contains the Reason string from the SearchResult.
+	if !strings.Contains(msg.Assign.CodeSearchContext, wantReason) {
+		t.Errorf("expected CodeSearchContext to contain Reason %q, got: %s", wantReason, msg.Assign.CodeSearchContext)
 	}
 }
 
@@ -9001,16 +9067,16 @@ func TestAssignBead_InjectsCodeContext_NilIndex(t *testing.T) {
 	}
 }
 
-// TestFormatCodeResults verifies formatting of FTS5Search results into markdown.
+// TestFormatCodeResults verifies formatting of search results into markdown.
 func TestFormatCodeResults(t *testing.T) {
 	t.Parallel()
 
 	t.Run("single chunk", func(t *testing.T) {
 		t.Parallel()
-		chunks := []CodeChunk{
-			{FilePath: "pkg/foo/bar.go", StartLine: 10, EndLine: 20, Content: "func Hello() {}"},
+		results := []SearchResult{
+			{CodeChunk: CodeChunk{FilePath: "pkg/foo/bar.go", StartLine: 10, EndLine: 20, Content: "func Hello() {}"}, Score: 1.0},
 		}
-		result := formatCodeChunks(chunks)
+		result := formatSearchResults(results)
 		if !strings.Contains(result, "### pkg/foo/bar.go:10-20") {
 			t.Errorf("expected header with file:line range, got: %s", result)
 		}
@@ -9024,11 +9090,11 @@ func TestFormatCodeResults(t *testing.T) {
 
 	t.Run("multiple chunks", func(t *testing.T) {
 		t.Parallel()
-		chunks := []CodeChunk{
-			{FilePath: "a.go", StartLine: 1, EndLine: 5, Content: "package a"},
-			{FilePath: "b.go", StartLine: 10, EndLine: 15, Content: "package b"},
+		results := []SearchResult{
+			{CodeChunk: CodeChunk{FilePath: "a.go", StartLine: 1, EndLine: 5, Content: "package a"}, Score: 1.0},
+			{CodeChunk: CodeChunk{FilePath: "b.go", StartLine: 10, EndLine: 15, Content: "package b"}, Score: 0.5},
 		}
-		result := formatCodeChunks(chunks)
+		result := formatSearchResults(results)
 		if !strings.Contains(result, "### a.go:1-5") {
 			t.Errorf("expected first chunk header, got: %s", result)
 		}
@@ -9045,13 +9111,27 @@ func TestFormatCodeResults(t *testing.T) {
 
 	t.Run("empty chunks", func(t *testing.T) {
 		t.Parallel()
-		result := formatCodeChunks(nil)
+		result := formatSearchResults(nil)
 		if result != "" {
-			t.Errorf("expected empty string for nil chunks, got: %s", result)
+			t.Errorf("expected empty string for nil results, got: %s", result)
 		}
-		result = formatCodeChunks([]CodeChunk{})
+		result = formatSearchResults([]SearchResult{})
 		if result != "" {
-			t.Errorf("expected empty string for empty chunks, got: %s", result)
+			t.Errorf("expected empty string for empty results, got: %s", result)
+		}
+	})
+
+	t.Run("includes reason when non-empty", func(t *testing.T) {
+		t.Parallel()
+		results := []SearchResult{
+			{CodeChunk: CodeChunk{FilePath: "pkg/x.go", StartLine: 1, EndLine: 5, Content: "func X() {}"}, Score: 0.9, Reason: "directly implements X"},
+		}
+		result := formatSearchResults(results)
+		if !strings.Contains(result, "directly implements X") {
+			t.Errorf("expected Reason in output, got: %s", result)
+		}
+		if !strings.Contains(result, "_Relevance:") {
+			t.Errorf("expected _Relevance: label, got: %s", result)
 		}
 	})
 }
