@@ -30,7 +30,7 @@ def oro_project_dir():
 
 _project_dir = oro_project_dir()
 DECISIONS_FILE = (
-    os.path.join(_project_dir, "decisions&discoveries.md") if _project_dir else "docs/decisions-and-discoveries.md"
+    os.path.join(_project_dir, "decisions&discoveries.md") if _project_dir else "docs/decisions&discoveries.md"
 )
 
 
