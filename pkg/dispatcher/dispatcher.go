@@ -84,9 +84,10 @@ type ProcessManager interface {
 	Kill(id string) error
 }
 
-// CodeIndex provides FTS5 code search for injecting relevant code into prompts.
+// CodeIndex provides code search for injecting relevant code into prompts.
 type CodeIndex interface {
 	FTS5Search(ctx context.Context, query string, limit int) ([]CodeChunk, error)
+	Search(ctx context.Context, query string, topK int) ([]SearchResult, error)
 }
 
 // CodeChunk represents a code search result.
@@ -97,6 +98,13 @@ type CodeChunk struct {
 	StartLine int
 	EndLine   int
 	Content   string
+}
+
+// SearchResult pairs a CodeChunk with its relevance score and optional rerank reason.
+type SearchResult struct {
+	CodeChunk
+	Score  float64
+	Reason string
 }
 
 // --- Worker tracking ---
@@ -1768,9 +1776,11 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	}
 	var codeCtx string
 	if d.codeIndex != nil {
-		chunks, err := d.codeIndex.FTS5Search(ctx, bead.Title, 5)
-		if err == nil && len(chunks) > 0 {
-			codeCtx = formatCodeChunks(chunks)
+		ctx5s, cancel5s := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel5s()
+		results, _ := d.codeIndex.Search(ctx5s, bead.Title, 5)
+		if len(results) > 0 {
+			codeCtx = formatSearchResults(results)
 		}
 	}
 	d.mu.Lock()
@@ -2959,13 +2969,17 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qg
 	d.mu.Unlock()
 }
 
-// formatCodeChunks formats code search results into markdown for prompt injection.
-func formatCodeChunks(chunks []CodeChunk) string {
+// formatSearchResults formats code search results into markdown for prompt injection.
+// When a result has a non-empty Reason, it is included as a relevance note.
+func formatSearchResults(results []SearchResult) string {
 	var b strings.Builder
-	for _, chunk := range chunks {
-		fmt.Fprintf(&b, "### %s:%d-%d\n```%s\n%s\n```\n\n",
-			chunk.FilePath, chunk.StartLine, chunk.EndLine,
-			"", chunk.Content) // Empty lang specifier for now
+	for _, r := range results {
+		fmt.Fprintf(&b, "### %s:%d-%d\n```\n%s\n```\n",
+			r.FilePath, r.StartLine, r.EndLine, r.Content)
+		if r.Reason != "" {
+			fmt.Fprintf(&b, "_Relevance: %s_\n", r.Reason)
+		}
+		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String())
 }

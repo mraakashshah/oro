@@ -350,7 +350,8 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	// dispatcher can serve queries on any previously-built index data.
 	// Build runs in the background to refresh the index without blocking startup.
 	var codeIdx dispatcher.CodeIndex
-	idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath, nil)
+	reranker := codesearch.NewReranker(&codesearch.ClaudeRerankSpawner{})
+	idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath, reranker)
 	if idxErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to open code index: %v\n", idxErr)
 	} else {
@@ -412,7 +413,7 @@ func readProjectConfig(dir string) (string, error) {
 }
 
 // codeIndexAdapter wraps *codesearch.CodeIndex to satisfy dispatcher.CodeIndex.
-// It converts []codesearch.Chunk to []dispatcher.CodeChunk.
+// It converts codesearch types to dispatcher types.
 type codeIndexAdapter struct {
 	idx *codesearch.CodeIndex
 }
@@ -431,6 +432,50 @@ func (a *codeIndexAdapter) FTS5Search(ctx context.Context, query string, limit i
 			StartLine: c.StartLine,
 			EndLine:   c.EndLine,
 			Content:   c.Content,
+		}
+	}
+	return out, nil
+}
+
+// Search performs two-phase search (FTS5 + optional Claude reranking).
+// On reranker timeout or failure, falls back to FTS5 positional scores. No error is returned.
+func (a *codeIndexAdapter) Search(ctx context.Context, query string, topK int) ([]dispatcher.SearchResult, error) {
+	results, err := a.idx.Search(ctx, query, topK)
+	if err == nil {
+		out := make([]dispatcher.SearchResult, len(results))
+		for i, r := range results {
+			out[i] = dispatcher.SearchResult{
+				CodeChunk: dispatcher.CodeChunk{
+					FilePath:  r.Chunk.FilePath,
+					Name:      r.Chunk.Name,
+					Kind:      string(r.Chunk.Kind),
+					StartLine: r.Chunk.StartLine,
+					EndLine:   r.Chunk.EndLine,
+					Content:   r.Chunk.Content,
+				},
+				Score:  r.Score,
+				Reason: r.Reason,
+			}
+		}
+		return out, nil
+	}
+	// Reranker failed/timed out — fall back to FTS5 positional scores with no Reason.
+	chunks, ftsErr := a.idx.FTS5Search(ctx, query, topK)
+	if ftsErr != nil {
+		return nil, nil //nolint:nilerr // best-effort: suppress error, caller gets empty results
+	}
+	out := make([]dispatcher.SearchResult, len(chunks))
+	for i, c := range chunks {
+		out[i] = dispatcher.SearchResult{
+			CodeChunk: dispatcher.CodeChunk{
+				FilePath:  c.FilePath,
+				Name:      c.Name,
+				Kind:      string(c.Kind),
+				StartLine: c.StartLine,
+				EndLine:   c.EndLine,
+				Content:   c.Content,
+			},
+			Score: 1.0 / float64(i+1),
 		}
 	}
 	return out, nil
