@@ -1851,9 +1851,11 @@ func TestApplyDirective_KillWorker(t *testing.T) {
 		t.Errorf("worker %s should be removed from pool", workerID)
 	}
 
-	// Assert: target count decremented
-	if targetCount != 0 {
-		t.Errorf("targetWorkers = %d, want 0 (decremented from 1)", targetCount)
+	// Assert: target count NOT decremented (worker registered via registerWorker
+	// without pendingManagedIDs entry is unmanaged; only managed workers affect
+	// targetWorkers).
+	if targetCount != 1 {
+		t.Errorf("targetWorkers = %d, want 1 (unmanaged worker does not affect target count)", targetCount)
 	}
 
 	// Assert: bead returned to queue (assignment marked completed)
@@ -9459,4 +9461,168 @@ func TestAssignBeadSkipsClosedBead(t *testing.T) {
 	if eventCount(t, d.db, "bead_closed_before_assign") == 0 {
 		t.Error("expected bead_closed_before_assign event to be logged, but it was not found")
 	}
+}
+
+// TestKillWorkerCleansUpWorktreeAndBead verifies that applyKillWorker:
+//  1. Calls WorktreeManager.Remove with the worker's worktree path.
+//  2. Calls BeadSource.Update(beadID, "open") to reset bead status.
+//  3. Calls clearBeadTracking to remove all tracking-map entries for the bead.
+//  4. Does NOT decrement targetWorkers when the killed worker is unmanaged.
+func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
+	const workerID = "w-kill-test"
+	const beadID = "oro-cleanup1"
+	const worktreePath = "/tmp/worktrees/oro-cleanup1"
+
+	t.Run("managed worker: worktree removed, bead reset, tracking cleared, targetWorkers decremented", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     conn,
+			state:    protocol.WorkerBusy,
+			beadID:   beadID,
+			worktree: worktreePath,
+			managed:  true,
+			encoder:  json.NewEncoder(conn),
+		}
+		// Seed tracking maps so we can verify clearBeadTracking.
+		d.attemptCounts[beadID] = 3
+		d.handoffCounts[beadID] = 1
+		d.rejectionCounts[beadID] = 2
+		d.escalatedBeads[beadID] = true
+		d.targetWorkers = 2
+		d.mu.Unlock()
+
+		_, err := d.applyKillWorker(workerID)
+		if err != nil {
+			t.Fatalf("applyKillWorker returned error: %v", err)
+		}
+
+		// 1. WorktreeManager.Remove must be called with the worker's worktree path.
+		wtMgr.mu.Lock()
+		removed := wtMgr.removed
+		wtMgr.mu.Unlock()
+		if len(removed) == 0 {
+			t.Error("expected WorktreeManager.Remove to be called, but it was not")
+		} else if removed[0] != worktreePath {
+			t.Errorf("Remove called with %q, want %q", removed[0], worktreePath)
+		}
+
+		// 2. BeadSource.Update must reset bead to "open".
+		beadSrc.mu.Lock()
+		status := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if status != "open" {
+			t.Errorf("BeadSource.Update called with status %q, want %q", status, "open")
+		}
+
+		// 3. Tracking maps must be cleared.
+		d.mu.Lock()
+		attempts := d.attemptCounts[beadID]
+		handoffs := d.handoffCounts[beadID]
+		rejections := d.rejectionCounts[beadID]
+		escalated := d.escalatedBeads[beadID]
+		d.mu.Unlock()
+		if attempts != 0 || handoffs != 0 || rejections != 0 || escalated {
+			t.Errorf("tracking maps not cleared: attempts=%d handoffs=%d rejections=%d escalated=%v",
+				attempts, handoffs, rejections, escalated)
+		}
+
+		// 4. targetWorkers must be decremented for a managed worker (2 -> 1).
+		d.mu.Lock()
+		target := d.targetWorkers
+		d.mu.Unlock()
+		if target != 1 {
+			t.Errorf("targetWorkers = %d, want 1 after killing managed worker", target)
+		}
+	})
+
+	t.Run("unmanaged worker: worktree removed, bead reset, tracking cleared, targetWorkers NOT decremented", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     conn,
+			state:    protocol.WorkerBusy,
+			beadID:   beadID,
+			worktree: worktreePath,
+			managed:  false, // external/unmanaged
+			encoder:  json.NewEncoder(conn),
+		}
+		d.attemptCounts[beadID] = 1
+		d.targetWorkers = 1
+		d.mu.Unlock()
+
+		_, err := d.applyKillWorker(workerID)
+		if err != nil {
+			t.Fatalf("applyKillWorker returned error: %v", err)
+		}
+
+		// Worktree must still be removed for unmanaged workers.
+		wtMgr.mu.Lock()
+		removed := wtMgr.removed
+		wtMgr.mu.Unlock()
+		if len(removed) == 0 || removed[0] != worktreePath {
+			t.Errorf("WorktreeManager.Remove not called correctly for unmanaged worker: %v", removed)
+		}
+
+		// Bead must still be reset to open.
+		beadSrc.mu.Lock()
+		status := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if status != "open" {
+			t.Errorf("BeadSource.Update status = %q, want %q", status, "open")
+		}
+
+		// targetWorkers must NOT be decremented for an unmanaged worker.
+		d.mu.Lock()
+		target := d.targetWorkers
+		d.mu.Unlock()
+		if target != 1 {
+			t.Errorf("targetWorkers = %d, want 1 (unmanaged worker should not affect target count)", target)
+		}
+	})
+
+	t.Run("worker with no bead or worktree: skips removal and reset", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     conn,
+			state:    protocol.WorkerIdle,
+			beadID:   "", // no assignment
+			worktree: "", // no worktree
+			managed:  true,
+			encoder:  json.NewEncoder(conn),
+		}
+		d.targetWorkers = 1
+		d.mu.Unlock()
+
+		_, err := d.applyKillWorker(workerID)
+		if err != nil {
+			t.Fatalf("applyKillWorker returned error: %v", err)
+		}
+
+		// No worktree to remove.
+		wtMgr.mu.Lock()
+		removed := wtMgr.removed
+		wtMgr.mu.Unlock()
+		if len(removed) != 0 {
+			t.Errorf("WorktreeManager.Remove called unexpectedly with %v for idle worker", removed)
+		}
+
+		// No bead to reset.
+		beadSrc.mu.Lock()
+		_, hasUpdate := beadSrc.updated[""]
+		beadSrc.mu.Unlock()
+		if hasUpdate {
+			t.Error("BeadSource.Update called for empty beadID, should be skipped")
+		}
+	})
 }
