@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Pre-push hook: runs full quality gate before allowing push.
+# Prevents agents and humans from pushing code that passes
+# per-file lint (pre-commit) but fails cross-cutting checks
+# (golangci-lint, go-arch-lint, govulncheck, etc.)
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+GATE="$REPO_ROOT/quality_gate.sh"
+
+if [ ! -x "$GATE" ]; then
+    echo "pre-push: quality_gate.sh not found or not executable at $GATE"
+    exit 1
+fi
+
+echo "pre-push: running quality gate (all checks)..."
+if ! "$GATE"; then
+    echo ""
+    echo "pre-push: QUALITY GATE FAILED — push blocked."
+    echo "Fix the failures above, then try again."
+    exit 1
+fi
+
+echo "pre-push: quality gate passed."

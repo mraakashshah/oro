@@ -1,4 +1,4 @@
-.PHONY: build build-dash build-search-hook install test lint fmt vet gate clean stage-assets clean-assets dev-sync
+.PHONY: build build-dash build-search-hook install install-git-hooks test lint fmt vet gate clean stage-assets clean-assets dev-sync
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -98,3 +98,15 @@ gate: stage-assets
 
 clean: clean-assets
 	rm -f oro coverage.out
+
+# install-git-hooks symlinks the canonical git hooks from git/hooks/ into .git/hooks/.
+# Run once after cloning: make install-git-hooks
+install-git-hooks:
+	@echo "Installing git hooks from git/hooks/ → .git/hooks/..."
+	@for hook in git/hooks/*; do \
+		name=$$(basename "$$hook"); \
+		target=".git/hooks/$$name"; \
+		src="$$(pwd)/$$hook"; \
+		ln -sf "$$src" "$$target" && echo "  ✓ $$name"; \
+	done
+	@echo "Done. Hooks active in .git/hooks/"
