@@ -52,7 +52,7 @@ jobs:
 
       - name: Test + Coverage
         run: |
-          go test -race -shuffle=on -coverprofile=coverage.out ./internal/... ./pkg/...
+          go test -race -shuffle=on -coverprofile=coverage.out ./internal/... ./pkg/... ./cmd/...
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
           awk "BEGIN {exit ($COVERAGE < 85)}"
