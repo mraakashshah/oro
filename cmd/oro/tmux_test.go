@@ -2369,3 +2369,114 @@ func TestStatusBarShowsQuitHint(t *testing.T) {
 		t.Error("expected status-right to contain navigation hints (ctrl-b, switch, detach, quit)")
 	}
 }
+
+// TestForwardCommandToManager verifies that ForwardCommandToManager routes
+// commands to the correct pane via tmux send-keys and returns the correct
+// feedback message.
+func TestForwardCommandToManager(t *testing.T) {
+	t.Run("oro command is forwarded to manager pane with feedback", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Session is attached; no SIGWINCH needed.
+		fake.output[key("tmux", "display-message", "-p", "-t", "mysession:manager", "#{session_attached}")] = "1"
+
+		sess := &TmuxSession{Name: "mysession", Runner: fake, Sleeper: noopSleep}
+		feedback, err := sess.ForwardCommandToManager("oro directive scale 3")
+		if err != nil {
+			t.Fatalf("ForwardCommandToManager returned error: %v", err)
+		}
+
+		// Feedback should be "[forwarded to manager] oro directive scale 3"
+		want := "[forwarded to manager] oro directive scale 3"
+		if feedback != want {
+			t.Errorf("feedback = %q, want %q", feedback, want)
+		}
+
+		// A send-keys call must target the manager pane.
+		calls := fake.getCalls()
+		foundManagerSendKeys := false
+		for _, call := range calls {
+			if len(call) >= 5 && call[0] == "tmux" && call[1] == "send-keys" {
+				for i, arg := range call {
+					if arg == "-t" && i+1 < len(call) && call[i+1] == "mysession:manager" {
+						foundManagerSendKeys = true
+					}
+				}
+			}
+		}
+		if !foundManagerSendKeys {
+			t.Error("expected tmux send-keys targeting mysession:manager pane")
+		}
+	})
+
+	t.Run("unknown command is forwarded to manager pane with [forwarded] feedback", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "display-message", "-p", "-t", "mysession:manager", "#{session_attached}")] = "1"
+
+		sess := &TmuxSession{Name: "mysession", Runner: fake, Sleeper: noopSleep}
+		feedback, err := sess.ForwardCommandToManager("git status")
+		if err != nil {
+			t.Fatalf("ForwardCommandToManager returned error: %v", err)
+		}
+
+		want := "[forwarded] git status"
+		if feedback != want {
+			t.Errorf("feedback = %q, want %q", feedback, want)
+		}
+	})
+
+	t.Run("forwarded command text is sent to manager pane", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "display-message", "-p", "-t", "mysession:manager", "#{session_attached}")] = "1"
+
+		sess := &TmuxSession{Name: "mysession", Runner: fake, Sleeper: noopSleep}
+		_, err := sess.ForwardCommandToManager("oro directive pause")
+		if err != nil {
+			t.Fatalf("ForwardCommandToManager returned error: %v", err)
+		}
+
+		// The actual command text "oro directive pause" should appear in a send-keys call.
+		calls := fake.getCalls()
+		foundCmd := false
+		for _, call := range calls {
+			for _, arg := range call {
+				if arg == "oro directive pause" {
+					foundCmd = true
+				}
+			}
+		}
+		if !foundCmd {
+			t.Error("expected command text 'oro directive pause' to appear in a send-keys call")
+		}
+	})
+
+	t.Run("send-keys error is propagated", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Inject an error for the send-keys call to manager.
+		fake.errs[key("tmux", "send-keys", "-t", "mysession:manager", "-l", "oro directive scale 3")] = fmt.Errorf("tmux not found")
+
+		sess := &TmuxSession{Name: "mysession", Runner: fake, Sleeper: noopSleep}
+		_, err := sess.ForwardCommandToManager("oro directive scale 3")
+		if err == nil {
+			t.Fatal("expected error when send-keys fails, got nil")
+		}
+	})
+}
+
+// TestForwardCommandToManager_RoutesArchitectCommands verifies that
+// ForwardCommandToManager forwards even bd-prefixed commands (it forwards
+// everything — routing decisions happen at the call site, not inside this method).
+func TestForwardCommandToManager_AlwaysForwards(t *testing.T) {
+	fake := newFakeCmd()
+	fake.output[key("tmux", "display-message", "-p", "-t", "mysession:manager", "#{session_attached}")] = "1"
+
+	sess := &TmuxSession{Name: "mysession", Runner: fake, Sleeper: noopSleep}
+	feedback, err := sess.ForwardCommandToManager("make test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should always forward with feedback.
+	if feedback == "" {
+		t.Error("expected non-empty feedback from ForwardCommandToManager")
+	}
+}
