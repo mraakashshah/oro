@@ -87,12 +87,12 @@ func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		d.assignBead(ctx, worker1, protocol.Bead{ID: "oro-test1", Priority: 0})
+		_ = d.assignBead(ctx, worker1, protocol.Bead{ID: "oro-test1", Priority: 0})
 	}()
 
 	go func() {
 		defer wg.Done()
-		d.assignBead(ctx, worker2, protocol.Bead{ID: "oro-test1", Priority: 0})
+		_ = d.assignBead(ctx, worker2, protocol.Bead{ID: "oro-test1", Priority: 0})
 	}()
 
 	wg.Wait()

@@ -1669,7 +1669,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		if i >= len(idle) {
 			break
 		}
-		d.assignBead(ctx, idle[i], bead)
+		_ = d.assignBead(ctx, idle[i], bead)
 		// Clean up priority bead after assignment.
 		if pbSnapshot[bead.ID] {
 			d.mu.Lock()
@@ -1779,10 +1779,14 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 	return title, acceptance, true
 }
 
-func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) { //nolint:funlen // orchestration logic, splitting would obscure flow
+func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) error { //nolint:funlen // orchestration logic, splitting would obscure flow
+	if strings.TrimSpace(bead.ID) == "" {
+		return fmt.Errorf("assignBead: empty bead ID")
+	}
+
 	title, acceptance, ok := d.checkBeadReady(ctx, bead, w.id)
 	if !ok {
-		return
+		return nil
 	}
 
 	// Atomically claim this bead for assignment (oro-ptp2: prevents race condition).
@@ -1793,7 +1797,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		d.mu.Unlock()
 		_ = d.logEvent(ctx, "assignment_race_detected", "dispatcher", bead.ID, w.id,
 			"bead already being assigned by another worker")
-		return
+		return nil
 	}
 	if d.assigningBeads == nil {
 		d.assigningBeads = make(map[string]bool)
@@ -1810,7 +1814,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
-		return
+		return nil
 	}
 
 	worktree, branch, err := d.worktrees.Create(ctx, bead.ID)
@@ -1822,7 +1826,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
-		return
+		return nil
 	}
 
 	_ = d.createAssignment(ctx, bead.ID, w.id, worktree)
@@ -1875,6 +1879,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.worktrees.Remove(ctx, worktree)
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
+	return nil
 }
 
 // lookupBeadDetail retrieves the title, acceptance criteria, and status for a bead (best-effort).

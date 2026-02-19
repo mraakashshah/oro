@@ -3289,7 +3289,7 @@ func TestAssignBeadCleansUpOnFailure(t *testing.T) {
 	d.mu.Unlock()
 
 	// Call assignBead — worktree creation succeeds, but sendToWorker should fail
-	d.assignBead(ctx, w, bead)
+	_ = d.assignBead(ctx, w, bead)
 
 	// Assert the worktree was cleaned up
 	wtMgr.mu.Lock()
@@ -5774,7 +5774,7 @@ func TestAssignUsesRichPrompt(t *testing.T) {
 		}
 	}()
 
-	d.assignBead(ctx, w, bead)
+	_ = d.assignBead(ctx, w, bead)
 
 	select {
 	case msg := <-msgCh:
@@ -6059,7 +6059,7 @@ func TestAssignBead_RevertsBusyOnSendFailure(t *testing.T) {
 	}
 
 	// Call assignBead — worktree creation succeeds, but sendToWorker should fail
-	d.assignBead(ctx, w, bead)
+	_ = d.assignBead(ctx, w, bead)
 
 	// Assert worker reverted to Idle with cleared fields
 	st, beadID, ok = d.WorkerInfo("w-fail-assign")
@@ -8223,7 +8223,7 @@ func TestAssignBead_MissingAcceptanceEscalatesToManager(t *testing.T) {
 
 	// Attempt to assign the bead.
 	w := &trackedWorker{id: "w1", conn: conn, state: protocol.WorkerIdle}
-	d.assignBead(context.Background(), w, protocol.Bead{ID: "bead-no-ac", Title: "Test bead without AC", Type: "task"})
+	_ = d.assignBead(context.Background(), w, protocol.Bead{ID: "bead-no-ac", Title: "Test bead without AC", Type: "task"})
 
 	// Verify escalation was sent (not silent skip).
 	esc.mu.Lock()
@@ -9645,7 +9645,7 @@ func TestAssignBeadSkipsClosedBead(t *testing.T) {
 
 	// Call assignBead with a bead that will be reported as closed by Show
 	bead := protocol.Bead{ID: beadID, Priority: 2}
-	d.assignBead(ctx, w, bead)
+	_ = d.assignBead(ctx, w, bead)
 
 	// Assert: No worktree was created
 	wtMgr.mu.Lock()
@@ -9833,4 +9833,56 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 			t.Error("BeadSource.Update called for empty beadID, should be skipped")
 		}
 	})
+}
+
+// TestAssignBead_EmptyBeadIDReturnsError verifies that assignBead returns an error
+// and does NOT create a worktree when the bead's ID is empty or whitespace-only.
+func TestAssignBead_EmptyBeadIDReturnsError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		beadID string
+	}{
+		{"empty string", ""},
+		{"whitespace only", "   "},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+
+			ctx := context.Background()
+
+			// Create a mock worker connection.
+			server, client := net.Pipe()
+			defer server.Close()
+			defer client.Close()
+
+			d.registerWorker("w-empty-test", server)
+
+			d.mu.Lock()
+			w := d.workers["w-empty-test"]
+			d.mu.Unlock()
+
+			bead := protocol.Bead{ID: tc.beadID, Priority: 2}
+			err := d.assignBead(ctx, w, bead)
+
+			if err == nil {
+				t.Errorf("assignBead(%q): expected error, got nil", tc.beadID)
+			}
+
+			// Assert: no worktree was created.
+			wtMgr.mu.Lock()
+			createdCount := len(wtMgr.created)
+			wtMgr.mu.Unlock()
+
+			if createdCount != 0 {
+				t.Errorf("assignBead(%q): expected 0 worktrees created, got %d", tc.beadID, createdCount)
+			}
+		})
+	}
 }
