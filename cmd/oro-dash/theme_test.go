@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
@@ -95,5 +97,25 @@ func TestThemeLegacyMapping(t *testing.T) {
 	}
 	if theme.Muted == "" {
 		t.Error("Muted color should not be empty")
+	}
+}
+
+func TestNoInlineNewStyleInViews(t *testing.T) {
+	// Assert that insights.go and workers_table.go contain zero inline
+	// lipgloss.NewStyle() calls — all styles must be pre-computed in theme.go.
+	files := []string{
+		"insights.go",
+		"workers_table.go",
+	}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			content, err := os.ReadFile(file) //nolint:gosec // test files only, not user input
+			if err != nil {
+				t.Fatalf("failed to read %s: %v", file, err)
+			}
+			if strings.Contains(string(content), "lipgloss.NewStyle()") {
+				t.Errorf("%s contains inline lipgloss.NewStyle() calls; move them to theme.go", file)
+			}
+		})
 	}
 }

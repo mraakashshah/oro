@@ -465,7 +465,7 @@ func (m Model) View() string {
 		return m.renderHelpOverlay() + "\n" + statusBar
 	case InsightsView:
 		insights := m.buildInsightsModel()
-		return insights.Render() + "\n" + statusBar
+		return insights.Render(m.styles) + "\n" + statusBar
 	case DetailView:
 		if m.detailModel != nil {
 			// Use split pane if terminal is wide enough

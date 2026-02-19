@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // WorkersTableModel holds the workers table state.
@@ -34,11 +33,7 @@ func (w WorkersTableModel) View(theme Theme, styles Styles) string {
 // renderEmptyWorkersState renders a message when no workers are active.
 func renderEmptyWorkersState(styles Styles) string {
 	msg := "No active workers"
-	centered := lipgloss.NewStyle().
-		Width(80).
-		Height(20).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(styles.Muted.Render(msg))
+	centered := styles.WorkersCentered.Render(styles.Muted.Render(msg))
 	return centered
 }
 
@@ -50,10 +45,10 @@ func (w WorkersTableModel) renderWorkersTable(theme Theme, styles Styles) string
 	headers := []string{"Worker ID", "Status", "Assigned Bead", "Health", "Context"}
 	headerWidths := []int{20, 15, 20, 10, 10}
 
-	// Render header row
+	// Render header row — use WorkersCol base style with .Width() applied per column.
 	headerParts := make([]string, 0, len(headers))
 	for i, header := range headers {
-		style := lipgloss.NewStyle().
+		style := styles.WorkersCol.
 			Width(headerWidths[i]).
 			Bold(true).
 			Foreground(theme.Primary)
@@ -101,13 +96,13 @@ func (w WorkersTableModel) renderWorkerRow(worker WorkerStatus, widths []int, st
 	}
 	contextStr = truncate(contextStr, widths[4])
 
-	// Build row
+	// Build row — use WorkersCol base style with dynamic .Width() per column (Width returns a copy).
 	cells := []string{
-		lipgloss.NewStyle().Width(widths[0]).Render(workerID),
-		lipgloss.NewStyle().Width(widths[1]).Render(status),
-		lipgloss.NewStyle().Width(widths[2]).Render(assignedBead),
-		lipgloss.NewStyle().Width(widths[3]).Render(healthBadge),
-		lipgloss.NewStyle().Width(widths[4]).Render(contextStr),
+		styles.WorkersCol.Width(widths[0]).Render(workerID),
+		styles.WorkersCol.Width(widths[1]).Render(status),
+		styles.WorkersCol.Width(widths[2]).Render(assignedBead),
+		styles.WorkersCol.Width(widths[3]).Render(healthBadge),
+		styles.WorkersCol.Width(widths[4]).Render(contextStr),
 	}
 
 	return strings.Join(cells, " ")
@@ -116,14 +111,12 @@ func (w WorkersTableModel) renderWorkerRow(worker WorkerStatus, widths []int, st
 // renderHealthBadge renders the health indicator based on heartbeat age.
 // Green (<5s), Amber (5-15s), Red (>15s).
 func (w WorkersTableModel) renderHealthBadge(worker WorkerStatus, styles Styles) string {
-	var healthStyle lipgloss.Style
+	healthStyle := styles.HealthRed
 	switch {
 	case worker.LastProgressSecs < 5.0:
 		healthStyle = styles.HealthGreen
 	case worker.LastProgressSecs <= 15.0:
 		healthStyle = styles.HealthAmber
-	default:
-		healthStyle = styles.HealthRed
 	}
 
 	return healthStyle.Render("●")

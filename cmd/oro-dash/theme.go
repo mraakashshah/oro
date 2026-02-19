@@ -104,6 +104,20 @@ type Styles struct {
 
 	// Health view styles
 	SectionTitle lipgloss.Style
+
+	// Insights view styles
+	InsightsDim          lipgloss.Style
+	InsightsBorder       lipgloss.Style
+	InsightsError        lipgloss.Style
+	InsightsNoData       lipgloss.Style
+	InsightsSuccess      lipgloss.Style
+	InsightsSectionTitle lipgloss.Style
+
+	// Workers table styles
+	WorkersCentered lipgloss.Style
+	WorkersRow      lipgloss.Style
+	// WorkersCol is a base style; call .Width(n) at render time (Width returns a copy).
+	WorkersCol lipgloss.Style
 }
 
 // DefaultTheme returns the default theme for oro dash.
@@ -154,6 +168,8 @@ func NewStyles(theme Theme) Styles {
 	s.initHelpStyles(theme)
 	s.initDetailStyles(theme)
 	s.initBadgeStyles(theme)
+	s.initInsightsStyles(theme)
+	s.initWorkersStyles()
 	return s
 }
 
@@ -223,4 +239,23 @@ func (s *Styles) initBadgeStyles(theme Theme) {
 	s.WorkerStyle = lipgloss.NewStyle().Foreground(theme.ColorInProgress)
 	s.BlockerStyle = lipgloss.NewStyle().Foreground(theme.ColorBlocked)
 	s.SectionTitle = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Padding(1, 0)
+}
+
+func (s *Styles) initInsightsStyles(theme Theme) {
+	s.InsightsDim = lipgloss.NewStyle().Foreground(theme.Muted)
+	s.InsightsBorder = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
+	s.InsightsError = lipgloss.NewStyle().Foreground(theme.Error)
+	s.InsightsNoData = lipgloss.NewStyle().Foreground(theme.Muted)
+	s.InsightsSuccess = lipgloss.NewStyle().Foreground(theme.Success)
+	s.InsightsSectionTitle = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
+}
+
+func (s *Styles) initWorkersStyles() {
+	s.WorkersCentered = lipgloss.NewStyle().
+		Width(80).
+		Height(20).
+		Align(lipgloss.Center, lipgloss.Center)
+	s.WorkersRow = lipgloss.NewStyle()
+	// Base column style — callers apply .Width(n) at render time; Width() returns a copy.
+	s.WorkersCol = lipgloss.NewStyle()
 }
