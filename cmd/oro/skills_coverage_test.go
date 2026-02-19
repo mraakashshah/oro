@@ -20,16 +20,16 @@ func TestSkillsAllListedInUsingSkillsIndex(t *testing.T) {
 		t.Fatalf("failed to read skills directory %s: %v", skillsDir, err)
 	}
 
-	// Collect direct skill names: all non-hidden entries (files or dirs),
-	// excluding "using-skills" itself (the index).
+	// Collect direct subdirectory names, excluding "using-skills" (the index itself).
 	var skillNames []string
 	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
 		name := e.Name()
-		// Skip hidden entries (e.g. .DS_Store).
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		// Exclude the index directory itself.
 		if name == "using-skills" {
 			continue
 		}
