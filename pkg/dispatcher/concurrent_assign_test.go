@@ -2,6 +2,9 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -124,5 +127,104 @@ func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
 
 	if busyCount != 1 {
 		t.Errorf("Expected exactly 1 busy worker on oro-test1, got %d", busyCount)
+	}
+}
+
+// TestScaleUpDoesNotDuplicateAssignment verifies that when the dispatcher scales up
+// (e.g. 5→6 workers), the new worker does NOT get assigned a bead that is currently
+// in-flight (assigningBeads set but worker state not yet updated to Busy).
+//
+// Regression test for oro-30o: assignLoop must check assigningBeads in
+// filterAssignable before dispatching to a worker, preventing the window where
+// a newly scaled-up worker races with an in-progress assignment.
+func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
+	t.Parallel()
+
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Provide one bead.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-scale", Title: "Scale up task", Priority: 1, Type: "task"},
+	})
+
+	// Simulate 5 busy workers (W1–W5) each holding a different bead.
+	busyConns := make([]net.Conn, 5)
+	for i := 0; i < 5; i++ {
+		wid := fmt.Sprintf("busy-w%d", i+1)
+		bid := fmt.Sprintf("bead-%d", i+1)
+
+		c1, c2 := net.Pipe()
+		t.Cleanup(func() { _ = c1.Close(); _ = c2.Close() })
+		busyConns[i] = c1
+
+		d.mu.Lock()
+		d.workers[wid] = &trackedWorker{
+			id:      wid,
+			conn:    c1,
+			state:   protocol.WorkerBusy,
+			beadID:  bid,
+			encoder: json.NewEncoder(c1),
+		}
+		d.mu.Unlock()
+	}
+
+	// Inject assigningBeads["bead-scale"] to simulate that an in-flight
+	// assignment is underway — the bead has been claimed but the worker that
+	// claimed it has not yet transitioned to WorkerBusy.
+	d.mu.Lock()
+	if d.assigningBeads == nil {
+		d.assigningBeads = make(map[string]bool)
+	}
+	d.assigningBeads["bead-scale"] = true
+	d.mu.Unlock()
+
+	// Connect the new (scale-up) worker W6 — it starts idle.
+	conn6, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn6, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "scale-w6",
+			ContextPct: 5,
+		},
+	})
+
+	// Wait for W6 to be registered (total: 5 injected + 1 connected = 6).
+	waitForWorkers(t, d, 6, 1*time.Second)
+
+	// Give the assign loop time to run tryAssign with W6 idle.
+	time.Sleep(200 * time.Millisecond)
+
+	// ASSERTION 1: No assignment_race_detected event should have been logged.
+	// Before the fix, filterAssignable does NOT check assigningBeads, so
+	// tryAssign calls assignBead(W6, bead-scale), which then detects the race
+	// and logs assignment_race_detected. After the fix, filterAssignable
+	// excludes in-flight beads so assignBead is never called.
+	raceCount := eventCount(t, d.db, "assignment_race_detected")
+	if raceCount > 0 {
+		t.Errorf("assignment_race_detected logged %d time(s) — filterAssignable must exclude in-flight beads (assigningBeads)", raceCount)
+	}
+
+	// ASSERTION 2: No worktree_error event (belt-and-suspenders check).
+	wtErrCount := eventCount(t, d.db, "worktree_error")
+	if wtErrCount > 0 {
+		t.Errorf("worktree_error logged %d time(s) — bead-scale was assigned to scale-up worker despite being in-flight", wtErrCount)
+	}
+
+	// ASSERTION 3: W6 must still be idle — it must not have received an ASSIGN.
+	d.mu.Lock()
+	w6, exists := d.workers["scale-w6"]
+	var w6State protocol.WorkerState
+	if exists {
+		w6State = w6.state
+	}
+	d.mu.Unlock()
+	if !exists {
+		t.Fatal("scale-w6 not found in worker pool")
+	}
+	if w6State != protocol.WorkerIdle {
+		t.Errorf("scale-w6 state = %q, want Idle — it should not have been assigned bead-scale", w6State)
 	}
 }
