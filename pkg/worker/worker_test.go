@@ -3587,3 +3587,64 @@ func TestWatchContext_SendsPeriodicHeartbeats(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+// TestEpicDecompositionSkipsQG verifies that when IsEpicDecomposition=true,
+// the worker sends DONE with QualityGatePassed=true without running quality_gate.sh.
+func TestEpicDecompositionSkipsQG(t *testing.T) {
+	t.Parallel()
+
+	// tmpDir has no quality_gate.sh — if QG ran it would error/fail.
+	tmpDir := t.TempDir()
+
+	pr, pw := io.Pipe()
+	proc := newMockProcess()
+
+	spawner := &mockSpawner{
+		process: proc,
+		stdout:  pr,
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-epic-decomp", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:              "epic-decomp-1",
+			Worktree:            tmpDir,
+			IsEpicDecomposition: true,
+		},
+	})
+	// Drain STATUS running
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus || msg.Status.State != "running" {
+		t.Fatalf("expected STATUS running, got type=%s", msg.Type)
+	}
+
+	// Subprocess finishes (decomposition complete)
+	_, _ = pw.Write([]byte("decomposed epic into 5 beads\n"))
+	_ = pw.Close()
+	close(proc.waitCh)
+
+	// Worker should send DONE with QualityGatePassed=true directly (no QG run)
+	msg = readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgDone {
+		t.Fatalf("expected DONE, got %s", msg.Type)
+	}
+	if !msg.Done.QualityGatePassed {
+		t.Error("expected QualityGatePassed=true for epic decomposition")
+	}
+	if msg.Done.BeadID != "epic-decomp-1" {
+		t.Errorf("expected bead_id epic-decomp-1, got %s", msg.Done.BeadID)
+	}
+
+	cancel()
+	<-errCh
+}

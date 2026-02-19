@@ -101,6 +101,7 @@ type Worker struct {
 	outputWg            sync.WaitGroup // tracks processOutput goroutine completion
 	reconnectDialHook   func(net.Conn) // test hook: called after dial, before sendMessage
 	pendingQGOutput     string         // QG output stored while awaiting review result
+	isEpicDecomposition bool           // true when current assignment is an epic decomposition
 	subprocExitCh       chan struct{}  // closed when subprocess exits
 	subprocExitClosed   bool           // true if subprocExitCh has been closed
 	handleExitClaimed   bool           // true if a handler claimed subprocess exit handling
@@ -359,6 +360,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.worktree = msg.Assign.Worktree
 	w.sessionText.Reset()
 	w.pendingQGOutput = ""
+	w.isEpicDecomposition = msg.Assign.IsEpicDecomposition
 	w.mu.Unlock()
 
 	// Truncate log file for new assignment (best-effort; continue if fails)
@@ -488,6 +490,24 @@ func (w *Worker) awaitSubprocessAndReport(ctx context.Context) {
 		return
 	}
 
+	// Epic decomposition assignments skip the quality gate entirely.
+	// The subprocess only plans/decomposes; there is no code to test or lint.
+	w.mu.Lock()
+	isEpicDecomp := w.isEpicDecomposition
+	w.mu.Unlock()
+
+	if isEpicDecomp {
+		_ = w.SendDone(ctx, true, "")
+		return
+	}
+
+	w.runQGAndReport(ctx)
+}
+
+// runQGAndReport runs the quality gate script and sends DONE or READY_FOR_REVIEW
+// depending on the result. It is called by awaitSubprocessAndReport for non-epic
+// assignments after the subprocess exits.
+func (w *Worker) runQGAndReport(ctx context.Context) {
 	// Send STATUS update to indicate subprocess has exited and worker is
 	// transitioning to quality gate phase. This ensures the dispatcher knows
 	// the subprocess is no longer running.
