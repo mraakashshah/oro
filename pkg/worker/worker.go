@@ -1130,9 +1130,11 @@ func buildClaudeArgs(model, prompt string) []string {
 func buildClaudeEnv() []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "CLAUDECODE=") {
-			env = append(env, e)
+		if strings.HasPrefix(e, "CLAUDECODE=") ||
+			strings.HasPrefix(e, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES") {
+			continue
 		}
+		env = append(env, e)
 	}
 	if os.Getenv("ORO_PROJECT") != "" {
 		env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
