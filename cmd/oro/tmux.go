@@ -835,3 +835,21 @@ func (s *TmuxSession) CleanupPaneDiedHooks() error {
 
 	return nil
 }
+
+// ForwardCommandToManager forwards a command to the manager pane via tmux send-keys
+// and returns a feedback message to display to the architect.
+//
+// This implements the unified command interface: the architect window accepts all
+// commands, and non-architect commands are routed to the manager automatically.
+// Routing decisions (whether to call this function) are made by the caller using
+// RouteCommand; this method always forwards unconditionally.
+//
+// Returns the feedback string (e.g. "[forwarded to manager] oro directive scale 3")
+// and any send-keys error.
+func (s *TmuxSession) ForwardCommandToManager(command string) (string, error) {
+	managerPane := s.Name + ":manager"
+	if err := s.SendKeys(managerPane, command); err != nil {
+		return "", fmt.Errorf("forward command to manager: %w", err)
+	}
+	return FormatForwardMessage(command), nil
+}
