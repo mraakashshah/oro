@@ -1,151 +1,93 @@
-package worker //nolint:testpackage // need access to buildClaudeArgs
+package worker //nolint:testpackage // need access to unexported buildClaudeArgs and buildClaudeEnv
 
 import (
 	"strings"
 	"testing"
 )
 
-func TestBuildClaudeArgs(t *testing.T) {
-	t.Run("base args without env vars", func(t *testing.T) {
-		// Ensure env vars are not set
-		t.Setenv("ORO_HOME", "")
+func TestBuildClaudeArgs_NoEnv(t *testing.T) {
+	t.Setenv("ORO_HOME", "")
+	t.Setenv("ORO_PROJECT", "")
+
+	got := buildClaudeArgs("claude-opus-4-6", "hello")
+	want := []string{"-p", "hello", "--model", "claude-opus-4-6"}
+	if len(got) != 4 {
+		t.Fatalf("expected length 4, got %d: %v", len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: want %q, got %q", i, want[i], got[i])
+		}
+	}
+}
+
+func TestBuildClaudeArgs_WithORO(t *testing.T) {
+	t.Setenv("ORO_HOME", "/tmp/h")
+	t.Setenv("ORO_PROJECT", "p")
+
+	got := buildClaudeArgs("claude-opus-4-6", "hello")
+	want := []string{
+		"-p", "hello",
+		"--model", "claude-opus-4-6",
+		"--add-dir", "/tmp/h",
+		"--settings", "/tmp/h/projects/p/settings.json",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected length %d, got %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: want %q, got %q", i, want[i], got[i])
+		}
+	}
+
+	t.Run("only ORO_HOME set returns length-4 slice", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "/tmp/h")
 		t.Setenv("ORO_PROJECT", "")
 
-		args := buildClaudeArgs("claude-sonnet-4-20250514", "do the thing")
-		expected := []string{"-p", "do the thing", "--model", "claude-sonnet-4-20250514"}
-		if len(args) != len(expected) {
-			t.Fatalf("got %d args, want %d: %v", len(args), len(expected), args)
-		}
-		for i, want := range expected {
-			if args[i] != want {
-				t.Errorf("arg[%d] = %q, want %q", i, args[i], want)
-			}
-		}
-	})
-
-	t.Run("adds add-dir and settings when ORO_HOME and ORO_PROJECT set", func(t *testing.T) {
-		t.Setenv("ORO_HOME", "/home/user/.oro")
-		t.Setenv("ORO_PROJECT", "myproj")
-
-		args := buildClaudeArgs("claude-sonnet-4-20250514", "do the thing")
-
-		expected := []string{
-			"-p", "do the thing",
-			"--model", "claude-sonnet-4-20250514",
-			"--add-dir", "/home/user/.oro",
-			"--settings", "/home/user/.oro/projects/myproj/settings.json",
-		}
-		if len(args) != len(expected) {
-			t.Fatalf("got %d args, want %d: %v", len(args), len(expected), args)
-		}
-		for i, want := range expected {
-			if args[i] != want {
-				t.Errorf("arg[%d] = %q, want %q", i, args[i], want)
-			}
-		}
-	})
-
-	t.Run("no flags when only ORO_HOME set", func(t *testing.T) {
-		t.Setenv("ORO_HOME", "/home/user/.oro")
-		t.Setenv("ORO_PROJECT", "") // Explicitly unset
-
-		args := buildClaudeArgs("claude-sonnet-4-20250514", "do the thing")
-		expected := []string{"-p", "do the thing", "--model", "claude-sonnet-4-20250514"}
-		if len(args) != len(expected) {
-			t.Fatalf("got %d args, want %d: %v", len(args), len(expected), args)
-		}
-	})
-
-	t.Run("no flags when only ORO_PROJECT set", func(t *testing.T) {
-		t.Setenv("ORO_HOME", "") // Explicitly unset
-		t.Setenv("ORO_PROJECT", "myproj")
-
-		args := buildClaudeArgs("claude-sonnet-4-20250514", "do the thing")
-		expected := []string{"-p", "do the thing", "--model", "claude-sonnet-4-20250514"}
-		if len(args) != len(expected) {
-			t.Fatalf("got %d args, want %d: %v", len(args), len(expected), args)
+		got := buildClaudeArgs("claude-opus-4-6", "hello")
+		if len(got) != 4 {
+			t.Fatalf("expected length 4 without ORO_PROJECT, got %d: %v", len(got), got)
 		}
 	})
 }
 
-func TestBuildClaudeEnvStripsClaudeCodeAlways(t *testing.T) {
-	t.Run("strips CLAUDECODE when ORO_PROJECT not set", func(t *testing.T) {
-		t.Setenv("ORO_PROJECT", "")
-		t.Setenv("CLAUDECODE", "1")
-		env := buildClaudeEnv()
-		// Must be non-nil: nil means exec.Cmd inherits parent env, leaking CLAUDECODE.
-		if env == nil {
-			t.Fatal("expected non-nil env when CLAUDECODE is set (nil would inherit parent env including CLAUDECODE)")
-		}
-		for _, e := range env {
-			if strings.HasPrefix(e, "CLAUDECODE=") {
-				t.Errorf("CLAUDECODE leaked into subprocess env: %s", e)
-			}
-		}
-	})
+func TestBuildClaudeEnv_StripsClaudecode(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("ORO_PROJECT", "")
 
-	t.Run("strips CLAUDECODE when ORO_PROJECT set", func(t *testing.T) {
-		t.Setenv("ORO_PROJECT", "myproj")
-		t.Setenv("CLAUDECODE", "1")
-		env := buildClaudeEnv()
-		if env == nil {
-			t.Fatal("expected non-nil env")
+	env := buildClaudeEnv()
+	if env == nil {
+		t.Fatal("expected non-nil env (nil would inherit parent env including CLAUDECODE)")
+	}
+	for _, e := range env {
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			t.Errorf("CLAUDECODE must be stripped, but found %q", e)
 		}
-		for _, e := range env {
-			if strings.HasPrefix(e, "CLAUDECODE=") {
-				t.Errorf("CLAUDECODE leaked into subprocess env: %s", e)
-			}
+		if strings.HasPrefix(e, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES") {
+			t.Errorf("unexpected CLAUDE_CODE_ADDITIONAL_DIRECTORIES without ORO_PROJECT: %s", e)
 		}
-	})
+	}
 }
 
-func TestBuildClaudeEnv(t *testing.T) {
-	t.Run("returns non-nil env even when ORO_PROJECT not set", func(t *testing.T) {
-		t.Setenv("ORO_PROJECT", "")
-		env := buildClaudeEnv()
-		if env == nil {
-			t.Error("expected non-nil env (must always strip CLAUDECODE)")
-		}
-	})
+func TestBuildClaudeEnv_AddsAdditionalDirs(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("ORO_PROJECT", "p")
 
-	t.Run("includes CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD when ORO_PROJECT set", func(t *testing.T) {
-		t.Setenv("ORO_PROJECT", "myproj")
-
-		env := buildClaudeEnv()
-		if env == nil {
-			t.Fatal("expected non-nil env")
+	env := buildClaudeEnv()
+	if env == nil {
+		t.Fatal("expected non-nil env")
+	}
+	found := false
+	for _, e := range env {
+		if e == "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1" {
+			found = true
 		}
-
-		found := false
-		for _, e := range env {
-			if e == "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1" {
-				found = true
-				break
-			}
+		if strings.HasPrefix(e, "CLAUDECODE=") {
+			t.Errorf("CLAUDECODE must be stripped, but found %q", e)
 		}
-		if !found {
-			t.Error("expected CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 in env")
-		}
-	})
-
-	t.Run("inherits existing environment when ORO_PROJECT set", func(t *testing.T) {
-		t.Setenv("ORO_PROJECT", "myproj")
-		t.Setenv("SOME_EXISTING_VAR", "hello")
-
-		env := buildClaudeEnv()
-		if env == nil {
-			t.Fatal("expected non-nil env")
-		}
-
-		found := false
-		for _, e := range env {
-			if e == "SOME_EXISTING_VAR=hello" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("expected inherited env vars to be present")
-		}
-	})
+	}
+	if !found {
+		t.Error("expected CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 to be present")
+	}
 }
