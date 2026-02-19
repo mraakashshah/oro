@@ -201,3 +201,194 @@ func TestPythonProfile(t *testing.T) {
 		}
 	})
 }
+
+func TestTypeScriptProfile(t *testing.T) {
+	profile := langprofile.TypeScriptProfile()
+
+	// Validate required fields
+	if err := profile.Validate(); err != nil {
+		t.Fatalf("TypeScriptProfile validation failed: %v", err)
+	}
+
+	// Check language name
+	if profile.Language != "typescript" {
+		t.Errorf("Language = %q, want %q", profile.Language, "typescript")
+	}
+
+	// Check test command contains vitest
+	if profile.TestCmd == "" {
+		t.Error("TestCmd should not be empty")
+	}
+	if profile.TestCmd != "vitest" {
+		t.Errorf("TestCmd = %q, want %q", profile.TestCmd, "vitest")
+	}
+
+	// Check formatters include biome
+	hasBiomeFormatter := false
+	for _, tool := range profile.Formatters {
+		if tool.Name == "biome" {
+			hasBiomeFormatter = true
+			if tool.Cmd == "" {
+				t.Error("biome formatter Cmd should not be empty")
+			}
+			if tool.DetectCmd == "" {
+				t.Error("biome formatter DetectCmd should not be empty")
+			}
+			if tool.InstallHint == "" {
+				t.Error("biome formatter InstallHint should not be empty")
+			}
+		}
+	}
+	if !hasBiomeFormatter {
+		t.Error("Formatters should include biome")
+	}
+
+	// Check linters include biome
+	hasBiomeLinter := false
+	for _, tool := range profile.Linters {
+		if tool.Name == "biome" {
+			hasBiomeLinter = true
+		}
+	}
+	if !hasBiomeLinter {
+		t.Error("Linters should include biome")
+	}
+
+	// Check type checker is tsc
+	if profile.TypeCheck == nil {
+		t.Error("TypeCheck should be set for TypeScript")
+	} else {
+		if profile.TypeCheck.Name != "tsc" {
+			t.Errorf("TypeCheck.Name = %q, want %q", profile.TypeCheck.Name, "tsc")
+		}
+		if profile.TypeCheck.Cmd == "" {
+			t.Error("tsc Cmd should not be empty")
+		}
+	}
+
+	// Detect: tsconfig.json present → TypeScript
+	t.Run("Detect_WithTsconfig", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tsconfigPath := filepath.Join(tmpDir, "tsconfig.json")
+		if err := os.WriteFile(tsconfigPath, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if !profile.Detect(tmpDir) {
+			t.Error("Detect should return true when tsconfig.json exists")
+		}
+	})
+
+	// Detect: no tsconfig.json → not TypeScript
+	t.Run("Detect_WithoutTsconfig", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		if profile.Detect(tmpDir) {
+			t.Error("Detect should return false when tsconfig.json does not exist")
+		}
+	})
+
+	// Detect: package.json alone is not TypeScript
+	t.Run("Detect_PackageJsonOnly", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		packageJSONPath := filepath.Join(tmpDir, "package.json")
+		if err := os.WriteFile(packageJSONPath, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if profile.Detect(tmpDir) {
+			t.Error("Detect should return false when only package.json exists (no tsconfig.json)")
+		}
+	})
+}
+
+func TestJavaScriptProfile(t *testing.T) {
+	profile := langprofile.JavaScriptProfile()
+
+	// Validate required fields
+	if err := profile.Validate(); err != nil {
+		t.Fatalf("JavaScriptProfile validation failed: %v", err)
+	}
+
+	// Check language name
+	if profile.Language != "javascript" {
+		t.Errorf("Language = %q, want %q", profile.Language, "javascript")
+	}
+
+	// Check test command is vitest
+	if profile.TestCmd == "" {
+		t.Error("TestCmd should not be empty")
+	}
+	if profile.TestCmd != "vitest" {
+		t.Errorf("TestCmd = %q, want %q", profile.TestCmd, "vitest")
+	}
+
+	// Check formatters include biome
+	hasBiomeFormatter := false
+	for _, tool := range profile.Formatters {
+		if tool.Name == "biome" {
+			hasBiomeFormatter = true
+			if tool.Cmd == "" {
+				t.Error("biome formatter Cmd should not be empty")
+			}
+		}
+	}
+	if !hasBiomeFormatter {
+		t.Error("Formatters should include biome")
+	}
+
+	// Check linters include biome
+	hasBiomeLinter := false
+	for _, tool := range profile.Linters {
+		if tool.Name == "biome" {
+			hasBiomeLinter = true
+		}
+	}
+	if !hasBiomeLinter {
+		t.Error("Linters should include biome")
+	}
+
+	// JavaScript should NOT have a TypeScript-style type checker
+	if profile.TypeCheck != nil {
+		t.Error("TypeCheck should not be set for JavaScript (no tsc)")
+	}
+
+	// Detect: package.json without tsconfig → JavaScript
+	t.Run("Detect_PackageJsonNoTsconfig", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		packageJSONPath := filepath.Join(tmpDir, "package.json")
+		if err := os.WriteFile(packageJSONPath, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if !profile.Detect(tmpDir) {
+			t.Error("Detect should return true when package.json exists without tsconfig.json")
+		}
+	})
+
+	// Detect: package.json + tsconfig.json → not JavaScript (TypeScript takes precedence)
+	t.Run("Detect_PackageJsonWithTsconfig", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		packageJSONPath := filepath.Join(tmpDir, "package.json")
+		tsconfigPath := filepath.Join(tmpDir, "tsconfig.json")
+		if err := os.WriteFile(packageJSONPath, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(tsconfigPath, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if profile.Detect(tmpDir) {
+			t.Error("Detect should return false when tsconfig.json is present (TypeScript takes precedence)")
+		}
+	})
+
+	// Detect: no package.json → not JavaScript
+	t.Run("Detect_NoPackageJson", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		if profile.Detect(tmpDir) {
+			t.Error("Detect should return false when package.json does not exist")
+		}
+	})
+}
