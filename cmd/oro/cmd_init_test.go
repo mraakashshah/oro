@@ -591,6 +591,32 @@ func TestOroInit(t *testing.T) {
 		if _, ok := parsed["hooks"]; !ok {
 			t.Errorf("settings.json should contain hooks key, got:\n%s", content)
 		}
+		// Should have permissions section with context7 MCP tools.
+		// Workers need library/API doc lookups (same as interactive sessions).
+		perms, ok := parsed["permissions"].(map[string]any)
+		if !ok {
+			t.Fatalf("settings.json missing permissions key, got:\n%s", content)
+		}
+		allow, ok := perms["allow"].([]any)
+		if !ok {
+			t.Fatalf("settings.json permissions missing allow list, got:\n%s", content)
+		}
+		wantPerms := []string{
+			"mcp__context7__resolve-library-id",
+			"mcp__context7__query-docs",
+		}
+		for _, want := range wantPerms {
+			found := false
+			for _, got := range allow {
+				if got == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("settings.json permissions.allow missing %q, got: %v", want, allow)
+			}
+		}
 	})
 
 	t.Run("creates handoffs directory", func(t *testing.T) {
