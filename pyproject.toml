@@ -16,6 +16,7 @@ ignore = ["SIM115"]
 pythonVersion = "3.11"
 venvPath = "."
 venv = ".venv"
+extraPaths = ["assets/hooks"]
 exclude = ["references", "yap", "archive", ".worktrees", ".venv", "tests/conftest.py"]
 
 [tool.pytest.ini_options]

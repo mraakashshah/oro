@@ -2,9 +2,16 @@
 # pylint: disable=import-error
 
 import os
+import sys
 from pathlib import Path
 
 import pytest  # type: ignore[import-not-found]
+
+# Add assets/hooks/ to sys.path so hook tests can import hook modules directly.
+# This makes tests run against the git-tracked source (assets/), not the deployed ~/.oro/.
+_ASSETS_HOOKS = Path(__file__).parent.parent / "assets" / "hooks"
+if str(_ASSETS_HOOKS) not in sys.path:
+    sys.path.insert(0, str(_ASSETS_HOOKS))
 
 
 def pytest_collection_modifyitems(config, items):
