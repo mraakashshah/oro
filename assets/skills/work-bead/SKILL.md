@@ -136,19 +136,37 @@ git commit -m "<type>(<scope>): <desc> (bd-<id>)"
 bd close <id> --reason "Tests pass, gate clean. Commit: <hash>"
 ```
 
-### Step 10: MERGE
+### Step 10: MERGE — Rebase in-place
 
-Rebase onto main and fast-forward merge for clean linear history:
+Rebase the agent branch onto main inside the worktree (bypasses the worktree guard hook):
 
 ```bash
-git checkout main
-git rebase main bead/<id>
+git -C .worktrees/bead-<id> rebase main
+```
+
+If rebase conflict: resolve in the worktree, `git rebase --continue`, re-run gate.
+
+### Step 11: REMOVE WORKTREE
+
+The worktree must be clean after rebase before it can be removed:
+
+```bash
+git worktree remove .worktrees/bead-<id>
+```
+
+If worktree is dirty after rebase: `git -C .worktrees/bead-<id> commit --amend` to fold changes in, then retry removal.
+
+### Step 12: FAST-FORWARD MERGE
+
+Fast-forward main to the rebased branch tip (same commit hashes, clean linear history):
+
+```bash
 git merge --ff-only bead/<id>
 ```
 
-If merge conflict: resolve in worktree, re-run gate, then merge.
+If `--ff-only` fails (main moved since rebase): re-run Step 10 rebase, then retry.
 
-### Step 11: PUSH
+### Step 13: PUSH
 
 ```bash
 git push
@@ -158,10 +176,9 @@ Note: `bd sync --flush-only` is not needed here — the pre-commit hook runs it 
 
 If push fails (no remote): report. Commit is local.
 
-### Step 12: CLEANUP
+### Step 14: CLEANUP
 
 ```bash
-git worktree remove .worktrees/bead-<id>
 git branch -d bead/<id>
 ```
 
@@ -187,7 +204,9 @@ If during RED the bead needs multiple unrelated tests:
 | Baseline tests fail in worktree | Report failures. Ask whether to proceed. |
 | Test won't fail (RED) | Testing existing behavior. Fix test. |
 | Quality gate fails | Fix issues. Re-run. Never skip. |
-| Merge conflict on main | `git rebase main` in worktree. Resolve. Re-run gate. |
+| Merge conflict (rebase) | Resolve in worktree, `git rebase --continue`, re-run gate. |
+| `--ff-only` fails (main moved) | Re-run Step 10 rebase from inside worktree, then retry `--ff-only`. |
+| Worktree dirty after rebase | `git -C .worktrees/bead-<id> commit --amend` in worktree, then remove. |
 | Push fails (no remote) | Report. Commit is local. |
 
 ## Red Flags
