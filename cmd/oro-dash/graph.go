@@ -218,3 +218,75 @@ func formatStaleReason(days int) string {
 func formatBugPriorityReason(priority int) string {
 	return fmt.Sprintf("bug with low priority (P%d)", priority)
 }
+
+// InDegrees returns a map of beadID -> number of other beads that depend on it
+// (i.e. the in-degree in the "dependency points to prerequisite" direction).
+// This is Phase 1 computation — O(E) where E is total dependency edges.
+func (g *DependencyGraph) InDegrees() map[string]int {
+	deg := make(map[string]int, len(g.beads))
+	// Initialise every known bead at zero
+	for _, b := range g.beads {
+		deg[b.ID] = 0
+	}
+	// For every "A depends on B" edge, increment B's count
+	for _, b := range g.beads {
+		for _, dep := range b.DependsOn {
+			deg[dep]++
+		}
+	}
+	return deg
+}
+
+// TopologicalOrder returns the beads in topological order (prerequisites first).
+// Uses Kahn's algorithm which runs in O(V+E).
+// Returns ErrCircularDependency if a cycle is detected.
+// This is Phase 1 computation.
+func (g *DependencyGraph) TopologicalOrder() ([]string, error) {
+	if len(g.beads) == 0 {
+		return []string{}, nil
+	}
+
+	// prereqCount[id] = number of prerequisites bead id must wait for.
+	// A bead with prereqCount == 0 can be scheduled immediately.
+	prereqCount := make(map[string]int, len(g.beads))
+	for _, b := range g.beads {
+		prereqCount[b.ID] = len(b.DependsOn)
+	}
+
+	// successors[B] = list of beads that list B as a prerequisite.
+	// When B is scheduled, we decrement each successor's prereqCount.
+	successors := make(map[string][]string, len(g.beads))
+	for _, b := range g.beads {
+		for _, dep := range b.DependsOn {
+			successors[dep] = append(successors[dep], b.ID)
+		}
+	}
+
+	// Seed the queue with nodes that have no prerequisites.
+	queue := make([]string, 0, len(g.beads))
+	for _, b := range g.beads {
+		if prereqCount[b.ID] == 0 {
+			queue = append(queue, b.ID)
+		}
+	}
+
+	order := make([]string, 0, len(g.beads))
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		order = append(order, node)
+
+		for _, succ := range successors[node] {
+			prereqCount[succ]--
+			if prereqCount[succ] == 0 {
+				queue = append(queue, succ)
+			}
+		}
+	}
+
+	if len(order) != len(g.beads) {
+		return nil, ErrCircularDependency
+	}
+
+	return order, nil
+}

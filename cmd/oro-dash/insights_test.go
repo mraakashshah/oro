@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInsightsModel_CriticalPath(t *testing.T) {
@@ -295,6 +296,8 @@ func TestInsightsView_Render(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			model := NewInsightsModel(tt.beads)
+			// Wait for phase 2 so render output includes critical path, bottlenecks, cycles.
+			waitForPhase2(t, model)
 			theme := DefaultTheme()
 			styles := NewStyles(theme)
 			output := model.Render(styles)
@@ -306,6 +309,19 @@ func TestInsightsView_Render(t *testing.T) {
 			}
 		})
 	}
+}
+
+// waitForPhase2 blocks until InsightsModel.Phase2() is non-nil or 600ms elapses.
+func waitForPhase2(t *testing.T, m *InsightsModel) {
+	t.Helper()
+	deadline := time.Now().Add(600 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if m.Phase2() != nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Don't fatal — let the test continue and report its own assertion failure.
 }
 
 // containsIgnoringANSI checks if output contains the substring, ignoring ANSI codes
