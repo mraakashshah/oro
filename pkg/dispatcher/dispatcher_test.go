@@ -85,6 +85,8 @@ type mockBeadSource struct {
 	readyErr             error           // if set, Ready() returns this error
 	allChildrenClosedMap map[string]bool // epicID -> allClosed
 	allChildrenClosedErr error           // if set, AllChildrenClosed() returns this error
+	hasChildrenMap       map[string]bool // epicID -> hasChildren
+	hasChildrenErr       error           // if set, HasChildren() returns this error
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -158,6 +160,20 @@ func (m *mockBeadSource) AllChildrenClosed(_ context.Context, epicID string) (bo
 		}
 	}
 	// Default: return false (epic has open children or is not an epic)
+	return false, nil
+}
+
+func (m *mockBeadSource) HasChildren(_ context.Context, epicID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.hasChildrenErr != nil {
+		return false, m.hasChildrenErr
+	}
+	if m.hasChildrenMap != nil {
+		if result, ok := m.hasChildrenMap[epicID]; ok {
+			return result, nil
+		}
+	}
 	return false, nil
 }
 

@@ -47,6 +47,10 @@ func (m *mockBeadSource) Update(_ context.Context, _ string, status string) erro
 func (m *mockBeadSource) AllChildrenClosed(_ context.Context, _ string) (bool, error) {
 	return true, nil
 }
+
+func (m *mockBeadSource) HasChildren(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 func (m *mockBeadSource) Sync(_ context.Context) error { return nil }
 
 // mockWorktreeManager records Create/Remove calls.

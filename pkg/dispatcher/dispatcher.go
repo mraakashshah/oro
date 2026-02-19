@@ -63,6 +63,7 @@ type BeadSource interface {
 	Update(ctx context.Context, id, status string) error
 	Sync(ctx context.Context) error
 	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
+	HasChildren(ctx context.Context, epicID string) (bool, error)
 }
 
 // WorktreeManager creates and removes git worktrees.

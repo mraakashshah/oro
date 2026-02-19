@@ -64,6 +64,10 @@ func (m *mockBeadSource) AllChildrenClosed(_ context.Context, _ string) (bool, e
 	return false, nil
 }
 
+func (m *mockBeadSource) HasChildren(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
