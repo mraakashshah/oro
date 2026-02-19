@@ -83,7 +83,7 @@ func TestStatusCmd_RunningWithDispatcherInfo(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	statusJSON := `{"state":"running","worker_count":3,"queue_depth":2,"assignments":{"worker-1":"oro-abc","worker-2":"oro-def"},"focused_epic":"epic-42"}`
+	statusJSON := `{"state":"running","worker_count":3,"queue_depth":2,"assignments":{"worker-1":"oro-abc","worker-2":"oro-def"},"focused_epic":"epic-42","workers":[{"id":"worker-1","state":"busy","bead_id":"oro-abc","last_progress_secs":10},{"id":"worker-2","state":"busy","bead_id":"oro-def","last_progress_secs":5},{"id":"worker-3","state":"idle","bead_id":"","last_progress_secs":0}],"active_count":2,"idle_count":1,"target_count":3,"progress_timeout_secs":600}`
 
 	ready := make(chan struct{})
 	go runMockStatusDispatcher(ctx, t, sockPath, statusJSON, ready)
@@ -116,12 +116,18 @@ func TestStatusCmd_RunningWithDispatcherInfo(t *testing.T) {
 		t.Errorf("output should contain state 'running', got: %q", got)
 	}
 
-	// Should show worker count.
-	if !strings.Contains(got, "3") {
-		t.Errorf("output should contain worker count '3', got: %q", got)
+	// Should show enriched worker count.
+	if !strings.Contains(got, "2 active") {
+		t.Errorf("output should contain '2 active', got: %q", got)
+	}
+	if !strings.Contains(got, "target: 3") {
+		t.Errorf("output should contain 'target: 3', got: %q", got)
 	}
 
-	// Should show assignments.
+	// Should show in_progress beads with assignments.
+	if !strings.Contains(got, "in_progress beads:") {
+		t.Errorf("output should contain 'in_progress beads:', got: %q", got)
+	}
 	if !strings.Contains(got, "oro-abc") {
 		t.Errorf("output should contain bead assignment 'oro-abc', got: %q", got)
 	}
@@ -231,29 +237,67 @@ func TestFormatStatusResponse(t *testing.T) {
 				Assignments: map[string]string{
 					"worker-1": "oro-abc",
 				},
-				FocusedEpic: "epic-42",
+				FocusedEpic:         "epic-42",
+				ActiveCount:         2,
+				IdleCount:           1,
+				TargetCount:         3,
+				ProgressTimeoutSecs: 600,
 			},
 			checks: []string{
 				"state:       running",
-				"workers:     3",
+				"workers:     2 active",
 				"queue:       2 ready",
 				"focus:       epic-42",
-				"worker-1",
-				"oro-abc",
 			},
 		},
 		{
 			name: "no assignments no focus",
 			resp: statusResponse{
-				State:       "paused",
-				WorkerCount: 1,
-				QueueDepth:  0,
-				Assignments: map[string]string{},
+				State:               "paused",
+				WorkerCount:         1,
+				QueueDepth:          0,
+				Assignments:         map[string]string{},
+				ActiveCount:         1,
+				IdleCount:           0,
+				TargetCount:         1,
+				ProgressTimeoutSecs: 600,
 			},
 			checks: []string{
 				"state:       paused",
-				"workers:     1",
+				"workers:     1 active",
 				"queue:       0 ready",
+			},
+		},
+		{
+			name: "zero workers shows 0 active",
+			resp: statusResponse{
+				State:               "running",
+				WorkerCount:         0,
+				QueueDepth:          3,
+				ProgressTimeoutSecs: 600,
+			},
+			checks: []string{
+				"workers:     0 active",
+				"in_progress beads: none",
+			},
+		},
+		{
+			name: "workers present but none busy shows in_progress none",
+			resp: statusResponse{
+				State:       "running",
+				WorkerCount: 2,
+				QueueDepth:  1,
+				Workers: []workerStatus{
+					{ID: "worker-1", State: "idle"},
+					{ID: "worker-2", State: "idle"},
+				},
+				IdleCount:           2,
+				TargetCount:         2,
+				ProgressTimeoutSecs: 600,
+			},
+			checks: []string{
+				"workers:     0 active",
+				"in_progress beads: none",
 			},
 		},
 	}
@@ -377,6 +421,11 @@ func TestFormatStatusResponse_DefaultWithAlerts(t *testing.T) {
 	// Should show queue depth
 	if !strings.Contains(got, "5") {
 		t.Errorf("expected queue depth '5', got:\n%s", got)
+	}
+
+	// Should use "in_progress beads:" label (not "active beads:")
+	if !strings.Contains(got, "in_progress beads:") {
+		t.Errorf("expected 'in_progress beads:' section header, got:\n%s", got)
 	}
 }
 
