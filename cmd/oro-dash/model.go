@@ -87,6 +87,8 @@ const (
 	HealthView
 	// WorkersView shows the workers table.
 	WorkersView
+	// TreeView shows the hierarchical all-beads tree view.
+	TreeView
 )
 
 // Model is the Bubble Tea model for the oro dashboard.
@@ -123,6 +125,9 @@ type Model struct {
 	searchQuery         string          // Current search query (deprecated, use searchInput.Value())
 	searchSelectedIndex int             // Index of the selected search result
 	searchModel         *SearchModel
+
+	// Tree view state
+	treeModel TreeModel
 
 	// Pre-computed styles to avoid allocations during rendering
 	theme  Theme
@@ -289,6 +294,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleHealthViewKeys(key)
 	case WorkersView:
 		return m.handleWorkersViewKeys(key)
+	case TreeView:
+		return m.handleTreeViewKeys(key)
 	default: // BoardView
 		return m.handleBoardViewKeys(key)
 	}
@@ -368,6 +375,9 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.searchSelectedIndex = 0
 	case "w":
 		m.activeView = WorkersView
+	case "a":
+		m.treeModel = NewTreeModel(m.beads)
+		m.activeView = TreeView
 	}
 	return m, cmd
 }
@@ -490,6 +500,8 @@ func (m Model) View() string {
 	case WorkersView:
 		workersTable := NewWorkersTableModel(m.workers, m.assignments)
 		return workersTable.View(m.theme, m.styles) + "\n" + statusBar
+	case TreeView:
+		return m.treeModel.View(m.theme, m.styles) + "\n" + statusBar
 	default:
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 		colWidth := m.calculateColumnWidth()
@@ -580,6 +592,8 @@ func helpHintsForView(view ViewType, width int) string {
 		return "esc back  ? help  q quit"
 	case WorkersView:
 		return "esc back  ? help  q quit"
+	case TreeView:
+		return "j/k navigate  space expand/collapse  esc back  ? help  q quit"
 	default:
 		return "? help  q quit"
 	}
