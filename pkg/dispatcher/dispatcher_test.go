@@ -5827,7 +5827,11 @@ func TestTryAssignSkipsEpics(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Provide both an epic and a leaf task — only the task should be assigned.
+	// Epic with open children — should be skipped; only the task should be assigned.
+	beadSrc.mu.Lock()
+	beadSrc.hasChildrenMap = map[string]bool{"epic-1": true}
+	beadSrc.allChildrenClosedMap = map[string]bool{"epic-1": false}
+	beadSrc.mu.Unlock()
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "epic-1", Title: "Epic: big feature", Priority: 0, Type: "epic"},
 		{ID: "task-1", Title: "Implement thing", Priority: 1, Type: "task"},
@@ -9901,4 +9905,160 @@ func TestAssignBead_EmptyBeadIDReturnsError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAssignEpicDecomposition verifies that epics without children are routed
+// to decomposition workers with IsEpicDecomposition=true and opus model,
+// epics with open children are skipped, and handleDone for epic decomp
+// skips merge/close.
+func TestAssignEpicDecomposition(t *testing.T) {
+	t.Run("epic with no children assigned for decomposition", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		beadSrc.mu.Lock()
+		beadSrc.hasChildrenMap = map[string]bool{"oro-epic1": false}
+		beadSrc.shown["oro-epic1"] = &protocol.BeadDetail{
+			Title:              "Epic: Add feature",
+			AcceptanceCriteria: "Decompose into subtasks",
+		}
+		beadSrc.mu.Unlock()
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{
+			ID:    "oro-epic1",
+			Title: "Epic: Add feature",
+			Type:  "epic",
+		}})
+
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected ASSIGN for epic decomposition")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN, got %s", msg.Type)
+		}
+		if !msg.Assign.IsEpicDecomposition {
+			t.Error("IsEpicDecomposition: got false, want true")
+		}
+		if msg.Assign.Model != protocol.ModelOpus {
+			t.Errorf("Model: got %q, want %q", msg.Assign.Model, protocol.ModelOpus)
+		}
+	})
+
+	t.Run("epic with open children skipped", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		beadSrc.mu.Lock()
+		beadSrc.hasChildrenMap = map[string]bool{"oro-epic2": true}
+		beadSrc.allChildrenClosedMap = map[string]bool{"oro-epic2": false}
+		beadSrc.shown["oro-epic2"] = &protocol.BeadDetail{
+			Title:              "Epic: Existing",
+			AcceptanceCriteria: "Some AC",
+		}
+		beadSrc.mu.Unlock()
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{
+			ID:    "oro-epic2",
+			Title: "Epic: Existing",
+			Type:  "epic",
+		}})
+
+		_, ok := readMsg(t, conn, 500*time.Millisecond)
+		if ok {
+			t.Fatal("epic with open children should not be assigned")
+		}
+	})
+
+	t.Run("handleDone for epic skips merge and close", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, gitRunner, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		beadSrc.mu.Lock()
+		beadSrc.hasChildrenMap = map[string]bool{"oro-epic3": false}
+		beadSrc.shown["oro-epic3"] = &protocol.BeadDetail{
+			Title:              "Epic: decompose me",
+			AcceptanceCriteria: "Decompose into subtasks",
+		}
+		beadSrc.mu.Unlock()
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{
+			ID:    "oro-epic3",
+			Title: "Epic: decompose me",
+			Type:  "epic",
+		}})
+
+		_, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected ASSIGN for epic decomposition")
+		}
+		beadSrc.SetBeads(nil)
+
+		// Send DONE (quality gate passed)
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgDone,
+			Done: &protocol.DonePayload{BeadID: "oro-epic3", WorkerID: "w1", QualityGatePassed: true},
+		})
+
+		// Worker should return to idle (no merge goroutine to wait for)
+		waitForWorkerState(t, d, "w1", protocol.WorkerIdle, 2*time.Second)
+
+		// No git rebase should have been attempted
+		if calls := gitRunner.RebaseCalls(); len(calls) > 0 {
+			t.Errorf("expected no git rebase for epic decomp, got %d calls: %v", len(calls), calls)
+		}
+
+		// Epic bead should NOT be closed by the dispatcher
+		beadSrc.mu.Lock()
+		closedCopy := make([]string, len(beadSrc.closed))
+		copy(closedCopy, beadSrc.closed)
+		beadSrc.mu.Unlock()
+		for _, id := range closedCopy {
+			if id == "oro-epic3" {
+				t.Error("epic should not be closed on decomp done; expected no beads.Close call")
+			}
+		}
+
+		// Worktree should be removed as cleanup
+		waitFor(t, func() bool {
+			wtMgr.mu.Lock()
+			defer wtMgr.mu.Unlock()
+			for _, p := range wtMgr.removed {
+				if strings.Contains(p, "oro-epic3") {
+					return true
+				}
+			}
+			return false
+		}, 1*time.Second)
+	})
 }
