@@ -95,7 +95,27 @@ func isDetached(flag bool) bool {
 // 3. Create tmux session with both beacons
 // 4. Print status
 // 5. Attach interactively (or print instructions if detached)
-func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
+// waitForSocket polls sockPath until it appears or socketTimeout elapses.
+// It manages the spinner on the startup log.
+func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration) error {
+	socketSpinner := log.StartSpinner("Waiting for dispatcher socket...")
+	deadline := time.Now().Add(socketTimeout)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(sockPath); statErr == nil {
+			break
+		}
+		time.Sleep(socketPollInterval)
+	}
+	if _, err := os.Stat(sockPath); err != nil {
+		socketSpinner()
+		return fmt.Errorf("dispatcher socket not ready at %s: %w", sockPath, err)
+	}
+	socketSpinner()
+	log.Step("Dispatcher socket ready")
+	return nil
+}
+
+func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, killFn func(int) error, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
 	// Initialize startup logger (TTY detection for spinner vs static output)
 	isTTY := isatty.IsTerminal(os.Stdout.Fd())
 	log := newStartupLog(w, isTTY)
@@ -118,20 +138,9 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 	log.Step(fmt.Sprintf("Daemon started (PID %d)", pid))
 
 	// 2. Wait for the dispatcher socket to appear.
-	socketSpinner := log.StartSpinner("Waiting for dispatcher socket...")
-	deadline := time.Now().Add(socketTimeout)
-	for time.Now().Before(deadline) {
-		if _, statErr := os.Stat(sockPath); statErr == nil {
-			break
-		}
-		time.Sleep(socketPollInterval)
+	if err := pollForSocket(log, sockPath, socketTimeout); err != nil {
+		return err
 	}
-	if _, err := os.Stat(sockPath); err != nil {
-		socketSpinner()
-		return fmt.Errorf("dispatcher socket not ready at %s: %w", sockPath, err)
-	}
-	socketSpinner()
-	log.Step("Dispatcher socket ready")
 
 	// 2b. Send start directive so dispatcher transitions from Inert to Running.
 	if err := sendStartDirective(sockPath); err != nil {
@@ -141,6 +150,12 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 	// 3. Create tmux session with short nudges (full role context injected by SessionStart hook).
 	sess := &TmuxSession{Name: "oro", Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
 	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
+		// Best-effort cleanup: kill the orphaned daemon so the user does not
+		// need to run `oro stop` manually. Swallow killFn errors (daemon may
+		// already be gone) and log a warning.
+		if killErr := killFn(pid); killErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to kill orphaned daemon (PID %d): %v\n", pid, killErr)
+		}
 		return fmt.Errorf("create tmux session: %w", err)
 	}
 
@@ -251,7 +266,9 @@ func newStartCmd() *cobra.Command {
 				return fmt.Errorf("set ORO_HOME: %w", err)
 			}
 
-			return runFullStart(cmd.OutOrStdout(), workers, model, project, &ExecDaemonSpawner{}, &ExecRunner{}, socketPollTimeout, nil, 0, isDetached(detach))
+			return runFullStart(cmd.OutOrStdout(), workers, model, project, &ExecDaemonSpawner{}, &ExecRunner{},
+				func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
+				socketPollTimeout, nil, 0, isDetached(detach))
 		},
 	}
 
