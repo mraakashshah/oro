@@ -2504,9 +2504,12 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 	if t := parseEscalationType(msg); t != "" {
 		escType = t
 	}
-	_, _ = d.db.ExecContext(ctx,
+	var escalationID int64
+	if res, err := d.db.ExecContext(ctx,
 		`INSERT INTO escalations (type, bead_id, worker_id, message) VALUES (?, ?, ?, ?)`,
-		escType, beadID, workerID, msg)
+		escType, beadID, workerID, msg); err == nil {
+		escalationID, _ = res.LastInsertId()
+	}
 
 	if err := d.escalator.Escalate(ctx, msg); err != nil {
 		_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
@@ -2516,7 +2519,7 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 	// Spawn one-shot manager agent for actionable escalation types.
 	if d.ops != nil {
 		if escType != "" {
-			d.spawnEscalationOneShot(ctx, escType, beadID, workerID, msg)
+			d.spawnEscalationOneShot(ctx, escalationID, escType, beadID, workerID, msg)
 		}
 	}
 }
@@ -2731,7 +2734,7 @@ func parseEscalationType(msg string) string {
 
 // spawnEscalationOneShot launches a one-shot claude -p process to handle
 // the escalation. The result is logged asynchronously.
-func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escType, beadID, workerID, msg string) {
+func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID int64, escType, beadID, workerID, msg string) {
 	// Look up bead details for context (best-effort).
 	var beadTitle, beadContext string
 	if beadID != "" {
@@ -2751,14 +2754,14 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escType, beadID
 	})
 
 	d.safeGo(func() {
-		d.handleEscalationResult(ctx, escType, beadID, workerID, resultCh)
+		d.handleEscalationResult(ctx, escalationID, escType, beadID, workerID, resultCh)
 	})
 }
 
 // handleEscalationResult logs the one-shot escalation agent's outcome.
 // If the one-shot fails (timeout, error, or non-zero exit), it escalates
 // to the persistent manager for manual intervention.
-func (d *Dispatcher) handleEscalationResult(ctx context.Context, escType, beadID, workerID string, resultCh <-chan ops.Result) {
+func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID int64, escType, beadID, workerID string, resultCh <-chan ops.Result) {
 	result := <-resultCh
 	if result.Err != nil {
 		_ = d.logEvent(ctx, "oneshot_escalation_failed", "ops", beadID, workerID,
@@ -2775,6 +2778,21 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escType, beadID
 	}
 	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
 		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
+
+	// Ack the escalation in the persistent queue so the retry loop doesn't re-deliver it.
+	if escalationID > 0 {
+		res, err := d.db.ExecContext(ctx,
+			`UPDATE escalations SET status='acked', acked_at=datetime('now') WHERE id=? AND status='pending'`,
+			escalationID)
+		if err != nil {
+			_ = d.logEvent(ctx, "escalation_ack_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"escalation_id":%d,"error":%q}`, escalationID, err.Error()))
+		} else {
+			n, _ := res.RowsAffected()
+			_ = d.logEvent(ctx, "escalation_acked", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"escalation_id":%d,"rows_affected":%d}`, escalationID, n))
+		}
+	}
 }
 
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) error {

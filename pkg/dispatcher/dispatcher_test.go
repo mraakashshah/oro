@@ -1623,6 +1623,50 @@ func TestOneShotTimeoutEscalatesToPersistentManager(t *testing.T) {
 	}
 }
 
+func TestOneShotResolutionAcksEscalationInDB(t *testing.T) {
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-ack"] = &protocol.BeadDetail{
+		ID:          "bead-ack",
+		Title:       "Ack test bead",
+		Description: "Testing one-shot acks escalation in DB",
+	}
+	beadSrc.mu.Unlock()
+
+	// Simulate successful one-shot resolution.
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "ACK: resolved"
+	spawnMock.spawnErr = nil
+	spawnMock.mu.Unlock()
+
+	ctx := context.Background()
+
+	// Trigger escalation — this persists a row and spawns one-shot.
+	msg := protocol.FormatEscalation(protocol.EscStuckWorker, "bead-ack", "worker stalled", "no progress")
+	d.escalate(ctx, msg, "bead-ack", "w1")
+
+	// Wait for the async one-shot goroutine to complete and ack the escalation.
+	waitFor(t, func() bool {
+		var status string
+		err := d.db.QueryRowContext(ctx,
+			`SELECT status FROM escalations WHERE bead_id = ? ORDER BY id DESC LIMIT 1`,
+			"bead-ack").Scan(&status)
+		return err == nil && status == "acked"
+	}, 2*time.Second)
+
+	// Confirm the escalation row is acked.
+	var status string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT status FROM escalations WHERE bead_id = ? ORDER BY id DESC LIMIT 1`,
+		"bead-ack").Scan(&status); err != nil {
+		t.Fatalf("query escalation status: %v", err)
+	}
+	if status != "acked" {
+		t.Fatalf("expected escalation status 'acked', got %q", status)
+	}
+}
+
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
