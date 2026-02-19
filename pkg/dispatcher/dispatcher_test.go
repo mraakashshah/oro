@@ -1442,9 +1442,9 @@ func TestDispatcher_PauseDirective(t *testing.T) {
 
 func TestDispatcher_Escalation(t *testing.T) {
 	d, beadSrc, _, esc, gitRunner, _ := newTestDispatcher(t)
-	// Configure git to fail on cherry-pick (non-conflict failure)
+	// Configure git to fail on ff-only merge (non-conflict failure)
 	gitRunner.mu.Lock()
-	gitRunner.failOn = "cherry-pick"
+	gitRunner.failOn = "--ff-only"
 	gitRunner.mu.Unlock()
 
 	startDispatcher(t, d)
