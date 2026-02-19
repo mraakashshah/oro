@@ -1,0 +1,6 @@
+Worker ID            Status          Assigned Bead        Health     Context   
+────────────────────────────────────────────────────────────────────────────────
+worker-green         busy            oro-w.1              ●          20%       
+worker-amber         busy            oro-w.2              ●          55%       
+worker-red           stale           oro-w.3              ●          90%       
+worker-idle          idle            -                    ●          -         

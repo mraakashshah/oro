@@ -1,0 +1,12 @@
+Critical Path
+  oro-ins.3 → oro-ins.2 → oro-ins.1
+
+Bottlenecks
+  oro-ins.2: 1
+  oro-ins.3: 1
+
+Cycles
+  None
+
+Triage Flags
+  No data

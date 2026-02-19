@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // BeadWithDeps represents a bead with its dependency information.
 type BeadWithDeps struct {
@@ -164,6 +167,10 @@ func (g *DependencyGraph) Bottlenecks() []Bottleneck {
 			})
 		}
 	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].BeadID < result[j].BeadID
+	})
 
 	return result
 }
