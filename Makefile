@@ -1,4 +1,4 @@
-.PHONY: build build-dash build-search-hook install install-git-hooks test lint fmt vet gate clean stage-assets clean-assets dev-sync
+.PHONY: build build-dash build-search-hook install install-git-hooks test lint fmt vet gate clean stage-assets clean-assets dev-sync mutate-py mutate-py-full
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -98,6 +98,22 @@ gate: stage-assets
 
 clean: clean-assets
 	rm -f oro coverage.out
+
+# mutate-py runs mutation testing on prompt_injection_guard.py (fast, ~23 mutations).
+# Uses cosmic-ray.toml. Fails if survival rate exceeds 50%.
+mutate-py:
+	uv run cosmic-ray init cosmic-ray.toml /tmp/cr-session.sqlite --force
+	uv run cosmic-ray exec cosmic-ray.toml /tmp/cr-session.sqlite
+	uv run cr-report /tmp/cr-session.sqlite
+	uv run cr-rate /tmp/cr-session.sqlite --fail-over 50
+
+# mutate-py-full runs mutation testing across all Python hooks (may take several minutes).
+# Uses cosmic-ray-full.toml.
+mutate-py-full:
+	uv run cosmic-ray init cosmic-ray-full.toml /tmp/cr-full-session.sqlite --force
+	uv run cosmic-ray exec cosmic-ray-full.toml /tmp/cr-full-session.sqlite
+	uv run cr-report /tmp/cr-full-session.sqlite
+	uv run cr-rate /tmp/cr-full-session.sqlite --fail-over 50
 
 # install-git-hooks symlinks the canonical git hooks from git/hooks/ into .git/hooks/.
 # Run once after cloning: make install-git-hooks

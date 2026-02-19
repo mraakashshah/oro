@@ -237,6 +237,20 @@ if $HAS_PYTHON; then
         check "pytest" "uv run pytest"
     fi
 
+    header "PYTHON TIER 5: MUTATION TESTING"
+    if [ -f "cosmic-ray.toml" ] && command -v uv >/dev/null 2>&1; then
+        CR_SESSION="/tmp/cr-qg-$$.sqlite"
+        # shellcheck disable=SC2317,SC2329
+        run_mutation_test() {
+            uv run cosmic-ray init cosmic-ray.toml "$CR_SESSION" --force 2>&1 && \
+            uv run cosmic-ray exec cosmic-ray.toml "$CR_SESSION" 2>&1 && \
+            uv run cr-report "$CR_SESSION" 2>&1 && \
+            uv run cr-rate "$CR_SESSION" --fail-over 50 2>&1
+        }
+        check "cosmic-ray" "run_mutation_test"
+        rm -f "$CR_SESSION"
+    fi
+
 fi
 
 # =============================================================================

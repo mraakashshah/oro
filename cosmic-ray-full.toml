@@ -1,0 +1,12 @@
+# Cosmic Ray — Full Mutation Testing Configuration
+# Targets all Python hooks in assets/hooks/ — can take several minutes.
+# Used by: make mutate-py
+
+[cosmic-ray]
+module-path = "assets/hooks"
+timeout = 30.0
+excluded-modules = []
+test-command = "uv run pytest tests/ -x --tb=no -q 2>/dev/null"
+
+[cosmic-ray.distributor]
+name = "local"

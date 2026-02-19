@@ -1,0 +1,14 @@
+# Cosmic Ray — Mutation Testing Configuration
+# https://cosmic-ray.readthedocs.io/
+#
+# QG check targets prompt_injection_guard.py (fast: ~13 tests, ~98 lines).
+# For a full run across all hooks: make mutate-py-full
+
+[cosmic-ray]
+module-path = "assets/hooks/prompt_injection_guard.py"
+timeout = 30.0
+excluded-modules = []
+test-command = "uv run pytest tests/test_prompt_injection_guard.py -x --tb=no -q"
+
+[cosmic-ray.distributor]
+name = "local"
