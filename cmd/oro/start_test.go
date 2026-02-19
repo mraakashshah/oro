@@ -71,7 +71,7 @@ func TestRunFullStart_Detached(t *testing.T) {
 		tmuxRunner := &mockCmdRunner{}
 
 		var buf bytes.Buffer
-		err = runFullStart(&buf, 2, "sonnet", "", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond, true)
+		err = runFullStart(&buf, 2, "sonnet", "", spawner, tmuxRunner, func(int) error { return nil }, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond, true)
 		// With detach=true, should return nil (no attach attempt).
 		if err != nil {
 			t.Fatalf("runFullStart with detach=true should succeed, got: %v", err)
@@ -116,7 +116,7 @@ func TestRunFullStart_Detached(t *testing.T) {
 		tmuxRunner := &mockCmdRunner{}
 
 		var buf bytes.Buffer
-		err = runFullStart(&buf, 2, "sonnet", "", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond, true)
+		err = runFullStart(&buf, 2, "sonnet", "", spawner, tmuxRunner, func(int) error { return nil }, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -399,7 +399,7 @@ func TestStartSendsDirective(t *testing.T) {
 	tmuxRunner := &mockCmdRunner{}
 
 	var buf bytes.Buffer
-	err = runFullStart(&buf, 2, "sonnet", "", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond, false)
+	err = runFullStart(&buf, 2, "sonnet", "", spawner, tmuxRunner, func(int) error { return nil }, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond, false)
 	// We expect an error because AttachInteractive tries to attach to a real tmux session.
 	if err == nil {
 		t.Fatal("expected error when AttachInteractive tries to attach to nonexistent session")
@@ -481,7 +481,7 @@ func TestRunFullStartAttachesSession(t *testing.T) {
 	// Note: This will attempt to call AttachInteractive which tries to connect
 	// to a real tmux session "oro". Since there's no real tmux in the test env,
 	// this will fail. We're verifying the code path leads to attach being called.
-	err = runFullStart(&buf, 2, "sonnet", "", spawner, tmuxRunner, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond, false)
+	err = runFullStart(&buf, 2, "sonnet", "", spawner, tmuxRunner, func(int) error { return nil }, 2*time.Second, func(time.Duration) {}, 50*time.Millisecond, false)
 
 	// We expect an error because AttachInteractive will fail (no tmux session).
 	if err == nil {
