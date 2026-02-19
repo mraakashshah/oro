@@ -383,13 +383,13 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}
-	wireDependencies(d, sockPath)
+	wireDependencies(d, sockPath, paths.OroHome)
 	return d, db, nil
 }
 
 // wireDependencies attaches process manager to the dispatcher.
-func wireDependencies(d *dispatcher.Dispatcher, sockPath string) {
-	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath))
+func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string) {
+	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath, oroHome))
 }
 
 // readProjectConfig reads the project name from .oro/config.yaml in the given directory.

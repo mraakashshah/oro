@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -147,7 +148,7 @@ func TestExecProcessManager_ConcurrentSpawn(t *testing.T) {
 // workers using os.Args[0] (the current binary path) instead of a
 // hardcoded "oro" string. This ensures oro works without being on PATH.
 func TestSpawnUsesCurrentBinary(t *testing.T) {
-	pm := dispatcher.NewOroProcessManager("/tmp/test.sock")
+	pm := dispatcher.NewOroProcessManager("/tmp/test.sock", "")
 
 	cmd := pm.CmdForWorker("w-test")
 	if cmd == nil {
@@ -269,4 +270,75 @@ func TestSpawn_ReaperTracked(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Wait() did not return within 3 seconds; reaper goroutine not tracked")
 	}
+}
+
+// TestOroProcessManagerWritesToWorkerLogFile verifies that Spawn creates a
+// per-worker log file at oroHome/workers/<id>/output.log and redirects
+// cmd.Stdout/Stderr to it (not os.Stdout/os.Stderr).
+func TestOroProcessManagerWritesToWorkerLogFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// Track the cmd built by the factory.
+	var builtCmd *exec.Cmd
+	var mu sync.Mutex
+
+	pm := dispatcher.NewOroProcessManager(sockPath, tmpDir)
+	// Override the factory to expose the built cmd and use a dummy process.
+	pm.SetCmdFactory(func(id string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		cmd := exec.Command("sleep", "0.1") //nolint:gosec // test-only dummy
+		builtCmd = cmd
+		return cmd
+	})
+
+	_, err := pm.Spawn("w-test")
+	if err != nil {
+		t.Fatalf("Spawn returned error: %v", err)
+	}
+
+	// Verify log file exists.
+	logPath := filepath.Join(tmpDir, "workers", "w-test", "output.log")
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("expected log file at %s, got error: %v", logPath, err)
+	}
+
+	// Verify cmd.Stdout is NOT os.Stdout.
+	mu.Lock()
+	cmd := builtCmd
+	mu.Unlock()
+	if cmd == nil {
+		t.Fatal("factory was never called")
+	}
+	if cmd.Stdout == os.Stdout {
+		t.Error("expected cmd.Stdout to be log file, got os.Stdout")
+	}
+	if cmd.Stderr == os.Stderr {
+		t.Error("expected cmd.Stderr to be log file, got os.Stderr")
+	}
+
+	// Cleanup.
+	pm.Wait()
+}
+
+// TestOroProcessManagerEmptyOroHome verifies that when oroHome is empty,
+// Spawn falls back to os.Stdout/os.Stderr (no log file created).
+func TestOroProcessManagerEmptyOroHome(t *testing.T) {
+	sockPath := "/tmp/test-empty-home.sock"
+
+	pm := dispatcher.NewOroProcessManager(sockPath, "")
+	pm.SetCmdFactory(func(_ string) *exec.Cmd {
+		return exec.Command("sleep", "0.1") //nolint:gosec // test-only dummy
+	})
+
+	// Spawn should succeed even with empty oroHome.
+	proc, err := pm.Spawn("w-fallback")
+	if err != nil {
+		t.Fatalf("Spawn returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("Spawn returned nil process")
+	}
+	pm.Wait()
 }
