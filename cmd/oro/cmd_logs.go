@@ -432,7 +432,7 @@ func readNewLogContent(w io.Writer, logPath string, lastSize, currentSize int64)
 	}
 
 	if n > 0 {
-		fmt.Fprint(w, string(newContent[:n]))
+		fmt.Fprint(w, string(newContent[:n])) //nolint:gosec // G705: writing log bytes to CLI writer, not an HTTP response
 	}
 
 	return n, nil
