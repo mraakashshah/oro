@@ -615,3 +615,90 @@ func TestEscalation_ComplexPayload(t *testing.T) {
 		}
 	}
 }
+
+// TestEscalator_ConcurrentEscalations is the acceptance test for oro-jmil.1.
+// It verifies that 10 concurrent Escalate() calls each deliver their full
+// set-buffer → paste-buffer → send-keys sequence without interleaving,
+// proving the sync.Mutex serializes access to the shared "oro-escalate" buffer.
+func TestEscalator_ConcurrentEscalations(t *testing.T) {
+	runner := &threadSafeEscRunner{}
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	const n = 10
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			msg := fmt.Sprintf("concurrent-msg-%d", i)
+			if err := esc.Escalate(context.Background(), msg); err != nil {
+				t.Errorf("Escalate(%d) unexpected error: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Collect all recorded calls under the lock.
+	runner.mu.Lock()
+	allCalls := make([]escCall, len(runner.calls))
+	copy(allCalls, runner.calls)
+	runner.mu.Unlock()
+
+	// Filter to core calls (skip display-message / resize-pane / kill wake calls).
+	var calls []escCall
+	for _, c := range allCalls {
+		if c.name == "tmux" && len(c.args) > 0 {
+			if c.args[0] == "display-message" || c.args[0] == "resize-pane" {
+				continue
+			}
+		}
+		if c.name == "kill" {
+			continue
+		}
+		calls = append(calls, c)
+	}
+
+	// Expect exactly n*6 core calls: each Escalate produces
+	// has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Escape, send-keys Enter.
+	if len(calls) != n*6 {
+		t.Fatalf("expected %d core calls (%d escalations × 6), got %d", n*6, n, len(calls))
+	}
+
+	// Verify that calls appear in contiguous groups of 6 with no interleaving.
+	// With mutex serialization, the sequence must be strictly:
+	//   [has-session, send-keys C-u, set-buffer, paste-buffer, send-keys Escape, send-keys Enter] × n
+	for i := 0; i < len(calls); i += 6 {
+		group := calls[i : i+6]
+		groupIdx := i / 6
+
+		if group[0].args[0] != "has-session" {
+			t.Errorf("group %d call 0: expected has-session, got %s", groupIdx, group[0].args[0])
+		}
+		if group[1].args[0] != "send-keys" || group[1].args[len(group[1].args)-1] != "C-u" {
+			t.Errorf("group %d call 1: expected send-keys C-u, got %v", groupIdx, group[1].args)
+		}
+		if group[2].args[0] != "set-buffer" {
+			t.Errorf("group %d call 2: expected set-buffer, got %s", groupIdx, group[2].args[0])
+		}
+		if group[3].args[0] != "paste-buffer" {
+			t.Errorf("group %d call 3: expected paste-buffer, got %s", groupIdx, group[3].args[0])
+		}
+		if group[4].args[0] != "send-keys" || group[4].args[len(group[4].args)-1] != "Escape" {
+			t.Errorf("group %d call 4: expected send-keys Escape, got %v", groupIdx, group[4].args)
+		}
+		if group[5].args[0] != "send-keys" || group[5].args[len(group[5].args)-1] != "Enter" {
+			t.Errorf("group %d call 5: expected send-keys Enter, got %v", groupIdx, group[5].args)
+		}
+
+		// The set-buffer and paste-buffer within the same group must reference
+		// the same buffer name, confirming no cross-goroutine buffer corruption.
+		setBufArgs := strings.Join(group[2].args, " ")
+		pasteBufArgs := strings.Join(group[3].args, " ")
+		if !strings.Contains(setBufArgs, "oro-escalate") {
+			t.Errorf("group %d: set-buffer missing 'oro-escalate' buffer name: %s", groupIdx, setBufArgs)
+		}
+		if !strings.Contains(pasteBufArgs, "oro-escalate") {
+			t.Errorf("group %d: paste-buffer missing 'oro-escalate' buffer name: %s", groupIdx, pasteBufArgs)
+		}
+	}
+}
