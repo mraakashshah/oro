@@ -582,10 +582,19 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 
 // generateSettings produces a settings.json with hook commands using absolute
 // paths under oroHome. Shell variable $HOME is used for portability.
+// Permissions include Context7 MCP tools so workers can look up library/API
+// documentation during implementation (same capability as interactive sessions).
 func generateSettings(oroHome string) ([]byte, error) {
 	settings := struct {
-		Hooks map[string][]hookGroup `json:"hooks"`
+		Permissions map[string][]string    `json:"permissions"`
+		Hooks       map[string][]hookGroup `json:"hooks"`
 	}{
+		Permissions: map[string][]string{
+			"allow": {
+				"mcp__context7__resolve-library-id",
+				"mcp__context7__query-docs",
+			},
+		},
 		Hooks: buildHookConfig(oroHome + "/hooks"),
 	}
 
