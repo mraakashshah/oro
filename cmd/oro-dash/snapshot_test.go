@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -340,6 +341,21 @@ func TestSnapshot_SearchView_NoResults(t *testing.T) {
 
 // ── Insights view snapshots ───────────────────────────────────────────────────
 
+// waitInsightsPhase2 blocks until Phase2 results arrive (max 600ms).
+// Insights snapshot tests call this so the golden file captures computed data,
+// not the transient "Computing…" placeholder.
+func waitInsightsPhase2(t *testing.T, m *InsightsModel) {
+	t.Helper()
+	deadline := time.Now().Add(600 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if m.Phase2() != nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Phase 2 timed out — render as-is (captures "Computing…" state).
+}
+
 func TestSnapshot_InsightsView_Empty(t *testing.T) {
 	model := NewInsightsModel([]BeadWithDeps{})
 	theme := DefaultTheme()
@@ -357,6 +373,7 @@ func TestSnapshot_InsightsView_WithCriticalPath(t *testing.T) {
 	}
 
 	model := NewInsightsModel(beads)
+	waitInsightsPhase2(t, model)
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
@@ -372,6 +389,7 @@ func TestSnapshot_InsightsView_WithBottleneck(t *testing.T) {
 	}
 
 	model := NewInsightsModel(beads)
+	waitInsightsPhase2(t, model)
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
@@ -386,6 +404,7 @@ func TestSnapshot_InsightsView_WithTriageFlags(t *testing.T) {
 	}
 
 	model := NewInsightsModel(beads)
+	waitInsightsPhase2(t, model)
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
@@ -400,6 +419,7 @@ func TestSnapshot_InsightsView_WithCycle(t *testing.T) {
 	}
 
 	model := NewInsightsModel(beads)
+	waitInsightsPhase2(t, model)
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
