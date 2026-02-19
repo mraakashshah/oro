@@ -342,3 +342,54 @@ func TestOroProcessManagerEmptyOroHome(t *testing.T) {
 	}
 	pm.Wait()
 }
+
+// TestKill_KillsProcessGroup is the acceptance-criteria test for oro-jmil.3.
+// It verifies that:
+//  1. Spawn sets Setpgid=true so each worker gets its own process group.
+//  2. Kill sends SIGTERM to the entire process group (-pgid), so descendant
+//     processes (e.g., grandchildren spawned by the worker shell) are also
+//     terminated — preventing orphaned claude/node/bash subtrees.
+//
+// Process tree: sh → sleep 3600 (background child).
+// Without Setpgid+group kill, "sleep 3600" survives after sh is killed.
+func TestKill_KillsProcessGroup(t *testing.T) {
+	pm := dispatcher.NewExecProcessManagerWithFactory("/tmp/test.sock", func(_ string) *exec.Cmd {
+		// Shell spawns a background sleep, then waits. This creates a
+		// process tree: sh → sleep. Without process group kill, the
+		// sleep survives after sh is killed.
+		return exec.Command("sh", "-c", "sleep 3600 & wait")
+	})
+
+	proc, err := pm.Spawn("w-pgid-acceptance")
+	if err != nil {
+		t.Fatalf("Spawn returned error: %v", err)
+	}
+	parentPID := proc.Pid
+
+	// Give the shell time to spawn its child sleep process.
+	time.Sleep(200 * time.Millisecond)
+
+	// Find the grandchild (sleep 3600) by parent PID via pgrep.
+	out, pgrepErr := exec.Command("pgrep", "-P", fmt.Sprintf("%d", parentPID)).Output() //nolint:gosec // test-only: PID from our own subprocess
+	if pgrepErr != nil {
+		t.Fatalf("pgrep failed (no child of PID %d): %v", parentPID, pgrepErr)
+	}
+	var grandchildPID int
+	if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &grandchildPID); scanErr != nil {
+		t.Fatalf("parse grandchild PID from %q: %v", out, scanErr)
+	}
+
+	// Kill should terminate the entire process group.
+	if killErr := pm.Kill("w-pgid-acceptance"); killErr != nil {
+		t.Fatalf("Kill returned error: %v", killErr)
+	}
+
+	// Give processes time to die.
+	time.Sleep(200 * time.Millisecond)
+
+	// Grandchild must be dead — process group kill worked.
+	p, _ := os.FindProcess(grandchildPID)
+	if sigErr := p.Signal(syscall.Signal(0)); sigErr == nil {
+		t.Errorf("grandchild process %d should be dead after Kill (process group not killed), but signal 0 succeeded", grandchildPID)
+	}
+}
