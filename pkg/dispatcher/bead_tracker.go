@@ -42,6 +42,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.qgStuckTracker, beadID)
 	delete(d.escalatedBeads, beadID)
 	delete(d.worktreeFailures, beadID)
+	delete(d.exhaustedBeads, beadID)
 	delete(d.assigningBeads, beadID)
 	d.mu.Unlock()
 }
@@ -127,6 +128,8 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 		delete(d.qgStuckTracker, beadID)
 		delete(d.escalatedBeads, beadID)
 		delete(d.worktreeFailures, beadID)
+		delete(d.exhaustedBeads, beadID)
+		delete(d.assigningBeads, beadID)
 	}
 	return len(orphaned)
 }
@@ -154,6 +157,12 @@ func (d *Dispatcher) allTrackingKeys() []string {
 		seen[id] = true
 	}
 	for id := range d.worktreeFailures {
+		seen[id] = true
+	}
+	for id := range d.exhaustedBeads {
+		seen[id] = true
+	}
+	for id := range d.assigningBeads {
 		seen[id] = true
 	}
 	keys := make([]string, 0, len(seen))

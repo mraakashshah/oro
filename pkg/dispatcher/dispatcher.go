@@ -318,6 +318,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			escalatedBeads:   make(map[string]bool),
 			worktreeFailures: make(map[string]time.Time),
 			exhaustedBeads:   make(map[string]bool),
+			assigningBeads:   make(map[string]bool),
 		},
 		priorityBeads:     make(map[string]bool),
 		pendingManagedIDs: make(map[string]bool),
@@ -1798,9 +1799,6 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "assignment_race_detected", "dispatcher", bead.ID, w.id,
 			"bead already being assigned by another worker")
 		return nil
-	}
-	if d.assigningBeads == nil {
-		d.assigningBeads = make(map[string]bool)
 	}
 	d.assigningBeads[bead.ID] = true
 	delete(d.escalatedBeads, bead.ID)
