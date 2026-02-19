@@ -119,6 +119,7 @@ type trackedWorker struct {
 	state          protocol.WorkerState
 	beadID         string
 	epicID         string // parent epic ID if the assigned bead is a child of an epic
+	isEpicDecomp   bool   // true when worker is assigned an epic for decomposition (no merge on done)
 	worktree       string
 	model          string // resolved model for the current bead assignment
 	lastSeen       time.Time
@@ -704,12 +705,15 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
 	var worktree, branch string
+	var isEpicDecomp bool
 	if ok {
 		worktree = w.worktree
 		branch = protocol.BranchPrefix + beadID
+		isEpicDecomp = w.isEpicDecomp
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
 		w.epicID = ""
+		w.isEpicDecomp = false
 	}
 	d.mu.Unlock()
 
@@ -719,6 +723,17 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 
 	// Clear tracking state for completed bead.
 	d.clearBeadTracking(beadID)
+
+	if isEpicDecomp {
+		// Epic decomposition complete — skip merge/close; just clean up the worktree.
+		_ = d.logEvent(ctx, "epic_decomp_done", workerID, beadID, workerID, "")
+		d.safeGo(func() {
+			if err := d.worktrees.Remove(ctx, worktree); err != nil {
+				_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+			}
+		})
+		return
+	}
 
 	// Merge in background
 	d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch) })
@@ -834,6 +849,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 				w.state = protocol.WorkerIdle
 				w.beadID = ""
 				w.epicID = ""
+				w.isEpicDecomp = false
 				_ = d.logEvent(ctx, "qg_retry_send_failed", workerID, beadID, workerID,
 					fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
 				_ = d.completeAssignment(ctx, beadID)
@@ -1098,6 +1114,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
 		w.beadID = ""
 		w.epicID = ""
+		w.isEpicDecomp = false
 	}
 	d.mu.Unlock()
 
@@ -1342,6 +1359,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 			w.state = protocol.WorkerIdle
 			w.beadID = ""
 			w.epicID = ""
+			w.isEpicDecomp = false
 			w.worktree = ""
 			w.model = ""
 		}
@@ -1482,6 +1500,7 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
 		w.epicID = ""
+		w.isEpicDecomp = false
 	}
 	d.mu.Unlock()
 }
@@ -1666,24 +1685,31 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
-	// Assign beads to idle workers (1:1).
-	for i, bead := range beads {
-		if i >= len(idle) {
+	// Assign beads to idle workers. Advance the idle cursor only when a worker is
+	// actually claimed — epics skipped in assignBead leave the worker idle so the
+	// next bead in the list can still be paired with it.
+	idleIdx := 0
+	for _, bead := range beads {
+		if idleIdx >= len(idle) {
 			break
 		}
-		_ = d.assignBead(ctx, idle[i], bead)
-		// Clean up priority bead after assignment.
-		if pbSnapshot[bead.ID] {
-			d.mu.Lock()
-			delete(d.priorityBeads, bead.ID)
-			d.mu.Unlock()
+		_ = d.assignBead(ctx, idle[idleIdx], bead)
+		// Advance idle cursor and clean up priority snapshot under a single lock.
+		d.mu.Lock()
+		if idle[idleIdx].state != protocol.WorkerIdle {
+			idleIdx++
 		}
+		if pbSnapshot[bead.ID] {
+			delete(d.priorityBeads, bead.ID)
+		}
+		d.mu.Unlock()
 	}
 }
 
-// filterAssignable returns beads eligible for assignment: excludes epics, closed beads,
+// filterAssignable returns beads eligible for assignment: excludes closed beads,
 // beads with status in_progress or blocked, beads with recent worktree creation
 // failures (within cooldown window), and beads currently in-flight (assigningBeads).
+// Epics are allowed through; assignBead performs the HasChildren check.
 func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 	d.mu.Lock()
@@ -1708,10 +1734,8 @@ func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead 
 
 // isBeadAssignable reports whether a bead passes all assignment filters.
 // Caller must hold d.mu. activeBeads maps bead IDs held by non-idle workers.
+// Epics are allowed through here; HasChildren is checked in assignBead (requires I/O).
 func (d *Dispatcher) isBeadAssignable(b protocol.Bead, now time.Time, activeBeads map[string]bool) bool {
-	if b.Type == "epic" {
-		return false
-	}
 	if b.Status == "closed" {
 		return false
 	}
@@ -1791,6 +1815,12 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		return nil
 	}
 
+	// Epic routing: check children before proceeding (requires I/O, must be outside lock).
+	isEpicDecomp, skip := d.checkEpicAssignable(ctx, bead, w.id)
+	if skip {
+		return nil
+	}
+
 	// Atomically claim this bead for assignment (oro-ptp2: prevents race condition).
 	// If another concurrent assignBead call already claimed it, abort.
 	d.mu.Lock()
@@ -1845,29 +1875,36 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			codeCtx = formatSearchResults(results)
 		}
 	}
+	resolvedModel := bead.ResolveModel()
+	if isEpicDecomp {
+		resolvedModel = protocol.ModelOpus
+	}
 	d.mu.Lock()
 	w.state = protocol.WorkerBusy
 	w.beadID = bead.ID
 	w.epicID = bead.Epic // store parent epic ID for auto-close on merge
+	w.isEpicDecomp = isEpicDecomp
 	w.worktree = worktree
-	w.model = bead.ResolveModel()
+	w.model = resolvedModel
 	w.lastProgress = d.nowFunc()
 	err = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:             bead.ID,
-			Worktree:           worktree,
-			Model:              bead.ResolveModel(),
-			MemoryContext:      memCtx,
-			CodeSearchContext:  codeCtx,
-			Title:              title,
-			AcceptanceCriteria: acceptance,
+			BeadID:              bead.ID,
+			Worktree:            worktree,
+			Model:               resolvedModel,
+			MemoryContext:       memCtx,
+			CodeSearchContext:   codeCtx,
+			Title:               title,
+			AcceptanceCriteria:  acceptance,
+			IsEpicDecomposition: isEpicDecomp,
 		},
 	})
 	if err != nil {
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
 		w.epicID = ""
+		w.isEpicDecomp = false
 		w.worktree = ""
 		w.model = ""
 	}
@@ -1879,6 +1916,36 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
 	return nil
+}
+
+// checkEpicAssignable determines whether an epic bead should proceed to assignment.
+// Returns (isEpicDecomp=true, skip=false) when the epic has no children and should
+// be assigned for decomposition. Returns (false, true) to skip in all other cases:
+// epic with open children (not ready), epic with all children closed (auto-closed here),
+// or any HasChildren/AllChildrenClosed error. For non-epic beads both values are false.
+func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead, workerID string) (isEpicDecomp, skip bool) {
+	if bead.Type != "epic" {
+		return false, false
+	}
+	hasChildren, err := d.beads.HasChildren(ctx, bead.ID)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_has_children_error", "dispatcher", bead.ID, workerID, err.Error())
+		return false, true
+	}
+	if !hasChildren {
+		return true, false // no children → assign for decomposition
+	}
+	// Epic has children: auto-close if all done, otherwise skip.
+	allClosed, err := d.beads.AllChildrenClosed(ctx, bead.ID)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_all_children_closed_error", "dispatcher", bead.ID, workerID, err.Error())
+		return false, true
+	}
+	if allClosed {
+		_ = d.beads.Close(ctx, bead.ID, "All children completed")
+		_ = d.logEvent(ctx, "epic_auto_closed_on_assign", "dispatcher", bead.ID, workerID, "")
+	}
+	return false, true
 }
 
 // lookupBeadDetail retrieves the title, acceptance criteria, and status for a bead (best-effort).
