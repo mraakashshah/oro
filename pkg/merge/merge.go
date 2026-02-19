@@ -21,6 +21,13 @@ type GitRunner interface {
 	Run(ctx context.Context, dir string, args ...string) (stdout string, stderr string, err error)
 }
 
+// WorktreeRemover abstracts worktree removal for testability.
+// The production implementation calls "git worktree remove <path>" or os.RemoveAll.
+// Tests inject a mock that records Remove calls.
+type WorktreeRemover interface {
+	Remove(path string) error
+}
+
 // Opts holds parameters for a single merge operation.
 type Opts struct {
 	Branch   string // branch to merge (e.g., "bead/abc")
@@ -53,6 +60,10 @@ type Coordinator struct {
 	mu  sync.Mutex
 	git GitRunner
 
+	// worktreeRemover is called to remove the agent worktree after a successful
+	// rebase. If nil, falls back to "git worktree remove <path>" via GitRunner.
+	worktreeRemover WorktreeRemover
+
 	// abortMu protects activeWorktree for concurrent access from Abort().
 	abortMu        sync.Mutex
 	activeWorktree string // non-empty while a merge is in progress
@@ -63,13 +74,15 @@ func NewCoordinator(git GitRunner) *Coordinator {
 	return &Coordinator{git: git}
 }
 
-// Merge performs a sequential rebase-merge using cherry-pick:
+// Merge performs a sequential rebase-merge using worktree-remove + ff-merge:
 //  1. git rebase main <branch> (in worktree)
-//  2. If clean: cherry-pick commits from branch onto main (in primary repo)
-//  3. If conflict: git rebase --abort, return *ConflictError
+//  2. If clean: remove the agent worktree
+//  3. git merge --ff-only <branch> (in primary repo)
+//  4. If conflict: git rebase --abort, return *ConflictError
 //
-// This approach avoids "git checkout main" which fails when main is already
-// checked out in the primary worktree (common in multi-worktree setups).
+// This approach produces identical commit hashes on main as on the branch
+// (no cherry-pick hash mismatch). It also avoids "git checkout main" which
+// fails when main is already checked out in the primary worktree.
 //
 // Only one Merge runs at a time (mutex-protected).
 func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
@@ -104,17 +117,21 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 		return nil, c.handleRebaseFailure(ctx, opts, stderr)
 	}
 
-	// Step 2-5: Cherry-pick commits from branch onto main in primary repo
-	return c.cherryPickToMain(ctx, opts)
+	// Steps 2-4: Remove worktree, ff-merge branch onto main in primary repo
+	return c.worktreeRemoveAndFFMerge(ctx, opts)
 }
 
-// cherryPickToMain applies commits from the rebased branch onto main in the primary repo.
-func (c *Coordinator) cherryPickToMain(ctx context.Context, opts Opts) (*Result, error) {
-	// Get the primary repository path.
+// worktreeRemoveAndFFMerge removes the agent worktree and fast-forward merges
+// the rebased branch onto main in the primary repository.
+//
+// This preserves commit hashes — no cherry-pick rewrite occurs.
+// Edge cases:
+//   - worktree dirty after rebase → Remove fails → return error with guidance
+//   - ff-only fails (main moved) → return error; branch still exists, caller can retry
+func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (*Result, error) {
+	// Derive the primary repository path from the worktree's git common dir.
 	// --git-common-dir returns the shared .git dir (e.g., "/repo/.git").
-	// We derive the primary repo by stripping the "/.git" suffix rather than
-	// running rev-parse --show-toplevel inside .git (which fails — .git is not
-	// a working tree).
+	// We derive the primary repo by stripping the "/.git" suffix.
 	commonDir, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get git common dir: %w", err)
@@ -131,42 +148,43 @@ func (c *Coordinator) cherryPickToMain(ctx context.Context, opts Opts) (*Result,
 		primaryRepo = strings.TrimSpace(primaryRepo)
 	}
 
-	// Get commits to cherry-pick
-	commitRange, _, err := c.git.Run(ctx, opts.Worktree, "rev-list", "--reverse", "main.."+opts.Branch)
+	// Remove the agent worktree. After this point the worktree directory is gone.
+	if removeErr := c.removeWorktree(ctx, primaryRepo, opts.Worktree); removeErr != nil {
+		return nil, fmt.Errorf("worktree remove failed (branch %s still intact): %w", opts.Branch, removeErr)
+	}
+
+	// Fast-forward merge the rebased branch onto main in the primary repo.
+	// This is the key difference from cherry-pick: the same commits land on main
+	// with identical SHAs.
+	_, _, err = c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get commit range: %w", err)
-	}
-	commitRange = strings.TrimSpace(commitRange)
-
-	if commitRange == "" {
-		// No commits to merge - branch is already up to date
-		stdout, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", "main")
-		if err != nil {
-			return nil, fmt.Errorf("rev-parse main failed: %w", err)
-		}
-		return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
+		return nil, fmt.Errorf("ff-only merge of %s failed (main may have moved; retry rebase): %w", opts.Branch, err)
 	}
 
-	// Cherry-pick each commit onto main
-	commits := strings.Split(commitRange, "\n")
-	for _, commit := range commits {
-		commit = strings.TrimSpace(commit)
-		if commit == "" {
-			continue
-		}
-		_, _, err = c.git.Run(ctx, primaryRepo, "cherry-pick", commit)
-		if err != nil {
-			_, _, _ = c.git.Run(ctx, primaryRepo, "cherry-pick", "--abort")
-			return nil, fmt.Errorf("cherry-pick of %s failed: %w", commit, err)
-		}
-	}
-
-	// Get the final commit SHA
+	// Get the final commit SHA on main.
 	stdout, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("rev-parse HEAD failed: %w", err)
 	}
 	return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
+}
+
+// removeWorktree removes the agent worktree. If a WorktreeRemover is configured,
+// it delegates to that; otherwise falls back to "git worktree remove <path>" via
+// the GitRunner (executed in the primary repo).
+func (c *Coordinator) removeWorktree(ctx context.Context, primaryRepo, worktreePath string) error {
+	if c.worktreeRemover != nil {
+		if err := c.worktreeRemover.Remove(worktreePath); err != nil {
+			return fmt.Errorf("worktree remover: %w", err)
+		}
+		return nil
+	}
+	// Fallback: use "git worktree remove" via the GitRunner.
+	_, _, err := c.git.Run(ctx, primaryRepo, "worktree", "remove", worktreePath)
+	if err != nil {
+		return fmt.Errorf("git worktree remove: %w", err)
+	}
+	return nil
 }
 
 // isBranchMerged checks if all commits on branch are already reachable from main.
