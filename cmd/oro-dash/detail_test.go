@@ -791,3 +791,272 @@ func TestDetailOutputTab(t *testing.T) {
 		}
 	})
 }
+
+// TestDepsTab verifies the Deps tab shows an interactive dependency tree,
+// cursor navigation, and Enter navigates to a dependency's detail view.
+func TestDepsTab(t *testing.T) {
+	t.Run("deps tab shows dependency list with cursor", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:    "oro-test.40",
+			Title: "Bead with deps",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-test.40", DependsOnID: "oro-dep.1", Type: "blocks"},
+				{IssueID: "oro-test.40", DependsOnID: "oro-dep.2", Type: "blocks"},
+			},
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3 // Deps tab
+
+		view := model.View(styles)
+
+		// Should show dep IDs
+		if !strings.Contains(view, "oro-dep.1") {
+			t.Errorf("expected dep ID 'oro-dep.1' in deps tab, got:\n%s", view)
+		}
+		if !strings.Contains(view, "oro-dep.2") {
+			t.Errorf("expected dep ID 'oro-dep.2' in deps tab, got:\n%s", view)
+		}
+	})
+
+	t.Run("deps tab shows cursor on selected dependency", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:    "oro-test.41",
+			Title: "Bead with deps cursor",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-test.41", DependsOnID: "oro-dep.A", Type: "blocks"},
+				{IssueID: "oro-test.41", DependsOnID: "oro-dep.B", Type: "blocks"},
+			},
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3 // Deps tab
+
+		view := model.View(styles)
+
+		// Should show a cursor indicator (▸ or >) on the selected dep
+		if !strings.Contains(view, "▸") && !strings.Contains(view, ">") {
+			t.Errorf("expected cursor indicator '▸' or '>' on selected dep, got:\n%s", view)
+		}
+	})
+
+	t.Run("j moves cursor down in deps list", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:    "oro-test.42",
+			Title: "Deps navigation down",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-test.42", DependsOnID: "oro-dep.1", Type: "blocks"},
+				{IssueID: "oro-test.42", DependsOnID: "oro-dep.2", Type: "blocks"},
+				{IssueID: "oro-test.42", DependsOnID: "oro-dep.3", Type: "blocks"},
+			},
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3 // Deps tab
+
+		// Initial: cursor at 0
+		if model.depSelectedIdx != 0 {
+			t.Errorf("expected initial depSelectedIdx=0, got %d", model.depSelectedIdx)
+		}
+
+		// Press j to move down
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		if model.depSelectedIdx != 1 {
+			t.Errorf("expected depSelectedIdx=1 after pressing j, got %d", model.depSelectedIdx)
+		}
+	})
+
+	t.Run("k moves cursor up in deps list", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:    "oro-test.43",
+			Title: "Deps navigation up",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-test.43", DependsOnID: "oro-dep.1", Type: "blocks"},
+				{IssueID: "oro-test.43", DependsOnID: "oro-dep.2", Type: "blocks"},
+			},
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3
+		model.depSelectedIdx = 1
+
+		// Press k to move up
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+		if model.depSelectedIdx != 0 {
+			t.Errorf("expected depSelectedIdx=0 after pressing k, got %d", model.depSelectedIdx)
+		}
+	})
+
+	t.Run("j clamps at bottom of deps list", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:    "oro-test.44",
+			Title: "Deps clamp bottom",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-test.44", DependsOnID: "oro-dep.1", Type: "blocks"},
+			},
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3
+		model.depSelectedIdx = 0
+
+		// Press j when already at last item
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		if model.depSelectedIdx != 0 {
+			t.Errorf("expected depSelectedIdx to stay at 0 when clamping at bottom, got %d", model.depSelectedIdx)
+		}
+	})
+
+	t.Run("k clamps at top of deps list", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:    "oro-test.45",
+			Title: "Deps clamp top",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-test.45", DependsOnID: "oro-dep.1", Type: "blocks"},
+				{IssueID: "oro-test.45", DependsOnID: "oro-dep.2", Type: "blocks"},
+			},
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3
+		model.depSelectedIdx = 0
+
+		// Press k when already at first item
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+		if model.depSelectedIdx != 0 {
+			t.Errorf("expected depSelectedIdx to stay at 0 when clamping at top, got %d", model.depSelectedIdx)
+		}
+	})
+
+	t.Run("Enter on Deps tab sends navigateToDepsMsg with selected dep ID", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:    "oro-test.46",
+			Title: "Deps enter navigation",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-test.46", DependsOnID: "oro-dep.X", Type: "blocks"},
+				{IssueID: "oro-test.46", DependsOnID: "oro-dep.Y", Type: "blocks"},
+			},
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3
+		model.depSelectedIdx = 1 // Select second dep
+
+		// Pressing Enter should emit a navigateToDepsMsg
+		_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatalf("expected a non-nil cmd when Enter is pressed on a dep")
+		}
+		// Execute cmd to get the message
+		msg := cmd()
+		depMsg, ok := msg.(navigateToDepMsg)
+		if !ok {
+			t.Fatalf("expected msg to be navigateToDepMsg, got %T", msg)
+		}
+		if depMsg.beadID != "oro-dep.Y" {
+			t.Errorf("expected navigateToDepMsg.beadID='oro-dep.Y', got %q", depMsg.beadID)
+		}
+	})
+
+	t.Run("Enter on Deps tab with no deps does nothing", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:           "oro-test.47",
+			Title:        "No deps enter",
+			Dependencies: nil,
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3
+
+		// Pressing Enter with no deps should not emit a cmd
+		_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd != nil {
+			msg := cmd()
+			if _, ok := msg.(navigateToDepMsg); ok {
+				t.Errorf("expected no navigateToDepMsg when no deps, got one")
+			}
+		}
+	})
+
+	t.Run("navigateToDepMsg handled by Model transitions to dep detail view", func(t *testing.T) {
+		// Set up a Model with beads including the dep target
+		depBead := protocol.Bead{
+			ID:     "oro-dep.nav",
+			Title:  "Dep navigation target",
+			Status: "open",
+		}
+		mainBead := protocol.BeadDetail{
+			ID:    "oro-nav.main",
+			Title: "Main bead",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-nav.main", DependsOnID: "oro-dep.nav", Type: "blocks"},
+			},
+		}
+
+		m := newModel()
+		m.beads = []protocol.Bead{depBead}
+		dm := newDetailModel(mainBead, m.theme, m.styles)
+		dm.activeTab = 3
+		dm.depSelectedIdx = 0
+		m.detailModel = &dm
+		m.activeView = DetailView
+
+		// Simulate navigateToDepMsg
+		newM, _ := m.Update(navigateToDepMsg{beadID: "oro-dep.nav"})
+		updatedModel, ok := newM.(Model)
+		if !ok {
+			t.Fatalf("expected Model type assertion to succeed")
+		}
+
+		// Should still be in DetailView
+		if updatedModel.activeView != DetailView {
+			t.Errorf("expected DetailView after dep navigation, got %v", updatedModel.activeView)
+		}
+		// detailModel should be set to the dep bead
+		if updatedModel.detailModel == nil {
+			t.Fatalf("expected detailModel to be set after dep navigation")
+		}
+		if updatedModel.detailModel.bead.ID != "oro-dep.nav" {
+			t.Errorf("expected detailModel.bead.ID='oro-dep.nav', got %q", updatedModel.detailModel.bead.ID)
+		}
+	})
+
+	t.Run("deps tab shows section headers for blockers vs blocked-by", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:    "oro-test.48",
+			Title: "Bead with section headers",
+			Dependencies: []protocol.Dependency{
+				{IssueID: "oro-test.48", DependsOnID: "oro-dep.blocks", Type: "blocks"},
+			},
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3
+
+		view := model.View(styles)
+
+		// Should show a "Blocks:" or "Depends on:" header
+		hasHeader := strings.Contains(view, "Blocks") || strings.Contains(view, "Depends on") || strings.Contains(view, "Dependencies")
+		if !hasHeader {
+			t.Errorf("expected section header in deps tab, got:\n%s", view)
+		}
+	})
+}

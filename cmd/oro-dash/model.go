@@ -189,6 +189,8 @@ func (m Model) Init() tea.Cmd {
 }
 
 // Update implements tea.Model.
+//
+//nolint:gocyclo // switch dispatch over message types; complexity is inherent in Bubble Tea Update
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -238,6 +240,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m, tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), tickCmd())
 
+	case navigateToDepMsg:
+		return m.handleNavigateToDep(msg.beadID)
 	case fsChangeMsg:
 		// File change detected in .beads/ - fetch immediately instead of waiting for tick
 		return m, fetchBeadsCmd()
@@ -877,4 +881,31 @@ func (m Model) drillDownToDetail() (Model, tea.Cmd) {
 
 	// Initiate async worker events fetch
 	return m, fetchWorkerEventsCmd(beadDetail.WorkerID)
+}
+
+// handleNavigateToDep navigates to the detail view of a dependency bead by ID.
+// It looks up the bead in the known beads list; if not found, creates a minimal detail.
+func (m Model) handleNavigateToDep(beadID string) (tea.Model, tea.Cmd) {
+	for _, b := range m.beads {
+		if b.ID != beadID {
+			continue
+		}
+		beadDetail := protocol.BeadDetail{
+			ID:           b.ID,
+			Title:        b.Title,
+			Status:       b.Status,
+			Model:        b.Model,
+			Dependencies: b.Dependencies,
+		}
+		dm := newDetailModel(beadDetail, m.theme, m.styles)
+		m.detailModel = &dm
+		m.activeView = DetailView
+		return m, fetchWorkerEventsCmd(beadDetail.WorkerID)
+	}
+	// Dep bead not found in known beads - navigate with minimal info.
+	beadDetail := protocol.BeadDetail{ID: beadID, Title: beadID}
+	dm := newDetailModel(beadDetail, m.theme, m.styles)
+	m.detailModel = &dm
+	m.activeView = DetailView
+	return m, nil
 }
