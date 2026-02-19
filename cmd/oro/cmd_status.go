@@ -192,12 +192,7 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 
 	fmt.Fprintf(w, "  state:       %s\n", resp.State)
 
-	// Use enriched worker counts if available, fall back to legacy.
-	if resp.TargetCount > 0 || resp.ActiveCount > 0 || resp.IdleCount > 0 {
-		fmt.Fprintf(w, "  workers:     %d active, %d idle (target: %d)\n", resp.ActiveCount, resp.IdleCount, resp.TargetCount)
-	} else {
-		fmt.Fprintf(w, "  workers:     %d\n", resp.WorkerCount)
-	}
+	fmt.Fprintf(w, "  workers:     %d active, %d idle (target: %d)\n", resp.ActiveCount, resp.IdleCount, resp.TargetCount)
 
 	fmt.Fprintf(w, "  queue:       %d ready\n", resp.QueueDepth)
 
@@ -205,11 +200,12 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 		fmt.Fprintf(w, "  focus:       %s\n", resp.FocusedEpic)
 	}
 
-	if len(resp.Workers) > 0 {
-		formatActiveBeads(w, resp)
-	} else if len(resp.Assignments) > 0 {
+	switch {
+	case len(resp.Workers) > 0:
+		formatInProgressBeads(w, resp)
+	case len(resp.Assignments) > 0:
 		// Legacy fallback: flat assignments map.
-		fmt.Fprintln(w, "  active beads:")
+		fmt.Fprintln(w, "  in_progress beads:")
 		ids := make([]string, 0, len(resp.Assignments))
 		for wID := range resp.Assignments {
 			ids = append(ids, wID)
@@ -218,11 +214,13 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 		for _, wID := range ids {
 			fmt.Fprintf(w, "    %s -> %s\n", wID, resp.Assignments[wID])
 		}
+	default:
+		fmt.Fprintln(w, "  in_progress beads: none")
 	}
 }
 
-// formatActiveBeads writes the active beads section using enriched worker data.
-func formatActiveBeads(w io.Writer, resp *statusResponse) {
+// formatInProgressBeads writes the in-progress beads section using enriched worker data.
+func formatInProgressBeads(w io.Writer, resp *statusResponse) {
 	// Filter to busy workers only.
 	var busy []workerStatus
 	for _, ws := range resp.Workers {
@@ -231,12 +229,13 @@ func formatActiveBeads(w io.Writer, resp *statusResponse) {
 		}
 	}
 	if len(busy) == 0 {
+		fmt.Fprintln(w, "  in_progress beads: none")
 		return
 	}
 
 	sort.Slice(busy, func(i, j int) bool { return busy[i].ID < busy[j].ID })
 
-	fmt.Fprintln(w, "  active beads:")
+	fmt.Fprintln(w, "  in_progress beads:")
 	halfTimeout := resp.ProgressTimeoutSecs / 2
 	for _, ws := range busy {
 		health := "healthy"
