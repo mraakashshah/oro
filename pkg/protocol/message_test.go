@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -449,6 +450,57 @@ func TestAssignPayload_Validate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAssignPayloadEpicDecomposition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("round_trip_true", func(t *testing.T) {
+		t.Parallel()
+		original := protocol.AssignPayload{
+			BeadID:              "oro-epic",
+			Worktree:            "/repo",
+			IsEpicDecomposition: true,
+		}
+
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		var decoded protocol.AssignPayload
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if !decoded.IsEpicDecomposition {
+			t.Error("IsEpicDecomposition: got false, want true")
+		}
+	})
+
+	t.Run("omitempty_when_false", func(t *testing.T) {
+		t.Parallel()
+		original := protocol.AssignPayload{
+			BeadID:   "oro-task",
+			Worktree: "/tmp/wt",
+		}
+
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		// Field should not appear in JSON when false (omitempty).
+		if strings.Contains(string(data), "is_epic_decomposition") {
+			t.Error("expected is_epic_decomposition to be omitted when false")
+		}
+		var decoded protocol.AssignPayload
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if decoded.IsEpicDecomposition {
+			t.Error("IsEpicDecomposition: got true, want false (default)")
+		}
+	})
 }
 
 func TestValidateBeadID(t *testing.T) {

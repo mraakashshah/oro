@@ -58,6 +58,10 @@ func (m *trackingBeadSource) AllChildrenClosed(_ context.Context, _ string) (boo
 	return false, nil
 }
 
+func (m *trackingBeadSource) HasChildren(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 func (m *trackingBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

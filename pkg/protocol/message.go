@@ -65,16 +65,17 @@ type Message struct {
 // CodeSearchContext contains formatted code search results from FTS5Search,
 // injected by the dispatcher based on the bead title.
 type AssignPayload struct {
-	BeadID             string `json:"bead_id"`
-	Worktree           string `json:"worktree"`
-	Model              string `json:"model,omitempty"`
-	MemoryContext      string `json:"memory_context,omitempty"`
-	CodeSearchContext  string `json:"code_search_context,omitempty"`
-	Feedback           string `json:"feedback,omitempty"`
-	Title              string `json:"title,omitempty"`
-	Description        string `json:"description,omitempty"`
-	AcceptanceCriteria string `json:"acceptance_criteria,omitempty"`
-	Attempt            int    `json:"attempt,omitempty"`
+	BeadID              string `json:"bead_id"`
+	Worktree            string `json:"worktree"`
+	Model               string `json:"model,omitempty"`
+	MemoryContext       string `json:"memory_context,omitempty"`
+	CodeSearchContext   string `json:"code_search_context,omitempty"`
+	Feedback            string `json:"feedback,omitempty"`
+	Title               string `json:"title,omitempty"`
+	Description         string `json:"description,omitempty"`
+	AcceptanceCriteria  string `json:"acceptance_criteria,omitempty"`
+	Attempt             int    `json:"attempt,omitempty"`
+	IsEpicDecomposition bool   `json:"is_epic_decomposition,omitempty"`
 }
 
 // Validate checks that the AssignPayload has required fields populated.
