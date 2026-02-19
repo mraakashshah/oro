@@ -609,3 +609,522 @@ func indent(s string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// rustFixture is a realistic Rust source file with structs, impls, traits,
+// enums, functions, and pub visibility modifiers. ~4KB.
+const rustFixture = `use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::fmt;
+
+pub const DEFAULT_PORT: u16 = 8080;
+pub const MAX_CONNECTIONS: usize = 1000;
+
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[derive(Debug, Clone)]
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Options,
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub host: String,
+    pub port: u16,
+    pub debug: bool,
+    pub max_connections: usize,
+}
+
+#[derive(Debug)]
+pub struct Route {
+    pub method: HttpMethod,
+    pub path: String,
+    handler: Box<dyn Fn(&Request) -> Response + Send + Sync>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub method: HttpMethod,
+    pub path: String,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Response {
+    pub status: u16,
+    pub headers: HashMap<String, String>,
+    pub body: Vec<u8>,
+}
+
+pub trait Handler: Send + Sync {
+    fn handle(&self, req: &Request) -> Response;
+    fn name(&self) -> &str;
+}
+
+pub trait Middleware: Send + Sync {
+    fn process(&self, req: &Request, next: &dyn Handler) -> Response;
+}
+
+pub struct Router {
+    routes: Vec<Route>,
+    not_found: Option<Box<dyn Handler>>,
+}
+
+pub struct Server {
+    config: Config,
+    router: Arc<Mutex<Router>>,
+    middleware: Vec<Box<dyn Middleware>>,
+}
+
+impl Config {
+    pub fn new(host: impl Into<String>, port: u16) -> Self {
+        Config {
+            host: host.into(),
+            port,
+            debug: false,
+            max_connections: MAX_CONNECTIONS,
+        }
+    }
+
+    pub fn with_debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.port == 0 {
+            return Err("port cannot be 0".into());
+        }
+        if self.host.is_empty() {
+            return Err("host cannot be empty".into());
+        }
+        Ok(())
+    }
+}
+
+impl Router {
+    pub fn new() -> Self {
+        Router {
+            routes: Vec::new(),
+            not_found: None,
+        }
+    }
+
+    pub fn add(&mut self, method: HttpMethod, path: impl Into<String>, handler: impl Fn(&Request) -> Response + Send + Sync + 'static) {
+        self.routes.push(Route {
+            method,
+            path: path.into(),
+            handler: Box::new(handler),
+        });
+    }
+
+    pub fn match_route(&self, method: &HttpMethod, path: &str) -> Option<&Route> {
+        self.routes.iter().find(|r| {
+            std::mem::discriminant(&r.method) == std::mem::discriminant(method)
+                && r.path == path
+        })
+    }
+
+    pub fn route_count(&self) -> usize {
+        self.routes.len()
+    }
+}
+
+impl Default for Router {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Server {
+    pub fn new(config: Config) -> Self {
+        Server {
+            config,
+            router: Arc::new(Mutex::new(Router::new())),
+            middleware: Vec::new(),
+        }
+    }
+
+    pub fn use_middleware(&mut self, mw: impl Middleware + 'static) {
+        self.middleware.push(Box::new(mw));
+    }
+
+    pub fn handle(&self, method: HttpMethod, path: impl Into<String>, handler: impl Fn(&Request) -> Response + Send + Sync + 'static) {
+        let mut router = self.router.lock().unwrap();
+        router.add(method, path, handler);
+    }
+
+    pub fn start(&self) -> Result<()> {
+        self.config.validate()?;
+        println!("Server starting on {}:{}", self.config.host, self.config.port);
+        Ok(())
+    }
+}
+
+impl fmt::Display for HttpMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HttpMethod::Get => write!(f, "GET"),
+            HttpMethod::Post => write!(f, "POST"),
+            HttpMethod::Put => write!(f, "PUT"),
+            HttpMethod::Delete => write!(f, "DELETE"),
+            HttpMethod::Patch => write!(f, "PATCH"),
+            HttpMethod::Options => write!(f, "OPTIONS"),
+        }
+    }
+}
+
+pub fn create_server(host: impl Into<String>, port: u16) -> Server {
+    let config = Config::new(host, port);
+    Server::new(config)
+}
+
+pub fn health_check() -> Response {
+    let mut headers = HashMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    Response {
+        status: 200,
+        headers,
+        body: b"{\"status\": \"ok\"}".to_vec(),
+    }
+}
+
+fn parse_path(path: &str) -> Vec<&str> {
+    path.split('/').filter(|s| !s.is_empty()).collect()
+}
+
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{}m{}s", ms / 60_000, (ms % 60_000) / 1000)
+    }
+}
+`
+
+// javaFixture is a realistic Java source file with classes, interfaces,
+// enums, and methods. ~4KB.
+const javaFixture = `package com.example.server;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+public class ServerConfig {
+    private final String host;
+    private final int port;
+    private final boolean debug;
+    private final int maxConnections;
+
+    public ServerConfig(String host, int port) {
+        this.host = host;
+        this.port = port;
+        this.debug = false;
+        this.maxConnections = 1000;
+    }
+
+    public String getHost() { return host; }
+    public int getPort() { return port; }
+    public boolean isDebug() { return debug; }
+    public int getMaxConnections() { return maxConnections; }
+
+    public void validate() {
+        if (port < 1 || port > 65535) {
+            throw new IllegalArgumentException("Invalid port: " + port);
+        }
+        if (host == null || host.isEmpty()) {
+            throw new IllegalArgumentException("Host cannot be empty");
+        }
+    }
+}
+
+public interface Handler {
+    Response handle(Request request);
+    String getName();
+}
+
+public interface Middleware {
+    Response process(Request request, Handler next);
+}
+
+public enum HttpMethod {
+    GET, POST, PUT, DELETE, PATCH, OPTIONS;
+
+    public static HttpMethod fromString(String method) {
+        return HttpMethod.valueOf(method.toUpperCase());
+    }
+}
+
+public class Request {
+    private final HttpMethod method;
+    private final String path;
+    private final Map<String, String> headers;
+    private final byte[] body;
+
+    public Request(HttpMethod method, String path) {
+        this.method = method;
+        this.path = path;
+        this.headers = new HashMap<>();
+        this.body = new byte[0];
+    }
+
+    public HttpMethod getMethod() { return method; }
+    public String getPath() { return path; }
+    public Map<String, String> getHeaders() { return new HashMap<>(headers); }
+    public byte[] getBody() { return body.clone(); }
+}
+
+public class Response {
+    private final int status;
+    private final Map<String, String> headers;
+    private final byte[] body;
+
+    public Response(int status) {
+        this.status = status;
+        this.headers = new HashMap<>();
+        this.body = new byte[0];
+    }
+
+    public Response(int status, byte[] body) {
+        this.status = status;
+        this.headers = new HashMap<>();
+        this.body = body;
+    }
+
+    public int getStatus() { return status; }
+    public byte[] getBody() { return body.clone(); }
+}
+
+public class Route {
+    private final HttpMethod method;
+    private final String path;
+    private final Handler handler;
+
+    public Route(HttpMethod method, String path, Handler handler) {
+        this.method = method;
+        this.path = path;
+        this.handler = handler;
+    }
+
+    public HttpMethod getMethod() { return method; }
+    public String getPath() { return path; }
+    public Handler getHandler() { return handler; }
+}
+
+public class Router {
+    private final List<Route> routes = new ArrayList<>();
+
+    public void addRoute(HttpMethod method, String path, Handler handler) {
+        routes.add(new Route(method, path, handler));
+    }
+
+    public Optional<Handler> match(HttpMethod method, String path) {
+        return routes.stream()
+            .filter(r -> r.getMethod() == method && r.getPath().equals(path))
+            .map(Route::getHandler)
+            .findFirst();
+    }
+
+    public List<Route> getRoutes() {
+        return new ArrayList<>(routes);
+    }
+
+    public int getRouteCount() {
+        return routes.size();
+    }
+}
+
+public class Server {
+    private final ServerConfig config;
+    private final Router router;
+    private final List<Middleware> middlewares;
+    private boolean running;
+
+    public Server(ServerConfig config) {
+        this.config = config;
+        this.router = new Router();
+        this.middlewares = new ArrayList<>();
+        this.running = false;
+    }
+
+    public void addMiddleware(Middleware middleware) {
+        middlewares.add(middleware);
+    }
+
+    public void handle(HttpMethod method, String path, Handler handler) {
+        router.addRoute(method, path, handler);
+    }
+
+    public void start() {
+        config.validate();
+        this.running = true;
+        System.out.printf("Server starting on %s:%d%n", config.getHost(), config.getPort());
+    }
+
+    public void stop() {
+        this.running = false;
+    }
+
+    public boolean isRunning() { return running; }
+}
+
+public class ServerFactory {
+    public static Server create(String host, int port) {
+        ServerConfig config = new ServerConfig(host, port);
+        return new Server(config);
+    }
+
+    public static Response healthCheck() {
+        byte[] body = "{\"status\": \"ok\"}".getBytes();
+        return new Response(200, body);
+    }
+}
+`
+
+func TestSummarizeRust(t *testing.T) {
+	requireAstGrep(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.rs")
+	if err := os.WriteFile(path, []byte(rustFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	summary, err := codesearch.SummarizeFile(path)
+	if err != nil {
+		t.Fatalf("SummarizeFile(%s) error: %v", path, err)
+	}
+
+	origTokens := estimateTokens(rustFixture)
+	summaryTokens := estimateTokens(summary)
+	savings := 1.0 - float64(summaryTokens)/float64(origTokens)
+	t.Logf("original ~%d tokens, summary ~%d tokens, savings %.1f%%", origTokens, summaryTokens, savings*100)
+
+	if savings < 0.70 {
+		t.Errorf("token savings %.1f%% < 70%% threshold", savings*100)
+	}
+
+	checks := []struct {
+		name    string
+		pattern string
+	}{
+		{"Config struct", "struct Config"},
+		{"Router struct", "struct Router"},
+		{"Server struct", "struct Server"},
+		{"Handler trait", "trait Handler"},
+		{"Middleware trait", "trait Middleware"},
+		{"HttpMethod enum", "enum HttpMethod"},
+		{"create_server func", "func create_server"},
+		{"health_check func", "func health_check"},
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(summary, c.pattern) {
+			t.Errorf("summary missing %s (expected %q)\nsummary:\n%s", c.name, c.pattern, summary)
+		}
+	}
+
+	if !strings.Contains(summary, "L") {
+		t.Error("summary has no line numbers")
+	}
+
+	t.Logf("summary:\n%s", indent(summary))
+}
+
+func TestSummarizeJava(t *testing.T) {
+	requireAstGrep(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Server.java")
+	if err := os.WriteFile(path, []byte(javaFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	summary, err := codesearch.SummarizeFile(path)
+	if err != nil {
+		t.Fatalf("SummarizeFile(%s) error: %v", path, err)
+	}
+
+	origTokens := estimateTokens(javaFixture)
+	summaryTokens := estimateTokens(summary)
+	savings := 1.0 - float64(summaryTokens)/float64(origTokens)
+	t.Logf("original ~%d tokens, summary ~%d tokens, savings %.1f%%", origTokens, summaryTokens, savings*100)
+
+	if savings < 0.70 {
+		t.Errorf("token savings %.1f%% < 70%% threshold", savings*100)
+	}
+
+	checks := []struct {
+		name    string
+		pattern string
+	}{
+		{"ServerConfig class", "class ServerConfig"},
+		{"Handler interface", "interface Handler"},
+		{"Middleware interface", "interface Middleware"},
+		{"HttpMethod enum", "enum HttpMethod"},
+		{"Request class", "class Request"},
+		{"Response class", "class Response"},
+		{"Router class", "class Router"},
+		{"Server class", "class Server"},
+		{"ServerFactory class", "class ServerFactory"},
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(summary, c.pattern) {
+			t.Errorf("summary missing %s (expected %q)\nsummary:\n%s", c.name, c.pattern, summary)
+		}
+	}
+
+	if !strings.Contains(summary, "L") {
+		t.Error("summary has no line numbers")
+	}
+
+	t.Logf("summary:\n%s", indent(summary))
+}
+
+func TestSummarizeRustNotInstalled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lib.rs")
+	if err := os.WriteFile(path, []byte("pub fn hello() {}\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", "")
+	defer os.Setenv("PATH", origPath)
+
+	_, err := codesearch.SummarizeFile(path)
+	if err == nil {
+		t.Fatal("expected error when ast-grep not in PATH")
+	}
+	if !strings.Contains(err.Error(), "ast-grep") {
+		t.Errorf("error should mention ast-grep, got: %v", err)
+	}
+}
+
+func TestSummarizeJavaNotInstalled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Main.java")
+	if err := os.WriteFile(path, []byte("public class Main { public static void main(String[] args) {} }\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", "")
+	defer os.Setenv("PATH", origPath)
+
+	_, err := codesearch.SummarizeFile(path)
+	if err == nil {
+		t.Fatal("expected error when ast-grep not in PATH")
+	}
+	if !strings.Contains(err.Error(), "ast-grep") {
+		t.Errorf("error should mention ast-grep, got: %v", err)
+	}
+}
