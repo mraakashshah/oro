@@ -12,6 +12,12 @@ import (
 	"oro/pkg/protocol"
 )
 
+// countUniqueTrackingKeys returns the number of unique bead IDs across all
+// tracking maps. Caller must hold d.mu.
+func countUniqueTrackingKeys(d *Dispatcher) int {
+	return len(d.allTrackingKeys())
+}
+
 // assertTrackingMapsEmpty verifies all five tracking maps are empty for the given beadID.
 func assertTrackingMapsEmpty(t *testing.T, d *Dispatcher, beadID string) {
 	t.Helper()
@@ -603,4 +609,152 @@ func TestBuildStatusJSON_FiltersStaleAttemptCounts(t *testing.T) {
 	if count, exists := status.AttemptCounts[staleBeadID]; exists {
 		t.Errorf("staleBeadID should not be in attempt counts, got %d", count)
 	}
+}
+
+// TestBeadTrackerGrowthIsBounded verifies that pruneStaleTracking keeps map
+// sizes bounded. After N beads complete, orphaned entries are pruned within
+// one cleanup tick, leaving at most one entry per active bead.
+//
+// Edges covered:
+//   - bead closed without completion event → pruned on next cleanup tick
+//   - bead still in_progress (assigned to worker) → NOT pruned
+//   - empty maps → cleanup is no-op
+func TestBeadTrackerGrowthIsBounded(t *testing.T) {
+	t.Run("closed_beads_pruned_leaving_bounded_map", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		cancel := startDispatcher(t, d)
+		defer cancel()
+
+		const active = 3
+		const orphaned = 10
+
+		// Seed orphaned entries (beads that completed or closed externally).
+		for i := range orphaned {
+			seedTrackingMaps(d, fmt.Sprintf("bead-closed-%d", i))
+		}
+
+		// Connect real workers so shutdown sequence can send graceful stop messages.
+		activeIDs := make([]string, active)
+		for i := range active {
+			conn, _ := connectWorker(t, d.cfg.SocketPath)
+			wid := fmt.Sprintf("w%d", i)
+			sendMsg(t, conn, protocol.Message{
+				Type:      protocol.MsgHeartbeat,
+				Heartbeat: &protocol.HeartbeatPayload{WorkerID: wid, ContextPct: 5},
+			})
+			activeIDs[i] = fmt.Sprintf("bead-active-%d", i)
+		}
+		waitForWorkers(t, d, active, 2*time.Second)
+
+		// Seed active tracking entries (acquires its own lock internally).
+		for i := range active {
+			seedNonQGTrackingMaps(d, activeIDs[i])
+		}
+
+		// Assign beads to workers.
+		d.mu.Lock()
+		for i := range active {
+			wid := fmt.Sprintf("w%d", i)
+			if w, ok := d.workers[wid]; ok {
+				w.state = protocol.WorkerBusy
+				w.beadID = activeIDs[i]
+			}
+		}
+		d.mu.Unlock()
+
+		// Bead source returns nothing (orphaned beads are closed).
+		beadSrc.SetBeads(nil)
+
+		d.pruneStaleTracking(context.Background())
+
+		// Orphaned entries must be gone.
+		for i := range orphaned {
+			assertTrackingMapsEmpty(t, d, fmt.Sprintf("bead-closed-%d", i))
+		}
+
+		// Map size must be bounded to active beads.
+		d.mu.Lock()
+		total := countUniqueTrackingKeys(d)
+		d.mu.Unlock()
+
+		if total > active {
+			t.Errorf("map size after prune = %d, want <= %d (active beads)", total, active)
+		}
+	})
+
+	t.Run("bead_closed_without_completion_event_pruned_on_tick", func(t *testing.T) {
+		// A bead that was closed directly (e.g. `bd close`) without a DONE
+		// message reaching the dispatcher — tracking entries leak.
+		// pruneStaleTracking must clean these up on the next tick.
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		cancel := startDispatcher(t, d)
+		defer cancel()
+
+		ghost := "bead-ghost-no-event"
+		seedTrackingMaps(d, ghost)
+
+		// No worker assigned, not in ready queue.
+		beadSrc.SetBeads(nil)
+
+		d.pruneStaleTracking(context.Background())
+
+		assertTrackingMapsEmpty(t, d, ghost)
+	})
+
+	t.Run("in_progress_bead_not_pruned", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		cancel := startDispatcher(t, d)
+		defer cancel()
+
+		inProgress := "bead-wip"
+
+		// Connect a real worker so shutdown can send graceful stop.
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-wip", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 2*time.Second)
+
+		// Seed tracking maps and mark worker as busy.
+		seedNonQGTrackingMaps(d, inProgress)
+		d.mu.Lock()
+		if w, ok := d.workers["w-wip"]; ok {
+			w.state = protocol.WorkerBusy
+			w.beadID = inProgress
+		}
+		d.mu.Unlock()
+
+		beadSrc.SetBeads(nil)
+
+		d.pruneStaleTracking(context.Background())
+
+		// Tracking entries for an in_progress bead must survive.
+		d.mu.Lock()
+		count := d.handoffCounts[inProgress]
+		d.mu.Unlock()
+
+		if count != 1 {
+			t.Errorf("in_progress bead should not be pruned; handoffCounts = %d, want 1", count)
+		}
+	})
+
+	t.Run("empty_maps_cleanup_is_noop", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		cancel := startDispatcher(t, d)
+		defer cancel()
+
+		beadSrc.SetBeads(nil)
+
+		// Must not panic; total unique keys must remain 0.
+		d.pruneStaleTracking(context.Background())
+
+		d.mu.Lock()
+		total := countUniqueTrackingKeys(d)
+		d.mu.Unlock()
+
+		if total != 0 {
+			t.Errorf("empty maps: total keys after noop = %d, want 0", total)
+		}
+	})
 }
