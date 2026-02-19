@@ -278,6 +278,7 @@ func TestCreateWithNudges(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Collect send-keys calls per window.
 		var architectCalls, managerCalls [][]string
@@ -322,6 +323,7 @@ func TestCreateWithNudges(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {

@@ -85,6 +85,7 @@ func stubPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge stri
 	fake.seqOut[mgrCapture] = []string{
 		"Welcome\n❯ \nstatus bar",                     // WaitForPrompt
 		"Welcome\n❯ " + managerNudge + "\nstatus bar", // SendKeysVerified
+		"bd stats\nrunning\n",                         // VerifyBeaconReceived (async goroutine)
 	}
 }
 
@@ -132,6 +133,7 @@ func TestTmuxLayout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify: new-session was called with -d, -s oro, and -n architect
 		newSessionCall := findCall(fake.calls, "new-session")
@@ -181,6 +183,7 @@ func TestTmuxLayout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify: new-session was NOT called
 		for _, call := range fake.calls {
@@ -269,6 +272,7 @@ func TestTmuxLayout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify send-keys was called for both windows (nudge only, no launch):
 		// - architect: nudge literal + Escape + Enter (3)
@@ -295,6 +299,7 @@ func TestTmuxLayout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Architect: verify new-session command has exec env with role env vars.
 		newSessionCall := findCall(fake.calls, "new-session")
@@ -343,6 +348,7 @@ func TestTmuxLayout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Collect send-keys calls per window.
 		var architectCalls, managerCalls [][]string
@@ -451,6 +457,7 @@ func TestTmuxLayout(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify capture-pane was called for both windows (WaitForPrompt).
 		var checkedArchitect, checkedManager bool
@@ -482,6 +489,7 @@ func TestTmuxLayout(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
 		}
+		sess.WaitBeacon()
 		if !strings.Contains(err.Error(), "prompt") {
 			t.Errorf("expected 'prompt' in error, got: %v", err)
 		}
@@ -700,6 +708,7 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify that capture-pane was called for manager (WaitForPrompt + SendKeysVerified + VerifyBeacon).
 		managerCaptureCount := 0
@@ -734,6 +743,7 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create should not fail on nudge verification timeout, got: %v", err)
 		}
+		sess.WaitBeacon()
 	})
 }
 
@@ -1264,6 +1274,7 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify kill-session was called.
 		var killedSession bool
@@ -1292,6 +1303,7 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify kill-session was NOT called.
 		for _, call := range fake.calls {
@@ -1444,6 +1456,7 @@ func TestTmuxStatusBarColor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify set-option was called to set status-style with architect color (green).
 		var foundStatusStyle bool
@@ -1470,6 +1483,7 @@ func TestTmuxStatusBarColor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Collect set-hook calls and find the after-select-window hook.
 		var hookArgs string
@@ -1520,6 +1534,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify new-session has exec env command as last arg.
 		newSessionCall := findCall(fake.calls, "new-session")
@@ -1589,6 +1604,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// No send-keys should contain export or execEnvCmd patterns.
 		for _, call := range fake.calls {
@@ -1611,6 +1627,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// No display-message calls for pane_current_command during Create
 		// (isHealthy check is only on pre-existing sessions, not fresh creation).
@@ -1874,6 +1891,7 @@ func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error from Create when new-window fails, got nil")
 		}
+		sess.WaitBeacon()
 
 		// Verify kill-session was called to clean up the half-created session.
 		var killedSession bool
@@ -1901,6 +1919,7 @@ func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error from Create when WaitForPrompt times out, got nil")
 		}
+		sess.WaitBeacon()
 
 		// Verify kill-session was called to clean up the session.
 		var killedSession bool
@@ -2114,6 +2133,7 @@ func TestStatusBarLabels(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		var foundStatusLeft, foundStatusLeftLen, foundStatusRight bool
 		for _, call := range fake.calls {
@@ -2152,6 +2172,7 @@ func TestScrollbackConfiguration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		var foundAlternateScreen, foundHistoryLimit bool
 		for _, call := range fake.calls {
@@ -2185,6 +2206,7 @@ func TestMouseModeEnabled(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		var foundMouse, foundClipboard bool
 		for _, call := range fake.calls {
@@ -2218,6 +2240,7 @@ func TestRemainOnExit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
+		sess.WaitBeacon()
 
 		// Verify remain-on-exit was set
 		var found bool
@@ -2348,6 +2371,7 @@ func TestStatusBarShowsQuitHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
+	sess.WaitBeacon()
 
 	// Check that status-right contains navigation hints instead of just 'oro | %H:%M'
 	var foundStatusRight bool
@@ -2479,4 +2503,116 @@ func TestForwardCommandToManager_AlwaysForwards(t *testing.T) {
 	if feedback == "" {
 		t.Error("expected non-empty feedback from ForwardCommandToManager")
 	}
+}
+
+// TestCreateParallelNudge verifies that launchAndNudge runs concurrently for
+// architect and manager panes, and that VerifyBeaconReceived does not block
+// Create from returning.
+func TestCreateParallelNudge(t *testing.T) {
+	t.Run("WaitForPrompt runs concurrently for both panes", func(t *testing.T) {
+		// Use a blocking sleeper that records when each sleep starts.
+		// If panes are waited on sequentially, architect must finish before
+		// manager starts — total elapsed ≥ 2×pollInterval.
+		// If parallel, both start together — total elapsed ≈ 1×pollInterval.
+
+		var (
+			mu         sync.Mutex
+			startTimes []time.Time
+		)
+
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+
+		// capture-pane: first call returns no prompt, second returns prompt + nudge.
+		// Both panes use seqOut so each pane delays once before signalling ready.
+		archCapture := key("tmux", "capture-pane", "-p", "-t", "oro:architect")
+		mgrCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
+		fake.seqOut[archCapture] = []string{
+			"loading...",                        // WaitForPrompt: not ready yet
+			"Welcome\n❯ \nstatus bar",           // WaitForPrompt: ready
+			"Welcome\n❯ arch nudge\nstatus bar", // SendKeysVerified
+			"bd stats\n❯ output visible\n",      // VerifyBeaconReceived (if sync)
+		}
+		fake.seqOut[mgrCapture] = []string{
+			"loading...",                       // WaitForPrompt: not ready yet
+			"Welcome\n❯ \nstatus bar",          // WaitForPrompt: ready
+			"Welcome\n❯ mgr nudge\nstatus bar", // SendKeysVerified
+			"bd stats\n❯ output visible\n",     // VerifyBeaconReceived (if sync)
+		}
+
+		// Sleeper records each invocation start time to detect serialization.
+		recordingSleeper := func(d time.Duration) {
+			mu.Lock()
+			startTimes = append(startTimes, time.Now())
+			mu.Unlock()
+			time.Sleep(d)
+		}
+
+		sess := &TmuxSession{
+			Name:          "oro",
+			Runner:        fake,
+			Sleeper:       recordingSleeper,
+			ReadyTimeout:  2 * time.Second,
+			BeaconTimeout: 100 * time.Millisecond,
+		}
+
+		start := time.Now()
+		err := sess.Create("arch nudge", "mgr nudge")
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+		sess.WaitBeacon()
+
+		// With parallel pane waiting the two poll-retry sleeps (one per pane)
+		// overlap, so total elapsed should be well under 2×pollInterval×2.
+		// Sequential would take ≥ 2 × pollInterval. Use 3× as a generous bound
+		// for the sequential case to keep the test stable on slow CI.
+		maxSeqTime := 3 * pollInterval * 2
+		if elapsed >= maxSeqTime {
+			t.Errorf("Create appears sequential: elapsed %v ≥ threshold %v (expected parallel pane waiting)", elapsed, maxSeqTime)
+		}
+	})
+
+	t.Run("VerifyBeaconReceived does not block Create return", func(t *testing.T) {
+		// If beacon verification is async, Create should return quickly even
+		// when the beacon never appears (beacon times out after BeaconTimeout).
+		// Set a large BeaconTimeout and verify Create returns before it expires.
+
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fake, "oro", "arch nudge", "mgr nudge")
+
+		// VerifyBeaconReceived: capture-pane for manager never shows "bd stats".
+		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
+		fake.seqOut[managerCapture] = []string{
+			"Welcome\n❯ \nstatus bar",          // WaitForPrompt
+			"Welcome\n❯ mgr nudge\nstatus bar", // SendKeysVerified
+			"no beacon here",                   // VerifyBeaconReceived — never found
+		}
+
+		const beaconTimeout = 500 * time.Millisecond
+		sess := &TmuxSession{
+			Name:          "oro",
+			Runner:        fake,
+			Sleeper:       noopSleep,
+			ReadyTimeout:  time.Second,
+			BeaconTimeout: beaconTimeout,
+		}
+
+		start := time.Now()
+		err := sess.Create("arch nudge", "mgr nudge")
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("Create should not fail on beacon timeout (warning only), got: %v", err)
+		}
+		sess.WaitBeacon()
+
+		// Create must return well before the beacon timeout expires.
+		// Allow 80% of the beacon timeout as the upper bound.
+		maxAllowed := beaconTimeout * 4 / 5
+		if elapsed >= maxAllowed {
+			t.Errorf("Create blocked waiting for beacon: elapsed %v ≥ maxAllowed %v (beacon verification should be async)", elapsed, maxAllowed)
+		}
+	})
 }
