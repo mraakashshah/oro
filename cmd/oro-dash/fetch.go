@@ -35,9 +35,9 @@ func parseBeadsOutput(output string) ([]protocol.Bead, error) {
 func fetchBeadsWithStatus(ctx context.Context, status string) ([]protocol.Bead, error) {
 	var cmd *exec.Cmd
 	if status == "" {
-		cmd = exec.CommandContext(ctx, "bd", "list", "--json")
+		cmd = exec.CommandContext(ctx, "bd", "list", "--json") //nolint:gosec // G204: "bd" is a trusted internal CLI, not user input
 	} else {
-		cmd = exec.CommandContext(ctx, "bd", "list", "--status", status, "--json")
+		cmd = exec.CommandContext(ctx, "bd", "list", "--status", status, "--json") //nolint:gosec // G204: "bd" is a trusted internal CLI, status is an enum value
 	}
 
 	out, err := cmd.Output()

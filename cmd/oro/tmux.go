@@ -23,7 +23,7 @@ type ExecRunner struct{}
 
 // Run executes a command and returns its combined output.
 func (e *ExecRunner) Run(name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...) //nolint:gosec // G204: name is always "tmux", args are controlled by internal callers
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }

@@ -548,6 +548,6 @@ func ingestKnowledgeOnStartup(db *sql.DB) {
 	}
 
 	if count > 0 {
-		fmt.Fprintf(os.Stderr, "info: ingested %d knowledge entries from %s\n", count, knowledgePath)
+		fmt.Fprintf(os.Stderr, "info: ingested %d knowledge entries from %s\n", count, knowledgePath) //nolint:gosec // G705: writing to stderr, not an HTTP response
 	}
 }
