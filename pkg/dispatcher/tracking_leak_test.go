@@ -18,7 +18,7 @@ func countUniqueTrackingKeys(d *Dispatcher) int {
 	return len(d.allTrackingKeys())
 }
 
-// assertTrackingMapsEmpty verifies all five tracking maps are empty for the given beadID.
+// assertTrackingMapsEmpty verifies all nine tracking maps are empty for the given beadID.
 func assertTrackingMapsEmpty(t *testing.T, d *Dispatcher, beadID string) {
 	t.Helper()
 	d.mu.Lock()
@@ -39,9 +39,21 @@ func assertTrackingMapsEmpty(t *testing.T, d *Dispatcher, beadID string) {
 	if _, ok := d.qgStuckTracker[beadID]; ok {
 		t.Errorf("qgStuckTracker[%s] still present, want deleted", beadID)
 	}
+	if _, ok := d.escalatedBeads[beadID]; ok {
+		t.Errorf("escalatedBeads[%s] still present, want deleted", beadID)
+	}
+	if _, ok := d.worktreeFailures[beadID]; ok {
+		t.Errorf("worktreeFailures[%s] still present, want deleted", beadID)
+	}
+	if _, ok := d.exhaustedBeads[beadID]; ok {
+		t.Errorf("exhaustedBeads[%s] still present, want deleted", beadID)
+	}
+	if _, ok := d.assigningBeads[beadID]; ok {
+		t.Errorf("assigningBeads[%s] still present, want deleted", beadID)
+	}
 }
 
-// seedTrackingMaps populates all five tracking maps with non-zero entries for beadID.
+// seedTrackingMaps populates all nine tracking maps with non-zero entries for beadID.
 func seedTrackingMaps(d *Dispatcher, beadID string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -50,6 +62,10 @@ func seedTrackingMaps(d *Dispatcher, beadID string) {
 	d.rejectionCounts[beadID] = 1
 	d.pendingHandoffs[beadID] = &pendingHandoff{beadID: beadID, worktree: "/tmp/wt", model: "m"}
 	d.qgStuckTracker[beadID] = &qgHistory{hashes: []string{"abc"}}
+	d.escalatedBeads[beadID] = true
+	d.worktreeFailures[beadID] = d.nowFunc()
+	d.exhaustedBeads[beadID] = true
+	d.assigningBeads[beadID] = true
 }
 
 // seedNonQGTrackingMaps populates the tracking maps that do NOT interfere with
@@ -176,6 +192,16 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		if !found {
 			t.Fatalf("expected QG cap escalation, got: %v", msgs)
 		}
+
+		// exhaustedBeads is intentionally set AFTER clearBeadTracking to block
+		// re-assignment of beads that exhausted QG retries. Verify it's set,
+		// then clear it so assertTrackingMapsEmpty can check all other maps.
+		d.mu.Lock()
+		if !d.exhaustedBeads[beadID] {
+			t.Errorf("exhaustedBeads[%s] should be set after QG retry cap", beadID)
+		}
+		delete(d.exhaustedBeads, beadID)
+		d.mu.Unlock()
 
 		assertTrackingMapsEmpty(t, d, beadID)
 	})
