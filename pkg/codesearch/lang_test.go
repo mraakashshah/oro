@@ -93,6 +93,34 @@ func TestLangFromPath(t *testing.T) {
 			wantOK:   true,
 		},
 
+		// --- Rust files ---
+		{
+			name:     "Rust file",
+			filePath: "/project/src/main.rs",
+			wantLang: codesearch.LangRust,
+			wantOK:   true,
+		},
+		{
+			name:     "Rust file uppercase extension",
+			filePath: "/project/lib.RS",
+			wantLang: codesearch.LangRust,
+			wantOK:   true,
+		},
+
+		// --- Java files ---
+		{
+			name:     "Java file",
+			filePath: "/project/src/main/java/Server.java",
+			wantLang: codesearch.LangJava,
+			wantOK:   true,
+		},
+		{
+			name:     "Java file uppercase extension",
+			filePath: "/project/Main.JAVA",
+			wantLang: codesearch.LangJava,
+			wantOK:   true,
+		},
+
 		// --- Unsupported / edge cases ---
 		{
 			name:     "empty path",
@@ -113,8 +141,14 @@ func TestLangFromPath(t *testing.T) {
 			wantOK:   false,
 		},
 		{
-			name:     "unsupported code extension",
-			filePath: "/project/main.rs",
+			name:     "unsupported code extension (Swift)",
+			filePath: "/project/main.swift",
+			wantLang: "",
+			wantOK:   false,
+		},
+		{
+			name:     "unsupported code extension (C++)",
+			filePath: "/project/main.cpp",
 			wantLang: "",
 			wantOK:   false,
 		},

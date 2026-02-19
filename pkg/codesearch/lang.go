@@ -15,16 +15,20 @@ const (
 	LangPython     Language = "python"
 	LangTypeScript Language = "typescript"
 	LangJavaScript Language = "javascript"
+	LangRust       Language = "rust"
+	LangJava       Language = "java"
 )
 
 var extToLang = map[string]Language{ //nolint:gochecknoglobals // static config
-	".go":  LangGo,
-	".py":  LangPython,
-	".ts":  LangTypeScript,
-	".tsx": LangTypeScript,
-	".js":  LangJavaScript,
-	".jsx": LangJavaScript,
-	".mjs": LangJavaScript,
+	".go":   LangGo,
+	".py":   LangPython,
+	".ts":   LangTypeScript,
+	".tsx":  LangTypeScript,
+	".js":   LangJavaScript,
+	".jsx":  LangJavaScript,
+	".mjs":  LangJavaScript,
+	".rs":   LangRust,
+	".java": LangJava,
 }
 
 // LangFromPath returns the language for a file path based on its extension.
