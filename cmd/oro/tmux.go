@@ -68,6 +68,7 @@ type TmuxSession struct {
 	Sleeper       func(time.Duration) // optional; overrides time.Sleep for testing
 	ReadyTimeout  time.Duration       // timeout for Claude readiness polling; 0 means defaultReadyTimeout
 	BeaconTimeout time.Duration       // timeout for beacon verification polling; 0 means defaultBeaconTimeout
+	beaconWg      sync.WaitGroup      // tracks background beacon verification goroutine
 }
 
 // NewTmuxSession creates a TmuxSession with the default ExecRunner.
@@ -234,27 +235,10 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		return err
 	}
 
-	// Launch Claude in both windows, wait for readiness, and inject nudges.
-	for _, w := range []struct {
-		role, nudge string
-	}{
-		{"architect", architectNudge},
-		{"manager", managerNudge},
-	} {
-		if err := s.launchAndNudge(w.role, w.nudge); err != nil {
-			_ = s.Kill() // cleanup on partial creation failure
-			return err
-		}
-	}
-
-	// Verify manager received nudge (look for bd stats execution).
-	beaconTimeout := s.BeaconTimeout
-	if beaconTimeout == 0 {
-		beaconTimeout = defaultBeaconTimeout
-	}
-	if err := s.VerifyBeaconReceived(s.Name+":manager", "bd stats", beaconTimeout); err != nil {
-		// Warning only — don't fail startup.
-		fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
+	// Launch Claude in both windows concurrently and start async beacon check.
+	if err := s.launchAndNudgeAll(architectNudge, managerNudge); err != nil {
+		_ = s.Kill()
+		return err
 	}
 
 	// Register pane-died hooks for crash detection.
@@ -316,6 +300,47 @@ func (s *TmuxSession) configureSessionOptions() error {
 		return fmt.Errorf("tmux set-option set-clipboard: %w", err)
 	}
 
+	return nil
+}
+
+// launchAndNudgeAll launches nudges concurrently for all panes and starts the
+// async beacon verification goroutine. Returns the first nudge error (if any).
+func (s *TmuxSession) launchAndNudgeAll(architectNudge, managerNudge string) error {
+	type nudgeResult struct {
+		role string
+		err  error
+	}
+	results := make(chan nudgeResult, 2)
+	for _, w := range []struct{ role, nudge string }{
+		{"architect", architectNudge},
+		{"manager", managerNudge},
+	} {
+		go func() {
+			results <- nudgeResult{role: w.role, err: s.launchAndNudge(w.role, w.nudge)}
+		}()
+	}
+	var nudgeErr error
+	for range 2 {
+		r := <-results
+		if r.err != nil && nudgeErr == nil {
+			nudgeErr = fmt.Errorf("%s: %w", r.role, r.err)
+		}
+	}
+	if nudgeErr != nil {
+		return nudgeErr
+	}
+	// Start async beacon verification — warning-only, must not block startup.
+	beaconTimeout := s.BeaconTimeout
+	if beaconTimeout == 0 {
+		beaconTimeout = defaultBeaconTimeout
+	}
+	s.beaconWg.Add(1)
+	go func() {
+		defer s.beaconWg.Done()
+		if err := s.VerifyBeaconReceived(s.Name+":manager", "bd stats", beaconTimeout); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
+		}
+	}()
 	return nil
 }
 
@@ -437,6 +462,14 @@ func (s *TmuxSession) sleep(d time.Duration) {
 		return
 	}
 	time.Sleep(d)
+}
+
+// WaitBeacon blocks until the background beacon verification goroutine
+// (launched by Create) has finished. This is a no-op if Create has not been
+// called or if the goroutine has already completed. Primarily useful in tests
+// to ensure all background goroutines have exited before inspecting state.
+func (s *TmuxSession) WaitBeacon() {
+	s.beaconWg.Wait()
 }
 
 // SendKeys sends text to a Claude Code tmux pane and presses Enter.
