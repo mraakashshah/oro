@@ -29,17 +29,18 @@ type Bead struct {
 
 // BeadDetail holds extended information about a single bead.
 type BeadDetail struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	Description        string `json:"description,omitempty"`
-	AcceptanceCriteria string `json:"acceptance_criteria"`
-	Status             string `json:"status,omitempty"`
-	Model              string `json:"model,omitempty"`
-	WorkerID           string `json:"worker_id,omitempty"`
-	ContextPercent     int    `json:"context_percent,omitempty"`
-	LastHeartbeat      string `json:"last_heartbeat,omitempty"`
-	GitDiff            string `json:"git_diff,omitempty"`
-	Memory             string `json:"memory,omitempty"`
+	ID                 string       `json:"id"`
+	Title              string       `json:"title"`
+	Description        string       `json:"description,omitempty"`
+	AcceptanceCriteria string       `json:"acceptance_criteria"`
+	Status             string       `json:"status,omitempty"`
+	Model              string       `json:"model,omitempty"`
+	WorkerID           string       `json:"worker_id,omitempty"`
+	ContextPercent     int          `json:"context_percent,omitempty"`
+	LastHeartbeat      string       `json:"last_heartbeat,omitempty"`
+	GitDiff            string       `json:"git_diff,omitempty"`
+	Memory             string       `json:"memory,omitempty"`
+	Dependencies       []Dependency `json:"dependencies,omitempty"`
 }
 
 // Model constants for routing.

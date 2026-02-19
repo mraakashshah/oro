@@ -25,6 +25,12 @@ type workerOutputMsg struct {
 	err    error
 }
 
+// navigateToDepMsg is sent when the user presses Enter on a dependency in the Deps tab.
+// It carries the ID of the dependency bead to navigate to.
+type navigateToDepMsg struct {
+	beadID string
+}
+
 // DetailModel represents the detail drilldown view for a single bead.
 type DetailModel struct {
 	bead              protocol.BeadDetail
@@ -42,6 +48,7 @@ type DetailModel struct {
 	height            int            // Terminal height
 	theme             Theme          // Pre-computed theme for render methods
 	styles            Styles         // Pre-computed styles for render methods
+	depSelectedIdx    int            // Index of the currently selected dependency in the Deps tab
 }
 
 // fetchWorkerEventsCmd returns a tea.Cmd that fetches worker events asynchronously.
@@ -103,6 +110,7 @@ func newDetailModel(bead protocol.BeadDetail, theme Theme, styles Styles) Detail
 		height:            24,
 		theme:             theme,
 		styles:            styles,
+		depSelectedIdx:    0,
 	}
 
 	// Set initial viewport content
@@ -125,6 +133,40 @@ func (d DetailModel) prevTab() DetailModel {
 	return d
 }
 
+// depsTabActive returns true when the Deps tab (index 3) is the active tab.
+func (d DetailModel) depsTabActive() bool {
+	return d.activeTab == 3
+}
+
+// handleDepsKey processes j/k/enter keys when the Deps tab is active.
+// Returns the updated model and an optional command (navigateToDepMsg on Enter).
+func (d DetailModel) handleDepsKey(key string) (DetailModel, tea.Cmd) {
+	deps := d.bead.Dependencies
+	switch key {
+	case "j", "down":
+		if len(deps) > 0 && d.depSelectedIdx < len(deps)-1 {
+			d.depSelectedIdx++
+			d.setViewportContent(d.getActiveTabContent())
+		}
+		return d, nil
+	case "k", "up":
+		if d.depSelectedIdx > 0 {
+			d.depSelectedIdx--
+			d.setViewportContent(d.getActiveTabContent())
+		}
+		return d, nil
+	case "enter":
+		if len(deps) > 0 && d.depSelectedIdx < len(deps) {
+			selectedID := deps[d.depSelectedIdx].DependsOnID
+			return d, func() tea.Msg {
+				return navigateToDepMsg{beadID: selectedID}
+			}
+		}
+		return d, nil
+	}
+	return d, nil
+}
+
 // Update handles messages for DetailModel, including viewport scrolling and window resize.
 //
 //nolint:unparam // tea.Cmd return required by Bubble Tea Update interface
@@ -133,19 +175,7 @@ func (d DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		// Update dimensions
-		d.width = msg.Width
-		d.height = msg.Height
-
-		// Resize viewport (accounting for tab bar and status bar)
-		statusBarHeight := 2
-		tabBarHeight := 2
-		viewportHeight := msg.Height - statusBarHeight - tabBarHeight
-		if viewportHeight < 1 {
-			viewportHeight = 1
-		}
-		d.tabViewport.Width = msg.Width
-		d.tabViewport.Height = viewportHeight
+		d = d.handleWindowResize(msg)
 
 	case tea.KeyMsg:
 		// Sync viewport content if tab changed (direct activeTab assignment)
@@ -155,11 +185,33 @@ func (d DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			d.viewportActiveTab = d.activeTab
 		}
 
+		// On the Deps tab, j/k/Enter are handled by the deps cursor; other keys fall through.
+		if d.depsTabActive() {
+			return d.handleDepsKey(msg.String())
+		}
+
 		// Handle viewport scrolling keys
 		d.tabViewport, cmd = d.tabViewport.Update(msg)
 	}
 
 	return d, cmd
+}
+
+// handleWindowResize updates dimensions and resizes the viewport on a WindowSizeMsg.
+func (d DetailModel) handleWindowResize(msg tea.WindowSizeMsg) DetailModel {
+	d.width = msg.Width
+	d.height = msg.Height
+
+	// Resize viewport (accounting for tab bar and status bar)
+	statusBarHeight := 2
+	tabBarHeight := 2
+	viewportHeight := msg.Height - statusBarHeight - tabBarHeight
+	if viewportHeight < 1 {
+		viewportHeight = 1
+	}
+	d.tabViewport.Width = msg.Width
+	d.tabViewport.Height = viewportHeight
+	return d
 }
 
 // setViewportContent updates the viewport with new content and resets scroll to top.
@@ -309,11 +361,31 @@ func (d DetailModel) renderDiffTab(styles Styles) string {
 	return d.bead.GitDiff
 }
 
-// renderDepsTab renders the Deps tab with dependency information.
+// renderDepsTab renders the Deps tab with an interactive dependency tree.
+// Each dependency is listed with a cursor indicator on the selected item.
+// j/k moves the cursor; Enter navigates to the selected dependency's detail view.
 func (d DetailModel) renderDepsTab(styles Styles) string {
-	// Edge case: bead has no deps → show 'No dependencies'
-	// For now, BeadDetail doesn't have dependency fields, so always show placeholder
-	return styles.DetailDimItalic.Render("No dependencies")
+	deps := d.bead.Dependencies
+	if len(deps) == 0 {
+		return styles.DetailDimItalic.Render("No dependencies")
+	}
+
+	lines := make([]string, 0, len(deps)+4)
+	lines = append(lines, styles.DetailBold.Render("Dependencies:"), "")
+
+	for i, dep := range deps {
+		var line string
+		if i == d.depSelectedIdx {
+			line = styles.Highlight.Render("▸ " + dep.DependsOnID)
+		} else {
+			line = "  " + styles.IDMuted.Render(dep.DependsOnID)
+		}
+		lines = append(lines, line)
+	}
+
+	lines = append(lines, "", styles.DetailDimItalic.Render("j/k navigate  Enter open"))
+
+	return strings.Join(lines, "\n")
 }
 
 // renderMemoryTab renders the Memory tab with injected context.
