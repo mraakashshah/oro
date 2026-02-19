@@ -870,6 +870,48 @@ func (d *Dispatcher) fetchBeadMemories(ctx context.Context, beadID string) strin
 	return memCtx
 }
 
+// storeRejectionFeedback persists reviewer feedback as a "gotcha" memory so
+// it becomes part of the bead's cross-session memory history. This allows
+// subsequent re-assigns to retrieve the full rejection history via ForPrompt.
+// Best-effort: errors are silently ignored.
+func (d *Dispatcher) storeRejectionFeedback(ctx context.Context, beadID, feedback string) {
+	if d.memories == nil || feedback == "" {
+		return
+	}
+	content := fmt.Sprintf("Reviewer rejected this bead: %s", feedback)
+	_, _ = d.memories.Insert(ctx, memory.InsertParams{
+		Content:    content,
+		Type:       "gotcha",
+		Source:     "daemon_extracted",
+		BeadID:     beadID,
+		Confidence: 0.9,
+	})
+}
+
+// buildRejectionMemoryContext stores the current reviewer feedback as a memory
+// and returns a MemoryContext that includes the rejection feedback prepended to
+// any general memories retrieved for the bead. This ensures the worker always
+// sees why it was rejected, even when the memory store has no prior entries.
+func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, feedback string) string {
+	// Persist the rejection feedback so it accumulates across retry cycles.
+	d.storeRejectionFeedback(ctx, beadID, feedback)
+
+	// Fetch general memories (now includes the just-stored feedback).
+	generalMemCtx := d.fetchBeadMemories(ctx, beadID)
+
+	// Always prepend a rejection section so the worker sees the current
+	// rejection reason even if ForPrompt returns nothing (cold store).
+	if feedback == "" {
+		return generalMemCtx
+	}
+
+	rejectionSection := fmt.Sprintf("## Review Rejection Feedback\n%s", feedback)
+	if generalMemCtx == "" {
+		return rejectionSection
+	}
+	return rejectionSection + "\n\n" + generalMemCtx
+}
+
 // mergeAndComplete runs merge.Coordinator.Merge and handles the result.
 func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch string) {
 	result, err := d.merger.Merge(ctx, merge.Opts{
@@ -1323,9 +1365,11 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	d.mu.Unlock()
 
 	d.withReservation(workerID,
-		// I/O function: fetch memories outside lock
+		// I/O function: store rejection feedback and build memory context outside lock.
+		// Persisting the feedback before ForPrompt ensures the current rejection reason
+		// is retrievable in subsequent retry cycles via the memory store.
 		func() string {
-			return d.fetchBeadMemories(ctx, beadID)
+			return d.buildRejectionMemoryContext(ctx, beadID, feedback)
 		},
 		// Assign function: update state and send message under lock
 		func(w *trackedWorker, memCtx string) bool {

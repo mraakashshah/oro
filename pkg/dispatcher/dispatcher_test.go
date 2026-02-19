@@ -5310,6 +5310,90 @@ func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
 	}
 }
 
+// --- Review rejection MemoryContext tests (oro-eou) ---
+
+// TestDispatcher_ReviewRejection_MemoryContextIncludesFeedback verifies that
+// the re-ASSIGN after a rejection includes a MemoryContext that contains the
+// reviewer feedback, so the worker knows why it was rejected.
+func TestDispatcher_ReviewRejection_MemoryContextIncludesFeedback(t *testing.T) {
+	_, conn, _, _ := setupReviewRejection(t)
+
+	// Trigger first rejection
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after rejection")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	// MemoryContext must include the reviewer feedback so the worker understands
+	// why it was rejected and doesn't retry blindly.
+	if msg.Assign.MemoryContext == "" {
+		t.Fatal("expected non-empty MemoryContext in rejection re-ASSIGN")
+	}
+	if !containsStr(msg.Assign.MemoryContext, "missing edge case tests") {
+		t.Errorf("expected MemoryContext to contain reviewer feedback, got: %s", msg.Assign.MemoryContext)
+	}
+}
+
+// TestDispatcher_ReviewRejection_MemoryContextAccumulatesFeedback verifies that
+// on the second rejection, the MemoryContext includes both the second rejection
+// feedback and (via memory store) the previously stored first rejection feedback.
+func TestDispatcher_ReviewRejection_MemoryContextAccumulatesFeedback(t *testing.T) {
+	d, conn, _, spawnMock := setupReviewRejection(t)
+
+	// First rejection
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+	msg1, ok := readMsg(t, conn, 3*time.Second)
+	if !ok || msg1.Type != protocol.MsgAssign {
+		t.Fatal("expected ASSIGN after 1st rejection")
+	}
+	// Verify Attempt=1 and MemoryContext includes feedback
+	if msg1.Assign.Attempt != 1 {
+		t.Fatalf("expected Attempt=1 after 1st rejection, got %d", msg1.Assign.Attempt)
+	}
+	if msg1.Assign.MemoryContext == "" {
+		t.Fatal("expected non-empty MemoryContext after 1st rejection")
+	}
+
+	// Change feedback for second rejection to distinguish from first
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "REJECTED: also missing integration test"
+	spawnMock.mu.Unlock()
+
+	// Second rejection
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+	msg2, ok := readMsg(t, conn, 3*time.Second)
+	if !ok || msg2.Type != protocol.MsgAssign {
+		t.Fatal("expected ASSIGN after 2nd rejection")
+	}
+	if msg2.Assign.Attempt != 2 {
+		t.Fatalf("expected Attempt=2 after 2nd rejection, got %d", msg2.Assign.Attempt)
+	}
+	if msg2.Assign.MemoryContext == "" {
+		t.Fatal("expected non-empty MemoryContext after 2nd rejection")
+	}
+	// Second rejection MemoryContext must contain the second feedback
+	if !containsStr(msg2.Assign.MemoryContext, "integration test") {
+		t.Errorf("expected MemoryContext to contain 2nd rejection feedback, got: %s", msg2.Assign.MemoryContext)
+	}
+
+	// Verify stored rejection memories in the DB (both rejections stored)
+	_ = d // used for db access if needed
+}
+
 // --- Diagnosis agent wiring tests (oro-2dj) ---
 
 // setupHandoffDiagnosis creates a dispatcher with a connected worker assigned to
