@@ -65,13 +65,11 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir → primaryRepo derived by stripping /.git
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git rev-list --reverse main..bead/abc
-			{Stdout: "commit1\ncommit2\n", Stderr: "", Err: nil},
-			// 4. git cherry-pick commit1 (in primary repo)
+			// 3. git worktree remove (fallback via GitRunner, no WorktreeRemover set)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 5. git cherry-pick commit2 (in primary repo)
+			// 4. git merge --ff-only bead/abc (in primary repo)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 6. git rev-parse HEAD (in primary repo)
+			// 5. git rev-parse HEAD (in primary repo)
 			{Stdout: "abc123def456\n", Stderr: "", Err: nil},
 		},
 	}
@@ -91,10 +89,10 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 		t.Errorf("expected commit SHA abc123def456, got %q", result.CommitSHA)
 	}
 
-	// Verify the git commands issued
+	// Verify the git commands issued — ff-merge flow (no cherry-pick)
 	calls := mock.getCalls()
-	if len(calls) != 7 {
-		t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 6 {
+		t.Fatalf("expected 6 git calls, got %d: %+v", len(calls), calls)
 	}
 
 	// Call 0: isBranchMerged check
@@ -103,14 +101,12 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 	assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 	// Call 2: rev-parse --git-common-dir
 	assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
-	// Call 3: rev-list (no more rev-parse --show-toplevel — primaryRepo derived from commonDir)
-	assertArgs(t, calls[3], "/tmp/wt-abc", "rev-list", "--reverse", "main..bead/abc")
-	// Call 4: cherry-pick commit1
-	assertArgs(t, calls[4], "/repo", "cherry-pick", "commit1")
-	// Call 5: cherry-pick commit2
-	assertArgs(t, calls[5], "/repo", "cherry-pick", "commit2")
-	// Call 6: rev-parse HEAD
-	assertArgs(t, calls[6], "/repo", "rev-parse", "HEAD")
+	// Call 3: git worktree remove (fallback via GitRunner in primary repo)
+	assertArgs(t, calls[3], "/repo", "worktree", "remove", "/tmp/wt-abc")
+	// Call 4: ff-only merge
+	assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/abc")
+	// Call 5: rev-parse HEAD
+	assertArgs(t, calls[5], "/repo", "rev-parse", "HEAD")
 }
 
 func TestMerge_RebaseConflict_ReturnsConflictError(t *testing.T) {
@@ -177,26 +173,26 @@ func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // c
 	var firstMergeStarted atomic.Bool
 	unblockFirst := make(chan struct{})
 
-	// A blocking GitRunner for the first merge - updated for cherry-pick flow
+	// A blocking GitRunner for the first merge - updated for ff-merge flow
 	blockingRunner := &blockingGitRunner{
 		onFirstCall: func() {
 			firstMergeStarted.Store(true)
 			<-unblockFirst // block until signaled
 		},
 		results: []mockResult{
-			// First merge (6 calls — no rev-parse --show-toplevel)
+			// First merge (6 calls — worktree remove + ff-merge)
 			{Stdout: "1\n", Stderr: "", Err: nil},          // rev-list --count (not merged)
 			{Stdout: "", Stderr: "", Err: nil},             // rebase
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil}, // rev-parse --git-common-dir
-			{Stdout: "c1\n", Stderr: "", Err: nil},         // rev-list
-			{Stdout: "", Stderr: "", Err: nil},             // cherry-pick
+			{Stdout: "", Stderr: "", Err: nil},             // worktree remove (fallback)
+			{Stdout: "", Stderr: "", Err: nil},             // merge --ff-only
 			{Stdout: "sha1\n", Stderr: "", Err: nil},       // rev-parse HEAD
 			// Second merge (6 calls)
 			{Stdout: "1\n", Stderr: "", Err: nil},          // rev-list --count (not merged)
 			{Stdout: "", Stderr: "", Err: nil},             // rebase
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil}, // rev-parse --git-common-dir
-			{Stdout: "c2\n", Stderr: "", Err: nil},         // rev-list
-			{Stdout: "", Stderr: "", Err: nil},             // cherry-pick
+			{Stdout: "", Stderr: "", Err: nil},             // worktree remove (fallback)
+			{Stdout: "", Stderr: "", Err: nil},             // merge --ff-only
 			{Stdout: "sha2\n", Stderr: "", Err: nil},       // rev-parse HEAD
 		},
 	}
@@ -398,7 +394,9 @@ func TestMerge_RebaseAbortFails(t *testing.T) {
 }
 
 func TestMerge_FFOnlyMergeFails(t *testing.T) {
-	// Updated for cherry-pick flow - test cherry-pick failure
+	// Test ff-only merge failure (e.g., main moved between rebase and merge).
+	// The worktree is removed before the ff-only attempt, so the branch still
+	// exists on the remote — caller can retry with a fresh rebase.
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// 0. git rev-list --count — not merged yet
@@ -407,12 +405,10 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — success
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git rev-list — success
-			{Stdout: "commit1\n", Stderr: "", Err: nil},
-			// 4. git cherry-pick — fails (e.g., main moved, conflict)
-			{Stdout: "", Stderr: "error: could not apply commit1", Err: fmt.Errorf("exit status 1")},
-			// 5. git cherry-pick --abort (cleanup)
+			// 3. git worktree remove — success (worktreeRemover nil → fallback)
 			{Stdout: "", Stderr: "", Err: nil},
+			// 4. git merge --ff-only — fails (main moved)
+			{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
 		},
 	}
 
@@ -424,15 +420,15 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error on cherry-pick failure, got nil")
+		t.Fatal("expected error on ff-only failure, got nil")
 	}
-	if !strings.Contains(err.Error(), "cherry-pick") {
-		t.Errorf("expected 'cherry-pick' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "ff-only") {
+		t.Errorf("expected 'ff-only' in error, got: %v", err)
 	}
 	// Should NOT be a ConflictError — this is a different kind of failure
 	var conflictErr3 *ConflictError
 	if errors.As(err, &conflictErr3) {
-		t.Error("cherry-pick failure should not produce ConflictError")
+		t.Error("ff-only failure should not produce ConflictError")
 	}
 }
 
@@ -471,7 +467,8 @@ func TestMerge_CheckoutMainFails(t *testing.T) {
 }
 
 func TestMerge_RevParseFails(t *testing.T) {
-	// Updated for cherry-pick flow - test rev-list failure
+	// Test that worktree remove failure is surfaced with a clear error.
+	// The worktree remove step occurs after a successful rebase but before ff-merge.
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// 0. git rev-list --count — not merged yet
@@ -480,8 +477,8 @@ func TestMerge_RevParseFails(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — success
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git rev-list — fails
-			{Stdout: "", Stderr: "fatal: bad revision", Err: fmt.Errorf("exit status 128")},
+			// 3. git worktree remove — fails (worktreeRemover nil → fallback via git)
+			{Stdout: "", Stderr: "fatal: worktree has modifications", Err: fmt.Errorf("exit status 128")},
 		},
 	}
 
@@ -493,15 +490,15 @@ func TestMerge_RevParseFails(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error on rev-list failure, got nil")
+		t.Fatal("expected error on worktree remove failure, got nil")
 	}
-	if !strings.Contains(err.Error(), "failed to get commit range") {
-		t.Errorf("expected 'failed to get commit range' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "worktree remove") {
+		t.Errorf("expected 'worktree remove' in error, got: %v", err)
 	}
 	// Should NOT be a ConflictError
 	var conflictErr *ConflictError
 	if errors.As(err, &conflictErr) {
-		t.Error("rev-list failure should not produce ConflictError")
+		t.Error("worktree remove failure should not produce ConflictError")
 	}
 }
 
@@ -710,9 +707,9 @@ func TestMerge_BranchAlreadyMerged_DiffCheck(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// rev-list --reverse main..bead/diff-nonempty — one commit
-				{Stdout: "abc123\n", Stderr: "", Err: nil},
-				// cherry-pick abc123
+				// git worktree remove (fallback via GitRunner)
+				{Stdout: "", Stderr: "", Err: nil},
+				// git merge --ff-only bead/diff-nonempty
 				{Stdout: "", Stderr: "", Err: nil},
 				// rev-parse HEAD
 				{Stdout: "rebasesha\n", Stderr: "", Err: nil},
@@ -748,9 +745,9 @@ func TestMerge_BranchAlreadyMerged_DiffCheck(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// rev-list --reverse main..bead/diff-err — one commit
-				{Stdout: "def456\n", Stderr: "", Err: nil},
-				// cherry-pick def456
+				// git worktree remove (fallback via GitRunner)
+				{Stdout: "", Stderr: "", Err: nil},
+				// git merge --ff-only bead/diff-err
 				{Stdout: "", Stderr: "", Err: nil},
 				// rev-parse HEAD
 				{Stdout: "errsha\n", Stderr: "", Err: nil},
