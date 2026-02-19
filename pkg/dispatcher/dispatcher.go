@@ -1636,8 +1636,8 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 }
 
 // filterAssignable returns beads eligible for assignment: excludes epics, closed beads,
-// beads with status in_progress or blocked, and beads with recent worktree creation
-// failures (within cooldown window).
+// beads with status in_progress or blocked, beads with recent worktree creation
+// failures (within cooldown window), and beads currently in-flight (assigningBeads).
 func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 	d.mu.Lock()
@@ -1653,29 +1653,44 @@ func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead 
 
 	out := make([]protocol.Bead, 0, len(allBeads))
 	for _, b := range allBeads {
-		if b.Type == "epic" {
-			continue
+		if d.isBeadAssignable(b, now, activeBeads) {
+			out = append(out, b)
 		}
-		if b.Status == "closed" {
-			continue
-		}
-		// oro-wee1: Filter out beads with status in_progress (human-owned) or blocked.
-		// Only beads with status "open" or empty (defaulting to open) should be assignable.
-		if b.Status == "in_progress" || b.Status == "blocked" {
-			continue
-		}
-		if failedAt, ok := d.worktreeFailures[b.ID]; ok && now.Sub(failedAt) < worktreeFailureCooldown {
-			continue
-		}
-		if activeBeads[b.ID] {
-			continue
-		}
-		if d.exhaustedBeads[b.ID] {
-			continue
-		}
-		out = append(out, b)
 	}
 	return out
+}
+
+// isBeadAssignable reports whether a bead passes all assignment filters.
+// Caller must hold d.mu. activeBeads maps bead IDs held by non-idle workers.
+func (d *Dispatcher) isBeadAssignable(b protocol.Bead, now time.Time, activeBeads map[string]bool) bool {
+	if b.Type == "epic" {
+		return false
+	}
+	if b.Status == "closed" {
+		return false
+	}
+	// oro-wee1: Filter out beads with status in_progress (human-owned) or blocked.
+	// Only beads with status "open" or empty (defaulting to open) should be assignable.
+	if b.Status == "in_progress" || b.Status == "blocked" {
+		return false
+	}
+	if failedAt, ok := d.worktreeFailures[b.ID]; ok && now.Sub(failedAt) < worktreeFailureCooldown {
+		return false
+	}
+	if activeBeads[b.ID] {
+		return false
+	}
+	// oro-30o: Skip beads currently in-flight (assigningBeads set but worker not yet
+	// transitioned to Busy). This prevents the scale-up duplicate assignment window
+	// where a newly connected worker picks up a bead already being assigned to
+	// another worker, causing a worktree_error (branch already exists).
+	if d.assigningBeads[b.ID] {
+		return false
+	}
+	if d.exhaustedBeads[b.ID] {
+		return false
+	}
+	return true
 }
 
 // recordAssignmentFailure marks a bead as having failed assignment (worktree
