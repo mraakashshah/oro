@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -16,6 +17,7 @@ import (
 // Thread-safe: all access to the process map is protected by a mutex.
 type ExecProcessManager struct {
 	socketPath string
+	oroHome    string
 	mu         sync.Mutex
 	procs      map[string]*os.Process
 	wg         sync.WaitGroup
@@ -46,9 +48,13 @@ func NewExecProcessManager(socketPath string) *ExecProcessManager {
 
 // NewOroProcessManager creates an ExecProcessManager that spawns real
 // `oro worker` processes with the given socket path and worker ID.
-func NewOroProcessManager(socketPath string) *ExecProcessManager {
+// When oroHome is non-empty, each spawned worker writes its output to
+// oroHome/workers/<id>/output.log; if oroHome is empty, output falls back
+// to os.Stdout/os.Stderr with a warning.
+func NewOroProcessManager(socketPath, oroHome string) *ExecProcessManager {
 	pm := &ExecProcessManager{
 		socketPath: socketPath,
+		oroHome:    oroHome,
 		procs:      make(map[string]*os.Process),
 	}
 	self := os.Args[0]
@@ -72,6 +78,14 @@ func NewExecProcessManagerWithFactory(socketPath string, factory func(id string)
 	}
 }
 
+// SetCmdFactory replaces the command factory on an existing ExecProcessManager.
+// This is used by tests to inject a controllable factory after construction.
+//
+//oro:testonly
+func (pm *ExecProcessManager) SetCmdFactory(factory func(id string) *exec.Cmd) {
+	pm.cmdFactory = factory
+}
+
 // CmdForWorker returns the exec.Cmd that would be used to spawn a worker
 // with the given ID, without actually starting it. Useful for testing.
 //
@@ -83,14 +97,52 @@ func (pm *ExecProcessManager) CmdForWorker(id string) *exec.Cmd {
 // Spawn starts a new worker process with the given ID and tracks it.
 // Each worker gets its own process group (Setpgid) so Kill can terminate
 // the entire tree (worker + claude + node + bash descendants).
+//
+// When oroHome is set, stdout/stderr are redirected to
+// oroHome/workers/<id>/output.log (created if needed). If oroHome is empty,
+// output falls back to os.Stdout/os.Stderr with a warning.
 func (pm *ExecProcessManager) Spawn(id string) (*os.Process, error) {
 	cmd := pm.cmdFactory(id)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	if pm.oroHome == "" {
+		// No oroHome configured — fall back to daemon log with warning.
+		fmt.Fprintf(os.Stderr, "warning: oroHome not set; worker %s output goes to daemon log\n", id)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return pm.startAndTrack(id, cmd, nil)
+	}
+
+	// Create per-worker log directory.
+	logDir := filepath.Join(pm.oroHome, "workers", id)
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create worker log dir %s: %w", logDir, err)
+	}
+
+	logPath := filepath.Join(logDir, "output.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // log path is deterministic
+	if err != nil {
+		return nil, fmt.Errorf("open worker log %s: %w", logPath, err)
+	}
+
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	return pm.startAndTrack(id, cmd, logFile)
+}
+
+// startAndTrack starts cmd, optionally closes logFile after Start, tracks the
+// process in pm.procs, and launches a reaper goroutine.
+func (pm *ExecProcessManager) startAndTrack(id string, cmd *exec.Cmd, logFile *os.File) (*os.Process, error) {
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return nil, fmt.Errorf("spawn worker %s: %w", id, err)
+	}
+	// logFile fd is inherited by the child; parent can close its copy.
+	if logFile != nil {
+		_ = logFile.Close()
 	}
 
 	proc := cmd.Process
