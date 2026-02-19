@@ -295,7 +295,9 @@ func TestInsightsView_Render(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			model := NewInsightsModel(tt.beads)
-			output := model.Render()
+			theme := DefaultTheme()
+			styles := NewStyles(theme)
+			output := model.Render(styles)
 
 			for _, want := range tt.wantContains {
 				if !containsIgnoringANSI(output, want) {
