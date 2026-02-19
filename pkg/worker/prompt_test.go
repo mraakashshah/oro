@@ -696,3 +696,70 @@ func TestAssemblePrompt_ExitSection_HandlesUnrelatedTestFailures(t *testing.T) {
 		t.Error("expected Exit section to mention merge process")
 	}
 }
+
+func TestBuildEpicDecompositionPrompt(t *testing.T) {
+	t.Parallel()
+
+	params := worker.EpicPromptParams{
+		BeadID:      "oro-epic-1",
+		Title:       "Implement JWT authentication",
+		Description: "Add JWT auth to the API with token generation and validation",
+	}
+
+	prompt := worker.BuildEpicDecompositionPrompt(params)
+
+	t.Run("contains_role", func(t *testing.T) {
+		t.Parallel()
+		if !strings.Contains(prompt, "## Role") {
+			t.Error("expected prompt to contain ## Role section")
+		}
+	})
+
+	t.Run("contains_epic_details", func(t *testing.T) {
+		t.Parallel()
+		if !strings.Contains(prompt, "oro-epic-1") {
+			t.Error("expected prompt to contain epic ID")
+		}
+		if !strings.Contains(prompt, "Implement JWT authentication") {
+			t.Error("expected prompt to contain epic title")
+		}
+		if !strings.Contains(prompt, "Add JWT auth") {
+			t.Error("expected prompt to contain epic description")
+		}
+	})
+
+	t.Run("contains_bead_craft_instructions", func(t *testing.T) {
+		t.Parallel()
+		if !strings.Contains(prompt, "bead-craft") || !strings.Contains(prompt, "bd create") {
+			t.Error("expected prompt to contain bead-craft decomposition instructions")
+		}
+	})
+
+	t.Run("contains_premortem_step", func(t *testing.T) {
+		t.Parallel()
+		if !strings.Contains(strings.ToLower(prompt), "premortem") {
+			t.Error("expected prompt to contain premortem step")
+		}
+	})
+
+	t.Run("no_tdd_or_qg", func(t *testing.T) {
+		t.Parallel()
+		if strings.Contains(prompt, "## TDD") {
+			t.Error("epic decomposition prompt should not contain TDD section")
+		}
+		if strings.Contains(prompt, "## Quality Gate") {
+			t.Error("epic decomposition prompt should not contain Quality Gate section")
+		}
+	})
+
+	t.Run("empty_description_still_valid", func(t *testing.T) {
+		t.Parallel()
+		p := worker.BuildEpicDecompositionPrompt(worker.EpicPromptParams{
+			BeadID: "oro-epic-2",
+			Title:  "Title only epic",
+		})
+		if !strings.Contains(p, "oro-epic-2") {
+			t.Error("expected prompt with empty description to still contain ID")
+		}
+	})
+}

@@ -73,6 +73,62 @@ func AssemblePrompt(params PromptParams) string {
 	return b.String()
 }
 
+// EpicPromptParams contains inputs for building an epic decomposition prompt.
+type EpicPromptParams struct {
+	BeadID      string
+	Title       string
+	Description string
+}
+
+// BuildEpicDecompositionPrompt builds a prompt for decomposing an epic into
+// child beads using bead-craft. No TDD/QG/worktree sections — this is planning only.
+func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
+	var b strings.Builder
+
+	section(&b, "Role", "You are an oro worker in epic decomposition mode. Your job is to break this epic into executable child beads.")
+
+	epicBody := fmt.Sprintf("- **ID:** %s\n- **Title:** %s\n- **Description:** %s",
+		params.BeadID, params.Title, params.Description)
+	section(&b, "Epic", epicBody)
+
+	section(&b, "Workflow", strings.Join([]string{
+		"1. **Explore**: Read the codebase to understand what this epic requires.",
+		"2. **Premortem**: Before decomposing, identify what could go wrong — tigers (likely failures), elephants (unlikely but catastrophic), paper tigers (seem scary but aren't).",
+		"3. **Decompose with bead-craft**: Break the epic into task/bug beads using `bd create`.",
+		"   - Each bead must have full acceptance criteria: `Test: | Cmd: | Assert:`",
+		"   - Each bead must have `Read:`, `Signature:` (when adding functions), and `Edges:` fields",
+		"   - Run the Rule of Five (P1-P5) on every bead before creating it",
+		"   - Size limit: <=7 min estimate, 1-3 source files, single-purpose title",
+		"4. **Wire dependencies**: `bd dep add <later> <earlier>` where ordering matters.",
+		"5. **Verify**: Run `bd show " + params.BeadID + "` to confirm the tree looks correct.",
+	}, "\n"))
+
+	section(&b, "Bead Creation", strings.Join([]string{
+		"Use this command for each child bead:",
+		"```",
+		"bd create --title=\"<specific task>\" \\",
+		"  --parent=" + params.BeadID + " \\",
+		"  --type=task \\",
+		"  --acceptance=\"Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>",
+		"Read: <file1>:<Symbol1>, <file2>:<Symbol2>",
+		"Signature: <func signature if applicable>",
+		"Edges: <error conditions if applicable>\" \\",
+		"  --estimate=<minutes>",
+		"```",
+	}, "\n"))
+
+	section(&b, "Constraints", strings.Join([]string{
+		"- Do NOT write code or create worktrees — only create beads",
+		"- Do NOT close the epic — children must complete first",
+		"- Do NOT push to git",
+		"- Every bead must pass bead-craft Rule of Five before creation",
+	}, "\n"))
+
+	section(&b, "Exit", "When all child beads are created and dependencies wired, your work is complete. Exit cleanly.")
+
+	return b.String()
+}
+
 // appendStaticSections writes the invariant sections (4-10) and Failure/Exit sections of the worker prompt.
 func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Coding Rules", strings.Join([]string{
