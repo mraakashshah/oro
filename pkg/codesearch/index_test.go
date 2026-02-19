@@ -2,10 +2,15 @@ package codesearch_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"oro/pkg/codesearch"
 )
@@ -472,4 +477,89 @@ func writeFile(t *testing.T, dir, name, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write file %s: %v", name, err)
 	}
+}
+
+func TestBuild_ConcurrentReadsDontSeeEmptyIndex(t *testing.T) {
+	rootDir := t.TempDir()
+
+	// Write enough files so Build() takes measurable time for overlap with readers.
+	const numFiles = 30
+	for i := range numFiles {
+		writeGoFile(t, rootDir, fmt.Sprintf("file%d.go", i), fmt.Sprintf(`package main
+
+// ConcurrentFunc%d is a searchable placeholder.
+func ConcurrentFunc%d() string {
+	return "concurrent test content"
+}
+`, i, i))
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "concurrent_test.db")
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+
+	ctx := context.Background()
+
+	// Initial build to populate the index.
+	if _, err := idx.Build(ctx, rootDir); err != nil {
+		t.Fatalf("initial Build: %v", err)
+	}
+
+	// Verify initial data is present before testing concurrency.
+	initial, err := idx.FTS5Search(ctx, "concurrent", 5)
+	if err != nil {
+		t.Fatalf("FTS5Search initial: %v", err)
+	}
+	if len(initial) == 0 {
+		t.Fatal("initial build must produce results for this test to be meaningful")
+	}
+
+	var emptyCount atomic.Int64
+	var searchCount atomic.Int64
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Start readers that continuously search while Build() runs.
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				results, err := idx.FTS5Search(ctx, "concurrent", 5)
+				if err == nil {
+					searchCount.Add(1)
+					if len(results) == 0 {
+						emptyCount.Add(1)
+					}
+				}
+				runtime.Gosched()
+			}
+		}()
+	}
+
+	// Let readers start before triggering rebuild.
+	time.Sleep(5 * time.Millisecond)
+
+	// Rebuild concurrently with readers running.
+	if _, err := idx.Build(ctx, rootDir); err != nil {
+		t.Fatalf("concurrent Build: %v", err)
+	}
+
+	close(done)
+	wg.Wait()
+
+	if emptyCount.Load() > 0 {
+		t.Errorf("saw %d empty Search results during concurrent Build (%d total searches)",
+			emptyCount.Load(), searchCount.Load())
+	}
+	t.Logf("completed %d concurrent searches, %d saw empty index",
+		searchCount.Load(), emptyCount.Load())
 }
