@@ -1,0 +1,114 @@
+---
+date: 2026-02-19
+status: partial
+---
+
+goal: >
+  Implement auto-decomposition of epics via worker assignment. When an epic
+  with no children appears in the ready pool, a worker decomposes it using
+  opus model + bead-craft instead of trying to write code.
+
+now: >
+  3 of 5 child beads complete (9kjh.1, 9kjh.2, 9kjh.5). Two remain:
+  oro-9kjh.3 (dispatcher routing — the main integration bead) and
+  oro-9kjh.4 (worker QG skip). A worker already picked up 9kjh.3.
+  Check if it succeeded or needs manual intervention.
+
+test: go test ./pkg/dispatcher/ ./pkg/worker/ ./pkg/protocol/ -v
+
+done_this_session:
+  - task: "Closed oro-7in4.1 and oro-7in4.2 (skill file edits)"
+    details: >
+      Added Invariants: field to bead-craft anatomy (block, table, P1 pass,
+      smell catalog). Added INVARIANTS step before RED in TDD skill.
+    files: [~/.oro/.claude/skills/bead-craft/SKILL.md, ~/.oro/.claude/skills/test-driven-development/SKILL.md]
+
+  - task: "Restarted oro swarm, focused on oro-7in4 epic"
+    details: >
+      Swarm was stale (workers from Feb 18). Stopped and restarted.
+      Workers picked up 7in4.3, 7in4.5, 7in4.6, 7in4.7, 7in4.8.
+
+  - task: "oro-9kjh.1: HasChildren method on BeadSource"
+    details: >
+      Added HasChildren(ctx, epicID) to BeadSource interface and CLIBeadSource.
+      Runs bd list --parent=<id> --json and checks if result is non-empty.
+      Updated 4 mock implementations across test files.
+    files: [pkg/dispatcher/beadsource.go, pkg/dispatcher/dispatcher.go]
+
+  - task: "oro-9kjh.2: IsEpicDecomposition flag on AssignPayload"
+    details: >
+      Added bool field with omitempty JSON tag. Zero value preserves
+      backward compat. Tests verify round-trip and omitempty behavior.
+    files: [pkg/protocol/message.go]
+
+  - task: "oro-9kjh.5: BuildEpicDecompositionPrompt"
+    details: >
+      New EpicPromptParams struct and prompt builder. Generates planning-only
+      prompt with Role, Epic, Workflow (explore → premortem → bead-craft →
+      wire deps → verify), Bead Creation template, Constraints, Exit.
+      No TDD/QG/worktree sections. Marked //oro:testonly until wired.
+    files: [pkg/worker/prompt.go]
+
+  - task: "Committed and pushed all changes (3 commits)"
+    details: >
+      f04b105: HasChildren + IsEpicDecomposition (9kjh.1, 9kjh.2)
+      05cadbb: BuildEpicDecompositionPrompt (9kjh.5)
+      c233ca7: testonly marker fix
+
+decisions:
+  - epic_routing_option_A: >
+      Chose dispatcher-side epic handling over separate epic handler.
+      Epics get assigned to workers like tasks but with different prompt,
+      no worktree, no QG, no merge. Reuses existing worker machinery.
+
+  - has_children_check: >
+      Epic with no children → decompose. Epic with open children → skip
+      (children are the work). Epic with all closed → auto-close (existing).
+      HasChildren check happens in assignBead, not filterAssignable, to
+      avoid per-bead shell calls during filtering.
+
+findings:
+  - testonly_marker_position: >
+      //oro:testonly must be directly above func line (or in doc comment
+      block). Blank line between marker and func breaks dead code detection.
+  - worker_7in4_5_stuck: >
+      oro-7in4.5 (sanitizeForTmuxHook) failed first attempt due to missing
+      quality_gate.sh in worktree. Relaunched but now STUCK after 28min.
+      May need manual intervention or restart.
+
+failed:
+  - "//oro:testonly with trailing text — dead code checker ignores it"
+  - "//oro:testonly separated from func by blank line — not detected"
+
+next:
+  - Check if worker completed oro-9kjh.3 (dispatcher routing) — this is the main integration
+  - If 9kjh.3 failed, implement manually (remove epic filter from isBeadAssignable, add epic routing in assignBead, skip merge in handleDone)
+  - Implement oro-9kjh.4 (worker QG skip for IsEpicDecomposition)
+  - Remove //oro:testonly from BuildEpicDecompositionPrompt once 9kjh.3 wires it
+  - Investigate oro-7in4.5 STUCK worker
+  - Close oro-9kjh epic when all children done
+
+files:
+  modified:
+    - pkg/dispatcher/beadsource.go
+    - pkg/dispatcher/beadsource_test.go
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/dispatcher_test.go
+    - pkg/protocol/message.go
+    - pkg/protocol/message_test.go
+    - pkg/worker/prompt.go
+    - pkg/worker/prompt_test.go
+    - pkg/integration/dispatcher_worker_test.go
+    - pkg/integration/e2e_lifecycle_test.go
+    - cmd/oro/cmd_work_execute_test.go
+
+beads:
+  completed: [oro-7in4.1, oro-7in4.2, oro-9kjh.1, oro-9kjh.2, oro-9kjh.5]
+  in_progress: [oro-9kjh.3]
+  remaining: [oro-9kjh.4]
+  epic: oro-9kjh
+
+git:
+  branch: main
+  pushed: true
+  latest_commit: c233ca7
