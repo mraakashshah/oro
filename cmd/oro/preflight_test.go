@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -166,6 +167,97 @@ func TestPreflightWarnsOnMissingSearchHook(t *testing.T) {
 		warnIfSearchHookMissing(&buf, binPath)
 		if buf.Len() > 0 {
 			t.Errorf("expected no output, got: %q", buf.String())
+		}
+	})
+}
+
+// TestAssetVersionStampMismatch verifies checkAssetVersion behaviour:
+//   - stale stamp triggers re-extraction and updates stamp
+//   - matching stamp is a no-op
+//   - missing stamp triggers extraction
+//   - missing embedded .version skips the check (backwards compat)
+func TestAssetVersionStampMismatch(t *testing.T) {
+	// Minimal embedded FS with version "v1.0.0".
+	// Includes stub entries for each mapped asset directory so extractAssets
+	// can walk them without error (it skips directories that are missing).
+	testFS := fstest.MapFS{
+		"_assets/.version":       {Data: []byte("v1.0.0\n")},
+		"_assets/skills/.keep":   {Data: []byte("")},
+		"_assets/hooks/.keep":    {Data: []byte("")},
+		"_assets/beacons/.keep":  {Data: []byte("")},
+		"_assets/commands/.keep": {Data: []byte("")},
+		"_assets/CLAUDE.md":      {Data: []byte("# claude\n")},
+	}
+
+	t.Run("stale stamp triggers re-extraction", func(t *testing.T) {
+		oroHome := t.TempDir()
+		stampPath := filepath.Join(oroHome, ".asset-version")
+		if err := os.WriteFile(stampPath, []byte("v0.9.0\n"), 0o600); err != nil { //nolint:gosec // test-only stamp file
+			t.Fatal(err)
+		}
+
+		reExtracted, err := checkAssetVersion(oroHome, testFS)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !reExtracted {
+			t.Error("expected reExtracted=true for stale stamp")
+		}
+		data, err := os.ReadFile(stampPath) //nolint:gosec // test-only path from t.TempDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(data)) != "v1.0.0" {
+			t.Errorf("expected stamp v1.0.0 after re-extraction, got %q", strings.TrimSpace(string(data)))
+		}
+	})
+
+	t.Run("matching stamp is no-op", func(t *testing.T) {
+		oroHome := t.TempDir()
+		stampPath := filepath.Join(oroHome, ".asset-version")
+		if err := os.WriteFile(stampPath, []byte("v1.0.0\n"), 0o600); err != nil { //nolint:gosec // test-only stamp file
+			t.Fatal(err)
+		}
+
+		reExtracted, err := checkAssetVersion(oroHome, testFS)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if reExtracted {
+			t.Error("expected reExtracted=false for matching stamp")
+		}
+	})
+
+	t.Run("missing stamp triggers extraction", func(t *testing.T) {
+		oroHome := t.TempDir()
+
+		reExtracted, err := checkAssetVersion(oroHome, testFS)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !reExtracted {
+			t.Error("expected reExtracted=true for missing stamp")
+		}
+		stampPath := filepath.Join(oroHome, ".asset-version")
+		data, err := os.ReadFile(stampPath) //nolint:gosec // test-only path from t.TempDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(data)) != "v1.0.0" {
+			t.Errorf("expected stamp v1.0.0 after extraction, got %q", strings.TrimSpace(string(data)))
+		}
+	})
+
+	t.Run("missing embedded version skips check", func(t *testing.T) {
+		emptyFS := fstest.MapFS{}
+		oroHome := t.TempDir()
+
+		reExtracted, err := checkAssetVersion(oroHome, emptyFS)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if reExtracted {
+			t.Error("expected reExtracted=false when no embedded .version file")
 		}
 	})
 }

@@ -19,6 +19,7 @@ stage-assets:
 	@test -d assets/commands && cp -r assets/commands/* cmd/oro/_assets/commands/ 2>/dev/null || true
 	@test -f assets/CLAUDE.md && cp assets/CLAUDE.md cmd/oro/_assets/ || true
 	@test -f assets/.test-marker && cp assets/.test-marker cmd/oro/_assets/ || true
+	@echo "$(VERSION)" > cmd/oro/_assets/.version
 
 clean-assets:
 	@rm -rf cmd/oro/_assets
