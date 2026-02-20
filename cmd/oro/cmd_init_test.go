@@ -962,6 +962,132 @@ func TestExtractAssets(t *testing.T) {
 
 // --- Executable bits test (oro-l9gw) ---
 
+// --- runInstall tests ---
+
+func TestRunInstall_Success(t *testing.T) {
+	var buf bytes.Buffer
+	def := toolDef{
+		Name:        "test-echo",
+		InstallCmd:  "echo",
+		InstallArgs: []string{"install-ok"},
+		// No BrewName: avoids brew on macOS
+	}
+
+	err := runInstall(&buf, def)
+	if err != nil {
+		t.Fatalf("runInstall should succeed for 'echo', got: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "done") {
+		t.Errorf("output should contain 'done', got: %q", got)
+	}
+	if !strings.Contains(got, def.Name) {
+		t.Errorf("output should contain tool name %q, got: %q", def.Name, got)
+	}
+}
+
+func TestRunInstall_NoInstallCmd(t *testing.T) {
+	var buf bytes.Buffer
+	def := toolDef{
+		Name: "test-no-install",
+		// No InstallCmd, no BrewName → installCommandForTool returns ""
+	}
+
+	err := runInstall(&buf, def)
+	if err == nil {
+		t.Fatal("runInstall should return error when no install cmd defined")
+	}
+	if !strings.Contains(err.Error(), "no install command defined") {
+		t.Errorf("error should mention 'no install command defined', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "test-no-install") {
+		t.Errorf("error should mention tool name, got: %v", err)
+	}
+}
+
+func TestRunInstall_CommandFails(t *testing.T) {
+	var buf bytes.Buffer
+	def := toolDef{
+		Name:       "test-fail",
+		InstallCmd: "false", // always exits 1
+	}
+
+	err := runInstall(&buf, def)
+	if err == nil {
+		t.Fatal("runInstall should return error when install command fails")
+	}
+	if !strings.Contains(err.Error(), "install test-fail") {
+		t.Errorf("error should mention 'install test-fail', got: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "FAILED") {
+		t.Errorf("output should contain 'FAILED', got: %q", got)
+	}
+}
+
+// --- installMissingTools tests ---
+
+func TestInstallMissingTools_NoneMissing(t *testing.T) {
+	origDefs := defaultToolDefs
+	defer func() { defaultToolDefs = origDefs }()
+	defaultToolDefs = []toolDef{
+		{Name: "go", Category: "prerequisites", CheckCmd: "go", CheckArgs: []string{"version"}},
+	}
+
+	results := []toolResult{
+		{Name: "go", Category: "prerequisites", Status: statusOK, Version: "go1.21"},
+	}
+
+	var buf bytes.Buffer
+	err := installMissingTools(&buf, results)
+	if err != nil {
+		t.Fatalf("installMissingTools should return nil with zero missing tools, got: %v", err)
+	}
+
+	// Early return path calls formatInitTable — output should contain tool name
+	got := buf.String()
+	if !strings.Contains(got, "go") {
+		t.Errorf("output should contain tool table with 'go', got: %q", got)
+	}
+}
+
+func TestInstallMissingTools_OneFailingInstall(t *testing.T) {
+	origDefs := defaultToolDefs
+	defer func() { defaultToolDefs = origDefs }()
+	// CheckCmd won't be found → tool stays missing after failed install
+	defaultToolDefs = []toolDef{
+		{
+			Name:        "nonexistent-tool-xyz-12345",
+			Category:    "system",
+			CheckCmd:    "nonexistent-tool-xyz-12345",
+			CheckArgs:   []string{"--version"},
+			InstallCmd:  "false", // exits 1 → install fails
+			InstallArgs: []string{},
+		},
+	}
+
+	results := []toolResult{
+		{Name: "nonexistent-tool-xyz-12345", Category: "system", Status: statusMissing},
+	}
+
+	var buf bytes.Buffer
+	err := installMissingTools(&buf, results)
+	// Re-verification after failed install finds tool still missing → error
+	if err == nil {
+		t.Fatal("installMissingTools should return error when tool is still missing after install")
+	}
+	if !strings.Contains(err.Error(), "still missing") {
+		t.Errorf("error should mention 'still missing', got: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "Installing") {
+		t.Errorf("output should mention 'Installing', got: %q", got)
+	}
+}
+
 func TestExtractAssets_ExecutableBits(t *testing.T) {
 	assets := fstest.MapFS{
 		"hooks/auto-format.sh":          &fstest.MapFile{Data: []byte("#!/bin/bash\necho formatting\n")},
