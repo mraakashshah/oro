@@ -8,16 +8,18 @@ import (
 	"os/exec"
 	"strings"
 
+	"oro/pkg/protocol"
+
 	_ "modernc.org/sqlite"
 )
 
-// FetchBeads runs `bd list --json` and parses the output into a []Bead slice.
+// FetchBeads runs `bd list --json` and parses the output into a []protocol.Bead slice.
 //
 // Error cases:
 //   - bd not in PATH → returns error
 //   - bd returns empty array → returns empty slice, nil error
 //   - JSON parse error → returns nil, error
-func FetchBeads() ([]Bead, error) {
+func FetchBeads() ([]protocol.Bead, error) {
 	// Verify bd is available on PATH before running.
 	if _, err := exec.LookPath("bd"); err != nil {
 		return nil, fmt.Errorf("bd not in PATH: %w", err)
@@ -32,10 +34,10 @@ func FetchBeads() ([]Bead, error) {
 
 	output := strings.TrimSpace(string(out))
 	if output == "" {
-		return []Bead{}, nil
+		return []protocol.Bead{}, nil
 	}
 
-	var beads []Bead
+	var beads []protocol.Bead
 	if err := json.Unmarshal([]byte(output), &beads); err != nil {
 		return nil, fmt.Errorf("parse beads JSON: %w", err)
 	}

@@ -39,7 +39,7 @@ func tickCmd() tea.Cmd {
 // fetchBeadsCmd returns a tea.Cmd that fetches beads from the bd CLI.
 func fetchBeadsCmd() tea.Cmd {
 	return func() tea.Msg {
-		beads, _ := fetchBeads(context.Background())
+		beads, _ := FetchBeads()
 		return beadsMsg(beads)
 	}
 }
@@ -434,40 +434,12 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 }
 
 // filterBeads filters beads based on the current search query.
-// Converts protocol.Bead to local Bead type for SearchModel.Filter,
-// then maps results back via ID index for O(n) lookup.
 func (m Model) filterBeads() []protocol.Bead {
 	query := m.searchInput.Value()
 	if query == "" {
 		return m.beads
 	}
-
-	// Build index and local slice in one pass
-	index := make(map[string]protocol.Bead, len(m.beads))
-	localBeads := make([]Bead, len(m.beads))
-	for i, pb := range m.beads {
-		index[pb.ID] = pb
-		localBeads[i] = Bead{
-			ID:       pb.ID,
-			Title:    pb.Title,
-			Status:   pb.Status,
-			Priority: pb.Priority,
-			Type:     pb.Type,
-		}
-	}
-
-	// Filter using SearchModel
-	filtered := m.searchModel.Filter(localBeads, query)
-
-	// Map back via index — O(n) not O(n*m)
-	result := make([]protocol.Bead, 0, len(filtered))
-	for _, fb := range filtered {
-		if pb, ok := index[fb.ID]; ok {
-			result = append(result, pb)
-		}
-	}
-
-	return result
+	return m.searchModel.Filter(m.beads, query)
 }
 
 // View implements tea.Model.

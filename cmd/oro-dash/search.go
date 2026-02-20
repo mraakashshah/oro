@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"oro/pkg/protocol"
 )
 
 // SearchModel handles search and filtering logic for beads.
@@ -41,7 +43,7 @@ func parseQuery(query string) searchFilters {
 }
 
 // matchesBead checks if a bead matches the given filters.
-func matchesBead(bead Bead, filters searchFilters) bool {
+func matchesBead(bead protocol.Bead, filters searchFilters) bool {
 	// Check priority filter
 	if filters.priority != nil && bead.Priority != *filters.priority {
 		return false
@@ -76,14 +78,14 @@ func matchesBead(bead Bead, filters searchFilters) bool {
 // - s:STATUS for status (e.g., s:open)
 // - t:TYPE for type (e.g., t:bug)
 // Empty query returns all beads.
-func (s *SearchModel) Filter(beads []Bead, query string) []Bead {
+func (s *SearchModel) Filter(beads []protocol.Bead, query string) []protocol.Bead {
 	if query == "" {
 		return beads
 	}
 
 	filters := parseQuery(query)
 
-	var result []Bead
+	var result []protocol.Bead
 	for _, bead := range beads {
 		if matchesBead(bead, filters) {
 			result = append(result, bead)

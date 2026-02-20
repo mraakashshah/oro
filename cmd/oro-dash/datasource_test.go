@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"oro/pkg/protocol"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -207,7 +209,7 @@ func TestFetchWorkers_DBNotFound(t *testing.T) {
 
 // compile-time signature checks.
 var (
-	_ func() ([]Bead, error)               = FetchBeads
+	_ func() ([]protocol.Bead, error)      = FetchBeads
 	_ func(string) ([]WorkerStatus, error) = FetchWorkers
 )
 
