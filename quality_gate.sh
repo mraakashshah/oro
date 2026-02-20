@@ -238,7 +238,9 @@ lane_go() {
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
 
     # --- Tier 4: Mutation Testing (sequential, modifies working tree) ---
-    if command -v go-mutesting >/dev/null 2>&1; then
+    if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
+        header "GO TIER 4: MUTATION TESTING (skipped — ORO_SKIP_MUTATION=1)"
+    elif command -v go-mutesting >/dev/null 2>&1; then
         header "GO TIER 4: MUTATION TESTING (incremental)"
 
         # shellcheck disable=SC2329
@@ -340,7 +342,9 @@ lane_python() {
     fi
 
     # --- Tier 5: Mutation Testing ---
-    if [ -f "cosmic-ray.toml" ] && command -v uv >/dev/null 2>&1; then
+    if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
+        header "PYTHON TIER 5: MUTATION TESTING (skipped — ORO_SKIP_MUTATION=1)"
+    elif [ -f "cosmic-ray.toml" ] && command -v uv >/dev/null 2>&1; then
         header "PYTHON TIER 5: MUTATION TESTING (incremental)"
         local CR_SESSION="$QG_DIR/cr-$$.sqlite"
 

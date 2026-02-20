@@ -15,7 +15,8 @@ if [ ! -x "$GATE" ]; then
     exit 1
 fi
 
-echo "pre-push: running quality gate (all checks)..."
+export ORO_SKIP_MUTATION=1
+echo "pre-push: running quality gate (mutations skipped — enforced in worker QG)..."
 if ! "$GATE"; then
     echo ""
     echo "pre-push: QUALITY GATE FAILED — push blocked."
