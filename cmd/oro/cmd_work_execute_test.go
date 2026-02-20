@@ -295,6 +295,11 @@ func TestExecuteWork_Success_NoReset(t *testing.T) {
 		t.Fatalf("expected success, got: %v", err)
 	}
 
+	// Bead should be marked in_progress first (the fix for oro-h06d)
+	if len(bs.updates) == 0 || bs.updates[0] != "in_progress" {
+		t.Errorf("expected first bead update to be 'in_progress', got updates: %v", bs.updates)
+	}
+
 	// Bead should NOT have been reset to open — only in_progress
 	for _, u := range bs.updates {
 		if u == "open" {
