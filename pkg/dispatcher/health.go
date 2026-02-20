@@ -1,6 +1,8 @@
 package dispatcher
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,10 +30,25 @@ type PaneStatus struct {
 	LastActivity string `json:"last_activity,omitempty"` // ISO 8601 timestamp
 }
 
+// paneAlive reports whether the named pane has a pane_activity row whose
+// last_seen unix timestamp is within the past 60 seconds of nowUnix.
+func paneAlive(ctx context.Context, db *sql.DB, pane string, nowUnix int64) bool {
+	var lastSeen int64
+	err := db.QueryRowContext(ctx, `SELECT last_seen FROM pane_activity WHERE pane = ?`, pane).Scan(&lastSeen)
+	if err != nil {
+		return false
+	}
+	return nowUnix-lastSeen <= 60
+}
+
 // applyHealth returns a JSON representation of the swarm health status.
 // It includes daemon status, pane statuses, and worker statuses.
 func (d *Dispatcher) applyHealth() (string, error) {
 	now := d.nowFunc()
+	nowUnix := now.Unix()
+
+	architectAlive := paneAlive(context.Background(), d.db, "architect", nowUnix)
+	managerAlive := paneAlive(context.Background(), d.db, "manager", nowUnix)
 
 	d.mu.Lock()
 	workers, _, _, _ := d.snapshotWorkers(now)
@@ -44,11 +61,11 @@ func (d *Dispatcher) applyHealth() (string, error) {
 		},
 		ArchitectPane: PaneStatus{
 			Name:  "architect",
-			Alive: false, // TODO: query tmux or pane_activity table
+			Alive: architectAlive,
 		},
 		ManagerPane: PaneStatus{
 			Name:  "manager",
-			Alive: false, // TODO: query tmux or pane_activity table
+			Alive: managerAlive,
 		},
 		Workers: workers,
 	}

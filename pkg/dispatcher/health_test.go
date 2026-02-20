@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestApplyHealth(t *testing.T) {
@@ -94,4 +95,88 @@ func TestApplyHealthViaDirective(t *testing.T) {
 	if health.Daemon.PID != os.Getpid() {
 		t.Errorf("Expected daemon PID %d, got %d", os.Getpid(), health.Daemon.PID)
 	}
+}
+
+// TestHealthPaneAlive verifies that applyHealth sets Alive=true for panes whose
+// pane_activity last_seen is within 60s, and Alive=false otherwise.
+func TestHealthPaneAlive(t *testing.T) {
+	fixedNow := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	t.Run("alive when last_seen within 60s", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.nowFunc = func() time.Time { return fixedNow }
+
+		recentTS := fixedNow.Unix() - 30 // 30 seconds ago — within the 60s window
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", recentTS); err != nil {
+			t.Fatalf("insert architect: %v", err)
+		}
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", recentTS); err != nil {
+			t.Fatalf("insert manager: %v", err)
+		}
+
+		result, err := d.applyHealth()
+		if err != nil {
+			t.Fatalf("applyHealth: %v", err)
+		}
+		var health SwarmHealth
+		if err := json.Unmarshal([]byte(result), &health); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if !health.ArchitectPane.Alive {
+			t.Error("expected ArchitectPane.Alive=true for recent pane_activity row")
+		}
+		if !health.ManagerPane.Alive {
+			t.Error("expected ManagerPane.Alive=true for recent pane_activity row")
+		}
+	})
+
+	t.Run("not alive when last_seen older than 60s", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.nowFunc = func() time.Time { return fixedNow }
+
+		staleTS := fixedNow.Unix() - 90 // 90 seconds ago — outside the 60s window
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", staleTS); err != nil {
+			t.Fatalf("insert architect: %v", err)
+		}
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", staleTS); err != nil {
+			t.Fatalf("insert manager: %v", err)
+		}
+
+		result, err := d.applyHealth()
+		if err != nil {
+			t.Fatalf("applyHealth: %v", err)
+		}
+		var health SwarmHealth
+		if err := json.Unmarshal([]byte(result), &health); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if health.ArchitectPane.Alive {
+			t.Error("expected ArchitectPane.Alive=false for stale pane_activity row")
+		}
+		if health.ManagerPane.Alive {
+			t.Error("expected ManagerPane.Alive=false for stale pane_activity row")
+		}
+	})
+
+	t.Run("not alive when no pane_activity row", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		result, err := d.applyHealth()
+		if err != nil {
+			t.Fatalf("applyHealth: %v", err)
+		}
+		var health SwarmHealth
+		if err := json.Unmarshal([]byte(result), &health); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if health.ArchitectPane.Alive {
+			t.Error("expected ArchitectPane.Alive=false when no pane_activity row")
+		}
+		if health.ManagerPane.Alive {
+			t.Error("expected ManagerPane.Alive=false when no pane_activity row")
+		}
+	})
 }
