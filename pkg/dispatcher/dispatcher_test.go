@@ -109,7 +109,7 @@ func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetai
 	// Default: return detail with acceptance criteria so assignBead doesn't skip.
 	return &protocol.BeadDetail{
 		Title:              id,
-		AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+		AcceptanceCriteria: "Test: auto | Assert: PASS",
 	}, nil
 }
 
@@ -300,19 +300,49 @@ func (m *mockGitRunner) RebaseCalls() [][]string {
 }
 
 // mockBatchSpawner for ops.Spawner
+type spawnCall struct {
+	model   string
+	prompt  string
+	workdir string
+}
+
 type mockBatchSpawner struct {
 	mu       sync.Mutex
 	verdict  string
 	spawnErr error
+	spawns   []spawnCall
 }
 
-func (m *mockBatchSpawner) Spawn(_ context.Context, _ string, _ string, _ string) (ops.Process, error) {
+func (m *mockBatchSpawner) Spawn(_ context.Context, model string, prompt string, workdir string) (ops.Process, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.spawns = append(m.spawns, spawnCall{model, prompt, workdir})
 	if m.spawnErr != nil {
 		return nil, m.spawnErr
 	}
 	return &mockProcess{output: m.verdict}, nil
+}
+
+func (m *mockBatchSpawner) SpawnCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.spawns)
+}
+
+// mockAcceptanceRunner is a test double for AcceptanceRunner.
+type mockAcceptanceRunner struct {
+	mu     sync.Mutex
+	output string
+	passed bool
+	err    error
+	calls  int
+}
+
+func (m *mockAcceptanceRunner) Run(_ context.Context, _ string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	return m.output, m.passed, m.err
 }
 
 type mockProcess struct {
@@ -8731,6 +8761,241 @@ func TestEpicCompletionAlert(t *testing.T) {
 			if strings.Contains(msg, "EPIC_COMPLETE") {
 				t.Errorf("should not escalate EPIC_COMPLETE when no focused epic, got: %s", msg)
 			}
+		}
+	})
+}
+
+// --- Epic acceptance test verification (oro-fewh) ---
+
+// TestEpicAutoCloseRunsAcceptanceTest verifies that tryCloseEpic runs the
+// epic's Cmd: acceptance test instead of merely counting closed children.
+func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
+	t.Run("passing acceptance test closes epic", func(t *testing.T) {
+		d, beadSource, _, _, _, spawnMock := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-ac-pass"
+		childID := "child-acp1"
+		workerID := "worker-acp1"
+
+		// Set acceptance runner to always pass.
+		runner := &mockAcceptanceRunner{passed: true, output: "ok"}
+		d.acceptance = runner
+
+		// Epic has Cmd: acceptance criteria.
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID:                 epicID,
+			Title:              "My Epic",
+			AcceptanceCriteria: "Test: foo_test.go:TestFoo | Cmd: go test ./... | Assert: PASS",
+		}
+		beadSource.mu.Unlock()
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			epicID:  epicID,
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acp1", "agent/"+childID)
+
+		// Wait for async auto-close goroutine.
+		waitFor(t, func() bool {
+			beadSource.mu.Lock()
+			defer beadSource.mu.Unlock()
+			for _, id := range beadSource.closed {
+				if id == epicID {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
+
+		// Epic must be closed.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if !epicClosed {
+			t.Error("expected epic to be closed after passing acceptance test")
+		}
+
+		// Acceptance runner must have been called.
+		runner.mu.Lock()
+		calls := runner.calls
+		runner.mu.Unlock()
+		if calls == 0 {
+			t.Error("expected acceptance runner to be called")
+		}
+
+		// No diagnostic agent should have been spawned.
+		if spawnMock.SpawnCount() > 0 {
+			t.Errorf("expected no diagnostic agent spawn on pass, got %d spawn(s)", spawnMock.SpawnCount())
+		}
+	})
+
+	t.Run("failing acceptance test spawns diagnostic and does not close epic", func(t *testing.T) {
+		d, beadSource, _, _, _, spawnMock := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-ac-fail"
+		childID := "child-acf1"
+		workerID := "worker-acf1"
+
+		// Set acceptance runner to always fail.
+		runner := &mockAcceptanceRunner{passed: false, output: "FAIL: test failed"}
+		d.acceptance = runner
+
+		// Epic has Cmd: acceptance criteria.
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID:                 epicID,
+			Title:              "My Epic",
+			AcceptanceCriteria: "Test: foo_test.go:TestFoo | Cmd: go test ./... | Assert: PASS",
+		}
+		beadSource.mu.Unlock()
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			epicID:  epicID,
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acf1", "agent/"+childID)
+
+		// Wait for async goroutine to run.
+		waitFor(t, func() bool {
+			runner.mu.Lock()
+			defer runner.mu.Unlock()
+			return runner.calls > 0
+		}, 2*time.Second)
+
+		// Allow diagnostic spawn goroutine to complete.
+		time.Sleep(100 * time.Millisecond)
+
+		// Epic must NOT be closed.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if epicClosed {
+			t.Error("expected epic NOT to be closed after failing acceptance test")
+		}
+
+		// A diagnostic agent must have been spawned.
+		if spawnMock.SpawnCount() == 0 {
+			t.Error("expected diagnostic agent to be spawned on acceptance test failure")
+		}
+
+		// The spawned prompt should mention the epic ID.
+		spawnMock.mu.Lock()
+		lastPrompt := ""
+		if len(spawnMock.spawns) > 0 {
+			lastPrompt = spawnMock.spawns[len(spawnMock.spawns)-1].prompt
+		}
+		spawnMock.mu.Unlock()
+		if !strings.Contains(lastPrompt, epicID) {
+			t.Errorf("expected diagnostic prompt to contain epic ID %q, got: %s", epicID, lastPrompt)
+		}
+	})
+
+	t.Run("epic without Cmd: falls back to count-based close with warning", func(t *testing.T) {
+		d, beadSource, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-no-cmd"
+		childID := "child-nc1"
+		workerID := "worker-nc1"
+
+		// Epic has acceptance criteria but no Cmd: field.
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID:                 epicID,
+			Title:              "My Epic",
+			AcceptanceCriteria: "All children pass their quality gates",
+		}
+		beadSource.mu.Unlock()
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			beadID:  childID,
+			epicID:  epicID,
+			state:   protocol.WorkerBusy,
+			encoder: json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-nc1", "agent/"+childID)
+
+		// Epic should still be closed (count-based fallback).
+		waitFor(t, func() bool {
+			beadSource.mu.Lock()
+			defer beadSource.mu.Unlock()
+			for _, id := range beadSource.closed {
+				if id == epicID {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
+
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if !epicClosed {
+			t.Error("expected epic to be closed via count-based fallback when no Cmd: present")
+		}
+
+		// Warning event should have been logged.
+		count := eventCount(t, d.db, "epic_no_acceptance_cmd")
+		if count == 0 {
+			t.Error("expected epic_no_acceptance_cmd warning event to be logged")
 		}
 	})
 }

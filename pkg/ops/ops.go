@@ -39,12 +39,13 @@ const (
 	OpsMerge      Type = "merge_conflict"
 	OpsDiagnosis  Type = "diagnosis"
 	OpsEscalation Type = "escalation"
+	OpsEpicFix    Type = "epic_fix" // spawned when epic acceptance test fails
 )
 
 // Model returns the preferred Claude model for this ops type.
 func (t Type) Model() string {
 	switch t {
-	case OpsMerge, OpsDiagnosis:
+	case OpsMerge, OpsDiagnosis, OpsEpicFix:
 		return "opus" // judgment-heavy
 	case OpsReview:
 		return "opus" // full code review requires judgment
@@ -116,6 +117,14 @@ type DiagOpts struct {
 	Symptom  string
 }
 
+// EpicFixOpts configures an epic acceptance-failure diagnostic agent.
+type EpicFixOpts struct {
+	EpicID string // the parent epic whose acceptance test failed
+	AC     string // full acceptance criteria text
+	Cmd    string // the Cmd: command that was run
+	Output string // combined stdout+stderr from the failed run
+}
+
 // --- Spawner ---
 
 // Spawner manages short-lived claude -p processes for ops tasks.
@@ -152,6 +161,15 @@ func (s *Spawner) ResolveMergeConflict(ctx context.Context, opts MergeOpts) <-ch
 func (s *Spawner) Diagnose(ctx context.Context, opts DiagOpts) <-chan Result {
 	prompt := buildDiagnosisPrompt(opts)
 	return s.run(ctx, OpsDiagnosis, opts.BeadID, opts.Worktree, prompt)
+}
+
+// DiagnoseEpicFailure spawns an agent that reads the failed acceptance test
+// output and creates fix beads under the epic. The result channel delivers the
+// agent's feedback when it exits (fire-and-forget is fine; callers may ignore
+// the channel).
+func (s *Spawner) DiagnoseEpicFailure(ctx context.Context, opts EpicFixOpts) <-chan Result {
+	prompt := buildEpicFixPrompt(opts)
+	return s.run(ctx, OpsEpicFix, opts.EpicID, "", prompt)
 }
 
 // Escalate spawns a one-shot manager agent to handle a dispatcher escalation.
@@ -330,8 +348,8 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 		r.Verdict, r.Feedback = parseReviewOutput(stdout)
 	case OpsMerge:
 		r.Verdict, r.Feedback = parseMergeOutput(stdout)
-	case OpsDiagnosis:
-		// Diagnosis has no verdict parsing — the whole output is the feedback.
+	case OpsDiagnosis, OpsEpicFix:
+		// Diagnosis / epic-fix have no verdict parsing — the whole output is the feedback.
 		r.Feedback = stdout
 	case OpsEscalation:
 		r.Verdict, r.Feedback = parseEscalationOutput(stdout)

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
@@ -106,6 +107,32 @@ type SearchResult struct {
 	CodeChunk
 	Score  float64
 	Reason string
+}
+
+// AcceptanceRunner executes an epic's acceptance test command and reports
+// whether it passed.
+type AcceptanceRunner interface {
+	Run(ctx context.Context, cmd string) (output string, passed bool, err error)
+}
+
+// ShellAcceptanceRunner runs the acceptance command through sh -c and reports
+// pass when the process exits with code 0.
+type ShellAcceptanceRunner struct{}
+
+// Run executes cmd via sh -c and returns the combined output. passed is true
+// when the process exits with code 0.
+func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output string, passed bool, err error) {
+	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	out, runErr := c.CombinedOutput()
+	output = string(out)
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return output, false, nil
+		}
+		return output, false, fmt.Errorf("running acceptance test: %w", runErr)
+	}
+	return output, true, nil
 }
 
 // --- Worker tracking ---
@@ -221,16 +248,17 @@ func (c Config) validate() error {
 // directly (e.g. d.workers, d.attemptCounts). Both embedded structs share
 // the Dispatcher-level mu for synchronisation.
 type Dispatcher struct {
-	cfg       Config
-	db        *sql.DB
-	merger    *merge.Coordinator
-	ops       *ops.Spawner
-	beads     BeadSource
-	worktrees WorktreeManager
-	escalator Escalator
-	memories  *memory.Store
-	codeIndex CodeIndex // interface for FTS5 code search (nil means no search)
-	procMgr   ProcessManager
+	cfg        Config
+	db         *sql.DB
+	merger     *merge.Coordinator
+	ops        *ops.Spawner
+	beads      BeadSource
+	worktrees  WorktreeManager
+	escalator  Escalator
+	memories   *memory.Store
+	codeIndex  CodeIndex // interface for FTS5 code search (nil means no search)
+	procMgr    ProcessManager
+	acceptance AcceptanceRunner // runs epic acceptance test commands
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
 	WorkerPool
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
@@ -306,6 +334,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		escalator:     esc,
 		memories:      memory.NewStore(db),
 		codeIndex:     codeIdx,
+		acceptance:    &ShellAcceptanceRunner{},
 		state:         StateInert,
 		targetWorkers: resolved.MaxWorkers,
 		WorkerPool: WorkerPool{
@@ -1019,8 +1048,11 @@ func (d *Dispatcher) autoCloseEpicIfComplete(ctx context.Context, workerID strin
 	d.safeGo(func() { d.tryCloseEpic(ctx, epicID, workerID) })
 }
 
-// tryCloseEpic checks if all children of the epic are closed, and if so, closes the
-// epic and alerts the manager when it's the focused epic.
+// tryCloseEpic checks if all children of the epic are closed. If so, it runs
+// the epic's Cmd: acceptance test (if present) before closing. A passing test
+// closes the epic normally; a failing test spawns a diagnostic agent to create
+// fix beads instead of closing. Epics without a Cmd: fall back to count-based
+// close with a warning logged.
 func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) {
 	allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
 	if err != nil {
@@ -1032,7 +1064,56 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		return
 	}
 
-	_ = d.beads.Close(ctx, epicID, "All children completed")
+	// Fetch the epic's acceptance criteria to look for an executable Cmd:.
+	detail, showErr := d.beads.Show(ctx, epicID)
+	if showErr != nil {
+		_ = d.logEvent(ctx, "epic_ac_fetch_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"error":%q}`, showErr.Error()))
+		// Fall back to count-based close so a transient Show error doesn't block.
+		d.completeEpicClose(ctx, epicID, workerID, "All children completed (AC fetch failed)")
+		return
+	}
+
+	cmd := parseAcceptanceCmd(detail.AcceptanceCriteria)
+	if cmd == "" {
+		// No executable acceptance test: warn and fall back to count-based close.
+		_ = d.logEvent(ctx, "epic_no_acceptance_cmd", "dispatcher", epicID, workerID,
+			`{"warning":"epic has no Cmd: acceptance test; falling back to count-based close"}`)
+		d.completeEpicClose(ctx, epicID, workerID, "All children completed (no acceptance test)")
+		return
+	}
+
+	// Run the acceptance test.
+	output, passed, runErr := d.acceptance.Run(ctx, cmd)
+	if runErr != nil {
+		_ = d.logEvent(ctx, "epic_acceptance_run_error", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"cmd":%q,"error":%q}`, cmd, runErr.Error()))
+		passed = false
+	}
+
+	if passed {
+		_ = d.logEvent(ctx, "epic_acceptance_passed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"cmd":%q}`, cmd))
+		d.completeEpicClose(ctx, epicID, workerID, "Acceptance test passed")
+		return
+	}
+
+	// Acceptance test failed: spawn a diagnostic agent to create fix beads.
+	// Do NOT close the epic — it will be retried when the fix beads complete.
+	_ = d.logEvent(ctx, "epic_acceptance_failed", "dispatcher", epicID, workerID,
+		fmt.Sprintf(`{"cmd":%q,"output":%q}`, cmd, output))
+	d.ops.DiagnoseEpicFailure(ctx, ops.EpicFixOpts{
+		EpicID: epicID,
+		AC:     detail.AcceptanceCriteria,
+		Cmd:    cmd,
+		Output: output,
+	})
+}
+
+// completeEpicClose closes the epic, cancels stale ops agents, logs the event,
+// and escalates to the manager if the epic is currently focused.
+func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, reason string) {
+	_ = d.beads.Close(ctx, epicID, reason)
 
 	// Cancel any in-flight ops agents for this epic to prevent stale escalations.
 	if n, err := d.ops.CancelForBead(epicID); n > 0 {
@@ -1054,6 +1135,25 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 			"all children completed",
 			`Run: oro directive focus "" to clear`), epicID, workerID)
 	}
+}
+
+// parseAcceptanceCmd extracts the Cmd: value from an acceptance criteria string.
+// It supports both pipe-separated inline format ("... | Cmd: go test | ...")
+// and line-per-field format. Returns "" if no Cmd: is present.
+func parseAcceptanceCmd(ac string) string {
+	for _, part := range strings.Split(ac, "|") {
+		trimmed := strings.TrimSpace(part)
+		if strings.HasPrefix(trimmed, "Cmd:") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:"))
+		}
+	}
+	for _, line := range strings.Split(ac, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Cmd:") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:"))
+		}
+	}
+	return ""
 }
 
 // handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
