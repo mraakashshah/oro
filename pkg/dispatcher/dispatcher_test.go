@@ -8107,7 +8107,11 @@ func TestQGExhaustionPreventsReassignment(t *testing.T) {
 	})
 
 	// Wait for the dispatcher to process exhaustion and release the worker.
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.exhaustedBeads["bead-exh"]
+	}, 2*time.Second)
 
 	// The bead should now be in exhaustedBeads and NOT re-assigned.
 	// Try to read another message — should NOT be an ASSIGN for bead-exh.
@@ -8157,8 +8161,13 @@ func TestAssignBeadSkipsMissingAcceptanceBeforeWorktree(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Wait for the assign cycle to process.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for the assign cycle to process (bead rejected => worktreeFailures recorded).
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, failed := d.worktreeFailures["bead-noac"]
+		return failed
+	}, 2*time.Second)
 
 	// No worktree should have been created for bead-noac.
 	wtMgr.mu.Lock()
@@ -8432,8 +8441,17 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		// Trigger merge and complete (white-box test).
 		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
 
-		// Wait for async auto-close goroutine.
-		time.Sleep(100 * time.Millisecond)
+		// Wait for async auto-close goroutine to close the epic.
+		waitFor(t, func() bool {
+			beadSource.mu.Lock()
+			defer beadSource.mu.Unlock()
+			for _, id := range beadSource.closed {
+				if id == epicID {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
 
 		// Verify the child bead was closed.
 		beadSource.mu.Lock()
@@ -8498,9 +8516,19 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 
 		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
 
-		time.Sleep(100 * time.Millisecond)
+		// Wait for the child bead to be closed (confirms goroutine ran).
+		waitFor(t, func() bool {
+			beadSource.mu.Lock()
+			defer beadSource.mu.Unlock()
+			for _, id := range beadSource.closed {
+				if id == childID {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
 
-		// Verify the child was closed but the epic was NOT closed.
+		// Verify the epic was NOT closed.
 		beadSource.mu.Lock()
 		epicClosed := false
 		for _, id := range beadSource.closed {
@@ -8545,7 +8573,17 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		// mergeAndComplete should complete successfully even if AllChildrenClosed errors.
 		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
 
-		time.Sleep(100 * time.Millisecond)
+		// Wait for the child bead to be closed (merge flow not blocked).
+		waitFor(t, func() bool {
+			beadSource.mu.Lock()
+			defer beadSource.mu.Unlock()
+			for _, id := range beadSource.closed {
+				if id == childID {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
 
 		// Verify the child bead was still closed (merge flow not blocked).
 		beadSource.mu.Lock()
@@ -8603,8 +8641,15 @@ func TestEpicCompletionAlert(t *testing.T) {
 
 		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
 
-		// Wait for async auto-close goroutine.
-		time.Sleep(200 * time.Millisecond)
+		// Wait for async auto-close goroutine to produce escalation.
+		waitFor(t, func() bool {
+			for _, msg := range esc.Messages() {
+				if strings.Contains(msg, "EPIC_COMPLETE") && strings.Contains(msg, epicID) {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
 
 		// Verify escalation message was sent with epic completion alert.
 		msgs := esc.Messages()
@@ -8665,7 +8710,17 @@ func TestEpicCompletionAlert(t *testing.T) {
 
 		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
 
-		time.Sleep(200 * time.Millisecond)
+		// Wait for the epic to be auto-closed (confirms goroutine completed).
+		waitFor(t, func() bool {
+			beadSource.mu.Lock()
+			defer beadSource.mu.Unlock()
+			for _, id := range beadSource.closed {
+				if id == epicID {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
 
 		// Verify NO epic completion escalation was sent.
 		msgs := esc.Messages()
@@ -8709,7 +8764,17 @@ func TestEpicCompletionAlert(t *testing.T) {
 
 		d.mergeAndComplete(ctx, childID, workerID, worktree, branch)
 
-		time.Sleep(200 * time.Millisecond)
+		// Wait for the epic to be auto-closed.
+		waitFor(t, func() bool {
+			beadSource.mu.Lock()
+			defer beadSource.mu.Unlock()
+			for _, id := range beadSource.closed {
+				if id == epicID {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
 
 		// Epic should still be auto-closed.
 		beadSource.mu.Lock()
@@ -8867,8 +8932,10 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 			return runner.calls > 0
 		}, 2*time.Second)
 
-		// Allow diagnostic spawn goroutine to complete.
-		time.Sleep(100 * time.Millisecond)
+		// Wait for diagnostic spawn goroutine to complete.
+		waitFor(t, func() bool {
+			return spawnMock.SpawnCount() > 0
+		}, 2*time.Second)
 
 		// Epic must NOT be closed.
 		beadSource.mu.Lock()
@@ -9795,8 +9862,14 @@ func TestDispatcher_FilterClosedBeads(t *testing.T) {
 	})
 	waitForWorkers(t, d, 2, 1*time.Second)
 
-	// Wait for assignment cycle
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the assignment cycle to have processed w2 by confirming w1 is busy
+	// (which means at least one full assign cycle completed after w2 registered).
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		w, ok := d.workers["w1"]
+		return ok && w.state == protocol.WorkerBusy
+	}, 2*time.Second)
 
 	// Verify the closed bead was NOT assigned to worker 2
 	d.mu.Lock()
@@ -9841,9 +9914,14 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 		},
 	})
 
-	// Wait for worker to be registered and assigned
+	// Wait for worker to be registered and assigned oro-test.
 	waitForWorkers(t, d, 1, 1*time.Second)
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		w, ok := d.workers["w1"]
+		return ok && w.beadID == "oro-test"
+	}, 2*time.Second)
 
 	// Verify worker was assigned oro-test
 	d.mu.Lock()
@@ -9864,8 +9942,13 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	// Close connection to trigger handleConn's deferred cleanup
 	_ = conn.Close()
 
-	// Wait for cleanup to run
-	time.Sleep(200 * time.Millisecond)
+	// Wait for cleanup to run (worker removed from d.workers).
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, exists := d.workers["w1"]
+		return !exists
+	}, 2*time.Second)
 
 	// Verify worker was removed from d.workers
 	d.mu.Lock()
