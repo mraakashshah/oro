@@ -920,3 +920,40 @@ func TestSummarizeIncludesMethodReceivers(t *testing.T) {
 		t.Error("summary missing method with receiver (Router.Match)")
 	}
 }
+
+func TestFormatChanType(t *testing.T) {
+	src := strings.Join([]string{
+		"package ch",
+		"",
+		"// Send sends on a send-only channel.",
+		"func Send(ch chan<- int) {}",
+		"",
+		"// Recv receives from a receive-only channel.",
+		"func Recv(ch <-chan string) {}",
+		"",
+		"// Bidi uses a bidirectional channel.",
+		"func Bidi(ch chan error) {}",
+	}, "\n")
+
+	path := writeTempGoFile(t, src)
+	summary, err := codesearch.Summarize(path)
+	if err != nil {
+		t.Fatalf("Summarize() error: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"send-only channel", "chan<- int"},
+		{"receive-only channel", "<-chan string"},
+		{"bidirectional channel", "chan error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.Contains(summary, tc.want) {
+				t.Errorf("summary missing %q\ngot:\n%s", tc.want, summary)
+			}
+		})
+	}
+}
