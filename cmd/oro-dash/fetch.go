@@ -178,6 +178,101 @@ func invertAssignments(m map[string]string) map[string]string {
 	return inv
 }
 
+// healthSwarmResponse mirrors the dispatcher's SwarmHealth JSON structure.
+// Defined locally to avoid coupling to pkg/dispatcher's unexported types.
+type healthSwarmResponse struct {
+	Daemon struct {
+		PID   int    `json:"pid"`
+		State string `json:"state"`
+	} `json:"daemon"`
+	ArchitectPane struct {
+		Name         string `json:"name"`
+		Alive        bool   `json:"alive"`
+		LastActivity string `json:"last_activity,omitempty"`
+	} `json:"architect_pane"`
+	ManagerPane struct {
+		Name         string `json:"name"`
+		Alive        bool   `json:"alive"`
+		LastActivity string `json:"last_activity,omitempty"`
+	} `json:"manager_pane"`
+	Workers []json.RawMessage `json:"workers"`
+}
+
+// fetchHealth connects to the dispatcher UDS, sends a health directive,
+// and returns parsed HealthData. Returns nil, nil if the socket is missing
+// or the dispatcher is offline — not an error condition.
+func fetchHealth(ctx context.Context, socketPath string) (*HealthData, error) {
+	if _, err := os.Stat(socketPath); err != nil {
+		return nil, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return nil, nil
+	}
+	defer conn.Close()
+
+	msg := protocol.Message{
+		Type: protocol.MsgDirective,
+		Directive: &protocol.DirectivePayload{
+			Op: "health",
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return nil, nil
+	}
+	data = append(data, '\n')
+
+	if _, err := conn.Write(data); err != nil {
+		return nil, nil
+	}
+
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		return nil, nil
+	}
+
+	var ack protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &ack); err != nil {
+		return nil, nil
+	}
+
+	if ack.Type != protocol.MsgACK || ack.ACK == nil || !ack.ACK.OK {
+		return nil, nil
+	}
+
+	return parseHealthResponse(ack.ACK.Detail), nil
+}
+
+// parseHealthResponse converts a SwarmHealth JSON string into a HealthData value.
+// Returns nil if the JSON is malformed.
+func parseHealthResponse(detail string) *HealthData {
+	var resp healthSwarmResponse
+	if err := json.Unmarshal([]byte(detail), &resp); err != nil {
+		return nil
+	}
+	return &HealthData{
+		DaemonPID:   resp.Daemon.PID,
+		DaemonState: resp.Daemon.State,
+		ArchitectPane: PaneHealth{
+			Name:         resp.ArchitectPane.Name,
+			Alive:        resp.ArchitectPane.Alive,
+			LastActivity: resp.ArchitectPane.LastActivity,
+		},
+		ManagerPane: PaneHealth{
+			Name:         resp.ManagerPane.Name,
+			Alive:        resp.ManagerPane.Alive,
+			LastActivity: resp.ManagerPane.LastActivity,
+		},
+		WorkerCount: len(resp.Workers),
+	}
+}
+
 // fetchWorkerOutput connects to the dispatcher UDS, sends a worker-logs directive,
 // and returns the output lines. Returns nil if the socket doesn't exist or the
 // connection fails — the dispatcher being offline is not an error condition.

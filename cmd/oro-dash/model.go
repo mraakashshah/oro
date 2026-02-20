@@ -29,6 +29,11 @@ type workerDataMsg struct {
 	focusedEpic string
 }
 
+// healthDataMsg carries health data from the dispatcher.
+type healthDataMsg struct {
+	data *HealthData
+}
+
 // tickCmd returns a command that sends a tickMsg after 2 seconds.
 func tickCmd() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
@@ -41,6 +46,15 @@ func fetchBeadsCmd() tea.Cmd {
 	return func() tea.Msg {
 		beads, _ := FetchBeads()
 		return beadsMsg(beads)
+	}
+}
+
+// fetchHealthCmd returns a tea.Cmd that fetches swarm health from the dispatcher.
+func fetchHealthCmd() tea.Cmd {
+	return func() tea.Msg {
+		socketPath := defaultSocketPath()
+		hd, _ := fetchHealth(context.Background(), socketPath)
+		return healthDataMsg{data: hd}
 	}
 }
 
@@ -242,8 +256,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detailModel.loadingEvents = false
 		}
 
+	case healthDataMsg:
+		m.healthData = msg.data
+
 	case tickMsg:
-		return m, tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), tickCmd())
+		return m, tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), fetchHealthCmd(), tickCmd())
 
 	case navigateToDepMsg:
 		return m.handleNavigateToDep(msg.beadID)
@@ -373,6 +390,8 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.searchInput.SetValue("")
 		m.searchQuery = ""
 		m.searchSelectedIndex = 0
+	case "H":
+		m.activeView = HealthView
 	case "w":
 		m.activeView = WorkersView
 	case "a":
