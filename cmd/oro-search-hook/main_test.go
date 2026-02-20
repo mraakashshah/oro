@@ -1,12 +1,69 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// errorWriter is an io.Writer that always returns an error.
+type errorWriter struct{}
+
+func (e *errorWriter) Write(p []byte) (int, error) {
+	return 0, errors.New("simulated write error")
+}
+
+// errorReader is an io.Reader that always returns an error.
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (int, error) {
+	return 0, errors.New("simulated read error")
+}
+
+// TestWriteOut verifies writeOut writes data to the provided writer.
+func TestWriteOut(t *testing.T) {
+	var buf bytes.Buffer
+	writeOut(&buf, []byte(`{"ok":true}`))
+	if got := buf.String(); got != `{"ok":true}` {
+		t.Errorf("got %q, want %q", got, `{"ok":true}`)
+	}
+}
+
+// TestWriteOut_writeError verifies writeOut does not panic when the writer fails.
+func TestWriteOut_writeError(t *testing.T) {
+	// Should not panic; error is logged to stderr.
+	writeOut(&errorWriter{}, []byte(`{}`))
+}
+
+// TestRun verifies the happy path: valid JSON input produces the expected response.
+func TestRun(t *testing.T) {
+	input := `{"hook_type":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}`
+	var out bytes.Buffer
+	run(strings.NewReader(input), &out)
+	if got := strings.TrimSpace(out.String()); got != "{}" {
+		t.Errorf("expected {} for non-Read tool, got %q", got)
+	}
+}
+
+// TestRun_readError verifies that run() fails open when stdin cannot be read.
+func TestRun_readError(t *testing.T) {
+	var out bytes.Buffer
+	run(&errorReader{}, &out)
+	if got := strings.TrimSpace(out.String()); got != "{}" {
+		t.Errorf("expected {} on read error (fail-open), got %q", got)
+	}
+}
+
+// Ensure errorWriter satisfies io.Writer at compile time.
+var _ io.Writer = (*errorWriter)(nil)
+
+// Ensure errorReader satisfies io.Reader at compile time.
+var _ io.Reader = (*errorReader)(nil)
 
 // hookResponse is the decoded JSON response from HandleHook.
 type hookResponse struct {
