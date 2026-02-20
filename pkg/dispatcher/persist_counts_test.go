@@ -100,10 +100,17 @@ func TestPersistAttemptCounts(t *testing.T) {
 			},
 		})
 
-		// Wait for the handoff processing to complete.
-		time.Sleep(200 * time.Millisecond)
+		// Wait for the handoff processing to persist handoff_count.
+		waitFor(t, func() bool {
+			var hc int
+			err := d.db.QueryRow(
+				`SELECT handoff_count FROM assignments WHERE bead_id=? AND status='active'`,
+				"bead-ho1",
+			).Scan(&hc)
+			return err == nil && hc == 1
+		}, 2*time.Second)
 
-		// Query the assignments table for handoff_count.
+		// Verify final value.
 		var handoffCount int
 		err := d.db.QueryRow(
 			`SELECT handoff_count FROM assignments WHERE bead_id=? AND status='active'`,
@@ -238,7 +245,14 @@ func TestAssignmentMarkedCompleteOnMerge(t *testing.T) {
 			},
 		})
 
-		time.Sleep(300 * time.Millisecond)
+		// Wait for async merge to mark assignment completed.
+		waitFor(t, func() bool {
+			var s string
+			err := d.db.QueryRow(
+				`SELECT status FROM assignments WHERE bead_id=?`, "bead-mc1",
+			).Scan(&s)
+			return err == nil && s == "completed"
+		}, 2*time.Second)
 
 		var status string
 		err := d.db.QueryRow(
@@ -285,7 +299,14 @@ func TestAssignmentMarkedCompleteOnMerge(t *testing.T) {
 			},
 		})
 
-		time.Sleep(300 * time.Millisecond)
+		// Wait for QG exhaustion to mark assignment completed.
+		waitFor(t, func() bool {
+			var s string
+			err := d.db.QueryRow(
+				`SELECT status FROM assignments WHERE bead_id=?`, "bead-mc2",
+			).Scan(&s)
+			return err == nil && s == "completed"
+		}, 2*time.Second)
 
 		var status string
 		err := d.db.QueryRow(
@@ -332,8 +353,25 @@ func TestConsolidation_TriggeredAfterNCompletions(t *testing.T) {
 				QualityGatePassed: true,
 			},
 		})
-		time.Sleep(300 * time.Millisecond)
+
+		// Wait for the bead's assignment to be marked completed.
+		bid := beadID // capture for closure
+		waitFor(t, func() bool {
+			var s string
+			err := d.db.QueryRow(
+				`SELECT status FROM assignments WHERE bead_id=?`, bid,
+			).Scan(&s)
+			return err == nil && s == "completed"
+		}, 2*time.Second)
 	}
+
+	// Wait for consolidation to reset the counter (triggered after 2nd completion).
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		c := d.completionsSinceConsolidate
+		d.mu.Unlock()
+		return c == 0
+	}, 2*time.Second)
 
 	// Verify counter was reset after consolidation.
 	d.mu.Lock()

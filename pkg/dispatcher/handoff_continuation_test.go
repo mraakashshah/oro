@@ -58,8 +58,7 @@ func TestHandoffContinuationInheritsAC(t *testing.T) {
 	}
 
 	// Wait for BeadSource.Create to be called with continuation bead that inherits AC.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		beadSrc.mu.Lock()
 		calls := make([]createCall, len(beadSrc.created))
 		copy(calls, beadSrc.created)
@@ -67,30 +66,31 @@ func TestHandoffContinuationInheritsAC(t *testing.T) {
 
 		for _, c := range calls {
 			if c.parent == "bead-parent" && c.beadType == "task" {
-				// Verify acceptance criteria was inherited.
-				expectedAC := "- [ ] Test: TestFeatureX passes\n- [ ] Feature X is documented"
-				if c.acceptanceCriteria != expectedAC {
-					t.Fatalf("continuation bead AC = %q; want %q", c.acceptanceCriteria, expectedAC)
-				}
-
-				// Verify description includes parent title for context.
-				if !strings.Contains(c.description, "Implement feature X") {
-					t.Fatalf("continuation bead description should include parent title; got %q", c.description)
-				}
-
-				// Verify event was logged.
-				if eventCount(t, d.db, "continuation_bead_created") > 0 {
-					return // SUCCESS
-				}
+				return eventCount(t, d.db, "continuation_bead_created") > 0
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return false
+	}, 3*time.Second)
 
-	// Dump what was created for debug.
+	// Verify the continuation bead details.
 	beadSrc.mu.Lock()
-	defer beadSrc.mu.Unlock()
-	t.Fatalf("expected continuation bead with inherited AC; got %+v", beadSrc.created)
+	calls := make([]createCall, len(beadSrc.created))
+	copy(calls, beadSrc.created)
+	beadSrc.mu.Unlock()
+
+	for _, c := range calls {
+		if c.parent == "bead-parent" && c.beadType == "task" {
+			expectedAC := "- [ ] Test: TestFeatureX passes\n- [ ] Feature X is documented"
+			if c.acceptanceCriteria != expectedAC {
+				t.Fatalf("continuation bead AC = %q; want %q", c.acceptanceCriteria, expectedAC)
+			}
+			if !strings.Contains(c.description, "Implement feature X") {
+				t.Fatalf("continuation bead description should include parent title; got %q", c.description)
+			}
+			return // SUCCESS
+		}
+	}
+	t.Fatal("expected continuation bead with inherited AC")
 }
 
 // TestHandoffContinuation_NoAC verifies graceful degradation when parent has no AC.
@@ -142,8 +142,7 @@ func TestHandoffContinuation_NoAC(t *testing.T) {
 	}
 
 	// Wait for continuation bead creation (should still work with empty AC).
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		beadSrc.mu.Lock()
 		calls := make([]createCall, len(beadSrc.created))
 		copy(calls, beadSrc.created)
@@ -151,21 +150,28 @@ func TestHandoffContinuation_NoAC(t *testing.T) {
 
 		for _, c := range calls {
 			if c.parent == "bead-noac" && c.beadType == "task" {
-				// AC should be empty (graceful degradation).
-				if c.acceptanceCriteria != "" {
-					t.Fatalf("continuation bead AC should be empty; got %q", c.acceptanceCriteria)
-				}
-
-				// Description should still include parent title.
-				if !strings.Contains(c.description, "Some task") {
-					t.Fatalf("continuation bead description should include parent title; got %q", c.description)
-				}
-
-				return // SUCCESS
+				return true
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return false
+	}, 3*time.Second)
 
+	// Verify the continuation bead details.
+	beadSrc.mu.Lock()
+	calls := make([]createCall, len(beadSrc.created))
+	copy(calls, beadSrc.created)
+	beadSrc.mu.Unlock()
+
+	for _, c := range calls {
+		if c.parent == "bead-noac" && c.beadType == "task" {
+			if c.acceptanceCriteria != "" {
+				t.Fatalf("continuation bead AC should be empty; got %q", c.acceptanceCriteria)
+			}
+			if !strings.Contains(c.description, "Some task") {
+				t.Fatalf("continuation bead description should include parent title; got %q", c.description)
+			}
+			return // SUCCESS
+		}
+	}
 	t.Fatal("expected continuation bead to be created even without parent AC")
 }

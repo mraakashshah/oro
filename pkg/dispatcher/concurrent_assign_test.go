@@ -28,11 +28,16 @@ func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
 	// If the race condition exists, both assignBead calls will create worktrees.
 	var worktreeCreateCount atomic.Int32
 
-	// Wrap worktree Create to add delay and track calls
+	// Channel-based synchronization: createStarted signals that the first
+	// worktree creation has entered the callback; createProceed gates it
+	// from returning, widening the race window without a raw sleep.
+	createStarted := make(chan struct{}, 2)
+	createProceed := make(chan struct{})
+
 	wtMgr.createFn = func(_ context.Context, beadID string) (string, string, error) {
 		if beadID == "oro-test1" {
-			// Simulate slow worktree creation to widen the race window
-			time.Sleep(50 * time.Millisecond)
+			createStarted <- struct{}{}
+			<-createProceed // block until test signals to proceed
 			worktreeCreateCount.Add(1)
 		}
 		return "/tmp/" + beadID, "branch-" + beadID, nil
@@ -94,6 +99,15 @@ func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
 		defer wg.Done()
 		_ = d.assignBead(ctx, worker2, protocol.Bead{ID: "oro-test1", Priority: 0})
 	}()
+
+	// Wait for at least one worktree creation to start, then unblock it.
+	// The race guard should ensure only one goroutine reaches createFn.
+	select {
+	case <-createStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for worktree creation to start")
+	}
+	close(createProceed)
 
 	wg.Wait()
 
@@ -194,8 +208,14 @@ func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
 	// Wait for W6 to be registered (total: 5 injected + 1 connected = 6).
 	waitForWorkers(t, d, 6, 1*time.Second)
 
-	// Give the assign loop time to run tryAssign with W6 idle.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the assign loop to have run at least once with W6 idle.
+	// cachedQueueDepth > 0 proves tryAssign ran and saw the ready bead.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		depth := d.cachedQueueDepth
+		d.mu.Unlock()
+		return depth > 0
+	}, 2*time.Second)
 
 	// ASSERTION 1: No assignment_race_detected event should have been logged.
 	// Before the fix, filterAssignable does NOT check assigningBeads, so
