@@ -402,6 +402,15 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) er
 		return fmt.Errorf("extract assets: %w", err)
 	}
 
+	// 7. Build oro-search-hook binary. Fail-open: ensureSearchHook logs a
+	// warning and returns nil when srcDir is missing (go-install users lack
+	// the source tree). oro init always runs from the repo root so the
+	// source is normally available.
+	absProjectRoot, _ := filepath.Abs(projectRoot)
+	searchHookSrc := filepath.Join(absProjectRoot, "cmd", "oro-search-hook")
+	searchHookBin := filepath.Join(oroHome, "hooks", "oro-search-hook")
+	_ = ensureSearchHook(searchHookBin, searchHookSrc)
+
 	return nil
 }
 

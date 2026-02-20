@@ -199,6 +199,11 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 		return "", fmt.Errorf("bootstrap oro dir: %w", err)
 	}
 
+	// Warn if oro-search-hook binary is absent — do NOT build it here since
+	// oro start may run outside the repo (go-install users lack the source tree).
+	searchHookBin := filepath.Join(paths.OroHome, "hooks", "oro-search-hook")
+	warnIfSearchHookMissing(w, searchHookBin)
+
 	pidPath = paths.PIDPath
 	sockPath := paths.SocketPath
 

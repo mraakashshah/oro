@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,14 +129,43 @@ func TestEnsureSearchHook(t *testing.T) {
 			t.Error("expected binary to remain fresh (not rebuilt)")
 		}
 	})
+}
 
-	t.Run("returns error when source dir missing", func(t *testing.T) {
+// TestEnsureSearchHookMissingSrcDir verifies that ensureSearchHook fails open
+// (logs warning, returns nil) when the source directory does not exist.
+// This is required for go-install users who lack the source tree.
+func TestEnsureSearchHookMissingSrcDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "oro-search-hook")
+
+	err := ensureSearchHook(binPath, "/nonexistent/source/dir")
+	if err != nil {
+		t.Fatalf("expected nil for missing srcDir (fail-open), got error: %v", err)
+	}
+}
+
+// TestPreflightWarnsOnMissingSearchHook verifies that warnIfSearchHookMissing
+// writes a warning when the binary is absent and stays silent when it exists.
+func TestPreflightWarnsOnMissingSearchHook(t *testing.T) {
+	t.Run("warns when binary missing", func(t *testing.T) {
+		var buf bytes.Buffer
+		warnIfSearchHookMissing(&buf, "/nonexistent/path/oro-search-hook")
+		if !strings.Contains(buf.String(), "oro-search-hook not found") {
+			t.Errorf("expected warning about missing binary, got: %q", buf.String())
+		}
+	})
+
+	t.Run("no warning when binary exists", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		binPath := filepath.Join(tmpDir, "oro-search-hook")
+		if err := os.WriteFile(binPath, []byte("binary"), 0o600); err != nil { //nolint:gosec // test-only fake binary
+			t.Fatal(err)
+		}
 
-		err := ensureSearchHook(binPath, "/nonexistent/source/dir")
-		if err == nil {
-			t.Fatal("expected error for missing source dir")
+		var buf bytes.Buffer
+		warnIfSearchHookMissing(&buf, binPath)
+		if buf.Len() > 0 {
+			t.Errorf("expected no output, got: %q", buf.String())
 		}
 	})
 }
