@@ -6,6 +6,25 @@ import (
 	"oro/pkg/codesearch"
 )
 
+func TestQueryType_String(t *testing.T) {
+	tests := []struct {
+		qt   codesearch.QueryType
+		want string
+	}{
+		{codesearch.QueryLiteral, "literal"},
+		{codesearch.QueryStructural, "structural"},
+		{codesearch.QuerySemantic, "semantic"},
+		{codesearch.QueryType(99), "unknown"},
+	}
+
+	for _, tt := range tests {
+		got := tt.qt.String()
+		if got != tt.want {
+			t.Errorf("QueryType(%d).String() = %q, want %q", int(tt.qt), got, tt.want)
+		}
+	}
+}
+
 func TestClassifyQuery_Structural(t *testing.T) {
 	tests := []struct {
 		name    string
