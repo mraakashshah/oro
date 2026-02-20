@@ -207,6 +207,62 @@ test_makefile_mutate_go_diff_trap_present() {
     return 1
 }
 
+# =============================================================================
+# Missing main branch + crash detection (oro-xgwr)
+# =============================================================================
+
+# Test: run_go_mutation_test checks for main branch existence before diffing
+# shellcheck disable=SC2317,SC2329
+test_mutation_checks_main_branch_existence() {
+    # The function must NOT blindly run 'git diff ... main 2>/dev/null || true'.
+    # It must detect when main doesn't exist and warn/fail — not silently PASS.
+    local fn_body
+    fn_body=$(grep -A 80 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -80)
+
+    # Must have a check for main branch existence (rev-parse, merge-base, or warning message)
+    if echo "$fn_body" | grep -qE 'rev-parse.*verify.*main|merge-base.*main|Cannot find main'; then
+        return 0
+    fi
+
+    echo "FAIL: run_go_mutation_test() does not check for main branch existence"
+    echo "  'git diff --name-only main 2>/dev/null || true' silently returns empty"
+    echo "  when main branch is absent → silent PASS (oro-xgwr)"
+    return 1
+}
+
+# Test: run_go_mutation_test captures go-mutesting exit code to detect crashes
+# shellcheck disable=SC2317,SC2329
+test_mutation_crash_flagged_as_fail() {
+    # When go-mutesting crashes (nonzero exit) with no score output,
+    # the function must return nonzero (FAIL), not 0 (silent PASS).
+    local fn_body
+    fn_body=$(grep -A 80 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -80)
+
+    # Must have exit-code capture for go-mutesting (not just swallow the exit code)
+    if echo "$fn_body" | grep -qE 'mutesting_exit|go-mutesting.*\|\|.*[0-9]|\$\? .*mutesting'; then
+        return 0
+    fi
+
+    echo "FAIL: run_go_mutation_test() does not capture go-mutesting exit code"
+    echo "  A crashed go-mutesting (nonzero exit, no score) is indistinguishable"
+    echo "  from 'no mutations possible' — both currently return 0 (PASS) (oro-xgwr)"
+    return 1
+}
+
+# Test: missing main branch warning appears in function output text
+# shellcheck disable=SC2317,SC2329
+test_mutation_missing_main_warning_message() {
+    # The warning must include 'Cannot find main branch' (or similar 'main' + warning)
+    if grep -A 80 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | \
+            grep -qiE 'Cannot find main|main.*not found|main.*missing|WARNING.*main'; then
+        return 0
+    fi
+
+    echo "FAIL: run_go_mutation_test() does not print a 'Cannot find main branch' warning"
+    echo "  Acceptance criteria require the warning message to be present (oro-xgwr)"
+    return 1
+}
+
 # Run tests
 echo "Testing quality_gate.sh config-driven behavior"
 echo "=============================================="
@@ -222,6 +278,14 @@ echo "=============================================="
 test_case "quality_gate.sh mutation has trap EXIT" test_quality_gate_mutation_trap_present
 test_case "Makefile mutate-go has trap" test_makefile_mutate_go_trap_present
 test_case "Makefile mutate-go-diff has trap" test_makefile_mutate_go_diff_trap_present
+
+echo ""
+echo "Testing missing main branch + crash detection (oro-xgwr)"
+echo "=============================================="
+
+test_case "mutation checks main branch existence" test_mutation_checks_main_branch_existence
+test_case "mutation crash flagged as FAIL" test_mutation_crash_flagged_as_fail
+test_case "mutation missing-main warning message" test_mutation_missing_main_warning_message
 
 echo ""
 printf '%bPassed:%b %d\n' "$GREEN" "$NC" "$PASS"

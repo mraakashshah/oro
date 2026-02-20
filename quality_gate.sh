@@ -249,6 +249,14 @@ lane_go() {
 
         # shellcheck disable=SC2329
         run_go_mutation_test() {
+            # Detect missing main branch explicitly — do NOT silently swallow git errors.
+            # 'git diff ... main 2>/dev/null || true' returns empty when main is absent,
+            # causing a false PASS. Fail loudly instead (oro-xgwr).
+            if ! git rev-parse --verify main >/dev/null 2>&1; then
+                echo "WARNING: Cannot find main branch — cannot determine changed files for mutation"
+                echo "FAIL: mutation testing requires main branch to compute diff"
+                return 1
+            fi
             local changed
             changed=$(git diff --name-only main -- '*.go' 2>/dev/null \
                 | grep -v '_test\.go$' \
@@ -262,14 +270,20 @@ lane_go() {
             # Restore source files on exit (handles Ctrl-C, OOM, timeout, and normal exit)
             trap 'git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true' EXIT
             echo "Mutating changed files: $changed"
-            local output
+            local output mutesting_exit=0
             # shellcheck disable=SC2086
-            output=$(go-mutesting --exec-timeout=30 $changed 2>&1)
+            output=$(go-mutesting --exec-timeout=30 $changed 2>&1) || mutesting_exit=$?
             git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true
             echo "$output"
             local score
             score=$(echo "$output" | grep "The mutation score is" | awk '{print $5}')
             if [ -z "$score" ]; then
+                # Distinguish crash (nonzero exit) from "no mutations possible" (exit 0).
+                # An empty score after a crash is a FAIL, not a silent skip (oro-xgwr).
+                if [ "$mutesting_exit" -ne 0 ]; then
+                    echo "FAIL: go-mutesting crashed (exit $mutesting_exit) — treating as mutation failure"
+                    return 1
+                fi
                 echo "No mutations generated for changed files — skipping"
                 return 0
             fi
@@ -354,6 +368,12 @@ lane_python() {
 
         # shellcheck disable=SC2329
         run_mutation_test() {
+            # Detect missing main branch explicitly (same fix as Go mutation, oro-xgwr).
+            if ! git rev-parse --verify main >/dev/null 2>&1; then
+                echo "WARNING: Cannot find main branch — cannot determine changed files for mutation"
+                echo "FAIL: mutation testing requires main branch to compute diff"
+                return 1
+            fi
             local changed
             changed=$(git diff --name-only main -- '*.py' 2>/dev/null \
                 | grep -v 'test_' \
