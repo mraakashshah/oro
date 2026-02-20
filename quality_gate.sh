@@ -175,6 +175,43 @@ if $HAS_GO; then
     check "go build" "go build -buildvcs=false ./..."
     check "go vet" "go vet ./..."
 
+    header "GO TIER 8: MUTATION TESTING (incremental)"
+    if command -v go-mutesting >/dev/null 2>&1; then
+        # shellcheck disable=SC2317,SC2329
+        run_go_mutation_test() {
+            # Incremental: only mutate Go files changed vs main.
+            # Skips test files and generated code. Fast enough for pre-push.
+            local changed
+            changed=$(git diff --name-only main -- '*.go' 2>/dev/null \
+                | grep -v '_test\.go$' \
+                | grep -v '_generated\.' \
+                | grep -v 'cmd/oro/_assets' \
+                || true)
+            if [ -z "$changed" ]; then
+                echo "No changed Go files to mutate — skipping"
+                return 0
+            fi
+            echo "Mutating changed files: $changed"
+            local output
+            # shellcheck disable=SC2086
+            output=$(go-mutesting --exec-timeout=30 $changed 2>&1)
+            git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true
+            echo "$output"
+            local score
+            score=$(echo "$output" | grep "The mutation score is" | awk '{print $5}')
+            if [ -z "$score" ]; then
+                echo "No mutations generated for changed files — skipping"
+                return 0
+            fi
+            if [ "$(echo "$score < 0.75" | bc -l)" -eq 1 ]; then
+                echo "FAIL: mutation score $score for changed files is below 0.75 threshold"
+                return 1
+            fi
+            echo "PASS: mutation score $score meets 0.75 threshold"
+        }
+        check "go-mutesting" "run_go_mutation_test"
+    fi
+
     # Clean staged embedded assets
     make clean-assets 2>/dev/null || true
 
@@ -237,11 +274,23 @@ if $HAS_PYTHON; then
         check "pytest" "uv run pytest"
     fi
 
-    header "PYTHON TIER 5: MUTATION TESTING"
+    header "PYTHON TIER 5: MUTATION TESTING (incremental)"
     if [ -f "cosmic-ray.toml" ] && command -v uv >/dev/null 2>&1; then
         CR_SESSION="/tmp/cr-qg-$$.sqlite"
         # shellcheck disable=SC2317,SC2329
         run_mutation_test() {
+            # Incremental: only run if Python source files changed vs main.
+            local changed
+            changed=$(git diff --name-only main -- '*.py' 2>/dev/null \
+                | grep -v 'test_' \
+                | grep -v '__pycache__' \
+                | grep -v 'archive/' \
+                || true)
+            if [ -z "$changed" ]; then
+                echo "No changed Python files to mutate — skipping"
+                return 0
+            fi
+            echo "Changed Python files: $changed"
             uv run cosmic-ray init cosmic-ray.toml "$CR_SESSION" --force 2>&1 && \
             uv run cosmic-ray exec cosmic-ray.toml "$CR_SESSION" 2>&1 && \
             uv run cr-report "$CR_SESSION" 2>&1 && \
