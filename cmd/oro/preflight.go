@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -84,6 +86,45 @@ func warnIfSearchHookMissing(w io.Writer, binPath string) {
 	if _, err := os.Stat(binPath); err != nil {
 		fmt.Fprintf(w, "warning: oro-search-hook not found — run oro init to build it\n")
 	}
+}
+
+// checkAssetVersion compares the version embedded in the binary (_assets/.version)
+// against the stamp written to oroHome/.asset-version by the last extraction.
+// If they differ (or the stamp is absent), assets are re-extracted and the stamp updated.
+// Returns reExtracted=true when extraction was performed.
+// If the embedded FS has no .version file, returns false, nil (backwards compat with old builds).
+// If re-extraction fails, returns a hard error directing the user to run oro init.
+func checkAssetVersion(oroHome string, embedded fs.FS) (bool, error) {
+	// Read embedded version — skip check if absent (old builds lack .version).
+	versionData, err := fs.ReadFile(embedded, "_assets/.version")
+	if err != nil {
+		return false, nil //nolint:nilerr // intentional: missing .version means skip check (backwards compat)
+	}
+	embeddedVersion := strings.TrimSpace(string(versionData))
+
+	// Read on-disk stamp; missing file is treated as stale (triggers re-extraction).
+	stampPath := filepath.Join(oroHome, ".asset-version")
+	diskData, err := os.ReadFile(stampPath) //nolint:gosec // stampPath constructed from trusted oroHome
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read asset stamp: %w", err)
+	}
+	diskVersion := strings.TrimSpace(string(diskData))
+
+	if diskVersion == embeddedVersion {
+		return false, nil
+	}
+
+	// Versions differ — re-extract assets (extractAssets also writes the stamp).
+	subAssets, err := fs.Sub(embedded, "_assets")
+	if err != nil {
+		return false, fmt.Errorf("re-extract assets: %w — run oro init to update", err)
+	}
+	if err := extractAssets(oroHome, subAssets); err != nil {
+		return false, fmt.Errorf("re-extract assets: %w — run oro init to update", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "assets updated from %s to %s\n", diskVersion, embeddedVersion)
+	return true, nil
 }
 
 // isStale returns true if binPath doesn't exist or is older than any file in srcDir.

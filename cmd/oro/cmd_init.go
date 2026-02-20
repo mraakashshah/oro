@@ -678,5 +678,11 @@ func extractAssets(dest string, assets fs.FS) error {
 		}
 	}
 
+	// Write version stamp so oro start can detect when assets need re-extraction.
+	if versionData, err := fs.ReadFile(assets, ".version"); err == nil {
+		stampPath := filepath.Join(dest, ".asset-version")
+		_ = os.WriteFile(stampPath, versionData, 0o644) //nolint:gosec // stamp file needs to be readable
+	}
+
 	return nil
 }
