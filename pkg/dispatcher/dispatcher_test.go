@@ -777,16 +777,12 @@ func TestRunWaitsForGoroutines(t *testing.T) {
 	}()
 
 	// Wait for listener to be ready
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		d.mu.Lock()
 		ln := d.listener
 		d.mu.Unlock()
-		if ln != nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return ln != nil
+	}, 2*time.Second)
 
 	// Cancel the context
 	cancel()
@@ -3297,14 +3293,9 @@ func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
 	// After ShutdownTimeout, the dispatcher should force-close connections.
 	// The workers should get disconnected (reads will fail or return EOF).
 	// We verify by polling ConnectedWorkers until it reaches 0.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if d.ConnectedWorkers() == 0 {
-			return // success
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("expected 0 connected workers after shutdown timeout, got %d", d.ConnectedWorkers())
+	waitFor(t, func() bool {
+		return d.ConnectedWorkers() == 0
+	}, 3*time.Second)
 }
 
 func TestConfig_ShutdownTimeout_Default(t *testing.T) {
@@ -3449,31 +3440,17 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 	})
 
 	// Wait for ops agent to be spawned
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(opsSpawner.Active()) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(opsSpawner.Active()) == 0 {
-		t.Fatal("expected active ops agent after READY_FOR_REVIEW")
-	}
+	waitFor(t, func() bool {
+		return len(opsSpawner.Active()) > 0
+	}, 2*time.Second)
 
 	// Trigger shutdown
 	cancel()
 
 	// Wait for all ops agents to be killed
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(opsSpawner.Active()) == 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if len(opsSpawner.Active()) != 0 {
-		t.Fatalf("expected 0 active ops agents after shutdown, got %d", len(opsSpawner.Active()))
-	}
+	waitFor(t, func() bool {
+		return len(opsSpawner.Active()) == 0
+	}, 2*time.Second)
 
 	// Verify all processes were killed
 	slowSpawner.mu.Lock()
@@ -3551,25 +3528,12 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	cancel()
 
 	// Wait for worktrees to be removed
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		wtMgr.mu.Lock()
 		n := len(wtMgr.removed)
 		wtMgr.mu.Unlock()
-		if n >= 2 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	wtMgr.mu.Lock()
-	removed := make([]string, len(wtMgr.removed))
-	copy(removed, wtMgr.removed)
-	wtMgr.mu.Unlock()
-
-	if len(removed) < 2 {
-		t.Fatalf("expected at least 2 worktrees removed, got %d: %v", len(removed), removed)
-	}
+		return n >= 2
+	}, 2*time.Second)
 }
 
 func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
@@ -3670,24 +3634,12 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 	cancel()
 
 	// Wait for worktrees to be removed.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		wtMgr.mu.Lock()
 		n := len(wtMgr.removed)
 		wtMgr.mu.Unlock()
-		if n >= 2 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	wtMgr.mu.Lock()
-	nRemoved := len(wtMgr.removed)
-	wtMgr.mu.Unlock()
-
-	if nRemoved < 2 {
-		t.Fatalf("expected at least 2 worktrees removed, got %d", nRemoved)
-	}
+		return n >= 2
+	}, 3*time.Second)
 
 	if worktreeRemovedBeforeShutdown.Load() {
 		t.Fatal("worktrees were removed BEFORE PREPARE_SHUTDOWN was sent to workers — " +
@@ -6601,7 +6553,12 @@ func TestGracefulShutdown_Cancellable(t *testing.T) {
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "test-worker", BeadID: ""},
 	})
-	time.Sleep(50 * time.Millisecond) // Let registration complete
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		_, ok := d.workers["test-worker"]
+		d.mu.Unlock()
+		return ok
+	}, 2*time.Second)
 
 	// Set worker to Busy state so ticker checks don't cause early exit
 	d.mu.Lock()
@@ -6620,7 +6577,13 @@ func TestGracefulShutdown_Cancellable(t *testing.T) {
 
 	// Call GracefulShutdownWorker first time
 	d.GracefulShutdownWorker("test-worker", longTimeout)
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		w, ok := d.workers["test-worker"]
+		has := ok && w.shutdownCancel != nil
+		d.mu.Unlock()
+		return has
+	}, 2*time.Second)
 
 	// Read first PREPARE_SHUTDOWN
 	msg1, ok1 := readMsg(t, conn, 200*time.Millisecond)
@@ -6631,9 +6594,10 @@ func TestGracefulShutdown_Cancellable(t *testing.T) {
 	// Record the current WaitGroup count (indirectly by checking when goroutines finish)
 	startTime := time.Now()
 
-	// Second call - should cancel the first goroutine immediately
+	// Second call - should cancel the first goroutine immediately.
+	// GracefulShutdownWorker sets shutdownCancel and sends PREPARE_SHUTDOWN
+	// synchronously before returning; readMsg below provides the sync point.
 	d.GracefulShutdownWorker("test-worker", longTimeout)
-	time.Sleep(50 * time.Millisecond)
 
 	// Read second PREPARE_SHUTDOWN
 	msg2, ok2 := readMsg(t, conn, 200*time.Millisecond)
@@ -6664,8 +6628,14 @@ func TestGracefulShutdown_Cancellable(t *testing.T) {
 		},
 	})
 
-	// Wait a bit for goroutines to detect the approval
-	time.Sleep(200 * time.Millisecond)
+	// Wait for goroutines to detect the approval (shutdownCancel cleared on approval)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		w, ok := d.workers["test-worker"]
+		done := !ok || w.shutdownCancel == nil
+		d.mu.Unlock()
+		return done
+	}, 2*time.Second)
 
 	elapsed := time.Since(startTime)
 
@@ -9716,15 +9686,12 @@ func TestApplyRestartDaemon(t *testing.T) {
 	_, _ = clientConn.Write(data)
 
 	// Wait for worker to be registered
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify worker is registered
-	d.mu.Lock()
-	if _, ok := d.workers[workerID]; !ok {
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		_, ok := d.workers[workerID]
 		d.mu.Unlock()
-		t.Fatal("worker not registered")
-	}
-	d.mu.Unlock()
+		return ok
+	}, 2*time.Second)
 
 	// Apply restart-daemon directive
 	detail, err := d.applyDirective(protocol.DirectiveRestartDaemon, "")
