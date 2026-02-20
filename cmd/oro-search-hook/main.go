@@ -17,6 +17,20 @@ import (
 	"oro/pkg/codesearch"
 )
 
+// run reads a hook event from r, processes it, and writes the response to w.
+// Extracted from main for testability.
+func run(r io.Reader, w io.Writer) {
+	input, err := io.ReadAll(r)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "oro-search-hook: failed to read stdin: %v\n", err)
+		// On stdin read error, output allow to avoid blocking.
+		writeOut(w, allowJSON)
+		return
+	}
+
+	writeOut(w, HandleHook(input))
+}
+
 // hookInput represents the JSON payload sent by Claude Code on stdin.
 type hookInput struct {
 	HookType  string    `json:"hook_type"`
@@ -108,20 +122,12 @@ func HandleHook(input []byte) []byte {
 }
 
 func main() {
-	input, err := io.ReadAll(os.Stdin)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "oro-search-hook: failed to read stdin: %v\n", err)
-		// On stdin read error, output allow to avoid blocking.
-		writeOut(allowJSON)
-		return
-	}
-
-	writeOut(HandleHook(input))
+	run(os.Stdin, os.Stdout)
 }
 
-// writeOut writes data to stdout, logging any write error to stderr.
-func writeOut(data []byte) {
-	if _, err := os.Stdout.Write(data); err != nil {
+// writeOut writes data to w, logging any write error to stderr.
+func writeOut(w io.Writer, data []byte) {
+	if _, err := w.Write(data); err != nil {
 		fmt.Fprintf(os.Stderr, "oro-search-hook: stdout write error: %v\n", err)
 	}
 }
