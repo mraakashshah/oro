@@ -160,6 +160,53 @@ EOF
     fi
 }
 
+# =============================================================================
+# Trap EXIT Tests (oro-bl44): mutation testing cleanup on interrupt
+# =============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Test: quality_gate.sh run_go_mutation_test has trap EXIT handler
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_mutation_trap_present() {
+    # Extract run_go_mutation_test function body (up to 60 lines after definition)
+    # and verify a trap EXIT handler is present
+    if grep -A 60 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | grep -q 'trap.*EXIT'; then
+        return 0
+    fi
+    echo "FAIL: quality_gate.sh run_go_mutation_test() has no trap EXIT handler"
+    echo "  Mutated source files will remain on disk if go-mutesting is killed"
+    return 1
+}
+
+# Test: Makefile mutate-go target has trap EXIT handler
+# shellcheck disable=SC2317,SC2329
+test_makefile_mutate_go_trap_present() {
+    # Extract lines from mutate-go: target to next target and check for trap
+    local target_body
+    target_body=$(awk '/^mutate-go:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go:/{f=0} f' "$SCRIPT_DIR/Makefile")
+    if echo "$target_body" | grep -q 'trap'; then
+        return 0
+    fi
+    echo "FAIL: Makefile mutate-go target has no trap handler"
+    echo "  Mutated source files will remain on disk if killed mid-run"
+    return 1
+}
+
+# Test: Makefile mutate-go-diff target has trap EXIT handler
+# shellcheck disable=SC2317,SC2329
+test_makefile_mutate_go_diff_trap_present() {
+    # Extract lines from mutate-go-diff: target to next target and check for trap
+    local target_body
+    target_body=$(awk '/^mutate-go-diff:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go-diff:/{f=0} f' "$SCRIPT_DIR/Makefile")
+    if echo "$target_body" | grep -q 'trap'; then
+        return 0
+    fi
+    echo "FAIL: Makefile mutate-go-diff target has no trap handler"
+    echo "  Mutated source files will remain on disk if killed mid-run"
+    return 1
+}
+
 # Run tests
 echo "Testing quality_gate.sh config-driven behavior"
 echo "=============================================="
@@ -167,6 +214,14 @@ echo "=============================================="
 test_case "Reads config when present" test_reads_config_when_present
 test_case "Falls back when config missing" test_fallback_when_config_missing
 test_case "Skips when tool missing" test_skip_when_tool_missing
+
+echo ""
+echo "Testing mutation trap handlers (oro-bl44)"
+echo "=============================================="
+
+test_case "quality_gate.sh mutation has trap EXIT" test_quality_gate_mutation_trap_present
+test_case "Makefile mutate-go has trap" test_makefile_mutate_go_trap_present
+test_case "Makefile mutate-go-diff has trap" test_makefile_mutate_go_diff_trap_present
 
 echo ""
 printf '%bPassed:%b %d\n' "$GREEN" "$NC" "$PASS"

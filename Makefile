@@ -103,7 +103,8 @@ clean: clean-assets
 # Uses go-mutesting. Fails if mutation score drops below 0.40.
 mutate-go:
 	@echo "Running Go mutation testing on pkg/..."
-	@go-mutesting --exec-timeout=30 pkg/... 2>&1 | tee /tmp/go-mutesting-output.txt; \
+	@trap 'git checkout -- pkg/ 2>/dev/null || true' EXIT; \
+	go-mutesting --exec-timeout=30 pkg/... 2>&1 | tee /tmp/go-mutesting-output.txt; \
 	git checkout -- pkg/ 2>/dev/null || true; \
 	score=$$(grep "The mutation score is" /tmp/go-mutesting-output.txt | awk '{print $$5}'); \
 	echo "Mutation score: $$score"; \
@@ -115,7 +116,8 @@ mutate-go:
 # mutate-go-diff runs mutation testing only on Go files changed vs main.
 # Used by the quality gate for fast incremental checks. Threshold: 0.75.
 mutate-go-diff:
-	@changed=$$(git diff --name-only main -- '*.go' | grep -v '_test\.go$$' | grep -v '_generated\.' | grep -v 'cmd/oro/_assets'); \
+	@trap 'git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true' EXIT; \
+	changed=$$(git diff --name-only main -- '*.go' | grep -v '_test\.go$$' | grep -v '_generated\.' | grep -v 'cmd/oro/_assets'); \
 	if [ -z "$$changed" ]; then echo "No changed Go files to mutate"; exit 0; fi; \
 	echo "Mutating: $$changed"; \
 	go-mutesting --exec-timeout=30 $$changed 2>&1 | tee /tmp/go-mutesting-diff.txt; \
