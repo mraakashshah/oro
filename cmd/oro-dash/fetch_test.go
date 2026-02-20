@@ -2,10 +2,65 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"oro/pkg/protocol"
 )
+
+// writeFakeBdMultiStatus writes an executable shell script at fakeBin/bd that:
+//   - returns status-filtered JSON when called with `--status <status>`
+//   - returns empty JSON array when called without --status (simulating single-call path)
+//
+// This distinguishes the multi-status path (fetchBeads) from the single-call path (FetchBeads).
+func writeFakeBdMultiStatus(t *testing.T, fakeBin string) {
+	t.Helper()
+	// Shell script: look for --status flag; if found echo a bead with that status,
+	// otherwise echo empty array (simulating old single-call behavior).
+	script := `#!/bin/sh
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--status" ]; then
+    printf '[{"id":"oro-001","title":"Test","status":"%s","issue_type":"task"}]\n' "$arg"
+    exit 0
+  fi
+  prev="$arg"
+done
+echo '[]'
+`
+	path := filepath.Join(fakeBin, "bd")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil { //nolint:gosec // G306: test-only executable stub
+		t.Fatalf("write fake bd: %v", err)
+	}
+}
+
+// TestFetchBeadsCmd_DelegatesToMultiStatusFetch verifies that fetchBeadsCmd uses
+// the multi-status fetchBeads path (4 status calls) rather than the deprecated
+// single-call FetchBeads path. The fake bd returns a bead only when called with
+// --status, so the multi-status path yields 4 beads while the single-call path
+// yields 0. A zero count means the wrong path is being used.
+func TestFetchBeadsCmd_DelegatesToMultiStatusFetch(t *testing.T) {
+	fakeBin := t.TempDir()
+	writeFakeBdMultiStatus(t, fakeBin)
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+":"+origPath)
+
+	cmd := fetchBeadsCmd()
+	msg := cmd()
+
+	beads, ok := msg.(beadsMsg)
+	if !ok {
+		t.Fatalf("expected beadsMsg, got %T", msg)
+	}
+
+	// Multi-status path fetches open/in_progress/blocked/closed → 4 beads.
+	// Single-call path fetches bd list --json → [] → 0 beads.
+	if len(beads) != 4 {
+		t.Errorf("fetchBeadsCmd returned %d beads; want 4 (multi-status path)", len(beads))
+	}
+}
 
 func TestParseBeadsOutput_ParsesJSONArray(t *testing.T) {
 	input := `[

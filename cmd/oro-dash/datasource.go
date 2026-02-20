@@ -3,47 +3,10 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"os/exec"
-	"strings"
-
-	"oro/pkg/protocol"
 
 	_ "modernc.org/sqlite"
 )
-
-// FetchBeads runs `bd list --json` and parses the output into a []protocol.Bead slice.
-//
-// Error cases:
-//   - bd not in PATH → returns error
-//   - bd returns empty array → returns empty slice, nil error
-//   - JSON parse error → returns nil, error
-func FetchBeads() ([]protocol.Bead, error) {
-	// Verify bd is available on PATH before running.
-	if _, err := exec.LookPath("bd"); err != nil {
-		return nil, fmt.Errorf("bd not in PATH: %w", err)
-	}
-
-	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "bd", "list", "--json") //nolint:gosec // G204: "bd" is a trusted internal CLI, not user input
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("bd list --json: %w", err)
-	}
-
-	output := strings.TrimSpace(string(out))
-	if output == "" {
-		return []protocol.Bead{}, nil
-	}
-
-	var beads []protocol.Bead
-	if err := json.Unmarshal([]byte(output), &beads); err != nil {
-		return nil, fmt.Errorf("parse beads JSON: %w", err)
-	}
-
-	return beads, nil
-}
 
 // FetchWorkers reads active worker assignments from the dispatcher's sqlite
 // state database at dbPath and returns one WorkerStatus per active row.
