@@ -328,6 +328,8 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if err := resolved.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	memStore := memory.NewStore(db)
+	memStore.SetEmbedder(memory.NewEmbedder())
 	return &Dispatcher{
 		cfg:           resolved,
 		db:            db,
@@ -336,7 +338,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		beads:         beads,
 		worktrees:     wt,
 		escalator:     esc,
-		memories:      memory.NewStore(db),
+		memories:      memStore,
 		codeIndex:     codeIdx,
 		acceptance:    &ShellAcceptanceRunner{},
 		state:         StateInert,
