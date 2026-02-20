@@ -139,7 +139,7 @@ jobs:
         run: |
           find . -name '*.py' -not -path './references/*' -not -path './yap/*' \
             -not -path './archive/*' -not -path './.worktrees/*' -not -path './.venv/*' \
-            -not -path './assets/*' \
+            -not -path './assets/*' -not -path './.claude/*' \
             | xargs uvx pylint --disable=all --enable=E
 
       # Tier 3: Type checking
