@@ -204,7 +204,7 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 		pinnedInt = 1
 	}
 
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx, //nolint:gosec // G701 false positive: parameterized query with ? placeholders, no string concatenation
 		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified, pinned)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob, filesRead, filesModified, pinnedInt,
