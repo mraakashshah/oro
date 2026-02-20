@@ -136,7 +136,6 @@ type Model struct {
 
 	// Search view state
 	searchInput         textinput.Model // Bubbles textinput for search query
-	searchQuery         string          // Current search query (deprecated, use searchInput.Value())
 	searchSelectedIndex int             // Index of the selected search result
 	searchModel         *SearchModel
 
@@ -388,7 +387,6 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.activeView = SearchView
 		m.searchInput.Focus()
 		m.searchInput.SetValue("")
-		m.searchQuery = ""
 		m.searchSelectedIndex = 0
 	case "H":
 		m.activeView = HealthView
@@ -410,7 +408,6 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 		m.activeView = BoardView
 		m.searchInput.Blur()
 		m.searchInput.SetValue("")
-		m.searchQuery = ""
 		m.searchSelectedIndex = 0
 		return m, nil
 	case "enter":
