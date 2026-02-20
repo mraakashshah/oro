@@ -169,6 +169,9 @@ func (g *DependencyGraph) Bottlenecks() []Bottleneck {
 	}
 
 	sort.Slice(result, func(i, j int) bool {
+		if result[i].BlockedCount != result[j].BlockedCount {
+			return result[i].BlockedCount > result[j].BlockedCount
+		}
 		return result[i].BeadID < result[j].BeadID
 	})
 
