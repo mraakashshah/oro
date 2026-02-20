@@ -1,0 +1,181 @@
+---
+date: 2026-02-19
+status: partial
+---
+
+goal: >
+  Aggressive quality audit of recent work (epic auto-decomposition oro-9kjh,
+  mutation testing oro-29tx/oro-7177). Found critical bugs: epic decomp prompt
+  never wired, security fix never merged, broken claim logic, shell scripting
+  bugs in mutation testing. Created 10 beads for all findings. Started Ralph
+  Loop design discussion for epic-level verification.
+
+now: >
+  10 audit-fix beads are ready (bd ready). Two are P0 — wire epic decomp
+  prompt (oro-vyte) and merge 7in4.5 security fix (oro-z021). User also
+  wants to design a Ralph Loop for epic-level verification to prevent
+  these integration gaps from recurring. That design discussion was
+  interrupted mid-brainstorming.
+
+test: go test ./pkg/dispatcher/ ./pkg/worker/ ./pkg/protocol/ ./cmd/oro/ -v
+
+done_this_session:
+  - task: "Aggressive audit of epic auto-decomposition (oro-9kjh)"
+    details: >
+      Dispatched 3 parallel audit agents (epic decomp code, mutation testing,
+      test quality). Found BuildEpicDecompositionPrompt never called in
+      production (marked //oro:testonly, buildAssignPrompt ignores
+      IsEpicDecomposition). Broken handleExitClaimed compare-and-swap
+      (dead code guard). TOCTOU race on HasChildren. tryCloseEpic
+      double-close race.
+    files: [pkg/worker/worker.go, pkg/worker/prompt.go, pkg/dispatcher/dispatcher.go]
+
+  - task: "Aggressive audit of mutation testing (oro-29tx, oro-7177)"
+    details: >
+      Found 9 bugs: unquoted $changed (word splitting/glob expansion),
+      shared /tmp/check-output.txt (race), no trap EXIT (mutated source
+      left on disk after Ctrl-C), git diff main fails silently on missing
+      branch, empty score = silent PASS, Makefile temp file isolation,
+      cosmic-ray baseline masking.
+    files: [quality_gate.sh, Makefile, cosmic-ray.toml]
+
+  - task: "Aggressive audit of test quality"
+    details: >
+      TestWorkerOversizeMessage flaky (SetReadDeadline never cleared on
+      net.Pipe). Tests for epic decomp are tautological (string-contains,
+      not behavioral). No test that --parent=<epicID> appears in bd create
+      examples. No negative test for IsEpicDecomposition=false.
+    files: [pkg/worker/message_size_test.go, pkg/worker/prompt_test.go, pkg/dispatcher/dispatcher_test.go]
+
+  - task: "Found unmerged security fix (oro-7in4.5)"
+    details: >
+      sanitizeForTmuxHook on main only strips \\n and \\r. Branch
+      agent/oro-7in4.5 (commit c4ef2d5) also strips ; & $ ` ( ).
+      Bead closed as done but never merged. Worktree still at
+      .worktrees/oro-7in4.5. 9 total unmerged agent branches found.
+
+  - task: "Created 10 beads for all audit findings"
+    details: >
+      P0: oro-vyte (wire epic decomp prompt), oro-z021 (merge 7in4.5).
+      P1: oro-of6x (fix claim logic), oro-bl44 (trap EXIT), oro-pcmh (flaky test).
+      P2: oro-ybz4 (PID-isolate temp), oro-xgwr (missing main branch),
+      oro-o1ep (TOCTOU + idempotency).
+      P3: oro-gcmz (clean branches, blocked by oro-z021), oro-koon (shell fixes).
+
+  - task: "Started Ralph Loop design discussion"
+    details: >
+      User wants epic-level machine-verifiable acceptance criteria to prevent
+      integration gaps. Current flow: child beads each have tests, epic
+      auto-closes on child count, nobody verifies the seam. Ralph Loop
+      would: run epic acceptance test -> if fail, create fix-bead ->
+      oro work <bead> -> repeat. Discussion interrupted at the question
+      of where verification gate should live (auto-close hook vs separate
+      command vs layered). User did not select an option.
+
+decisions:
+  - beads_not_epic: >
+      Created 10 flat beads instead of grouping under epics. Each fix is
+      independent. Only dependency: oro-gcmz (branch cleanup) blocked by
+      oro-z021 (merge 7in4.5 first).
+
+findings:
+  - epic_decomp_not_wired: >
+      BuildEpicDecompositionPrompt (pkg/worker/prompt.go:87) is marked
+      //oro:testonly. buildAssignPrompt (worker.go:409-428) never checks
+      IsEpicDecomposition. When epic routed for decomp, worker sends
+      standard task prompt. Feature shipped across 5 beads, doesn't work.
+  - security_fix_lost: >
+      oro-7in4.5 metachar stripping committed on agent/oro-7in4.5 (c4ef2d5)
+      but never merged to main. On main, sanitizeForTmuxHook only strips
+      \\n and \\r. No tests for metacharacters exist on main.
+  - nine_stale_branches: >
+      agent/oro-5kk0, agent/oro-7in4.3, agent/oro-7in4.5, agent/oro-7in4.6,
+      agent/oro-cwz.6, agent/oro-cwz.7, agent/oro-js7.3, agent/oro-qawb,
+      agent/oro-vst8. Most have code already on main via different commits.
+      7in4.5 is the only one with genuinely lost work.
+  - broken_claim_logic: >
+      worker.go awaitSubprocessAndReport sets handleExitClaimed=true
+      unconditionally then reads it (always true). Guard is dead code.
+      Both goroutines can claim exit simultaneously -> double DONE.
+  - flaky_test_root_cause: >
+      TestWorkerOversizeMessage: SetReadDeadline(1s) on net.Pipe()
+      never cleared after heartbeat read. Expired deadline causes
+      write goroutine's Write() to fail silently. Fix: add
+      serverConn.SetReadDeadline(time.Time{}) after heartbeat.
+  - ralph_loop_gap: >
+      oro work already IS a Ralph Loop per-bead (fresh context, QG retry,
+      merge, close). Missing piece is epic-level verification — no
+      machine-verifiable acceptance at the epic level, auto-close only
+      counts children, doesn't verify integration.
+
+worked:
+  - "Parallel audit agents (3 concurrent) for code, mutation testing, and test quality"
+  - "Direct git branch inspection to find unmerged work"
+  - "Cross-referencing bead status with actual git history"
+
+failed:
+  - "Previous session closed 5 beads without verifying end-to-end integration"
+  - "Workers committed on branches without merge step completing"
+  - "shellcheck disable comments treated as fixes instead of acknowledged debt"
+
+next:
+  - "P0: Wire BuildEpicDecompositionPrompt into buildAssignPrompt (oro-vyte)"
+  - "P0: Cherry-pick/merge c4ef2d5 from agent/oro-7in4.5 to main (oro-z021)"
+  - "P1: Fix handleExitClaimed compare-and-swap (oro-of6x)"
+  - "P1: Add trap EXIT for go-mutesting cleanup (oro-bl44)"
+  - "P1: Fix flaky TestWorkerOversizeMessage (oro-pcmh)"
+  - "Design Ralph Loop for epic-level verification (unbeaded — needs brainstorming)"
+  - "Consider: epic acceptance criteria should be mandatory in bead-craft skill"
+
+beads:
+  created:
+    - oro-vyte  # P0 wire epic decomp prompt
+    - oro-z021  # P0 merge 7in4.5 security fix
+    - oro-of6x  # P1 fix claim logic
+    - oro-bl44  # P1 trap EXIT mutation testing
+    - oro-pcmh  # P1 fix flaky test
+    - oro-ybz4  # P2 PID-isolate temp file
+    - oro-xgwr  # P2 handle missing main branch
+    - oro-o1ep  # P2 TOCTOU + idempotency
+    - oro-gcmz  # P3 clean up branches (blocked by oro-z021)
+    - oro-koon  # P3 shell correctness fixes
+  in_progress: []
+  remaining:
+    - oro-vyte
+    - oro-z021
+    - oro-of6x
+    - oro-bl44
+    - oro-pcmh
+    - oro-ybz4
+    - oro-xgwr
+    - oro-o1ep
+    - oro-gcmz
+    - oro-koon
+
+learnings:
+  undocumented:
+    - "Epic-level acceptance criteria missing from bead-craft workflow (oro-vyte, workflow)"
+    - "Bead closed != code on main, merge never happens (oro-z021, process)"
+    - "handleExitClaimed compare-and-swap broken, sets then reads (oro-of6x, concurrency)"
+  proposed_codification:
+    - type: rule
+      target: .claude/rules/epic-acceptance.md
+      content: "Epics MUST have machine-verifiable acceptance criteria (Test/Cmd/Assert). Auto-close should verify, not just count."
+      frequency: 2
+      tag: verification
+    - type: hook
+      target: .claude/hooks/merge_verify.py
+      content: "On bead close, verify the commit SHA referenced in close-reason is reachable from main. Flag if bead closed but work not on main."
+      frequency: 2
+      tag: process
+
+git:
+  branch: main
+  pushed: true
+  latest_commit: 7e02dad
+  dirty_files:
+    - "oro (binary, gitignored)"
+    - ".claude/ (untracked)"
+    - "bin/ (untracked)"
+    - "docs/handoffs/2026-02-19_10-00_push-and-lint-fix.yaml (untracked)"
+    - "pkg/codesearch/astgrep.go.tmp (stale artifact)"
