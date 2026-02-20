@@ -93,11 +93,22 @@ if [ -n "$staged_sh" ] && command -v shellcheck >/dev/null 2>&1; then
 fi
 
 # JSON: biome check (format + lint)
+# Prefer project-local biome (./node_modules/.bin/biome) over system install
 staged_json=$(git diff --cached --name-only --diff-filter=d -- '*.json')
-if [ -n "$staged_json" ] && command -v biome >/dev/null 2>&1; then
-    if ! biome check --files-ignore-unknown=true $staged_json 2>/dev/null; then
-        echo "Error: JSON issues found. Run: biome check --write <files>" >&2
-        errors=1
+if [ -n "$staged_json" ]; then
+    if [ -x "./node_modules/.bin/biome" ]; then
+        BIOME_CMD="./node_modules/.bin/biome"
+    elif command -v biome >/dev/null 2>&1; then
+        BIOME_CMD="biome"
+    else
+        BIOME_CMD=""
+    fi
+    if [ -n "$BIOME_CMD" ]; then
+        # shellcheck disable=SC2086
+        if ! $BIOME_CMD check --files-ignore-unknown=true $staged_json 2>/dev/null; then
+            echo "Error: JSON issues found. Run: biome check --write <files>" >&2
+            errors=1
+        fi
     fi
 fi
 
