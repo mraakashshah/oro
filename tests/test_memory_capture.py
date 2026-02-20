@@ -23,13 +23,13 @@ recall = _mod.recall
 
 class TestExtractLearned:
     def test_extracts_learned_prefix(self):
-        cmd = 'bd comment oro-abc "LEARNED: TaskGroup requires @Sendable closures in Swift 6"'
+        cmd = 'bd comments add oro-abc "LEARNED: TaskGroup requires @Sendable closures in Swift 6"'
         bead_id, content = extract_learned(cmd)
         assert bead_id == "oro-abc"
         assert content == "TaskGroup requires @Sendable closures in Swift 6"
 
     def test_returns_none_for_non_learned(self):
-        cmd = 'bd comment oro-abc "Fixed the build issue"'
+        cmd = 'bd comments add oro-abc "Fixed the build issue"'
         result = extract_learned(cmd)
         assert result is None
 
@@ -39,20 +39,20 @@ class TestExtractLearned:
         assert result is None
 
     def test_handles_single_quotes(self):
-        cmd = "bd comment oro-xyz 'LEARNED: Use uv sync instead of pip install'"
+        cmd = "bd comments add oro-xyz 'LEARNED: Use uv sync instead of pip install'"
         bead_id, content = extract_learned(cmd)
         assert bead_id == "oro-xyz"
         assert content == "Use uv sync instead of pip install"
 
     def test_handles_no_quotes(self):
-        cmd = "bd comment oro-123 LEARNED: simple note"
+        cmd = "bd comments add oro-123 LEARNED: simple note"
         bead_id, content = extract_learned(cmd)
         assert bead_id == "oro-123"
         assert content == "simple note"
 
     def test_truncates_long_content(self):
         long_text = "x" * 3000
-        cmd = f'bd comment oro-abc "LEARNED: {long_text}"'
+        cmd = f'bd comments add oro-abc "LEARNED: {long_text}"'
         _, content = extract_learned(cmd)
         assert len(content) <= 2048
 

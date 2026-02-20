@@ -154,7 +154,7 @@ Before writing the handoff, ask yourself: "Did I learn anything this session wor
 
 If yes, run for each learning:
 ```bash
-bd comment <bead-id> "LEARNED: <what you learned>"
+bd comments add <bead-id> "LEARNED: <what you learned>"
 ```
 
 This feeds into knowledge.jsonl and gets resurfaced in future sessions. Examples:
