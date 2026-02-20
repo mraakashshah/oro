@@ -263,6 +263,40 @@ test_mutation_missing_main_warning_message() {
     return 1
 }
 
+# =============================================================================
+# Python mutation: missing main branch check (oro-xgwr)
+# =============================================================================
+
+# Test: Python run_mutation_test checks for main branch existence before diffing
+# shellcheck disable=SC2317,SC2329
+test_python_mutation_checks_main_branch_existence() {
+    # The Python mutation function must also check for main branch existence,
+    # not blindly run 'git diff ... main 2>/dev/null || true'.
+    local fn_body
+    fn_body=$(grep -A 40 'run_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -40)
+
+    if echo "$fn_body" | grep -qE 'rev-parse.*verify.*main|merge-base.*main|Cannot find main'; then
+        return 0
+    fi
+
+    echo "FAIL: Python run_mutation_test() does not check for main branch existence"
+    echo "  Same bug as Go mutation — silent PASS when main is absent (oro-xgwr)"
+    return 1
+}
+
+# Test: Python run_mutation_test prints warning when main branch missing
+# shellcheck disable=SC2317,SC2329
+test_python_mutation_missing_main_warning_message() {
+    if grep -A 40 'run_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | \
+            grep -qiE 'Cannot find main|main.*not found|main.*missing|WARNING.*main'; then
+        return 0
+    fi
+
+    echo "FAIL: Python run_mutation_test() does not print a 'Cannot find main branch' warning"
+    echo "  Acceptance criteria require the warning message to be present (oro-xgwr)"
+    return 1
+}
+
 # Run tests
 echo "Testing quality_gate.sh config-driven behavior"
 echo "=============================================="
@@ -286,6 +320,13 @@ echo "=============================================="
 test_case "mutation checks main branch existence" test_mutation_checks_main_branch_existence
 test_case "mutation crash flagged as FAIL" test_mutation_crash_flagged_as_fail
 test_case "mutation missing-main warning message" test_mutation_missing_main_warning_message
+
+echo ""
+echo "Testing Python mutation missing main branch (oro-xgwr)"
+echo "=============================================="
+
+test_case "python mutation checks main branch" test_python_mutation_checks_main_branch_existence
+test_case "python mutation missing-main warning" test_python_mutation_missing_main_warning_message
 
 echo ""
 printf '%bPassed:%b %d\n' "$GREEN" "$NC" "$PASS"
