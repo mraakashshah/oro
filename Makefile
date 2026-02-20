@@ -1,4 +1,4 @@
-.PHONY: build build-dash build-search-hook install install-git-hooks test lint fmt vet gate clean stage-assets clean-assets dev-sync mutate-py mutate-py-full
+.PHONY: build build-dash build-search-hook install install-git-hooks test lint fmt vet gate clean stage-assets clean-assets dev-sync mutate-go mutate-go-diff mutate-py mutate-py-full
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -98,6 +98,34 @@ gate: stage-assets
 
 clean: clean-assets
 	rm -f oro coverage.out
+
+# mutate-go runs mutation testing on Go packages in pkg/.
+# Uses go-mutesting. Fails if mutation score drops below 0.40.
+mutate-go:
+	@echo "Running Go mutation testing on pkg/..."
+	@go-mutesting --exec-timeout=30 pkg/... 2>&1 | tee /tmp/go-mutesting-output.txt; \
+	git checkout -- pkg/ 2>/dev/null || true; \
+	score=$$(grep "The mutation score is" /tmp/go-mutesting-output.txt | awk '{print $$5}'); \
+	echo "Mutation score: $$score"; \
+	if [ -n "$$score" ] && [ $$(echo "$$score < 0.40" | bc -l) -eq 1 ]; then \
+		echo "FAIL: mutation score $$score is below 0.40 threshold"; \
+		exit 1; \
+	fi
+
+# mutate-go-diff runs mutation testing only on Go files changed vs main.
+# Used by the quality gate for fast incremental checks. Threshold: 0.75.
+mutate-go-diff:
+	@changed=$$(git diff --name-only main -- '*.go' | grep -v '_test\.go$$' | grep -v '_generated\.' | grep -v 'cmd/oro/_assets'); \
+	if [ -z "$$changed" ]; then echo "No changed Go files to mutate"; exit 0; fi; \
+	echo "Mutating: $$changed"; \
+	go-mutesting --exec-timeout=30 $$changed 2>&1 | tee /tmp/go-mutesting-diff.txt; \
+	git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true; \
+	score=$$(grep "The mutation score is" /tmp/go-mutesting-diff.txt | awk '{print $$5}'); \
+	echo "Mutation score: $$score"; \
+	if [ -n "$$score" ] && [ $$(echo "$$score < 0.75" | bc -l) -eq 1 ]; then \
+		echo "FAIL: mutation score $$score is below 0.75 threshold"; \
+		exit 1; \
+	fi
 
 # mutate-py runs mutation testing on prompt_injection_guard.py (fast, ~23 mutations).
 # Uses cosmic-ray.toml. Fails if survival rate exceeds 50%.
