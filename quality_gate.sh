@@ -271,8 +271,9 @@ lane_go() {
             trap 'git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true' EXIT
             echo "Mutating changed files: $changed"
             local output mutesting_exit=0
-            # shellcheck disable=SC2086
-            output=$(go-mutesting --exec-timeout=30 $changed 2>&1) || mutesting_exit=$?
+            local -a changed_files
+            mapfile -t changed_files <<< "$changed"
+            output=$(go-mutesting --exec-timeout=30 "${changed_files[@]}" 2>&1) || mutesting_exit=$?
             git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true
             echo "$output"
             local score
