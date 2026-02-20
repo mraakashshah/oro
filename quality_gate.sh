@@ -266,7 +266,7 @@ if $HAS_PYTHON; then
 
     header "PYTHON TIER 3: TYPE CHECKING"
     if command -v pyright >/dev/null 2>&1 && pyright --version >/dev/null 2>&1; then
-        check "pyright" "pyright --ignore .claude/hooks"
+        check "pyright" "pyright"
     fi
 
     header "PYTHON TIER 4: TESTING"
