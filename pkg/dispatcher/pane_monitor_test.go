@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,17 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// pollCounter installs a testPanePollDone hook that increments a counter and
+// returns a function that checks whether at least n polls have completed.
+func pollCounter(d *Dispatcher) func(n int64) func() bool {
+	var count atomic.Int64
+	d.testPanePollDone = func() { count.Add(1) }
+	return func(n int64) func() bool {
+		baseline := count.Load()
+		return func() bool { return count.Load() >= baseline+n }
+	}
+}
 
 func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 	// Create temporary test directory
@@ -67,6 +79,9 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 		signaledPanes: make(map[string]bool),
 	}
 
+	// Install poll-completion hook for synchronization
+	awaitPolls := pollCounter(d)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -77,8 +92,9 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait a bit to ensure initial poll happens
-	time.Sleep(200 * time.Millisecond)
+	// Wait for at least one poll to complete (replaces time.Sleep)
+	pollDone := awaitPolls(1)
+	waitFor(t, pollDone, 2*time.Second)
 
 	// Verify no handoff files created yet (below threshold)
 	architectHandoffFile := filepath.Join(architectDir, "handoff_requested")
@@ -97,8 +113,11 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 		t.Fatalf("failed to update architect context_pct: %v", err)
 	}
 
-	// Wait for next poll cycle (poll interval is 100ms)
-	time.Sleep(250 * time.Millisecond)
+	// Wait for handoff file to appear (replaces time.Sleep)
+	waitFor(t, func() bool {
+		_, statErr := os.Stat(architectHandoffFile)
+		return statErr == nil
+	}, 2*time.Second)
 
 	// Verify handoff file created for architect
 	if _, err := os.Stat(architectHandoffFile); os.IsNotExist(err) {
@@ -116,8 +135,11 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 		t.Fatalf("failed to update manager context_pct: %v", err)
 	}
 
-	// Wait for next poll cycle
-	time.Sleep(250 * time.Millisecond)
+	// Wait for manager handoff file to appear (replaces time.Sleep)
+	waitFor(t, func() bool {
+		_, statErr := os.Stat(managerHandoffFile)
+		return statErr == nil
+	}, 2*time.Second)
 
 	// Verify handoff file created for manager
 	if _, err := os.Stat(managerHandoffFile); os.IsNotExist(err) {
@@ -130,8 +152,9 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 		t.Fatalf("failed to update architect context_pct: %v", err)
 	}
 
-	// Wait for next poll cycle
-	time.Sleep(250 * time.Millisecond)
+	// Wait for at least one more poll cycle (replaces time.Sleep)
+	pollAfterLower := awaitPolls(1)
+	waitFor(t, pollAfterLower, 2*time.Second)
 
 	// Verify architect is still signaled (no re-signal, stays in map)
 	d.mu.Lock()
@@ -177,6 +200,7 @@ func TestPaneMonitorLoop_SkipsMissingFiles(t *testing.T) {
 
 	cfg := Config{
 		PaneContextThreshold: 60,
+		PaneMonitorInterval:  100 * time.Millisecond, // Fast polling for test
 	}
 	cfg = cfg.withDefaults()
 
@@ -188,6 +212,9 @@ func TestPaneMonitorLoop_SkipsMissingFiles(t *testing.T) {
 		signaledPanes: make(map[string]bool),
 	}
 
+	// Install poll-completion hook for synchronization
+	awaitPolls := pollCounter(d)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
@@ -198,8 +225,9 @@ func TestPaneMonitorLoop_SkipsMissingFiles(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for loop to run
-	time.Sleep(200 * time.Millisecond)
+	// Wait for at least one poll to complete (replaces time.Sleep)
+	pollDone := awaitPolls(1)
+	waitFor(t, pollDone, 2*time.Second)
 
 	// Cancel and verify clean exit
 	cancel()
@@ -241,6 +269,7 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 
 	cfg := Config{
 		PaneContextThreshold: 60,
+		PaneMonitorInterval:  100 * time.Millisecond, // Fast polling for test
 	}
 	cfg = cfg.withDefaults()
 
@@ -252,6 +281,9 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 		signaledPanes: make(map[string]bool),
 	}
 
+	// Install poll-completion hook for synchronization
+	awaitPolls := pollCounter(d)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
@@ -262,8 +294,9 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for loop to run
-	time.Sleep(200 * time.Millisecond)
+	// Wait for at least one poll to complete (replaces time.Sleep)
+	pollDone := awaitPolls(1)
+	waitFor(t, pollDone, 2*time.Second)
 
 	// Verify no handoff file created (parse error should skip)
 	architectHandoffFile := filepath.Join(architectDir, "handoff_requested")

@@ -80,10 +80,15 @@ func TestAutoScale(t *testing.T) {
 		},
 	})
 
-	// Wait a bit for auto-scale logic to kick in
-	time.Sleep(200 * time.Millisecond)
+	// Wait for auto-scale logic to increase targetWorkers (replaces time.Sleep)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		tw := d.targetWorkers
+		d.mu.Unlock()
+		return tw > 1
+	}, 2*time.Second)
 
-	// Verify that targetWorkers was increased from initial value of 1
+	// Read final value for assertions
 	d.mu.Lock()
 	target := d.targetWorkers
 	d.mu.Unlock()
@@ -183,10 +188,15 @@ func TestAutoScaleRespectsMax(t *testing.T) {
 		},
 	})
 
-	// Wait for auto-scale attempts
-	time.Sleep(300 * time.Millisecond)
+	// Wait for auto-scale to increase targetWorkers (replaces time.Sleep)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		tw := d.targetWorkers
+		d.mu.Unlock()
+		return tw > 1
+	}, 2*time.Second)
 
-	// Verify that targetWorkers never exceeded MaxWorkers
+	// Read final value for assertions
 	d.mu.Lock()
 	target := d.targetWorkers
 	d.mu.Unlock()

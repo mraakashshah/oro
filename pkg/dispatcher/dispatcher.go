@@ -295,6 +295,10 @@ type Dispatcher struct {
 	// deletion occurs during the unlock window.
 	testUnlockHook func()
 
+	// testPanePollDone, if non-nil, is called after each pane monitor poll
+	// iteration completes. Tests use this to synchronize without time.Sleep.
+	testPanePollDone func()
+
 	// priorityBeads holds bead IDs that should be assigned before normal queue ordering.
 	// Used by spawn-for directive to guarantee a specific bead gets the next idle worker.
 	priorityBeads map[string]bool

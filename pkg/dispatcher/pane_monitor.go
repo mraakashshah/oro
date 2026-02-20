@@ -28,6 +28,9 @@ func (d *Dispatcher) paneMonitorLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.checkPaneContexts(ctx, roles)
+			if d.testPanePollDone != nil {
+				d.testPanePollDone()
+			}
 		}
 	}
 }
