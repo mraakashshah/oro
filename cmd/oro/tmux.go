@@ -828,10 +828,13 @@ func buildPaneDiedHook(dyingRole, sessionName, project string) string {
 }
 
 // sanitizeForTmuxHook prepares a message for safe use in a tmux hook shell command.
-// Strips newlines and replaces problematic characters.
+// Strips newlines and shell metacharacters that could break the hook command.
 func sanitizeForTmuxHook(msg string) string {
 	msg = strings.ReplaceAll(msg, "\n", " ")
 	msg = strings.ReplaceAll(msg, "\r", " ")
+	for _, meta := range []string{";", "&", "$", "`", "(", ")"} {
+		msg = strings.ReplaceAll(msg, meta, "")
+	}
 	return msg
 }
 
