@@ -42,6 +42,56 @@ func (s *Store) HasEmbedder() bool {
 	return s.embedder != nil
 }
 
+// vocabKVKey is the kv_store key used to persist the embedder vocabulary.
+const vocabKVKey = "embedder_vocab"
+
+// SaveVocab serializes the attached embedder's vocabulary to the kv_store
+// table. Subsequent calls overwrite the previous value (UPSERT). Returns an
+// error if no embedder has been set.
+func (s *Store) SaveVocab(ctx context.Context) error {
+	if s.embedder == nil {
+		return fmt.Errorf("save vocab: no embedder set")
+	}
+	vocab := s.embedder.ExportVocab()
+	data, err := json.Marshal(vocab)
+	if err != nil {
+		return fmt.Errorf("save vocab marshal: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+		vocabKVKey, string(data),
+	)
+	if err != nil {
+		return fmt.Errorf("save vocab upsert: %w", err)
+	}
+	return nil
+}
+
+// LoadVocab restores the embedder's vocabulary from the kv_store table. If no
+// saved vocab exists this is a no-op (the embedder keeps its current, possibly
+// empty, vocabulary). Returns an error if no embedder has been set.
+func (s *Store) LoadVocab(ctx context.Context) error {
+	if s.embedder == nil {
+		return fmt.Errorf("load vocab: no embedder set")
+	}
+	var value string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM kv_store WHERE key = ?`, vocabKVKey,
+	).Scan(&value)
+	if err == sql.ErrNoRows {
+		return nil // no persisted vocab — fresh start is valid
+	}
+	if err != nil {
+		return fmt.Errorf("load vocab query: %w", err)
+	}
+	var vocab map[string]int
+	if err := json.Unmarshal([]byte(value), &vocab); err != nil {
+		return fmt.Errorf("load vocab unmarshal: %w", err)
+	}
+	s.embedder.ImportVocab(vocab)
+	return nil
+}
+
 // InsertParams holds parameters for inserting a new memory.
 type InsertParams struct {
 	Content       string

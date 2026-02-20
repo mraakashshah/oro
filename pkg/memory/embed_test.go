@@ -586,6 +586,71 @@ func TestEmbedder_ConcurrentSafety(t *testing.T) {
 	wg.Wait()
 }
 
+// TestEmbedder_VocabPersistence verifies that vocab saved to the DB can be
+// reloaded into a fresh Embedder, and that embeddings computed before and
+// after the simulated restart are identical (cosine similarity ~1.0).
+func TestEmbedder_VocabPersistence(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	// Phase 1: "before restart" — embed text and persist vocab.
+	store1 := NewStore(db)
+	e1 := NewEmbedder()
+	store1.SetEmbedder(e1)
+
+	vec1 := e1.Embed("ruff pyright linting python")
+	if vec1 == nil {
+		t.Fatal("Embed returned nil before save")
+	}
+
+	if err := store1.SaveVocab(ctx); err != nil {
+		t.Fatalf("SaveVocab: %v", err)
+	}
+
+	vocabSize := e1.VocabSize()
+	if vocabSize == 0 {
+		t.Fatal("expected non-empty vocab after embedding")
+	}
+
+	// Phase 2: "after restart" — fresh embedder, load vocab from DB.
+	store2 := NewStore(db)
+	e2 := NewEmbedder()
+	store2.SetEmbedder(e2)
+
+	if err := store2.LoadVocab(ctx); err != nil {
+		t.Fatalf("LoadVocab: %v", err)
+	}
+
+	if e2.VocabSize() != vocabSize {
+		t.Errorf("after LoadVocab: vocab size = %d, want %d", e2.VocabSize(), vocabSize)
+	}
+
+	// Embedding the same text with the loaded vocab must produce an identical
+	// vector (same indices → same values → cosine similarity 1.0).
+	vec2 := e2.Embed("ruff pyright linting python")
+	if vec2 == nil {
+		t.Fatal("Embed returned nil after restart")
+	}
+
+	sim := CosineSimilarity(vec1, vec2)
+	if sim < 0.999 {
+		t.Errorf("embeddings before/after restart: similarity = %f, want ~1.0", sim)
+	}
+
+	// Phase 3: LoadVocab on a DB with no saved vocab is a no-op.
+	db2 := setupTestDB(t)
+	store3 := NewStore(db2)
+	e3 := NewEmbedder()
+	store3.SetEmbedder(e3)
+
+	if err := store3.LoadVocab(ctx); err != nil {
+		t.Fatalf("LoadVocab on empty DB: %v", err)
+	}
+	if e3.VocabSize() != 0 {
+		t.Errorf("LoadVocab on empty DB: vocab size = %d, want 0", e3.VocabSize())
+	}
+}
+
 // assertUnitVector checks that a float32 vector has L2 norm ~1.0.
 func assertUnitVector(t *testing.T, v []float32) {
 	t.Helper()

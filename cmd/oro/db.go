@@ -47,4 +47,5 @@ func migrateStateDB(db *sql.DB) {
 	_, _ = db.ExecContext(ctx, protocol.MigrateAssignmentCounts)
 	_, _ = db.ExecContext(ctx, protocol.MigrateFileTracking)
 	_, _ = db.ExecContext(ctx, protocol.MigratePinnedMemories)
+	_, _ = db.ExecContext(ctx, protocol.MigrateKVStore)
 }

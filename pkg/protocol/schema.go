@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS escalations (
     last_retry_at TEXT
 );
 
+-- Persistent key-value store for dispatcher runtime state (e.g. embedder vocab)
+CREATE TABLE IF NOT EXISTS kv_store (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- FTS5 full-text index over memories for BM25-ranked search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
@@ -116,4 +123,14 @@ ALTER TABLE memories ADD COLUMN pinned INTEGER DEFAULT 0;
 const MigrateAssignmentCounts = `
 ALTER TABLE assignments ADD COLUMN attempt_count INTEGER DEFAULT 0;
 ALTER TABLE assignments ADD COLUMN handoff_count INTEGER DEFAULT 0;
+`
+
+// MigrateKVStore creates the kv_store table on existing databases.
+// Uses CREATE TABLE IF NOT EXISTS so it is safe to run on any database.
+const MigrateKVStore = `
+CREATE TABLE IF NOT EXISTS kv_store (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
