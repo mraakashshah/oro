@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -334,4 +335,66 @@ func TestMemoriesCmd(t *testing.T) {
 			t.Errorf("expected 'Remaining: 0' for empty store, got:\n%s", output)
 		}
 	})
+}
+
+// TestCLIAndDispatcherUseSameDB verifies that defaultMemoryStore() opens the
+// same database that the dispatcher and workers use (StateDBPath / state.db),
+// not the legacy MemoryDBPath (memories.db). This guards against the split
+// where workers insert memories into state.db but the CLI reads memories.db.
+func TestCLIAndDispatcherUseSameDB(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", tmpDir)
+
+	// Resolve paths the same way the dispatcher does.
+	paths, err := ResolvePaths()
+	if err != nil {
+		t.Fatalf("resolve paths: %v", err)
+	}
+
+	// Verify the dispatcher DB lives at state.db (sanity check on test setup).
+	wantStateDB := filepath.Join(tmpDir, "state.db")
+	if paths.StateDBPath != wantStateDB {
+		t.Fatalf("StateDBPath = %q, want %q", paths.StateDBPath, wantStateDB)
+	}
+
+	// Simulate the dispatcher: open state.db and insert a memory.
+	dispDB, err := sql.Open("sqlite", paths.StateDBPath)
+	if err != nil {
+		t.Fatalf("open dispatcher db: %v", err)
+	}
+	t.Cleanup(func() { _ = dispDB.Close() })
+
+	if _, err := dispDB.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+
+	dispStore := memory.NewStore(dispDB)
+	ctx := context.Background()
+	id, err := dispStore.Insert(ctx, memory.InsertParams{
+		Content:    "dispatcher memory visible to CLI",
+		Type:       "lesson",
+		Source:     "test",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert via dispatcher store: %v", err)
+	}
+
+	// Simulate the CLI: open the store via defaultMemoryStore().
+	cliStore, err := defaultMemoryStore()
+	if err != nil {
+		t.Fatalf("defaultMemoryStore: %v", err)
+	}
+
+	mems, err := cliStore.List(ctx, memory.ListOpts{})
+	if err != nil {
+		t.Fatalf("list via CLI store: %v", err)
+	}
+
+	for _, m := range mems {
+		if m.ID == id {
+			return // memory is visible: test passes
+		}
+	}
+	t.Errorf("memory inserted via dispatcher store (id=%d) not visible via CLI store (got %d memories) — CLI and dispatcher use different DBs", id, len(mems))
 }
