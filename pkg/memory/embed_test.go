@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"testing"
 )
 
@@ -564,6 +565,25 @@ func TestStore_HybridSearch_VectorBoostsSemanticMatch(t *testing.T) {
 	if results[0].Type != "gotcha" {
 		t.Errorf("expected gotcha (semantic match) first, got type=%q content=%q", results[0].Type, results[0].Content)
 	}
+}
+
+func TestEmbedder_ConcurrentSafety(t *testing.T) {
+	e := NewEmbedder()
+	const goroutines = 20
+	const iters = 50
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func(id int) {
+			defer wg.Done()
+			for j := range iters {
+				text := fmt.Sprintf("goroutine%d iter%d unique", id, j)
+				_ = e.Embed(text)
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 // assertUnitVector checks that a float32 vector has L2 norm ~1.0.

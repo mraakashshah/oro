@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"math"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -24,6 +25,7 @@ const maxVocabSize = 10000
 // time. The RRF hybrid scoring is the main innovation here — even simple TF
 // vectors provide useful semantic signal when combined with FTS5 BM25 via RRF.
 type Embedder struct {
+	mu    sync.RWMutex
 	vocab map[string]int // term -> dimension index
 }
 
@@ -52,12 +54,13 @@ func (e *Embedder) Embed(text string) []float32 {
 		return nil
 	}
 
-	// Count term frequencies.
+	// Count term frequencies (local map, no lock needed).
 	tf := make(map[string]int, len(tokens))
 	for _, t := range tokens {
 		tf[t]++
 	}
 
+	e.mu.Lock()
 	// Grow vocabulary with new terms, up to the cap.
 	for term := range tf {
 		if _, ok := e.vocab[term]; !ok {
@@ -68,15 +71,16 @@ func (e *Embedder) Embed(text string) []float32 {
 		}
 	}
 
-	// Build dense vector. Skip terms not in vocabulary (beyond cap).
+	// Build dense vector under the same lock so vocab doesn't shift mid-build.
 	vec := make([]float32, len(e.vocab))
 	for term, count := range tf {
 		if idx, ok := e.vocab[term]; ok {
 			vec[idx] = float32(count)
 		}
 	}
+	e.mu.Unlock()
 
-	// L2-normalize.
+	// L2-normalize (operates on local vec, no lock needed).
 	normalize32(vec)
 	return vec
 }
@@ -85,6 +89,8 @@ func (e *Embedder) Embed(text string) []float32 {
 //
 //oro:testonly
 func (e *Embedder) VocabSize() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return len(e.vocab)
 }
 
