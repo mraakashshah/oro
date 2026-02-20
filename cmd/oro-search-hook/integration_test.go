@@ -321,6 +321,66 @@ func findHookEntry(preToolUse []any, matcher, cmdSubstring string) map[string]an
 	return nil
 }
 
+// TestSettingsJsonRegistration verifies that the repo-local .claude/settings.json
+// registers oro-search-hook with an absolute path (not a relative path).
+// Relative paths break when Claude runs from a subdirectory or worktree.
+// The canonical path should be ~/.oro/hooks/oro-search-hook (matching oro init output).
+func TestSettingsJsonRegistration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	// Find repo root's .claude/settings.json.
+	root := projectRoot(t)
+	settingsPath := filepath.Join(root, ".claude", "settings.json")
+
+	data, err := os.ReadFile(settingsPath) //nolint:gosec // test reads known settings file
+	if err != nil {
+		t.Fatalf("failed to read .claude/settings.json at %s: %v", settingsPath, err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("failed to parse .claude/settings.json: %v", err)
+	}
+
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		t.Fatal(".claude/settings.json missing 'hooks' key")
+	}
+
+	preToolUse, ok := hooks["PreToolUse"].([]any)
+	if !ok {
+		t.Fatal(".claude/settings.json missing 'PreToolUse' in hooks")
+	}
+
+	hookEntry := findHookEntry(preToolUse, "Read", "oro-search-hook")
+	if hookEntry == nil {
+		t.Fatal(".claude/settings.json does not contain oro-search-hook under PreToolUse[Read]")
+	}
+
+	// The command must use an absolute path, not a relative one.
+	// Relative paths (.claude/hooks/oro-search-hook) break in worktrees and subdirectories.
+	// The canonical absolute path is ~/.oro/hooks/oro-search-hook.
+	cmd, _ := hookEntry["command"].(string)
+	if strings.HasPrefix(cmd, ".") || strings.HasPrefix(cmd, "oro-search-hook") {
+		t.Errorf(".claude/settings.json oro-search-hook command is a relative path %q; "+
+			"must be an absolute path like ~/.oro/hooks/oro-search-hook", cmd)
+	}
+
+	// Must contain the canonical ~/.oro/hooks/ prefix (expanded or unexpanded).
+	if !strings.Contains(cmd, ".oro/hooks/oro-search-hook") {
+		t.Errorf(".claude/settings.json oro-search-hook command %q does not use "+
+			"canonical path ~/.oro/hooks/oro-search-hook", cmd)
+	}
+
+	// Verify timeout is set.
+	timeoutNum, ok := hookEntry["timeout"].(float64)
+	if !ok || timeoutNum != 5000 {
+		t.Errorf("expected timeout=5000, got %v", hookEntry["timeout"])
+	}
+}
+
 // itoa converts a non-negative int to a string without importing strconv.
 func itoa(n int) string {
 	if n == 0 {
