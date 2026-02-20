@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: capture LEARNED entries from bd comment into knowledge base.
+"""PostToolUse hook: capture LEARNED entries from bd comments add into knowledge base.
 
-Intercepts `bd comment <id> "LEARNED: ..."` commands run via Bash tool.
+Intercepts `bd comments add <id> "LEARNED: ..."` commands run via Bash tool.
 Extracts structured entries into .beads/memory/knowledge.jsonl with
 auto-tagging, deduplication by key, and timestamp.
 
@@ -61,17 +61,17 @@ TAG_KEYWORDS = [
     "websocket",
 ]
 
-# Pattern: bd comment <bead_id> "LEARNED: <content>"
+# Pattern: bd comments add <bead_id> "LEARNED: <content>"
 # Supports double quotes, single quotes, or no quotes
 _BD_COMMENT_RE = re.compile(
-    r"""bd\s+comment\s+([\w-]+)\s+"""
+    r"""bd\s+comments\s+add\s+([\w-]+)\s+"""
     r"""(?:["']LEARNED:\s*(.+?)["']|LEARNED:\s*(.+))""",
     re.DOTALL,
 )
 
 
 def extract_learned(command: str) -> tuple[str, str] | None:
-    """Extract bead_id and content from a bd comment LEARNED command."""
+    """Extract bead_id and content from a bd comments add LEARNED command."""
     m = _BD_COMMENT_RE.search(command)
     if not m:
         return None
