@@ -430,12 +430,12 @@ lane_other() {
     fi
 
     local docs_checks=(
-        "markdownlint" "markdownlint --config .markdownlint.yml 'docs/**/*.md' '*.md' --ignore references --ignore yap --ignore archive"
+        "markdownlint" "./node_modules/.bin/markdownlint-cli2 --config .markdownlint.yml 'docs/**/*.md' '*.md' '!references/**' '!yap/**' '!archive/**'"
         "yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
     )
     if [ -n "$BIOME_PATHS" ]; then
         # shellcheck disable=SC2086
-        docs_checks+=("biome (json)" "biome check --files-ignore-unknown=true $BIOME_PATHS")
+        docs_checks+=("biome (json)" "./node_modules/.bin/biome check --files-ignore-unknown=true $BIOME_PATHS")
     fi
     parallel_checks "${docs_checks[@]}"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))

@@ -90,16 +90,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install JS tools
+        run: npm ci
+
       - name: markdownlint
-        uses: DavidAnson/markdownlint-cli2-action@v22
-        with:
-          config: .markdownlint.yml
-          globs: |
-            docs/**/*.md
-            *.md
-            !references/**
-            !yap/**
-            !archive/**
+        run: |
+          npx markdownlint-cli2 --config .markdownlint.yml \
+            "docs/**/*.md" "*.md" "!references/**" "!yap/**" "!archive/**"
 
       - name: yamllint
         run: |
@@ -110,9 +107,7 @@ jobs:
             -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings
 
       - name: biome (json)
-        run: |
-          npm install --no-save @biomejs/biome
-          npx biome check --files-ignore-unknown=true docs/ .github/ .beads/ *.json
+        run: npx biome check --files-ignore-unknown=true docs/ .github/ .beads/ *.json
 
   python:
     name: Python
