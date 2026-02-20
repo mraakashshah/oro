@@ -59,24 +59,38 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 	}
 
 	// Wire memory store so [MEMORY] markers and implicit patterns are captured.
+	var memStore *memory.Store
 	paths, pathsErr := ResolvePaths()
 	if pathsErr == nil {
 		db, dbErr := openDB(paths.StateDBPath)
 		if dbErr == nil {
 			defer func() { _ = db.Close() }()
-			w.SetMemoryStore(openWorkerMemoryStore(db))
+			memStore = openWorkerMemoryStore(db)
+			w.SetMemoryStore(memStore)
 		}
 	}
 
 	if err := w.Run(ctx); err != nil {
 		return fmt.Errorf("worker %s: %w", id, err)
 	}
+
+	// Persist the embedder vocabulary so the next session starts with the same
+	// vector space. Non-fatal: the next session degrades gracefully if missing.
+	if memStore != nil {
+		_ = memStore.SaveVocab(context.Background())
+	}
 	return nil
 }
 
 // openWorkerMemoryStore creates a memory.Store from an open DB connection.
+// It attaches a fresh Embedder and restores the accumulated vocabulary from
+// the database so embeddings from prior sessions remain in the same vector
+// space. LoadVocab failure is non-fatal: the embedder starts with an empty
+// vocab and degrades gracefully (new memories embed correctly; cosine
+// similarity against old embeddings may be noisy until vocab re-accumulates).
 func openWorkerMemoryStore(db *sql.DB) *memory.Store {
 	store := memory.NewStore(db)
 	store.SetEmbedder(memory.NewEmbedder())
+	_ = store.LoadVocab(context.Background()) // non-fatal: empty vocab is valid
 	return store
 }

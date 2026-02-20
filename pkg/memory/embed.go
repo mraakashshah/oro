@@ -92,6 +92,31 @@ func (e *Embedder) VocabSize() int {
 	return len(e.vocab)
 }
 
+// ExportVocab returns a copy of the current vocabulary mapping (term → index).
+// Used for persistence: pass the result to ImportVocab on a fresh Embedder to
+// restore the same vector space after a restart.
+func (e *Embedder) ExportVocab() map[string]int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make(map[string]int, len(e.vocab))
+	for k, v := range e.vocab {
+		out[k] = v
+	}
+	return out
+}
+
+// ImportVocab replaces the embedder's vocabulary with the provided mapping.
+// Any prior vocabulary is discarded. After import, Embed() assigns new terms
+// indices that extend beyond the imported vocab's existing indices.
+func (e *Embedder) ImportVocab(vocab map[string]int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.vocab = make(map[string]int, len(vocab))
+	for k, v := range vocab {
+		e.vocab[k] = v
+	}
+}
+
 // normalize32 normalizes a float32 vector to unit length in place.
 func normalize32(v []float32) {
 	var sum float64
