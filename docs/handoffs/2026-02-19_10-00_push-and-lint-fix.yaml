@@ -1,0 +1,76 @@
+---
+date: 2026-02-19
+status: complete
+---
+
+goal: >
+  Pushed 9 local commits to origin (main was ahead by 8), fixed gocritic lint
+  failure blocking push, rebuilt oro binary on main.
+
+now: >
+  Main is clean and pushed. 10 ready beads available. Uncommitted changes in
+  cmd_init.go (context7 permissions), cmd_init_test.go, and docs/ need review
+  before committing — these are from a prior session's in-progress work.
+
+test: go test ./cmd/oro/ && golangci-lint run ./cmd/oro/
+
+done_this_session:
+  - task: "Reviewed yesterday's throughput"
+    details: >
+      26 beads closed on Feb 18 across dashboard (nqi.*), codesearch (noc.*),
+      reranker (cwz.*), E2E tests (8v2u.*), lang profiles (js7.*), and
+      settings-only beads. 34 commits landed on main.
+
+  - task: "Rebuilt oro binary on main"
+    details: >
+      Switched from agent/oro-qlvv.2 to main. Required make stage-assets
+      before go build due to embed.go _assets dependency.
+    files: [bin/oro]
+
+  - task: "Fixed gocritic lint failure"
+    details: >
+      cmd/oro/cmd_status.go:203 had if-else chain that gocritic wanted as
+      switch statement. Converted and committed.
+    files: [cmd/oro/cmd_status.go]
+
+  - task: "Pushed 9 commits to origin"
+    details: >
+      All 19 quality gate checks passed. Commits include langprofile tests,
+      skills coverage test, worker unit tests, CLI smoke tests, codesearch
+      reranker, audit script, docs rename, and the gocritic fix.
+
+decisions:
+  - stage_assets_required: >
+      make stage-assets must be run before go build or golangci-lint when
+      _assets/ dir is missing. Pre-commit hook also fails without it.
+
+findings:
+  - uncommitted_changes: >
+      cmd_init.go has context7 MCP permissions additions, cmd_init_test.go
+      has corresponding test updates, docs/decisions&discoveries.md has new
+      entries. These appear to be from a prior oro work session (oro-r8ov or
+      similar). Need review before committing to main.
+
+  - stale_branch: >
+      agent/oro-qlvv.2 branch still exists locally but has no worktree.
+      Can be cleaned up with: git branch -D agent/oro-qlvv.2
+
+next:
+  - Review and commit uncommitted changes in cmd_init.go, cmd_init_test.go, docs/
+  - Launch oro work for ready beads (oro-8g75, oro-u6hm, oro-qlvv.1, oro-b7l4)
+  - Clean up stale agent/oro-qlvv.2 branch
+
+files:
+  modified:
+    - cmd/oro/cmd_status.go
+    - docs/handoffs/2026-02-19_10-00_push-and-lint-fix.yaml
+
+beads:
+  completed: []
+  in_progress: []
+  remaining: [oro-8g75, oro-u6hm, oro-b7l4, oro-obho, oro-qlvv.1, oro-qlvv.2, oro-p7ft, oro-r8ov]
+
+git:
+  branch: main
+  pushed: true
+  origin_sync: up to date (fad5764)
