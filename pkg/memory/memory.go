@@ -881,8 +881,6 @@ func formatAge(createdAt string) string {
 // - Merges content of duplicates, keeping higher confidence
 // - Prunes memories with decayed score below minScore
 // Returns count of merged and pruned memories.
-//
-//oro:testonly
 func Consolidate(ctx context.Context, store *Store, opts ConsolidateOpts) (merged, pruned int, err error) {
 	if opts.SimilarityThreshold <= 0 {
 		opts.SimilarityThreshold = 0.8
