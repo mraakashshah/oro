@@ -904,6 +904,48 @@ func TestCLIBeadSource_HasChildren(t *testing.T) {
 	})
 }
 
+func TestCLIBeadSource_Update(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("")}
+		src := NewCLIBeadSource(runner)
+
+		err := src.Update(context.Background(), "abc.1", "in_progress")
+		if err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "update") {
+			t.Errorf("expected 'update' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "abc.1") {
+			t.Errorf("expected 'abc.1' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--status=in_progress") {
+			t.Errorf("expected '--status=in_progress' in args, got %v", call.Args)
+		}
+	})
+
+	t.Run("bd_error_wrapped", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("update failed")}
+		src := NewCLIBeadSource(runner)
+
+		err := src.Update(context.Background(), "abc.1", "in_progress")
+		if err == nil {
+			t.Fatal("expected error from Update when command fails")
+		}
+		if !strings.Contains(err.Error(), "bd update abc.1") {
+			t.Errorf("expected error to mention 'bd update abc.1', got: %v", err)
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {
