@@ -1,3 +1,4 @@
 {
-	"exclude": [".claude/hooks", "yap", "archive", ".worktrees", ".venv"]
+	"exclude": [".claude/hooks", "yap", "archive", ".worktrees", ".venv"],
+	"extraPaths": [".claude/hooks"]
 }
