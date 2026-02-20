@@ -117,10 +117,10 @@ mutate-go:
 # Used by the quality gate for fast incremental checks. Threshold: 0.75.
 mutate-go-diff:
 	@trap 'git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true' EXIT; \
-	changed=$$(git diff --name-only main -- '*.go' | grep -v '_test\.go$$' | grep -v '_generated\.' | grep -v 'cmd/oro/_assets'); \
+	changed=$$(git diff --name-only main -- '*.go' 2>/dev/null | grep -v '_test\.go$$' | grep -v '_generated\.' | grep -v 'cmd/oro/_assets'); \
 	if [ -z "$$changed" ]; then echo "No changed Go files to mutate"; exit 0; fi; \
-	echo "Mutating: $$changed"; \
-	go-mutesting --exec-timeout=30 $$changed 2>&1 | tee /tmp/go-mutesting-diff.txt; \
+	printf "Mutating: %s\n" "$$changed"; \
+	printf '%s\n' "$$changed" | xargs go-mutesting --exec-timeout=30 2>&1 | tee /tmp/go-mutesting-diff.txt; \
 	git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true; \
 	score=$$(grep "The mutation score is" /tmp/go-mutesting-diff.txt | awk '{print $$5}'); \
 	echo "Mutation score: $$score"; \
@@ -132,18 +132,22 @@ mutate-go-diff:
 # mutate-py runs mutation testing on prompt_injection_guard.py (fast, ~23 mutations).
 # Uses cosmic-ray.toml. Fails if survival rate exceeds 50%.
 mutate-py:
-	uv run cosmic-ray init cosmic-ray.toml /tmp/cr-session.sqlite --force
-	uv run cosmic-ray exec cosmic-ray.toml /tmp/cr-session.sqlite
-	uv run cr-report /tmp/cr-session.sqlite
-	uv run cr-rate /tmp/cr-session.sqlite --fail-over 50
+	@cr_db="/tmp/cr-session-$$$$.sqlite"; \
+	uv run cosmic-ray init cosmic-ray.toml "$$cr_db" --force && \
+	uv run cosmic-ray exec cosmic-ray.toml "$$cr_db" && \
+	uv run cr-report "$$cr_db" && \
+	uv run cr-rate "$$cr_db" --fail-over 50; \
+	rc=$$?; rm -f "$$cr_db"; exit $$rc
 
 # mutate-py-full runs mutation testing across all Python hooks (may take several minutes).
 # Uses cosmic-ray-full.toml.
 mutate-py-full:
-	uv run cosmic-ray init cosmic-ray-full.toml /tmp/cr-full-session.sqlite --force
-	uv run cosmic-ray exec cosmic-ray-full.toml /tmp/cr-full-session.sqlite
-	uv run cr-report /tmp/cr-full-session.sqlite
-	uv run cr-rate /tmp/cr-full-session.sqlite --fail-over 50
+	@cr_db="/tmp/cr-full-session-$$$$.sqlite"; \
+	uv run cosmic-ray init cosmic-ray-full.toml "$$cr_db" --force && \
+	uv run cosmic-ray exec cosmic-ray-full.toml "$$cr_db" && \
+	uv run cr-report "$$cr_db" && \
+	uv run cr-rate "$$cr_db" --fail-over 50; \
+	rc=$$?; rm -f "$$cr_db"; exit $$rc
 
 # install-git-hooks symlinks the canonical git hooks from git/hooks/ into .git/hooks/.
 # Run once after cloning: make install-git-hooks
