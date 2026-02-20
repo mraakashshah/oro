@@ -1,0 +1,108 @@
+---
+date: 2026-02-20
+status: complete
+---
+
+goal: >
+  Closed 11 beads via pipeline dispatch (3 workers at a time), closed
+  2 epics (oro-7in4, oro-7in4.4), rewrote dispatching-parallel-agents
+  skill for pipeline mode + oro workers.
+
+now: >
+  Two epics remain: oro-q5p0 (P1, wire memory system) needs decomposition,
+  oro-owx0 (P3, dashboard wave 3) blocked by oro-ycjj. Deploy updated
+  hooks to ~/.oro/hooks/ after checkout (test_memory_capture.py loads from there).
+
+test: go test ./pkg/dispatcher/ -race -count=1 && uv run pytest tests/
+
+done_this_session:
+  - task: "Closed oro-pudq: Fix deprecated bd comment → bd comments add"
+    details: "Updated hooks, tests, skill docs. Deployed to ~/.oro/hooks/."
+    files: [.claude/hooks/memory_capture.py, assets/hooks/memory_capture.py, tests/test_memory_capture.py, .claude/skills/create-handoff/SKILL.md, assets/skills/create-handoff/SKILL.md]
+
+  - task: "Closed oro-koon: Fix shell correctness in mutation testing"
+    details: "Quoted $changed with mapfile array, added 2>/dev/null to git diff, PID-isolated cosmic-ray temp files."
+    files: [quality_gate.sh, Makefile, test_quality_gate.sh]
+
+  - task: "Closed oro-7in4.9: Cap embedder vocabulary for vectorSearch OOM"
+    details: "Added maxVocabSize=10000 constant, guarded vocab growth in Embed(), fixed index-0 pollution bug."
+    files: [pkg/memory/embed.go, pkg/memory/embed_test.go]
+
+  - task: "Closed oro-7in4.4 epic: Replace time.Sleep in dispatcher tests"
+    details: "76 time.Sleep calls replaced with waitFor/channel patterns across 14 test files. 7 child beads, all merged."
+    files: [pkg/dispatcher/dispatcher_test.go, pkg/dispatcher/qg_retry_test.go, pkg/dispatcher/tracking_leak_test.go, pkg/dispatcher/pane_monitor_test.go, pkg/dispatcher/dispatcher_autoscale_test.go, pkg/dispatcher/persist_counts_test.go, pkg/dispatcher/handoff_continuation_test.go, pkg/dispatcher/concurrent_assign_test.go, pkg/dispatcher/process_manager_test.go, pkg/dispatcher/message_size_test.go, pkg/dispatcher/register_race_test.go, pkg/dispatcher/socket_permissions_test.go, pkg/dispatcher/stale_socket_test.go, pkg/dispatcher/dispatcher.go, pkg/dispatcher/pane_monitor.go]
+
+  - task: "Closed oro-7in4 parent epic: Edge case coverage"
+    details: "All 9 children closed across invariant-first workflow, CI race detector, time.Sleep, input validation, resource safety."
+
+  - task: "Closed oro-p6r7: Rewrite dispatching-parallel-agents skill"
+    details: "Pipeline mode default, oro work primary, hybrid merge (cherry-pick with active worktrees), 5 worker concurrency."
+    files: [.claude/skills/dispatching-parallel-agents/SKILL.md, assets/skills/dispatching-parallel-agents/SKILL.md]
+
+  - task: "Merged background workers from previous session"
+    details: "oro-xgwr (mutation testing) and oro-o1ep (TOCTOU guard) both completed. Cleaned up stale worktrees."
+
+decisions:
+  - pipeline_over_batch: >
+      Rewrote dispatching skill to pipeline by default. Merge each worker
+      as it completes, backfill from queue. Batch is strictly worse when
+      queue > concurrency limit.
+  - cherry_pick_with_active_worktrees: >
+      Cannot git rebase when worktrees exist (guard hook). Cherry-pick is
+      safe alternative. Only rebase when all worktrees removed.
+  - five_oro_workers: >
+      Default concurrency set to 5 oro workers. Previous session found 2
+      caused signal:killed but that may have been resource-specific. 3
+      Task agents ran fine this session.
+
+findings:
+  - test_imports_from_oro_home: >
+      test_memory_capture.py imports from ORO_HOME/hooks/ (~/.oro/hooks/),
+      not assets/hooks/. Workers updating assets/ won't fix test failures
+      until the deployed copy is also updated. Need install step or
+      conftest change.
+  - index_zero_pollution_in_embedder: >
+      Worker found a latent bug: when vocab is capped, unseen terms returned
+      Go's zero-value int (0) from map lookup, corrupting dimension 0 of
+      the vector. Fixed with ok-check: if idx, ok := e.vocab[term]; ok.
+
+worked:
+  - "Pipeline dispatch with 3 concurrent workers — 11 beads in ~90 minutes"
+  - "Cherry-pick merge pattern avoids killing active workers"
+  - "Dispatching time.Sleep beads by file to avoid merge conflicts"
+  - "Sequential deps for same-file beads (7in4.4.1→.2→.3)"
+
+failed:
+  - "Worker didn't deploy hook to ~/.oro/hooks/ — tests load from there not assets/"
+  - "Forgot bd update --status=in_progress in early worker prompts"
+
+next:
+  - "Decompose oro-q5p0 (P1 epic): Wire memory system end-to-end"
+  - "oro-owx0 (P3 epic): Dashboard Wave 3 — blocked by oro-ycjj"
+  - "Consider adding install step to deploy assets/hooks/ to ~/.oro/hooks/"
+  - "Rebuild oro binary before next worker batch (picks up new commits)"
+
+beads:
+  completed: [oro-pudq, oro-koon, oro-7in4.9, oro-7in4.4.1, oro-7in4.4.2, oro-7in4.4.3, oro-7in4.4.4, oro-7in4.4.5, oro-7in4.4.6, oro-7in4.4.7, oro-7in4.4, oro-7in4, oro-p6r7]
+  in_progress: []
+  remaining:
+    - oro-q5p0    # P1 epic: wire memory system (needs decomposition)
+    - oro-owx0    # P3 epic: dashboard wave 3 (blocked by oro-ycjj)
+
+learnings:
+  undocumented:
+    - "test_memory_capture.py imports from ORO_HOME/hooks/ not assets/hooks/ — workers must deploy to both (oro-pudq, hooks)"
+    - "Cherry-pick is safe merge alternative when worktrees are active — rebase guard blocks but cherry-pick works (pipeline, git)"
+    - "Embedder map lookup without ok-check causes index-0 vector pollution when vocab is capped (oro-7in4.9, memory)"
+    - "bd update --status=in_progress must be in worker prompt template — otherwise active work is invisible (orchestration)"
+  proposed_codification:
+    - type: rule
+      target: .claude/rules/worker-dispatch.md
+      content: "Worker prompts must include bd update <id> --status=in_progress at start."
+      frequency: 1
+      tag: orchestration
+
+git:
+  branch: main
+  pushed: true
+  latest_commit: a801264
