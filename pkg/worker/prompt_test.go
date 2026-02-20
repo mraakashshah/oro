@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
 
@@ -695,6 +696,68 @@ func TestAssemblePrompt_ExitSection_HandlesUnrelatedTestFailures(t *testing.T) {
 	if !strings.Contains(strings.ToLower(exitSection), "merge") {
 		t.Error("expected Exit section to mention merge process")
 	}
+}
+
+func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("epic_decomposition_uses_decomposition_prompt", func(t *testing.T) {
+		t.Parallel()
+
+		prompt, _ := worker.BuildAssignPrompt(&protocol.AssignPayload{
+			BeadID:              "oro-epic-1",
+			Worktree:            "/tmp/wt-epic",
+			Title:               "Epic: Add auth",
+			Description:         "Add JWT authentication",
+			Model:               "opus",
+			IsEpicDecomposition: true,
+		})
+
+		// Must contain bead-craft instructions
+		if !strings.Contains(prompt, "bead-craft") {
+			t.Errorf("expected epic decomp prompt to contain 'bead-craft', got:\n%s", prompt)
+		}
+		// Must contain bd create and --parent= flag for child bead creation
+		if !strings.Contains(prompt, "bd create") {
+			t.Errorf("expected epic decomp prompt to contain 'bd create', got:\n%s", prompt)
+		}
+		if !strings.Contains(prompt, "--parent=") {
+			t.Errorf("expected epic decomp prompt to contain '--parent=', got:\n%s", prompt)
+		}
+		// Must NOT contain standard worker sections
+		if strings.Contains(prompt, "## Quality Gate") {
+			t.Error("epic decomp prompt must NOT contain '## Quality Gate'")
+		}
+		if strings.Contains(prompt, "## Worktree") {
+			t.Error("epic decomp prompt must NOT contain '## Worktree'")
+		}
+	})
+
+	t.Run("standard_assignment_uses_standard_prompt", func(t *testing.T) {
+		t.Parallel()
+
+		prompt, _ := worker.BuildAssignPrompt(&protocol.AssignPayload{
+			BeadID:              "oro-task-1",
+			Worktree:            "/tmp/wt-task",
+			Title:               "Fix bug",
+			Description:         "Fix the auth bug",
+			AcceptanceCriteria:  "Tests pass",
+			Model:               "opus",
+			IsEpicDecomposition: false,
+		})
+
+		// Standard prompt contains Quality Gate and Worktree sections
+		if !strings.Contains(prompt, "## Quality Gate") {
+			t.Error("standard prompt must contain '## Quality Gate'")
+		}
+		if !strings.Contains(prompt, "## Worktree") {
+			t.Error("standard prompt must contain '## Worktree'")
+		}
+		// Standard prompt should NOT contain epic decomposition workflow
+		if strings.Contains(prompt, "epic decomposition mode") {
+			t.Error("standard prompt must NOT contain 'epic decomposition mode'")
+		}
+	})
 }
 
 func TestBuildEpicDecompositionPrompt(t *testing.T) {
