@@ -122,7 +122,7 @@ type ShellAcceptanceRunner struct{}
 // Run executes cmd via sh -c and returns the combined output. passed is true
 // when the process exits with code 0.
 func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output string, passed bool, err error) {
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	c := exec.CommandContext(ctx, "sh", "-c", cmd) //nolint:gosec // cmd is a user-defined acceptance test string
 	out, runErr := c.CombinedOutput()
 	output = string(out)
 	if runErr != nil {
