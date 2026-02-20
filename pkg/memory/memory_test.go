@@ -2098,3 +2098,113 @@ func TestVectorSearch_BoundsMemory(t *testing.T) {
 		}
 	}
 }
+
+// TestForPrompt_UsesHybridSearch verifies that ForPrompt routes through
+// HybridSearch when an embedder is set, and falls back to Search otherwise.
+//
+// Detection method: HybridSearch calls embedder.Embed(query) which grows the
+// vocabulary. Store.Search never touches the embedder. So after ForPrompt runs
+// with a query that contains a novel term, vocab growth proves HybridSearch
+// was invoked.
+func TestForPrompt_UsesHybridSearch(t *testing.T) {
+	ctx := context.Background()
+
+	// --- Case 1: with embedder, ForPrompt must route through HybridSearch ---
+	embedder := NewEmbedder()
+	store := NewStore(setupTestDB(t))
+	store.SetEmbedder(embedder)
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "ruff pyright linting python always run first", Type: "gotcha",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	vocabBefore := embedder.VocabSize()
+
+	// Query includes "unique_xzq9hybrid" — a term not in any stored memory.
+	// HybridSearch calls embedder.Embed(query) → vocab grows.
+	// Search (FTS5-only) never touches the embedder → vocab stays same.
+	result, err := ForPrompt(ctx, store, nil, "unique_xzq9hybrid ruff pyright linting", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt with embedder: %v", err)
+	}
+
+	vocabAfter := embedder.VocabSize()
+	if vocabAfter <= vocabBefore {
+		t.Errorf("ForPrompt with embedder should call HybridSearch (which calls Embed on query); "+
+			"vocab did not grow: before=%d after=%d", vocabBefore, vocabAfter)
+	}
+
+	// Results must be non-empty (FTS5 and/or vector finds the stored memory).
+	if result == "" {
+		t.Fatal("expected non-empty result from ForPrompt with embedder")
+	}
+	if !strings.Contains(result, "## Relevant Memories") {
+		t.Error("expected markdown header in result")
+	}
+	if !strings.Contains(result, "ruff") {
+		t.Error("expected ruff memory content in result")
+	}
+
+	// --- Case 2: with embedder, vector-similar match ranks before weaker match ---
+	embedder2 := NewEmbedder()
+	store2 := NewStore(setupTestDB(t))
+	store2.SetEmbedder(embedder2)
+
+	_, err = store2.Insert(ctx, InsertParams{
+		// All query terms, repeated — high TF vector + high FTS5 BM25.
+		Content: "ruff pyright linting always run ruff before pyright python", Type: "gotcha",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert gotcha: %v", err)
+	}
+	_, err = store2.Insert(ctx, InsertParams{
+		// Only "ruff" and "python" from query — weaker match.
+		Content: "ruff python code quality tools", Type: "lesson",
+		Source: "self_report", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert lesson: %v", err)
+	}
+
+	result2, err := ForPrompt(ctx, store2, nil, "ruff pyright linting python", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt ranking: %v", err)
+	}
+	if !strings.Contains(result2, "## Relevant Memories") {
+		t.Error("expected markdown header in ranking result")
+	}
+	gotchaPos := strings.Index(result2, "gotcha")
+	lessonPos := strings.Index(result2, "lesson")
+	if gotchaPos == -1 {
+		t.Error("expected gotcha (all query terms → high FTS5+vector) in results")
+	}
+	if lessonPos != -1 && gotchaPos > lessonPos {
+		t.Error("expected gotcha (full match) to rank before lesson (partial match)")
+	}
+
+	// --- Case 3: without embedder, ForPrompt falls back to Search ---
+	storeFTS := NewStore(setupTestDB(t))
+	_, err = storeFTS.Insert(ctx, InsertParams{
+		Content: "ruff pyright linting python", Type: "gotcha",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert fallback: %v", err)
+	}
+
+	resultFTS, err := ForPrompt(ctx, storeFTS, nil, "ruff pyright linting python", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt without embedder: %v", err)
+	}
+	if resultFTS == "" {
+		t.Fatal("expected non-empty result from ForPrompt without embedder (Search fallback)")
+	}
+	if !strings.Contains(resultFTS, "gotcha") {
+		t.Error("expected gotcha in FTS5-fallback results")
+	}
+}

@@ -319,8 +319,6 @@ const rrfK = 60.0
 // receive a partial RRF score from that list alone.
 //
 // If no embedder is set, falls back to plain FTS5 Search().
-//
-//oro:testonly
 func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts) ([]ScoredMemory, error) {
 	if query == "" {
 		return nil, nil
@@ -813,10 +811,19 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 		return "", nil
 	}
 
-	results, err := store.Search(ctx, beadDesc, SearchOpts{
-		Limit: 10,
-		Tags:  beadTags,
-	})
+	var results []ScoredMemory
+	var err error
+	if store.embedder != nil {
+		results, err = store.HybridSearch(ctx, beadDesc, SearchOpts{
+			Limit: 10,
+			Tags:  beadTags,
+		})
+	} else {
+		results, err = store.Search(ctx, beadDesc, SearchOpts{
+			Limit: 10,
+			Tags:  beadTags,
+		})
+	}
 	if err != nil {
 		return "", fmt.Errorf("for prompt search: %w", err)
 	}
