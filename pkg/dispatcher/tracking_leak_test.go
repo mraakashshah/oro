@@ -125,7 +125,14 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		}
 
 		// Wait for escalation.
-		time.Sleep(300 * time.Millisecond)
+		waitFor(t, func() bool {
+			for _, m := range esc.Messages() {
+				if strings.Contains(m, beadID) && strings.Contains(m, "QG output repeated") {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
 		msgs := esc.Messages()
 		found := false
 		for _, m := range msgs {
@@ -180,7 +187,14 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 			}
 		}
 
-		time.Sleep(300 * time.Millisecond)
+		waitFor(t, func() bool {
+			for _, m := range esc.Messages() {
+				if strings.Contains(m, beadID) && strings.Contains(m, "quality gate failed") {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
 		msgs := esc.Messages()
 		found := false
 		for _, m := range msgs {
@@ -372,10 +386,9 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		d.checkHeartbeats(ctx)
 
 		// Worker should be removed.
-		time.Sleep(100 * time.Millisecond)
-		if d.ConnectedWorkers() != 0 {
-			t.Fatalf("expected 0 workers after heartbeat timeout, got %d", d.ConnectedWorkers())
-		}
+		waitFor(t, func() bool {
+			return d.ConnectedWorkers() == 0
+		}, 2*time.Second)
 
 		assertTrackingMapsEmpty(t, d, beadID)
 	})
@@ -414,8 +427,12 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 			},
 		})
 
-		// Wait for merge to complete (async).
-		time.Sleep(300 * time.Millisecond)
+		// Wait for merge to complete (async) — tracking maps should be cleared.
+		waitFor(t, func() bool {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			return d.handoffCounts[beadID] == 0 && d.rejectionCounts[beadID] == 0
+		}, 2*time.Second)
 
 		assertTrackingMapsEmpty(t, d, beadID)
 	})
