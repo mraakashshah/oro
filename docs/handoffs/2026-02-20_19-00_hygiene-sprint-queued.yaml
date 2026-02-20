@@ -1,0 +1,111 @@
+---
+date: 2026-02-20
+status: complete
+
+goal: >
+  Closed 3 epics (oro-q5p0, oro-81nf, oro-ihda). Landed 4 more beads: CI fix
+  (oro-st0i), settings.json path unification (oro-ihda.5), Phase 2 dash spec
+  (oro-9g0y), and decomposed hygiene epic (oro-8tgu) into 13 child beads.
+  All work pushed to main. 19/19 quality gate green.
+
+now: >
+  Execute oro-8tgu hygiene sprint children. Start with the non-coverage beads
+  (8tgu.1, 8tgu.2, 8tgu.3, 8tgu.11) in parallel, then coverage beads.
+  Note: oro work <id> does NOT exist — use Task agents following work-bead skill.
+
+test: go test ./... -race -count=1 && go build ./...
+
+done_this_session:
+  - {bead: oro-q5p0, action: closed epic, note: all 6 children confirmed done}
+  - {bead: oro-81nf, action: closed epic, note: all 6 children confirmed done}
+  - {bead: oro-ihda, action: closed epic, note: all 5 children confirmed done}
+  - {bead: oro-st0i, commit: 1ace76f, files: [cmd/oro/db_test.go, cmd/oro/cmd_logs_test.go, cmd/oro/cmd_init_test.go, .claude/skills/using-skills/SKILL.md]}
+  - {bead: oro-ihda.5, commit: 4670892, files: [.claude/settings.json, cmd/oro-search-hook/integration_test.go]}
+  - {bead: oro-9g0y, commit: 8b6bc62, files: [docs/plans/2026-02-20-dash-phase2-visual-refresh.md]}
+  - {bead: oro-8tgu, action: decomposed into 13 children, note: children filed, deps wired}
+
+decisions:
+  oro_work_does_not_exist: >
+    `oro work <bead-id>` is referenced in dispatching-parallel-agents skill but
+    does not exist in the oro binary. Fallback is Task agents following
+    work-bead skill manually (worktree + TDD + merge). This is equally effective.
+    The skill reference should be updated or the command should be implemented.
+  hygiene_sprint_prioritization: >
+    8tgu.11 (consolidate duplicate fetch impls) must run before 8tgu.6 (fetch.go tests)
+    because tests should cover the surviving implementation, not the dead one.
+    bd dep wired: 8tgu.6 depends on 8tgu.11.
+
+findings:
+  oro_st0i_fixes:
+    - TestSkillsAllListedInUsingSkillsIndex: adversarial-spec-review missing from using-skills index
+    - TestDefaultMemoryStore_WALMode: test used ORO_MEMORY_DB but nb7p pivot changed to ORO_DB_PATH/state.db
+    - TestLogsRawFlag data race: goroutine writing buf raced with buf.String() read after ctx.Done()
+    - TestInitCommand_GeneratesConfig: real defaultToolDefs requires gofumpt/goimports not in CI env
+  settings_json_fix: >
+    .claude/settings.json had relative path .claude/hooks/oro-search-hook which breaks
+    in worktrees. Fixed to absolute ~/.oro/hooks/oro-search-hook matching oro init output.
+  hygiene_audit_results:
+    coverage_gaps: [pkg/langprofile (58.3%), cmd/oro-search-hook (60%), cmd/oro (73%)]
+    dead_code: [model.go searchQuery field deprecated, followRawLogs thin-wrapper]
+    todos: [dispatcher health.go pane Alive always false, pane_activity table exists but unused]
+    duplicate_code: [datasource.go FetchBeads vs fetch.go fetchBeads+fetchBeadsWithStatus]
+
+worked:
+  - Task agents with explicit work-bead steps (worktree + -C flags + TDD + merge)
+  - Parallel dispatch for independent file scopes (st0i + ihda.5 simultaneously)
+  - Spec-writing as pure write task dispatched to background agent (no worktree needed)
+  - Audit-only agent for decomposition (read-only, creates beads, reports findings)
+
+failed:
+  - oro work <bead-id> — command does not exist (exit code 1, "unknown command")
+  - Dispatch agents with just `cd /path && oro work` — same failure
+
+next:
+  - Execute oro-8tgu children in parallel batches (see file-scope grouping below)
+  - After hygiene sprint: update dispatching-parallel-agents skill to remove oro work reference
+  - Consider implementing oro work subcommand as thin wrapper around work-bead lifecycle
+
+beads:
+  completed: [oro-q5p0, oro-81nf, oro-ihda, oro-st0i, oro-ihda.5, oro-9g0y]
+  in_progress: []
+  remaining: [oro-8tgu, oro-8tgu.1, oro-8tgu.2, oro-8tgu.3, oro-8tgu.4, oro-8tgu.5,
+              oro-8tgu.6, oro-8tgu.7, oro-8tgu.8, oro-8tgu.9, oro-8tgu.10,
+              oro-8tgu.11, oro-8tgu.12, oro-8tgu.13]
+  epic: oro-8tgu
+
+hygiene_dispatch_plan:
+  batch1_parallel:
+    - oro-8tgu.1  # cmd/oro-dash/model.go — remove searchQuery field
+    - oro-8tgu.2  # cmd/oro/cmd_logs.go — remove followRawLogs wrapper
+    - oro-8tgu.3  # pkg/dispatcher/health.go — implement pane alive
+    - oro-8tgu.7  # pkg/codesearch/classifier.go — QueryType.String() test
+    - oro-8tgu.8  # pkg/codesearch/summarize.go — formatChanType test
+    - oro-8tgu.9  # pkg/dispatcher/beadsource.go — CLIBeadSource.Update test
+  batch2_sequential:
+    - oro-8tgu.11 # cmd/oro-dash/ — consolidate fetch impls (must run before 8tgu.6)
+    - oro-8tgu.6  # cmd/oro-dash/fetch.go — tests (after consolidation)
+  batch3_parallel:
+    - oro-8tgu.4  # pkg/langprofile — GenerateConfig/BuildYAML tests
+    - oro-8tgu.5  # cmd/oro-search-hook — writeOut/main tests
+    - oro-8tgu.10 # pkg/dispatcher — applyPendingEscalations tests
+    - oro-8tgu.12 # cmd/oro — ingestKnowledgeOnStartup tests
+    - oro-8tgu.13 # cmd/oro — runInstall/installMissingTools tests
+
+learnings:
+  undocumented:
+    - "oro work <bead-id> does not exist — use Task agents with work-bead steps (oro-st0i, cli)"
+  proposed_codification:
+    - type: skill
+      target: .claude/skills/dispatching-parallel-agents/SKILL.md
+      content: >
+        Remove 'oro work <bead-id>' as primary command. Replace with Task agent
+        using work-bead steps. The binary has no 'work' subcommand.
+      frequency: 1
+      tag: cli
+    - type: skill
+      target: .claude/skills/dispatching-parallel-agents/SKILL.md
+      content: >
+        git tag has 4 entries at 'create' level: add cherry-pick preference,
+        never cd into worktrees (use -C), pull before commit patterns.
+      frequency: 4
+      tag: git
