@@ -22,7 +22,6 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 		{"model", protocol.DefaultModel},
 		{"timeout", "15m0s"},
 		{"skip-review", "false"},
-		{"resume", "false"},
 		{"dry-run", "false"},
 	}
 	for _, tt := range tests {
@@ -121,19 +120,47 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestSetupWorktree_CollisionGuard(t *testing.T) {
-	// setupWorktree should fail if worktree dir exists and --resume is false.
+func TestSetupWorktree_ExistingWorktreeAutoResumes(t *testing.T) {
+	// When worktree dir exists, setupWorktree should auto-resume (not error).
 	cfg := &workConfig{beadID: "oro-test"}
 	deps := &workDeps{repoRoot: t.TempDir()}
 
-	// Create the worktree dir to trigger collision.
+	// Create the worktree dir to simulate a previous run.
 	wtDir := deps.repoRoot + "/.worktrees/oro-test"
 	if err := os.MkdirAll(wtDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
-	_, _, err := setupWorktree(context.Background(), cfg, deps)
-	if err == nil {
-		t.Fatal("expected collision guard error")
+	gotPath, _, err := setupWorktree(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("expected auto-resume, got error: %v", err)
+	}
+	if gotPath != wtDir {
+		t.Fatalf("expected path %s, got %s", wtDir, gotPath)
+	}
+}
+
+func TestSetupWorktree_NoWorktreeCreatesNew(t *testing.T) {
+	// When worktree dir does not exist, setupWorktree should call Create.
+	cfg := &workConfig{beadID: "oro-test"}
+	repoRoot := t.TempDir()
+	wtPath := repoRoot + "/.worktrees/oro-test"
+	deps := &workDeps{
+		repoRoot: repoRoot,
+		wtMgr: &mockWorktreeManager{
+			createPath:   wtPath,
+			createBranch: protocol.BranchPrefix + "oro-test",
+		},
+	}
+
+	gotPath, gotBranch, err := setupWorktree(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != wtPath {
+		t.Fatalf("expected path %s, got %s", wtPath, gotPath)
+	}
+	if gotBranch != protocol.BranchPrefix+"oro-test" {
+		t.Fatalf("expected branch %s, got %s", protocol.BranchPrefix+"oro-test", gotBranch)
 	}
 }

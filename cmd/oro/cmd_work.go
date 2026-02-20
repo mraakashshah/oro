@@ -35,7 +35,6 @@ type workConfig struct {
 	model      string
 	timeout    time.Duration
 	skipReview bool
-	resume     bool
 	dryRun     bool
 	bead       *protocol.BeadDetail
 }
@@ -73,7 +72,6 @@ automatically. Exit code 0 means the bead landed on main.`,
 	cmd.Flags().StringVar(&cfg.model, "model", protocol.DefaultModel, "starting Claude model")
 	cmd.Flags().DurationVar(&cfg.timeout, "timeout", 15*time.Minute, "per-claude-spawn timeout")
 	cmd.Flags().BoolVar(&cfg.skipReview, "skip-review", false, "skip ops review gate")
-	cmd.Flags().BoolVar(&cfg.resume, "resume", false, "resume from existing worktree")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "show execution plan without running")
 
 	return cmd
@@ -160,8 +158,8 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	logStep("Loaded %s: %s", cfg.bead.ID, cfg.bead.Title)
 
 	if cfg.dryRun {
-		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t, resume=%t",
-			cfg.beadID, cfg.model, cfg.timeout, cfg.skipReview, cfg.resume)
+		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t",
+			cfg.beadID, cfg.model, cfg.timeout, cfg.skipReview)
 		return nil
 	}
 
@@ -187,8 +185,8 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	var feedback string
 	var attempt int
 
-	// On --resume with commits ahead, skip first claude spawn.
-	skipClaude := cfg.resume && deps.hasNewWork(deps.repoRoot, branch)
+	// Auto-resume: if worktree has commits ahead, skip first claude spawn.
+	skipClaude := deps.hasNewWork(deps.repoRoot, branch)
 	if skipClaude {
 		logStep("Resuming — branch %s has commits, skipping to QG", branch)
 	}
@@ -277,22 +275,16 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	return nil
 }
 
-// setupWorktree creates a new worktree or validates an existing one for --resume.
+// setupWorktree auto-detects worktree state:
+//   - exists → resume from it
+//   - doesn't exist → create new
 func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps) (wtPath, branch string, err error) {
 	wtPath = filepath.Join(deps.repoRoot, ".worktrees", cfg.beadID)
 	branch = protocol.BranchPrefix + cfg.beadID
 
-	if cfg.resume {
-		if _, statErr := os.Stat(wtPath); statErr != nil {
-			return "", "", fmt.Errorf("--resume but worktree %s does not exist", wtPath)
-		}
+	if _, statErr := os.Stat(wtPath); statErr == nil {
 		logStep("Resuming worktree: %s", wtPath)
 		return wtPath, branch, nil
-	}
-
-	// Collision guard.
-	if _, statErr := os.Stat(wtPath); statErr == nil {
-		return "", "", fmt.Errorf("worktree %s already exists — use --resume to continue, or remove it first", wtPath)
 	}
 
 	wtPath, branch, err = deps.wtMgr.Create(ctx, cfg.beadID)
@@ -441,7 +433,7 @@ func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree,
 
 	var conflictErr *merge.ConflictError
 	if errors.As(err, &conflictErr) {
-		return nil, fmt.Errorf("merge conflict on %s (%v) — resolve manually and re-run with --resume",
+		return nil, fmt.Errorf("merge conflict on %s (%v) — resolve manually and re-run",
 			cfg.beadID, conflictErr.Files)
 	}
 	return nil, fmt.Errorf("merge: %w", err)
