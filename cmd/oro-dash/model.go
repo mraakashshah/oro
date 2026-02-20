@@ -490,7 +490,7 @@ func (m Model) View() string {
 		return m.renderHealthView() + "\n" + statusBar
 	case WorkersView:
 		workersTable := NewWorkersTableModel(m.workers, m.assignments)
-		return workersTable.View(m.theme, m.styles) + "\n" + statusBar
+		return workersTable.View(m.theme, m.styles, max(m.width, 80)) + "\n" + statusBar
 	case TreeView:
 		return m.treeModel.View(m.theme, m.styles) + "\n" + statusBar
 	default:
