@@ -363,8 +363,23 @@ func TestCountMissing(t *testing.T) {
 
 // --- Config generation tests ---
 
+// overrideToolDefs replaces defaultToolDefs with a minimal set of tools that
+// are guaranteed to be present in any development environment (go, tmux, jq).
+// This prevents TestInitCommand_GeneratesConfig from failing when optional
+// tools like gofumpt/goimports are not installed on the test machine.
+// The original value is restored via t.Cleanup.
+func overrideToolDefs(t *testing.T) {
+	t.Helper()
+	orig := defaultToolDefs
+	defaultToolDefs = []toolDef{
+		{Name: "go", Category: "prerequisites", CheckCmd: "go", CheckArgs: []string{"version"}},
+	}
+	t.Cleanup(func() { defaultToolDefs = orig })
+}
+
 func TestInitCommand_GeneratesConfig(t *testing.T) {
 	t.Run("generates config with project name and Go profile", func(t *testing.T) {
+		overrideToolDefs(t)
 		tmpDir := t.TempDir()
 
 		// Create a go.mod file to simulate a Go project
@@ -403,6 +418,7 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 	})
 
 	t.Run("generates config with project name when no languages detected", func(t *testing.T) {
+		overrideToolDefs(t)
 		tmpDir := t.TempDir()
 
 		root := newRootCmd()
@@ -427,6 +443,7 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 	})
 
 	t.Run("idempotent re-run succeeds", func(t *testing.T) {
+		overrideToolDefs(t)
 		tmpDir := t.TempDir()
 
 		// First run
@@ -451,6 +468,7 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 	})
 
 	t.Run("derives project name from directory when not provided", func(t *testing.T) {
+		overrideToolDefs(t)
 		tmpDir := t.TempDir()
 
 		root := newRootCmd()

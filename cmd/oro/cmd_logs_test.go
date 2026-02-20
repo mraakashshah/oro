@@ -346,19 +346,19 @@ func TestLogsRawFlag(t *testing.T) {
 			t.Fatalf("close log file: %v", err)
 		}
 
-		// Wait for context timeout or error
-		select {
-		case err := <-errCh:
-			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("followRawLogs failed: %v", err)
-			}
-		case <-ctx.Done():
-			// Expected - timeout is normal for follow
+		// Wait for the poller to tick (500ms poll interval) and detect the new
+		// content. Then cancel the context and drain the goroutine before reading
+		// buf — this avoids a data race between buf writes (goroutine) and
+		// buf.String() (test goroutine).
+		time.Sleep(700 * time.Millisecond)
+		cancel()
+		if err := <-errCh; err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("followRawLogs failed: %v", err)
 		}
 
 		output := buf.String()
 
-		// Should eventually see the new line
+		// Should have seen the new line within the polling window.
 		if !strings.Contains(output, "new line") {
 			t.Errorf("follow did not detect new line: %s", output)
 		}

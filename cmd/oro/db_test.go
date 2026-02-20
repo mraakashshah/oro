@@ -178,7 +178,7 @@ func TestBuildDispatcher_WALMode(t *testing.T) {
 // database with WAL and busy_timeout. We test via the openDB path.
 func TestDefaultMemoryStore_WALMode(t *testing.T) {
 	tmpDir := t.TempDir()
-	t.Setenv("ORO_MEMORY_DB", filepath.Join(tmpDir, "memories.db"))
+	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
 
 	store, err := defaultMemoryStore()
 	if err != nil {
@@ -186,7 +186,7 @@ func TestDefaultMemoryStore_WALMode(t *testing.T) {
 	}
 	// The store wraps a *sql.DB; we can't access it directly, so open another
 	// connection and check WAL was set on the file.
-	db, err := sql.Open("sqlite", filepath.Join(tmpDir, "memories.db"))
+	db, err := sql.Open("sqlite", filepath.Join(tmpDir, "state.db"))
 	if err != nil {
 		t.Fatalf("open for verification: %v", err)
 	}
