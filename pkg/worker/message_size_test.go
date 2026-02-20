@@ -42,6 +42,9 @@ func TestWorkerOversizeMessage(t *testing.T) {
 	if err != nil || n == 0 {
 		t.Fatal("expected initial heartbeat")
 	}
+	// Clear read deadline so it doesn't expire and cause the write goroutine's
+	// Write() to fail on net.Pipe() when sending the oversized message.
+	_ = serverConn.SetReadDeadline(time.Time{})
 
 	// Send an oversized ASSIGN message (> MaxMessageSize)
 	// We send it in a goroutine because the write will block when the pipe
