@@ -1,0 +1,86 @@
+---
+date: 2026-02-20
+status: partial
+---
+
+goal: >
+  Closed oro-owx0 (Dashboard Wave 3 epic — all 6 children already done,
+  blocker oro-ycjj resolved). Decomposed oro-q5p0 (P1 epic: wire memory
+  system) into 4 child beads with dependency graph. Discovered and filed
+  DB split bug (oro-nb7p).
+
+now: >
+  Execute oro-q5p0 children. Start with .1 and .2 in parallel (both
+  independent). Then .3 and .4 unblock after .2 lands. Parent epic
+  oro-q5p0 must be set to in_progress before children become unblocked
+  (bd auto-blocks children on parent).
+
+test: go test ./pkg/memory/ ./pkg/dispatcher/ -race -count=1
+
+done_this_session:
+  - task: "Closed oro-owx0: Dashboard Wave 3 epic"
+    details: "All 6 children were already closed, blocker oro-ycjj resolved. Just needed closing."
+
+  - task: "Decomposed oro-q5p0 into 4 child beads"
+    details: >
+      Deep codebase exploration of memory system revealed actual wiring state
+      differs from epic description. ForPrompt already wired (3 dispatcher
+      call sites). Consolidate already auto-runs every 5 beads. Real gaps
+      are embedder not wired and HybridSearch not used.
+
+  - task: "Filed oro-nb7p: DB split bug"
+    details: >
+      CLI defaultMemoryStore() uses memories.db but dispatcher uses state.db.
+      Workers insert to state.db, oro memories list reads memories.db.
+
+decisions:
+  - four_beads_not_seven: >
+      Epic had 7 acceptance criteria but several are already met (ForPrompt
+      wired, Consolidate auto-runs). Decomposed into 4 actual gaps: testonly
+      removal on Consolidate, embedder wiring, HybridSearch switch, integration test.
+  - db_split_separate_bead: >
+      DB split between CLI and dispatcher is real but out of scope for the
+      memory wiring epic. Filed as standalone P2 bug oro-nb7p.
+
+findings:
+  - forprompt_already_wired: >
+      ForPrompt() has 3 production call sites in dispatcher: assignBead(),
+      fetchBeadMemories(), registerWorker(). Epic description claiming "never
+      called" is stale.
+  - consolidate_already_auto: >
+      Consolidate runs automatically every ConsolidateAfterN=5 bead completions
+      in dispatcher.go:1026. Also available via oro memories consolidate CLI.
+  - embedder_is_root_blocker: >
+      NewEmbedder() and SetEmbedder() are testonly, never called in production.
+      This means all memories have nil embedding blobs, HybridSearch degrades
+      to plain FTS5, and vector search never runs. Wiring embedder (.2) is
+      the critical path — .3 and .4 depend on it.
+  - db_split: >
+      cmd/oro/store.go:defaultMemoryStore opens paths.MemoryDBPath (~/.oro/memories.db)
+      but dispatcher uses paths.StateDBPath (~/.oro/state.db). Two different files.
+
+worked:
+  - "Deep codebase exploration via subagent before decomposition — found stale assumptions in epic"
+  - "Filing DB split as separate bug rather than scope-creeping the epic"
+
+next:
+  - "bd update oro-q5p0 --status=in_progress (unblocks children)"
+  - "Execute oro-q5p0.1 and oro-q5p0.2 in parallel"
+  - "Execute oro-q5p0.3 and oro-q5p0.4 after .2 lands"
+  - "Investigate oro-nb7p DB split (P2, separate from epic)"
+
+beads:
+  completed: [oro-owx0]
+  in_progress: []
+  remaining:
+    - oro-q5p0      # P1 epic: wire memory system (parent)
+    - oro-q5p0.1    # Remove testonly from Consolidate (ready)
+    - oro-q5p0.2    # Wire embedder in production (ready, critical path)
+    - oro-q5p0.3    # Switch ForPrompt to HybridSearch (blocked by .2)
+    - oro-q5p0.4    # Integration test: worker receives memories (blocked by .2)
+    - oro-nb7p      # P2 bug: DB split CLI vs dispatcher
+
+learnings:
+  undocumented:
+    - "ForPrompt() already wired in 3 dispatcher call sites — epic description stale (oro-q5p0, memory)"
+    - "CLI defaultMemoryStore() uses memories.db but dispatcher uses state.db — two different DBs (oro-nb7p, cli, go)"
