@@ -14,6 +14,20 @@ import (
 	"oro/pkg/dispatcher"
 )
 
+// waitFor polls condition every tick until it returns true or timeout expires.
+// This is a local copy for the external test package (dispatcher_test).
+func waitFor(t *testing.T, condition func() bool, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond) // short poll inside helper is OK
+	}
+	t.Fatalf("waitFor: condition not met within %v", timeout)
+}
+
 // TestExecProcessManager_Spawn_StoresProcessAndReturnsNonNil verifies that
 // Spawn starts a real process (sleep 60), tracks it, and returns a non-nil
 // *os.Process.
@@ -88,12 +102,13 @@ func TestExecProcessManager_Kill_SendsSignalToTrackedProcess(t *testing.T) {
 		t.Fatalf("Kill returned error: %v", err)
 	}
 
-	// Give a moment for the process to die.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the process to die.
+	p, _ := os.FindProcess(pid)
+	waitFor(t, func() bool {
+		return p.Signal(syscall.Signal(0)) != nil
+	}, 2*time.Second)
 
 	// After kill, the process should no longer be running.
-	// FindProcess always succeeds on Unix, so we send signal 0 to check.
-	p, _ := os.FindProcess(pid)
 	if err := p.Signal(syscall.Signal(0)); err == nil {
 		t.Fatal("expected process to be dead after Kill, but signal 0 succeeded")
 	}
@@ -211,29 +226,29 @@ func TestExecProcessManager_Kill_KillsProcessGroup(t *testing.T) {
 	}
 	parentPID := proc.Pid
 
-	// Give the shell time to spawn its child.
-	time.Sleep(200 * time.Millisecond)
-
-	// Find the grandchild (sleep 3600) by parent PID via pgrep.
-	out, pgrepErr := exec.Command("pgrep", "-P", fmt.Sprintf("%d", parentPID)).Output() //nolint:gosec // test-only: PID from our own subprocess
-	if pgrepErr != nil {
-		t.Fatalf("pgrep failed (no child of PID %d): %v", parentPID, pgrepErr)
-	}
+	// Wait for the shell to spawn its child.
 	var grandchildPID int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &grandchildPID); err != nil {
-		t.Fatalf("parse grandchild PID from %q: %v", out, err)
-	}
+	waitFor(t, func() bool {
+		out, err := exec.Command("pgrep", "-P", fmt.Sprintf("%d", parentPID)).Output() //nolint:gosec // test-only: PID from our own subprocess
+		if err != nil {
+			return false
+		}
+		_, scanErr := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &grandchildPID)
+		return scanErr == nil && grandchildPID > 0
+	}, 2*time.Second)
 
 	// Kill should terminate the entire process group.
 	if err := pm.Kill("w-pgid"); err != nil {
 		t.Fatalf("Kill returned error: %v", err)
 	}
 
-	// Give processes time to die.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for grandchild to die.
+	p, _ := os.FindProcess(grandchildPID)
+	waitFor(t, func() bool {
+		return p.Signal(syscall.Signal(0)) != nil
+	}, 2*time.Second)
 
 	// Grandchild should be dead.
-	p, _ := os.FindProcess(grandchildPID)
 	if err := p.Signal(syscall.Signal(0)); err == nil {
 		t.Errorf("grandchild process %d should be dead after Kill, but signal 0 succeeded", grandchildPID)
 	}
@@ -366,29 +381,29 @@ func TestKill_KillsProcessGroup(t *testing.T) {
 	}
 	parentPID := proc.Pid
 
-	// Give the shell time to spawn its child sleep process.
-	time.Sleep(200 * time.Millisecond)
-
-	// Find the grandchild (sleep 3600) by parent PID via pgrep.
-	out, pgrepErr := exec.Command("pgrep", "-P", fmt.Sprintf("%d", parentPID)).Output() //nolint:gosec // test-only: PID from our own subprocess
-	if pgrepErr != nil {
-		t.Fatalf("pgrep failed (no child of PID %d): %v", parentPID, pgrepErr)
-	}
+	// Wait for the shell to spawn its child sleep process.
 	var grandchildPID int
-	if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &grandchildPID); scanErr != nil {
-		t.Fatalf("parse grandchild PID from %q: %v", out, scanErr)
-	}
+	waitFor(t, func() bool {
+		out, err := exec.Command("pgrep", "-P", fmt.Sprintf("%d", parentPID)).Output() //nolint:gosec // test-only: PID from our own subprocess
+		if err != nil {
+			return false
+		}
+		_, scanErr := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &grandchildPID)
+		return scanErr == nil && grandchildPID > 0
+	}, 2*time.Second)
 
 	// Kill should terminate the entire process group.
 	if killErr := pm.Kill("w-pgid-acceptance"); killErr != nil {
 		t.Fatalf("Kill returned error: %v", killErr)
 	}
 
-	// Give processes time to die.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for grandchild to die.
+	p, _ := os.FindProcess(grandchildPID)
+	waitFor(t, func() bool {
+		return p.Signal(syscall.Signal(0)) != nil
+	}, 2*time.Second)
 
 	// Grandchild must be dead — process group kill worked.
-	p, _ := os.FindProcess(grandchildPID)
 	if sigErr := p.Signal(syscall.Signal(0)); sigErr == nil {
 		t.Errorf("grandchild process %d should be dead after Kill (process group not killed), but signal 0 succeeded", grandchildPID)
 	}

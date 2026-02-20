@@ -71,8 +71,15 @@ func TestOversizeMessage(t *testing.T) {
 	_, _ = conn1.Write(data)
 	_ = conn1.Close()
 
-	// Wait a bit for the dispatcher to process the error
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the dispatcher to process the error and remain responsive.
+	waitFor(t, func() bool {
+		conn, err := net.Dial("unix", cfg.SocketPath) //nolint:noctx // test setup
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, 2*time.Second)
 
 	// Test 2: Verify dispatcher is still running by establishing a new connection
 	// and sending a normal-sized message
@@ -200,13 +207,12 @@ func tempSocket(t *testing.T) string {
 
 func waitForListener(t *testing.T, socketPath string) {
 	t.Helper()
-	for i := 0; i < 50; i++ {
+	waitFor(t, func() bool {
 		conn, err := net.Dial("unix", socketPath) //nolint:noctx // test setup
-		if err == nil {
-			_ = conn.Close()
-			return
+		if err != nil {
+			return false
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("listener did not become ready")
+		_ = conn.Close()
+		return true
+	}, 5*time.Second)
 }
