@@ -1,0 +1,91 @@
+date: 2026-02-20
+status: partial
+
+goal: >
+  Executed parallel oro work agents across two epics (oro-q5p0 memory system,
+  oro-ihda build fixes) and one epic (oro-81nf dash phase 1). 16 commits landed
+  on main. Fixed oro-nb7p DB split bug. Filed oro-st0i (CI fix) and oro-8tgu
+  (hygiene sprint). Started dispatcher enhancement brainstorm.
+
+now: >
+  Push first (16 commits unpushed). Check if q5p0.6 worker (bf68529) landed.
+  Run oro-st0i (CI fix) -- all blockers resolved, it is ready.
+  Close parent epics after all children done. File dispatcher file-scope bead.
+
+test: go test ./pkg/memory/ ./pkg/dispatcher/ ./cmd/oro/ ./cmd/oro-dash/ -race -count=1
+
+done_this_session:
+  - {bead: oro-q5p0.1, commit: 45fb20d, files: [pkg/memory/memory.go]}
+  - {bead: oro-q5p0.5, commit: 8388585, files: [pkg/memory/embed.go]}
+  - {bead: oro-nb7p,   commit: 08df4ef, files: [cmd/oro/store.go]}
+  - {bead: oro-81nf.1, commit: dca15b4, files: [cmd/oro-dash/main.go, cmd/oro-dash/search.go, cmd/oro-dash/model.go]}
+  - {bead: oro-ihda.1, commit: 06260a1, files: [Makefile]}
+  - {bead: oro-q5p0.2, commit: e837f58, files: [pkg/dispatcher/dispatcher.go, cmd/oro/cmd_worker.go]}
+  - {bead: oro-81nf.2, commit: 6176bb6, files: [cmd/oro-dash/graph.go]}
+  - {bead: oro-ihda.3, commit: 48121f0, files: [Makefile], notes: cherry-picked manually}
+  - {bead: oro-q5p0.3, commit: 7909554, files: [pkg/memory/memory.go]}
+  - {bead: oro-81nf.3, commit: 2753060, files: [cmd/oro-dash/board.go]}
+  - {bead: oro-ihda.2, commit: 8a64a02, files: [cmd/oro/preflight.go, cmd/oro/cmd_init.go, cmd/oro/cmd_start.go]}
+  - {bead: oro-81nf.4, commit: 21cce41, files: [cmd/oro-dash/health.go, cmd/oro-dash/fetch.go, cmd/oro-dash/model.go]}
+  - {bead: oro-q5p0.4, commit: 1ea1c62, files: [pkg/dispatcher/dispatcher_test.go]}
+  - {bead: oro-81nf.6, commit: 4eb8e0d, files: [cmd/oro-dash/search.go]}
+  - {bead: oro-81nf.5, commit: 20dae8c, files: [cmd/oro-dash/workers_table.go]}
+  - {bead: oro-ihda.4, commit: 14c9696, files: [Makefile, cmd/oro/cmd_init.go, cmd/oro/cmd_start.go]}
+
+decisions:
+  oro_work_needs_acceptance_field: >
+    oro work requires --acceptance dedicated field. Description-embedded
+    Test/Cmd/Assert is NOT read. Beads without it fail exit code 3.
+    Always use bd create --acceptance or bd update --acceptance before dispatching.
+  cherry_pick_for_concurrent_merges: >
+    When other worktrees are active oro work auto-merge fails exit code 2.
+    Fix: git worktree remove --force .worktrees/<id> && git cherry-pick agent/<id>
+    && git branch -D agent/<id> && bd close manually.
+  file_scope_scheduling: >
+    Check Read lines in bead descriptions for file overlap before parallel dispatch.
+    Held ihda.4 until ihda.2 done (cmd_init.go overlap).
+    Held 81nf.5 until 81nf.4 done (model.go overlap).
+  dispatcher_enhancement_split: >
+    Deterministic logic (file-scope conflict detection, slot backfill, orphan
+    worktree cleanup) goes in Go dispatcher. Claude-driven reasoning stays in
+    manager prompt (dispatching-parallel-agents skill is already this).
+    User asked about "manager beacon" -- needs clarification next session.
+
+findings:
+  git_rebase_multiple_branches: >
+    "Cannot rebase onto multiple branches" is harmless when multiple workers merged
+    simultaneously. HEAD already has the commit. Restore stash and continue.
+  beads_jsonl_stash_conflict: >
+    git stash pop can conflict on .beads/issues.jsonl. Safe to git stash drop --
+    bd hooks auto-manage the file.
+  oro_st0i_ready: All 5 blockers of oro-st0i resolved. Verified bd show. Ready now.
+
+worked:
+  - 5 parallel oro work agents with no signal:killed at this bead size
+  - File-scope analysis before dispatch prevented merge conflicts
+  - Cherry-pick as fallback when auto-merge fails
+
+failed:
+  - Initial dispatch without --acceptance field -- 4/5 workers failed exit code 3
+
+next:
+  - git push
+  - Wait for q5p0.6 notification (bf68529) then pull
+  - oro work oro-st0i --skip-review
+  - bd close oro-q5p0 oro-81nf oro-ihda after all children confirmed done
+  - Clarify manager beacon with user then file dispatcher file-scope bead
+  - oro-ihda.5 (P2) after CI is green
+
+beads:
+  completed: [oro-q5p0.1, oro-q5p0.5, oro-q5p0.2, oro-q5p0.3, oro-q5p0.4, oro-nb7p,
+              oro-81nf.1, oro-81nf.2, oro-81nf.3, oro-81nf.4, oro-81nf.5, oro-81nf.6,
+              oro-ihda.1, oro-ihda.2, oro-ihda.3, oro-ihda.4]
+  in_progress: [oro-q5p0.6]
+  remaining: [oro-st0i, oro-ihda.5, oro-8tgu, oro-9g0y]
+
+learnings:
+  undocumented:
+    - "oro work fails exit code 3 if no --acceptance field -- description format not read (oro-q5p0.1, oro-ihda, go)"
+    - "oro work auto-merge fails with concurrent worktrees -- cherry-pick workaround (oro-ihda.3, git)"
+    - "git pull --rebase multiple-branches error is harmless when commit already merged (git)"
+    - ".beads/issues.jsonl stash conflict safe to drop -- bd hooks own the file (git, beads)"
