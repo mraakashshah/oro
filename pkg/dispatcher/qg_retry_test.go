@@ -86,7 +86,14 @@ func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
 	}
 
 	// After maxQGRetries, should escalate to manager.
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool {
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, "bead-qg1") && strings.Contains(m, "quality gate failed") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
 	msgs := esc.Messages()
 	found := false
 	for _, m := range msgs {
@@ -188,8 +195,12 @@ func TestHandleDone_QGFailRetryAttemptCountResetsOnSuccess(t *testing.T) {
 		},
 	})
 
-	// Wait for merge to complete (async).
-	time.Sleep(200 * time.Millisecond)
+	// Wait for merge to complete (async) — attempt count should be cleared.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.attemptCounts["bead-qg3"] == 0
+	}, 2*time.Second)
 
 	// Verify attempt count was cleared.
 	d.mu.Lock()
@@ -321,7 +332,14 @@ func TestHandleDone_QGStuckDetection_IdenticalOutputsEscalate(t *testing.T) {
 	}
 
 	// After maxStuckCount identical outputs, should escalate with stuck message.
-	time.Sleep(200 * time.Millisecond)
+	waitFor(t, func() bool {
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, "bead-stuck1") && strings.Contains(m, "QG output repeated") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
 	msgs := esc.Messages()
 	found := false
 	for _, m := range msgs {
@@ -382,7 +400,18 @@ func TestHandleDone_QGStuckDetection_DifferentOutputsReset(t *testing.T) {
 		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	// Negative test: verify stuck escalation did NOT fire. We wait for the
+	// escalation message for bead-stuck2 that we know WILL arrive (the QG retry
+	// cap "quality gate failed" message) to confirm processing completed, then
+	// assert no stuck-specific escalation exists.
+	waitFor(t, func() bool {
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, "bead-stuck2") && strings.Contains(m, "quality gate failed") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
 	msgs := esc.Messages()
 	for _, m := range msgs {
 		if strings.Contains(m, "bead-stuck2") && strings.Contains(m, "QG output repeated") {
@@ -429,8 +458,15 @@ func TestHandleQGFailure_Exhaustion(t *testing.T) {
 		},
 	})
 
-	// Give the dispatcher time to process.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for dispatcher to process and escalate.
+	waitFor(t, func() bool {
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, "bead-exh1") && strings.Contains(m, "quality gate failed 3 times") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
 
 	// Assert: escalation with "quality gate failed 3 times".
 	msgs := esc.Messages()
@@ -525,7 +561,17 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 		}
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	// Negative test: verify stuck escalation did NOT fire. Wait for the QG retry
+	// cap escalation ("quality gate failed") to confirm processing completed,
+	// then assert no stuck-specific escalation exists.
+	waitFor(t, func() bool {
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, "bead-stuck3") && strings.Contains(m, "quality gate failed") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
 	msgs := esc.Messages()
 
 	for _, m := range msgs {
@@ -573,8 +619,15 @@ func TestQGExhaustion_CreatesP0Bead(t *testing.T) {
 		},
 	})
 
-	// Wait for processing.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for dispatcher to process and escalate.
+	waitFor(t, func() bool {
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, "bead-p0") && strings.Contains(m, "quality gate failed") {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
 
 	// Assert: escalation still happens.
 	msgs := esc.Messages()
