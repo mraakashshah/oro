@@ -1,0 +1,144 @@
+---
+date: 2026-02-19
+status: complete
+---
+
+goal: >
+  Designed and implemented the Ralph Loop verification pipeline for oro.
+  Ralph Loops (iterative fresh-context execution with machine-verifiable
+  exit conditions) already exist per-bead via oro work. This session
+  added verification gates at the design and decomposition stages, and
+  designed the epic-level integration gate.
+
+now: >
+  New adversarial-spec-review skill is live at ~/.oro/.claude/skills/.
+  Use it after any spec or bead decomposition — it's wired into the
+  brainstorming skill as mandatory Step 7. Next implementation work:
+  oro-fewh (upgrade epic auto-close to run acceptance tests). Also
+  10 audit-fix beads from previous session remain ready (2x P0).
+
+test: go test ./pkg/dispatcher/ ./pkg/worker/ ./pkg/protocol/ ./cmd/oro/ -v
+
+done_this_session:
+  - task: "Designed Ralph Loop gate pipeline"
+    details: >
+      Four gates: design gate (adversarial spec review), coverage gate
+      (bead-spec cross-reference), bead gate (existing QG), epic gate
+      (acceptance test on auto-close). Each gate follows verify -> fix ->
+      verify -> repeat pattern. Design doc committed.
+    files: [docs/plans/2026-02-19-ralph-loop-design.md]
+
+  - task: "Created adversarial-spec-review skill"
+    details: >
+      Six-check skill: (1) write acceptance test first, (2) trace call
+      chains / wiring audit, (3) requirements traceability matrix,
+      (4) negative space analysis, (5) red team scenarios, (6) integration
+      point inventory. Verdict rules prevent shipping specs with wiring
+      gaps. Should be run by fresh-context subagent, not the spec author.
+    files: [~/.oro/.claude/skills/adversarial-spec-review/SKILL.md]
+
+  - task: "Updated brainstorming skill with adversarial review gate"
+    details: >
+      Added Step 7 (adversarial review) as mandatory gate before
+      implementation handoff. Brainstorming flow is now: research ->
+      understand -> explore approaches -> premortem -> present ->
+      document -> adversarial review -> implementation handoff.
+    files: [~/.oro/.claude/skills/brainstorming/SKILL.md]
+
+  - task: "Updated bead-craft epic acceptance criteria"
+    details: >
+      Epic acceptance criteria must now be executable commands
+      (Cmd: + Assert:), not 'all children closed'. Old pattern was
+      the root cause of audit failures — it counts beads, doesn't
+      verify integration.
+    files: [~/.oro/.claude/skills/bead-craft/SKILL.md]
+
+  - task: "Filed oro-fewh for epic auto-close verification"
+    details: >
+      P1 feature: upgrade tryCloseEpic to run epic acceptance test
+      instead of counting children. On failure, spawn diagnostic agent
+      to create fix beads. Ralph Loop emerges naturally from existing
+      bead execution flow.
+
+decisions:
+  - skills_not_code_for_gates_1_2: >
+      Gates 1-2 (design, coverage) are skill-driven and interactive.
+      Human judgment is valuable at design/decomposition. Automating
+      brainstorming loses more than it gains.
+  - epic_gate_built_into_auto_close: >
+      Gate 4 (epic verification) is not a separate oro run command.
+      It's built into the existing auto-close logic in the dispatcher.
+      The Ralph Loop emerges naturally as fix beads flow through
+      oro work / swarm.
+  - skills_in_dot_oro: >
+      Skills live at ~/.oro/.claude/skills/ (symlinked from
+      .claude/skills in repo). Not git-tracked in oro repo.
+      Accepted for now — may change later.
+
+findings:
+  - ralph_already_per_bead: >
+      oro work IS a Ralph Loop: fresh context per spawn, external state
+      via beads, machine-verifiable exit via QG, backpressure via
+      review. The gap was only at higher levels.
+  - bead_craft_weak_epic_ac: >
+      bead-craft Step 2 created epics with "All child beads closed"
+      as acceptance — this is accounting, not verification. Fixed to
+      require Cmd: + Assert:.
+  - wiring_is_the_failure_mode: >
+      The #1 failure pattern: components exist but aren't connected.
+      Check 2 (wiring audit / call chain tracing) in the adversarial
+      review is specifically designed to catch this.
+
+worked:
+  - "Mapping Ralph Loop concepts to existing oro infrastructure"
+  - "Grounding design in specific audit failures (epic decomp, 7in4.5)"
+  - "Reading actual code (cmd_work.go, dispatcher, architecture spec) before proposing"
+
+failed:
+  - "Initially proposed oro run <epic-id> as separate command — user corrected that it should be built into existing flow"
+
+next:
+  - "P0: Wire BuildEpicDecompositionPrompt (oro-vyte)"
+  - "P0: Merge 7in4.5 security fix (oro-z021)"
+  - "P1: Upgrade epic auto-close to verify acceptance criteria (oro-fewh)"
+  - "P1: Fix handleExitClaimed compare-and-swap (oro-of6x)"
+  - "P1: Add trap EXIT for go-mutesting cleanup (oro-bl44)"
+  - "P1: Fix flaky TestWorkerOversizeMessage (oro-pcmh)"
+
+beads:
+  created: [oro-fewh]
+  in_progress: []
+  remaining:
+    - oro-vyte   # P0 wire epic decomp prompt
+    - oro-z021   # P0 merge 7in4.5 security fix
+    - oro-fewh   # P1 epic auto-close verification
+    - oro-of6x   # P1 fix claim logic
+    - oro-bl44   # P1 trap EXIT mutation testing
+    - oro-pcmh   # P1 fix flaky test
+    - oro-ybz4   # P2 PID-isolate temp file
+    - oro-xgwr   # P2 handle missing main branch
+    - oro-o1ep   # P2 TOCTOU + idempotency
+    - oro-gcmz   # P3 clean up branches
+    - oro-koon   # P3 shell correctness fixes
+
+learnings:
+  undocumented:
+    - "Ralph Loop philosophy: less context is better — fresh context each iteration prevents accumulated failure baggage (design, workflow)"
+    - "Epic acceptance criteria must be executable commands, not accounting checks like 'all children closed' (oro-fewh, process)"
+    - "The #1 spec failure mode is unwired components — function exists but call site never updated (oro-vyte, verification)"
+  proposed_codification:
+    - type: rule
+      target: .claude/rules/epic-acceptance.md
+      content: "Epics MUST have machine-verifiable acceptance criteria (Cmd:/Assert:). Auto-close verifies, not counts."
+      frequency: 3
+      tag: verification
+
+git:
+  branch: main
+  pushed: false
+  latest_commit: 1c657b7
+  unpushed_commits:
+    - "1c657b7 docs: add Ralph Loop gate pipeline design"
+  dirty_files:
+    - ".beads/issues.jsonl (modified by bd create)"
+    - "oro (binary, gitignored)"
