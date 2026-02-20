@@ -82,8 +82,6 @@ type EpicPromptParams struct {
 
 // BuildEpicDecompositionPrompt builds a prompt for decomposing an epic into
 // child beads using bead-craft. No TDD/QG/worktree sections — this is planning only.
-//
-//oro:testonly
 func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	var b strings.Builder
 

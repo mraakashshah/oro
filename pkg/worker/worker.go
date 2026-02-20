@@ -367,7 +367,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.closeLogFile()
 	_ = w.openLogFile()
 
-	prompt, model := buildAssignPrompt(msg.Assign)
+	prompt, model := BuildAssignPrompt(msg.Assign)
 	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
@@ -405,20 +405,32 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	return nil
 }
 
-// buildAssignPrompt constructs the prompt and resolves the model from an ASSIGN payload.
-func buildAssignPrompt(a *protocol.AssignPayload) (prompt, model string) {
-	if a.Title != "" {
+// BuildAssignPrompt constructs the prompt and resolves the model from an ASSIGN payload.
+// When IsEpicDecomposition is true, it returns a planning-only prompt via
+// BuildEpicDecompositionPrompt (no TDD/QG/worktree sections). Otherwise it
+// returns the standard 12-section worker prompt.
+func BuildAssignPrompt(a *protocol.AssignPayload) (prompt, model string) {
+	switch {
+	case a.IsEpicDecomposition:
+		prompt = BuildEpicDecompositionPrompt(EpicPromptParams{
+			BeadID:      a.BeadID,
+			Title:       a.Title,
+			Description: a.Description,
+		})
+	case a.Title != "":
 		prompt = AssemblePrompt(PromptParams{
 			BeadID:             a.BeadID,
 			Title:              a.Title,
+			Description:        a.Description,
 			AcceptanceCriteria: a.AcceptanceCriteria,
 			MemoryContext:      a.MemoryContext,
+			CodeSearchContext:  a.CodeSearchContext,
 			WorktreePath:       a.Worktree,
 			Model:              a.Model,
 			Attempt:            a.Attempt,
 			Feedback:           a.Feedback,
 		})
-	} else {
+	default:
 		prompt = BuildPrompt(a.BeadID, a.Worktree, a.MemoryContext)
 	}
 	model = a.Model
