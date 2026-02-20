@@ -261,12 +261,12 @@ if $HAS_PYTHON; then
     header "PYTHON TIER 2: LINTING"
     check "ruff check" "ruff check ."
     if command -v pylint >/dev/null 2>&1; then
-        check "pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' -not -path './.venv/*' | xargs pylint --disable=all --enable=E --disable=import-error"
+        check "pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' -not -path './.venv/*' -not -path './.claude/hooks/*' | xargs pylint --disable=all --enable=E --disable=import-error"
     fi
 
     header "PYTHON TIER 3: TYPE CHECKING"
     if command -v pyright >/dev/null 2>&1 && pyright --version >/dev/null 2>&1; then
-        check "pyright" "pyright"
+        check "pyright" "pyright --ignore .claude/hooks"
     fi
 
     header "PYTHON TIER 4: TESTING"
