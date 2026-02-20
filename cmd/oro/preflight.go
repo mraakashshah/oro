@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,12 +36,14 @@ func runPreflightChecks() error {
 }
 
 // ensureSearchHook builds the oro-search-hook binary if it is missing or stale
-// (older than any source file in srcDir). Returns an error only if srcDir is
-// missing — build failures are fail-open (logged, not fatal).
+// (older than any source file in srcDir). Fail-open on all errors: missing
+// srcDir logs a warning and returns nil (safe for go-install users who lack
+// the source tree), and build failures are logged but not fatal.
 func ensureSearchHook(binPath, srcDir string) error {
-	// Verify source directory exists.
+	// Verify source directory exists — fail-open for go-install users.
 	if _, err := os.Stat(srcDir); err != nil {
-		return fmt.Errorf("search hook source dir: %w", err)
+		fmt.Fprintf(os.Stderr, "warning: oro-search-hook source dir not found (%s) — skipping build\n", srcDir)
+		return nil
 	}
 
 	if !isStale(binPath, srcDir) {
@@ -72,6 +75,15 @@ func ensureSearchHook(binPath, srcDir string) error {
 	}
 
 	return nil
+}
+
+// warnIfSearchHookMissing writes a warning to w if the oro-search-hook binary
+// is not found at binPath. Called during oro start — does not attempt to build
+// (use oro init for that).
+func warnIfSearchHookMissing(w io.Writer, binPath string) {
+	if _, err := os.Stat(binPath); err != nil {
+		fmt.Fprintf(w, "warning: oro-search-hook not found — run oro init to build it\n")
+	}
 }
 
 // isStale returns true if binPath doesn't exist or is older than any file in srcDir.
