@@ -8,6 +8,12 @@ import (
 	"unicode"
 )
 
+// maxVocabSize caps the number of unique terms in the vocabulary to prevent
+// embedding vectors from growing without bound. Once the cap is reached, new
+// unseen terms are silently ignored (zero weight). This prevents OOM in
+// vectorSearch which loads up to 1000 rows of embeddings into memory.
+const maxVocabSize = 10000
+
 // Embedder computes TF-IDF-style term-frequency vectors for text.
 // It maintains a vocabulary (term -> dimension index) that grows as new terms
 // are encountered. All embeddings share the same vector space defined by the
@@ -52,18 +58,22 @@ func (e *Embedder) Embed(text string) []float32 {
 		tf[t]++
 	}
 
-	// Grow vocabulary with new terms.
+	// Grow vocabulary with new terms, up to the cap.
 	for term := range tf {
 		if _, ok := e.vocab[term]; !ok {
+			if len(e.vocab) >= maxVocabSize {
+				continue
+			}
 			e.vocab[term] = len(e.vocab)
 		}
 	}
 
-	// Build dense vector.
+	// Build dense vector. Skip terms not in vocabulary (beyond cap).
 	vec := make([]float32, len(e.vocab))
 	for term, count := range tf {
-		idx := e.vocab[term]
-		vec[idx] = float32(count)
+		if idx, ok := e.vocab[term]; ok {
+			vec[idx] = float32(count)
+		}
 	}
 
 	// L2-normalize.

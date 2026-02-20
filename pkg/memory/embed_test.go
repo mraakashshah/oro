@@ -2,6 +2,7 @@ package memory //nolint:testpackage // white-box tests for tokenize, normalize32
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 )
@@ -216,6 +217,66 @@ func TestNormalize32_ZeroVector(t *testing.T) {
 		if x != 0 {
 			t.Errorf("normalize32 zero vector: v[%d] = %f, want 0", i, x)
 		}
+	}
+}
+
+func TestEmbedder_VocabCap(t *testing.T) {
+	e := NewEmbedder()
+
+	// Feed unique terms well beyond the cap.
+	// maxVocabSize is 10000; we'll try to insert 12000 unique terms.
+	const totalTerms = 12000
+	for i := 0; i < totalTerms; i++ {
+		// Each call introduces one unique term.
+		term := fmt.Sprintf("uniqueterm%d", i)
+		_ = e.Embed(term)
+	}
+
+	// Vocab should be capped at maxVocabSize.
+	if e.VocabSize() != maxVocabSize {
+		t.Errorf("vocab size = %d, want %d (maxVocabSize)", e.VocabSize(), maxVocabSize)
+	}
+
+	// Embedding with only unseen terms should still return a valid (zero) vector.
+	v := e.Embed("some brand new unseen term")
+	if v == nil {
+		t.Fatal("Embed returned nil after vocab cap reached")
+	}
+	// Vector length should equal vocab size (capped).
+	if len(v) != maxVocabSize {
+		t.Errorf("vector length = %d, want %d", len(v), maxVocabSize)
+	}
+
+	// Embed a known term that was added before the cap -- it should still work
+	// and produce a proper unit vector.
+	v2 := e.Embed("uniqueterm0")
+	if v2 == nil {
+		t.Fatal("Embed returned nil for known term after cap")
+	}
+	assertUnitVector(t, v2)
+
+	// Mix of known and unknown terms should also produce a valid unit vector
+	// (the known terms contribute, unknown terms are ignored).
+	v3 := e.Embed("uniqueterm0 totally_unknown_xyz")
+	if v3 == nil {
+		t.Fatal("Embed returned nil for mixed known/unknown terms")
+	}
+	assertUnitVector(t, v3)
+
+	// CosineSimilarity should handle mismatched vector lengths gracefully.
+	// Create a short vector (simulating an older embedding with fewer dimensions).
+	short := []float32{1.0, 0.0, 0.0}
+	long := make([]float32, maxVocabSize)
+	long[0] = 1.0
+	sim := CosineSimilarity(short, long)
+	if math.Abs(sim-1.0) > 0.001 {
+		t.Errorf("cosine similarity with mismatched lengths: got %f, want ~1.0", sim)
+	}
+
+	// Reversed order should also work.
+	sim2 := CosineSimilarity(long, short)
+	if math.Abs(sim2-1.0) > 0.001 {
+		t.Errorf("cosine similarity reversed: got %f, want ~1.0", sim2)
 	}
 }
 
