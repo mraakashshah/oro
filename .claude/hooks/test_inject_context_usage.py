@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 # The module under test
 from inject_context_usage import (
-    CONTEXT_WINDOW,
+    DEFAULT_CONTEXT_WINDOW as CONTEXT_WINDOW,
+)
+from inject_context_usage import (
     DEFAULT_THRESHOLD,
     load_thresholds,
     main,
