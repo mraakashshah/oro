@@ -728,7 +728,6 @@ func TestModel_SearchLiveFilter(t *testing.T) {
 			{ID: "oro-abc.2", Title: "Add feature", Status: "open"},
 		}
 		m.activeView = SearchView
-		m.searchQuery = ""
 
 		filtered := m.filterBeads()
 		if len(filtered) != 2 {
@@ -745,7 +744,7 @@ func TestModel_SearchNavigateToDetail(t *testing.T) {
 			{ID: "oro-abc.1", Title: "Fix authentication bug", Status: "open"},
 		}
 		m.activeView = SearchView
-		m.searchQuery = "auth"
+		m.searchInput.SetValue("auth")
 		m.searchSelectedIndex = 0
 
 		// Press Enter
@@ -796,7 +795,7 @@ func TestModel_SearchResultNavigation(t *testing.T) {
 			{ID: "oro-abc.2", Title: "Add auth feature", Status: "open"},
 		}
 		m.activeView = SearchView
-		m.searchQuery = "auth"
+		m.searchInput.SetValue("auth")
 		m.searchSelectedIndex = 0
 
 		// Press down
@@ -818,7 +817,7 @@ func TestModel_SearchResultNavigation(t *testing.T) {
 			{ID: "oro-abc.2", Title: "Add auth feature", Status: "open"},
 		}
 		m.activeView = SearchView
-		m.searchQuery = "auth"
+		m.searchInput.SetValue("auth")
 		m.searchSelectedIndex = 1
 
 		// Press up
@@ -840,7 +839,7 @@ func TestModel_SearchResultNavigation(t *testing.T) {
 			{ID: "oro-abc.2", Title: "Add auth feature", Status: "open"},
 		}
 		m.activeView = SearchView
-		m.searchQuery = "auth"
+		m.searchInput.SetValue("auth")
 		m.searchSelectedIndex = 1
 
 		// Press down at last result
@@ -861,7 +860,7 @@ func TestModel_SearchResultNavigation(t *testing.T) {
 			{ID: "oro-abc.1", Title: "Fix auth bug", Status: "open"},
 		}
 		m.activeView = SearchView
-		m.searchQuery = "auth"
+		m.searchInput.SetValue("auth")
 		m.searchSelectedIndex = 0
 
 		// Press up at first result
