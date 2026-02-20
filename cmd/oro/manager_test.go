@@ -186,6 +186,47 @@ func TestManagerBeacon(t *testing.T) {
 	})
 }
 
+// TestManagerBeaconMergeCompleteProtocol verifies that the manager beacon
+// documents the MERGE_COMPLETE protocol and git push responsibility.
+func TestManagerBeaconMergeCompleteProtocol(t *testing.T) {
+	beacon := ManagerBeacon()
+
+	t.Run("dispatcher messages section includes MERGE_COMPLETE type", func(t *testing.T) {
+		dispatchIdx := strings.Index(beacon, "## Dispatcher Messages")
+		if dispatchIdx == -1 {
+			t.Fatal("could not find ## Dispatcher Messages section")
+		}
+		rest := beacon[dispatchIdx+len("## Dispatcher Messages"):]
+		nextSection := strings.Index(rest, "\n## ")
+		var dispatchSection string
+		if nextSection == -1 {
+			dispatchSection = rest
+		} else {
+			dispatchSection = rest[:nextSection]
+		}
+		if !strings.Contains(dispatchSection, "MERGE_COMPLETE") {
+			t.Error("Dispatcher Messages section must document the MERGE_COMPLETE message type")
+		}
+	})
+
+	t.Run("beacon instructs manager to run git push on MERGE_COMPLETE", func(t *testing.T) {
+		if !strings.Contains(beacon, "git push") {
+			t.Error("beacon must mention 'git push' as the action for MERGE_COMPLETE")
+		}
+	})
+
+	t.Run("shutdown section includes git push step", func(t *testing.T) {
+		shutdownIdx := strings.Index(beacon, "## Shutdown")
+		if shutdownIdx == -1 {
+			t.Fatal("could not find ## Shutdown section")
+		}
+		shutdownSection := beacon[shutdownIdx:]
+		if !strings.Contains(shutdownSection, "git push") {
+			t.Error("Shutdown section must include 'git push' before reporting final status")
+		}
+	})
+}
+
 func TestManagerNudge(t *testing.T) {
 	nudge := ManagerNudge()
 

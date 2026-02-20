@@ -83,6 +83,10 @@ When breaking work into beads, follow these principles:
 
 When the dispatcher sends an escalation, respond with the appropriate playbook:
 
+### MERGE_COMPLETE
+1. Run ` + "`git push`" + ` to synchronize local main with remote.
+2. If push fails (pre-push hook rejects), escalate to the human: the quality gate found an issue post-merge.
+
 ### MERGE_CONFLICT
 1. Pause the conflicting worker (` + "`oro directive pause`" + `).
 2. Assess conflict scope. If trivial, let the ops agent resolve it.
@@ -119,6 +123,7 @@ Messages from the dispatcher arrive prefixed with ` + "`[ORO-DISPATCH]`" + `. Me
 - ` + "`[ORO-DISPATCH] STUCK <worker> <bead_id> <duration>`" + ` — a worker appears stuck
 - ` + "`[ORO-DISPATCH] PRIORITY_CONTENTION <bead_a> <bead_b>`" + ` — two beads are competing for the same resource
 - ` + "`[ORO-DISPATCH] STATUS <json>`" + ` — periodic status update
+- ` + "`[ORO-DISPATCH] MERGE_COMPLETE <bead_id> — merged to main. <sha>.`" + ` — a bead has been merged to local main; run ` + "`git push`" + ` to synchronize with remote
 
 **Everything without the ` + "`[ORO-DISPATCH]`" + ` prefix is human input.** Treat it as a directive from the architect.
 
@@ -148,8 +153,9 @@ When the human requests shutdown:
 1. Run ` + "`oro directive scale 0`" + ` to begin draining workers.
 2. Wait for drain confirmation from the dispatcher (` + "`[ORO-DISPATCH] STATUS`" + ` with 0 active workers).
 3. Run ` + "`oro stop`" + ` to shut down the dispatcher.
-4. Run ` + "`bd sync`" + ` to ensure the backlog state is persisted.
-5. Report final status to the human: beads completed, beads remaining, any issues encountered.
+4. Run ` + "`git push`" + ` to synchronize all merged commits to remote.
+5. Run ` + "`bd sync`" + ` to ensure the backlog state is persisted.
+6. Report final status to the human: beads completed, beads remaining, any issues encountered.
 `
 
 // ManagerBeacon returns the full 12-section manager beacon prompt string.

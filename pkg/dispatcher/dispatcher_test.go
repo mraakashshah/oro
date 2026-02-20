@@ -5745,6 +5745,41 @@ func TestMergeClosesBead(t *testing.T) {
 	}
 }
 
+// TestMergeAndCompleteEscalatesMergeComplete verifies that after a successful
+// merge, the dispatcher sends a MERGE_COMPLETE escalation to the manager so
+// the manager can run git push.
+func TestMergeAndCompleteEscalatesMergeComplete(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Init schema so logEvent and escalate (which writes to escalations table) work.
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	beadID := "bead-push-notify"
+	workerID := "w-push"
+	worktree := "/tmp/worktree-" + beadID
+	branch := "agent/" + beadID
+
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
+
+	found := false
+	for _, msg := range esc.Messages() {
+		if strings.Contains(msg, string(protocol.EscMergeComplete)) {
+			found = true
+			if !strings.Contains(msg, beadID) {
+				t.Errorf("MERGE_COMPLETE message should contain bead ID %q, got: %q", beadID, msg)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected MERGE_COMPLETE escalation after successful merge, got messages: %v", esc.Messages())
+	}
+}
+
 // TestAssignUsesRichPrompt verifies that assignBead populates the AssignPayload
 // with bead title, description, and acceptance criteria from beads.Show().
 func TestAssignUsesRichPrompt(t *testing.T) {
