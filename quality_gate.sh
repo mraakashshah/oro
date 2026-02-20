@@ -253,6 +253,8 @@ lane_go() {
                 echo "No changed Go files to mutate — skipping"
                 return 0
             fi
+            # Restore source files on exit (handles Ctrl-C, OOM, timeout, and normal exit)
+            trap 'git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true' EXIT
             echo "Mutating changed files: $changed"
             local output
             # shellcheck disable=SC2086
