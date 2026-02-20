@@ -44,7 +44,7 @@ func newLogsCmd() *cobra.Command {
 				w := cmd.OutOrStdout()
 
 				if cfg.follow {
-					return followRawLogs(cmd.Context(), w, workerID)
+					return followRawLogsWithContext(cmd.Context(), w, workerID)
 				}
 
 				return printRawLogs(w, workerID, cfg.tail)
@@ -311,13 +311,8 @@ func printRawLogs(w io.Writer, workerID string, tail int) error {
 	return nil
 }
 
-// followRawLogs continuously monitors a worker's output.log file for new content.
+// followRawLogsWithContext continuously monitors a worker's output.log file for new content.
 // It polls the file size every 500ms and reads new bytes when the file grows.
-func followRawLogs(ctx context.Context, w io.Writer, workerID string) error {
-	return followRawLogsWithContext(ctx, w, workerID)
-}
-
-// followRawLogsWithContext is the internal implementation that accepts a context.
 func followRawLogsWithContext(ctx context.Context, w io.Writer, workerID string) error {
 	logPath, err := getWorkerLogPath(workerID)
 	if err != nil {
