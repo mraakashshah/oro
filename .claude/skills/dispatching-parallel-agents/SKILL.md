@@ -7,154 +7,216 @@ description: Use when facing 2 or more independent tasks that can be worked on w
 
 ## Overview
 
-Dispatch one agent per independent problem. Each agent gets its own git worktree, commits on a branch, and the manager merges ff-only to main.
+Run a pipeline of N workers against a prioritized bead queue. Each worker executes one bead end-to-end via `oro work`. As workers complete, merge results and immediately launch the next bead.
 
-**Core principle:** Every agent gets a worktree. Every agent commits. No agent merges or pushes.
+**Core principle:** Keep N worker slots saturated. Merge as you go. Never wait for all workers to finish before starting more.
 
 ## When to Use
 
-- 2+ tasks with different root causes or independent scope
-- Multiple subsystems to build/fix independently
-- Each problem can be understood without context from others
+- Queue of 2+ independent beads to execute
+- Multiple subsystems to build/fix in parallel
+- Each bead can be understood without context from others
 
 **Don't use when:**
 - Failures are related (fix one might fix others)
 - Need to understand full system state first
 - Exploratory debugging (don't know what's broken yet)
 
-## The Pattern
+## Preflight
 
-### 1. Create Worktrees
-
-Before dispatching, create one worktree + branch per agent:
+Before dispatching, clean house:
 
 ```bash
-git worktree add .worktrees/task-1 -b agent/task-1
-git worktree add .worktrees/task-2 -b agent/task-2
+git worktree list              # check for orphaned worktrees from previous sessions
+bd ready                       # get prioritized queue
+bd list --status=in_progress   # check for stale claims
 ```
 
-### 2. Dispatch Agents to Worktrees
+Remove stale worktrees from previous sessions. Reset stale in_progress beads if the worker is gone.
 
-Each agent gets:
-- **Worktree path** — work exclusively in this directory
-- **Specific scope** — one subsystem or task
-- **Commit instructions** — commit on the branch before completing
-- **Quality gate** — run tests AND full linter (golangci-lint/ruff) in the worktree
-- **Bead closure** — `bd close <id> --reason="summary"`
+## Priority Order
 
-Use the Task tool with multiple calls in a single message, `run_in_background: true`.
+Process the queue in this order:
 
-**Agent prompt template:**
+1. **Individual beads** (not epic children), bugs first
+2. **Decomposed epic children**, bugs first then tasks
+3. **New epics** needing decomposition
+
+Within each tier: higher priority (P0 > P1 > P2) first.
+
+## Scheduling Rules
+
+- **Different files → parallel**: Launch simultaneously
+- **Same file → sequential**: Wire deps with `bd dep add`
+- **Default concurrency: 5 oro workers**
+
+## The Pipeline
+
+### 1. Launch Workers
+
+Fill empty slots up to N concurrency:
+
+**Primary — `oro work` (handles worktree, TDD, QG, ops review, merge):**
+
+```bash
+oro work <bead-id> &    # background, or use Task tool with run_in_background
+```
+
+**Fallback — Task agent (when work is not a bead, or oro unavailable):**
 
 ```
-You are working in an isolated git worktree at: .worktrees/task-1
-Branch: agent/task-1
+You are working in an isolated git worktree at: /absolute/path/.worktrees/<id>
+Branch: agent/<id>
+
+FIRST: bd update <id> --status=in_progress
 
 ## Task
 [task description]
 
 ## Rules
-- ONLY modify files within .worktrees/task-1
+- ONLY modify files within /absolute/path/.worktrees/<id>
+- Run tests: go test -C /absolute/path/.worktrees/<id> ./pkg/... -race -count=1
 - Commit your work with a descriptive message before completing
-- Run tests: go -C .worktrees/task-1 test -race -count=1 ./pkg/... -v
 - Do NOT push, merge, or rebase
 - Close bead: bd close <id> --reason="summary"
 ```
 
-**IMPORTANT:** Tell agents to use `go -C <worktree>` instead of `cd <worktree> && go test`. The `cd` persists in the Bash tool cwd — if the worktree is later removed, ALL subsequent bash commands fail silently. Use absolute paths everywhere.
+**IMPORTANT:** Tell agents to use `go -C <worktree>` or absolute paths, never `cd <worktree>`. The `cd` persists in the Bash tool cwd — if the worktree is later removed, ALL subsequent bash commands fail silently.
 
-### 3. Protect the Main Context
+### 2. Monitor
 
 - Run background agents with `run_in_background: true`
 - **Never poll** — trust task completion notifications
-- Agent closes bead with `bd close <id> --reason="summary"` — the bead IS the output
-- **Never use TaskOutput** to read full transcripts (70k+ tokens)
+- **Never use TaskOutput** to read full transcripts (70k+ tokens eats context)
 - **Do NOT create TaskCreate/TodoWrite entries** to track agents — they go stale after compaction. Use `bd` for persistent tracking.
+- Agent closes bead with `bd close <id>` — the bead IS the output
 
-### 4. Merge Results
+### 3. Merge (as each worker completes)
 
-**Remove ALL worktrees before rebasing** — the rebase guard hook blocks `git rebase` when any branch is checked out in a worktree.
+#### Happy Path (oro work auto-merged)
 
 ```bash
-# 1. Stash beads changes (bd operations modify .beads/issues.jsonl)
+git pull --rebase    # pick up the worker's merge
+```
+
+#### oro work failed to merge / Task agent completed
+
+Cherry-pick is the safe default when other worktrees are still active:
+
+```bash
 git stash
-
-# 2. Remove ALL worktrees (even for still-running agents if needed)
-git worktree remove .worktrees/task-1
-git worktree remove .worktrees/task-2
-# If worktree has untracked files: git worktree remove --force .worktrees/task-X
-
-# 3. Merge in order (see Merge Ordering below)
-git rebase main agent/task-1
-git checkout main
-git merge --ff-only agent/task-1
-
-# 4. Repeat for each branch, then restore stash
+git worktree remove .worktrees/<id>
+git cherry-pick agent/<id>
+git branch -D agent/<id>
 git stash pop
 ```
 
-#### Merge Ordering Strategy
+#### When all worktrees are removed (can rebase)
 
-Order matters. Merge in this sequence to minimize conflicts:
+Rebase gives cleaner history but requires no active worktrees (rebase guard hook blocks otherwise):
 
-1. **New files only** (no existing file modifications) — zero conflict risk
-2. **Small, isolated packages** — low conflict risk
-3. **Mechanical/formatting changes** — medium risk but easy to resolve
-4. **Cross-cutting changes** (interface renames, type moves) — merge before dependents
-5. **Large structural refactors** (dispatcher.go, big test files) — highest conflict risk, merge last
+```bash
+git stash
+git rebase main agent/<id>
+git checkout main
+git merge --ff-only agent/<id>
+git branch -D agent/<id>
+git stash pop
+```
 
-Within the same risk tier, merge smaller changesets first.
+### 4. Backfill
 
-#### Fixing Agent Mistakes at Merge Time
+Launch the next bead from the queue into the freed slot. Repeat until queue is empty.
+
+Check dependency chains: if bead X was blocking bead Y (same file), Y is now unblocked.
+
+### 5. Finalize
+
+When all workers are done and merged:
+
+```bash
+go test ./...              # full test suite on main
+git push                   # push when green
+```
+
+## Merge Strategy Details
+
+### Fixing Agent Mistakes at Merge Time
 
 Agents frequently make these errors — check before merging:
 
 | Problem | Detection | Fix |
 |---------|-----------|-----|
-| **Didn't commit** | `git -C .worktrees/X log` shows same commit as main | Stage + commit from manager: `git -C .worktrees/X add . && git -C .worktrees/X commit -m "..."` |
-| **Syntax errors** | Diagnostics show compile errors in worktree | Read the file, fix with Edit tool, then commit |
-| **Wrong package name** | Linter rejects (e.g., `package foo` should be `package foo_test`) | Fix the package declaration, recommit |
-| **Extra closing braces** | Common when replacing `time.Sleep` blocks with `waitFor` closures — leaves orphan `}` | Search for pattern: `}, timeout)\n\t}\n\n\t//` and remove extra `}` |
+| **Didn't commit** | `git -C .worktrees/X log` shows same commit as main | Stage + commit from manager |
+| **Syntax errors** | `go -C .worktrees/X build ./...` fails | Read the file, fix, recommit |
+| **Wrong package name** | Linter rejects | Fix the package declaration, recommit |
 
 **Always verify agent commits compile** before merging: `go -C .worktrees/X build ./...`
 
-#### Conflict Resolution
+### Conflict Resolution
 
 When `git rebase main agent/X` produces conflicts:
 
 1. **Read the conflict markers** — understand what both sides changed
 2. **Keep both changes** when they're additive (new fields, new methods, new tests)
-3. **Prefer HEAD** for structural changes (type renames, package moves) that later branches should adopt
-4. **Fix cross-references** after resolution — e.g., if branch A moved `WorkerState` to `protocol.WorkerState`, branch B's code needs updating post-merge
+3. **Prefer HEAD** for structural changes (type renames, package moves)
+4. **Fix cross-references** after resolution
 5. **Always build + test after conflict resolution** before merging the next branch
 
-### 5. Cleanup
+### bd File Contention
 
-```bash
-git branch -d agent/task-1 agent/task-2
-```
+Multiple workers closing beads modify `.beads/issues.jsonl`. This is expected merge friction — take the latest version when cherry-picking. The file is auto-synced by hooks.
 
-Run full test suite on main. Push when green.
+## Error Recovery
+
+| Situation | Action |
+|-----------|--------|
+| Worker completes, merge succeeds | Pull. Launch next. |
+| Worker completes, merge fails | Cherry-pick or rebase manually. |
+| Worker fails (test failure) | Inspect worktree. Fix + recommit, or re-dispatch. |
+| Worker killed (signal:killed) | Resource contention. Reduce concurrency. Re-dispatch. |
+| Worker stuck (no progress) | Check output file tail. Kill and re-dispatch if needed. |
+| Bead too large (worker decomposes) | Worker promotes to epic. Pick up children in next cycle. |
+
+**Do NOT blindly retry failed workers.** Inspect first.
+
+## Resource Limits
+
+- **Default concurrency: 5 oro workers**
+- Monitor for signal:killed — reduce to 3 if it occurs
+- Task agents are lighter weight — can run more concurrently
+
+## Task Agent Fallback
+
+Use raw Task agents instead of `oro work` when:
+
+- Work is not tracked as a bead (ad-hoc exploration, research)
+- `oro` binary is unavailable or broken
+- Need custom agent behavior beyond `oro work`'s lifecycle
+
+Task agent prompt template must include:
+- Absolute worktree path
+- `bd update <id> --status=in_progress` at start
+- `bd close <id>` at end
+- Commit instructions (do NOT push/merge/rebase)
 
 ## Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
-| Too broad ("fix all tests") | Scope to one file/subsystem |
-| No worktree path in prompt | Agent must know where to work |
-| No commit instruction | Agent must commit before completing |
-| Polling agents with sleep loops | Trust system reminders |
-| Using TaskOutput for results | Read bead annotations instead |
-| Using `cd` into worktrees | Shell cwd persists — use `go -C` or absolute paths |
-| Creating TaskCreate entries for agents | They go stale after compaction — use bd |
-| Merging before removing worktrees | Rebase guard hook blocks — remove first |
-| Dispatching overlapping file scopes | Two agents editing dispatcher_test.go = guaranteed merge conflict |
+| Batch dispatch (wait for all, then merge all) | Pipeline: merge each as it finishes, backfill |
+| Not claiming beads (`in_progress`) | Worker prompt must include `bd update` at start |
+| Dispatching overlapping file scopes | Same file = sequential deps via `bd dep add` |
+| Using TaskOutput to read transcripts | Trust notifications. Read bead, not transcript. |
+| Rebasing with active worktrees | Cherry-pick instead |
+| Polling agents with sleep loops | Trust task notifications |
+| Forgetting stale worktree cleanup | Preflight: `git worktree list` |
+| Using `cd` into worktrees | Shell cwd persists — use absolute paths |
 
 ## Red Flags
 
-- Dispatching agents for related failures
-- Agents without worktree isolation
-- Agents merging or pushing (only manager does this)
-- No test suite run on main after merge
-- Trusting agent results without verification
-- Two agents modifying the same large file (split by package instead)
+- All slots empty while queue has work (pipeline stall)
+- Two workers editing the same file (merge conflict guaranteed)
+- Worker running >10min on a 7min bead (check progress)
+- signal:killed appearing (reduce concurrency)
+- Saying "ready to push" (just push)
