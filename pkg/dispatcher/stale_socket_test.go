@@ -117,7 +117,16 @@ func TestStaleSocketCleanup_DispatcherRunUsesIt(t *testing.T) {
 	// Stop the first dispatcher. This closes the listener but may leave
 	// the socket file on disk (which is the actual bug scenario).
 	cancel1()
-	time.Sleep(100 * time.Millisecond)
+
+	// Wait for the first dispatcher to stop accepting connections.
+	waitFor(t, func() bool {
+		conn, err := net.Dial("unix", sockPath) //nolint:noctx // test setup
+		if err != nil {
+			return true // connection refused means dispatcher stopped
+		}
+		_ = conn.Close()
+		return false
+	}, 2*time.Second)
 
 	// Force-create a stale socket file to guarantee the scenario.
 	// The graceful shutdown may or may not leave one, so we create a
@@ -156,15 +165,14 @@ func TestStaleSocketCleanup_ActiveDispatcherBlocksSecond(t *testing.T) {
 	_ = startDispatcher(t, d1)
 
 	// Wait for listener to be ready.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err := net.Dial("unix", sockPath)
-		if err == nil {
-			_ = conn.Close()
-			break
+	waitFor(t, func() bool {
+		conn, err := net.Dial("unix", sockPath) //nolint:noctx // test setup
+		if err != nil {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		_ = conn.Close()
+		return true
+	}, 2*time.Second)
 
 	// Create a second dispatcher pointing to the same socket.
 	d2, _, _, _, _, _ := newTestDispatcher(t)

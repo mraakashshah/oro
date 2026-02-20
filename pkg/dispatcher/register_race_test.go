@@ -213,8 +213,10 @@ func TestRegisterWorker_SendsAssignWhenWorkerSurvives(t *testing.T) {
 	// No testUnlockHook — no deletion happens.
 	d.registerWorker(workerID, spy)
 
-	// Give a moment for any deferred writes.
-	time.Sleep(10 * time.Millisecond)
+	// Wait for the ASSIGN write to complete.
+	waitFor(t, func() bool {
+		return spy.writeCalled.Load() > 0
+	}, 2*time.Second)
 
 	if n := spy.writeCalled.Load(); n == 0 {
 		t.Fatal("registerWorker did not send ASSIGN when worker survived; expected at least 1 Write")

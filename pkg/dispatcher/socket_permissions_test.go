@@ -14,8 +14,11 @@ func TestSocketPermissions(t *testing.T) {
 	// Start the dispatcher, which creates the Unix socket.
 	startDispatcher(t, d)
 
-	// Wait briefly for the socket to be created.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the socket file to be created.
+	waitFor(t, func() bool {
+		_, err := os.Stat(sockPath)
+		return err == nil
+	}, 2*time.Second)
 
 	// Verify the socket file exists.
 	info, err := os.Stat(sockPath)
