@@ -1877,6 +1877,33 @@ func TestBuildPaneDiedHookContent(t *testing.T) {
 	})
 }
 
+func TestSanitizeForTmuxHook_StripsMeta(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "strips semicolon", input: "hello; world", want: "hello world"},
+		{name: "strips ampersand", input: "hello & world", want: "hello  world"},
+		{name: "strips dollar", input: "$HOME", want: "HOME"},
+		{name: "strips backtick", input: "`cmd`", want: "cmd"},
+		{name: "strips open paren", input: "foo(bar", want: "foobar"},
+		{name: "strips close paren", input: "foo)bar", want: "foobar"},
+		{name: "strips all metacharacters", input: ";$&`()", want: ""},
+		{name: "replaces newline with space", input: "hello\nworld", want: "hello world"},
+		{name: "replaces carriage return with space", input: "hello\rworld", want: "hello world"},
+		{name: "passes clean message unchanged", input: "hello world", want: "hello world"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeForTmuxHook(tc.input)
+			if got != tc.want {
+				t.Errorf("sanitizeForTmuxHook(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 	t.Run("when new-window fails, kill-session is called", func(t *testing.T) {
 		fake := newFakeCmd()
