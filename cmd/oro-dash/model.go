@@ -44,7 +44,7 @@ func tickCmd() tea.Cmd {
 // fetchBeadsCmd returns a tea.Cmd that fetches beads from the bd CLI.
 func fetchBeadsCmd() tea.Cmd {
 	return func() tea.Msg {
-		beads, _ := FetchBeads()
+		beads, _ := fetchBeads(context.Background())
 		return beadsMsg(beads)
 	}
 }
