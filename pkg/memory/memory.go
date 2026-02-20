@@ -31,10 +31,15 @@ func NewStore(db *sql.DB) *Store {
 
 // SetEmbedder attaches an Embedder to the store. When set, Insert() computes
 // and stores TF-IDF embeddings, and HybridSearch() uses them for RRF scoring.
-//
-//oro:testonly
 func (s *Store) SetEmbedder(e *Embedder) {
 	s.embedder = e
+}
+
+// HasEmbedder reports whether an Embedder has been attached to the store.
+//
+//oro:testonly
+func (s *Store) HasEmbedder() bool {
+	return s.embedder != nil
 }
 
 // InsertParams holds parameters for inserting a new memory.

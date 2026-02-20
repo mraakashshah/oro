@@ -30,8 +30,6 @@ type Embedder struct {
 }
 
 // NewEmbedder creates an Embedder with an empty vocabulary.
-//
-//oro:testonly
 func NewEmbedder() *Embedder {
 	return &Embedder{vocab: make(map[string]int)}
 }

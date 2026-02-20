@@ -76,5 +76,7 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 
 // openWorkerMemoryStore creates a memory.Store from an open DB connection.
 func openWorkerMemoryStore(db *sql.DB) *memory.Store {
-	return memory.NewStore(db)
+	store := memory.NewStore(db)
+	store.SetEmbedder(memory.NewEmbedder())
+	return store
 }

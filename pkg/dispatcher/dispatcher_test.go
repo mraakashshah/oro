@@ -10410,3 +10410,13 @@ func TestAssignEpicDecomposition(t *testing.T) {
 		}, 1*time.Second)
 	})
 }
+
+// TestDispatcherSetsEmbedder verifies that New() wires an Embedder into the
+// dispatcher's memory store so that Insert() can compute embeddings.
+func TestDispatcherSetsEmbedder(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	if !d.memories.HasEmbedder() {
+		t.Fatal("expected dispatcher memory store to have a non-nil embedder after New()")
+	}
+}
