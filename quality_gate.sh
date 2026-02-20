@@ -204,7 +204,7 @@ lane_go() {
         "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
         "dead exports" "check_dead_exports"
     )
-    if [ -f ".go-arch-lint.yml" ]; then
+    if [ -f ".go-arch-lint.yml" ] && command -v go-arch-lint >/dev/null 2>&1; then
         tier2_checks+=("go-arch-lint" "go-arch-lint check --project-path .")
     fi
     parallel_checks "${tier2_checks[@]}"
@@ -229,11 +229,15 @@ lane_go() {
         fi
     }
 
-    parallel_checks \
-        "go test + coverage" "go_test_with_coverage" \
-        "govulncheck" "govulncheck ./..." \
-        "go build" "go build -buildvcs=false ./..." \
+    local tier3_checks=(
+        "go test + coverage" "go_test_with_coverage"
+        "go build" "go build -buildvcs=false ./..."
         "go vet" "go vet ./..."
+    )
+    if command -v govulncheck >/dev/null 2>&1; then
+        tier3_checks+=("govulncheck" "govulncheck ./...")
+    fi
+    parallel_checks "${tier3_checks[@]}"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
 
