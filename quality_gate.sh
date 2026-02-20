@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Oro Quality Gate — Comprehensive quality checks
+# Oro Quality Gate — Parallel lanes with early exit
+#
+# Architecture: 4 independent lanes (Go, Python, Shell, Docs) run in
+# parallel. Within each lane, checks run in tiers — independent checks
+# within a tier run in parallel, and the lane bails on first tier failure.
+# Wall-clock time ≈ max(lane) instead of sum(all checks).
 # =============================================================================
 
 set -euo pipefail
 
 # Unset git hook env vars that leak into test subprocesses.
-# When called from pre-push/pre-commit hooks, git sets GIT_DIR and
-# GIT_WORK_TREE which cause test-created git repos to reference the
-# parent repo instead of their own .git directories.
 unset GIT_DIR GIT_WORK_TREE
 
 # Colors
@@ -17,33 +19,87 @@ GREEN='\033[0;32m'
 # shellcheck disable=SC2034
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Counters
-PASS=0
-FAIL=0
+# Temp directory for all check outputs (cleaned up on exit)
+QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
+trap 'rm -rf "$QG_DIR"' EXIT
 
-check() {
-    local name="$1"
-    local cmd="$2"
-
-    printf '%b▶%b %-30s' "$BLUE" "$NC" "$name"
-
-    if eval "$cmd" > /tmp/check-output.txt 2>&1; then
-        printf '%b✓ PASS%b\n' "$GREEN" "$NC"
-        PASS=$((PASS + 1))
-    else
-        printf '%b✗ FAIL%b\n' "$RED" "$NC"
-        head -20 /tmp/check-output.txt
-        FAIL=$((FAIL + 1))
-    fi
-}
+# =============================================================================
+# PRIMITIVES
+# =============================================================================
 
 header() {
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
     echo " $1"
     echo "═══════════════════════════════════════════════════════════════"
+}
+
+# Run a single check. Returns 0 on pass, 1 on fail.
+# Output goes to the lane's captured stdout.
+check() {
+    local name="$1"
+    local cmd="$2"
+    local slug
+    slug=$(echo "$name" | tr ' ()/.' '------')
+    local out="$QG_DIR/check-${slug}-${RANDOM}.out"
+
+    printf '%b▶%b %-30s' "$BLUE" "$NC" "$name"
+
+    if eval "$cmd" > "$out" 2>&1; then
+        printf '%b✓ PASS%b\n' "$GREEN" "$NC"
+        return 0
+    else
+        printf '%b✗ FAIL%b\n' "$RED" "$NC"
+        head -20 "$out"
+        return 1
+    fi
+}
+
+# Run multiple checks in parallel, preserving output order.
+# Sets TIER_PASS and TIER_FAIL for the caller.
+# Usage: parallel_checks "name1" "cmd1" "name2" "cmd2" ...
+parallel_checks() {
+    TIER_PASS=0
+    TIER_FAIL=0
+    local i=0
+    local pids=()
+    local tier_id="${RANDOM}${RANDOM}"
+
+    while [ $# -ge 2 ]; do
+        local name="$1" cmd="$2"; shift 2
+        local pfx="$QG_DIR/pc-${tier_id}-${i}"
+        (
+            local cmd_out="${pfx}.cmd-out"
+            if eval "$cmd" > "$cmd_out" 2>&1; then
+                printf '%b▶%b %-30s%b✓ PASS%b\n' "$BLUE" "$NC" "$name" "$GREEN" "$NC" > "${pfx}.display"
+                echo "pass" > "${pfx}.rc"
+            else
+                {
+                    printf '%b▶%b %-30s%b✗ FAIL%b\n' "$BLUE" "$NC" "$name" "$RED" "$NC"
+                    head -20 "$cmd_out"
+                } > "${pfx}.display"
+                echo "fail" > "${pfx}.rc"
+            fi
+        ) &
+        pids+=($!)
+        i=$((i + 1))
+    done
+
+    for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+
+    local j=0
+    while [ "$j" -lt "$i" ]; do
+        local pfx="$QG_DIR/pc-${tier_id}-${j}"
+        cat "${pfx}.display" 2>/dev/null || true
+        if [ "$(cat "${pfx}.rc" 2>/dev/null || echo fail)" = "pass" ]; then
+            TIER_PASS=$((TIER_PASS + 1))
+        else
+            TIER_FAIL=$((TIER_FAIL + 1))
+        fi
+        j=$((j + 1))
+    done
 }
 
 # =============================================================================
@@ -58,46 +114,41 @@ if [ -f "go.mod" ]; then HAS_GO=true; fi
 if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "requirements.txt" ]; then HAS_PYTHON=true; fi
 if compgen -G "*.sh" > /dev/null || compgen -G "ad_hoc/*.sh" > /dev/null; then HAS_SHELL=true; fi
 
-header "ORO QUALITY GATE"
-
-echo ""
-echo "Running all quality checks..."
-if $HAS_GO; then echo "  Detected: Go project"; fi
-if $HAS_PYTHON; then echo "  Detected: Python project"; fi
-if $HAS_SHELL; then echo "  Detected: Shell scripts"; fi
-echo ""
-
 # =============================================================================
-# GO CHECKS
+# LANE: GO
 # =============================================================================
 
-if $HAS_GO; then
+# shellcheck disable=SC2317
+lane_go() {
+    local pass=0 fail=0
 
-    GO_DIRS="cmd internal pkg"
+    if ! $HAS_GO; then
+        echo "${pass}:${fail}" > "$QG_DIR/go.rc"
+        return
+    fi
 
-    # Stage embedded assets (go:embed in cmd/oro requires _assets/ dir)
+    local GO_DIRS="cmd internal pkg"
     make stage-assets 2>/dev/null || true
 
+    # --- Tier 1: Formatting (parallel) ---
     header "GO TIER 1: FORMATTING"
-    check "gofumpt" "test -z \"\$(gofumpt -l $GO_DIRS 2>/dev/null)\""
-    check "goimports" "test -z \"\$(goimports -l $GO_DIRS 2>/dev/null)\""
+    parallel_checks \
+        "gofumpt" "test -z \"\$(gofumpt -l $GO_DIRS 2>/dev/null)\"" \
+        "goimports" "test -z \"\$(goimports -l $GO_DIRS 2>/dev/null)\""
+    pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
+    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
 
-    header "GO TIER 2: LINTING"
-    check "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
+    # --- Tier 2: Lint + Dead Code + Architecture (parallel) ---
+    header "GO TIER 2: LINT + DEAD CODE + ARCHITECTURE"
 
-    header "GO TIER 3: DEAD CODE"
-    # Detect exported functions in pkg/ and internal/ only referenced from test files.
-    # shellcheck disable=SC2317,SC2329
+    # Dead exports detector (function must be defined before parallel_checks eval's it)
+    # shellcheck disable=SC2329
     check_dead_exports() {
         local dead_found=0
         local checked=0
         local skipped=0
 
-        # Collect all exported function declarations from non-test Go files.
-        # Handles both standalone: func FuncName(...)
-        # and methods:             func (r *Type) FuncName(...)
         while IFS=: read -r file lineno line; do
-            # Extract function name: last word before the opening paren
             local func_name
             func_name=$(echo "$line" | sed -E 's/^func[[:space:]]+(\([^)]*\)[[:space:]]+)?([A-Z][A-Za-z0-9_]*).*/\2/')
             if [ -z "$func_name" ]; then
@@ -106,8 +157,6 @@ if $HAS_GO; then
 
             checked=$((checked + 1))
 
-            # Check for //oro:testonly suppression in the godoc block above.
-            # Scan upward through consecutive comment lines.
             local suppressed=false
             local scan=$((lineno - 1))
             while [ "$scan" -ge 1 ]; do
@@ -117,10 +166,9 @@ if $HAS_GO; then
                     suppressed=true
                     break
                 elif echo "$scan_line" | grep -qE '^[[:space:]]*//' ; then
-                    # Still in a comment block, keep scanning
                     scan=$((scan - 1))
                 else
-                    break  # Non-comment line — stop
+                    break
                 fi
             done
             if $suppressed; then
@@ -128,10 +176,6 @@ if $HAS_GO; then
                 continue
             fi
 
-            # Search for this function name in non-test Go files, excluding
-            # the declaration line and comment-only lines (godoc, etc.).
-            # We look in pkg/, internal/, AND cmd/ so that wiring from cmd/
-            # or same-file callers count.
             local callers
             callers=$(grep -rn --include="*.go" --exclude="*_test.go" "\\b${func_name}\\b" pkg/ internal/ cmd/ \
                 | grep -v "^${file}:${lineno}:" \
@@ -155,32 +199,50 @@ if $HAS_GO; then
         fi
         return 0
     }
-    check "dead exports" "check_dead_exports"
 
-    header "GO TIER 4: ARCHITECTURE"
+    local tier2_checks=(
+        "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
+        "dead exports" "check_dead_exports"
+    )
     if [ -f ".go-arch-lint.yml" ]; then
-        check "go-arch-lint" "go-arch-lint check --project-path ."
+        tier2_checks+=("go-arch-lint" "go-arch-lint check --project-path .")
     fi
+    parallel_checks "${tier2_checks[@]}"
+    pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
+    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
 
-    header "GO TIER 5: TESTING"
-    COVERAGE_FILE="/tmp/oro-coverage-$$.out"
-    check "go test" "GOFLAGS=-buildvcs=false go test -race -shuffle=on -p 2 -coverprofile=$COVERAGE_FILE ./internal/... ./pkg/... && go tool cover -func=$COVERAGE_FILE | grep total | awk '{print \$3}' | sed 's/%//' | awk '{if (\$1 < 85) exit 1}'"
-    check "coverage" "go tool cover -func=$COVERAGE_FILE | tail -1"
-    rm -f "$COVERAGE_FILE"
+    # --- Tier 3: Test + Security + Build (parallel) ---
+    header "GO TIER 3: TEST + SECURITY + BUILD"
 
-    header "GO TIER 6: SECURITY"
-    check "govulncheck" "govulncheck ./..."
+    local COVERAGE_FILE="$QG_DIR/coverage-$$.out"
 
-    header "GO TIER 7: BUILD"
-    check "go build" "go build -buildvcs=false ./..."
-    check "go vet" "go vet ./..."
+    # shellcheck disable=SC2329
+    go_test_with_coverage() {
+        GOFLAGS=-buildvcs=false go test -race -shuffle=on -p 2 \
+            -coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
+        local cov
+        cov=$(go tool cover -func="$COVERAGE_FILE" | grep total | awk '{print $3}' | sed 's/%//')
+        echo "Coverage: ${cov}%"
+        if [ "$(echo "$cov < 85" | bc -l)" -eq 1 ]; then
+            echo "FAIL: coverage ${cov}% is below 85% threshold"
+            return 1
+        fi
+    }
 
-    header "GO TIER 8: MUTATION TESTING (incremental)"
+    parallel_checks \
+        "go test + coverage" "go_test_with_coverage" \
+        "govulncheck" "govulncheck ./..." \
+        "go build" "go build -buildvcs=false ./..." \
+        "go vet" "go vet ./..."
+    pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
+    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
+
+    # --- Tier 4: Mutation Testing (sequential, modifies working tree) ---
     if command -v go-mutesting >/dev/null 2>&1; then
-        # shellcheck disable=SC2317,SC2329
+        header "GO TIER 4: MUTATION TESTING (incremental)"
+
+        # shellcheck disable=SC2329
         run_go_mutation_test() {
-            # Incremental: only mutate Go files changed vs main.
-            # Skips test files and generated code. Fast enough for pre-push.
             local changed
             changed=$(git diff --name-only main -- '*.go' 2>/dev/null \
                 | grep -v '_test\.go$' \
@@ -209,77 +271,79 @@ if $HAS_GO; then
             fi
             echo "PASS: mutation score $score meets 0.75 threshold"
         }
-        check "go-mutesting" "run_go_mutation_test"
+
+        if check "go-mutesting" "run_go_mutation_test"; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+        fi
     fi
 
-    # Clean staged embedded assets
     make clean-assets 2>/dev/null || true
-
-fi
-
-# =============================================================================
-# SHELL CHECKS
-# =============================================================================
-
-if $HAS_SHELL; then
-
-    header "SHELL: LINT"
-    check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +"
-
-fi
+    echo "${pass}:${fail}" > "$QG_DIR/go.rc"
+}
 
 # =============================================================================
-# DOCS & CONFIG CHECKS
+# LANE: PYTHON
 # =============================================================================
 
-header "DOCS & CONFIG"
-check "markdownlint" "markdownlint --config .markdownlint.yml 'docs/**/*.md' '*.md' --ignore references --ignore yap --ignore archive"
-check "yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
-# Only check paths that actually exist (worktrees may not have all directories)
-BIOME_PATHS=""
-for p in docs/ .github/ .beads/; do
-    [ -d "$p" ] && BIOME_PATHS="$BIOME_PATHS $p"
-done
-# Check for JSON files in project root
-if compgen -G "*.json" > /dev/null 2>&1; then
-    BIOME_PATHS="$BIOME_PATHS *.json"
-fi
-if [ -n "$BIOME_PATHS" ]; then
-    # shellcheck disable=SC2086
-    check "biome (json)" "biome check --files-ignore-unknown=true $BIOME_PATHS"
-fi
+# shellcheck disable=SC2317
+lane_python() {
+    local pass=0 fail=0
 
-# =============================================================================
-# PYTHON CHECKS
-# =============================================================================
-
-if $HAS_PYTHON; then
-
-    header "PYTHON TIER 1: FORMATTING"
-    check "ruff format" "ruff format --check ."
-
-    header "PYTHON TIER 2: LINTING"
-    check "ruff check" "ruff check ."
-    if command -v pylint >/dev/null 2>&1; then
-        check "pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' -not -path './.venv/*' -not -path './.claude/hooks/*' | xargs pylint --disable=all --enable=E --disable=import-error"
+    if ! $HAS_PYTHON; then
+        echo "${pass}:${fail}" > "$QG_DIR/python.rc"
+        return
     fi
 
+    # --- Tier 1: Formatting ---
+    header "PYTHON TIER 1: FORMATTING"
+    if check "ruff format" "ruff format --check ."; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+        echo "${pass}:${fail}" > "$QG_DIR/python.rc"; return
+    fi
+
+    # --- Tier 2: Linting (parallel) ---
+    header "PYTHON TIER 2: LINTING"
+    local tier2_checks=("ruff check" "ruff check .")
+    if command -v pylint >/dev/null 2>&1; then
+        tier2_checks+=("pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' -not -path './.venv/*' -not -path './.claude/hooks/*' | xargs pylint --disable=all --enable=E --disable=import-error")
+    fi
+    parallel_checks "${tier2_checks[@]}"
+    pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
+    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/python.rc"; return; fi
+
+    # --- Tier 3: Type Checking ---
     header "PYTHON TIER 3: TYPE CHECKING"
     if command -v pyright >/dev/null 2>&1 && pyright --version >/dev/null 2>&1; then
-        check "pyright" "pyright"
+        if check "pyright" "pyright"; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+            echo "${pass}:${fail}" > "$QG_DIR/python.rc"; return
+        fi
     fi
 
+    # --- Tier 4: Testing ---
     header "PYTHON TIER 4: TESTING"
     if compgen -G "tests/test_*.py" > /dev/null 2>&1 || compgen -G "tests/**/test_*.py" > /dev/null 2>&1; then
-        check "pytest" "uv run pytest"
+        if check "pytest" "uv run pytest"; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+            echo "${pass}:${fail}" > "$QG_DIR/python.rc"; return
+        fi
     fi
 
-    header "PYTHON TIER 5: MUTATION TESTING (incremental)"
+    # --- Tier 5: Mutation Testing ---
     if [ -f "cosmic-ray.toml" ] && command -v uv >/dev/null 2>&1; then
-        CR_SESSION="/tmp/cr-qg-$$.sqlite"
-        # shellcheck disable=SC2317,SC2329
+        header "PYTHON TIER 5: MUTATION TESTING (incremental)"
+        local CR_SESSION="$QG_DIR/cr-$$.sqlite"
+
+        # shellcheck disable=SC2329
         run_mutation_test() {
-            # Incremental: only run if Python source files changed vs main.
             local changed
             changed=$(git diff --name-only main -- '*.py' 2>/dev/null \
                 | grep -v 'test_' \
@@ -296,24 +360,109 @@ if $HAS_PYTHON; then
             uv run cr-report "$CR_SESSION" 2>&1 && \
             uv run cr-rate "$CR_SESSION" --fail-over 50 2>&1
         }
-        check "cosmic-ray" "run_mutation_test"
-        rm -f "$CR_SESSION"
+
+        if check "cosmic-ray" "run_mutation_test"; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+        fi
     fi
 
-fi
+    echo "${pass}:${fail}" > "$QG_DIR/python.rc"
+}
 
 # =============================================================================
-# SUMMARY
+# LANE: SHELL + DOCS (lightweight, combined into one lane)
 # =============================================================================
 
+# shellcheck disable=SC2317
+lane_other() {
+    local pass=0 fail=0
+
+    if $HAS_SHELL; then
+        header "SHELL: LINT"
+        if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +"; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+        fi
+    fi
+
+    header "DOCS & CONFIG"
+    # Build biome paths
+    local BIOME_PATHS=""
+    for p in docs/ .github/ .beads/; do
+        [ -d "$p" ] && BIOME_PATHS="$BIOME_PATHS $p"
+    done
+    if compgen -G "*.json" > /dev/null 2>&1; then
+        BIOME_PATHS="$BIOME_PATHS *.json"
+    fi
+
+    local docs_checks=(
+        "markdownlint" "markdownlint --config .markdownlint.yml 'docs/**/*.md' '*.md' --ignore references --ignore yap --ignore archive"
+        "yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
+    )
+    if [ -n "$BIOME_PATHS" ]; then
+        # shellcheck disable=SC2086
+        docs_checks+=("biome (json)" "biome check --files-ignore-unknown=true $BIOME_PATHS")
+    fi
+    parallel_checks "${docs_checks[@]}"
+    pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
+
+    echo "${pass}:${fail}" > "$QG_DIR/other.rc"
+}
+
+# =============================================================================
+# MAIN: Run lanes in parallel, aggregate results
+# =============================================================================
+
+header "ORO QUALITY GATE"
+
+echo ""
+echo "Running quality checks in parallel..."
+if $HAS_GO; then echo "  Detected: Go project"; fi
+if $HAS_PYTHON; then echo "  Detected: Python project"; fi
+if $HAS_SHELL; then echo "  Detected: Shell scripts"; fi
+echo ""
+
+# Launch all lanes in parallel, each writing output to a file
+lane_go     > "$QG_DIR/go.out"     2>&1 &
+PID_GO=$!
+lane_python > "$QG_DIR/python.out" 2>&1 &
+PID_PY=$!
+lane_other  > "$QG_DIR/other.out"  2>&1 &
+PID_OT=$!
+
+# Wait for all lanes
+wait "$PID_GO" 2>/dev/null || true
+wait "$PID_PY" 2>/dev/null || true
+wait "$PID_OT" 2>/dev/null || true
+
+# Display results in order: Go, Shell+Docs, Python
+cat "$QG_DIR/go.out"     2>/dev/null || true
+cat "$QG_DIR/other.out"  2>/dev/null || true
+cat "$QG_DIR/python.out" 2>/dev/null || true
+
+# Aggregate pass/fail counts
+TOTAL_PASS=0
+TOTAL_FAIL=0
+for rc_file in "$QG_DIR"/go.rc "$QG_DIR"/python.rc "$QG_DIR"/other.rc; do
+    if [ -f "$rc_file" ]; then
+        IFS=: read -r p f < "$rc_file"
+        TOTAL_PASS=$((TOTAL_PASS + p))
+        TOTAL_FAIL=$((TOTAL_FAIL + f))
+    fi
+done
+
+# Summary
 header "SUMMARY"
 
 echo ""
-printf '%bPassed:%b %d\n' "$GREEN" "$NC" "$PASS"
-printf '%bFailed:%b %d\n' "$RED" "$NC" "$FAIL"
+printf '%bPassed:%b %d\n' "$GREEN" "$NC" "$TOTAL_PASS"
+printf '%bFailed:%b %d\n' "$RED" "$NC" "$TOTAL_FAIL"
 echo ""
 
-if [ "$FAIL" -gt 0 ]; then
+if [ "$TOTAL_FAIL" -gt 0 ]; then
     printf '%bQuality gate FAILED%b\n' "$RED" "$NC"
     exit 1
 else
