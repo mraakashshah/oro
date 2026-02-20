@@ -51,6 +51,14 @@ dev-sync:
 
 build: stage-assets
 	go build $(LDFLAGS) ./cmd/oro
+	@if [ -d cmd/oro-search-hook ]; then \
+		mkdir -p .claude/hooks && \
+		go build -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook; \
+	fi
+	@if [ -d cmd/oro-dash ]; then \
+		mkdir -p bin && \
+		go build $(LDFLAGS) -o bin/oro-dash ./cmd/oro-dash; \
+	fi
 	@$(MAKE) clean-assets
 
 install: stage-assets
