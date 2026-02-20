@@ -1041,6 +1041,55 @@ func TestDispatcher_AssignBead_MarksInProgress(t *testing.T) {
 	}
 }
 
+func TestWorkerReceivesMemoryInPrompt(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Seed a memory whose content contains terms identical to the bead title,
+	// guaranteeing FTS5 match without flakiness (SanitizeFTS5Query uses OR per term).
+	ctx := context.Background()
+	memContent := "always run golangci lint before committing"
+	_, err := d.memories.Insert(ctx, memory.InsertParams{
+		Content:    memContent,
+		Type:       "lesson",
+		Source:     "self_report",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-mem", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Bead title shares terms with the memory content so ForPrompt finds it via FTS5.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-lint", Title: "golangci lint checks", Priority: 1},
+	})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN message")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected MsgAssign, got %s", msg.Type)
+	}
+	if !containsStr(msg.Assign.MemoryContext, "Relevant Memories") {
+		t.Errorf("MemoryContext missing 'Relevant Memories' header; got: %q", msg.Assign.MemoryContext)
+	}
+	if !containsStr(msg.Assign.MemoryContext, "golangci lint") {
+		t.Errorf("MemoryContext missing memory content; got: %q", msg.Assign.MemoryContext)
+	}
+}
+
 func TestDispatcher_WorkerDone_MergesClean(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
