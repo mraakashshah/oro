@@ -2,6 +2,7 @@
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
+ORO_HOME ?= $(HOME)/.oro
 
 # stage-assets copies oro config assets from the repo's assets/ directory into
 # cmd/oro/_assets/ so that go:embed can bundle them into the binary.
