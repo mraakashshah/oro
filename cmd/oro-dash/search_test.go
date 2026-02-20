@@ -6,6 +6,122 @@ import (
 	"oro/pkg/protocol"
 )
 
+func TestFuzzyMatchToleratesTypos(t *testing.T) {
+	t.Run("levenshtein edge cases", func(t *testing.T) {
+		if got := levenshtein("", "abc"); got != 3 {
+			t.Errorf("levenshtein('', 'abc') = %d, want 3", got)
+		}
+		if got := levenshtein("abc", ""); got != 3 {
+			t.Errorf("levenshtein('abc', '') = %d, want 3", got)
+		}
+		if got := levenshtein("", ""); got != 0 {
+			t.Errorf("levenshtein('', '') = %d, want 0", got)
+		}
+		if got := levenshtein("dispatcer", "dispatcher"); got != 1 {
+			t.Errorf("levenshtein('dispatcer', 'dispatcher') = %d, want 1", got)
+		}
+		if got := levenshtein("heartbeet", "heartbeat"); got != 1 {
+			t.Errorf("levenshtein('heartbeet', 'heartbeat') = %d, want 1", got)
+		}
+	})
+
+	t.Run("minEditDistance edge cases", func(t *testing.T) {
+		if got := minEditDistance("", "anything"); got != 0 {
+			t.Errorf("minEditDistance('', 'anything') = %d, want 0", got)
+		}
+		if got := minEditDistance("abc", ""); got != 3 {
+			t.Errorf("minEditDistance('abc', '') = %d, want 3", got)
+		}
+		if got := minEditDistance("dispatcer", "fix dispatcher timeout"); got != 1 {
+			t.Errorf("minEditDistance('dispatcer', 'fix dispatcher timeout') = %d, want 1", got)
+		}
+		if got := minEditDistance("heartbeet", "improve heartbeat monitoring"); got != 1 {
+			t.Errorf("minEditDistance('heartbeet', 'improve heartbeat monitoring') = %d, want 1", got)
+		}
+	})
+
+	t.Run("fuzzyMaxDistance thresholds", func(t *testing.T) {
+		// 1-4 char terms: exact substring only (no false positives on short terms)
+		for _, termLen := range []int{1, 2, 3, 4} {
+			if got := fuzzyMaxDistance(termLen); got != 0 {
+				t.Errorf("fuzzyMaxDistance(%d) = %d, want 0 (exact only)", termLen, got)
+			}
+		}
+		// 5+ char terms: allow 1 edit
+		for _, termLen := range []int{5, 9, 12} {
+			if got := fuzzyMaxDistance(termLen); got < 1 {
+				t.Errorf("fuzzyMaxDistance(%d) = %d, want >= 1", termLen, got)
+			}
+		}
+	})
+
+	testBeads := []protocol.Bead{
+		{ID: "oro-aaa.1", Title: "Fix dispatcher timeout", Status: "open", Priority: 0, Type: "bug"},
+		{ID: "oro-bbb.2", Title: "Improve heartbeat monitoring", Status: "open", Priority: 1, Type: "feature"},
+		{ID: "oro-ccc.3", Title: "Update configuration file", Status: "open", Priority: 2, Type: "task"},
+	}
+	sm := SearchModel{}
+
+	t.Run("dispatcer matches dispatcher (1 typo)", func(t *testing.T) {
+		result := sm.Filter(testBeads, "dispatcer")
+		if len(result) == 0 {
+			t.Error("Filter('dispatcer') returned no results, want oro-aaa.1")
+			return
+		}
+		found := false
+		for _, b := range result {
+			if b.ID == "oro-aaa.1" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Filter('dispatcer') missing expected bead oro-aaa.1, got %v", result)
+		}
+	})
+
+	t.Run("heartbeet matches heartbeat (1 typo)", func(t *testing.T) {
+		result := sm.Filter(testBeads, "heartbeet")
+		if len(result) == 0 {
+			t.Error("Filter('heartbeet') returned no results, want oro-bbb.2")
+			return
+		}
+		found := false
+		for _, b := range result {
+			if b.ID == "oro-bbb.2" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Filter('heartbeet') missing expected bead oro-bbb.2, got %v", result)
+		}
+	})
+
+	t.Run("zzzzz matches nothing", func(t *testing.T) {
+		result := sm.Filter(testBeads, "zzzzz")
+		if len(result) != 0 {
+			t.Errorf("Filter('zzzzz') returned %d results, want 0: %v", len(result), result)
+		}
+	})
+
+	t.Run("1-char term uses exact substring (no false positives)", func(t *testing.T) {
+		// 'z' does not appear in any test bead
+		result := sm.Filter(testBeads, "z")
+		if len(result) != 0 {
+			t.Errorf("Filter('z') returned %d results, want 0", len(result))
+		}
+	})
+
+	t.Run("2-char term uses exact substring (no false positives)", func(t *testing.T) {
+		// 'zz' does not appear in any test bead
+		result := sm.Filter(testBeads, "zz")
+		if len(result) != 0 {
+			t.Errorf("Filter('zz') returned %d results, want 0", len(result))
+		}
+	})
+}
+
 func TestSearchModel_Filter(t *testing.T) {
 	testBeads := []protocol.Bead{
 		{ID: "oro-abc.1", Title: "Fix authentication bug", Status: "open", Priority: 0, Type: "bug"},
