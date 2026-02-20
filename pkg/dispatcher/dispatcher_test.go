@@ -1449,9 +1449,8 @@ func TestDispatcher_StopDirective_AlwaysRejected(t *testing.T) {
 	// (P0 fix: only SIGTERM via 'oro stop' can stop the swarm.)
 	sendDirective(t, d.cfg.SocketPath, "stop")
 
-	// Give a moment for the directive to be processed
-	time.Sleep(50 * time.Millisecond)
-
+	// sendDirective is synchronous (waits for ACK), so processing is already
+	// complete when it returns — no sleep needed.
 	if d.GetState() != StateRunning {
 		t.Fatalf("dispatcher should remain running after stop directive, got %s", d.GetState())
 	}
@@ -3922,14 +3921,19 @@ func TestQualityGateRetry_NoMergeHappens(t *testing.T) {
 		},
 	})
 
-	// Consume the re-ASSIGN
+	// Consume the re-ASSIGN — this is the positive signal that the DONE
+	// handler finished processing (quality gate failed -> re-assign). No
+	// async merge should have been triggered before re-assign.
 	_, ok = readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN")
 	}
 
-	// Wait a bit to ensure no async merge was triggered
-	time.Sleep(300 * time.Millisecond)
+	// Wait for the quality_gate_rejected event as a positive signal that
+	// all DONE handling (including any potential merge path) has completed.
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "quality_gate_rejected") > 0
+	}, 2*time.Second)
 
 	// No merge-related events should exist
 	if eventCount(t, d.db, "merged") != 0 {
@@ -4819,8 +4823,20 @@ func TestDispatcher_ReconcileScale_ScaleDown(t *testing.T) {
 
 	d.reconcileScale()
 
-	// Give graceful shutdown time to send messages
-	time.Sleep(300 * time.Millisecond)
+	// Wait for graceful shutdown to complete — after ShutdownTimeout (200ms)
+	// the shutdown goroutines send SHUTDOWN and reset state to Idle. Wait
+	// until no workers are in ShuttingDown state (all timeouts processed).
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		shuttingDown := 0
+		for _, w := range d.workers {
+			if w.state == protocol.WorkerShuttingDown {
+				shuttingDown++
+			}
+		}
+		d.mu.Unlock()
+		return shuttingDown == 0
+	}, 2*time.Second)
 
 	// Should have called GracefulShutdownWorker for 3 workers
 	// The 3 idle workers should be shut down, leaving the 2 busy ones
@@ -5215,17 +5231,10 @@ func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
 	}
 
-	// Dispatcher should have spawned a new worker process
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(pm.SpawnedIDs()) > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if len(pm.SpawnedIDs()) == 0 {
-		t.Fatal("expected new worker process to be spawned for handoff")
-	}
+	// Dispatcher should have spawned a new worker process.
+	waitFor(t, func() bool {
+		return len(pm.SpawnedIDs()) > 0
+	}, 2*time.Second)
 
 	// Simulate new worker connecting (the spawned process)
 	conn2, _ := connectWorker(t, d.cfg.SocketPath)
@@ -5314,14 +5323,9 @@ func TestDispatcher_Handoff_NoProcManager_LogsOnly(t *testing.T) {
 	}
 
 	// handoff_pending event logged
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "handoff_pending") > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected handoff_pending event")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "handoff_pending") > 0
+	}, 2*time.Second)
 }
 
 func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
@@ -5504,21 +5508,12 @@ func TestDispatcher_Handoff_FirstHandoff_RespawnsNormally(t *testing.T) {
 	}
 
 	// Verify handoff count is 1
-	deadline := time.Now().Add(1 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		d.mu.Lock()
 		count := d.handoffCounts["bead-stuck"]
 		d.mu.Unlock()
-		if count == 1 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	d.mu.Lock()
-	got := d.handoffCounts["bead-stuck"]
-	d.mu.Unlock()
-	t.Fatalf("expected handoff count 1, got %d", got)
+		return count == 1
+	}, 2*time.Second)
 }
 
 func TestDispatcher_Handoff_SecondHandoff_TriggersDiagnosis(t *testing.T) {
@@ -5550,14 +5545,9 @@ func TestDispatcher_Handoff_SecondHandoff_TriggersDiagnosis(t *testing.T) {
 	}
 
 	// Verify diagnosis event logged
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if eventCount(t, d.db, "diagnosis_spawned") > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("expected 'diagnosis_spawned' event after 2nd handoff")
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "diagnosis_spawned") > 0
+	}, 3*time.Second)
 }
 
 func TestDispatcher_Handoff_DiagnosisFailure_EscalatesToManager(t *testing.T) {
@@ -5583,20 +5573,15 @@ func TestDispatcher_Handoff_DiagnosisFailure_EscalatesToManager(t *testing.T) {
 	readMsg(t, conn, 2*time.Second)
 
 	// Verify escalation to manager
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		msgs := esc.Messages()
 		for _, m := range msgs {
 			if strings.Contains(m, "bead-stuck") && strings.Contains(m, "STUCK") {
-				// Also verify diagnosis_escalated event
-				if eventCount(t, d.db, "diagnosis_escalated") > 0 {
-					return
-				}
+				return eventCount(t, d.db, "diagnosis_escalated") > 0
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("expected STUCK escalation for bead-stuck, got: %v", esc.Messages())
+		return false
+	}, 3*time.Second)
 }
 
 func TestDispatcher_Handoff_CountResetsOnDone(t *testing.T) {
@@ -6293,20 +6278,15 @@ func TestMergeConflict_ResolutionFailed_Escalates(t *testing.T) {
 	})
 
 	// Wait for escalation — proves the result channel was consumed and failure handled
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		msgs := esc.Messages()
 		for _, m := range msgs {
 			if strings.Contains(m, "bead-mcf") && strings.Contains(m, "MERGE_CONFLICT") {
-				// Also verify the event was logged
-				if eventCount(t, d.db, "merge_conflict_failed") > 0 {
-					return // success
-				}
+				return eventCount(t, d.db, "merge_conflict_failed") > 0
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("expected MERGE_CONFLICT escalation for bead-mcf, got: %v", esc.Messages())
+		return false
+	}, 3*time.Second)
 }
 
 // TestHandleHandoff_NoAssignAfterShutdown verifies that tryAssign cannot grab a
@@ -6778,9 +6758,14 @@ func TestPriorityContention(t *testing.T) {
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
 
-	// Wait for a few poll cycles (at least 250ms = 5 cycles at 50ms)
-	// to ensure no escalation fires
-	time.Sleep(250 * time.Millisecond)
+	// Wait for the assign loop to process the new bead list (positive signal:
+	// cachedQueueDepth reflects the 2 beads we just set).
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		depth := d.cachedQueueDepth
+		d.mu.Unlock()
+		return depth >= 2
+	}, 2*time.Second)
 
 	// Verify NO escalation occurred
 	messages := esc.Messages()
@@ -7303,8 +7288,7 @@ func TestHandoffExhaustion_CreatesContinuationBead(t *testing.T) {
 	if !ok {
 		t.Fatal("beads is not *mockBeadSource")
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, func() bool {
 		beadSrc.mu.Lock()
 		calls := make([]createCall, len(beadSrc.created))
 		copy(calls, beadSrc.created)
@@ -7313,19 +7297,11 @@ func TestHandoffExhaustion_CreatesContinuationBead(t *testing.T) {
 		for _, c := range calls {
 			if c.parent == "bead-stuck" && c.beadType == "task" &&
 				strings.Contains(c.description, "Implemented 3 of 5 subtasks") {
-				// Verify event was logged.
-				if eventCount(t, d.db, "continuation_bead_created") > 0 {
-					return
-				}
+				return eventCount(t, d.db, "continuation_bead_created") > 0
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	// Dump what was created for debug.
-	beadSrc.mu.Lock()
-	defer beadSrc.mu.Unlock()
-	t.Fatalf("expected BeadSource.Create with parent=bead-stuck, type=task, description containing handoff summary; got %+v", beadSrc.created)
+		return false
+	}, 3*time.Second)
 }
 
 // TestCrashRecovery_ReconnectPreservesAttemptCount verifies the full crash
@@ -7525,10 +7501,16 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 		},
 	})
 
-	// Give reconnect processing a moment.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for reconnect processing to mark worker as busy on bead-crash1.
+	waitFor(t, func() bool {
+		d2.mu.Lock()
+		w, ok := d2.workers["w1"]
+		busy := ok && w.state == protocol.WorkerBusy && w.beadID == "bead-crash1"
+		d2.mu.Unlock()
+		return busy
+	}, 2*time.Second)
 
-	// Verify the worker is now recognized as busy on bead-crash1.
+	// Read the worker state for assertions below.
 	d2.mu.Lock()
 	w, wOK := d2.workers["w1"]
 	var workerBeadID string
@@ -9166,8 +9148,14 @@ func TestAutoScaleDisabledWhenMaxWorkersZero(t *testing.T) {
 		{ID: "bead-3", Title: "Task 3", Priority: 1},
 	})
 
-	// Wait a bit to ensure auto-scale doesn't trigger
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the assign loop to process the beads (positive signal:
+	// cachedQueueDepth reflects the 3 beads), then verify auto-scale didn't fire.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		depth := d.cachedQueueDepth
+		d.mu.Unlock()
+		return depth >= 3
+	}, 2*time.Second)
 
 	// Verify targetWorkers stayed at 0
 	d.mu.Lock()
@@ -9291,8 +9279,13 @@ func TestBuildStatusJSON_CachedQueueDepth(t *testing.T) {
 		t.Fatal("expected ASSIGN")
 	}
 
-	// Wait a tick for the cached depth to be updated.
-	time.Sleep(150 * time.Millisecond)
+	// Wait for the assign loop to cache the queue depth.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		depth := d.cachedQueueDepth
+		d.mu.Unlock()
+		return depth >= 1
+	}, 2*time.Second)
 
 	// Query status
 	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "status", "")
@@ -9338,8 +9331,13 @@ func TestBuildStatusJSON_LiveQueueDepth(t *testing.T) {
 		t.Fatal("expected ASSIGN")
 	}
 
-	// Wait for assign loop to cache depth.
-	time.Sleep(150 * time.Millisecond)
+	// Wait for the assign loop to cache the initial depth.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		depth := d.cachedQueueDepth
+		d.mu.Unlock()
+		return depth >= 1
+	}, 2*time.Second)
 
 	// Now add 3 MORE beads (total 4 in source, 1 assigned, 3 ready).
 	beadSrc.SetBeads([]protocol.Bead{
