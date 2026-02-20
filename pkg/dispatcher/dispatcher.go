@@ -967,7 +967,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
-
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeComplete, beadID, "merged to main", result.CommitSHA), beadID, workerID)
 	// Extract learnings from event payloads for this bead (async, non-blocking).
 	d.safeGo(func() { d.extractAndStoreLearnings(ctx, beadID) })
 
