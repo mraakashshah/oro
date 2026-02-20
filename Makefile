@@ -53,12 +53,14 @@ dev-sync:
 build: stage-assets
 	go build $(LDFLAGS) ./cmd/oro
 	@if [ -d cmd/oro-search-hook ]; then \
-		mkdir -p .claude/hooks && \
-		go build -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook; \
+		mkdir -p .claude/hooks $(ORO_HOME)/hooks && \
+		go build -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook && \
+		cp .claude/hooks/oro-search-hook $(ORO_HOME)/hooks/oro-search-hook; \
 	fi
 	@if [ -d cmd/oro-dash ]; then \
-		mkdir -p bin && \
-		go build $(LDFLAGS) -o bin/oro-dash ./cmd/oro-dash; \
+		mkdir -p bin $(ORO_HOME)/bin && \
+		go build $(LDFLAGS) -o bin/oro-dash ./cmd/oro-dash && \
+		cp bin/oro-dash $(ORO_HOME)/bin/oro-dash; \
 	fi
 	@$(MAKE) clean-assets
 
