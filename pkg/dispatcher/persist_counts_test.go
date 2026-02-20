@@ -365,13 +365,12 @@ func TestConsolidation_TriggeredAfterNCompletions(t *testing.T) {
 		}, 2*time.Second)
 	}
 
-	// Wait for consolidation to reset the counter (triggered after 2nd completion).
+	// Wait for the consolidation goroutine to complete and log its event.
+	// (The counter is reset synchronously before the goroutine runs, so
+	// waiting for the event is the correct synchronisation point.)
 	waitFor(t, func() bool {
-		d.mu.Lock()
-		c := d.completionsSinceConsolidate
-		d.mu.Unlock()
-		return c == 0
-	}, 2*time.Second)
+		return eventCount(t, d.db, "memory_consolidation") > 0
+	}, 3*time.Second)
 
 	// Verify counter was reset after consolidation.
 	d.mu.Lock()
