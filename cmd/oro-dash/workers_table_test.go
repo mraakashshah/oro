@@ -7,6 +7,80 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// TestWorkersTableAdaptsToWidth verifies that the workers table layout adapts to terminal width.
+// Different widths produce different column layouts, the separator matches totalWidth,
+// and very narrow terminals (<50) use minimum floors to prevent truncation.
+func TestWorkersTableAdaptsToWidth(t *testing.T) {
+	workers := []WorkerStatus{
+		{ID: "worker-1", Status: "busy", BeadID: "oro-abc.1", LastProgressSecs: 2.0, ContextPct: 45},
+	}
+	assignments := map[string]string{"oro-abc.1": "worker-1"}
+	wt := NewWorkersTableModel(workers, assignments)
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	t.Run("wide vs narrow produce different outputs", func(t *testing.T) {
+		outputWide := wt.View(theme, styles, 160)
+		outputNarrow := wt.View(theme, styles, 80)
+		if outputWide == outputNarrow {
+			t.Error("View should produce different output for width=160 vs width=80")
+		}
+	})
+
+	t.Run("separator width matches totalWidth", func(t *testing.T) {
+		for _, width := range []int{80, 120, 160} {
+			output := wt.View(theme, styles, width)
+			lines := strings.Split(output, "\n")
+			foundSeparator := false
+			for _, line := range lines {
+				// The separator line is composed of box-drawing chars (─)
+				runes := []rune(line)
+				if len(runes) > 0 && runes[0] == '─' {
+					foundSeparator = true
+					if len(runes) != width {
+						t.Errorf("separator width=%d for totalWidth=%d, want %d", len(runes), width, width)
+					}
+				}
+			}
+			if !foundSeparator {
+				t.Errorf("no separator line found in output for width=%d", width)
+			}
+		}
+	})
+
+	t.Run("column widths differ across terminal widths", func(t *testing.T) {
+		widths80 := calculateWorkerColumnWidths(80)
+		widths160 := calculateWorkerColumnWidths(160)
+		if len(widths80) != 5 {
+			t.Fatalf("calculateWorkerColumnWidths(80) returned %d columns, want 5", len(widths80))
+		}
+		if len(widths160) != 5 {
+			t.Fatalf("calculateWorkerColumnWidths(160) returned %d columns, want 5", len(widths160))
+		}
+		// Wider terminal should produce wider columns
+		sum80 := 0
+		sum160 := 0
+		for _, w := range widths80 {
+			sum80 += w
+		}
+		for _, w := range widths160 {
+			sum160 += w
+		}
+		if sum160 <= sum80 {
+			t.Errorf("total column width for 160 (%d) should exceed total for 80 (%d)", sum160, sum80)
+		}
+	})
+
+	t.Run("minimum floors prevent truncation on very narrow terminal", func(t *testing.T) {
+		widths := calculateWorkerColumnWidths(40) // very narrow (<50)
+		for i, w := range widths {
+			if w < 6 {
+				t.Errorf("column %d width=%d is below minimum floor 6 for narrow terminal", i, w)
+			}
+		}
+	})
+}
+
 // TestWorkersTableView verifies the workers table view feature.
 // Tests: w key switches to WorkersView, table renders with correct columns,
 // heartbeat health colors (green <5s, amber 5-15s, red >15s), esc returns to BoardView,

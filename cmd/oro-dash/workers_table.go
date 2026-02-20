@@ -21,13 +21,45 @@ func NewWorkersTableModel(workers []WorkerStatus, assignments map[string]string)
 	}
 }
 
-// View renders the workers table.
-func (w WorkersTableModel) View(theme Theme, styles Styles) string {
+// calculateWorkerColumnWidths computes per-column widths for the workers table
+// based on the available terminal width. Widths are proportional to content
+// importance, with minimum floors to prevent truncation on very narrow terminals.
+// Returns [workerID, status, assignedBead, health, context] widths.
+func calculateWorkerColumnWidths(totalWidth int) []int {
+	const (
+		numSeparators   = 4 // single-space gaps between 5 columns
+		minWorkerID     = 10
+		minStatus       = 8
+		minAssignedBead = 10
+		minHealth       = 6
+		minContext      = 6
+	)
+
+	usable := totalWidth - numSeparators
+	if usable < minWorkerID+minStatus+minAssignedBead+minHealth+minContext {
+		return []int{minWorkerID, minStatus, minAssignedBead, minHealth, minContext}
+	}
+
+	workerID := max(int(float64(usable)*0.28), minWorkerID)
+	status := max(int(float64(usable)*0.20), minStatus)
+	assignedBead := max(int(float64(usable)*0.28), minAssignedBead)
+	health := max(int(float64(usable)*0.12), minHealth)
+	// Context absorbs the remainder so columns exactly fill usable width.
+	context := usable - workerID - status - assignedBead - health
+	if context < minContext {
+		context = minContext
+	}
+
+	return []int{workerID, status, assignedBead, health, context}
+}
+
+// View renders the workers table at the given total terminal width.
+func (w WorkersTableModel) View(theme Theme, styles Styles, totalWidth int) string {
 	if len(w.workers) == 0 {
 		return renderEmptyWorkersState(styles)
 	}
 
-	return w.renderWorkersTable(theme, styles)
+	return w.renderWorkersTable(theme, styles, totalWidth)
 }
 
 // renderEmptyWorkersState renders a message when no workers are active.
@@ -38,18 +70,19 @@ func renderEmptyWorkersState(styles Styles) string {
 }
 
 // renderWorkersTable renders the full workers table with headers and rows.
-func (w WorkersTableModel) renderWorkersTable(theme Theme, styles Styles) string {
+func (w WorkersTableModel) renderWorkersTable(theme Theme, styles Styles, totalWidth int) string {
 	var sb strings.Builder
+
+	colWidths := calculateWorkerColumnWidths(totalWidth)
 
 	// Table headers
 	headers := []string{"Worker ID", "Status", "Assigned Bead", "Health", "Context"}
-	headerWidths := []int{20, 15, 20, 10, 10}
 
 	// Render header row — use WorkersCol base style with .Width() applied per column.
 	headerParts := make([]string, 0, len(headers))
 	for i, header := range headers {
 		style := styles.WorkersCol.
-			Width(headerWidths[i]).
+			Width(colWidths[i]).
 			Bold(true).
 			Foreground(theme.Primary)
 		headerParts = append(headerParts, style.Render(header))
@@ -57,13 +90,13 @@ func (w WorkersTableModel) renderWorkersTable(theme Theme, styles Styles) string
 	sb.WriteString(strings.Join(headerParts, " "))
 	sb.WriteString("\n")
 
-	// Render separator
-	sb.WriteString(strings.Repeat("─", 80))
+	// Render separator spanning the full terminal width.
+	sb.WriteString(strings.Repeat("─", totalWidth))
 	sb.WriteString("\n")
 
 	// Render worker rows
 	for _, worker := range w.workers {
-		row := w.renderWorkerRow(worker, headerWidths, styles)
+		row := w.renderWorkerRow(worker, colWidths, styles)
 		sb.WriteString(row)
 		sb.WriteString("\n")
 	}

@@ -434,7 +434,7 @@ func TestSnapshot_WorkersView_Empty(t *testing.T) {
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
-	output := wt.View(theme, styles)
+	output := wt.View(theme, styles, 80)
 	assertGolden(t, output)
 }
 
@@ -456,6 +456,6 @@ func TestSnapshot_WorkersView_MultipleWorkers(t *testing.T) {
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
-	output := wt.View(theme, styles)
+	output := wt.View(theme, styles, 80)
 	assertGolden(t, output)
 }
