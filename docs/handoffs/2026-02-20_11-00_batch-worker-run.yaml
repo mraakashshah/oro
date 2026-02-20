@@ -1,0 +1,122 @@
+---
+date: 2026-02-20
+status: partial
+---
+
+goal: >
+  Batch-launched oro workers for stalled beads, closed 7 beads,
+  fixed worktree auto-detect race condition (oro-9kbj).
+
+now: >
+  Two workers still running in background: oro-xgwr (QG passed, ops
+  review rejected scope creep, re-executing with opus) and oro-o1ep
+  (claude working on first attempt). Check their worktrees for
+  progress. Also oro-koon (P3) not started. Epics need decomposition.
+
+test: make stage-assets && go test ./cmd/oro/ -run "TestSetupWorktree|TestExecute" -v
+
+done_this_session:
+  - task: "Closed oro-vyte (P0): Wire BuildEpicDecompositionPrompt"
+    details: "Worker completed after QG flakiness. Merged at e6445a6."
+    files: [pkg/worker/prompt.go, pkg/worker/worker.go, pkg/worker/prompt_test.go]
+
+  - task: "Closed oro-of6x (P1): CAS fix for handleExitClaimed"
+    details: "Worker completed but merge kept failing (already on main). Manually closed. Commit c5693fb."
+    files: [pkg/worker/worker.go]
+
+  - task: "Closed oro-fot0 (P1): Manager push after merge"
+    details: "Worker added MERGE_COMPLETE escalation type. Merged at 0fcc3dc."
+    files: [pkg/protocol/types.go, pkg/dispatcher/dispatcher.go, cmd/oro/manager.go]
+
+  - task: "Closed oro-fewh (P1): Epic auto-close verification"
+    details: "Upgraded tryCloseEpic to run acceptance criteria Cmd/Assert instead of counting children. Merged at 8948171."
+    files: [pkg/dispatcher/dispatcher.go]
+
+  - task: "Closed oro-ybz4 (P2): PID-isolate temp file"
+    details: "Already fixed in 4827a41 (quality gate parallelization). Closed without changes."
+
+  - task: "Closed oro-gcmz (P3): Clean up stale branches"
+    details: "Worker cleaned up 29 stale agent branches. Merged at fad18a0."
+
+  - task: "Fixed worktree auto-detect race (oro-9kbj)"
+    details: >
+      setupWorktree now auto-detects: exists → resume, doesn't exist → create.
+      Removed --resume flag entirely. Eliminates race where cleanup deletes
+      worktree between "use --resume" error and "--resume but doesn't exist" error.
+    files: [cmd/oro/cmd_work.go, cmd/oro/cmd_work_test.go]
+
+  - task: "Investigated self-decomposition gap"
+    details: >
+      Explored why workers don't self-decompose when hitting context limits.
+      Found: prompt tells LLM to decompose but runtime doesn't enforce it.
+      oro work just retries from scratch. Dispatcher has ralph handoff (2 retries)
+      then creates one continuation bead. No true multi-way decomposition.
+
+decisions:
+  - worktree_auto_detect: >
+      Removed --resume flag from oro work. Auto-detect is simpler and
+      eliminates the race condition. One codepath handles both cases.
+  - parallel_workers_unreliable: >
+      Running 2 oro workers simultaneously causes signal:killed.
+      Resource contention with 2 claude processes. Run 1 at a time
+      or accept occasional failures.
+
+findings:
+  - self_decomposition_gap: >
+      oro work has no self-decomposition. When a bead is too large for
+      one context window, the LLM is told to run bd create but never does.
+      The runtime retries blindly up to 6 times. Need runtime enforcement:
+      after N no-commit exits, spawn decomposition agent.
+  - ops_review_catches_scope_creep: >
+      oro-xgwr worker picked up the --resume removal from main (via merge)
+      and ops review correctly flagged it as scope creep not covered by
+      the bead's acceptance criteria. The review system works.
+  - biome_2x_key_rename: >
+      biome 2.x uses "include" not "includes" in files config. A worker
+      introduced the wrong key (1abcfc1), then it was fixed (f12a53b).
+
+worked:
+  - "Launching workers in background and monitoring with TaskOutput"
+  - "Manually closing beads when worker can't (already-merged branches)"
+  - "Rebuilding oro binary before relaunching workers to pick up fixes"
+
+failed:
+  - "Running 2 workers simultaneously — resource contention kills them"
+  - "Background workers merging to main while editing same files — race condition"
+  - "Multiple --resume / no-resume cycles before auto-detect fix"
+
+next:
+  - "Check oro-xgwr and oro-o1ep worker results (may have completed)"
+  - "oro-koon (P3): Fix shell correctness in mutation testing"
+  - "Epic decomposition needed: oro-q5p0, oro-7in4, oro-owx0"
+  - "File bead for self-decomposition in oro work (runtime enforcement)"
+
+beads:
+  completed: [oro-vyte, oro-of6x, oro-fot0, oro-fewh, oro-ybz4, oro-gcmz, oro-9kbj]
+  in_progress: [oro-xgwr, oro-o1ep]
+  remaining:
+    - oro-koon    # P3 shell correctness in mutation testing
+    - oro-q5p0    # P1 epic: wire memory system
+    - oro-7in4    # P2 epic: edge case coverage
+    - oro-owx0    # P3 epic: dashboard wave 3
+
+learnings:
+  undocumented:
+    - "oro work --resume races with worktree cleanup — auto-detect eliminates the flag (oro-9kbj, worktree)"
+    - "Running 2 oro workers simultaneously causes signal:killed from resource contention (oro-xgwr, orchestration)"
+    - "ops review correctly catches scope creep from unrelated changes merged into worker branch (oro-xgwr, verification)"
+    - "Self-decomposition exists only as prompt instruction, not runtime enforcement — LLMs never voluntarily decompose (exploration, architecture)"
+  proposed_codification:
+    - type: rule
+      target: .claude/rules/worker-concurrency.md
+      content: "Run oro workers sequentially, not in parallel. Two concurrent claude processes cause signal:killed."
+      frequency: 2
+      tag: orchestration
+
+git:
+  branch: main
+  pushed: true
+  latest_commit: f12a53b
+  dirty_files:
+    - ".beads/issues.jsonl (modified by bd operations)"
+    - "oro (binary, gitignored)"
