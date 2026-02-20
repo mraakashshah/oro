@@ -2,10 +2,12 @@ package main
 
 import (
 	"testing"
+
+	"oro/pkg/protocol"
 )
 
 func TestSearchModel_Filter(t *testing.T) {
-	testBeads := []Bead{
+	testBeads := []protocol.Bead{
 		{ID: "oro-abc.1", Title: "Fix authentication bug", Status: "open", Priority: 0, Type: "bug"},
 		{ID: "oro-abc.2", Title: "Add user dashboard", Status: "in_progress", Priority: 1, Type: "feature"},
 		{ID: "oro-xyz.3", Title: "Refactor auth module", Status: "open", Priority: 2, Type: "task"},

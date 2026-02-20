@@ -12,15 +12,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Bead represents a bead/issue.
-type Bead struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Status   string `json:"status"`
-	Priority int    `json:"priority"`
-	Type     string `json:"type"`
-}
-
 // WorkerStatus represents worker status with enriched fields.
 type WorkerStatus struct {
 	ID               string  `json:"id"`

@@ -1420,6 +1420,43 @@ func TestTriageFlagFiresForStaleP0(t *testing.T) {
 	}
 }
 
+// TestFilterBeads_TypeFilter_Integration verifies the full filterBeads pipeline filters by type.
+// Validates: SearchModel.Filter accepts protocol.Bead, filterBeads returns only matching types.
+func TestFilterBeads_TypeFilter_Integration(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "oro-001", Title: "Fix crash", Status: "open", Priority: 0, Type: "bug"},
+		{ID: "oro-002", Title: "Add dashboard", Status: "open", Priority: 1, Type: "feature"},
+		{ID: "oro-003", Title: "Refactor DB", Status: "in_progress", Priority: 2, Type: "task"},
+		{ID: "oro-004", Title: "Another bug fix", Status: "open", Priority: 1, Type: "bug"},
+	}
+
+	// SearchModel.Filter must accept []protocol.Bead directly (no local Bead conversion).
+	sm := &SearchModel{}
+	filtered := sm.Filter(beads, "t:bug")
+	if len(filtered) != 2 {
+		t.Fatalf("SearchModel.Filter(\"t:bug\") returned %d beads, want 2", len(filtered))
+	}
+	for _, b := range filtered {
+		if b.Type != "bug" {
+			t.Errorf("SearchModel.Filter returned non-bug bead %s (type=%s)", b.ID, b.Type)
+		}
+	}
+
+	// filterBeads through the full Model pipeline must return only bugs.
+	m := newModel()
+	m.beads = beads
+	m.searchInput.SetValue("t:bug")
+	result := m.filterBeads()
+	if len(result) != 2 {
+		t.Fatalf("filterBeads() with \"t:bug\" returned %d beads, want 2", len(result))
+	}
+	for _, b := range result {
+		if b.Type != "bug" {
+			t.Errorf("filterBeads() returned non-bug bead %s (type=%s)", b.ID, b.Type)
+		}
+	}
+}
+
 // TestStatusBarBottom verifies status bar is at bottom of View() output, includes help hints,
 // and handles narrow/short terminal edge cases.
 func TestStatusBarBottom(t *testing.T) {
