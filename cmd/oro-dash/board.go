@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -67,9 +69,16 @@ func NewBoardModelWithWorkers(beads []protocol.Bead, workers []WorkerStatus, ass
 		beadsInCol := buckets[t]
 		totalCount := len(beadsInCol)
 
-		// Limit Done column to most recent 10 beads
-		if t == "Done" && len(beadsInCol) > 10 {
-			beadsInCol = beadsInCol[len(beadsInCol)-10:]
+		// Sort Done column by UpdatedAt descending (most recent first), then cap at 10.
+		// Beads with empty UpdatedAt parse as zero-time and sort as oldest.
+		if t == "Done" {
+			slices.SortStableFunc(beadsInCol, func(a, b protocol.Bead) int {
+				// Descending: b before a, so compare b to a.
+				return parseBeadTime(b.UpdatedAt).Compare(parseBeadTime(a.UpdatedAt))
+			})
+			if len(beadsInCol) > 10 {
+				beadsInCol = beadsInCol[:10]
+			}
 		}
 
 		columns = append(columns, boardColumn{
@@ -288,6 +297,17 @@ func (bm BoardModel) healthStyleForWorker(worker WorkerStatus, styles Styles) li
 	default:
 		return styles.HealthRed
 	}
+}
+
+// parseBeadTime parses an RFC3339 UpdatedAt string.
+// Returns zero time on any parse failure (e.g. empty string), so such beads
+// sort as the oldest possible when sorted descending.
+func parseBeadTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // renderBlockerInfo renders blocker bead IDs for blocked cards.

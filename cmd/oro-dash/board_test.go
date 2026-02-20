@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -85,14 +86,16 @@ func TestBoardView_EmptyBeads(t *testing.T) {
 // TestDoneColumn_MostRecent verifies that the Done column shows the 10 most
 // recently closed beads, not the oldest ones.
 func TestDoneColumn_MostRecent(t *testing.T) {
-	// Create 15 closed beads in order from oldest (a) to newest (o)
-	// We assume beads come from bd in chronological order (oldest first)
+	// Create 15 closed beads in order from oldest (a) to newest (o).
+	// UpdatedAt timestamps are assigned in ascending order so that the sort
+	// in NewBoardModelWithWorkers produces the same result as the input order.
 	closedBeads := make([]protocol.Bead, 15)
 	for i := range 15 {
 		closedBeads[i] = protocol.Bead{
-			ID:     string(rune('a' + i)),
-			Title:  "Closed task " + string(rune('A'+i)),
-			Status: "closed",
+			ID:        string(rune('a' + i)),
+			Title:     "Closed task " + string(rune('A'+i)),
+			Status:    "closed",
+			UpdatedAt: fmt.Sprintf("2024-01-%02dT00:00:00Z", i+1),
 		}
 	}
 
@@ -460,4 +463,103 @@ func TestCardRendering_WorkerNotInList(t *testing.T) {
 	if !strings.Contains(output, "worker-missing") {
 		t.Errorf("Render() missing worker ID 'worker-missing'\ngot:\n%s", output)
 	}
+}
+
+// TestDoneColumnSortedByUpdatedAtDescending verifies that the Done column sorts
+// beads by UpdatedAt descending (most recently updated first) before capping at 10.
+func TestDoneColumnSortedByUpdatedAtDescending(t *testing.T) {
+	t.Run("sorts by UpdatedAt descending before capping at 10", func(t *testing.T) {
+		// 12 closed beads in newest-first input order.
+		// done-12 has UpdatedAt 2024-01-12 (newest), done-01 has 2024-01-01 (oldest).
+		// The old code took the last 10 in input order (done-03..done-12 visible, done-01 and done-02 hidden).
+		// The new code must sort first so the 10 highest UpdatedAt appear:
+		//   done-12..done-03 visible, done-01 and done-02 cut off.
+		// Since input is already newest-first, the sort doesn't change order here —
+		// but the slice changes from [:10] vs [2:], exposing the difference.
+		beads := make([]protocol.Bead, 12)
+		for i := range 12 {
+			day := 12 - i // input position 0 = newest day 12
+			beads[i] = protocol.Bead{
+				ID:        fmt.Sprintf("done-%02d", day),
+				Title:     fmt.Sprintf("Task %02d", day),
+				Status:    "closed",
+				UpdatedAt: fmt.Sprintf("2024-01-%02dT00:00:00Z", day),
+			}
+		}
+
+		board := NewBoardModel(beads)
+		theme := DefaultTheme()
+		output := board.Render(theme, NewStyles(theme))
+
+		// Header: 10 visible out of 12 total.
+		if !strings.Contains(output, "Done (10/12)") {
+			t.Errorf("expected 'Done (10/12)' in header\ngot:\n%s", output)
+		}
+
+		// The 10 most recently updated (days 3..12) must appear.
+		for day := 3; day <= 12; day++ {
+			id := fmt.Sprintf("done-%02d", day)
+			if !strings.Contains(output, id) {
+				t.Errorf("Done column missing bead %q (should be in top 10)\ngot:\n%s", id, output)
+			}
+		}
+
+		// The 2 oldest (days 1 and 2) must NOT appear — cut off by the cap.
+		for day := 1; day <= 2; day++ {
+			id := fmt.Sprintf("done-%02d", day)
+			if strings.Contains(output, id) {
+				t.Errorf("Done column should NOT show bead %q (beyond cap)\ngot:\n%s", id, output)
+			}
+		}
+
+		// Sort order: done-12 (newest) must appear before done-03 (10th newest).
+		idx12 := strings.Index(output, "done-12")
+		idx03 := strings.Index(output, "done-03")
+		if idx12 == -1 || idx03 == -1 {
+			t.Fatal("done-12 and done-03 must both appear in output")
+		}
+		if idx12 >= idx03 {
+			t.Errorf("done-12 (pos %d) should appear before done-03 (pos %d)", idx12, idx03)
+		}
+	})
+
+	t.Run("empty UpdatedAt sorts as zero-time (oldest)", func(t *testing.T) {
+		// 11 beads with ascending timestamps + 1 with empty UpdatedAt.
+		// The empty-UpdatedAt bead sorts as zero-time (oldest) and falls off the cap.
+		// ts-01 (2024-01-01, oldest stamped) also falls off: top 10 are ts-02..ts-11.
+		beads := make([]protocol.Bead, 12)
+		for i := range 11 {
+			beads[i] = protocol.Bead{
+				ID:        fmt.Sprintf("ts-%02d", i+1),
+				Title:     fmt.Sprintf("Stamped %02d", i+1),
+				Status:    "closed",
+				UpdatedAt: fmt.Sprintf("2024-01-%02dT00:00:00Z", i+1),
+			}
+		}
+		beads[11] = protocol.Bead{
+			ID:     "no-ts",
+			Title:  "No timestamp",
+			Status: "closed",
+			// UpdatedAt intentionally empty → sorts as zero-time (oldest)
+		}
+
+		board := NewBoardModel(beads)
+		theme := DefaultTheme()
+		output := board.Render(theme, NewStyles(theme))
+
+		// Header: 10 visible of 12.
+		if !strings.Contains(output, "Done (10/12)") {
+			t.Errorf("expected 'Done (10/12)' in header\ngot:\n%s", output)
+		}
+
+		// The empty-UpdatedAt bead (zero-time = oldest) must not appear.
+		if strings.Contains(output, "no-ts") {
+			t.Errorf("bead with empty UpdatedAt should sort as oldest and be cut off\ngot:\n%s", output)
+		}
+
+		// ts-01 (oldest stamped) is also cut off — zero-time bead pushed ts-01 into the cap boundary.
+		if strings.Contains(output, "ts-01") {
+			t.Errorf("ts-01 (oldest stamped) should be cut off by cap\ngot:\n%s", output)
+		}
+	})
 }
