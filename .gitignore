@@ -26,6 +26,9 @@ Thumbs.db
 # Reference repos (cloned locally, not tracked)
 docs/alternative-architecture-analysis/reference/
 
+# Node.js
+node_modules/
+
 # Build artifacts
 oro-dash
 coverage.out

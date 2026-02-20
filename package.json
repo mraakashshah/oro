@@ -1,0 +1,8 @@
+{
+  "name": "oro",
+  "private": true,
+  "devDependencies": {
+    "@biomejs/biome": "2.4.4",
+    "markdownlint-cli2": "0.21.0"
+  }
+}
