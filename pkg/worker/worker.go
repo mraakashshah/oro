@@ -470,15 +470,16 @@ func (w *Worker) awaitSubprocessAndReport(ctx context.Context) {
 	}
 
 	// Claim responsibility for handling the subprocess exit.
+	// CAS: read old value, conditionally set, check if we won the race.
 	w.mu.Lock()
-	if !w.handleExitClaimed {
+	alreadyClaimed := w.handleExitClaimed
+	if !alreadyClaimed {
 		w.handleExitClaimed = true
 	}
-	claimed := w.handleExitClaimed
 	w.mu.Unlock()
 
-	// If watchContext already claimed it (unexpected death), exit.
-	if !claimed {
+	// If checkSubprocessHealth already claimed the exit, bail without sending DONE.
+	if alreadyClaimed {
 		return
 	}
 
