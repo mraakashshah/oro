@@ -180,3 +180,259 @@ func TestClassifyQuery_BypassPatterns(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tests targeting surviving mutations
+// ---------------------------------------------------------------------------
+
+// TestClassifyQuery_NormalizeRegexPattern exercises normalizeRegexPattern
+// indirectly via ClassifyQuery so that mutations in the normalization logic
+// are detected.
+func TestClassifyQuery_NormalizeRegexPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    codesearch.QueryType
+	}{
+		// double-backslash variants (Go raw-string literal \\w+, \\s+)
+		// These come in when callers pass strings produced by fmt.Sprintf or
+		// JSON encoding that double the backslash.
+		{
+			name:    "double-backslash \\w+ becomes W — structural",
+			pattern: `func \\w+`,
+			want:    codesearch.QueryStructural,
+		},
+		{
+			name:    "double-backslash \\s+ becomes space — structural",
+			pattern: `func \\s+\w+`,
+			want:    codesearch.QueryStructural,
+		},
+		{
+			name:    "double-backslash \\s* becomes space — structural",
+			pattern: `func \\s*\w+`,
+			want:    codesearch.QueryStructural,
+		},
+		{
+			name:    "double-backslash \\w* becomes W — structural",
+			pattern: `func \\w*`,
+			want:    codesearch.QueryStructural,
+		},
+		// \S+ / \S* treated as word match (W)
+		{
+			name:    "\\S+ treated as word match — structural",
+			pattern: `func\s+\S+`,
+			want:    codesearch.QueryStructural,
+		},
+		{
+			name:    "\\S* treated as word match — structural",
+			pattern: `func\s+\S*`,
+			want:    codesearch.QueryStructural,
+		},
+		// .* gap patterns
+		{
+			name:    ".* gap becomes space — struct suffix structural",
+			pattern: `type.*struct`,
+			want:    codesearch.QueryStructural,
+		},
+		{
+			name:    ".+ gap becomes space — func structural",
+			pattern: `func.+\w+`,
+			want:    codesearch.QueryStructural,
+		},
+		// escaped parens \( \) for method receivers
+		{
+			name:    "escaped parens in method receiver — structural",
+			pattern: `func \(\w+\s+\w+\) \w+`,
+			want:    codesearch.QueryStructural,
+		},
+		// multiple consecutive spaces collapse to one
+		{
+			name:    "multiple spaces collapse — structural",
+			pattern: "func   MyFunc",
+			want:    codesearch.QueryStructural,
+		},
+		// pure \\w+ with no prefix is NOT structural (falls through to literal)
+		{
+			name:    "bare \\w+ alone is literal",
+			pattern: `\\w+`,
+			want:    codesearch.QueryLiteral,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codesearch.ClassifyQuery(tt.pattern)
+			if got != tt.want {
+				t.Errorf("ClassifyQuery(%q) = %v, want %v", tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyQuery_IsStructuralPattern covers isStructuralPattern branches
+// that surviving mutations target.
+func TestClassifyQuery_IsStructuralPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    codesearch.QueryType
+	}{
+		// Literal pattern with no regex — "type Server struct" normalizes as-is
+		// and should still be structural via the suffix check.
+		{
+			name:    "literal type Server struct — structural",
+			pattern: "type Server struct",
+			want:    codesearch.QueryStructural,
+		},
+		// Method receiver with literal "func (" prefix.
+		{
+			name:    "func ( receiver prefix — structural",
+			pattern: "func (r *Router) ServeHTTP",
+			want:    codesearch.QueryStructural,
+		},
+		// Structural suffix without required "type " prefix must NOT classify as structural.
+		{
+			name:    "suffix struct without type prefix — literal",
+			pattern: "foo struct",
+			want:    codesearch.QueryLiteral,
+		},
+		{
+			name:    "suffix interface without type prefix — literal",
+			pattern: "foo interface",
+			want:    codesearch.QueryLiteral,
+		},
+		// "type " alone (bare keyword "type" was already tested; "type " with
+		// nothing after it — the keyword map contains "type" not "type ").
+		{
+			name:    "type keyword alone is literal",
+			pattern: "type",
+			want:    codesearch.QueryLiteral,
+		},
+		// Structural suffix check: "type " followed by only one char — still matches
+		// "type " prefix but rest is one char, and that IS something non-empty.
+		{
+			name:    "type X struct — structural",
+			pattern: "type X struct",
+			want:    codesearch.QueryStructural,
+		},
+		// Prefix must match the full keyword token including trailing space.
+		{
+			name:    "func_nospace is literal",
+			pattern: "funcFoo",
+			want:    codesearch.QueryLiteral,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codesearch.ClassifyQuery(tt.pattern)
+			if got != tt.want {
+				t.Errorf("ClassifyQuery(%q) = %v, want %v", tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyQuery_HasAlphanumeric covers hasAlphanumeric boundary conditions.
+func TestClassifyQuery_HasAlphanumeric(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    codesearch.QueryType
+	}{
+		// Only digits — hasAlphanumeric returns true (digits count), length >= 3 —
+		// falls through bareKeywords (no match), no semantic prefix, no structural
+		// match => literal.
+		{
+			name:    "digits only 123 — literal",
+			pattern: "123",
+			want:    codesearch.QueryLiteral,
+		},
+		// Exactly 3 chars (boundary: len < 3 is literal, len == 3 continues).
+		{
+			name:    "length exactly 3 alphanumeric — literal (no structural match)",
+			pattern: "abc",
+			want:    codesearch.QueryLiteral,
+		},
+		// Exactly 2 chars — below threshold, always literal.
+		{
+			name:    "length 2 — trivial literal",
+			pattern: "ab",
+			want:    codesearch.QueryLiteral,
+		},
+		// No alphanumeric at all (pure metacharacters, len >= 3) — literal.
+		{
+			name:    "pure metacharacters no alphanumeric — literal",
+			pattern: `\s+`,
+			want:    codesearch.QueryLiteral,
+		},
+		// Mixed metacharacters with digit — length >= 3, has alphanumeric.
+		{
+			name:    "metacharacter with digit suffix — literal",
+			pattern: `\s1`,
+			want:    codesearch.QueryLiteral,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codesearch.ClassifyQuery(tt.pattern)
+			if got != tt.want {
+				t.Errorf("ClassifyQuery(%q) = %v, want %v", tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyQuery_AllSemanticPrefixes ensures every entry in semanticPrefixes
+// is covered so mutations that alter individual prefix strings are detected.
+func TestClassifyQuery_AllSemanticPrefixes(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+	}{
+		{"where is", "where is auth logic"},
+		{"where are", "where are the handlers"},
+		{"how does", "how does authentication work"},
+		{"how do", "how do I configure TLS"},
+		{"how is", "how is the context propagated"},
+		{"what is", "what is the retry strategy"},
+		{"what are", "what are the middlewares"},
+		{"what handles", "what handles incoming requests"},
+		{"why is", "why is this locked"},
+		{"why does", "why does the test fail"},
+		{"why do", "why do we need this wrapper"},
+		{"find the", "find the error handler"},
+		{"show me", "show me the config loader"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codesearch.ClassifyQuery(tt.pattern)
+			if got != codesearch.QuerySemantic {
+				t.Errorf("ClassifyQuery(%q) = %v, want QuerySemantic", tt.pattern, got)
+			}
+		})
+	}
+}
+
+// TestClassifyQuery_AllBareKeywordsLiteral covers every bareKeyword entry,
+// including the ones not exercised by existing tests (type, function, export, async).
+func TestClassifyQuery_AllBareKeywordsLiteral(t *testing.T) {
+	keywords := []string{
+		"func", "def", "class", "struct", "interface", "impl",
+		"trait", "enum", "fn",
+		// Previously uncovered bare keywords:
+		"type", "function", "export", "async",
+	}
+
+	for _, kw := range keywords {
+		kw := kw
+		t.Run("bare keyword: "+kw, func(t *testing.T) {
+			got := codesearch.ClassifyQuery(kw)
+			if got != codesearch.QueryLiteral {
+				t.Errorf("ClassifyQuery(%q) = %v, want QueryLiteral (bare keyword)", kw, got)
+			}
+		})
+	}
+}
