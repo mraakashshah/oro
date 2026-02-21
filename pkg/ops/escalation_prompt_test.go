@@ -96,3 +96,182 @@ func TestBuildEscalationPrompt_EmptyOptionalFields(t *testing.T) {
 		t.Fatalf("prompt missing bead ID with minimal opts, got:\n%s", prompt)
 	}
 }
+
+// --- writeEscalationHeader content tests ---
+
+func TestWriteEscalationHeader_OneShotManagerAgent(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "STUCK_WORKER",
+		BeadID:         "oro-hdr",
+	})
+	if !strings.Contains(prompt, "one-shot manager agent") {
+		t.Fatalf("header missing 'one-shot manager agent', got:\n%s", prompt)
+	}
+}
+
+func TestWriteEscalationHeader_EscalationTypeInHeader(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "MERGE_CONFLICT",
+		BeadID:         "oro-hdr2",
+	})
+	// The header should explicitly label the escalation type
+	if !strings.Contains(prompt, "Escalation type: MERGE_CONFLICT") {
+		t.Fatalf("header missing 'Escalation type: MERGE_CONFLICT', got:\n%s", prompt)
+	}
+}
+
+func TestWriteEscalationHeader_TaskOutputProhibition(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "MISSING_AC",
+		BeadID:         "oro-hdr3",
+	})
+	if !strings.Contains(prompt, "TaskOutput") {
+		t.Fatalf("header missing TaskOutput prohibition, got:\n%s", prompt)
+	}
+}
+
+// --- writePlaybook section content tests ---
+
+func TestWritePlaybook_StuckWorker_StepsContent(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "STUCK_WORKER",
+		BeadID:         "oro-sw",
+	})
+	if !strings.Contains(prompt, "Check the worker") {
+		t.Fatalf("STUCK_WORKER playbook missing 'Check the worker', got:\n%s", prompt)
+	}
+}
+
+func TestWritePlaybook_MergeConflict_GoTestStep(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "MERGE_CONFLICT",
+		BeadID:         "oro-mc",
+	})
+	if !strings.Contains(prompt, "go test ./...") {
+		t.Fatalf("MERGE_CONFLICT playbook missing 'go test ./...', got:\n%s", prompt)
+	}
+}
+
+func TestWritePlaybook_PriorityContention_Steps(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "PRIORITY_CONTENTION",
+		BeadID:         "oro-pc",
+	})
+	if !strings.Contains(prompt, "bd list --status=in_progress") {
+		t.Fatalf("PRIORITY_CONTENTION playbook missing 'bd list --status=in_progress', got:\n%s", prompt)
+	}
+}
+
+func TestWritePlaybook_MissingAC_Steps(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "MISSING_AC",
+		BeadID:         "oro-mac",
+	})
+	if !strings.Contains(prompt, "bd show") {
+		t.Fatalf("MISSING_AC playbook missing 'bd show', got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "--acceptance") {
+		t.Fatalf("MISSING_AC playbook missing '--acceptance' flag, got:\n%s", prompt)
+	}
+}
+
+func TestWritePlaybook_DefaultType_UnknownEscalationText(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "TOTALLY_UNKNOWN_TYPE",
+		BeadID:         "oro-def",
+	})
+	if !strings.Contains(prompt, "Unknown escalation type: TOTALLY_UNKNOWN_TYPE") {
+		t.Fatalf("default case missing 'Unknown escalation type: TOTALLY_UNKNOWN_TYPE', got:\n%s", prompt)
+	}
+}
+
+// --- writeAvailableCLI section content tests ---
+
+func TestWriteAvailableCLI_BdShow(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "STUCK_WORKER",
+		BeadID:         "oro-cli",
+	})
+	if !strings.Contains(prompt, "bd show <id>") {
+		t.Fatalf("CLI section missing 'bd show <id>', got:\n%s", prompt)
+	}
+}
+
+func TestWriteAvailableCLI_OroDirective(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "STUCK_WORKER",
+		BeadID:         "oro-cli2",
+	})
+	if !strings.Contains(prompt, "oro directive restart-worker") {
+		t.Fatalf("CLI section missing 'oro directive restart-worker', got:\n%s", prompt)
+	}
+}
+
+// --- writeEscalationOutput section content tests ---
+
+func TestWriteEscalationOutput_ACKFormat(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "STUCK_WORKER",
+		BeadID:         "oro-out",
+	})
+	if !strings.Contains(prompt, "ACK: <brief description of action taken>") {
+		t.Fatalf("output section missing ACK format, got:\n%s", prompt)
+	}
+}
+
+func TestWriteEscalationOutput_ESCALATEFormat(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "STUCK_WORKER",
+		BeadID:         "oro-out2",
+	})
+	if !strings.Contains(prompt, "ESCALATE: <reason this needs human attention>") {
+		t.Fatalf("output section missing ESCALATE format, got:\n%s", prompt)
+	}
+}
+
+// --- parseEscalationOutput tests ---
+
+func TestParseEscalationOutput_ACK_ReturnsVerdictResolved(t *testing.T) {
+	verdict, feedback := parseEscalationOutput("ACK: restarted the stalled worker")
+	if verdict != VerdictResolved {
+		t.Fatalf("expected VerdictResolved for ACK output, got %q", verdict)
+	}
+	if !strings.Contains(feedback, "restarted the stalled worker") {
+		t.Fatalf("expected feedback to contain action, got %q", feedback)
+	}
+}
+
+func TestParseEscalationOutput_ESCALATE_ReturnsVerdictFailed(t *testing.T) {
+	verdict, feedback := parseEscalationOutput("ESCALATE: semantic conflict requires human judgment")
+	if verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed for ESCALATE output, got %q", verdict)
+	}
+	if !strings.Contains(feedback, "semantic conflict requires human judgment") {
+		t.Fatalf("expected feedback to contain reason, got %q", feedback)
+	}
+}
+
+func TestParseEscalationOutput_NoVerdict_ReturnsVerdictFailedWithFullOutput(t *testing.T) {
+	fullOutput := "I looked at the bead but couldn't figure out what to do next."
+	verdict, feedback := parseEscalationOutput(fullOutput)
+	if verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed when no verdict keyword present, got %q", verdict)
+	}
+	if feedback != fullOutput {
+		t.Fatalf("expected full output as feedback, got %q", feedback)
+	}
+}
+
+func TestParseEscalationOutput_ACK_CaseInsensitive(t *testing.T) {
+	verdict, _ := parseEscalationOutput("ack: did the thing")
+	if verdict != VerdictResolved {
+		t.Fatalf("expected VerdictResolved for lowercase 'ack:', got %q", verdict)
+	}
+}
+
+func TestParseEscalationOutput_ESCALATE_CaseInsensitive(t *testing.T) {
+	verdict, _ := parseEscalationOutput("escalate: need human help")
+	if verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed for lowercase 'escalate:', got %q", verdict)
+	}
+}
