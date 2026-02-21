@@ -94,7 +94,9 @@ fi
 
 # JSON: biome check (format + lint)
 # Prefer project-local biome (./node_modules/.bin/biome) over system install
-staged_json=$(git diff --cached --name-only --diff-filter=d -- '*.json')
+# Exclude package-lock.json — biome treats it as a protected auto-generated file
+# and exits 1 when all provided files are ignored.
+staged_json=$(git diff --cached --name-only --diff-filter=d -- '*.json' | grep -v '^package-lock\.json$')
 if [ -n "$staged_json" ]; then
     if [ -x "./node_modules/.bin/biome" ]; then
         BIOME_CMD="./node_modules/.bin/biome"
