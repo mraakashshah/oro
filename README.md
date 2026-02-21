@@ -239,7 +239,7 @@ Workers emit `[MEMORY]` markers during execution. The dispatcher also extracts l
 ### Prerequisites
 
 ```bash
-# Go 1.24+
+# Go 1.26
 go version
 
 # Claude Code CLI
