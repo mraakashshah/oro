@@ -57,6 +57,10 @@ func ensureSearchHook(binPath, srcDir string) error {
 		return fmt.Errorf("create hook dir: %w", err)
 	}
 
+	// Remove stale binary before rebuilding; go build refuses to overwrite a
+	// file that isn't a valid object/executable (Go 1.21+).
+	_ = os.Remove(binPath)
+
 	// Derive repo root (two levels up from srcDir which is cmd/oro-search-hook).
 	repoRoot := filepath.Dir(filepath.Dir(srcDir))
 
