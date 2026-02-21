@@ -97,8 +97,8 @@ lint:
 	golangci-lint run --timeout 5m
 
 fmt:
-	gofumpt -w .
-	goimports -w .
+	go tool gofumpt -w .
+	go tool goimports -w .
 
 vet: stage-assets
 	go vet ./...
@@ -116,7 +116,7 @@ clean: clean-assets
 mutate-go:
 	@echo "Running Go mutation testing on pkg/..."
 	@trap 'git checkout -- pkg/ 2>/dev/null || true' EXIT; \
-	go-mutesting --exec-timeout=30 pkg/... 2>&1 | tee /tmp/go-mutesting-output.txt; \
+	go tool go-mutesting --exec-timeout=30 pkg/... 2>&1 | tee /tmp/go-mutesting-output.txt; \
 	git checkout -- pkg/ 2>/dev/null || true; \
 	score=$$(grep "The mutation score is" /tmp/go-mutesting-output.txt | awk '{print $$5}'); \
 	echo "Mutation score: $$score"; \
@@ -132,7 +132,7 @@ mutate-go-diff:
 	changed=$$(git diff --name-only main -- '*.go' 2>/dev/null | grep -v '_test\.go$$' | grep -v '_generated\.' | grep -v 'cmd/oro/_assets'); \
 	if [ -z "$$changed" ]; then echo "No changed Go files to mutate"; exit 0; fi; \
 	printf "Mutating: %s\n" "$$changed"; \
-	printf '%s\n' "$$changed" | xargs go-mutesting --exec-timeout=30 2>&1 | tee /tmp/go-mutesting-diff.txt; \
+	printf '%s\n' "$$changed" | xargs go tool go-mutesting --exec-timeout=30 2>&1 | tee /tmp/go-mutesting-diff.txt; \
 	git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true; \
 	score=$$(grep "The mutation score is" /tmp/go-mutesting-diff.txt | awk '{print $$5}'); \
 	echo "Mutation score: $$score"; \
