@@ -121,8 +121,8 @@ mutate-go:
 	git checkout -- pkg/ 2>/dev/null || true; \
 	score=$$(grep "The mutation score is" /tmp/go-mutesting-output.txt | awk '{print $$5}'); \
 	echo "Mutation score: $$score"; \
-	if [ -n "$$score" ] && [ $$(echo "$$score < 0.40" | bc -l) -eq 1 ]; then \
-		echo "FAIL: mutation score $$score is below 0.40 threshold"; \
+	if [ -n "$$score" ] && [ $$(echo "$$score < 0.55" | bc -l) -eq 1 ]; then \
+		echo "FAIL: mutation score $$score is below 0.55 threshold"; \
 		exit 1; \
 	fi
 
