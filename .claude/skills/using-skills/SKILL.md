@@ -24,7 +24,7 @@ If an invoked skill turns out to be wrong for the situation, you don't need to f
 
 **Discipline:** test-driven-development, systematic-debugging, verification-before-completion, observe-before-editing, destructive-command-safety
 
-**Workflow:** brainstorming, writing-plans, executing-plans, requesting-code-review, receiving-code-review, finishing-work, review-implementation, review-docs, adversarial-spec-review
+**Workflow:** spec, brainstorming, writing-plans, executing-plans, requesting-code-review, receiving-code-review, finishing-work, review-implementation, review-docs, adversarial-spec-review
 
 **Orchestration:** dispatching-parallel-agents, workflow-routing, premortem, completion-check, explore
 
