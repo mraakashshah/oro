@@ -133,8 +133,8 @@ lane_go() {
     # --- Tier 1: Formatting (parallel) ---
     header "GO TIER 1: FORMATTING"
     parallel_checks \
-        "gofumpt" "test -z \"\$(gofumpt -l $GO_DIRS 2>/dev/null)\"" \
-        "goimports" "test -z \"\$(goimports -l $GO_DIRS 2>/dev/null)\""
+        "gofumpt" "test -z \"\$(go tool gofumpt -l $GO_DIRS 2>/dev/null)\"" \
+        "goimports" "test -z \"\$(go tool goimports -l $GO_DIRS 2>/dev/null)\""
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
 
@@ -234,9 +234,7 @@ lane_go() {
         "go build" "go build -buildvcs=false ./..."
         "go vet" "go vet ./..."
     )
-    if command -v govulncheck >/dev/null 2>&1; then
-        tier3_checks+=("govulncheck" "govulncheck ./...")
-    fi
+    tier3_checks+=("govulncheck" "go tool govulncheck ./...")
     parallel_checks "${tier3_checks[@]}"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
@@ -273,7 +271,7 @@ lane_go() {
             local output mutesting_exit=0
             local -a changed_files
             mapfile -t changed_files <<< "$changed"
-            output=$(go-mutesting --exec-timeout=30 "${changed_files[@]}" 2>&1) || mutesting_exit=$?
+            output=$(go tool go-mutesting --exec-timeout=30 "${changed_files[@]}" 2>&1) || mutesting_exit=$?
             git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true
             echo "$output"
             local score
