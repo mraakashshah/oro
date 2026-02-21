@@ -17,7 +17,7 @@ Detect the user's primary goal from their message:
 |--------|------|-------------|
 | "how does", "what is", "find", "understand" | **Research** | `explore` → document findings |
 | "design", "architect", "plan", "break down" | **Plan** | `brainstorming` → `premortem` → `writing-plans` |
-| "spec", "decompose", "break into beads", "encode" | **Encode** | `bead-craft` (decompose mode) |
+| "spec", "decompose", "break into beads", "encode" | **Encode** | `beadcraft` (decompose mode) |
 | "add", "implement", "create", "build" | **Build** | `executing-beads` → `finishing-work` |
 | "fix", "broken", "failing", "debug", "bug" | **Fix** | `systematic-debugging` → `test-driven-development` → `finishing-work` |
 | "work bead", "pick up a bead", "execute bead", "do <id>" | **Work Bead** | `work-bead` |
@@ -28,7 +28,7 @@ If intent is clear from context, infer the goal. Otherwise, ask:
 What's your primary goal?
 1. Research — understand/explore something
 2. Plan — design and spec a solution (brainstorming → premortem → writing-plans)
-3. Encode — decompose a spec into beads (bead-craft)
+3. Encode — decompose a spec into beads (beadcraft)
 4. Build — execute beads and ship
 5. Fix — debug/fix an issue
 ```
@@ -53,9 +53,9 @@ What's your primary goal?
 
 ### Encode
 
-**Runs automatically — invoke bead-craft and present the tree.**
+**Runs automatically — invoke beadcraft and present the tree.**
 
-1. `bead-craft` (decompose mode) — parse spec into epic + task beads with full quality (Rule of Five, acceptance criteria, Read/Signature/Edges)
+1. `beadcraft` (decompose mode) — parse spec into epic + task beads with full quality (Rule of Five, acceptance criteria, Read/Signature/Edges)
 2. Present bead tree for user confirmation
 3. Suggest: "Ready to build?"
 

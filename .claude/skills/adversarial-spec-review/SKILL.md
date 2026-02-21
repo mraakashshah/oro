@@ -226,7 +226,7 @@ integration_points:
 
 If FAIL:
 1. Present findings to user with specific fixes
-2. Create beads for each gap (use `bead-craft` create mode)
+2. Create beads for each gap (use `beadcraft` create mode)
 3. Re-run this review after fixes are applied (the Ralph Loop)
 
 If PASS:

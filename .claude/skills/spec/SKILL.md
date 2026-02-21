@@ -35,9 +35,9 @@ Return the full output in the specified YAML format."
 
 Do not skip this stage. Specs without adversarial review ship broken.
 
-### Stage 3 — Decompose (`bead-craft` Decompose mode)
+### Stage 3 — Decompose (`beadcraft` Decompose mode)
 
-Invoke `bead-craft` in Decompose mode on the validated design doc:
+Invoke `beadcraft` in Decompose mode on the validated design doc:
 
 - Create the epic bead
 - Decompose into task beads with full anatomy (Test: | Cmd: | Assert: | Read: | Signature: | Edges:)

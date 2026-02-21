@@ -32,7 +32,7 @@ If an invoked skill turns out to be wrong for the situation, you don't need to f
 
 **Continuity:** create-handoff, resume-handoff, documenting-solutions, refactor, using-git-worktrees, writing-skills, context-checkpoint
 
-**Beads:** bead-craft, executing-beads, work-bead
+**Beads:** beadcraft, executing-beads, work-bead
 
 ## Priority
 
@@ -63,6 +63,7 @@ These thoughts mean STOP — you're rationalizing:
 | "I'll just do this one thing first" | Check BEFORE doing anything. |
 | "This feels productive" | Undisciplined action wastes time. Skills prevent this. |
 | "I know what that means" | Knowing the concept ≠ using the skill. Invoke it. |
+| "Creating a bead without running beadcraft" | beadcraft defines quality for every bead |
 
 ## Commitment Protocol
 
