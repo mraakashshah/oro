@@ -1,0 +1,69 @@
+---
+date: 2026-02-20
+status: partial
+---
+
+goal: >
+  Created spec skill (brainstorm → adversarial-review → beads pipeline).
+  Added structural-only scope guard to adversarial-spec-review.
+  Started audit of potentially orphaned review skills.
+
+now: >
+  1. git push (2 commits ahead of origin — spec skill + adversarial-spec-review scope guard)
+  2. Complete the orphaned skills audit (see open_question below)
+
+test: go test ./... -race -count=1 && go build ./...
+
+done_this_session:
+  - task: Create spec skill — lightweight orchestration of brainstorm → adversarial-review → bead-craft
+    files: [.claude/skills/spec/SKILL.md, .claude/skills/using-skills/SKILL.md]
+    commit: 4344423
+  - task: Add Scope section to adversarial-spec-review — structural findings only, self-check question
+    files: [.claude/skills/adversarial-spec-review/SKILL.md]
+    commit: 0d8ecee
+
+decisions:
+  spec_skill_as_lightweight_orchestrator: >
+    User wanted a high-level skill that names the pipeline, not a CLI command.
+    Skill just sequences brainstorming → adversarial-spec-review → bead-craft.
+    No new logic — pure coordination.
+  adversarial_review_scope_guard: >
+    Added self-check question: "If this gap existed and all beads passed, would
+    the feature be visibly broken or untestable?" If no → not a finding.
+    Explicit in-scope/out-of-scope lists. Minor negative_space gaps must not
+    affect verdict.
+
+open_question:
+  orphaned_skills_audit: >
+    User asked: do we actually use these skills?
+    - requesting-code-review
+    - receiving-code-review
+    - finishing-work
+    - review-implementation
+    - review-docs
+    Search cut off at context limit. Partial findings:
+    - workflow-routing/SKILL.md references them 5 times
+    - executing-plans/SKILL.md references them 1 time
+    - work-bead/SKILL.md: 0 references
+    - executing-beads/SKILL.md: 0 references
+    - No hooks or CLAUDE.md reference them
+    Next: read workflow-routing and executing-plans to see if references are
+    substantive (actively invoked) or just listed. Then read the 5 skills
+    themselves to assess whether they overlap with existing spec/bead pipeline.
+    Decision: keep, merge into spec skill, or delete.
+
+next:
+  - git push
+  - Read workflow-routing/SKILL.md and executing-plans/SKILL.md to assess how
+    the 5 skills are referenced
+  - Read each of the 5 skills and decide: keep / merge / delete
+  - Resume spec-suggest brainstorm (user chose option A — bd suggest "title"
+    outputs drafted acceptance criteria — but session ended before full design)
+
+files:
+  created: [.claude/skills/spec/SKILL.md]
+  modified:
+    - .claude/skills/using-skills/SKILL.md
+    - .claude/skills/adversarial-spec-review/SKILL.md
+
+context_at_handoff: 51% (Sonnet threshold 50% — compacting now)
