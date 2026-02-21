@@ -16,6 +16,28 @@ If you can answer that question, the spec has a gap. Fix it before execution beg
 
 **This is Gate 1 (design) and Gate 2 (coverage) of the Ralph Loop pipeline.**
 
+## Scope — What Is and Is Not a Finding
+
+**Self-check for every finding before writing it down:**
+> "If this gap existed and all beads passed, would the feature be visibly broken or untestable?"
+> If **no** → not a finding. Drop it.
+
+**In scope (structural failures):**
+- Wiring gaps — component built but never called
+- Missing bead — no one delivers a required criterion
+- Untestable acceptance — can't write a binary pass/fail command
+- Format mismatch across a boundary — producer and consumer disagree
+- Cross-cutting concern with no covering bead
+
+**Out of scope (handled elsewhere):**
+- Error message wording, naming, style → quality gate catches these
+- Minor missing error handling → workers use judgment; QG and code review handle it
+- "You should also add X" suggestions → feature creep, not spec gaps
+- Logging format, output prettiness → not structural
+- Anything already covered by the project quality gate or ops review
+
+When in doubt, mark it `minor` in negative_space and do not let it affect the verdict.
+
 ## When to Use
 
 - After writing a spec, before decomposing into beads (design gate)
@@ -233,3 +255,5 @@ The agent reads the spec, reads the code, produces the review. Fresh eyes, no as
 - Assuming "covered" without tracing the actual call chain
 - Running this on individual beads (wrong tool — use QG + review for that)
 - Reviewer who wrote the spec reviewing their own spec (use a subagent)
+- Flagging style, naming, or error message wording as findings — use the self-check
+- Letting minor negative_space items inflate a PASS into a FAIL
