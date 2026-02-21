@@ -173,6 +173,8 @@ setup: install-git-hooks
 	npm install
 	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin $(GOLANGCI_LINT_VERSION)
+	@echo "Installing Python dependencies..."
+	uv sync
 	@echo "✓ Setup complete."
 
 # install-git-hooks symlinks the canonical git hooks from git/hooks/ into .git/hooks/.
