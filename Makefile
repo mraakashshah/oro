@@ -1,8 +1,9 @@
-.PHONY: build build-dash build-search-hook install install-git-hooks test lint fmt vet gate clean stage-assets clean-assets dev-sync mutate-go mutate-go-diff mutate-py mutate-py-full
+.PHONY: build build-dash build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync mutate-go mutate-go-diff mutate-py mutate-py-full
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
 ORO_HOME ?= $(HOME)/.oro
+GOLANGCI_LINT_VERSION ?= v2.10.1
 
 # stage-assets copies oro config assets from the repo's assets/ directory into
 # cmd/oro/_assets/ so that go:embed can bundle them into the binary.
@@ -160,6 +161,19 @@ mutate-py-full:
 	uv run cr-report "$$cr_db" && \
 	uv run cr-rate "$$cr_db" --fail-over 50; \
 	rc=$$?; rm -f "$$cr_db"; exit $$rc
+
+# setup installs all dev tooling required by the quality gate:
+#   - npm deps (biome, markdownlint-cli2) from package.json
+#   - golangci-lint at the pinned version via the official install script
+#   - git hooks via install-git-hooks
+#   Go tool deps (gofumpt, goimports, go-mutesting, govulncheck) are pinned in
+#   go.mod and auto-fetched on first use via `go tool <name>` — no manual install.
+setup: install-git-hooks
+	@echo "Installing npm dependencies..."
+	npm install
+	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin $(GOLANGCI_LINT_VERSION)
+	@echo "✓ Setup complete."
 
 # install-git-hooks symlinks the canonical git hooks from git/hooks/ into .git/hooks/.
 # Run once after cloning: make install-git-hooks

@@ -239,7 +239,7 @@ Workers emit `[MEMORY]` markers during execution. The dispatcher also extracts l
 ### Prerequisites
 
 ```bash
-# Go 1.23+
+# Go 1.24+
 go version
 
 # Claude Code CLI
@@ -247,9 +247,6 @@ claude --version
 
 # Beads issue tracker
 brew install beads
-
-# Linter
-brew install golangci-lint
 ```
 
 ### Install
@@ -257,6 +254,7 @@ brew install golangci-lint
 ```bash
 git clone https://github.com/yourusername/oro.git
 cd oro
+make setup      # npm deps, golangci-lint, git hooks
 make build
 make install    # installs to $GOPATH/bin
 ```
@@ -404,11 +402,13 @@ Short-lived `claude -p` processes spawned by the dispatcher for operational task
 ### Build
 
 ```bash
+make setup          # Install dev tooling (npm deps, golangci-lint, git hooks)
 make build          # Build oro binary
 make build-dash     # Build TUI dashboard
 make install        # Install to $GOPATH/bin
 make test           # Run tests with race detector
 make lint           # Run golangci-lint
+make fmt            # Format Go files (gofumpt + goimports)
 make gate           # Full quality gate
 ```
 
