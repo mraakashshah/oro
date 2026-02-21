@@ -66,6 +66,10 @@ Write the simplest code that makes the test pass.
 
 Clean up while tests stay green. No new behavior.
 
+### Step 5b: Spec Check
+
+Invoke `review-implementation` against the bead's acceptance criteria and description. Confirm every requirement is met before proceeding to the quality gate.
+
 ### Step 6: Quality Gate
 
 Run the project quality gate:

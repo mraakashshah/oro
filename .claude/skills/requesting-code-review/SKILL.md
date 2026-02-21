@@ -54,6 +54,8 @@ Check for:
 
 ### 4. Act on feedback
 
+When feedback arrives, invoke `receiving-code-review` before implementing anything.
+
 | Severity | Action |
 |----------|--------|
 | **Critical** | Fix immediately |

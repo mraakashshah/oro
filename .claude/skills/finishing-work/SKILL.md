@@ -85,6 +85,8 @@ If genuinely clean run, say so — but clean runs should be rare. Most work has 
 
 Log friction to the relevant `bd` issue notes or `~/.oro/projects/<name>/decisions&discoveries.md` if it's a broader insight.
 
+**Then invoke `review-docs`** to check that documentation still matches the code that just landed. Stale docs are worse than no docs.
+
 **Then invoke `documenting-solutions`** to capture any non-trivial problems solved during this work. This is not optional — if you learned something worth knowing next time, document it.
 
 ### Step 5: Landing the Plane
