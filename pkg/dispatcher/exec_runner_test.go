@@ -46,16 +46,11 @@ func TestExecCommandRunner_Run_MultipleArgs(t *testing.T) {
 }
 
 func TestExecCommandRunner_Run_WithGitRepo(t *testing.T) {
-	// Unset git environment variables that may be inherited when this test runs
-	// inside a pre-commit hook. GIT_DIR and GIT_INDEX_FILE from the hook context
-	// cause git commands inside the temp repo to operate on the outer repo's
-	// objects/index rather than the temp repo's, causing spurious failures.
-	for _, key := range []string{"GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"} {
-		orig, set := os.LookupEnv(key)
-		if set {
-			os.Unsetenv(key)                           //nolint:errcheck
-			t.Cleanup(func() { os.Setenv(key, orig) }) //nolint:errcheck
-		}
+	// Isolate git from the parent repo and any hook environment.
+	// t.Setenv is race-safe and auto-restores on cleanup.
+	for _, key := range []string{"GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_PREFIX"} {
+		t.Setenv(key, "")
+		os.Unsetenv(key) //nolint:errcheck
 	}
 
 	runner := &dispatcher.ExecCommandRunner{}
@@ -64,13 +59,19 @@ func TestExecCommandRunner_Run_WithGitRepo(t *testing.T) {
 	// Create a temporary git repository
 	tmpDir := t.TempDir()
 
+	// Prevent git from discovering the parent repo by walking up.
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(tmpDir))
+	// Prevent system/global config from interfering.
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(tmpDir, ".gitconfig-empty"))
+
 	// Initialize git repo
 	_, err := runner.Run(ctx, "git", "-C", tmpDir, "init")
 	if err != nil {
 		t.Fatalf("git init failed: %v", err)
 	}
 
-	// Configure git user (required for commits)
+	// Configure git user (required for commits) — scoped to tmpDir repo
 	_, err = runner.Run(ctx, "git", "-C", tmpDir, "config", "user.name", "Test User")
 	if err != nil {
 		t.Fatalf("git config user.name failed: %v", err)
@@ -92,8 +93,8 @@ func TestExecCommandRunner_Run_WithGitRepo(t *testing.T) {
 		t.Fatalf("git add failed: %v", err)
 	}
 
-	// Commit the file
-	_, err = runner.Run(ctx, "git", "-C", tmpDir, "commit", "-m", "Initial commit")
+	// Commit the file (--no-verify to avoid triggering parent repo hooks)
+	_, err = runner.Run(ctx, "git", "-C", tmpDir, "commit", "--no-verify", "-m", "Initial commit")
 	if err != nil {
 		t.Fatalf("git commit failed: %v", err)
 	}

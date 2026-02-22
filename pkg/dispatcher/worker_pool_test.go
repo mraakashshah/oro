@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"sync"
 	"testing"
@@ -21,9 +22,11 @@ type failConn struct {
 func (f *failConn) Write([]byte) (int, error) {
 	return 0, net.ErrClosed
 }
+
 func (f *failConn) Read([]byte) (int, error) {
 	return 0, net.ErrClosed
 }
+
 func (f *failConn) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -35,13 +38,6 @@ func (f *failConn) RemoteAddr() net.Addr             { return nil }
 func (f *failConn) SetDeadline(time.Time) error      { return nil }
 func (f *failConn) SetReadDeadline(time.Time) error  { return nil }
 func (f *failConn) SetWriteDeadline(time.Time) error { return nil }
-
-// closedAt records whether Close has been called
-func (f *failConn) isClosed() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.closed
-}
 
 // --- upsertWorker tests ---
 
@@ -870,7 +866,7 @@ func TestSendToWorker_BuffersExactlyMaxMessages(t *testing.T) {
 	// Send exactly maxPendingMessages — should NOT remove the worker
 	d.mu.Lock()
 	for i := 0; i < maxPendingMessages; i++ {
-		d.sendToWorker(w, msg) //nolint:errcheck
+		d.sendToWorker(w, msg) //nolint:errcheck,gosec
 	}
 	d.mu.Unlock()
 
@@ -885,14 +881,14 @@ func TestSendToWorker_BuffersExactlyMaxMessages(t *testing.T) {
 
 // isWorkerUnreachable checks if err is a *protocol.WorkerUnreachableError.
 func isWorkerUnreachable(err error, out **protocol.WorkerUnreachableError) bool {
-	if err == nil {
+	var e *protocol.WorkerUnreachableError
+	if !errors.As(err, &e) {
 		return false
 	}
-	e, ok := err.(*protocol.WorkerUnreachableError)
-	if ok && out != nil {
+	if out != nil {
 		*out = e
 	}
-	return ok
+	return true
 }
 
 // --- GracefulShutdownWorker tests ---
