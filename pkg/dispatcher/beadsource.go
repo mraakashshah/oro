@@ -98,9 +98,24 @@ func extractACFromDescription(desc string) string {
 	body = strings.TrimLeft(body, "\r\n")
 	// Stop at the next H2 header if present.
 	if next := strings.Index(body, "\n## "); next >= 0 {
-		body = body[:next]
+		// body[next] is the '\n' immediately before '## '. Trim all trailing
+		// newlines from the content portion (body[:next]), then re-add exactly
+		// one '\n' only when the last content line terminated directly at the
+		// ## boundary (no blank line between content and next header).
+		// A blank line means body[next-1] == '\n' (two consecutive newlines).
+		content := strings.TrimRight(body[:next], "\r\n")
+		if next > 0 && body[next-1] != '\n' {
+			// Single newline before ##: last content line ends here, keep terminator.
+			body = content + "\n"
+		} else {
+			// Blank line (or start) before ##: drop trailing whitespace entirely.
+			body = content
+		}
+	} else {
+		// No following header: trim trailing whitespace for a clean result.
+		body = strings.TrimRight(body, " \t\r\n")
 	}
-	return strings.TrimSpace(body)
+	return body
 }
 
 // findHeaderAtLineStart finds the header text at the start of a line

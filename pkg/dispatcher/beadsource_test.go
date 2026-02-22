@@ -615,6 +615,30 @@ func TestExtractACFromDescription(t *testing.T) {
 			desc: "## ACCEPTANCE CRITERIA\n- [ ] All caps with hashes\n- [ ] Should work",
 			want: "- [ ] All caps with hashes\n- [ ] Should work",
 		},
+		// AC#1: simple header immediately followed by content (idx=0 case)
+		{
+			name: "ac1_header_immediately_followed_by_content",
+			desc: "## Acceptance Criteria\ncontent",
+			want: "content",
+		},
+		// AC#2: no AC header returns empty string
+		{
+			name: "ac2_no_ac_header_returns_empty",
+			desc: "Some other text with no relevant header.",
+			want: "",
+		},
+		// AC#3: truncated at next ## header, body includes trailing newline before ##
+		{
+			name: "ac3_truncated_at_next_h2_preserves_trailing_newline",
+			desc: "## Acceptance Criteria\nfoo\n## Next\nmore",
+			want: "foo\n",
+		},
+		// AC#4: bare "acceptance criteria" header without ## prefix
+		{
+			name: "ac4_bare_acceptance_criteria_no_hash",
+			desc: "acceptance criteria\ncontent",
+			want: "content",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -624,6 +648,41 @@ func TestExtractACFromDescription(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFindHeaderAtLineStart(t *testing.T) {
+	// AC#5: header at position 0 returns 0, not -1
+	t.Run("ac5_header_at_start_returns_0", func(t *testing.T) {
+		got := findHeaderAtLineStart("## AC\nmore", "## AC")
+		if got != 0 {
+			t.Errorf("findHeaderAtLineStart: got %d, want 0", got)
+		}
+	})
+
+	// AC#6: missing header returns -1
+	t.Run("ac6_missing_header_returns_negative_one", func(t *testing.T) {
+		got := findHeaderAtLineStart("some text\nno header here", "## acceptance criteria")
+		if got != -1 {
+			t.Errorf("findHeaderAtLineStart: got %d, want -1", got)
+		}
+	})
+
+	// AC#7: idx=0 case - body starts after newline correctly (header at position 0)
+	t.Run("ac7_idx_zero_body_starts_after_newline", func(t *testing.T) {
+		desc := "## Acceptance Criteria\nbody text"
+		descLower := strings.ToLower(desc)
+		header := "## acceptance criteria"
+		idx := findHeaderAtLineStart(descLower, header)
+		if idx != 0 {
+			t.Fatalf("findHeaderAtLineStart: got %d, want 0", idx)
+		}
+		// Simulate what extractACFromDescription does: skip past header, then trim leading newlines
+		body := desc[idx+len(header):]
+		body = strings.TrimLeft(body, "\r\n")
+		if body != "body text" {
+			t.Errorf("body after header: got %q, want %q", body, "body text")
+		}
+	})
 }
 
 func TestCLIBeadSource_Show_ExtractsACFromDescription(t *testing.T) {
