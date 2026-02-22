@@ -46,6 +46,18 @@ func TestExecCommandRunner_Run_MultipleArgs(t *testing.T) {
 }
 
 func TestExecCommandRunner_Run_WithGitRepo(t *testing.T) {
+	// Unset git environment variables that may be inherited when this test runs
+	// inside a pre-commit hook. GIT_DIR and GIT_INDEX_FILE from the hook context
+	// cause git commands inside the temp repo to operate on the outer repo's
+	// objects/index rather than the temp repo's, causing spurious failures.
+	for _, key := range []string{"GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"} {
+		orig, set := os.LookupEnv(key)
+		if set {
+			os.Unsetenv(key)                           //nolint:errcheck
+			t.Cleanup(func() { os.Setenv(key, orig) }) //nolint:errcheck
+		}
+	}
+
 	runner := &dispatcher.ExecCommandRunner{}
 	ctx := context.Background()
 
