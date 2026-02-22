@@ -198,6 +198,84 @@ func TestStaleSocketCleanup_ActiveDispatcherBlocksSecond(t *testing.T) {
 	}
 }
 
+// TestStaleSocketCleanup_StatErrorReturnsError tests that a non-IsNotExist
+// stat error is propagated back to the caller.
+// This kills mutant 1 (removal of `return fmt.Errorf("stat socket...")`)
+// which would silently ignore the stat error and fall through to dial.
+func TestStaleSocketCleanup_StatErrorReturnsError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("permission tests are not meaningful when running as root")
+	}
+
+	// Create a directory with no-search permission. stat() on any path inside
+	// it returns EACCES (permission denied), which is NOT os.IsNotExist.
+	parentDir := t.TempDir()
+	lockedDir := filepath.Join(parentDir, "locked")
+	if err := os.Mkdir(lockedDir, 0o700); err != nil {
+		t.Fatalf("mkdir locked dir: %v", err)
+	}
+
+	// Create a placeholder file inside the locked dir before sealing it.
+	sockPath := filepath.Join(lockedDir, "test.sock")
+	if err := os.WriteFile(sockPath, nil, 0o600); err != nil {
+		t.Fatalf("create placeholder: %v", err)
+	}
+
+	// Seal the directory: no read, write, or execute bits.
+	if err := os.Chmod(lockedDir, 0o000); err != nil {
+		t.Fatalf("chmod locked dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(lockedDir, 0o700) }) //nolint:gosec // restoring dir permissions in cleanup
+
+	// cleanStaleSocket should propagate the stat error, not return nil.
+	err := cleanStaleSocket(sockPath)
+	if err == nil {
+		t.Fatal("expected error from stat on inaccessible path, got nil")
+	}
+
+	// The error must mention "stat socket" to confirm it comes from the stat
+	// branch, not some later stage.
+	if !containsSubstr(err.Error(), "stat socket") {
+		t.Fatalf("expected error to mention 'stat socket', got: %v", err)
+	}
+}
+
+// TestStaleSocketCleanup_RemoveErrorReturnsError tests that a failure in
+// os.Remove is propagated back as an error.
+// This kills mutant 3 (removal of `return fmt.Errorf("remove stale socket...")`)
+// which would silently swallow the Remove error and return nil.
+func TestStaleSocketCleanup_RemoveErrorReturnsError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("permission tests are not meaningful when running as root")
+	}
+
+	// Create the stale socket file inside a directory we will write-protect.
+	parentDir := t.TempDir()
+	sockPath := filepath.Join(parentDir, "stale.sock")
+	if err := os.WriteFile(sockPath, nil, 0o600); err != nil {
+		t.Fatalf("create stale socket: %v", err)
+	}
+
+	// Remove write permission from the parent directory so os.Remove(sockPath)
+	// will fail with EACCES rather than succeeding.
+	if err := os.Chmod(parentDir, 0o500); err != nil { //nolint:gosec // intentionally restricting dir write permission for test
+		t.Fatalf("chmod parent dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parentDir, 0o700) }) //nolint:gosec // restoring dir permissions in cleanup
+
+	// Nobody is listening on the socket, so the dial attempt will fail and
+	// cleanStaleSocket will attempt os.Remove — which should fail.
+	err := cleanStaleSocket(sockPath)
+	if err == nil {
+		t.Fatal("expected error when os.Remove fails, got nil")
+	}
+
+	// The error must mention "remove stale socket".
+	if !containsSubstr(err.Error(), "remove stale socket") {
+		t.Fatalf("expected error to mention 'remove stale socket', got: %v", err)
+	}
+}
+
 // containsSubstr is a simple substring check helper.
 func containsSubstr(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
