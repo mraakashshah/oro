@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
@@ -841,5 +843,119 @@ func TestBeadTrackerGrowthIsBounded(t *testing.T) {
 		if total != 0 {
 			t.Errorf("empty maps: total keys after noop = %d, want 0", total)
 		}
+	})
+}
+
+// TestPruneStaleTracking_PerMapAssertions verifies that deleteOrphanedTracking
+// removes entries from each of the 9 tracking maps individually when a bead is
+// orphaned (not in activeBeads), and preserves entries when the bead is active.
+func TestPruneStaleTracking_PerMapAssertions(t *testing.T) {
+	t.Run("deleteOrphanedTracking_clears_all_9_maps", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		// Seed all 9 maps with "bead-1".
+		seedTrackingMaps(d, "bead-1")
+
+		// Call deleteOrphanedTracking with empty activeBeads — bead-1 is orphaned.
+		d.mu.Lock()
+		d.deleteOrphanedTracking(map[string]bool{})
+		d.mu.Unlock()
+
+		// Assert each map individually.
+		d.mu.Lock()
+		defer d.mu.Unlock()
+
+		_, ok := d.attemptCounts["bead-1"]
+		require.False(t, ok, "attemptCounts not cleared")
+
+		_, ok = d.handoffCounts["bead-1"]
+		require.False(t, ok, "handoffCounts not cleared")
+
+		_, ok = d.rejectionCounts["bead-1"]
+		require.False(t, ok, "rejectionCounts not cleared")
+
+		_, ok = d.pendingHandoffs["bead-1"]
+		require.False(t, ok, "pendingHandoffs not cleared")
+
+		_, ok = d.qgStuckTracker["bead-1"]
+		require.False(t, ok, "qgStuckTracker not cleared")
+
+		_, ok = d.escalatedBeads["bead-1"]
+		require.False(t, ok, "escalatedBeads not cleared")
+
+		_, ok = d.worktreeFailures["bead-1"]
+		require.False(t, ok, "worktreeFailures not cleared")
+
+		_, ok = d.exhaustedBeads["bead-1"]
+		require.False(t, ok, "exhaustedBeads not cleared")
+
+		_, ok = d.assigningBeads["bead-1"]
+		require.False(t, ok, "assigningBeads not cleared")
+	})
+
+	t.Run("deleteOrphanedTracking_preserves_active_bead_in_all_9_maps", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		// Seed all 9 maps with "bead-1".
+		seedTrackingMaps(d, "bead-1")
+
+		// Call deleteOrphanedTracking with bead-1 marked active — must be preserved.
+		d.mu.Lock()
+		d.deleteOrphanedTracking(map[string]bool{"bead-1": true})
+		d.mu.Unlock()
+
+		// Assert each map individually still contains "bead-1".
+		d.mu.Lock()
+		defer d.mu.Unlock()
+
+		_, ok := d.attemptCounts["bead-1"]
+		require.True(t, ok, "attemptCounts should be preserved for active bead")
+
+		_, ok = d.handoffCounts["bead-1"]
+		require.True(t, ok, "handoffCounts should be preserved for active bead")
+
+		_, ok = d.rejectionCounts["bead-1"]
+		require.True(t, ok, "rejectionCounts should be preserved for active bead")
+
+		_, ok = d.pendingHandoffs["bead-1"]
+		require.True(t, ok, "pendingHandoffs should be preserved for active bead")
+
+		_, ok = d.qgStuckTracker["bead-1"]
+		require.True(t, ok, "qgStuckTracker should be preserved for active bead")
+
+		_, ok = d.escalatedBeads["bead-1"]
+		require.True(t, ok, "escalatedBeads should be preserved for active bead")
+
+		_, ok = d.worktreeFailures["bead-1"]
+		require.True(t, ok, "worktreeFailures should be preserved for active bead")
+
+		_, ok = d.exhaustedBeads["bead-1"]
+		require.True(t, ok, "exhaustedBeads should be preserved for active bead")
+
+		_, ok = d.assigningBeads["bead-1"]
+		require.True(t, ok, "assigningBeads should be preserved for active bead")
+	})
+}
+
+// TestAllTrackingKeys verifies that allTrackingKeys returns keys from every
+// tracking map, including exhaustedBeads which was the historically missing one.
+func TestAllTrackingKeys(t *testing.T) {
+	t.Run("exhaustedBeads_included_in_union", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		// Populate only exhaustedBeads — all other maps are empty.
+		d.mu.Lock()
+		d.exhaustedBeads["bead-x"] = true
+		keys := d.allTrackingKeys()
+		d.mu.Unlock()
+
+		found := false
+		for _, k := range keys {
+			if k == "bead-x" {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "allTrackingKeys must include bead-x from exhaustedBeads")
 	})
 }
