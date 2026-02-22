@@ -1,0 +1,116 @@
+---
+date: 2026-02-22
+status: partial
+---
+
+goal: >
+  Kill dispatcher mutation survivors across all pkg/dispatcher/*.go files.
+  Increase kill rates to per-file targets (55-70%). Multiple parallel agents
+  dispatched via worktrees.
+
+now: >
+  Wait for running background agents to complete. For each that finishes:
+    1. git --git-dir=/Users/as21/codehouse/oro/.git --work-tree=/Users/as21/codehouse/oro cherry-pick <commit>
+    2. git ... worktree remove --force .worktrees/<id>
+    3. git ... branch -D agent/<id>
+    4. Check bd ready for newly-unblocked beads; dispatch next agent.
+  After all done: git ... log --oneline | head; then `git push`
+
+test: go test -C /Users/as21/codehouse/oro ./pkg/dispatcher/... -race -count=1
+
+done_this_session:
+  - task: "oro-v5jf: rename bead-craft skill to beadcraft, mandate use"
+    commit: ac79b69
+  - task: "oro-eclo.2: qg_stuck.go mutation kill rate 90.9% (exceeds 70% target)"
+    commits: [2a800a4, bfd5405]
+  - task: "oro-eclo.4: exec_runner.go already 100% kill rate — no changes needed"
+  - task: "oro-eclo.5: stale_socket.go 100% kill rate"
+    commit: cb7a11c
+  - task: "oro-hqlx.1: extractACFromDescription/findHeaderAtLineStart 7 edge case tests + bug fix"
+    commit: a8d49f5
+  - task: "oro-b3of.1: clearBeadTracking 9 per-map assertions + idempotent test"
+    commit: bc14f43
+  - task: "oro-hqlx.2: Show() populates BeadDetail fields — 5 assertions"
+    commit: 0bc2d7e
+
+git_head: 0bc2d7e
+
+active_agents:
+  - id: aef0711025cd0f421
+    bead: oro-eclo.3
+    worktree: .worktrees/eclo3
+    branch: agent/eclo3
+    task: extractor.go mutation kill rate to 70%
+  - id: a11e627101744c5fd
+    bead: oro-eclo.7
+    worktree: .worktrees/eclo7
+    branch: agent/eclo7
+    task: pane_monitor.go mutation kill rate to 55%
+  - id: a675eddfa9f606369
+    bead: oro-eclo.1
+    worktree: .worktrees/eclo1
+    branch: agent/eclo1
+    task: health.go mutation kill rate to 70%
+  - id: a3e49c1e27e455476
+    bead: oro-eclo.6
+    worktree: .worktrees/eclo6
+    branch: agent/eclo6
+    task: worker_logs.go mutation kill rate to 55%
+  - id: aa5150f8dacff2263
+    bead: oro-b3of.2
+    worktree: .worktrees/b3of2
+    branch: agent/b3of2
+    task: deleteOrphanedTracking per-map deletions + allTrackingKeys completeness
+  - id: a1da23757a344ce76
+    bead: oro-hqlx.3
+    worktree: .worktrees/hqlx3
+    branch: agent/hqlx3
+    task: "Create() flags, bug priority override, HasChildren empty-list"
+
+remaining_beads_after_agents:
+  - oro-hqlx (epic): auto-closes when hqlx.1+hqlx.2+hqlx.3 all close
+  - oro-b3of (epic): auto-closes when b3of.1+b3of.2 all close
+  - oro-eclo (epic): auto-closes when eclo.1+...+eclo.7 all close
+  - possibly new eclo.N beads created by bd as children
+
+decisions:
+  merge_strategy: >
+    Cherry-pick instead of rebase while any worktrees are active.
+    When ALL worktrees removed, can rebase for cleaner history.
+  worktree_git_dir: >
+    git status/cherry-pick requires explicit --git-dir and --work-tree flags
+    because the main repo appears as (bare) when worktrees exist.
+    Use: git --git-dir=/Users/as21/codehouse/oro/.git --work-tree=/Users/as21/codehouse/oro <cmd>
+  go_mutesting_location: >
+    Run go-mutesting from /Users/as21/codehouse/oro (main repo) targeting
+    pkg/dispatcher/file.go. Write test changes to worktree test files.
+    Run go test with -C pointing to worktree. Commit with git -C worktree.
+  pre_commit_hook_fix: >
+    eclo2 agent added env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE -u GIT_PREFIX
+    to the go test invocation in .git/hooks/pre-commit to prevent TestExecCommandRunner_Run_WithGitRepo
+    from recursively triggering the pre-commit hook during worktree commits.
+  first_wave_agents_killed: >
+    First-wave agents (dispatched before /clear + session resume) were killed
+    silently. Their worktrees had no commits after 1hr. Re-dispatched fresh agents.
+
+findings:
+  pass_fail_semantics: "PASS=survived(bad), FAIL=killed(good), score=kill rate"
+  equivalent_mutant: >
+    qg_stuck.go had 1 surviving mutant that was equivalent (main repo had a bug
+    i <= n vs correct i < n) — can't kill equivalent mutants
+  compact_risk: >
+    Some agents compacted instead of completing (b3of2, eclo6 first attempt).
+    Fixed by adding "Do NOT compact" to agent prompts.
+
+next:
+  - Wait for 6 active agents to complete (notifications will fire)
+  - Cherry-pick each completion into main (use --git-dir/--work-tree flags)
+  - Remove worktrees + branches after cherry-pick
+  - Check bd ready after each merge for newly unblocked beads
+  - After all done: run full quality gate then git push
+  - Close parent epics if not auto-closed: bd close oro-hqlx oro-b3of oro-eclo
+
+beads:
+  completed: [oro-v5jf, oro-eclo.2, oro-eclo.4, oro-eclo.5, oro-hqlx.1, oro-b3of.1, oro-hqlx.2]
+  in_progress: [oro-eclo.1, oro-eclo.3, oro-eclo.6, oro-eclo.7, oro-b3of.2, oro-hqlx.3]
+  epics: [oro-hqlx, oro-b3of, oro-eclo]
