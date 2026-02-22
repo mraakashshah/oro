@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -311,5 +312,235 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 		// Loop exited cleanly
 	case <-time.After(1 * time.Second):
 		t.Error("paneMonitorLoop did not exit after context cancellation")
+	}
+}
+
+// newPaneTestDispatcher creates a minimal Dispatcher for unit tests of pane monitor functions.
+func newPaneTestDispatcher(t *testing.T, threshold int, panesDir string) *Dispatcher {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("failed to init schema: %v", err)
+	}
+	cfg := Config{
+		PaneContextThreshold: threshold,
+		PaneMonitorInterval:  100 * time.Millisecond,
+	}
+	cfg = cfg.withDefaults()
+	return &Dispatcher{
+		cfg:           cfg,
+		db:            db,
+		panesDir:      panesDir,
+		nowFunc:       time.Now,
+		signaledPanes: make(map[string]bool),
+	}
+}
+
+// TestCheckPaneContext_ExactThreshold kills mutant .go.6 (>= vs >):
+// pct == threshold must trigger signalHandoff (>= is correct, > would miss this case).
+func TestCheckPaneContext_ExactThreshold(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	roleDir := filepath.Join(panesDir, "architect")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const threshold = 60
+	pctFile := filepath.Join(roleDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte(strconv.Itoa(threshold)), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	d := newPaneTestDispatcher(t, threshold, panesDir)
+	d.checkPaneContext(context.Background(), "architect")
+
+	handoffFile := filepath.Join(roleDir, "handoff_requested")
+	if _, err := os.Stat(handoffFile); os.IsNotExist(err) {
+		t.Error("handoff_requested must be created when pct == threshold (>= not >)")
+	}
+}
+
+// TestCheckPaneContext_BelowThreshold ensures no signal when pct < threshold.
+func TestCheckPaneContext_BelowThreshold(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	roleDir := filepath.Join(panesDir, "architect")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const threshold = 60
+	pctFile := filepath.Join(roleDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("59"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	d := newPaneTestDispatcher(t, threshold, panesDir)
+	d.checkPaneContext(context.Background(), "architect")
+
+	handoffFile := filepath.Join(roleDir, "handoff_requested")
+	if _, err := os.Stat(handoffFile); err == nil {
+		t.Error("handoff_requested must NOT be created when pct < threshold")
+	}
+}
+
+// TestCheckPaneContext_AlreadySignaled kills mutant .go.1 (remove return from alreadySignaled guard):
+// once a pane is signaled, subsequent calls must not touch the handoff file again.
+func TestCheckPaneContext_AlreadySignaled(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	roleDir := filepath.Join(panesDir, "architect")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const threshold = 60
+	pctFile := filepath.Join(roleDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("80"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	d := newPaneTestDispatcher(t, threshold, panesDir)
+
+	// First call: should signal and set signaledPanes.
+	d.checkPaneContext(context.Background(), "architect")
+
+	handoffFile := filepath.Join(roleDir, "handoff_requested")
+	if _, err := os.Stat(handoffFile); os.IsNotExist(err) {
+		t.Fatal("handoff_requested must be created on first call")
+	}
+
+	// Verify signaledPanes is set.
+	d.mu.Lock()
+	if !d.signaledPanes["architect"] {
+		t.Error("signaledPanes[architect] must be true after first signal")
+	}
+	d.mu.Unlock()
+
+	// Remove handoff file, then call again — should NOT re-create it.
+	if err := os.Remove(handoffFile); err != nil {
+		t.Fatalf("remove handoff: %v", err)
+	}
+
+	d.checkPaneContext(context.Background(), "architect")
+
+	// File must still be absent (early return via alreadySignaled guard).
+	if _, err := os.Stat(handoffFile); err == nil {
+		t.Error("handoff_requested must not be re-created for already-signaled pane")
+	}
+}
+
+// TestSignalHandoff_SetsSignaledPanes kills mutant .go.14 (signaledPanes[role]=true removed):
+// signalHandoff must mark the pane in signaledPanes after writing the file.
+func TestSignalHandoff_SetsSignaledPanes(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	roleDir := filepath.Join(panesDir, "manager")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	d := newPaneTestDispatcher(t, 60, panesDir)
+	d.signalHandoff(context.Background(), "manager", roleDir, 75)
+
+	handoffFile := filepath.Join(roleDir, "handoff_requested")
+	if _, err := os.Stat(handoffFile); os.IsNotExist(err) {
+		t.Error("handoff_requested must be created by signalHandoff")
+	}
+
+	d.mu.Lock()
+	signaled := d.signaledPanes["manager"]
+	d.mu.Unlock()
+	if !signaled {
+		t.Error("signaledPanes[manager] must be true after signalHandoff")
+	}
+}
+
+// TestSignalHandoff_DeduplicatesOnLoop kills mutant .go.14 via the full loop path:
+// after signaling once, subsequent polls must not re-create the handoff file.
+func TestSignalHandoff_DeduplicatesOnLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	roleDir := filepath.Join(panesDir, "architect")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	const threshold = 60
+	pctFile := filepath.Join(roleDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("75"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	d := newPaneTestDispatcher(t, threshold, panesDir)
+	awaitPolls := pollCounter(d)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		d.paneMonitorLoop(ctx)
+		close(done)
+	}()
+
+	handoffFile := filepath.Join(roleDir, "handoff_requested")
+	waitFor(t, func() bool {
+		_, err := os.Stat(handoffFile)
+		return err == nil
+	}, 2*time.Second)
+
+	if err := os.Remove(handoffFile); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	afterRemove := awaitPolls(2)
+	waitFor(t, afterRemove, 2*time.Second)
+
+	if _, err := os.Stat(handoffFile); err == nil {
+		t.Error("handoff_requested must not be re-created for already-signaled pane")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("loop did not exit")
+	}
+}
+
+// TestCheckPaneContext_SignalsHandoffAboveThreshold kills mutant .go.4 (signalHandoff not called):
+// directly verifies that checkPaneContext calls signalHandoff when pct > threshold.
+func TestCheckPaneContext_SignalsHandoffAboveThreshold(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	roleDir := filepath.Join(panesDir, "manager")
+	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pctFile := filepath.Join(roleDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("90"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	d := newPaneTestDispatcher(t, 60, panesDir)
+	d.checkPaneContext(context.Background(), "manager")
+
+	handoffFile := filepath.Join(roleDir, "handoff_requested")
+	if _, err := os.Stat(handoffFile); os.IsNotExist(err) {
+		t.Error("handoff_requested must be created when pct > threshold")
+	}
+
+	d.mu.Lock()
+	signaled := d.signaledPanes["manager"]
+	d.mu.Unlock()
+	if !signaled {
+		t.Error("signaledPanes[manager] must be set after checkPaneContext triggers handoff")
 	}
 }
