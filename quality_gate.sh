@@ -330,7 +330,7 @@ lane_python() {
     header "PYTHON TIER 2: LINTING"
     local tier2_checks=("ruff check" "ruff check .")
     if command -v pylint >/dev/null 2>&1; then
-        tier2_checks+=("pylint" "find . -name '*.py' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' -not -path './.venv/*' -not -path './.claude/hooks/*' | xargs pylint --disable=all --enable=E")
+        tier2_checks+=("pylint" "find . -name '*.py' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' -not -path './.venv/*' -not -path './.claude/hooks/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' | xargs pylint --disable=all --enable=E")
     fi
     parallel_checks "${tier2_checks[@]}"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
