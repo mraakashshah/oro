@@ -616,6 +616,304 @@ func TestEscalation_ComplexPayload(t *testing.T) {
 	}
 }
 
+// --- Targeted mutation-kill tests (oro-eclo.8) ---
+
+// stepErrorRunner returns an error on the Nth non-has-session call (1-indexed).
+type stepErrorRunner struct {
+	step    int // which call (excluding has-session) to fail on
+	current int
+}
+
+func (m *stepErrorRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	if name == "tmux" && len(args) > 0 && args[0] == "has-session" {
+		return nil, nil
+	}
+	// skip display-message calls (wake infrastructure)
+	if name == "tmux" && len(args) > 0 && args[0] == "display-message" {
+		return []byte("1"), nil // simulate attached, so wake is skipped
+	}
+	m.current++
+	if m.current == m.step {
+		return nil, fmt.Errorf("injected error at step %d", m.step)
+	}
+	return nil, nil
+}
+
+// TestSanitizeForTmux_NewlineReplacement directly tests the pure sanitizeForTmux function.
+// Kills mutants that mutate string replacement logic.
+func TestSanitizeForTmux_NewlineReplacement(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"unix newline", "line1\nline2", "line1 line2"},
+		{"carriage return", "line1\rline2", "line1 line2"},
+		{"both", "line1\r\nline2", "line1  line2"},
+		{"multiple newlines", "a\nb\nc", "a b c"},
+		{"no newlines", "hello world", "hello world"},
+		{"empty string", "", ""},
+		{"only newline", "\n", " "},
+		{"only cr", "\r", " "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &mockEscRunner{}
+			esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+			// Call Escalate and check the set-buffer call contains sanitized text.
+			_ = esc.Escalate(context.Background(), tc.input)
+			// set-buffer is index 2 in runner.calls (has-session=0, send-keys C-u=1, set-buffer=2)
+			if len(runner.calls) < 3 {
+				t.Fatalf("expected at least 3 calls, got %d", len(runner.calls))
+			}
+			setCall := runner.calls[2]
+			if setCall.args[0] != "set-buffer" {
+				t.Fatalf("call 2 should be set-buffer, got %s", setCall.args[0])
+			}
+			got := setCall.args[len(setCall.args)-1]
+			if got != tc.want {
+				t.Errorf("sanitized msg = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWakeIfDetached_AttachedSkipsKill verifies that when session_attached != "0",
+// wakeIfDetached does NOT send SIGWINCH. Kills mutants 8-9 (missing return guard).
+func TestWakeIfDetached_AttachedSkipsKill(t *testing.T) {
+	// detachedOutput=nil causes mockEscRunner to NOT intercept display-message,
+	// and return nil (general err=nil), which means out="" and TrimSpace=""!="0" → returns early.
+	// But we need to return something non-"0" for the attached case.
+	runner := &mockEscRunner{
+		detachedOutput: []byte("1"), // session IS attached
+	}
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With session attached, there should be NO kill -WINCH calls.
+	for _, c := range runner.calls {
+		if c.name == "kill" {
+			t.Errorf("expected no kill calls when session is attached, got: %v %v", c.name, c.args)
+		}
+	}
+}
+
+// TestWakeIfDetached_DetachedSendsKill verifies that when session_attached == "0",
+// wakeIfDetached DOES send SIGWINCH. Kills mutants 10-11 (condition mutations).
+func TestWakeIfDetached_DetachedSendsKill(t *testing.T) {
+	runner := &mockEscRunner{
+		detachedOutput: []byte("0"), // session is detached
+	}
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With session detached, there must be at least one kill -WINCH call.
+	var killCount int
+	for _, c := range runner.calls {
+		if c.name == "kill" && len(c.args) > 0 && c.args[0] == "-WINCH" {
+			killCount++
+		}
+	}
+	if killCount == 0 {
+		t.Error("expected kill -WINCH calls when session is detached, got none")
+	}
+}
+
+// TestWakeIfDetached_DisplayMessageErrorSkipsKill verifies that when display-message
+// fails, wakeIfDetached still tries kill (since err != nil means "not attached").
+// But if pane_pid also fails, no kill should happen. Kills mutant 9 (missing return on pid error).
+func TestWakeIfDetached_DisplayMessageErrorSkipsKillWhenPidFails(t *testing.T) {
+	// Custom runner that: fails display-message (so we try to wake), and also fails pane_pid.
+	runner := &pidErrorRunner{}
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, c := range runner.calls {
+		if c.name == "kill" {
+			t.Errorf("expected no kill when pane_pid fails, got kill call: %v", c.args)
+		}
+	}
+}
+
+// pidErrorRunner: has-session succeeds, display-message fails (triggers wake path),
+// pane_pid display-message also fails (so kill is skipped), other calls succeed.
+type pidErrorRunner struct {
+	calls        []escCall
+	displayCount int
+}
+
+func (m *pidErrorRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	m.calls = append(m.calls, escCall{name: name, args: args})
+	if name == "tmux" && len(args) > 0 {
+		switch args[0] {
+		case "has-session":
+			return nil, nil
+		case "display-message":
+			m.displayCount++
+			// Fail all display-message calls → triggers wake path AND fails pid lookup.
+			return nil, fmt.Errorf("display-message error")
+		}
+	}
+	return nil, nil
+}
+
+// TestEscalate_CuError verifies that a C-u send-keys error is returned.
+// Kills mutant 3 (error return suppressed for C-u).
+func TestEscalate_CuError(t *testing.T) {
+	runner := &stepErrorRunner{step: 1} // step 1 = first non-has-session call = send-keys C-u
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error when C-u send-keys fails")
+	}
+	if !strings.Contains(err.Error(), "C-u") {
+		t.Errorf("error should mention C-u, got: %v", err)
+	}
+}
+
+// TestEscalate_SetBufferError verifies that a set-buffer error is returned.
+// Kills mutant 4 (error return suppressed for set-buffer).
+func TestEscalate_SetBufferError(t *testing.T) {
+	runner := &stepErrorRunner{step: 2} // step 2 = set-buffer
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error when set-buffer fails")
+	}
+	if !strings.Contains(err.Error(), "set-buffer") {
+		t.Errorf("error should mention set-buffer, got: %v", err)
+	}
+}
+
+// TestEscalate_PasteBufferError verifies that a paste-buffer error is returned.
+// Kills mutant 5 (error return suppressed for paste-buffer).
+func TestEscalate_PasteBufferError(t *testing.T) {
+	runner := &stepErrorRunner{step: 3} // step 3 = paste-buffer
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error when paste-buffer fails")
+	}
+	if !strings.Contains(err.Error(), "paste-buffer") {
+		t.Errorf("error should mention paste-buffer, got: %v", err)
+	}
+}
+
+// TestEscalate_EscapeError verifies that a send-keys Escape error is returned.
+// Kills mutant 6 (error return suppressed for Escape).
+func TestEscalate_EscapeError(t *testing.T) {
+	runner := &stepErrorRunner{step: 4} // step 4 = send-keys Escape
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error when send-keys Escape fails")
+	}
+	if !strings.Contains(err.Error(), "Escape") {
+		t.Errorf("error should mention Escape, got: %v", err)
+	}
+}
+
+// TestEscalate_EnterError verifies that a send-keys Enter error is returned.
+// Kills mutant 7 (error return suppressed for Enter).
+func TestEscalate_EnterError(t *testing.T) {
+	runner := &stepErrorRunner{step: 5} // step 5 = send-keys Enter
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error when send-keys Enter fails")
+	}
+	if !strings.Contains(err.Error(), "Enter") {
+		t.Errorf("error should mention Enter, got: %v", err)
+	}
+}
+
+// TestNewTmuxEscalator_DefaultSessionUsedInHasSession verifies that the default
+// session name "oro" is actually used in the has-session call.
+// Kills mutant 0 (default sessionName assignment removed).
+func TestNewTmuxEscalator_DefaultSessionUsedInHasSession(t *testing.T) {
+	runner := &mockEscRunner{}
+	esc := dispatcher.NewTmuxEscalator("", "", runner) // use defaults
+
+	_ = esc.Escalate(context.Background(), "test")
+
+	if len(runner.calls) == 0 {
+		t.Fatal("expected calls, got none")
+	}
+	hasSessionCall := runner.calls[0]
+	if hasSessionCall.args[0] != "has-session" {
+		t.Fatalf("first call should be has-session, got %s", hasSessionCall.args[0])
+	}
+	// The session name "-t" target must be "oro"
+	found := false
+	for i, arg := range hasSessionCall.args {
+		if arg == "-t" && i+1 < len(hasSessionCall.args) && hasSessionCall.args[i+1] == "oro" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected default session 'oro' in has-session call, got args: %v", hasSessionCall.args)
+	}
+}
+
+// TestNewTmuxEscalator_DefaultPaneUsedInSendKeys verifies that the default
+// pane "oro:manager" is used in send-keys calls.
+// Kills mutant 1 (default paneTarget assignment removed).
+func TestNewTmuxEscalator_DefaultPaneUsedInSendKeys(t *testing.T) {
+	runner := &mockEscRunner{}
+	esc := dispatcher.NewTmuxEscalator("", "", runner) // use defaults
+
+	_ = esc.Escalate(context.Background(), "test")
+
+	calls := coreCalls(runner.calls)
+	// send-keys C-u is calls[1]; check -t arg is "oro:manager"
+	if len(calls) < 2 {
+		t.Fatalf("expected at least 2 calls, got %d", len(calls))
+	}
+	cuCall := calls[1]
+	found := false
+	for i, arg := range cuCall.args {
+		if arg == "-t" && i+1 < len(cuCall.args) && cuCall.args[i+1] == "oro:manager" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected default pane 'oro:manager' in send-keys C-u call, got args: %v", cuCall.args)
+	}
+}
+
+// TestEscalate_HasSessionFails_ReturnsError verifies that has-session failure
+// causes Escalate to return an error mentioning the session name.
+// Kills mutant 2 (error return suppressed for has-session failure).
+func TestEscalate_HasSessionFails_ReturnsErrorWithSessionName(t *testing.T) {
+	runner := &mockEscRunner{hasSessionErr: fmt.Errorf("no such session")}
+	esc := dispatcher.NewTmuxEscalator("mysession", "mysession:0", runner)
+
+	err := esc.Escalate(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error when has-session fails")
+	}
+	if !strings.Contains(err.Error(), "mysession") {
+		t.Errorf("error should contain session name 'mysession', got: %v", err)
+	}
+}
+
 // TestEscalator_ConcurrentEscalations is the acceptance test for oro-jmil.1.
 // It verifies that 10 concurrent Escalate() calls each deliver their full
 // set-buffer → paste-buffer → send-keys sequence without interleaving,
