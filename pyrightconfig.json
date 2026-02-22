@@ -1,7 +1,6 @@
 {
 	"exclude": [
 		".claude/hooks",
-		"yap",
 		"archive",
 		".worktrees",
 		".venv",

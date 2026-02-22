@@ -330,7 +330,7 @@ lane_python() {
     header "PYTHON TIER 2: LINTING"
     local tier2_checks=("ruff check" "ruff check .")
     if command -v pylint >/dev/null 2>&1; then
-        tier2_checks+=("pylint" "find . -name '*.py' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' -not -path './.venv/*' -not -path './.claude/hooks/*' | xargs pylint --disable=all --enable=E")
+        tier2_checks+=("pylint" "find . -name '*.py' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './assets/*' -not -path './.venv/*' -not -path './.claude/hooks/*' | xargs pylint --disable=all --enable=E")
     fi
     parallel_checks "${tier2_checks[@]}"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
@@ -410,7 +410,7 @@ lane_other() {
 
     if $HAS_SHELL; then
         header "SHELL: LINT"
-        if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +"; then
+        if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +"; then
             pass=$((pass + 1))
         else
             fail=$((fail + 1))
@@ -428,8 +428,8 @@ lane_other() {
     fi
 
     local docs_checks=(
-        "markdownlint" "./node_modules/.bin/markdownlint-cli2 --config .markdownlint.yml 'docs/**/*.md' '*.md' '!references/**' '!yap/**' '!archive/**'"
-        "yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
+        "markdownlint" "./node_modules/.bin/markdownlint-cli2 --config .markdownlint.yml 'docs/**/*.md' '*.md' '!references/**' '!archive/**'"
+        "yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
     )
     if [ -n "$BIOME_PATHS" ]; then
         # shellcheck disable=SC2086

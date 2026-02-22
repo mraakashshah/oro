@@ -82,7 +82,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: shellcheck
-        run: find . -name '*.sh' -not -path './references/*' -not -path './yap/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +
+        run: find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +
 
   docs:
     name: Docs & Config
@@ -96,15 +96,15 @@ jobs:
       - name: markdownlint
         run: |
           npx markdownlint-cli2 --config .markdownlint.yml \
-            "docs/**/*.md" "*.md" "!references/**" "!yap/**" "!archive/**"
+            "docs/**/*.md" "*.md" "!references/**" "!archive/**"
 
       - name: yamllint
         run: |
           pip install yamllint
           find . \( -name '*.yml' -o -name '*.yaml' \) \
-            -not -path './references/*' -not -path './yap/*' \
-            -not -path './archive/*' -not -path './.worktrees/*' \
-            -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings
+            -not -path './references/*' -not -path './archive/*' \
+            -not -path './.worktrees/*' -not -path './node_modules/*' \
+            | xargs yamllint -d relaxed --no-warnings
 
       - name: biome (json)
         run: npx biome check --files-ignore-unknown=true docs/ .github/ .beads/ *.json
@@ -132,7 +132,7 @@ jobs:
 
       - name: pylint (errors only)
         run: |
-          find . -name '*.py' -not -path './references/*' -not -path './yap/*' \
+          find . -name '*.py' -not -path './references/*' \
             -not -path './archive/*' -not -path './.worktrees/*' -not -path './.venv/*' \
             -not -path './assets/*' -not -path './.claude/*' \
             | xargs uvx pylint --disable=all --enable=E
