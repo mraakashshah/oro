@@ -129,4 +129,202 @@ func TestApplyWorkerLogsDirective(t *testing.T) {
 			}
 		}
 	})
+
+	// --- Mutation-killing tests for applyWorkerLogs ---
+
+	t.Run("empty args returns error", func(t *testing.T) {
+		// Kills mutation: suppress 'worker-logs requires worker ID argument' error
+		_, err := d.applyWorkerLogs("")
+		if err == nil {
+			t.Fatal("expected error for empty args")
+		}
+		if !strings.Contains(err.Error(), "worker ID") {
+			t.Errorf("expected worker ID error, got: %v", err)
+		}
+	})
+
+	t.Run("explicit count 1 returns only last line", func(t *testing.T) {
+		// Kills mutation: len(parts) >= 1 vs > 1.
+		// With the buggy >= 1, a single-arg call treats the workerID as count arg
+		// position (off-by-one in slice logic), causing incorrect behaviour.
+		result, err := d.applyWorkerLogs(fmt.Sprintf("%s 1", workerID))
+		if err != nil {
+			t.Fatalf("applyWorkerLogs count=1 failed: %v", err)
+		}
+		if !strings.Contains(result, "line 5") {
+			t.Errorf("expected line 5, got: %s", result)
+		}
+		if strings.Contains(result, "line 4") || strings.Contains(result, "line 3") ||
+			strings.Contains(result, "line 2") || strings.Contains(result, "line 1") {
+			t.Errorf("expected only last 1 line, got: %s", result)
+		}
+	})
+
+	t.Run("zero count returns error", func(t *testing.T) {
+		// Kills mutation: suppress 'line count must be positive' for count <= 0
+		_, err := d.applyWorkerLogs(fmt.Sprintf("%s 0", workerID))
+		if err == nil {
+			t.Fatal("expected error for count=0")
+		}
+		if !strings.Contains(err.Error(), "positive") {
+			t.Errorf("expected positive-count error, got: %v", err)
+		}
+	})
+
+	t.Run("negative count returns error", func(t *testing.T) {
+		// Kills mutation: suppress 'line count must be positive' for count <= 0
+		_, err := d.applyWorkerLogs(fmt.Sprintf("%s -5", workerID))
+		if err == nil {
+			t.Fatal("expected error for negative count")
+		}
+		if !strings.Contains(err.Error(), "positive") {
+			t.Errorf("expected positive-count error, got: %v", err)
+		}
+	})
+
+	t.Run("non-numeric count returns error", func(t *testing.T) {
+		// Kills mutation: suppress 'invalid line count' error
+		_, err := d.applyWorkerLogs(fmt.Sprintf("%s abc", workerID))
+		if err == nil {
+			t.Fatal("expected error for non-numeric count")
+		}
+		if !strings.Contains(err.Error(), "invalid line count") {
+			t.Errorf("expected invalid line count error, got: %v", err)
+		}
+	})
+
+	t.Run("illegal characters in worker ID returns error", func(t *testing.T) {
+		// Kills mutation: suppress 'illegal characters' error.
+		// IDs must be single tokens (no spaces) with illegal chars to hit ID validation.
+		badIDs := []string{
+			"worker@id",
+			"worker!",
+			"worker#name",
+			"worker$1",
+		}
+		for _, id := range badIDs {
+			_, err := d.applyWorkerLogs(id)
+			if err == nil {
+				t.Errorf("expected error for illegal worker ID: %q", id)
+			}
+			if !strings.Contains(err.Error(), "illegal characters") {
+				t.Errorf("expected illegal characters error for %q, got: %v", id, err)
+			}
+		}
+	})
+
+	t.Run("worker not found returns error", func(t *testing.T) {
+		// Kills mutation: suppress 'worker X not found' error
+		_, err := d.applyWorkerLogs("valid-but-missing")
+		if err == nil {
+			t.Fatal("expected error for missing worker")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("expected not found error, got: %v", err)
+		}
+	})
+}
+
+// TestReadLastNLines tests readLastNLines directly to kill mutations in that function.
+func TestReadLastNLines(t *testing.T) {
+	t.Run("exact N lines returns all lines in order", func(t *testing.T) {
+		f := t.TempDir() + "/test.log"
+		lines := []string{"alpha", "beta", "gamma"}
+		if err := os.WriteFile(f, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readLastNLines(f, 3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("expected 3 lines, got %d: %v", len(got), got)
+		}
+		for i, want := range lines {
+			if got[i] != want {
+				t.Errorf("line %d: want %q, got %q", i, want, got[i])
+			}
+		}
+	})
+
+	t.Run("fewer than N lines returns all lines", func(t *testing.T) {
+		f := t.TempDir() + "/test.log"
+		if err := os.WriteFile(f, []byte("only one line\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readLastNLines(f, 10)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 line, got %d: %v", len(got), got)
+		}
+		if got[0] != "only one line" {
+			t.Errorf("expected 'only one line', got %q", got[0])
+		}
+	})
+
+	t.Run("more than N lines returns last N in order", func(t *testing.T) {
+		f := t.TempDir() + "/test.log"
+		var allLines []string
+		for i := 1; i <= 10; i++ {
+			allLines = append(allLines, fmt.Sprintf("line %d", i))
+		}
+		if err := os.WriteFile(f, []byte(strings.Join(allLines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readLastNLines(f, 3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("expected 3 lines, got %d: %v", len(got), got)
+		}
+		want := []string{"line 8", "line 9", "line 10"}
+		for i, w := range want {
+			if got[i] != w {
+				t.Errorf("line %d: want %q, got %q", i, w, got[i])
+			}
+		}
+	})
+
+	t.Run("empty file returns empty slice", func(t *testing.T) {
+		f := t.TempDir() + "/empty.log"
+		if err := os.WriteFile(f, []byte(""), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readLastNLines(f, 5)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected empty slice, got: %v", got)
+		}
+	})
+
+	t.Run("nonexistent file returns error", func(t *testing.T) {
+		_, err := readLastNLines("/nonexistent/path/to/file.log", 5)
+		if err == nil {
+			t.Fatal("expected error for nonexistent file")
+		}
+		if !strings.Contains(err.Error(), "open file") {
+			t.Errorf("expected 'open file' error, got: %v", err)
+		}
+	})
+
+	t.Run("lines returned in correct order not reversed", func(t *testing.T) {
+		f := t.TempDir() + "/order.log"
+		lines := []string{"first", "second", "third", "fourth", "fifth"}
+		if err := os.WriteFile(f, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readLastNLines(f, 3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Must be in original file order: third, fourth, fifth
+		if got[0] != "third" || got[1] != "fourth" || got[2] != "fifth" {
+			t.Errorf("lines not in correct order: %v", got)
+		}
+	})
 }
