@@ -1,7 +1,7 @@
 # Oro Install & Distribution: Making It Easy for People
 
 **Date:** 2026-02-22
-**Status:** Draft
+**Status:** Reviewed (adversarial review passed after revisions)
 **Author:** architect
 **Refines:** `2026-02-17-oro-distribution-and-setup.md` (same design, updated for implementation)
 
@@ -10,8 +10,7 @@
 Oro today can only be used by its own developers. There is no distribution
 path — no release binaries, no install script, no way for someone to download
 oro and use it on their own project. The quality gate is hardcoded for oro's
-own stack, and worker prompts hardcode oro-specific coding rules. Even if
-someone got the binary, it would enforce oro-internal conventions on their code.
+own stack, and worker prompts hardcode oro-specific coding rules.
 
 ## Audience
 
@@ -45,11 +44,23 @@ oro init
 
 ---
 
-## Design
+## Epic Structure
 
-### 1. Distribution: GitHub Releases + Install Script
+Adversarial review identified scope creep. Split into 3 independent epics:
 
-#### GoReleaser Configuration (`.goreleaser.yml`)
+| Epic | Scope | Ships independently |
+|------|-------|---------------------|
+| **A: Distribution** | GoReleaser + install.sh + `oro setup` (phases 1,2,4,5,6) + install.md rewrite | Yes — core value |
+| **B: Quality Gate Generation** | `oro setup` phase 3 + templates (.golangci.yml, pyproject.toml, quality_gate.sh) | Yes — enhances setup |
+| **C: Config-Driven Prompts** | Rewire `AssemblePrompt` to read from `.oro/config.yaml` + worktree path resolution | Yes — requires careful worktree handling |
+
+Epic A is the minimum viable distribution. Epics B and C layer on top.
+
+---
+
+## Epic A: Distribution
+
+### 1. GoReleaser Configuration (`.goreleaser.yml`)
 
 Builds 3 binaries for darwin/amd64 and darwin/arm64:
 
@@ -109,7 +120,7 @@ release:
 All three binaries ship in a single archive. `draft: true` allows review
 before publishing.
 
-#### Release CI Workflow (`.github/workflows/release.yml`)
+### 2. Release CI Workflow (`.github/workflows/release.yml`)
 
 ```yaml
 name: Release
@@ -138,9 +149,11 @@ jobs:
 macOS runner for darwin builds. `make stage-assets` runs as a GoReleaser
 before hook.
 
-#### CGO_ENABLED=0 Validation
+### 3. CGO_ENABLED=0 Validation
 
-Add a CI job that builds with `CGO_ENABLED=0` and runs the test suite:
+Add a CI job to the existing `ci.yml` that builds with `CGO_ENABLED=0` and
+runs the test suite. Note: `-race` requires CGO, so use `-count=1` without
+`-race` for the CGO-free check:
 
 ```yaml
   cgo-free-check:
@@ -151,15 +164,12 @@ Add a CI job that builds with `CGO_ENABLED=0` and runs the test suite:
         with:
           go-version-file: go.mod
       - run: make stage-assets
-      - run: CGO_ENABLED=0 go build ./cmd/oro
-      - run: CGO_ENABLED=0 go test -race -count=1 ./...
+      - run: CGO_ENABLED=0 go build ./cmd/oro ./cmd/oro-dash ./cmd/oro-search-hook
+      - run: CGO_ENABLED=0 go test -count=1 ./...
       - run: make clean-assets
 ```
 
-This runs on every push/PR to catch CGO regressions before they affect
-releases.
-
-#### Install Script (`scripts/install.sh`)
+### 4. Install Script (`scripts/install.sh`)
 
 Modeled on beads' install.sh. Steps:
 
@@ -172,22 +182,18 @@ Modeled on beads' install.sh. Steps:
 7. Create `~/.oro/bin/` and `~/.oro/hooks/` directories
 8. Install `oro-dash` to `~/.oro/bin/`
 9. Install `oro-search-hook` to `~/.oro/hooks/`
-10. Re-sign binaries for macOS (codesign — avoids Gatekeeper delay)
+10. Re-sign binaries for macOS (codesign — avoids Gatekeeper delay; skip
+    gracefully if codesign unavailable)
 11. Check PATH for `oro`, `~/.oro/bin`, print instructions if missing
 12. Print: `Run 'cd your-project && oro setup' to get started`
 
 The script supports upgrading: it overwrites existing binaries.
 
----
+### 5. `oro setup` Command (Epic A scope — without quality gate generation)
 
-### 2. `oro setup` Command
-
-New subcommand. Six phases, run in order. Safe to run multiple times
-(idempotent).
+Five phases (Phase 3/quality gate deferred to Epic B):
 
 #### Phase 1: Prerequisites Check
-
-Verify hard prerequisites that can't be auto-installed:
 
 ```
 Checking prerequisites...
@@ -201,130 +207,16 @@ Fail fast if `claude` or `brew` is missing. `git` is also required.
 
 #### Phase 2: Detect Project
 
-Detect languages present in the project:
+Detect languages via existing `langprofile` package:
 
 | Language | Marker files |
 |----------|-------------|
 | Go | `go.mod` |
 | Python | `pyproject.toml`, `setup.py`, or `requirements.txt` |
 
-Uses the existing `langprofile` package. Reads Go module name from `go.mod`
-for config generation. Creates `.oro/config.yaml` with detected languages
-and coding rules via `langprofile.GenerateConfig()`.
+Creates `.oro/config.yaml` with detected languages and coding rules.
 
-#### Phase 3: Generate Quality Gate
-
-Generate `quality_gate.sh` in the project root — a standalone, self-contained
-shell script tailored to the detected languages. This script is committed to
-the project repo and becomes the user's source of truth. It evolves
-independently from oro.
-
-Also generates language-specific config files:
-
-**For Go projects — `.golangci.yml`** (only if file doesn't exist):
-
-A comprehensive config with 30+ linters enabled: staticcheck, govet, errcheck,
-errorlint, wrapcheck, gocyclo, gocognit, funlen, gosec, gocritic, revive,
-and more. `{{MODULE_NAME}}` in the goimports local-prefixes setting is
-replaced with the actual Go module name.
-
-Test files get relaxed rules (no funlen, gocyclo, wrapcheck, etc.).
-
-**For Python projects — `pyproject.toml` sections** (only add sections that
-don't already exist):
-
-```toml
-[tool.ruff]
-line-length = 120
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"]
-
-[tool.pyright]
-venvPath = "."
-venv = ".venv"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-```
-
-If `pyproject.toml` doesn't exist, create it with a minimal `[project]`
-section. If it exists, only append missing `[tool.*]` sections. Never
-overwrite existing tool configuration.
-
-**Generated `quality_gate.sh`:**
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Generated by oro setup — this file is yours to evolve.
-# Oro workers run this script after every bead. All checks must pass.
-
-PASS=0
-FAIL=0
-
-check() {
-    local name="$1"; shift
-    if "$@" > /dev/null 2>&1; then
-        printf "  [\033[32mPASS\033[0m] %s\n" "$name"
-        ((PASS++))
-    else
-        printf "  [\033[31mFAIL\033[0m] %s\n" "$name"
-        ((FAIL++))
-    fi
-}
-
-# === Go checks ===  (present only if go.mod detected)
-
-echo "Go checks..."
-check "gofumpt"         bash -c 'test -z "$(gofumpt -l .)"'
-check "goimports"       bash -c 'test -z "$(goimports -l .)"'
-check "golangci-lint"   golangci-lint run --timeout 5m ./...
-check "go test"         go test -race -shuffle=on -coverprofile=coverage.out ./...
-check "coverage >= 70%" bash -c '
-    pct=$(go tool cover -func=coverage.out | tail -1 | awk "{print \$NF}" | tr -d "%")
-    awk "BEGIN {exit ($pct < 70.0)}"
-'
-check "govulncheck"     govulncheck ./...
-check "go build"        go build ./...
-check "go vet"          go vet ./...
-
-# === Python checks ===  (present only if pyproject.toml/setup.py detected)
-
-echo "Python checks..."
-check "ruff format"     ruff format --check .
-check "ruff check"      ruff check .
-check "pyright"         pyright
-check "pytest"          uv run pytest
-
-# === Docs & config ===  (always present)
-
-echo "Docs & config checks..."
-if command -v markdownlint > /dev/null 2>&1; then
-    check "markdownlint" markdownlint '**/*.md'
-fi
-if command -v yamllint > /dev/null 2>&1; then
-    check "yamllint" yamllint .
-fi
-if command -v shellcheck > /dev/null 2>&1; then
-    check "shellcheck" bash -c 'find . -name "*.sh" -not -path "./.git/*" | xargs shellcheck'
-fi
-
-# === Summary ===
-
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-if [ "$FAIL" -gt 0 ]; then
-    exit 1
-fi
-```
-
-Language sections are conditionally included based on detection. Docs checks
-use `command -v` guards — they run if the tool is installed, skip silently
-if not.
-
-#### Phase 4: Install Tools
+#### Phase 3: Install Tools
 
 **Tier 1: Oro runtime** (always installed):
 
@@ -352,174 +244,67 @@ if not.
 | `ruff` | `uv tool install ruff` |
 | `pyright` | `uv tool install pyright` |
 
-All brew installs are batched:
+Brew installs batched: `HOMEBREW_NO_AUTO_UPDATE=1 brew install ...`
 
-```bash
-HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux jq ripgrep uv beads golangci-lint
-```
+Skip any tool already on PATH. After install, check PATH for `~/go/bin`
+and `~/.local/bin`. Print exact export lines if missing.
 
-Skip any tool already on PATH. Print status for each:
+**Developer tools** (`oro setup --dev`) adds markdownlint, yamllint,
+shellcheck, biome.
 
-```
-Installing tools...
-  [1/7] tmux ............. found (3.5a)
-  [2/7] jq ............... found (1.7.1)
-  [3/7] rg ............... installing via brew... done (14.1.1)
-  [4/7] uv ............... found (0.6.0)
-  [5/7] bd ............... installing via brew... done (0.22.0)
-  [6/7] golangci-lint .... found (2.1.0)
-  [7/7] gofumpt .......... installing via go install... done
-```
+#### Phase 4: Bootstrap Project
 
-After install, check whether `~/go/bin` and `~/.local/bin` are on PATH.
-Print exact export lines if not:
+Reuses existing `bootstrapProject()` from `cmd_init.go`:
 
-```
-  [!!] ~/go/bin is not on PATH — Go tools may not be found
-       Add to your ~/.zshrc:  export PATH="$HOME/go/bin:$PATH"
-```
-
-**Developer tools** (`oro setup --dev`) adds:
-
-| Tool | Install method |
-|------|----------------|
-| `markdownlint` | `brew install markdownlint-cli` |
-| `yamllint` | `uv tool install yamllint` |
-| `shellcheck` | `brew install shellcheck` |
-| `biome` | `brew install biome` |
-
-#### Phase 5: Bootstrap Project
-
-Reuses existing `bootstrapProject()` logic from `cmd_init.go`:
-
-1. `.oro/config.yaml` (created in Phase 2)
+1. `.oro/config.yaml` (from Phase 2)
 2. `.gitignore` entries for `.oro/` and `.beads`
-3. `~/.oro/projects/<name>/` directory tree + handoffs dir
-4. `.beads` symlink → `~/.oro/projects/<name>/beads/`
-5. Extract embedded assets to `~/.oro/` (additive only — never overwrite
-   existing files, never delete user-created files)
-6. Discover + install companion binaries:
-   - Find `oro-dash` and `oro-search-hook` as siblings of the running `oro`
-     binary (`os.Executable()` + sibling lookup). Fall back to PATH.
-   - Copy to `~/.oro/bin/oro-dash` and `~/.oro/hooks/oro-search-hook`
-7. Generate `settings.json` with absolute paths (always overwrite — idempotent)
-8. Create `.beads/config.yaml`
+3. `~/.oro/projects/<name>/` directory tree
+4. `.beads` symlink
+5. Extract embedded assets to `~/.oro/` (**additive only** — see note below)
+6. Companion binary discovery (os.Executable sibling lookup + PATH fallback)
+7. `settings.json` with `$HOME` prefix (Claude Code expands $HOME in hooks)
+8. `.beads/config.yaml`
 
-#### Phase 6: Doctor Check
+**IMPORTANT: extractAssets() must be fixed for additive behavior.**
+Current `extractAssets()` always overwrites files. Must add existence check:
+skip files that already exist on disk unless `--force` flag is set. This is
+a code change to `cmd_init.go`.
+
+#### Phase 5: Doctor Check
 
 ```
 Verification:
   [ok] claude 1.0.44
   [ok] tmux 3.5a
   [ok] bd 0.22.0
-  [ok] quality_gate.sh (executable)
-  [ok] .golangci.yml
   [ok] ~/.oro/hooks/oro-search-hook
   [ok] ~/.oro/bin/oro-dash
   [ok] .oro/config.yaml
   [ok] .beads/ initialized
 
 Setup complete. Run 'oro start' to launch the swarm.
-
-If the quality gate fails on first run, open Claude Code in your project
-and ask it to run ./quality_gate.sh and fix any issues. The gate is a
-regular shell script — Claude can read the errors and adjust it for your
-project.
-```
-
-Actionable errors for failures:
-
-```
-  [!!] golangci-lint not found
-       Run: brew install golangci-lint
-       Go linting will fail in the quality gate without this.
 ```
 
 #### Flags
 
 | Flag | Behavior |
 |------|----------|
-| `--dev` | Install doc/config linting tools (markdownlint, yamllint, shellcheck, biome) |
-| `--dry-run` | Print what would be installed/created, do nothing |
-| `--skip-tools` | Skip tool installation, only bootstrap project + generate gate |
-| `--force-gate` | Regenerate `quality_gate.sh` even if it already exists |
-| `--force` | Overwrite all generated files AND oro-provided assets |
+| `--dev` | Install doc/config linting tools |
+| `--dry-run` | Print what would happen, do nothing |
+| `--skip-tools` | Skip tool installation, only bootstrap |
+| `--force` | Overwrite existing files and oro-provided assets |
 
 #### `oro init` Relationship
 
-`oro init` is simplified to Phase 2 + Phase 5 only (detect + bootstrap).
-Use it for initializing additional projects without reinstalling tools.
-
-`oro setup` = prerequisites + detect + generate gate + install tools +
-bootstrap + doctor.
-
----
-
-### 3. Config-Driven Worker Prompts
-
-**Current problem:** `prompt.go` hardcodes oro-specific coding rules
-(functional first, go-arch-lint, etc.). Workers on external projects receive
-wrong instructions.
-
-**Fix:** `AssemblePrompt` reads `coding_rules` from `.oro/config.yaml` instead
-of using hardcoded strings. The `coding_rules` field already exists per
-language in the config — it's generated by `langprofile.GenerateConfig()`.
-
-The worker prompt's "Coding Rules" section becomes:
-
-```go
-// Read from .oro/config.yaml languages.<lang>.coding_rules
-// Concatenate rules from all detected languages
-section(b, "Coding Rules", strings.Join(configCodingRules, "\n"))
-```
-
-This means `oro setup`'s generated config directly controls what workers are
-told about coding style. Users can edit `.oro/config.yaml` to customize.
-
----
-
-### 4. Additive Asset Extraction
-
-Oro ships built-in skills, hooks, beacons, and commands embedded in the binary.
-Users can also create their own. The extraction strategy is **additive**:
-
-- **New file (not on disk)**: write it
-- **Existing file**: skip (preserve user's version)
-- **User-created file (not in embedded asset list)**: never touched
-
-This means:
-- Running `oro setup` after updating oro adds new skills but doesn't overwrite
-  existing ones. Users who want updated builtins run `oro setup --force`.
-- Users can create custom skills and they survive any number of re-runs.
-
----
-
-### 5. First-Run Experience
-
-When `oro start` launches with an empty backlog (no beads), the architect
-pane displays a welcome message instead of a blank screen:
-
-```
-Welcome to oro.
-
-No beads found. To get started, tell me what you'd like to build.
-Describe your goal and I'll break it down into a plan.
-
-Examples:
-  "Add user authentication with JWT tokens"
-  "Refactor the database layer to use connection pooling"
-  "Fix the race condition in the order processing pipeline"
-```
-
-Triggered by checking `bd ready` + `bd stats` in the architect beacon.
-
----
+`oro init` is simplified to Phase 2 + Phase 4 only (detect + bootstrap).
+For initializing additional projects without reinstalling tools. The
+current `oro init` behavior (installing tools) moves to `oro setup`.
 
 ### 6. Developer Path Updates
 
 #### `install.md` Rewrite
 
-Two clear paths side by side:
+Two clear paths:
 
 **For users (using oro on your project):**
 ```bash
@@ -533,10 +318,42 @@ oro start
 ```bash
 git clone git@github.com:mraakashshah/oro.git
 cd oro
-make setup        # installs dev tools
-make install      # builds + installs oro binary
-oro init           # bootstraps oro for oro development
+make setup && make install
+oro init
 ```
+
+---
+
+## Epic B: Quality Gate Generation (deferred)
+
+`oro setup` Phase 3 — generates `quality_gate.sh`, `.golangci.yml`, and
+`pyproject.toml` tool sections based on detected languages. The full design
+is in the original spec sections above (Section 2, Phase 3). Ships as a
+standalone enhancement after Epic A.
+
+Adds `--force-gate` flag to `oro setup`.
+
+---
+
+## Epic C: Config-Driven Worker Prompts (deferred)
+
+Rewires `AssemblePrompt` to read `coding_rules` from `.oro/config.yaml`.
+Requires solving worktree path resolution (config is gitignored and absent
+in worktrees). Ships independently after Epic A.
+
+---
+
+## Adversarial Review Findings (resolved)
+
+| Finding | Resolution |
+|---------|------------|
+| Worktree path resolution for config-driven prompts | Deferred to Epic C — not blocking |
+| `$HOME` literal in settings.json | VALIDATED: Claude Code expands `$HOME` in hook commands. Current approach is correct. |
+| `extractAssets()` overwrites existing files | Called out explicitly in Epic A Phase 4 as a required code change |
+| Scope creep (5 concerns bundled) | Split into 3 epics (A, B, C) |
+| `-race` flag requires CGO | CGO-free CI check uses `-count=1` without `-race` |
+| Partial tool installation failure | Continue-on-error with doctor check at end. User re-runs `oro setup`. |
+| codesign unavailable on machines without Xcode | Skip gracefully with warning |
 
 ---
 
@@ -547,15 +364,11 @@ oro init           # bootstraps oro for oro development
 | Resource | Behavior |
 |----------|----------|
 | Tools already installed | Skip (print "found") |
-| `.golangci.yml` exists | Skip (never overwrite) |
-| `pyproject.toml` tool sections exist | Skip those sections |
-| `quality_gate.sh` exists | Skip. Use `--force-gate` to regenerate. |
 | `.oro/config.yaml` exists | Skip |
 | Assets (skills, hooks, beacons) | Additive only (new files written, existing preserved) |
 | Companion binaries | Reinstall (always update to current version) |
 | `.beads` | Skip if initialized |
 | `settings.json` | Regenerate (always overwrite — idempotent) |
-| Role directories | Re-symlink |
 
 ---
 
@@ -563,38 +376,29 @@ oro init           # bootstraps oro for oro development
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| Worker prompt hardcodes oro-specific coding rules | HIGH | Wire `AssemblePrompt` to read from `.oro/config.yaml` (section 3) |
-| CGO_ENABLED=0 may break sqlite at runtime | HIGH | CI validation step: build + test with CGO_ENABLED=0 on every push |
-| Companion binaries not found after install | HIGH | `os.Executable()` sibling lookup + PATH fallback + actionable warning |
-| `go install` / `uv tool install` binaries not on PATH | HIGH | Check PATH after install, print exact export line for `.zshrc` |
-| GoReleaser `make stage-assets` fails in CI | HIGH | CI runs on full checkout with npm installed. Tested by release workflow. |
-| User's existing `.golangci.yml` gets overwritten | HIGH | Only create if file doesn't exist |
-| User's existing `quality_gate.sh` gets overwritten | HIGH | Skip if exists. Require `--force-gate` |
-| User-created skills/hooks deleted by re-run | HIGH | Additive extraction: only write new files |
-| `$HOME` literal in settings.json | HIGH | Use `os.UserHomeDir()` for absolute paths |
-| Quality gate fails on first run (unusual test setup) | MEDIUM | Print troubleshooting note pointing to Claude-assisted fix |
-| First-run blank screen confuses new users | MEDIUM | Welcome message in architect beacon |
-| `brew install beads` may not work yet | MEDIUM | Verify bd install path. Fallback: `go install` |
-| Generated gate references tools not yet installed | LOW | Phase 4 (install) runs before gate is needed. Gate is generated but not executed until `oro start`. |
+| CGO_ENABLED=0 may break sqlite at runtime | HIGH | CI validation: build + test without CGO on every push |
+| Companion binaries not found after install | HIGH | os.Executable() sibling lookup + PATH fallback + actionable warning |
+| go install / uv tool install binaries not on PATH | HIGH | Check PATH after install, print exact export line |
+| GoReleaser make stage-assets fails in CI | HIGH | CI runs on full checkout with npm installed |
+| User-created skills/hooks deleted by re-run | HIGH | Additive extraction: fix extractAssets() to skip existing files |
+| brew install beads may not work yet | MEDIUM | Verify bd install path. Fallback: go install |
+| First-run blank screen | LOW | Deferred to future enhancement |
 
 ---
 
-## Files Changed
+## Files Changed (Epic A only)
 
 | File | Change |
 |------|--------|
 | `.goreleaser.yml` (new) | GoReleaser config for 3 binaries, darwin only |
 | `.github/workflows/release.yml` (new) | Release CI workflow on `v*` tags |
+| `.github/workflows/ci.yml` | Add cgo-free-check job |
 | `scripts/install.sh` (new) | Curl install script for users |
-| `cmd/oro/cmd_setup.go` (new) | `oro setup` command — 6 phases |
-| `cmd/oro/gate_template.go` (new) | Quality gate script template + generation logic |
-| `cmd/oro/golangci_template.go` (new) | `.golangci.yml` template + module name substitution |
-| `cmd/oro/pyproject.go` (new) | `pyproject.toml` section merger |
+| `cmd/oro/cmd_setup.go` (new) | `oro setup` command — 5 phases |
 | `cmd/oro/tools_setup.go` (new) | Tiered tool manifest, install logic, PATH checks |
 | `cmd/oro/doctor.go` (new) | Doctor verification checks + companion binary discovery |
-| `cmd/oro/cmd_init.go` | Simplify to Phase 2 + Phase 5 only, extract shared functions |
-| `pkg/worker/prompt.go` | Read coding rules from `.oro/config.yaml` instead of hardcoding |
-| `assets/beacons/architect.md` | Add empty-backlog welcome message |
+| `cmd/oro/cmd_init.go` | Fix extractAssets() for additive behavior; simplify init to Phase 2+4 |
+| `cmd/oro/root.go` | Register new setup command |
 | `install.md` | Rewrite for dual-path install |
 
 ---
@@ -607,4 +411,6 @@ oro init           # bootstraps oro for oro development
 - `oro start` auto-launch after setup
 - Upgrading between oro versions (idempotent re-run is the upgrade path)
 - Installing Claude Code — prerequisite, user's responsibility
-- Project-specific quality gate customization UI — users edit the script directly
+- Quality gate generation (Epic B)
+- Config-driven worker prompts (Epic C)
+- First-run welcome message (future enhancement)
