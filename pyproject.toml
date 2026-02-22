@@ -22,6 +22,9 @@ venv = ".venv"
 extraPaths = ["assets/hooks"]
 exclude = ["references", "yap", "archive", ".worktrees", ".venv", "tests/conftest.py"]
 
+[tool.pylint.main]
+init-hook = "import sys; sys.path.insert(0, 'assets/hooks')"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
