@@ -1002,6 +1002,122 @@ func TestCLIBeadSource_HasChildren(t *testing.T) {
 	})
 }
 
+// TestCLIBeadSource_Create_Assertions covers the 7 explicit assertions (a–e) required
+// by the bead spec for Create() flag handling.
+func TestCLIBeadSource_Create_Assertions(t *testing.T) {
+	// (a) Create() always includes "--json" in args.
+	t.Run("a_always_includes_json_flag", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-a"}`)}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		call := runner.calls[0]
+		if !sliceContains(call.Args, "--json") {
+			t.Errorf("(a) expected '--json' in args, got %v", call.Args)
+		}
+	})
+
+	// (b) Create(parent="epic-1") → args include "--parent=epic-1".
+	t.Run("b_parent_epic1_includes_parent_flag", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-b"}`)}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "epic-1", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		call := runner.calls[0]
+		if !sliceContains(call.Args, "--parent=epic-1") {
+			t.Errorf("(b) expected '--parent=epic-1' in args, got %v", call.Args)
+		}
+	})
+
+	// (c) Create(parent="") → "--parent" NOT in args.
+	t.Run("c_empty_parent_omits_parent_flag", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-c"}`)}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		call := runner.calls[0]
+		for _, arg := range call.Args {
+			if strings.HasPrefix(arg, "--parent=") {
+				t.Errorf("(c) expected no --parent arg when parent is empty, got %v", call.Args)
+			}
+		}
+	})
+
+	// (d) Create(acceptanceCriteria="do X") → args include "--acceptance-criteria=do X".
+	t.Run("d_acceptance_criteria_do_x_included", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-d"}`)}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "do X")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		call := runner.calls[0]
+		if !sliceContains(call.Args, "--acceptance-criteria=do X") {
+			t.Errorf("(d) expected '--acceptance-criteria=do X' in args, got %v", call.Args)
+		}
+	})
+
+	// (e) Create(beadType="bug", priority=3) → args include "--priority=0" (bug forces priority to 0).
+	t.Run("e_bug_type_forces_priority_to_zero", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"oro-e"}`)}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Create(context.Background(), "Login broken", "bug", 3, "Desc", "", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		call := runner.calls[0]
+		if !sliceContains(call.Args, "--priority=0") {
+			t.Errorf("(e) bug type must force priority=0: expected '--priority=0' in args, got %v", call.Args)
+		}
+		// Also verify priority=3 is NOT present.
+		if sliceContains(call.Args, "--priority=3") {
+			t.Errorf("(e) bug type must override priority: unexpected '--priority=3' in args, got %v", call.Args)
+		}
+	})
+}
+
+// TestCLIBeadSource_HasChildren_Assertions covers assertions (f–g) required by the bead spec.
+func TestCLIBeadSource_HasChildren_Assertions(t *testing.T) {
+	// (f) runner returns "[]" → HasChildren returns false, nil (not true).
+	t.Run("f_empty_list_returns_false_nil", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("[]")}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.HasChildren(context.Background(), "epic-1")
+		if err != nil {
+			t.Fatalf("(f) HasChildren returned unexpected error: %v", err)
+		}
+		if got {
+			t.Errorf("(f) HasChildren: got true, want false for empty list []")
+		}
+	})
+
+	// (g) AllChildrenClosed with unparseable JSON → returns false, non-nil error.
+	t.Run("g_allchildrenclosed_unparseable_json_returns_error", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("not valid json {")}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.AllChildrenClosed(context.Background(), "epic-1")
+		if err == nil {
+			t.Fatal("(g) AllChildrenClosed: expected non-nil error for unparseable JSON, got nil")
+		}
+		if got {
+			t.Errorf("(g) AllChildrenClosed: expected false on error, got true")
+		}
+	})
+}
+
 func TestCLIBeadSource_Update(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("")}
