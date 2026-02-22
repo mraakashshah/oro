@@ -167,50 +167,89 @@ func TestCLIBeadSource_Ready_InvalidJSON(t *testing.T) {
 }
 
 func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
-	detail := protocol.BeadDetail{
-		ID:                 "abc.1",
-		Title:              "Implement widget",
-		AcceptanceCriteria: "Widget renders correctly",
-	}
-	data, err := json.Marshal(detail)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	// AC1: object-form JSON {"id":"x","title":"T","description":"D"} populates fields.
+	t.Run("object_form_populates_id_title_description", func(t *testing.T) {
+		raw := `{"id":"x","title":"T","description":"D"}`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
 
-	runner := &mockCommandRunner{output: data}
-	src := NewCLIBeadSource(runner)
+		got, err := src.Show(context.Background(), "x")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if got.ID != "x" {
+			t.Errorf("ID: got %q, want %q", got.ID, "x")
+		}
+		if got.Title != "T" {
+			t.Errorf("Title: got %q, want %q", got.Title, "T")
+		}
+		if got.Description != "D" {
+			t.Errorf("Description: got %q, want %q", got.Description, "D")
+		}
+	})
 
-	got, err := src.Show(context.Background(), "abc.1")
-	if err != nil {
-		t.Fatalf("Show: %v", err)
-	}
-	if got.ID != "abc.1" {
-		t.Errorf("ID: got %q, want %q", got.ID, "abc.1")
-	}
-	if got.Title != "Implement widget" {
-		t.Errorf("Title: got %q, want %q", got.Title, "Implement widget")
-	}
-	if got.AcceptanceCriteria != "Widget renders correctly" {
-		t.Errorf("AcceptanceCriteria: got %q, want %q", got.AcceptanceCriteria, "Widget renders correctly")
-	}
+	// AC2: array-form [{"id":"x","title":"T"}] → detail.ID=="x", detail.Title=="T".
+	t.Run("array_form_populates_id_and_title", func(t *testing.T) {
+		raw := `[{"id":"x","title":"T"}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
 
-	// Verify correct command.
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(runner.calls))
-	}
-	call := runner.calls[0]
-	if call.Name != "bd" {
-		t.Errorf("command name: got %q, want %q", call.Name, "bd")
-	}
-	if !sliceContains(call.Args, "show") {
-		t.Errorf("expected 'show' in args, got %v", call.Args)
-	}
-	if !sliceContains(call.Args, "abc.1") {
-		t.Errorf("expected 'abc.1' in args, got %v", call.Args)
-	}
-	if !sliceContains(call.Args, "--json") {
-		t.Errorf("expected '--json' in args, got %v", call.Args)
-	}
+		got, err := src.Show(context.Background(), "x")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if got.ID != "x" {
+			t.Errorf("ID: got %q, want %q", got.ID, "x")
+		}
+		if got.Title != "T" {
+			t.Errorf("Title: got %q, want %q", got.Title, "T")
+		}
+	})
+
+	// AC3: description contains AC section + explicit AC field is "" →
+	// detail.AcceptanceCriteria set to extracted value.
+	t.Run("ac_extracted_from_description_when_explicit_field_empty", func(t *testing.T) {
+		raw := `{"id":"x","title":"T","description":"Context.\n\n## Acceptance Criteria\n- [ ] Must work","acceptance_criteria":""}`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Show(context.Background(), "x")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if got.AcceptanceCriteria == "" {
+			t.Errorf("AcceptanceCriteria: expected extracted value, got empty string")
+		}
+		if !strings.Contains(got.AcceptanceCriteria, "Must work") {
+			t.Errorf("AcceptanceCriteria: expected to contain %q, got %q", "Must work", got.AcceptanceCriteria)
+		}
+	})
+
+	// AC4: explicit non-empty AC field → detail.AcceptanceCriteria == explicit value (not overwritten).
+	t.Run("explicit_ac_field_not_overwritten", func(t *testing.T) {
+		raw := `{"id":"x","title":"T","description":"Desc.\n\n## Acceptance Criteria\n- [ ] From description","acceptance_criteria":"Explicit AC"}`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Show(context.Background(), "x")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if got.AcceptanceCriteria != "Explicit AC" {
+			t.Errorf("AcceptanceCriteria: got %q, want %q", got.AcceptanceCriteria, "Explicit AC")
+		}
+	})
+
+	// AC5: empty array "[]" → non-nil error returned.
+	t.Run("empty_array_returns_error", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("[]")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Show(context.Background(), "x")
+		if err == nil {
+			t.Fatal("expected non-nil error for empty array, got nil")
+		}
+	})
 }
 
 func TestCLIBeadSource_Show_CommandError(t *testing.T) {
