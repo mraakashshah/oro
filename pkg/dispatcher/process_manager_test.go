@@ -319,7 +319,7 @@ func TestOroProcessManagerWritesToWorkerLogFile(t *testing.T) {
 		t.Fatalf("expected log file at %s, got error: %v", logPath, err)
 	}
 
-	// Verify cmd.Stdout is NOT os.Stdout.
+	// Verify cmd.Stdout is NOT os.Stdout and is NOT nil (must be redirected to log file).
 	mu.Lock()
 	cmd := builtCmd
 	mu.Unlock()
@@ -329,8 +329,14 @@ func TestOroProcessManagerWritesToWorkerLogFile(t *testing.T) {
 	if cmd.Stdout == os.Stdout {
 		t.Error("expected cmd.Stdout to be log file, got os.Stdout")
 	}
+	if cmd.Stdout == nil {
+		t.Error("expected cmd.Stdout to be set to log file, but it is nil")
+	}
 	if cmd.Stderr == os.Stderr {
 		t.Error("expected cmd.Stderr to be log file, got os.Stderr")
+	}
+	if cmd.Stderr == nil {
+		t.Error("expected cmd.Stderr to be set to log file, but it is nil")
 	}
 
 	// Cleanup.
@@ -338,13 +344,23 @@ func TestOroProcessManagerWritesToWorkerLogFile(t *testing.T) {
 }
 
 // TestOroProcessManagerEmptyOroHome verifies that when oroHome is empty,
-// Spawn falls back to os.Stdout/os.Stderr (no log file created).
+// Spawn falls back to os.Stdout/os.Stderr (no log file created) and that
+// cmd.Stdout and cmd.Stderr are set to os.Stdout and os.Stderr respectively.
+// This kills mutations that remove the cmd.Stdout = os.Stdout or
+// cmd.Stderr = os.Stderr assignments in the fallback path.
 func TestOroProcessManagerEmptyOroHome(t *testing.T) {
 	sockPath := "/tmp/test-empty-home.sock"
 
+	var capturedCmd *exec.Cmd
+	var mu sync.Mutex
+
 	pm := dispatcher.NewOroProcessManager(sockPath, "")
 	pm.SetCmdFactory(func(_ string) *exec.Cmd {
-		return exec.Command("sleep", "0.1") //nolint:gosec // test-only dummy
+		mu.Lock()
+		defer mu.Unlock()
+		cmd := exec.Command("sleep", "0.1") //nolint:gosec // test-only dummy
+		capturedCmd = cmd
+		return cmd
 	})
 
 	// Spawn should succeed even with empty oroHome.
@@ -356,6 +372,21 @@ func TestOroProcessManagerEmptyOroHome(t *testing.T) {
 		t.Fatal("Spawn returned nil process")
 	}
 	pm.Wait()
+
+	// Verify that when oroHome is empty, cmd.Stdout and cmd.Stderr are set to
+	// os.Stdout and os.Stderr (the fallback path).
+	mu.Lock()
+	cmd := capturedCmd
+	mu.Unlock()
+	if cmd == nil {
+		t.Fatal("factory was never called")
+	}
+	if cmd.Stdout != os.Stdout {
+		t.Errorf("expected cmd.Stdout to be os.Stdout in fallback, got %v", cmd.Stdout)
+	}
+	if cmd.Stderr != os.Stderr {
+		t.Errorf("expected cmd.Stderr to be os.Stderr in fallback, got %v", cmd.Stderr)
+	}
 }
 
 // TestKill_KillsProcessGroup is the acceptance-criteria test for oro-jmil.3.
