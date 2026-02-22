@@ -439,34 +439,76 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 }
 
 // TestClearBeadTracking_DirectCall verifies the clearBeadTracking helper
-// clears all five maps in a single call.
+// clears all nine tracking maps in a single call. Each map is asserted
+// individually so that a missing delete() is caught with a precise failure.
 func TestClearBeadTracking_DirectCall(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
 	beadID := "bead-direct"
+
+	// --- Setup: populate ALL 9 maps ---
 	seedTrackingMaps(d, beadID)
 
-	// Verify maps are populated.
+	// Verify maps are populated before calling clearBeadTracking.
 	d.mu.Lock()
 	if d.attemptCounts[beadID] == 0 {
 		t.Fatal("setup: attemptCounts should be non-zero")
 	}
 	d.mu.Unlock()
 
+	// --- Exercise ---
 	d.clearBeadTracking(beadID)
 
-	assertTrackingMapsEmpty(t, d, beadID)
+	// --- Assert: each of the 9 maps individually ---
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if _, ok := d.attemptCounts[beadID]; ok {
+		t.Errorf("attemptCounts[%s] still present after clearBeadTracking", beadID)
+	}
+	if _, ok := d.handoffCounts[beadID]; ok {
+		t.Errorf("handoffCounts[%s] still present after clearBeadTracking", beadID)
+	}
+	if _, ok := d.rejectionCounts[beadID]; ok {
+		t.Errorf("rejectionCounts[%s] still present after clearBeadTracking", beadID)
+	}
+	if _, ok := d.pendingHandoffs[beadID]; ok {
+		t.Errorf("pendingHandoffs[%s] still present after clearBeadTracking", beadID)
+	}
+	if _, ok := d.qgStuckTracker[beadID]; ok {
+		t.Errorf("qgStuckTracker[%s] still present after clearBeadTracking", beadID)
+	}
+	if _, ok := d.escalatedBeads[beadID]; ok {
+		t.Errorf("escalatedBeads[%s] still present after clearBeadTracking", beadID)
+	}
+	if _, ok := d.worktreeFailures[beadID]; ok {
+		t.Errorf("worktreeFailures[%s] still present after clearBeadTracking", beadID)
+	}
+	if _, ok := d.exhaustedBeads[beadID]; ok {
+		t.Errorf("exhaustedBeads[%s] still present after clearBeadTracking", beadID)
+	}
+	if _, ok := d.assigningBeads[beadID]; ok {
+		t.Errorf("assigningBeads[%s] still present after clearBeadTracking", beadID)
+	}
 }
 
 // TestClearBeadTracking_IdempotentOnMissingBead verifies clearBeadTracking
-// does not panic when called for a bead that has no tracking entries.
+// does not panic when called for a bead that has no tracking entries, and
+// that calling it a second time on a cleared bead also does not panic.
 func TestClearBeadTracking_IdempotentOnMissingBead(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
-	// Should not panic.
+	// First call: bead never had any entries — must not panic.
 	d.clearBeadTracking("nonexistent-bead")
 
+	// Second call: idempotent on a bead whose entries were already cleared.
+	beadID := "bead-already-cleared"
+	seedTrackingMaps(d, beadID)
+	d.clearBeadTracking(beadID) // first clear
+	d.clearBeadTracking(beadID) // second clear — must not panic
+
 	assertTrackingMapsEmpty(t, d, "nonexistent-bead")
+	assertTrackingMapsEmpty(t, d, beadID)
 }
 
 // TestPruneStaleTracking verifies that orphaned tracking entries are cleaned
