@@ -10949,3 +10949,164 @@ func TestHandleQGFailure_AttemptInitiallyZero(t *testing.T) {
 		t.Fatalf("expected attemptCount=1 after first QG failure (starting from 0), got %d", count)
 	}
 }
+
+// TestScaleDown_BusyWorker_BeadRequeued verifies that when the dispatcher
+// shuts down a worker that has an in-flight bead, the bead is requeued to
+// "open" status so it can be reassigned — covering both the shutdown-approved
+// path (worker responds gracefully) and the shutdown-timeout path (worker
+// doesn't respond within the deadline).
+func TestScaleDown_BusyWorker_BeadRequeued(t *testing.T) {
+	t.Run("approved path — bead requeued when worker sends SHUTDOWN_APPROVED without HANDOFF", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-approved", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-sd-approved", Title: "Scale-down approved test", Priority: 1}})
+		_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+		if !ok {
+			t.Fatal("expected ASSIGN")
+		}
+		beadSrc.SetBeads(nil)
+
+		// Trigger graceful shutdown — worker will NOT send HANDOFF, just SHUTDOWN_APPROVED
+		d.GracefulShutdownWorker("w-approved", 2*time.Second)
+
+		// Worker receives PREPARE_SHUTDOWN
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected PREPARE_SHUTDOWN")
+		}
+		if msg.Type != protocol.MsgPrepareShutdown {
+			t.Fatalf("expected PREPARE_SHUTDOWN, got %s", msg.Type)
+		}
+
+		// Worker sends SHUTDOWN_APPROVED without sending HANDOFF first
+		sendMsg(t, conn, protocol.Message{
+			Type:             protocol.MsgShutdownApproved,
+			ShutdownApproved: &protocol.ShutdownApprovedPayload{WorkerID: "w-approved"},
+		})
+
+		// Worker receives hard SHUTDOWN
+		msg2, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected SHUTDOWN after approval")
+		}
+		if msg2.Type != protocol.MsgShutdown {
+			t.Fatalf("expected SHUTDOWN, got %s", msg2.Type)
+		}
+
+		// Bead must be requeued to "open" so it can be reassigned
+		waitFor(t, func() bool {
+			beadSrc.mu.Lock()
+			defer beadSrc.mu.Unlock()
+			return beadSrc.updated["bead-sd-approved"] == "open"
+		}, 2*time.Second)
+
+		beadSrc.mu.Lock()
+		status := beadSrc.updated["bead-sd-approved"]
+		beadSrc.mu.Unlock()
+		if status != "open" {
+			t.Fatalf("expected bead requeued to 'open', got %q", status)
+		}
+
+		// A requeue escalation event must be logged
+		if eventCount(t, d.db, "bead_requeued_scale_down") == 0 {
+			t.Fatal("expected bead_requeued_scale_down event")
+		}
+
+		// Tracking maps must not retain the bead
+		d.mu.Lock()
+		_, hasAttempt := d.attemptCounts["bead-sd-approved"]
+		_, hasPending := d.pendingHandoffs["bead-sd-approved"]
+		d.mu.Unlock()
+		if hasAttempt {
+			t.Fatal("attemptCounts leaked entry for requeued bead")
+		}
+		if hasPending {
+			t.Fatal("pendingHandoffs leaked entry for requeued bead")
+		}
+	})
+
+	t.Run("timeout path — bead requeued when worker doesn't respond within deadline", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-timeout-requeue", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-sd-timeout", Title: "Scale-down timeout test", Priority: 1}})
+		_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+		if !ok {
+			t.Fatal("expected ASSIGN")
+		}
+		beadSrc.SetBeads(nil)
+
+		// Trigger graceful shutdown with very short timeout — worker will NOT respond
+		d.GracefulShutdownWorker("w-timeout-requeue", 100*time.Millisecond)
+
+		// Worker receives PREPARE_SHUTDOWN but we do NOT respond
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected PREPARE_SHUTDOWN")
+		}
+		if msg.Type != protocol.MsgPrepareShutdown {
+			t.Fatalf("expected PREPARE_SHUTDOWN, got %s", msg.Type)
+		}
+
+		// Dispatcher falls back to hard SHUTDOWN after timeout
+		msg2, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected hard SHUTDOWN after timeout")
+		}
+		if msg2.Type != protocol.MsgShutdown {
+			t.Fatalf("expected SHUTDOWN (hard kill), got %s", msg2.Type)
+		}
+
+		// Bead must be requeued to "open"
+		waitFor(t, func() bool {
+			beadSrc.mu.Lock()
+			defer beadSrc.mu.Unlock()
+			return beadSrc.updated["bead-sd-timeout"] == "open"
+		}, 2*time.Second)
+
+		beadSrc.mu.Lock()
+		status := beadSrc.updated["bead-sd-timeout"]
+		beadSrc.mu.Unlock()
+		if status != "open" {
+			t.Fatalf("expected bead requeued to 'open', got %q", status)
+		}
+
+		// A requeue escalation event must be logged
+		if eventCount(t, d.db, "bead_requeued_scale_down") == 0 {
+			t.Fatal("expected bead_requeued_scale_down event")
+		}
+
+		// Tracking maps must not retain the bead
+		d.mu.Lock()
+		_, hasAttempt := d.attemptCounts["bead-sd-timeout"]
+		_, hasPending := d.pendingHandoffs["bead-sd-timeout"]
+		d.mu.Unlock()
+		if hasAttempt {
+			t.Fatal("attemptCounts leaked entry for requeued bead")
+		}
+		if hasPending {
+			t.Fatal("pendingHandoffs leaked entry for requeued bead")
+		}
+	})
+}

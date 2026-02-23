@@ -1601,14 +1601,27 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 	// Send hard SHUTDOWN to finalize
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
+	var beadID string
 	if ok {
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+		beadID = w.beadID // capture before clearing
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
 		w.epicID = ""
 		w.isEpicDecomp = false
 	}
 	d.mu.Unlock()
+
+	// Requeue any in-flight bead so it can be reassigned.
+	if beadID != "" {
+		if err := d.beads.Update(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "scale_down_bead_reset_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+		d.clearBeadTracking(beadID)
+		_ = d.logEvent(ctx, "bead_requeued_scale_down", "dispatcher", beadID, workerID,
+			`{"reason":"shutdown_approved"}`)
+	}
 }
 
 // handleDirectiveWithACK handles a DIRECTIVE message from the manager and sends an ACK response.

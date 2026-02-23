@@ -353,13 +353,27 @@ func (d *Dispatcher) shutdownWaitLoop(shutdownCtx context.Context, cancelFunc co
 // handleShutdownTimeout sends hard SHUTDOWN after graceful shutdown timeout.
 func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	var beadID string
 	w, ok := d.workers[workerID]
 	if ok {
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+		beadID = w.beadID // capture before clearing
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
 		w.shutdownCancel = nil
+	}
+	d.mu.Unlock()
+
+	// Requeue any in-flight bead so it can be reassigned.
+	if beadID != "" {
+		ctx := context.Background()
+		if err := d.beads.Update(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "scale_down_bead_reset_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+		d.clearBeadTracking(beadID)
+		_ = d.logEvent(ctx, "bead_requeued_scale_down", "dispatcher", beadID, workerID,
+			`{"reason":"shutdown_timeout"}`)
 	}
 }
 
