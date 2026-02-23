@@ -32,6 +32,22 @@ type Chunk struct {
 	Content   string
 }
 
+// ChunkFile dispatches to the appropriate chunker based on file extension.
+// Routes Go files to ChunkGoSource and supported languages to ChunkWithAstGrep.
+// Returns an error for unsupported file types.
+func ChunkFile(filePath, src string) ([]Chunk, error) {
+	lang, ok := LangFromPath(filePath)
+	if !ok {
+		return nil, fmt.Errorf("codesearch: unsupported file type: %s", filePath)
+	}
+
+	if lang == LangGo {
+		return ChunkGoSource(filePath, src)
+	}
+
+	return ChunkWithAstGrep(filePath, src, lang)
+}
+
 // ChunkGoSource parses Go source code and extracts indexable chunks.
 // Pure function: takes a file path (for metadata) and source text, returns chunks.
 func ChunkGoSource(filePath, src string) ([]Chunk, error) {

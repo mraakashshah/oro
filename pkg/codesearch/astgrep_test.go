@@ -1131,15 +1131,9 @@ func TestSummarizeJavaNotInstalled(t *testing.T) {
 
 func TestChunkWithAstGrep_Python(t *testing.T) {
 	requireAstGrep(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "server.py")
-	if err := os.WriteFile(path, []byte(pythonFixture), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangPython)
+	chunks, err := codesearch.ChunkWithAstGrep("server.py", pythonFixture, codesearch.LangPython)
 	if err != nil {
-		t.Fatalf("ChunkWithAstGrep(%s, Python) error: %v", path, err)
+		t.Fatalf("ChunkWithAstGrep error: %v", err)
 	}
 
 	if len(chunks) == 0 {
@@ -1148,8 +1142,8 @@ func TestChunkWithAstGrep_Python(t *testing.T) {
 
 	// Verify chunks have required fields
 	for i, chunk := range chunks {
-		if chunk.FilePath != path {
-			t.Errorf("chunk[%d].FilePath = %q, want %q", i, chunk.FilePath, path)
+		if chunk.FilePath != "server.py" {
+			t.Errorf("chunk[%d].FilePath = %q, want %q", i, chunk.FilePath, "server.py")
 		}
 		if chunk.Name == "" {
 			t.Errorf("chunk[%d].Name is empty", i)
@@ -1187,15 +1181,9 @@ func TestChunkWithAstGrep_Python(t *testing.T) {
 
 func TestChunkWithAstGrep_TypeScript(t *testing.T) {
 	requireAstGrep(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "server.ts")
-	if err := os.WriteFile(path, []byte(typescriptFixture), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangTypeScript)
+	chunks, err := codesearch.ChunkWithAstGrep("server.ts", typescriptFixture, codesearch.LangTypeScript)
 	if err != nil {
-		t.Fatalf("ChunkWithAstGrep(%s, TypeScript) error: %v", path, err)
+		t.Fatalf("ChunkWithAstGrep error: %v", err)
 	}
 
 	if len(chunks) == 0 {
@@ -1204,8 +1192,8 @@ func TestChunkWithAstGrep_TypeScript(t *testing.T) {
 
 	// Verify chunks have required fields
 	for _, chunk := range chunks {
-		if chunk.FilePath != path {
-			t.Errorf("chunk.FilePath = %q, want %q", chunk.FilePath, path)
+		if chunk.FilePath != "server.ts" {
+			t.Errorf("chunk.FilePath = %q, want %q", chunk.FilePath, "server.ts")
 		}
 		if chunk.Name == "" {
 			t.Errorf("chunk.Name is empty")
@@ -1240,7 +1228,7 @@ func TestChunkWithAstGrep_UnknownLanguage(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	_, err := codesearch.ChunkWithAstGrep(path, codesearch.Language("unknown"))
+	_, err := codesearch.ChunkWithAstGrep("file.txt", "some text\n", codesearch.Language("unknown"))
 	if err == nil {
 		t.Fatal("expected error for unknown language")
 	}
@@ -1257,9 +1245,9 @@ func TestChunkWithAstGrep_NoMatches(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangPython)
+	chunks, err := codesearch.ChunkWithAstGrep("empty.py", "# just a comment\n", codesearch.LangPython)
 	if err != nil {
-		t.Fatalf("ChunkWithAstGrep(%s, Python) error: %v", path, err)
+		t.Fatalf("ChunkWithAstGrep error: %v", err)
 	}
 
 	if chunks != nil {
@@ -1269,15 +1257,9 @@ func TestChunkWithAstGrep_NoMatches(t *testing.T) {
 
 func TestChunkWithAstGrep_Rust(t *testing.T) {
 	requireAstGrep(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "lib.rs")
-	if err := os.WriteFile(path, []byte(rustFixture), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangRust)
+	chunks, err := codesearch.ChunkWithAstGrep("lib.rs", rustFixture, codesearch.LangRust)
 	if err != nil {
-		t.Fatalf("ChunkWithAstGrep(%s, Rust) error: %v", path, err)
+		t.Fatalf("ChunkWithAstGrep error: %v", err)
 	}
 
 	if len(chunks) == 0 {
@@ -1286,7 +1268,7 @@ func TestChunkWithAstGrep_Rust(t *testing.T) {
 
 	// Verify basic structure
 	for _, chunk := range chunks {
-		if chunk.FilePath != path || chunk.Name == "" || chunk.Kind == "" {
+		if chunk.FilePath != "lib.rs" || chunk.Name == "" || chunk.Kind == "" {
 			t.Errorf("incomplete chunk: FilePath=%q Name=%q Kind=%q", chunk.FilePath, chunk.Name, chunk.Kind)
 		}
 	}
@@ -1294,15 +1276,9 @@ func TestChunkWithAstGrep_Rust(t *testing.T) {
 
 func TestChunkWithAstGrep_Java(t *testing.T) {
 	requireAstGrep(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "Server.java")
-	if err := os.WriteFile(path, []byte(javaFixture), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangJava)
+	chunks, err := codesearch.ChunkWithAstGrep("Server.java", javaFixture, codesearch.LangJava)
 	if err != nil {
-		t.Fatalf("ChunkWithAstGrep(%s, Java) error: %v", path, err)
+		t.Fatalf("ChunkWithAstGrep error: %v", err)
 	}
 
 	if len(chunks) == 0 {

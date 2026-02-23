@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -549,24 +550,31 @@ func firstLineOf(s string) string {
 	return s
 }
 
-// ChunkWithAstGrep extracts structural code elements from a file as Chunks
+// ChunkWithAstGrep extracts structural code elements from source code as Chunks
 // using ast-grep rules for the specified language.
 // Returns nil (not empty slice) if no matches are found.
-func ChunkWithAstGrep(filePath string, lang Language) ([]Chunk, error) {
+func ChunkWithAstGrep(filePath, src string, lang Language) ([]Chunk, error) {
 	rules, ok := langRules[lang]
 	if !ok {
 		return nil, fmt.Errorf("codesearch: no ast-grep rules for language %s", lang)
 	}
 
-	// Read file content to extract lines
-	content, err := os.ReadFile(filePath) //nolint:gosec // filePath from trusted internal caller
+	lines := strings.Split(src, "\n")
+
+	// Write source to a temporary file for ast-grep to process
+	tmpFile, err := os.CreateTemp("", filepath.Base(filePath)+".*")
 	if err != nil {
-		return nil, fmt.Errorf("codesearch: read file: %w", err)
+		return nil, fmt.Errorf("codesearch: create temp file: %w", err)
 	}
+	defer os.Remove(tmpFile.Name())
 
-	lines := strings.Split(string(content), "\n")
+	if _, err := tmpFile.WriteString(src); err != nil {
+		tmpFile.Close()
+		return nil, fmt.Errorf("codesearch: write temp file: %w", err)
+	}
+	tmpFile.Close()
 
-	matches, err := runAstGrep(filePath, rules)
+	matches, err := runAstGrep(tmpFile.Name(), rules)
 	if err != nil {
 		return nil, err
 	}

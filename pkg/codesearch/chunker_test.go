@@ -629,3 +629,108 @@ type (
 		t.Errorf("expected type names Foo and Bar, got %q and %q", types[0].Name, types[1].Name)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ChunkFile dispatcher — language-aware chunk router
+// ---------------------------------------------------------------------------
+
+func TestChunkFile(t *testing.T) {
+	tests := []struct {
+		name        string
+		filePath    string
+		src         string
+		wantErr     bool
+		wantKinds   map[codesearch.ChunkKind]int
+		wantMinName string
+	}{
+		{
+			name:      "go_file_routes_to_ChunkGoSource",
+			filePath:  "example.go",
+			src:       "package x\nfunc Hello() {}\nfunc World() {}",
+			wantErr:   false,
+			wantKinds: map[codesearch.ChunkKind]int{codesearch.ChunkFunc: 2},
+		},
+		{
+			name:        "python_file_routes_to_ChunkWithAstGrep",
+			filePath:    "example.py",
+			src:         "def hello():\n    pass\n",
+			wantErr:     false,
+			wantKinds:   map[codesearch.ChunkKind]int{}, // Just verify no error
+			wantMinName: "hello",
+		},
+		{
+			name:        "typescript_file_routes_to_ChunkWithAstGrep",
+			filePath:    "example.ts",
+			src:         "function hello() {}\n",
+			wantErr:     false,
+			wantKinds:   map[codesearch.ChunkKind]int{},
+			wantMinName: "hello",
+		},
+		{
+			name:        "javascript_file_routes_to_ChunkWithAstGrep",
+			filePath:    "example.js",
+			src:         "function hello() {}\n",
+			wantErr:     false,
+			wantKinds:   map[codesearch.ChunkKind]int{},
+			wantMinName: "hello",
+		},
+		{
+			name:      "rust_file_routes_to_ChunkWithAstGrep",
+			filePath:  "example.rs",
+			src:       "fn hello() {}\n",
+			wantErr:   false,
+			wantKinds: map[codesearch.ChunkKind]int{},
+		},
+		{
+			name:      "java_file_routes_to_ChunkWithAstGrep",
+			filePath:  "Example.java",
+			src:       "public class Example {}\n",
+			wantErr:   false,
+			wantKinds: map[codesearch.ChunkKind]int{},
+		},
+		{
+			name:      "unsupported_extension_returns_error",
+			filePath:  "example.unknown",
+			src:       "some code",
+			wantErr:   true,
+			wantKinds: map[codesearch.ChunkKind]int{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			chunks, err := codesearch.ChunkFile(tc.filePath, tc.src)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("wantErr=%v, got error=%v", tc.wantErr, err)
+			}
+			if tc.wantErr {
+				return
+			}
+			// For Go files, verify kind counts match
+			if len(tc.wantKinds) > 0 {
+				kindCounts := make(map[codesearch.ChunkKind]int)
+				for _, c := range chunks {
+					kindCounts[c.Kind]++
+				}
+				for kind, wantCount := range tc.wantKinds {
+					if got := kindCounts[kind]; got != wantCount {
+						t.Errorf("expected %d chunks of kind %q, got %d", wantCount, kind, got)
+					}
+				}
+			}
+			// Check that if we expected a minimum name, at least one chunk has it
+			if tc.wantMinName != "" {
+				found := false
+				for _, c := range chunks {
+					if c.Name == tc.wantMinName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected to find chunk with name %q", tc.wantMinName)
+				}
+			}
+		})
+	}
+}
