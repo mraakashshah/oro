@@ -3296,10 +3296,27 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qg
 		fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 		fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
-	d.clearBeadTracking(beadID)
 
-	// Mark bead as exhausted so filterAssignable blocks re-assignment.
+	// Release worker and mark bead as exhausted atomically.
+	// Worker must be released to prevent heartbeat/progress timeout from
+	// calling clearBeadTracking and wiping exhaustedBeads.
 	d.mu.Lock()
+	if w, ok := d.workers[workerID]; ok {
+		w.state = protocol.WorkerIdle
+		w.beadID = ""
+		w.epicID = ""
+		w.isEpicDecomp = false
+	}
+	// Clear tracking maps and set exhaustedBeads within same lock.
+	delete(d.attemptCounts, beadID)
+	delete(d.handoffCounts, beadID)
+	delete(d.rejectionCounts, beadID)
+	delete(d.pendingHandoffs, beadID)
+	delete(d.qgStuckTracker, beadID)
+	delete(d.escalatedBeads, beadID)
+	delete(d.worktreeFailures, beadID)
+	delete(d.assigningBeads, beadID)
+	// Set exhaustedBeads last, within same lock, to block re-assignment.
 	d.exhaustedBeads[beadID] = true
 	d.mu.Unlock()
 }
