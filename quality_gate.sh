@@ -25,6 +25,11 @@ NC='\033[0m'
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
 trap 'rm -rf "$QG_DIR"' EXIT
 
+# Resolve repo root node_modules (works from worktrees too).
+# Worktrees don't have their own node_modules — resolve via git-common-dir.
+REPO_ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+NODE_BIN="$REPO_ROOT/node_modules/.bin"
+
 # =============================================================================
 # PRIMITIVES
 # =============================================================================
@@ -428,12 +433,12 @@ lane_other() {
     fi
 
     local docs_checks=(
-        "markdownlint" "./node_modules/.bin/markdownlint-cli2 --config .markdownlint.yml 'docs/**/*.md' '*.md' '!references/**' '!archive/**'"
+        "markdownlint" "$NODE_BIN/markdownlint-cli2 --config .markdownlint.yml 'docs/**/*.md' '*.md' '!references/**' '!archive/**'"
         "yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
     )
     if [ -n "$BIOME_PATHS" ]; then
         # shellcheck disable=SC2086
-        docs_checks+=("biome (json)" "./node_modules/.bin/biome check --files-ignore-unknown=true $BIOME_PATHS")
+        docs_checks+=("biome (json)" "$NODE_BIN/biome check --files-ignore-unknown=true $BIOME_PATHS")
     fi
     parallel_checks "${docs_checks[@]}"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
