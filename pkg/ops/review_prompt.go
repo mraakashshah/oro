@@ -110,8 +110,7 @@ func writePhases(b *strings.Builder, base string) {
 func writeVerdictAndOutput(b *strings.Builder) {
 	b.WriteString("## Verdict\n")
 	b.WriteString("- Any Critical → REJECTED\n")
-	b.WriteString("- 2+ Important → REJECTED\n")
-	b.WriteString("- 1 Important → REJECTED if fix is a small, localized change\n")
+	b.WriteString("- Any Important → REJECTED\n")
 	b.WriteString("- Minor only → APPROVED\n\n")
 
 	b.WriteString("## Output\n")

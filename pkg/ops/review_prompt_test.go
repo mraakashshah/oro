@@ -396,7 +396,7 @@ func TestWriteVerdictAndOutput_RejectionRules(t *testing.T) {
 
 	rules := []string{
 		"Any Critical → REJECTED",
-		"2+ Important → REJECTED",
+		"Any Important → REJECTED",
 		"Minor only → APPROVED",
 	}
 	for _, r := range rules {
