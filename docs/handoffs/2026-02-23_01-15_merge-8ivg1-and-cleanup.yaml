@@ -99,9 +99,9 @@ unpushed_commits: 9
 
 learnings:
   undocumented:
-    - "git worktree remove --force can set core.bare=true, breaking all git operations" (oro-8ivg.1, git)
-    - "Never git add -A during rebase — use specific file paths only" (oro-8ivg.1, git)
-    - "For add/add conflicts across diverged branches, manual file extraction via git show + scripted merge is faster than rebase" (oro-8ivg.1, git)
+    - "git worktree remove --force can set core.bare=true, breaking all git operations (oro-8ivg.1, git)"
+    - "Never git add -A during rebase — use specific file paths only (oro-8ivg.1, git)"
+    - "For add/add conflicts across diverged branches, manual file extraction via git show + scripted merge is faster than rebase (oro-8ivg.1, git)"
   proposed_codification:
     - type: rule
       target: .claude/rules/worktree-safety.md
