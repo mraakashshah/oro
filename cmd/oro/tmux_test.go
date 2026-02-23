@@ -1877,6 +1877,46 @@ func TestBuildPaneDiedHookContent(t *testing.T) {
 	})
 }
 
+func TestBuildPaneDiedHook_SkipsWhenRestartingFlag(t *testing.T) {
+	t.Run("hook contains restarting flag guard before respawn-pane for architect", func(t *testing.T) {
+		hook := buildPaneDiedHook("architect", "oro", "")
+
+		// The guard should be present: test \! -f ~/.oro/panes/architect/restarting &&
+		expectedGuard := "test \\! -f ~/.oro/panes/architect/restarting &&"
+		if !strings.Contains(hook, expectedGuard) {
+			t.Errorf("hook should contain restarting flag guard, expected %q in %s", expectedGuard, hook)
+		}
+	})
+
+	t.Run("hook contains restarting flag guard before respawn-pane for manager", func(t *testing.T) {
+		hook := buildPaneDiedHook("manager", "oro", "")
+
+		// The guard should be present: test \! -f ~/.oro/panes/manager/restarting &&
+		expectedGuard := "test \\! -f ~/.oro/panes/manager/restarting &&"
+		if !strings.Contains(hook, expectedGuard) {
+			t.Errorf("hook should contain restarting flag guard, expected %q in %s", expectedGuard, hook)
+		}
+	})
+
+	t.Run("guard appears before respawn-pane command", func(t *testing.T) {
+		hook := buildPaneDiedHook("architect", "oro", "")
+
+		// The guard should appear before the respawn-pane command
+		guardIdx := strings.Index(hook, "test \\! -f ~/.oro/panes/architect/restarting &&")
+		respawnIdx := strings.Index(hook, "tmux respawn-pane")
+
+		if guardIdx == -1 {
+			t.Errorf("guard not found in hook: %s", hook)
+		}
+		if respawnIdx == -1 {
+			t.Errorf("respawn-pane not found in hook: %s", hook)
+		}
+		if guardIdx > respawnIdx {
+			t.Errorf("guard should appear before respawn-pane, guard at %d, respawn-pane at %d, hook: %s", guardIdx, respawnIdx, hook)
+		}
+	})
+}
+
 func TestSanitizeForTmuxHook_StripsMeta(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -816,8 +816,10 @@ func buildPaneDiedHook(dyingRole, sessionName, project string) string {
 
 	// Respawn the dead pane with the same command, plus notify surviving pane
 	// Note: escapeForShell already wraps output in single quotes, so we use %s not '%s'
+	// Guard with double-respawn check: if restarting flag exists, entire hook becomes no-op
 	hook := fmt.Sprintf(
-		"run-shell \"tmux respawn-pane -k -t %s %s; tmux set-buffer -b oro-pane-died %s; tmux paste-buffer -b oro-pane-died -t %s -d; tmux send-keys -t %s Enter\"",
+		"run-shell \"test \\! -f ~/.oro/panes/%s/restarting && tmux respawn-pane -k -t %s %s && tmux set-buffer -b oro-pane-died %s && tmux paste-buffer -b oro-pane-died -t %s -d && tmux send-keys -t %s Enter\"",
+		dyingRole,
 		dyingPane,
 		escapeForShell(respawnCmd),
 		escapeForShell(sanitizeForTmuxHook(escalationMsg)),
