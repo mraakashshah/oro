@@ -3648,3 +3648,49 @@ func TestEpicDecompositionSkipsQG(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+// TestClaudeSpawnerSetsStdinToDevNull verifies that ClaudeSpawner.Spawn sets cmd.Stdin to /dev/null,
+// preventing the spawned process from inheriting parent stdin and hanging on reads.
+func TestClaudeSpawnerSetsStdinToDevNull(t *testing.T) {
+	spawner := &worker.ClaudeSpawner{}
+
+	// Use a context with a short timeout to allow cmd.Start() to fail gracefully
+	// (claude binary might not exist, but that's OK - we just need to verify cmd setup)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	proc, _, _, _ := spawner.Spawn(ctx, "claude-opus-4-5", "test prompt", "/tmp")
+
+	// We expect Start() to fail (timeout or claude not found), but we just need the cmd to be built
+	// If we got a process back, inspect it
+	if proc == nil {
+		t.Skip("process is nil, likely due to context timeout or spawn error")
+		return
+	}
+
+	// Cast to the internal cmdProcess type to access the cmd
+	cmdProc, ok := proc.(*worker.CmdProcess)
+	if !ok {
+		t.Fatal("expected cmdProcess")
+	}
+
+	cmd := cmdProc.Cmd
+
+	// Verify that cmd.Stdin is set (not nil)
+	if cmd.Stdin == nil {
+		t.Error("expected cmd.Stdin to be non-nil, got nil")
+		return
+	}
+
+	// Verify it's an open file pointing to /dev/null
+	file, ok := cmd.Stdin.(*os.File)
+	if !ok {
+		t.Error("expected cmd.Stdin to be an *os.File, got other type")
+		return
+	}
+
+	// Verify the file is /dev/null by checking the name
+	if file.Name() != os.DevNull {
+		t.Errorf("expected cmd.Stdin to point to %s, got %s", os.DevNull, file.Name())
+	}
+}

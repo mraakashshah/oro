@@ -1191,36 +1191,47 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 	cmd.Stderr = os.Stderr
 	cmd.Env = buildClaudeEnv()
 
+	// Open /dev/null for stdin to prevent the spawned process from inheriting parent stdin,
+	// which can cause claude -p to hang if the parent's stdin is a pipe.
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open /dev/null: %w", err)
+	}
+	cmd.Stdin = devNull
+
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		devNull.Close() // Clean up fd before returning error
 		return nil, nil, nil, fmt.Errorf("start claude: %w", err)
 	}
-	return &cmdProcess{cmd: cmd}, stdoutPipe, nil, nil
+	// The fd has been dup'd into the child process, so we can close our copy.
+	devNull.Close()
+	return &CmdProcess{Cmd: cmd}, stdoutPipe, nil, nil
 }
 
-// cmdProcess wraps *exec.Cmd to implement the Process interface.
-type cmdProcess struct {
-	cmd *exec.Cmd
+// CmdProcess wraps *exec.Cmd to implement the Process interface.
+type CmdProcess struct {
+	Cmd *exec.Cmd
 }
 
 // Wait blocks until the subprocess exits.
-func (p *cmdProcess) Wait() error {
-	if err := p.cmd.Wait(); err != nil {
+func (p *CmdProcess) Wait() error {
+	if err := p.Cmd.Wait(); err != nil {
 		return fmt.Errorf("claude process wait: %w", err)
 	}
 	return nil
 }
 
 // Kill terminates the subprocess immediately.
-func (p *cmdProcess) Kill() error {
-	if p.cmd.Process == nil {
+func (p *CmdProcess) Kill() error {
+	if p.Cmd.Process == nil {
 		return nil
 	}
-	if err := p.cmd.Process.Kill(); err != nil {
+	if err := p.Cmd.Process.Kill(); err != nil {
 		return fmt.Errorf("kill claude process: %w", err)
 	}
 	return nil
