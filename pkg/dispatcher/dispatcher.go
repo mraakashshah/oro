@@ -688,7 +688,7 @@ func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg pro
 	case protocol.MsgDone:
 		d.handleDone(ctx, workerID, msg)
 	case protocol.MsgHandoff:
-		_, _, _, _ = d.handleHandoff, ctx, workerID, msg
+		d.handleHandoff(ctx, workerID, msg)
 	case protocol.MsgReadyForReview:
 		d.handleReadyForReview(ctx, workerID, msg)
 	case protocol.MsgReconnect:
