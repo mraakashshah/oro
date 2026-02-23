@@ -288,7 +288,7 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string
 		return fmt.Errorf("access embedded assets: %w", err)
 	}
 
-	if err := bootstrapProject(projectRoot, name, oroHome, subAssets); err != nil {
+	if _, err := bootstrapProject(projectRoot, name, oroHome, subAssets); err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
 	}
 
@@ -352,46 +352,50 @@ func resolveProjectName(projectRoot, projectName string) (string, error) {
 // bootstrapProject orchestrates project initialization for externalized config.
 // It creates the local anchor (.oro/config.yaml), manages .gitignore, generates
 // per-project settings.json, creates handoffs dir, and extracts embedded assets.
-func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) error {
+// Returns the detected language config (threaded from createProjectAnchor) so
+// callers avoid a redundant disk read.
+func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) (*langprofile.Config, error) {
 	// 1. Create local anchor: .oro/config.yaml with project name.
-	if err := createProjectAnchor(projectRoot, projectName); err != nil {
-		return fmt.Errorf("create project anchor: %w", err)
+	// Thread the detected config back to the caller.
+	cfg, err := createProjectAnchor(projectRoot, projectName)
+	if err != nil {
+		return nil, fmt.Errorf("create project anchor: %w", err)
 	}
 
 	// 2. Add .oro/ and .beads to .gitignore if not present.
 	if err := ensureGitignore(projectRoot, ".oro/"); err != nil {
-		return fmt.Errorf("update gitignore: %w", err)
+		return nil, fmt.Errorf("update gitignore: %w", err)
 	}
 	if err := ensureGitignore(projectRoot, ".beads"); err != nil {
-		return fmt.Errorf("update gitignore for .beads: %w", err)
+		return nil, fmt.Errorf("update gitignore for .beads: %w", err)
 	}
 
 	// 3. Create per-project directory structure under oroHome.
 	projectDir := filepath.Join(oroHome, "projects", projectName)
 	handoffsDir := filepath.Join(projectDir, "handoffs")
 	if err := os.MkdirAll(handoffsDir, 0o755); err != nil { //nolint:gosec // project dir needs to be readable
-		return fmt.Errorf("create project dir: %w", err)
+		return nil, fmt.Errorf("create project dir: %w", err)
 	}
 
 	// 4. Set up beads symlink: .beads → oroHome/projects/<name>/beads/
 	beadsTarget := filepath.Join(projectDir, "beads")
 	if err := setupBeadsSymlink(projectRoot, beadsTarget); err != nil {
-		return fmt.Errorf("setup beads symlink: %w", err)
+		return nil, fmt.Errorf("setup beads symlink: %w", err)
 	}
 
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
 	if err != nil {
-		return fmt.Errorf("generate settings: %w", err)
+		return nil, fmt.Errorf("generate settings: %w", err)
 	}
 	settingsPath := filepath.Join(projectDir, "settings.json")
 	if err := os.WriteFile(settingsPath, settingsData, 0o644); err != nil { //nolint:gosec // settings file needs to be readable
-		return fmt.Errorf("write settings: %w", err)
+		return nil, fmt.Errorf("write settings: %w", err)
 	}
 
 	// 6. Extract embedded assets to oroHome (additive: don't overwrite user edits).
 	if err := extractAssets(oroHome, assets, false); err != nil {
-		return fmt.Errorf("extract assets: %w", err)
+		return nil, fmt.Errorf("extract assets: %w", err)
 	}
 
 	// 7. Build oro-search-hook binary. Fail-open: ensureSearchHook logs a
@@ -403,15 +407,16 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) er
 	searchHookBin := filepath.Join(oroHome, "hooks", "oro-search-hook")
 	_ = ensureSearchHook(searchHookBin, searchHookSrc)
 
-	return nil
+	return cfg, nil
 }
 
 // createProjectAnchor writes the .oro/config.yaml anchor file in the project root.
 // It includes the project name and detected language profiles.
-func createProjectAnchor(projectRoot, projectName string) error {
+// Returns the detected language config so callers can use it without re-reading from disk.
+func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, error) {
 	oroDir := filepath.Join(projectRoot, ".oro")
 	if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // config dir needs to be readable
-		return fmt.Errorf("create .oro dir: %w", err)
+		return nil, fmt.Errorf("create .oro dir: %w", err)
 	}
 
 	var buf strings.Builder
@@ -425,13 +430,15 @@ func createProjectAnchor(projectRoot, projectName string) error {
 		if langYAML != "" {
 			buf.WriteString(langYAML)
 		}
+	} else {
+		cfg = &langprofile.Config{Languages: map[string]langprofile.LanguageConfig{}}
 	}
 
 	configPath := filepath.Join(oroDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // config file needs to be readable
-		return fmt.Errorf("write config.yaml: %w", err)
+		return nil, fmt.Errorf("write config.yaml: %w", err)
 	}
-	return nil
+	return cfg, nil
 }
 
 // ensureGitignore adds entry to .gitignore if not already present.

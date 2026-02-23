@@ -84,7 +84,7 @@ func runSetup(w io.Writer, opts setupOptions) error {
 		return err
 	}
 
-	setupPhase2Detect(w, opts)
+	_ = setupPhase2Detect(w, opts)
 
 	if err := setupPhase3Tools(w, opts); err != nil {
 		return err
@@ -120,24 +120,30 @@ func setupPhase1Prereqs(w io.Writer, opts setupOptions) error {
 	return nil
 }
 
-// setupPhase2Detect detects project languages via langprofile.
-func setupPhase2Detect(w io.Writer, opts setupOptions) {
+// setupPhase2Detect detects project languages via langprofile and returns the
+// detected config so it can be threaded through to bootstrapProject.
+// Returns nil in dry-run mode (no detection performed).
+func setupPhase2Detect(w io.Writer, opts setupOptions) *langprofile.Config {
 	fmt.Fprintln(w, "Phase 2: Detecting project languages...")
 	if opts.dryRun {
 		fmt.Fprintf(w, "  [dry-run] Would scan %s for language markers\n", opts.projectRoot)
-	} else {
-		detectAndPrintLanguages(w, opts.projectRoot)
+		fmt.Fprintln(w)
+		return nil
 	}
+	cfg := detectAndPrintLanguages(w, opts.projectRoot)
 	fmt.Fprintln(w)
+	return cfg
 }
 
-// detectAndPrintLanguages runs language detection and prints results.
-func detectAndPrintLanguages(w io.Writer, projectRoot string) {
+// detectAndPrintLanguages runs language detection, prints results, and returns
+// the detected config for downstream use.
+func detectAndPrintLanguages(w io.Writer, projectRoot string) *langprofile.Config {
 	profiles := langprofile.AllProfiles()
 	cfg, err := langprofile.GenerateConfig(projectRoot, profiles)
 	switch {
 	case err != nil:
 		fmt.Fprintf(w, "  Warning: language detection failed: %v\n", err)
+		return &langprofile.Config{Languages: map[string]langprofile.LanguageConfig{}}
 	case len(cfg.Languages) == 0:
 		fmt.Fprintln(w, "  No languages detected.")
 	default:
@@ -145,6 +151,7 @@ func detectAndPrintLanguages(w io.Writer, projectRoot string) {
 			fmt.Fprintf(w, "  Detected: %s\n", lang)
 		}
 	}
+	return cfg
 }
 
 // setupPhase3Tools installs missing tools (reuses oro init logic).
@@ -212,7 +219,8 @@ func executeBootstrap(w io.Writer, name string, opts setupOptions) error {
 		return fmt.Errorf("access embedded assets: %w", err)
 	}
 
-	if err := bootstrapProject(opts.projectRoot, name, oroHome, subAssets); err != nil {
+	cfg, err := bootstrapProject(opts.projectRoot, name, oroHome, subAssets)
+	if err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
 	}
 
@@ -224,8 +232,8 @@ func executeBootstrap(w io.Writer, name string, opts setupOptions) error {
 
 	fmt.Fprintf(w, "  Project %q bootstrapped.\n", name)
 
-	// Read back the written config to confirm it was created and report language count.
-	if cfg, readErr := langprofile.ReadConfig(opts.projectRoot); readErr == nil && cfg != nil {
+	// Use the config threaded back from bootstrapProject (avoids redundant disk read).
+	if cfg != nil && len(cfg.Languages) > 0 {
 		fmt.Fprintf(w, "  Config: %d language(s) detected.\n", len(cfg.Languages))
 	}
 

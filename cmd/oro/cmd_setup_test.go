@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -245,4 +247,53 @@ func TestSetupNewSetupCmd(t *testing.T) {
 			t.Errorf("expected flag %q to be registered", name)
 		}
 	}
+}
+
+// TestSetupPhase2ReturnsConfig verifies that setupPhase2Detect returns the detected
+// language config so it can be threaded through to bootstrapProject without re-detection.
+func TestSetupPhase2ReturnsConfig(t *testing.T) {
+	t.Run("returns config for Go project", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create go.mod to trigger Go language detection.
+		goModPath := filepath.Join(tmpDir, "go.mod")
+		if err := os.WriteFile(goModPath, []byte("module example.com/test\n\ngo 1.21\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("failed to create go.mod: %v", err)
+		}
+
+		var buf bytes.Buffer
+		opts := setupOptions{projectRoot: tmpDir, dryRun: false}
+
+		cfg := setupPhase2Detect(&buf, opts)
+
+		if cfg == nil {
+			t.Fatal("setupPhase2Detect should return non-nil config when Go project detected")
+		}
+		if _, ok := cfg.Languages["go"]; !ok {
+			t.Errorf("config should contain 'go' language entry, got languages: %v", cfg.Languages)
+		}
+	})
+
+	t.Run("returns nil in dry-run mode", func(t *testing.T) {
+		var buf bytes.Buffer
+		opts := setupOptions{projectRoot: t.TempDir(), dryRun: true}
+
+		cfg := setupPhase2Detect(&buf, opts)
+
+		if cfg != nil {
+			t.Errorf("setupPhase2Detect should return nil in dry-run mode, got: %+v", cfg)
+		}
+	})
+
+	t.Run("returns non-nil but empty config when no languages detected", func(t *testing.T) {
+		var buf bytes.Buffer
+		opts := setupOptions{projectRoot: t.TempDir(), dryRun: false}
+
+		cfg := setupPhase2Detect(&buf, opts)
+
+		// Config is returned (non-nil) even when empty — caller can distinguish from dry-run.
+		if cfg == nil {
+			t.Fatal("setupPhase2Detect should return non-nil config even when no languages detected")
+		}
+	})
 }

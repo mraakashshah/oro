@@ -516,7 +516,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -537,7 +537,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -563,7 +563,7 @@ func TestOroInit(t *testing.T) {
 			t.Fatalf("write .gitignore: %v", err)
 		}
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -583,7 +583,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -641,7 +641,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -660,7 +660,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -680,7 +680,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -700,7 +700,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -721,7 +721,7 @@ func TestOroInit(t *testing.T) {
 		oroHome := t.TempDir()
 
 		// First run
-		if err := bootstrapProject(projectDir, "myproject", oroHome, assets); err != nil {
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets); err != nil {
 			t.Fatalf("first bootstrapProject failed: %v", err)
 		}
 
@@ -732,7 +732,7 @@ func TestOroInit(t *testing.T) {
 		}
 
 		// Second run (idempotent)
-		if err := bootstrapProject(projectDir, "myproject", oroHome, assets); err != nil {
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets); err != nil {
 			t.Fatalf("second bootstrapProject failed: %v", err)
 		}
 
@@ -845,7 +845,7 @@ func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -867,7 +867,7 @@ func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
