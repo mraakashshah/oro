@@ -122,6 +122,7 @@ func TestWorkersTableView(t *testing.T) {
 
 	t.Run("no workers shows empty state message (daemon offline)", func(t *testing.T) {
 		m := newModel()
+		m.initialLoad = false // Skip loading state for this test
 		m.activeView = WorkersView
 		m.workers = nil // No workers
 		m.assignments = nil
@@ -136,6 +137,7 @@ func TestWorkersTableView(t *testing.T) {
 
 	t.Run("workers table renders all columns", func(t *testing.T) {
 		m := newModel()
+		m.initialLoad = false // Skip loading state for this test
 		m.activeView = WorkersView
 		m.workers = []WorkerStatus{
 			{
@@ -174,6 +176,7 @@ func TestWorkersTableView(t *testing.T) {
 
 	t.Run("heartbeat less than 5s renders green", func(t *testing.T) {
 		m := newModel()
+		m.initialLoad = false // Skip loading state for this test
 		m.activeView = WorkersView
 		m.workers = []WorkerStatus{
 			{
@@ -197,6 +200,7 @@ func TestWorkersTableView(t *testing.T) {
 
 	t.Run("heartbeat between 5s and 15s renders amber", func(t *testing.T) {
 		m := newModel()
+		m.initialLoad = false // Skip loading state for this test
 		m.activeView = WorkersView
 		m.workers = []WorkerStatus{
 			{
@@ -216,6 +220,7 @@ func TestWorkersTableView(t *testing.T) {
 
 	t.Run("heartbeat greater than 15s renders red", func(t *testing.T) {
 		m := newModel()
+		m.initialLoad = false // Skip loading state for this test
 		m.activeView = WorkersView
 		m.workers = []WorkerStatus{
 			{
@@ -235,6 +240,7 @@ func TestWorkersTableView(t *testing.T) {
 
 	t.Run("worker with no bead assignment shows dash", func(t *testing.T) {
 		m := newModel()
+		m.initialLoad = false // Skip loading state for this test
 		m.activeView = WorkersView
 		m.workers = []WorkerStatus{
 			{

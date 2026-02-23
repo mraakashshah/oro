@@ -14,6 +14,7 @@ import (
 func TestBoardColumns_AdaptToTerminalWidth(t *testing.T) {
 	// Create model with test beads
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.beads = []protocol.Bead{
 		{ID: "test-1", Title: "Test Bead Long Title That Might Wrap", Status: "open", Type: "task", Priority: 2},
 	}
@@ -65,6 +66,7 @@ func TestBoardColumns_AdaptToTerminalWidth(t *testing.T) {
 func TestSearchInput_AdaptToTerminalWidth(t *testing.T) {
 	// Create model
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.beads = []protocol.Bead{
 		{ID: "test-1", Title: "Sample", Status: "open", Type: "task", Priority: 2},
 	}
@@ -119,6 +121,7 @@ func TestBoardView_MinimumWidthFloor(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 			m.beads = []protocol.Bead{
 				{ID: "test-1", Title: "Test", Status: "open", Type: "task", Priority: 2},
 			}
@@ -233,6 +236,7 @@ func TestSearchInput_WidthCalculation(t *testing.T) {
 // the search overlay actually uses adaptive width in rendering.
 func TestRenderSearchOverlay_UsesAdaptiveWidth(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.beads = []protocol.Bead{
 		{ID: "test-1", Title: "Sample Bead", Status: "open", Type: "task", Priority: 2},
 	}

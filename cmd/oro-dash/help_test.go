@@ -10,6 +10,7 @@ import (
 // TestHelpViewToggle verifies that ? key toggles help overlay on/off.
 func TestHelpViewToggle(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = BoardView
 
 	// Press ? to open help
@@ -45,6 +46,7 @@ func TestHelpViewToggle(t *testing.T) {
 // TestHelpViewEscDismisses verifies that Esc key dismisses help overlay.
 func TestHelpViewEscDismisses(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = HelpView
 	m.previousView = BoardView
 
@@ -66,6 +68,7 @@ func TestHelpViewEscDismisses(t *testing.T) {
 // TestHelpViewFromDetailView verifies help can be opened from detail view.
 func TestHelpViewFromDetailView(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = DetailView
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
@@ -97,6 +100,7 @@ func TestHelpViewFromDetailView(t *testing.T) {
 // TestHelpViewFromInsightsView verifies help can be opened from insights view.
 func TestHelpViewFromInsightsView(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = InsightsView
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
@@ -117,6 +121,7 @@ func TestHelpViewFromInsightsView(t *testing.T) {
 // TestHelpDoesNotInterfereWithSearch verifies help doesn't interfere with search overlay.
 func TestHelpDoesNotInterfereWithSearch(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = SearchView
 	m.searchInput.Focus()
 	m.searchInput.SetValue("test")
@@ -140,6 +145,7 @@ func TestHelpDoesNotInterfereWithSearch(t *testing.T) {
 // TestHelpContentBoard verifies board-specific help content is shown.
 func TestHelpContentBoard(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = HelpView
 	m.previousView = BoardView
 
@@ -157,6 +163,7 @@ func TestHelpContentBoard(t *testing.T) {
 // TestHelpContentDetail verifies detail-specific help content is shown.
 func TestHelpContentDetail(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = HelpView
 	m.previousView = DetailView
 
@@ -174,6 +181,7 @@ func TestHelpContentDetail(t *testing.T) {
 // TestHelpContentInsights verifies insights-specific help content is shown.
 func TestHelpContentInsights(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = HelpView
 	m.previousView = InsightsView
 
@@ -191,6 +199,7 @@ func TestHelpContentInsights(t *testing.T) {
 // TestHelpContentSearch verifies search-specific help content is shown.
 func TestHelpContentSearch(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = HelpView
 	m.previousView = SearchView
 
@@ -208,6 +217,7 @@ func TestHelpContentSearch(t *testing.T) {
 // TestHelpRendersWithoutCrashing verifies help view renders successfully.
 func TestHelpRendersWithoutCrashing(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 	m.activeView = HelpView
 	m.previousView = BoardView
 

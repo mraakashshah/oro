@@ -122,8 +122,9 @@ type Model struct {
 	focusedEpic string            // Epic ID currently focused by dispatcher
 
 	// UI state
-	width  int
-	height int
+	width       int
+	height      int
+	initialLoad bool // True until first beadsMsg arrives
 	//nolint:unused // Will be used for error display
 	err error
 
@@ -158,6 +159,7 @@ func newModel() Model {
 	ti.CharLimit = 100
 	return Model{
 		activeView:  BoardView,
+		initialLoad: true, // Show "Loading" until first beadsMsg
 		searchInput: ti,
 		searchModel: &SearchModel{},
 		theme:       theme,
@@ -219,6 +221,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case beadsMsg:
+		m.initialLoad = false // Clear loading state on first beadsMsg (even if empty)
 		m.beads = []protocol.Bead(msg)
 		m.openCount = 0
 		m.inProgressCount = 0
@@ -460,6 +463,12 @@ func (m Model) filterBeads() []protocol.Bead {
 
 // View implements tea.Model.
 func (m Model) View() string {
+	// Show loading state until first beadsMsg
+	if m.initialLoad {
+		statusBar := m.renderStatusBar(m.width)
+		return "Loading..." + "\n" + statusBar
+	}
+
 	statusBar := m.renderStatusBar(m.width)
 
 	switch m.activeView {

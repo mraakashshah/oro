@@ -18,6 +18,7 @@ import (
 // pane statuses, and worker count.
 func TestHealthViewRender(t *testing.T) {
 	m := newModel()
+	m.initialLoad = false // Skip loading state for this test
 
 	// Set up health data
 	m.daemonHealthy = true
@@ -61,6 +62,7 @@ func TestHealthViewRender(t *testing.T) {
 func TestHealthViewShowsDispatcherData(t *testing.T) {
 	t.Run("renders daemon PID and state from healthData", func(t *testing.T) {
 		m := newModel()
+		m.initialLoad = false // Skip loading state for this test
 		m.activeView = HealthView
 		m.healthData = &HealthData{
 			DaemonPID:     55001,

@@ -1456,6 +1456,88 @@ func TestFilterBeads_TypeFilter_Integration(t *testing.T) {
 	}
 }
 
+// TestModel_InitialLoadState verifies the initial loading state behavior:
+// - Before beadsMsg: View shows "Loading"
+// - After beadsMsg: View shows board (even if empty)
+// - Empty beadsMsg slice still clears initialLoad
+func TestModel_InitialLoadState(t *testing.T) {
+	t.Run("initial state shows Loading message", func(t *testing.T) {
+		m := newModel()
+
+		// Before any beadsMsg, initialLoad should be true
+		if !m.initialLoad {
+			t.Errorf("initial state should have initialLoad=true, got false")
+		}
+
+		// View should contain "Loading"
+		view := m.View()
+		if !strings.Contains(view, "Loading") {
+			t.Errorf("initial View() should contain 'Loading', got: %s", view)
+		}
+	})
+
+	t.Run("after beadsMsg, board is shown instead of Loading", func(t *testing.T) {
+		m := newModel()
+		beads := []protocol.Bead{
+			{ID: "b-1", Title: "Test Task", Status: "open"},
+		}
+
+		// Send beadsMsg
+		updated, _ := m.Update(beadsMsg(beads))
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// initialLoad should now be false
+		if model.initialLoad {
+			t.Errorf("after beadsMsg, initialLoad should be false, got true")
+		}
+
+		// View should show board content, not "Loading"
+		view := model.View()
+		if strings.Contains(view, "Loading") {
+			t.Errorf("View() after beadsMsg should not contain 'Loading', got: %s", view)
+		}
+
+		// View should contain bead content (check for bead ID which is guaranteed to appear)
+		if !strings.Contains(view, "b-1") {
+			t.Errorf("View() after beadsMsg should contain bead ID, got: %s", view)
+		}
+
+		// Board structure should be present (column headers)
+		if !strings.Contains(view, "Ready") {
+			t.Errorf("View() after beadsMsg should contain board structure, got: %s", view)
+		}
+	})
+
+	t.Run("empty beadsMsg slice still clears initialLoad", func(t *testing.T) {
+		m := newModel()
+
+		// Verify initial state
+		if !m.initialLoad {
+			t.Errorf("initial state should have initialLoad=true")
+		}
+
+		// Send empty beadsMsg
+		updated, _ := m.Update(beadsMsg([]protocol.Bead{}))
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		// initialLoad should be false even with empty slice
+		if model.initialLoad {
+			t.Errorf("after empty beadsMsg, initialLoad should be false, got true")
+		}
+
+		// Beads should be empty but present
+		if len(model.beads) != 0 {
+			t.Errorf("after empty beadsMsg, beads should be empty, got %d", len(model.beads))
+		}
+	})
+}
+
 // TestStatusBarBottom verifies status bar is at bottom of View() output, includes help hints,
 // and handles narrow/short terminal edge cases.
 func TestStatusBarBottom(t *testing.T) {
