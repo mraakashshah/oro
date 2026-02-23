@@ -1577,12 +1577,38 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
 	if ok {
-		w.beadID = msg.Reconnect.BeadID
+		// oro-ovpc: Check if another worker is already assigned to this bead.
+		// If so, reject the reconnect's bead claim to prevent concurrent assignment.
+		beadID := msg.Reconnect.BeadID
+		var beadStolenFrom string
+		for otherID, other := range d.workers {
+			if otherID != workerID && other.beadID == beadID && other.state == protocol.WorkerBusy {
+				beadStolenFrom = otherID
+				break
+			}
+		}
+
+		if beadStolenFrom != "" {
+			// Another worker is already busy on this bead — reject the reconnect claim.
+			_ = d.logEvent(ctx, "reconnect_bead_conflict", workerID, beadID, beadStolenFrom,
+				fmt.Sprintf("worker %s already assigned to %s", beadStolenFrom, beadID))
+			// Don't set w.beadID; keep worker idle/disconnected
+		} else {
+			// No conflict — accept the reconnect claim
+			w.beadID = beadID
+		}
+
 		w.lastSeen = d.nowFunc()
 		switch msg.Reconnect.State {
 		case "running":
-			w.state = protocol.WorkerBusy
-			w.lastProgress = d.nowFunc()
+			// Only set to Busy if we accepted the bead claim
+			if w.beadID == beadID {
+				w.state = protocol.WorkerBusy
+				w.lastProgress = d.nowFunc()
+			} else {
+				// Conflict detected, keep worker idle
+				w.state = protocol.WorkerIdle
+			}
 		default:
 			w.state = protocol.WorkerIdle
 		}

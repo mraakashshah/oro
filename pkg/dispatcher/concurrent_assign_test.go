@@ -248,3 +248,114 @@ func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
 		t.Errorf("scale-w6 state = %q, want Idle — it should not have been assigned bead-scale", w6State)
 	}
 }
+
+// TestReconnectDoesNotStealBead verifies that when a worker reconnects and
+// reports it's working on a bead that is already assigned to another worker,
+// the reconnect does NOT override the existing assignment. This prevents the
+// race condition documented in oro-ovpc where two workers (one via normal
+// assignment, one via reconnect) can be simultaneously assigned to the same bead.
+func TestReconnectDoesNotStealBead(t *testing.T) {
+	t.Parallel()
+
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Setup bead detail
+	beadSrc.mu.Lock()
+	beadSrc.shown["oro-test1"] = &protocol.BeadDetail{
+		ID:                 "oro-test1",
+		Title:              "Test bead",
+		AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+	}
+	beadSrc.mu.Unlock()
+
+	// Connect worker 1 and assign it to oro-test1 via normal assignment flow
+	conn1, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Assign w1 to oro-test1
+	ctx := context.Background()
+	d.mu.Lock()
+	worker1 := d.workers["w1"]
+	d.mu.Unlock()
+	if worker1 == nil {
+		t.Fatal("worker1 not registered")
+	}
+
+	// Simulate normal assignment (this sets assigningBeads and worker state)
+	_ = d.assignBead(ctx, worker1, protocol.Bead{ID: "oro-test1", Priority: 0})
+
+	// Wait for assignment to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify w1 is assigned to oro-test1
+	d.mu.Lock()
+	w1State := d.workers["w1"].state
+	w1BeadID := d.workers["w1"].beadID
+	d.mu.Unlock()
+
+	if w1State != protocol.WorkerBusy || w1BeadID != "oro-test1" {
+		t.Fatalf("worker1 not assigned correctly: state=%s beadID=%s", w1State, w1BeadID)
+	}
+
+	// Now connect worker 2 and have it RECONNECT claiming the same bead
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w2",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 2, 1*time.Second)
+
+	// Send RECONNECT message claiming oro-test1 (the bug: this overrides w1's assignment)
+	sendMsg(t, conn2, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			BeadID: "oro-test1",
+			State:  "running",
+		},
+	})
+
+	// Give reconnect time to process
+	time.Sleep(100 * time.Millisecond)
+
+	// CRITICAL ASSERTIONS: Only ONE worker should be assigned to oro-test1
+	d.mu.Lock()
+	busyCount := 0
+	var assignedWorkerIDs []string
+	for id, w := range d.workers {
+		if w.beadID == "oro-test1" && w.state == protocol.WorkerBusy {
+			busyCount++
+			assignedWorkerIDs = append(assignedWorkerIDs, id)
+		}
+	}
+	d.mu.Unlock()
+
+	if busyCount != 1 {
+		t.Errorf("Race condition detected: %d workers assigned to oro-test1 (workers: %v), expected exactly 1",
+			busyCount, assignedWorkerIDs)
+	}
+
+	// ASSERTION 2: w1 should still be the assigned worker (it was assigned first)
+	d.mu.Lock()
+	w1StillAssigned := d.workers["w1"].beadID == "oro-test1" && d.workers["w1"].state == protocol.WorkerBusy
+	w2StolenBead := d.workers["w2"].beadID == "oro-test1" && d.workers["w2"].state == protocol.WorkerBusy
+	d.mu.Unlock()
+
+	if !w1StillAssigned {
+		t.Error("worker1 lost its assignment to oro-test1 after w2 reconnect — w1 should retain the bead")
+	}
+
+	if w2StolenBead {
+		t.Error("worker2 stole oro-test1 from worker1 via reconnect — this is the oro-ovpc race condition")
+	}
+}
