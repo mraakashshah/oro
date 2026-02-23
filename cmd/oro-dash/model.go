@@ -635,9 +635,21 @@ func (m Model) renderStatusBar(width int) string {
 		return metrics
 	}
 
-	// Wide bar: metrics left, hints right
+	// Wide bar: metrics left, hints right (right-aligned with gap fill)
 	hintsStyled := m.styles.StatusLabel.Render(hints)
-	return lipgloss.JoinHorizontal(lipgloss.Left, metrics, "  ", hintsStyled)
+
+	// Calculate gap to right-align hints
+	metricsWidth := lipgloss.Width(metrics)
+	hintsWidth := lipgloss.Width(hints)
+	gap := width - metricsWidth - hintsWidth
+
+	// Minimum gap is 2 for separation
+	if gap < 2 {
+		gap = 2
+	}
+
+	gapStr := strings.Repeat(" ", gap)
+	return lipgloss.JoinHorizontal(lipgloss.Left, metrics, gapStr, hintsStyled)
 }
 
 // renderSearchOverlay renders the search overlay with text input and filtered results.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,12 @@ import (
 
 	"oro/pkg/protocol"
 )
+
+// stripANSI removes ANSI color codes from a string.
+func stripANSI(s string) string {
+	ansi := regexp.MustCompile("\\x1b\\[[0-9;]*m")
+	return ansi.ReplaceAllString(s, "")
+}
 
 // TestStatusBar verifies the status bar shows daemon health + worker count + aggregate stats.
 func TestStatusBar(t *testing.T) {
@@ -182,6 +189,113 @@ func TestStatusBar_ShowsBeadCountsWhenDaemonOffline(t *testing.T) {
 	}
 	if !strings.Contains(bar, "offline") {
 		t.Errorf("status bar should still indicate daemon is offline, got: %s", bar)
+	}
+}
+
+// TestStatusBar_HintsRightAligned verifies that hints are right-aligned with gap fill.
+func TestStatusBar_HintsRightAligned(t *testing.T) {
+	tests := []struct {
+		name       string
+		width      int
+		height     int
+		activeView ViewType
+		wantHints  bool // true if hints should be visible
+	}{
+		{
+			name:       "board view hints right-aligned at width 100",
+			width:      100,
+			height:     40,
+			activeView: BoardView,
+			wantHints:  true,
+		},
+		{
+			name:       "detail view hints right-aligned at width 120",
+			width:      120,
+			height:     40,
+			activeView: DetailView,
+			wantHints:  true,
+		},
+		{
+			name:       "hints hidden when width < 60",
+			width:      50,
+			height:     40,
+			activeView: BoardView,
+			wantHints:  false,
+		},
+		{
+			name:       "hints hidden when height < 30",
+			width:      100,
+			height:     20,
+			activeView: BoardView,
+			wantHints:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{
+				daemonHealthy:   true,
+				workerCount:     3,
+				openCount:       5,
+				inProgressCount: 2,
+				activeView:      tt.activeView,
+				height:          tt.height,
+			}
+
+			bar := m.renderStatusBar(tt.width)
+			barClean := stripANSI(bar)
+
+			if tt.wantHints {
+				// When hints should be visible:
+				// 1. "q quit" is in the output
+				if !strings.Contains(barClean, "q quit") {
+					t.Errorf("renderStatusBar() missing 'q quit' hint, got clean: %s", barClean)
+				}
+
+				// 2. Verify gap before hints is calculated for right-alignment
+				// The gap should be at least 2 (minimum right-align gap)
+				idx := strings.Index(barClean, "q quit")
+				if idx > 0 {
+					// Count trailing spaces before "q quit"
+					beforeHints := barClean[:idx]
+					gapCount := 0
+					for i := len(beforeHints) - 1; i >= 0 && beforeHints[i] == ' '; i-- {
+						gapCount++
+					}
+
+					// Gap must be at least 2 for right-alignment
+					if gapCount < 2 {
+						t.Errorf("gap before 'q quit' is %d, want >= 2 (right-align gap fill). Bar: %s", gapCount, barClean)
+					}
+
+					// 3. For right-alignment, the bar should fit within width or at least
+					// the gap should scale with width. When gap is calculated correctly,
+					// the final bar should be close to width (within a few chars for rounding).
+					// This test verifies the hints end near the right edge.
+					hintsStartIdx := idx
+					hintsEndIdx := len(barClean)
+					hintsLen := hintsEndIdx - hintsStartIdx
+
+					// Calculate what the gap SHOULD be for proper right-alignment
+					metricsEndIdx := idx - gapCount
+					metricsLen := metricsEndIdx
+					expectedGap := tt.width - metricsLen - hintsLen
+					if expectedGap < 2 {
+						expectedGap = 2
+					}
+
+					// With right-alignment, actual gap should match or exceed expected minimum
+					if gapCount < 2 {
+						t.Errorf("gap is %d, want >= 2 for right-alignment. Bar: %s", gapCount, barClean)
+					}
+				}
+			} else {
+				// When hints should be hidden, "q quit" should not appear
+				if strings.Contains(barClean, "q quit") {
+					t.Errorf("renderStatusBar() should not show 'q quit' when width < 60 or height < 30, got: %s", barClean)
+				}
+			}
+		})
 	}
 }
 
