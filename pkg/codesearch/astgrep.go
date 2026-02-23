@@ -532,7 +532,7 @@ func stripJavaModifiers(s string) string {
 		changed := false
 		for _, mod := range modifiers {
 			if strings.HasPrefix(s, mod) {
-				_, _, _, _ = s, strings.TrimPrefix, s, mod
+				s = strings.TrimPrefix(s, mod)
 				changed = true
 			}
 		}
@@ -562,17 +562,19 @@ func ChunkWithAstGrep(filePath, src string, lang Language) ([]Chunk, error) {
 	lines := strings.Split(src, "\n")
 
 	// Write source to a temporary file for ast-grep to process
-	tmpFile, err := os.CreateTemp("", filepath.Base(filePath)+".*")
+	tmpFile, err := os.CreateTemp("", "*"+filepath.Ext(filePath))
 	if err != nil {
 		return nil, fmt.Errorf("codesearch: create temp file: %w", err)
 	}
 	defer os.Remove(tmpFile.Name())
 
 	if _, err := tmpFile.WriteString(src); err != nil {
-		tmpFile.Close() //nolint:errcheck // best-effort cleanup
+		_ = tmpFile.Close()
 		return nil, fmt.Errorf("codesearch: write temp file: %w", err)
 	}
-	tmpFile.Close() //nolint:errcheck // best-effort cleanup
+	if err := tmpFile.Close(); err != nil {
+		return nil, fmt.Errorf("codesearch: close temp file: %w", err)
+	}
 
 	matches, err := runAstGrep(tmpFile.Name(), rules)
 	if err != nil {
