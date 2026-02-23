@@ -1,7 +1,9 @@
 package worker_test
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -125,8 +127,10 @@ func TestSubprocessExitDetection_DuringReview(t *testing.T) {
 		defer func() { _ = dispatcherConn.Close() }()
 
 		w := worker.NewWithConn("w-status-review", workerConn, spawner)
-		// Set fast polling so test runs quickly
-		w.SetContextPollInterval(50 * time.Millisecond)
+		// Fast heartbeats so we receive messages quickly.
+		// Avoid setting a short contextPollInterval — it causes a race
+		// between awaitSubprocessAndReport (delay = 2*poll) and
+		// checkSubprocessHealth (detection = 2 ticks), both ~2*poll.
 		w.SetHeartbeatInterval(100 * time.Millisecond)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -142,7 +146,26 @@ func TestSubprocessExitDetection_DuringReview(t *testing.T) {
 			},
 		})
 
-		_ = readMessage(t, dispatcherConn) // drain STATUS running
+		// Use a single scanner to avoid losing buffered data across calls.
+		// Creating a new bufio.Scanner per read can buffer beyond the first
+		// newline; subsequent scanners on the same conn miss those bytes.
+		scanner := bufio.NewScanner(dispatcherConn)
+		scanMsg := func() protocol.Message {
+			t.Helper()
+			if err := dispatcherConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatalf("set read deadline: %v", err)
+			}
+			if !scanner.Scan() {
+				t.Fatalf("failed to read message: %v", scanner.Err())
+			}
+			var m protocol.Message
+			if err := json.Unmarshal(scanner.Bytes(), &m); err != nil {
+				t.Fatalf("failed to unmarshal message: %v", err)
+			}
+			return m
+		}
+
+		_ = scanMsg() // drain STATUS running
 
 		// Subprocess exits normally
 		_, _ = pw.Write([]byte("work done\n"))
@@ -161,7 +184,7 @@ func TestSubprocessExitDetection_DuringReview(t *testing.T) {
 			default:
 			}
 
-			msg := readMessage(t, dispatcherConn)
+			msg := scanMsg()
 			switch msg.Type {
 			case protocol.MsgStatus:
 				// Check if this STATUS message indicates subprocess has exited
@@ -192,7 +215,7 @@ func TestSubprocessExitDetection_DuringReview(t *testing.T) {
 			},
 		})
 
-		msg := readMessage(t, dispatcherConn)
+		msg := scanMsg()
 		if msg.Type != protocol.MsgDone {
 			t.Fatalf("expected DONE after approval, got %s", msg.Type)
 		}
