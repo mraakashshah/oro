@@ -2048,13 +2048,9 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		return title, acceptance, false
 	}
 	if acceptance == "" {
-		_ = d.logEvent(ctx, "missing_acceptance", "dispatcher", bead.ID, workerID,
-			"bead has no acceptance criteria — escalating to manager")
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMissingAC, bead.ID,
-			"bead has no acceptance criteria — please add AC via bd update",
-			fmt.Sprintf("title: %s", title)), bead.ID, workerID)
-		d.recordAssignmentFailure(bead.ID)
-		return title, "", false
+		_ = d.logEvent(ctx, "missing_acceptance_warning", "dispatcher", bead.ID, workerID,
+			"bead has no acceptance criteria — assigning with warning")
+		return title, "", true
 	}
 	return title, acceptance, true
 }
