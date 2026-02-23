@@ -1,0 +1,133 @@
+---
+date: 2026-02-23
+status: complete
+---
+
+goal: >
+  Emergency cleanup after oro stop --force left 15 stale worktrees, 12 zombie worker
+  processes, and 7 beads falsely marked in_progress. Merged all completed work, fixed
+  3 worker-introduced bugs, reset stale claims, pushed 7 new commits to main.
+
+now: >
+  Clean state. No in_progress beads. No stale worktrees. Main is up to date.
+  Next session: dispatch workers for P0 bugs (oro-xs8l, oro-xzuh) and ready P2 tasks.
+  Recommend max 3 concurrent workers to avoid orphan accumulation.
+
+test: go test ./... -count=1 -race
+
+done_this_session:
+  - task: "Killed 12 zombie oro worker processes (daemon socket was gone)"
+    files: []
+  - task: "Reset 4 stale in_progress beads to open (no work done: 1rep.1, 1rep.4, 1rep.5, cwz.8)"
+    files: []
+  - task: "Closed 3 in_progress beads with completed unmerged work (n5uq, i8i8.2, i8i8.9)"
+    files: []
+  - task: "Merged oro-i8i8.6 (empty board column states) — snapshot conflict resolution + update"
+    files: [cmd/oro-dash/board.go, cmd/oro-dash/board_test.go, cmd/oro-dash/insights.go, cmd/oro-dash/insights_test.go, cmd/oro-dash/testdata/*.golden]
+  - task: "Merged oro-i8i8.7 (workers daemon-aware empty state) — fixed prevCol<=0 nav regression"
+    files: [cmd/oro-dash/model.go, cmd/oro-dash/workers_table.go, cmd/oro-dash/workers_table_test.go]
+  - task: "Merged oro-i8i8.2 (status bar separator) — fixed _ = m.activeView WorkersView breakage"
+    files: [cmd/oro-dash/theme.go, cmd/oro-dash/model.go, cmd/oro-dash/model_test.go]
+  - task: "Merged oro-jq8n (auto-ack MERGE_COMPLETE escalations)"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+  - task: "Merged oro-n5uq (P0: O_TRUNC→O_APPEND in worker log)"
+    files: [pkg/worker/worker.go, pkg/worker/worker_log_test.go]
+  - task: "Merged oro-i8i8.9 (initial load state)"
+    files: [cmd/oro-dash/model.go, cmd/oro-dash/model_test.go, cmd/oro-dash/adaptive_width_test.go]
+  - task: "Merged oro-cwz.1 (golangci-lint fixes in preflight)"
+    files: [cmd/oro/preflight.go, cmd/oro/preflight_test.go]
+  - task: "Discarded 4 stale worktrees whose work was already in main (hfvx, i8i8.1, i8i8.8, nqi.2)"
+    files: []
+  - task: "Pushed all 7 new commits to origin"
+    files: []
+
+findings:
+  oro_stop_force_is_lossy: >
+    oro stop --force kills worker processes mid-flight. Workers complete beads and commit
+    to worktree branches but never reach the rebase+merge steps (work-bead Steps 10-12).
+    Result: completed work stranded in branches, in_progress claims never reset.
+    This is a systemic gap — the system needs graceful drain or post-stop recovery.
+  worker_quality_gate_escapes: >
+    3 bugs escaped worker quality gates into merged commits:
+    (1) i8i8.7: prevCol<=0 instead of <0 broke left-column navigation (h key)
+    (2) i8i8.2: _ = m.activeView stub instead of m.activeView = WorkersView broke 'w' key
+    (3) multiple: snapshot .golden files conflicted and needed regeneration via -update flag
+    All were introduced during snapshot conflict resolution — workers took wrong sides.
+  gitignore_affects_oro_dash: >
+    .gitignore contains 'oro-dash' which matches cmd/oro-dash/** path components.
+    git add of files under cmd/oro-dash/ requires -f flag. All workers hitting this.
+  snapshot_conflicts_are_routine: >
+    cmd/oro-dash/testdata/*.golden files conflict on every concurrent dashboard bead.
+    Resolution: checkout --ours (take main), add -f, continue rebase, run tests with
+    -update flag to regenerate, amend commit. This is now a known pattern.
+
+decisions:
+  discard_hfvx_worktree: >
+    oro-hfvx worktree had 28-file -1082 line diff from very old branch base. Main already
+    had the hfvx fix via 6da2620. Discarding was correct — merging would have deleted
+    recently-added code.
+  merge_cwz1_despite_open_bead: >
+    oro-cwz.1 bead is open/blocked (depends on oro-cwz) but its commit was only 2-file
+    golangci-lint cleanup in preflight.go. Safe and desirable to merge independently.
+
+worked:
+  - "git checkout --ours + add -f + rebase --continue for snapshot conflicts"
+  - "go test ./cmd/oro-dash/... -run TestSnapshot_X -update to regenerate golden files"
+  - "git worktree add <path> <branch> to re-add removed worktree for re-rebase"
+  - "GIT_EDITOR=true git rebase --continue to avoid editor prompts"
+  - "pkill -f 'oro worker --socket' to kill all orphaned workers atomically"
+
+failed:
+  - "Running all rebase+remove+merge in parallel — main moves between rebases, ff-only fails"
+  - "git worktree remove without --force when untracked files exist (temp .go.tmp files)"
+
+next:
+  - "Dispatch oro-xs8l (P0: escalation fails when manager pane missing)"
+  - "Dispatch oro-xzuh (P1: dispatcher shows closed beads as in-progress)"
+  - "Consider filing bead for: graceful drain on oro stop (let workers finish current bead)"
+  - "Consider filing bead for: post-stop recovery scan (detect and merge completed worktrees)"
+  - "Limit concurrent workers to 3 to reduce orphan cleanup burden"
+
+git_state:
+  head: e0c39b6
+  unpushed: 0
+  worktrees: 1  # only main
+
+beads:
+  completed_this_session: [oro-n5uq, oro-i8i8.2, oro-i8i8.6, oro-i8i8.7, oro-i8i8.9]
+  reset_to_open: [oro-1rep.1, oro-1rep.4, oro-1rep.5, oro-cwz.8]
+  in_progress: []
+  ready:
+    - oro-xs8l   # P0: escalation fails when manager pane missing
+    - oro-xzuh   # P1: dispatcher shows closed beads as in-progress
+    - oro-1rep   # P1 epic: external Python project support
+    - oro-i8i8   # P2 epic: dashboard phase 2
+    - oro-i8i8.11 # P2: right-align status bar hints
+    - oro-1rep.1  # P2: langprofile.Config from detection functions
+    - oro-1rep.4  # P2: implement oro shell command
+    - oro-1rep.5  # P2: add project column to memory store
+
+learnings:
+  undocumented:
+    - "oro stop --force leaves completed worktrees unmerged — in_progress claims never reset (session, git+oro)"
+    - "cmd/oro-dash files need git add -f due to .gitignore 'oro-dash' pattern (session, git+go)"
+    - "snapshot .golden files always conflict on concurrent dashboard beads — standard resolution: checkout --ours, rebase --continue, -update flag (session, go)"
+    - "worker nav regression: prevCol<=0 should be prevCol<0 — off-by-one clamps column 0 (session, go)"
+  proposed_codification:
+    - type: rule
+      target: .claude/rules/worktree-merge-protocol.md
+      content: >
+        When merging multiple worktrees: rebase one at a time. After each merge, main moves.
+        Re-add worktree (git worktree add) and re-rebase before ff-only if main moved.
+        Never run parallel rebase+merge sequences.
+      frequency: 6
+      tag: git
+    - type: rule
+      target: .claude/rules/snapshot-conflict-resolution.md
+      content: >
+        For cmd/oro-dash/testdata/*.golden conflicts: checkout --ours, add -f (gitignore),
+        rebase --continue, then run 'go test ./cmd/oro-dash/... -run TestSnapshot_X -update'
+        to regenerate. Amend commit to include updated snapshots. Pattern applies to all
+        snapshot-based test files.
+      frequency: 3
+      tag: go
