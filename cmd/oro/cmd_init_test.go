@@ -924,7 +924,7 @@ func TestExtractAssets(t *testing.T) {
 	assets := testAssets()
 	dest := t.TempDir()
 
-	if err := extractAssets(dest, assets); err != nil {
+	if err := extractAssets(dest, assets, true); err != nil {
 		t.Fatalf("extractAssets failed: %v", err)
 	}
 
@@ -1100,7 +1100,7 @@ func TestExtractAssets_ExecutableBits(t *testing.T) {
 
 	dest := t.TempDir()
 
-	if err := extractAssets(dest, assets); err != nil {
+	if err := extractAssets(dest, assets, true); err != nil {
 		t.Fatalf("extractAssets failed: %v", err)
 	}
 
@@ -1147,4 +1147,127 @@ func TestExtractAssets_ExecutableBits(t *testing.T) {
 	if yamlMode.Perm() != 0o644 {
 		t.Errorf("yaml file should have mode 0o644, got %#o", yamlMode.Perm())
 	}
+}
+
+func TestExtractAssets_Additive(t *testing.T) {
+	assets := fstest.MapFS{
+		"skills/test/SKILL.md":          &fstest.MapFile{Data: []byte("# Test Skill\n")},
+		"hooks/session_start_extras.py": &fstest.MapFile{Data: []byte("# new hook content\n")},
+		"beacons/architect.md":          &fstest.MapFile{Data: []byte("# New Architect\n")},
+		"commands/test/prompt.md":       &fstest.MapFile{Data: []byte("test command\n")},
+		"CLAUDE.md":                     &fstest.MapFile{Data: []byte("# New Instructions\n")},
+	}
+
+	t.Run("pre-existing file preserved when force=false", func(t *testing.T) {
+		dest := t.TempDir()
+
+		// Pre-create a file at the same path an asset would be extracted to.
+		hookDir := filepath.Join(dest, "hooks")
+		if err := os.MkdirAll(hookDir, 0o750); err != nil { //nolint:gosec // test dir
+			t.Fatalf("mkdir: %v", err)
+		}
+		preExisting := []byte("# user customised hook\n")
+		hookPath := filepath.Join(hookDir, "session_start_extras.py")
+		if err := os.WriteFile(hookPath, preExisting, 0o600); err != nil { //nolint:gosec // test file
+			t.Fatalf("write pre-existing: %v", err)
+		}
+
+		// Also pre-create CLAUDE.md
+		claudeDir := filepath.Join(dest, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o750); err != nil { //nolint:gosec // test dir
+			t.Fatalf("mkdir .claude: %v", err)
+		}
+		preClaudeContent := []byte("# user CLAUDE.md\n")
+		if err := os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), preClaudeContent, 0o600); err != nil { //nolint:gosec // test file
+			t.Fatalf("write pre-existing CLAUDE.md: %v", err)
+		}
+
+		if err := extractAssets(dest, assets, false); err != nil {
+			t.Fatalf("extractAssets failed: %v", err)
+		}
+
+		// Hook should be UNCHANGED (preserved).
+		got, err := os.ReadFile(hookPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("read hook: %v", err)
+		}
+		if string(got) != string(preExisting) {
+			t.Errorf("hook should be preserved, got %q, want %q", string(got), string(preExisting))
+		}
+
+		// CLAUDE.md should be UNCHANGED (preserved).
+		gotClaude, err := os.ReadFile(filepath.Join(claudeDir, "CLAUDE.md")) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("read CLAUDE.md: %v", err)
+		}
+		if string(gotClaude) != string(preClaudeContent) {
+			t.Errorf("CLAUDE.md should be preserved, got %q, want %q", string(gotClaude), string(preClaudeContent))
+		}
+	})
+
+	t.Run("pre-existing file overwritten when force=true", func(t *testing.T) {
+		dest := t.TempDir()
+
+		// Pre-create a file at the same path.
+		hookDir := filepath.Join(dest, "hooks")
+		if err := os.MkdirAll(hookDir, 0o750); err != nil { //nolint:gosec // test dir
+			t.Fatalf("mkdir: %v", err)
+		}
+		hookPath := filepath.Join(hookDir, "session_start_extras.py")
+		if err := os.WriteFile(hookPath, []byte("# old content\n"), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatalf("write pre-existing: %v", err)
+		}
+
+		if err := extractAssets(dest, assets, true); err != nil {
+			t.Fatalf("extractAssets failed: %v", err)
+		}
+
+		// Hook should be OVERWRITTEN with asset content.
+		got, err := os.ReadFile(hookPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("read hook: %v", err)
+		}
+		if string(got) != "# new hook content\n" {
+			t.Errorf("hook should be overwritten, got %q, want %q", string(got), "# new hook content\n")
+		}
+	})
+
+	t.Run("new file always written regardless of force", func(t *testing.T) {
+		dest := t.TempDir()
+
+		// No pre-existing files — everything is new.
+		if err := extractAssets(dest, assets, false); err != nil {
+			t.Fatalf("extractAssets failed: %v", err)
+		}
+
+		// Hook should be created even with force=false.
+		hookPath := filepath.Join(dest, "hooks", "session_start_extras.py")
+		got, err := os.ReadFile(hookPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("hook not created: %v", err)
+		}
+		if string(got) != "# new hook content\n" {
+			t.Errorf("hook content mismatch, got %q", string(got))
+		}
+
+		// Beacon should be created.
+		beaconPath := filepath.Join(dest, "beacons", "architect.md")
+		got, err = os.ReadFile(beaconPath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("beacon not created: %v", err)
+		}
+		if string(got) != "# New Architect\n" {
+			t.Errorf("beacon content mismatch, got %q", string(got))
+		}
+
+		// CLAUDE.md should be created.
+		claudePath := filepath.Join(dest, ".claude", "CLAUDE.md")
+		got, err = os.ReadFile(claudePath) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("CLAUDE.md not created: %v", err)
+		}
+		if string(got) != "# New Instructions\n" {
+			t.Errorf("CLAUDE.md content mismatch, got %q", string(got))
+		}
+	})
 }

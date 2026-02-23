@@ -123,7 +123,7 @@ func checkAssetVersion(oroHome string, embedded fs.FS) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("re-extract assets: %w — run oro init to update", err)
 	}
-	if err := extractAssets(oroHome, subAssets); err != nil {
+	if err := extractAssets(oroHome, subAssets, true); err != nil {
 		return false, fmt.Errorf("re-extract assets: %w — run oro init to update", err)
 	}
 

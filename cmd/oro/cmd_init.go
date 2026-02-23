@@ -397,8 +397,8 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) er
 		return fmt.Errorf("write settings: %w", err)
 	}
 
-	// 6. Extract embedded assets to oroHome.
-	if err := extractAssets(oroHome, assets); err != nil {
+	// 6. Extract embedded assets to oroHome (additive: don't overwrite user edits).
+	if err := extractAssets(oroHome, assets, false); err != nil {
 		return fmt.Errorf("extract assets: %w", err)
 	}
 
@@ -623,6 +623,15 @@ var assetMapping = map[string]string{ //nolint:gochecknoglobals // static config
 	"commands": filepath.Join(".claude", "commands"),
 }
 
+// fileExists returns true if a file exists at path (not a directory).
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
 // filePermForAsset returns the appropriate file permission mode for an asset file.
 // Shell (.sh) and Python (.py) scripts get executable permissions (0o755),
 // all other files get standard read/write permissions (0o644).
@@ -633,47 +642,71 @@ func filePermForAsset(path string) os.FileMode {
 	return 0o644
 }
 
+// extractClaudeMD extracts the CLAUDE.md file from assets to dest/.claude/CLAUDE.md.
+// Skips writing if force is false and the file already exists.
+func extractClaudeMD(dest string, assets fs.FS, force bool) error {
+	data, err := fs.ReadFile(assets, "CLAUDE.md")
+	if err != nil {
+		return nil //nolint:nilerr // CLAUDE.md is optional in assets
+	}
+	claudeDir := filepath.Join(dest, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil { //nolint:gosec // needs to be readable
+		return fmt.Errorf("create .claude dir: %w", err)
+	}
+	claudePath := filepath.Join(claudeDir, "CLAUDE.md")
+	if !force && fileExists(claudePath) {
+		return nil
+	}
+	if err := os.WriteFile(claudePath, data, 0o644); err != nil { //nolint:gosec // needs to be readable
+		return fmt.Errorf("write CLAUDE.md: %w", err)
+	}
+	return nil
+}
+
+// extractAssetDir walks a single mapped directory from srcFS and copies files
+// to destBase/destDir. Skips existing files when force is false.
+func extractAssetDir(srcFS fs.FS, srcDir, destBase, destDir string, force bool) error {
+	return fs.WalkDir(srcFS, ".", func(path string, d fs.DirEntry, err error) error { //nolint:wrapcheck // caller wraps with srcDir context
+		if err != nil {
+			return err
+		}
+
+		destPath := filepath.Join(destBase, destDir, path)
+
+		if d.IsDir() {
+			return os.MkdirAll(destPath, 0o755) //nolint:gosec // needs to be readable
+		}
+
+		if !force && fileExists(destPath) {
+			return nil
+		}
+
+		data, err := fs.ReadFile(srcFS, path)
+		if err != nil {
+			return fmt.Errorf("read %s/%s: %w", srcDir, path, err)
+		}
+
+		return os.WriteFile(destPath, data, filePermForAsset(path)) //nolint:gosec // needs to be readable
+	})
+}
+
 // extractAssets walks the embedded FS and copies files to oroHome.
 // Directory mapping: skills → .claude/skills/, hooks → hooks/, beacons → beacons/,
 // commands → .claude/commands/, CLAUDE.md → .claude/CLAUDE.md.
-func extractAssets(dest string, assets fs.FS) error {
-	// Handle CLAUDE.md specially (single file, not a directory).
-	if data, err := fs.ReadFile(assets, "CLAUDE.md"); err == nil {
-		claudeDir := filepath.Join(dest, ".claude")
-		if err := os.MkdirAll(claudeDir, 0o755); err != nil { //nolint:gosec // needs to be readable
-			return fmt.Errorf("create .claude dir: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), data, 0o644); err != nil { //nolint:gosec // needs to be readable
-			return fmt.Errorf("write CLAUDE.md: %w", err)
-		}
+// When force is false, files that already exist on disk are skipped (additive-only).
+// When force is true, all files are overwritten (current behavior for version bumps).
+// The version stamp is always written regardless of the force flag.
+func extractAssets(dest string, assets fs.FS, force bool) error {
+	if err := extractClaudeMD(dest, assets, force); err != nil {
+		return err
 	}
 
-	// Walk each mapped directory.
 	for srcDir, destDir := range assetMapping {
 		srcFS, err := fs.Sub(assets, srcDir)
 		if err != nil {
 			continue // directory not present in assets, skip
 		}
-
-		err = fs.WalkDir(srcFS, ".", func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-
-			destPath := filepath.Join(dest, destDir, path)
-
-			if d.IsDir() {
-				return os.MkdirAll(destPath, 0o755) //nolint:gosec // needs to be readable
-			}
-
-			data, err := fs.ReadFile(srcFS, path)
-			if err != nil {
-				return fmt.Errorf("read %s/%s: %w", srcDir, path, err)
-			}
-
-			return os.WriteFile(destPath, data, filePermForAsset(path)) //nolint:gosec // needs to be readable
-		})
-		if err != nil {
+		if err := extractAssetDir(srcFS, srcDir, dest, destDir, force); err != nil {
 			return fmt.Errorf("extract %s: %w", srcDir, err)
 		}
 	}
