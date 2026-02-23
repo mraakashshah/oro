@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"oro/pkg/dispatcher"
+	"oro/pkg/langprofile"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -307,6 +308,12 @@ func hasCommitsAhead(repoRoot, branch string) bool {
 
 // spawnAndWait spawns claude -p and waits for it to exit, with timeout.
 func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, model string, attempt int, feedback string) error {
+	// Resolve project root from worktree path
+	projectRoot := ""
+	if resolved, err := langprofile.ResolveProjectRoot(worktree); err == nil {
+		projectRoot = resolved
+	}
+
 	prompt := worker.AssemblePrompt(worker.PromptParams{
 		BeadID:             cfg.beadID,
 		Title:              cfg.bead.Title,
@@ -316,6 +323,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		Model:              model,
 		Attempt:            attempt,
 		Feedback:           feedback,
+		ProjectRoot:        projectRoot,
 	})
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, cfg.timeout)

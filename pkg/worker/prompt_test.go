@@ -933,3 +933,56 @@ func TestBuildEpicDecompositionPrompt(t *testing.T) {
 		}
 	})
 }
+
+func TestAssemblePrompt_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	// Create a temporary project directory with .oro/config.yaml
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test config dir
+		t.Fatalf("failed to create .oro dir: %v", err)
+	}
+
+	// Write a config.yaml with coding rules
+	configContent := `languages:
+  go:
+    coding_rules:
+      - "Functional first: pure functions, immutability"
+      - "Error handling: wrap with context"
+      - "Testing: use table-driven tests"
+`
+	configPath := filepath.Join(oroDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil { //nolint:gosec // test config file
+		t.Fatalf("failed to write config.yaml: %v", err)
+	}
+
+	params := worker.PromptParams{
+		BeadID:             "oro-test-endtoend",
+		Title:              "End-to-end ProjectRoot test",
+		Description:        "Test that ProjectRoot loads config-driven coding rules",
+		AcceptanceCriteria: "Prompt includes config-driven rules",
+		MemoryContext:      "",
+		WorktreePath:       "/tmp/wt-endtoend",
+		Model:              "opus",
+		ProjectRoot:        tmpDir,
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Verify that the Coding Rules section includes config-driven rules
+	if !strings.Contains(prompt, "Functional first: pure functions, immutability") {
+		t.Errorf("expected Coding Rules section to contain config-driven rule from config.yaml, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Error handling: wrap with context") {
+		t.Errorf("expected Coding Rules section to contain error handling rule from config.yaml, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Testing: use table-driven tests") {
+		t.Errorf("expected Coding Rules section to contain testing rule from config.yaml, got:\n%s", prompt)
+	}
+
+	// Verify that Coding Rules section is still present
+	if !strings.Contains(prompt, "## Coding Rules") {
+		t.Error("expected prompt to contain ## Coding Rules section")
+	}
+}

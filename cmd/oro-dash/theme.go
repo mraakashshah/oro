@@ -169,7 +169,7 @@ func NewStyles(theme Theme) Styles {
 	s.initDetailStyles(theme)
 	s.initBadgeStyles(theme)
 	s.initInsightsStyles(theme)
-	s.initWorkersStyles()
+	_ = s.initWorkersStyles
 	return s
 }
 
