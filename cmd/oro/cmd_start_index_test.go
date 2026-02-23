@@ -116,14 +116,37 @@ func TestBuildCodeIndex_DirectCall(t *testing.T) {
 }
 
 // TestBuildCodeIndex_CancelledContext verifies buildCodeIndex returns nil
-// (never fatal) when the context is already cancelled.
+// and does NOT create the index DB when the context is already cancelled.
 func TestBuildCodeIndex_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	err := buildCodeIndex(ctx, t.TempDir(), filepath.Join(t.TempDir(), "index.db"))
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	err := buildCodeIndex(ctx, t.TempDir(), dbPath)
 	if err != nil {
 		t.Errorf("expected nil on cancelled context, got: %v", err)
+	}
+
+	// Verify the DB was NOT created (early return before NewCodeIndex).
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		t.Errorf("index DB should not be created when context is cancelled")
+	}
+}
+
+// TestBuildCodeIndex_OpenFailure verifies buildCodeIndex returns nil (never fatal)
+// when the index DB cannot be opened (parent path blocked by a regular file).
+func TestBuildCodeIndex_OpenFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create a regular file that blocks MkdirAll from creating the DB's parent dir.
+	blocker := filepath.Join(tmpDir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	dbPath := filepath.Join(blocker, "subdir", "index.db")
+
+	err := buildCodeIndex(context.Background(), tmpDir, dbPath)
+	if err != nil {
+		t.Errorf("expected nil on open failure, got: %v", err)
 	}
 }
 
