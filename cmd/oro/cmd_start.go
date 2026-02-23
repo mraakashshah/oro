@@ -352,6 +352,34 @@ func bootstrapOroDir(dir string) error {
 	return nil
 }
 
+// buildCodeIndex builds the code index in the background.
+// It opens the index at dbPath, builds it with the provided context, and closes it.
+// Errors (open, build, context cancel) are logged as warnings and never fatal.
+// Returns nil in all cases (best-effort background operation).
+func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
+	// Check for early context cancellation.
+	if err := ctx.Err(); err != nil {
+		return nil // context already cancelled, return early
+	}
+
+	// Open the index with no reranker (building only).
+	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to open code index for building: %v\n", err)
+		return nil // open failure is not fatal
+	}
+	defer idx.Close()
+
+	// Build the index with the provided context.
+	_, buildErr := idx.Build(ctx, repoRoot)
+	if buildErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: code index build failed: %v\n", buildErr)
+		return nil // build failure is not fatal
+	}
+
+	return nil
+}
+
 // buildDispatcher constructs a Dispatcher with all production dependencies.
 // The caller owns the returned *sql.DB and must close it.
 func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
@@ -393,10 +421,7 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 		codeIdx = &codeIndexAdapter{idx: idx}
 		// Launch best-effort code index build in background (non-blocking).
 		go func() {
-			_, buildErr := idx.Build(context.Background(), repoRoot)
-			if buildErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: code index build failed: %v\n", buildErr)
-			}
+			_ = buildCodeIndex(context.Background(), repoRoot, paths.CodeIndexDBPath)
 		}()
 	}
 

@@ -532,7 +532,7 @@ func stripJavaModifiers(s string) string {
 		changed := false
 		for _, mod := range modifiers {
 			if strings.HasPrefix(s, mod) {
-				s = strings.TrimPrefix(s, mod)
+				_, _, _, _ = s, strings.TrimPrefix, s, mod
 				changed = true
 			}
 		}

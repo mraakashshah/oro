@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,7 +55,75 @@ func TestBuildDispatcher_BuildsIndex(t *testing.T) {
 	}
 
 	if !found {
-		t.Errorf("index DB not created at %s after buildDispatcher", indexPath)
+		t.Fatalf("index DB not created at %s after buildDispatcher", indexPath)
+	}
+
+	// Verify the index contains >0 chunks (acceptance: "index contains >0 chunks").
+	// The build goroutine may still be running; poll until chunks appear.
+	var chunkCount int
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		idxDB, err := sql.Open("sqlite", indexPath)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		err = idxDB.QueryRow("SELECT count(*) FROM chunks").Scan(&chunkCount)
+		_ = idxDB.Close()
+		if err == nil && chunkCount > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if chunkCount == 0 {
+		t.Errorf("index DB at %s has 0 chunks; expected >0 after buildCodeIndex", indexPath)
+	}
+}
+
+// TestBuildCodeIndex_DirectCall verifies buildCodeIndex creates a DB with >0 chunks
+// when given a directory containing Go source files.
+func TestBuildCodeIndex_DirectCall(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "code_index.db")
+
+	// Create a minimal Go source file.
+	srcDir := filepath.Join(tmpDir, "src")
+	if err := os.MkdirAll(srcDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "hello.go"), []byte("package hello\n\nfunc Hello() string { return \"hi\" }\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := buildCodeIndex(context.Background(), srcDir, dbPath); err != nil {
+		t.Fatalf("buildCodeIndex: %v", err)
+	}
+
+	// Verify DB exists and contains chunks.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM chunks").Scan(&count); err != nil {
+		t.Fatalf("query chunks: %v", err)
+	}
+	if count == 0 {
+		t.Errorf("expected >0 chunks, got 0")
+	}
+}
+
+// TestBuildCodeIndex_CancelledContext verifies buildCodeIndex returns nil
+// (never fatal) when the context is already cancelled.
+func TestBuildCodeIndex_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := buildCodeIndex(ctx, t.TempDir(), filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Errorf("expected nil on cancelled context, got: %v", err)
 	}
 }
 
