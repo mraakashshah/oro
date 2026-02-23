@@ -121,7 +121,7 @@ func TestBoardView_MinimumWidthFloor(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newModel()
-	m.initialLoad = false // Skip loading state for this test
+			m.initialLoad = false // Skip loading state for this test
 			m.beads = []protocol.Bead{
 				{ID: "test-1", Title: "Test", Status: "open", Type: "task", Priority: 2},
 			}
