@@ -363,7 +363,7 @@ func TestPreflightWarnsEpicCGate(t *testing.T) {
 
 const hardcodedCodingRules = "gofumpt, golangci-lint"
 `
-		if err := os.WriteFile(promptPath, []byte(hardcodedRules), 0o644); err != nil {
+		if err := os.WriteFile(promptPath, []byte(hardcodedRules), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
@@ -386,7 +386,7 @@ func getCodingRules(cfg *config.Config) string {
 	return cfg.CodingRules
 }
 `
-		if err := os.WriteFile(promptPath, []byte(configDrivenRules), 0o644); err != nil {
+		if err := os.WriteFile(promptPath, []byte(configDrivenRules), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
@@ -411,7 +411,7 @@ func initGitRepo(dir string) error {
 // addAndCommitFile adds a file to git and commits it.
 func addAndCommitFile(dir, filename string) error {
 	// Add the file
-	cmd := exec.Command("git", "add", filename)
+	cmd := exec.Command("git", "add", filename) //nolint:gosec // args are test-controlled constants
 	cmd.Dir = dir
 	cmd.Stderr = io.Discard
 	cmd.Stdout = io.Discard
@@ -420,7 +420,7 @@ func addAndCommitFile(dir, filename string) error {
 	}
 
 	// Commit the file
-	cmd = exec.Command("git", "commit", "-m", "test commit")
+	cmd = exec.Command("git", "commit", "-m", "test commit") //nolint:gosec // args are test-controlled constants
 	cmd.Dir = dir
 	cmd.Stderr = io.Discard
 	cmd.Stdout = io.Discard

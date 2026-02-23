@@ -128,19 +128,15 @@ func warnIfQualityGateMissing(w io.Writer, dir string) {
 	}
 }
 
-// warnIfQualityGateUntrackedInGit is a wrapper for warnIfQualityGateUntracked
-// provided for test compatibility. It takes a writer and directory.
-func warnIfQualityGateUntrackedInGit(w io.Writer, dir string) {
-	warnIfQualityGateUntracked(w, dir)
-}
-
 // isFileTrackedInGit returns true if the given filename is tracked in git within
 // the specified directory. Returns false if the file is untracked. Returns error if
 // we're not in a git repository or if there's an unexpected failure.
 func isFileTrackedInGit(dir, filename string) (bool, error) {
 	// Run git ls-files to check if the file is tracked
 	// If the file is tracked, it will be in the output; if not, output will be empty
-	cmd := exec.Command("git", "ls-files", "--error-unmatch", filename) //nolint:gosec // filename is a constant or user-provided safe value
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-files", "--error-unmatch", filename) //nolint:gosec // filename is a constant or user-provided safe value
 	cmd.Dir = dir
 
 	// Suppress stderr to avoid "fatal" messages for untracked files
