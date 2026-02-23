@@ -28,13 +28,27 @@ _CD_RE = re.compile(
 
 
 def _git_repo_root() -> str:
-    """Get the git repo root via git rev-parse.
+    """Get the real git repo root, even when CWD is inside a worktree.
 
-    The hook process runs from the project root (Claude Code guarantee),
-    so this returns the correct repo root regardless of where the hook
-    file lives on disk.
+    git rev-parse --show-toplevel returns the worktree root when CWD is
+    inside a worktree, which breaks cd-to-project-root detection. We use
+    --git-common-dir to find the shared .git directory, then resolve the
+    actual repo root from that.
     """
     try:
+        # --git-common-dir returns the shared .git dir (e.g. /repo/.git)
+        # even from inside a worktree, unlike --show-toplevel.
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        git_common = Path(result.stdout.strip()).resolve()
+        # .git dir is at repo_root/.git → parent is the real root
+        if git_common.name == ".git":
+            return str(git_common.parent)
+        # Fallback: if structure is unexpected, use --show-toplevel
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True,

@@ -1,6 +1,7 @@
 """Tests for no_cd_guard hook."""
 
-from unittest.mock import patch
+import subprocess
+from unittest.mock import MagicMock, patch
 
 from no_cd_guard import _git_repo_root, build_decision, find_cd_targets, is_outside_root
 
@@ -44,6 +45,74 @@ class TestGitRepoRoot:
         # Must not contain .worktrees or .claude/worktrees
         assert ".worktrees" not in root
         assert root.endswith("/oro") or root.endswith("/oro/")
+
+    def test_git_repo_root_inside_worktree(self, tmp_path):
+        """Returns real repo root when CWD is /repo/root/.worktrees/agent-xxx.
+
+        Bug: git rev-parse --show-toplevel returns the worktree path when
+        executed from inside a worktree, making the hook believe cd /repo/root
+        is "outside the project" and blocking valid navigation.
+
+        Fix: use --git-common-dir which always returns the shared .git dir,
+        even from inside a worktree. Parent of .git dir is the real repo root.
+        """
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        git_dir = repo_root / ".git"
+        git_dir.mkdir()
+        worktree = repo_root / ".worktrees" / "agent-xxx"
+        worktree.mkdir(parents=True)
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            if "--git-common-dir" in cmd:
+                # Correct: --git-common-dir points to shared .git even from worktree
+                result.stdout = str(git_dir) + "\n"
+            elif "--show-toplevel" in cmd:
+                # Bug: --show-toplevel returns worktree path from inside worktree
+                result.stdout = str(worktree) + "\n"
+            else:
+                result.stdout = ""
+            return result
+
+        with patch("no_cd_guard.subprocess.run", side_effect=mock_run):
+            result = _git_repo_root()
+
+        assert result == str(repo_root.resolve())
+
+    def test_git_repo_root_fallback_when_common_dir_not_dot_git(self, tmp_path):
+        """Falls back to --show-toplevel when --git-common-dir dir is not named .git."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        # Unusual: common dir not named ".git" (e.g. bare repo or manual setup)
+        common_dir = repo_root / ".git_common"
+        common_dir.mkdir()
+
+        def mock_run(cmd, **kwargs):
+            result = MagicMock()
+            if "--git-common-dir" in cmd:
+                result.stdout = str(common_dir) + "\n"
+            elif "--show-toplevel" in cmd:
+                result.stdout = str(repo_root) + "\n"
+            else:
+                result.stdout = ""
+            return result
+
+        with patch("no_cd_guard.subprocess.run", side_effect=mock_run):
+            result = _git_repo_root()
+
+        assert result == str(repo_root)
+
+    def test_git_repo_root_fallback_on_git_failure(self):
+        """Falls back to cwd string when git commands fail."""
+        with patch(
+            "no_cd_guard.subprocess.run",
+            side_effect=subprocess.CalledProcessError(128, "git"),
+        ):
+            result = _git_repo_root()
+
+        assert isinstance(result, str)
+        assert len(result) > 0
 
 
 class TestBuildDecision:
