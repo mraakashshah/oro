@@ -2,8 +2,10 @@ package worker
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
+	"oro/pkg/langprofile"
 	"oro/pkg/protocol"
 )
 
@@ -19,6 +21,7 @@ type PromptParams struct {
 	Model              string
 	Attempt            int    // QG retry attempt (0 = first attempt)
 	Feedback           string // rejection/QG failure feedback from previous attempt
+	ProjectRoot        string // optional: path to project root for reading .oro/config.yaml
 }
 
 // section writes a markdown section (## header + body) to the builder.
@@ -129,14 +132,41 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	return b.String()
 }
 
-// appendStaticSections writes the invariant sections (4-10) and Failure/Exit sections of the worker prompt.
-func appendStaticSections(b *strings.Builder, params PromptParams) {
-	section(b, "Coding Rules", strings.Join([]string{
+// collectCodingRules returns coding rules from .oro/config.yaml when ProjectRoot
+// is set and the config contains non-empty rules. Falls back to hardcoded defaults
+// when ProjectRoot is empty, the config file is absent, ReadConfig errors, or
+// all language coding_rules fields are empty.
+func collectCodingRules(projectRoot string) []string {
+	fallback := []string{
 		"- Functional first: pure functions, immutability, early returns",
 		"- Pure core (business logic), impure edges (I/O, CLI)",
 		"- Go: gofumpt, golangci-lint, go-arch-lint",
 		"- Python: PEP 8, ruff, pyright, pytest fixtures > classes",
-	}, "\n"))
+	}
+	if projectRoot == "" {
+		return fallback
+	}
+	cfg, err := langprofile.ReadConfig(projectRoot)
+	if err != nil {
+		log.Printf("warn: prompt: ReadConfig(%q): %v; using hardcoded rules", projectRoot, err)
+		return fallback
+	}
+	if cfg == nil {
+		return fallback
+	}
+	var rules []string
+	for _, langCfg := range cfg.Languages {
+		rules = append(rules, langCfg.CodingRules...)
+	}
+	if len(rules) == 0 {
+		return fallback
+	}
+	return rules
+}
+
+// appendStaticSections writes the invariant sections (4-10) and Failure/Exit sections of the worker prompt.
+func appendStaticSections(b *strings.Builder, params PromptParams) {
+	section(b, "Coding Rules", strings.Join(collectCodingRules(params.ProjectRoot), "\n"))
 	section(b, "TDD", "Write tests FIRST. Red-green-refactor. Every feature/fix needs a test.")
 	section(b, "Quality Gate", "Before completing, run `./quality_gate.sh` and ensure it passes.")
 	section(b, "Worktree", fmt.Sprintf(

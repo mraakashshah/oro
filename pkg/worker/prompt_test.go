@@ -1,6 +1,8 @@
 package worker_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -756,6 +758,111 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 		// Standard prompt should NOT contain epic decomposition workflow
 		if strings.Contains(prompt, "epic decomposition mode") {
 			t.Error("standard prompt must NOT contain 'epic decomposition mode'")
+		}
+	})
+}
+
+// extractSection returns the content from the start of header to the start of
+// the next ## header. Fatal if header not found.
+func extractSection(t *testing.T, prompt, header string) string {
+	t.Helper()
+	start := strings.Index(prompt, header)
+	if start == -1 {
+		t.Fatalf("section %q not found in prompt", header)
+	}
+	rest := prompt[start+1:]
+	end := strings.Index(rest, "## ")
+	if end == -1 {
+		return prompt[start:]
+	}
+	return prompt[start : start+1+end]
+}
+
+// TestAssemblePrompt_ConfigDrivenRules verifies that the Coding Rules section
+// is driven by .oro/config.yaml when ProjectRoot is set, and falls back to
+// hardcoded rules when config is absent or has no coding_rules entries.
+func TestAssemblePrompt_ConfigDrivenRules(t *testing.T) {
+	t.Parallel()
+
+	const hardcodedRule = "Functional first: pure functions, immutability, early returns"
+	const configRule1 = "- Use interfaces for dependencies"
+	const configRule2 = "- Prefer table-driven tests"
+
+	makeParams := func(projectRoot string) worker.PromptParams {
+		return worker.PromptParams{
+			BeadID:             "bead-cfg",
+			Title:              "Config test",
+			Description:        "Test config-driven rules",
+			AcceptanceCriteria: "Rules from config",
+			WorktreePath:       "/tmp/wt-cfg",
+			Model:              "opus",
+			ProjectRoot:        projectRoot,
+		}
+	}
+
+	writeConfig := func(t *testing.T, dir, content string) {
+		t.Helper()
+		oroDir := filepath.Join(dir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatalf("setup MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte(content), 0o600); err != nil {
+			t.Fatalf("setup WriteFile: %v", err)
+		}
+	}
+
+	t.Run("uses_config_rules_when_present", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeConfig(t, dir, "languages:\n  go:\n    coding_rules:\n      - \""+configRule1+"\"\n      - \""+configRule2+"\"\n")
+
+		prompt := worker.AssemblePrompt(makeParams(dir))
+		section := extractSection(t, prompt, "## Coding Rules")
+
+		if !strings.Contains(section, configRule1) {
+			t.Errorf("expected Coding Rules to contain config rule %q, got:\n%s", configRule1, section)
+		}
+		if !strings.Contains(section, configRule2) {
+			t.Errorf("expected Coding Rules to contain config rule %q, got:\n%s", configRule2, section)
+		}
+		if strings.Contains(section, hardcodedRule) {
+			t.Errorf("expected Coding Rules NOT to contain hardcoded rule %q when config present, got:\n%s", hardcodedRule, section)
+		}
+	})
+
+	t.Run("falls_back_to_hardcoded_when_config_missing", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir() // no .oro/config.yaml
+
+		prompt := worker.AssemblePrompt(makeParams(dir))
+		section := extractSection(t, prompt, "## Coding Rules")
+
+		if !strings.Contains(section, hardcodedRule) {
+			t.Errorf("expected Coding Rules to contain hardcoded rule %q when config missing, got:\n%s", hardcodedRule, section)
+		}
+	})
+
+	t.Run("falls_back_to_hardcoded_when_project_root_empty", func(t *testing.T) {
+		t.Parallel()
+
+		prompt := worker.AssemblePrompt(makeParams(""))
+		section := extractSection(t, prompt, "## Coding Rules")
+
+		if !strings.Contains(section, hardcodedRule) {
+			t.Errorf("expected Coding Rules to contain hardcoded rule %q when ProjectRoot empty, got:\n%s", hardcodedRule, section)
+		}
+	})
+
+	t.Run("falls_back_to_hardcoded_when_coding_rules_empty", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeConfig(t, dir, "languages:\n  go:\n    test_cmd: go test ./...\n")
+
+		prompt := worker.AssemblePrompt(makeParams(dir))
+		section := extractSection(t, prompt, "## Coding Rules")
+
+		if !strings.Contains(section, hardcodedRule) {
+			t.Errorf("expected Coding Rules to contain hardcoded rule %q when config has no coding_rules, got:\n%s", hardcodedRule, section)
 		}
 	})
 }
