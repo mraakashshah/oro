@@ -73,7 +73,8 @@ func (m *mockWorktreeManager) Remove(_ context.Context, path string) error {
 	m.removed = append(m.removed, path)
 	return m.removeErr
 }
-func (m *mockWorktreeManager) Prune(_ context.Context) error { return nil }
+func (m *mockWorktreeManager) Prune(_ context.Context) error                  { return nil }
+func (m *mockWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
 
 // mockProcess implements worker.Process with configurable exit.
 type mockProcess struct {
