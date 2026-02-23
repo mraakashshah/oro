@@ -126,17 +126,24 @@ func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead
 	header := bm.renderColumnHeader(col, colWidth, theme, styles)
 
 	var cardsBuilder strings.Builder
-	for beadIdx, b := range col.beads {
-		// Use activeCardStyle if this is the active card
-		style := cardStyle
-		if colIdx == activeCol && beadIdx == activeBead {
-			style = activeCardStyle
-		}
 
-		cardContent := bm.renderCardContent(b, styles)
-		card := style.Render(cardContent)
-		cardsBuilder.WriteString(card)
-		cardsBuilder.WriteString("\n")
+	// If column is empty, show "no items" placeholder
+	if len(col.beads) == 0 {
+		emptyMsg := styles.Muted.Render("no items")
+		cardsBuilder.WriteString(emptyMsg)
+	} else {
+		for beadIdx, b := range col.beads {
+			// Use activeCardStyle if this is the active card
+			style := cardStyle
+			if colIdx == activeCol && beadIdx == activeBead {
+				style = activeCardStyle
+			}
+
+			cardContent := bm.renderCardContent(b, styles)
+			card := style.Render(cardContent)
+			cardsBuilder.WriteString(card)
+			cardsBuilder.WriteString("\n")
+		}
 	}
 	cards := cardsBuilder.String()
 

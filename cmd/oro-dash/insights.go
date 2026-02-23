@@ -131,19 +131,7 @@ func (m *InsightsModel) Render(styles Styles) string {
 }
 
 func renderEmptyState(styles Styles) string {
-	return strings.Join([]string{
-		renderSectionTitle("Critical Path", styles),
-		styles.InsightsDim.Render("  No data"),
-		"",
-		renderSectionTitle("Bottlenecks", styles),
-		styles.InsightsDim.Render("  No data"),
-		"",
-		renderSectionTitle("Cycles", styles),
-		styles.InsightsDim.Render("  No data"),
-		"",
-		renderSectionTitle("Triage Flags", styles),
-		styles.InsightsDim.Render("  No data"),
-	}, "\n")
+	return styles.InsightsDim.Render("No beads to analyze")
 }
 
 func renderSectionTitle(title string, styles Styles) string {

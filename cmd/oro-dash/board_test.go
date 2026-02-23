@@ -610,3 +610,30 @@ func TestDoneColumnSortedByUpdatedAtDescending(t *testing.T) {
 		}
 	})
 }
+
+// TestBoardRender_EmptyColumnShowsNoItems verifies that empty board columns
+// display "no items" placeholder instead of remaining blank.
+func TestBoardRender_EmptyColumnShowsNoItems(t *testing.T) {
+	// Create a board with one bead in the In Progress column
+	// so Ready, Blocked, and Done columns are empty
+	beads := []protocol.Bead{
+		{ID: "b-wip", Title: "Task in progress", Status: "in_progress"},
+	}
+
+	board := NewBoardModel(beads)
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
+
+	// Verify column headers appear
+	if !strings.Contains(output, "Ready") {
+		t.Errorf("Render() missing 'Ready' column header\ngot:\n%s", output)
+	}
+	if !strings.Contains(output, "Blocked") {
+		t.Errorf("Render() missing 'Blocked' column header\ngot:\n%s", output)
+	}
+
+	// Verify that empty columns show "no items" placeholder
+	if !strings.Contains(output, "no items") {
+		t.Errorf("Render() empty columns should show 'no items' placeholder\ngot:\n%s", output)
+	}
+}

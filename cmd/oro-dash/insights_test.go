@@ -232,11 +232,7 @@ func TestInsightsView_Render(t *testing.T) {
 			name:  "no beads shows no data message",
 			beads: []BeadWithDeps{},
 			wantContains: []string{
-				"No data",
-				"Critical Path",
-				"Bottlenecks",
-				"Cycles",
-				"Triage Flags",
+				"No beads to analyze",
 			},
 		},
 		{
@@ -329,4 +325,21 @@ func containsIgnoringANSI(output, substring string) bool {
 	// Simple check - in real implementation we'd strip ANSI codes
 	// For now, just use strings.Contains
 	return strings.Contains(output, substring)
+}
+
+// TestInsightsView_EmptyBeads verifies that the insights view displays
+// "No beads to analyze" when there are no beads.
+func TestInsightsView_EmptyBeads(t *testing.T) {
+	// Create insights model with no beads
+	beads := []BeadWithDeps{}
+	model := NewInsightsModel(beads)
+
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+	output := model.Render(styles)
+
+	// Verify "No beads to analyze" message appears
+	if !containsIgnoringANSI(output, "No beads to analyze") {
+		t.Errorf("Render() with no beads should show 'No beads to analyze'\ngot:\n%s", output)
+	}
 }
