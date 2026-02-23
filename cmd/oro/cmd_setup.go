@@ -219,7 +219,7 @@ func executeBootstrap(w io.Writer, name string, opts setupOptions) error {
 		return fmt.Errorf("access embedded assets: %w", err)
 	}
 
-	cfg, err := bootstrapProject(opts.projectRoot, name, oroHome, subAssets)
+	cfg, err := bootstrapProject(opts.projectRoot, name, oroHome, subAssets, opts.force)
 	if err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
 	}

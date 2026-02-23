@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"text/template"
 
 	"oro/pkg/langprofile"
@@ -269,6 +271,35 @@ func generateQualityGateScript(cfg *langprofile.Config) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+// writeQualityGateScript generates quality_gate.sh in projectRoot from the
+// detected language config. Skips if the file already exists (unless force is
+// true). Uses atomic write (tmp + rename) for safety.
+func writeQualityGateScript(projectRoot string, cfg *langprofile.Config, force bool) error {
+	dest := filepath.Join(projectRoot, "quality_gate.sh")
+
+	// Skip if file exists and not forcing.
+	if !force && fileExists(dest) {
+		return nil
+	}
+
+	content, err := generateQualityGateScript(cfg)
+	if err != nil {
+		return err
+	}
+
+	// Atomic write: write to temp file, then rename.
+	tmp := dest + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o755); err != nil { //nolint:gosec // quality gate script must be executable
+		return fmt.Errorf("write temp quality gate: %w", err)
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		os.Remove(tmp) //nolint:errcheck,gosec // best-effort cleanup
+		return fmt.Errorf("rename quality gate: %w", err)
+	}
+
+	return nil
 }
 
 // qualityGateTmpl is the bash template for the generated quality_gate.sh.

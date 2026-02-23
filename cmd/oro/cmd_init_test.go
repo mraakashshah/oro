@@ -518,7 +518,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -539,7 +539,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -565,7 +565,7 @@ func TestOroInit(t *testing.T) {
 			t.Fatalf("write .gitignore: %v", err)
 		}
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -585,7 +585,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -643,7 +643,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -662,7 +662,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -682,7 +682,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -702,7 +702,7 @@ func TestOroInit(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -723,7 +723,7 @@ func TestOroInit(t *testing.T) {
 		oroHome := t.TempDir()
 
 		// First run
-		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets); err != nil {
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
 			t.Fatalf("first bootstrapProject failed: %v", err)
 		}
 
@@ -734,7 +734,7 @@ func TestOroInit(t *testing.T) {
 		}
 
 		// Second run (idempotent)
-		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets); err != nil {
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
 			t.Fatalf("second bootstrapProject failed: %v", err)
 		}
 
@@ -847,7 +847,7 @@ func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -869,7 +869,7 @@ func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets)
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
@@ -881,6 +881,144 @@ func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
 
 		if !strings.Contains(string(data), ".beads") {
 			t.Errorf(".gitignore should contain .beads, got:\n%s", string(data))
+		}
+	})
+}
+
+// --- Quality gate generation tests (oro-1rep.2) ---
+
+func TestBootstrapGeneratesQualityGate(t *testing.T) {
+	assets := testAssets()
+
+	t.Run("generates quality_gate.sh in project root with mode 0755", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// Create a go.mod to simulate Go project.
+		if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("write go.mod: %v", err)
+		}
+
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		info, err := os.Stat(qgPath)
+		if err != nil {
+			t.Fatalf("quality_gate.sh not created: %v", err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("quality_gate.sh mode = %#o, want 0755", info.Mode().Perm())
+		}
+	})
+
+	t.Run("Python-only config produces script with Python lane and no Go lane", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// Create a requirements.txt to simulate Python project (no go.mod).
+		if err := os.WriteFile(filepath.Join(projectDir, "requirements.txt"), []byte("requests\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("write requirements.txt: %v", err)
+		}
+
+		_, err := bootstrapProject(projectDir, "pyproject", oroHome, assets, false)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		data, err := os.ReadFile(qgPath) //nolint:gosec // test file
+		if err != nil {
+			t.Fatalf("quality_gate.sh not created: %v", err)
+		}
+
+		content := string(data)
+		if !strings.Contains(content, "lane_python") {
+			t.Errorf("Python-only config should produce Python lane, got:\n%s", content)
+		}
+		if strings.Contains(content, "lane_go") {
+			t.Errorf("Python-only config should NOT produce Go lane, got:\n%s", content)
+		}
+	})
+
+	t.Run("existing file is NOT overwritten without force", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// Create a go.mod so detection finds Go.
+		if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("write go.mod: %v", err)
+		}
+
+		// Pre-create quality_gate.sh with custom content.
+		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		custom := []byte("#!/bin/bash\n# custom user script\n")
+		if err := os.WriteFile(qgPath, custom, 0o755); err != nil { //nolint:gosec // test file
+			t.Fatalf("write existing quality_gate.sh: %v", err)
+		}
+
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		got, err := os.ReadFile(qgPath) //nolint:gosec // test file
+		if err != nil {
+			t.Fatalf("read quality_gate.sh: %v", err)
+		}
+		if string(got) != string(custom) {
+			t.Errorf("quality_gate.sh should NOT be overwritten without force, got:\n%s", string(got))
+		}
+	})
+
+	t.Run("force flag overwrites existing file", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// Create a go.mod so detection finds Go.
+		if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatalf("write go.mod: %v", err)
+		}
+
+		// Pre-create quality_gate.sh with custom content.
+		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		custom := []byte("#!/bin/bash\n# custom user script\n")
+		if err := os.WriteFile(qgPath, custom, 0o755); err != nil { //nolint:gosec // test file
+			t.Fatalf("write existing quality_gate.sh: %v", err)
+		}
+
+		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, true)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		got, err := os.ReadFile(qgPath) //nolint:gosec // test file
+		if err != nil {
+			t.Fatalf("read quality_gate.sh: %v", err)
+		}
+		if string(got) == string(custom) {
+			t.Error("quality_gate.sh should be overwritten with --force")
+		}
+		if !strings.Contains(string(got), "Oro Quality Gate") {
+			t.Errorf("overwritten quality_gate.sh should contain generated content, got:\n%s", string(got))
+		}
+	})
+
+	t.Run("no languages detected skips quality gate generation", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// Empty dir — no language markers.
+		_, err := bootstrapProject(projectDir, "emptyproject", oroHome, assets, false)
+		if err != nil {
+			t.Fatalf("bootstrapProject failed: %v", err)
+		}
+
+		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		if _, err := os.Stat(qgPath); err == nil {
+			t.Error("quality_gate.sh should NOT be created when no languages detected")
 		}
 	})
 }

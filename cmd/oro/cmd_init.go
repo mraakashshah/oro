@@ -369,7 +369,7 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string
 		return fmt.Errorf("access embedded assets: %w", err)
 	}
 
-	if _, err := bootstrapProject(projectRoot, name, oroHome, subAssets); err != nil {
+	if _, err := bootstrapProject(projectRoot, name, oroHome, subAssets, false); err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
 	}
 
@@ -435,7 +435,7 @@ func resolveProjectName(projectRoot, projectName string) (string, error) {
 // per-project settings.json, creates handoffs dir, and extracts embedded assets.
 // Returns the detected language config (threaded from createProjectAnchor) so
 // callers avoid a redundant disk read.
-func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) (*langprofile.Config, error) {
+func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) {
 	// 1. Create local anchor: .oro/config.yaml with project name.
 	// Thread the detected config back to the caller.
 	cfg, err := createProjectAnchor(projectRoot, projectName)
@@ -479,7 +479,13 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS) (*
 		return nil, fmt.Errorf("extract assets: %w", err)
 	}
 
-	// 7. Build oro-search-hook binary. Fail-open: ensureSearchHook logs a
+	// 7. Generate quality_gate.sh in project root (skip if exists, unless force).
+	if err := writeQualityGateScript(projectRoot, cfg, force); err != nil {
+		// Fail-open: warn but continue. Quality gate is helpful but not critical.
+		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
+	}
+
+	// 8. Build oro-search-hook binary. Fail-open: ensureSearchHook logs a
 	// warning and returns nil when srcDir is missing (go-install users lack
 	// the source tree). oro init always runs from the repo root so the
 	// source is normally available.
