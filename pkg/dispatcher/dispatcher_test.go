@@ -11274,3 +11274,146 @@ func TestDispatcherCleansUpClosedBeadAssignments(t *testing.T) {
 		t.Errorf("expected worker beadID to be cleared after external close, got %q", beadAfter)
 	}
 }
+
+// TestAssignment_SkipsClosedBeads verifies that when tryAssign encounters closed
+// beads in the ready queue, it skips them and assigns the next ready bead (or
+// leaves the worker idle if no open beads are available).
+func TestAssignment_SkipsClosedBeads(t *testing.T) {
+	t.Run("skip_closed_assign_next_open", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		// Connect an idle worker
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   "w-skip-test",
+				ContextPct: 5,
+			},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		// Start dispatcher so tryAssign operates
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		// Set up ready queue with first bead closed, second bead open
+		beadSrc.SetBeads([]protocol.Bead{
+			{ID: "oro-closed-1", Priority: 2, Status: "closed"},
+			{ID: "oro-open-1", Priority: 2, Status: "open"},
+		})
+
+		// Configure Show() to return details with acceptance criteria
+		beadSrc.mu.Lock()
+		beadSrc.shown["oro-closed-1"] = &protocol.BeadDetail{
+			ID:                 "oro-closed-1",
+			Title:              "Closed Bead",
+			AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+			Status:             "closed",
+		}
+		beadSrc.shown["oro-open-1"] = &protocol.BeadDetail{
+			ID:                 "oro-open-1",
+			Title:              "Open Bead",
+			AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+			Status:             "open",
+		}
+		beadSrc.mu.Unlock()
+
+		// Invoke tryAssign
+		d.tryAssign(context.Background())
+
+		// Worker should be assigned to oro-open-1 (closed bead was skipped)
+		st, beadID, ok := d.WorkerInfo("w-skip-test")
+		if !ok {
+			t.Fatal("expected worker w-skip-test to be tracked")
+		}
+		if beadID != "oro-open-1" {
+			t.Fatalf("expected worker to be assigned oro-open-1, got beadID=%s state=%s", beadID, st)
+		}
+
+		// Verify worktree was created only for oro-open-1
+		wtMgr.mu.Lock()
+		_, closedWtCreated := wtMgr.created["oro-closed-1"]
+		_, openWtCreated := wtMgr.created["oro-open-1"]
+		wtMgr.mu.Unlock()
+
+		if closedWtCreated {
+			t.Error("worktree should not have been created for closed bead oro-closed-1")
+		}
+		if !openWtCreated {
+			t.Error("worktree should have been created for open bead oro-open-1")
+		}
+	})
+
+	t.Run("all_closed_worker_remains_idle", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		// Connect an idle worker
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   "w-all-closed",
+				ContextPct: 5,
+			},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		// Start dispatcher
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		// Set up ready queue with all beads closed
+		beadSrc.SetBeads([]protocol.Bead{
+			{ID: "oro-closed-2", Priority: 2, Status: "closed"},
+			{ID: "oro-closed-3", Priority: 2, Status: "closed"},
+		})
+
+		// Configure Show() with closed status
+		beadSrc.mu.Lock()
+		beadSrc.shown["oro-closed-2"] = &protocol.BeadDetail{
+			ID:                 "oro-closed-2",
+			Title:              "Closed Bead 2",
+			AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+			Status:             "closed",
+		}
+		beadSrc.shown["oro-closed-3"] = &protocol.BeadDetail{
+			ID:                 "oro-closed-3",
+			Title:              "Closed Bead 3",
+			AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+			Status:             "closed",
+		}
+		beadSrc.mu.Unlock()
+
+		// Invoke tryAssign
+		d.tryAssign(context.Background())
+
+		// Worker should remain idle (all beads were closed)
+		st, beadID, ok := d.WorkerInfo("w-all-closed")
+		if !ok {
+			t.Fatal("expected worker w-all-closed to be tracked")
+		}
+		if st != protocol.WorkerIdle {
+			t.Fatalf("expected worker to remain idle, got state=%s beadID=%s", st, beadID)
+		}
+		if beadID != "" {
+			t.Fatalf("expected no bead assignment, got beadID=%s", beadID)
+		}
+
+		// No worktree should have been created
+		wtMgr.mu.Lock()
+		createdCount := len(wtMgr.created)
+		wtMgr.mu.Unlock()
+		if createdCount != 0 {
+			t.Fatalf("expected 0 worktrees created, got %d", createdCount)
+		}
+
+		// Verify no ASSIGN was sent
+		msg, gotMsg := readMsg(t, conn, 100*time.Millisecond)
+		if gotMsg && msg.Type == protocol.MsgAssign {
+			t.Fatal("received unexpected ASSIGN message when all beads are closed")
+		}
+	})
+}
