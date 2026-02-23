@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS memories (
     embedding BLOB,
     files_read TEXT DEFAULT '[]',
     files_modified TEXT DEFAULT '[]',
-    pinned INTEGER DEFAULT 0
+    pinned INTEGER DEFAULT 0,
+    project TEXT DEFAULT 'oro'
 );
 
 -- Architect/manager pane SessionStart activity tracking
@@ -133,4 +134,11 @@ CREATE TABLE IF NOT EXISTS kv_store (
     value TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+`
+
+// MigrateProjectColumn adds the project column to existing memories tables.
+// Idempotent: will fail silently if column already exists (SQLite limitation).
+// After running, execute: UPDATE memories SET project = 'oro' WHERE project IS NULL
+const MigrateProjectColumn = `
+ALTER TABLE memories ADD COLUMN project TEXT DEFAULT 'oro';
 `

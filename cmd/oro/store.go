@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
@@ -33,6 +34,18 @@ func defaultMemoryStore() (*memory.Store, error) {
 	_, _ = db.ExecContext(context.Background(), protocol.MigrateFileTracking)
 	_, _ = db.ExecContext(context.Background(), protocol.MigratePinnedMemories)
 	_, _ = db.ExecContext(context.Background(), protocol.MigrateKVStore)
+	_, _ = db.ExecContext(context.Background(), protocol.MigrateProjectColumn)
 
-	return memory.NewStore(db), nil
+	// Backfill project column for existing rows
+	_, _ = db.ExecContext(context.Background(), `UPDATE memories SET project = 'oro' WHERE project IS NULL OR project = ''`)
+
+	store := memory.NewStore(db)
+
+	// Set project scope from environment if ORO_PROJECT is set.
+	// This scopes all memory operations to the current project.
+	if project := os.Getenv("ORO_PROJECT"); project != "" {
+		store.SetProject(project)
+	}
+
+	return store, nil
 }

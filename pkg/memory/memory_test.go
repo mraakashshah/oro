@@ -2208,3 +2208,247 @@ func TestForPrompt_UsesHybridSearch(t *testing.T) {
 		t.Error("expected gotcha in FTS5-fallback results")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SetProject tests (oro-1rep.5)
+// ---------------------------------------------------------------------------
+
+func TestSetProjectScopesSearchAndInsert(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Test 1: Insert with SetProject(A) stamps project=A
+	store.SetProject("projectA")
+	idA1, err := store.Insert(ctx, InsertParams{
+		Content:    "memory for project A unique_proj_a_xyz",
+		Type:       "lesson",
+		Source:     "self_report",
+		Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert A1: %v", err)
+	}
+
+	// Verify project column was set
+	var project string
+	err = db.QueryRowContext(ctx, `SELECT project FROM memories WHERE id = ?`, idA1).Scan(&project)
+	if err != nil {
+		t.Fatalf("query project A1: %v", err)
+	}
+	if project != "projectA" {
+		t.Errorf("expected project='projectA', got %q", project)
+	}
+
+	// Insert another for project A (with distinct content to avoid dedup)
+	_, err = store.Insert(ctx, InsertParams{
+		Content:    "completely different content about testing patterns unique_proj_a_xyz projectA specific details",
+		Type:       "gotcha",
+		Source:     "self_report",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert A2: %v", err)
+	}
+
+	// Test 2: Insert with SetProject(B) stamps project=B
+	store.SetProject("projectB")
+	idB1, err := store.Insert(ctx, InsertParams{
+		Content:    "memory for project B unique_proj_b_xyz",
+		Type:       "lesson",
+		Source:     "self_report",
+		Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert B1: %v", err)
+	}
+
+	err = db.QueryRowContext(ctx, `SELECT project FROM memories WHERE id = ?`, idB1).Scan(&project)
+	if err != nil {
+		t.Fatalf("query project B1: %v", err)
+	}
+	if project != "projectB" {
+		t.Errorf("expected project='projectB', got %q", project)
+	}
+
+	// Test 3: Search with SetProject(A) returns only project A memories
+	store.SetProject("projectA")
+	resultsA, err := store.Search(ctx, "unique_proj_a_xyz", SearchOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("search A: %v", err)
+	}
+	if len(resultsA) != 2 {
+		t.Errorf("expected 2 results for project A, got %d", len(resultsA))
+	}
+	for _, r := range resultsA {
+		if !strings.Contains(r.Content, "unique_proj_a_xyz") {
+			t.Errorf("expected project A content with unique_proj_a_xyz, got: %s", r.Content)
+		}
+	}
+
+	// Test 4: Search with SetProject(B) returns only project B memories
+	store.SetProject("projectB")
+	resultsB, err := store.Search(ctx, "unique_proj_b_xyz", SearchOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("search B: %v", err)
+	}
+	if len(resultsB) != 1 {
+		t.Errorf("expected 1 result for project B, got %d", len(resultsB))
+	}
+	if !strings.Contains(resultsB[0].Content, "project B") {
+		t.Errorf("expected project B content, got: %s", resultsB[0].Content)
+	}
+
+	// Test 5: SetProject empty string returns all memories (no filtering)
+	store.SetProject("")
+	resultsAll, err := store.Search(ctx, "unique_proj", SearchOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("search all: %v", err)
+	}
+	if len(resultsAll) < 3 {
+		t.Errorf("expected at least 3 results (2 A + 1 B), got %d", len(resultsAll))
+	}
+
+	// Test 6: ForPrompt scoped to project
+	store.SetProject("projectA")
+	prompt, err := ForPrompt(ctx, store, nil, "unique_proj_a_xyz", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt A: %v", err)
+	}
+	if !strings.Contains(prompt, "unique_proj_a_xyz") || prompt == "" {
+		t.Error("expected ForPrompt to contain project A memories with unique_proj_a_xyz")
+	}
+	if strings.Contains(prompt, "unique_proj_b_xyz") {
+		t.Error("expected ForPrompt NOT to contain project B memories")
+	}
+
+	// Test 7: ForPrompt with empty project returns all
+	store.SetProject("")
+	promptAll, err := ForPrompt(ctx, store, nil, "unique_proj", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt all: %v", err)
+	}
+	if !strings.Contains(promptAll, "unique_proj_a_xyz") {
+		t.Error("expected ForPrompt all to contain project A memories")
+	}
+	if !strings.Contains(promptAll, "unique_proj_b_xyz") {
+		t.Error("expected ForPrompt all to contain project B memories")
+	}
+}
+
+func TestMigrateProjectColumn_Idempotent(t *testing.T) {
+	// Create DB with OLD schema (without project column)
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Use old schema without project column
+	oldSchema := `
+	CREATE TABLE IF NOT EXISTS memories (
+		id INTEGER PRIMARY KEY,
+		content TEXT NOT NULL,
+		type TEXT NOT NULL,
+		tags TEXT,
+		source TEXT NOT NULL,
+		bead_id TEXT,
+		worker_id TEXT,
+		confidence REAL DEFAULT 0.8,
+		created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		embedding BLOB,
+		files_read TEXT DEFAULT '[]',
+		files_modified TEXT DEFAULT '[]',
+		pinned INTEGER DEFAULT 0
+	);
+	CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+		content,
+		tags,
+		content=memories,
+		content_rowid=id
+	);
+	CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+		INSERT INTO memories_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
+	END;
+	`
+	if _, err := db.Exec(oldSchema); err != nil {
+		t.Fatalf("exec old schema: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Insert a memory before migration (without using SetProject since column doesn't exist)
+	res, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"memory before migration unique_mig_xyz", "lesson", "[]", "self_report", 0.8,
+	)
+	if err != nil {
+		t.Fatalf("insert before migration: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	// Run migration first time
+	migration := `ALTER TABLE memories ADD COLUMN project TEXT DEFAULT 'oro'`
+	_, err = db.Exec(migration)
+	if err != nil {
+		t.Fatalf("first migration: %v", err)
+	}
+
+	// Backfill
+	_, err = db.Exec(`UPDATE memories SET project = 'oro' WHERE project IS NULL OR project = ''`)
+	if err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// Verify backfill worked
+	var project string
+	err = db.QueryRowContext(ctx, `SELECT project FROM memories WHERE id = ?`, id).Scan(&project)
+	if err != nil {
+		t.Fatalf("query project: %v", err)
+	}
+	if project != "oro" {
+		t.Errorf("expected backfilled project='oro', got %q", project)
+	}
+
+	// Run migration second time (idempotency test)
+	// This should fail with "duplicate column name" but we catch and ignore
+	_, err = db.Exec(migration)
+	if err == nil {
+		t.Error("expected error on duplicate column, but migration succeeded")
+	}
+	// SQLite error is expected, verify the table still works
+
+	// Verify data still intact
+	err = db.QueryRowContext(ctx, `SELECT project FROM memories WHERE id = ?`, id).Scan(&project)
+	if err != nil {
+		t.Fatalf("query after duplicate migration: %v", err)
+	}
+	if project != "oro" {
+		t.Errorf("expected project='oro' after duplicate migration, got %q", project)
+	}
+
+	// Insert a new memory after migration
+	store2 := NewStore(db)
+	store2.SetProject("test-project")
+	id2, err := store2.Insert(ctx, InsertParams{
+		Content:    "memory after migration unique_mig_xyz",
+		Type:       "lesson",
+		Source:     "self_report",
+		Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert after migration: %v", err)
+	}
+
+	err = db.QueryRowContext(ctx, `SELECT project FROM memories WHERE id = ?`, id2).Scan(&project)
+	if err != nil {
+		t.Fatalf("query project2: %v", err)
+	}
+	if project != "test-project" {
+		t.Errorf("expected project='test-project', got %q", project)
+	}
+}

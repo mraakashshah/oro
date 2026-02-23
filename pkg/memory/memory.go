@@ -22,6 +22,7 @@ import (
 type Store struct {
 	db       *sql.DB
 	embedder *Embedder
+	project  string // current project scope for queries and inserts
 }
 
 // NewStore creates a new Store backed by the given SQLite database.
@@ -40,6 +41,14 @@ func (s *Store) SetEmbedder(e *Embedder) {
 //oro:testonly
 func (s *Store) HasEmbedder() bool {
 	return s.embedder != nil
+}
+
+// SetProject sets the project scope for subsequent Insert, Search, and
+// ForPrompt operations. When set to a non-empty string, only memories
+// matching that project are returned or inserted. When set to empty string,
+// all memories are accessible (no project filtering).
+func (s *Store) SetProject(project string) {
+	s.project = project
 }
 
 // vocabKVKey is the kv_store key used to persist the embedder vocabulary.
@@ -204,10 +213,16 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 		pinnedInt = 1
 	}
 
+	// Use current project scope, default to 'oro' if not set
+	project := s.project
+	if project == "" {
+		project = "oro"
+	}
+
 	res, err := s.db.ExecContext(ctx, //nolint:gosec // G701 false positive: parameterized query with ? placeholders, no string concatenation
-		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified, pinned)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob, filesRead, filesModified, pinnedInt,
+		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified, pinned, project)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob, filesRead, filesModified, pinnedInt, project,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("memory insert: %w", err)
@@ -271,13 +286,14 @@ func jaccardSimilarity(a, b map[string]struct{}) float64 {
 	}
 	union := len(a) + len(b) - intersection
 	if union == 0 {
-		return 0
+
 	}
 	return float64(intersection) / float64(union)
 }
 
 // searchSQL builds the FTS5 search SQL and args for the given query and opts.
-func searchSQL(query string, opts SearchOpts) (stmt string, args []any) {
+// project parameter filters by project column; empty string means no filtering.
+func searchSQL(query string, opts SearchOpts, project string) (stmt string, args []any) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 10
@@ -294,6 +310,10 @@ func searchSQL(query string, opts SearchOpts) (stmt string, args []any) {
 		conditions = append(conditions, "(m.files_read LIKE ? OR m.files_modified LIKE ?)")
 		pattern := "%" + opts.FilePath + "%"
 		args = append(args, pattern, pattern)
+	}
+	if project != "" {
+		conditions = append(conditions, "m.project = ?")
+		args = append(args, project)
 	}
 
 	// Use FTS5 rank for relevance ordering; compute score in Go.
@@ -326,7 +346,7 @@ func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]Sc
 		return nil, nil
 	}
 
-	q, args := searchSQL(query, opts)
+	q, args := searchSQL(query, opts, s.project)
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("memory search: %w", err)
@@ -442,6 +462,10 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 	if typeFilter != "" {
 		q += " AND type = ?"
 		args = append(args, typeFilter)
+	}
+	if s.project != "" {
+		q += " AND project = ?"
+		args = append(args, s.project)
 	}
 
 	q += " ORDER BY created_at DESC LIMIT ?"
@@ -1046,7 +1070,7 @@ func processSimilarMemories(
 ) (int, error) {
 	merged := 0
 	for _, s := range similar {
-		if s.ID == current.ID || deleted[s.ID] || s.Score < threshold {
+		if s.ID == current.ID || deleted[s.ID] || s.Score <= threshold {
 			continue
 		}
 
