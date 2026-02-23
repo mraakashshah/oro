@@ -1561,6 +1561,58 @@ func (d *Dispatcher) appendReviewPatterns(ctx context.Context, beadID, workerID 
 
 // clearRejectionCount, clearHandoffCount, clearBeadTracking, pruneStaleTracking → bead_tracker.go
 
+// validateReconnectBead checks if a bead is valid for reconnection.
+// Returns true if bead is open and can be reconnected, false otherwise.
+// oro-3xdf: Rejects closed or missing beads to prevent stuck workers.
+func (d *Dispatcher) validateReconnectBead(ctx context.Context, beadID, workerID string) bool {
+	_, _, status := d.lookupBeadDetail(ctx, beadID, workerID)
+	if status == "closed" || status == "" {
+		reason := "bead is closed"
+		if status == "" {
+			reason = "bead lookup failed (not found or error)"
+		}
+		_ = d.logEvent(ctx, "reconnect_closed_bead_rejected", workerID, beadID, workerID,
+			fmt.Sprintf("rejecting reconnect: %s", reason))
+		return false
+	}
+	return true
+}
+
+// processReconnectUnderLock handles reconnection logic while holding d.mu.
+// Caller must hold d.mu.
+// oro-ovpc: Prevents bead stealing by checking for existing assignments.
+func (d *Dispatcher) processReconnectUnderLock(ctx context.Context, w *trackedWorker, workerID, beadID, state string) {
+	// Check if another worker is already assigned to this bead.
+	var beadStolenFrom string
+	for otherID, other := range d.workers {
+		if otherID != workerID && other.beadID == beadID && other.state == protocol.WorkerBusy {
+			beadStolenFrom = otherID
+			break
+		}
+	}
+
+	if beadStolenFrom != "" {
+		_ = d.logEvent(ctx, "reconnect_bead_conflict", workerID, beadID, beadStolenFrom,
+			fmt.Sprintf("worker %s already assigned to %s", beadStolenFrom, beadID))
+	} else {
+		w.beadID = beadID
+	}
+
+	w.lastSeen = d.nowFunc()
+	if state == "running" && w.beadID == beadID {
+		w.state = protocol.WorkerBusy
+		w.lastProgress = d.nowFunc()
+	} else {
+		w.state = protocol.WorkerIdle
+	}
+
+	// Replay pending messages
+	for _, pending := range w.pendingMsgs {
+		_ = d.sendToWorker(w, pending)
+	}
+	w.pendingMsgs = nil
+}
+
 func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg protocol.Message) {
 	if msg.Reconnect == nil {
 		return
@@ -1574,51 +1626,22 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 
 	_ = d.logEvent(ctx, "reconnect", workerID, msg.Reconnect.BeadID, workerID, msg.Reconnect.State)
 
+	beadID := msg.Reconnect.BeadID
+
+	// oro-3xdf: Check if the bead is valid (open, not closed/missing).
+	// Do this outside the lock to avoid I/O while holding mutex.
+	if !d.validateReconnectBead(ctx, beadID, workerID) {
+		return
+	}
+
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
-	if ok {
-		// oro-ovpc: Check if another worker is already assigned to this bead.
-		// If so, reject the reconnect's bead claim to prevent concurrent assignment.
-		beadID := msg.Reconnect.BeadID
-		var beadStolenFrom string
-		for otherID, other := range d.workers {
-			if otherID != workerID && other.beadID == beadID && other.state == protocol.WorkerBusy {
-				beadStolenFrom = otherID
-				break
-			}
-		}
-
-		if beadStolenFrom != "" {
-			// Another worker is already busy on this bead — reject the reconnect claim.
-			_ = d.logEvent(ctx, "reconnect_bead_conflict", workerID, beadID, beadStolenFrom,
-				fmt.Sprintf("worker %s already assigned to %s", beadStolenFrom, beadID))
-			// Don't set w.beadID; keep worker idle/disconnected
-		} else {
-			// No conflict — accept the reconnect claim
-			w.beadID = beadID
-		}
-
-		w.lastSeen = d.nowFunc()
-		switch msg.Reconnect.State {
-		case "running":
-			// Only set to Busy if we accepted the bead claim
-			if w.beadID == beadID {
-				w.state = protocol.WorkerBusy
-				w.lastProgress = d.nowFunc()
-			} else {
-				// Conflict detected, keep worker idle
-				w.state = protocol.WorkerIdle
-			}
-		default:
-			w.state = protocol.WorkerIdle
-		}
-
-		// Replay any pending messages that were buffered during disconnect
-		for _, pending := range w.pendingMsgs {
-			_ = d.sendToWorker(w, pending)
-		}
-		w.pendingMsgs = nil // Clear buffer after replay
+	if !ok {
+		d.mu.Unlock()
+		return
 	}
+
+	d.processReconnectUnderLock(ctx, w, workerID, beadID, msg.Reconnect.State)
 	d.mu.Unlock()
 
 	// Process any buffered events
@@ -1886,11 +1909,17 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 
 	for _, a := range active {
 		_, _, status := d.lookupBeadDetail(ctx, a.beadID, a.workerID)
-		if status != "closed" {
+		// oro-3xdf: Shut down worker if bead is closed OR if lookup failed (empty status).
+		// A worker should not remain assigned to a bead that can't be verified as open.
+		// Only continue (keep worker assigned) if bead exists and is not closed.
+		if status != "" && status != "closed" {
 			continue
 		}
-		_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", a.beadID, a.workerID,
-			"bead closed while worker assigned; sending shutdown")
+		reason := "bead closed while worker assigned; sending shutdown"
+		if status == "" {
+			reason = "bead lookup failed (not found or error); sending shutdown"
+		}
+		_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", a.beadID, a.workerID, reason)
 
 		// Send SHUTDOWN and clear worker state under lock.
 		d.mu.Lock()
