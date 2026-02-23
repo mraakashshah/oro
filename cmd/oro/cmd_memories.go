@@ -198,15 +198,21 @@ func newMemoriesListCmd() *cobra.Command {
 	var typeFilter string
 	var tagFilter string
 	var limit int
+	var allProjects bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List memories",
-		Long:  "List memories from the store with optional filtering by type and tag.\nOutputs a table with id, type, content (truncated), confidence, and created_at.",
+		Long:  "List memories from the store with optional filtering by type and tag.\nOutputs a table with id, type, content (truncated), confidence, and created_at.\nUse --all-projects to list memories across all projects.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, err := defaultMemoryStore()
 			if err != nil {
 				return fmt.Errorf("memories list: %w", err)
+			}
+
+			// Override project scope if --all-projects is set
+			if allProjects {
+				store.SetProject("")
 			}
 
 			results, listErr := store.List(context.Background(), memory.ListOpts{
@@ -226,6 +232,7 @@ func newMemoriesListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&typeFilter, "type", "", "filter by memory type (lesson|decision|gotcha|pattern|self_report)")
 	cmd.Flags().StringVar(&tagFilter, "tag", "", "filter by tag")
 	cmd.Flags().IntVar(&limit, "limit", 20, "maximum number of memories to return")
+	cmd.Flags().BoolVar(&allProjects, "all-projects", false, "list memories across all projects (ignore project scope)")
 
 	return cmd
 }

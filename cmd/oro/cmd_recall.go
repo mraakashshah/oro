@@ -37,15 +37,42 @@ func formatCreatedAt(createdAt string) string {
 	return createdAt
 }
 
+// recallByID fetches and formats a single memory by ID.
+func recallByID(ctx context.Context, s *memory.Store, memoryID int64, out interface{ Write([]byte) (int, error) }) error {
+	mem, err := s.GetByID(ctx, memoryID)
+	if err != nil {
+		return fmt.Errorf("recall: %w", err)
+	}
+	pinnedTag := ""
+	if mem.Pinned {
+		pinnedTag = " [pinned]"
+	}
+	fmt.Fprintf(out, "[%s]%s %s\n", mem.Type, pinnedTag, mem.Content)
+	fmt.Fprintf(out, "confidence: %.2f | source: %s | created: %s\n",
+		mem.Confidence, mem.Source, formatCreatedAt(mem.CreatedAt))
+	return nil
+}
+
+// recallByQuery searches memories by text query and formats results.
+func recallByQuery(ctx context.Context, s *memory.Store, query, filePath string, out interface{ Write([]byte) (int, error) }) error {
+	results, err := s.Search(ctx, query, memory.SearchOpts{Limit: 5, FilePath: filePath})
+	if err != nil {
+		return fmt.Errorf("recall: %w", err)
+	}
+	fmt.Fprint(out, formatRecallResults(results))
+	return nil
+}
+
 // newRecallCmdWithStore creates the "oro recall" subcommand.
 // If store is nil, the command lazily opens the default store on execution.
 func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 	var filePath string
 	var memoryID int64
+	var allProjects bool
 	cmd := &cobra.Command{
 		Use:   "recall <query>",
 		Short: "Search memories",
-		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.\nUse --id to fetch a single memory by ID.",
+		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.\nUse --id to fetch a single memory by ID.\nUse --all-projects to search across all projects.",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Lazy store initialization if not provided
@@ -58,25 +85,22 @@ func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 				}
 			}
 
+			// If --all-projects is set, clear project scope
+			if allProjects {
+				s.SetProject("")
+			}
+
 			// Check for conflicting usage
 			if memoryID > 0 && len(args) > 0 {
 				return fmt.Errorf("cannot use both --id and query arguments")
 			}
 
+			ctx := context.Background()
+			out := cmd.OutOrStdout()
+
 			// Fetch by ID if specified
 			if memoryID > 0 {
-				mem, err := s.GetByID(context.Background(), memoryID)
-				if err != nil {
-					return fmt.Errorf("recall: %w", err)
-				}
-				pinnedTag := ""
-				if mem.Pinned {
-					pinnedTag = " [pinned]"
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "[%s]%s %s\n", mem.Type, pinnedTag, mem.Content)
-				fmt.Fprintf(cmd.OutOrStdout(), "confidence: %.2f | source: %s | created: %s\n",
-					mem.Confidence, mem.Source, formatCreatedAt(mem.CreatedAt))
-				return nil
+				return recallByID(ctx, s, memoryID, out)
 			}
 
 			// Otherwise, search by query
@@ -85,16 +109,11 @@ func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
 			}
 
 			query := strings.Join(args, " ")
-			results, err := s.Search(context.Background(), query, memory.SearchOpts{Limit: 5, FilePath: filePath})
-			if err != nil {
-				return fmt.Errorf("recall: %w", err)
-			}
-
-			fmt.Fprint(cmd.OutOrStdout(), formatRecallResults(results))
-			return nil
+			return recallByQuery(ctx, s, query, filePath, out)
 		},
 	}
 	cmd.Flags().StringVar(&filePath, "file", "", "filter memories by file path")
 	cmd.Flags().Int64Var(&memoryID, "id", 0, "fetch memory by ID")
+	cmd.Flags().BoolVar(&allProjects, "all-projects", false, "search across all projects (ignore project scope)")
 	return cmd
 }

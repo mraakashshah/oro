@@ -193,3 +193,108 @@ func TestRecallCmd(t *testing.T) {
 		}
 	})
 }
+
+func TestRecallScopesByProject(t *testing.T) {
+	db := setupTestMemoryDB(t)
+	store := memory.NewStore(db)
+	ctx := context.Background()
+
+	// Seed memories for different projects by setting project scope before insert
+	projectAMemories := []memory.InsertParams{
+		{Content: "myapp uses JWT authentication", Type: "decision", Source: "cli", Confidence: 0.9},
+		{Content: "myapp database is PostgreSQL", Type: "decision", Source: "cli", Confidence: 0.85},
+	}
+	projectBMemories := []memory.InsertParams{
+		{Content: "otherapp uses OAuth2", Type: "decision", Source: "cli", Confidence: 0.8},
+		{Content: "otherapp uses MongoDB", Type: "decision", Source: "cli", Confidence: 0.75},
+	}
+
+	// Insert myapp memories
+	store.SetProject("myapp")
+	for _, m := range projectAMemories {
+		if _, err := store.Insert(ctx, m); err != nil {
+			t.Fatalf("failed to insert myapp memory: %v", err)
+		}
+	}
+
+	// Insert otherapp memories
+	store.SetProject("otherapp")
+	for _, m := range projectBMemories {
+		if _, err := store.Insert(ctx, m); err != nil {
+			t.Fatalf("failed to insert otherapp memory: %v", err)
+		}
+	}
+
+	// Reset project scope for tests
+	store.SetProject("")
+
+	t.Run("with ORO_PROJECT=myapp returns only myapp memories", func(t *testing.T) {
+		// Set project scope on store
+		store.SetProject("myapp")
+		defer store.SetProject("") // reset after test
+
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"database"})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("recall execute: %v", err)
+		}
+
+		output := out.String()
+		if !strings.Contains(output, "PostgreSQL") {
+			t.Errorf("expected myapp's PostgreSQL memory, got:\n%s", output)
+		}
+		if strings.Contains(output, "MongoDB") {
+			t.Errorf("should not include otherapp's MongoDB memory, got:\n%s", output)
+		}
+	})
+
+	t.Run("--all-projects returns memories from all projects", func(t *testing.T) {
+		// Set project scope on store (simulating ORO_PROJECT=myapp)
+		store.SetProject("myapp")
+		defer store.SetProject("") // reset after test
+
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--all-projects", "OAuth2"})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("recall execute: %v", err)
+		}
+
+		output := out.String()
+		// Should find otherapp's OAuth2 memory even though store is scoped to myapp
+		if !strings.Contains(output, "OAuth2") {
+			t.Errorf("expected otherapp's OAuth2 memory with --all-projects, got:\n%s", output)
+		}
+		if !strings.Contains(output, "otherapp") {
+			t.Errorf("expected otherapp in results with --all-projects, got:\n%s", output)
+		}
+	})
+
+	t.Run("without ORO_PROJECT returns all memories (unscoped)", func(t *testing.T) {
+		// Don't set project scope (simulating no ORO_PROJECT)
+		store.SetProject("")
+
+		cmd := newRecallCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"uses"})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("recall execute: %v", err)
+		}
+
+		output := out.String()
+		// Should find memories from both projects when unscoped
+		if !strings.Contains(output, "JWT") {
+			t.Errorf("expected myapp's JWT memory, got:\n%s", output)
+		}
+		if !strings.Contains(output, "OAuth2") {
+			t.Errorf("expected otherapp's OAuth2 memory, got:\n%s", output)
+		}
+	})
+}

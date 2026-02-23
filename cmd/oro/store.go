@@ -42,8 +42,17 @@ func defaultMemoryStore() (*memory.Store, error) {
 	store := memory.NewStore(db)
 
 	// Set project scope from environment if ORO_PROJECT is set.
-	// This scopes all memory operations to the current project.
-	if project := os.Getenv("ORO_PROJECT"); project != "" {
+	// If not set, fallback to reading project name from .oro/config.yaml.
+	// If neither exists, no project filtering is applied (all memories accessible).
+	project := os.Getenv("ORO_PROJECT")
+	if project == "" {
+		// Fallback to .oro/config.yaml in current directory
+		configProject, err := readProjectConfig(".")
+		if err == nil && configProject != "" {
+			project = configProject
+		}
+	}
+	if project != "" {
 		store.SetProject(project)
 	}
 
