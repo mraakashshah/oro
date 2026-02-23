@@ -569,10 +569,10 @@ func ChunkWithAstGrep(filePath, src string, lang Language) ([]Chunk, error) {
 	defer os.Remove(tmpFile.Name())
 
 	if _, err := tmpFile.WriteString(src); err != nil {
-		tmpFile.Close()
+		tmpFile.Close() //nolint:errcheck // best-effort cleanup
 		return nil, fmt.Errorf("codesearch: write temp file: %w", err)
 	}
-	tmpFile.Close()
+	tmpFile.Close() //nolint:errcheck // best-effort cleanup
 
 	matches, err := runAstGrep(tmpFile.Name(), rules)
 	if err != nil {
