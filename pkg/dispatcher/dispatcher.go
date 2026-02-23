@@ -1761,6 +1761,9 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
+	// Detect beads closed externally while a worker is assigned and clean up.
+	d.checkClosedBeadAssignments(ctx)
+
 	// Reconcile worker pool size (spawns/removes workers to match target).
 	d.reconcileScale()
 
@@ -1822,6 +1825,51 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 			delete(d.priorityBeads, bead.ID)
 		}
 		d.mu.Unlock()
+	}
+}
+
+// checkClosedBeadAssignments detects beads that have been closed externally
+// while a worker is still assigned to them. For each such bead it clears the
+// in-memory worker state, completes the DB assignment record, and sends a
+// SHUTDOWN signal so the worker exits cleanly. Called on every assign-loop
+// tick, ensuring cleanup occurs within one tick interval of external closure.
+func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
+	// Collect (workerID, beadID) pairs for all busy/reserved workers under lock.
+	type assignment struct {
+		workerID string
+		beadID   string
+	}
+	d.mu.Lock()
+	var active []assignment
+	for _, w := range d.workers {
+		if w.beadID != "" && (w.state == protocol.WorkerBusy || w.state == protocol.WorkerReserved) {
+			active = append(active, assignment{w.id, w.beadID})
+		}
+	}
+	d.mu.Unlock()
+
+	for _, a := range active {
+		_, _, status := d.lookupBeadDetail(ctx, a.beadID, a.workerID)
+		if status != "closed" {
+			continue
+		}
+		_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", a.beadID, a.workerID,
+			"bead closed while worker assigned; sending shutdown")
+
+		// Send SHUTDOWN and clear worker state under lock.
+		d.mu.Lock()
+		if w, ok := d.workers[a.workerID]; ok && w.beadID == a.beadID {
+			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+			w.state = protocol.WorkerIdle
+			w.beadID = ""
+			w.epicID = ""
+			w.worktree = ""
+		}
+		d.mu.Unlock()
+
+		// Complete DB assignment record and clear per-bead tracking maps.
+		_ = d.completeAssignment(ctx, a.beadID)
+		d.clearBeadTracking(a.beadID)
 	}
 }
 

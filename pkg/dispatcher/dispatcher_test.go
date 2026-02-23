@@ -11192,3 +11192,85 @@ func TestScaleDown_BusyWorker_BeadRequeued(t *testing.T) {
 		}
 	})
 }
+
+// TestDispatcherCleansUpClosedBeadAssignments verifies that when a bead transitions
+// to closed while a worker is assigned, the dispatcher removes the assignment within
+// one tick interval and the worker receives an exit signal.
+func TestDispatcherCleansUpClosedBeadAssignments(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	const beadID = "oro-cleanup-test"
+
+	// Provide an open bead for assignment.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: beadID, Title: "Work bead", Status: "open", Priority: 2, Type: "task", AcceptanceCriteria: "Test: pass"},
+	})
+
+	// Connect a worker and register it.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Start dispatcher so it assigns work.
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Wait for the ASSIGN message confirming the worker received the bead.
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN message")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign == nil || msg.Assign.BeadID != beadID {
+		t.Fatalf("expected ASSIGN for %q, got %+v", beadID, msg.Assign)
+	}
+
+	// Confirm worker is busy with the bead.
+	waitFor(t, func() bool {
+		st, bid, ok := d.WorkerInfo("w1")
+		return ok && bid == beadID && st == protocol.WorkerBusy
+	}, 1*time.Second)
+
+	// Externally close the bead (simulates `bd close` from outside the dispatcher).
+	beadSrc.mu.Lock()
+	if beadSrc.shown == nil {
+		beadSrc.shown = make(map[string]*protocol.BeadDetail)
+	}
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:     beadID,
+		Status: "closed",
+	}
+	beadSrc.mu.Unlock()
+
+	// Also remove from the ready list so Ready() no longer returns it.
+	beadSrc.SetBeads([]protocol.Bead{})
+
+	// Within one tick, the dispatcher should detect the closed bead and send SHUTDOWN.
+	shutdownMsg, ok := readMsg(t, conn, 500*time.Millisecond)
+	if !ok {
+		t.Fatal("expected SHUTDOWN after bead closed externally, got nothing")
+	}
+	if shutdownMsg.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", shutdownMsg.Type)
+	}
+
+	// Verify the worker's assignment was cleared.
+	waitFor(t, func() bool {
+		_, bid, ok := d.WorkerInfo("w1")
+		return !ok || bid == ""
+	}, 500*time.Millisecond)
+
+	_, beadAfter, _ := d.WorkerInfo("w1")
+	if beadAfter != "" {
+		t.Errorf("expected worker beadID to be cleared after external close, got %q", beadAfter)
+	}
+}
