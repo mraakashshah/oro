@@ -1197,6 +1197,7 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("open /dev/null: %w", err)
 	}
+	defer devNull.Close() // fd is dup'd into child by Start(); safe to close our copy on return
 	cmd.Stdin = devNull
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -1205,11 +1206,8 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 	}
 
 	if err := cmd.Start(); err != nil {
-		devNull.Close() // Clean up fd before returning error
 		return nil, nil, nil, fmt.Errorf("start claude: %w", err)
 	}
-	// The fd has been dup'd into the child process, so we can close our copy.
-	devNull.Close()
 	return &CmdProcess{Cmd: cmd}, stdoutPipe, nil, nil
 }
 
