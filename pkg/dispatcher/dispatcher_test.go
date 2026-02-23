@@ -7082,7 +7082,7 @@ func TestTryAssign_NoBeadsReady(t *testing.T) {
 // 2. Sends an escalation with EscWorkerCrash
 // 3. Clears all bead tracking entries
 // 4. Logs a heartbeat_timeout event
-// Edge: idle workers are exempt from heartbeat timeout.
+// Edge: idle workers with stale heartbeats are also removed (disconnected).
 func TestCheckHeartbeats_WorkerDisconnect(t *testing.T) {
 	t.Run("busy worker with assigned bead times out", func(t *testing.T) {
 		d, _, _, esc, _, _ := newTestDispatcher(t)
@@ -7169,7 +7169,7 @@ func TestCheckHeartbeats_WorkerDisconnect(t *testing.T) {
 		}
 	})
 
-	t.Run("idle worker is exempt from heartbeat timeout", func(t *testing.T) {
+	t.Run("idle worker with stale heartbeat is removed", func(t *testing.T) {
 		d, _, _, esc, _, _ := newTestDispatcher(t)
 
 		server, client := net.Pipe()
@@ -7196,27 +7196,20 @@ func TestCheckHeartbeats_WorkerDisconnect(t *testing.T) {
 		// Trigger heartbeat check.
 		d.checkHeartbeats(context.Background())
 
-		// Assert: idle worker NOT removed.
-		if d.ConnectedWorkers() != 1 {
-			t.Fatalf("expected idle worker to survive heartbeat check, got %d workers", d.ConnectedWorkers())
-		}
-		st, _, ok := d.WorkerInfo(workerID)
-		if !ok {
-			t.Fatal("expected idle worker to still be in map")
-		}
-		if st != protocol.WorkerIdle {
-			t.Fatalf("expected worker state idle, got %s", st)
+		// Assert: stale idle worker removed (disconnected).
+		if d.ConnectedWorkers() != 0 {
+			t.Fatalf("expected stale idle worker to be removed, got %d workers", d.ConnectedWorkers())
 		}
 
-		// Assert: no escalations.
-		if len(esc.Messages()) != 0 {
-			t.Errorf("expected no escalation for idle worker, got %d", len(esc.Messages()))
+		// Assert: escalation sent (idle worker with no bead — still reported).
+		if len(esc.Messages()) != 1 {
+			t.Errorf("expected 1 escalation for stale idle worker, got %d", len(esc.Messages()))
 		}
 
-		// Assert: no heartbeat_timeout events.
+		// Assert: heartbeat_timeout event logged for the stale idle worker.
 		count := eventCount(t, d.db, "heartbeat_timeout")
-		if count != 0 {
-			t.Errorf("expected 0 heartbeat_timeout events for idle worker, got %d", count)
+		if count != 1 {
+			t.Errorf("expected 1 heartbeat_timeout event for stale idle worker, got %d", count)
 		}
 	})
 }
@@ -11201,6 +11194,7 @@ func TestScaleDown_BusyWorker_BeadRequeued(t *testing.T) {
 
 	t.Run("timeout path — bead requeued when worker doesn't respond within deadline", func(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		d.cfg.HeartbeatTimeout = 10 * time.Second // survive setup; shutdown timeout is 100ms
 		startDispatcher(t, d)
 
 		conn, _ := connectWorker(t, d.cfg.SocketPath)

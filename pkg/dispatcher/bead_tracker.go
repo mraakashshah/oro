@@ -52,7 +52,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 func (d *Dispatcher) clearRejectionCount(beadID string) {
 	d.mu.Lock()
 	delete(d.rejectionCounts, beadID)
-	_ = d.mu.Unlock
+	d.mu.Unlock()
 }
 
 // clearHandoffCount removes the handoff counter for a bead (e.g., on completion).

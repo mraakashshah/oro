@@ -142,21 +142,22 @@ func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output str
 
 // trackedWorker holds runtime state for a connected worker.
 type trackedWorker struct {
-	id             string
-	conn           net.Conn
-	state          protocol.WorkerState
-	beadID         string
-	epicID         string // parent epic ID if the assigned bead is a child of an epic
-	isEpicDecomp   bool   // true when worker is assigned an epic for decomposition (no merge on done)
-	worktree       string
-	model          string // resolved model for the current bead assignment
-	lastSeen       time.Time
-	lastProgress   time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
-	contextPct     int       // context usage percentage from last heartbeat (0-100)
-	encoder        *json.Encoder
-	pendingMsgs    []protocol.Message // buffered messages for disconnected worker
-	shutdownCancel context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
-	managed        bool               // true if spawned by the dispatcher (vs externally connected)
+	id               string
+	conn             net.Conn
+	state            protocol.WorkerState
+	beadID           string
+	epicID           string // parent epic ID if the assigned bead is a child of an epic
+	isEpicDecomp     bool   // true when worker is assigned an epic for decomposition (no merge on done)
+	worktree         string
+	model            string // resolved model for the current bead assignment
+	lastSeen         time.Time
+	lastProgress     time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
+	contextPct       int       // context usage percentage from last heartbeat (0-100)
+	encoder          *json.Encoder
+	pendingMsgs      []protocol.Message // buffered messages for disconnected worker
+	shutdownCancel   context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
+	shutdownApproved bool               // set by handleShutdownApproved; checked by checkShutdownApproved
+	managed          bool               // true if spawned by the dispatcher (vs externally connected)
 }
 
 // pendingHandoff holds context for a bead whose worker has been shut down
@@ -1587,14 +1588,15 @@ func (d *Dispatcher) appendReviewPatterns(ctx context.Context, beadID, workerID 
 // Returns true if bead is open and can be reconnected, false otherwise.
 // oro-3xdf: Rejects closed or missing beads to prevent stuck workers.
 func (d *Dispatcher) validateReconnectBead(ctx context.Context, beadID, workerID string) bool {
-	_, _, status := d.lookupBeadDetail(ctx, beadID, workerID)
-	if status == "closed" || status == "" {
-		reason := "bead is closed"
-		if status == "" {
-			reason = "bead lookup failed (not found or error)"
-		}
+	detail, err := d.beads.Show(ctx, beadID)
+	if err != nil || detail == nil {
 		_ = d.logEvent(ctx, "reconnect_closed_bead_rejected", workerID, beadID, workerID,
-			fmt.Sprintf("rejecting reconnect: %s", reason))
+			"rejecting reconnect: bead lookup failed (not found or error)")
+		return false
+	}
+	if detail.Status == "closed" {
+		_ = d.logEvent(ctx, "reconnect_closed_bead_rejected", workerID, beadID, workerID,
+			"rejecting reconnect: bead is closed")
 		return false
 	}
 	return true
@@ -1685,6 +1687,7 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 	var beadID string
 	if ok {
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+		w.shutdownApproved = true
 		beadID = w.beadID // capture before clearing
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
@@ -1930,18 +1933,23 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 	d.mu.Unlock()
 
 	for _, a := range active {
-		_, _, status := d.lookupBeadDetail(ctx, a.beadID, a.workerID)
-		// oro-3xdf: Shut down worker if bead is closed OR if lookup failed (empty status).
-		// A worker should not remain assigned to a bead that can't be verified as open.
-		// Only continue (keep worker assigned) if bead exists and is not closed.
-		if status != "" && status != "closed" {
+		detail, err := d.beads.Show(ctx, a.beadID)
+		if err != nil {
+			// Transient lookup error — don't kill the worker, retry next cycle.
 			continue
 		}
-		reason := "bead closed while worker assigned; sending shutdown"
-		if status == "" {
-			reason = "bead lookup failed (not found or error); sending shutdown"
+		switch {
+		case detail == nil:
+			// Bead not found in source — treat as externally removed.
+			_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", a.beadID, a.workerID,
+				"bead not found in source; sending shutdown")
+		case detail.Status == "closed":
+			_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", a.beadID, a.workerID,
+				"bead closed while worker assigned; sending shutdown")
+		default:
+			// Bead exists and is not explicitly closed — keep worker assigned.
+			continue
 		}
-		_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", a.beadID, a.workerID, reason)
 
 		// Send SHUTDOWN and clear worker state under lock.
 		d.mu.Lock()

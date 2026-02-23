@@ -194,10 +194,11 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	var dead []string
 	var stuck []string
 	for id, w := range d.workers {
-		if w.state == protocol.WorkerIdle || w.state == protocol.WorkerReserved {
+		if w.state == protocol.WorkerReserved {
 			continue
 		}
-		// Liveness check: heartbeat timeout.
+		// Liveness check: heartbeat timeout (applies to all non-reserved workers,
+		// including idle — an idle worker with a stale heartbeat is disconnected).
 		if now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
 			dead = append(dead, id)
 			continue
@@ -336,14 +337,13 @@ func (d *Dispatcher) shutdownWaitLoop(shutdownCtx context.Context, cancelFunc co
 	for {
 		select {
 		case <-shutdownCtx.Done():
-			// Context cancelled (either timeout or duplicate shutdown call)
 			if shutdownCtx.Err() == context.DeadlineExceeded {
 				d.handleShutdownTimeout(workerID)
 			}
-			// If err == context.Canceled, duplicate shutdown call cancelled us - exit silently
 			return
 		case <-ticker.C:
-			if d.checkShutdownApproved(workerID) {
+			approved := d.checkShutdownApproved(workerID)
+			if approved {
 				return
 			}
 		}
@@ -385,11 +385,11 @@ func (d *Dispatcher) checkShutdownApproved(workerID string) bool {
 	if !ok {
 		return false
 	}
-	approved := w.state == protocol.WorkerIdle
-	if approved && w.shutdownCancel != nil {
-		w.shutdownCancel = nil // Clear cancel func after successful shutdown
+	if w.shutdownApproved {
+		w.shutdownCancel = nil
+		return true
 	}
-	return approved
+	return false
 }
 
 // shutdownWaitForWorkers waits up to ShutdownTimeout for all workers to drain,

@@ -475,9 +475,10 @@ func TestTouchProgress_NoopForUnknownWorker(t *testing.T) {
 
 // --- checkHeartbeats tests ---
 
-// TestCheckHeartbeats_SkipsIdleWorkers verifies that idle workers are not timed out.
-// Kills mutations 17 (remove continue for idle), 38 (skip idle check).
-func TestCheckHeartbeats_SkipsIdleWorkers(t *testing.T) {
+// TestCheckHeartbeats_RemovesStaleIdleWorkers verifies that idle workers with
+// stale heartbeats are removed (they are disconnected). Only reserved workers
+// are exempt from heartbeat timeout.
+func TestCheckHeartbeats_RemovesStaleIdleWorkers(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
@@ -485,8 +486,8 @@ func TestCheckHeartbeats_SkipsIdleWorkers(t *testing.T) {
 	d.nowFunc = func() time.Time { return now }
 
 	conn := newMockConn()
-	workerID := "idle-skipped"
-	// Place worker with lastSeen far in the past — but state is Idle
+	workerID := "idle-stale"
+	// Place worker with lastSeen far in the past — state is Idle
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
 		id:       workerID,
@@ -502,8 +503,8 @@ func TestCheckHeartbeats_SkipsIdleWorkers(t *testing.T) {
 	_, stillPresent := d.workers[workerID]
 	d.mu.Unlock()
 
-	if !stillPresent {
-		t.Error("idle worker should not be removed by checkHeartbeats")
+	if stillPresent {
+		t.Error("stale idle worker should be removed by checkHeartbeats")
 	}
 }
 
@@ -1041,10 +1042,10 @@ func TestCheckShutdownApproved_ReturnsFalseForMissingWorker(t *testing.T) {
 	}
 }
 
-// TestCheckShutdownApproved_TrueWhenWorkerIsIdle verifies that Idle state
-// means approved.
+// TestCheckShutdownApproved_TrueWhenFlagSet verifies that the explicit
+// shutdownApproved flag means approved.
 // Kills mutation 44 (skip approved check).
-func TestCheckShutdownApproved_TrueWhenWorkerIsIdle(t *testing.T) {
+func TestCheckShutdownApproved_TrueWhenFlagSet(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
@@ -1052,15 +1053,16 @@ func TestCheckShutdownApproved_TrueWhenWorkerIsIdle(t *testing.T) {
 	workerID := "idle-approved"
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:    workerID,
-		conn:  conn,
-		state: protocol.WorkerIdle,
+		id:               workerID,
+		conn:             conn,
+		state:            protocol.WorkerIdle,
+		shutdownApproved: true,
 	}
 	d.mu.Unlock()
 
 	result := d.checkShutdownApproved(workerID)
 	if !result {
-		t.Error("expected true when worker is Idle")
+		t.Error("expected true when shutdownApproved is set")
 	}
 }
 
@@ -1101,16 +1103,17 @@ func TestCheckShutdownApproved_ClearsShutdownCancelOnApproval(t *testing.T) {
 
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:             workerID,
-		conn:           conn,
-		state:          protocol.WorkerIdle,
-		shutdownCancel: cancelFn,
+		id:               workerID,
+		conn:             conn,
+		state:            protocol.WorkerIdle,
+		shutdownApproved: true,
+		shutdownCancel:   cancelFn,
 	}
 	d.mu.Unlock()
 
 	result := d.checkShutdownApproved(workerID)
 	if !result {
-		t.Error("expected true for idle worker")
+		t.Error("expected true when shutdownApproved is set")
 	}
 
 	d.mu.Lock()
