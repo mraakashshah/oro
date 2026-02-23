@@ -72,6 +72,7 @@ type WorktreeManager interface {
 	Create(ctx context.Context, beadID string) (path string, branch string, err error)
 	Remove(ctx context.Context, path string) error
 	Prune(ctx context.Context) error
+	DeleteBranch(ctx context.Context, branch string) error
 }
 
 // Escalator sends messages to the Manager. Production impl uses tmux send-keys.

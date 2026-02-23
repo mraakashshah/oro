@@ -695,6 +695,51 @@ func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestGitWorktreeManager_DeleteBranch_Success(t *testing.T) {
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", runner)
+
+	err := mgr.DeleteBranch(context.Background(), "agent/oro-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.Name != "git" {
+		t.Fatalf("name: got %q, want %q", call.Name, "git")
+	}
+	wantArgs := []string{"-C", "/repo/root", "branch", "-d", "agent/oro-test"}
+	if len(call.Args) != len(wantArgs) {
+		t.Fatalf("args: got %v, want %v", call.Args, wantArgs)
+	}
+	for i, a := range call.Args {
+		if a != wantArgs[i] {
+			t.Fatalf("args[%d]: got %q, want %q", i, a, wantArgs[i])
+		}
+	}
+}
+
+func TestGitWorktreeManager_DeleteBranch_Error(t *testing.T) {
+	runner := &mockCommandRunner{
+		err: fmt.Errorf("error: branch 'agent/oro-missing' not found"),
+	}
+	mgr := NewGitWorktreeManager("/repo/root", runner)
+
+	err := mgr.DeleteBranch(context.Background(), "agent/oro-missing")
+	if err == nil {
+		t.Fatal("expected error from DeleteBranch")
+	}
+	if !strings.Contains(err.Error(), "branch delete") {
+		t.Fatalf("error should mention 'branch delete', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "agent/oro-missing") {
+		t.Fatalf("error should contain branch name, got: %v", err)
+	}
+}
+
 func TestGitWorktreeManager_Create_InvalidBeadID(t *testing.T) {
 	t.Parallel()
 

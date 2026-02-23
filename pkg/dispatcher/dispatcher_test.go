@@ -221,6 +221,10 @@ func (m *mockWorktreeManager) Remove(ctx context.Context, path string) error {
 	return nil
 }
 
+func (m *mockWorktreeManager) DeleteBranch(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *mockWorktreeManager) Prune(ctx context.Context) error {
 	return nil
 }
