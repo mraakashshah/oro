@@ -75,13 +75,53 @@ func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string
 }
 
 // Remove runs `git worktree remove <path> --force`.
+// Before removing, it automatically commits any uncommitted changes in the
+// worktree to prevent losing work when workers are killed or time out.
 func (g *GitWorktreeManager) Remove(ctx context.Context, path string) error {
+	// Auto-commit any uncommitted changes before removal to prevent data loss.
+	if err := g.autoCommitUncommittedChanges(ctx, path); err != nil {
+		// Log the error but don't fail the removal — stale worktree cleanup
+		// is more important than preserving uncommitted changes in edge cases.
+		_ = err // Errors are non-fatal
+	}
+
 	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot,
 		"worktree", "remove", path, "--force",
 	)
 	if err != nil {
 		return fmt.Errorf("worktree remove %s: %w", path, err)
 	}
+	return nil
+}
+
+// autoCommitUncommittedChanges checks if the worktree has uncommitted changes
+// and commits them with a descriptive message. This prevents losing work when
+// a worker is killed or times out.
+func (g *GitWorktreeManager) autoCommitUncommittedChanges(ctx context.Context, path string) error {
+	// Check if worktree has uncommitted changes.
+	output, err := g.runner.Run(ctx, "git", "-C", path, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("git status in %s: %w", path, err)
+	}
+
+	// If output is empty, worktree is clean — nothing to commit.
+	if strings.TrimSpace(string(output)) == "" {
+		return nil
+	}
+
+	// Stage all changes.
+	_, err = g.runner.Run(ctx, "git", "-C", path, "add", "-A")
+	if err != nil {
+		return fmt.Errorf("git add in %s: %w", path, err)
+	}
+
+	// Commit with descriptive message.
+	_, err = g.runner.Run(ctx, "git", "-C", path, "commit", "-m",
+		"auto-commit: preserve uncommitted changes before worktree removal")
+	if err != nil {
+		return fmt.Errorf("git commit in %s: %w", path, err)
+	}
+
 	return nil
 }
 

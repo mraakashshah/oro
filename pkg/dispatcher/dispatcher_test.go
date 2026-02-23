@@ -10180,7 +10180,7 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 	const beadID = "oro-cleanup1"
 	const worktreePath = "/tmp/worktrees/oro-cleanup1"
 
-	t.Run("managed worker: worktree removed, bead reset, tracking cleared, targetWorkers decremented", func(t *testing.T) {
+	t.Run("managed worker: worktree preserved for respawn, bead reset, tracking cleared, targetWorkers decremented", func(t *testing.T) {
 		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 
 		conn := newMockConn()
@@ -10199,6 +10199,8 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 		d.handoffCounts[beadID] = 1
 		d.rejectionCounts[beadID] = 2
 		d.escalatedBeads[beadID] = true
+		// Seed worktreeByBead so kill preserves it.
+		d.worktreeByBead[beadID] = worktreePath
 		d.targetWorkers = 2
 		d.mu.Unlock()
 
@@ -10207,14 +10209,20 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 			t.Fatalf("applyKillWorker returned error: %v", err)
 		}
 
-		// 1. WorktreeManager.Remove must be called with the worker's worktree path.
+		// 1. WorktreeManager.Remove must NOT be called (oro-1eo8: preserve for respawn).
 		wtMgr.mu.Lock()
 		removed := wtMgr.removed
 		wtMgr.mu.Unlock()
-		if len(removed) == 0 {
-			t.Error("expected WorktreeManager.Remove to be called, but it was not")
-		} else if removed[0] != worktreePath {
-			t.Errorf("Remove called with %q, want %q", removed[0], worktreePath)
+		if len(removed) != 0 {
+			t.Errorf("expected WorktreeManager.Remove to NOT be called (preserve for respawn), but was called with: %v", removed)
+		}
+
+		// 1b. Worktree path must still be in worktreeByBead map for respawn reuse.
+		d.mu.Lock()
+		preservedPath := d.worktreeByBead[beadID]
+		d.mu.Unlock()
+		if preservedPath != worktreePath {
+			t.Errorf("worktreeByBead[%s] = %q, want %q (should be preserved)", beadID, preservedPath, worktreePath)
 		}
 
 		// 2. BeadSource.Update must reset bead to "open".
@@ -10246,7 +10254,7 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 		}
 	})
 
-	t.Run("unmanaged worker: worktree removed, bead reset, tracking cleared, targetWorkers NOT decremented", func(t *testing.T) {
+	t.Run("unmanaged worker: worktree preserved for respawn, bead reset, tracking cleared, targetWorkers NOT decremented", func(t *testing.T) {
 		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 
 		conn := newMockConn()
@@ -10261,6 +10269,7 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 			encoder:  json.NewEncoder(conn),
 		}
 		d.attemptCounts[beadID] = 1
+		d.worktreeByBead[beadID] = worktreePath
 		d.targetWorkers = 1
 		d.mu.Unlock()
 
@@ -10269,12 +10278,12 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 			t.Fatalf("applyKillWorker returned error: %v", err)
 		}
 
-		// Worktree must still be removed for unmanaged workers.
+		// Worktree must NOT be removed (oro-1eo8: preserve for respawn).
 		wtMgr.mu.Lock()
 		removed := wtMgr.removed
 		wtMgr.mu.Unlock()
-		if len(removed) == 0 || removed[0] != worktreePath {
-			t.Errorf("WorktreeManager.Remove not called correctly for unmanaged worker: %v", removed)
+		if len(removed) != 0 {
+			t.Errorf("expected WorktreeManager.Remove to NOT be called (preserve for respawn), but was called with: %v", removed)
 		}
 
 		// Bead must still be reset to open.
