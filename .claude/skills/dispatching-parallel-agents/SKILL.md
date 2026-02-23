@@ -93,36 +93,23 @@ FIRST: bd update <id> --status=in_progress
 
 ### 3. Merge (as each worker completes)
 
-#### Happy Path (oro work auto-merged)
+Rebase + fast-forward merge. Always. This gives clean linear history without duplicate commits.
 
 ```bash
-git pull --rebase    # pick up the worker's merge
+git stash                                    # save dirty beads file
+git worktree remove --force .worktrees/<id>  # remove worktree, keep branch
+git rebase main <branch>                     # rebase onto current main
+git checkout main                            # switch back to main
+git merge --ff-only <branch>                 # fast-forward (no merge commit)
+git branch -D <branch>                       # delete merged branch
+git stash pop                                # restore beads state
 ```
 
-#### oro work failed to merge / Task agent completed
+**Why not cherry-pick?** Cherry-pick duplicates commit hashes, polluting `git log` and breaking `git bisect`. Rebase preserves authorship and produces identical diffs with clean history.
 
-Cherry-pick is the safe default when other worktrees are still active:
+**Worktree removal unblocks rebase.** The rebase guard hook only fires when worktrees are active. Remove the worktree first (step 2), then rebase freely — even while other worktrees exist for different agents.
 
-```bash
-git stash
-git worktree remove .worktrees/<id>
-git cherry-pick agent/<id>
-git branch -D agent/<id>
-git stash pop
-```
-
-#### When all worktrees are removed (can rebase)
-
-Rebase gives cleaner history but requires no active worktrees (rebase guard hook blocks otherwise):
-
-```bash
-git stash
-git rebase main agent/<id>
-git checkout main
-git merge --ff-only agent/<id>
-git branch -D agent/<id>
-git stash pop
-```
+**CRITICAL: Do not backfill or use any tools between removing a worktree and completing the merge.** Removing a worktree can corrupt the hook resolver's CWD — all tools break until the merge sequence finishes. Complete the full 7-step sequence atomically.
 
 ### 4. Backfill
 
@@ -163,16 +150,12 @@ When `git rebase main agent/X` produces conflicts:
 4. **Fix cross-references** after resolution
 5. **Always build + test after conflict resolution** before merging the next branch
 
-### bd File Contention
-
-Multiple workers closing beads modify `.beads/issues.jsonl`. This is expected merge friction — take the latest version when cherry-picking. The file is auto-synced by hooks.
-
 ## Error Recovery
 
 | Situation | Action |
 |-----------|--------|
 | Worker completes, merge succeeds | Pull. Launch next. |
-| Worker completes, merge fails | Cherry-pick or rebase manually. |
+| Worker completes, merge conflicts | Resolve during rebase, build + test, continue. |
 | Worker fails (test failure) | Inspect worktree. Fix + recommit, or re-dispatch. |
 | Worker killed (signal:killed) | Resource contention. Reduce concurrency. Re-dispatch. |
 | Worker stuck (no progress) | Check output file tail. Kill and re-dispatch if needed. |
@@ -208,7 +191,7 @@ Task agent prompt template must include:
 | Not claiming beads (`in_progress`) | Worker prompt must include `bd update` at start |
 | Dispatching overlapping file scopes | Same file = sequential deps via `bd dep add` |
 | Using TaskOutput to read transcripts | Trust notifications. Read bead, not transcript. |
-| Rebasing with active worktrees | Cherry-pick instead |
+| Using tools between worktree remove and merge complete | Complete the 7-step merge atomically |
 | Polling agents with sleep loops | Trust task notifications |
 | Forgetting stale worktree cleanup | Preflight: `git worktree list` |
 | Using `cd` into worktrees | Shell cwd persists — use absolute paths |
