@@ -11489,3 +11489,41 @@ func TestRemoveWorktreeAndClearTracking_DeletesBranch(t *testing.T) {
 		d.removeWorktreeAndClearTracking(context.Background(), "oro-both", "w3", "/tmp/worktree-oro-both")
 	})
 }
+
+// TestSnapshotWorkers_IncludesLastHeartbeat verifies that snapshotWorkers
+// includes LastHeartbeatSecs calculated from now.Sub(w.lastSeen).
+func TestSnapshotWorkers_IncludesLastHeartbeat(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Register a worker with a known lastSeen time
+	workerID := "test-worker-1"
+	s, c := net.Pipe()
+	t.Cleanup(func() { _ = s.Close(); _ = c.Close() })
+	d.registerWorker(workerID, s)
+
+	// Set a known lastSeen time 5 seconds in the past
+	now := time.Now()
+	lastSeenTime := now.Add(-5 * time.Second)
+	d.mu.Lock()
+	d.workers[workerID].lastSeen = lastSeenTime
+	d.mu.Unlock()
+
+	// Call snapshotWorkers with the known "now" time
+	workers, _, _, _ := d.snapshotWorkers(now)
+
+	// Verify we got the worker
+	if len(workers) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(workers))
+	}
+
+	worker := workers[0]
+	if worker.ID != workerID {
+		t.Fatalf("expected worker ID %q, got %q", workerID, worker.ID)
+	}
+
+	// Verify LastHeartbeatSecs is approximately 5.0
+	expectedHeartbeatSecs := 5.0
+	if worker.LastHeartbeatSecs != expectedHeartbeatSecs {
+		t.Errorf("expected LastHeartbeatSecs %.1f, got %.1f", expectedHeartbeatSecs, worker.LastHeartbeatSecs)
+	}
+}

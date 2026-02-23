@@ -2228,11 +2228,12 @@ func (d *Dispatcher) lookupBeadDetail(ctx context.Context, beadID, workerID stri
 
 // workerStatus holds per-worker health info for the enriched status response.
 type workerStatus struct {
-	ID               string  `json:"id"`
-	State            string  `json:"state"`
-	BeadID           string  `json:"bead_id,omitempty"`
-	LastProgressSecs float64 `json:"last_progress_secs"`
-	ContextPct       int     `json:"context_pct"`
+	ID                string  `json:"id"`
+	State             string  `json:"state"`
+	BeadID            string  `json:"bead_id,omitempty"`
+	LastProgressSecs  float64 `json:"last_progress_secs"`
+	LastHeartbeatSecs float64 `json:"last_heartbeat_secs"`
+	ContextPct        int     `json:"context_pct"`
 }
 
 // statusResponse is the JSON structure returned by the status directive.
@@ -2355,12 +2356,17 @@ func (d *Dispatcher) snapshotWorkers(now time.Time) (workers []workerStatus, ass
 		if !w.lastProgress.IsZero() {
 			progressSecs = now.Sub(w.lastProgress).Seconds()
 		}
+		var heartbeatSecs float64
+		if !w.lastSeen.IsZero() {
+			heartbeatSecs = now.Sub(w.lastSeen).Seconds()
+		}
 		workers = append(workers, workerStatus{
-			ID:               id,
-			State:            string(w.state),
-			BeadID:           w.beadID,
-			LastProgressSecs: progressSecs,
-			ContextPct:       w.contextPct,
+			ID:                id,
+			State:             string(w.state),
+			BeadID:            w.beadID,
+			LastProgressSecs:  progressSecs,
+			LastHeartbeatSecs: heartbeatSecs,
+			ContextPct:        w.contextPct,
 		})
 		if w.state == protocol.WorkerBusy || w.state == protocol.WorkerReserved {
 			active++
