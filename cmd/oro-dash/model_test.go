@@ -13,7 +13,7 @@ import (
 
 // stripANSI removes ANSI color codes from a string.
 func stripANSI(s string) string {
-	ansi := regexp.MustCompile("\\x1b\\[[0-9;]*m")
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	return ansi.ReplaceAllString(s, "")
 }
 
@@ -245,55 +245,28 @@ func TestStatusBar_HintsRightAligned(t *testing.T) {
 			bar := m.renderStatusBar(tt.width)
 			barClean := stripANSI(bar)
 
-			if tt.wantHints {
-				// When hints should be visible:
-				// 1. "q quit" is in the output
-				if !strings.Contains(barClean, "q quit") {
-					t.Errorf("renderStatusBar() missing 'q quit' hint, got clean: %s", barClean)
-				}
-
-				// 2. Verify gap before hints is calculated for right-alignment
-				// The gap should be at least 2 (minimum right-align gap)
-				idx := strings.Index(barClean, "q quit")
-				if idx > 0 {
-					// Count trailing spaces before "q quit"
-					beforeHints := barClean[:idx]
-					gapCount := 0
-					for i := len(beforeHints) - 1; i >= 0 && beforeHints[i] == ' '; i-- {
-						gapCount++
-					}
-
-					// Gap must be at least 2 for right-alignment
-					if gapCount < 2 {
-						t.Errorf("gap before 'q quit' is %d, want >= 2 (right-align gap fill). Bar: %s", gapCount, barClean)
-					}
-
-					// 3. For right-alignment, the bar should fit within width or at least
-					// the gap should scale with width. When gap is calculated correctly,
-					// the final bar should be close to width (within a few chars for rounding).
-					// This test verifies the hints end near the right edge.
-					hintsStartIdx := idx
-					hintsEndIdx := len(barClean)
-					hintsLen := hintsEndIdx - hintsStartIdx
-
-					// Calculate what the gap SHOULD be for proper right-alignment
-					metricsEndIdx := idx - gapCount
-					metricsLen := metricsEndIdx
-					expectedGap := tt.width - metricsLen - hintsLen
-					if expectedGap < 2 {
-						expectedGap = 2
-					}
-
-					// With right-alignment, actual gap should match or exceed expected minimum
-					if gapCount < 2 {
-						t.Errorf("gap is %d, want >= 2 for right-alignment. Bar: %s", gapCount, barClean)
-					}
-				}
-			} else {
-				// When hints should be hidden, "q quit" should not appear
+			if !tt.wantHints {
 				if strings.Contains(barClean, "q quit") {
 					t.Errorf("renderStatusBar() should not show 'q quit' when width < 60 or height < 30, got: %s", barClean)
 				}
+				return
+			}
+
+			// Hints should be visible with "q quit"
+			if !strings.Contains(barClean, "q quit") {
+				t.Fatalf("renderStatusBar() missing 'q quit' hint, got: %s", barClean)
+			}
+
+			// Verify gap before hints enforces right-alignment (minimum gap of 2)
+			idx := strings.Index(barClean, "q quit")
+			beforeHints := barClean[:idx]
+			gapCount := 0
+			for i := len(beforeHints) - 1; i >= 0 && beforeHints[i] == ' '; i-- {
+				gapCount++
+			}
+
+			if gapCount < 2 {
+				t.Errorf("gap before 'q quit' is %d, want >= 2 (right-align gap fill). Bar: %s", gapCount, barClean)
 			}
 		})
 	}
