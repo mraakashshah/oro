@@ -448,3 +448,98 @@ func TestHelpHints_TreeView(t *testing.T) {
 		t.Error("expected non-empty help hints for TreeView")
 	}
 }
+
+// TestTreeModel_Render verifies the tree view renders correctly with all required features.
+// Acceptance criteria:
+// - Renders tree-indented hierarchy
+// - Epic rows show progress fraction
+// - Space toggles collapse
+func TestTreeModel_Render(t *testing.T) {
+	beads := makeTestBeads()
+	tm := NewTreeModel(beads)
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	// 1. Verify tree-indented hierarchy: children should be indented under epics
+	output := tm.View(theme, styles)
+
+	// Epic headers should be present (not indented)
+	if !strings.Contains(output, "Epic One") {
+		t.Error("expected 'Epic One' epic header in tree view")
+	}
+	if !strings.Contains(output, "Epic Two") {
+		t.Error("expected 'Epic Two' epic header in tree view")
+	}
+
+	// Child beads should be indented (prefixed with "  ")
+	lines := strings.Split(output, "\n")
+	foundIndentedChild := false
+	for _, line := range lines {
+		if strings.Contains(line, "Task One") || strings.Contains(line, "Task Two") {
+			if strings.HasPrefix(line, "  ") {
+				foundIndentedChild = true
+				break
+			}
+		}
+	}
+	if !foundIndentedChild {
+		t.Error("expected child beads to be indented under epic headers")
+	}
+
+	// 2. Verify epic rows show progress fraction
+	// epic-1 has 3 children: task-1 (open), task-2 (in_progress), task-3 (closed)
+	// Only closed counts as done, so 1/3
+	if !strings.Contains(output, "1/3") {
+		t.Errorf("expected progress fraction '1/3' for epic-1 in output:\n%s", output)
+	}
+
+	// epic-2 has 1 child: task-4 (open), so 0/1
+	if !strings.Contains(output, "0/1") {
+		t.Errorf("expected progress fraction '0/1' for epic-2 in output:\n%s", output)
+	}
+
+	// 3. Verify Space toggles collapse
+	// Find epic-1 group and toggle it
+	epicIdx := -1
+	for i, g := range tm.groups {
+		if g.epic.ID == "epic-1" {
+			epicIdx = i
+			break
+		}
+	}
+	if epicIdx == -1 {
+		t.Fatal("could not find epic-1 group")
+	}
+
+	// Groups start expanded by default
+	if !tm.groups[epicIdx].expanded {
+		t.Error("expected groups to start expanded by default")
+	}
+
+	// Collapse the group
+	tm = tm.toggleCollapse(epicIdx)
+	if tm.groups[epicIdx].expanded {
+		t.Error("expected group to be collapsed after toggle")
+	}
+
+	// When collapsed, child beads should not appear in view
+	collapsedOutput := tm.View(theme, styles)
+	if !strings.Contains(collapsedOutput, "Epic One") {
+		t.Error("expected epic header to remain visible when collapsed")
+	}
+	if strings.Contains(collapsedOutput, "Task One") {
+		t.Error("expected child beads to be hidden when epic is collapsed")
+	}
+
+	// Expand again
+	tm = tm.toggleCollapse(epicIdx)
+	if !tm.groups[epicIdx].expanded {
+		t.Error("expected group to be expanded after second toggle")
+	}
+
+	// When expanded, children should reappear
+	expandedOutput := tm.View(theme, styles)
+	if !strings.Contains(expandedOutput, "Task One") {
+		t.Error("expected child beads to reappear when epic is expanded")
+	}
+}
