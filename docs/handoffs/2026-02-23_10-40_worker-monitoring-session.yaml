@@ -1,0 +1,109 @@
+---
+date: 2026-02-23
+status: complete
+---
+
+goal: >
+  Monitored 4-9 workers running in parallel. Identified and fixed 3 bugs, merged 11 commits
+  to main. Restarted dispatcher to activate xzuh fix. Pre-existing TestDispatcher_Handoff_*
+  failures traced to missing handleHandoff call and fixed by oro-0knc.
+
+now: >
+  Workers running (target=2, 5 active draining). Monitor for cwz.13 merge conflict with
+  xzuh dispatcher.go changes. oro-xs8l bead shows in_progress but is CLOSED — stale worker
+  still heartbeating; will clean up when worker exits.
+
+test: go test ./pkg/dispatcher/... -count=1 -race
+
+done_this_session:
+  - task: "Merged oro-i8i8.11 (right-align status bar hints) — 3 commits including lint fixes"
+    files: [cmd/oro-dash/model.go, cmd/oro-dash/theme.go, cmd/oro-dash/model_test.go]
+  - task: "Merged oro-1rep.4 (oro shell command)"
+    files: [cmd/oro/cmd_shell.go, cmd/oro/cmd_shell_test.go]
+  - task: "Merged oro-1rep.7 (filter tools by detected language)"
+    files: [cmd/oro/cmd_init.go, cmd/oro/cmd_init_test.go]
+  - task: "Merged oro-1rep.2 (wire quality gate generation into bootstrapProject)"
+    files: [cmd/oro/cmd_init.go, cmd/oro/quality_gate_gen.go]
+  - task: "Merged oro-xzuh (dispatcher cleans closed bead assignments within one tick)"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+  - task: "Merged oro-cwz.1 (multi-language file summarization via ast-grep)"
+    files: [pkg/codesearch/summarizer.go]
+  - task: "Fixed P0 oro-xs8l manually — escalator.go changes found in main worktree (old worker confusion)"
+    files: [pkg/dispatcher/escalator.go, pkg/dispatcher/escalator_test.go]
+  - task: "Merged oro-cwz.8 (ChunkWithAstGrep multi-language code extraction)"
+    files: [pkg/codesearch/chunker.go]
+  - task: "Merged oro-0knc (restore handleHandoff in dispatch switch — fixes all TestDispatcher_Handoff_* tests)"
+    files: [pkg/dispatcher/dispatcher.go]
+  - task: "Restarted dispatcher to activate xzuh stale-assignment fix"
+    files: []
+  - task: "Killed zombie pre-restart workers that reconnected to new dispatcher"
+    files: []
+
+findings:
+  pre_existing_handoff_tests_were_real_bug: >
+    TestDispatcher_Handoff_RespawnsWorker and related tests were failing because
+    handleHandoff was missing from the message dispatch switch. Traced by oro-0knc worker.
+    Now fixed in ba0e423. All handoff tests pass.
+  xs8l_fix_landed_in_main_worktree: >
+    The first xs8l worker (PID 35642, started 9:25AM) wrote escalator.go changes to the
+    MAIN working directory instead of its worktree. Discovered via git status. Changes were
+    correct and committed directly as 170603d.
+  oro_stop_force_doesnt_kill_workers: >
+    oro stop --force only kills the dispatcher process. Worker processes remain running and
+    reconnect to the new dispatcher after oro start. Zombie workers accumulate across restarts.
+    Must pkill worker processes manually to fully drain.
+  scale_directive_is_additive: >
+    oro directive scale N ADDS N to current target (not set-to-N). This is intended behavior.
+    Don't try to scale down by running scale 3 — use scale -N or kill workers directly.
+  qg_failures_blocked_all_workers: >
+    Pre-existing TestDispatcher_Handoff_* failures caused quality_gate_rejected events for
+    every bead touching dispatcher tests. Workers got auto-reviewed around them by escalation
+    agents citing "pre-existing failures" — but this masked real issues. The real fix (oro-0knc)
+    restored the missing handleHandoff call that was accidentally removed.
+  cwz13_will_conflict: >
+    oro-cwz.13 worker is modifying pkg/dispatcher/dispatcher.go and dispatcher_test.go.
+    The xzuh fix (b9922de) also touched those files. When cwz.13 rebases, it will conflict.
+    Watch for MERGE_CONFLICT escalation and resolve manually if escalation agent fails.
+
+decisions:
+  did_not_restart_dispatcher_early: >
+    Waited until workers had no uncommitted work before restarting dispatcher to avoid
+    losing in-progress changes. Correct approach — but note that oro stop --force doesn't
+    kill workers anyway, so restart timing matters less than expected.
+  manually_committed_xs8l_fix: >
+    Found xs8l fix in main working tree (worker wrote to wrong dir). Verified tests pass,
+    committed directly to main rather than routing back through worker. Faster and correct.
+  let_workers_drain_naturally: >
+    With 8 workers and target=2, chose not to kill excess workers. They will exit after
+    completing their beads. No ongoing harm.
+
+worked:
+  - "sqlite3 state.db events table for real-time dispatcher monitoring"
+  - "git -C .worktrees/bead log main..HEAD --count to check worker progress"
+  - "pkill -f 'oro worker.*<worker-id>' to kill specific zombie workers"
+  - "bd update <id> --status=open to reset orphaned in_progress beads for re-dispatch"
+  - "git merge --ff-only after rebase to merge stuck worker branches to main"
+
+failed:
+  - "oro directive stop — disabled, use oro stop instead"
+  - "oro directive scale 3 to reduce workers — scale is additive, not absolute"
+  - "pkill of zombie workers — they reconnect quickly to new dispatcher"
+  - "Restarting stale workers via oro directive restart-worker — they get re-assigned to same bead"
+
+next:
+  - "Watch cwz.13 for MERGE_CONFLICT escalation (will conflict with b9922de on dispatcher.go)"
+  - "oro-xs8l shows in_progress but is CLOSED — stale worker still heartbeating, will auto-clean"
+  - "Consider filing bead: oro stop --force should also kill all worker processes"
+  - "Consider filing bead: detect and recover uncommitted worktree changes on worker respawn"
+  - "Workers actively working: cwz.12, cwz.9, cwz.13, cwz.1 (stale on closed bead), xs8l (stale)"
+
+git_state:
+  head: 217d3a6
+  commits_this_session: 11
+  unpushed: 0
+  worktrees: [oro-cwz.12, oro-cwz.9, oro-cwz.13, oro-xs8l, oro-cwz.1]
+
+beads:
+  completed: [oro-i8i8.11, oro-1rep.4, oro-1rep.7, oro-1rep.2, oro-xzuh, oro-cwz.1, oro-xs8l, oro-cwz.8, oro-0knc]
+  in_progress: [oro-cwz.12, oro-cwz.9, oro-cwz.13]
+  stale_in_progress: [oro-xs8l, oro-cwz.1]  # closed but worker still heartbeating
