@@ -195,7 +195,7 @@ func (s *Styles) initCommonStyles(theme Theme) {
 func (s *Styles) initBoardStyles(theme Theme) {
 	s.Card = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.ColorBorder).Padding(1, 2)
 	s.ActiveCard = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.Primary).Padding(1, 2)
-	s.Column = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.ColorBorder).Padding(1)
+	s.Column = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.ColorBorder).Padding(0)
 	s.Header = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Padding(0, 1)
 	s.IDMuted = lipgloss.NewStyle().Foreground(theme.Muted)
 }
