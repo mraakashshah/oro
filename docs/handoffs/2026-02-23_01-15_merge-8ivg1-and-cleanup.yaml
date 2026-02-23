@@ -1,0 +1,110 @@
+---
+date: 2026-02-23
+status: partial
+---
+
+goal: >
+  Merged oro-8ivg.1 (quality gate script generation + ORO_WORKER=1 fix)
+  to main after killing stuck worker, resolving worktree corruption,
+  and manually merging conflicting quality_gate_gen files.
+
+now: >
+  All workers dead. No in-progress beads. 9 unpushed commits on main.
+  Next session: push to origin, then dispatch workers for ready beads
+  (oro-8ivg.4, oro-qh9b.2, oro-sshq.1-3, oro-sshq.6).
+  oro-8ivg.4 is now unblocked (8ivg.1 merged).
+
+test: make stage-assets && go test ./cmd/oro/... -count=1 && make clean-assets
+
+done_this_session:
+  - task: "Merged oro-8ivg.1 — manual conflict resolution after stuck worker"
+    files:
+      - cmd/oro/quality_gate_gen.go
+      - cmd/oro/quality_gate_gen_test.go
+      - pkg/worker/worker.go
+      - .claude/hooks/session_start_extras.py
+      - assets/hooks/session_start_extras.py
+    commit: aa633e7
+  - task: "Fixed core.bare=true corruption from git worktree remove --force"
+  - task: "Killed stuck oro work wrapper (PID 3823) for 8ivg.1"
+  - task: "Cleaned up all worktrees (only main worktree remains)"
+
+decisions:
+  manual_merge_over_rebase: >
+    Rebase/cherry-pick kept hitting add/add conflicts on quality_gate_gen
+    files (8ivg.1 predated 8ivg.2/8ivg.3 merges). Extracted exact file
+    content from the branch via git show, merged manually with Python
+    script, applied to main. Faster and cleaner than fighting rebase.
+  squash_3_commits: >
+    8ivg.1 had 3 commits (feat+fix+worker-env). Squashed into single
+    commit on main since the intermediate states don't matter post-merge.
+
+findings:
+  core_bare_corruption: >
+    git worktree remove --force set core.bare=true on the main repo,
+    causing all git commands to fail with "must be run in a work tree".
+    Fix: git config core.bare false. Root cause unclear — possibly
+    related to killing the wrapper process before worktree removal.
+  git_add_A_during_rebase: >
+    Never use git add -A during rebase conflict resolution. It picked
+    up archive/yap/ (818 files) and created a bloated commit. Always
+    add specific conflicted files only.
+
+worked:
+  - "git show <commit>:<file> to extract exact file content from branch"
+  - "Python script to merge two Go files (main templates + new functions)"
+  - "git config core.bare false to fix corruption"
+
+failed:
+  - "git rebase main agent/oro-8ivg.1 — add/add conflicts on shared files"
+  - "git cherry-pick — same conflicts"
+  - "git add -A during rebase — pulled in untracked archive/ directory"
+  - "git worktree remove --force — corrupted repo by setting core.bare=true"
+
+next:
+  - "Push 9 unpushed commits to origin"
+  - "Dispatch oro-8ivg.4 (wire QG gen into setup — now unblocked)"
+  - "Dispatch oro-qh9b.2 (config-driven coding rules)"
+  - "Dispatch oro-sshq.1, sshq.2, sshq.3, sshq.6 (dashboard phase 1)"
+  - "Limit concurrent workers to 3 (5 caused silent deaths last session)"
+
+files:
+  modified:
+    - cmd/oro/quality_gate_gen.go
+    - cmd/oro/quality_gate_gen_test.go
+    - pkg/worker/worker.go
+    - .claude/hooks/session_start_extras.py
+    - assets/hooks/session_start_extras.py
+
+beads:
+  completed: [oro-8ivg.1]
+  in_progress: []
+  remaining:
+    - oro-8ivg.4   # wire QG gen into setup (READY, unblocked by 8ivg.1)
+    - oro-qh9b.2   # config-driven coding rules (READY)
+    - oro-qh9b.3   # wire call sites (blocked by qh9b.2)
+    - oro-sshq.1   # unify bead types (READY)
+    - oro-sshq.2   # sort bottlenecks (READY)
+    - oro-sshq.3   # timestamp-sort done (READY)
+    - oro-sshq.4   # wire HealthView (blocked by sshq.1)
+    - oro-sshq.5   # width-adaptive workers (blocked by sshq.1)
+    - oro-sshq.6   # fuzzy search (READY)
+    - oro-i8i8.*   # Phase 2, all 11 tasks (blocked by oro-sshq)
+  epics: [oro-8ivg, oro-qh9b, oro-sshq, oro-i8i8]
+
+active_worktrees: []
+
+git_head: aa633e7
+unpushed_commits: 9
+
+learnings:
+  undocumented:
+    - "git worktree remove --force can set core.bare=true, breaking all git operations" (oro-8ivg.1, git)
+    - "Never git add -A during rebase — use specific file paths only" (oro-8ivg.1, git)
+    - "For add/add conflicts across diverged branches, manual file extraction via git show + scripted merge is faster than rebase" (oro-8ivg.1, git)
+  proposed_codification:
+    - type: rule
+      target: .claude/rules/worktree-safety.md
+      content: "Never use git worktree remove --force — it can corrupt core.bare. Always git checkout main first, then remove. If core.bare gets set, fix with git config core.bare false."
+      frequency: 1
+      tag: git
