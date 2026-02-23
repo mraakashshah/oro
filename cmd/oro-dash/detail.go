@@ -318,9 +318,9 @@ func (d DetailModel) renderOverviewTab(styles Styles) string {
 
 // renderWorkerTab renders the Worker tab with worker context %, heartbeat, and event history.
 func (d DetailModel) renderWorkerTab(theme Theme, styles Styles) string {
-	// Edge case: no worker assigned → show 'Unassigned'
+	// Edge case: no worker assigned
 	if d.bead.WorkerID == "" {
-		_ = styles.DetailDimItalic.Render
+		return styles.DetailDimItalic.Render("No worker assigned")
 	}
 
 	var lines []string
@@ -390,9 +390,9 @@ func (d DetailModel) renderDepsTab(styles Styles) string {
 
 // renderMemoryTab renders the Memory tab with injected context.
 func (d DetailModel) renderMemoryTab(styles Styles) string {
-	// Edge case: no memory → show 'No context'
+	// Edge case: no memory injected
 	if d.bead.Memory == "" {
-		return styles.DetailDimItalic.Render("No context")
+		return styles.DetailDimItalic.Render("No memory injected")
 	}
 
 	return d.bead.Memory
@@ -410,9 +410,9 @@ func (d DetailModel) renderOutputTab(styles Styles) string {
 		return styles.DetailError.Render("Error loading output: " + d.outputError.Error())
 	}
 
-	// Edge case: empty output → show 'no output available'
+	// Edge case: empty output
 	if len(d.workerOutput) == 0 {
-		return styles.DetailDimItalic.Render("no output available")
+		return styles.DetailDimItalic.Render("No output yet")
 	}
 
 	return strings.Join(d.workerOutput, "\n")

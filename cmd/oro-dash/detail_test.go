@@ -178,7 +178,7 @@ func TestDetailModel_WorkerTab(t *testing.T) {
 		}
 	})
 
-	t.Run("no worker assigned shows Unassigned", func(t *testing.T) {
+	t.Run("no worker assigned shows placeholder", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:       "oro-test.11",
 			Title:    "Bead without worker",
@@ -192,9 +192,9 @@ func TestDetailModel_WorkerTab(t *testing.T) {
 
 		view := model.View(styles)
 
-		// Edge: no worker assigned → show 'Unassigned'
-		if !strings.Contains(view, "Unassigned") {
-			t.Errorf("expected 'Unassigned' when no worker assigned, got:\n%s", view)
+		// Edge: no worker assigned → show 'No worker assigned'
+		if !strings.Contains(view, "No worker assigned") {
+			t.Errorf("expected 'No worker assigned' when no worker assigned, got:\n%s", view)
 		}
 	})
 }
@@ -284,7 +284,7 @@ func TestDetailModel_MemoryTab(t *testing.T) {
 		}
 	})
 
-	t.Run("no memory shows No context", func(t *testing.T) {
+	t.Run("no memory shows placeholder", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:     "oro-test.15",
 			Title:  "Bead without memory",
@@ -298,9 +298,9 @@ func TestDetailModel_MemoryTab(t *testing.T) {
 
 		view := model.View(styles)
 
-		// Edge: no memory → show 'No context'
-		if !strings.Contains(view, "No context") {
-			t.Errorf("expected 'No context' when no memory exists, got:\n%s", view)
+		// Edge: no memory → show 'No memory injected'
+		if !strings.Contains(view, "No memory injected") {
+			t.Errorf("expected 'No memory injected' when no memory exists, got:\n%s", view)
 		}
 	})
 }
@@ -346,7 +346,7 @@ func TestDetailModel_AsyncWorkerEvents(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:       "oro-test.17",
 			Title:    "Loading state test",
-			WorkerID: "worker-loading",
+			WorkerID: "worker-fetch",
 		}
 
 		theme := DefaultTheme()
@@ -357,9 +357,9 @@ func TestDetailModel_AsyncWorkerEvents(t *testing.T) {
 
 		view := model.View(styles)
 
-		// Loading state should be visible
-		if !strings.Contains(view, "Loading") && !strings.Contains(view, "loading") {
-			t.Errorf("expected 'Loading' indicator in worker tab while events are being fetched, got:\n%s", view)
+		// Loading state should be visible (check exact string to avoid false positives from worker ID)
+		if !strings.Contains(view, "Loading events...") {
+			t.Errorf("expected 'Loading events...' indicator in worker tab while events are being fetched, got:\n%s", view)
 		}
 	})
 
@@ -742,7 +742,7 @@ func TestDetailOutputTab(t *testing.T) {
 		}
 	})
 
-	t.Run("empty output shows no output available", func(t *testing.T) {
+	t.Run("empty output shows no output yet", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:       "oro-test.33",
 			Title:    "Empty output test",
@@ -761,9 +761,9 @@ func TestDetailOutputTab(t *testing.T) {
 
 		view := model.View(styles)
 
-		// Assert: shows "no output available"
-		if !strings.Contains(view, "no output available") {
-			t.Errorf("expected 'no output available' placeholder, got:\n%s", view)
+		// Assert: shows "No output yet"
+		if !strings.Contains(view, "No output yet") {
+			t.Errorf("expected 'No output yet' placeholder, got:\n%s", view)
 		}
 	})
 
@@ -1114,4 +1114,75 @@ func TestDetailView_ActiveTabHasUnderlineStyle(t *testing.T) {
 	if !strings.Contains(view2, "Overview") {
 		t.Errorf("expected 'Overview' to still appear as inactive tab")
 	}
+}
+
+// TestDetailView_EmptyStates_AreInformative verifies that all 5 detail view tabs
+// display informative empty state messages with context and action hints.
+func TestDetailView_EmptyStates_AreInformative(t *testing.T) {
+	// Bead with no worker, no diff, no deps, no memory, no output
+	bead := protocol.BeadDetail{
+		ID:    "oro-test.empty",
+		Title: "Empty state test bead",
+	}
+
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	t.Run("worker tab shows informative message when no worker assigned", func(t *testing.T) {
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 1 // Worker tab
+
+		view := model.View(styles)
+
+		if !strings.Contains(view, "No worker assigned") {
+			t.Errorf("expected worker tab to say 'No worker assigned', got:\n%s", view)
+		}
+	})
+
+	t.Run("diff tab shows informative message when no changes", func(t *testing.T) {
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 2 // Diff tab
+
+		view := model.View(styles)
+
+		if !strings.Contains(view, "No changes") {
+			t.Errorf("expected diff tab to say 'No changes', got:\n%s", view)
+		}
+	})
+
+	t.Run("deps tab shows informative message when no dependencies", func(t *testing.T) {
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 3 // Deps tab
+
+		view := model.View(styles)
+
+		if !strings.Contains(view, "No dependencies") {
+			t.Errorf("expected deps tab to say 'No dependencies', got:\n%s", view)
+		}
+	})
+
+	t.Run("memory tab shows informative message when no memory", func(t *testing.T) {
+		model := newDetailModel(bead, theme, styles)
+		model.activeTab = 4 // Memory tab
+
+		view := model.View(styles)
+
+		if !strings.Contains(view, "No memory injected") {
+			t.Errorf("expected memory tab to say 'No memory injected', got:\n%s", view)
+		}
+	})
+
+	t.Run("output tab shows informative message when no output", func(t *testing.T) {
+		model := newDetailModel(bead, theme, styles)
+		model.loadingOutput = false
+		model.outputError = nil
+		model.workerOutput = nil
+		model.activeTab = 5 // Output tab
+
+		view := model.View(styles)
+
+		if !strings.Contains(view, "No output yet") {
+			t.Errorf("expected output tab to say 'No output yet', got:\n%s", view)
+		}
+	})
 }
