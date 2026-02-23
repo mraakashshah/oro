@@ -2671,6 +2671,11 @@ func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount i
 // shuts down managed workers to reach the target. Unmanaged (externally
 // connected) workers are invisible to scaling in all modes.
 // When MaxWorkers=0, returns immediately as a no-op (manual mode).
+//
+// reconcileScale compares target vs connected managed workers and spawns or
+// shuts down managed workers to reach the target. Unmanaged (externally
+// connected) workers are invisible to scaling in all modes.
+// When MaxWorkers=0, returns immediately as a no-op (manual mode).
 func (d *Dispatcher) reconcileScale() string {
 	d.mu.Lock()
 	if d.cfg.MaxWorkers == 0 {
@@ -2678,7 +2683,10 @@ func (d *Dispatcher) reconcileScale() string {
 		return ""
 	}
 	target := d.targetWorkers
-	managedCount := 0
+	// Count both connected managed workers AND pending spawns (oro-ovpc).
+	// Without counting pending, concurrent reconcileScale calls both see
+	// managedCount=0 and spawn duplicates before workers connect.
+	managedCount := len(d.pendingManagedIDs)
 	for _, w := range d.workers {
 		if w.managed {
 			managedCount++
