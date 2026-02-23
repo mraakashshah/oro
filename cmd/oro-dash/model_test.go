@@ -1554,3 +1554,26 @@ func TestStatusBarBottom(t *testing.T) {
 		}
 	})
 }
+
+// TestStatusBar_UsesSeparator verifies status bar uses box-drawing separator │ not ASCII |.
+func TestStatusBar_UsesSeparator(t *testing.T) {
+	m := Model{
+		daemonHealthy:   true,
+		workerCount:     3,
+		openCount:       10,
+		inProgressCount: 5,
+	}
+	m.styles = NewStyles(m.theme)
+
+	bar := m.renderStatusBar(120)
+
+	// Should contain box-drawing separator
+	if !strings.Contains(bar, "│") {
+		t.Errorf("renderStatusBar() should use box-drawing │ separator, got: %s", bar)
+	}
+
+	// Should NOT contain ASCII pipe as separator
+	if strings.Contains(bar, " | ") {
+		t.Errorf("renderStatusBar() should not use ASCII | separator, got: %s", bar)
+	}
+}

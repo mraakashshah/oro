@@ -122,6 +122,9 @@ type Styles struct {
 	WorkersRow      lipgloss.Style
 	// WorkersCol is a base style; call .Width(n) at render time (Width returns a copy).
 	WorkersCol lipgloss.Style
+
+	// Status bar separator (pre-rendered string for use in renderStatusBar)
+	Separator string
 }
 
 // DefaultTheme returns the default theme for oro dash.
@@ -175,7 +178,8 @@ func NewStyles(theme Theme) Styles {
 	s.initDetailStyles(theme)
 	s.initBadgeStyles(theme)
 	s.initInsightsStyles(theme)
-	_ = s.initWorkersStyles
+	s.initWorkersStyles()
+	s.Separator = " │ "
 	return s
 }
 

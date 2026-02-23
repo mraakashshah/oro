@@ -601,11 +601,11 @@ func (m Model) renderStatusBar(width int) string {
 	// Build base metrics
 	metricsComponents := []string{
 		daemonStatus,
-		m.styles.StatusLabel.Render(" | Workers: "),
+		m.styles.StatusLabel.Render(m.styles.Separator + "Workers: "),
 		m.styles.StatusPrimary.Render(fmt.Sprintf("%d", m.workerCount)),
-		m.styles.StatusLabel.Render(" | Open: "),
+		m.styles.StatusLabel.Render(m.styles.Separator + "Open: "),
 		m.styles.StatusWarning.Render(fmt.Sprintf("%d", m.openCount)),
-		m.styles.StatusLabel.Render(" | In Progress: "),
+		m.styles.StatusLabel.Render(m.styles.Separator + "In Progress: "),
 		m.styles.StatusSuccess.Render(fmt.Sprintf("%d", m.inProgressCount)),
 	}
 
@@ -613,7 +613,7 @@ func (m Model) renderStatusBar(width int) string {
 	if m.focusedEpic != "" {
 		pct, total, done := GetEpicProgress(m.focusedEpic, m.beads)
 		metricsComponents = append(metricsComponents,
-			m.styles.StatusLabel.Render(" | Epic: "),
+			m.styles.StatusLabel.Render(m.styles.Separator+"Epic: "),
 			m.styles.StatusPrimary.Render(fmt.Sprintf("%s (%d/%d - %d%%)", m.focusedEpic, done, total, pct)),
 		)
 	}
