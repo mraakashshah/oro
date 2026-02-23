@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -160,4 +162,142 @@ func TestGeneratePyprojectToolSections(t *testing.T) {
 			t.Errorf("expected empty string for config with no languages, got:\n%s", got)
 		}
 	})
+}
+
+// TestGenerateQualityGateScript verifies the quality gate script generator
+// produces scripts tailored to detected languages.
+func TestGenerateQualityGateScript(t *testing.T) {
+	t.Run("nil config returns error", func(t *testing.T) {
+		_, err := generateQualityGateScript(nil)
+		if err == nil {
+			t.Fatal("expected error for nil config, got nil")
+		}
+	})
+
+	t.Run("empty languages returns error", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{},
+		}
+		_, err := generateQualityGateScript(cfg)
+		if err == nil {
+			t.Fatal("expected error for empty languages, got nil")
+		}
+	})
+
+	t.Run("go-only config produces Go lane and no Python lane", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{
+				"go": {
+					TestCmd:    "go test ./...",
+					Formatters: []string{"gofumpt"},
+					Linters:    []string{"golangci-lint"},
+				},
+			},
+		}
+		script, err := generateQualityGateScript(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
+			t.Error("script should start with #!/usr/bin/env bash")
+		}
+		if !strings.Contains(script, "lane_go") {
+			t.Error("go-only config should include lane_go function")
+		}
+		if strings.Contains(script, "lane_python") {
+			t.Error("go-only config should not include lane_python function")
+		}
+
+		checkBashSyntax(t, script)
+	})
+
+	t.Run("python-only config produces Python lane and no Go lane", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{
+				"python": {
+					TestCmd:    "uv run pytest",
+					Formatters: []string{"ruff"},
+					Linters:    []string{"ruff"},
+				},
+			},
+		}
+		script, err := generateQualityGateScript(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
+			t.Error("script should start with #!/usr/bin/env bash")
+		}
+		if strings.Contains(script, "lane_go") {
+			t.Error("python-only config should not include lane_go function")
+		}
+		if !strings.Contains(script, "lane_python") {
+			t.Error("python-only config should include lane_python function")
+		}
+
+		checkBashSyntax(t, script)
+	})
+
+	t.Run("both go and python produces both lanes", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{
+				"go": {
+					TestCmd:    "go test ./...",
+					Formatters: []string{"gofumpt"},
+				},
+				"python": {
+					TestCmd:    "uv run pytest",
+					Formatters: []string{"ruff"},
+				},
+			},
+		}
+		script, err := generateQualityGateScript(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
+			t.Error("script should start with #!/usr/bin/env bash")
+		}
+		if !strings.Contains(script, "lane_go") {
+			t.Error("both-lang config should include lane_go function")
+		}
+		if !strings.Contains(script, "lane_python") {
+			t.Error("both-lang config should include lane_python function")
+		}
+
+		checkBashSyntax(t, script)
+	})
+}
+
+// checkBashSyntax writes the script to a temp file and runs bash -n to verify
+// the script is syntactically valid shell.
+func checkBashSyntax(t *testing.T, script string) {
+	t.Helper()
+
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not found in PATH, skipping syntax check")
+		return
+	}
+
+	f, err := os.CreateTemp("", "quality_gate_*.sh")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer os.Remove(f.Name())
+
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+
+	out, err := exec.Command(bashPath, "-n", f.Name()).CombinedOutput() //nolint:gosec // bashPath from LookPath, f.Name() is our own temp file
+	if err != nil {
+		t.Errorf("bash -n syntax check failed: %v\n%s", err, string(out))
+	}
 }

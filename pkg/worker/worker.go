@@ -1172,6 +1172,7 @@ func buildClaudeEnv() []string {
 	if os.Getenv("ORO_PROJECT") != "" {
 		env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
 	}
+	env = append(env, "ORO_WORKER=1")
 	return env
 }
 

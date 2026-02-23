@@ -544,17 +544,34 @@ def main() -> None:
     skills_file = Path(oro_home()) / ".claude" / "skills" / "using-skills" / "SKILL.md"
     auto_skills = auto_load_skills(str(skills_file))
 
-    # Always inject superpowers + auto-loaded skills + role beacon + project state + any findings
-    situational = _format_output(stale, merged, learnings)
-    parts = [_SUPERPOWERS]
-    if auto_skills:
-        parts.append(auto_skills)
-    if beacon:
-        parts.append(f"# Role Beacon ({oro_role})\n\n{beacon}")
-    for section in (handoff, state, situational):
-        if section:
-            parts.append(section)
-    context = "\n\n".join(parts)
+    # Worker agents get minimal context: superpowers + skills + learnings only.
+    # Full context (handoff, project state, bd ready) overwhelms sonnet workers.
+    is_worker = os.environ.get("ORO_WORKER") == "1"
+
+    if is_worker:
+        parts = [_SUPERPOWERS]
+        if auto_skills:
+            parts.append(auto_skills)
+        if learnings:
+            lines = ["## Recent Learnings"]
+            for entry in learnings:
+                tags = ", ".join(entry.get("tags", []))
+                tag_str = f" ({tags})" if tags else ""
+                lines.append(f"- [{entry['bead']}] {entry['content']}{tag_str}")
+            parts.append("\n".join(lines))
+        context = "\n\n".join(parts)
+    else:
+        # Full injection for manager/architect sessions
+        situational = _format_output(stale, merged, learnings)
+        parts = [_SUPERPOWERS]
+        if auto_skills:
+            parts.append(auto_skills)
+        if beacon:
+            parts.append(f"# Role Beacon ({oro_role})\n\n{beacon}")
+        for section_content in (handoff, state, situational):
+            if section_content:
+                parts.append(section_content)
+        context = "\n\n".join(parts)
 
     output: dict = {
         "hookSpecificOutput": {
@@ -563,8 +580,8 @@ def main() -> None:
         }
     }
 
-    # 8. User-visible banner (only when priming)
-    if is_priming:
+    # 8. User-visible banner (only when priming, skip for workers)
+    if is_priming and not is_worker:
         closed = recently_closed_beads(limit=3)
         ready = ready_beads(limit=4)
         banner = session_banner(closed, ready)
