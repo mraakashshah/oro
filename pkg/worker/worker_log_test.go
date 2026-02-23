@@ -102,9 +102,9 @@ func TestProcessOutputWritesToLogFile(t *testing.T) {
 	}
 }
 
-// TestHandleAssignTruncatesLogFile verifies that handleAssign truncates
-// the log file when sessionText.Reset() is called
-func TestHandleAssignTruncatesLogFile(t *testing.T) {
+// TestOpenLogFileAppendsInsteadOfTruncating verifies that openLogFile uses O_APPEND,
+// preserving pre-existing log content on each assignment instead of truncating it.
+func TestOpenLogFileAppendsInsteadOfTruncating(t *testing.T) {
 	// Create temp home directory for test isolation
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -117,7 +117,7 @@ func TestHandleAssignTruncatesLogFile(t *testing.T) {
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
 
-	w := worker.NewWithConn("test-worker-2", workerConn, spawner)
+	w := worker.NewWithConn("test-worker-append", workerConn, spawner)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -148,7 +148,7 @@ func TestHandleAssignTruncatesLogFile(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify first log file has content
-	logPath := filepath.Join(tempHome, ".oro", "workers", "test-worker-2", "output.log")
+	logPath := filepath.Join(tempHome, ".oro", "workers", "test-worker-append", "output.log")
 	// #nosec G304 -- test code reading from test temp directory
 	firstContent, err := os.ReadFile(logPath)
 	if err != nil {
@@ -177,18 +177,18 @@ func TestHandleAssignTruncatesLogFile(t *testing.T) {
 	// Give processOutput time to complete
 	time.Sleep(200 * time.Millisecond)
 
-	// Verify log file was truncated and contains only second assignment output
+	// Verify log file contains BOTH first and second assignment output (appended, not truncated)
 	// #nosec G304 -- test code reading from test temp directory
-	secondContent, err := os.ReadFile(logPath)
+	finalContent, err := os.ReadFile(logPath)
 	if err != nil {
-		t.Fatalf("Failed to read second log file: %v", err)
+		t.Fatalf("Failed to read final log file: %v", err)
 	}
 
-	secondStr := string(secondContent)
-	if strings.Contains(secondStr, "first assignment output") {
-		t.Errorf("Log file should not contain first assignment output after truncation.\nContent:\n%s", secondStr)
+	finalStr := string(finalContent)
+	if !strings.Contains(finalStr, "first assignment output") {
+		t.Errorf("Log file should contain first assignment output after second ASSIGN (appended, not truncated).\nContent:\n%s", finalStr)
 	}
-	if !strings.Contains(secondStr, "second assignment output") {
-		t.Errorf("Log file should contain second assignment output.\nContent:\n%s", secondStr)
+	if !strings.Contains(finalStr, "second assignment output") {
+		t.Errorf("Log file should contain second assignment output.\nContent:\n%s", finalStr)
 	}
 }

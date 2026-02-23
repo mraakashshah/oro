@@ -630,9 +630,10 @@ func (w *Worker) extractImplicitMemories(ctx context.Context) {
 	}
 }
 
-// openLogFile creates or truncates ~/.oro/workers/<ID>/output.log and
-// opens it for writing. If directory creation or file open fails, returns
-// error but caller should continue without logging (best-effort).
+// openLogFile creates or opens ~/.oro/workers/<ID>/output.log for appending.
+// Uses O_APPEND to preserve content from both dispatcher and worker writes.
+// If directory creation or file open fails, returns error but caller should
+// continue without logging (best-effort).
 func (w *Worker) openLogFile() error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -645,9 +646,9 @@ func (w *Worker) openLogFile() error {
 	}
 
 	logPath := filepath.Join(logDir, "output.log")
-	// O_TRUNC ensures we start fresh on each assignment
+	// O_APPEND allows both dispatcher and worker to write without truncating each other
 	// #nosec G304 -- logPath is constructed from home dir and worker ID, not user input
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
 	}
