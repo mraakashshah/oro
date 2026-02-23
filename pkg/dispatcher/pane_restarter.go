@@ -32,6 +32,14 @@ func NewTmuxPaneRestarter(sessionName, cmdStr string, runner CommandRunner) *Tmu
 	}
 }
 
+// CmdStr returns the command string for this TmuxPaneRestarter.
+// This is used for testing to verify the correct cmdStr was configured.
+//
+//oro:testonly
+func (r *TmuxPaneRestarter) CmdStr() string {
+	return r.cmdStr
+}
+
 // SetPaneRestarter sets the PaneRestarter on a Dispatcher.
 // This is used by cmd/oro to wire up the production TmuxPaneRestarter
 // after constructing the Dispatcher.
@@ -39,6 +47,16 @@ func (d *Dispatcher) SetPaneRestarter(r PaneRestarter) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.paneRestarter = r
+}
+
+// GetPaneRestarter returns the currently set PaneRestarter, or nil if not set.
+// This is used for testing to verify that SetPaneRestarter was called.
+//
+//oro:testonly
+func (d *Dispatcher) GetPaneRestarter() PaneRestarter {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.paneRestarter
 }
 
 // Restart respawns the tmux pane identified by role (target: sessionName:role)

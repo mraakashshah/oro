@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dispatcher"
 	"oro/pkg/protocol"
 )
 
@@ -314,4 +316,56 @@ func (s *killTestSpawner) SpawnDaemon(pidPath string, workers int) (int, error) 
 		}()
 	}
 	return pid, nil
+}
+
+// TestWireDependencies_SetsPaneRestarter verifies that wireDependencies
+// wires up a PaneRestarter using execEnvCmd to build the manager cmdStr.
+func TestWireDependencies_SetsPaneRestarter(t *testing.T) {
+	t.Run("sets PaneRestarter with manager cmdStr", func(t *testing.T) {
+		// Create a mock dispatcher to capture the SetPaneRestarter call.
+		mockDispatcher := &dispatcher.Dispatcher{}
+		sockPath := "/tmp/test.sock"
+		oroHome := "/tmp/oro"
+
+		// Set ORO_PROJECT env var for execEnvCmd.
+		t.Setenv("ORO_PROJECT", "test-project")
+
+		// Create a mock command runner.
+		runner := &fakeCommandRunner{}
+
+		// Call wireDependencies.
+		wireDependencies(mockDispatcher, sockPath, oroHome, runner)
+
+		// Assert: paneRestarter must be set (non-nil).
+		if mockDispatcher.GetPaneRestarter() == nil {
+			t.Fatal("expected paneRestarter to be set, but got nil")
+		}
+
+		// Assert: the cmdStr should use execEnvCmd to include manager role
+		pr := mockDispatcher.GetPaneRestarter()
+		tmuxRestarter, ok := pr.(*dispatcher.TmuxPaneRestarter)
+		if !ok {
+			t.Fatalf("expected TmuxPaneRestarter, got %T", pr)
+		}
+
+		// The cmdStr should contain "claude" from the execEnvCmd output
+		cmdStr := tmuxRestarter.CmdStr()
+		if cmdStr == "" {
+			t.Fatal("expected non-empty cmdStr")
+		}
+		// Should contain elements from execEnvCmd result
+		if !strings.Contains(cmdStr, "claude") {
+			t.Errorf("expected cmdStr to contain 'claude', got: %s", cmdStr)
+		}
+		if !strings.Contains(cmdStr, "ORO_ROLE=manager") {
+			t.Errorf("expected cmdStr to contain 'ORO_ROLE=manager', got: %s", cmdStr)
+		}
+	})
+}
+
+// fakeCommandRunner is a mock CommandRunner for testing.
+type fakeCommandRunner struct{}
+
+func (f *fakeCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return []byte{}, nil
 }

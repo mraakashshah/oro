@@ -450,7 +450,10 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 // wireDependencies attaches production components to the dispatcher.
 func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string, runner dispatcher.CommandRunner) {
 	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath, oroHome))
-	d.SetPaneRestarter(dispatcher.NewTmuxPaneRestarter("oro", "claude", runner))
+	// Build the manager pane command using execEnvCmd with the project context
+	project := os.Getenv("ORO_PROJECT")
+	managerCmd := execEnvCmd("manager", project)
+	d.SetPaneRestarter(dispatcher.NewTmuxPaneRestarter("oro", managerCmd, runner))
 }
 
 // readProjectConfig reads the project name from .oro/config.yaml in the given directory.
