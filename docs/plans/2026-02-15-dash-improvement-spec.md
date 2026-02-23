@@ -1,7 +1,7 @@
 # Oro Dash Improvement Spec
 
 **Date:** 2026-02-15
-**Status:** Draft
+**Status:** SUPERSEDED on 2026-02-20 by dash-phase1-data-correctness.md and dash-phase2-visual-refresh.md
 **References:** [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer), [perles](https://github.com/zjrosen/perles), [existing spec](2026-02-08-tui-dashboard-spec.md)
 
 ## Current State

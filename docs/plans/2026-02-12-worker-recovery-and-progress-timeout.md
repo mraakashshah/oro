@@ -1,5 +1,7 @@
 # Spec: Worker Recovery After Review Rejection & Progress Timeout
 
+**Status:** DONE (stale)
+
 Date: 2026-02-12
 
 ## Problem Statement

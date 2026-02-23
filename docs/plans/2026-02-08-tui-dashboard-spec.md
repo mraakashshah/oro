@@ -1,7 +1,7 @@
 # Oro TUI Dashboard Spec
 
 **Date:** 2026-02-08
-**Status:** Draft (updated with reference research)
+**Status:** SUPERSEDED on 2026-02-15 by 2026-02-15-dash-improvement-spec.md
 
 ## Design Philosophy
 

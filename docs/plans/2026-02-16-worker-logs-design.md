@@ -1,5 +1,7 @@
 # Design: Per-Worker Log Files
 
+**Status:** DONE (stale)
+
 Date: 2026-02-16
 
 ## Problem

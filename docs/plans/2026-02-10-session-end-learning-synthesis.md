@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-10
 **Bead:** oro-p6t
-**Status:** Decided
+**Status:** DONE (stale)
 **Depends on:** `2026-02-07-memory-system-spec.md` (Layer 3: Project Memory), `memory_capture.py` (LEARNED extraction hook)
 
 ## Problem

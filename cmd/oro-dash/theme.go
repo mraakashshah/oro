@@ -155,7 +155,7 @@ func DefaultTheme() Theme {
 		ColorBorder:  lipgloss.Color("#3E4347"),
 		ColorBg:      lipgloss.Color("#111113"),
 		ColorFg:      lipgloss.Color("#EDEEF0"),
-		ColorFocus:   lipgloss.Color("#6E56CF"), // Purple — active card background
+		ColorFocus:   lipgloss.Color("#2A2A3A"), // Subtle dark highlight — active card background
 		ColorMutedFg: lipgloss.Color("#889096"), // Dim gray — muted headers/secondary text
 
 		// Heartbeat health colors
@@ -203,8 +203,8 @@ func (s *Styles) initCommonStyles(theme Theme) {
 }
 
 func (s *Styles) initBoardStyles(theme Theme) {
-	s.Card = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.ColorBorder).Padding(1, 2)
-	s.ActiveCard = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.Primary).Padding(1, 2)
+	s.Card = lipgloss.NewStyle().Padding(0, 1).MarginBottom(1)
+	s.ActiveCard = lipgloss.NewStyle().Padding(0, 1).MarginBottom(1).Background(theme.ColorFocus)
 	s.Column = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.ColorBorder).Padding(0)
 	s.Header = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Padding(0, 1)
 	s.IDMuted = lipgloss.NewStyle().Foreground(theme.Muted)

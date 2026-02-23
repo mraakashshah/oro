@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-07
 **Bead:** oro-w2u
-**Status:** Spec complete
+**Status:** DONE (stale)
 
 ## Problem
 

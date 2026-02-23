@@ -1,7 +1,7 @@
 # Disable Dispatcher Pane Restart
 
 **Date:** 2026-02-16
-**Status:** Implementing
+**Status:** DONE (stale)
 **Fixes:** Recurring oro/tmux crash (dispatcher + tmux dying after 3-10 minutes)
 
 ## Problem

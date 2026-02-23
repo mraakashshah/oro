@@ -1,7 +1,7 @@
 # Oro Hardening Spec
 
 **Date:** 2026-02-10
-**Status:** Draft — awaiting review
+**Status:** DONE (stale)
 **Scope:** Every structural, security, concurrency, lifecycle, error-handling, and testing deficiency found in a full codebase audit of 550K LOC across 45 production Go files.
 
 ---

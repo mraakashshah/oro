@@ -1,7 +1,7 @@
 # Oro Setup: One-Command Bootstrap
 
 **Date:** 2026-02-15
-**Status:** Draft
+**Status:** SUPERSEDED on 2026-02-17 by 2026-02-17-oro-distribution-and-setup.md
 **Author:** architect
 
 ## Problem

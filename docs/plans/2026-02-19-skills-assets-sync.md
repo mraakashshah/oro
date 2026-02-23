@@ -1,5 +1,7 @@
 # Skills & Assets Sync Implementation Plan
 
+**Status:** DONE on 2026-02-16 (oro-zjxg)
+
 > **For Claude:** Use executing-plans skill to implement this plan task-by-task.
 
 **Goal:** Ensure sub-agents (Task tool) and new Oro workers reliably receive and use skills.

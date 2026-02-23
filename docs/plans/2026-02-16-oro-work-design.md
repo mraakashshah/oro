@@ -1,7 +1,7 @@
 # `oro work` — Standalone Bead Executor
 
 **Date:** 2026-02-16
-**Status:** Draft
+**Status:** DONE (stale)
 
 ## Goal
 

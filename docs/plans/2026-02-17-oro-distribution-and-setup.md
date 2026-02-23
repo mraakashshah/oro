@@ -1,7 +1,7 @@
 # Oro Distribution & Setup: From Download to `oro start`
 
 **Date:** 2026-02-17
-**Status:** Draft
+**Status:** SUPERSEDED on 2026-02-22 by 2026-02-22-install-and-distribution-design.md
 **Author:** architect
 **Supersedes:** `2026-02-15-oro-setup-design.md` (incorporated and extended)
 

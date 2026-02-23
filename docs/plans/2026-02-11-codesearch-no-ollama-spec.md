@@ -1,7 +1,7 @@
 # Codesearch Without Ollama: TF Embeddings vs Claude Reranker
 
 **Date:** 2026-02-11
-**Status:** Implemented
+**Status:** DONE on 2026-02-12 (oro-noc)
 **Context:** `oro index build/search` requires Ollama with `nomic-embed-text`. This is the only external runtime dependency in oro. The semantic search path (natural-language queries like "where is auth logic") rarely fires — the classifier routes most real queries to ripgrep or AST. But when it does fire, it's dead without Ollama.
 
 **Goal:** Remove the Ollama dependency entirely. Make semantic code search work with zero external setup.

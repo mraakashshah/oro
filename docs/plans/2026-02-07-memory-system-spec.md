@@ -1,7 +1,7 @@
 # Oro Memory System: Spec & Premortem
 
 **Date:** 2026-02-07
-**Status:** Decided — all open questions resolved 2026-02-07
+**Status:** DONE (stale)
 
 ## Problem
 

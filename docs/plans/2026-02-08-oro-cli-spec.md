@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-08 (updated 2026-02-09)
 **Bead:** oro-r7b
-**Status:** Spec
+**Status:** DONE (stale)
 **Reference:** [Architecture Spec](2026-02-08-oro-architecture-spec.md)
 
 ## Overview

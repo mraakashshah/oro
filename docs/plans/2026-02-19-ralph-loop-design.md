@@ -1,7 +1,7 @@
 # Ralph Loop Design — Verification at Every Stage
 
 **Date:** 2026-02-19
-**Status:** Draft
+**Status:** DONE on 2026-02-19 — skills updated; CLI items (oro run, oro verify-coverage) deferred
 
 ## Problem
 

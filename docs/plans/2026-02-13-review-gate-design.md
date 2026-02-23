@@ -1,7 +1,7 @@
 # Code Review Gate Design
 
 **Date:** 2026-02-13
-**Status:** Approved
+**Status:** DONE (stale)
 
 ## Goal
 

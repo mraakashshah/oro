@@ -1,7 +1,7 @@
 # Component Lifecycle: Independent Dispatcher and Worker Management
 
 **Date:** 2026-02-17
-**Status:** Design approved
+**Status:** DONE on 2026-02-17 (oro-18c5)
 **Epic:** oro-TBD (P0)
 
 ## Problem

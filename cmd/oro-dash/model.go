@@ -129,8 +129,9 @@ type Model struct {
 	err error
 
 	// Kanban navigation state
-	activeCol  int // Index of the active column (0-3: Ready, In Progress, Blocked, Done)
-	activeBead int // Index of the active bead within the current column
+	activeCol        int    // Index of the active column (0-3: Ready, In Progress, Blocked, Done)
+	activeBead       int    // Index of the active bead within the current column
+	colScrollOffsets [4]int // Per-column scroll offset (first visible bead index)
 
 	// Detail view state
 	detailModel *DetailModel // Set when drilling down into a bead
@@ -174,7 +175,8 @@ func (m Model) calculateColumnWidth() int {
 	const minWidth = 18
 	const numColumns = 4
 
-	colWidth := m.width / numColumns
+	// Each column has a 2-char border (left+right), so subtract that from available width
+	colWidth := (m.width - numColumns*2) / numColumns
 	if colWidth < minWidth {
 		return minWidth
 	}
@@ -334,11 +336,11 @@ func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
 	case "esc", "backspace":
 		m.activeView = BoardView
 		m.detailModel = nil
-	case "tab":
+	case "tab", "right":
 		if m.detailModel != nil {
 			*m.detailModel = m.detailModel.nextTab()
 		}
-	case "shift+tab":
+	case "shift+tab", "left":
 		if m.detailModel != nil {
 			*m.detailModel = m.detailModel.prevTab()
 		}
@@ -372,9 +374,9 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "enter":
 		m, cmd = m.drillDownToDetail()
-	case "h":
+	case "h", "left":
 		m = m.moveToPrevColumn()
-	case "l":
+	case "l", "right":
 		m = m.moveToNextColumn()
 	case "tab":
 		m = m.moveToNextColumn()
@@ -382,8 +384,10 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m = m.moveToPrevColumn()
 	case "j", "down":
 		m = m.moveToNextBead()
+		m = m.ensureBoardScrollVisible()
 	case "k", "up":
 		m = m.moveToPrevBead()
+		m = m.ensureBoardScrollVisible()
 	case "i":
 		m.activeView = InsightsView
 	case "/":
@@ -479,17 +483,15 @@ func (m Model) View() string {
 		return insights.Render(m.styles) + "\n" + statusBar
 	case DetailView:
 		if m.detailModel != nil {
-			// Use split pane if terminal is wide enough
-			if m.width >= 80 {
-				return m.renderSplitPane() + "\n" + statusBar
+			if m.width >= 100 {
+				return m.renderContextSplit() + "\n" + statusBar
 			}
-			// Narrow terminal: show detail only
 			return m.detailModel.View(m.styles) + "\n" + statusBar
 		}
 		// Fallback to board if detailModel is nil
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 		colWidth := m.calculateColumnWidth()
-		return board.RenderWithCustomWidth(m.activeCol, m.activeBead, colWidth, m.theme, m.styles) + "\n" + statusBar
+		return board.RenderWithScroll(m.activeCol, m.activeBead, colWidth, m.colScrollOffsets, m.maxVisibleBeads(), m.theme, m.styles) + "\n" + statusBar
 	case SearchView:
 		return m.renderSearchOverlay() + "\n" + statusBar
 	case HealthView:
@@ -502,8 +504,46 @@ func (m Model) View() string {
 	default:
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 		colWidth := m.calculateColumnWidth()
-		return board.RenderWithCustomWidth(m.activeCol, m.activeBead, colWidth, m.theme, m.styles) + "\n" + statusBar
+		return board.RenderWithScroll(m.activeCol, m.activeBead, colWidth, m.colScrollOffsets, m.maxVisibleBeads(), m.theme, m.styles) + "\n" + statusBar
 	}
+}
+
+// renderContextSplit renders DetailView with a bead context panel on the left and detail on the right.
+func (m Model) renderContextSplit() string {
+	leftWidth := int(float64(m.width) * 0.3)
+	if leftWidth < 25 {
+		leftWidth = 25
+	}
+	rightWidth := m.width - leftWidth - 1
+
+	// Build context panel
+	d := m.detailModel
+	var ctx strings.Builder
+	ctx.WriteString(m.styles.Header.Render(d.bead.ID) + "\n")
+	ctx.WriteString(m.styles.Muted.Render(d.bead.Status) + "\n\n")
+
+	// Dependencies
+	if len(d.bead.Dependencies) > 0 {
+		ctx.WriteString(m.styles.StatusLabel.Render("Dependencies:") + "\n")
+		for _, dep := range d.bead.Dependencies {
+			ctx.WriteString("  " + m.styles.Muted.Render(dep.Type+": ") + dep.DependsOnID + "\n")
+		}
+	}
+
+	// Acceptance criteria summary
+	if d.bead.AcceptanceCriteria != "" {
+		ctx.WriteString("\n" + m.styles.StatusLabel.Render("Acceptance:") + "\n")
+		ac := d.bead.AcceptanceCriteria
+		if len(ac) > leftWidth*6 {
+			ac = ac[:leftWidth*6] + "..."
+		}
+		ctx.WriteString(m.styles.Muted.Render(ac) + "\n")
+	}
+
+	leftPanel := lipgloss.NewStyle().Width(leftWidth).Render(ctx.String())
+	rightPanel := lipgloss.NewStyle().Width(rightWidth).Render(m.detailModel.View(m.styles))
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
 }
 
 // renderSplitPane renders DetailView as a split pane with board on left and detail on right.
@@ -516,7 +556,7 @@ func (m Model) renderSplitPane() string {
 	board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 	// Adjust column width based on available board space
 	colWidth := max((boardWidth/4)-2, 20) // 4 columns with some padding, min 20
-	boardView := board.RenderWithCustomWidth(m.activeCol, m.activeBead, colWidth, m.theme, m.styles)
+	boardView := board.RenderWithScroll(m.activeCol, m.activeBead, colWidth, m.colScrollOffsets, m.maxVisibleBeads(), m.theme, m.styles)
 
 	// Render detail view with remaining width
 	detailView := m.detailModel.View(m.styles)
@@ -821,6 +861,35 @@ func (m Model) moveToPrevBead() Model {
 		m.activeBead--
 	}
 
+	return m
+}
+
+// maxVisibleBeads returns the number of beads that fit in the terminal height.
+func (m Model) maxVisibleBeads() int {
+	// Overhead: column header (~3 lines) + status bar (~2 lines) + column border (~2 lines)
+	const overhead = 7
+	const cardHeight = 4 // content(3) + margin(1), no borders
+	available := m.height - overhead
+	if available < cardHeight {
+		return 1
+	}
+	return available / cardHeight
+}
+
+// ensureBoardScrollVisible adjusts the active column's scroll offset
+// so the cursor (activeBead) is within the visible window.
+func (m Model) ensureBoardScrollVisible() Model {
+	maxVis := m.maxVisibleBeads()
+	col := m.activeCol
+	if col < 0 || col >= len(m.colScrollOffsets) {
+		return m
+	}
+	offset := m.colScrollOffsets[col]
+	if m.activeBead < offset {
+		m.colScrollOffsets[col] = m.activeBead
+	} else if m.activeBead >= offset+maxVis {
+		m.colScrollOffsets[col] = m.activeBead - maxVis + 1
+	}
 	return m
 }
 

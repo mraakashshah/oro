@@ -1,7 +1,7 @@
 # Oro Architecture Spec
 
 **Date:** 2026-02-08
-**Status:** Complete — all questions resolved
+**Status:** DONE (stale)
 
 **Reference:** [gastown](https://github.com/steveyegge/gastown) — similar multi-agent orchestration (Mayor + Polecats). Oro differs in using UDS for worker communication (push-based, supports 50-worker swarms) vs gastown's CLI+beads polling approach.
 

@@ -73,12 +73,8 @@ func NewBoardModelWithWorkers(beads []protocol.Bead, workers []WorkerStatus, ass
 		// Beads with empty UpdatedAt parse as zero-time and sort as oldest.
 		if t == "Done" {
 			slices.SortStableFunc(beadsInCol, func(a, b protocol.Bead) int {
-				// Descending: b before a, so compare b to a.
 				return parseBeadTime(b.UpdatedAt).Compare(parseBeadTime(a.UpdatedAt))
 			})
-			if len(beadsInCol) > 10 {
-				beadsInCol = beadsInCol[:10]
-			}
 		}
 
 		columns = append(columns, boardColumn{
@@ -107,17 +103,34 @@ func (bm BoardModel) RenderWithCursor(activeCol, activeBead int, theme Theme, st
 
 // RenderWithCustomWidth renders the board with a custom column width.
 func (bm BoardModel) RenderWithCustomWidth(activeCol, activeBead, colWidth int, theme Theme, styles Styles) string {
+	var noScroll [4]int
+	return bm.RenderWithScroll(activeCol, activeBead, colWidth, noScroll, 0, theme, styles)
+}
+
+// RenderWithScroll renders the board with per-column scroll offsets.
+// maxVisible=0 means no limit (show all beads).
+func (bm BoardModel) RenderWithScroll(activeCol, activeBead, colWidth int, scrollOffsets [4]int, maxVisible int, theme Theme, styles Styles) string {
 	rendered := make([]string, 0, len(bm.columns))
 	for colIdx, col := range bm.columns {
-		full := bm.renderColumn(col, colIdx, activeCol, activeBead, colWidth, theme, styles)
+		offset := 0
+		if colIdx < len(scrollOffsets) {
+			offset = scrollOffsets[colIdx]
+		}
+		full := bm.renderColumnWithScroll(col, colIdx, activeCol, activeBead, colWidth, offset, maxVisible, theme, styles)
 		rendered = append(rendered, full)
 	}
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
 }
 
-// renderColumn renders a single column with its header and cards.
+// renderColumn renders a single column with its header and cards (no scrolling).
 func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead, colWidth int, theme Theme, styles Styles) string {
+	return bm.renderColumnWithScroll(col, colIdx, activeCol, activeBead, colWidth, 0, 0, theme, styles)
+}
+
+// renderColumnWithScroll renders a column with scroll offset and visible limit.
+// scrollOffset is the index of the first visible bead; maxVisible=0 means show all.
+func (bm BoardModel) renderColumnWithScroll(col boardColumn, colIdx, activeCol, activeBead, colWidth, scrollOffset, maxVisible int, theme Theme, styles Styles) string {
 	// Pre-compute card styles with width
 	cardStyle := styles.Card.Width(colWidth - 2)
 	activeCardStyle := styles.ActiveCard.Width(colWidth - 2).Background(theme.ColorFocus)
@@ -132,7 +145,27 @@ func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead
 		emptyMsg := styles.Muted.Render("no items")
 		cardsBuilder.WriteString(emptyMsg)
 	} else {
-		for beadIdx, b := range col.beads {
+		// Calculate visible window
+		start := scrollOffset
+		if start < 0 {
+			start = 0
+		}
+		if start > len(col.beads) {
+			start = len(col.beads)
+		}
+		end := len(col.beads)
+		if maxVisible > 0 && start+maxVisible < end {
+			end = start + maxVisible
+		}
+
+		// Show "above" indicator
+		if start > 0 {
+			cardsBuilder.WriteString(styles.Muted.Render(fmt.Sprintf("  ▲ %d more", start)))
+			cardsBuilder.WriteString("\n")
+		}
+
+		for beadIdx := start; beadIdx < end; beadIdx++ {
+			b := col.beads[beadIdx]
 			// Use activeCardStyle if this is the active card
 			style := cardStyle
 			if colIdx == activeCol && beadIdx == activeBead {
@@ -142,6 +175,12 @@ func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead
 			cardContent := bm.renderCardContent(b, styles)
 			card := style.Render(cardContent)
 			cardsBuilder.WriteString(card)
+			cardsBuilder.WriteString("\n")
+		}
+
+		// Show "below" indicator
+		if remaining := len(col.beads) - end; remaining > 0 {
+			cardsBuilder.WriteString(styles.Muted.Render(fmt.Sprintf("  ▼ %d more", remaining)))
 			cardsBuilder.WriteString("\n")
 		}
 	}
@@ -216,7 +255,6 @@ func (bm BoardModel) renderCardHeader(b protocol.Bead, styles Styles) string {
 	// Type indicator icon
 	typeIcon := bm.renderTypeIndicator(b.Type)
 
-	// Title (will be truncated by card style if too long)
 	headerParts = append(headerParts, priorityBadge, typeIcon, b.Title)
 
 	return strings.Join(headerParts, " ")

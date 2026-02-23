@@ -1,5 +1,7 @@
 # Plan: Fix `oro work` false completion bug
 
+**Status:** DONE on 2026-02-17 (oro-l6pz)
+
 ## Problem
 
 When `oro work` spawns claude and claude dies (SIGKILL, nesting error, timeout, etc.) with **zero work done**, the process continues through QG → review → merge → bead close. The QG passes vacuously on an unchanged worktree, merge is a no-op (returns main HEAD), and the bead gets falsely closed.

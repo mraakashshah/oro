@@ -1,7 +1,7 @@
 # Code Search Gaps: Index Build, Test Fix, Dispatcher Context
 
 **Date:** 2026-02-15
-**Status:** Proposed
+**Status:** DONE on 2026-02-23 (oro-cwz)
 
 ## Context
 

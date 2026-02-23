@@ -2,7 +2,7 @@
 
 **Date:** 2026-02-07
 **Bead:** oro-seg
-**Status:** Decided
+**Status:** DONE (stale)
 **Depends on:** `2026-02-07-memory-system-spec.md` (Layer 3: Project Memory schema)
 
 ## Problem

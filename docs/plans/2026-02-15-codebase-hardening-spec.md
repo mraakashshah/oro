@@ -1,5 +1,7 @@
 # Codebase Hardening: Tier 1 & Tier 2 Improvements
 
+**Status:** DONE on 2026-02-15 (oro-rgux)
+
 > **For Claude:** Use executing-plans skill to implement this plan task-by-task.
 
 **Goal:** Fix correctness bugs (unbounded memory load, non-atomic rebuild), eliminate highest-value duplication (config paths, FTS5 sanitizer), and close silent-failure gaps.

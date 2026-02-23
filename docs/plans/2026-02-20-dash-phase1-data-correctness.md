@@ -1,5 +1,7 @@
 # Dashboard Phase 1: Data Correctness Implementation Plan
 
+**Status:** DONE on 2026-02-23 (oro-sshq)
+
 > **For Claude:** Use executing-plans skill to implement this plan task-by-task.
 
 **Goal:** Fix 6 data/wiring issues in oro-dash so the dashboard shows correct data, responds fast, and has no dead views — prerequisites for the Phase 2 visual design refresh.

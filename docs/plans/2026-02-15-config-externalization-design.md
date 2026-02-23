@@ -1,7 +1,7 @@
 # Oro Config Externalization Design
 
 **Date:** 2026-02-15
-**Status:** Approved
+**Status:** DONE on 2026-02-15 (oro-etu3)
 **Bead:** oro-jzpq (P0)
 **Descoped:** `.beads/` externalization → oro-6v9z (P4)
 

@@ -1,7 +1,7 @@
 # Tmux Hardening Spec
 
 **Date:** 2026-02-14
-**Status:** Draft
+**Status:** DONE on 2026-02-14 (oro-5zzb)
 **Epic:** oro-tmux-hardening (P0)
 
 ## Problem Statement

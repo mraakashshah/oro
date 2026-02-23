@@ -1,7 +1,7 @@
 # Knowledge Ingest: One-Way Bridge from Human Sessions to Workers
 
 **Date:** 2026-02-15
-**Status:** Proposed
+**Status:** DONE on 2026-02-15 (oro-o84l)
 **Bead:** TBD
 
 ## Problem

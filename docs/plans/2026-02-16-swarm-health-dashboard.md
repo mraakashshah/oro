@@ -1,5 +1,7 @@
 # Design: Swarm Health Dashboard & Manual Daemon Restart
 
+**Status:** DONE (stale)
+
 Date: 2026-02-16
 
 ## Problem
