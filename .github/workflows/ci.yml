@@ -75,6 +75,31 @@ jobs:
         if: always()
         run: make clean-assets
 
+  cgo-free:
+    name: CGO-free Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Stage assets
+        run: make stage-assets
+        env:
+          ORO_HOME: ${{ github.workspace }}/.oro-ci
+
+      - name: Build (CGO_ENABLED=0)
+        run: CGO_ENABLED=0 go build ./cmd/oro ./cmd/oro-dash ./cmd/oro-search-hook
+
+      - name: Test (CGO_ENABLED=0)
+        run: CGO_ENABLED=0 go test -count=1 ./cmd/... ./internal/... ./pkg/...
+
+      - name: Clean assets
+        if: always()
+        run: make clean-assets
+
   shell:
     name: Shell
     runs-on: ubuntu-latest
