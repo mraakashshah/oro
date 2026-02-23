@@ -172,17 +172,19 @@ type pendingHandoff struct {
 
 // Config holds Dispatcher configuration.
 type Config struct {
-	SocketPath           string        // UDS socket path.
-	DBPath               string        // SQLite database path.
-	MaxWorkers           int           // Worker pool size (default 10).
-	HeartbeatTimeout     time.Duration // Worker heartbeat timeout (default 45s).
-	ProgressTimeout      time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
-	PollInterval         time.Duration // bd ready poll interval (default 10s).
-	FallbackPollInterval time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
-	ShutdownTimeout      time.Duration // Graceful shutdown timeout (default 10s).
-	ConsolidateAfterN    int           // Trigger context consolidation after N completed beads (default 5).
-	PaneContextThreshold int           // Context percentage threshold for pane handoff (default 60).
-	PaneMonitorInterval  time.Duration // Pane context_pct poll interval (default 5s).
+	SocketPath            string        // UDS socket path.
+	DBPath                string        // SQLite database path.
+	MaxWorkers            int           // Worker pool size (default 10).
+	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
+	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
+	PollInterval          time.Duration // bd ready poll interval (default 10s).
+	FallbackPollInterval  time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
+	ShutdownTimeout       time.Duration // Graceful shutdown timeout (default 10s).
+	ConsolidateAfterN     int           // Trigger context consolidation after N completed beads (default 5).
+	PaneContextThreshold  int           // Context percentage threshold for pane handoff (default 60).
+	PaneMonitorInterval   time.Duration // Pane context_pct poll interval (default 5s).
+	PaneRestartCooldown   time.Duration // Min time between manager pane restarts (default 2m).
+	PaneInactivityTimeout time.Duration // Manager inactivity duration before restart (default 10m).
 }
 
 func (c *Config) withDefaults() Config {
@@ -213,6 +215,12 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.PaneMonitorInterval == 0 {
 		out.PaneMonitorInterval = 5 * time.Second
+	}
+	if out.PaneRestartCooldown == 0 {
+		out.PaneRestartCooldown = 2 * time.Minute
+	}
+	if out.PaneInactivityTimeout == 0 {
+		out.PaneInactivityTimeout = 10 * time.Minute
 	}
 	return out
 }
@@ -282,6 +290,9 @@ type Dispatcher struct {
 
 	// signaledPanes tracks which panes have been signaled to avoid re-signaling
 	signaledPanes map[string]bool
+
+	// paneStates tracks per-pane restart state (lastRestartAt, restartCount, restarting flag)
+	paneStates map[string]*paneState
 
 	// startTime records when Run() was called (for uptime).
 	startTime time.Time
@@ -367,6 +378,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		beadsDir:          protocol.BeadsDir,
 		panesDir:          filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
 		signaledPanes:     make(map[string]bool),
+		paneStates:        make(map[string]*paneState),
 		nowFunc:           time.Now,
 		acceptSem:         make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil

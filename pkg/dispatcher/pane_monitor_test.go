@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -337,6 +338,7 @@ func newPaneTestDispatcher(t *testing.T, threshold int, panesDir string) *Dispat
 		panesDir:      panesDir,
 		nowFunc:       time.Now,
 		signaledPanes: make(map[string]bool),
+		paneStates:    make(map[string]*paneState),
 	}
 }
 
@@ -542,5 +544,221 @@ func TestCheckPaneContext_SignalsHandoffAboveThreshold(t *testing.T) {
 	d.mu.Unlock()
 	if !signaled {
 		t.Error("signaledPanes[manager] must be set after checkPaneContext triggers handoff")
+	}
+}
+
+// --- Restart tests ---
+
+// mockPaneRestarter records Restart calls for assertion in tests.
+type mockPaneRestarter struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (m *mockPaneRestarter) Restart(role string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, role)
+	return nil
+}
+
+func (m *mockPaneRestarter) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.calls)
+}
+
+func (m *mockPaneRestarter) firstCall() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.calls) == 0 {
+		return ""
+	}
+	return m.calls[0]
+}
+
+// newPaneRestartTestDispatcher creates a Dispatcher with restart-capable config for tests.
+func newPaneRestartTestDispatcher(t *testing.T, panesDir string, restarter PaneRestarter) *Dispatcher {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("failed to init schema: %v", err)
+	}
+	cfg := Config{
+		PaneContextThreshold:  60,
+		PaneMonitorInterval:   50 * time.Millisecond,
+		PaneRestartCooldown:   5 * time.Minute,
+		PaneInactivityTimeout: 10 * time.Minute,
+	}
+	cfg = cfg.withDefaults()
+	return &Dispatcher{
+		cfg:           cfg,
+		db:            db,
+		panesDir:      panesDir,
+		nowFunc:       time.Now,
+		signaledPanes: make(map[string]bool),
+		paneStates:    make(map[string]*paneState),
+		paneRestarter: restarter,
+	}
+}
+
+// TestPaneMonitor_RestartOnThreshold verifies that when manager context_pct exceeds
+// the threshold and a PaneRestarter is wired up, the manager pane is restarted
+// instead of writing a handoff_requested file.
+func TestPaneMonitor_RestartOnThreshold(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	managerDir := filepath.Join(panesDir, "manager")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pctFile := filepath.Join(managerDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("80"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	restarter := &mockPaneRestarter{}
+	d := newPaneRestartTestDispatcher(t, panesDir, restarter)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		d.paneMonitorLoop(ctx)
+		close(done)
+	}()
+
+	// Wait for at least one restart call.
+	waitFor(t, func() bool { return restarter.callCount() > 0 }, 2*time.Second)
+
+	if restarter.callCount() == 0 {
+		t.Fatal("expected Restart to be called for manager pane on threshold")
+	}
+	if restarter.firstCall() != "manager" {
+		t.Errorf("Restart called with %q, want manager", restarter.firstCall())
+	}
+
+	// Verify handoff file NOT created (restart path replaces signalHandoff).
+	managerHandoff := filepath.Join(managerDir, "handoff_requested")
+	if _, err := os.Stat(managerHandoff); err == nil {
+		t.Error("manager handoff_requested should not be created (restart path, not signalHandoff)")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("loop did not exit")
+	}
+}
+
+// TestPaneMonitor_RestartOnInactivity verifies that when manager context_pct has
+// not been updated for longer than PaneInactivityTimeout, the pane is restarted
+// even if the context percentage is below the handoff threshold.
+func TestPaneMonitor_RestartOnInactivity(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	managerDir := filepath.Join(panesDir, "manager")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write context_pct BELOW threshold so only inactivity triggers restart.
+	pctFile := filepath.Join(managerDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("10"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	restarter := &mockPaneRestarter{}
+	d := newPaneRestartTestDispatcher(t, panesDir, restarter)
+
+	// Simulate the file being older than the inactivity timeout by advancing nowFunc.
+	const inactivityTimeout = 10 * time.Minute
+	fakeNow := time.Now().Add(inactivityTimeout + time.Second)
+	d.nowFunc = func() time.Time { return fakeNow }
+	d.cfg.PaneInactivityTimeout = inactivityTimeout
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		d.paneMonitorLoop(ctx)
+		close(done)
+	}()
+
+	// Wait for restart to be triggered by inactivity.
+	waitFor(t, func() bool { return restarter.callCount() > 0 }, 2*time.Second)
+
+	if restarter.callCount() == 0 {
+		t.Fatal("expected Restart to be called for manager pane on inactivity")
+	}
+	if restarter.firstCall() != "manager" {
+		t.Errorf("Restart called with %q, want manager", restarter.firstCall())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("loop did not exit")
+	}
+}
+
+// TestPaneMonitor_CooldownPreventsRestart verifies that once the manager pane has
+// been restarted, subsequent polls within PaneRestartCooldown do not trigger
+// additional restarts.
+func TestPaneMonitor_CooldownPreventsRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	managerDir := filepath.Join(panesDir, "manager")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// context_pct above threshold so every poll would restart without cooldown.
+	pctFile := filepath.Join(managerDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("80"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	restarter := &mockPaneRestarter{}
+	d := newPaneRestartTestDispatcher(t, panesDir, restarter)
+	d.cfg.PaneRestartCooldown = 5 * time.Minute // long cooldown prevents second restart
+
+	awaitPolls := pollCounter(d)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		d.paneMonitorLoop(ctx)
+		close(done)
+	}()
+
+	// Wait for the first restart.
+	waitFor(t, func() bool { return restarter.callCount() > 0 }, 2*time.Second)
+
+	// Wait for 3 more polls to allow a potential second restart.
+	afterFirst := awaitPolls(3)
+	waitFor(t, afterFirst, 2*time.Second)
+
+	// Cooldown must prevent any additional restarts.
+	if count := restarter.callCount(); count != 1 {
+		t.Errorf("expected exactly 1 Restart call (cooldown active), got %d", count)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("loop did not exit")
 	}
 }

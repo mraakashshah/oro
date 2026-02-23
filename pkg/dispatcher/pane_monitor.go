@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// paneState tracks per-pane restart history to enforce cooldown and prevent
+// concurrent restarts.
+type paneState struct {
+	lastRestartAt time.Time
+	restartCount  int
+	restarting    bool // guard against concurrent restart attempts
+}
+
 // paneMonitorLoop polls ~/.oro/panes/{architect,manager}/context_pct at the
 // configured interval (default 5s). When a pane's context percentage exceeds
 // the configured threshold, it writes a handoff_requested file to signal the
@@ -44,8 +52,19 @@ func (d *Dispatcher) checkPaneContexts(ctx context.Context, roles []string) {
 }
 
 // checkPaneContext reads the context_pct file for a single role, parses the
-// percentage, and signals handoff if it exceeds the threshold.
+// percentage, and either restarts (manager with PaneRestarter wired) or signals
+// handoff (architect, or manager without PaneRestarter).
 func (d *Dispatcher) checkPaneContext(ctx context.Context, role string) {
+	// Manager with a PaneRestarter: use restart logic instead of signalHandoff.
+	d.mu.Lock()
+	restarter := d.paneRestarter
+	d.mu.Unlock()
+
+	if role == "manager" && restarter != nil {
+		d.checkManagerPane(ctx)
+		return
+	}
+
 	roleDir := filepath.Join(d.panesDir, role)
 	pctFile := filepath.Join(roleDir, "context_pct")
 
@@ -82,6 +101,80 @@ func (d *Dispatcher) checkPaneContext(ctx context.Context, role string) {
 		// Signal handoff
 		d.signalHandoff(ctx, role, roleDir, pct)
 	}
+}
+
+// checkManagerPane applies restart logic for the manager pane: restarts when
+// context_pct exceeds the threshold or the pane has been inactive longer than
+// PaneInactivityTimeout. Cooldown and the restarting flag prevent concurrent or
+// rapid-fire restarts.
+func (d *Dispatcher) checkManagerPane(ctx context.Context) {
+	const role = "manager"
+	pctFile := filepath.Join(d.panesDir, role, "context_pct")
+
+	// Guard: cooldown and restarting flag.
+	d.mu.Lock()
+	state := d.paneStates[role]
+	if state == nil {
+		state = &paneState{}
+		d.paneStates[role] = state
+	}
+	if state.restarting {
+		d.mu.Unlock()
+		return
+	}
+	if !state.lastRestartAt.IsZero() && d.nowFunc().Sub(state.lastRestartAt) < d.cfg.PaneRestartCooldown {
+		d.mu.Unlock()
+		return
+	}
+	d.mu.Unlock()
+
+	// context_pct file missing → pane may be dead, skip restart.
+	info, err := os.Stat(pctFile) //nolint:gosec // derived from trusted panesDir
+	if err != nil {
+		return
+	}
+
+	if !d.managerRestartNeeded(pctFile, info) {
+		return
+	}
+
+	// Mark restarting to prevent concurrent restart attempts.
+	d.mu.Lock()
+	state.restarting = true
+	restarter := d.paneRestarter
+	d.mu.Unlock()
+
+	if restarter != nil {
+		if restartErr := restarter.Restart(role); restartErr != nil {
+			_ = d.logEvent(ctx, "pane_restart_failed", "dispatcher", "", "",
+				"role="+role+" error="+restartErr.Error())
+		}
+	}
+
+	d.mu.Lock()
+	state.restarting = false
+	state.lastRestartAt = d.nowFunc()
+	state.restartCount++
+	d.mu.Unlock()
+}
+
+// managerRestartNeeded returns true if the manager pane should be restarted:
+// either the context_pct exceeds the threshold or the file has not been updated
+// within PaneInactivityTimeout.
+func (d *Dispatcher) managerRestartNeeded(pctFile string, info os.FileInfo) bool {
+	// Check context threshold.
+	//nolint:gosec // pctFile derived from trusted panesDir
+	data, err := os.ReadFile(pctFile)
+	if err == nil {
+		pctStr := strings.TrimSpace(string(data))
+		pct, parseErr := strconv.Atoi(pctStr)
+		if parseErr == nil && pct >= d.cfg.PaneContextThreshold {
+			return true
+		}
+	}
+	// Check inactivity: file not updated for longer than PaneInactivityTimeout.
+	return d.cfg.PaneInactivityTimeout > 0 &&
+		d.nowFunc().Sub(info.ModTime()) >= d.cfg.PaneInactivityTimeout
 }
 
 // signalHandoff writes the handoff_requested file and marks the pane as signaled.
