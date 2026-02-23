@@ -100,9 +100,17 @@ Branch deletion runs regardless of whether worktree removal succeeded — even i
 ### Test Plan
 
 1. **Unit test for `GitWorktreeManager.DeleteBranch`** — mock runner, verify `git branch -d <branch>` is called with correct args.
-2. **Unit test for `removeWorktreeAndClearTracking` with branch cleanup** — verify both `Remove` and `DeleteBranch` are called, and that branch deletion failure doesn't affect worktree cleanup.
-3. **Update existing mock `WorktreeManager`** in dispatcher tests to implement `DeleteBranch`.
+2. **Unit test for `removeWorktreeAndClearTracking` with branch cleanup** — verify:
+   - Both `Remove` and `DeleteBranch` are called, in that order.
+   - Remove fails + DeleteBranch succeeds: both logged independently.
+   - Both Remove and DeleteBranch fail: both failures logged independently.
+   - Branch deletion failure doesn't affect worktree cleanup.
+3. **Update all 3 mock `WorktreeManager` implementations** to add no-op `DeleteBranch`.
 4. **Existing tests continue to pass** — the new method is additive.
+
+### Follow-Up (out of scope)
+
+- **`oro work` branch leak** — `cmd/oro/cmd_work.go` calls `Remove()` after merge but never deletes the branch. Same bug, different code path. File a follow-up bead.
 
 ## Files Modified
 
@@ -110,3 +118,5 @@ Branch deletion runs regardless of whether worktree removal succeeded — even i
 - `pkg/dispatcher/worktree_manager.go` — add `DeleteBranch` method
 - `pkg/dispatcher/worktree_manager_test.go` — test `DeleteBranch`
 - `pkg/dispatcher/dispatcher_test.go` — update mock, test branch cleanup in `removeWorktreeAndClearTracking`
+- `cmd/oro/cmd_work_execute_test.go` — update mock with no-op `DeleteBranch`
+- `pkg/integration/dispatcher_worker_test.go` — update mock with no-op `DeleteBranch`
