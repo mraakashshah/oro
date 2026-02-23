@@ -443,13 +443,14 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}
-	wireDependencies(d, sockPath, paths.OroHome)
+	wireDependencies(d, sockPath, paths.OroHome, runner)
 	return d, db, nil
 }
 
-// wireDependencies attaches process manager to the dispatcher.
-func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string) {
+// wireDependencies attaches production components to the dispatcher.
+func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string, runner dispatcher.CommandRunner) {
 	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath, oroHome))
+	d.SetPaneRestarter(dispatcher.NewTmuxPaneRestarter("oro", "claude", runner))
 }
 
 // readProjectConfig reads the project name from .oro/config.yaml in the given directory.

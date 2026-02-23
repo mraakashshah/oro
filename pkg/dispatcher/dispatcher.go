@@ -249,17 +249,18 @@ func (c Config) validate() error {
 // directly (e.g. d.workers, d.attemptCounts). Both embedded structs share
 // the Dispatcher-level mu for synchronisation.
 type Dispatcher struct {
-	cfg        Config
-	db         *sql.DB
-	merger     *merge.Coordinator
-	ops        *ops.Spawner
-	beads      BeadSource
-	worktrees  WorktreeManager
-	escalator  Escalator
-	memories   *memory.Store
-	codeIndex  CodeIndex // interface for FTS5 code search (nil means no search)
-	procMgr    ProcessManager
-	acceptance AcceptanceRunner // runs epic acceptance test commands
+	cfg           Config
+	db            *sql.DB
+	merger        *merge.Coordinator
+	ops           *ops.Spawner
+	beads         BeadSource
+	worktrees     WorktreeManager
+	escalator     Escalator
+	memories      *memory.Store
+	codeIndex     CodeIndex // interface for FTS5 code search (nil means no search)
+	procMgr       ProcessManager
+	acceptance    AcceptanceRunner // runs epic acceptance test commands
+	paneRestarter PaneRestarter    // restarts named tmux panes (nil means no restart)
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
 	WorkerPool
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
