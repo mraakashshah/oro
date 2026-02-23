@@ -246,6 +246,11 @@ Use --project-root to specify a different project directory (default: current di
 
 // runInit is the core logic for the init command, separated for testability.
 func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string) error {
+	// Resolve real repo root for worktree support (e.g. when running from inside .worktrees/).
+	if resolved, err := langprofile.ResolveProjectRoot(projectRoot); err == nil {
+		projectRoot = resolved
+	}
+
 	// Report tool status but never install. Use oro setup for that.
 	results := checkAllTools(defaultToolDefs)
 	if quiet {

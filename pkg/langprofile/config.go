@@ -1,9 +1,19 @@
 package langprofile
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
+
+// ErrNoProjectRoot is returned by ReadConfig when projectRoot is empty.
+var ErrNoProjectRoot = errors.New("projectRoot must not be empty")
 
 // Config represents the .oro/config.yaml structure.
 type Config struct {
@@ -78,6 +88,85 @@ func BuildYAML(cfg *Config) string {
 	}
 
 	return content.String()
+}
+
+// ReadConfig loads .oro/config.yaml from projectRoot and returns the parsed Config.
+// Returns nil,nil if the config file does not exist (graceful absence).
+// Returns nil,ErrNoProjectRoot if projectRoot is empty.
+// Returns nil,err if the YAML is malformed.
+func ReadConfig(projectRoot string) (*Config, error) {
+	if projectRoot == "" {
+		return nil, ErrNoProjectRoot
+	}
+
+	configPath := filepath.Join(projectRoot, ".oro", "config.yaml")
+	data, err := os.ReadFile(configPath) //nolint:gosec // path constructed from trusted projectRoot
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config.yaml: %w", err)
+	}
+
+	return &cfg, nil
+}
+
+// ResolveProjectRoot finds the real repo root from path, even when path is
+// inside a git worktree. Uses git rev-parse --git-common-dir (which always
+// points to the shared .git dir) rather than --show-toplevel (which returns
+// the worktree root). If path is not in a git repo, returns path as-is.
+func ResolveProjectRoot(path string) (string, error) {
+	cmd := exec.CommandContext(context.Background(), "git", "rev-parse", "--git-common-dir")
+	cmd.Dir = path
+	// Strip inherited git env vars (GIT_DIR etc.) so git detects the repo
+	// from cmd.Dir rather than from the parent process context (e.g. hooks).
+	cmd.Env = gitCleanEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		// Not a git repo — return path unchanged (intentionally swallow error).
+		return path, nil //nolint:nilerr // graceful absence: non-git paths return as-is
+	}
+
+	gitCommon := filepath.Clean(strings.TrimSpace(string(out)))
+	// --git-common-dir returns a path relative to cmd.Dir when inside a worktree.
+	// Resolve to absolute.
+	if !filepath.IsAbs(gitCommon) {
+		gitCommon = filepath.Join(path, gitCommon)
+	}
+	gitCommon = filepath.Clean(gitCommon)
+
+	// .git dir lives at <repo_root>/.git — its parent is the real root.
+	if filepath.Base(gitCommon) == ".git" {
+		return filepath.Dir(gitCommon), nil
+	}
+
+	// Fallback: unexpected structure, return path as-is.
+	return path, nil
+}
+
+// gitCleanEnv returns the current environment with git override variables removed.
+// GIT_DIR, GIT_WORK_TREE, and GIT_COMMON_DIR can cause git to ignore cmd.Dir
+// and instead use the parent process's git context (e.g. when running inside hooks).
+func gitCleanEnv() []string {
+	skip := map[string]bool{
+		"GIT_DIR":        true,
+		"GIT_WORK_TREE":  true,
+		"GIT_COMMON_DIR": true,
+	}
+	env := os.Environ()
+	out := env[:0]
+	for _, e := range env {
+		key, _, _ := strings.Cut(e, "=")
+		if !skip[key] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // writeLanguageConfig writes a single language configuration to the builder.

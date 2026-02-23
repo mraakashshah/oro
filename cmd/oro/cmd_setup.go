@@ -223,6 +223,12 @@ func executeBootstrap(w io.Writer, name string, opts setupOptions) error {
 	}
 
 	fmt.Fprintf(w, "  Project %q bootstrapped.\n", name)
+
+	// Read back the written config to confirm it was created and report language count.
+	if cfg, readErr := langprofile.ReadConfig(opts.projectRoot); readErr == nil && cfg != nil {
+		fmt.Fprintf(w, "  Config: %d language(s) detected.\n", len(cfg.Languages))
+	}
+
 	return nil
 }
 

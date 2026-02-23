@@ -1,6 +1,7 @@
 package langprofile_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,6 +204,125 @@ func TestBuildYAML(t *testing.T) {
 			if strings.Contains(got, absent) {
 				t.Errorf("expected %q to be absent when empty, but found it in:\n%s", absent, got)
 			}
+		}
+	})
+}
+
+func TestReadConfig(t *testing.T) {
+	t.Run("returns config with languages and coding_rules from .oro/config.yaml", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		yaml := `languages:
+  go:
+    formatters:
+      - gofumpt
+    linters:
+      - golangci-lint
+    test_cmd: go test ./...
+    coding_rules:
+      - Use gofumpt for formatting
+`
+		//nolint:gosec // Test file permissions are acceptable
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := langprofile.ReadConfig(tmpDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected non-nil config")
+		}
+		goCfg, ok := cfg.Languages["go"]
+		if !ok {
+			t.Fatal("expected 'go' language in config")
+		}
+		if goCfg.TestCmd != "go test ./..." {
+			t.Errorf("expected TestCmd 'go test ./...', got %q", goCfg.TestCmd)
+		}
+		if len(goCfg.CodingRules) == 0 {
+			t.Error("expected coding_rules to be populated")
+		}
+		if goCfg.CodingRules[0] != "Use gofumpt for formatting" {
+			t.Errorf("expected coding rule 'Use gofumpt for formatting', got %q", goCfg.CodingRules[0])
+		}
+	})
+
+	t.Run("missing config returns nil,nil", func(t *testing.T) {
+		tmpDir := t.TempDir() // no .oro/config.yaml
+
+		cfg, err := langprofile.ReadConfig(tmpDir)
+		if err != nil {
+			t.Fatalf("expected nil error for missing config, got: %v", err)
+		}
+		if cfg != nil {
+			t.Errorf("expected nil config for missing file, got: %+v", cfg)
+		}
+	})
+
+	t.Run("malformed YAML returns nil,err", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // Test file permissions are acceptable
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte(":\t invalid: [yaml"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := langprofile.ReadConfig(tmpDir)
+		if err == nil {
+			t.Fatal("expected error for malformed YAML, got nil")
+		}
+		if cfg != nil {
+			t.Errorf("expected nil config on error, got: %+v", cfg)
+		}
+	})
+
+	t.Run("empty projectRoot returns nil,ErrNoProjectRoot", func(t *testing.T) {
+		cfg, err := langprofile.ReadConfig("")
+		if err == nil {
+			t.Fatal("expected ErrNoProjectRoot, got nil error")
+		}
+		if !errors.Is(err, langprofile.ErrNoProjectRoot) {
+			t.Errorf("expected ErrNoProjectRoot, got: %v", err)
+		}
+		if cfg != nil {
+			t.Errorf("expected nil config, got: %+v", cfg)
+		}
+	})
+}
+
+func TestResolveProjectRoot(t *testing.T) {
+	t.Run("from worktree path returns main repo root", func(t *testing.T) {
+		// Use the actual worktree path for this test — we know we're in one.
+		worktreePath := "/Users/as21/codehouse/oro/.worktrees/oro-qh9b.1"
+		expectedRoot := "/Users/as21/codehouse/oro"
+
+		got, err := langprofile.ResolveProjectRoot(worktreePath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != expectedRoot {
+			t.Errorf("expected %q, got %q", expectedRoot, got)
+		}
+	})
+
+	t.Run("not in git repo returns path as-is", func(t *testing.T) {
+		// Use a temp dir outside any git repo
+		tmpDir := t.TempDir()
+
+		got, err := langprofile.ResolveProjectRoot(tmpDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != tmpDir {
+			t.Errorf("expected path as-is %q, got %q", tmpDir, got)
 		}
 	})
 }
