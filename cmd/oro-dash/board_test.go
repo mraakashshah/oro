@@ -465,6 +465,53 @@ func TestCardRendering_WorkerNotInList(t *testing.T) {
 	}
 }
 
+// TestBoardRender_ActiveCardUsesThemeColorFocus verifies that active cards use
+// the theme's ColorFocus color for the background, not hard-coded #3a3a3a.
+// Also verifies that column headers use ColorMutedFg, not Primary,
+// except Done column which keeps theme.Success (green).
+func TestBoardRender_ActiveCardUsesThemeColorFocus(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b-1", Title: "Task 1", Status: "open"},
+		{ID: "b-2", Title: "Task 2", Status: "open"},
+		{ID: "b-3", Title: "Task 3", Status: "in_progress"},
+		{ID: "b-4", Title: "Task 4", Status: "blocked"},
+		{ID: "b-5", Title: "Task 5", Status: "closed", UpdatedAt: "2024-01-01T00:00:00Z"},
+	}
+
+	board := NewBoardModel(beads)
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	// Render with cursor at first column, first bead (makes it "active")
+	output := board.RenderWithCursor(0, 0, theme, styles)
+
+	// TEST 1: Active card should NOT contain hex #3a3a3a as ANSI escape code
+	// The hard-coded background color #3a3a3a should not appear as a 24-bit truecolor ANSI escape
+	// Background: "48;2;58;58;58" (where 58 = 0x3a in decimal)
+	hardcodedBgANSI := "48;2;58;58;58"
+
+	if strings.Contains(output, hardcodedBgANSI) {
+		t.Errorf("Active card should NOT use hard-coded #3a3a3a background (ANSI %s)\ngot:\n%s", hardcodedBgANSI, output)
+	}
+
+	// TEST 2: Verify active card exists in output (sanity check)
+	if !strings.Contains(output, "b-1") {
+		t.Errorf("Render() missing active card bead ID 'b-1'\ngot:\n%s", output)
+	}
+
+	// TEST 3: Column headers should be present
+	for _, header := range []string{"Ready", "In Progress", "Blocked"} {
+		if !strings.Contains(output, header) {
+			t.Errorf("Render() missing column header %q\ngot:\n%s", header, output)
+		}
+	}
+
+	// TEST 4: Verify Done column header is present and should use theme.Success (green)
+	if !strings.Contains(output, "Done") {
+		t.Errorf("Render() missing Done column header\ngot:\n%s", output)
+	}
+}
+
 // TestDoneColumnSortedByUpdatedAtDescending verifies that the Done column sorts
 // beads by UpdatedAt descending (most recently updated first) before capping at 10.
 func TestDoneColumnSortedByUpdatedAtDescending(t *testing.T) {

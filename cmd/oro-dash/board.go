@@ -120,7 +120,7 @@ func (bm BoardModel) RenderWithCustomWidth(activeCol, activeBead, colWidth int, 
 func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead, colWidth int, theme Theme, styles Styles) string {
 	// Pre-compute card styles with width
 	cardStyle := styles.Card.Width(colWidth - 2)
-	activeCardStyle := styles.ActiveCard.Width(colWidth - 2).Background(lipgloss.Color("#3a3a3a"))
+	activeCardStyle := styles.ActiveCard.Width(colWidth - 2).Background(theme.ColorFocus)
 	columnStyle := styles.Column.Width(colWidth)
 
 	header := bm.renderColumnHeader(col, colWidth, theme, styles)
@@ -145,8 +145,8 @@ func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead
 
 // renderColumnHeader renders a column header with title and optional count.
 func (bm BoardModel) renderColumnHeader(col boardColumn, colWidth int, theme Theme, styles Styles) string {
-	// Use Success (green) color for Done column, Primary (blue) for others
-	headerColor := theme.Primary
+	// Use Success (green) for Done column, ColorMutedFg (dim gray) for Ready/In Progress/Blocked
+	headerColor := theme.ColorMutedFg
 	if col.title == "Done" {
 		headerColor = theme.Success
 	}

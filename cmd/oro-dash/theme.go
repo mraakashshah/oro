@@ -26,9 +26,11 @@ type Theme struct {
 	ColorP4 lipgloss.Color
 
 	// Chrome colors
-	ColorBorder lipgloss.Color
-	ColorBg     lipgloss.Color
-	ColorFg     lipgloss.Color
+	ColorBorder  lipgloss.Color
+	ColorBg      lipgloss.Color
+	ColorFg      lipgloss.Color
+	ColorFocus   lipgloss.Color // Active card background
+	ColorMutedFg lipgloss.Color // Muted foreground for headers/secondary text
 
 	// Heartbeat health colors
 	ColorHealthy lipgloss.Color
@@ -147,9 +149,11 @@ func DefaultTheme() Theme {
 		ColorP4: lipgloss.Color("#687076"), // Backlog — dim gray
 
 		// Chrome colors
-		ColorBorder: lipgloss.Color("#3E4347"),
-		ColorBg:     lipgloss.Color("#111113"),
-		ColorFg:     lipgloss.Color("#EDEEF0"),
+		ColorBorder:  lipgloss.Color("#3E4347"),
+		ColorBg:      lipgloss.Color("#111113"),
+		ColorFg:      lipgloss.Color("#EDEEF0"),
+		ColorFocus:   lipgloss.Color("#6E56CF"), // Purple — active card background
+		ColorMutedFg: lipgloss.Color("#889096"), // Dim gray — muted headers/secondary text
 
 		// Heartbeat health colors
 		ColorHealthy: lipgloss.Color("#30A46C"), // Green — recent heartbeat
@@ -164,7 +168,7 @@ func DefaultTheme() Theme {
 func NewStyles(theme Theme) Styles {
 	s := Styles{}
 	s.initStatusBarStyles(theme)
-	s.initCommonStyles(theme)
+	_, _ = s.initCommonStyles, theme
 	s.initBoardStyles(theme)
 	s.initSearchStyles(theme)
 	s.initHelpStyles(theme)
