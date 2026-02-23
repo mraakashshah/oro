@@ -21,6 +21,7 @@ import (
 const (
 	statusOK      = "OK"
 	statusMissing = "MISSING"
+	statusSkipped = "SKIPPED"
 )
 
 // toolDef describes a tool that oro needs, how to check for it, and how to install it.
@@ -148,6 +149,80 @@ func countMissing(results []toolResult) int {
 	return n
 }
 
+// filterToolsByLanguage filters tool definitions based on detected languages.
+// Prerequisites and system tools are always included.
+// Language-specific tools (go-tools, python-tools) are included only if
+// their corresponding language is detected in the config.
+// If no languages are detected, only prerequisites and system tools are returned.
+func filterToolsByLanguage(defs []toolDef, cfg *langprofile.Config) []toolDef {
+	var filtered []toolDef
+
+	for _, def := range defs {
+		switch def.Category {
+		case "prerequisites", "system":
+			// Always include prerequisites and system tools
+			filtered = append(filtered, def)
+		case "go-tools":
+			// Include only if Go is detected
+			if _, hasGo := cfg.Languages["go"]; hasGo {
+				filtered = append(filtered, def)
+			}
+		case "python-tools":
+			// Include only if Python is detected
+			if _, hasPython := cfg.Languages["python"]; hasPython {
+				filtered = append(filtered, def)
+			}
+		default:
+			// Unknown category: include by default (fail-open)
+			filtered = append(filtered, def)
+		}
+	}
+
+	return filtered
+}
+
+// checkToolsWithLanguageFilter checks tools after filtering by language config.
+// Tools not in the filtered set are marked as SKIPPED.
+func checkToolsWithLanguageFilter(defs []toolDef, cfg *langprofile.Config) []toolResult {
+	filtered := filterToolsByLanguage(defs, cfg)
+	filteredMap := make(map[string]bool)
+	for _, def := range filtered {
+		filteredMap[def.Name] = true
+	}
+
+	results := make([]toolResult, 0, len(defs))
+
+	// Add results for filtered tools (actual checks)
+	for _, def := range filtered {
+		results = append(results, checkTool(def))
+	}
+
+	// Add skipped results for tools not in filtered set
+	for _, def := range defs {
+		if !filteredMap[def.Name] {
+			results = append(results, toolResult{
+				Name:     def.Name,
+				Category: def.Category,
+				Status:   statusSkipped,
+			})
+		}
+	}
+
+	return results
+}
+
+// countMissingExcludingSkipped returns the count of results with statusMissing,
+// excluding tools marked as statusSkipped.
+func countMissingExcludingSkipped(results []toolResult) int {
+	n := 0
+	for _, r := range results {
+		if r.Status == statusMissing {
+			n++
+		}
+	}
+	return n
+}
+
 // installCommandForTool returns the command and args to install a tool,
 // respecting platform (macOS uses brew when BrewName is set).
 func installCommandForTool(def toolDef) (bin string, args []string) {
@@ -165,7 +240,7 @@ func formatInitTable(w io.Writer, results []toolResult) {
 
 	for _, r := range results {
 		ver := r.Version
-		if r.Status == statusMissing {
+		if r.Status == statusMissing || r.Status == statusSkipped {
 			ver = "-"
 		}
 		fmt.Fprintf(w, "%-20s %-15s %-10s %s\n", r.Name, r.Category, r.Status, ver)
@@ -173,8 +248,14 @@ func formatInitTable(w io.Writer, results []toolResult) {
 
 	fmt.Fprintln(w)
 
-	missing := countMissing(results)
-	total := len(results)
+	missing := countMissingExcludingSkipped(results)
+	skipped := 0
+	for _, r := range results {
+		if r.Status == statusSkipped {
+			skipped++
+		}
+	}
+	total := len(results) - skipped
 	if missing == 0 {
 		fmt.Fprintf(w, "All %d tools available.\n", total)
 	} else {

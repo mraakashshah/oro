@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"oro/pkg/langprofile"
 )
 
 // --- ToolChecker unit tests ---
@@ -1147,6 +1149,150 @@ func TestExtractAssets_ExecutableBits(t *testing.T) {
 	if yamlMode.Perm() != 0o644 {
 		t.Errorf("yaml file should have mode 0o644, got %#o", yamlMode.Perm())
 	}
+}
+
+// --- Tool filtering by language tests ---
+
+func TestToolFilterByLanguage(t *testing.T) {
+	t.Run("Python-only config filters out go-tools category", func(t *testing.T) {
+		// Create a config with only Python detected
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{
+				"python": {},
+			},
+		}
+
+		// Define a test tool set
+		testTools := []toolDef{
+			{Name: "go", Category: "prerequisites", CheckCmd: "go", CheckArgs: []string{"version"}},
+			{Name: "python3", Category: "prerequisites", CheckCmd: "python3", CheckArgs: []string{"--version"}},
+			{Name: "gofumpt", Category: "go-tools", CheckCmd: "gofumpt", CheckArgs: []string{"--version"}},
+			{Name: "goimports", Category: "go-tools", CheckCmd: "goimports", CheckArgs: []string{"--version"}},
+			{Name: "tmux", Category: "system", CheckCmd: "tmux", CheckArgs: []string{"-V"}},
+		}
+
+		// Filter tools by language
+		filtered := filterToolsByLanguage(testTools, cfg)
+
+		// Prerequisites should always be included
+		var hasGo, hasPython3, hasTmux bool
+		var hasGoTools int
+		for _, t := range filtered {
+			if t.Name == "go" {
+				hasGo = true
+			}
+			if t.Name == "python3" {
+				hasPython3 = true
+			}
+			if t.Name == "tmux" {
+				hasTmux = true
+			}
+			if t.Category == "go-tools" {
+				hasGoTools++
+			}
+		}
+
+		if !hasGo || !hasPython3 {
+			t.Error("prerequisites should always be included")
+		}
+		if !hasTmux {
+			t.Error("system tools should always be included")
+		}
+		if hasGoTools > 0 {
+			t.Error("go-tools should be filtered out when only Python is detected")
+		}
+	})
+
+	t.Run("skipped tools shown as skipped not missing", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{
+				"python": {},
+			},
+		}
+
+		testTools := []toolDef{
+			{Name: "go", Category: "prerequisites", CheckCmd: "go", CheckArgs: []string{"version"}},
+			{Name: "gofumpt", Category: "go-tools", CheckCmd: "gofumpt", CheckArgs: []string{"--version"}},
+		}
+
+		// Check tools with filtering
+		results := checkToolsWithLanguageFilter(testTools, cfg)
+
+		// gofumpt should be skipped, not missing
+		var gofumptResult *toolResult
+		for i := range results {
+			if results[i].Name == "gofumpt" {
+				gofumptResult = &results[i]
+				break
+			}
+		}
+
+		if gofumptResult == nil {
+			t.Fatal("gofumpt should be in results")
+		}
+
+		// Check for a "skipped" status (may need to add this constant)
+		if gofumptResult.Status == statusMissing {
+			t.Error("gofumpt should be marked as skipped, not missing")
+		}
+	})
+
+	t.Run("skipped tools do not count toward missing-tool exit code", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{
+				"python": {},
+			},
+		}
+
+		testTools := []toolDef{
+			{Name: "go", Category: "prerequisites", CheckCmd: "go", CheckArgs: []string{"version"}},
+			{Name: "gofumpt", Category: "go-tools", CheckCmd: "gofumpt", CheckArgs: []string{"--version"}},
+		}
+
+		results := checkToolsWithLanguageFilter(testTools, cfg)
+		missing := countMissingExcludingSkipped(results)
+
+		// Only tools that are actually missing should count, not skipped ones
+		if missing > 0 {
+			t.Errorf("skipped tools should not count toward missing, got %d", missing)
+		}
+	})
+
+	t.Run("zero languages detected returns only prerequisites and system", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{},
+		}
+
+		testTools := []toolDef{
+			{Name: "go", Category: "prerequisites", CheckCmd: "go", CheckArgs: []string{"version"}},
+			{Name: "python3", Category: "prerequisites", CheckCmd: "python3", CheckArgs: []string{"--version"}},
+			{Name: "gofumpt", Category: "go-tools", CheckCmd: "gofumpt", CheckArgs: []string{"--version"}},
+			{Name: "ruff", Category: "python-tools", CheckCmd: "ruff", CheckArgs: []string{"--version"}},
+			{Name: "tmux", Category: "system", CheckCmd: "tmux", CheckArgs: []string{"-V"}},
+		}
+
+		filtered := filterToolsByLanguage(testTools, cfg)
+
+		var hasPrereqs, hasSystem, hasLanguageTools bool
+		for _, t := range filtered {
+			if t.Category == "prerequisites" {
+				hasPrereqs = true
+			}
+			if t.Category == "system" {
+				hasSystem = true
+			}
+			if t.Category == "go-tools" || t.Category == "python-tools" {
+				hasLanguageTools = true
+			}
+		}
+
+		if !hasPrereqs || !hasSystem {
+			t.Error("prerequisites and system should be included")
+		}
+		if hasLanguageTools {
+			t.Error("language-specific tools should be filtered out when no languages detected")
+		}
+	})
 }
 
 func TestExtractAssets_Additive(t *testing.T) {
