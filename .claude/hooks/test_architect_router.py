@@ -26,11 +26,11 @@ class TestRouteCommand:
         assert architect_router.route_command("oro directive scale 3") == "manager"
         assert architect_router.route_command("  oro directive pause") == "manager"
 
-    def test_git_readonly_commands_stay_local(self):
-        """git status and other read-only commands now stay with architect."""
-        assert architect_router.route_command("git status") == "architect"
-        assert architect_router.route_command("git log") == "architect"
-        assert architect_router.route_command("git diff") == "architect"
+    def test_git_readonly_commands_forward_to_manager(self):
+        """git status and other read-only commands forward to manager (per acceptance criteria)."""
+        assert architect_router.route_command("git status") == "manager"
+        assert architect_router.route_command("git log") == "manager"
+        assert architect_router.route_command("git diff") == "manager"
 
     def test_build_commands_forward_to_manager(self):
         """Build commands should forward to manager."""
@@ -38,16 +38,16 @@ class TestRouteCommand:
         assert architect_router.route_command("go build") == "manager"
         assert architect_router.route_command("go test ./...") == "manager"
 
-    def test_empty_commands_stay_local(self):
-        """Empty commands now stay with architect (safe default)."""
-        assert architect_router.route_command("") == "architect"
-        assert architect_router.route_command("   ") == "architect"
+    def test_empty_commands_forward_to_manager(self):
+        """Empty commands forward to manager (per acceptance criteria)."""
+        assert architect_router.route_command("") == "manager"
+        assert architect_router.route_command("   ") == "manager"
 
-    def test_unknown_commands_stay_local(self):
-        """Unknown commands now stay with architect (safe default)."""
-        assert architect_router.route_command("echo bd stats") == "architect"
-        assert architect_router.route_command("ls -la") == "architect"
-        assert architect_router.route_command("some-random-command") == "architect"
+    def test_unknown_commands_forward_to_manager(self):
+        """Unknown commands forward to manager (per acceptance criteria)."""
+        assert architect_router.route_command("echo bd stats") == "manager"
+        assert architect_router.route_command("ls -la") == "manager"
+        assert architect_router.route_command("some-random-command") == "manager"
 
 
 class TestFormatForwardMessage:
@@ -100,13 +100,19 @@ class TestBuildDecision:
         assert architect_router.build_decision(hook_input) is None
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    def test_passthrough_for_git_readonly(self):
-        """git status and other read-only commands now pass through."""
+    @patch("architect_router.send_to_manager_pane", return_value=True)
+    def test_forwards_git_readonly_commands(self, mock_send):
+        """git status and other read-only commands now forward to manager (per acceptance criteria)."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "git status"},
         }
-        assert architect_router.build_decision(hook_input) is None
+        result = architect_router.build_decision(hook_input)
+
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+        assert result["message"] == "[forwarded] git status"
+        mock_send.assert_called_once_with("git status")
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane", return_value=True)
