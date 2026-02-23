@@ -36,13 +36,16 @@ def route_command(command: str) -> str:
     Returns "architect" or "manager".
 
     Routing logic:
+      - Empty commands stay with architect (safe default)
       - Commands starting with "bd " stay with architect
       - Commands starting with "oro " go to manager
-      - All other commands (unknown, git, build, etc.) go to manager
+      - Build commands (make, go build/test/install) go to manager
+      - Git commands stay with architect (read-only safe default)
+      - All other commands (ls, cat, etc.) stay with architect (safe default)
     """
     trimmed = command.strip()
     if not trimmed:
-        return "manager"
+        return "architect"
 
     if trimmed.startswith("bd "):
         return "architect"
@@ -50,8 +53,17 @@ def route_command(command: str) -> str:
     if trimmed.startswith("oro "):
         return "manager"
 
-    # All other commands forward to manager (per acceptance criteria)
-    return "manager"
+    # Build commands forward to manager
+    for build_prefix in ("make ", "go build", "go test", "go install"):
+        if trimmed.startswith(build_prefix):
+            return "manager"
+
+    # Git commands stay with architect
+    if trimmed.startswith("git "):
+        return "architect"
+
+    # All other commands stay with architect (safe default)
+    return "architect"
 
 
 # Extensions for code files that the architect must not stage or commit
