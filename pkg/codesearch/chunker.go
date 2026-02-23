@@ -35,6 +35,8 @@ type Chunk struct {
 // ChunkFile dispatches to the appropriate chunker based on file extension.
 // Routes Go files to ChunkGoSource and supported languages to ChunkWithAstGrep.
 // Returns an error for unsupported file types.
+//
+//oro:testonly
 func ChunkFile(filePath, src string) ([]Chunk, error) {
 	lang, ok := LangFromPath(filePath)
 	if !ok {
