@@ -18,6 +18,7 @@ Output: JSON with additionalContext when threshold exceeded, nothing otherwise.
 
 import contextlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -152,6 +153,10 @@ def calculate_context_pct(usage: dict, budget: int) -> tuple[int, int, float]:
 
 
 def main() -> None:
+    # Skip hook entirely if manager role
+    if os.environ.get("ORO_ROLE") == "manager":
+        sys.exit(0)
+
     hook_input = json.loads(sys.stdin.read())
     transcript_path = hook_input.get("transcript_path", "")
 

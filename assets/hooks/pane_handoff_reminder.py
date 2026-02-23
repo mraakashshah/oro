@@ -33,6 +33,10 @@ def _check_signal(role: str) -> bool:
 
 
 def main() -> None:
+    # Skip hook entirely if manager role
+    if os.environ.get("ORO_ROLE") == "manager":
+        sys.exit(0)
+
     # Fast path: no-op if ORO_ROLE not set
     role = os.environ.get("ORO_ROLE")
     if not role:
