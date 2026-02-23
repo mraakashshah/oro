@@ -1036,8 +1036,9 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	}
 }
 
-// removeWorktreeAndClearTracking removes a worktree and clears its tracking entry.
-// Safe to call after successful merge completion. Logs but does not return errors.
+// removeWorktreeAndClearTracking removes a worktree, deletes the agent branch,
+// and clears the tracking entry. Safe to call after successful merge completion.
+// Logs but does not return errors.
 func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID, workerID, worktree string) {
 	if err := d.worktrees.Remove(ctx, worktree); err != nil {
 		_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
@@ -1046,6 +1047,12 @@ func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID,
 		d.mu.Lock()
 		delete(d.worktreeByBead, beadID)
 		d.mu.Unlock()
+	}
+
+	// Best-effort branch cleanup — branch was merged, safe to delete.
+	branch := protocol.BranchPrefix + beadID
+	if err := d.worktrees.DeleteBranch(ctx, branch); err != nil {
+		_ = d.logEvent(ctx, "branch_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
 	}
 }
 

@@ -184,11 +184,13 @@ func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 }
 
 type mockWorktreeManager struct {
-	mu       sync.Mutex
-	created  map[string]string // beadID -> worktree path
-	removed  []string
-	createFn func(ctx context.Context, beadID string) (string, string, error)
-	removeFn func(ctx context.Context, path string) error
+	mu              sync.Mutex
+	created         map[string]string // beadID -> worktree path
+	removed         []string
+	deletedBranches []string
+	createFn        func(ctx context.Context, beadID string) (string, string, error)
+	removeFn        func(ctx context.Context, path string) error
+	deleteBranchFn  func(branch string) error
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID string) (string, string, error) {
@@ -221,7 +223,13 @@ func (m *mockWorktreeManager) Remove(ctx context.Context, path string) error {
 	return nil
 }
 
-func (m *mockWorktreeManager) DeleteBranch(_ context.Context, _ string) error {
+func (m *mockWorktreeManager) DeleteBranch(_ context.Context, branch string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deleteBranchFn != nil {
+		return m.deleteBranchFn(branch)
+	}
+	m.deletedBranches = append(m.deletedBranches, branch)
 	return nil
 }
 
@@ -11428,5 +11436,56 @@ func TestAssignment_SkipsClosedBeads(t *testing.T) {
 		if gotMsg && msg.Type == protocol.MsgAssign {
 			t.Fatal("received unexpected ASSIGN message when all beads are closed")
 		}
+	})
+}
+
+func TestRemoveWorktreeAndClearTracking_DeletesBranch(t *testing.T) {
+	t.Run("happy path: Remove succeeds then DeleteBranch called", func(t *testing.T) {
+		d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+
+		d.removeWorktreeAndClearTracking(context.Background(), "oro-test", "w1", "/tmp/worktree-oro-test")
+
+		wtMgr.mu.Lock()
+		defer wtMgr.mu.Unlock()
+
+		// Verify Remove was called
+		if len(wtMgr.removed) != 1 || wtMgr.removed[0] != "/tmp/worktree-oro-test" {
+			t.Fatalf("expected Remove called with /tmp/worktree-oro-test, got: %v", wtMgr.removed)
+		}
+
+		// Verify DeleteBranch was called with correct branch name
+		if len(wtMgr.deletedBranches) != 1 || wtMgr.deletedBranches[0] != "agent/oro-test" {
+			t.Fatalf("expected DeleteBranch called with agent/oro-test, got: %v", wtMgr.deletedBranches)
+		}
+	})
+
+	t.Run("Remove fails, DeleteBranch still called", func(t *testing.T) {
+		d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+		wtMgr.removeFn = func(_ context.Context, _ string) error {
+			return fmt.Errorf("worktree stuck")
+		}
+
+		d.removeWorktreeAndClearTracking(context.Background(), "oro-fail", "w2", "/tmp/worktree-oro-fail")
+
+		wtMgr.mu.Lock()
+		defer wtMgr.mu.Unlock()
+
+		// DeleteBranch should still be attempted even though Remove failed
+		if len(wtMgr.deletedBranches) != 1 || wtMgr.deletedBranches[0] != "agent/oro-fail" {
+			t.Fatalf("expected DeleteBranch called despite Remove failure, got: %v", wtMgr.deletedBranches)
+		}
+	})
+
+	t.Run("both Remove and DeleteBranch fail: no panic", func(t *testing.T) {
+		d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+		wtMgr.removeFn = func(_ context.Context, _ string) error {
+			return fmt.Errorf("worktree stuck")
+		}
+		wtMgr.deleteBranchFn = func(_ string) error {
+			return fmt.Errorf("branch not found")
+		}
+
+		// Should not panic — both errors are logged, not returned.
+		d.removeWorktreeAndClearTracking(context.Background(), "oro-both", "w3", "/tmp/worktree-oro-both")
 	})
 }
