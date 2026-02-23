@@ -310,10 +310,28 @@ func TestResolveProjectRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// Build a clean env that strips GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR.
+		// These leak from parent git hooks and would cause commands to target
+		// the parent repo instead of our temp repo.
+		cleanEnv := func() []string {
+			skip := map[string]bool{
+				"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_COMMON_DIR": true,
+			}
+			var out []string
+			for _, e := range os.Environ() {
+				k, _, _ := strings.Cut(e, "=")
+				if !skip[k] {
+					out = append(out, e)
+				}
+			}
+			return out
+		}()
+
 		run := func(dir, name string, args ...string) {
 			t.Helper()
 			cmd := exec.Command(name, args...) //nolint:gosec // Test helper with controlled inputs
 			cmd.Dir = dir
+			cmd.Env = cleanEnv
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("%s %v failed: %v\n%s", name, args, err, out)
