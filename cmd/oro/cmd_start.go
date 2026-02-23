@@ -209,6 +209,14 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 	searchHookBin := filepath.Join(paths.OroHome, "hooks", "oro-search-hook")
 	warnIfSearchHookMissing(w, searchHookBin)
 
+	// Warn about quality_gate.sh issues
+	repoRoot, err := os.Getwd()
+	if err == nil {
+		warnIfQualityGateMissing(w, repoRoot)
+		warnIfQualityGateUntracked(w, repoRoot)
+		warnIfEpicCNotDeployed(w, repoRoot)
+	}
+
 	pidPath = paths.PIDPath
 	sockPath := paths.SocketPath
 

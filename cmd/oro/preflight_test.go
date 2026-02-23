@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -260,6 +263,168 @@ func TestAssetVersionStampMismatch(t *testing.T) {
 			t.Error("expected reExtracted=false when no embedded .version file")
 		}
 	})
+}
+
+// TestPreflightWarnsUntrackedQualityGate verifies warnings about quality_gate.sh:
+// - warns when quality_gate.sh exists but is untracked in git
+// - warns differently when quality_gate.sh is completely missing
+// - no warning when quality_gate.sh is tracked
+// - skips git check entirely if not in a git repo
+func TestPreflightWarnsUntrackedQualityGate(t *testing.T) {
+	t.Run("warns when quality_gate.sh is untracked in git", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		qualityGatePath := filepath.Join(tmpDir, "quality_gate.sh")
+
+		// Initialize a git repo
+		if err := initGitRepo(tmpDir); err != nil {
+			t.Fatalf("failed to init git repo: %v", err)
+		}
+
+		// Create the file but don't track it in git
+		if err := os.WriteFile(qualityGatePath, []byte("#!/bin/bash\necho test\n"), 0o755); err != nil { //nolint:gosec // test-only file
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		warnIfQualityGateUntracked(&buf, tmpDir)
+		output := buf.String()
+		if !strings.Contains(output, "quality_gate.sh") || !strings.Contains(output, "untracked") {
+			t.Errorf("expected warning about untracked quality_gate.sh, got: %q", output)
+		}
+	})
+
+	t.Run("warns when quality_gate.sh is missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Don't create the file at all
+		var buf bytes.Buffer
+		warnIfQualityGateMissing(&buf, tmpDir)
+		output := buf.String()
+		if !strings.Contains(output, "quality_gate.sh") || !strings.Contains(output, "missing") {
+			t.Errorf("expected warning about missing quality_gate.sh, got: %q", output)
+		}
+	})
+
+	t.Run("no warning when quality_gate.sh is tracked", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		qualityGatePath := filepath.Join(tmpDir, "quality_gate.sh")
+
+		// Initialize a git repo
+		if err := initGitRepo(tmpDir); err != nil {
+			t.Fatalf("failed to init git repo: %v", err)
+		}
+
+		// Create and track the file
+		if err := os.WriteFile(qualityGatePath, []byte("#!/bin/bash\necho test\n"), 0o755); err != nil { //nolint:gosec // test-only file
+			t.Fatal(err)
+		}
+
+		// Track the file in git
+		if err := addAndCommitFile(tmpDir, "quality_gate.sh"); err != nil {
+			t.Fatalf("failed to track file in git: %v", err)
+		}
+
+		var buf bytes.Buffer
+		warnIfQualityGateUntracked(&buf, tmpDir)
+		output := buf.String()
+		if strings.Contains(output, "untracked") {
+			t.Errorf("expected no warning for tracked file, got: %q", output)
+		}
+	})
+
+	t.Run("skips git check when not in git repo", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		qualityGatePath := filepath.Join(tmpDir, "quality_gate.sh")
+
+		// Create file but don't initialize git repo
+		if err := os.WriteFile(qualityGatePath, []byte("#!/bin/bash\necho test\n"), 0o755); err != nil { //nolint:gosec // test-only file
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		// Should not warn about untracked when not in a git repo
+		warnIfQualityGateUntracked(&buf, tmpDir)
+		output := buf.String()
+		// Should be silent (no untracked warning) when not in git repo
+		if strings.Contains(output, "untracked") {
+			t.Errorf("expected no untracked warning in non-git repo, got: %q", output)
+		}
+	})
+}
+
+// TestPreflightWarnsEpicCGate verifies warning when prompt.go still has hardcoded coding rules
+func TestPreflightWarnsEpicCGate(t *testing.T) {
+	t.Run("warns when prompt.go has hardcoded coding rules", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		promptPath := filepath.Join(tmpDir, "prompt.go")
+
+		// Write prompt.go with hardcoded coding rules
+		hardcodedRules := `package main
+
+const hardcodedCodingRules = "gofumpt, golangci-lint"
+`
+		if err := os.WriteFile(promptPath, []byte(hardcodedRules), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		warnIfEpicCNotDeployed(&buf, tmpDir)
+		output := buf.String()
+		if !strings.Contains(output, "Epic C") && !strings.Contains(output, "config") {
+			t.Errorf("expected warning about Epic C not deployed, got: %q", output)
+		}
+	})
+
+	t.Run("no warning when prompt.go is config-driven", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		promptPath := filepath.Join(tmpDir, "prompt.go")
+
+		// Write prompt.go that's config-driven (reads from config)
+		configDrivenRules := `package main
+
+func getCodingRules(cfg *config.Config) string {
+	return cfg.CodingRules
+}
+`
+		if err := os.WriteFile(promptPath, []byte(configDrivenRules), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		warnIfEpicCNotDeployed(&buf, tmpDir)
+		output := buf.String()
+		if len(output) > 0 {
+			t.Errorf("expected no warning for config-driven prompt.go, got: %q", output)
+		}
+	})
+}
+
+// initGitRepo initializes a git repository in the given directory.
+func initGitRepo(dir string) error {
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	cmd.Stderr = io.Discard
+	cmd.Stdout = io.Discard
+	return cmd.Run()
+}
+
+// addAndCommitFile adds a file to git and commits it.
+func addAndCommitFile(dir, filename string) error {
+	// Add the file
+	cmd := exec.Command("git", "add", filename)
+	cmd.Dir = dir
+	cmd.Stderr = io.Discard
+	cmd.Stdout = io.Discard
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git add: %w", err)
+	}
+
+	// Commit the file
+	cmd = exec.Command("git", "commit", "-m", "test commit")
+	cmd.Dir = dir
+	cmd.Stderr = io.Discard
+	cmd.Stdout = io.Discard
+	return cmd.Run()
 }
 
 // repoRoot finds the repository root by looking for go.mod.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -89,6 +90,106 @@ func ensureSearchHook(binPath, srcDir string) error {
 func warnIfSearchHookMissing(w io.Writer, binPath string) {
 	if _, err := os.Stat(binPath); err != nil {
 		fmt.Fprintf(w, "warning: oro-search-hook not found — run oro init to build it\n")
+	}
+}
+
+// warnIfQualityGateUntracked writes a warning if quality_gate.sh exists in the
+// given directory but is untracked in git. The directory is typically the repo root.
+func warnIfQualityGateUntracked(w io.Writer, dir string) {
+	qualityGatePath := filepath.Join(dir, "quality_gate.sh")
+
+	// Check if the file exists
+	if _, err := os.Stat(qualityGatePath); err != nil {
+		// File doesn't exist — other functions handle this case
+		return
+	}
+
+	// File exists. Check if it's tracked in git.
+	isTracked, err := isFileTrackedInGit(dir, "quality_gate.sh")
+	if err != nil {
+		// We're either not in a git repo or git command failed — skip warning
+		return
+	}
+
+	if !isTracked {
+		fmt.Fprintf(w, "warning: quality_gate.sh exists but is untracked in git — commit it with: git add quality_gate.sh && git commit\n")
+	}
+}
+
+// warnIfQualityGateMissing writes a warning if quality_gate.sh does not exist
+// in the given directory. The directory is typically the repo root.
+func warnIfQualityGateMissing(w io.Writer, dir string) {
+	qualityGatePath := filepath.Join(dir, "quality_gate.sh")
+
+	if _, err := os.Stat(qualityGatePath); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(w, "warning: quality_gate.sh is missing — run oro init to generate it\n")
+		}
+	}
+}
+
+// warnIfQualityGateUntrackedInGit is a wrapper for warnIfQualityGateUntracked
+// provided for test compatibility. It takes a writer and directory.
+func warnIfQualityGateUntrackedInGit(w io.Writer, dir string) {
+	warnIfQualityGateUntracked(w, dir)
+}
+
+// isFileTrackedInGit returns true if the given filename is tracked in git within
+// the specified directory. Returns false if the file is untracked. Returns error if
+// we're not in a git repository or if there's an unexpected failure.
+func isFileTrackedInGit(dir, filename string) (bool, error) {
+	// Run git ls-files to check if the file is tracked
+	// If the file is tracked, it will be in the output; if not, output will be empty
+	cmd := exec.Command("git", "ls-files", "--error-unmatch", filename) //nolint:gosec // filename is a constant or user-provided safe value
+	cmd.Dir = dir
+
+	// Suppress stderr to avoid "fatal" messages for untracked files
+	cmd.Stderr = io.Discard
+
+	err := cmd.Run()
+	if err == nil {
+		// git ls-files succeeded — file is tracked
+		return true, nil
+	}
+
+	// Check if it's an exit error to distinguish between different error codes
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		exitCode := exitErr.ExitCode()
+		if exitCode == 1 {
+			// Exit code 1 means file is untracked (we are in a git repo)
+			return false, nil
+		}
+		// Exit code 128 means not in a git repo — return error so caller knows to skip
+		return false, fmt.Errorf("not in a git repository")
+	}
+
+	// Unexpected error (e.g., git not found)
+	return false, fmt.Errorf("git check failed: %w", err)
+}
+
+// warnIfEpicCNotDeployed writes a warning if prompt.go has hardcoded coding rules
+// instead of reading from config. This indicates Epic C (config-driven worker prompts)
+// is not yet deployed.
+func warnIfEpicCNotDeployed(w io.Writer, dir string) {
+	promptPath := filepath.Join(dir, "prompt.go")
+
+	data, err := os.ReadFile(promptPath) //nolint:gosec // dir is trusted (repo root)
+	if err != nil {
+		// File doesn't exist or can't be read — skip warning
+		return
+	}
+
+	content := string(data)
+
+	// Check for indicators of hardcoded rules vs config-driven rules
+	// Hardcoded: contains constant declarations with tool names like "gofumpt", "golangci-lint"
+	// Config-driven: reads from cfg.CodingRules or similar
+	hasHardcodedRules := strings.Contains(content, "gofumpt") && strings.Contains(content, "const")
+	hasConfigDriven := strings.Contains(content, "cfg.CodingRules") || strings.Contains(content, "config.CodingRules")
+
+	if hasHardcodedRules && !hasConfigDriven {
+		fmt.Fprintf(w, "warning: prompt.go has hardcoded coding rules — Epic C (config-driven worker prompts) is not deployed yet — external projects may receive incorrect linting instructions\n")
 	}
 }
 
