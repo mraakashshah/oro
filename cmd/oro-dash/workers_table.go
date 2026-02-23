@@ -9,15 +9,17 @@ import (
 
 // WorkersTableModel holds the workers table state.
 type WorkersTableModel struct {
-	workers     []WorkerStatus
-	assignments map[string]string
+	workers      []WorkerStatus
+	assignments  map[string]string
+	daemonOnline bool
 }
 
 // NewWorkersTableModel creates a new workers table model.
-func NewWorkersTableModel(workers []WorkerStatus, assignments map[string]string) WorkersTableModel {
+func NewWorkersTableModel(workers []WorkerStatus, assignments map[string]string, daemonOnline bool) WorkersTableModel {
 	return WorkersTableModel{
-		workers:     workers,
-		assignments: assignments,
+		workers:      workers,
+		assignments:  assignments,
+		daemonOnline: daemonOnline,
 	}
 }
 
@@ -56,15 +58,21 @@ func calculateWorkerColumnWidths(totalWidth int) []int {
 // View renders the workers table at the given total terminal width.
 func (w WorkersTableModel) View(theme Theme, styles Styles, totalWidth int) string {
 	if len(w.workers) == 0 {
-		return renderEmptyWorkersState(styles)
+		return w.renderEmptyWorkersState(styles)
 	}
 
 	return w.renderWorkersTable(theme, styles, totalWidth)
 }
 
 // renderEmptyWorkersState renders a message when no workers are active.
-func renderEmptyWorkersState(styles Styles) string {
-	msg := "No active workers"
+// Message depends on daemon status: online → 'oro work' hint, offline → 'daemon offline'.
+func (w WorkersTableModel) renderEmptyWorkersState(styles Styles) string {
+	var msg string
+	if w.daemonOnline {
+		msg = "No active workers — type 'oro work' to start workers"
+	} else {
+		msg = "daemon offline"
+	}
 	centered := styles.WorkersCentered.Render(styles.Muted.Render(msg))
 	return centered
 }

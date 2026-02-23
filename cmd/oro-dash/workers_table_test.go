@@ -15,7 +15,7 @@ func TestWorkersTableAdaptsToWidth(t *testing.T) {
 		{ID: "worker-1", Status: "busy", BeadID: "oro-abc.1", LastProgressSecs: 2.0, ContextPct: 45},
 	}
 	assignments := map[string]string{"oro-abc.1": "worker-1"}
-	wt := NewWorkersTableModel(workers, assignments)
+	wt := NewWorkersTableModel(workers, assignments, true)
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
@@ -120,16 +120,17 @@ func TestWorkersTableView(t *testing.T) {
 		}
 	})
 
-	t.Run("no workers shows empty state message", func(t *testing.T) {
+	t.Run("no workers shows empty state message (daemon offline)", func(t *testing.T) {
 		m := newModel()
 		m.activeView = WorkersView
 		m.workers = nil // No workers
 		m.assignments = nil
+		m.daemonHealthy = false
 
 		output := m.View()
 
-		if !strings.Contains(output, "No active workers") {
-			t.Errorf("expected 'No active workers' message, got:\n%s", output)
+		if !strings.Contains(output, "daemon offline") {
+			t.Errorf("expected 'daemon offline' message, got:\n%s", output)
 		}
 	})
 
@@ -254,6 +255,30 @@ func TestWorkersTableView(t *testing.T) {
 		// Should show '-' for no assignment
 		if !strings.Contains(output, "-") {
 			t.Errorf("expected '-' for empty bead assignment")
+		}
+	})
+}
+
+// TestWorkersTable_EmptyState_DaemonOnline verifies the empty state message changes based on daemon status.
+// When daemon is online: show 'oro work' hint.
+// When daemon is offline: show 'daemon offline' message.
+func TestWorkersTable_EmptyState_DaemonOnline(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	t.Run("daemon online shows oro work hint", func(t *testing.T) {
+		wt := NewWorkersTableModel([]WorkerStatus{}, map[string]string{}, true)
+		output := wt.View(theme, styles, 80)
+		if !strings.Contains(output, "oro work") {
+			t.Errorf("expected 'oro work' hint when daemon online, got:\n%s", output)
+		}
+	})
+
+	t.Run("daemon offline shows daemon offline message", func(t *testing.T) {
+		wt := NewWorkersTableModel([]WorkerStatus{}, map[string]string{}, false)
+		output := wt.View(theme, styles, 80)
+		if !strings.Contains(output, "daemon offline") {
+			t.Errorf("expected 'daemon offline' message when daemon offline, got:\n%s", output)
 		}
 	})
 }

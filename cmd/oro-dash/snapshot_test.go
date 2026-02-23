@@ -430,7 +430,7 @@ func TestSnapshot_InsightsView_WithCycle(t *testing.T) {
 // ── Workers table view snapshots ──────────────────────────────────────────────
 
 func TestSnapshot_WorkersView_Empty(t *testing.T) {
-	wt := NewWorkersTableModel(nil, nil)
+	wt := NewWorkersTableModel(nil, nil, false)
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
@@ -452,7 +452,7 @@ func TestSnapshot_WorkersView_MultipleWorkers(t *testing.T) {
 		"oro-w.3": "worker-red",
 	}
 
-	wt := NewWorkersTableModel(workers, assignments)
+	wt := NewWorkersTableModel(workers, assignments, true)
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
