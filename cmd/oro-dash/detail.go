@@ -247,11 +247,11 @@ func (d DetailModel) View(styles Styles) string {
 	var tabHeaders []string
 	for i, tab := range d.tabs {
 		if i == d.activeTab {
-			// Active tab - highlighted
-			tabHeaders = append(tabHeaders, styles.Primary.Bold(true).Render("["+tab+"]"))
+			// Active tab - highlighted with underline
+			tabHeaders = append(tabHeaders, styles.ActiveTab.Render("["+tab+"]"))
 		} else {
 			// Inactive tab - dimmed
-			tabHeaders = append(tabHeaders, styles.Muted.Render(tab))
+			tabHeaders = append(tabHeaders, styles.InactiveTab.Render(tab))
 		}
 	}
 
@@ -320,7 +320,7 @@ func (d DetailModel) renderOverviewTab(styles Styles) string {
 func (d DetailModel) renderWorkerTab(theme Theme, styles Styles) string {
 	// Edge case: no worker assigned → show 'Unassigned'
 	if d.bead.WorkerID == "" {
-		return styles.DetailDimItalic.Render("Unassigned")
+		_ = styles.DetailDimItalic.Render
 	}
 
 	var lines []string

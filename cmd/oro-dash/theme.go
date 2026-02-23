@@ -82,6 +82,8 @@ type Styles struct {
 	DetailDimItalic lipgloss.Style
 	DetailError     lipgloss.Style
 	DetailBold      lipgloss.Style
+	ActiveTab       lipgloss.Style
+	InactiveTab     lipgloss.Style
 
 	// Priority badge styles
 	BadgeP0 lipgloss.Style
@@ -222,6 +224,8 @@ func (s *Styles) initDetailStyles(theme Theme) {
 	s.DetailDimItalic = lipgloss.NewStyle().Foreground(theme.Muted).Italic(true)
 	s.DetailError = lipgloss.NewStyle().Foreground(theme.Error)
 	s.DetailBold = lipgloss.NewStyle().Bold(true)
+	s.ActiveTab = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Underline(true)
+	s.InactiveTab = lipgloss.NewStyle().Foreground(theme.Muted)
 }
 
 func (s *Styles) initBadgeStyles(theme Theme) {
