@@ -5,11 +5,61 @@ description: Use when the user says "make a spec", "spec out X", or "brainstorm 
 
 # Spec
 
-## Overview
+Two modes, auto-detected. Both produce the same output: a validated bead dependency graph.
 
-Three-stage pipeline: collaborative design → adversarial validation → bead decomposition. Output is a reviewed design doc and a ready-to-execute bead tree.
+## Mode Detection
 
-## Stages
+**Full** (default) — any of: cross-cutting (2+ packages), architectural decisions, unclear requirements, >5 beads likely.
+
+**Quick** — all of: single package, well-understood change, <=5 beads, no architectural decisions.
+
+Announce which mode: "Using **quick spec** — single package, well-understood change." or "Using **full spec** — cross-cutting change, needs design doc."
+
+---
+
+## Quick Mode
+
+Research → inline review → decompose. No design doc. No subagent. Same context throughout.
+
+### Step 1 — Research
+
+Read affected code. Mandatory gate: no proposals without citing files read.
+
+- Read the functions/types being changed
+- `grep` for all interface implementations, callers, and test mocks
+- Note what files must change for compilation
+
+### Step 2 — Inline Adversarial + Premortem
+
+Self-review in the same context. Run these checks before decomposing:
+
+| Check | Question |
+|-------|----------|
+| **Backward compat** | Does this break any existing implementations? Grep all impls/callers. |
+| **Test sufficiency** | Happy path, error path, edge cases — all covered? |
+| **Missing files** | What files must change that aren't obvious? (test mocks, integration tests) |
+| **Blast radius** | What's the worst that happens if this is wrong? Rollback plan? |
+| **Out of scope** | What are you explicitly NOT doing? Note follow-ups. |
+
+Write findings inline. If any check reveals the change is bigger than expected → switch to Full mode.
+
+### Step 3 — Decompose (`beadcraft`)
+
+Invoke `beadcraft` in Decompose mode on the research + review findings. Same quality bar as full mode: Rule of Five, full bead anatomy, wired dependencies.
+
+Present bead tree. **Wait for user confirmation.**
+
+### Output
+
+```
+bd show <epic-id>    ← confirmed bead tree (no design doc)
+```
+
+---
+
+## Full Mode
+
+Collaborative design → adversarial validation → bead decomposition. Produces a committed design doc.
 
 ### Stage 1 — Brainstorm (`brainstorming` skill)
 
@@ -37,26 +87,23 @@ Do not skip this stage. Specs without adversarial review ship broken.
 
 ### Stage 3 — Decompose (`beadcraft` Decompose mode)
 
-Invoke `beadcraft` in Decompose mode on the validated design doc:
-
-- Create the epic bead
-- Decompose into task beads with full anatomy (Test: | Cmd: | Assert: | Read: | Signature: | Edges:)
-- Rule of Five on every bead
-- Wire dependencies with `bd dep add`
+Invoke `beadcraft` in Decompose mode on the validated design doc. Same as Quick Step 3.
 
 Present the bead tree to the user. **Wait for confirmation before declaring done.**
 
-## Output
+### Output
 
 ```
 docs/plans/YYYY-MM-DD-<topic>-design.md   ← committed
 bd show <epic-id>                          ← confirmed bead tree
 ```
 
+---
+
 ## Red Flags
 
-- Proposing approaches in Stage 1 without citing files read
-- Skipping Stage 2 ("the design is obvious")
-- Running adversarial review in the same context that wrote the spec
-- Moving to Stage 3 before the adversarial review returns PASS
+- Proposing approaches without citing files read (both modes)
+- Using Quick mode for cross-cutting changes ("it's simple enough")
+- Skipping adversarial checks in Quick mode ("the change is obvious")
+- Running Full adversarial review in the same context that wrote the spec
 - Presenting the bead tree without waiting for user confirmation
