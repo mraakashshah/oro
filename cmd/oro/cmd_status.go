@@ -13,10 +13,11 @@ import (
 
 // workerStatus holds per-worker health info from the enriched dispatcher response.
 type workerStatus struct {
-	ID               string  `json:"id"`
-	State            string  `json:"state"`
-	BeadID           string  `json:"bead_id,omitempty"`
-	LastProgressSecs float64 `json:"last_progress_secs"`
+	ID                string  `json:"id"`
+	State             string  `json:"state"`
+	BeadID            string  `json:"bead_id,omitempty"`
+	LastProgressSecs  float64 `json:"last_progress_secs"`
+	LastHeartbeatSecs float64 `json:"last_heartbeat_secs,omitempty"`
 }
 
 // statusResponse mirrors the dispatcher's status JSON structure.
@@ -136,16 +137,21 @@ func formatAlerts(w io.Writer, resp *statusResponse) bool {
 	}
 	var alerts []alert
 
-	// Stuck worker alerts: progress exceeds half the timeout.
+	// Stuck worker alerts: use minimum of progress and heartbeat staleness.
+	// A recent heartbeat means the worker is alive even if progress is stale.
 	halfTimeout := resp.ProgressTimeoutSecs / 2
 	for _, ws := range resp.Workers {
 		if ws.State != "busy" || ws.LastProgressSecs <= 0 {
 			continue
 		}
-		if ws.LastProgressSecs >= resp.ProgressTimeoutSecs {
-			alerts = append(alerts, alert{"!", fmt.Sprintf("%s: no progress (%s) CRITICAL", ws.ID, formatDuration(ws.LastProgressSecs))})
-		} else if ws.LastProgressSecs >= halfTimeout {
-			alerts = append(alerts, alert{"!", fmt.Sprintf("%s: no progress (%s)", ws.ID, formatDuration(ws.LastProgressSecs))})
+		staleness := ws.LastProgressSecs
+		if ws.LastHeartbeatSecs > 0 && ws.LastHeartbeatSecs < staleness {
+			staleness = ws.LastHeartbeatSecs
+		}
+		if staleness >= resp.ProgressTimeoutSecs {
+			alerts = append(alerts, alert{"!", fmt.Sprintf("%s: no progress (%s) CRITICAL", ws.ID, formatDuration(staleness))})
+		} else if staleness >= halfTimeout {
+			alerts = append(alerts, alert{"!", fmt.Sprintf("%s: no progress (%s)", ws.ID, formatDuration(staleness))})
 		}
 	}
 
@@ -238,10 +244,14 @@ func formatInProgressBeads(w io.Writer, resp *statusResponse) {
 	fmt.Fprintln(w, "  in_progress beads:")
 	halfTimeout := resp.ProgressTimeoutSecs / 2
 	for _, ws := range busy {
+		staleness := ws.LastProgressSecs
+		if ws.LastHeartbeatSecs > 0 && ws.LastHeartbeatSecs < staleness {
+			staleness = ws.LastHeartbeatSecs
+		}
 		health := "healthy"
-		if ws.LastProgressSecs >= resp.ProgressTimeoutSecs {
+		if staleness >= resp.ProgressTimeoutSecs {
 			health = "STUCK"
-		} else if ws.LastProgressSecs >= halfTimeout {
+		} else if staleness >= halfTimeout {
 			health = "slow"
 		}
 		fmt.Fprintf(w, "    %s -> %s (%s, %s ago)\n", ws.ID, ws.BeadID, health, formatDuration(ws.LastProgressSecs))

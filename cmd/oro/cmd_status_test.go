@@ -516,6 +516,105 @@ func TestFormatStatusResponse_VerboseFlag(t *testing.T) {
 	}
 }
 
+// TestFormatAlerts_HeartbeatingWorkerNotFlagged verifies that a worker with a
+// recent heartbeat is NOT shown in alerts as slow/stuck, even if LastProgressSecs
+// exceeds the threshold.
+func TestFormatAlerts_HeartbeatingWorkerNotFlagged(t *testing.T) {
+	resp := statusResponse{
+		ProgressTimeoutSecs: 600, // halfTimeout = 300
+		Workers: []workerStatus{
+			// Would trigger "slow" alert without heartbeat check (400 > 300).
+			{ID: "worker-1", State: "busy", BeadID: "bead-abc", LastProgressSecs: 400, LastHeartbeatSecs: 5},
+		},
+	}
+
+	var buf bytes.Buffer
+	hadAlerts := formatAlerts(&buf, &resp)
+	got := buf.String()
+
+	if hadAlerts {
+		t.Errorf("expected no alerts for heartbeating worker, but got alerts:\n%s", got)
+	}
+	if strings.Contains(got, "worker-1") {
+		t.Errorf("heartbeating worker should not appear in alerts, got:\n%s", got)
+	}
+}
+
+// TestFormatAlerts_StuckWorkerWithStaleHeartbeatStillFlagged verifies that a worker
+// with stale progress AND stale heartbeat is still flagged in alerts.
+func TestFormatAlerts_StuckWorkerWithStaleHeartbeatStillFlagged(t *testing.T) {
+	resp := statusResponse{
+		ProgressTimeoutSecs: 600, // halfTimeout = 300
+		Workers: []workerStatus{
+			// Both progress and heartbeat are stale: should still alert.
+			{ID: "worker-1", State: "busy", BeadID: "bead-abc", LastProgressSecs: 400, LastHeartbeatSecs: 400},
+		},
+	}
+
+	var buf bytes.Buffer
+	hadAlerts := formatAlerts(&buf, &resp)
+	got := buf.String()
+
+	if !hadAlerts {
+		t.Errorf("expected alerts for stuck worker (stale heartbeat), but got none")
+	}
+	if !strings.Contains(got, "worker-1") {
+		t.Errorf("stuck worker should appear in alerts, got:\n%s", got)
+	}
+}
+
+// TestFormatInProgressBeads_HeartbeatingWorkerShowsHealthy verifies that a worker
+// emitting heartbeats is labeled "healthy" even when LastProgressSecs is high.
+func TestFormatInProgressBeads_HeartbeatingWorkerShowsHealthy(t *testing.T) {
+	resp := statusResponse{
+		ProgressTimeoutSecs: 600, // halfTimeout = 300
+		Workers: []workerStatus{
+			// Without heartbeat check this would be "slow"; with it, "healthy".
+			{ID: "worker-1", State: "busy", BeadID: "bead-abc", LastProgressSecs: 400, LastHeartbeatSecs: 5},
+		},
+	}
+
+	var buf bytes.Buffer
+	formatInProgressBeads(&buf, &resp)
+	got := buf.String()
+
+	if strings.Contains(got, "slow") {
+		t.Errorf("heartbeating worker should not be 'slow', got:\n%s", got)
+	}
+	if strings.Contains(got, "STUCK") {
+		t.Errorf("heartbeating worker should not be 'STUCK', got:\n%s", got)
+	}
+	if !strings.Contains(got, "healthy") {
+		t.Errorf("heartbeating worker should be 'healthy', got:\n%s", got)
+	}
+}
+
+// TestStatusDisplay_HealthyWithRecentHeartbeat verifies end-to-end that a worker
+// with stale progress but recent heartbeat shows "healthy" in full status output.
+func TestStatusDisplay_HealthyWithRecentHeartbeat(t *testing.T) {
+	resp := statusResponse{
+		State:               "running",
+		WorkerCount:         1,
+		ProgressTimeoutSecs: 600, // halfTimeout = 300
+		Workers: []workerStatus{
+			{ID: "worker-1", State: "busy", BeadID: "oro-abc", LastProgressSecs: 400, LastHeartbeatSecs: 50},
+		},
+		ActiveCount: 1,
+		TargetCount: 1,
+	}
+
+	var buf bytes.Buffer
+	formatStatusResponse(&buf, &resp)
+	got := buf.String()
+
+	if !strings.Contains(got, "healthy") {
+		t.Errorf("expected health label 'healthy', got:\n%s", got)
+	}
+	if strings.Contains(got, "slow") {
+		t.Errorf("should not show 'slow' when heartbeat is recent, got:\n%s", got)
+	}
+}
+
 // runMockStatusDispatcher starts a UDS listener that accepts multiple connections,
 // reads a DIRECTIVE message with op=status, and sends an ACK with the given
 // status JSON as the detail. Handles multiple connections (probeSocket + queryDispatcherStatus).
