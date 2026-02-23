@@ -1464,6 +1464,127 @@ func TestUpsertWorker_NewWorkerLastSeenSet(t *testing.T) {
 	}
 }
 
+// TestShutdownKillsManagedWorkers verifies that shutdownWaitForWorkers calls
+// procMgr.Kill for managed workers but NOT for unmanaged workers.
+// Edges: procMgr==nil → skip; Kill error → ignored (best-effort).
+func TestShutdownKillsManagedWorkers(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.ShutdownTimeout = 150 * time.Millisecond
+
+	managedID := "managed-worker-1"
+	unmanagedID := "unmanaged-worker-1"
+
+	managedConn := newMockConn()
+	unmanagedConn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[managedID] = &trackedWorker{
+		id:      managedID,
+		conn:    managedConn,
+		state:   protocol.WorkerBusy,
+		managed: true,
+	}
+	d.workers[unmanagedID] = &trackedWorker{
+		id:      unmanagedID,
+		conn:    unmanagedConn,
+		state:   protocol.WorkerBusy,
+		managed: false,
+	}
+	d.mu.Unlock()
+
+	// Workers won't drain — timeout fires and force-closes them.
+	d.shutdownWaitForWorkers()
+
+	killed := pm.KilledIDs()
+
+	foundManaged := false
+	for _, id := range killed {
+		if id == managedID {
+			foundManaged = true
+		}
+	}
+	if !foundManaged {
+		t.Errorf("expected procMgr.Kill(%q), killed=%v", managedID, killed)
+	}
+
+	for _, id := range killed {
+		if id == unmanagedID {
+			t.Errorf("procMgr.Kill should NOT be called for unmanaged worker %q", unmanagedID)
+		}
+	}
+}
+
+// TestShutdownKillsManagedWorkers_NilProcMgr verifies that shutdownWaitForWorkers
+// is a no-op when procMgr is nil (does not panic).
+func TestShutdownKillsManagedWorkers_NilProcMgr(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// procMgr is nil by default
+	d.cfg.ShutdownTimeout = 150 * time.Millisecond
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers["managed-w"] = &trackedWorker{
+		id:      "managed-w",
+		conn:    conn,
+		state:   protocol.WorkerBusy,
+		managed: true,
+	}
+	d.mu.Unlock()
+
+	// Should not panic even without a procMgr.
+	d.shutdownWaitForWorkers()
+}
+
+// TestShutdownKillsManagedWorkers_DrainPath verifies that Kill is called
+// for managed workers even when workers drain before the timeout.
+func TestShutdownKillsManagedWorkers_DrainPath(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.ShutdownTimeout = 10 * time.Second // long timeout — drain path
+
+	managedID := "drain-managed"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[managedID] = &trackedWorker{
+		id:      managedID,
+		conn:    conn,
+		state:   protocol.WorkerBusy,
+		managed: true,
+	}
+	d.mu.Unlock()
+
+	// Simulate worker draining shortly after start.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		d.mu.Lock()
+		delete(d.workers, managedID)
+		d.mu.Unlock()
+	}()
+
+	d.shutdownWaitForWorkers()
+
+	killed := pm.KilledIDs()
+	found := false
+	for _, id := range killed {
+		if id == managedID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected procMgr.Kill(%q) on drain path, killed=%v", managedID, killed)
+	}
+}
+
 // TestSendToWorker_MarshalErrorReturnsError verifies that a marshal error
 // is returned (mutation 22 removes error return).
 // Note: It's hard to provoke marshal errors with valid protocol.Message but

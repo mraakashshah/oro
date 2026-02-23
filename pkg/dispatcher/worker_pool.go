@@ -393,13 +393,24 @@ func (d *Dispatcher) checkShutdownApproved(workerID string) bool {
 }
 
 // shutdownWaitForWorkers waits up to ShutdownTimeout for all workers to drain,
-// then force-closes any remaining connections.
+// then force-closes any remaining connections. After waiting, it kills any
+// managed worker OS processes via procMgr (best-effort, errors ignored).
 func (d *Dispatcher) shutdownWaitForWorkers() {
 	deadline := time.NewTimer(d.cfg.ShutdownTimeout)
 	defer deadline.Stop()
 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+
+	// Capture managed IDs before the wait — workers may drain off the map.
+	d.mu.Lock()
+	managedIDs := make([]string, 0, len(d.workers))
+	for id, w := range d.workers {
+		if w.managed {
+			managedIDs = append(managedIDs, id)
+		}
+	}
+	d.mu.Unlock()
 
 	for {
 		select {
@@ -411,11 +422,24 @@ func (d *Dispatcher) shutdownWaitForWorkers() {
 				delete(d.workers, id)
 			}
 			d.mu.Unlock()
+			d.killManagedWorkers(managedIDs)
 			return
 		case <-ticker.C:
 			if d.ConnectedWorkers() == 0 {
+				d.killManagedWorkers(managedIDs)
 				return
 			}
 		}
+	}
+}
+
+// killManagedWorkers sends Kill to each ID via procMgr.
+// No-op when procMgr is nil. Errors are ignored (best-effort).
+func (d *Dispatcher) killManagedWorkers(ids []string) {
+	if d.procMgr == nil || len(ids) == 0 {
+		return
+	}
+	for _, id := range ids {
+		_ = d.procMgr.Kill(id)
 	}
 }
