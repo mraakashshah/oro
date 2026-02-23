@@ -3289,6 +3289,18 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qg
 
 	_ = d.completeAssignment(ctx, beadID)
 
+	// Release the worker so checkHeartbeats won't find a stale busy worker
+	// and call clearBeadTracking (which would wipe exhaustedBeads).
+	d.mu.Lock()
+	if w, ok := d.workers[workerID]; ok {
+		w.state = protocol.WorkerIdle
+		w.beadID = ""
+		w.worktree = ""
+		w.epicID = ""
+		w.isEpicDecomp = false
+	}
+	d.mu.Unlock()
+
 	// Cancel any in-flight ops agents for this bead to prevent stale escalations.
 	d.cancelOpsAgents(ctx, beadID, workerID, "qg_exhausted")
 
