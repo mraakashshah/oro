@@ -1,0 +1,100 @@
+# GoReleaser configuration for oro
+# Builds 3 darwin binaries (oro, oro-dash, oro-search-hook) into a single archive.
+# See https://goreleaser.com for documentation.
+
+version: 2
+
+before:
+  hooks:
+    - make stage-assets
+
+builds:
+  - id: oro
+    main: ./cmd/oro
+    binary: oro
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X oro/internal/appversion.version={{.Version}}
+
+  - id: oro-dash
+    main: ./cmd/oro-dash
+    binary: oro-dash
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X oro/internal/appversion.version={{.Version}}
+
+  - id: oro-search-hook
+    main: ./cmd/oro-search-hook
+    binary: oro-search-hook
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X oro/internal/appversion.version={{.Version}}
+
+archives:
+  - id: oro-archive
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds:
+      - oro
+      - oro-dash
+      - oro-search-hook
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+      - "Merge branch"
+  groups:
+    - title: "Features"
+      regexp: '^.*feat(\(\w+\))?:.*$'
+      order: 0
+    - title: "Bug Fixes"
+      regexp: '^.*fix(\(\w+\))?:.*$'
+      order: 1
+    - title: "Others"
+      order: 999
+
+release:
+  github:
+    owner: mraakashshah
+    name: oro
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  header: |
+    ## oro v{{.Version}}
+
+    Pre-compiled binaries for macOS (Intel & Apple Silicon).
+
+    ### Installation
+
+    Download the appropriate binary for your platform below, extract it, and place it in your PATH.
