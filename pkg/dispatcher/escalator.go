@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -53,7 +54,10 @@ func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 	// escalations undelivered and beads stuck forever.
 	_, err := e.runner.Run(ctx, "tmux", "has-session", "-t", e.sessionName)
 	if err != nil {
-		return fmt.Errorf("tmux session %s not found: %w", e.sessionName, err)
+		// Session/window not found — skip tmux escalation gracefully.
+		// The ops-only path will handle escalation delivery.
+		fmt.Fprintf(os.Stderr, "[oro] warning: tmux session %s not found, skipping tmux escalation: %v\n", e.sessionName, err)
+		return nil
 	}
 
 	// Step 0.5: Clear any pending input from a previous partial delivery.

@@ -478,21 +478,18 @@ func TestFormatEscalation_EmptyBeadID(t *testing.T) {
 	}
 }
 
+// TestEscalation_DeadSession verifies that when has-session fails (manager window missing),
+// Escalate returns nil so the ops path can proceed (graceful skip, not error).
 func TestEscalation_DeadSession(t *testing.T) {
-	// Simulate a dead tmux session: has-session returns error
 	runner := &mockEscRunner{hasSessionErr: fmt.Errorf("session not found")}
 	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
 
 	err := esc.Escalate(context.Background(), "test escalation")
-	if err == nil {
-		t.Fatal("expected error when tmux session is dead")
+	if err != nil {
+		t.Fatalf("expected nil error when manager window missing (graceful skip), got: %v", err)
 	}
 
-	if !strings.Contains(err.Error(), "session oro not found") {
-		t.Fatalf("error should mention session not found, got: %v", err)
-	}
-
-	// Verify has-session was called but nothing else
+	// Verify has-session was called but nothing else (skipped after first check)
 	if len(runner.calls) != 1 {
 		t.Fatalf("expected 1 call (has-session only), got %d", len(runner.calls))
 	}
@@ -503,6 +500,27 @@ func TestEscalation_DeadSession(t *testing.T) {
 	}
 	if call.args[2] != "oro" {
 		t.Fatalf("expected session name 'oro', got %s", call.args[2])
+	}
+}
+
+// TestEscalatorSkipsWhenManagerMissing is the acceptance test for oro-xs8l.
+// When tmux has-session fails (session/window missing), Escalate must return
+// nil — not an error — so the ops-only fallback path can proceed.
+func TestEscalatorSkipsWhenManagerMissing(t *testing.T) {
+	runner := &mockEscRunner{hasSessionErr: fmt.Errorf("can't find window: manager")}
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "STUCK_WORKER: oro-xs8l")
+	if err != nil {
+		t.Fatalf("Escalate must return nil when manager window is missing, got: %v", err)
+	}
+
+	// Only the has-session probe should have been called — no further tmux commands.
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 call (has-session probe only), got %d: %+v", len(runner.calls), runner.calls)
+	}
+	if runner.calls[0].args[0] != "has-session" {
+		t.Fatalf("expected has-session, got %v", runner.calls[0].args)
 	}
 }
 
@@ -899,18 +917,20 @@ func TestNewTmuxEscalator_DefaultPaneUsedInSendKeys(t *testing.T) {
 }
 
 // TestEscalate_HasSessionFails_ReturnsError verifies that has-session failure
-// causes Escalate to return an error mentioning the session name.
-// Kills mutant 2 (error return suppressed for has-session failure).
-func TestEscalate_HasSessionFails_ReturnsErrorWithSessionName(t *testing.T) {
+// TestEscalate_HasSessionFails_ReturnsNil verifies that has-session failure causes
+// Escalate to return nil (graceful skip) rather than an error, so the ops path proceeds.
+// Previously tested error return; updated for oro-xs8l graceful-skip behavior.
+func TestEscalate_HasSessionFails_ReturnsNil(t *testing.T) {
 	runner := &mockEscRunner{hasSessionErr: fmt.Errorf("no such session")}
 	esc := dispatcher.NewTmuxEscalator("mysession", "mysession:0", runner)
 
 	err := esc.Escalate(context.Background(), "test")
-	if err == nil {
-		t.Fatal("expected error when has-session fails")
+	if err != nil {
+		t.Fatalf("expected nil when has-session fails (graceful skip), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "mysession") {
-		t.Errorf("error should contain session name 'mysession', got: %v", err)
+	// Only has-session was called; no further tmux commands attempted.
+	if len(runner.calls) != 1 || runner.calls[0].args[0] != "has-session" {
+		t.Errorf("expected only has-session call, got: %+v", runner.calls)
 	}
 }
 
