@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -546,4 +547,54 @@ func firstLineOf(s string) string {
 		return s[:idx]
 	}
 	return s
+}
+
+// ChunkWithAstGrep extracts structural code elements from a file as Chunks
+// using ast-grep rules for the specified language.
+// Returns nil (not empty slice) if no matches are found.
+func ChunkWithAstGrep(filePath string, lang Language) ([]Chunk, error) {
+	rules, ok := langRules[lang]
+	if !ok {
+		return nil, fmt.Errorf("codesearch: no ast-grep rules for language %s", lang)
+	}
+
+	// Read file content to extract lines
+	content, err := os.ReadFile(filePath) //nolint:gosec // filePath from trusted internal caller
+	if err != nil {
+		return nil, fmt.Errorf("codesearch: read file: %w", err)
+	}
+
+	lines := strings.Split(string(content), "\n")
+
+	matches, err := runAstGrep(filePath, rules)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	// Convert matches to chunks
+	chunks := make([]Chunk, len(matches))
+	for i, m := range matches {
+		kind, name := extractSignature(m, lang)
+		startLine := m.Range.Start.Line + 1 // ast-grep is 0-indexed, Chunk expects 1-indexed
+
+		// For EndLine, we estimate from match text line count
+		// (ast-grep doesn't provide end position currently)
+		matchLines := strings.Count(m.Text, "\n") + 1
+		endLine := startLine + matchLines - 1
+
+		chunks[i] = Chunk{
+			FilePath:  filePath,
+			Name:      name,
+			Kind:      ChunkKind(kind),
+			StartLine: startLine,
+			EndLine:   endLine,
+			Content:   extractLines(lines, startLine, endLine),
+		}
+	}
+
+	return chunks, nil
 }

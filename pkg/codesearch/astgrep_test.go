@@ -1128,3 +1128,196 @@ func TestSummarizeJavaNotInstalled(t *testing.T) {
 		t.Errorf("error should mention ast-grep, got: %v", err)
 	}
 }
+
+func TestChunkWithAstGrep_Python(t *testing.T) {
+	requireAstGrep(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.py")
+	if err := os.WriteFile(path, []byte(pythonFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangPython)
+	if err != nil {
+		t.Fatalf("ChunkWithAstGrep(%s, Python) error: %v", path, err)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected non-empty chunks for Python source")
+	}
+
+	// Verify chunks have required fields
+	for i, chunk := range chunks {
+		if chunk.FilePath != path {
+			t.Errorf("chunk[%d].FilePath = %q, want %q", i, chunk.FilePath, path)
+		}
+		if chunk.Name == "" {
+			t.Errorf("chunk[%d].Name is empty", i)
+		}
+		if chunk.Kind == "" {
+			t.Errorf("chunk[%d].Kind is empty", i)
+		}
+		if chunk.StartLine <= 0 {
+			t.Errorf("chunk[%d].StartLine = %d, want > 0", i, chunk.StartLine)
+		}
+		if chunk.EndLine < chunk.StartLine {
+			t.Errorf("chunk[%d].EndLine = %d < StartLine = %d", i, chunk.EndLine, chunk.StartLine)
+		}
+		if chunk.Content == "" {
+			t.Errorf("chunk[%d].Content is empty", i)
+		}
+	}
+
+	// Verify we found expected structural elements
+	nameStr := strings.Join(func() []string {
+		var names []string
+		for _, chunk := range chunks {
+			names = append(names, chunk.Name)
+		}
+		return names
+	}(), " | ")
+
+	expectedSubstrings := []string{"Config", "Route", "Router", "Server", "create_server", "validate_config"}
+	for _, expected := range expectedSubstrings {
+		if !strings.Contains(nameStr, expected) {
+			t.Errorf("expected to find %q in chunk names, got: %s", expected, nameStr)
+		}
+	}
+}
+
+func TestChunkWithAstGrep_TypeScript(t *testing.T) {
+	requireAstGrep(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.ts")
+	if err := os.WriteFile(path, []byte(typescriptFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangTypeScript)
+	if err != nil {
+		t.Fatalf("ChunkWithAstGrep(%s, TypeScript) error: %v", path, err)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected non-empty chunks for TypeScript source")
+	}
+
+	// Verify chunks have required fields
+	for _, chunk := range chunks {
+		if chunk.FilePath != path {
+			t.Errorf("chunk.FilePath = %q, want %q", chunk.FilePath, path)
+		}
+		if chunk.Name == "" {
+			t.Errorf("chunk.Name is empty")
+		}
+		if chunk.Kind == "" {
+			t.Errorf("chunk.Kind is empty")
+		}
+		if chunk.StartLine <= 0 || chunk.EndLine < chunk.StartLine {
+			t.Errorf("invalid line range: [%d, %d]", chunk.StartLine, chunk.EndLine)
+		}
+		if chunk.Content == "" {
+			t.Errorf("chunk.Content is empty")
+		}
+	}
+
+	// Verify we found expected structural elements
+	kinds := make(map[string]bool)
+	for _, chunk := range chunks {
+		kinds[string(chunk.Kind)] = true
+	}
+
+	// TypeScript should have classes, interfaces, types, enums, functions
+	if !kinds["class"] && !kinds["interface"] && !kinds["type"] && !kinds["enum"] && !kinds["func"] {
+		t.Errorf("expected to find at least one of class/interface/type/enum/func, got: %v", kinds)
+	}
+}
+
+func TestChunkWithAstGrep_UnknownLanguage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(path, []byte("some text\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	_, err := codesearch.ChunkWithAstGrep(path, codesearch.Language("unknown"))
+	if err == nil {
+		t.Fatal("expected error for unknown language")
+	}
+	if !strings.Contains(err.Error(), "no ast-grep rules") {
+		t.Errorf("error should mention rules, got: %v", err)
+	}
+}
+
+func TestChunkWithAstGrep_NoMatches(t *testing.T) {
+	requireAstGrep(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.py")
+	if err := os.WriteFile(path, []byte("# just a comment\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangPython)
+	if err != nil {
+		t.Fatalf("ChunkWithAstGrep(%s, Python) error: %v", path, err)
+	}
+
+	if chunks != nil {
+		t.Errorf("expected nil for empty matches, got: %v", chunks)
+	}
+}
+
+func TestChunkWithAstGrep_Rust(t *testing.T) {
+	requireAstGrep(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lib.rs")
+	if err := os.WriteFile(path, []byte(rustFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangRust)
+	if err != nil {
+		t.Fatalf("ChunkWithAstGrep(%s, Rust) error: %v", path, err)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected non-empty chunks for Rust source")
+	}
+
+	// Verify basic structure
+	for _, chunk := range chunks {
+		if chunk.FilePath != path || chunk.Name == "" || chunk.Kind == "" {
+			t.Errorf("incomplete chunk: FilePath=%q Name=%q Kind=%q", chunk.FilePath, chunk.Name, chunk.Kind)
+		}
+	}
+}
+
+func TestChunkWithAstGrep_Java(t *testing.T) {
+	requireAstGrep(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Server.java")
+	if err := os.WriteFile(path, []byte(javaFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	chunks, err := codesearch.ChunkWithAstGrep(path, codesearch.LangJava)
+	if err != nil {
+		t.Fatalf("ChunkWithAstGrep(%s, Java) error: %v", path, err)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected non-empty chunks for Java source")
+	}
+
+	// Verify we have classes
+	hasClass := false
+	for _, chunk := range chunks {
+		if chunk.Kind == "class" {
+			hasClass = true
+			break
+		}
+	}
+	if !hasClass {
+		t.Error("expected to find at least one class chunk")
+	}
+}
