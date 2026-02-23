@@ -3,6 +3,7 @@ package langprofile_test
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -300,16 +301,43 @@ func TestReadConfig(t *testing.T) {
 
 func TestResolveProjectRoot(t *testing.T) {
 	t.Run("from worktree path returns main repo root", func(t *testing.T) {
-		// Use the actual worktree path for this test — we know we're in one.
-		worktreePath := "/Users/as21/codehouse/oro/.worktrees/oro-qh9b.1"
-		expectedRoot := "/Users/as21/codehouse/oro"
+		// Create a temporary git repo with a worktree so the test is self-contained.
+		repoDir := t.TempDir()
+		// On macOS, TempDir may return a /var symlink; resolve it so path
+		// comparisons match what git returns (git resolves symlinks).
+		repoDir, err := filepath.EvalSymlinks(repoDir)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-		got, err := langprofile.ResolveProjectRoot(worktreePath)
+		run := func(dir, name string, args ...string) {
+			t.Helper()
+			cmd := exec.Command(name, args...) //nolint:gosec // Test helper with controlled inputs
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s %v failed: %v\n%s", name, args, err, out)
+			}
+		}
+
+		// Init repo, disable hooks (prevent parent project hooks from firing),
+		// and make an initial commit (worktree add requires a commit).
+		run(repoDir, "git", "init")
+		run(repoDir, "git", "config", "core.hooksPath", "/dev/null")
+		run(repoDir, "git", "commit", "--allow-empty", "-m", "init")
+
+		worktreeDir := filepath.Join(t.TempDir(), "wt")
+		run(repoDir, "git", "worktree", "add", worktreeDir, "-b", "test-wt")
+		t.Cleanup(func() {
+			_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", worktreeDir).Run() //nolint:gosec // Test cleanup with controlled inputs
+		})
+
+		got, err := langprofile.ResolveProjectRoot(worktreeDir)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if got != expectedRoot {
-			t.Errorf("expected %q, got %q", expectedRoot, got)
+		if got != repoDir {
+			t.Errorf("expected %q, got %q", repoDir, got)
 		}
 	})
 
