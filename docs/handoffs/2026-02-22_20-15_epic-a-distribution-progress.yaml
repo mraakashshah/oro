@@ -1,0 +1,88 @@
+---
+date: 2026-02-22
+status: partial
+---
+
+goal: >
+  Execute Epic A (oro-g6sx) distribution beads. Completed 7/9 task beads
+  plus 1 P1 bug fix. Two beads remain.
+
+now: >
+  Dispatch oro work for final 2 beads: .8 (simplify init) and .9 (rewrite
+  install.md). Both unblocked, different files, can run in parallel.
+  Use oro work (not Task agents) — binary is rebuilt and working.
+
+test: make stage-assets && go test ./cmd/oro/... -count=1 && make clean-assets
+
+done_this_session:
+  - task: "Bead .4 — curl-pipe-bash install script"
+    files: [scripts/install.sh, scripts/install_test.sh]
+    commit: "5333278"
+  - task: "Bead .7 — oro setup command with 5 phases"
+    files: [cmd/oro/cmd_setup.go, cmd/oro/cmd_setup_test.go, cmd/oro/root.go, cmd/oro/cmd_help.go]
+    commit: "d4d33d2"
+  - task: "Bug oro-tjwb — fix no_cd_guard worktree root detection"
+    files: [.claude/hooks/no_cd_guard.py, tests/test_no_cd_guard.py]
+    commit: "77f43ce"
+  - task: "Merged beads .4 and .7 via rebase+ff-only"
+  - task: "Removed stale learning about oro work not existing"
+  - task: "Updated dispatching skill (prior session) — cherry-pick → rebase+ff-only"
+
+decisions:
+  oro_work_exists: >
+    oro work IS implemented and functional. Prior learning was wrong (stale binary).
+    Run make install after code changes. Use oro work for future beads.
+  merge_step_by_step: >
+    Rebase guard hook evaluates entire chained command pre-execution.
+    Must remove worktree as separate Bash call, then rebase in next call.
+  no_cd_guard_fix: >
+    git rev-parse --show-toplevel returns worktree root when CWD is inside
+    worktree. Fixed to use --git-common-dir which returns shared .git dir.
+
+findings:
+  hook_chaining_blocked: >
+    Cannot chain git worktree remove + git rebase in one command. The
+    rebase_worktree_guard hook checks ALL branches in worktrees before any
+    part of the command executes. Split into separate tool calls.
+  cwd_corruption_still_possible: >
+    Task agents with isolation:worktree can shift the manager's Bash CWD
+    into the worktree. The no_cd_guard fix helps escape, but the root cause
+    (Task tool CWD leaking) is still present.
+
+worked:
+  - "oro work for simple beads (once binary rebuilt)"
+  - "Rebase+ff-only as separate steps: remove worktree, then rebase+merge"
+  - "Task agents with worktree isolation for parallel bead work"
+
+failed:
+  - "Chained git worktree remove + rebase in single command (hook blocks)"
+  - "oro work without acceptance criteria (exits immediately)"
+  - "Mock-based test for _git_repo_root (module-level import caching)"
+
+next:
+  - "oro work oro-g6sx.8 --skip-review (simplify init, 5min)"
+  - "oro work oro-g6sx.9 --skip-review (rewrite install.md, 3min)"
+  - "After both: bd close epic oro-g6sx, push, create Epic B/C beads"
+
+files:
+  created:
+    - scripts/install.sh
+    - scripts/install_test.sh
+    - cmd/oro/cmd_setup.go
+    - cmd/oro/cmd_setup_test.go
+    - tests/test_no_cd_guard.py
+  modified:
+    - .claude/hooks/no_cd_guard.py
+    - cmd/oro/root.go
+    - cmd/oro/cmd_help.go
+    - .claude/skills/dispatching-parallel-agents/SKILL.md
+
+beads:
+  completed: [oro-g6sx.4, oro-g6sx.7, oro-tjwb]
+  in_progress: []
+  remaining:
+    - oro-g6sx.8  # simplify oro init (READY)
+    - oro-g6sx.9  # rewrite install.md (READY)
+  epic: oro-g6sx
+
+git_head: d4d33d2
