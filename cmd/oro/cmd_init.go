@@ -213,24 +213,19 @@ func newInitCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init [project-name]",
-		Short: "Bootstrap oro dependencies, generate config, and extract assets",
-		Long: `Checks for and installs all tools required by the oro agent swarm,
-creates .oro/config.yaml with project identity, generates per-project
-settings.json with hook paths, and extracts embedded assets to ~/.oro/.
+		Short: "Detect project, generate config, and extract assets",
+		Long: `Bootstraps a project for oro: creates .oro/config.yaml with project identity,
+generates per-project settings.json with hook paths, and extracts embedded
+assets to ~/.oro/. Reports any missing tools but does NOT install them.
 
-Phase 1: System prerequisites (Go, Python, Node, npm, Homebrew)
-Phase 2: Go tools (gofumpt, goimports, golangci-lint, etc.)
-Phase 3: Python tools (uv, ruff, pyright)
-Phase 4: System tools (tmux, shellcheck, biome, jq, ast-grep, bd)
-Phase 5: Bootstrap project (config anchor, settings, embedded assets)
+Use 'oro setup' to install missing tools (interactive, installs via brew/go/npm).
 
 The project name is taken from the first argument, or defaults to the
 directory name of --project-root.
 
-Use --check to verify without installing (exits non-zero if any tool is missing).
+Use --check to verify tools without bootstrapping (exits non-zero if any missing).
 Use --quiet to suppress all output (useful for CI scripts).
-Use --project-root to specify a different project directory (default: current directory).
-Use --force to overwrite existing .oro/config.yaml.`,
+Use --project-root to specify a different project directory (default: current directory).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
@@ -251,11 +246,26 @@ Use --force to overwrite existing .oro/config.yaml.`,
 
 // runInit is the core logic for the init command, separated for testability.
 func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string) error {
-	if err := ensureTools(w, checkOnly, quiet); err != nil {
-		return err
-	}
-	if checkOnly || quiet {
+	// Report tool status but never install. Use oro setup for that.
+	results := checkAllTools(defaultToolDefs)
+	if quiet {
+		if !allToolsPresent(results) {
+			return fmt.Errorf("%d tools missing — run 'oro setup' to install", countMissing(results))
+		}
 		return nil
+	}
+	if checkOnly {
+		formatInitTable(w, results)
+		if !allToolsPresent(results) {
+			return fmt.Errorf("%d tools missing — run 'oro setup' to install", countMissing(results))
+		}
+		return nil
+	}
+	// Report missing tools but continue with bootstrap.
+	missing := countMissing(results)
+	if missing > 0 {
+		formatInitTable(w, results)
+		fmt.Fprintf(w, "\n%d tools missing. Run 'oro setup' to install them.\nContinuing with project bootstrap...\n\n", missing)
 	}
 
 	name, err := resolveProjectName(projectRoot, projectName)
@@ -284,29 +294,6 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string
 	fmt.Fprintf(w, "\nRun 'oro start' to launch agents.\n")
 
 	return nil
-}
-
-// ensureTools checks for required tools, optionally installing missing ones.
-// Returns nil on success. In check-only or quiet mode, returns an error if tools are missing.
-func ensureTools(w io.Writer, checkOnly, quiet bool) error {
-	results := checkAllTools(defaultToolDefs)
-
-	if quiet {
-		if allToolsPresent(results) {
-			return nil
-		}
-		return fmt.Errorf("%d tools missing", countMissing(results))
-	}
-
-	if checkOnly {
-		formatInitTable(w, results)
-		if !allToolsPresent(results) {
-			return fmt.Errorf("%d tools missing", countMissing(results))
-		}
-		return nil
-	}
-
-	return installMissingTools(w, results)
 }
 
 // installMissingTools installs any missing tools and re-verifies.
