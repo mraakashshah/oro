@@ -182,6 +182,39 @@ formatters:
         - oro
 `
 
+// pyprojectToolSectionsTemplate contains [tool.*] sections for Python projects.
+// These are appended to an existing pyproject.toml or used standalone.
+const pyprojectToolSectionsTemplate = `[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+venvPath = "."
+venv = ".venv"
+
+[tool.pylint.main]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+`
+
+// generatePyprojectToolSections returns pyproject.toml tool sections for Python projects.
+// Returns empty string if cfg is nil or does not include a "python" language entry.
+// The error return is reserved for future template-based generation.
+func generatePyprojectToolSections(cfg *langprofile.Config) (string, error) { //nolint:unparam // error reserved for future use
+	if cfg == nil {
+		return "", nil
+	}
+	if _, ok := cfg.Languages["python"]; !ok {
+		return "", nil
+	}
+	return pyprojectToolSectionsTemplate, nil
+}
+
 // generateGolangciLint returns a .golangci.yml configuration string for Go projects.
 // Returns empty string if cfg is nil or does not include a "go" language entry.
 // The error return is reserved for future template-based generation.

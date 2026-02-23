@@ -81,3 +81,83 @@ func TestGenerateGolangciLint(t *testing.T) {
 		}
 	})
 }
+
+// TestGeneratePyprojectToolSections verifies pyproject.toml tool section generation from Config.
+func TestGeneratePyprojectToolSections(t *testing.T) {
+	t.Run("Python in config returns TOML with tool sections", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{
+				"python": {Linters: []string{"ruff", "pylint"}, TypeCheck: "pyright"},
+			},
+		}
+
+		got, err := generatePyprojectToolSections(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got == "" {
+			t.Fatal("expected non-empty TOML, got empty string")
+		}
+
+		// Verify all required tool sections are present.
+		requiredSections := []string{
+			"[tool.ruff]",
+			"[tool.ruff.lint]",
+			"[tool.pyright]",
+			"[tool.pytest.ini_options]",
+		}
+		for _, section := range requiredSections {
+			if !strings.Contains(got, section) {
+				t.Errorf("expected section %q in output", section)
+			}
+		}
+
+		// Verify ruff lint select includes the standard rule set.
+		requiredRules := []string{"E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"}
+		for _, rule := range requiredRules {
+			if !strings.Contains(got, `"`+rule+`"`) {
+				t.Errorf("expected ruff rule %q in select list", rule)
+			}
+		}
+	})
+
+	t.Run("No Python in config returns empty string", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{
+				"go": {Linters: []string{"golangci-lint"}},
+			},
+		}
+
+		got, err := generatePyprojectToolSections(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "" {
+			t.Errorf("expected empty string for non-Python config, got:\n%s", got)
+		}
+	})
+
+	t.Run("Nil config returns empty string", func(t *testing.T) {
+		got, err := generatePyprojectToolSections(nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "" {
+			t.Errorf("expected empty string for nil config, got:\n%s", got)
+		}
+	})
+
+	t.Run("Empty languages map returns empty string", func(t *testing.T) {
+		cfg := &langprofile.Config{
+			Languages: map[string]langprofile.LanguageConfig{},
+		}
+
+		got, err := generatePyprojectToolSections(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "" {
+			t.Errorf("expected empty string for config with no languages, got:\n%s", got)
+		}
+	})
+}
