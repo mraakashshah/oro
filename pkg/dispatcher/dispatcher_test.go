@@ -5796,6 +5796,88 @@ func TestMergeAndCompleteEscalatesMergeComplete(t *testing.T) {
 	}
 }
 
+// TestMergeCompleteEscalationAutoAcked verifies that MERGE_COMPLETE escalations
+// are automatically acknowledged after successful merge, preventing duplicate notifications.
+// This ensures: (1) escalation status='acked' in DB, (2) retryPendingEscalations skips it,
+// (3) manager receives exactly 1 notification per merge.
+func TestMergeCompleteEscalationAutoAcked(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Init schema so escalations table is available
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	beadID := "bead-auto-ack-test"
+	workerID := "w-ack"
+	worktree := "/tmp/worktree-" + beadID
+	branch := "agent/" + beadID
+
+	// Perform merge - this creates a MERGE_COMPLETE escalation
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch)
+
+	// Verify escalation was created with status='pending'
+	var escID int64
+	var escType string
+	var escStatus string
+	err = d.db.QueryRowContext(ctx,
+		`SELECT id, type, status FROM escalations WHERE bead_id = ? AND type = ?`,
+		beadID, "MERGE_COMPLETE").
+		Scan(&escID, &escType, &escStatus)
+	if err != nil {
+		t.Fatalf("failed to query MERGE_COMPLETE escalation: %v", err)
+	}
+
+	// Before retry: should be pending
+	if escStatus != "pending" {
+		t.Errorf("initial escalation status = %q, want 'pending'", escStatus)
+	}
+
+	// Count initial escalations sent
+	initialMsgCount := len(esc.Messages())
+
+	// Run retry logic - this should auto-ack the MERGE_COMPLETE escalation
+	d.retryPendingEscalations(ctx)
+
+	// Verify escalation is now acked
+	var ackedStatus string
+	var ackedAt sql.NullString
+	err = d.db.QueryRowContext(ctx,
+		`SELECT status, acked_at FROM escalations WHERE bead_id = ? AND type = ?`,
+		beadID, "MERGE_COMPLETE").
+		Scan(&ackedStatus, &ackedAt)
+	if err != nil {
+		t.Fatalf("failed to query escalation after retry: %v", err)
+	}
+
+	if ackedStatus != "acked" {
+		t.Errorf("after retryPendingEscalations, escalation status = %q, want 'acked'", ackedStatus)
+	}
+	if !ackedAt.Valid || ackedAt.String == "" {
+		t.Error("after retryPendingEscalations, escalation acked_at is NULL or empty, want timestamp")
+	}
+
+	// Verify no additional escalation was sent (only the original MERGE_COMPLETE)
+	finalMsgCount := len(esc.Messages())
+	if finalMsgCount > initialMsgCount {
+		t.Errorf("retryPendingEscalations resent escalation: initial=%d msgs, final=%d msgs",
+			initialMsgCount, finalMsgCount)
+	}
+
+	// Verify manager received exactly 1 MERGE_COMPLETE message
+	mergeCompleteCount := 0
+	for _, msg := range esc.Messages() {
+		if strings.Contains(msg, string(protocol.EscMergeComplete)) {
+			mergeCompleteCount++
+		}
+	}
+	if mergeCompleteCount != 1 {
+		t.Errorf("manager received %d MERGE_COMPLETE notifications, want 1", mergeCompleteCount)
+	}
+}
+
 // TestAssignUsesRichPrompt verifies that assignBead populates the AssignPayload
 // with bead title, description, and acceptance criteria from beads.Show().
 func TestAssignUsesRichPrompt(t *testing.T) {

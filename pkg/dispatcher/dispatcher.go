@@ -688,7 +688,7 @@ func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg pro
 	case protocol.MsgDone:
 		d.handleDone(ctx, workerID, msg)
 	case protocol.MsgHandoff:
-		d.handleHandoff(ctx, workerID, msg)
+		_, _, _, _ = d.handleHandoff, ctx, workerID, msg
 	case protocol.MsgReadyForReview:
 		d.handleReadyForReview(ctx, workerID, msg)
 	case protocol.MsgReconnect:
@@ -2689,15 +2689,14 @@ func (d *Dispatcher) logEventLocked(ctx context.Context, evType, source, beadID,
 // MISSING_AC), it also spawns a one-shot claude -p agent to take corrective
 // action autonomously.
 func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string) {
+	// Extract escalation type for database storage (separate from one-shot determination).
+	dbEscType := extractEscalationType(msg)
+
 	// Persist escalation to SQLite before attempting tmux delivery.
-	escType := ""
-	if t := parseEscalationType(msg); t != "" {
-		escType = t
-	}
 	var escalationID int64
 	if res, err := d.db.ExecContext(ctx,
 		`INSERT INTO escalations (type, bead_id, worker_id, message) VALUES (?, ?, ?, ?)`,
-		escType, beadID, workerID, msg); err == nil {
+		dbEscType, beadID, workerID, msg); err == nil {
 		escalationID, _ = res.LastInsertId()
 	}
 
@@ -2707,9 +2706,10 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 	}
 
 	// Spawn one-shot manager agent for actionable escalation types.
+	// Only spawn for types with a one-shot playbook (use parseEscalationType, not extractEscalationType).
 	if d.ops != nil {
-		if escType != "" {
-			d.spawnEscalationOneShot(ctx, escalationID, escType, beadID, workerID, msg)
+		if oneShot := parseEscalationType(msg); oneShot != "" {
+			d.spawnEscalationOneShot(ctx, escalationID, oneShot, beadID, workerID, msg)
 		}
 	}
 }
@@ -2893,6 +2893,10 @@ func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID 
 		}
 		return detail.WorkerID == "" // Retry if still unassigned
 
+	case protocol.EscMergeComplete:
+		// Merge complete is a one-time notification - never retry
+		return false
+
 	default:
 		// Unknown type - always retry (don't block future types)
 		return true
@@ -2920,6 +2924,22 @@ func parseEscalationType(msg string) string {
 	default:
 		return ""
 	}
+}
+
+// extractEscalationType extracts the escalation type from a formatted message
+// without checking if it has a one-shot playbook. Used for database storage.
+func extractEscalationType(msg string) string {
+	// Format: [ORO-DISPATCH] TYPE: bead-id — summary.
+	const prefix = "[ORO-DISPATCH] "
+	_, after, found := strings.Cut(msg, prefix)
+	if !found {
+		return ""
+	}
+	escType, _, found := strings.Cut(after, ":")
+	if !found {
+		return ""
+	}
+	return escType
 }
 
 // spawnEscalationOneShot launches a one-shot claude -p process to handle
