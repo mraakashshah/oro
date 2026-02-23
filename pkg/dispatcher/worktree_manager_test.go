@@ -73,15 +73,24 @@ func TestGitWorktreeManager_Remove_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	// Expect 2 calls: git status (returns clean) + git worktree remove
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
 	}
-	call := runner.calls[0]
+
+	// Call 1: git status --porcelain (auto-commit check)
+	statusCall := runner.calls[0]
+	if !containsAll(statusCall.Args, "status", "--porcelain") {
+		t.Fatalf("call[0] should be git status --porcelain, got: %v", statusCall.Args)
+	}
+
+	// Call 2: git worktree remove
+	removeCall := runner.calls[1]
 	wantArgs := []string{"-C", "/repo/root", "worktree", "remove", "/repo/root/.worktrees/abc123", "--force"}
-	if len(call.Args) != len(wantArgs) {
-		t.Fatalf("args: got %v, want %v", call.Args, wantArgs)
+	if len(removeCall.Args) != len(wantArgs) {
+		t.Fatalf("args: got %v, want %v", removeCall.Args, wantArgs)
 	}
-	for i, a := range call.Args {
+	for i, a := range removeCall.Args {
 		if a != wantArgs[i] {
 			t.Fatalf("args[%d]: got %q, want %q", i, a, wantArgs[i])
 		}
