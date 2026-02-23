@@ -11,6 +11,7 @@ const helpText = `Oro — Agent swarm orchestrator
 
 Lifecycle:
   init       Bootstrap dependencies and generate config
+  setup      User-friendly project setup with prereq checks and health verification
   start      Launch the swarm (tmux + dispatcher + workers)
   stop       Graceful shutdown
   cleanup    Clean all stale state after a crash
