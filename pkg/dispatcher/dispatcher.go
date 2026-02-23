@@ -356,6 +356,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			worktreeFailures: make(map[string]time.Time),
 			exhaustedBeads:   make(map[string]bool),
 			assigningBeads:   make(map[string]bool),
+			worktreeByBead:   make(map[string]string),
 		},
 		priorityBeads:     make(map[string]bool),
 		pendingManagedIDs: make(map[string]bool),
@@ -1008,11 +1009,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 
 	// Auto-close parent epic if all children are completed.
 	d.autoCloseEpicIfComplete(ctx, workerID)
-
-	// Remove worktree after merge — safe because QG already ran before DONE.
-	if err := d.worktrees.Remove(ctx, worktree); err != nil {
-		_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
-	}
+	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 
 	// Trigger memory consolidation after every N bead completions.
 	d.mu.Lock()
@@ -1034,6 +1031,19 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 			_ = d.logEvent(ctx, "memory_consolidation", "dispatcher", "", "",
 				fmt.Sprintf(`{"merged":%d,"pruned":%d}`, merged, pruned))
 		})
+	}
+}
+
+// removeWorktreeAndClearTracking removes a worktree and clears its tracking entry.
+// Safe to call after successful merge completion. Logs but does not return errors.
+func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID, workerID, worktree string) {
+	if err := d.worktrees.Remove(ctx, worktree); err != nil {
+		_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+	} else {
+		// Clear worktree tracking entry after successful removal (oro-1eo8).
+		d.mu.Lock()
+		delete(d.worktreeByBead, beadID)
+		d.mu.Unlock()
 	}
 }
 
@@ -2013,16 +2023,37 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		return nil
 	}
 
-	worktree, branch, err := d.worktrees.Create(ctx, bead.ID)
-	if err != nil {
-		_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())
-		d.recordAssignmentFailure(bead.ID)
-		// Revert status since assignment failed
-		_ = d.beads.Update(ctx, bead.ID, "ready")
+	// Check if a worktree already exists for this bead (from previous worker timeout/kill).
+	// If it exists, reuse it to preserve uncommitted changes (oro-1eo8).
+	d.mu.Lock()
+	existingWorktree := d.worktreeByBead[bead.ID]
+	d.mu.Unlock()
+
+	var worktree, branch string
+	var err error
+	if existingWorktree != "" {
+		// Reuse existing worktree.
+		worktree = existingWorktree
+		branch = protocol.BranchPrefix + bead.ID
+		_ = d.logEvent(ctx, "worktree_reused", "dispatcher", bead.ID, w.id,
+			fmt.Sprintf(`{"worktree":%q}`, worktree))
+	} else {
+		// Create new worktree.
+		worktree, branch, err = d.worktrees.Create(ctx, bead.ID)
+		if err != nil {
+			_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())
+			d.recordAssignmentFailure(bead.ID)
+			// Revert status since assignment failed
+			_ = d.beads.Update(ctx, bead.ID, "ready")
+			d.mu.Lock()
+			delete(d.assigningBeads, bead.ID)
+			d.mu.Unlock()
+			return nil
+		}
+		// Store new worktree for potential reuse on respawn (oro-1eo8).
 		d.mu.Lock()
-		delete(d.assigningBeads, bead.ID)
+		d.worktreeByBead[bead.ID] = worktree
 		d.mu.Unlock()
-		return nil
 	}
 
 	_ = d.createAssignment(ctx, bead.ID, w.id, worktree)
@@ -2402,7 +2433,6 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 
 	// Capture fields before removing worker.
 	beadID := w.beadID
-	worktree := w.worktree
 	managed := w.managed
 
 	// Close connection and remove worker from pool.
@@ -2416,13 +2446,9 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 	}
 	d.mu.Unlock()
 
-	// Remove the worker's git worktree (best-effort: log warning on failure).
-	if worktree != "" {
-		if err := d.worktrees.Remove(ctx, worktree); err != nil {
-			_ = d.logEvent(ctx, "kill_worker_worktree_remove_failed", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"worktree":%q,"error":%q}`, worktree, err.Error()))
-		}
-	}
+	// DO NOT remove the worktree here - preserve it for respawn reuse (oro-1eo8).
+	// The worktree will be reused if the same bead is reassigned, or cleaned up
+	// on successful completion or explicit shutdown.
 
 	// Reset bead to open so it can be reassigned.
 	if beadID != "" {
