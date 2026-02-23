@@ -590,6 +590,102 @@ func TestAssemblePrompt_CodeSearchContext_Present(t *testing.T) {
 	}
 }
 
+// TestAssemblePrompt_CodeSearchSection verifies that the ## Relevant Code section
+// is rendered conditionally: present when CodeSearchContext is non-empty, omitted
+// when empty, and positioned correctly between Memory and Coding Rules sections.
+func TestAssemblePrompt_CodeSearchSection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("section_omitted_when_empty", func(t *testing.T) {
+		t.Parallel()
+
+		params := worker.PromptParams{
+			BeadID:             "bead-no-search",
+			Title:              "No code search",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "Some context",
+			CodeSearchContext:  "", // Empty
+			WorktreePath:       "/tmp/wt-no-search",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		if strings.Contains(prompt, "## Relevant Code") {
+			t.Error("expected ## Relevant Code section to be omitted when CodeSearchContext is empty")
+		}
+	})
+
+	t.Run("section_present_when_non_empty", func(t *testing.T) {
+		t.Parallel()
+
+		codeSearchCtx := "### pkg/example/example.go:15-30\n```go\nfunc Test() {}\n```"
+
+		params := worker.PromptParams{
+			BeadID:             "bead-with-search",
+			Title:              "With code search",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "Some context",
+			CodeSearchContext:  codeSearchCtx,
+			WorktreePath:       "/tmp/wt-with-search",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		if !strings.Contains(prompt, "## Relevant Code") {
+			t.Error("expected ## Relevant Code section to be present when CodeSearchContext is non-empty")
+		}
+
+		if !strings.Contains(prompt, codeSearchCtx) {
+			t.Error("expected prompt to contain the CodeSearchContext content")
+		}
+	})
+
+	t.Run("section_ordering", func(t *testing.T) {
+		t.Parallel()
+
+		codeSearchCtx := "### pkg/foo/bar.go:5-10\n```go\nfunc Foo() {}\n```"
+
+		params := worker.PromptParams{
+			BeadID:             "bead-order-test",
+			Title:              "Order test",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "Some context",
+			CodeSearchContext:  codeSearchCtx,
+			WorktreePath:       "/tmp/wt-order",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		memIdx := strings.Index(prompt, "## Memory")
+		codeIdx := strings.Index(prompt, "## Relevant Code")
+		rulesIdx := strings.Index(prompt, "## Coding Rules")
+
+		if memIdx == -1 {
+			t.Fatal("## Memory section not found in prompt")
+		}
+		if codeIdx == -1 {
+			t.Fatal("## Relevant Code section not found in prompt")
+		}
+		if rulesIdx == -1 {
+			t.Fatal("## Coding Rules section not found in prompt")
+		}
+
+		if codeIdx <= memIdx {
+			t.Errorf("expected ## Relevant Code to appear after ## Memory (Memory at %d, Code at %d)", memIdx, codeIdx)
+		}
+
+		if codeIdx >= rulesIdx {
+			t.Errorf("expected ## Relevant Code to appear before ## Coding Rules (Code at %d, Rules at %d)", codeIdx, rulesIdx)
+		}
+	})
+}
+
 func TestPromptHandoffTemplate(t *testing.T) {
 	t.Parallel()
 
