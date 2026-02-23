@@ -265,6 +265,7 @@ type Dispatcher struct {
 	BeadTracker
 
 	mu                          sync.Mutex
+	reconcilingScale            atomic.Bool // prevents concurrent reconcileScale() calls (oro-ovpc.1)
 	state                       State
 	listener                    net.Listener
 	focusedEpic                 string
@@ -2671,14 +2672,28 @@ func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount i
 // shuts down managed workers to reach the target. Unmanaged (externally
 // connected) workers are invisible to scaling in all modes.
 // When MaxWorkers=0, returns immediately as a no-op (manual mode).
+//
+// Uses atomic flag to prevent concurrent execution. If already running, returns
+// immediately to avoid duplicate spawns. See oro-ovpc.1.
 func (d *Dispatcher) reconcileScale() string {
+	// Use atomic CAS to ensure only one reconcileScale runs at a time (oro-ovpc.1).
+	// If another call is in progress, return immediately - the running call will
+	// handle the reconciliation. This prevents duplicate spawns without deadlock.
+	if !d.reconcilingScale.CompareAndSwap(false, true) {
+		return "" // already reconciling
+	}
+	defer d.reconcilingScale.Store(false)
+
 	d.mu.Lock()
 	if d.cfg.MaxWorkers == 0 {
 		d.mu.Unlock()
 		return ""
 	}
 	target := d.targetWorkers
-	managedCount := 0
+	// Count both connected managed workers AND pending spawns (oro-ovpc).
+	// Without counting pending, concurrent reconcileScale calls both see
+	// managedCount=0 and spawn duplicates before workers connect.
+	managedCount := len(d.pendingManagedIDs)
 	for _, w := range d.workers {
 		if w.managed {
 			managedCount++
