@@ -26,11 +26,12 @@ type Theme struct {
 	ColorP4 lipgloss.Color
 
 	// Chrome colors
-	ColorBorder  lipgloss.Color
-	ColorBg      lipgloss.Color
-	ColorFg      lipgloss.Color
-	ColorFocus   lipgloss.Color // Active card background
-	ColorMutedFg lipgloss.Color // Muted foreground for headers/secondary text
+	ColorBorder    lipgloss.Color
+	ColorBorderDim lipgloss.Color // Darker border for secondary elements
+	ColorBg        lipgloss.Color
+	ColorFg        lipgloss.Color
+	ColorFocus     lipgloss.Color // Active card background
+	ColorMutedFg   lipgloss.Color // Muted foreground for headers/secondary text
 
 	// Heartbeat health colors
 	ColorHealthy lipgloss.Color
@@ -123,6 +124,13 @@ type Styles struct {
 	// WorkersCol is a base style; call .Width(n) at render time (Width returns a copy).
 	WorkersCol lipgloss.Style
 
+	// List view styles
+	ListRow             lipgloss.Style
+	ListActiveRow       lipgloss.Style
+	ListGroupHeader     lipgloss.Style
+	ListDetailBorder    lipgloss.Style
+	ListDetailBorderDim lipgloss.Style
+
 	// Status bar separator (pre-rendered string for use in renderStatusBar)
 	Separator string
 }
@@ -152,11 +160,12 @@ func DefaultTheme() Theme {
 		ColorP4: lipgloss.Color("#687076"), // Backlog — dim gray
 
 		// Chrome colors
-		ColorBorder:  lipgloss.Color("#3E4347"),
-		ColorBg:      lipgloss.Color("#111113"),
-		ColorFg:      lipgloss.Color("#EDEEF0"),
-		ColorFocus:   lipgloss.Color("#2A2A3A"), // Subtle dark highlight — active card background
-		ColorMutedFg: lipgloss.Color("#889096"), // Dim gray — muted headers/secondary text
+		ColorBorder:    lipgloss.Color("#3E4347"),
+		ColorBorderDim: lipgloss.Color("#2A2D30"), // Darker border for secondary elements
+		ColorBg:        lipgloss.Color("#111113"),
+		ColorFg:        lipgloss.Color("#EDEEF0"),
+		ColorFocus:     lipgloss.Color("#2A2A3A"), // Subtle dark highlight — active card background
+		ColorMutedFg:   lipgloss.Color("#889096"), // Dim gray — muted headers/secondary text
 
 		// Heartbeat health colors
 		ColorHealthy: lipgloss.Color("#30A46C"), // Green — recent heartbeat
@@ -179,6 +188,7 @@ func NewStyles(theme Theme) Styles {
 	s.initBadgeStyles(theme)
 	s.initInsightsStyles(theme)
 	s.initWorkersStyles()
+	s.initListViewStyles(theme)
 	s.Separator = " │ "
 	return s
 }
@@ -270,4 +280,12 @@ func (s *Styles) initWorkersStyles() {
 	s.WorkersRow = lipgloss.NewStyle()
 	// Base column style — callers apply .Width(n) at render time; Width() returns a copy.
 	s.WorkersCol = lipgloss.NewStyle()
+}
+
+func (s *Styles) initListViewStyles(theme Theme) {
+	s.ListRow = lipgloss.NewStyle().Foreground(theme.ColorFg)
+	s.ListActiveRow = lipgloss.NewStyle().Bold(true).Background(theme.ColorFocus)
+	s.ListGroupHeader = lipgloss.NewStyle().Bold(true).Foreground(theme.ColorMutedFg)
+	s.ListDetailBorder = lipgloss.NewStyle().Foreground(theme.ColorBorder)
+	s.ListDetailBorderDim = lipgloss.NewStyle().Foreground(theme.ColorBorderDim)
 }

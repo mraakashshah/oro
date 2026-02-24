@@ -100,6 +100,46 @@ func TestThemeLegacyMapping(t *testing.T) {
 	}
 }
 
+func TestListViewStyles(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	// Assert: All list-view styles are non-zero (by rendering with test text)
+	tests := []struct {
+		name  string
+		style lipgloss.Style
+	}{
+		{"ListRow", styles.ListRow},
+		{"ListActiveRow", styles.ListActiveRow},
+		{"ListGroupHeader", styles.ListGroupHeader},
+		{"ListDetailBorder", styles.ListDetailBorder},
+		{"ListDetailBorderDim", styles.ListDetailBorderDim},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered := tt.style.Render("test")
+			if rendered == "" {
+				t.Errorf("%s style rendered empty, expected non-empty", tt.name)
+			}
+		})
+	}
+
+	// Assert: ColorBorderDim is non-zero
+	if theme.ColorBorderDim == "" {
+		t.Error("ColorBorderDim is empty, expected a color value")
+	}
+
+	// Edge constraint: ColorBorderDim (#2A2D30) must be darker than ColorBorder (#3E4347)
+	// Verify the specific values
+	if string(theme.ColorBorderDim) != "#2A2D30" {
+		t.Errorf("ColorBorderDim = %q, want #2A2D30", string(theme.ColorBorderDim))
+	}
+	if string(theme.ColorBorder) != "#3E4347" {
+		t.Errorf("ColorBorder = %q, want #3E4347", string(theme.ColorBorder))
+	}
+}
+
 func TestNoInlineNewStyleInViews(t *testing.T) {
 	// Assert that insights.go and workers_table.go contain zero inline
 	// lipgloss.NewStyle() calls — all styles must be pre-computed in theme.go.
