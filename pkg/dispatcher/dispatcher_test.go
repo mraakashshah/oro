@@ -11721,3 +11721,103 @@ func TestStatusDirective_Throttled(t *testing.T) {
 		t.Fatalf("expected uptime_seconds=6.0 in fresh response, got %.1f", status3.UptimeSeconds)
 	}
 }
+
+// TestBeadClosedExternally_TriggersMerge verifies that when a bead is closed
+// externally (e.g., via `bd close`) while a worker is assigned, the dispatcher
+// triggers mergeAndComplete for the worker's branch so that committed code
+// on the agent branch gets merged to main instead of being stranded.
+func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Init schema so logEvent, completeAssignment, etc. work.
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	beadID := "bead-ext-close"
+	workerID := "w-ext"
+	worktree := "/tmp/worktree-" + beadID
+
+	// Register an assignment so completeAssignment has something to update.
+	_, err = d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+
+	// Set up a tracked worker that is busy on this bead with a worktree.
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn,
+		beadID:   beadID,
+		state:    protocol.WorkerBusy,
+		worktree: worktree,
+		encoder:  json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	// Configure the mock bead source to return "closed" status for this bead.
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		Title:              beadID,
+		Status:             "closed",
+		AcceptanceCriteria: "done",
+	}
+	beadSrc.mu.Unlock()
+
+	// Trigger the handler that detects externally-closed beads.
+	d.checkClosedBeadAssignments(ctx)
+
+	// Wait for the async mergeAndComplete goroutine to run — indicated by
+	// beads.Close being called (mergeAndComplete closes the bead after merge).
+	waitFor(t, func() bool {
+		beadSrc.mu.Lock()
+		defer beadSrc.mu.Unlock()
+		for _, id := range beadSrc.closed {
+			if id == beadID {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
+
+	// Verify the worker was transitioned to idle and cleared.
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	var wState protocol.WorkerState
+	var wBead string
+	if ok {
+		wState = w.state
+		wBead = w.beadID
+	}
+	d.mu.Unlock()
+
+	if !ok {
+		t.Fatal("expected worker to still exist in tracking")
+	}
+	if wState != protocol.WorkerIdle {
+		t.Errorf("expected worker state Idle, got %v", wState)
+	}
+	if wBead != "" {
+		t.Errorf("expected worker beadID cleared, got %q", wBead)
+	}
+
+	// Verify SHUTDOWN was sent to the worker.
+	conn.mu.Lock()
+	gotShutdown := false
+	for _, data := range conn.written {
+		if strings.Contains(string(data), string(protocol.MsgShutdown)) {
+			gotShutdown = true
+			break
+		}
+	}
+	conn.mu.Unlock()
+	if !gotShutdown {
+		t.Error("expected SHUTDOWN message to be sent to worker")
+	}
+}

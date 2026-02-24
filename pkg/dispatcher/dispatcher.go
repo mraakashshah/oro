@@ -1972,10 +1972,12 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 			continue
 		}
 
-		// Send SHUTDOWN and clear worker state under lock.
+		// Send SHUTDOWN, capture worktree, and clear worker state under lock.
+		var worktree string
 		d.mu.Lock()
 		if w, ok := d.workers[a.workerID]; ok && w.beadID == a.beadID {
 			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+			worktree = w.worktree
 			w.state = protocol.WorkerIdle
 			w.beadID = ""
 			w.epicID = ""
@@ -1983,9 +1985,19 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 		}
 		d.mu.Unlock()
 
-		// Complete DB assignment record and clear per-bead tracking maps.
-		_ = d.completeAssignment(ctx, a.beadID)
-		d.clearBeadTracking(a.beadID)
+		// If the worker had a worktree, attempt to merge any commits on the
+		// agent branch before cleaning up. mergeAndComplete handles assignment
+		// completion, tracking cleanup, and worktree removal internally.
+		if worktree != "" {
+			beadID := a.beadID
+			workerID := a.workerID
+			branch := protocol.BranchPrefix + beadID
+			d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch) })
+		} else {
+			// No worktree — just complete the DB record and clear tracking.
+			_ = d.completeAssignment(ctx, a.beadID)
+			d.clearBeadTracking(a.beadID)
+		}
 	}
 }
 
