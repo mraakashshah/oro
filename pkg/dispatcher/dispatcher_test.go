@@ -10253,24 +10253,29 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	// Close connection to trigger handleConn's deferred cleanup
 	_ = conn.Close()
 
-	// Wait for cleanup to run (worker removed from d.workers).
+	// Wait for full cleanup: worker removed AND tracking maps cleared.
+	// handleConn's defer deletes the worker and releases the lock BEFORE
+	// calling clearBeadTracking, so checking only worker removal races
+	// with the subsequent map cleanup.
 	waitFor(t, func() bool {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		_, exists := d.workers["w1"]
-		return !exists
+		_, workerExists := d.workers["w1"]
+		_, attemptExists := d.attemptCounts["oro-test"]
+		_, qgExists := d.qgStuckTracker["oro-test"]
+		_, escExists := d.escalatedBeads["oro-test"]
+		_, wtExists := d.worktreeFailures["oro-test"]
+		_, assignExists := d.assigningBeads["oro-test"]
+		return !workerExists && !attemptExists && !qgExists && !escExists && !wtExists && !assignExists
 	}, 2*time.Second)
 
-	// Verify worker was removed from d.workers
+	// Final assertions under lock for clear error messages.
 	d.mu.Lock()
 	_, stillExists := d.workers["w1"]
-	if stillExists {
-		d.mu.Unlock()
-		t.Fatal("worker w1 still exists after connection close")
-	}
-
-	// Assert: All BeadTracker maps should have zero entries for oro-test
 	var errs []string
+	if stillExists {
+		errs = append(errs, "worker w1 still exists after connection close")
+	}
 	if _, exists := d.attemptCounts["oro-test"]; exists {
 		errs = append(errs, "attemptCounts still has oro-test entry")
 	}
@@ -10289,7 +10294,7 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	d.mu.Unlock()
 
 	if len(errs) > 0 {
-		t.Errorf("BeadTracker maps not cleared:\n  - %s", strings.Join(errs, "\n  - "))
+		t.Fatalf("BeadTracker cleanup incomplete:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 
 	// Assert: BeadSource.Update must have been called with ("oro-test", "open")
