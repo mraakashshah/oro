@@ -70,6 +70,42 @@ func TestDrainOutput_NilStore(t *testing.T) {
 	}
 }
 
+func TestDrainOutput_MultiWriter(t *testing.T) {
+	input := "line one\nline two\n"
+	reader := io.NopCloser(strings.NewReader(input))
+	var buf1, buf2 bytes.Buffer
+
+	worker.DrainOutput(context.Background(), reader, nil, "oro-test", &buf1, &buf2)
+
+	if buf1.String() != input {
+		t.Fatalf("writer 1: expected %q, got %q", input, buf1.String())
+	}
+	if buf2.String() != input {
+		t.Fatalf("writer 2: expected %q, got %q", input, buf2.String())
+	}
+}
+
+func TestDrainOutput_NilWriterFiltered(t *testing.T) {
+	input := "hello\n"
+	reader := io.NopCloser(strings.NewReader(input))
+	var buf bytes.Buffer
+
+	// nil writer in slice should not panic
+	worker.DrainOutput(context.Background(), reader, nil, "oro-test", &buf, nil)
+
+	if buf.String() != input {
+		t.Fatalf("expected %q, got %q", input, buf.String())
+	}
+}
+
+func TestDrainOutput_NoWriters(t *testing.T) {
+	input := "hello\n"
+	reader := io.NopCloser(strings.NewReader(input))
+
+	// empty writers slice — should not panic
+	worker.DrainOutput(context.Background(), reader, nil, "oro-test")
+}
+
 func TestDrainOutput_EmptyInput(t *testing.T) {
 	reader := io.NopCloser(strings.NewReader(""))
 	var buf bytes.Buffer
