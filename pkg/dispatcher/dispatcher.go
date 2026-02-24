@@ -1667,6 +1667,15 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	// oro-3xdf: Check if the bead is valid (open, not closed/missing).
 	// Do this outside the lock to avoid I/O while holding mutex.
 	if !d.validateReconnectBead(ctx, beadID, workerID) {
+		// oro-xj37: Transition worker to Idle so tryAssign can pick it up.
+		// Without this, the worker stays in its previous state permanently.
+		d.mu.Lock()
+		if w, ok := d.workers[workerID]; ok {
+			w.state = protocol.WorkerIdle
+			w.beadID = ""
+			w.lastSeen = d.nowFunc()
+		}
+		d.mu.Unlock()
 		return
 	}
 

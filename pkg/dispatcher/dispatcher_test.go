@@ -2819,6 +2819,83 @@ func TestHandleReconnect_UnknownWorker(t *testing.T) {
 	}
 }
 
+// TestReconnect_ClosedBeadTransitionsToIdle verifies that when a worker
+// reconnects referencing a closed (or missing) bead, the worker transitions
+// to Idle so that tryAssign can pick it up on the next cycle.
+// Bug: oro-xj37 — handleReconnect returned early when validateReconnectBead
+// rejected the bead, leaving the worker in its previous state permanently.
+func TestReconnect_ClosedBeadTransitionsToIdle(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Register the bead as closed in the mock so validateReconnectBead rejects it.
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-closed"] = &protocol.BeadDetail{
+		Title:  "bead-closed",
+		Status: "closed",
+	}
+	beadSrc.mu.Unlock()
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+
+	// First, register the worker with a heartbeat so it exists in the map.
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-closed-bead", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Manually set the worker to Busy with the bead that is now closed,
+	// simulating the state before reconnect.
+	d.mu.Lock()
+	w := d.workers["w-closed-bead"]
+	w.state = protocol.WorkerBusy
+	w.beadID = "bead-closed"
+	d.mu.Unlock()
+
+	// Now send RECONNECT referencing the closed bead.
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID:   "w-closed-bead",
+			BeadID:     "bead-closed",
+			State:      "running",
+			ContextPct: 30,
+		},
+	})
+
+	// The worker should transition to Idle (not stay Busy).
+	waitForWorkerState(t, d, "w-closed-bead", protocol.WorkerIdle, 2*time.Second)
+
+	// beadID should be cleared.
+	_, beadID, ok := d.WorkerInfo("w-closed-bead")
+	if !ok {
+		t.Fatal("worker should still be tracked")
+	}
+	if beadID != "" {
+		t.Fatalf("expected empty beadID after closed-bead reconnect, got %q", beadID)
+	}
+
+	// Now verify that tryAssign picks up this idle worker. Start the
+	// dispatcher assignment loop and provide a ready bead.
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-new", Title: "New work", Priority: 1}})
+
+	// The idle worker should receive an ASSIGN message for the new bead.
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN message for idle worker after closed-bead reconnect")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign == nil || msg.Assign.BeadID != "bead-new" {
+		t.Fatalf("expected assignment of bead-new, got %+v", msg.Assign)
+	}
+}
+
 func TestHandleDone_QualityGateFailed_RejectsMerge(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
