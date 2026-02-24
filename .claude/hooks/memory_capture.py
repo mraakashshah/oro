@@ -9,8 +9,10 @@ Input: JSON on stdin with tool_name, tool_input, etc.
 Output: JSON with additionalContext confirming capture, or nothing.
 """
 
+import contextlib
 import json
 import re
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -149,6 +151,38 @@ def recall(knowledge_file: str, query: str) -> list[dict]:
         for e in by_key.values()
         if query_lower in e.get("content", "").lower() or query_lower in " ".join(e.get("tags", [])).lower()
     ]
+
+
+_MEMORY_TYPE_PREFIXES = ["lesson:", "decision:", "gotcha:", "pattern:"]
+
+
+def detect_memory_type(content: str) -> tuple[str, str]:
+    """Parse a type prefix from content, mirroring parseTypePrefix in cmd_remember.go.
+
+    Returns (original_content, extracted_body). If no known prefix is found,
+    both elements are the original content.
+    """
+    for prefix in _MEMORY_TYPE_PREFIXES:
+        if content.startswith(prefix):
+            body = content[len(prefix) :].strip()
+            return content, body
+    return content, content
+
+
+def sync_to_memories_db(content: str, tags: list[str]) -> None:
+    """Sync a memory entry to memories.db via `oro remember`.
+
+    Calls subprocess to invoke `oro remember --tags=<tags> <content>`.
+    Silently ignores FileNotFoundError (oro not on PATH) and TimeoutExpired.
+    The knowledge.jsonl write always succeeds regardless of this call.
+    """
+
+    args = ["oro", "remember"]
+    if tags:
+        args.append(f"--tags={','.join(tags)}")
+    args.append(content)
+    with contextlib.suppress(FileNotFoundError, subprocess.TimeoutExpired):
+        subprocess.run(args, capture_output=True, timeout=5)
 
 
 def main() -> None:

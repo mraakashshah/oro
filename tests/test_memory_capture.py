@@ -3,7 +3,9 @@
 import importlib.util
 import json
 import os
+import subprocess as _subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 # Load the hook module from ORO_HOME/hooks/ (externalized config)
 _oro_home = Path(os.environ.get("ORO_HOME", Path.home() / ".oro"))
@@ -19,6 +21,8 @@ auto_tag = _mod.auto_tag
 slugify = _mod.slugify
 append_entry = _mod.append_entry
 recall = _mod.recall
+sync_to_memories_db = _mod.sync_to_memories_db
+detect_memory_type = _mod.detect_memory_type
 
 
 class TestExtractLearned:
@@ -225,3 +229,49 @@ class TestRecall:
         # Search by content
         results = recall(str(knowledge_file), "fixtures")
         assert len(results) == 1
+
+
+class TestSyncToMemoriesDb:
+    def test_sync_to_memories_db(self):
+        """sync_to_memories_db calls subprocess.run with oro remember command."""
+        with patch("subprocess.run") as mock_run:
+            sync_to_memories_db("lesson: content", ["go", "sqlite"])
+            mock_run.assert_called_once()
+            args = mock_run.call_args[0][0]
+            assert args == ["oro", "remember", "--tags=go,sqlite", "lesson: content"]
+
+    def test_sync_file_not_found_silently_caught(self):
+        """FileNotFoundError (oro not on PATH) is caught silently."""
+        with patch("subprocess.run", side_effect=FileNotFoundError("oro not found")):
+            sync_to_memories_db("lesson: content", ["go"])  # must not raise
+
+    def test_sync_timeout_silently_caught(self):
+        """subprocess.TimeoutExpired is caught silently."""
+        with patch(
+            "subprocess.run",
+            side_effect=_subprocess.TimeoutExpired("oro", 5),
+        ):
+            sync_to_memories_db("lesson: content", ["go"])  # must not raise
+
+
+class TestDetectMemoryType:
+    def test_detect_memory_type_gotcha(self):
+        """detect_memory_type('gotcha: X') returns ('gotcha: X', 'X')."""
+        full, body = detect_memory_type("gotcha: X")
+        assert full == "gotcha: X"
+        assert body == "X"
+
+    def test_detect_memory_type_lesson(self):
+        full, body = detect_memory_type("lesson: something useful")
+        assert full == "lesson: something useful"
+        assert body == "something useful"
+
+    def test_detect_memory_type_no_prefix(self):
+        full, body = detect_memory_type("plain text")
+        assert full == "plain text"
+        assert body == "plain text"
+
+    def test_detect_memory_type_decision(self):
+        full, body = detect_memory_type("decision: use sqlite")
+        assert full == "decision: use sqlite"
+        assert body == "use sqlite"
