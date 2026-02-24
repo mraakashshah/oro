@@ -166,16 +166,14 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	// Open per-bead log file for observability.
-	var logFile *os.File
-	if oroHome, homeErr := resolveOroHome(); homeErr == nil {
-		logDir := filepath.Join(oroHome, "workers", "work-"+cfg.beadID)
-		_ = os.MkdirAll(logDir, 0o750)                                                                                                  //nolint:gosec // user-private log dir
-		if f, openErr := os.OpenFile(filepath.Join(logDir, "output.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); openErr == nil { //nolint:gosec // path from resolveOroHome, not user input
-			logFile = f
-			defer logFile.Close()
-			logOut = io.MultiWriter(os.Stderr, logFile)
-			defer func() { logOut = os.Stderr }()
-		}
+	logFile, logFileErr := openBeadLog(cfg.beadID)
+	if logFileErr != nil {
+		logStep("Warning: %v", logFileErr)
+	}
+	if logFile != nil {
+		defer logFile.Close()
+		logOut = io.MultiWriter(os.Stderr, logFile)
+		defer func() { logOut = os.Stderr }()
 	}
 
 	// Step 2: Mark in_progress and set up deferred bead reset.
@@ -426,6 +424,25 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree s
 			return nil
 		}
 	}
+}
+
+// openBeadLog creates the per-bead log directory and opens the output.log file.
+// Returns (nil, err) on failure — callers should warn but not abort.
+func openBeadLog(beadID string) (*os.File, error) {
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve oro home for log file: %w", err)
+	}
+	logDir := filepath.Join(oroHome, "workers", "work-"+beadID)
+	if err := os.MkdirAll(logDir, 0o750); err != nil { //nolint:gosec // user-private log dir
+		return nil, fmt.Errorf("cannot create log dir %s: %w", logDir, err)
+	}
+	logPath := filepath.Join(logDir, "output.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec // path from resolveOroHome, not user input
+	if err != nil {
+		return nil, fmt.Errorf("cannot open log file %s: %w", logPath, err)
+	}
+	return f, nil
 }
 
 // logOut is the destination for logStep output. Default is os.Stderr.

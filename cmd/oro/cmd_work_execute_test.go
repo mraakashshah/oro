@@ -333,6 +333,57 @@ func TestExecuteWork_Success_NoReset(t *testing.T) {
 	}
 }
 
+func TestWorkLogSetup_SurfacesErrors(t *testing.T) {
+	// When log file creation fails, executeWork should surface warnings
+	// to stderr (via logStep), not silently swallow them.
+
+	// Create a read-only directory so MkdirAll for workers/ subdir fails.
+	tmpDir := t.TempDir()
+	readOnlyDir := filepath.Join(tmpDir, "readonly")
+	if err := os.MkdirAll(readOnlyDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(readOnlyDir, 0o444); err != nil { //nolint:gosec // intentionally read-only for test
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnlyDir, 0o750) }) //nolint:gosec // restore perms for cleanup
+
+	// Point ORO_HOME inside the read-only dir so MkdirAll will fail.
+	t.Setenv("ORO_HOME", filepath.Join(readOnlyDir, "oro"))
+
+	bs := &mockBeadSource{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+
+	deps := testDeps(bs, wt, sp, mg, true, true)
+
+	cfg := &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	// Capture logStep output via logOut.
+	var buf strings.Builder
+	origLogOut := logOut
+	logOut = &buf
+	defer func() { logOut = origLogOut }()
+
+	err := executeWork(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("log file failures should not be fatal, got: %v", err)
+	}
+
+	output := buf.String()
+
+	// Must contain a warning about the log directory creation failure.
+	if !strings.Contains(output, "log dir") && !strings.Contains(output, "log file") {
+		t.Errorf("expected warning about log file/dir creation failure in output, got:\n%s", output)
+	}
+}
+
 func TestWorkWritesLogFile(t *testing.T) {
 	// When executeWork runs, it should write Claude output and phase markers
 	// to ~/.oro/workers/work-<beadID>/output.log.
