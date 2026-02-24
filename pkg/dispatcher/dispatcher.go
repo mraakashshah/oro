@@ -2801,10 +2801,18 @@ func (d *Dispatcher) reconcileScale() string {
 			managedCount++
 		}
 	}
+	// Guard: cap total workers (all connected + pending) at 2*target to prevent
+	// runaway crash-respawn loops (oro-135n). When stuck workers get reaped by
+	// heartbeat timeout, managedCount drops and scaleUp fires, but if total
+	// workers are already at 2*target the replacements would just pile up.
+	totalWorkers := len(d.workers) + len(d.pendingManagedIDs)
 	d.mu.Unlock()
 
 	switch {
 	case managedCount < target:
+		if totalWorkers >= 2*target {
+			return fmt.Sprintf("target=%d, managed=%d, but total workers %d >= 2*target %d — cap reached, skipping scaleUp", target, managedCount, totalWorkers, 2*target)
+		}
 		return d.scaleUp(target, managedCount)
 	case managedCount > target:
 		return d.scaleDown(target, managedCount)

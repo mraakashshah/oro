@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -399,6 +400,143 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 		}
 		if result != "" {
 			t.Errorf("MaxWorkers=0: expected empty result string, got %q", result)
+		}
+	})
+}
+
+// TestReconcileScale_CapsAtDoubleTarget verifies that reconcileScale refuses to
+// spawn workers when the total worker count (len(d.workers) + len(d.pendingManagedIDs))
+// reaches 2*targetWorkers. This prevents runaway crash-respawn loops where stuck
+// workers get reaped by heartbeat timeout, drop managedCount, and trigger spawning
+// of replacements that also get stuck (oro-135n).
+func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
+	t.Run("blocks spawn when total workers at 2x target", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 20 // high ceiling so MaxWorkers doesn't interfere
+
+		d.mu.Lock()
+		d.targetWorkers = 5
+		// 3 managed workers (managedCount=3 < target=5 → scaleUp path)
+		for i := 0; i < 3; i++ {
+			id := fmt.Sprintf("managed-%d", i)
+			conn := newMockConn()
+			d.workers[id] = &trackedWorker{
+				id:      id,
+				conn:    conn,
+				state:   protocol.WorkerBusy,
+				managed: true,
+				encoder: json.NewEncoder(conn),
+			}
+		}
+		// 8 stuck unmanaged workers (crash-respawn debris)
+		for i := 0; i < 8; i++ {
+			id := fmt.Sprintf("stuck-%d", i)
+			conn := newMockConn()
+			d.workers[id] = &trackedWorker{
+				id:      id,
+				conn:    conn,
+				state:   protocol.WorkerBusy,
+				managed: false,
+				encoder: json.NewEncoder(conn),
+			}
+		}
+		d.mu.Unlock()
+		// total = 11 workers + 0 pending = 11 >= 2*5 = 10 → cap blocks scaleUp
+
+		_ = d.reconcileScale()
+
+		pm.mu.Lock()
+		spawned := len(pm.spawned)
+		pm.mu.Unlock()
+
+		if spawned > 0 {
+			t.Errorf("expected 0 spawns when total workers (11) >= 2*target (10), got %d", spawned)
+		}
+	})
+
+	t.Run("allows spawn when total below 2x target", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 20
+
+		d.mu.Lock()
+		d.targetWorkers = 5
+		// 3 managed workers, 2 unmanaged → total=5, pending=0
+		for i := 0; i < 3; i++ {
+			id := fmt.Sprintf("managed-%d", i)
+			conn := newMockConn()
+			d.workers[id] = &trackedWorker{
+				id:      id,
+				conn:    conn,
+				state:   protocol.WorkerBusy,
+				managed: true,
+				encoder: json.NewEncoder(conn),
+			}
+		}
+		for i := 0; i < 2; i++ {
+			id := fmt.Sprintf("unmanaged-%d", i)
+			conn := newMockConn()
+			d.workers[id] = &trackedWorker{
+				id:      id,
+				conn:    conn,
+				state:   protocol.WorkerBusy,
+				managed: false,
+				encoder: json.NewEncoder(conn),
+			}
+		}
+		d.mu.Unlock()
+		// total = 5 < 2*5 = 10 → cap allows; managedCount=3 < target=5 → spawn 2
+
+		_ = d.reconcileScale()
+
+		pm.mu.Lock()
+		spawned := len(pm.spawned)
+		pm.mu.Unlock()
+
+		if spawned != 2 {
+			t.Errorf("expected 2 spawns when total (5) < 2*target (10), got %d", spawned)
+		}
+	})
+
+	t.Run("cap counts pending managed IDs toward total", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 20
+
+		d.mu.Lock()
+		d.targetWorkers = 5
+		// 9 unmanaged workers + 1 stale pending = total 10 >= 2*5 = 10 → blocked
+		for i := 0; i < 9; i++ {
+			id := fmt.Sprintf("unmanaged-%d", i)
+			conn := newMockConn()
+			d.workers[id] = &trackedWorker{
+				id:      id,
+				conn:    conn,
+				state:   protocol.WorkerBusy,
+				managed: false,
+				encoder: json.NewEncoder(conn),
+			}
+		}
+		d.pendingManagedIDs["stale-pending-0"] = true
+		d.mu.Unlock()
+		// managedCount = 0 workers + 1 pending = 1 < target(5) → scaleUp path
+		// total = 9 workers + 1 pending = 10 >= 2*5 = 10 → cap blocks
+
+		_ = d.reconcileScale()
+
+		pm.mu.Lock()
+		spawned := len(pm.spawned)
+		pm.mu.Unlock()
+
+		if spawned > 0 {
+			t.Errorf("expected 0 spawns when total (workers+pending=10) >= 2*target (10), got %d", spawned)
 		}
 	})
 }
