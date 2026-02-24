@@ -4,7 +4,7 @@
 # Pre-commit hook: bd flush + language-aware lint/format checks
 #
 # 1. Flushes bd issue changes to .beads/issues.jsonl
-# 2. Checks staged files: ruff (Python), gofmt/go vet (Go), sh, biome (JSON)
+# 2. Checks staged files: ruff (Python), gofumpt/golangci-lint (Go), sh, biome (JSON)
 
 # --- bd (beads) flush ---
 
