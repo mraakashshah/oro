@@ -437,12 +437,12 @@ lane_other() {
 	local pass=0 fail=0
 
 	if $HAS_SHELL; then
-		header "SHELL: LINT"
-		if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +"; then
-			pass=$((pass + 1))
-		else
-			fail=$((fail + 1))
-		fi
+		header "SHELL: FORMAT + LINT"
+		parallel_checks \
+			"shfmt" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' -exec shfmt -d {} +" \
+			"shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +"
+		pass=$((pass + TIER_PASS))
+		fail=$((fail + TIER_FAIL))
 	fi
 
 	header "DOCS & CONFIG"

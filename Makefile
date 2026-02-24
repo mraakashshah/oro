@@ -100,6 +100,7 @@ lint:
 fmt:
 	go tool gofumpt -w .
 	go tool goimports -w .
+	go tool shfmt -w .
 
 vet: stage-assets
 	go vet ./...

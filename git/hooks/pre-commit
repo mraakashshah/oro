@@ -83,12 +83,22 @@ if [ -n "$staged_go" ]; then
 	fi
 fi
 
-# Shell: shellcheck
+# Shell: shfmt + shellcheck
 staged_sh=$(git diff --cached --name-only --diff-filter=d -- '*.sh')
-if [ -n "$staged_sh" ] && command -v shellcheck >/dev/null 2>&1; then
-	if ! shellcheck $staged_sh 2>/dev/null; then
-		echo "Error: shellcheck issues found." >&2
-		errors=1
+if [ -n "$staged_sh" ]; then
+	if command -v shfmt >/dev/null 2>&1; then
+		# shellcheck disable=SC2086
+		if ! shfmt -d $staged_sh 2>/dev/null; then
+			echo "Error: Shell formatting issues. Run: shfmt -w <files>" >&2
+			errors=1
+		fi
+	fi
+	if command -v shellcheck >/dev/null 2>&1; then
+		# shellcheck disable=SC2086
+		if ! shellcheck $staged_sh 2>/dev/null; then
+			echo "Error: shellcheck issues found." >&2
+			errors=1
+		fi
 	fi
 fi
 
