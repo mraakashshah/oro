@@ -144,6 +144,12 @@ func (d *Dispatcher) checkManagerPane(ctx context.Context) {
 	restarter := d.paneRestarter
 	d.mu.Unlock()
 
+	// Write restarting sentinel file so the pane-died hook can detect an
+	// in-progress restart and skip its own respawn (prevents double-respawn).
+	restartingFile := filepath.Join(d.panesDir, role, "restarting")
+	_ = os.WriteFile(restartingFile, []byte{}, 0o644) //nolint:gosec // trusted path
+	defer os.Remove(restartingFile)                   //nolint:errcheck // best-effort cleanup
+
 	if restarter != nil {
 		if restartErr := restarter.Restart(role); restartErr != nil {
 			_ = d.logEvent(ctx, "pane_restart_failed", "dispatcher", "", "",

@@ -711,6 +711,75 @@ func TestPaneMonitor_RestartOnInactivity(t *testing.T) {
 	}
 }
 
+// restartingFileRestarter checks that the restarting sentinel file exists on disk
+// when Restart is called, and records whether it was found.
+type restartingFileRestarter struct {
+	mu             sync.Mutex
+	calls          []string
+	fileExisted    bool // true if restarting file existed during Restart()
+	restartingPath string
+}
+
+func (r *restartingFileRestarter) Restart(role string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, role)
+	_, err := os.Stat(r.restartingPath)
+	r.fileExisted = err == nil
+	return nil
+}
+
+func (r *restartingFileRestarter) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
+// TestCheckManagerPane_WritesRestartingFile verifies that checkManagerPane writes
+// a "restarting" sentinel file before calling Restart() and removes it afterward.
+// This prevents double-respawn: the pane-died hook checks for this file to
+// determine whether a restart is already in progress.
+func TestCheckManagerPane_WritesRestartingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	managerDir := filepath.Join(panesDir, "manager")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write context_pct above threshold to trigger restart.
+	pctFile := filepath.Join(managerDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("80"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	restartingFile := filepath.Join(managerDir, "restarting")
+	restarter := &restartingFileRestarter{restartingPath: restartingFile}
+
+	d := newPaneRestartTestDispatcher(t, panesDir, restarter)
+
+	// Call checkManagerPane directly (synchronous, no loop needed).
+	d.checkManagerPane(context.Background())
+
+	// Restart must have been called.
+	if restarter.callCount() != 1 {
+		t.Fatalf("expected 1 Restart call, got %d", restarter.callCount())
+	}
+
+	// The restarting file must have existed on disk during Restart().
+	restarter.mu.Lock()
+	existed := restarter.fileExisted
+	restarter.mu.Unlock()
+	if !existed {
+		t.Error("restarting sentinel file must exist on disk when Restart() is called")
+	}
+
+	// After checkManagerPane returns, the restarting file must be cleaned up.
+	if _, err := os.Stat(restartingFile); err == nil {
+		t.Error("restarting sentinel file must be removed after checkManagerPane returns")
+	}
+}
+
 // TestPaneMonitor_CooldownPreventsRestart verifies that once the manager pane has
 // been restarted, subsequent polls within PaneRestartCooldown do not trigger
 // additional restarts.
