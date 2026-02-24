@@ -1,6 +1,7 @@
 # Decisions and Discoveries
 
 ## 2026-02-19: Hook audit: settings.local.json and worker settings.json are identical
+
 **Tags:** #hooks #audit #worker #settings #no-gap
 **Context:** Concern that ~/.oro/projects/oro/settings.json (worker settings, passed via --settings flag) and .claude/settings.local.json (local Claude Code session settings) evolved independently and diverged, leaving workers missing hooks or vice versa.
 **Decision/Discovery:** Audit found both files are byte-for-byte equivalent in content. All 16 hook entries (across SessionStart, PreToolUse, PostToolUse, Stop) are present in both files with identical matchers and commands. The permissions section is also identical. No gaps exist as of 2026-02-19.
