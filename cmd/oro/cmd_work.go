@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -164,6 +165,19 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		return nil
 	}
 
+	// Open per-bead log file for observability.
+	var logFile *os.File
+	if oroHome, homeErr := resolveOroHome(); homeErr == nil {
+		logDir := filepath.Join(oroHome, "workers", "work-"+cfg.beadID)
+		_ = os.MkdirAll(logDir, 0o750)                                                                                                  //nolint:gosec // user-private log dir
+		if f, openErr := os.OpenFile(filepath.Join(logDir, "output.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); openErr == nil { //nolint:gosec // path from resolveOroHome, not user input
+			logFile = f
+			defer logFile.Close()
+			logOut = io.MultiWriter(os.Stderr, logFile)
+			defer func() { logOut = os.Stderr }()
+		}
+	}
+
 	// Step 2: Mark in_progress and set up deferred bead reset.
 	_ = deps.beadSrc.Update(ctx, cfg.beadID, "in_progress")
 	var merged bool
@@ -198,8 +212,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 
 		if !skipClaude {
+			logStep("--- attempt %d (%s) ---", attempt, modelShort(model))
 			logStep("Spawning claude (%s, attempt %d)...", modelShort(model), attempt)
-			if err := spawnAndWait(ctx, cfg, deps, worktree, model, attempt, feedback); err != nil {
+			if err := spawnAndWait(ctx, cfg, deps, worktree, model, attempt, feedback, logFile); err != nil {
 				return fmt.Errorf("claude spawn: %w", err)
 			}
 			logStep("Claude completed")
@@ -244,7 +259,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 	// Step 8: Ops review.
 	if !cfg.skipReview {
-		if err := reviewLoop(ctx, cfg, deps, worktree, &model, &attempt, &feedback); err != nil {
+		if err := reviewLoop(ctx, cfg, deps, worktree, &model, &attempt, &feedback, logFile); err != nil {
 			return err
 		}
 	} else {
@@ -307,7 +322,8 @@ func hasCommitsAhead(repoRoot, branch string) bool {
 }
 
 // spawnAndWait spawns claude -p and waits for it to exit, with timeout.
-func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, model string, attempt int, feedback string) error {
+// logFile, when non-nil, receives a copy of Claude's stdout alongside stderr.
+func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, model string, attempt int, feedback string, logFile *os.File) error {
 	// Resolve project root from worktree path
 	projectRoot := ""
 	if resolved, err := langprofile.ResolveProjectRoot(worktree); err == nil {
@@ -334,9 +350,13 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		return fmt.Errorf("spawn: %w", err)
 	}
 
-	// Drain stdout (echoes to stderr, extracts memories).
+	// Drain stdout (echoes to stderr + optional log file, extracts memories).
 	if stdout != nil {
-		worker.DrainOutput(ctx, stdout, nil, cfg.beadID, os.Stderr)
+		writers := []io.Writer{os.Stderr}
+		if logFile != nil {
+			writers = append(writers, logFile)
+		}
+		worker.DrainOutput(ctx, stdout, nil, cfg.beadID, writers...)
 	}
 
 	if err := proc.Wait(); err != nil {
@@ -347,7 +367,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 }
 
 // reviewLoop runs ops review and handles rejection retries.
-func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, model *string, attempt *int, feedback *string) error {
+func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, model *string, attempt *int, feedback *string, logFile *os.File) error {
 	for rejects := 0; ; {
 		logStep("Running ops review (opus)...")
 		resultCh := deps.opsMgr.Review(ctx, ops.ReviewOpts{
@@ -382,7 +402,7 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree s
 			*feedback = result.Feedback
 
 			logStep("Re-executing with review feedback (opus)...")
-			if err := spawnAndWait(ctx, cfg, deps, worktree, *model, *attempt, *feedback); err != nil {
+			if err := spawnAndWait(ctx, cfg, deps, worktree, *model, *attempt, *feedback, logFile); err != nil {
 				return fmt.Errorf("claude re-spawn after review: %w", err)
 			}
 
@@ -408,9 +428,13 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree s
 	}
 }
 
-// logStep prints a status line to stderr.
+// logOut is the destination for logStep output. Default is os.Stderr.
+// executeWork sets it to io.MultiWriter(os.Stderr, logFile) when a log file is available.
+var logOut io.Writer = os.Stderr //nolint:gochecknoglobals // package-level writer for logStep fan-out
+
+// logStep prints a status line to logOut (stderr + optional log file).
 func logStep(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	fmt.Fprintf(logOut, format+"\n", args...)
 }
 
 // modelShort returns a human-friendly model name.

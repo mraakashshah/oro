@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +137,18 @@ func testDeps(bs *mockBeadSource, wt *mockWorktreeManager, sp *mockSpawner, mg *
 			return qgPassed, "qg output", nil
 		},
 	}
+}
+
+// contentSpawner returns configurable stdout content.
+type contentSpawner struct {
+	proc    worker.Process
+	content string
+	called  bool
+}
+
+func (m *contentSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	m.called = true
+	return m.proc, io.NopCloser(strings.NewReader(m.content)), nil, nil
 }
 
 // --- Tests ---
@@ -316,5 +330,75 @@ func TestExecuteWork_Success_NoReset(t *testing.T) {
 	// Merger should have been called
 	if !mg.called {
 		t.Error("expected merger to be called on success")
+	}
+}
+
+func TestWorkWritesLogFile(t *testing.T) {
+	// When executeWork runs, it should write Claude output and phase markers
+	// to ~/.oro/workers/work-<beadID>/output.log.
+
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", tmpDir)
+
+	claudeOutput := "implementing feature X\ntest passed\n"
+	sp := &contentSpawner{proc: &mockProcess{}, content: claudeOutput}
+	bs := &mockBeadSource{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+
+	// hasNewWork returns false first (don't skip claude), true after (commits exist).
+	callCount := 0
+	deps := &workDeps{
+		beadSrc:  bs,
+		wtMgr:    wt,
+		spawner:  sp,
+		merger:   mg,
+		repoRoot: "/tmp/test-repo",
+		hasNewWork: func(_, _ string) bool {
+			callCount++
+			return callCount > 1
+		},
+		runQG: func(_ context.Context, _ string) (bool, string, error) {
+			return true, "", nil
+		},
+	}
+
+	cfg := &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	// Reset logOut after test to not leak state.
+	origLogOut := logOut
+	defer func() { logOut = origLogOut }()
+
+	err := executeWork(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	// Check log file exists and has content.
+	logPath := filepath.Join(tmpDir, "workers", "work-oro-test", "output.log")
+	data, readErr := os.ReadFile(logPath) //nolint:gosec // test-constructed path
+	if readErr != nil {
+		t.Fatalf("expected log file at %s, got error: %v", logPath, readErr)
+	}
+	logContent := string(data)
+
+	// Must contain Claude output.
+	if !strings.Contains(logContent, "implementing feature X") {
+		t.Errorf("log file missing Claude output, got:\n%s", logContent)
+	}
+
+	// Must contain attempt separator.
+	if !strings.Contains(logContent, "--- attempt 0 (sonnet) ---") {
+		t.Errorf("log file missing attempt separator, got:\n%s", logContent)
+	}
+
+	// Must contain phase markers from logStep.
+	if !strings.Contains(logContent, "Spawning claude") {
+		t.Errorf("log file missing phase marker, got:\n%s", logContent)
 	}
 }
