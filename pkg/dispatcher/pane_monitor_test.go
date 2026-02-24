@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -829,5 +830,78 @@ func TestPaneMonitor_CooldownPreventsRestart(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Error("loop did not exit")
+	}
+}
+
+// failingMockPaneRestarter always returns an error from Restart.
+type failingMockPaneRestarter struct {
+	mu    sync.Mutex
+	calls []string
+	err   error
+}
+
+func (m *failingMockPaneRestarter) Restart(role string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, role)
+	return m.err
+}
+
+func (m *failingMockPaneRestarter) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.calls)
+}
+
+// TestCheckManagerPane_NoUpdateOnFailure verifies that when Restart() returns an
+// error, lastRestartAt and restartCount are NOT updated. This ensures a failed
+// restart does not burn the cooldown window, allowing the next poll to retry.
+func TestCheckManagerPane_NoUpdateOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	panesDir := filepath.Join(tmpDir, "panes")
+	managerDir := filepath.Join(panesDir, "manager")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil { //nolint:gosec
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// context_pct above threshold to trigger restart.
+	pctFile := filepath.Join(managerDir, "context_pct")
+	if err := os.WriteFile(pctFile, []byte("80"), 0o644); err != nil { //nolint:gosec
+		t.Fatalf("write pct: %v", err)
+	}
+
+	restarter := &failingMockPaneRestarter{err: errors.New("tmux not found")}
+	d := newPaneRestartTestDispatcher(t, panesDir, restarter)
+
+	// Snapshot state before calling checkManagerPane.
+	beforeTime := time.Time{} // zero value
+	beforeCount := 0
+
+	d.checkManagerPane(context.Background())
+
+	// Restart must have been attempted.
+	if restarter.callCount() != 1 {
+		t.Fatalf("expected 1 Restart call, got %d", restarter.callCount())
+	}
+
+	// Cooldown state must be unchanged because Restart returned an error.
+	d.mu.Lock()
+	state := d.paneStates["manager"]
+	d.mu.Unlock()
+
+	if state == nil {
+		t.Fatal("paneStates[manager] should exist after checkManagerPane")
+	}
+
+	if state.lastRestartAt != beforeTime {
+		t.Errorf("lastRestartAt should remain zero after failed restart, got %v", state.lastRestartAt)
+	}
+	if state.restartCount != beforeCount {
+		t.Errorf("restartCount should remain %d after failed restart, got %d", beforeCount, state.restartCount)
+	}
+
+	// Verify restarting flag is cleared (so next poll can retry).
+	if state.restarting {
+		t.Error("restarting flag should be cleared after failed restart")
 	}
 }

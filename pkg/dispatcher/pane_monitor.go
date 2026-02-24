@@ -150,8 +150,10 @@ func (d *Dispatcher) checkManagerPane(ctx context.Context) {
 	_ = os.WriteFile(restartingFile, []byte{}, 0o644) //nolint:gosec // trusted path
 	defer os.Remove(restartingFile)                   //nolint:errcheck // best-effort cleanup
 
+	var restartErr error
 	if restarter != nil {
-		if restartErr := restarter.Restart(role); restartErr != nil {
+		restartErr = restarter.Restart(role)
+		if restartErr != nil {
 			_ = d.logEvent(ctx, "pane_restart_failed", "dispatcher", "", "",
 				"role="+role+" error="+restartErr.Error())
 		}
@@ -159,8 +161,10 @@ func (d *Dispatcher) checkManagerPane(ctx context.Context) {
 
 	d.mu.Lock()
 	state.restarting = false
-	state.lastRestartAt = d.nowFunc()
-	state.restartCount++
+	if restartErr == nil {
+		state.lastRestartAt = d.nowFunc()
+		state.restartCount++
+	}
 	d.mu.Unlock()
 }
 
