@@ -607,3 +607,104 @@ class TestMainIntegration:
         # Verify both signals were deleted
         assert not requested_file.exists(), "handoff_requested should be deleted after main()"
         assert not complete_file.exists(), "handoff_complete should be deleted after main()"
+
+
+# --- handoff_archive ---
+
+
+class TestHandoffArchive:
+    def test_pane_handoff_archives_old_file(self, tmp_path):
+        """Verify pane_handoff archives old handoff to timestamped backup."""
+        import re
+
+        # Set up pane directory with handoff
+        panes = tmp_path / "panes"
+        role_dir = panes / "manager"
+        role_dir.mkdir(parents=True)
+        handoff_file = role_dir / "handoff.yaml"
+        content = "---\ngoal: test\nnow: working\n"
+        handoff_file.write_text(content)
+
+        # Call pane_handoff to read the file
+        result = pane_handoff("manager", panes_dir=str(panes))
+
+        # Verify the result is readable
+        assert "goal: test" in result
+        assert "## Latest Handoff (Auto-Recovery)" in result
+
+        # Verify original handoff.yaml still exists and is readable
+        assert handoff_file.is_file()
+        assert handoff_file.read_text() == content
+
+        # Verify an archive was created with timestamp pattern
+        # Pattern: handoff.YYYY-MM-DD_HH-MM-SS.yaml or similar
+        archive_pattern = re.compile(r"handoff\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.yaml")
+        archives = [f for f in role_dir.iterdir() if archive_pattern.match(f.name)]
+        assert len(archives) >= 1, f"No archived handoff found in {role_dir}"
+
+        # Verify archive contains the old content
+        archive = archives[0]
+        archive_content = archive.read_text()
+        assert archive_content == content, f"Archive content differs: {archive_content}"
+
+    def test_latest_handoff_archives_old_file(self, tmp_path):
+        """Verify latest_handoff archives old handoff to timestamped backup."""
+        import re
+
+        # Set up handoffs directory
+        handoffs_dir = tmp_path / "handoffs"
+        handoffs_dir.mkdir()
+        handoff_file = handoffs_dir / "2026-02-15.yaml"
+        content = "---\ngoal: latest test\nnow: working on latest\n"
+        handoff_file.write_text(content)
+
+        # Call latest_handoff to read the file
+        result = _mod.latest_handoff(str(handoffs_dir))
+
+        # Verify the result is readable
+        assert "goal: latest test" in result
+        assert "## Latest Handoff" in result
+
+        # Verify original handoff file still exists
+        assert handoff_file.is_file()
+        assert handoff_file.read_text() == content
+
+        # Verify an archive was created
+        archive_pattern = re.compile(r"2026-02-15\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.yaml")
+        archives = [f for f in handoffs_dir.iterdir() if archive_pattern.match(f.name)]
+        assert len(archives) >= 1, f"No archived handoff found in {handoffs_dir}"
+
+        # Verify archive contains the old content
+        archive = archives[0]
+        archive_content = archive.read_text()
+        assert archive_content == content, f"Archive content differs: {archive_content}"
+
+    def test_multiple_reads_create_multiple_archives(self, tmp_path):
+        """Verify multiple reads create multiple timestamped archives."""
+        import re
+        import time
+
+        # Set up pane directory
+        panes = tmp_path / "panes"
+        role_dir = panes / "manager"
+        role_dir.mkdir(parents=True)
+        handoff_file = role_dir / "handoff.yaml"
+        content = "---\ngoal: multi-read test\n"
+        handoff_file.write_text(content)
+
+        # First read
+        pane_handoff("manager", panes_dir=str(panes))
+        time.sleep(0.1)  # Small delay to ensure different timestamp
+
+        # Modify the handoff
+        new_content = "---\ngoal: multi-read test updated\n"
+        handoff_file.write_text(new_content)
+
+        # Second read
+        pane_handoff("manager", panes_dir=str(panes))
+
+        # Verify multiple archives exist (pattern includes optional counter suffix)
+        # Matches: handoff.YYYY-MM-DD_HH-MM-SS.yaml or handoff.YYYY-MM-DD_HH-MM-SS.N.yaml
+        archive_pattern = re.compile(r"handoff\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:\.\d+)?\.yaml")
+        archives = [f for f in role_dir.iterdir() if archive_pattern.match(f.name)]
+        assert len(archives) >= 2, f"Should have at least 2 archives, got {len(archives)}"

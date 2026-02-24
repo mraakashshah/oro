@@ -308,6 +308,46 @@ HANDOFFS_DIR = os.path.join(_project_dir, "handoffs") if _project_dir else "docs
 PANES_DIR = os.path.join(oro_home(), "panes")
 
 
+def archive_handoff(handoff_file: Path) -> None:
+    """Archive an existing handoff file to a timestamped backup.
+
+    Creates a copy of the handoff file with a timestamp suffix (e.g.,
+    handoff.2026-02-23_14-30-45.yaml) in the same directory as the original.
+    If an archive with the same timestamp already exists, appends a counter
+    (e.g., handoff.2026-02-23_14-30-45.1.yaml).
+    The original file remains unchanged. Does nothing if the file doesn't exist.
+
+    Best-effort: silently skips on errors (e.g., permission issues).
+    """
+    if not handoff_file.is_file():
+        return
+
+    try:
+        # Generate timestamp: YYYY-MM-DD_HH-MM-SS
+        now = datetime.now(UTC)
+        timestamp = now.strftime("%Y-%m-%d_%H-%M-%S")
+
+        # Create archive filename: original_name.TIMESTAMP.yaml
+        # e.g., "handoff.yaml" -> "handoff.2026-02-23_14-30-45.yaml"
+        stem = handoff_file.stem
+        suffix = handoff_file.suffix
+        archive_name = f"{stem}.{timestamp}{suffix}"
+        archive_path = handoff_file.parent / archive_name
+
+        # If archive already exists, append a counter to make it unique
+        counter = 1
+        while archive_path.exists():
+            archive_name = f"{stem}.{timestamp}.{counter}{suffix}"
+            archive_path = handoff_file.parent / archive_name
+            counter += 1
+
+        # Copy file content to archive
+        archive_path.write_text(handoff_file.read_text())
+    except OSError:
+        # Best-effort: log warning and continue
+        print(f"warning: could not archive handoff file {handoff_file}", file=sys.stderr)
+
+
 def pane_handoff(role: str, panes_dir: str = PANES_DIR) -> str:
     """Read per-role handoff from panes_dir/<role>/handoff.yaml.
 
@@ -335,12 +375,18 @@ def pane_handoff(role: str, panes_dir: str = PANES_DIR) -> str:
         print(f"warning: malformed YAML in {handoff_file}, skipping pane handoff", file=sys.stderr)
         return ""
 
+    # Archive the handoff file before returning (memory persistence)
+    archive_handoff(handoff_file)
+
     label = "## Latest Handoff (Auto-Recovery)\n```yaml\n"
     return label + content[:2000] + ("\n...(truncated)" if len(content) > 2000 else "") + "\n```"
 
 
 def latest_handoff(handoffs_dir: str) -> str:
-    """Read the latest handoff YAML file and return its contents (truncated to 2000 chars)."""
+    """Read the latest handoff YAML file and return its contents (truncated to 2000 chars).
+
+    Archives the handoff file to a timestamped backup before returning (memory persistence).
+    """
     hd = Path(handoffs_dir)
     if not hd.is_dir():
         return ""
@@ -348,8 +394,13 @@ def latest_handoff(handoffs_dir: str) -> str:
     if not files:
         return ""
     try:
-        content = files[-1].read_text()
-        label = f"## Latest Handoff ({files[-1].name})\n```yaml\n"
+        handoff_file = files[-1]
+        content = handoff_file.read_text()
+
+        # Archive the handoff file before returning (memory persistence)
+        archive_handoff(handoff_file)
+
+        label = f"## Latest Handoff ({handoff_file.name})\n```yaml\n"
         return label + content[:2000] + ("\n...(truncated)" if len(content) > 2000 else "") + "\n```"
     except OSError:
         return ""
