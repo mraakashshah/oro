@@ -79,6 +79,8 @@ def extract_learned(command: str) -> tuple[str, str] | None:
     content = (m.group(2) or m.group(3) or "").strip()
     if not content:
         return None
+    if len(content) < 10:
+        return None
     return bead_id, content[:MAX_CONTENT_LEN]
 
 

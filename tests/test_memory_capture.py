@@ -60,6 +60,19 @@ class TestExtractLearned:
         _, content = extract_learned(cmd)
         assert len(content) <= 2048
 
+    def test_extract_returns_none_for_content_under_10_chars(self):
+        """Content under 10 chars (e.g. truncated from shell quoting) returns None."""
+        cmd = 'bd comments add oro-abc "LEARNED: short"'
+        result = extract_learned(cmd)
+        assert result is None
+
+    def test_extract_accepts_content_at_exactly_10_chars(self):
+        """Content at exactly 10 chars passes through normally."""
+        cmd = 'bd comments add oro-abc "LEARNED: 1234567890"'
+        bead_id, content = extract_learned(cmd)
+        assert bead_id == "oro-abc"
+        assert content == "1234567890"
+
 
 class TestAutoTag:
     def test_detects_python_tags(self):
