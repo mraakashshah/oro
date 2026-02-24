@@ -372,6 +372,49 @@ func TestMemoriesListJSON(t *testing.T) {
 		}
 	})
 
+	t.Run("json_format_includes_bead_id_and_source_fields", func(t *testing.T) {
+		_, store := newTestMemoryStoreAndDB(t)
+		ctx := context.Background()
+
+		_, err := store.Insert(ctx, memory.InsertParams{
+			Content:    "bead_id and source must appear in JSON",
+			Type:       "lesson",
+			Source:     "daemon_extracted",
+			BeadID:     "bd-test-1234",
+			Confidence: 0.75,
+		})
+		if err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--format=json"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+
+		var results []map[string]any
+		if err := json.Unmarshal([]byte(out.String()), &results); err != nil {
+			t.Fatalf("output is not valid JSON: %v\noutput: %s", err, out.String())
+		}
+		if len(results) != 1 {
+			t.Fatalf("expected 1 item, got %d", len(results))
+		}
+		item := results[0]
+		if v, ok := item["source"]; !ok {
+			t.Errorf("item missing field 'source'")
+		} else if v != "daemon_extracted" {
+			t.Errorf("source = %q, want %q", v, "daemon_extracted")
+		}
+		if v, ok := item["bead_id"]; !ok {
+			t.Errorf("item missing field 'bead_id'")
+		} else if v != "bd-test-1234" {
+			t.Errorf("bead_id = %q, want %q", v, "bd-test-1234")
+		}
+	})
+
 	t.Run("json_format_empty_db_outputs_empty_array", func(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 

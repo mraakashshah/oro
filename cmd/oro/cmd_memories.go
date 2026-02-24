@@ -45,6 +45,8 @@ type memoryJSONRecord struct {
 	Content    string  `json:"content"`
 	Confidence float64 `json:"confidence"`
 	CreatedAt  string  `json:"created_at"`
+	BeadID     string  `json:"bead_id"`
+	Source     string  `json:"source"`
 }
 
 // formatMemoriesJSON serialises memories as a JSON array with a fixed field set.
@@ -57,6 +59,8 @@ func formatMemoriesJSON(memories []protocol.Memory) (string, error) {
 			Content:    m.Content,
 			Confidence: m.Confidence,
 			CreatedAt:  m.CreatedAt,
+			BeadID:     m.BeadID,
+			Source:     m.Source,
 		}
 	}
 	b, err := json.Marshal(records)
