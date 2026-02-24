@@ -371,7 +371,7 @@ func TestRunQualityGate_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir)
+	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir, false)
 	if err != nil {
 		t.Fatalf("RunQualityGate: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestRunQualityGate_Failure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir)
+	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir, false)
 	if err != nil {
 		t.Fatalf("RunQualityGate unexpected error: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestRunQualityGate_NoScript(t *testing.T) {
 	// No quality_gate.sh in dir — should return false with an error
 	tmpDir := t.TempDir()
 
-	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir)
+	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir, false)
 	if err == nil {
 		t.Fatal("expected error when quality_gate.sh is missing")
 	}
@@ -431,7 +431,7 @@ func TestRunQualityGate_CapturesOutput(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir)
+		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, false)
 		if err != nil {
 			t.Fatalf("RunQualityGate: %v", err)
 		}
@@ -457,7 +457,7 @@ func TestRunQualityGate_CapturesOutput(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir)
+		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, false)
 		if err != nil {
 			t.Fatalf("RunQualityGate unexpected error: %v", err)
 		}
@@ -476,7 +476,7 @@ func TestRunQualityGate_CapturesOutput(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
 
-		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir)
+		passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, false)
 		if err == nil {
 			t.Fatal("expected error when quality_gate.sh is missing")
 		}
@@ -521,7 +521,7 @@ func TestRunQualityGate_RestoresDeletedScript(t *testing.T) {
 	}
 
 	// RunQualityGate should restore from git and succeed.
-	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir)
+	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, false)
 	if err != nil {
 		t.Fatalf("RunQualityGate: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestRunQualityGate_RestoreFails_ReturnsError(t *testing.T) {
 	// Create a temp dir with NO git repo and NO quality_gate.sh.
 	tmpDir := t.TempDir()
 
-	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir)
+	passed, _, err := worker.RunQualityGate(context.Background(), tmpDir, false)
 	if err == nil {
 		t.Fatal("expected error when quality_gate.sh is missing and restore fails")
 	}

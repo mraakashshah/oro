@@ -92,8 +92,8 @@ type workDeps struct {
 	opsMgr     *ops.Spawner
 	merger     merger
 	repoRoot   string
-	hasNewWork func(repoRoot, branch string) bool                               // defaults to hasCommitsAhead
-	runQG      func(ctx context.Context, worktree string) (bool, string, error) // defaults to worker.RunQualityGate
+	hasNewWork func(repoRoot, branch string) bool                                                  // defaults to hasCommitsAhead
+	runQG      func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
 }
 
 // exitError carries an exit code through the normal error return path,
@@ -226,14 +226,14 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 		skipClaude = false // Only skip the first iteration.
 
-		logStep("Running quality gate...")
-		passed, qgOutput, qgErr := deps.runQG(ctx, worktree)
+		logStep("Running quality gate (skip mutation)...")
+		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, true)
 		if qgErr != nil {
 			return fmt.Errorf("quality gate error: %w", qgErr)
 		}
 
 		if passed {
-			logStep("Quality gate passed")
+			logStep("Quality gate passed (mutation deferred to pre-merge)")
 			break
 		}
 
@@ -264,7 +264,21 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		logStep("Skipping review (--skip-review)")
 	}
 
-	// Step 9: Merge to main.
+	// Step 9: Pre-merge mutation testing.
+	logStep("Running mutation testing...")
+	mutPassed, mutOutput, mutErr := deps.runQG(ctx, worktree, false)
+	if mutErr != nil {
+		return fmt.Errorf("pre-merge quality gate error: %w", mutErr)
+	}
+	if !mutPassed {
+		return &exitError{
+			code: exitCodeRetries,
+			msg:  fmt.Sprintf("Pre-merge quality gate (mutation) failed:\n%s", mutOutput),
+		}
+	}
+	logStep("Mutation testing passed")
+
+	// Step 10: Merge to main.
 	mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch)
 	if mergeErr != nil {
 		return &exitError{
@@ -404,9 +418,9 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree s
 				return fmt.Errorf("claude re-spawn after review: %w", err)
 			}
 
-			// Re-run QG before next review.
-			logStep("Re-running quality gate...")
-			passed, qgOutput, qgErr := deps.runQG(ctx, worktree)
+			// Re-run QG before next review (skip mutation — deferred to pre-merge).
+			logStep("Re-running quality gate (skip mutation)...")
+			passed, qgOutput, qgErr := deps.runQG(ctx, worktree, true)
 			if qgErr != nil {
 				return fmt.Errorf("quality gate error: %w", qgErr)
 			}

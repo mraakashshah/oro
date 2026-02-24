@@ -133,7 +133,7 @@ func testDeps(bs *mockBeadSource, wt *mockWorktreeManager, sp *mockSpawner, mg *
 		hasNewWork: func(_, _ string) bool {
 			return hasWork
 		},
-		runQG: func(_ context.Context, _ string) (bool, string, error) {
+		runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) {
 			return qgPassed, "qg output", nil
 		},
 	}
@@ -409,7 +409,7 @@ func TestWorkWritesLogFile(t *testing.T) {
 			callCount++
 			return callCount > 1
 		},
-		runQG: func(_ context.Context, _ string) (bool, string, error) {
+		runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) {
 			return true, "", nil
 		},
 	}

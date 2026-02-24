@@ -531,7 +531,7 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	wt := w.worktree
 	w.mu.Unlock()
 
-	passed, output, err := RunQualityGate(ctx, wt)
+	passed, output, err := RunQualityGate(ctx, wt, false)
 	if err != nil {
 		// Script missing or cannot start — report as failed with error detail.
 		_ = w.SendDone(ctx, false, err.Error())
@@ -1107,7 +1107,9 @@ func (w *Worker) SendReadyForReview(_ context.Context) error {
 // It returns (true, output, nil) if the script exits 0, (false, output, nil) if
 // it exits non-zero, and (false, "", err) if the script cannot be found or started.
 // Output contains combined stdout and stderr from the script.
-func RunQualityGate(ctx context.Context, worktree string) (passed bool, output string, err error) {
+// When skipMutation is true, ORO_SKIP_MUTATION=1 is set so the script skips
+// the slow mutation-testing tiers.
+func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error) {
 	scriptPath := filepath.Join(worktree, "quality_gate.sh")
 	if _, err := os.Stat(scriptPath); err != nil {
 		// Agent may have deleted quality_gate.sh — try restoring from git.
@@ -1124,6 +1126,9 @@ func RunQualityGate(ctx context.Context, worktree string) (passed bool, output s
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
+	if skipMutation {
+		cmd.Env = append(os.Environ(), "ORO_SKIP_MUTATION=1")
+	}
 
 	out, err := cmd.CombinedOutput()
 	output = string(out)
