@@ -39,6 +39,25 @@ if command -v bd >/dev/null 2>&1; then
 	fi
 fi
 
+# --- Author identity guard ---
+# Reject commits from test/placeholder identities (env var leakage from hooks)
+author_email=$(git config user.email 2>/dev/null || echo "")
+author_name=$(git config user.name 2>/dev/null || echo "")
+case "$author_email" in
+test@test.com | test@example.com | t@t.com | "")
+	echo "Error: git user.email is '$author_email' — looks like a test identity." >&2
+	echo "Fix: git config --local --unset user.email  (or set the correct value)" >&2
+	exit 1
+	;;
+esac
+case "$author_name" in
+Test | "Test User" | T | "")
+	echo "Error: git user.name is '$author_name' — looks like a test identity." >&2
+	echo "Fix: git config --local --unset user.name  (or set the correct value)" >&2
+	exit 1
+	;;
+esac
+
 # --- Language-aware lint/format checks ---
 
 errors=0
