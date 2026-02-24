@@ -5581,6 +5581,43 @@ func TestDispatcher_ReviewRejection_MemoryContextAccumulatesFeedback(t *testing.
 	_ = d // used for db access if needed
 }
 
+// TestRejectionReassignIncludesMemoryAndAttempt verifies that when a review
+// is rejected, the re-ASSIGN message contains both:
+//   - MemoryContext with the reviewer feedback (so the worker knows what went wrong)
+//   - An incremented Attempt counter (so the worker knows this is a retry)
+//
+// This is the combined acceptance-criteria test for oro-eou.
+func TestRejectionReassignIncludesMemoryAndAttempt(t *testing.T) {
+	_, conn, _, _ := setupReviewRejection(t)
+
+	// Send READY_FOR_REVIEW — the mock reviewer returns "REJECTED: missing edge case tests".
+	sendMsg(t, conn, protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
+	})
+
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after rejection")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	// MemoryContext must be present and contain the reviewer feedback.
+	if msg.Assign.MemoryContext == "" {
+		t.Fatal("expected non-empty MemoryContext in rejection re-ASSIGN")
+	}
+	if !containsStr(msg.Assign.MemoryContext, "missing edge case tests") {
+		t.Fatalf("expected MemoryContext to contain reviewer feedback, got: %s", msg.Assign.MemoryContext)
+	}
+
+	// Attempt must be incremented (>0) so the worker knows this is a retry.
+	if msg.Assign.Attempt < 1 {
+		t.Fatalf("expected Attempt >= 1 after rejection, got %d", msg.Assign.Attempt)
+	}
+}
+
 // --- Diagnosis agent wiring tests (oro-2dj) ---
 
 // setupHandoffDiagnosis creates a dispatcher with a connected worker assigned to
