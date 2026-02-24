@@ -40,3 +40,4 @@ cmd/oro/_assets/
 .perles/
 uv.lock
 .beads
+docs/handoffs/
