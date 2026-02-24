@@ -11593,3 +11593,54 @@ func TestSnapshotWorkers_IncludesLastHeartbeat(t *testing.T) {
 		t.Errorf("expected LastHeartbeatSecs %.1f, got %.1f", expectedHeartbeatSecs, worker.LastHeartbeatSecs)
 	}
 }
+
+func TestStatusDirective_Throttled(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Control time to deterministically test throttling.
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	d.startTime = now
+
+	// First call — should build fresh status JSON.
+	resp1, err := d.applyDirective(protocol.DirectiveStatus, "")
+	if err != nil {
+		t.Fatalf("first status directive failed: %v", err)
+	}
+	if resp1 == "" {
+		t.Fatal("expected non-empty status response")
+	}
+
+	// Advance time by 1 second (within 5s window).
+	now = now.Add(1 * time.Second)
+
+	// Second call — should return cached response (identical JSON).
+	resp2, err := d.applyDirective(protocol.DirectiveStatus, "")
+	if err != nil {
+		t.Fatalf("second status directive failed: %v", err)
+	}
+	if resp2 != resp1 {
+		t.Fatalf("expected cached response within 5s window\ngot:  %s\nwant: %s", resp2, resp1)
+	}
+
+	// Advance time past the 5s throttle window (total 6s from first call).
+	now = now.Add(5 * time.Second)
+
+	// Third call — should rebuild fresh (uptime_seconds will differ).
+	resp3, err := d.applyDirective(protocol.DirectiveStatus, "")
+	if err != nil {
+		t.Fatalf("third status directive failed: %v", err)
+	}
+	if resp3 == resp1 {
+		t.Fatal("expected fresh response after 5s window expired, got cached response")
+	}
+
+	// Verify the fresh response has updated uptime.
+	var status3 statusResponse
+	if err := json.Unmarshal([]byte(resp3), &status3); err != nil {
+		t.Fatalf("failed to unmarshal third response: %v", err)
+	}
+	if status3.UptimeSeconds != 6.0 {
+		t.Fatalf("expected uptime_seconds=6.0 in fresh response, got %.1f", status3.UptimeSeconds)
+	}
+}

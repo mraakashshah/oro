@@ -49,6 +49,11 @@ const (
 	StateStopping State = "stopping" // Finishing current work, no new assignments.
 )
 
+// statusThrottleWindow is the dedup window for status directives. Repeated
+// status requests within this window return a cached response to avoid
+// redundant rebuilds when the manager sends bursts of 2-5 status calls.
+const statusThrottleWindow = 5 * time.Second
+
 // --- Domain types ---
 
 // Bead, BeadDetail, and model constants are now in pkg/protocol/types.go
@@ -333,6 +338,12 @@ type Dispatcher struct {
 
 	// acceptSem limits concurrent connection handlers in acceptLoop
 	acceptSem chan struct{}
+
+	// lastStatusTime and lastStatusJSON implement throttling for status
+	// directives. If a status request arrives within statusThrottleWindow
+	// of the previous one, the cached JSON is returned without rebuilding.
+	lastStatusTime time.Time
+	lastStatusJSON string
 }
 
 // New creates a Dispatcher. It does NOT start listening or polling — call Run().
@@ -2308,7 +2319,7 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	case protocol.DirectiveResume:
 		return d.applyResume()
 	case protocol.DirectiveStatus:
-		return d.buildStatusJSON(), nil
+		return d.applyStatus()
 	case protocol.DirectiveFocus:
 		return d.applyFocus(args)
 	case protocol.DirectiveShutdown:
@@ -2329,6 +2340,27 @@ func (d *Dispatcher) applyResume() (string, error) {
 	}
 	d.setState(StateRunning)
 	return "resumed", nil
+}
+
+// applyStatus returns the dispatcher status JSON, throttled to avoid redundant
+// rebuilds when the manager sends bursts of status requests. If a cached
+// response exists and was built within statusThrottleWindow, it is returned
+// immediately. Otherwise the status is rebuilt and cached.
+func (d *Dispatcher) applyStatus() (string, error) {
+	now := d.nowFunc()
+	d.mu.Lock()
+	cached := d.lastStatusJSON
+	elapsed := now.Sub(d.lastStatusTime)
+	d.mu.Unlock()
+	if cached != "" && elapsed < statusThrottleWindow {
+		return cached, nil
+	}
+	result := d.buildStatusJSON()
+	d.mu.Lock()
+	d.lastStatusTime = now
+	d.lastStatusJSON = result
+	d.mu.Unlock()
+	return result, nil
 }
 
 // applyRestartDaemon initiates graceful shutdown for daemon restart.
