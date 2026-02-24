@@ -592,9 +592,10 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 			delete(d.workers, workerID)
 			d.mu.Unlock()
 
-			// Clear tracking maps for the bead if it was assigned
+			// Clear tracking maps and reset bead to open so it can be reassigned.
 			if beadID != "" {
 				d.clearBeadTracking(beadID)
+				_ = d.beads.Update(context.Background(), beadID, "open")
 			}
 		}
 	}()

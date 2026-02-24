@@ -10174,6 +10174,18 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	if len(errs) > 0 {
 		t.Errorf("BeadTracker maps not cleared:\n  - %s", strings.Join(errs, "\n  - "))
 	}
+
+	// Assert: BeadSource.Update must have been called with ("oro-test", "open")
+	// to reset the bead for reassignment after the connection drop.
+	beadSrc.mu.Lock()
+	updatedStatus, updatedOK := beadSrc.updated["oro-test"]
+	beadSrc.mu.Unlock()
+
+	if !updatedOK {
+		t.Error("BeadSource.Update not called for oro-test after connection drop")
+	} else if updatedStatus != "open" {
+		t.Errorf("BeadSource.Update called with status %q for oro-test, want %q", updatedStatus, "open")
+	}
 }
 
 // TestAssignBeadSkipsClosedBead verifies that assignBead does not create a worktree
