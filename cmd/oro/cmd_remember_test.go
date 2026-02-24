@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -212,6 +213,102 @@ func TestRememberCmd(t *testing.T) {
 			}
 			if mem.Pinned != tc.wantPinned {
 				t.Errorf("stored pinned = %v, want %v", mem.Pinned, tc.wantPinned)
+			}
+		})
+	}
+}
+
+func TestRememberWithTags(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantTags []string
+		wantText string
+	}{
+		{
+			name:     "tags flag with comma-separated values",
+			args:     []string{"--tags=go,sqlite", "lesson:", "WAL mode is faster"},
+			wantTags: []string{"go", "sqlite"},
+			wantText: "WAL mode is faster",
+		},
+		{
+			name:     "tags flag with whitespace trimmed",
+			args:     []string{"--tags=go, sqlite, database", "pattern:", "use indexed queries"},
+			wantTags: []string{"go", "sqlite", "database"},
+			wantText: "use indexed queries",
+		},
+		{
+			name:     "empty tags flag stores no tags",
+			args:     []string{"--tags=", "unique_no_tags_xyz789"},
+			wantTags: []string{},
+			wantText: "unique_no_tags_xyz789",
+		},
+		{
+			name:     "no tags flag means no tags",
+			args:     []string{"unique_no_flag_abc123"},
+			wantTags: []string{},
+			wantText: "unique_no_flag_abc123",
+		},
+		{
+			name:     "single tag in tags flag",
+			args:     []string{"--tags=golang", "decision:", "use goroutines"},
+			wantTags: []string{"golang"},
+			wantText: "use goroutines",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestMemoryStore(t)
+			cmd := newRememberCmdWithStore(store)
+
+			var out strings.Builder
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs(tc.args)
+
+			err := cmd.Execute()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			output := out.String()
+			if !strings.Contains(output, "Remembered") {
+				t.Errorf("expected output to contain 'Remembered', got: %s", output)
+			}
+
+			// Verify the memory was stored with correct tags
+			ctx := context.Background()
+			results, err := store.Search(ctx, tc.wantText, memory.SearchOpts{Limit: 5})
+			if err != nil {
+				t.Fatalf("search: %v", err)
+			}
+			if len(results) == 0 {
+				t.Fatalf("expected at least one memory matching %q", tc.wantText)
+			}
+
+			mem := results[0]
+
+			// Parse tags from memory (stored as JSON)
+			var storedTags []string
+			if mem.Tags != "" {
+				if err := json.Unmarshal([]byte(mem.Tags), &storedTags); err != nil {
+					t.Fatalf("failed to parse tags JSON: %v", err)
+				}
+			}
+
+			// Compare tags
+			if len(storedTags) != len(tc.wantTags) {
+				t.Errorf("stored tags count = %d, want %d. stored=%v, want=%v", len(storedTags), len(tc.wantTags), storedTags, tc.wantTags)
+			}
+			for i, tag := range tc.wantTags {
+				if i >= len(storedTags) {
+					t.Errorf("missing tag at index %d: %q", i, tag)
+					continue
+				}
+				if storedTags[i] != tag {
+					t.Errorf("stored tags[%d] = %q, want %q", i, storedTags[i], tag)
+				}
 			}
 		})
 	}

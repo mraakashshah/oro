@@ -31,10 +31,28 @@ func parseTypePrefix(text string) (string, string) {
 	return "self_report", text
 }
 
+// parseTagsFlag splits a comma-separated tags string into a slice, trimming whitespace.
+// Empty string returns an empty slice.
+func parseTagsFlag(tagsStr string) []string {
+	if tagsStr == "" {
+		return []string{}
+	}
+	parts := strings.Split(tagsStr, ",")
+	var result []string
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
 // newRememberCmdWithStore creates the "oro remember" subcommand.
 // If store is nil, the command lazily opens the default store on execution.
 func newRememberCmdWithStore(store *memory.Store) *cobra.Command {
 	var pin bool
+	var tags string
 	cmd := &cobra.Command{
 		Use:   "remember <text>",
 		Short: "Store a memory",
@@ -57,6 +75,7 @@ func newRememberCmdWithStore(store *memory.Store) *cobra.Command {
 			id, err := s.Insert(context.Background(), memory.InsertParams{
 				Content:    content,
 				Type:       memType,
+				Tags:       parseTagsFlag(tags),
 				Source:     "cli",
 				Confidence: 0.8,
 				Pinned:     pin,
@@ -74,5 +93,6 @@ func newRememberCmdWithStore(store *memory.Store) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&pin, "pin", false, "Pin memory (skip time decay)")
+	cmd.Flags().StringVar(&tags, "tags", "", "Comma-separated tags")
 	return cmd
 }
