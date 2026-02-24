@@ -179,7 +179,16 @@ func (tm TreeModel) toggleAtCursor() TreeModel {
 		return tm
 	}
 	row := rows[tm.cursor]
-	return tm.toggleCollapse(row.groupIdx)
+	tm = tm.toggleCollapse(row.groupIdx)
+	// Clamp cursor to new visible range (children may have disappeared)
+	newRows := tm.flatRows()
+	if tm.cursor >= len(newRows) {
+		tm.cursor = len(newRows) - 1
+	}
+	if tm.cursor < 0 {
+		tm.cursor = 0
+	}
+	return tm
 }
 
 // View renders the tree as a string suitable for the dashboard.
@@ -205,7 +214,7 @@ func (tm TreeModel) View(theme Theme, styles Styles) string {
 			sb.WriteString(tm.renderEpicRow(g, active, theme, styles))
 		} else {
 			child := g.children[row.childIdx]
-			sb.WriteString(tm.renderChildRow(child, active, styles))
+			sb.WriteString(tm.renderChildRow(child, active, theme, styles))
 		}
 		sb.WriteString("\n")
 	}
@@ -241,13 +250,13 @@ func (tm TreeModel) renderEpicRow(g treeGroup, active bool, theme Theme, styles 
 
 	epicHeaderStyle := lipgloss.NewStyle().Bold(true).Foreground(theme.Primary)
 	if active {
-		epicHeaderStyle = epicHeaderStyle.Background(lipgloss.Color("#3a3a3a"))
+		epicHeaderStyle = epicHeaderStyle.Background(theme.ColorFocus)
 	}
 	return epicHeaderStyle.Render(line)
 }
 
 // renderChildRow renders a single child bead row indented under its epic.
-func (tm TreeModel) renderChildRow(b protocol.Bead, active bool, styles Styles) string {
+func (tm TreeModel) renderChildRow(b protocol.Bead, active bool, theme Theme, styles Styles) string {
 	priorityBadge := renderTreePriorityBadge(b.Priority, styles)
 	statusBadge := renderTreeStatusBadge(b.Status, styles)
 	typeIcon := renderTreeTypeIcon(b.Type)
@@ -255,7 +264,7 @@ func (tm TreeModel) renderChildRow(b protocol.Bead, active bool, styles Styles) 
 	line := fmt.Sprintf("  %s %s %s %s  %s", priorityBadge, statusBadge, typeIcon, b.Title, styles.IDMuted.Render(b.ID))
 
 	if active {
-		return lipgloss.NewStyle().Background(lipgloss.Color("#3a3a3a")).Render(line)
+		return lipgloss.NewStyle().Background(theme.ColorFocus).Render(line)
 	}
 	return line
 }

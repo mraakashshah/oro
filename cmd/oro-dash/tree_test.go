@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -541,5 +542,57 @@ func TestTreeModel_Render(t *testing.T) {
 	expandedOutput := tm.View(theme, styles)
 	if !strings.Contains(expandedOutput, "Task One") {
 		t.Error("expected child beads to reappear when epic is expanded")
+	}
+}
+
+// TestTreeModel_ToggleAtCursor_ClampsAfterCollapse verifies that when the cursor
+// is on a child row and Space collapses the parent, the cursor is clamped to the
+// new visible range so the user doesn't end up on a non-existent row.
+func TestTreeModel_ToggleAtCursor_ClampsAfterCollapse(t *testing.T) {
+	// Minimal data: 1 epic with 2 children. No other groups.
+	beads := []protocol.Bead{
+		{ID: "epic-1", Title: "Epic One", Type: "epic", Status: "open", Priority: 0},
+		{ID: "task-1", Title: "Task One", Type: "task", Status: "open", Priority: 1, Epic: "epic-1"},
+		{ID: "task-2", Title: "Task Two", Type: "task", Status: "open", Priority: 2, Epic: "epic-1"},
+	}
+	tm := NewTreeModel(beads)
+
+	// Expanded flat rows: [epic-1, task-1, task-2] — 3 rows (indices 0, 1, 2)
+	rows := tm.flatRows()
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 flat rows, got %d", len(rows))
+	}
+
+	// Place cursor on row 2 (last child of Epic One)
+	tm.cursor = 2
+
+	// Toggle at cursor — collapses Epic One from a child row
+	tm = tm.toggleAtCursor()
+
+	// After collapse, only the epic header remains: 1 row (index 0).
+	newRows := tm.flatRows()
+	if len(newRows) != 1 {
+		t.Fatalf("expected 1 flat row after collapse, got %d", len(newRows))
+	}
+
+	// Cursor must be clamped to valid range [0, len(newRows)-1]
+	if tm.cursor >= len(newRows) {
+		t.Errorf("cursor %d out of range after collapse (only %d visible rows)", tm.cursor, len(newRows))
+	}
+	if tm.cursor < 0 {
+		t.Errorf("cursor should not be negative, got %d", tm.cursor)
+	}
+}
+
+// TestTreeView_ActiveRowUsesThemeColorFocus verifies that the tree view source
+// uses theme.ColorFocus for active row highlighting, not a hardcoded color.
+// Source-level check because lipgloss doesn't emit ANSI in headless test envs.
+func TestTreeView_ActiveRowUsesThemeColorFocus(t *testing.T) {
+	src, err := os.ReadFile("tree.go")
+	if err != nil {
+		t.Fatalf("failed to read tree.go: %v", err)
+	}
+	if strings.Contains(string(src), `"#3a3a3a"`) {
+		t.Error("tree.go must not hardcode #3a3a3a; use theme.ColorFocus instead")
 	}
 }
