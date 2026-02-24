@@ -21,6 +21,15 @@
 		],
 		"PostToolUse": [
 			{
+				"matcher": "",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/context_pct_writer.py"
+					}
+				]
+			},
+			{
 				"matcher": "Read|WebFetch|Bash",
 				"hooks": [
 					{

@@ -652,6 +652,9 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 			}},
 		},
 		"PostToolUse": {
+			{Matcher: "", Hooks: []hookEntry{
+				{Type: "command", Command: py("context_pct_writer.py")},
+			}},
 			{Matcher: "Read|WebFetch|Bash", Hooks: []hookEntry{
 				{Type: "command", Command: py("prompt_injection_guard.py")},
 			}},
