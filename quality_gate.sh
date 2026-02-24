@@ -10,7 +10,15 @@
 
 set -euo pipefail
 
-# Unset git hook env vars that leak into test subprocesses.
+# Prevent hook env leakage into test subprocesses.
+# Save worktree state BEFORE unsetting — mutation testing needs this later to
+# resolve refs (git rev-parse --verify main) in worktrees where .git is a
+# gitlink file and .git/worktrees/<name> has no refs/heads/main.
+QG_IS_WORKTREE=false
+if [ -f .git ]; then
+	QG_IS_WORKTREE=true
+	QG_GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
+fi
 unset GIT_DIR GIT_WORK_TREE
 
 # Colors
@@ -33,6 +41,19 @@ NODE_BIN="$REPO_ROOT/node_modules/.bin"
 # =============================================================================
 # PRIMITIVES
 # =============================================================================
+
+# Run git with ref-resolution support in worktrees.
+# GIT_DIR is unset globally to prevent leakage into test subprocesses, but
+# mutation testing needs ref resolution (git rev-parse --verify main, git diff
+# main). This wrapper temporarily sets GIT_DIR for the git command only.
+# shellcheck disable=SC2329
+qg_git() {
+	if $QG_IS_WORKTREE; then
+		GIT_DIR="$QG_GIT_COMMON_DIR" git "$@"
+	else
+		git "$@"
+	fi
+}
 
 header() {
 	echo ""
@@ -271,13 +292,13 @@ lane_go() {
 			# Detect missing main branch explicitly — do NOT silently swallow git errors.
 			# 'git diff ... main 2>/dev/null || true' returns empty when main is absent,
 			# causing a false PASS. Fail loudly instead (oro-xgwr).
-			if ! git rev-parse --verify main >/dev/null 2>&1; then
+			if ! qg_git rev-parse --verify main >/dev/null 2>&1; then
 				echo "WARNING: Cannot find main branch — cannot determine changed files for mutation"
 				echo "FAIL: mutation testing requires main branch to compute diff"
 				return 1
 			fi
 			local changed
-			changed=$(git diff --name-only main -- '*.go' 2>/dev/null |
+			changed=$(qg_git diff --name-only main -- '*.go' 2>/dev/null |
 				grep -v '_test\.go$' |
 				grep -v '_generated\.' |
 				grep -v 'cmd/oro/_assets' ||
@@ -396,13 +417,13 @@ lane_python() {
 		# shellcheck disable=SC2329
 		run_mutation_test() {
 			# Detect missing main branch explicitly (same fix as Go mutation, oro-xgwr).
-			if ! git rev-parse --verify main >/dev/null 2>&1; then
+			if ! qg_git rev-parse --verify main >/dev/null 2>&1; then
 				echo "WARNING: Cannot find main branch — cannot determine changed files for mutation"
 				echo "FAIL: mutation testing requires main branch to compute diff"
 				return 1
 			fi
 			local changed
-			changed=$(git diff --name-only main -- '*.py' 2>/dev/null |
+			changed=$(qg_git diff --name-only main -- '*.py' 2>/dev/null |
 				grep -v 'test_' |
 				grep -v '__pycache__' |
 				grep -v 'archive/' ||

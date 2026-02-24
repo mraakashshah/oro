@@ -298,6 +298,168 @@ test_python_mutation_missing_main_warning_message() {
 }
 
 # =============================================================================
+# Worktree ref resolution after env cleanup (oro-w6xz)
+# =============================================================================
+
+# Test: quality_gate.sh detects worktrees and provides qg_git for ref resolution
+# shellcheck disable=SC2317,SC2329
+test_worktree_ref_resolution_after_env_cleanup() {
+	# Verify that quality_gate.sh:
+	# 1. Unsets GIT_DIR/GIT_WORK_TREE (prevents hook leakage)
+	# 2. Detects worktrees via .git gitlink file BEFORE the unset
+	# 3. Saves git-common-dir for later use by mutation testing
+	# 4. Provides a qg_git helper that temporarily sets GIT_DIR for ref resolution
+
+	local env_block
+	env_block=$(head -25 "$SCRIPT_DIR/quality_gate.sh")
+
+	# Must have: unset GIT_DIR (still needed for hook leakage prevention)
+	if ! echo "$env_block" | grep -q 'unset GIT_DIR'; then
+		echo "FAIL: quality_gate.sh does not unset GIT_DIR (needed for hook leakage prevention)"
+		return 1
+	fi
+
+	# Must have: worktree detection via [ -f .git ] (gitlink file check)
+	if ! echo "$env_block" | grep -qE '\[ -f \.git \]|-f \.git'; then
+		echo "FAIL: quality_gate.sh does not detect worktrees via .git gitlink file"
+		echo "  Worktrees need git-common-dir saved before GIT_DIR is unset"
+		return 1
+	fi
+
+	# Must have: git-common-dir saved to a shell variable (not exported as GIT_DIR)
+	if ! echo "$env_block" | grep -qE 'git-common-dir'; then
+		echo "FAIL: quality_gate.sh does not save git-common-dir for worktree ref resolution"
+		return 1
+	fi
+
+	# Must have: qg_git helper function that uses saved common dir
+	if ! grep -q 'qg_git()' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not define qg_git() helper for worktree ref resolution"
+		echo "  Mutation testing needs qg_git to resolve refs without leaking GIT_DIR"
+		return 1
+	fi
+
+	# Mutation testing must use qg_git (not bare git) for rev-parse and diff
+	local go_mutation
+	go_mutation=$(grep -A 80 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -80)
+	if echo "$go_mutation" | grep -qE '^\s+if ! git rev-parse --verify main'; then
+		echo "FAIL: run_go_mutation_test() uses bare 'git' instead of 'qg_git' for rev-parse"
+		echo "  In worktrees, qg_git sets GIT_DIR temporarily for ref resolution"
+		return 1
+	fi
+
+	return 0
+}
+
+# Test: qg_git rev-parse --verify main works in a real worktree
+# shellcheck disable=SC2317,SC2329
+test_worktree_rev_parse_main_functional() {
+	# Functional test: create a real git repo + worktree, simulate hook env,
+	# run the QG env setup + qg_git helper, then verify ref resolution works.
+	#
+	# The bug: after 'unset GIT_DIR GIT_WORK_TREE', the worktree's
+	# .git/worktrees/<name> dir has no refs/heads/main — it relies on
+	# commondir. qg_git temporarily sets GIT_DIR for the git command only.
+	local tmpdir
+	tmpdir=$(mktemp -d)
+
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	# Create a minimal git repo with a main branch
+	git init --initial-branch=main "$tmpdir/repo" >/dev/null 2>&1
+	git -C "$tmpdir/repo" commit --allow-empty -m "init" >/dev/null 2>&1
+
+	# Create a worktree
+	git -C "$tmpdir/repo" worktree add "$tmpdir/wt" -b test-branch >/dev/null 2>&1
+
+	# Verify .git is a gitlink in the worktree
+	if [ ! -f "$tmpdir/wt/.git" ]; then
+		echo "FAIL: test setup broken — .git is not a gitlink file in worktree"
+		git -C "$tmpdir/repo" worktree remove "$tmpdir/wt" 2>/dev/null || true
+		return 1
+	fi
+
+	# Extract the env setup block (from "# Prevent" comment through "unset GIT_DIR")
+	# and the qg_git function from quality_gate.sh
+	local env_setup qg_git_fn
+	env_setup=$(sed -n '/^# Prevent hook/,/^unset GIT_DIR/p' "$SCRIPT_DIR/quality_gate.sh")
+	qg_git_fn=$(sed -n '/^qg_git()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh")
+
+	# If no env setup extracted, fall back to just the unset line
+	if [ -z "$env_setup" ]; then
+		env_setup=$(grep -m1 'unset GIT_DIR' "$SCRIPT_DIR/quality_gate.sh")
+	fi
+
+	# Run the env setup + qg_git in a subshell simulating hook context
+	local result
+	result=$(bash -c "
+		set -euo pipefail
+		# Simulate hook env leakage (GIT_DIR set to worktree-specific git dir)
+		export GIT_DIR=\"$tmpdir/repo/.git/worktrees/wt\"
+		export GIT_WORK_TREE=\"$tmpdir/wt\"
+
+		# Change to worktree directory
+		cd \"$tmpdir/wt\"
+
+		# Run the env setup block from quality_gate.sh
+		$env_setup
+
+		# Define qg_git helper
+		$qg_git_fn
+
+		# Test 1: qg_git can resolve main
+		if ! qg_git rev-parse --verify main >/dev/null 2>&1; then
+			echo 'FAIL: qg_git rev-parse --verify main failed in worktree'
+			exit 0
+		fi
+
+		# Test 2: GIT_DIR must NOT be exported (would leak into test subprocesses)
+		if env | grep -q '^GIT_DIR='; then
+			echo 'FAIL: GIT_DIR is exported — it would leak into test subprocesses'
+			exit 0
+		fi
+
+		echo 'PASS'
+	" 2>&1)
+
+	# Cleanup worktree
+	git -C "$tmpdir/repo" worktree remove "$tmpdir/wt" 2>/dev/null || true
+
+	if [ "$result" = "PASS" ]; then
+		return 0
+	else
+		echo "$result"
+		return 1
+	fi
+}
+
+# Test: GIT_DIR/GIT_WORK_TREE do not leak into test subprocesses after QG env setup
+# shellcheck disable=SC2317,SC2329
+test_worktree_env_no_leak_to_subprocesses() {
+	# After the env setup block, neither GIT_DIR nor GIT_WORK_TREE must be exported.
+	# The qg_git helper sets GIT_DIR per-command (not globally), preventing leakage.
+	local env_block
+	env_block=$(head -25 "$SCRIPT_DIR/quality_gate.sh")
+
+	# GIT_DIR must NOT be globally exported (would leak into test subprocesses)
+	if echo "$env_block" | grep -q 'export GIT_DIR'; then
+		echo "FAIL: quality_gate.sh exports GIT_DIR globally"
+		echo "  GIT_DIR must not leak into test subprocesses — use qg_git for per-command isolation"
+		return 1
+	fi
+
+	# GIT_WORK_TREE must NOT be re-exported after the unset
+	if echo "$env_block" | grep -q 'export GIT_WORK_TREE'; then
+		echo "FAIL: quality_gate.sh re-exports GIT_WORK_TREE after unsetting it"
+		echo "  GIT_WORK_TREE must stay unset to prevent leakage into test subprocesses"
+		return 1
+	fi
+
+	return 0
+}
+
+# =============================================================================
 # Shell correctness in mutation testing (oro-koon)
 # =============================================================================
 
@@ -439,6 +601,14 @@ echo "=============================================="
 
 test_case "python mutation checks main branch" test_python_mutation_checks_main_branch_existence
 test_case "python mutation missing-main warning" test_python_mutation_missing_main_warning_message
+
+echo ""
+echo "Testing worktree ref resolution (oro-w6xz)"
+echo "=============================================="
+
+test_case "worktree env restores GIT_DIR" test_worktree_ref_resolution_after_env_cleanup
+test_case "worktree rev-parse main works" test_worktree_rev_parse_main_functional
+test_case "worktree env no GIT_WORK_TREE leak" test_worktree_env_no_leak_to_subprocesses
 
 echo ""
 echo "Testing shell correctness in mutation testing (oro-koon)"
