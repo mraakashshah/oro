@@ -546,25 +546,6 @@ func (m Model) renderContextSplit() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
 }
 
-// renderSplitPane renders DetailView as a split pane with board on left and detail on right.
-func (m Model) renderSplitPane() string {
-	// Calculate widths based on splitRatio
-	boardWidth := int(float64(m.width) * m.splitRatio)
-	_ = m.width - boardWidth // detailWidth reserved for future use
-
-	// Render board with muted colors and reduced column width
-	board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
-	// Adjust column width based on available board space
-	colWidth := max((boardWidth/4)-2, 20) // 4 columns with some padding, min 20
-	boardView := board.RenderWithScroll(m.activeCol, m.activeBead, colWidth, m.colScrollOffsets, m.maxVisibleBeads(), m.theme, m.styles)
-
-	// Render detail view with remaining width
-	detailView := m.detailModel.View(m.styles)
-
-	// Join horizontally
-	return lipgloss.JoinHorizontal(lipgloss.Top, boardView, detailView)
-}
-
 // calculateDaysSinceUpdate calculates days since the bead was last updated.
 // Returns 0 if updatedAt is empty or invalid.
 func calculateDaysSinceUpdate(updatedAt string) int {

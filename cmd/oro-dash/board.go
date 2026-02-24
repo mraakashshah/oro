@@ -114,18 +114,13 @@ func (bm BoardModel) RenderWithScroll(activeCol, activeBead, colWidth int, scrol
 	for colIdx, col := range bm.columns {
 		offset := 0
 		if colIdx < len(scrollOffsets) {
-			offset = scrollOffsets[colIdx]
+			offset = scrollOffsets[colIdx] //nolint:gosec // bounds checked on line above
 		}
 		full := bm.renderColumnWithScroll(col, colIdx, activeCol, activeBead, colWidth, offset, maxVisible, theme, styles)
 		rendered = append(rendered, full)
 	}
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
-}
-
-// renderColumn renders a single column with its header and cards (no scrolling).
-func (bm BoardModel) renderColumn(col boardColumn, colIdx, activeCol, activeBead, colWidth int, theme Theme, styles Styles) string {
-	return bm.renderColumnWithScroll(col, colIdx, activeCol, activeBead, colWidth, 0, 0, theme, styles)
 }
 
 // renderColumnWithScroll renders a column with scroll offset and visible limit.
@@ -144,46 +139,48 @@ func (bm BoardModel) renderColumnWithScroll(col boardColumn, colIdx, activeCol, 
 	if len(col.beads) == 0 {
 		emptyMsg := styles.Muted.Render("no items")
 		cardsBuilder.WriteString(emptyMsg)
-	} else {
-		// Calculate visible window
-		start := scrollOffset
-		if start < 0 {
-			start = 0
-		}
-		if start > len(col.beads) {
-			start = len(col.beads)
-		}
-		end := len(col.beads)
-		if maxVisible > 0 && start+maxVisible < end {
-			end = start + maxVisible
-		}
-
-		// Show "above" indicator
-		if start > 0 {
-			cardsBuilder.WriteString(styles.Muted.Render(fmt.Sprintf("  ▲ %d more", start)))
-			cardsBuilder.WriteString("\n")
-		}
-
-		for beadIdx := start; beadIdx < end; beadIdx++ {
-			b := col.beads[beadIdx]
-			// Use activeCardStyle if this is the active card
-			style := cardStyle
-			if colIdx == activeCol && beadIdx == activeBead {
-				style = activeCardStyle
-			}
-
-			cardContent := bm.renderCardContent(b, styles)
-			card := style.Render(cardContent)
-			cardsBuilder.WriteString(card)
-			cardsBuilder.WriteString("\n")
-		}
-
-		// Show "below" indicator
-		if remaining := len(col.beads) - end; remaining > 0 {
-			cardsBuilder.WriteString(styles.Muted.Render(fmt.Sprintf("  ▼ %d more", remaining)))
-			cardsBuilder.WriteString("\n")
-		}
+		return columnStyle.Render(header + "\n" + cardsBuilder.String())
 	}
+
+	// Calculate visible window
+	start := scrollOffset
+	if start < 0 {
+		start = 0
+	}
+	if start > len(col.beads) {
+		start = len(col.beads)
+	}
+	end := len(col.beads)
+	if maxVisible > 0 && start+maxVisible < end {
+		end = start + maxVisible
+	}
+
+	// Show "above" indicator
+	if start > 0 {
+		cardsBuilder.WriteString(styles.Muted.Render(fmt.Sprintf("  ▲ %d more", start)))
+		cardsBuilder.WriteString("\n")
+	}
+
+	for beadIdx := start; beadIdx < end; beadIdx++ {
+		b := col.beads[beadIdx]
+		// Use activeCardStyle if this is the active card
+		style := cardStyle
+		if colIdx == activeCol && beadIdx == activeBead {
+			style = activeCardStyle
+		}
+
+		cardContent := bm.renderCardContent(b, styles)
+		card := style.Render(cardContent)
+		cardsBuilder.WriteString(card)
+		cardsBuilder.WriteString("\n")
+	}
+
+	// Show "below" indicator
+	if remaining := len(col.beads) - end; remaining > 0 {
+		cardsBuilder.WriteString(styles.Muted.Render(fmt.Sprintf("  ▼ %d more", remaining)))
+		cardsBuilder.WriteString("\n")
+	}
+
 	cards := cardsBuilder.String()
 
 	return columnStyle.Render(header + "\n" + cards)
