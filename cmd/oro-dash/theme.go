@@ -171,7 +171,7 @@ func DefaultTheme() Theme {
 func NewStyles(theme Theme) Styles {
 	s := Styles{}
 	s.initStatusBarStyles(theme)
-	_, _ = s.initCommonStyles, theme
+	s.initCommonStyles(theme)
 	s.initBoardStyles(theme)
 	s.initSearchStyles(theme)
 	s.initHelpStyles(theme)

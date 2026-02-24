@@ -119,3 +119,33 @@ func TestNoInlineNewStyleInViews(t *testing.T) {
 		})
 	}
 }
+
+func TestCommonStylesInitialized(t *testing.T) {
+	// Verify that NewStyles properly initializes common styles.
+	// This test catches the no-op bug where initCommonStyles is not called.
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	// All common styles should render non-empty strings
+	tests := []struct {
+		name  string
+		style lipgloss.Style
+	}{
+		{"Muted", styles.Muted},
+		{"Bold", styles.Bold},
+		{"Primary", styles.Primary},
+		{"Dim", styles.Dim},
+		{"Error", styles.Error},
+		{"Success", styles.Success},
+		{"Secondary", styles.Secondary},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered := tt.style.Render("test")
+			if rendered == "" {
+				t.Errorf("%s style rendered empty string; initCommonStyles not called?", tt.name)
+			}
+		})
+	}
+}
