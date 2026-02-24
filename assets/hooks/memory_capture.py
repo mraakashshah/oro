@@ -151,6 +151,39 @@ def recall(knowledge_file: str, query: str) -> list[dict]:
     ]
 
 
+_MEMORY_TYPE_RE = re.compile(r"^(gotcha|lesson|decision|pattern|self_report):\s*(.+)", re.DOTALL)
+
+
+def detect_memory_type(content: str) -> tuple[str, str]:
+    """Detect optional memory type prefix (gotcha:/lesson:/decision:/pattern:/self_report:).
+
+    Returns (full_content, body) where body has the prefix stripped.
+    If no prefix, returns (content, content).
+    """
+    m = _MEMORY_TYPE_RE.match(content)
+    if m:
+        return content, m.group(2).strip()
+    return content, content
+
+
+def sync_to_memories_db(content: str, tags: list[str]) -> None:
+    """Best-effort sync a learned entry to memories.db via ``oro remember``.
+
+    Silently catches OSError (oro not on PATH) and TimeoutExpired.
+    """
+    import contextlib
+    import subprocess
+
+    tag_arg = f"--tags={','.join(tags)}" if tags else "--tags="
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            ["oro", "remember", tag_arg, content],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+
 def main() -> None:
     hook_input = json.loads(sys.stdin.read())
 
@@ -165,6 +198,7 @@ def main() -> None:
     bead_id, content = result
     tags = auto_tag(content)
     append_entry(KNOWLEDGE_FILE, bead_id, content, tags)
+    sync_to_memories_db(content, tags)
 
     output = {
         "hookSpecificOutput": {

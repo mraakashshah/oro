@@ -9,10 +9,8 @@ Input: JSON on stdin with tool_name, tool_input, etc.
 Output: JSON with additionalContext confirming capture, or nothing.
 """
 
-import contextlib
 import json
 import re
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -153,36 +151,37 @@ def recall(knowledge_file: str, query: str) -> list[dict]:
     ]
 
 
-_MEMORY_TYPE_PREFIXES = ["lesson:", "decision:", "gotcha:", "pattern:"]
+_MEMORY_TYPE_RE = re.compile(r"^(gotcha|lesson|decision|pattern|self_report):\s*(.+)", re.DOTALL)
 
 
 def detect_memory_type(content: str) -> tuple[str, str]:
-    """Parse a type prefix from content, mirroring parseTypePrefix in cmd_remember.go.
+    """Detect optional memory type prefix (gotcha:/lesson:/decision:/pattern:/self_report:).
 
-    Returns (original_content, extracted_body). If no known prefix is found,
-    both elements are the original content.
+    Returns (full_content, body) where body has the prefix stripped.
+    If no prefix, returns (content, content).
     """
-    for prefix in _MEMORY_TYPE_PREFIXES:
-        if content.startswith(prefix):
-            body = content[len(prefix) :].strip()
-            return content, body
+    m = _MEMORY_TYPE_RE.match(content)
+    if m:
+        return content, m.group(2).strip()
     return content, content
 
 
 def sync_to_memories_db(content: str, tags: list[str]) -> None:
-    """Sync a memory entry to memories.db via `oro remember`.
+    """Best-effort sync a learned entry to memories.db via ``oro remember``.
 
-    Calls subprocess to invoke `oro remember --tags=<tags> <content>`.
-    Silently ignores FileNotFoundError (oro not on PATH) and TimeoutExpired.
-    The knowledge.jsonl write always succeeds regardless of this call.
+    Silently catches OSError (oro not on PATH) and TimeoutExpired.
     """
+    import contextlib
+    import subprocess
 
-    args = ["oro", "remember"]
-    if tags:
-        args.append(f"--tags={','.join(tags)}")
-    args.append(content)
-    with contextlib.suppress(FileNotFoundError, subprocess.TimeoutExpired):
-        subprocess.run(args, capture_output=True, timeout=5)
+    tag_arg = f"--tags={','.join(tags)}" if tags else "--tags="
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run(
+            ["oro", "remember", tag_arg, content],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
 
 
 def main() -> None:
@@ -199,6 +198,7 @@ def main() -> None:
     bead_id, content = result
     tags = auto_tag(content)
     append_entry(KNOWLEDGE_FILE, bead_id, content, tags)
+    sync_to_memories_db(content, tags)
 
     output = {
         "hookSpecificOutput": {
