@@ -735,6 +735,9 @@ func (d *Dispatcher) handleHeartbeat(ctx context.Context, workerID string, msg p
 	if w, ok := d.workers[workerID]; ok {
 		w.lastSeen = d.nowFunc()
 		w.contextPct = msg.Heartbeat.ContextPct
+		if w.state == protocol.WorkerBusy {
+			w.lastProgress = d.nowFunc()
+		}
 	}
 	d.mu.Unlock()
 

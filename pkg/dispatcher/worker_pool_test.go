@@ -473,6 +473,103 @@ func TestTouchProgress_NoopForUnknownWorker(t *testing.T) {
 	d.touchProgress("nonexistent")
 }
 
+// --- handleHeartbeat progress tests ---
+
+// TestHeartbeatTouchesProgressForBusyWorker verifies that a heartbeat from a
+// busy worker updates lastProgress, preventing the progress timeout from
+// killing workers that are legitimately running Claude for >10 min.
+func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	d.cfg.ProgressTimeout = 1 * time.Second
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	// Register a busy worker with stale lastProgress (past timeout).
+	staleProgress := now.Add(-(d.cfg.ProgressTimeout + time.Second))
+	conn := newMockConn()
+	workerID := "busy-heartbeating"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		beadID:       "test-bead",
+		lastSeen:     now,
+		lastProgress: staleProgress,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	// Send heartbeat — should refresh lastProgress for busy worker.
+	d.handleHeartbeat(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID: workerID,
+			BeadID:   "test-bead",
+		},
+	})
+
+	// Verify lastProgress was updated.
+	d.mu.Lock()
+	got := d.workers[workerID].lastProgress
+	d.mu.Unlock()
+	if !got.Equal(now) {
+		t.Errorf("lastProgress = %v, want %v (heartbeat should refresh progress for busy worker)", got, now)
+	}
+
+	// The worker must survive checkHeartbeats.
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillPresent := d.workers[workerID]
+	d.mu.Unlock()
+	if !stillPresent {
+		t.Error("busy worker with recent heartbeat should NOT be removed by checkHeartbeats")
+	}
+}
+
+// TestHeartbeatDoesNotTouchProgressForIdleWorker verifies that heartbeats
+// from idle workers do NOT update lastProgress.
+func TestHeartbeatDoesNotTouchProgressForIdleWorker(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	staleProgress := now.Add(-5 * time.Minute)
+	conn := newMockConn()
+	workerID := "idle-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerIdle,
+		lastSeen:     now,
+		lastProgress: staleProgress,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	// Send heartbeat — should NOT refresh lastProgress for idle worker.
+	d.handleHeartbeat(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID: workerID,
+		},
+	})
+
+	d.mu.Lock()
+	got := d.workers[workerID].lastProgress
+	d.mu.Unlock()
+	if !got.Equal(staleProgress) {
+		t.Errorf("lastProgress = %v, want %v (heartbeat should NOT touch progress for idle worker)", got, staleProgress)
+	}
+}
+
 // --- checkHeartbeats tests ---
 
 // TestCheckHeartbeats_RemovesStaleIdleWorkers verifies that idle workers with
