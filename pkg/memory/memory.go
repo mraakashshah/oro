@@ -174,6 +174,18 @@ func tagsFromJSON(s string) []string {
 // spec, 0.7 is the day-one threshold for FTS5 overlap dedup.
 const dedupJaccardThreshold = 0.7
 
+// validMemoryTypes is the set of allowed memory type values for Insert.
+//
+//nolint:gochecknoglobals // compile-once lookup table, safe as package-level var
+var validMemoryTypes = map[string]struct{}{
+	"lesson":     {},
+	"decision":   {},
+	"gotcha":     {},
+	"pattern":    {},
+	"preference": {},
+	"summary":    {},
+}
+
 // Insert adds a new memory with write-time dedup. Before inserting, it checks
 // FTS5 for existing memories with high term overlap (Jaccard similarity).
 // If a near-duplicate exists:
@@ -182,6 +194,16 @@ const dedupJaccardThreshold = 0.7
 //
 // Returns the inserted (or existing duplicate) ID.
 func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
+	if len(m.Content) < 10 {
+		return 0, fmt.Errorf("memory insert: content too short (min 10 chars, got %d)", len(m.Content))
+	}
+	if len(m.Content) > 2048 {
+		return 0, fmt.Errorf("memory insert: content too long (max 2048 chars, got %d)", len(m.Content))
+	}
+	if _, ok := validMemoryTypes[m.Type]; !ok {
+		return 0, fmt.Errorf("memory insert: invalid type %q (must be one of: lesson, decision, gotcha, pattern, preference)", m.Type)
+	}
+
 	conf := m.Confidence
 	if conf == 0 {
 		conf = 0.8

@@ -205,7 +205,7 @@ func TestStore_List(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		_, err := store.Insert(ctx, InsertParams{
-			Content: "memory " + string(rune('A'+i)), Type: "lesson",
+			Content: "memory item " + string(rune('A'+i)), Type: "lesson",
 			Tags: []string{"test"}, Source: "self_report", Confidence: 0.8,
 		})
 		if err != nil {
@@ -2451,4 +2451,55 @@ func TestMigrateProjectColumn_Idempotent(t *testing.T) {
 	if project != "test-project" {
 		t.Errorf("expected project='test-project', got %q", project)
 	}
+}
+
+func TestInsertQualityGate(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	validContent := "This is a valid memory content for testing purposes"
+
+	t.Run("rejects content shorter than 10 chars", func(t *testing.T) {
+		_, err := store.Insert(ctx, InsertParams{
+			Content: "short",
+			Type:    "lesson",
+		})
+		if err == nil {
+			t.Error("expected error for content < 10 chars, got nil")
+		}
+	})
+
+	t.Run("rejects content longer than 2048 chars", func(t *testing.T) {
+		_, err := store.Insert(ctx, InsertParams{
+			Content: strings.Repeat("a", 2049),
+			Type:    "lesson",
+		})
+		if err == nil {
+			t.Error("expected error for content > 2048 chars, got nil")
+		}
+	})
+
+	t.Run("rejects invalid type", func(t *testing.T) {
+		_, err := store.Insert(ctx, InsertParams{
+			Content: validContent,
+			Type:    "bogus",
+		})
+		if err == nil {
+			t.Error("expected error for type='bogus', got nil")
+		}
+	})
+
+	t.Run("accepts preference type with valid content", func(t *testing.T) {
+		id, err := store.Insert(ctx, InsertParams{
+			Content: validContent,
+			Type:    "preference",
+		})
+		if err != nil {
+			t.Errorf("expected no error for valid insert, got: %v", err)
+		}
+		if id <= 0 {
+			t.Errorf("expected positive ID, got %d", id)
+		}
+	})
 }
