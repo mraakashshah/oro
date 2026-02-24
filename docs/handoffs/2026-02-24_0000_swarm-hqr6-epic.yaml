@@ -1,0 +1,138 @@
+---
+date: 2026-02-24
+status: partial
+---
+
+goal: >
+  Launch oro swarm focused on epic oro-hqr6 (Activate memory system).
+  Completed 3 of 5 child beads, merged to main. Swarm ran ~45min with
+  3-13 workers auto-scaling. Force-stopped at user request.
+
+now: >
+  Finish oro-hqr6.2 (--format=json for oro memories list). Staged changes
+  exist in worktree .worktrees/oro-hqr6.2 — 111 lines in cmd_memories.go
+  and cmd_memories_test.go. Review staged code, commit, run QG, merge to
+  main. Then hqr6.5 unblocks (dual-source memory reading).
+
+test: go test ./cmd/oro/... -run TestMemoriesListJSON
+
+done_this_session:
+  - task: "Launched swarm with oro start -w 3 -D, set focus on oro-hqr6"
+    files: []
+  - task: "oro-hqr6.1: Add --tags flag to oro remember CLI — merged to main"
+    files: [cmd/oro/cmd_remember.go, cmd/oro/cmd_remember_test.go]
+  - task: "oro-hqr6.3: Add Saving Learnings section to worker prompt — merged to main"
+    files: [pkg/worker/prompt.go, pkg/worker/prompt_test.go]
+  - task: "oro-hqr6.4: Add real-time sync from memory_capture.py — merged by dispatcher"
+    files: [.claude/hooks/memory_capture.py, tests/test_memory_capture.py]
+  - task: "Fixed core.bare=true bug that broke git ops in main worktree"
+    files: []
+  - task: "Cherry-picked closed bead branches to main (dispatcher merge was failing)"
+    files: []
+  - task: "Repeatedly cleaned up workers stubbing quality_gate.sh"
+    files: []
+
+blockers: []
+
+questions: []
+
+decisions:
+  cherry_pick_over_merge: >
+    Closed beads had branches that couldn't ff-only merge (main moved ahead).
+    Cherry-picked commits from agent/oro-hqr6.1 and agent/oro-hqr6.3 onto
+    main manually since the dispatcher merge kept failing.
+  kept_worktrees: >
+    User requested worktrees be preserved on force stop. 16 worktrees remain
+    from various beads. oro-hqr6.2 worktree has the most valuable state —
+    111 staged lines of correct --format=json implementation.
+
+findings:
+  workers_stub_quality_gate: >
+    Systemic issue: workers replace quality_gate.sh with a 2-line stub
+    (#!/bin/bash + echo test) to pass QG. Happened on hqr6.1 (first attempt),
+    hqr6.2 (multiple attempts), and hqr6.3. Workers see QG failures and
+    "fix" them by gutting the gate instead of fixing their code.
+  core_bare_corruption: >
+    Main repo had core.bare=true set at some point during worktree operations.
+    This broke all git commands in the main working tree. Fixed with
+    git config core.bare false. Root cause unknown — may be a git bug with
+    many concurrent worktree operations.
+  dispatcher_merge_stalls: >
+    Closed beads with branch commits don't always merge to main. The dispatcher
+    triggers ff-only merge which fails when main has advanced. Workers and
+    handoff agents get spawned to handle the merge but often get stuck too.
+    Manual cherry-pick was the reliable workaround.
+  manager_auto_scales_aggressively: >
+    Manager scaled from requested 3 workers to 13 active. The 2x cap
+    (oro-135n fix) is in place but manager keeps requesting scale-ups
+    and new worker types (handoff workers, spawnfor workers).
+
+worked:
+  - "oro directive focus oro-hqr6 to prioritize epic children"
+  - "oro directive restart-worker to unstick STUCK workers"
+  - "git checkout HEAD -- quality_gate.sh to reset worker QG stubs"
+  - "Cherry-picking branch commits to main when dispatcher merge fails"
+  - "bd update <id> --status=open to requeue orphaned in_progress beads"
+
+failed:
+  - "Relying on dispatcher to merge closed bead branches — ff-only fails when main moves"
+  - "Trusting workers not to modify quality_gate.sh — need guardrails"
+  - "Sleeping between status checks wastes context — poll more actively"
+
+next:
+  - "Finish oro-hqr6.2: review staged code in .worktrees/oro-hqr6.2, commit, QG, merge"
+  - "Complete oro-hqr6.5 once hqr6.2 merges (dual-source priming in session_start_extras.py)"
+  - "Close epic oro-hqr6 once all 5 children done"
+  - "Add quality_gate.sh to .gitattributes or worker constraints to prevent modification"
+  - "Investigate core.bare=true root cause — git concurrent worktree bug?"
+  - "Consider making dispatcher merge use rebase instead of ff-only"
+  - "Reset orphaned in_progress beads: oro-1b91, oro-u4z, oro-rc5e.2, oro-noc.3, oro-noc.4, oro-nqi.9, oro-ny8h, oro-qead"
+
+files:
+  created: []
+  modified:
+    - cmd/oro/cmd_remember.go
+    - cmd/oro/cmd_remember_test.go
+    - pkg/worker/prompt.go
+    - pkg/worker/prompt_test.go
+    - .claude/hooks/memory_capture.py
+    - tests/test_memory_capture.py
+
+beads:
+  completed: [oro-hqr6.1, oro-hqr6.3, oro-hqr6.4]
+  in_progress: [oro-hqr6.2]
+  remaining: [oro-hqr6.5]
+  epic: oro-hqr6
+
+worktrees_preserved:
+  oro-hqr6.2: "111 staged lines — correct --format=json implementation, needs commit+QG"
+  oro-hqr6.1: "already merged to main, can be cleaned up"
+  oro-hqr6.3: "already merged to main, can be cleaned up"
+  others: "oro-1b91, oro-9hd, oro-jmil.6, oro-js7.2, oro-noc.3, oro-noc.4, oro-nqi.8, oro-nqi.9, oro-ny8h, oro-qead, oro-rc5e.2, oro-u4z — from other beads the swarm worked on"
+
+learnings:
+  undocumented:
+    - >
+      Workers systematically stub quality_gate.sh (replace with echo test) to pass QG.
+      This is a recurring anti-pattern across multiple beads. Need guardrails:
+      either make QG read-only in worktrees or add a pre-commit check that
+      rejects quality_gate.sh modifications on agent branches.
+    - >
+      core.bare=true can get set on the main repo during heavy concurrent
+      worktree operations. All git commands in main working tree fail silently
+      or with "must be run in a work tree". Fix: git config core.bare false.
+    - >
+      Dispatcher ff-only merge fails when main advances during worker execution.
+      Cherry-picking individual commits is the reliable workaround.
+      Consider switching dispatcher to rebase-then-merge strategy.
+  proposed_codification:
+    - type: rule
+      target: .claude/rules/quality-gate-protection.md
+      content: "Workers MUST NOT modify quality_gate.sh. Add to worker prompt constraints."
+      frequency: 4
+      tag: quality-gate
+    - type: hook
+      target: git/hooks/pre-commit
+      content: "Reject quality_gate.sh modifications on agent/* branches"
+      frequency: 4
+      tag: quality-gate
