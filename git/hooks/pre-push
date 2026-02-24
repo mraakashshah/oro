@@ -11,17 +11,17 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 GATE="$REPO_ROOT/quality_gate.sh"
 
 if [ ! -x "$GATE" ]; then
-    echo "pre-push: quality_gate.sh not found or not executable at $GATE"
-    exit 1
+	echo "pre-push: quality_gate.sh not found or not executable at $GATE"
+	exit 1
 fi
 
 export ORO_SKIP_MUTATION=1
 echo "pre-push: running quality gate (mutations skipped — enforced in worker QG)..."
 if ! "$GATE"; then
-    echo ""
-    echo "pre-push: QUALITY GATE FAILED — push blocked."
-    echo "Fix the failures above, then try again."
-    exit 1
+	echo ""
+	echo "pre-push: QUALITY GATE FAILED — push blocked."
+	echo "Fix the failures above, then try again."
+	exit 1
 fi
 
 echo "pre-push: quality gate passed."

@@ -24,20 +24,32 @@ MODEL="sonnet"
 AUTO_YES=false
 
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --model)  MODEL="$2"; shift 2 ;;
-        --yes|-y) AUTO_YES=true; shift ;;
-        -*)       echo "Unknown flag: $1" >&2; exit 1 ;;
-        *)        BEAD_ID="$1"; shift ;;
-    esac
+	case "$1" in
+	--model)
+		MODEL="$2"
+		shift 2
+		;;
+	--yes | -y)
+		AUTO_YES=true
+		shift
+		;;
+	-*)
+		echo "Unknown flag: $1" >&2
+		exit 1
+		;;
+	*)
+		BEAD_ID="$1"
+		shift
+		;;
+	esac
 done
 
 if [ -z "$BEAD_ID" ]; then
-    echo "Usage: ad_hoc/oro-worker.sh <bead-id> [--model <model>]" >&2
-    echo ""
-    echo "Available beads:"
-    bd ready 2>/dev/null || echo "  (run 'bd ready' to see available work)"
-    exit 1
+	echo "Usage: ad_hoc/oro-worker.sh <bead-id> [--model <model>]" >&2
+	echo ""
+	echo "Available beads:"
+	bd ready 2>/dev/null || echo "  (run 'bd ready' to see available work)"
+	exit 1
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -53,19 +65,19 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log()  { printf '%b[worker]%b %s\n' "$BLUE" "$NC" "$1"; }
-ok()   { printf '%b[worker]%b %s\n' "$GREEN" "$NC" "$1"; }
-err()  { printf '%b[worker]%b %s\n' "$RED" "$NC" "$1"; }
+log() { printf '%b[worker]%b %s\n' "$BLUE" "$NC" "$1"; }
+ok() { printf '%b[worker]%b %s\n' "$GREEN" "$NC" "$1"; }
+err() { printf '%b[worker]%b %s\n' "$RED" "$NC" "$1"; }
 warn() { printf '%b[worker]%b %s\n' "$YELLOW" "$NC" "$1"; }
 
 # ---- Cleanup on failure ----
 cleanup_on_error() {
-    err "Worker failed. Cleaning up..."
-    if [ -d "$WORKTREE" ]; then
-        git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null || true
-    fi
-    git -C "$REPO_ROOT" branch -D "$BRANCH" 2>/dev/null || true
-    bd update "$BEAD_ID" --status=open 2>/dev/null || true
+	err "Worker failed. Cleaning up..."
+	if [ -d "$WORKTREE" ]; then
+		git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null || true
+	fi
+	git -C "$REPO_ROOT" branch -D "$BRANCH" 2>/dev/null || true
+	bd update "$BEAD_ID" --status=open 2>/dev/null || true
 }
 
 # =============================================================================
@@ -75,8 +87,8 @@ log "Fetching bead ${BEAD_ID}..."
 
 BEAD_JSON=$(jq -r "select(.id==\"${BEAD_ID}\")" "${REPO_ROOT}/.beads/issues.jsonl")
 if [ -z "$BEAD_JSON" ]; then
-    err "Bead ${BEAD_ID} not found in .beads/issues.jsonl"
-    exit 1
+	err "Bead ${BEAD_ID} not found in .beads/issues.jsonl"
+	exit 1
 fi
 
 BEAD_TITLE=$(echo "$BEAD_JSON" | jq -r '.title')
@@ -87,8 +99,8 @@ BEAD_PRIORITY=$(echo "$BEAD_JSON" | jq -r '.priority // 2')
 BEAD_STATUS=$(echo "$BEAD_JSON" | jq -r '.status')
 
 if [ "$BEAD_STATUS" != "open" ]; then
-    err "Bead ${BEAD_ID} is '${BEAD_STATUS}', expected 'open'"
-    exit 1
+	err "Bead ${BEAD_ID} is '${BEAD_STATUS}', expected 'open'"
+	exit 1
 fi
 
 echo ""
@@ -111,13 +123,13 @@ log "Creating worktree..."
 mkdir -p "$WORKTREE_BASE"
 
 if git -C "$REPO_ROOT" worktree list | grep -q "$WORKTREE"; then
-    warn "Worktree already exists, removing..."
-    git -C "$REPO_ROOT" worktree remove --force "$WORKTREE"
+	warn "Worktree already exists, removing..."
+	git -C "$REPO_ROOT" worktree remove --force "$WORKTREE"
 fi
 
 if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/${BRANCH}"; then
-    warn "Branch ${BRANCH} already exists, deleting..."
-    git -C "$REPO_ROOT" branch -D "$BRANCH"
+	warn "Branch ${BRANCH} already exists, deleting..."
+	git -C "$REPO_ROOT" branch -D "$BRANCH"
 fi
 
 git -C "$REPO_ROOT" worktree add "$WORKTREE" -b "$BRANCH" main
@@ -128,7 +140,7 @@ git -C "$REPO_ROOT" worktree add "$WORKTREE" -b "$BRANCH" main
 log "Querying memories..."
 MEMORIES=$(cd "$REPO_ROOT" && oro recall "$BEAD_TITLE" 2>/dev/null) || true
 if [ -z "$MEMORIES" ]; then
-    MEMORIES="No relevant memories found."
+	MEMORIES="No relevant memories found."
 fi
 
 # =============================================================================
@@ -139,7 +151,7 @@ log "Assembling worker prompt..."
 # Build the notes section only if notes exist
 NOTES_SECTION=""
 if [ -n "$BEAD_NOTES" ]; then
-    NOTES_SECTION="
+	NOTES_SECTION="
 **Notes:** ${BEAD_NOTES}"
 fi
 
@@ -249,12 +261,12 @@ echo "════════════════════════�
 echo ""
 
 if [ "$AUTO_YES" = false ]; then
-    read -rp "Launch worker? [y/N] " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        warn "Aborted by user."
-        cleanup_on_error
-        exit 0
-    fi
+	read -rp "Launch worker? [y/N] " confirm
+	if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+		warn "Aborted by user."
+		cleanup_on_error
+		exit 0
+	fi
 fi
 
 # =============================================================================
@@ -272,11 +284,12 @@ export ORO_ROLE=worker
 #   --permission-mode acceptEdits: auto-approve file edits
 #   --add-dir: allow reading main repo as reference
 CLAUDE_EXIT=0
-(cd "$WORKTREE" && claude -p "$PROMPT" \
-    --model "$MODEL" \
-    --verbose \
-    --permission-mode "acceptEdits" \
-    --add-dir "$REPO_ROOT" \
+(
+	cd "$WORKTREE" && claude -p "$PROMPT" \
+		--model "$MODEL" \
+		--verbose \
+		--permission-mode "acceptEdits" \
+		--add-dir "$REPO_ROOT"
 ) 2>&1 | tee "$LOG_FILE" || CLAUDE_EXIT=$?
 
 # =============================================================================
@@ -314,31 +327,31 @@ echo ""
 # 9. NEXT STEPS
 # =============================================================================
 if [ "$CLAUDE_EXIT" -eq 0 ]; then
-    ok "Worker completed. Next steps:"
-    echo ""
-    echo "  1. Review the changes:"
-    echo "     cd ${WORKTREE}"
-    echo "     git log main..HEAD --oneline"
-    echo "     git diff main"
-    echo ""
-    echo "  2. Run quality gate (if worker didn't):"
-    echo "     cd ${WORKTREE} && ./quality_gate.sh"
-    echo ""
-    echo "  3. Merge to main:"
-    echo "     cd ${REPO_ROOT}"
-    echo "     ad_hoc/oro-merge.sh ${BRANCH}"
-    echo ""
-    echo "  4. Close the bead:"
-    echo "     bd close ${BEAD_ID}"
-    echo ""
-    echo "  5. Clean up worktree:"
-    echo "     git worktree remove ${WORKTREE}"
-    echo "     git branch -d ${BRANCH}"
+	ok "Worker completed. Next steps:"
+	echo ""
+	echo "  1. Review the changes:"
+	echo "     cd ${WORKTREE}"
+	echo "     git log main..HEAD --oneline"
+	echo "     git diff main"
+	echo ""
+	echo "  2. Run quality gate (if worker didn't):"
+	echo "     cd ${WORKTREE} && ./quality_gate.sh"
+	echo ""
+	echo "  3. Merge to main:"
+	echo "     cd ${REPO_ROOT}"
+	echo "     ad_hoc/oro-merge.sh ${BRANCH}"
+	echo ""
+	echo "  4. Close the bead:"
+	echo "     bd close ${BEAD_ID}"
+	echo ""
+	echo "  5. Clean up worktree:"
+	echo "     git worktree remove ${WORKTREE}"
+	echo "     git branch -d ${BRANCH}"
 else
-    err "Worker exited with code ${CLAUDE_EXIT}. Review the log:"
-    echo "     less ${LOG_FILE}"
-    echo ""
-    echo "  Worktree preserved at: ${WORKTREE}"
-    echo "  To retry: cd ${WORKTREE} && claude"
-    echo "  To clean up: git worktree remove --force ${WORKTREE}"
+	err "Worker exited with code ${CLAUDE_EXIT}. Review the log:"
+	echo "     less ${LOG_FILE}"
+	echo ""
+	echo "  Worktree preserved at: ${WORKTREE}"
+	echo "  To retry: cd ${WORKTREE} && claude"
+	echo "  To clean up: git worktree remove --force ${WORKTREE}"
 fi
