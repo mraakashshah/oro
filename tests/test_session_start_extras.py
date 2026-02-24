@@ -21,6 +21,8 @@ _oro_home = Path(os.environ.get("ORO_HOME", Path.home() / ".oro"))
 find_stale_beads = _mod.find_stale_beads
 find_merged_worktrees = _mod.find_merged_worktrees
 recent_learnings = _mod.recent_learnings
+recent_memories_db = _mod.recent_memories_db
+merge_memory_sources = _mod.merge_memory_sources
 session_banner = _mod.session_banner
 role_beacon = _mod.role_beacon
 pane_handoff = _mod.pane_handoff
@@ -708,3 +710,181 @@ class TestHandoffArchive:
         archive_pattern = re.compile(r"handoff\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:\.\d+)?\.yaml")
         archives = [f for f in role_dir.iterdir() if archive_pattern.match(f.name)]
         assert len(archives) >= 2, f"Should have at least 2 archives, got {len(archives)}"
+
+
+# --- recent_memories_db ---
+
+
+class TestRecentMemoriesDB:
+    def test_parses_valid_json_from_oro(self, monkeypatch):
+        """recent_memories_db returns parsed list from oro memories list --format=json."""
+        import subprocess
+
+        fake_json = json.dumps(
+            [
+                {"id": 1, "type": "lesson", "content": "use ruff", "confidence": 0.9, "created_at": "2026-01-01"},
+                {"id": 2, "type": "gotcha", "content": "beware cd", "confidence": 0.8, "created_at": "2026-01-02"},
+            ]
+        )
+
+        def fake_run(cmd, **kwargs):
+            result = subprocess.CompletedProcess(cmd, 0, stdout=fake_json + "\n", stderr="")
+            return result
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        result = recent_memories_db(n=5)
+        assert len(result) == 2
+        assert result[0]["content"] == "use ruff"
+        assert result[1]["type"] == "gotcha"
+
+    def test_oro_not_on_path_returns_empty(self, monkeypatch):
+        """When oro is not installed, returns empty list."""
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise OSError("No such file or directory: 'oro'")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert recent_memories_db(n=5) == []
+
+    def test_oro_returns_nonzero_exit_returns_empty(self, monkeypatch):
+        """When oro exits with error, returns empty list."""
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert recent_memories_db(n=5) == []
+
+    def test_oro_returns_invalid_json_returns_empty(self, monkeypatch):
+        """When oro outputs invalid JSON, returns empty list."""
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, stdout="not json\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert recent_memories_db(n=5) == []
+
+    def test_passes_limit_to_oro(self, monkeypatch):
+        """Limit parameter is forwarded to oro --limit flag."""
+        import subprocess
+
+        captured_cmd = []
+
+        def fake_run(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]\n", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        recent_memories_db(n=3)
+        assert "--limit=3" in captured_cmd
+
+    def test_timeout_returns_empty(self, monkeypatch):
+        """When oro times out, returns empty list."""
+        import subprocess
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 5)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert recent_memories_db(n=5) == []
+
+
+# --- merge_memory_sources ---
+
+
+class TestMergeMemorySources:
+    def test_both_empty_returns_empty(self):
+        assert merge_memory_sources([], [], limit=5) == []
+
+    def test_jsonl_only(self):
+        jsonl = [
+            {"content": "lesson one", "bead": "b1", "tags": []},
+            {"content": "lesson two", "bead": "b2", "tags": []},
+        ]
+        result = merge_memory_sources(jsonl, [], limit=5)
+        assert len(result) == 2
+
+    def test_db_only(self):
+        db = [
+            {"id": 1, "type": "lesson", "content": "from db", "confidence": 0.9, "created_at": "2026-01-01"},
+        ]
+        result = merge_memory_sources([], db, limit=5)
+        assert len(result) == 1
+        assert result[0]["content"] == "from db"
+
+    def test_deduplicates_by_first_60_chars_overlap(self):
+        """Entries with >80% overlap in first 60 chars are deduplicated."""
+        shared_prefix = "Workers systematically stub quality_gate.sh to pass QG che"  # 60 chars
+        jsonl = [{"content": shared_prefix + " — from jsonl source", "bead": "b1", "tags": []}]
+        db = [
+            {
+                "id": 1,
+                "type": "lesson",
+                "content": shared_prefix + " — from db source",
+                "confidence": 0.9,
+                "created_at": "2026-01-01",
+            }
+        ]
+        result = merge_memory_sources(jsonl, db, limit=5)
+        # jsonl takes priority, so only 1 entry and it's the jsonl one
+        assert len(result) == 1
+        assert "from jsonl source" in result[0]["content"]
+
+    def test_jsonl_takes_priority_over_db_duplicates(self):
+        """When both sources have similar content, knowledge.jsonl wins."""
+        jsonl = [{"content": "core.bare=true breaks git commands in worktrees badly", "bead": "b1", "tags": ["git"]}]
+        db = [
+            {
+                "id": 1,
+                "type": "gotcha",
+                "content": "core.bare=true breaks git commands in worktrees fixed",
+                "confidence": 0.85,
+                "created_at": "2026-01-01",
+            }
+        ]
+        result = merge_memory_sources(jsonl, db, limit=5)
+        assert len(result) == 1
+        assert result[0]["content"] == jsonl[0]["content"]
+
+    def test_non_overlapping_entries_both_kept(self):
+        """Entries with different content are kept from both sources."""
+        jsonl = [{"content": "ruff is the preferred linter for Python", "bead": "b1", "tags": []}]
+        db = [
+            {
+                "id": 1,
+                "type": "lesson",
+                "content": "go vet catches subtle bugs",
+                "confidence": 0.9,
+                "created_at": "2026-01-01",
+            }
+        ]
+        result = merge_memory_sources(jsonl, db, limit=5)
+        assert len(result) == 2
+
+    def test_total_capped_at_limit(self):
+        """Output never exceeds the limit parameter."""
+        jsonl = [{"content": f"jsonl fact {i}", "bead": "b1", "tags": []} for i in range(4)]
+        db = [
+            {"id": i, "type": "lesson", "content": f"db fact {i}", "confidence": 0.9, "created_at": "2026-01-01"}
+            for i in range(4)
+        ]
+        result = merge_memory_sources(jsonl, db, limit=5)
+        assert len(result) == 5
+
+    def test_jsonl_entries_come_first(self):
+        """JSONL entries appear before DB entries in output."""
+        jsonl = [{"content": "from jsonl", "bead": "b1", "tags": []}]
+        db = [{"id": 1, "type": "lesson", "content": "from db", "confidence": 0.9, "created_at": "2026-01-01"}]
+        result = merge_memory_sources(jsonl, db, limit=5)
+        assert result[0]["content"] == "from jsonl"
+        assert result[1]["content"] == "from db"
+
+    def test_short_content_not_falsely_deduplicated(self):
+        """Short entries (<60 chars) with different content should not match."""
+        jsonl = [{"content": "use pytest", "bead": "b1", "tags": []}]
+        db = [{"id": 1, "type": "lesson", "content": "use ruff", "confidence": 0.9, "created_at": "2026-01-01"}]
+        result = merge_memory_sources(jsonl, db, limit=5)
+        assert len(result) == 2

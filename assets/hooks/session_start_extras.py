@@ -11,6 +11,8 @@ Pure functions for testability:
   - find_stale_beads(bd_output, days_threshold=3)
   - find_merged_worktrees(worktrees_dir, main_branch="main")
   - recent_learnings(knowledge_file, n=5)
+  - recent_memories_db(n=5)
+  - merge_memory_sources(jsonl, db, limit=5)
   - role_beacon(role, beacons_dir)
 """
 
@@ -228,6 +230,61 @@ def recent_learnings(knowledge_file: str, n: int = 5) -> list[dict]:
     # Sort by timestamp descending, take top n
     sorted_entries = sorted(by_key.values(), key=lambda e: e.get("ts", ""), reverse=True)
     return sorted_entries[:n]
+
+
+def recent_memories_db(n: int = 5) -> list[dict]:
+    """Fetch recent memories from oro's SQLite store via the CLI.
+
+    Calls ``oro memories list --format=json --limit=N`` and parses the JSON output.
+    Returns empty list when oro is not on PATH, exits non-zero, or outputs invalid JSON.
+    """
+    try:
+        result = subprocess.run(
+            ["oro", "memories", "list", "--format=json", f"--limit={n}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+
+    try:
+        entries = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    return entries if isinstance(entries, list) else []
+
+
+def _content_overlap(a: str, b: str, prefix_len: int = 60) -> float:
+    """Return the fraction of matching characters in the first *prefix_len* chars."""
+    pa = a[:prefix_len]
+    pb = b[:prefix_len]
+    if not pa or not pb:
+        return 0.0
+    matches = sum(ca == cb for ca, cb in zip(pa, pb, strict=False))
+    return matches / max(len(pa), len(pb))
+
+
+def merge_memory_sources(jsonl: list[dict], db: list[dict], limit: int = 5) -> list[dict]:
+    """Merge knowledge.jsonl learnings with memories.db entries, deduplicating.
+
+    Deduplication: entries whose first 60 characters overlap by >80% are
+    considered duplicates.  knowledge.jsonl (``jsonl``) entries take priority —
+    duplicate DB entries are dropped.  The merged result is capped at *limit*.
+    JSONL entries appear before DB entries in the output.
+    """
+    merged: list[dict] = list(jsonl)
+
+    for db_entry in db:
+        db_content = db_entry.get("content", "")
+        is_dup = any(_content_overlap(existing.get("content", ""), db_content) > 0.80 for existing in merged)
+        if not is_dup:
+            merged.append(db_entry)
+
+    return merged[:limit]
 
 
 _CLOSED_LINE_RE = re.compile(r"^✓\s+([\w.-]+)\s+\[.*?\]\s+\[.*?\]\s+-\s+(.+)$")
@@ -496,6 +553,19 @@ def project_state() -> str:
     return "\n\n".join(sections)
 
 
+def _format_learning_entry(entry: dict) -> str:
+    """Format a single learning entry from either knowledge.jsonl or memories.db."""
+    content = entry.get("content", "")
+    # knowledge.jsonl entries have 'bead' and 'tags'
+    if "bead" in entry:
+        tags = ", ".join(entry.get("tags", []))
+        tag_str = f" ({tags})" if tags else ""
+        return f"- [{entry['bead']}] {content}{tag_str}"
+    # memories.db entries have 'type' and 'id'
+    mem_type = entry.get("type", "memory")
+    return f"- [{mem_type}] {content}"
+
+
 def _format_output(stale: list[dict], merged: list[dict], learnings: list[dict]) -> str:
     """Format all findings into a single context string."""
     sections = []
@@ -517,9 +587,7 @@ def _format_output(stale: list[dict], merged: list[dict], learnings: list[dict])
     if learnings:
         lines = ["## Recent Learnings"]
         for entry in learnings:
-            tags = ", ".join(entry.get("tags", []))
-            tag_str = f" ({tags})" if tags else ""
-            lines.append(f"- [{entry['bead']}] {entry['content']}{tag_str}")
+            lines.append(_format_learning_entry(entry))
         sections.append("\n".join(lines))
 
     return "\n\n".join(sections)
@@ -564,8 +632,10 @@ def main() -> None:
     # 2. Merged worktree cleanup
     merged = find_merged_worktrees(WORKTREES_DIR)
 
-    # 3. Recent learnings
-    learnings = recent_learnings(KNOWLEDGE_FILE)
+    # 3. Recent learnings (dual-source: knowledge.jsonl + memories.db)
+    jsonl_learnings = recent_learnings(KNOWLEDGE_FILE)
+    db_memories = recent_memories_db(n=5)
+    learnings = merge_memory_sources(jsonl_learnings, db_memories, limit=5)
 
     # 4. Update pane activity (if ORO_ROLE is set)
     oro_role = os.environ.get("ORO_ROLE", "")
@@ -606,9 +676,7 @@ def main() -> None:
         if learnings:
             lines = ["## Recent Learnings"]
             for entry in learnings:
-                tags = ", ".join(entry.get("tags", []))
-                tag_str = f" ({tags})" if tags else ""
-                lines.append(f"- [{entry['bead']}] {entry['content']}{tag_str}")
+                lines.append(_format_learning_entry(entry))
             parts.append("\n".join(lines))
         context = "\n\n".join(parts)
     else:
