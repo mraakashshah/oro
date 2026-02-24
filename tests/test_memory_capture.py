@@ -98,6 +98,11 @@ class TestAutoTag:
         tags = auto_tag("PYTEST fixtures are great")
         assert "pytest" in tags
 
+    def test_auto_tag_oro_domain_and_operational_keywords(self):
+        tags = auto_tag("worktree cleanup race condition")
+        assert "worktree" in tags
+        assert "race" in tags
+
 
 class TestSlugify:
     def test_basic_slugify(self):

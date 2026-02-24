@@ -19,6 +19,7 @@ KNOWLEDGE_FILE = ".beads/memory/knowledge.jsonl"
 MAX_CONTENT_LEN = 2048
 
 TAG_KEYWORDS = [
+    # General tech
     "async",
     "auth",
     "cache",
@@ -59,6 +60,22 @@ TAG_KEYWORDS = [
     "uv",
     "wasm",
     "websocket",
+    # Oro-domain
+    "bead",
+    "dispatcher",
+    "pane",
+    "swarm",
+    "worker",
+    "worktree",
+    # Tools
+    "claude",
+    "subprocess",
+    "tmux",
+    # Operational
+    "deadlock",
+    "flaky",
+    "race",
+    "timeout",
 ]
 
 # Pattern: bd comments add <bead_id> "LEARNED: <content>"

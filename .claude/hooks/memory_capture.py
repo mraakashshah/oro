@@ -19,6 +19,7 @@ KNOWLEDGE_FILE = ".beads/memory/knowledge.jsonl"
 MAX_CONTENT_LEN = 2048
 
 TAG_KEYWORDS = [
+    # General tech
     "async",
     "auth",
     "cache",
@@ -59,6 +60,22 @@ TAG_KEYWORDS = [
     "uv",
     "wasm",
     "websocket",
+    # Oro-domain
+    "bead",
+    "dispatcher",
+    "pane",
+    "swarm",
+    "worker",
+    "worktree",
+    # Tools
+    "claude",
+    "subprocess",
+    "tmux",
+    # Operational
+    "deadlock",
+    "flaky",
+    "race",
+    "timeout",
 ]
 
 # Pattern: bd comments add <bead_id> "LEARNED: <content>"
@@ -78,6 +95,8 @@ def extract_learned(command: str) -> tuple[str, str] | None:
     bead_id = m.group(1)
     content = (m.group(2) or m.group(3) or "").strip()
     if not content:
+        return None
+    if len(content) < 10:
         return None
     return bead_id, content[:MAX_CONTENT_LEN]
 
