@@ -7,6 +7,9 @@ only needs to send a short nudge — the hook handles the heavy context injectio
 
 Outputs additionalContext on SessionStart.
 
+For manager role, running handoff instructions are injected to enable seamless session
+transitions and maintain context across manager handoffs.
+
 Pure functions for testability:
   - find_stale_beads(bd_output, days_threshold=3)
   - find_merged_worktrees(worktrees_dir, main_branch="main")
