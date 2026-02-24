@@ -38,6 +38,20 @@ func memoryBody(ctx string) string {
 	return ctx
 }
 
+// savingLearningsBody returns the Saving Learnings section content with examples.
+func savingLearningsBody() string {
+	return strings.Join([]string{
+		"As you work, capture learnings for the next session using [MEMORY] markers. Examples:",
+		"",
+		"- `[MEMORY] I learned that the FTS5 trigger must be on INSERT only`",
+		"- `[MEMORY] Gotcha: Race condition in channel close — must use sync.Once`",
+		"- `[MEMORY] Note: The dispatcher retries with exponential backoff`",
+		"- `[MEMORY] Decision: Use pure functions for business logic to enable testing`",
+		"",
+		"Record these in `.oro/learnings.json` (array of strings). The next worker will see them in their Memory section.",
+	}, "\n")
+}
+
 // AssemblePrompt builds the complete 12-section worker prompt from bead details
 // and context. This prompt is passed to `claude -p` when spawning a worker.
 func AssemblePrompt(params PromptParams) string {
@@ -65,6 +79,9 @@ func AssemblePrompt(params PromptParams) string {
 
 	// 3. Memory
 	section(&b, "Memory", memoryBody(params.MemoryContext))
+
+	// 3a. Saving Learnings
+	section(&b, "Saving Learnings", savingLearningsBody())
 
 	// 3b. Relevant Code (only if CodeSearchContext is non-empty)
 	if params.CodeSearchContext != "" {
@@ -119,13 +136,7 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 		"  --estimate=<minutes>",
 		"```",
 	}, "\n"))
-
-	section(&b, "Constraints", strings.Join([]string{
-		"- Do NOT write code or create worktrees — only create beads",
-		"- Do NOT close the epic — children must complete first",
-		"- Do NOT push to git",
-		"- Every bead must pass bead-craft Rule of Five before creation",
-	}, "\n"))
+	_, _ = b, strings.Join
 
 	section(&b, "Exit", "When all child beads are created and dependencies wired, your work is complete. Exit cleanly.")
 

@@ -1030,6 +1030,135 @@ func TestBuildEpicDecompositionPrompt(t *testing.T) {
 	})
 }
 
+func TestAssemblePrompt_SavingLearningsSection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("section_present_between_memory_and_coding_rules_no_code", func(t *testing.T) {
+		t.Parallel()
+
+		params := worker.PromptParams{
+			BeadID:             "bead-learning",
+			Title:              "Test saving learnings",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "Prior context",
+			CodeSearchContext:  "", // No code search results
+			WorktreePath:       "/tmp/wt-learning",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		// Check that section exists
+		if !strings.Contains(prompt, "## Saving Learnings") {
+			t.Error("expected prompt to contain '## Saving Learnings' section")
+		}
+
+		// Verify ordering: Memory -> Saving Learnings -> Coding Rules (when no Relevant Code)
+		memIdx := strings.Index(prompt, "## Memory")
+		learningsIdx := strings.Index(prompt, "## Saving Learnings")
+		rulesIdx := strings.Index(prompt, "## Coding Rules")
+
+		if memIdx == -1 {
+			t.Fatal("## Memory section not found")
+		}
+		if learningsIdx == -1 {
+			t.Fatal("## Saving Learnings section not found")
+		}
+		if rulesIdx == -1 {
+			t.Fatal("## Coding Rules section not found")
+		}
+
+		if learningsIdx <= memIdx {
+			t.Errorf("expected Saving Learnings after Memory (Memory at %d, Learnings at %d)", memIdx, learningsIdx)
+		}
+		if learningsIdx >= rulesIdx {
+			t.Errorf("expected Saving Learnings before Coding Rules (Learnings at %d, Rules at %d)", learningsIdx, rulesIdx)
+		}
+	})
+
+	t.Run("section_present_between_memory_and_relevant_code_with_code", func(t *testing.T) {
+		t.Parallel()
+
+		codeSearchCtx := "### pkg/example/example.go:15-30\n```go\nfunc Test() {}\n```"
+
+		params := worker.PromptParams{
+			BeadID:             "bead-learning-code",
+			Title:              "Test with code",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "Prior context",
+			CodeSearchContext:  codeSearchCtx,
+			WorktreePath:       "/tmp/wt-learning-code",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		// Verify ordering: Memory -> Saving Learnings -> Relevant Code
+		memIdx := strings.Index(prompt, "## Memory")
+		learningsIdx := strings.Index(prompt, "## Saving Learnings")
+		codeIdx := strings.Index(prompt, "## Relevant Code")
+
+		if memIdx == -1 || learningsIdx == -1 || codeIdx == -1 {
+			t.Fatalf("expected all sections present")
+		}
+
+		if learningsIdx <= memIdx {
+			t.Errorf("expected Saving Learnings after Memory (Memory at %d, Learnings at %d)", memIdx, learningsIdx)
+		}
+		if learningsIdx >= codeIdx {
+			t.Errorf("expected Saving Learnings before Relevant Code (Learnings at %d, Code at %d)", learningsIdx, codeIdx)
+		}
+	})
+
+	t.Run("section_contains_required_examples", func(t *testing.T) {
+		t.Parallel()
+
+		params := worker.PromptParams{
+			BeadID:             "bead-examples",
+			Title:              "Test examples",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "",
+			WorktreePath:       "/tmp/wt-examples",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		// Extract Saving Learnings section
+		learningsStart := strings.Index(prompt, "## Saving Learnings")
+		if learningsStart == -1 {
+			t.Fatal("## Saving Learnings section not found")
+		}
+		learningsEnd := strings.Index(prompt[learningsStart+1:], "## ")
+		var learningsSection string
+		if learningsEnd == -1 {
+			learningsSection = prompt[learningsStart:]
+		} else {
+			learningsSection = prompt[learningsStart : learningsStart+1+learningsEnd]
+		}
+
+		// Check for required content
+		if !strings.Contains(learningsSection, "[MEMORY]") {
+			t.Error("expected Saving Learnings section to contain '[MEMORY]' marker")
+		}
+		if !strings.Contains(learningsSection, "I learned") {
+			t.Error("expected Saving Learnings section to contain 'I learned' example")
+		}
+		if !strings.Contains(learningsSection, "Gotcha:") {
+			t.Error("expected Saving Learnings section to contain 'Gotcha:' example")
+		}
+		if !strings.Contains(learningsSection, "Note:") {
+			t.Error("expected Saving Learnings section to contain 'Note:' example")
+		}
+		if !strings.Contains(learningsSection, "Decision:") {
+			t.Error("expected Saving Learnings section to contain 'Decision:' example")
+		}
+	})
+}
+
 func TestAssemblePrompt_EndToEnd(t *testing.T) {
 	t.Parallel()
 
