@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -37,16 +38,45 @@ func formatMemoriesTable(memories []protocol.Memory) string {
 	return b.String()
 }
 
+// memoryJSONRecord holds the subset of fields emitted by --format=json.
+type memoryJSONRecord struct {
+	ID         int64   `json:"id"`
+	Type       string  `json:"type"`
+	Content    string  `json:"content"`
+	Confidence float64 `json:"confidence"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+// formatMemoriesJSON serialises memories as a JSON array with a fixed field set.
+func formatMemoriesJSON(memories []protocol.Memory) (string, error) {
+	records := make([]memoryJSONRecord, len(memories))
+	for i, m := range memories {
+		records[i] = memoryJSONRecord{
+			ID:         m.ID,
+			Type:       m.Type,
+			Content:    m.Content,
+			Confidence: m.Confidence,
+			CreatedAt:  m.CreatedAt,
+		}
+	}
+	b, err := json.Marshal(records)
+	if err != nil {
+		return "", fmt.Errorf("json marshal: %w", err)
+	}
+	return string(b) + "\n", nil
+}
+
 // newMemoriesListCmdWithStore creates the "oro memories list" subcommand wired to a memory.Store.
 func newMemoriesListCmdWithStore(store *memory.Store) *cobra.Command {
 	var typeFilter string
 	var tagFilter string
 	var limit int
+	var format string
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List memories",
-		Long:  "List memories from the store with optional filtering by type and tag.\nOutputs a table with id, type, content (truncated), confidence, and created_at.",
+		Long:  "List memories from the store with optional filtering by type and tag.\nOutputs a table with id, type, content (truncated), confidence, and created_at.\nUse --format=json for machine-readable output.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			results, err := store.List(context.Background(), memory.ListOpts{
 				Type:  typeFilter,
@@ -57,6 +87,15 @@ func newMemoriesListCmdWithStore(store *memory.Store) *cobra.Command {
 				return fmt.Errorf("memories list: %w", err)
 			}
 
+			if format == "json" {
+				out, err := formatMemoriesJSON(results)
+				if err != nil {
+					return fmt.Errorf("memories list json: %w", err)
+				}
+				fmt.Fprint(cmd.OutOrStdout(), out)
+				return nil
+			}
+
 			fmt.Fprint(cmd.OutOrStdout(), formatMemoriesTable(results))
 			return nil
 		},
@@ -65,6 +104,7 @@ func newMemoriesListCmdWithStore(store *memory.Store) *cobra.Command {
 	cmd.Flags().StringVar(&typeFilter, "type", "", "filter by memory type (lesson|decision|gotcha|pattern|self_report)")
 	cmd.Flags().StringVar(&tagFilter, "tag", "", "filter by tag")
 	cmd.Flags().IntVar(&limit, "limit", 20, "maximum number of memories to return")
+	cmd.Flags().StringVar(&format, "format", "", "output format: json")
 
 	return cmd
 }
@@ -199,11 +239,12 @@ func newMemoriesListCmd() *cobra.Command {
 	var tagFilter string
 	var limit int
 	var allProjects bool
+	var format string
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List memories",
-		Long:  "List memories from the store with optional filtering by type and tag.\nOutputs a table with id, type, content (truncated), confidence, and created_at.\nUse --all-projects to list memories across all projects.",
+		Long:  "List memories from the store with optional filtering by type and tag.\nOutputs a table with id, type, content (truncated), confidence, and created_at.\nUse --all-projects to list memories across all projects.\nUse --format=json for machine-readable output.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, err := defaultMemoryStore()
 			if err != nil {
@@ -224,6 +265,15 @@ func newMemoriesListCmd() *cobra.Command {
 				return fmt.Errorf("memories list: %w", listErr)
 			}
 
+			if format == "json" {
+				out, err := formatMemoriesJSON(results)
+				if err != nil {
+					return fmt.Errorf("memories list json: %w", err)
+				}
+				fmt.Fprint(cmd.OutOrStdout(), out)
+				return nil
+			}
+
 			fmt.Fprint(cmd.OutOrStdout(), formatMemoriesTable(results))
 			return nil
 		},
@@ -233,6 +283,7 @@ func newMemoriesListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tagFilter, "tag", "", "filter by tag")
 	cmd.Flags().IntVar(&limit, "limit", 20, "maximum number of memories to return")
 	cmd.Flags().BoolVar(&allProjects, "all-projects", false, "list memories across all projects (ignore project scope)")
+	cmd.Flags().StringVar(&format, "format", "", "output format: json")
 
 	return cmd
 }

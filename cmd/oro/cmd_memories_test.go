@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -333,6 +334,63 @@ func TestMemoriesCmd(t *testing.T) {
 		}
 		if !strings.Contains(output, "Remaining: 0") {
 			t.Errorf("expected 'Remaining: 0' for empty store, got:\n%s", output)
+		}
+	})
+}
+
+// TestMemoriesListJSON verifies that --format=json outputs a valid JSON array
+// with id, type, content, confidence, and created_at fields.
+func TestMemoriesListJSON(t *testing.T) {
+	t.Run("json_format_outputs_valid_json_array_with_required_fields", func(t *testing.T) {
+		_, store := newTestMemoryStoreAndDB(t)
+		seedMemoriesCmd(t, store)
+
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--format=json", "--limit=3"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+
+		output := out.String()
+		var results []map[string]any
+		if err := json.Unmarshal([]byte(output), &results); err != nil {
+			t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+		}
+
+		if len(results) != 3 {
+			t.Errorf("expected 3 items with --limit=3, got %d", len(results))
+		}
+
+		for i, item := range results {
+			for _, field := range []string{"id", "type", "content", "confidence", "created_at"} {
+				if _, ok := item[field]; !ok {
+					t.Errorf("item[%d] missing field %q", i, field)
+				}
+			}
+		}
+	})
+
+	t.Run("json_format_empty_db_outputs_empty_array", func(t *testing.T) {
+		_, store := newTestMemoryStoreAndDB(t)
+
+		cmd := newMemoriesListCmdWithStore(store)
+		var out strings.Builder
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{"--format=json"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+
+		output := strings.TrimSpace(out.String())
+		var results []map[string]any
+		if err := json.Unmarshal([]byte(output), &results); err != nil {
+			t.Fatalf("output is not valid JSON: %v\noutput: %s", err, output)
+		}
+
+		if len(results) != 0 {
+			t.Errorf("expected empty JSON array for empty DB, got %d items", len(results))
 		}
 	})
 }
