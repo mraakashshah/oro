@@ -946,15 +946,18 @@ func TestDispatcher_AssignBead_SkipsBeadWithoutAcceptance(t *testing.T) {
 	beadSrc.mu.Unlock()
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-no-ac", Title: "No acceptance", Priority: 1}})
 
-	// Should NOT receive ASSIGN (bead lacks acceptance criteria)
-	_, ok := readMsg(t, conn, 500*time.Millisecond)
-	if ok {
-		t.Fatal("should not assign bead without acceptance criteria")
+	// Bead should be assigned with a warning (acceptance criteria missing is non-blocking)
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN even without acceptance criteria (warning-only)")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN message, got %s", msg.Type)
 	}
 
-	// Verify escalation was logged
+	// Verify warning was logged
 	waitFor(t, func() bool {
-		return eventCount(t, d.db, "missing_acceptance") > 0
+		return eventCount(t, d.db, "missing_acceptance_warning") > 0
 	}, 1*time.Second)
 }
 
