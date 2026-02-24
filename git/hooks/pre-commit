@@ -77,7 +77,7 @@ if [ -n "$staged_go" ]; then
     fi
     # Go tests on staged packages
     staged_go_dirs=$(echo "$staged_go" | xargs -n1 dirname | sort -u | sed 's|^|./|;s|$|/...|')
-    if ! go test -race -shuffle=on $staged_go_dirs 2>&1; then
+    if ! env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE go test -race -shuffle=on $staged_go_dirs 2>&1; then
         echo "Error: Go tests failed." >&2
         errors=1
     fi

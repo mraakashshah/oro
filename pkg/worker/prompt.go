@@ -136,7 +136,13 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 		"  --estimate=<minutes>",
 		"```",
 	}, "\n"))
-	_, _ = b, strings.Join
+
+	section(&b, "Constraints", strings.Join([]string{
+		"- Do NOT write code or create worktrees — only create beads",
+		"- Do NOT close the epic — children must complete first",
+		"- Do NOT push to git",
+		"- Every bead must pass bead-craft Rule of Five before creation",
+	}, "\n"))
 
 	section(&b, "Exit", "When all child beads are created and dependencies wired, your work is complete. Exit cleanly.")
 
