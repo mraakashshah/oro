@@ -12013,3 +12013,105 @@ func TestCheckHeartbeats_ResetsBeadToOpen(t *testing.T) {
 		}
 	})
 }
+
+// TestCheckHeartbeats_PrevSessionWorker verifies that workers whose IDs embed a
+// timestamp predating the dispatcher's startTime are silently removed on
+// heartbeat timeout without firing a WORKER_CRASH escalation. This prevents
+// noisy re-alerts after a dispatcher restart when stale workers from the
+// previous session reconnect and then go silent.
+//
+// AC: After dispatcher restart, no WORKER_CRASH alerts for workers from
+// previous session; workers from current session still trigger crash alerts.
+func TestCheckHeartbeats_PrevSessionWorker(t *testing.T) {
+	t.Run("prev-session worker times out without WORKER_CRASH alert", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+		// Simulate a restart: startTime is 'now', so workers created before now
+		// are from the previous session.
+		d.startTime = now
+
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		// Worker ID with a timestamp 1 hour before startTime — previous session.
+		prevEpoch := now.Add(-1 * time.Hour).UnixNano()
+		workerID := fmt.Sprintf("worker-%d-0", prevEpoch)
+
+		d.mu.Lock()
+		d.upsertWorker(workerID, server, false)
+		w := d.workers[workerID]
+		w.state = protocol.WorkerBusy
+		w.beadID = "bead-stale"
+		w.worktree = "/tmp/worktree-stale"
+		w.lastSeen = now
+		d.mu.Unlock()
+
+		// Advance time past HeartbeatTimeout.
+		d.nowFunc = func() time.Time { return now.Add(600 * time.Millisecond) }
+
+		d.checkHeartbeats(context.Background())
+
+		// Worker must be removed.
+		if d.ConnectedWorkers() != 0 {
+			t.Fatalf("expected prev-session worker to be removed, got %d workers", d.ConnectedWorkers())
+		}
+
+		// No WORKER_CRASH escalation for prev-session workers.
+		msgs := esc.Messages()
+		for _, m := range msgs {
+			if strings.Contains(m, string(protocol.EscWorkerCrash)) {
+				t.Errorf("unexpected WORKER_CRASH alert for prev-session worker: %s", m)
+			}
+		}
+	})
+
+	t.Run("current-session worker times out WITH WORKER_CRASH alert", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+		// startTime is 1 hour ago — worker created 'now' is within this session.
+		d.startTime = now.Add(-1 * time.Hour)
+
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		// Worker ID with a timestamp after startTime — current session.
+		epoch := now.UnixNano()
+		workerID := fmt.Sprintf("worker-%d-0", epoch)
+
+		d.mu.Lock()
+		d.upsertWorker(workerID, server, false)
+		w := d.workers[workerID]
+		w.state = protocol.WorkerBusy
+		w.beadID = "bead-current"
+		w.worktree = "/tmp/worktree-current"
+		w.lastSeen = now
+		d.mu.Unlock()
+
+		// Advance time past HeartbeatTimeout.
+		d.nowFunc = func() time.Time { return now.Add(600 * time.Millisecond) }
+
+		d.checkHeartbeats(context.Background())
+
+		// Worker must be removed.
+		if d.ConnectedWorkers() != 0 {
+			t.Fatalf("expected current-session worker to be removed, got %d workers", d.ConnectedWorkers())
+		}
+
+		// WORKER_CRASH escalation must fire for current-session workers.
+		msgs := esc.Messages()
+		hasCrash := false
+		for _, m := range msgs {
+			if strings.Contains(m, string(protocol.EscWorkerCrash)) {
+				hasCrash = true
+				break
+			}
+		}
+		if !hasCrash {
+			t.Error("expected WORKER_CRASH alert for current-session worker, got none")
+		}
+	})
+}

@@ -163,6 +163,7 @@ type trackedWorker struct {
 	shutdownCancel   context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
 	shutdownApproved bool               // set by handleShutdownApproved; checked by checkShutdownApproved
 	managed          bool               // true if spawned by the dispatcher (vs externally connected)
+	prevSession      bool               // true if worker ID predates this dispatcher's startTime (previous session)
 }
 
 // pendingHandoff holds context for a bead whose worker has been shut down

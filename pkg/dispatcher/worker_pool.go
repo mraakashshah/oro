@@ -5,11 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
+	"strconv"
 	"time"
 
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
 )
+
+// workerEpochRe matches the first 15-19 digit number in a worker ID, which
+// encodes the nanosecond Unix timestamp at worker creation time.
+// Worker ID formats: "worker-<nano>-<i>", "ext-<nano>-<i>",
+// "worker-spawnfor-<nano>", "worker-handoff-<nano>".
+var workerEpochRe = regexp.MustCompile(`\b(\d{15,19})\b`)
+
+// parseWorkerEpoch extracts the creation timestamp embedded in a worker ID.
+// Returns (time, true) when a nanosecond timestamp is found, otherwise zero
+// time and false (e.g. for hand-crafted test IDs like "w-1").
+func parseWorkerEpoch(id string) (time.Time, bool) {
+	m := workerEpochRe.FindString(id)
+	if m == "" {
+		return time.Time{}, false
+	}
+	ns, err := strconv.ParseInt(m, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(0, ns), true
+}
 
 // WorkerPool manages the set of connected workers. It is embedded in
 // Dispatcher so that field access (e.g. d.workers) is promoted, keeping
@@ -29,13 +52,18 @@ type WorkerPool struct {
 // with d.mu held.
 func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 	if _, exists := d.workers[id]; !exists {
+		prev := false
+		if epoch, ok := parseWorkerEpoch(id); ok && epoch.Before(d.startTime) {
+			prev = true
+		}
 		d.workers[id] = &trackedWorker{
-			id:       id,
-			conn:     conn,
-			state:    protocol.WorkerIdle,
-			lastSeen: d.nowFunc(),
-			encoder:  json.NewEncoder(conn),
-			managed:  managed,
+			id:          id,
+			conn:        conn,
+			state:       protocol.WorkerIdle,
+			lastSeen:    d.nowFunc(),
+			encoder:     json.NewEncoder(conn),
+			managed:     managed,
+			prevSession: prev,
 		}
 	} else {
 		d.workers[id].conn = conn
@@ -164,8 +192,9 @@ func (d *Dispatcher) touchProgress(workerID string) {
 // workerExitInfo holds the minimal details needed to escalate a timed-out
 // worker exit after releasing d.mu.
 type workerExitInfo struct {
-	workerID string
-	beadID   string
+	workerID    string
+	beadID      string
+	prevSession bool // worker is from a previous dispatcher session
 }
 
 // escalateTimedOutWorkers dispatches escalation messages and clears bead
@@ -173,7 +202,12 @@ type workerExitInfo struct {
 // d.mu so that escalate and clearBeadTracking can acquire their own locks.
 func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []workerExitInfo) {
 	for _, dw := range dead {
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
+		// Skip WORKER_CRASH alert for workers from a previous dispatcher session —
+		// they are already dead from the operator's perspective and re-alerting
+		// on them after a restart is noisy and misleading (oro-ny8h).
+		if !dw.prevSession {
+			d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
+		}
 		if dw.beadID != "" {
 			// Reset the bead to "open" so it can be reassigned, mirroring the
 			// graceful-disconnect path in dispatcher.go.
@@ -252,7 +286,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	deadWorkers := make([]workerExitInfo, 0, len(dead))
 	for _, id := range dead {
 		w := d.workers[id]
-		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID})
+		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, prevSession: w.prevSession})
 		if w.managed {
 			newManagedExits++
 		}
