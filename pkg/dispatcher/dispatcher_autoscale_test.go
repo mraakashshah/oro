@@ -405,12 +405,12 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 }
 
 // TestReconcileScale_CapsAtDoubleTarget verifies that reconcileScale refuses to
-// spawn workers when the total worker count (len(d.workers) + len(d.pendingManagedIDs))
+// spawn workers when managed worker count (connected + pending + unexpected exits)
 // reaches 2*targetWorkers. This prevents runaway crash-respawn loops where stuck
 // workers get reaped by heartbeat timeout, drop managedCount, and trigger spawning
-// of replacements that also get stuck (oro-135n).
+// of replacements that also get stuck (oro-135n, oro-kdne).
 func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
-	t.Run("blocks spawn when total workers at 2x target", func(t *testing.T) {
+	t.Run("blocks spawn when managed+exits at 2x target", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 
 		pm := &mockProcessManager{}
@@ -419,7 +419,7 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 
 		d.mu.Lock()
 		d.targetWorkers = 5
-		// 3 managed workers (managedCount=3 < target=5 → scaleUp path)
+		// 3 managed workers connected (managedCount=3 < target=5 → scaleUp path)
 		for i := 0; i < 3; i++ {
 			id := fmt.Sprintf("managed-%d", i)
 			conn := newMockConn()
@@ -431,20 +431,10 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 				encoder: json.NewEncoder(conn),
 			}
 		}
-		// 8 stuck unmanaged workers (crash-respawn debris)
-		for i := 0; i < 8; i++ {
-			id := fmt.Sprintf("stuck-%d", i)
-			conn := newMockConn()
-			d.workers[id] = &trackedWorker{
-				id:      id,
-				conn:    conn,
-				state:   protocol.WorkerBusy,
-				managed: false,
-				encoder: json.NewEncoder(conn),
-			}
-		}
+		// 7 managed workers have already died unexpectedly.
+		// managedCount(3) + exits(7) = 10 >= 2*5 = 10 → cap blocks scaleUp.
+		d.unexpectedManagedExits = 7
 		d.mu.Unlock()
-		// total = 11 workers + 0 pending = 11 >= 2*5 = 10 → cap blocks scaleUp
 
 		_ = d.reconcileScale()
 
@@ -453,11 +443,11 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 		pm.mu.Unlock()
 
 		if spawned > 0 {
-			t.Errorf("expected 0 spawns when total workers (11) >= 2*target (10), got %d", spawned)
+			t.Errorf("expected 0 spawns when managed+exits (10) >= 2*target (10), got %d", spawned)
 		}
 	})
 
-	t.Run("allows spawn when total below 2x target", func(t *testing.T) {
+	t.Run("allows spawn when managed+exits below 2x target", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 
 		pm := &mockProcessManager{}
@@ -466,7 +456,7 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 
 		d.mu.Lock()
 		d.targetWorkers = 5
-		// 3 managed workers, 2 unmanaged → total=5, pending=0
+		// 3 managed workers, 2 unmanaged (unmanaged must not affect cap)
 		for i := 0; i < 3; i++ {
 			id := fmt.Sprintf("managed-%d", i)
 			conn := newMockConn()
@@ -489,8 +479,8 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 				encoder: json.NewEncoder(conn),
 			}
 		}
+		// exits=0: managedCount(3)+exits(0)=3 < 2*5=10 → cap allows; spawn 2
 		d.mu.Unlock()
-		// total = 5 < 2*5 = 10 → cap allows; managedCount=3 < target=5 → spawn 2
 
 		_ = d.reconcileScale()
 
@@ -499,11 +489,11 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 		pm.mu.Unlock()
 
 		if spawned != 2 {
-			t.Errorf("expected 2 spawns when total (5) < 2*target (10), got %d", spawned)
+			t.Errorf("expected 2 spawns when managed+exits (3) < 2*target (10), got %d", spawned)
 		}
 	})
 
-	t.Run("cap counts pending managed IDs toward total", func(t *testing.T) {
+	t.Run("cap counts pending managed IDs toward managed total", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 
 		pm := &mockProcessManager{}
@@ -512,8 +502,9 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 
 		d.mu.Lock()
 		d.targetWorkers = 5
-		// 9 unmanaged workers + 1 stale pending = total 10 >= 2*5 = 10 → blocked
-		for i := 0; i < 9; i++ {
+		// 1 stale pending managed ID + 9 unexpected exits = managed+exits 10 >= 2*5=10 → blocked.
+		// Unmanaged workers are present but must not influence the cap.
+		for i := 0; i < 5; i++ {
 			id := fmt.Sprintf("unmanaged-%d", i)
 			conn := newMockConn()
 			d.workers[id] = &trackedWorker{
@@ -525,9 +516,9 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 			}
 		}
 		d.pendingManagedIDs["stale-pending-0"] = true
+		d.unexpectedManagedExits = 9
 		d.mu.Unlock()
-		// managedCount = 0 workers + 1 pending = 1 < target(5) → scaleUp path
-		// total = 9 workers + 1 pending = 10 >= 2*5 = 10 → cap blocks
+		// managedCount = 1 pending; exits = 9; 1+9 = 10 >= 2*5 = 10 → cap blocks
 
 		_ = d.reconcileScale()
 
@@ -536,7 +527,7 @@ func TestReconcileScale_CapsAtDoubleTarget(t *testing.T) {
 		pm.mu.Unlock()
 
 		if spawned > 0 {
-			t.Errorf("expected 0 spawns when total (workers+pending=10) >= 2*target (10), got %d", spawned)
+			t.Errorf("expected 0 spawns when managed+exits (pending+exits=10) >= 2*target (10), got %d", spawned)
 		}
 	})
 }
@@ -606,4 +597,138 @@ func TestApplyRestartWorker_PreservesManagedFlag(t *testing.T) {
 	if !isManaged {
 		t.Errorf("respawned worker %q should be managed after reconnect, but managed=%v", workerID, isManaged)
 	}
+}
+
+// TestReconcileScale_CapByManagedExits verifies the corrected 2*target cap:
+// (a) unmanaged workers do not contribute to the cap and must not block managed
+// worker spawning (the oro-kdne root cause), (b) unexpected managed exits tracked
+// in d.unexpectedManagedExits do contribute, (c) checkHeartbeats increments
+// d.unexpectedManagedExits only for dead managed workers, and (d)
+// applyScaleDirective resets the counter when the target changes.
+func TestReconcileScale_CapByManagedExits(t *testing.T) {
+	t.Run("unmanaged workers do not block managed spawning", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 20
+
+		d.mu.Lock()
+		d.targetWorkers = 3
+		// Simulate 10 orphaned unmanaged workers from a previous session.
+		for i := 0; i < 10; i++ {
+			id := fmt.Sprintf("orphaned-%d", i)
+			conn := newMockConn()
+			d.workers[id] = &trackedWorker{
+				id:      id,
+				conn:    conn,
+				state:   protocol.WorkerIdle,
+				managed: false,
+				encoder: json.NewEncoder(conn),
+			}
+		}
+		d.mu.Unlock()
+		// managedCount=0 + unexpectedManagedExits=0 < 2*3=6 → cap must not fire → spawn 3
+
+		_ = d.reconcileScale()
+
+		pm.mu.Lock()
+		spawned := len(pm.spawned)
+		pm.mu.Unlock()
+
+		if spawned != 3 {
+			t.Errorf("expected 3 spawns (unmanaged workers must not block managed spawning), got %d", spawned)
+		}
+	})
+
+	t.Run("unexpectedManagedExits at 2*target blocks scaleUp", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 20
+
+		d.mu.Lock()
+		d.targetWorkers = 3
+		// 6 managed workers have already died → cap = 2*3 = 6 reached.
+		d.unexpectedManagedExits = 6
+		d.mu.Unlock()
+		// managedCount=0 + unexpectedManagedExits=6 >= 2*3=6 → cap fires
+
+		_ = d.reconcileScale()
+
+		pm.mu.Lock()
+		spawned := len(pm.spawned)
+		pm.mu.Unlock()
+
+		if spawned > 0 {
+			t.Errorf("expected 0 spawns when unexpectedManagedExits (6) >= 2*target (6), got %d", spawned)
+		}
+	})
+
+	t.Run("checkHeartbeats increments counter only for dead managed workers", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		d.mu.Lock()
+		// One dead managed worker.
+		conn1 := newMockConn()
+		d.workers["managed-dead"] = &trackedWorker{
+			id:       "managed-dead",
+			conn:     conn1,
+			state:    protocol.WorkerBusy,
+			managed:  true,
+			lastSeen: now.Add(-2 * d.cfg.HeartbeatTimeout),
+			encoder:  json.NewEncoder(conn1),
+		}
+		// One dead unmanaged worker — must NOT be counted.
+		conn2 := newMockConn()
+		d.workers["unmanaged-dead"] = &trackedWorker{
+			id:       "unmanaged-dead",
+			conn:     conn2,
+			state:    protocol.WorkerBusy,
+			managed:  false,
+			lastSeen: now.Add(-2 * d.cfg.HeartbeatTimeout),
+			encoder:  json.NewEncoder(conn2),
+		}
+		d.mu.Unlock()
+
+		d.checkHeartbeats(context.Background())
+
+		d.mu.Lock()
+		exits := d.unexpectedManagedExits
+		d.mu.Unlock()
+
+		if exits != 1 {
+			t.Errorf("expected unexpectedManagedExits=1 (only managed worker counted), got %d", exits)
+		}
+	})
+
+	t.Run("applyScaleDirective resets unexpectedManagedExits", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.setState(StateRunning)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 20
+
+		d.mu.Lock()
+		d.unexpectedManagedExits = 99
+		d.mu.Unlock()
+
+		_, err := d.applyScaleDirective("3")
+		if err != nil {
+			t.Fatalf("applyScaleDirective failed: %v", err)
+		}
+
+		d.mu.Lock()
+		exits := d.unexpectedManagedExits
+		d.mu.Unlock()
+
+		if exits != 0 {
+			t.Errorf("expected unexpectedManagedExits=0 after applyScaleDirective, got %d", exits)
+		}
+	})
 }

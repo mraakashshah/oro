@@ -161,6 +161,32 @@ func (d *Dispatcher) touchProgress(workerID string) {
 
 // --- Heartbeat monitoring ---
 
+// workerExitInfo holds the minimal details needed to escalate a timed-out
+// worker exit after releasing d.mu.
+type workerExitInfo struct {
+	workerID string
+	beadID   string
+}
+
+// escalateTimedOutWorkers dispatches escalation messages and clears bead
+// tracking for workers that were removed by checkHeartbeats. Called outside
+// d.mu so that escalate and clearBeadTracking can acquire their own locks.
+func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []workerExitInfo) {
+	for _, dw := range dead {
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
+		if dw.beadID != "" {
+			d.clearBeadTracking(dw.beadID)
+		}
+	}
+	for _, sw := range stuck {
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
+			"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
+		if sw.beadID != "" {
+			d.clearBeadTracking(sw.beadID)
+		}
+	}
+}
+
 // heartbeatLoop checks for workers that have exceeded the heartbeat timeout
 // and periodically prunes stale tracking map entries (hourly).
 func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
@@ -209,44 +235,37 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 		}
 	}
 	// Remove dead workers and collect info for escalation after unlock.
-	type deadInfo struct {
-		workerID string
-		beadID   string
-	}
-	deadWorkers := make([]deadInfo, 0, len(dead))
+	// Count managed exits inline to feed the reconcileScale cap (oro-kdne).
+	var newManagedExits int
+	deadWorkers := make([]workerExitInfo, 0, len(dead))
 	for _, id := range dead {
 		w := d.workers[id]
-		deadWorkers = append(deadWorkers, deadInfo{workerID: id, beadID: w.beadID})
+		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID})
+		if w.managed {
+			newManagedExits++
+		}
 		_ = d.logEventLocked(ctx, "heartbeat_timeout", "dispatcher", w.beadID, id, "")
 		_ = w.conn.Close()
 		delete(d.workers, id)
 	}
 	// Kill stuck workers and collect info for escalation after unlock.
-	stuckWorkers := make([]deadInfo, 0, len(stuck))
+	stuckWorkers := make([]workerExitInfo, 0, len(stuck))
 	for _, id := range stuck {
 		w := d.workers[id]
-		stuckWorkers = append(stuckWorkers, deadInfo{workerID: id, beadID: w.beadID})
+		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID})
+		if w.managed {
+			newManagedExits++
+		}
 		_ = d.logEventLocked(ctx, "progress_timeout", "dispatcher", w.beadID, id,
 			fmt.Sprintf(`{"last_progress_ago":%q}`, now.Sub(w.lastProgress).Round(time.Second)))
 		_ = w.conn.Close()
 		delete(d.workers, id)
 	}
+	d.unexpectedManagedExits += newManagedExits
 	d.mu.Unlock()
 
 	// Escalate outside the lock and clear tracking maps for abandoned beads.
-	for _, dw := range deadWorkers {
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
-		if dw.beadID != "" {
-			d.clearBeadTracking(dw.beadID)
-		}
-	}
-	for _, sw := range stuckWorkers {
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
-			"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
-		if sw.beadID != "" {
-			d.clearBeadTracking(sw.beadID)
-		}
-	}
+	d.escalateTimedOutWorkers(ctx, deadWorkers, stuckWorkers)
 }
 
 // --- UDS send helper ---

@@ -328,6 +328,13 @@ type Dispatcher struct {
 	// from this set and the trackedWorker.managed flag is set to true.
 	pendingManagedIDs map[string]bool
 
+	// unexpectedManagedExits counts managed workers removed by checkHeartbeats
+	// (heartbeat or progress timeout). Used by reconcileScale to cap spawning:
+	// managedCount + unexpectedManagedExits >= 2*target blocks scaleUp, preventing
+	// runaway crash-respawn loops while keeping unmanaged workers invisible to scaling.
+	// Reset to 0 by applyScaleDirective when the target changes.
+	unexpectedManagedExits int
+
 	// shutdownCh is closed when a shutdown directive is received, causing Run() to exit.
 	shutdownCh chan struct{}
 	// shutdownAuthorized gates whether SIGTERM is honored by the signal handler.
@@ -2546,6 +2553,7 @@ func (d *Dispatcher) applyScaleDirective(args string) (string, error) {
 
 	d.mu.Lock()
 	d.targetWorkers = target
+	d.unexpectedManagedExits = 0
 	connected := len(d.workers)
 	d.mu.Unlock()
 
@@ -2816,17 +2824,18 @@ func (d *Dispatcher) reconcileScale() string {
 			managedCount++
 		}
 	}
-	// Guard: cap total workers (all connected + pending) at 2*target to prevent
-	// runaway crash-respawn loops (oro-135n). When stuck workers get reaped by
-	// heartbeat timeout, managedCount drops and scaleUp fires, but if total
-	// workers are already at 2*target the replacements would just pile up.
-	totalWorkers := len(d.workers) + len(d.pendingManagedIDs)
+	// Guard: cap at 2*target using only managed workers (connected + pending +
+	// exits) to prevent runaway crash-respawn loops (oro-135n, oro-kdne).
+	// Unmanaged (orphaned) workers are excluded so they cannot block managed
+	// worker spawning.
+	managedExits := d.unexpectedManagedExits
 	d.mu.Unlock()
 
 	switch {
 	case managedCount < target:
-		if totalWorkers >= 2*target {
-			return fmt.Sprintf("target=%d, managed=%d, but total workers %d >= 2*target %d — cap reached, skipping scaleUp", target, managedCount, totalWorkers, 2*target)
+		if managedCount+managedExits >= 2*target {
+			return fmt.Sprintf("target=%d, managed=%d, exits=%d, managed+exits %d >= 2*target %d — cap reached, skipping scaleUp",
+				target, managedCount, managedExits, managedCount+managedExits, 2*target)
 		}
 		return d.scaleUp(target, managedCount)
 	case managedCount > target:
@@ -3413,7 +3422,7 @@ func (d *Dispatcher) shutdownRemoveWorktrees(paths []string) {
 		if err := d.worktrees.Remove(ctx, p); err != nil {
 			_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", "", "", err.Error())
 		} else {
-			_ = d.logEvent(ctx, "worktree_removed", "dispatcher", "", "", p)
+			_, _, _ = d.logEvent, ctx, p
 		}
 	}
 
