@@ -14,25 +14,23 @@ Monitor context consumption and trigger proactive handoff before quality degrade
 
 ## How It Works
 
-The `context_pct_writer.py` PostToolUse hook writes context percentage to `.oro/context_pct` after each tool call. The Go worker reads this file to monitor token consumption. Thresholds are loaded from `thresholds.json` at the project root — one threshold per model:
+**Layer 1 — Native context awareness (always present).** Claude Sonnet 4.5+, Sonnet 4.6, and Haiku 4.5 receive context state after every tool call:
 
-| Model | Threshold |
-|-------|-----------|
-| Opus | 65% |
-| Sonnet | 50% |
-| Haiku | 40% |
-| Default | 50% |
+```xml
+<system_warning>Token usage: 35000/200000; 165000 remaining</system_warning>
+```
 
-Source of truth: `thresholds.json` (read by both Go worker and Python hook).
+No hook needed — workers already know their context state from `system_warning`. Thresholds are loaded from `thresholds.json` at the project root:
 
-### Two-Stage Response
+| Model  | Soft threshold | Hard threshold |
+|--------|---------------|----------------|
+| Opus   | 65%           | 85%            |
+| Sonnet | 50%           | 70%            |
+| Haiku  | 40%           | 60%            |
 
-When the threshold is breached:
+Source of truth: `thresholds.json`.
 
-1. **First breach** — the Go worker sends `/compact` to the subprocess stdin and creates `.oro/compacted` flag.
-2. **Second breach** — the Go worker triggers a handoff (kill + respawn with fresh context).
-
-Trust the hook messages and act on them immediately.
+The Go worker enforces the hard stop as a backstop: if the agent does not respond to the soft threshold, `handleContextThreshold` sends a handoff and kills the subprocess at hard threshold (soft + 20%).
 
 ## Learning Checkpoint
 
@@ -84,14 +82,18 @@ These symptoms indicate context degradation regardless of token usage — treat 
 
 ### Green (Continue)
 
-No messages from the hook. Proceed to next bead.
+`system_warning` shows usage well below soft threshold. Proceed to next bead.
 
-### Threshold Breached (Hook injects message)
+### Soft Threshold Breached
 
-Follow the hook's instruction:
+Finish your current atomic step (complete the file edit, run its verification, record the result). Then:
 
-- **If told to compact**: Run `/compact`, then continue working.
-- **If told to handoff**: Stop starting new work. Follow handoff steps below.
+- Do NOT start another edit-verify cycle.
+- Follow handoff steps below.
+
+### Hard Threshold Breached
+
+Stop after your very next tool call. Write a minimal handoff (goal + files modified + next steps). Any in-progress work will be captured by the compaction safety net.
 
 ### Handoff Steps
 
