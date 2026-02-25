@@ -2899,6 +2899,59 @@ func TestReconnect_ClosedBeadTransitionsToIdle(t *testing.T) {
 	}
 }
 
+// TestReconnect_EmptyBeadID_TransitionsToIdle verifies that an idle worker
+// reconnecting after a network glitch with BeadID="" is cleanly transitioned
+// to Idle without logging spurious reconnect_closed_bead_rejected events.
+// Bug: oro-sydf — validateReconnectBead was called even when BeadID was empty,
+// causing a failed bead lookup and a spurious rejection log event.
+func TestReconnect_EmptyBeadID_TransitionsToIdle(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Simulate production: Show("") returns nil (bead not found).
+	// Without the fix, validateReconnectBead("") would look up "" in the bead
+	// source, get nil, and log a spurious reconnect_closed_bead_rejected event.
+	beadSrc.mu.Lock()
+	beadSrc.shown[""] = nil
+	beadSrc.mu.Unlock()
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+
+	// Register the worker so it appears in the dispatcher's map.
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-idle-glitch", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Simulate the worker having been Busy before the network glitch.
+	d.mu.Lock()
+	w := d.workers["w-idle-glitch"]
+	w.state = protocol.WorkerBusy
+	w.beadID = ""
+	d.mu.Unlock()
+
+	// Send RECONNECT with empty BeadID (idle worker after network glitch).
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID:   "w-idle-glitch",
+			BeadID:     "",
+			State:      "idle",
+			ContextPct: 0,
+		},
+	})
+
+	// Worker must transition to Idle.
+	waitForWorkerState(t, d, "w-idle-glitch", protocol.WorkerIdle, 2*time.Second)
+
+	// Must NOT have logged a spurious reconnect_closed_bead_rejected event.
+	count := eventCount(t, d.db, "reconnect_closed_bead_rejected")
+	if count > 0 {
+		t.Fatalf("expected 0 reconnect_closed_bead_rejected events, got %d", count)
+	}
+}
+
 func TestHandleDone_QualityGateFailed_RejectsMerge(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
