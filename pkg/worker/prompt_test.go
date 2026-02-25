@@ -1159,6 +1159,50 @@ func TestAssemblePrompt_SavingLearningsSection(t *testing.T) {
 	})
 }
 
+// TestPromptContainsContextThresholds verifies that the worker prompt includes
+// Layer 1 context handoff instructions: "atomic step" guidance, per-model soft and
+// hard threshold percentages (opus 65/85, sonnet 50/70, haiku 40/60), and a
+// "create-handoff" instruction.
+func TestPromptContainsContextThresholds(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-ctx-threshold",
+		Title:              "Context threshold test",
+		Description:        "Test context threshold instructions in prompt",
+		AcceptanceCriteria: "Thresholds present in prompt",
+		MemoryContext:      "",
+		WorktreePath:       "/tmp/wt-ctx-threshold",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Must contain "atomic step" — encourages small commits before threshold
+	if !strings.Contains(prompt, "atomic step") {
+		t.Error("expected prompt to contain 'atomic step'")
+	}
+
+	// Must contain "create-handoff" instruction
+	if !strings.Contains(prompt, "create-handoff") {
+		t.Error("expected prompt to contain 'create-handoff' instruction")
+	}
+
+	// Must contain soft threshold percentages for all models
+	for _, pct := range []string{"65%", "50%", "40%"} {
+		if !strings.Contains(prompt, pct) {
+			t.Errorf("expected prompt to contain soft threshold %q", pct)
+		}
+	}
+
+	// Must contain hard threshold percentages for all models (soft + 20)
+	for _, pct := range []string{"85%", "70%", "60%"} {
+		if !strings.Contains(prompt, pct) {
+			t.Errorf("expected prompt to contain hard threshold %q", pct)
+		}
+	}
+}
+
 func TestAssemblePrompt_EndToEnd(t *testing.T) {
 	t.Parallel()
 

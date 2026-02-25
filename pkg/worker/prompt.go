@@ -199,6 +199,20 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"- Do not modify the main branch",
 	}, "\n"))
 
+	// Context Handoff (Layer 1 threshold instructions)
+	section(b, "Context Handoff", strings.Join([]string{
+		"Complete each atomic step before context fills. Context thresholds by model:",
+		"",
+		"| Model   | Soft (warn) | Hard (stop) |",
+		"|---------|-------------|-------------|",
+		"| opus    | 65%         | 85%         |",
+		"| sonnet  | 50%         | 70%         |",
+		"| haiku   | 40%         | 60%         |",
+		"",
+		"At the soft threshold: commit current work and invoke the `create-handoff` skill.",
+		"At the hard threshold: the dispatcher will force-stop the worker.",
+	}, "\n"))
+
 	// 11. Failure
 	section(b, "Failure", strings.Join([]string{
 		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
