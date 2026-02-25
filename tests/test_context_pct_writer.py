@@ -152,7 +152,43 @@ context_pct_writer.main()
             Path(transcript_path).unlink(missing_ok=True)
 
 
+def test_budget_from_config():
+    """load_budget_from_config reads budget by model key with proper fallbacks.
+
+    Edges:
+    - Known key (1m_beta) → 1_000_000
+    - Unknown key → falls back to "default" value (200_000)
+    - Missing file → falls back to DEFAULT_CONTEXT_WINDOW (200_000)
+    """
+    import importlib
+    import sys
+
+    # Direct import for unit testing the pure function
+    if HOOKS_DIR not in sys.path:
+        sys.path.insert(0, HOOKS_DIR)
+    cpw = importlib.import_module("context_pct_writer")
+    importlib.reload(cpw)
+
+    config = {"default": 200000, "1m_beta": 1000000}
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(config, f)
+        config_path = Path(f.name)
+
+    try:
+        # Known key returns exact value
+        assert cpw.load_budget_from_config("1m_beta", config_path) == 1_000_000
+
+        # Unknown key falls back to "default" entry
+        assert cpw.load_budget_from_config("unknown_model", config_path) == 200_000
+
+        # Missing file falls back to DEFAULT_CONTEXT_WINDOW
+        assert cpw.load_budget_from_config("1m_beta", Path("/no/such/file.json")) == cpw.DEFAULT_CONTEXT_WINDOW
+    finally:
+        config_path.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     test_writes_correct_percentage_with_1m_budget()
     test_clamps_percentage_at_100()
+    test_budget_from_config()
     print("All tests passed!")

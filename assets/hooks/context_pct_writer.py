@@ -22,6 +22,27 @@ from pathlib import Path
 
 DEFAULT_CONTEXT_WINDOW = 200_000  # Fallback if budget not provided
 PANES_DIR = os.path.expanduser("~/.oro/panes")
+BUDGETS_FILE = Path(__file__).resolve().parent.parent.parent / "context_budgets.json"
+
+
+def load_budget_from_config(model_key: str, config_path: Path | None = None) -> int:
+    """Load token budget for model_key from context_budgets.json.
+
+    Args:
+        model_key: Model identifier key (e.g., "1m_beta", "default").
+        config_path: Path to config JSON. Defaults to BUDGETS_FILE.
+
+    Returns:
+        Token budget. Falls back to config "default" if key not found,
+        then to DEFAULT_CONTEXT_WINDOW if file is missing or invalid.
+    """
+    if config_path is None:
+        config_path = BUDGETS_FILE
+    try:
+        budgets = json.loads(config_path.read_text())
+        return budgets.get(model_key, budgets.get("default", DEFAULT_CONTEXT_WINDOW))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_CONTEXT_WINDOW
 
 
 def get_last_usage(transcript_path: str) -> dict | None:
@@ -81,8 +102,9 @@ def main() -> None:
     if not usage:
         return
 
-    # Read budget from hook input, fallback to default if not provided
-    budget = hook_input.get("budget", DEFAULT_CONTEXT_WINDOW)
+    # Budget lookup: hook_input["budget"] overrides; otherwise use context_budgets.json
+    model_key = hook_input.get("model_key", "default")
+    budget = hook_input.get("budget") or load_budget_from_config(model_key)
 
     pct = calculate_context_pct(usage, budget)
 
