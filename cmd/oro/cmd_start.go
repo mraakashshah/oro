@@ -332,6 +332,8 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
 	}
 	defer db.Close()
 
+	wireDependencies(d, paths.SocketPath, paths.OroHome, &dispatcher.ExecCommandRunner{}, true /* daemonOnly */)
+
 	ctx := cmd.Context()
 	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized())
 	defer cleanup()
@@ -443,17 +445,20 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}
-	wireDependencies(d, sockPath, paths.OroHome, runner)
 	return d, db, nil
 }
 
 // wireDependencies attaches production components to the dispatcher.
-func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string, runner dispatcher.CommandRunner) {
+func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string, runner dispatcher.CommandRunner, daemonOnly bool) {
 	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath, oroHome))
-	// Build the manager pane command using execEnvCmd with the project context
-	project := os.Getenv("ORO_PROJECT")
-	managerCmd := execEnvCmd("manager", project)
-	d.SetPaneRestarter(dispatcher.NewTmuxPaneRestarter("oro", managerCmd, runner))
+	// Skip pane restarter in daemon-only mode: no tmux session exists, so
+	// attempting to restart panes would spam pane_restart_failed events.
+	if !daemonOnly {
+		// Build the manager pane command using execEnvCmd with the project context
+		project := os.Getenv("ORO_PROJECT")
+		managerCmd := execEnvCmd("manager", project)
+		d.SetPaneRestarter(dispatcher.NewTmuxPaneRestarter("oro", managerCmd, runner))
+	}
 }
 
 // readProjectConfig reads the project name from .oro/config.yaml in the given directory.

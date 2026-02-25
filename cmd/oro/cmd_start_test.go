@@ -334,7 +334,7 @@ func TestWireDependencies_SetsPaneRestarter(t *testing.T) {
 		runner := &fakeCommandRunner{}
 
 		// Call wireDependencies.
-		wireDependencies(mockDispatcher, sockPath, oroHome, runner)
+		wireDependencies(mockDispatcher, sockPath, oroHome, runner, false /* daemonOnly */)
 
 		// Assert: paneRestarter must be set (non-nil).
 		if mockDispatcher.GetPaneRestarter() == nil {
@@ -368,4 +368,35 @@ type fakeCommandRunner struct{}
 
 func (f *fakeCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return []byte{}, nil
+}
+
+// TestWireDependencies_DaemonOnly_SkipsPaneRestarter verifies that when
+// daemonOnly=true, wireDependencies does NOT set a PaneRestarter on the
+// dispatcher, preventing pane_restart_failed spam in daemon mode.
+func TestWireDependencies_DaemonOnly_SkipsPaneRestarter(t *testing.T) {
+	t.Run("daemon mode: paneRestarter is nil", func(t *testing.T) {
+		d := &dispatcher.Dispatcher{}
+		sockPath := "/tmp/test-daemon.sock"
+		oroHome := "/tmp/oro-daemon"
+		runner := &fakeCommandRunner{}
+
+		wireDependencies(d, sockPath, oroHome, runner, true /* daemonOnly */)
+
+		if d.GetPaneRestarter() != nil {
+			t.Fatal("expected paneRestarter to be nil in daemon mode, but it was set")
+		}
+	})
+
+	t.Run("non-daemon mode: paneRestarter is set", func(t *testing.T) {
+		d := &dispatcher.Dispatcher{}
+		sockPath := "/tmp/test-nodaemon.sock"
+		oroHome := "/tmp/oro-nodaemon"
+		runner := &fakeCommandRunner{}
+
+		wireDependencies(d, sockPath, oroHome, runner, false /* daemonOnly */)
+
+		if d.GetPaneRestarter() == nil {
+			t.Fatal("expected paneRestarter to be set in non-daemon mode, but got nil")
+		}
+	})
 }
