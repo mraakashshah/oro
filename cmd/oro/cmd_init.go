@@ -635,6 +635,9 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 			},
 		}},
 		"PreToolUse": {
+			{Matcher: "", Hooks: []hookEntry{
+				{Type: "command", Command: py("pane_handoff_reminder.py")},
+			}},
 			{Matcher: "Bash", Hooks: []hookEntry{
 				{Type: "command", Command: py("architect_router.py")},
 				{Type: "command", Command: py("worktree_guard.py")},

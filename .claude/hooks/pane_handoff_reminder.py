@@ -56,8 +56,7 @@ def main() -> None:
     handoff_path = panes_dir / role / "handoff.yaml"
 
     context = (
-        f"CRITICAL: Context threshold reached. You MUST create a handoff now. "
-        f"Write your handoff to {handoff_path} immediately. "
+        f"Context threshold reached. Write your handoff to {handoff_path} now. "
         f"Include: goal (what you accomplished), now (next steps), "
         f"done_this_session (tasks + files + details), and decisions (any key choices made)."
     )

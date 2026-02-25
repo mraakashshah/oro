@@ -76,6 +76,15 @@
 		],
 		"PreToolUse": [
 			{
+				"matcher": "",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/pane_handoff_reminder.py"
+					}
+				]
+			},
+			{
 				"matcher": "Bash",
 				"hooks": [
 					{

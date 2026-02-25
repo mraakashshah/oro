@@ -55,6 +55,26 @@ class TestCheckSignal:
         assert _check_signal(temp_role) is False
 
 
+class TestMessageWording:
+    """Test that reminder message uses appropriate (non-alarming) wording."""
+
+    def test_message_wording(self, temp_panes_dir, temp_role, capsys):
+        """Output message must not contain 'CRITICAL' — use calm directive wording."""
+        role_dir = temp_panes_dir / temp_role
+        role_dir.mkdir()
+        (role_dir / "handoff_requested").touch()
+        (role_dir / "context_pct").write_text("55")
+
+        main()
+
+        captured = capsys.readouterr()
+        assert captured.out != "", "Hook should produce output when signal+context fire"
+        assert "CRITICAL" not in captured.out, (
+            "Message must not use alarming 'CRITICAL' prefix — use calm wording instead"
+        )
+        assert "handoff" in captured.out.lower(), "Message must mention handoff"
+
+
 class TestMainWithContextGuard:
     """Test main() respects context_pct guard (defense in depth)."""
 
@@ -92,9 +112,9 @@ class TestMainWithContextGuard:
         # Act: run the hook
         main()
 
-        # Assert: outputs critical warning because context is high (>= 40%)
+        # Assert: outputs handoff reminder because context is high (>= 40%)
         captured = capsys.readouterr()
-        assert "CRITICAL: Context threshold reached" in captured.out
+        assert "Context threshold reached" in captured.out
         assert "handoff.yaml" in captured.out
 
     def test_signal_exists_no_context_pct_file_no_output(self, temp_panes_dir, temp_role, capsys):
