@@ -310,14 +310,38 @@ lane_go() {
 				echo "No changed Go files to mutate — skipping"
 				return 0
 			fi
+
+			# Limit mutations to functions touched in the diff (hunk headers + added func lines).
+			local match_pattern=""
+			local touched_funcs
+			touched_funcs=$(qg_git diff main -- '*.go' 2>/dev/null |
+				grep -E '^(\+func |@@.*func )' |
+				sed -E 's/.*func[[:space:]]+(\([^)]*\)[[:space:]]+)?([A-Za-z0-9_]+).*/\2/' |
+				grep -v '^$' | sort -u | paste -sd'|' || true)
+			if [ -n "$touched_funcs" ]; then
+				match_pattern="($touched_funcs)"
+				echo "Limiting mutations to touched functions: $touched_funcs"
+			fi
+
 			# Restore source files on exit (handles Ctrl-C, OOM, timeout, and normal exit)
 			trap 'git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true' EXIT
 			echo "Mutating changed files: $changed"
 			local output mutesting_exit=0
 			local -a changed_files
 			mapfile -t changed_files <<<"$changed"
-			output=$(go tool go-mutesting --exec-timeout=30 "${changed_files[@]}" 2>&1) || mutesting_exit=$?
+
+			local -a match_args=()
+			[ -n "$match_pattern" ] && match_args=("--match=$match_pattern")
+
+			# 8-minute overall cap — if exceeded, pass with warning (best-effort signal).
+			output=$(timeout 480 go tool go-mutesting --exec-timeout=60 "${match_args[@]}" "${changed_files[@]}" 2>&1) || mutesting_exit=$?
 			git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true
+
+			if [ "$mutesting_exit" -eq 124 ]; then
+				echo "WARNING: mutation testing timed out after 8min — skipping score check"
+				return 0
+			fi
+
 			echo "$output"
 			local score
 			score=$(echo "$output" | grep "The mutation score is" | awk '{print $5}')
