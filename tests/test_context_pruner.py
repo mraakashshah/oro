@@ -1,4 +1,5 @@
 """Tests for context_pruner.py PostToolUse hook."""
+# pylint: disable=import-error
 
 from __future__ import annotations
 

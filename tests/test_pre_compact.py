@@ -1,4 +1,5 @@
 """Tests for pre_compact.py and session_start_compact.py hooks."""
+# pylint: disable=import-error
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 # Add hooks directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / ".claude" / "hooks"))

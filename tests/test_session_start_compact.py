@@ -1,4 +1,5 @@
 """Tests for session_start_compact.py hook."""
+# pylint: disable=import-error
 
 from __future__ import annotations
 
