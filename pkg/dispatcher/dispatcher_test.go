@@ -11866,3 +11866,97 @@ func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
 		t.Error("expected SHUTDOWN message to be sent to worker")
 	}
 }
+
+// TestCheckHeartbeats_ResetsBeadToOpen verifies that when a worker's heartbeat
+// times out while it has an assigned bead, escalateTimedOutWorkers resets the
+// bead status back to "open" so it can be reassigned. This is the heartbeat
+// analogue of the graceful-disconnect path in dispatcher.go which calls
+// beads.Update(ctx, beadID, "open").
+func TestCheckHeartbeats_ResetsBeadToOpen(t *testing.T) {
+	t.Run("dead worker bead reset to open", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		beadID := "bead-heartbeat-reset"
+		workerID := "w-heartbeat-reset"
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     server,
+			state:    protocol.WorkerBusy,
+			beadID:   beadID,
+			worktree: "/tmp/worktree-heartbeat-reset",
+			lastSeen: now,
+			encoder:  json.NewEncoder(server),
+		}
+		d.mu.Unlock()
+
+		// Advance time past HeartbeatTimeout to trigger dead worker detection.
+		d.nowFunc = func() time.Time { return now.Add(600 * time.Millisecond) }
+
+		d.checkHeartbeats(context.Background())
+
+		// Assert: beads.Update was called with "open" for the timed-out bead.
+		beadSrc.mu.Lock()
+		status, ok := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if !ok {
+			t.Fatal("expected beads.Update to be called for bead after heartbeat timeout, but it was not")
+		}
+		if status != "open" {
+			t.Fatalf("expected bead status to be reset to %q, got %q", "open", status)
+		}
+	})
+
+	t.Run("stuck worker bead reset to open", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		beadID := "bead-stuck-reset"
+		workerID := "w-stuck-reset"
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			conn:         server,
+			state:        protocol.WorkerBusy,
+			beadID:       beadID,
+			worktree:     "/tmp/worktree-stuck-reset",
+			lastSeen:     now,
+			lastProgress: now,
+			encoder:      json.NewEncoder(server),
+		}
+		d.mu.Unlock()
+
+		// ProgressTimeout defaults to 0 in test config, so use a non-zero value.
+		d.cfg.ProgressTimeout = 100 * time.Millisecond
+
+		// Advance time past ProgressTimeout but not past HeartbeatTimeout,
+		// so the worker is "stuck" (progress timeout) not "dead" (heartbeat timeout).
+		d.nowFunc = func() time.Time { return now.Add(200 * time.Millisecond) }
+
+		d.checkHeartbeats(context.Background())
+
+		// Assert: beads.Update was called with "open" for the stuck bead.
+		beadSrc.mu.Lock()
+		status, ok := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if !ok {
+			t.Fatal("expected beads.Update to be called for bead after progress timeout, but it was not")
+		}
+		if status != "open" {
+			t.Fatalf("expected bead status to be reset to %q, got %q", "open", status)
+		}
+	})
+}

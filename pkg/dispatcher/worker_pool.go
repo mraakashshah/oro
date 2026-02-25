@@ -175,6 +175,12 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 	for _, dw := range dead {
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
 		if dw.beadID != "" {
+			// Reset the bead to "open" so it can be reassigned, mirroring the
+			// graceful-disconnect path in dispatcher.go.
+			if err := d.beads.Update(ctx, dw.beadID, "open"); err != nil {
+				_ = d.logEvent(ctx, "heartbeat_bead_reset_failed", "dispatcher", dw.beadID, dw.workerID,
+					fmt.Sprintf(`{"error":%q}`, err.Error()))
+			}
 			d.clearBeadTracking(dw.beadID)
 		}
 	}
@@ -182,6 +188,12 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
 			"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
 		if sw.beadID != "" {
+			// Reset the bead to "open" so it can be reassigned, mirroring the
+			// graceful-disconnect path in dispatcher.go.
+			if err := d.beads.Update(ctx, sw.beadID, "open"); err != nil {
+				_ = d.logEvent(ctx, "progress_timeout_bead_reset_failed", "dispatcher", sw.beadID, sw.workerID,
+					fmt.Sprintf(`{"error":%q}`, err.Error()))
+			}
 			d.clearBeadTracking(sw.beadID)
 		}
 	}
