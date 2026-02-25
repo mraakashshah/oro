@@ -290,12 +290,12 @@ Beads 1-4 are the crash fix (P0). Beads 5-9 are the feature build (P1-P2).
 
 ### Adversarial review mitigations (2026-02-25)
 
-5. **pane_handoff_reminder.py is dead code** — Now includes registration in settings.json + cmd_init.go as part of bead 4. Was never invoked before.
-6. **Threshold mismatch (Go worker vs Layer 1 prompt)** — Repurposed Go worker's `handleContextThreshold` as single-stage hard stop at `threshold + 20` (opus=85%, sonnet=70%, haiku=60%). Removed two-stage `w.compacted` logic. Layer 1 prompt uses thresholds.json values as soft threshold. thresholds.json values unchanged; Go worker derives hard stop.
-7. **cmd_init.go not in scope** — Added dual-update rule: every bead that touches hooks must update both settings.json and cmd_init.go:buildHookConfig().
-8. **assets/hooks/ stale copies** — Expanded bead 1 to delete assets/hooks/inject_context_usage.py.
-9. **worker.go dead code** — Bead 2 removes `.oro/compacted` flag write and `w.compacted` bool from worker.go.
-10. **context-checkpoint skill stale** — Added bead 9 to update skill references.
+1. **pane_handoff_reminder.py is dead code** — Now includes registration in settings.json + cmd_init.go as part of bead 4. Was never invoked before.
+2. **Threshold mismatch (Go worker vs Layer 1 prompt)** — Repurposed Go worker's `handleContextThreshold` as single-stage hard stop at `threshold + 20` (opus=85%, sonnet=70%, haiku=60%). Removed two-stage `w.compacted` logic. Layer 1 prompt uses thresholds.json values as soft threshold. thresholds.json values unchanged; Go worker derives hard stop.
+3. **cmd_init.go not in scope** — Added dual-update rule: every bead that touches hooks must update both settings.json and cmd_init.go:buildHookConfig().
+4. **assets/hooks/ stale copies** — Expanded bead 1 to delete assets/hooks/inject_context_usage.py.
+5. **worker.go dead code** — Bead 2 removes `.oro/compacted` flag write and `w.compacted` bool from worker.go.
+6. **context-checkpoint skill stale** — Added bead 9 to update skill references.
 
 ### Accepted risks
 
