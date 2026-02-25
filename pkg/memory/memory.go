@@ -104,7 +104,7 @@ func (s *Store) LoadVocab(ctx context.Context) error {
 // InsertParams holds parameters for inserting a new memory.
 type InsertParams struct {
 	Content       string
-	Type          string // lesson | decision | gotcha | pattern | preference | summary
+	Type          string // lesson | decision | gotcha | pattern | preference | summary | self_report
 	Tags          []string
 	Source        string // self_report | daemon_extracted
 	BeadID        string
@@ -178,12 +178,13 @@ const dedupJaccardThreshold = 0.7
 //
 //nolint:gochecknoglobals // compile-once lookup table, safe as package-level var
 var validMemoryTypes = map[string]struct{}{
-	"lesson":     {},
-	"decision":   {},
-	"gotcha":     {},
-	"pattern":    {},
-	"preference": {},
-	"summary":    {},
+	"lesson":      {},
+	"decision":    {},
+	"gotcha":      {},
+	"pattern":     {},
+	"preference":  {},
+	"summary":     {},
+	"self_report": {},
 }
 
 // Insert adds a new memory with write-time dedup. Before inserting, it checks
@@ -201,7 +202,7 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 		return 0, fmt.Errorf("memory insert: content too long (max 2048 chars, got %d)", len(m.Content))
 	}
 	if _, ok := validMemoryTypes[m.Type]; !ok {
-		return 0, fmt.Errorf("memory insert: invalid type %q (must be one of: lesson, decision, gotcha, pattern, preference, summary)", m.Type)
+		return 0, fmt.Errorf("memory insert: invalid type %q (must be one of: lesson, decision, gotcha, pattern, preference, summary, self_report)", m.Type)
 	}
 
 	conf := m.Confidence
