@@ -46,6 +46,10 @@
 					{
 						"type": "command",
 						"command": "python3 .claude/hooks/context_pct_writer.py"
+					},
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/context_pruner.py"
 					}
 				]
 			},

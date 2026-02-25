@@ -662,6 +662,7 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 		"PostToolUse": {
 			{Matcher: "", Hooks: []hookEntry{
 				{Type: "command", Command: py("context_pct_writer.py")},
+				{Type: "command", Command: py("context_pruner.py")},
 			}},
 			{Matcher: "Read|WebFetch|Bash", Hooks: []hookEntry{
 				{Type: "command", Command: py("prompt_injection_guard.py")},
@@ -677,12 +678,9 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 				{Type: "command", Command: py("validate_agent_completion.py")},
 			}},
 		},
-		"Stop": {{
-			Matcher: "",
-			Hooks: []hookEntry{
-				{Type: "command", Command: sh("stop-checklist.sh")},
-			},
-		}},
+		"Stop": {{Matcher: "", Hooks: []hookEntry{
+			{Type: "command", Command: sh("stop-checklist.sh")},
+		}}},
 	}
 }
 
