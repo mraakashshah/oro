@@ -3628,3 +3628,108 @@ func TestClaudeSpawnerSetsStdinToDevNull(t *testing.T) {
 		t.Errorf("expected cmd.Stdin to point to %s, got %s", os.DevNull, file.Name())
 	}
 }
+
+// TestHardStopThresholds verifies that each model family triggers a hard stop
+// at exactly threshold+20, derived from thresholds.json:
+//
+//	opus:   65 + 20 = 85
+//	sonnet: 50 + 20 = 70
+//	haiku:  40 + 20 = 60
+func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven integration test with parallel subtests
+	t.Parallel()
+
+	thresholdsData := `{"opus": 65, "sonnet": 50, "haiku": 40}`
+
+	cases := []struct {
+		name     string
+		model    string
+		hardStop int
+	}{
+		{name: "opus", model: "opus", hardStop: 85},     // 65 + 20
+		{name: "sonnet", model: "sonnet", hardStop: 70}, // 50 + 20
+		{name: "haiku", model: "haiku", hardStop: 60},   // 40 + 20
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			spawner := newMockSpawner()
+			dispatcherConn, workerConn := net.Pipe()
+			defer func() { _ = dispatcherConn.Close() }()
+
+			w := worker.NewWithConn("w-hardstop-"+tc.name, workerConn, spawner)
+			w.SetContextPollInterval(50 * time.Millisecond)
+			w.SetHeartbeatInterval(1 * time.Hour) // suppress heartbeats during test
+
+			tmpDir := t.TempDir()
+			oroDir := filepath.Join(tmpDir, ".oro")
+			if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(tmpDir, "thresholds.json"), []byte(thresholdsData), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+			sendMessage(t, dispatcherConn, protocol.Message{
+				Type: protocol.MsgAssign,
+				Assign: &protocol.AssignPayload{
+					BeadID:   "bead-" + tc.name,
+					Worktree: tmpDir,
+					Model:    tc.model,
+				},
+			})
+
+			// Drain STATUS
+			_ = readMessage(t, dispatcherConn)
+
+			// Write pct AT hard stop boundary — should NOT trigger handoff
+			if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte(fmt.Sprintf("%d", tc.hardStop)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			justWait(300 * time.Millisecond)
+
+			if spawner.process.Killed() {
+				t.Fatalf("%s: subprocess killed at pct=%d (hard stop boundary); expected no kill", tc.name, tc.hardStop)
+			}
+
+			// Write pct ABOVE hard stop — should trigger handoff + kill
+			if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte(fmt.Sprintf("%d", tc.hardStop+1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			// Read messages until HANDOFF
+			_ = dispatcherConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			scanner := bufio.NewScanner(dispatcherConn)
+			gotHandoff := false
+			for scanner.Scan() {
+				var msg protocol.Message
+				if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if msg.Type == protocol.MsgHandoff {
+					gotHandoff = true
+					break
+				}
+			}
+			if !gotHandoff {
+				t.Fatalf("%s: expected HANDOFF when pct=%d > hard stop=%d", tc.name, tc.hardStop+1, tc.hardStop)
+			}
+
+			// Subprocess should be killed after handoff
+			waitFor(t, func() bool {
+				return spawner.process.Killed()
+			}, 200*time.Millisecond)
+
+			cancel()
+			<-errCh
+		})
+	}
+}
