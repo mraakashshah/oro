@@ -628,10 +628,18 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 	sh := func(s string) string { return hooksDir + "/" + s }
 
 	return map[string][]hookGroup{
-		"SessionStart": {{
+		"SessionStart": {
+			{Matcher: "", Hooks: []hookEntry{
+				{Type: "command", Command: py("session_start_extras.py"), StatusMessage: "Loading project context..."},
+			}},
+			{Matcher: "compact", Hooks: []hookEntry{
+				{Type: "command", Command: py("session_start_compact.py")},
+			}},
+		},
+		"PreCompact": {{
 			Matcher: "",
 			Hooks: []hookEntry{
-				{Type: "command", Command: py("session_start_extras.py"), StatusMessage: "Loading project context..."},
+				{Type: "command", Command: py("pre_compact.py")},
 			},
 		}},
 		"PreToolUse": {

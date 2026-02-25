@@ -17,6 +17,26 @@
 						"statusMessage": "Loading project context..."
 					}
 				]
+			},
+			{
+				"matcher": "compact",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/session_start_compact.py"
+					}
+				]
+			}
+		],
+		"PreCompact": [
+			{
+				"matcher": "",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 .claude/hooks/pre_compact.py"
+					}
+				]
 			}
 		],
 		"PostToolUse": [
