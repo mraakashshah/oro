@@ -14,7 +14,7 @@ Monitor context consumption and trigger proactive handoff before quality degrade
 
 ## How It Works
 
-The `inject_context_usage.py` PreToolUse hook monitors token consumption automatically. Thresholds are loaded from `thresholds.json` at the project root — one threshold per model:
+The `context_pct_writer.py` PostToolUse hook writes context percentage to `.oro/context_pct` after each tool call. The Go worker reads this file to monitor token consumption. Thresholds are loaded from `thresholds.json` at the project root — one threshold per model:
 
 | Model | Threshold |
 |-------|-----------|
@@ -29,8 +29,8 @@ Source of truth: `thresholds.json` (read by both Go worker and Python hook).
 
 When the threshold is breached:
 
-1. **First breach** — hook injects a `/compact` message. The Go worker sends `/compact` to the subprocess stdin and creates `.oro/compacted` flag.
-2. **Second breach** — hook injects a handoff message. The Go worker triggers a ralph handoff (kill + respawn with fresh context).
+1. **First breach** — the Go worker sends `/compact` to the subprocess stdin and creates `.oro/compacted` flag.
+2. **Second breach** — the Go worker triggers a handoff (kill + respawn with fresh context).
 
 Trust the hook messages and act on them immediately.
 

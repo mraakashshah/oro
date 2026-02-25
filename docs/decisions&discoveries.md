@@ -11,13 +11,13 @@ Hook inventory (same in both files):
 |---|---|---|
 | SessionStart | (all) | enforce-skills.sh |
 | SessionStart | (all) | session_start_extras.py |
-| PreToolUse | (all) | inject_context_usage.py |
 | PreToolUse | Bash | architect_router.py |
 | PreToolUse | Bash | worktree_guard.py |
 | PreToolUse | Bash | no_cd_guard.py |
 | PreToolUse | Bash | rebase_worktree_guard.py |
 | PreToolUse | Read | oro-search-hook |
 | PreToolUse | Task | enforce_worktree.py |
+| PostToolUse | (all) | context_pct_writer.py |
 | PostToolUse | Read\|WebFetch\|Bash | prompt_injection_guard.py |
 | PostToolUse | Edit\|Write | auto-format.sh |
 | PostToolUse | Bash | memory_capture.py |
