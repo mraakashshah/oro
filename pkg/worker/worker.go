@@ -88,7 +88,6 @@ type Worker struct {
 	beadID              string
 	worktree            string
 	model               string
-	compacted           bool
 	mu                  sync.Mutex
 	spawner             StreamingSpawner
 	socketPath          string // for reconnection
@@ -376,7 +375,6 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.mu.Lock()
 	w.proc = proc
 	w.model = model
-	w.compacted = false
 	w.subprocExitCh = make(chan struct{})
 	w.subprocExitClosed = false
 	w.handleExitClaimed = false
@@ -683,9 +681,9 @@ func BuildPrompt(beadID, worktree, memoryContext string) string {
 }
 
 // watchContext polls .oro/context_pct in the current worktree and triggers
-// a two-stage response when context usage exceeds the model-specific threshold:
-//  1. First breach: send /compact to subprocess stdin, create .oro/compacted flag
-//  2. Second breach: send HANDOFF and kill subprocess (ralph handoff)
+// a single-stage hard stop when context usage exceeds the model-specific
+// hard threshold (soft threshold + 20). Layer 1 prompt handles the soft
+// threshold; the Go worker enforces the hard stop via SendHandoff + killProc.
 //
 // It also monitors subprocess health: if the subprocess dies unexpectedly
 // (subprocess exits and remains unclaimed for one poll interval), send DONE(false) with error.
@@ -739,6 +737,9 @@ func (w *Worker) watchContext(ctx context.Context) {
 }
 
 // handleContextThreshold checks context percentage and handles threshold breaches.
+// Single-stage hard stop: if pct > threshold+20, send handoff and kill.
+// Layer 1 prompt handles the soft threshold (the raw threshold value);
+// this function enforces the hard stop 20 points above.
 // Returns true if handoff was triggered (caller should return).
 func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshold int) bool {
 	if wt == "" {
@@ -751,27 +752,13 @@ func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshol
 		return false
 	}
 
+	hardStop := threshold + 20
 	pct, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pct <= threshold {
+	if err != nil || pct <= hardStop {
 		return false
 	}
 
-	w.mu.Lock()
-	alreadyCompacted := w.compacted
-	w.mu.Unlock()
-
-	if !alreadyCompacted {
-		// First breach: wait for Claude's auto-compaction to reduce context.
-		w.mu.Lock()
-		w.compacted = true
-		w.mu.Unlock()
-		oroDir := filepath.Join(wt, protocol.OroDir)
-		_ = os.MkdirAll(oroDir, 0o700) //nolint:gosec // runtime directory
-		_ = os.WriteFile(filepath.Join(oroDir, "compacted"), []byte("1"), 0o600)
-		return false
-	}
-
-	// Second breach: auto-compact didn't help enough — handoff
+	// Hard stop: handoff + kill
 	_ = w.SendHandoff(ctx)
 	w.killProc()
 	return true

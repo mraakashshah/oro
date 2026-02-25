@@ -2604,7 +2604,7 @@ func TestHandleAssign_PassesMemoryContextToSpawner(t *testing.T) {
 	<-errCh
 }
 
-func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-stage integration test
+func TestHandleContextThreshold(t *testing.T) {
 	t.Parallel()
 
 	spawner := newMockSpawner()
@@ -2612,10 +2612,10 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
 
-	w := worker.NewWithConn("w-compact", workerConn, spawner)
+	w := worker.NewWithConn("w-threshold", workerConn, spawner)
 	w.SetContextPollInterval(50 * time.Millisecond)
 
-	// Create worktree with thresholds.json (opus=65)
+	// Create worktree with thresholds.json (opus=65, hard stop = 85)
 	tmpDir := t.TempDir()
 	oroDir := filepath.Join(tmpDir, ".oro")
 	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
@@ -2634,7 +2634,7 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:   "bead-compact",
+			BeadID:   "bead-threshold",
 			Worktree: tmpDir,
 			Model:    "opus",
 		},
@@ -2643,31 +2643,25 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 	// Drain STATUS message
 	_ = readMessage(t, dispatcherConn)
 
-	// --- First threshold breach: should mark compacted, NOT handoff ---
-	// (gives Claude's built-in auto-compaction a chance to reduce context)
+	// Write pct between soft (65) and hard (85) — should NOT trigger handoff
 	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Wait for .oro/compacted flag to be created
-	waitFor(t, func() bool {
-		_, err := os.Stat(filepath.Join(oroDir, "compacted"))
-		return err == nil
-	}, 2*time.Second)
+	// Wait several poll cycles — no handoff expected
+	justWait(300 * time.Millisecond)
 
-	// Verify subprocess was NOT killed (no handoff yet)
 	if spawner.process.Killed() {
-		t.Fatal("subprocess should not be killed on first threshold breach")
+		t.Fatal("subprocess should not be killed when pct is between soft and hard threshold")
 	}
 
-	// Reset context_pct below threshold to simulate auto-compact working
-	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("30"), 0o600); err != nil {
-		t.Fatal(err)
+	// No .oro/compacted flag should exist (two-stage logic removed)
+	if _, err := os.Stat(filepath.Join(oroDir, "compacted")); err == nil {
+		t.Fatal(".oro/compacted flag should not be created — two-stage logic removed")
 	}
-	justWait(100 * time.Millisecond)
 
-	// --- Second threshold breach: should handoff ---
-	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
+	// Write pct above hard stop (85) — should trigger single-stage handoff+kill
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("90"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2686,73 +2680,13 @@ func TestWatchContext_CompactThenHandoff(t *testing.T) { //nolint:funlen // two-
 		}
 	}
 	if !gotHandoff {
-		t.Fatal("expected HANDOFF on second threshold breach")
+		t.Fatal("expected HANDOFF when pct exceeds hard stop (threshold+20)")
 	}
 
 	// Subprocess should be killed after handoff
 	waitFor(t, func() bool {
 		return spawner.process.Killed()
 	}, 200*time.Millisecond)
-
-	cancel()
-	<-errCh
-}
-
-func TestWatchContext_CreatesOroDirectoryWith0700Perms(t *testing.T) {
-	t.Parallel()
-
-	spawner := newMockSpawner()
-	dispatcherConn, workerConn := net.Pipe()
-	defer func() { _ = dispatcherConn.Close() }()
-
-	w := worker.NewWithConn("w-perm", workerConn, spawner)
-	w.SetContextPollInterval(50 * time.Millisecond)
-
-	// Create worktree WITHOUT .oro directory (so worker creates it)
-	tmpDir := t.TempDir()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
-
-	// Send ASSIGN to trigger watchContext
-	sendMessage(t, dispatcherConn, protocol.Message{
-		Type: protocol.MsgAssign,
-		Assign: &protocol.AssignPayload{
-			BeadID:   "bead-perm",
-			Worktree: tmpDir,
-			Model:    "opus",
-		},
-	})
-
-	// Drain STATUS message
-	_ = readMessage(t, dispatcherConn)
-
-	// Write context_pct above threshold to trigger compacted flag creation
-	oroDir := filepath.Join(tmpDir, ".oro")
-	if err := os.MkdirAll(oroDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Wait for .oro/compacted flag to be created
-	waitFor(t, func() bool {
-		_, err := os.Stat(filepath.Join(oroDir, "compacted"))
-		return err == nil
-	}, 2*time.Second)
-
-	// Verify .oro directory has 0700 permissions (no group or other access)
-	info, err := os.Stat(oroDir)
-	if err != nil {
-		t.Fatalf("stat .oro dir: %v", err)
-	}
-	perm := info.Mode().Perm()
-	if perm != 0o700 {
-		t.Errorf("expected .oro perms 0700, got %04o", perm)
-	}
 
 	cancel()
 	<-errCh
