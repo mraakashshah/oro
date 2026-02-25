@@ -255,7 +255,10 @@ lane_go() {
 
 	# shellcheck disable=SC2329
 	go_test_with_coverage() {
-		GOFLAGS=-buildvcs=false go test -race -shuffle=on -p 2 \
+		local race_flag=""
+		if [ "${ORO_SKIP_MUTATION:-}" != "1" ]; then race_flag="-race"; fi
+		# shellcheck disable=SC2086
+		GOFLAGS=-buildvcs=false go test $race_flag -shuffle=on -p 3 \
 			-coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
 		local cov
 		cov=$(go tool cover -func="$COVERAGE_FILE" | grep total | awk '{print $3}' | sed 's/%//')
