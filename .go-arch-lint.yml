@@ -6,6 +6,7 @@ excludeFiles:
   - "archive/.+"
   - "references/.+"
   - "\\.worktrees/.+"
+  - "\\.claude/worktrees/.+"
   - "readme_test\\.go"
 
 components:
