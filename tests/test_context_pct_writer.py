@@ -308,10 +308,75 @@ context_pct_writer.main()
             Path(transcript_path).unlink(missing_ok=True)
 
 
+def test_main_role_default_writes_pane_file():
+    """When neither ORO_ROLE nor ORO_WORKER is set, defaults to role='main'.
+
+    Given: No ORO_ROLE, no ORO_WORKER in environment
+    When: Hook runs after a tool use
+    Then: Should write context_pct to ~/.oro/panes/main/context_pct
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        transcript_path = f.name
+        entry = {
+            "message": {
+                "model": "claude-sonnet-4-5",
+                "usage": {
+                    "input_tokens": 50000,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                },
+            }
+        }
+        f.write(json.dumps(entry) + "\n")
+
+    with tempfile.TemporaryDirectory() as panes_dir:
+        try:
+            hook_input = {"transcript_path": transcript_path, "budget": 200_000}
+
+            env = os.environ.copy()
+            # Explicitly remove both ORO_ROLE and ORO_WORKER
+            env.pop("ORO_ROLE", None)
+            env.pop("ORO_WORKER", None)
+            env["PYTHONPATH"] = HOOKS_DIR
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    "-c",
+                    f'''
+import context_pct_writer
+context_pct_writer.PANES_DIR = "{panes_dir}"
+context_pct_writer.main()
+''',
+                ],
+                input=json.dumps(hook_input),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+
+            assert result.returncode == 0, f"Hook failed: {result.stderr}"
+
+            # Should default to role="main" and write to panes/main/context_pct
+            context_file = Path(panes_dir) / "main" / "context_pct"
+            assert context_file.exists(), (
+                "Hook should default to role='main' and write to "
+                "~/.oro/panes/main/context_pct when no ORO_ROLE/ORO_WORKER set"
+            )
+
+            written_pct = int(context_file.read_text().strip())
+            assert written_pct == 25, f"Expected 25% (50K/200K) but got {written_pct}%"
+
+        finally:
+            Path(transcript_path).unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     test_writes_correct_percentage_with_1m_budget()
     test_clamps_percentage_at_100()
     test_budget_from_config()
     test_writes_worktree_context_pct_when_oro_worker()
     test_writes_both_pane_and_worktree_when_both_set()
+    test_main_role_default_writes_pane_file()
     print("All tests passed!")
