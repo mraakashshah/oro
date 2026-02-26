@@ -295,6 +295,28 @@ func TestListRow_Render(t *testing.T) {
 		}
 	})
 
+	t.Run("groupBeads maps unknown status to open", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "unk", Status: "weird_status", Priority: 1},
+			{ID: "real", Status: "open", Priority: 2},
+		}
+		groups := groupBeads(beads)
+		if len(groups["open"]) != 2 {
+			t.Errorf("groupBeads should map unknown status to open: got %d open beads, want 2", len(groups["open"]))
+		}
+		// The unknown-status bead should be in the open group
+		found := false
+		for _, b := range groups["open"] {
+			if b.ID == "unk" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("groupBeads: bead with unknown status not found in open group")
+		}
+	})
+
 	t.Run("groupBeads caps closed group at 10", func(t *testing.T) {
 		beads := make([]protocol.Bead, 15)
 		for i := range beads {
