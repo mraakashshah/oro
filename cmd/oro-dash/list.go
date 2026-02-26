@@ -288,16 +288,21 @@ func (lm ListModel) hasVisibleBeads() bool {
 	return false
 }
 
-// View renders the list view as a dense table of beads grouped by status.
-func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
-	if len(lm.beads) == 0 {
-		return styles.Muted.Render("No beads found. Run `bd create` to get started.")
+// cursorBead returns the bead at the current cursor position, or nil if on a header row.
+func (lm ListModel) cursorBead() *protocol.Bead {
+	rows := lm.flatRows()
+	if lm.cursor < 0 || lm.cursor >= len(rows) {
+		return nil
 	}
-
-	if !lm.hasVisibleBeads() {
-		return styles.Muted.Render("No beads match")
+	row := rows[lm.cursor]
+	if row.isHeader || row.bead == nil {
+		return nil
 	}
+	return row.bead
+}
 
+// renderList renders the flat bead list with headers and row highlighting.
+func (lm ListModel) renderList(styles Styles, width, height int) string {
 	rows := lm.flatRows()
 	groups := groupBeads(lm.filteredBeads())
 
@@ -321,6 +326,32 @@ func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	}
 
 	return lipgloss.NewStyle().Width(width).Height(height).Render(out.String())
+}
+
+// View renders the list view as a dense table of beads grouped by status.
+// When detailFocused=true and width >= 60, renders a split-pane layout with
+// the list on the left and detail pane on the right.
+func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
+	if len(lm.beads) == 0 {
+		return styles.Muted.Render("No beads found. Run `bd create` to get started.")
+	}
+
+	if !lm.hasVisibleBeads() {
+		return styles.Muted.Render("No beads match")
+	}
+
+	if lm.detailFocused && width >= 60 {
+		bead := lm.cursorBead()
+		if bead != nil {
+			listWidth := int(float64(width) * lm.splitRatio)
+			detailWidth := width - listWidth - 1
+			listPane := lm.renderList(styles, listWidth, height)
+			detailPane := renderDetailPane(*bead, lm.workers, lm.assignments, lm.detailSections, styles, detailWidth, height)
+			return lipgloss.JoinHorizontal(lipgloss.Top, listPane, detailPane)
+		}
+	}
+
+	return lm.renderList(styles, width, height)
 }
 
 // groupBeads groups beads by status, sorts each group by priority (ascending),
@@ -452,7 +483,7 @@ func renderDetailPane(b protocol.Bead, workers []WorkerStatus, assignments map[s
 	// Header: ID + title + status
 	out.WriteString(styles.Header.Render(b.ID) + "\n")
 	out.WriteString(b.Title + "\n")
-	out.WriteString(styles.Muted.Render(b.Status) + "\n\n")
+	_, _, _ = out.WriteString, styles.Muted.Render, b.Status
 
 	// Acceptance section (only if content exists)
 	if b.AcceptanceCriteria != "" {

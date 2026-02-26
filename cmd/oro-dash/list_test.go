@@ -987,3 +987,69 @@ func TestListFilter_Toggle(t *testing.T) {
 		}
 	})
 }
+
+// TestListView_SplitPaneRendersDetailPane verifies the split-pane layout wiring in View().
+func TestListView_SplitPaneRendersDetailPane(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	makeBead := func() protocol.Bead {
+		return protocol.Bead{
+			ID:                 "test-1",
+			Title:              "Test bead title",
+			Status:             "open",
+			Priority:           2,
+			Type:               "task",
+			AcceptanceCriteria: "Must pass all tests",
+		}
+	}
+
+	t.Run("detailFocused=true shows bead ID title and acceptance criteria", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads([]protocol.Bead{makeBead()})
+		lm.detailFocused = true
+		lm.cursor = 1 // row 0 = header, row 1 = bead
+		lm.detailSections = defaultDetailSections()
+
+		out := lm.View(theme, styles, 120, 30)
+
+		if !strings.Contains(out, "test-1") {
+			t.Errorf("split pane missing bead ID 'test-1': %q", out)
+		}
+		if !strings.Contains(out, "Test bead title") {
+			t.Errorf("split pane missing bead title: %q", out)
+		}
+		// Acceptance criteria content only appears in detail pane, not in list rows
+		if !strings.Contains(out, "Must pass all tests") {
+			t.Errorf("split pane missing acceptance criteria content: %q", out)
+		}
+	})
+
+	t.Run("detailFocused=false renders list only without detail pane content", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads([]protocol.Bead{makeBead()})
+		lm.detailFocused = false
+		lm.cursor = 1
+
+		out := lm.View(theme, styles, 120, 30)
+
+		// Acceptance criteria only appears in detail pane — must be absent in list-only mode
+		if strings.Contains(out, "Must pass all tests") {
+			t.Errorf("list-only view should not show acceptance criteria: %q", out)
+		}
+	})
+
+	t.Run("width < 60 forces list-only even when detailFocused=true", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads([]protocol.Bead{makeBead()})
+		lm.detailFocused = true
+		lm.cursor = 1
+		lm.detailSections = defaultDetailSections()
+
+		out := lm.View(theme, styles, 55, 30)
+
+		if strings.Contains(out, "Must pass all tests") {
+			t.Errorf("narrow view (width<60) should not show detail pane: %q", out)
+		}
+	})
+}
