@@ -106,6 +106,8 @@ const (
 	TreeView
 	// ListView shows the dense list view with split-pane detail.
 	ListView
+	// StatusView shows system status with sections for daemon, panes, workers.
+	StatusView
 )
 
 // Model is the Bubble Tea model for the oro dashboard.
@@ -150,6 +152,9 @@ type Model struct {
 
 	// List view state
 	listModel ListModel
+
+	// Status view state
+	statusModel StatusModel
 
 	// Pre-computed styles to avoid allocations during rendering
 	theme  Theme
@@ -331,6 +336,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleWorkersViewKeys(key)
 	case TreeView:
 		return m.handleTreeViewKeys(key)
+	case StatusView:
+		return m.handleStatusViewKeys(key)
 	case ListView:
 		return m.handleListViewKeys(key)
 	default: // BoardView
@@ -386,7 +393,7 @@ func (m Model) handleInsightsViewKeys(key string) (tea.Model, tea.Cmd) {
 
 // handleListViewKeys processes keyboard input in ListView.
 //
-//nolint:gocyclo // switch dispatch over key bindings; complexity is inherent in key routing
+//nolint:gocyclo,funlen // switch dispatch over key bindings; complexity is inherent in key routing
 func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 	// Detail pane focused: handle detail-specific keys
 	if m.listModel.detailFocused {
@@ -427,6 +434,8 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.activeView = HealthView
 	case "w":
 		m.activeView = WorkersView
+	case "s":
+		m.activeView = StatusView
 	case "a":
 		m.treeModel = NewTreeModel(m.beads)
 		m.activeView = TreeView
@@ -508,6 +517,8 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.searchInput.Focus()
 		m.searchInput.SetValue("")
 		m.searchSelectedIndex = 0
+	case "s":
+		m.activeView = StatusView
 	case "H":
 		m.activeView = HealthView
 	case "w":
@@ -614,6 +625,8 @@ func (m Model) View() string {
 		return workersTable.View(m.theme, m.styles, max(m.width, 80)) + "\n" + statusBar
 	case TreeView:
 		return m.treeModel.View(m.theme, m.styles) + "\n" + statusBar
+	case StatusView:
+		return m.statusModel.View(m.theme, m.styles, m.healthData, m.width, m.height) + "\n" + statusBar
 	case ListView:
 		return m.listModel.View(m.theme, m.styles, m.width, m.height-2) + "\n" + statusBar
 	default:
@@ -725,6 +738,8 @@ func helpHintsForView(view ViewType, width int) string {
 		return "esc back  ? help  q quit"
 	case WorkersView:
 		return "esc back  ? help  q quit"
+	case StatusView:
+		return "j/k navigate  enter expand  esc back  ? help  q quit"
 	case TreeView:
 		return "j/k navigate  space expand/collapse  esc back  ? help  q quit"
 	case ListView:
