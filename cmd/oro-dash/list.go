@@ -344,7 +344,7 @@ func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 		bead := lm.cursorBead()
 		if bead != nil {
 			listWidth := int(float64(width) * lm.splitRatio)
-			detailWidth := width - listWidth - 1
+			detailWidth := width - listWidth
 			listPane := lm.renderList(styles, listWidth, height)
 			detailPane := renderDetailPane(*bead, lm.workers, lm.assignments, lm.detailSections, styles, detailWidth, height)
 			return lipgloss.JoinHorizontal(lipgloss.Top, listPane, detailPane)
@@ -483,7 +483,7 @@ func renderDetailPane(b protocol.Bead, workers []WorkerStatus, assignments map[s
 	// Header: ID + title + status
 	out.WriteString(styles.Header.Render(b.ID) + "\n")
 	out.WriteString(b.Title + "\n")
-	_, _, _ = out.WriteString, styles.Muted.Render, b.Status
+	out.WriteString(styles.Muted.Render(b.Status) + "\n\n")
 
 	// Acceptance section (only if content exists)
 	if b.AcceptanceCriteria != "" {
