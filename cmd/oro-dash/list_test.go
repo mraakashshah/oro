@@ -1054,6 +1054,55 @@ func TestListView_SplitPaneRendersDetailPane(t *testing.T) {
 	})
 }
 
+// TestFilterLabelRendered verifies that the active filter label appears in View() output.
+func TestFilterLabelRendered(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	allBeads := []protocol.Bead{
+		{ID: "ip-1", Title: "In progress task", Status: "in_progress", Priority: 1, Type: "task"},
+		{ID: "op-1", Title: "Open task one", Status: "open", Priority: 2, Type: "task"},
+		{ID: "bl-1", Title: "Blocked task", Status: "blocked", Priority: 0, Type: "bug"},
+		{ID: "cl-1", Title: "Closed task", Status: "closed", Priority: 3, Type: "task"},
+	}
+
+	t.Run("filter o renders Open label", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		lm = lm.setFilter("o")
+		out := lm.View(theme, styles, 80, 24)
+		if !strings.Contains(out, "Filter: Open") {
+			t.Errorf("filter 'o': View() should contain 'Filter: Open', got:\n%s", out)
+		}
+	})
+
+	t.Run("filter c renders Closed label", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		lm = lm.setFilter("c")
+		out := lm.View(theme, styles, 80, 24)
+		if !strings.Contains(out, "Filter: Closed") {
+			t.Errorf("filter 'c': View() should contain 'Filter: Closed', got:\n%s", out)
+		}
+	})
+
+	t.Run("filter r renders Ready label", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		lm = lm.setFilter("r")
+		out := lm.View(theme, styles, 80, 24)
+		if !strings.Contains(out, "Filter: Ready") {
+			t.Errorf("filter 'r': View() should contain 'Filter: Ready', got:\n%s", out)
+		}
+	})
+
+	t.Run("no filter renders no filter label", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		// No filter set — activeFilter is ""
+		out := lm.View(theme, styles, 80, 24)
+		if strings.Contains(out, "Filter:") {
+			t.Errorf("no filter: View() should NOT contain 'Filter:', got:\n%s", out)
+		}
+	})
+}
+
 // TestListResponsive verifies responsive column visibility by terminal width.
 func TestListResponsive(t *testing.T) {
 	theme := DefaultTheme()

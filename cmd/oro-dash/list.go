@@ -311,6 +311,11 @@ func (lm ListModel) renderList(styles Styles, width, height int) string {
 	groups := groupBeads(lm.filteredBeads())
 
 	var out strings.Builder
+
+	if label := lm.filterLabel(); label != "" {
+		out.WriteString(styles.StatusLabel.Render(fmt.Sprintf("Filter: %s", label)) + "\n")
+	}
+
 	lastStatus := ""
 	for i, row := range rows {
 		active := i == lm.cursor
