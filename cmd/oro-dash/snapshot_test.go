@@ -399,8 +399,8 @@ func TestSnapshot_InsightsView_WithBottleneck(t *testing.T) {
 
 func TestSnapshot_InsightsView_WithTriageFlags(t *testing.T) {
 	beads := []BeadWithDeps{
-		{ID: "oro-ins.7", Priority: 0, DaysSinceUpdate: 10},
-		{ID: "oro-ins.8", Type: "bug", Priority: 4},
+		{ID: "oro-ins.7", Status: "open", Priority: 0, DaysSinceUpdate: 10},
+		{ID: "oro-ins.8", Status: "open", Type: "bug", Priority: 4},
 	}
 
 	model := NewInsightsModel(beads)

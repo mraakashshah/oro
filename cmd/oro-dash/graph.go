@@ -8,6 +8,7 @@ import (
 // BeadWithDeps represents a bead with its dependency information.
 type BeadWithDeps struct {
 	ID              string
+	Status          string
 	Priority        int
 	Type            string
 	DaysSinceUpdate int
@@ -192,6 +193,11 @@ func (g *DependencyGraph) TriageFlags() []TriageFlag {
 	var flags []TriageFlag
 
 	for _, bead := range g.beads {
+		// Skip closed beads — only flag actionable work
+		if bead.Status == "closed" {
+			continue
+		}
+
 		// Check for stale P0 beads
 		if bead.Priority == 0 && bead.DaysSinceUpdate >= 7 {
 			flags = append(flags, TriageFlag{

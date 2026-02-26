@@ -793,6 +793,7 @@ func (m Model) buildInsightsModel() *InsightsModel {
 
 		beadsWithDeps[i] = BeadWithDeps{
 			ID:              b.ID,
+			Status:          b.Status,
 			Priority:        b.Priority,
 			Type:            b.Type,
 			DaysSinceUpdate: calculateDaysSinceUpdate(b.UpdatedAt),

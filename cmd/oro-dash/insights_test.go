@@ -147,7 +147,7 @@ func TestInsightsModel_TriageFlags(t *testing.T) {
 		{
 			name: "stale P0 bead gets flagged",
 			beads: []BeadWithDeps{
-				{ID: "bead-1", Priority: 0, DaysSinceUpdate: 8},
+				{ID: "bead-1", Status: "open", Priority: 0, DaysSinceUpdate: 8},
 			},
 			wantFlags: []TriageFlag{
 				{BeadID: "bead-1", Reason: "stale P0 (8 days)", Severity: "high"},
@@ -156,7 +156,7 @@ func TestInsightsModel_TriageFlags(t *testing.T) {
 		{
 			name: "misprioritized bug gets flagged",
 			beads: []BeadWithDeps{
-				{ID: "bead-1", Type: "bug", Priority: 4},
+				{ID: "bead-1", Status: "open", Type: "bug", Priority: 4},
 			},
 			wantFlags: []TriageFlag{
 				{BeadID: "bead-1", Reason: "bug with low priority (P4)", Severity: "medium"},
@@ -167,6 +167,14 @@ func TestInsightsModel_TriageFlags(t *testing.T) {
 			beads: []BeadWithDeps{
 				{ID: "bead-1", Priority: 2, DaysSinceUpdate: 3},
 				{ID: "bead-2", Type: "task", Priority: 2},
+			},
+			wantFlags: []TriageFlag{},
+		},
+		{
+			name: "closed beads are excluded from triage",
+			beads: []BeadWithDeps{
+				{ID: "bead-1", Status: "closed", Priority: 0, DaysSinceUpdate: 30},
+				{ID: "bead-2", Status: "closed", Type: "bug", Priority: 4},
 			},
 			wantFlags: []TriageFlag{},
 		},
