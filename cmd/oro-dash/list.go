@@ -19,13 +19,14 @@ type listRow struct {
 
 // ListModel holds state for the dense list view.
 type ListModel struct {
-	beads       []protocol.Bead
-	workers     []WorkerStatus
-	assignments map[string]string
-	width       int
-	height      int
-	cursor      int             // flat row index into flatRows()
-	collapsed   map[string]bool // status -> collapsed
+	beads        []protocol.Bead
+	workers      []WorkerStatus
+	assignments  map[string]string
+	width        int
+	height       int
+	cursor       int             // flat row index into flatRows()
+	collapsed    map[string]bool // status -> collapsed
+	activeFilter string          // quick filter: "", "o", "c", "r"
 	// Split-pane focus and detail state
 	detailFocused  bool            // true when detail pane has focus
 	detailSections map[string]bool // section name -> expanded (nil uses defaults)
@@ -71,7 +72,7 @@ func listRenderOrder() []string {
 // flatRows returns the visible rows: headers + bead rows for expanded groups.
 // Empty groups are omitted. Collapsed groups show only their header.
 func (lm ListModel) flatRows() []listRow {
-	groups := groupBeads(lm.beads)
+	groups := groupBeads(lm.filteredBeads())
 	rows := make([]listRow, 0, len(lm.beads)+4)
 	for _, status := range listRenderOrder() {
 		beads := groups[status]
@@ -165,6 +166,58 @@ func (lm *ListModel) restoreCursor(beadID string) {
 	}
 }
 
+// setFilter sets or toggles a quick filter. Same filter again clears it.
+func (lm ListModel) setFilter(f string) ListModel {
+	if lm.activeFilter == f {
+		lm.activeFilter = ""
+	} else {
+		lm.activeFilter = f
+	}
+	return lm
+}
+
+// filteredBeads returns beads matching the active filter. No filter returns all.
+func (lm ListModel) filteredBeads() []protocol.Bead {
+	if lm.activeFilter == "" {
+		return lm.beads
+	}
+	result := make([]protocol.Bead, 0, len(lm.beads))
+	for _, b := range lm.beads {
+		if lm.matchesFilter(b) {
+			result = append(result, b)
+		}
+	}
+	return result
+}
+
+// matchesFilter checks if a bead matches the active filter.
+func (lm ListModel) matchesFilter(b protocol.Bead) bool {
+	switch lm.activeFilter {
+	case "o":
+		return b.Status == "open" || b.Status == "in_progress"
+	case "c":
+		return b.Status == "closed"
+	case "r":
+		return b.Status == "open"
+	default:
+		return true
+	}
+}
+
+// filterLabel returns a display label for the active filter, or "" if none.
+func (lm ListModel) filterLabel() string {
+	switch lm.activeFilter {
+	case "o":
+		return "Open"
+	case "c":
+		return "Closed"
+	case "r":
+		return "Ready"
+	default:
+		return ""
+	}
+}
+
 // toggleFocus switches focus between list and detail panes.
 func (lm ListModel) toggleFocus() ListModel {
 	lm.detailFocused = !lm.detailFocused
@@ -246,7 +299,7 @@ func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	}
 
 	rows := lm.flatRows()
-	groups := groupBeads(lm.beads)
+	groups := groupBeads(lm.filteredBeads())
 
 	var out strings.Builder
 	lastStatus := ""

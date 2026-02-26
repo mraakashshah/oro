@@ -384,6 +384,8 @@ func (m Model) handleInsightsViewKeys(key string) (tea.Model, tea.Cmd) {
 }
 
 // handleListViewKeys processes keyboard input in ListView.
+//
+//nolint:gocyclo // switch dispatch over key bindings; complexity is inherent in key routing
 func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 	// Detail pane focused: handle detail-specific keys
 	if m.listModel.detailFocused {
@@ -404,6 +406,8 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.listModel = m.listModel.adjustSplit(-0.05)
 	case ">":
 		m.listModel = m.listModel.adjustSplit(0.05)
+	case "o", "c", "r":
+		m.listModel = m.listModel.setFilter(key)
 	case "b":
 		m.previousNavView = BoardView
 		m.activeView = BoardView

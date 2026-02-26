@@ -868,3 +868,122 @@ func TestListFocus_TabSwitch(t *testing.T) {
 		}
 	})
 }
+
+// TestListFilter_Toggle verifies quick filter keys o/c/r.
+func TestListFilter_Toggle(t *testing.T) {
+	allBeads := []protocol.Bead{
+		{ID: "ip-1", Status: "in_progress", Priority: 1, Type: "task"},
+		{ID: "op-1", Status: "open", Priority: 2, Type: "task"},
+		{ID: "bl-1", Status: "blocked", Priority: 0, Type: "bug"},
+		{ID: "cl-1", Status: "closed", Priority: 3, Type: "task"},
+	}
+
+	t.Run("o filter shows open and in_progress only", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		lm = lm.setFilter("o")
+		filtered := lm.filteredBeads()
+		for _, b := range filtered {
+			if b.Status != "open" && b.Status != "in_progress" {
+				t.Errorf("o filter: unexpected status %q for %s", b.Status, b.ID)
+			}
+		}
+		if len(filtered) != 2 {
+			t.Errorf("o filter: got %d beads, want 2", len(filtered))
+		}
+	})
+
+	t.Run("c filter shows closed only", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		lm = lm.setFilter("c")
+		filtered := lm.filteredBeads()
+		for _, b := range filtered {
+			if b.Status != "closed" {
+				t.Errorf("c filter: unexpected status %q for %s", b.Status, b.ID)
+			}
+		}
+		if len(filtered) != 1 {
+			t.Errorf("c filter: got %d beads, want 1", len(filtered))
+		}
+	})
+
+	t.Run("r filter shows ready (open and not blocked)", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		lm = lm.setFilter("r")
+		filtered := lm.filteredBeads()
+		for _, b := range filtered {
+			if b.Status != "open" {
+				t.Errorf("r filter: unexpected status %q for %s", b.Status, b.ID)
+			}
+		}
+		if len(filtered) != 1 {
+			t.Errorf("r filter: got %d beads, want 1", len(filtered))
+		}
+	})
+
+	t.Run("toggle same filter clears it", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		lm = lm.setFilter("o")
+		if lm.activeFilter != "o" {
+			t.Fatalf("filter not set: %q", lm.activeFilter)
+		}
+		lm = lm.setFilter("o") // toggle off
+		if lm.activeFilter != "" {
+			t.Errorf("toggle should clear filter, got %q", lm.activeFilter)
+		}
+		if len(lm.filteredBeads()) != len(allBeads) {
+			t.Error("cleared filter should show all beads")
+		}
+	})
+
+	t.Run("filter persists across refresh", func(t *testing.T) {
+		lm := NewListModel().updateBeads(allBeads)
+		lm = lm.setFilter("c")
+		// Simulate refresh with new data
+		newBeads := append(allBeads, protocol.Bead{ID: "cl-2", Status: "closed", Priority: 2, Type: "task"})
+		lm = lm.updateBeads(newBeads)
+		if lm.activeFilter != "c" {
+			t.Errorf("filter not persisted: %q", lm.activeFilter)
+		}
+		filtered := lm.filteredBeads()
+		if len(filtered) != 2 {
+			t.Errorf("after refresh: got %d closed beads, want 2", len(filtered))
+		}
+	})
+
+	t.Run("filterLabel returns display name", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.setFilter("o")
+		label := lm.filterLabel()
+		if label == "" {
+			t.Error("filterLabel should return non-empty for active filter")
+		}
+	})
+
+	t.Run("filter+collapse empties all visible beads shows message", func(t *testing.T) {
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		// Only closed beads, filter to open → nothing visible
+		closedOnly := []protocol.Bead{
+			{ID: "cl-1", Status: "closed", Priority: 1, Type: "task"},
+		}
+		lm := NewListModel().updateBeads(closedOnly)
+		lm = lm.setFilter("o")
+		out := lm.View(theme, styles, 80, 24)
+		if !strings.Contains(out, "No beads match") {
+			t.Errorf("empty filter result should show 'No beads match': %q", out)
+		}
+	})
+
+	t.Run("handleListViewKeys wires o/c/r to filter", func(t *testing.T) {
+		m := newModel()
+		m.activeView = ListView
+		m.beads = allBeads
+		m.listModel = m.listModel.updateBeads(allBeads)
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+		rm, _ := updated.(Model)
+		if rm.listModel.activeFilter != "o" {
+			t.Errorf("o key: filter = %q, want 'o'", rm.listModel.activeFilter)
+		}
+	})
+}
