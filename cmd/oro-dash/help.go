@@ -72,6 +72,17 @@ func getSearchHelpBindings() []helpBinding {
 	}
 }
 
+// getStatusHelpBindings returns help bindings for StatusView.
+func getStatusHelpBindings() []helpBinding {
+	return []helpBinding{
+		{"j/k or ↑/↓", "Navigate sections"},
+		{"enter", "Expand section / open bead"},
+		{"esc", "Return to previous view"},
+		{"?", "Toggle help"},
+		{"q or ctrl+c", "Quit"},
+	}
+}
+
 // getHelpBindingsForView returns help bindings for the given view.
 func getHelpBindingsForView(view ViewType) []helpBinding {
 	switch view {
@@ -85,6 +96,8 @@ func getHelpBindingsForView(view ViewType) []helpBinding {
 		return getSearchHelpBindings()
 	case ListView:
 		return getListViewHelpBindings()
+	case StatusView:
+		return getStatusHelpBindings()
 	default:
 		return getBoardHelpBindings()
 	}
@@ -103,6 +116,8 @@ func getViewName(view ViewType) string {
 		return "Search"
 	case ListView:
 		return "List View"
+	case StatusView:
+		return "Status View"
 	default:
 		return "Unknown View"
 	}

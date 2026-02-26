@@ -873,3 +873,124 @@ func TestStatusResponsive(t *testing.T) {
 		}
 	})
 }
+
+// TestStatusSnapshot verifies StatusView snapshots across widths and states,
+// and that StatusView is wired into help bindings and view names.
+func TestStatusSnapshot(t *testing.T) {
+	t.Run("HelpBindingsForStatusView", func(t *testing.T) {
+		bindings := getHelpBindingsForView(StatusView)
+		if len(bindings) == 0 {
+			t.Error("getHelpBindingsForView(StatusView) returned empty bindings")
+		}
+		// Should have j/k, enter, esc at minimum
+		keys := make(map[string]bool)
+		for _, b := range bindings {
+			keys[b.key] = true
+		}
+		if !keys["j/k or ↑/↓"] {
+			t.Error("StatusView help should include j/k navigation")
+		}
+		if !keys["esc"] {
+			t.Error("StatusView help should include esc")
+		}
+	})
+
+	t.Run("ViewNameForStatusView", func(t *testing.T) {
+		name := getViewName(StatusView)
+		if name == "" || name == "Unknown View" {
+			t.Errorf("getViewName(StatusView) = %q, want non-empty known name", name)
+		}
+	})
+
+	t.Run("FullWidthSnapshot", func(t *testing.T) {
+		m := buildStatusModel(130, 50)
+		view := m.View()
+		plain := stripANSI(view)
+
+		// Full view should contain all 5 sections
+		for _, section := range []string{"System", "Panes", "Workers", "Pipeline", "Session"} {
+			if !strings.Contains(plain, section) {
+				t.Errorf("full-width snapshot missing section %q", section)
+			}
+		}
+	})
+
+	t.Run("NarrowSnapshot", func(t *testing.T) {
+		m := buildStatusModel(70, 50)
+		view := m.View()
+		plain := stripANSI(view)
+
+		// Narrow view still shows section titles
+		if !strings.Contains(plain, "System") {
+			t.Error("narrow snapshot missing System section")
+		}
+		// But no worker line2 columns
+		if strings.Contains(plain, "done:") {
+			t.Error("narrow snapshot should hide worker line2")
+		}
+	})
+
+	t.Run("EmptyWorkersSnapshot", func(t *testing.T) {
+		m := buildStatusModel(120, 50)
+		m.workers = nil
+		view := m.View()
+		plain := stripANSI(view)
+
+		if !strings.Contains(plain, "No workers connected") {
+			t.Error("empty workers snapshot missing 'No workers connected'")
+		}
+	})
+
+	t.Run("NilHealthSnapshot", func(t *testing.T) {
+		m := buildStatusModel(120, 50)
+		m.healthData = nil
+		view := m.View()
+		plain := stripANSI(view)
+
+		if !strings.Contains(plain, "Connecting...") {
+			t.Error("nil health snapshot missing 'Connecting...'")
+		}
+	})
+}
+
+// buildStatusModel creates a fully populated Model for snapshot testing.
+func buildStatusModel(width, height int) Model {
+	m := newModel()
+	m.activeView = StatusView
+	m.initialLoad = false
+	m.width = width
+	m.height = height
+	m.healthData = &HealthData{
+		DaemonPID:     1234,
+		DaemonState:   "running",
+		ArchitectPane: PaneHealth{Name: "architect", Alive: true},
+		ManagerPane:   PaneHealth{Name: "manager", Alive: true},
+		WorkerCount:   2,
+	}
+	m.workers = []WorkerStatus{
+		{ID: "w-1", Status: "working", BeadID: "oro-abc", ContextPct: 40, LastProgressSecs: 2},
+		{ID: "w-2", Status: "idle", BeadID: "", ContextPct: 0, LastProgressSecs: 0},
+	}
+	m.pendingHandoffCount = 1
+	m.attemptCounts = map[string]int{"oro-abc": 3}
+
+	buf := NewMetricsBuffer()
+	now := time.Now()
+	for i := range 5 {
+		buf.Record(MetricsSample{
+			Timestamp:     now.Add(time.Duration(i) * 2 * time.Second),
+			BeadsClosed:   i,
+			QueueReady:    3,
+			QueueWIP:      2,
+			WorkersActive: 1,
+			WorkersTotal:  2,
+			Workers: []WorkerSample{
+				{ID: "w-1", ContextPct: 10 + i*10, State: "working"},
+				{ID: "w-2", ContextPct: 0, State: "idle"},
+			},
+		})
+	}
+	m.metricsBuffer = buf
+
+	return m
+}
