@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -668,6 +669,145 @@ func TestStatusResponse_NewFields(t *testing.T) {
 		}
 		if um.inProgressCount != 1 {
 			t.Errorf("inProgressCount = %d, want 1", um.inProgressCount)
+		}
+	})
+}
+
+// --- sample collection wiring (oro-yqvn.4) ---
+
+func TestSampleCollection(t *testing.T) {
+	t.Run("TickSetsSamplePending", func(t *testing.T) {
+		m := newModel()
+		m.metricsBuffer = NewMetricsBuffer()
+
+		// Simulate tick message
+		updated, _ := m.Update(tickMsg(time.Now()))
+		um, ok := updated.(Model)
+		if !ok {
+			t.Fatal("expected Model type from Update")
+		}
+		if !um.samplePending {
+			t.Error("samplePending should be true after tickMsg")
+		}
+	})
+
+	t.Run("SampleRecordedAfterBothMsgs", func(t *testing.T) {
+		m := newModel()
+		m.metricsBuffer = NewMetricsBuffer()
+		m.samplePending = true
+
+		// Process beadsMsg first
+		beads := beadsMsg{
+			{ID: "oro-1", Status: "open"},
+			{ID: "oro-2", Status: "in_progress"},
+			{ID: "oro-3", Status: "closed"},
+		}
+		updated, _ := m.Update(beads)
+		m = updated.(Model) //nolint:errcheck // test assertion
+
+		// After beadsMsg alone, beadsReady but workers not yet
+		if m.metricsBuffer.Len() != 0 {
+			t.Error("sample should not be recorded until both messages arrive")
+		}
+
+		// Process workerDataMsg
+		wdm := workerDataMsg{
+			workers: []WorkerStatus{
+				{ID: "w-1", Status: "working"},
+				{ID: "w-2", Status: "idle"},
+			},
+		}
+		updated, _ = m.Update(wdm)
+		m = updated.(Model) //nolint:errcheck // test assertion
+
+		// Now both have arrived; sample should be recorded
+		if m.metricsBuffer.Len() != 1 {
+			t.Errorf("expected 1 sample after both msgs, got %d", m.metricsBuffer.Len())
+		}
+
+		// Verify sample content
+		samples := m.metricsBuffer.Last(1)
+		s := samples[0]
+		if s.QueueReady != 1 {
+			t.Errorf("QueueReady = %d, want 1", s.QueueReady)
+		}
+		if s.QueueWIP != 1 {
+			t.Errorf("QueueWIP = %d, want 1", s.QueueWIP)
+		}
+		if s.BeadsClosed != 1 {
+			t.Errorf("BeadsClosed = %d, want 1", s.BeadsClosed)
+		}
+		if s.WorkersActive != 1 {
+			t.Errorf("WorkersActive = %d, want 1", s.WorkersActive)
+		}
+		if s.WorkersIdle != 1 {
+			t.Errorf("WorkersIdle = %d, want 1", s.WorkersIdle)
+		}
+		if s.WorkersTotal != 2 {
+			t.Errorf("WorkersTotal = %d, want 2", s.WorkersTotal)
+		}
+	})
+
+	t.Run("SamplePendingClearedAfterRecord", func(t *testing.T) {
+		m := newModel()
+		m.metricsBuffer = NewMetricsBuffer()
+		m.samplePending = true
+		m.beadsReady = true
+
+		// workerDataMsg should record and clear
+		wdm := workerDataMsg{
+			workers: []WorkerStatus{{ID: "w-1", Status: "idle"}},
+		}
+		updated, _ := m.Update(wdm)
+		m = updated.(Model) //nolint:errcheck // test assertion
+
+		if m.samplePending {
+			t.Error("samplePending should be false after sample recorded")
+		}
+		if m.beadsReady {
+			t.Error("beadsReady should be false after sample recorded")
+		}
+	})
+
+	t.Run("BuildCurrentSampleFields", func(t *testing.T) {
+		m := newModel()
+		m.openCount = 3
+		m.inProgressCount = 2
+		m.closedCount = 5
+		m.workers = []WorkerStatus{
+			{ID: "w-1", Status: "working", BeadID: "oro-1", ContextPct: 40},
+			{ID: "w-2", Status: "idle", ContextPct: 0},
+			{ID: "w-3", Status: "working", BeadID: "oro-2", ContextPct: 60},
+		}
+
+		s := m.buildCurrentSample()
+
+		if s.QueueReady != 3 {
+			t.Errorf("QueueReady = %d, want 3", s.QueueReady)
+		}
+		if s.QueueWIP != 2 {
+			t.Errorf("QueueWIP = %d, want 2", s.QueueWIP)
+		}
+		if s.BeadsClosed != 5 {
+			t.Errorf("BeadsClosed = %d, want 5", s.BeadsClosed)
+		}
+		if s.WorkersActive != 2 {
+			t.Errorf("WorkersActive = %d, want 2", s.WorkersActive)
+		}
+		if s.WorkersIdle != 1 {
+			t.Errorf("WorkersIdle = %d, want 1", s.WorkersIdle)
+		}
+		if s.WorkersTotal != 3 {
+			t.Errorf("WorkersTotal = %d, want 3", s.WorkersTotal)
+		}
+		if len(s.Workers) != 3 {
+			t.Fatalf("len(Workers) = %d, want 3", len(s.Workers))
+		}
+		if s.Workers[0].ContextPct != 40 {
+			t.Errorf("Workers[0].ContextPct = %d, want 40", s.Workers[0].ContextPct)
+		}
+		if s.Timestamp.IsZero() {
+			t.Error("Timestamp should not be zero")
 		}
 	})
 }

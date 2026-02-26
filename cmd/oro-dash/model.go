@@ -142,6 +142,12 @@ type Model struct {
 	pendingHandoffCount int
 	attemptCounts       map[string]int
 
+	// Sample collection state (oro-yqvn.4)
+	metricsBuffer *MetricsBuffer
+	samplePending bool // true after tickMsg, cleared when sample recorded
+	beadsReady    bool // beadsMsg arrived since last sample
+	workersReady  bool // workerDataMsg arrived since last sample
+
 	// UI state
 	width       int
 	height      int
@@ -195,6 +201,7 @@ func newModel() Model {
 		theme:           theme,
 		styles:          NewStyles(theme),
 		splitRatio:      0.4, // Default 40% board, 60% detail
+		metricsBuffer:   NewMetricsBuffer(),
 	}
 }
 
@@ -270,6 +277,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.healthData = msg.data
 
 	case tickMsg:
+		m.samplePending = true
 		return m, tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), fetchHealthCmd(), tickCmd())
 
 	case navigateToDepMsg:
@@ -282,10 +290,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// buildCurrentSample creates a MetricsSample from the current model state.
+func (m Model) buildCurrentSample() MetricsSample {
+	s := MetricsSample{
+		Timestamp:    time.Now(),
+		BeadsClosed:  m.closedCount,
+		QueueReady:   m.openCount,
+		QueueWIP:     m.inProgressCount,
+		WorkersTotal: len(m.workers),
+	}
+	s.Workers = make([]WorkerSample, len(m.workers))
+	for i, w := range m.workers {
+		s.Workers[i] = WorkerSample{
+			ID:         w.ID,
+			ContextPct: w.ContextPct,
+			State:      w.Status,
+			BeadID:     w.BeadID,
+		}
+		switch w.Status {
+		case "working":
+			s.WorkersActive++
+		case "idle":
+			s.WorkersIdle++
+		}
+	}
+	return s
+}
+
+// maybeRecordSample records a metrics sample if samplePending and both data sources are ready.
+func (m Model) maybeRecordSample() Model {
+	if !m.samplePending || !m.beadsReady || !m.workersReady {
+		return m
+	}
+	if m.metricsBuffer != nil {
+		m.metricsBuffer.Record(m.buildCurrentSample())
+	}
+	m.samplePending = false
+	m.beadsReady = false
+	m.workersReady = false
+	return m
+}
+
 // applyBeadsMsg updates the model with fetched bead data, recomputing status counts.
 func (m Model) applyBeadsMsg(msg beadsMsg) Model {
 	m.initialLoad = false
 	m.beads = []protocol.Bead(msg)
+	m.beadsReady = true
 	m.openCount = 0
 	m.inProgressCount = 0
 	m.closedCount = 0
@@ -301,6 +351,7 @@ func (m Model) applyBeadsMsg(msg beadsMsg) Model {
 	}
 	m = m.clampCursor()
 	m.listModel = m.listModel.updateBeads(m.beads)
+	m = m.maybeRecordSample()
 	return m
 }
 
@@ -322,6 +373,8 @@ func (m Model) applyWorkerDataMsg(msg workerDataMsg) Model {
 	m.pendingHandoffCount = msg.pendingHandoffCount
 	m.attemptCounts = msg.attemptCounts
 	m.listModel = m.listModel.updateWorkers(msg.workers, msg.assignments)
+	m.workersReady = true
+	m = m.maybeRecordSample()
 	return m
 }
 
