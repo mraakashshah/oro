@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -408,6 +409,10 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.listModel = m.listModel.adjustSplit(0.05)
 	case "o", "c", "r":
 		m.listModel = m.listModel.setFilter(key)
+	case "y":
+		if id := m.listModel.cursorBeadID(); id != "" {
+			_ = clipboard.WriteAll(id)
+		}
 	case "b":
 		m.previousNavView = BoardView
 		m.activeView = BoardView
@@ -669,7 +674,7 @@ func calculateDaysSinceUpdate(updatedAt string) int {
 	}
 
 	days := int(time.Since(t).Hours() / 24)
-	if days < 0 {
+	if days <= 0 {
 		return 0
 	}
 	return days

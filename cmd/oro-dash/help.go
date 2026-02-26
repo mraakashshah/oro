@@ -45,6 +45,22 @@ func getInsightsHelpBindings() []helpBinding {
 	}
 }
 
+// getListViewHelpBindings returns help bindings for ListView.
+func getListViewHelpBindings() []helpBinding {
+	return []helpBinding{
+		{"j/k or ↑/↓", "Navigate beads"},
+		{"enter", "Open full detail view"},
+		{"tab/l", "Focus detail pane"},
+		{"space", "Collapse/expand group"},
+		{"b", "Switch to board view"},
+		{"y", "Copy bead ID to clipboard"},
+		{"/", "Open search"},
+		{"o/c/r", "Filter open/closed/ready"},
+		{"?", "Toggle help"},
+		{"q or ctrl+c", "Quit"},
+	}
+}
+
 // getSearchHelpBindings returns help bindings for SearchView.
 func getSearchHelpBindings() []helpBinding {
 	return []helpBinding{
@@ -67,6 +83,8 @@ func getHelpBindingsForView(view ViewType) []helpBinding {
 		return getInsightsHelpBindings()
 	case SearchView:
 		return getSearchHelpBindings()
+	case ListView:
+		return getListViewHelpBindings()
 	default:
 		return getBoardHelpBindings()
 	}
@@ -83,6 +101,8 @@ func getViewName(view ViewType) string {
 		return "Insights View"
 	case SearchView:
 		return "Search"
+	case ListView:
+		return "List View"
 	default:
 		return "Unknown View"
 	}

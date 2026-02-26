@@ -7,6 +7,53 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// TestHelpBindings_ListView verifies that ListView has complete help bindings
+// in getHelpBindingsForView, getViewName, and helpHintsForView.
+func TestHelpBindings_ListView(t *testing.T) {
+	// getHelpBindingsForView must return ListView-specific bindings.
+	bindings := getHelpBindingsForView(ListView)
+	bindingMap := make(map[string]string)
+	for _, b := range bindings {
+		bindingMap[b.key] = b.desc
+	}
+
+	// enter → full detail
+	enterDesc, hasEnter := bindingMap["enter"]
+	if !hasEnter {
+		t.Error("ListView bindings missing 'enter' key")
+	} else if !strings.Contains(strings.ToLower(enterDesc), "detail") {
+		t.Errorf("ListView 'enter' desc should mention 'detail', got %q", enterDesc)
+	}
+
+	// b → board
+	boardDesc, hasBoard := bindingMap["b"]
+	if !hasBoard {
+		t.Error("ListView bindings missing 'b' key")
+	} else if !strings.Contains(strings.ToLower(boardDesc), "board") {
+		t.Errorf("ListView 'b' desc should mention 'board', got %q", boardDesc)
+	}
+
+	// y → clipboard
+	clipDesc, hasClip := bindingMap["y"]
+	if !hasClip {
+		t.Error("ListView bindings missing 'y' key")
+	} else if !strings.Contains(strings.ToLower(clipDesc), "clipboard") {
+		t.Errorf("ListView 'y' desc should mention 'clipboard', got %q", clipDesc)
+	}
+
+	// getViewName returns a meaningful name (not the fallthrough "Unknown View").
+	name := getViewName(ListView)
+	if name == "Unknown View" || name == "" {
+		t.Errorf("getViewName(ListView) = %q, want meaningful name", name)
+	}
+
+	// helpHintsForView returns non-empty hints for ListView at a wide terminal.
+	hints := helpHintsForView(ListView, 80)
+	if hints == "" {
+		t.Error("helpHintsForView(ListView, 80) returned empty string, want hints")
+	}
+}
+
 // TestHelpViewToggle verifies that ? key toggles help overlay on/off.
 func TestHelpViewToggle(t *testing.T) {
 	m := newModel()
