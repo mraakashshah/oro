@@ -593,3 +593,125 @@ func TestPipelineSection(t *testing.T) {
 		}
 	})
 }
+
+// TestSessionSection verifies the session counters section renders
+// handoffs, respawns, and QG runs from model state and MetricsBuffer.
+func TestSessionSection(t *testing.T) {
+	styles := NewStyles(DefaultTheme())
+
+	// lineContains checks if any line in output contains both label and value.
+	lineContains := func(output, label, value string) bool {
+		for _, line := range strings.Split(output, "\n") {
+			if strings.Contains(line, label) && strings.Contains(line, value) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("HandoffsFromCount", func(t *testing.T) {
+		got := renderSessionSection(3, nil, nil, styles)
+		plain := stripANSI(got)
+
+		if !strings.Contains(plain, "Session") {
+			t.Errorf("missing Session title in:\n%s", plain)
+		}
+		if !lineContains(plain, "Handoffs", "3") {
+			t.Errorf("expected Handoffs: 3 in:\n%s", plain)
+		}
+	})
+
+	t.Run("QGRunsFromAttemptCounts", func(t *testing.T) {
+		attempts := map[string]int{
+			"oro-abc1": 3,
+			"oro-abc2": 5,
+			"oro-abc3": 4,
+		}
+		got := renderSessionSection(0, attempts, nil, styles)
+		plain := stripANSI(got)
+
+		if !lineContains(plain, "QG Runs", "12") {
+			t.Errorf("expected QG Runs: 12 in:\n%s", plain)
+		}
+	})
+
+	t.Run("RespawnDetection", func(t *testing.T) {
+		buf := NewMetricsBuffer()
+		now := time.Now()
+
+		// Sample 0: w1 working, w2 working
+		buf.Record(MetricsSample{
+			Timestamp: now.Add(-2 * time.Second),
+			Workers: []WorkerSample{
+				{ID: "w1", State: "working"},
+				{ID: "w2", State: "working"},
+			},
+		})
+		// Sample 1: w1 goes idle, w2 still working => NOT shutdown
+		buf.Record(MetricsSample{
+			Timestamp: now.Add(-1 * time.Second),
+			Workers: []WorkerSample{
+				{ID: "w1", State: "idle"},
+				{ID: "w2", State: "working"},
+			},
+		})
+
+		got := renderSessionSection(0, nil, buf, styles)
+		plain := stripANSI(got)
+
+		if !lineContains(plain, "Respawns", "1") {
+			t.Errorf("expected Respawns: 1, got:\n%s", plain)
+		}
+	})
+
+	t.Run("ShutdownSuppression", func(t *testing.T) {
+		buf := NewMetricsBuffer()
+		now := time.Now()
+
+		// Sample 0: all workers working
+		buf.Record(MetricsSample{
+			Timestamp: now.Add(-2 * time.Second),
+			Workers: []WorkerSample{
+				{ID: "w1", State: "working"},
+				{ID: "w2", State: "working"},
+				{ID: "w3", State: "working"},
+			},
+		})
+		// Sample 1: ALL workers go idle (shutdown signal)
+		buf.Record(MetricsSample{
+			Timestamp: now.Add(-1 * time.Second),
+			Workers: []WorkerSample{
+				{ID: "w1", State: "idle"},
+				{ID: "w2", State: "idle"},
+				{ID: "w3", State: "idle"},
+			},
+		})
+
+		got := renderSessionSection(0, nil, buf, styles)
+		plain := stripANSI(got)
+
+		if !lineContains(plain, "Respawns", "0") {
+			t.Errorf("expected Respawns: 0 during shutdown, got:\n%s", plain)
+		}
+	})
+
+	t.Run("EmptyBuffer", func(t *testing.T) {
+		buf := NewMetricsBuffer()
+
+		got := renderSessionSection(0, nil, buf, styles)
+		plain := stripANSI(got)
+
+		if !lineContains(plain, "Respawns", "0") {
+			t.Errorf("expected Respawns: 0 with empty buffer, got:\n%s", plain)
+		}
+	})
+
+	t.Run("NilAttemptCounts", func(t *testing.T) {
+		got := renderSessionSection(0, nil, nil, styles)
+		plain := stripANSI(got)
+
+		if !lineContains(plain, "QG Runs", "0") {
+			t.Errorf("expected QG Runs: 0 with nil attemptCounts, got:\n%s", plain)
+		}
+	})
+}
