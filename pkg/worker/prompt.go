@@ -209,7 +209,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"| sonnet  | 50%         | 70%         |",
 		"| haiku   | 40%         | 60%         |",
 		"",
-		"At the soft threshold: commit current work and invoke the `create-handoff` skill.",
+		"At the soft threshold: run `git add && git commit` to save your work, then invoke the `create-handoff` skill.",
 		"At the hard threshold: the dispatcher will force-stop the worker.",
 	}, "\n"))
 

@@ -1255,3 +1255,45 @@ func TestAssemblePrompt_EndToEnd(t *testing.T) {
 		t.Error("expected prompt to contain ## Coding Rules section")
 	}
 }
+
+// TestPromptSoftThresholdSaysGitCommit verifies that the Context Handoff section
+// explicitly instructs agents to run 'git add' and 'git commit' at the soft threshold,
+// rather than the ambiguous 'commit current work' which haiku agents misinterpreted
+// as "write files to disk" (oro-3eve).
+func TestPromptSoftThresholdSaysGitCommit(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-soft-threshold",
+		Title:              "Soft threshold git commit test",
+		Description:        "Test that soft threshold instructs explicit git commands",
+		AcceptanceCriteria: "Prompt contains git add and git commit",
+		WorktreePath:       "/tmp/wt-soft-threshold",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract Context Handoff section for focused assertions
+	handoffStart := strings.Index(prompt, "## Context Handoff")
+	if handoffStart == -1 {
+		t.Fatal("expected prompt to contain ## Context Handoff section")
+	}
+	handoffEnd := strings.Index(prompt[handoffStart+1:], "## ")
+	var handoffSection string
+	if handoffEnd == -1 {
+		handoffSection = prompt[handoffStart:]
+	} else {
+		handoffSection = prompt[handoffStart : handoffStart+1+handoffEnd]
+	}
+
+	// Must explicitly say 'git add' — not just 'commit current work'
+	if !strings.Contains(handoffSection, "git add") {
+		t.Errorf("soft threshold instruction must contain 'git add' (not just 'commit current work'). Got:\n%s", handoffSection)
+	}
+
+	// Must explicitly say 'git commit' — not just 'commit current work'
+	if !strings.Contains(handoffSection, "git commit") {
+		t.Errorf("soft threshold instruction must contain 'git commit' (not just 'commit current work'). Got:\n%s", handoffSection)
+	}
+}
