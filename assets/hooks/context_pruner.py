@@ -24,6 +24,9 @@ from pathlib import Path
 # Debounce state file
 DEBOUNCE_FILE = "/tmp/oro-context-pruner-state"
 
+# Debug log file (used when ORO_DEBUG=1)
+LOG_FILE = str(Path.home() / ".oro" / "hooks" / "context_pruner.log")
+
 # Defaults when pruning.json is missing
 DEFAULT_THRESHOLDS: dict[str, int] = {"Read": 8000, "Bash": 4000}
 DEFAULT_DEBOUNCE_CALLS = 3
@@ -80,6 +83,18 @@ def increment_counter() -> None:
             Path(DEBOUNCE_FILE).write_text(f"{ts}:{count}")
 
 
+def write_debug_log(tool_name: str, result_len: int, threshold: int, action: str) -> None:
+    """Append a JSON log entry to LOG_FILE when ORO_DEBUG=1."""
+    if os.environ.get("ORO_DEBUG") != "1":
+        return
+    log_path = Path(LOG_FILE)
+    with contextlib.suppress(OSError):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = json.dumps({"tool_name": tool_name, "result_len": result_len, "threshold": threshold, "action": action})
+        with log_path.open("a") as f:
+            f.write(entry + "\n")
+
+
 def main() -> None:
     """Main hook entry point."""
     try:
@@ -114,11 +129,13 @@ def main() -> None:
     # Check debounce
     if should_debounce(debounce_calls):
         increment_counter()
+        write_debug_log(tool_name, result_len, threshold, "debounced")
         print(json.dumps({}))
         return
 
     # Fire the nudge
     record_fire()
+    write_debug_log(tool_name, result_len, threshold, "nudge_fired")
     msg = (
         f"Large tool output ({result_len} chars). "
         f"Summarize key findings in your response rather than "
