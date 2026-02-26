@@ -25,9 +25,12 @@ type beadsMsg []protocol.Bead
 
 // workerDataMsg carries worker status, assignments, and focused epic from the dispatcher.
 type workerDataMsg struct {
-	workers     []WorkerStatus
-	assignments map[string]string
-	focusedEpic string
+	workers             []WorkerStatus
+	assignments         map[string]string
+	focusedEpic         string
+	uptimeSeconds       float64
+	pendingHandoffCount int
+	attemptCounts       map[string]int
 }
 
 // healthDataMsg carries health data from the dispatcher.
@@ -63,11 +66,17 @@ func fetchHealthCmd() tea.Cmd {
 func fetchWorkersCmd() tea.Cmd {
 	return func() tea.Msg {
 		socketPath := defaultSocketPath()
-		workers, assignments, focusedEpic, _ := fetchWorkerStatus(context.Background(), socketPath)
+		ds, _ := fetchWorkerStatus(context.Background(), socketPath)
+		if ds == nil {
+			return workerDataMsg{}
+		}
 		return workerDataMsg{
-			workers:     workers,
-			assignments: assignments,
-			focusedEpic: focusedEpic,
+			workers:             ds.workers,
+			assignments:         ds.assignments,
+			focusedEpic:         ds.focusedEpic,
+			uptimeSeconds:       ds.uptimeSeconds,
+			pendingHandoffCount: ds.pendingHandoffCount,
+			attemptCounts:       ds.attemptCounts,
 		}
 	}
 }
@@ -126,6 +135,12 @@ type Model struct {
 	assignments map[string]string // bead ID -> worker ID
 	healthData  *HealthData       // Health data from dispatcher
 	focusedEpic string            // Epic ID currently focused by dispatcher
+
+	// Enriched dispatcher fields (oro-yqvn.3)
+	closedCount         int
+	uptimeSeconds       float64
+	pendingHandoffCount int
+	attemptCounts       map[string]int
 
 	// UI state
 	width       int
@@ -238,36 +253,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.listModel = m.listModel.resize(msg.Width, msg.Height)
 
 	case beadsMsg:
-		m.initialLoad = false // Clear loading state on first beadsMsg (even if empty)
-		m.beads = []protocol.Bead(msg)
-		m.openCount = 0
-		m.inProgressCount = 0
-		for _, b := range m.beads {
-			switch b.Status {
-			case "open":
-				m.openCount++
-			case "in_progress":
-				m.inProgressCount++
-			}
-		}
-		// Clamp cursor position to ensure it's valid after bead data refresh
-		m = m.clampCursor()
-		m.listModel = m.listModel.updateBeads(m.beads)
+		m = m.applyBeadsMsg(msg)
 
 	case workerDataMsg:
-		if msg.workers == nil {
-			m.daemonHealthy = false
-			m.workerCount = 0
-			m.assignments = nil
-			m.focusedEpic = ""
-		} else {
-			m.daemonHealthy = true
-			m.workers = msg.workers
-			m.workerCount = len(msg.workers)
-			m.assignments = msg.assignments
-			m.focusedEpic = msg.focusedEpic
-			m.listModel = m.listModel.updateWorkers(msg.workers, msg.assignments)
-		}
+		m = m.applyWorkerDataMsg(msg)
 
 	case workerEventsMsg:
 		// Update detail model with fetched worker events
@@ -291,6 +280,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// applyBeadsMsg updates the model with fetched bead data, recomputing status counts.
+func (m Model) applyBeadsMsg(msg beadsMsg) Model {
+	m.initialLoad = false
+	m.beads = []protocol.Bead(msg)
+	m.openCount = 0
+	m.inProgressCount = 0
+	m.closedCount = 0
+	for _, b := range m.beads {
+		switch b.Status {
+		case "open":
+			m.openCount++
+		case "in_progress":
+			m.inProgressCount++
+		case "closed":
+			m.closedCount++
+		}
+	}
+	m = m.clampCursor()
+	m.listModel = m.listModel.updateBeads(m.beads)
+	return m
+}
+
+// applyWorkerDataMsg updates the model with worker status from the dispatcher.
+func (m Model) applyWorkerDataMsg(msg workerDataMsg) Model {
+	if msg.workers == nil {
+		m.daemonHealthy = false
+		m.workerCount = 0
+		m.assignments = nil
+		m.focusedEpic = ""
+		return m
+	}
+	m.daemonHealthy = true
+	m.workers = msg.workers
+	m.workerCount = len(msg.workers)
+	m.assignments = msg.assignments
+	m.focusedEpic = msg.focusedEpic
+	m.uptimeSeconds = msg.uptimeSeconds
+	m.pendingHandoffCount = msg.pendingHandoffCount
+	m.attemptCounts = msg.attemptCounts
+	m.listModel = m.listModel.updateWorkers(msg.workers, msg.assignments)
+	return m
 }
 
 // handleKeyPress processes keyboard input and returns updated model with optional command.

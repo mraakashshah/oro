@@ -137,18 +137,12 @@ func TestParseBeadsOutput_MalformedJSON(t *testing.T) {
 
 func TestFetchWorkers_Offline(t *testing.T) {
 	ctx := context.Background()
-	workers, assignments, focusedEpic, err := fetchWorkerStatus(ctx, "/nonexistent/socket/path.sock")
+	ds, err := fetchWorkerStatus(ctx, "/nonexistent/socket/path.sock")
 	if err != nil {
 		t.Fatalf("expected no error for offline dispatcher, got: %v", err)
 	}
-	if len(workers) != 0 {
-		t.Fatalf("expected empty slice for offline dispatcher, got %d workers", len(workers))
-	}
-	if len(assignments) != 0 {
-		t.Fatalf("expected empty map for offline dispatcher, got %d assignments", len(assignments))
-	}
-	if focusedEpic != "" {
-		t.Fatalf("expected empty focusedEpic for offline dispatcher, got %q", focusedEpic)
+	if ds != nil {
+		t.Fatalf("expected nil dispatcherStatus for offline dispatcher, got %+v", ds)
 	}
 }
 
@@ -435,34 +429,37 @@ func TestFetchWorkerStatus_LiveSocket(t *testing.T) {
 	go runMockStatusDispatcher(t, sockPath, statusJSON, ready)
 	<-ready
 
-	workers, assignments, focusedEpic, err := fetchWorkerStatus(context.Background(), sockPath)
+	ds, err := fetchWorkerStatus(context.Background(), sockPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if ds == nil {
+		t.Fatal("expected non-nil dispatcherStatus")
+	}
 
-	if len(workers) != 2 {
-		t.Fatalf("expected 2 workers, got %d", len(workers))
+	if len(ds.workers) != 2 {
+		t.Fatalf("expected 2 workers, got %d", len(ds.workers))
 	}
-	if workers[0].ID != "w-1" {
-		t.Errorf("workers[0].ID = %q, want %q", workers[0].ID, "w-1")
+	if ds.workers[0].ID != "w-1" {
+		t.Errorf("workers[0].ID = %q, want %q", ds.workers[0].ID, "w-1")
 	}
-	if workers[0].Status != "working" {
-		t.Errorf("workers[0].Status = %q, want %q", workers[0].Status, "working")
+	if ds.workers[0].Status != "working" {
+		t.Errorf("workers[0].Status = %q, want %q", ds.workers[0].Status, "working")
 	}
-	if workers[0].BeadID != "oro-x1" {
-		t.Errorf("workers[0].BeadID = %q, want %q", workers[0].BeadID, "oro-x1")
+	if ds.workers[0].BeadID != "oro-x1" {
+		t.Errorf("workers[0].BeadID = %q, want %q", ds.workers[0].BeadID, "oro-x1")
 	}
-	if workers[0].ContextPct != 30 {
-		t.Errorf("workers[0].ContextPct = %d, want 30", workers[0].ContextPct)
+	if ds.workers[0].ContextPct != 30 {
+		t.Errorf("workers[0].ContextPct = %d, want 30", ds.workers[0].ContextPct)
 	}
 
 	// assignments is inverted: beadID -> workerID
-	if assignments["oro-x1"] != "w-1" {
-		t.Errorf("assignments[%q] = %q, want %q", "oro-x1", assignments["oro-x1"], "w-1")
+	if ds.assignments["oro-x1"] != "w-1" {
+		t.Errorf("assignments[%q] = %q, want %q", "oro-x1", ds.assignments["oro-x1"], "w-1")
 	}
 
-	if focusedEpic != "epic-99" {
-		t.Errorf("focusedEpic = %q, want %q", focusedEpic, "epic-99")
+	if ds.focusedEpic != "epic-99" {
+		t.Errorf("focusedEpic = %q, want %q", ds.focusedEpic, "epic-99")
 	}
 }
 
@@ -574,4 +571,103 @@ func TestFetchWorkerOutput_EmptyOutput(t *testing.T) {
 	if len(lines) != 0 {
 		t.Errorf("expected 0 lines for empty output, got %d", len(lines))
 	}
+}
+
+// --- statusResponse enriched fields (oro-yqvn.3) ---
+
+func TestStatusResponse_NewFields(t *testing.T) {
+	t.Run("ParsesUptimeAndHandoffAndAttempts", func(t *testing.T) {
+		jsonData := `{
+			"state":"running",
+			"workers":[],
+			"worker_count":0,
+			"assignments":{},
+			"uptime_seconds":123.45,
+			"pending_handoff_count":3,
+			"attempt_counts":{"oro-a":2,"oro-b":1}
+		}`
+
+		var resp statusResponse
+		if err := json.Unmarshal([]byte(jsonData), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if resp.UptimeSeconds != 123.45 {
+			t.Errorf("UptimeSeconds = %v, want 123.45", resp.UptimeSeconds)
+		}
+		if resp.PendingHandoffCount != 3 {
+			t.Errorf("PendingHandoffCount = %d, want 3", resp.PendingHandoffCount)
+		}
+		if len(resp.AttemptCounts) != 2 {
+			t.Fatalf("AttemptCounts len = %d, want 2", len(resp.AttemptCounts))
+		}
+		if resp.AttemptCounts["oro-a"] != 2 {
+			t.Errorf("AttemptCounts[oro-a] = %d, want 2", resp.AttemptCounts["oro-a"])
+		}
+	})
+
+	t.Run("NewFieldsPropagatedViaWorkerDataMsg", func(t *testing.T) {
+		sockPath := os.TempDir() + "/enriched.sock"
+		_ = os.Remove(sockPath)
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+		statusJSON := `{
+			"state":"running",
+			"workers":[{"id":"w-1","state":"idle","last_progress_secs":0,"context_pct":0}],
+			"worker_count":1,
+			"assignments":{},
+			"uptime_seconds":99.9,
+			"pending_handoff_count":2,
+			"attempt_counts":{"oro-x":5}
+		}`
+
+		ready := make(chan struct{})
+		go runMockStatusDispatcher(t, sockPath, statusJSON, ready)
+		<-ready
+
+		ds, err := fetchWorkerStatus(context.Background(), sockPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ds == nil {
+			t.Fatal("expected non-nil dispatcherStatus")
+		}
+		if len(ds.workers) != 1 {
+			t.Fatalf("expected 1 worker, got %d", len(ds.workers))
+		}
+		if ds.uptimeSeconds != 99.9 {
+			t.Errorf("uptimeSeconds = %v, want 99.9", ds.uptimeSeconds)
+		}
+		if ds.pendingHandoffCount != 2 {
+			t.Errorf("pendingHandoffCount = %d, want 2", ds.pendingHandoffCount)
+		}
+		if ds.attemptCounts["oro-x"] != 5 {
+			t.Errorf("attemptCounts[oro-x] = %d, want 5", ds.attemptCounts["oro-x"])
+		}
+	})
+
+	t.Run("ClosedCountComputedInBeadsMsg", func(t *testing.T) {
+		m := newModel()
+		beads := beadsMsg{
+			{ID: "oro-1", Status: "open"},
+			{ID: "oro-2", Status: "closed"},
+			{ID: "oro-3", Status: "closed"},
+			{ID: "oro-4", Status: "in_progress"},
+		}
+		updated, _ := m.Update(beads)
+		um, ok := updated.(Model)
+		if !ok {
+			t.Fatal("expected Model type from Update")
+		}
+
+		if um.closedCount != 2 {
+			t.Errorf("closedCount = %d, want 2", um.closedCount)
+		}
+		if um.openCount != 1 {
+			t.Errorf("openCount = %d, want 1", um.openCount)
+		}
+		if um.inProgressCount != 1 {
+			t.Errorf("inProgressCount = %d, want 1", um.inProgressCount)
+		}
+	})
 }

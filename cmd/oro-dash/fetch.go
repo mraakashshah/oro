@@ -78,6 +78,11 @@ type statusResponse struct {
 	WorkerCount int               `json:"worker_count"`
 	Assignments map[string]string `json:"assignments"`
 	FocusedEpic string            `json:"focused_epic,omitempty"`
+
+	// Enriched fields from dispatcher (oro-yqvn.3)
+	UptimeSeconds       float64        `json:"uptime_seconds"`
+	PendingHandoffCount int            `json:"pending_handoff_count"`
+	AttemptCounts       map[string]int `json:"attempt_counts,omitempty"`
 }
 
 // workerEntry represents a single worker in the dispatcher status response.
@@ -90,14 +95,24 @@ type workerEntry struct {
 	ContextPct       int     `json:"context_pct"`
 }
 
+// dispatcherStatus holds the parsed result from a dispatcher status query.
+type dispatcherStatus struct {
+	workers             []WorkerStatus
+	assignments         map[string]string // bead ID -> worker ID (inverted)
+	focusedEpic         string
+	uptimeSeconds       float64
+	pendingHandoffCount int
+	attemptCounts       map[string]int
+}
+
 // fetchWorkerStatus connects to the dispatcher UDS, sends a status directive,
 // and extracts worker info, assignments, and focused epic from the response.
-// Returns empty slices if the socket doesn't exist or the connection fails — the
+// Returns nil, nil if the socket doesn't exist or the connection fails -- the
 // dispatcher being offline is not an error condition.
-func fetchWorkerStatus(ctx context.Context, socketPath string) (workers []WorkerStatus, assignments map[string]string, focusedEpic string, err error) {
+func fetchWorkerStatus(ctx context.Context, socketPath string) (*dispatcherStatus, error) {
 	// Fast path: if socket doesn't exist, dispatcher is offline.
 	if _, err := os.Stat(socketPath); err != nil {
-		return nil, nil, "", nil
+		return nil, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
@@ -107,7 +122,7 @@ func fetchWorkerStatus(ctx context.Context, socketPath string) (workers []Worker
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", socketPath)
 	if err != nil {
-		return nil, nil, "", nil
+		return nil, nil
 	}
 	defer conn.Close()
 
@@ -120,36 +135,43 @@ func fetchWorkerStatus(ctx context.Context, socketPath string) (workers []Worker
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return nil, nil, "", nil
+		return nil, nil
 	}
 	data = append(data, '\n')
 
 	if _, err := conn.Write(data); err != nil {
-		return nil, nil, "", nil
+		return nil, nil
 	}
 
 	// Read one line of JSON response (the ACK).
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
-		return nil, nil, "", nil
+		return nil, nil
 	}
 
 	var ack protocol.Message
 	if err := json.Unmarshal(scanner.Bytes(), &ack); err != nil {
-		return nil, nil, "", nil
+		return nil, nil
 	}
 
 	if ack.Type != protocol.MsgACK || ack.ACK == nil || !ack.ACK.OK {
-		return nil, nil, "", nil
+		return nil, nil
 	}
 
 	// Parse the status JSON from the ACK detail field.
 	var resp statusResponse
 	if err := json.Unmarshal([]byte(ack.ACK.Detail), &resp); err != nil {
-		return nil, nil, "", nil
+		return nil, nil
 	}
 
-	return convertWorkerEntries(resp.Workers), invertAssignments(resp.Assignments), resp.FocusedEpic, nil
+	return &dispatcherStatus{
+		workers:             convertWorkerEntries(resp.Workers),
+		assignments:         invertAssignments(resp.Assignments),
+		focusedEpic:         resp.FocusedEpic,
+		uptimeSeconds:       resp.UptimeSeconds,
+		pendingHandoffCount: resp.PendingHandoffCount,
+		attemptCounts:       resp.AttemptCounts,
+	}, nil
 }
 
 // convertWorkerEntries converts workerEntry slice to WorkerStatus slice,
@@ -168,7 +190,7 @@ func convertWorkerEntries(entries []workerEntry) []WorkerStatus {
 	return workers
 }
 
-// invertAssignments flips workerID→beadID to beadID→workerID
+// invertAssignments flips workerID->beadID to beadID->workerID
 // so BoardModel can look up worker by bead ID.
 func invertAssignments(m map[string]string) map[string]string {
 	inv := make(map[string]string, len(m))
@@ -200,7 +222,7 @@ type healthSwarmResponse struct {
 
 // fetchHealth connects to the dispatcher UDS, sends a health directive,
 // and returns parsed HealthData. Returns nil, nil if the socket is missing
-// or the dispatcher is offline — not an error condition.
+// or the dispatcher is offline -- not an error condition.
 func fetchHealth(ctx context.Context, socketPath string) (*HealthData, error) {
 	if _, err := os.Stat(socketPath); err != nil {
 		return nil, nil
@@ -275,7 +297,7 @@ func parseHealthResponse(detail string) *HealthData {
 
 // fetchWorkerOutput connects to the dispatcher UDS, sends a worker-logs directive,
 // and returns the output lines. Returns nil if the socket doesn't exist or the
-// connection fails — the dispatcher being offline is not an error condition.
+// connection fails -- the dispatcher being offline is not an error condition.
 func fetchWorkerOutput(ctx context.Context, socketPath, workerID string, count int) ([]string, error) {
 	// Fast path: if socket doesn't exist, dispatcher is offline.
 	if _, err := os.Stat(socketPath); err != nil {
@@ -293,7 +315,7 @@ func fetchWorkerOutput(ctx context.Context, socketPath, workerID string, count i
 	}
 	defer conn.Close()
 
-	// Send worker-logs directive: {"type":"DIRECTIVE","directive":{"op":"worker-logs","args":"<workerID> <count>"}}
+	// Send worker-logs directive
 	msg := protocol.Message{
 		Type: protocol.MsgDirective,
 		Directive: &protocol.DirectivePayload{
