@@ -6,6 +6,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"oro/pkg/protocol"
 )
 
 // TestStatusView_Scaffold verifies the StatusView scaffold:
@@ -262,7 +264,7 @@ func TestWorkersSection(t *testing.T) {
 			{Timestamp: time.Now(), Workers: []WorkerSample{{ID: "w-1", ContextPct: 42, State: "working", BeadID: "oro-abc"}}},
 		})
 
-		got := renderWorkersSection(workers, buf, 10, theme, styles)
+		got := renderWorkersSection(workers, buf, 10, theme, styles, 200)
 		plain := stripANSI(got)
 		lines := strings.Split(strings.TrimSpace(plain), "\n")
 
@@ -303,7 +305,7 @@ func TestWorkersSection(t *testing.T) {
 		}
 		buf := NewMetricsBuffer()
 
-		got := renderWorkersSection(workers, buf, 10, theme, styles)
+		got := renderWorkersSection(workers, buf, 10, theme, styles, 200)
 		plain := stripANSI(got)
 
 		// w-2 (working) should appear before w-1 (idle)
@@ -329,8 +331,8 @@ func TestWorkersSection(t *testing.T) {
 		}
 		buf := NewMetricsBuffer()
 
-		activeOut := renderWorkersSection(active, buf, 10, theme, styles)
-		idleOut := renderWorkersSection(idle, buf, 10, theme, styles)
+		activeOut := renderWorkersSection(active, buf, 10, theme, styles, 200)
+		idleOut := renderWorkersSection(idle, buf, 10, theme, styles, 200)
 
 		// Active card should NOT be wrapped in Muted style —
 		// raw output equals stripped output for the card lines.
@@ -369,7 +371,7 @@ func TestWorkersSection(t *testing.T) {
 		workers := []WorkerStatus{}
 		buf := NewMetricsBuffer()
 
-		got := renderWorkersSection(workers, buf, 10, theme, styles)
+		got := renderWorkersSection(workers, buf, 10, theme, styles, 200)
 		plain := stripANSI(got)
 
 		if !strings.Contains(plain, "No workers connected") {
@@ -389,7 +391,7 @@ func TestWorkersSection(t *testing.T) {
 		}
 		buf := makeBuf(samples)
 
-		got := renderWorkersSection(workers, buf, 10, theme, styles)
+		got := renderWorkersSection(workers, buf, 10, theme, styles, 200)
 		plain := stripANSI(got)
 
 		// Sparkline should be present — Unicode block characters
@@ -415,7 +417,7 @@ func TestWorkersSection(t *testing.T) {
 		}
 		buf := makeBuf(samples)
 
-		got := renderWorkersSection(workers, buf, 10, theme, styles)
+		got := renderWorkersSection(workers, buf, 10, theme, styles, 200)
 		plain := stripANSI(got)
 
 		// Count baseline blocks — should have padding since only 1 data point
@@ -712,6 +714,162 @@ func TestSessionSection(t *testing.T) {
 
 		if !lineContains(plain, "QG Runs", "0") {
 			t.Errorf("expected QG Runs: 0 with nil attemptCounts, got:\n%s", plain)
+		}
+	})
+}
+
+// TestStatusResponsive verifies width-dependent responsive layout,
+// viewport scrolling, and enter-on-worker navigation.
+func TestStatusResponsive(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	// Helper: build a model with workers and health data.
+	mkModel := func(width, height int) Model {
+		m := newModel()
+		m.activeView = StatusView
+		m.initialLoad = false
+		m.width = width
+		m.height = height
+		m.healthData = &HealthData{
+			DaemonPID:     1234,
+			DaemonState:   "running",
+			ArchitectPane: PaneHealth{Name: "architect", Alive: true},
+			ManagerPane:   PaneHealth{Name: "manager", Alive: true},
+			WorkerCount:   2,
+		}
+		m.workers = []WorkerStatus{
+			{ID: "w-1", Status: "working", BeadID: "oro-abc", ContextPct: 40, LastProgressSecs: 2},
+			{ID: "w-2", Status: "idle", BeadID: "", ContextPct: 0, LastProgressSecs: 0},
+		}
+		m.pendingHandoffCount = 1
+		m.attemptCounts = map[string]int{"oro-abc": 3}
+
+		// Add some metrics samples
+		buf := NewMetricsBuffer()
+		now := time.Now()
+		for i := 0; i < 5; i++ {
+			buf.Record(MetricsSample{
+				Timestamp:     now.Add(time.Duration(i) * 2 * time.Second),
+				BeadsClosed:   i,
+				QueueReady:    3,
+				QueueWIP:      2,
+				WorkersActive: 1,
+				WorkersTotal:  2,
+				Workers: []WorkerSample{
+					{ID: "w-1", ContextPct: 10 + i*10, State: "working"},
+					{ID: "w-2", ContextPct: 0, State: "idle"},
+				},
+			})
+		}
+		m.metricsBuffer = buf
+
+		return m
+	}
+
+	_ = theme
+	_ = styles
+
+	t.Run("FullWidthShowsAllColumns", func(t *testing.T) {
+		m := mkModel(130, 50)
+		view := m.View()
+		plain := stripANSI(view)
+
+		// Full width (>120): all worker columns visible
+		if !strings.Contains(plain, "cycle:") {
+			t.Errorf("full width (>120) should show cycle column, got:\n%s", plain)
+		}
+		if !strings.Contains(plain, "elapsed:") {
+			t.Errorf("full width (>120) should show elapsed column, got:\n%s", plain)
+		}
+	})
+
+	t.Run("MediumWidthHidesCycleElapsed", func(t *testing.T) {
+		m := mkModel(110, 50)
+		view := m.View()
+		plain := stripANSI(view)
+
+		// 100-120: hide cycle and elapsed
+		if strings.Contains(plain, "cycle:") {
+			t.Errorf("medium width (100-120) should hide cycle column, got:\n%s", plain)
+		}
+		if strings.Contains(plain, "elapsed:") {
+			t.Errorf("medium width (100-120) should hide elapsed column, got:\n%s", plain)
+		}
+		// But should still show done and fail
+		if !strings.Contains(plain, "done:") {
+			t.Errorf("medium width should still show done column, got:\n%s", plain)
+		}
+	})
+
+	t.Run("NarrowWidthHidesFailCycle", func(t *testing.T) {
+		m := mkModel(90, 50)
+		view := m.View()
+		plain := stripANSI(view)
+
+		// 80-100: hide fail and cycle (and elapsed)
+		if strings.Contains(plain, "fail:") {
+			t.Errorf("narrow width (80-100) should hide fail column, got:\n%s", plain)
+		}
+		if strings.Contains(plain, "cycle:") {
+			t.Errorf("narrow width should hide cycle column, got:\n%s", plain)
+		}
+	})
+
+	t.Run("VeryNarrowNoSparklines", func(t *testing.T) {
+		m := mkModel(70, 50)
+		view := m.View()
+		plain := stripANSI(view)
+
+		// <80: no worker line2 (1-line workers)
+		if strings.Contains(plain, "done:") {
+			t.Errorf("very narrow (<80) should hide worker line2, got:\n%s", plain)
+		}
+		// System section still present
+		if !strings.Contains(plain, "System") {
+			t.Errorf("very narrow should still show System section, got:\n%s", plain)
+		}
+	})
+
+	t.Run("JKScrollsViewport", func(t *testing.T) {
+		m := mkModel(120, 10) // Short height to force scrolling
+		m.statusModel.cursor = 0
+
+		// j moves down
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		model := updated.(Model) //nolint:errcheck
+		if model.statusModel.cursor != 1 {
+			t.Errorf("expected cursor=1 after j, got %d", model.statusModel.cursor)
+		}
+
+		// Multiple j presses
+		for range 3 {
+			updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+			model = updated.(Model) //nolint:errcheck
+		}
+		if model.statusModel.cursor < 2 {
+			t.Errorf("expected cursor >= 2 after multiple j, got %d", model.statusModel.cursor)
+		}
+
+		// k moves back
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		model = updated.(Model) //nolint:errcheck
+		if model.statusModel.cursor >= statusSectionCount {
+			t.Errorf("cursor should be < sectionCount after k, got %d", model.statusModel.cursor)
+		}
+	})
+
+	t.Run("EnterOnWorkerNavigatesToDetail", func(t *testing.T) {
+		m := mkModel(120, 50)
+		m.beads = []protocol.Bead{{ID: "oro-abc", Title: "Test bead", Status: "open"}}
+		m.statusModel.cursor = 2 // Workers section
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model := updated.(Model) //nolint:errcheck
+
+		// Enter on worker section should navigate to detail view for first working worker's bead
+		if model.activeView != DetailView {
+			t.Errorf("expected DetailView after Enter on Workers section, got %v", model.activeView)
 		}
 	})
 }

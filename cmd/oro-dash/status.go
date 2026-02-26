@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"oro/pkg/protocol"
 )
 
 // StatusModel holds the state for the StatusView.
@@ -33,7 +35,7 @@ func (s StatusModel) View(
 	sections := append(make([]string, 0, statusSectionCount),
 		renderSystemSection(healthData, styles),
 		renderPanesStatusSection(healthData, styles),
-		renderWorkersSection(workers, buf, sparkW, theme, styles),
+		renderWorkersSection(workers, buf, sparkW, theme, styles, width),
 		renderPipelineSection(buf, width, theme, styles),
 		renderSessionSection(pendingHandoffs, attemptCounts, buf, styles),
 	)
@@ -77,10 +79,10 @@ func renderPaneStatusLine(pane PaneHealth) string {
 
 // renderWorkersSection renders detailed 2-line worker cards with per-worker sparklines.
 // Line 1: [id] [status] bead:[beadID] ctx:[pct]% hb:[heartbeat]
-// Line 2: [sparkline] done:— fail:— cycle:— elapsed:—
+// Line 2: [sparkline] done:— fail:— cycle:— elapsed:— (responsive to viewWidth)
 // Active workers appear first; idle workers are dimmed. Empty state shows a hint.
 func renderWorkersSection(
-	workers []WorkerStatus, buf *MetricsBuffer, sparkWidth int, theme Theme, styles Styles,
+	workers []WorkerStatus, buf *MetricsBuffer, sparkWidth int, theme Theme, styles Styles, viewWidth int,
 ) string {
 	title := styles.SectionTitle.Render("Workers")
 
@@ -97,7 +99,7 @@ func renderWorkersSection(
 		if i > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(renderWorkerCard(w, history[w.ID], sparkWidth, theme, styles))
+		sb.WriteString(renderWorkerCard(w, history[w.ID], sparkWidth, theme, styles, viewWidth))
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, sb.String())
@@ -128,12 +130,21 @@ func extractWorkerHistory(buf *MetricsBuffer, width int) map[string][]float64 {
 	return result
 }
 
-// renderWorkerCard renders a single 2-line worker card.
+// renderWorkerCard renders a single worker card. At viewWidth >= 80, renders 2 lines
+// (status + sparkline/stats). Below 80, renders only line 1 for compact display.
 func renderWorkerCard(
-	w WorkerStatus, history []float64, sparkWidth int, theme Theme, styles Styles,
+	w WorkerStatus, history []float64, sparkWidth int, theme Theme, styles Styles, viewWidth int,
 ) string {
 	l1 := formatWorkerLine1(w)
-	l2 := formatWorkerLine2(history, sparkWidth, theme, styles)
+
+	if viewWidth < 80 {
+		if w.Status == "idle" {
+			return styles.Muted.Render(l1)
+		}
+		return l1
+	}
+
+	l2 := formatWorkerLine2(history, sparkWidth, theme, styles, viewWidth)
 
 	if w.Status == "idle" {
 		return styles.Muted.Render(l1 + "\n" + l2)
@@ -159,9 +170,11 @@ func formatWorkerLine1(w WorkerStatus) string {
 		w.ID, w.Status, bead, w.ContextPct, hb)
 }
 
-// formatWorkerLine2 formats the second line: sparkline + done/fail/cycle/elapsed.
+// formatWorkerLine2 formats the second line: sparkline + responsive stat columns.
+// >120: all columns (done/fail/cycle/elapsed). 100-120: hide cycle+elapsed.
+// 80-100: hide fail+cycle+elapsed. <80: caller skips line2 entirely.
 func formatWorkerLine2(
-	history []float64, sparkWidth int, theme Theme, styles Styles,
+	history []float64, sparkWidth int, theme Theme, styles Styles, viewWidth int,
 ) string {
 	const emDash = "\u2014"
 
@@ -170,8 +183,16 @@ func formatWorkerLine2(
 		spark = renderSparkline([]float64{0}, sparkWidth, theme.Primary, styles)
 	}
 
-	return fmt.Sprintf("%s done:%s fail:%s cycle:%s elapsed:%s",
-		spark, emDash, emDash, emDash, emDash)
+	switch {
+	case viewWidth > 120:
+		return fmt.Sprintf("%s done:%s fail:%s cycle:%s elapsed:%s",
+			spark, emDash, emDash, emDash, emDash)
+	case viewWidth > 100:
+		return fmt.Sprintf("%s done:%s fail:%s",
+			spark, emDash, emDash)
+	default:
+		return fmt.Sprintf("%s done:%s", spark, emDash)
+	}
 }
 
 // renderPipelineSection renders throughput, queue, and utilization sparkline rows.
@@ -361,6 +382,9 @@ func allWorkersIdle(workers []WorkerSample) bool {
 	return true
 }
 
+// statusSectionWorkers is the index of the Workers section in the status view.
+const statusSectionWorkers = 2
+
 // handleStatusViewKeys processes keyboard input in StatusView.
 func (m Model) handleStatusViewKeys(key string) (tea.Model, tea.Cmd) {
 	switch key {
@@ -375,7 +399,35 @@ func (m Model) handleStatusViewKeys(key string) (tea.Model, tea.Cmd) {
 			m.statusModel.cursor--
 		}
 	case "enter":
-		// Placeholder for future section expansion
+		if m.statusModel.cursor == statusSectionWorkers {
+			return m.navigateToWorkerBead()
+		}
+	}
+	return m, nil
+}
+
+// navigateToWorkerBead finds the first working worker's bead and opens DetailView.
+func (m Model) navigateToWorkerBead() (tea.Model, tea.Cmd) {
+	for _, w := range m.workers {
+		if w.Status != "working" || w.BeadID == "" {
+			continue
+		}
+		for _, b := range m.beads {
+			if b.ID != w.BeadID {
+				continue
+			}
+			bd := protocol.BeadDetail{
+				ID:                 b.ID,
+				Title:              b.Title,
+				Status:             b.Status,
+				AcceptanceCriteria: b.AcceptanceCriteria,
+				Dependencies:       b.Dependencies,
+			}
+			dm := newDetailModel(bd, m.theme, m.styles)
+			m.detailModel = &dm
+			m.activeView = DetailView
+			return m, nil
+		}
 	}
 	return m, nil
 }
