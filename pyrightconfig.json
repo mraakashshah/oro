@@ -1,6 +1,7 @@
 {
 	"exclude": [
 		".claude/hooks",
+		".claude/worktrees",
 		"archive",
 		".worktrees",
 		".venv",
