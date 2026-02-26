@@ -26,11 +26,19 @@ type ListModel struct {
 	height      int
 	cursor      int             // flat row index into flatRows()
 	collapsed   map[string]bool // status -> collapsed
+	// Split-pane focus and detail state
+	detailFocused  bool            // true when detail pane has focus
+	detailSections map[string]bool // section name -> expanded (nil uses defaults)
+	detailCursor   int             // section index for j/k in detail pane
+	splitRatio     float64         // list pane width ratio [0.35, 0.75]
 }
 
 // NewListModel creates a new empty ListModel.
 func NewListModel() ListModel {
-	return ListModel{}
+	return ListModel{
+		splitRatio:     0.5,
+		detailSections: defaultDetailSections(),
+	}
 }
 
 // updateBeads stores refreshed bead data and restores cursor by bead ID.
@@ -155,6 +163,66 @@ func (lm *ListModel) restoreCursor(beadID string) {
 	if lm.cursor < 0 {
 		lm.cursor = 0
 	}
+}
+
+// toggleFocus switches focus between list and detail panes.
+func (lm ListModel) toggleFocus() ListModel {
+	lm.detailFocused = !lm.detailFocused
+	return lm
+}
+
+// unfocusDetail returns focus to the list pane.
+func (lm ListModel) unfocusDetail() ListModel {
+	lm.detailFocused = false
+	return lm
+}
+
+// detailSectionKeys returns the ordered section keys for the current bead.
+func detailSectionKeys() []string {
+	return []string{"acceptance", "worker", "deps", "notes"}
+}
+
+// toggleDetailSection toggles the section at detailCursor.
+func (lm ListModel) toggleDetailSection() ListModel {
+	keys := detailSectionKeys()
+	if lm.detailCursor < 0 || lm.detailCursor >= len(keys) {
+		return lm
+	}
+	if lm.detailSections == nil {
+		lm.detailSections = defaultDetailSections()
+	}
+	key := keys[lm.detailCursor]
+	lm.detailSections[key] = !lm.detailSections[key]
+	return lm
+}
+
+// detailMoveDown moves the detail cursor down (clamps at last section).
+func (lm ListModel) detailMoveDown() ListModel {
+	keys := detailSectionKeys()
+	if lm.detailCursor < len(keys)-1 {
+		lm.detailCursor++
+	}
+	return lm
+}
+
+// detailMoveUp moves the detail cursor up (clamps at 0).
+func (lm ListModel) detailMoveUp() ListModel {
+	if lm.detailCursor > 0 {
+		lm.detailCursor--
+	}
+	return lm
+}
+
+// adjustSplit changes the split ratio by delta, clamped to [0.35, 0.75].
+func (lm ListModel) adjustSplit(delta float64) ListModel {
+	lm.splitRatio += delta
+	if lm.splitRatio < 0.35 {
+		lm.splitRatio = 0.35
+	}
+	if lm.splitRatio > 0.75 {
+		lm.splitRatio = 0.75
+	}
+	return lm
 }
 
 // hasVisibleBeads returns true if any bead rows are visible (not all collapsed).

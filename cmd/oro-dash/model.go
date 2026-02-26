@@ -385,6 +385,10 @@ func (m Model) handleInsightsViewKeys(key string) (tea.Model, tea.Cmd) {
 
 // handleListViewKeys processes keyboard input in ListView.
 func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
+	// Detail pane focused: handle detail-specific keys
+	if m.listModel.detailFocused {
+		return m.handleListDetailKeys(key)
+	}
 	switch key {
 	case "j", "down":
 		m.listModel = m.listModel.moveDown()
@@ -394,6 +398,12 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.listModel = m.listModel.toggleAtCursor()
 	case "enter":
 		return m.listDrillDown()
+	case "tab", "l":
+		m.listModel = m.listModel.toggleFocus()
+	case "<":
+		m.listModel = m.listModel.adjustSplit(-0.05)
+	case ">":
+		m.listModel = m.listModel.adjustSplit(0.05)
 	case "b":
 		m.previousNavView = BoardView
 		m.activeView = BoardView
@@ -411,6 +421,27 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 	case "a":
 		m.treeModel = NewTreeModel(m.beads)
 		m.activeView = TreeView
+	}
+	return m, nil
+}
+
+// handleListDetailKeys processes keys when the detail pane is focused.
+func (m Model) handleListDetailKeys(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		m.listModel = m.listModel.unfocusDetail()
+	case "tab", "l":
+		m.listModel = m.listModel.toggleFocus()
+	case " ":
+		m.listModel = m.listModel.toggleDetailSection()
+	case "j", "down":
+		m.listModel = m.listModel.detailMoveDown()
+	case "k", "up":
+		m.listModel = m.listModel.detailMoveUp()
+	case "<":
+		m.listModel = m.listModel.adjustSplit(-0.05)
+	case ">":
+		m.listModel = m.listModel.adjustSplit(0.05)
 	}
 	return m, nil
 }

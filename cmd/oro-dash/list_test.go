@@ -728,3 +728,143 @@ func TestListDetail_FollowsCursor(t *testing.T) {
 		}
 	})
 }
+
+// TestListFocus_TabSwitch verifies focus switching, section interactivity, and split ratio.
+func TestListFocus_TabSwitch(t *testing.T) {
+	makeModel := func() Model {
+		m := newModel()
+		m.activeView = ListView
+		beads := []protocol.Bead{
+			{
+				ID: "b-1", Title: "Bead one", Status: "open", Priority: 2, Type: "task",
+				AcceptanceCriteria: "Test criteria",
+			},
+		}
+		m.beads = beads
+		m.listModel = m.listModel.updateBeads(beads)
+		m.listModel.cursor = 1 // first bead row
+		m.width = 120
+		m.height = 40
+		return m
+	}
+
+	t.Run("tab switches focus from list to detail", func(t *testing.T) {
+		m := makeModel()
+		if m.listModel.detailFocused {
+			t.Fatal("should start with list focused")
+		}
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		rm, _ := updated.(Model)
+		if !rm.listModel.detailFocused {
+			t.Error("tab should switch focus to detail pane")
+		}
+	})
+
+	t.Run("tab switches focus from detail back to list", func(t *testing.T) {
+		m := makeModel()
+		m.listModel.detailFocused = true
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+		rm, _ := updated.(Model)
+		if rm.listModel.detailFocused {
+			t.Error("tab should switch focus back to list pane")
+		}
+	})
+
+	t.Run("l is alias for tab", func(t *testing.T) {
+		m := makeModel()
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+		rm, _ := updated.(Model)
+		if !rm.listModel.detailFocused {
+			t.Error("l should switch focus to detail pane")
+		}
+	})
+
+	t.Run("esc in detail pane returns to list pane", func(t *testing.T) {
+		m := makeModel()
+		m.listModel.detailFocused = true
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		rm, _ := updated.(Model)
+		if rm.listModel.detailFocused {
+			t.Error("esc should return focus to list pane")
+		}
+		if rm.activeView != ListView {
+			t.Errorf("esc in detail pane should stay in ListView, got %d", rm.activeView)
+		}
+	})
+
+	t.Run("space in detail toggles section", func(t *testing.T) {
+		m := makeModel()
+		m.listModel.detailFocused = true
+		m.listModel.detailSections = defaultDetailSections()
+		// acceptance starts expanded
+		if !m.listModel.detailSections["acceptance"] {
+			t.Fatal("acceptance should start expanded")
+		}
+		// detailCursor=0 → acceptance section
+		m.listModel.detailCursor = 0
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+		rm, _ := updated.(Model)
+		if rm.listModel.detailSections["acceptance"] {
+			t.Error("space should toggle acceptance to collapsed")
+		}
+	})
+
+	t.Run("j/k in detail scrolls detailCursor", func(t *testing.T) {
+		m := makeModel()
+		m.listModel.detailFocused = true
+		m.listModel.detailSections = defaultDetailSections()
+		m.listModel.detailCursor = 0
+		// j should move cursor down
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		rm, _ := updated.(Model)
+		if rm.listModel.detailCursor != 1 {
+			t.Errorf("j: detailCursor = %d, want 1", rm.listModel.detailCursor)
+		}
+		// k should move cursor back
+		updated, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		rm, _ = updated.(Model)
+		if rm.listModel.detailCursor != 0 {
+			t.Errorf("k: detailCursor = %d, want 0", rm.listModel.detailCursor)
+		}
+	})
+
+	t.Run("less-than decreases splitRatio", func(t *testing.T) {
+		m := makeModel()
+		m.listModel.splitRatio = 0.5
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("<")})
+		rm, _ := updated.(Model)
+		if rm.listModel.splitRatio >= 0.5 {
+			t.Errorf("< should decrease splitRatio, got %f", rm.listModel.splitRatio)
+		}
+	})
+
+	t.Run("greater-than increases splitRatio", func(t *testing.T) {
+		m := makeModel()
+		m.listModel.splitRatio = 0.5
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(">")})
+		rm, _ := updated.(Model)
+		if rm.listModel.splitRatio <= 0.5 {
+			t.Errorf("> should increase splitRatio, got %f", rm.listModel.splitRatio)
+		}
+	})
+
+	t.Run("splitRatio clamps at 0.35 minimum", func(t *testing.T) {
+		m := makeModel()
+		m.listModel.splitRatio = 0.35
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("<")})
+		rm, _ := updated.(Model)
+		if rm.listModel.splitRatio < 0.35 {
+			t.Errorf("splitRatio below minimum: %f", rm.listModel.splitRatio)
+		}
+	})
+
+	t.Run("splitRatio clamps at 0.75 maximum", func(t *testing.T) {
+		m := makeModel()
+		m.listModel.splitRatio = 0.75
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(">")})
+		rm, _ := updated.(Model)
+		if rm.listModel.splitRatio > 0.75 {
+			t.Errorf("splitRatio above maximum: %f", rm.listModel.splitRatio)
+		}
+	})
+}
