@@ -163,6 +163,229 @@ func TestListModel_NewAndEmpty(t *testing.T) {
 	})
 }
 
+// TestListNav_JK verifies cursor navigation, group collapse, and cursor persistence.
+func TestListNav_JK(t *testing.T) {
+	makeBeads := func() []protocol.Bead {
+		return []protocol.Bead{
+			{ID: "ip-1", Title: "In progress bead", Status: "in_progress", Priority: 1, Type: "task"},
+			{ID: "op-1", Title: "Open bead one", Status: "open", Priority: 2, Type: "task"},
+			{ID: "op-2", Title: "Open bead two", Status: "open", Priority: 1, Type: "task"},
+			{ID: "bl-1", Title: "Blocked bead", Status: "blocked", Priority: 0, Type: "bug"},
+		}
+	}
+
+	t.Run("flatRows includes headers and bead rows for expanded groups", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		rows := lm.flatRows()
+		// 3 non-empty groups: in_progress(1 header + 1 bead), open(1 header + 2 beads), blocked(1 header + 1 bead)
+		// = 3 headers + 4 beads = 7 rows
+		if len(rows) != 7 {
+			t.Errorf("flatRows: got %d rows, want 7", len(rows))
+		}
+		// First row should be a header
+		if !rows[0].isHeader {
+			t.Error("flatRows: first row should be a header")
+		}
+		// Second row should be a bead
+		if rows[1].isHeader {
+			t.Error("flatRows: second row should be a bead row")
+		}
+	})
+
+	t.Run("j moves cursor down", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		if lm.cursor != 0 {
+			t.Fatalf("initial cursor = %d, want 0", lm.cursor)
+		}
+		lm = lm.moveDown()
+		if lm.cursor != 1 {
+			t.Errorf("after moveDown: cursor = %d, want 1", lm.cursor)
+		}
+	})
+
+	t.Run("k moves cursor up", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		lm.cursor = 3
+		lm = lm.moveUp()
+		if lm.cursor != 2 {
+			t.Errorf("after moveUp: cursor = %d, want 2", lm.cursor)
+		}
+	})
+
+	t.Run("k clamps at 0", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		lm = lm.moveUp()
+		if lm.cursor != 0 {
+			t.Errorf("moveUp from 0: cursor = %d, want 0", lm.cursor)
+		}
+	})
+
+	t.Run("j clamps at last visible row", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		rows := lm.flatRows()
+		lm.cursor = len(rows) - 1
+		lm = lm.moveDown()
+		if lm.cursor != len(rows)-1 {
+			t.Errorf("moveDown from last: cursor = %d, want %d", lm.cursor, len(rows)-1)
+		}
+	})
+
+	t.Run("space toggles collapse on header row", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		// cursor is at 0 which is the "in_progress" header
+		if !lm.flatRows()[0].isHeader {
+			t.Fatal("row 0 should be a header")
+		}
+		beforeCount := len(lm.flatRows())
+		lm = lm.toggleAtCursor()
+		afterCount := len(lm.flatRows())
+		// Collapsing in_progress (1 bead) should remove 1 row
+		if afterCount != beforeCount-1 {
+			t.Errorf("after collapse: %d rows, want %d", afterCount, beforeCount-1)
+		}
+	})
+
+	t.Run("space is no-op on bead row", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		lm.cursor = 1 // first bead row (in_progress bead)
+		if lm.flatRows()[1].isHeader {
+			t.Fatal("row 1 should be a bead row")
+		}
+		beforeCount := len(lm.flatRows())
+		lm = lm.toggleAtCursor()
+		afterCount := len(lm.flatRows())
+		if afterCount != beforeCount {
+			t.Errorf("space on bead: rows changed from %d to %d", beforeCount, afterCount)
+		}
+	})
+
+	t.Run("space re-expand shows beads again", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		beforeCount := len(lm.flatRows())
+		lm = lm.toggleAtCursor() // collapse
+		lm = lm.toggleAtCursor() // re-expand
+		afterCount := len(lm.flatRows())
+		if afterCount != beforeCount {
+			t.Errorf("after re-expand: %d rows, want %d", afterCount, beforeCount)
+		}
+	})
+
+	t.Run("j skips collapsed group beads", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		// Collapse in_progress group (cursor at header row 0)
+		lm = lm.toggleAtCursor()
+		// Now row 0 = in_progress header (collapsed), row 1 = open header, row 2 = open bead 1...
+		lm = lm.moveDown() // should go to row 1 (open header)
+		row := lm.flatRows()[lm.cursor]
+		if !row.isHeader || row.status != "open" {
+			t.Errorf("after j from collapsed header: expected open header, got isHeader=%v status=%s", row.isHeader, row.status)
+		}
+	})
+
+	t.Run("cursorBeadID returns bead ID when on bead row", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		lm.cursor = 1 // first bead (ip-1)
+		id := lm.cursorBeadID()
+		if id != "ip-1" {
+			t.Errorf("cursorBeadID on bead row: got %q, want %q", id, "ip-1")
+		}
+	})
+
+	t.Run("cursorBeadID returns empty on header row", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		lm.cursor = 0 // header
+		id := lm.cursorBeadID()
+		if id != "" {
+			t.Errorf("cursorBeadID on header: got %q, want empty", id)
+		}
+	})
+
+	t.Run("cursor persists by bead ID across refresh", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		lm.cursor = 4 // should be op-2 (open header=3, op-2=4 due to priority sort)
+		savedID := lm.cursorBeadID()
+		if savedID == "" {
+			t.Fatal("expected a bead ID at cursor 4")
+		}
+		// Simulate refresh: new data with same beads + one new bead
+		newBeads := append(makeBeads(), protocol.Bead{ID: "op-3", Title: "New open", Status: "open", Priority: 3, Type: "task"})
+		lm = lm.updateBeads(newBeads)
+		// Cursor should have been restored to the same bead ID
+		restoredID := lm.cursorBeadID()
+		if restoredID != savedID {
+			t.Errorf("cursor not persisted: got %q, want %q", restoredID, savedID)
+		}
+	})
+
+	t.Run("all groups collapsed shows No beads match", func(t *testing.T) {
+		lm := NewListModel().updateBeads(makeBeads())
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		// Collapse all groups
+		rows := lm.flatRows()
+		for i := len(rows) - 1; i >= 0; i-- {
+			if rows[i].isHeader {
+				lm.cursor = i
+				lm = lm.toggleAtCursor()
+				rows = lm.flatRows() // refresh after collapse
+			}
+		}
+		out := lm.View(theme, styles, 80, 24)
+		if !strings.Contains(out, "No beads match") {
+			t.Errorf("all collapsed: View should contain 'No beads match', got %q", out)
+		}
+	})
+
+	t.Run("handleListViewKeys wires j/k/space to ListModel", func(t *testing.T) {
+		m := newModel()
+		m.activeView = ListView
+		beads := makeBeads()
+		m.listModel = m.listModel.updateBeads(beads)
+		m.beads = beads
+
+		// j key should move cursor down
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		rm, _ := updated.(Model)
+		if rm.listModel.cursor != 1 {
+			t.Errorf("j key: cursor = %d, want 1", rm.listModel.cursor)
+		}
+
+		// k key should move cursor back up
+		updated, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		rm, _ = updated.(Model)
+		if rm.listModel.cursor != 0 {
+			t.Errorf("k key: cursor = %d, want 0", rm.listModel.cursor)
+		}
+
+		// space key on header should toggle collapse
+		beforeRows := len(rm.listModel.flatRows())
+		updated, _ = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+		rm, _ = updated.(Model)
+		afterRows := len(rm.listModel.flatRows())
+		if afterRows >= beforeRows {
+			t.Errorf("space on header: rows didn't decrease (%d -> %d)", beforeRows, afterRows)
+		}
+	})
+
+	t.Run("enter on bead row opens detail view", func(t *testing.T) {
+		m := newModel()
+		m.activeView = ListView
+		beads := makeBeads()
+		m.listModel = m.listModel.updateBeads(beads)
+		m.beads = beads
+		m.listModel.cursor = 1 // bead row (ip-1)
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		rm, _ := updated.(Model)
+		if rm.activeView != DetailView {
+			t.Errorf("enter on bead: activeView = %d, want DetailView (%d)", rm.activeView, DetailView)
+		}
+		if rm.detailModel == nil {
+			t.Error("enter on bead: detailModel is nil")
+		}
+	})
+}
+
 // TestListRow_Render verifies list row rendering: icon+priority+ID+title+worker+ctx%,
 // status grouping, priority sort, Done cap at 10, and empty group hiding.
 func TestListRow_Render(t *testing.T) {

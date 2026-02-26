@@ -386,6 +386,14 @@ func (m Model) handleInsightsViewKeys(key string) (tea.Model, tea.Cmd) {
 // handleListViewKeys processes keyboard input in ListView.
 func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 	switch key {
+	case "j", "down":
+		m.listModel = m.listModel.moveDown()
+	case "k", "up":
+		m.listModel = m.listModel.moveUp()
+	case " ":
+		m.listModel = m.listModel.toggleAtCursor()
+	case "enter":
+		return m.listDrillDown()
 	case "b":
 		m.previousNavView = BoardView
 		m.activeView = BoardView
@@ -403,6 +411,32 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 	case "a":
 		m.treeModel = NewTreeModel(m.beads)
 		m.activeView = TreeView
+	}
+	return m, nil
+}
+
+// listDrillDown opens DetailView for the bead at the list cursor.
+func (m Model) listDrillDown() (tea.Model, tea.Cmd) {
+	beadID := m.listModel.cursorBeadID()
+	if beadID == "" {
+		return m, nil
+	}
+	for _, b := range m.beads {
+		if b.ID != beadID {
+			continue
+		}
+		beadDetail := protocol.BeadDetail{
+			ID:                 b.ID,
+			Title:              b.Title,
+			Status:             b.Status,
+			AcceptanceCriteria: b.AcceptanceCriteria,
+			Model:              b.Model,
+			Dependencies:       b.Dependencies,
+		}
+		dm := newDetailModel(beadDetail, m.theme, m.styles)
+		m.detailModel = &dm
+		m.activeView = DetailView
+		return m, fetchWorkerEventsCmd(beadDetail.WorkerID)
 	}
 	return m, nil
 }
@@ -654,7 +688,7 @@ func helpHintsForView(view ViewType, width int) string {
 	case TreeView:
 		return "j/k navigate  space expand/collapse  esc back  ? help  q quit"
 	case ListView:
-		return "b board  / search  i insights  w workers  ? help  q quit"
+		return "j/k navigate  space collapse  enter detail  b board  / search  ? help  q quit"
 	default:
 		return "? help  q quit"
 	}

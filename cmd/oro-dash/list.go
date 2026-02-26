@@ -10,6 +10,13 @@ import (
 	"oro/pkg/protocol"
 )
 
+// listRow identifies a single visible row in the list.
+type listRow struct {
+	isHeader bool
+	status   string         // group status key (e.g. "open", "in_progress")
+	bead     *protocol.Bead // non-nil for bead rows
+}
+
 // ListModel holds state for the dense list view.
 type ListModel struct {
 	beads       []protocol.Bead
@@ -17,6 +24,8 @@ type ListModel struct {
 	assignments map[string]string
 	width       int
 	height      int
+	cursor      int             // flat row index into flatRows()
+	collapsed   map[string]bool // status -> collapsed
 }
 
 // NewListModel creates a new empty ListModel.
@@ -24,9 +33,11 @@ func NewListModel() ListModel {
 	return ListModel{}
 }
 
-// updateBeads stores refreshed bead data.
+// updateBeads stores refreshed bead data and restores cursor by bead ID.
 func (lm ListModel) updateBeads(beads []protocol.Bead) ListModel {
+	savedID := lm.cursorBeadID()
 	lm.beads = beads
+	lm.restoreCursor(savedID)
 	return lm
 }
 
@@ -44,26 +55,148 @@ func (lm ListModel) resize(width, height int) ListModel {
 	return lm
 }
 
+// listRenderOrder returns the canonical order for status groups.
+func listRenderOrder() []string {
+	return []string{"in_progress", "open", "blocked", "closed"}
+}
+
+// flatRows returns the visible rows: headers + bead rows for expanded groups.
+// Empty groups are omitted. Collapsed groups show only their header.
+func (lm ListModel) flatRows() []listRow {
+	groups := groupBeads(lm.beads)
+	rows := make([]listRow, 0, len(lm.beads)+4)
+	for _, status := range listRenderOrder() {
+		beads := groups[status]
+		if len(beads) == 0 {
+			continue
+		}
+		rows = append(rows, listRow{isHeader: true, status: status})
+		if !lm.collapsed[status] {
+			for i := range beads {
+				rows = append(rows, listRow{status: status, bead: &beads[i]})
+			}
+		}
+	}
+	return rows
+}
+
+// moveDown moves the cursor one row down (clamps at last visible row).
+func (lm ListModel) moveDown() ListModel {
+	rows := lm.flatRows()
+	if lm.cursor < len(rows)-1 {
+		lm.cursor++
+	}
+	return lm
+}
+
+// moveUp moves the cursor one row up (clamps at 0).
+func (lm ListModel) moveUp() ListModel {
+	if lm.cursor > 0 {
+		lm.cursor--
+	}
+	return lm
+}
+
+// toggleAtCursor toggles collapse on a header row. No-op on bead rows.
+func (lm ListModel) toggleAtCursor() ListModel {
+	rows := lm.flatRows()
+	if lm.cursor < 0 || lm.cursor >= len(rows) {
+		return lm
+	}
+	row := rows[lm.cursor]
+	if !row.isHeader {
+		return lm
+	}
+	if lm.collapsed == nil {
+		lm.collapsed = map[string]bool{}
+	}
+	lm.collapsed[row.status] = !lm.collapsed[row.status]
+	// Clamp cursor to new visible range
+	newRows := lm.flatRows()
+	if lm.cursor >= len(newRows) {
+		lm.cursor = len(newRows) - 1
+	}
+	if lm.cursor < 0 {
+		lm.cursor = 0
+	}
+	return lm
+}
+
+// cursorBeadID returns the bead ID at the current cursor, or "" if on a header.
+func (lm ListModel) cursorBeadID() string {
+	rows := lm.flatRows()
+	if lm.cursor < 0 || lm.cursor >= len(rows) {
+		return ""
+	}
+	row := rows[lm.cursor]
+	if row.isHeader || row.bead == nil {
+		return ""
+	}
+	return row.bead.ID
+}
+
+// restoreCursor finds a bead by ID in the flat rows and sets the cursor to it.
+// If the bead is not found, clamps the cursor to the valid range.
+func (lm *ListModel) restoreCursor(beadID string) {
+	if beadID == "" {
+		return
+	}
+	rows := lm.flatRows()
+	for i, row := range rows {
+		if row.bead != nil && row.bead.ID == beadID {
+			lm.cursor = i
+			return
+		}
+	}
+	// Bead not found — clamp cursor
+	if lm.cursor >= len(rows) {
+		lm.cursor = len(rows) - 1
+	}
+	if lm.cursor < 0 {
+		lm.cursor = 0
+	}
+}
+
+// hasVisibleBeads returns true if any bead rows are visible (not all collapsed).
+func (lm ListModel) hasVisibleBeads() bool {
+	for _, row := range lm.flatRows() {
+		if !row.isHeader {
+			return true
+		}
+	}
+	return false
+}
+
 // View renders the list view as a dense table of beads grouped by status.
 func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	if len(lm.beads) == 0 {
 		return styles.Muted.Render("No beads found. Run `bd create` to get started.")
 	}
 
+	if !lm.hasVisibleBeads() {
+		return styles.Muted.Render("No beads match")
+	}
+
+	rows := lm.flatRows()
 	groups := groupBeads(lm.beads)
 
 	var out strings.Builder
-	renderOrder := []string{"in_progress", "open", "blocked", "closed"}
-	for _, status := range renderOrder {
-		beads := groups[status]
-		if len(beads) == 0 {
+	lastStatus := ""
+	for i, row := range rows {
+		active := i == lm.cursor
+		if row.isHeader {
+			if lastStatus != "" {
+				out.WriteString("\n")
+			}
+			out.WriteString(lm.renderHeaderRow(row.status, len(groups[row.status]), active, styles) + "\n")
+			lastStatus = row.status
 			continue
 		}
-		out.WriteString(renderGroupHeader(status, len(beads), styles) + "\n")
-		for _, b := range beads {
-			out.WriteString(lm.renderRow(b, width, styles) + "\n")
+		line := lm.renderRow(*row.bead, width, styles)
+		if active {
+			line = styles.Highlight.Render(line)
 		}
-		out.WriteString("\n")
+		out.WriteString(line + "\n")
 	}
 
 	return lipgloss.NewStyle().Width(width).Height(height).Render(out.String())
@@ -100,6 +233,19 @@ func groupBeads(beads []protocol.Bead) map[string][]protocol.Bead {
 	}
 
 	return groups
+}
+
+// renderHeaderRow renders a group header with collapse indicator and optional cursor highlight.
+func (lm ListModel) renderHeaderRow(status string, count int, active bool, styles Styles) string {
+	indicator := "▼"
+	if lm.collapsed[status] {
+		indicator = "▶"
+	}
+	header := fmt.Sprintf("%s %s", indicator, renderGroupHeader(status, count, styles))
+	if active {
+		header = styles.Highlight.Render(header)
+	}
+	return header
 }
 
 // renderGroupHeader renders a group header like "In Progress (3)".
