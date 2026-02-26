@@ -278,6 +278,11 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 		// Progress check: worker is busy but has not made meaningful progress.
 		if w.state == protocol.WorkerBusy && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > d.cfg.ProgressTimeout {
 			stuck = append(stuck, id)
+			continue
+		}
+		// Review timeout: reviewing worker has stalled without progress.
+		if w.state == protocol.WorkerReviewing && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > d.cfg.ReviewTimeout {
+			stuck = append(stuck, id)
 		}
 	}
 	// Remove dead workers and collect info for escalation after unlock.

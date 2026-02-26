@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -831,6 +832,93 @@ func TestCheckHeartbeats_StuckProgressTimeout_GreaterThan(t *testing.T) {
 
 	if !stillPresent {
 		t.Error("worker at exactly progress timeout boundary should NOT be stuck (need strictly >)")
+	}
+}
+
+// TestCheckHeartbeats_ReviewTimeout verifies that a reviewing worker with stale
+// lastProgress exceeding ReviewTimeout is killed and escalated as STUCK_WORKER.
+func TestCheckHeartbeats_ReviewTimeout(t *testing.T) {
+	t.Parallel()
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+
+	d.cfg.ReviewTimeout = 100 * time.Millisecond
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+	workerID := "review-stuck-worker"
+	beadID := "review-bead"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         server,
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		lastSeen:     now.Add(-10 * time.Millisecond),
+		lastProgress: now.Add(-(d.cfg.ReviewTimeout + time.Second)),
+		encoder:      json.NewEncoder(server),
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillPresent := d.workers[workerID]
+	d.mu.Unlock()
+
+	if stillPresent {
+		t.Error("reviewing worker past ReviewTimeout should be removed")
+	}
+
+	// Assert: escalation sent with STUCK_WORKER type.
+	msgs := esc.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 escalation message, got %d: %v", len(msgs), msgs)
+	}
+	if !strings.Contains(msgs[0], string(protocol.EscStuckWorker)) {
+		t.Errorf("expected escalation to contain %q, got %q", protocol.EscStuckWorker, msgs[0])
+	}
+	if !strings.Contains(msgs[0], beadID) {
+		t.Errorf("expected escalation to mention bead %q, got %q", beadID, msgs[0])
+	}
+}
+
+// TestCheckHeartbeats_ReviewTimeout_ZeroLastProgressSkipped verifies that a
+// reviewing worker with zero lastProgress is NOT removed.
+func TestCheckHeartbeats_ReviewTimeout_ZeroLastProgressSkipped(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	d.cfg.ReviewTimeout = 100 * time.Millisecond
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	conn := newMockConn()
+	workerID := "review-zero-progress-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerReviewing,
+		beadID:       "test-bead",
+		lastSeen:     now.Add(-10 * time.Millisecond),
+		lastProgress: time.Time{}, // zero time — should not trigger review timeout
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillPresent := d.workers[workerID]
+	d.mu.Unlock()
+
+	if !stillPresent {
+		t.Error("reviewing worker with zero lastProgress should not be removed")
 	}
 }
 

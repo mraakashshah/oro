@@ -192,6 +192,7 @@ type Config struct {
 	PaneMonitorInterval   time.Duration // Pane context_pct poll interval (default 5s).
 	PaneRestartCooldown   time.Duration // Min time between manager pane restarts (default 2m).
 	PaneInactivityTimeout time.Duration // Manager inactivity duration before restart (default 10m).
+	ReviewTimeout         time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
 }
 
 func (c *Config) withDefaults() Config {
@@ -228,6 +229,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.PaneInactivityTimeout == 0 {
 		out.PaneInactivityTimeout = 10 * time.Minute
+	}
+	if out.ReviewTimeout == 0 {
+		out.ReviewTimeout = 15 * time.Minute
 	}
 	return out
 }
