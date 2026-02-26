@@ -711,7 +711,7 @@ func (m Model) View() string {
 	case TreeView:
 		return m.treeModel.View(m.theme, m.styles) + "\n" + statusBar
 	case StatusView:
-		return m.statusModel.View(m.theme, m.styles, m.healthData, m.width, m.height) + "\n" + statusBar
+		return m.statusModel.View(m.theme, m.styles, m.healthData, m.workers, m.pendingHandoffCount, m.attemptCounts, m.metricsBuffer, m.width, m.height) + "\n" + statusBar
 	case ListView:
 		return m.listModel.View(m.theme, m.styles, m.width, m.height-2) + "\n" + statusBar
 	default:
