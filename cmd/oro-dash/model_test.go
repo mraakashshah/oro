@@ -297,6 +297,7 @@ func TestKeyboardNavigation(t *testing.T) {
 
 	t.Run("h/l navigate between columns", func(t *testing.T) {
 		m := newModel()
+		m.activeView = BoardView
 		m.beads = beads
 
 		// l moves to next column (Ready -> In Progress)
@@ -326,6 +327,7 @@ func TestKeyboardNavigation(t *testing.T) {
 
 	t.Run("Tab/Shift-Tab navigate between columns", func(t *testing.T) {
 		m := newModel()
+		m.activeView = BoardView
 		m.beads = beads
 
 		// Tab moves to next column
@@ -352,6 +354,7 @@ func TestKeyboardNavigation(t *testing.T) {
 
 	t.Run("j/k navigate within column", func(t *testing.T) {
 		m := newModel()
+		m.activeView = BoardView
 		m.beads = beads
 		m.activeCol = 0 // Ready column has 2 beads
 
@@ -379,6 +382,7 @@ func TestKeyboardNavigation(t *testing.T) {
 
 	t.Run("arrow keys navigate within column", func(t *testing.T) {
 		m := newModel()
+		m.activeView = BoardView
 		m.beads = beads
 		m.activeCol = 0
 
@@ -406,6 +410,7 @@ func TestKeyboardNavigation(t *testing.T) {
 
 	t.Run("cursor clamps at column boundaries", func(t *testing.T) {
 		m := newModel()
+		m.activeView = BoardView
 		m.beads = beads
 		m.activeCol = 0
 
@@ -475,6 +480,7 @@ func TestKeyboardNavigation(t *testing.T) {
 		}
 
 		m := newModel()
+		m.activeView = BoardView
 		m.beads = beadsWithGap
 		m.activeCol = 1 // In Progress column
 
@@ -518,10 +524,10 @@ func TestModel_ViewSwitching(t *testing.T) {
 			expectedQuit: false,
 		},
 		{
-			name:         "Esc key switches from InsightsView to BoardView",
+			name:         "Esc key switches from InsightsView to previousNavView",
 			initialView:  InsightsView,
 			key:          "esc",
-			expectedView: BoardView,
+			expectedView: ListView, // default previousNavView
 			expectedQuit: false,
 		},
 		{
@@ -626,7 +632,7 @@ func TestModel_DetailViewDrilldown(t *testing.T) {
 		}
 	})
 
-	t.Run("Esc from DetailView returns to BoardView with cursor preserved", func(t *testing.T) {
+	t.Run("Esc from DetailView returns to previousNavView with cursor preserved", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "b-1", Title: "Test bead 1", Status: "open"},
 			{ID: "b-2", Title: "Test bead 2", Status: "open"},
@@ -646,8 +652,9 @@ func TestModel_DetailViewDrilldown(t *testing.T) {
 			t.Fatal("Update() did not return Model")
 		}
 
-		if model.activeView != BoardView {
-			t.Errorf("after Esc, activeView = %v, want BoardView", model.activeView)
+		// Default previousNavView is ListView
+		if model.activeView != ListView {
+			t.Errorf("after Esc, activeView = %v, want ListView", model.activeView)
 		}
 
 		// Verify cursor position preserved
@@ -659,7 +666,7 @@ func TestModel_DetailViewDrilldown(t *testing.T) {
 		}
 	})
 
-	t.Run("Backspace from DetailView returns to BoardView", func(t *testing.T) {
+	t.Run("Backspace from DetailView returns to previousNavView", func(t *testing.T) {
 		m := newModel()
 		m.activeView = DetailView
 		m.detailModel = &DetailModel{}
@@ -671,8 +678,9 @@ func TestModel_DetailViewDrilldown(t *testing.T) {
 			t.Fatal("Update() did not return Model")
 		}
 
-		if model.activeView != BoardView {
-			t.Errorf("after Backspace, activeView = %v, want BoardView", model.activeView)
+		// Default previousNavView is ListView
+		if model.activeView != ListView {
+			t.Errorf("after Backspace, activeView = %v, want ListView", model.activeView)
 		}
 	})
 }
@@ -738,7 +746,7 @@ func TestModel_SearchOverlay(t *testing.T) {
 		}
 	})
 
-	t.Run("Esc from SearchView returns to BoardView", func(t *testing.T) {
+	t.Run("Esc from SearchView returns to previousNavView", func(t *testing.T) {
 		m := newModel()
 		m.activeView = SearchView
 
@@ -749,8 +757,9 @@ func TestModel_SearchOverlay(t *testing.T) {
 			t.Fatal("Update() did not return Model")
 		}
 
-		if model.activeView != BoardView {
-			t.Errorf("after Esc, activeView = %v, want BoardView", model.activeView)
+		// Default previousNavView is ListView
+		if model.activeView != ListView {
+			t.Errorf("after Esc, activeView = %v, want ListView", model.activeView)
 		}
 	})
 
@@ -1304,9 +1313,9 @@ func TestSearchTextInput(t *testing.T) {
 			t.Fatal("Update did not return Model")
 		}
 
-		// Verify we're back in BoardView
-		if m.activeView != BoardView {
-			t.Fatalf("expected BoardView, got %v", m.activeView)
+		// Verify we're back in the default nav view (ListView)
+		if m.activeView != ListView {
+			t.Fatalf("expected ListView, got %v", m.activeView)
 		}
 
 		// Verify textinput is blurred

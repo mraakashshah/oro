@@ -166,7 +166,7 @@ func (w WorkersTableModel) renderHealthBadge(worker WorkerStatus, styles Styles)
 // handleWorkersViewKeys processes keyboard input in WorkersView.
 func (m Model) handleWorkersViewKeys(key string) (tea.Model, tea.Cmd) {
 	if key == "esc" {
-		m.activeView = BoardView
+		m.activeView = m.previousNavView
 	}
 	return m, nil
 }

@@ -103,12 +103,15 @@ const (
 	WorkersView
 	// TreeView shows the hierarchical all-beads tree view.
 	TreeView
+	// ListView shows the dense list view with split-pane detail.
+	ListView
 )
 
 // Model is the Bubble Tea model for the oro dashboard.
 type Model struct {
 	activeView      ViewType
 	previousView    ViewType // View to return to when help is dismissed
+	previousNavView ViewType // Nav view to return to on esc (BoardView or ListView)
 	daemonHealthy   bool
 	workerCount     int
 	openCount       int
@@ -144,6 +147,9 @@ type Model struct {
 	// Tree view state
 	treeModel TreeModel
 
+	// List view state
+	listModel ListModel
+
 	// Pre-computed styles to avoid allocations during rendering
 	theme  Theme
 	styles Styles
@@ -159,13 +165,15 @@ func newModel() Model {
 	ti.Placeholder = "Search by ID, title, or filter (p:0, s:open, t:bug)"
 	ti.CharLimit = 100
 	return Model{
-		activeView:  BoardView,
-		initialLoad: true, // Show "Loading" until first beadsMsg
-		searchInput: ti,
-		searchModel: &SearchModel{},
-		theme:       theme,
-		styles:      NewStyles(theme),
-		splitRatio:  0.4, // Default 40% board, 60% detail
+		activeView:      ListView,
+		previousNavView: ListView,
+		initialLoad:     true, // Show "Loading" until first beadsMsg
+		searchInput:     ti,
+		searchModel:     &SearchModel{},
+		listModel:       NewListModel(),
+		theme:           theme,
+		styles:          NewStyles(theme),
+		splitRatio:      0.4, // Default 40% board, 60% detail
 	}
 }
 
@@ -221,6 +229,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.listModel = m.listModel.resize(msg.Width, msg.Height)
 
 	case beadsMsg:
 		m.initialLoad = false // Clear loading state on first beadsMsg (even if empty)
@@ -237,6 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Clamp cursor position to ensure it's valid after bead data refresh
 		m = m.clampCursor()
+		m.listModel = m.listModel.updateBeads(m.beads)
 
 	case workerDataMsg:
 		if msg.workers == nil {
@@ -250,6 +260,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workerCount = len(msg.workers)
 			m.assignments = msg.assignments
 			m.focusedEpic = msg.focusedEpic
+			m.listModel = m.listModel.updateWorkers(msg.workers, msg.assignments)
 		}
 
 	case workerEventsMsg:
@@ -277,6 +288,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleKeyPress processes keyboard input and returns updated model with optional command.
+//
+//nolint:gocyclo // switch dispatch over view types; complexity is inherent in Bubble Tea key routing
 func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
@@ -317,6 +330,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleWorkersViewKeys(key)
 	case TreeView:
 		return m.handleTreeViewKeys(key)
+	case ListView:
+		return m.handleListViewKeys(key)
 	default: // BoardView
 		return m.handleBoardViewKeys(key)
 	}
@@ -334,7 +349,7 @@ func (m Model) handleHelpViewKeys(key string) (tea.Model, tea.Cmd) {
 func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "backspace":
-		m.activeView = BoardView
+		m.activeView = m.previousNavView
 		m.detailModel = nil
 	case "tab", "right":
 		if m.detailModel != nil {
@@ -363,7 +378,31 @@ func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
 // handleInsightsViewKeys processes keyboard input in InsightsView.
 func (m Model) handleInsightsViewKeys(key string) (tea.Model, tea.Cmd) {
 	if key == "esc" {
+		m.activeView = m.previousNavView
+	}
+	return m, nil
+}
+
+// handleListViewKeys processes keyboard input in ListView.
+func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "b":
+		m.previousNavView = BoardView
 		m.activeView = BoardView
+	case "i":
+		m.activeView = InsightsView
+	case "/":
+		m.activeView = SearchView
+		m.searchInput.Focus()
+		m.searchInput.SetValue("")
+		m.searchSelectedIndex = 0
+	case "H":
+		m.activeView = HealthView
+	case "w":
+		m.activeView = WorkersView
+	case "a":
+		m.treeModel = NewTreeModel(m.beads)
+		m.activeView = TreeView
 	}
 	return m, nil
 }
@@ -412,7 +451,7 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 
 	switch key {
 	case "esc":
-		m.activeView = BoardView
+		m.activeView = m.previousNavView
 		m.searchInput.Blur()
 		m.searchInput.SetValue("")
 		m.searchSelectedIndex = 0
@@ -501,6 +540,8 @@ func (m Model) View() string {
 		return workersTable.View(m.theme, m.styles, max(m.width, 80)) + "\n" + statusBar
 	case TreeView:
 		return m.treeModel.View(m.theme, m.styles) + "\n" + statusBar
+	case ListView:
+		return m.listModel.View(m.theme, m.styles, m.width, m.height-2) + "\n" + statusBar
 	default:
 		board := NewBoardModelWithWorkers(m.beads, m.workers, m.assignments)
 		colWidth := m.calculateColumnWidth()
@@ -612,6 +653,8 @@ func helpHintsForView(view ViewType, width int) string {
 		return "esc back  ? help  q quit"
 	case TreeView:
 		return "j/k navigate  space expand/collapse  esc back  ? help  q quit"
+	case ListView:
+		return "b board  / search  i insights  w workers  ? help  q quit"
 	default:
 		return "? help  q quit"
 	}

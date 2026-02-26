@@ -352,7 +352,7 @@ func renderTreeTypeIcon(beadType string) string {
 func (m Model) handleTreeViewKeys(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc":
-		m.activeView = BoardView
+		m.activeView = m.previousNavView
 	case "j", "down":
 		m.treeModel = m.treeModel.moveDown()
 	case "k", "up":

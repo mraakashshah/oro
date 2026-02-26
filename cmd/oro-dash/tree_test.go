@@ -382,8 +382,8 @@ func TestModel_AKeyOpensTreeView(t *testing.T) {
 	}
 }
 
-// TestModel_EscFromTreeViewReturnsToBoardView verifies esc from TreeView returns to BoardView.
-func TestModel_EscFromTreeViewReturnsToBoardView(t *testing.T) {
+// TestModel_EscFromTreeViewReturnsToPreviousNavView verifies esc from TreeView returns to previousNavView.
+func TestModel_EscFromTreeViewReturnsToPreviousNavView(t *testing.T) {
 	m := newModel()
 	m.activeView = TreeView
 
@@ -393,8 +393,9 @@ func TestModel_EscFromTreeViewReturnsToBoardView(t *testing.T) {
 		t.Fatal("expected Model type from Update")
 	}
 
-	if updatedModel.activeView != BoardView {
-		t.Errorf("expected BoardView (%d), got %d", BoardView, updatedModel.activeView)
+	// Default previousNavView is ListView
+	if updatedModel.activeView != ListView {
+		t.Errorf("expected ListView (%d), got %d", ListView, updatedModel.activeView)
 	}
 }
 

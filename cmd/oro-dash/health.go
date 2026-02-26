@@ -91,7 +91,7 @@ func (m Model) renderWorkersSection() string {
 // handleHealthViewKeys processes keyboard input in HealthView.
 func (m Model) handleHealthViewKeys(key string) (tea.Model, tea.Cmd) {
 	if key == "esc" {
-		m.activeView = BoardView
+		m.activeView = m.previousNavView
 	}
 	return m, nil
 }

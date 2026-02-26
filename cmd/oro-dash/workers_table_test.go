@@ -115,8 +115,9 @@ func TestWorkersTableView(t *testing.T) {
 			t.Fatalf("expected Model, got %T", updated)
 		}
 
-		if updatedModel.activeView != BoardView {
-			t.Errorf("expected BoardView, got %v", updatedModel.activeView)
+		// Default previousNavView is ListView
+		if updatedModel.activeView != ListView {
+			t.Errorf("expected ListView, got %v", updatedModel.activeView)
 		}
 	})
 

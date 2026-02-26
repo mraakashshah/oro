@@ -13,9 +13,9 @@ import (
 func TestDashModel_Init(t *testing.T) {
 	m := newModel()
 
-	// Model should initialize with BoardView as the active view
-	if m.activeView != BoardView {
-		t.Errorf("expected activeView to be BoardView, got %v", m.activeView)
+	// Model should initialize with ListView as the default active view
+	if m.activeView != ListView {
+		t.Errorf("expected activeView to be ListView, got %v", m.activeView)
 	}
 
 	// Init should return a tick command for periodic refresh
