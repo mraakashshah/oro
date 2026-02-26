@@ -2,14 +2,16 @@
 """PostToolUse hook: write context percentage to pane file.
 
 Reads the Claude Code transcript to find the most recent token usage,
-calculates context consumption as a percentage, and writes it to
-~/.oro/panes/<role>/context_pct for dispatcher polling.
+calculates context consumption as a percentage, and writes it to:
+- ~/.oro/panes/<role>/context_pct for dispatcher pane polling (when ORO_ROLE set)
+- CWD/.oro/context_pct for Go worker hard-stop enforcement (when ORO_WORKER=1)
 
 Input: JSON on stdin with transcript_path, tool_name, tool_input, etc.
 Output: Silent (no stdout). Best-effort file write.
 
 Environment:
-  ORO_ROLE: Role name (architect/manager). No-op if unset.
+  ORO_ROLE: Role name (architect/manager). Writes to pane file when set.
+  ORO_WORKER: Set to "1" for worker processes. Writes to CWD/.oro/context_pct.
 
 Performance: <10ms (no network, no subprocess spawning).
 """
@@ -87,9 +89,11 @@ def calculate_context_pct(usage: dict, budget: int) -> int:
 
 def main() -> None:
     """Main entry point."""
-    # No-op if ORO_ROLE is not set
     role = os.getenv("ORO_ROLE")
-    if not role:
+    is_worker = os.getenv("ORO_WORKER") == "1"
+
+    # No-op if neither ORO_ROLE nor ORO_WORKER is set
+    if not role and not is_worker:
         return
 
     hook_input = json.loads(sys.stdin.read())
@@ -108,13 +112,20 @@ def main() -> None:
 
     pct = calculate_context_pct(usage, budget)
 
-    # Best-effort write to ~/.oro/panes/<role>/context_pct
-    pane_dir = Path(PANES_DIR) / role
-    context_file = pane_dir / "context_pct"
+    # Best-effort write to ~/.oro/panes/<role>/context_pct (pane processes)
+    if role:
+        pane_dir = Path(PANES_DIR) / role
+        context_file = pane_dir / "context_pct"
+        with contextlib.suppress(OSError):
+            pane_dir.mkdir(parents=True, exist_ok=True)
+            context_file.write_text(f"{pct}\n")
 
-    with contextlib.suppress(OSError):
-        pane_dir.mkdir(parents=True, exist_ok=True)
-        context_file.write_text(f"{pct}\n")
+    # Best-effort write to CWD/.oro/context_pct (worker processes)
+    if is_worker:
+        oro_dir = Path.cwd() / ".oro"
+        with contextlib.suppress(OSError):
+            oro_dir.mkdir(parents=True, exist_ok=True)
+            (oro_dir / "context_pct").write_text(f"{pct}\n")
 
 
 if __name__ == "__main__":

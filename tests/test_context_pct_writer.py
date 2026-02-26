@@ -187,8 +187,131 @@ def test_budget_from_config():
         config_path.unlink(missing_ok=True)
 
 
+def test_writes_worktree_context_pct_when_oro_worker():
+    """Hook should write to CWD/.oro/context_pct when ORO_WORKER=1.
+
+    Given: ORO_WORKER=1 (no ORO_ROLE)
+    When: Hook runs after a tool use
+    Then: Should write context_pct to CWD/.oro/context_pct
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        transcript_path = f.name
+        entry = {
+            "message": {
+                "model": "claude-sonnet-4-5",
+                "usage": {"input_tokens": 100000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            }
+        }
+        f.write(json.dumps(entry) + "\n")
+
+    with tempfile.TemporaryDirectory() as work_dir:
+        try:
+            hook_input = {"transcript_path": transcript_path, "budget": 200_000}
+
+            env = os.environ.copy()
+            # No ORO_ROLE — only ORO_WORKER
+            env.pop("ORO_ROLE", None)
+            env["ORO_WORKER"] = "1"
+            env["PYTHONPATH"] = HOOKS_DIR
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    "-c",
+                    """
+import context_pct_writer
+context_pct_writer.main()
+""",
+                ],
+                input=json.dumps(hook_input),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+                cwd=work_dir,
+            )
+
+            assert result.returncode == 0, f"Hook failed: {result.stderr}"
+
+            # Should write to CWD/.oro/context_pct
+            context_file = Path(work_dir) / ".oro" / "context_pct"
+            assert context_file.exists(), "Hook should write to CWD/.oro/context_pct when ORO_WORKER=1"
+
+            written_pct = int(context_file.read_text().strip())
+            assert written_pct == 50, f"Expected 50% (100K/200K) but got {written_pct}%"
+
+        finally:
+            Path(transcript_path).unlink(missing_ok=True)
+
+
+def test_writes_both_pane_and_worktree_when_both_set():
+    """Hook should write to both locations when both ORO_ROLE and ORO_WORKER are set.
+
+    Given: ORO_ROLE=architect AND ORO_WORKER=1
+    When: Hook runs after a tool use
+    Then: Should write to both ~/.oro/panes/<role>/context_pct AND CWD/.oro/context_pct
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        transcript_path = f.name
+        entry = {
+            "message": {
+                "model": "claude-sonnet-4-5",
+                "usage": {"input_tokens": 60000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            }
+        }
+        f.write(json.dumps(entry) + "\n")
+
+    with tempfile.TemporaryDirectory() as work_dir, tempfile.TemporaryDirectory() as panes_dir:
+        try:
+            hook_input = {"transcript_path": transcript_path, "budget": 200_000}
+
+            env = os.environ.copy()
+            env["ORO_ROLE"] = "architect"
+            env["ORO_WORKER"] = "1"
+            env["PYTHONPATH"] = HOOKS_DIR
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    "-c",
+                    f'''
+import context_pct_writer
+context_pct_writer.PANES_DIR = "{panes_dir}"
+context_pct_writer.main()
+''',
+                ],
+                input=json.dumps(hook_input),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+                cwd=work_dir,
+            )
+
+            assert result.returncode == 0, f"Hook failed: {result.stderr}"
+
+            # Pane file should exist
+            pane_file = Path(panes_dir) / "architect" / "context_pct"
+            assert pane_file.exists(), "Hook should write pane context_pct when ORO_ROLE set"
+
+            # Worktree file should also exist
+            wt_file = Path(work_dir) / ".oro" / "context_pct"
+            assert wt_file.exists(), "Hook should also write CWD/.oro/context_pct when ORO_WORKER=1"
+
+            # Both should have same value
+            pane_pct = int(pane_file.read_text().strip())
+            wt_pct = int(wt_file.read_text().strip())
+            assert pane_pct == 30, f"Expected 30% but got {pane_pct}%"
+            assert wt_pct == 30, f"Expected 30% but got {wt_pct}%"
+
+        finally:
+            Path(transcript_path).unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     test_writes_correct_percentage_with_1m_budget()
     test_clamps_percentage_at_100()
     test_budget_from_config()
+    test_writes_worktree_context_pct_when_oro_worker()
+    test_writes_both_pane_and_worktree_when_both_set()
     print("All tests passed!")

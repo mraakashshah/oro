@@ -926,6 +926,7 @@ func (w *Worker) sendMessage(msg protocol.Message) error {
 func (w *Worker) trySendHeartbeat(_ context.Context) {
 	w.mu.Lock()
 	beadID := w.beadID
+	wt := w.worktree
 	conn := w.conn
 	disconnected := w.disconnected
 	w.mu.Unlock()
@@ -934,11 +935,22 @@ func (w *Worker) trySendHeartbeat(_ context.Context) {
 		return
 	}
 
+	// Best-effort read of context_pct from worktree for dispatcher monitoring.
+	var contextPct int
+	if wt != "" {
+		if data, err := os.ReadFile(filepath.Join(wt, protocol.OroDir, "context_pct")); err == nil { //nolint:gosec // path constructed internally
+			if v, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+				contextPct = v
+			}
+		}
+	}
+
 	data, err := json.Marshal(protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			BeadID:   beadID,
-			WorkerID: w.ID,
+			BeadID:     beadID,
+			WorkerID:   w.ID,
+			ContextPct: contextPct,
 		},
 	})
 	if err != nil {

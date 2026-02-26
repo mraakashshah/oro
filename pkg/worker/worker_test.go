@@ -3522,6 +3522,71 @@ func TestWatchContext_SendsPeriodicHeartbeats(t *testing.T) {
 	<-errCh
 }
 
+func TestWatchContext_HeartbeatIncludesContextPct(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-hb-pct", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+	w.SetHeartbeatInterval(50 * time.Millisecond)
+
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+
+	// Write context_pct = 42 to the worktree
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("42"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// Assign worker to the worktree
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-hb-pct",
+			Worktree: tmpDir,
+		},
+	})
+
+	// Drain STATUS message
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus {
+		t.Fatalf("expected STATUS, got %s", msg.Type)
+	}
+
+	// Collect heartbeats — at least one should include ContextPct=42
+	_ = dispatcherConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	scanner := bufio.NewScanner(dispatcherConn)
+	var gotPct bool
+	for scanner.Scan() {
+		var m protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &m); err != nil {
+			continue
+		}
+		if m.Type == protocol.MsgHeartbeat && m.Heartbeat != nil && m.Heartbeat.ContextPct == 42 {
+			gotPct = true
+			break
+		}
+	}
+
+	if !gotPct {
+		t.Fatal("expected at least one heartbeat with ContextPct=42 from worktree context_pct file")
+	}
+
+	cancel()
+	<-errCh
+}
+
 // TestEpicDecompositionSkipsQG verifies that when IsEpicDecomposition=true,
 // the worker sends DONE with QualityGatePassed=true without running quality_gate.sh.
 func TestEpicDecompositionSkipsQG(t *testing.T) {
