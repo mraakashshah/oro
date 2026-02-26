@@ -12,7 +12,7 @@ import (
 // If width < len(values), only the most recent (rightmost) values are shown.
 // Empty values or zero width returns an empty string.
 //
-//nolint:unparam // styles param required by caller contract; will be used for theming
+//nolint:unparam,unused // styles param required by caller contract; will be called by StatusView (oro-yqvn.6)
 func renderSparkline(values []float64, width int, color lipgloss.Color, _ Styles) string {
 	// 8-level Unicode block characters for sparklines (index 0=lowest, 7=highest).
 	blocks := [8]rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
