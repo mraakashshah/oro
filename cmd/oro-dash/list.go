@@ -58,9 +58,13 @@ func (lm ListModel) updateWorkers(workers []WorkerStatus, assignments map[string
 }
 
 // resize updates the available dimensions.
+// Resets detail focus when width drops below 100 (no detail pane at narrow widths).
 func (lm ListModel) resize(width, height int) ListModel {
 	lm.width = width
 	lm.height = height
+	if width < 100 {
+		lm.detailFocused = false
+	}
 	return lm
 }
 
@@ -329,7 +333,7 @@ func (lm ListModel) renderList(styles Styles, width, height int) string {
 }
 
 // View renders the list view as a dense table of beads grouped by status.
-// When detailFocused=true and width >= 60, renders a split-pane layout with
+// When detailFocused=true and width >= 100, renders a split-pane layout with
 // the list on the left and detail pane on the right.
 func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	if len(lm.beads) == 0 {
@@ -340,7 +344,7 @@ func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 		return styles.Muted.Render("No beads match")
 	}
 
-	if lm.detailFocused && width >= 60 {
+	if lm.detailFocused && width >= 100 {
 		bead := lm.cursorBead()
 		if bead != nil {
 			listWidth := int(float64(width) * lm.splitRatio)
@@ -417,10 +421,21 @@ func renderGroupHeader(status string, count int, styles Styles) string {
 
 // renderRow renders a single bead as a compact list row showing
 // icon + priority + ID + title + worker + ctx%.
+// Column visibility adapts to terminal width:
+//   - >120: worker ID + ctx%
+//   - 100-120: worker ID only (hide ctx%)
+//   - <100: no worker info (list-only mode)
+//   - <80: truncate bead ID (first 5 chars + "...")
 func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string {
 	icon := renderTreeTypeIcon(b.Type)
 	priority := renderTreePriorityBadge(b.Priority, styles)
-	id := styles.IDMuted.Render(b.ID)
+
+	// Truncate bead ID at narrow widths (<80).
+	idText := b.ID
+	if width < 80 && len([]rune(idText)) > 8 {
+		idText = string([]rune(idText)[:5]) + "..."
+	}
+	id := styles.IDMuted.Render(idText)
 
 	// Truncate title to fit within available width.
 	// Reserve space for: 2 indent + icon(1) + 1 + priority(4) + 1 + id + 2 + worker(~15) + margin.
@@ -433,22 +448,37 @@ func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string 
 		title = string([]rune(title)[:maxTitle-3]) + "..."
 	}
 
-	// Look up worker assignment.
-	workerPart := ""
-	if lm.assignments != nil {
-		if workerID, ok := lm.assignments[b.ID]; ok && workerID != "" {
-			ctxPct := 0
-			for _, w := range lm.workers {
-				if w.ID == workerID {
-					ctxPct = w.ContextPct
-					break
-				}
-			}
-			workerPart = styles.Muted.Render(fmt.Sprintf(" %s %d%%", workerID, ctxPct))
-		}
-	}
+	// Look up worker assignment — only shown when width >= 100.
+	workerPart := renderWorkerPart(lm.workers, lm.assignments, b.ID, width, styles)
 
 	return fmt.Sprintf("  %s %s %s  %-*s%s", icon, priority, id, maxTitle, title, workerPart)
+}
+
+// renderWorkerPart returns the styled worker portion of a list row.
+// width>120: "workerID pct%", width 100-120: "workerID", width<100: "".
+func renderWorkerPart(workers []WorkerStatus, assignments map[string]string, beadID string, width int, styles Styles) string {
+	if width < 100 || assignments == nil {
+		return ""
+	}
+	workerID, ok := assignments[beadID]
+	if !ok || workerID == "" {
+		return ""
+	}
+	if width > 120 {
+		ctxPct := workerContextPct(workers, workerID)
+		return styles.Muted.Render(fmt.Sprintf(" %s %d%%", workerID, ctxPct))
+	}
+	return styles.Muted.Render(fmt.Sprintf(" %s", workerID))
+}
+
+// workerContextPct returns the ContextPct for the given workerID, or 0 if not found.
+func workerContextPct(workers []WorkerStatus, workerID string) int {
+	for _, w := range workers {
+		if w.ID == workerID {
+			return w.ContextPct
+		}
+	}
+	return 0
 }
 
 // defaultDetailSections returns the default expanded/collapsed state for detail sections.

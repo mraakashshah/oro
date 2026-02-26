@@ -444,7 +444,7 @@ func TestListRow_Render(t *testing.T) {
 		}
 		assignments := map[string]string{"wip-1": "worker-a"}
 		lm := NewListModel().updateWorkers(workers, assignments)
-		row := lm.renderRow(b, 80, styles)
+		row := lm.renderRow(b, 140, styles)
 		if !strings.Contains(row, "worker-a") {
 			t.Errorf("renderRow missing worker ID 'worker-a': %q", row)
 		}
@@ -1039,17 +1039,95 @@ func TestListView_SplitPaneRendersDetailPane(t *testing.T) {
 		}
 	})
 
-	t.Run("width < 60 forces list-only even when detailFocused=true", func(t *testing.T) {
+	t.Run("width < 100 forces list-only even when detailFocused=true", func(t *testing.T) {
 		lm := NewListModel()
 		lm = lm.updateBeads([]protocol.Bead{makeBead()})
 		lm.detailFocused = true
 		lm.cursor = 1
 		lm.detailSections = defaultDetailSections()
 
-		out := lm.View(theme, styles, 55, 30)
+		out := lm.View(theme, styles, 90, 30)
 
 		if strings.Contains(out, "Must pass all tests") {
-			t.Errorf("narrow view (width<60) should not show detail pane: %q", out)
+			t.Errorf("narrow view (width<100) should not show detail pane: %q", out)
+		}
+	})
+}
+
+// TestListResponsive verifies responsive column visibility by terminal width.
+func TestListResponsive(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	makeLM := func() ListModel {
+		beads := []protocol.Bead{
+			{ID: "oro-abc123", Title: "Task one", Status: "open", Priority: 2, Type: "task"},
+		}
+		workers := []WorkerStatus{
+			{ID: "worker-a", Status: "working", BeadID: "oro-abc123", ContextPct: 55},
+		}
+		assignments := map[string]string{"oro-abc123": "worker-a"}
+		lm := NewListModel()
+		lm = lm.updateBeads(beads)
+		lm = lm.updateWorkers(workers, assignments)
+		return lm
+	}
+
+	t.Run("width>120 shows worker ID and ctx%", func(t *testing.T) {
+		lm := makeLM()
+		out := lm.View(theme, styles, 140, 30)
+		if !strings.Contains(out, "worker-a") {
+			t.Errorf("width 140: missing worker ID 'worker-a': %q", out)
+		}
+		if !strings.Contains(out, "55%") {
+			t.Errorf("width 140: missing ctx%% '55%%': %q", out)
+		}
+	})
+
+	t.Run("width 100-120 shows worker ID but hides ctx%", func(t *testing.T) {
+		lm := makeLM()
+		out := lm.View(theme, styles, 110, 30)
+		if !strings.Contains(out, "worker-a") {
+			t.Errorf("width 110: missing worker ID 'worker-a': %q", out)
+		}
+		if strings.Contains(out, "55%") {
+			t.Errorf("width 110: should not show ctx%% '55%%': %q", out)
+		}
+	})
+
+	t.Run("width 80-100 list only no detail pane no worker info", func(t *testing.T) {
+		lm := makeLM()
+		lm.detailFocused = true
+		out := lm.View(theme, styles, 90, 30)
+		// No detail pane content
+		if strings.Contains(out, "Must pass all tests") {
+			t.Errorf("width 90: should not show detail pane")
+		}
+		// No worker info in rows
+		if strings.Contains(out, "worker-a") {
+			t.Errorf("width 90: should not show worker ID: %q", out)
+		}
+	})
+
+	t.Run("width<80 truncates bead ID to 8 chars", func(t *testing.T) {
+		lm := makeLM()
+		out := lm.View(theme, styles, 70, 30)
+		// Full ID "oro-abc123" (10 chars) should NOT appear
+		if strings.Contains(out, "oro-abc123") {
+			t.Errorf("width 70: bead ID should be truncated, found full ID: %q", out)
+		}
+		// Truncated form: first 5 chars + "..." = "oro-a..."
+		if !strings.Contains(out, "oro-a"+"\u2026") && !strings.Contains(out, "oro-a...") {
+			t.Errorf("width 70: missing truncated bead ID 'oro-a...' or 'oro-a\u2026': %q", out)
+		}
+	})
+
+	t.Run("focus resets to list pane when width drops below 100 while detail focused", func(t *testing.T) {
+		lm := makeLM()
+		lm.detailFocused = true
+		lm = lm.resize(90, 30)
+		if lm.detailFocused {
+			t.Error("resize to width<100 should reset detailFocused to false")
 		}
 	})
 }
