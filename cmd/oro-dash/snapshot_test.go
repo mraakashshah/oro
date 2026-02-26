@@ -459,3 +459,104 @@ func TestSnapshot_WorkersView_MultipleWorkers(t *testing.T) {
 	output := wt.View(theme, styles, 80)
 	assertGolden(t, output)
 }
+
+// ── List view snapshots ───────────────────────────────────────────────────────
+
+func TestSnapshot_ListView(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	// Shared helper: creates a realistic set of beads across statuses.
+	mixedBeads := func() []protocol.Bead {
+		return []protocol.Bead{
+			{ID: "oro-ip.1", Title: "Refactor auth module", Status: "in_progress", Priority: 1, Type: "task"},
+			{ID: "oro-ip.2", Title: "Fix login timeout", Status: "in_progress", Priority: 0, Type: "bug"},
+			{ID: "oro-op.1", Title: "Add caching layer", Status: "open", Priority: 2, Type: "feature"},
+			{ID: "oro-op.2", Title: "Write API docs", Status: "open", Priority: 3, Type: "task"},
+			{
+				ID: "oro-bl.1", Title: "Blocked on infra", Status: "blocked", Priority: 1, Type: "task",
+				Dependencies: []protocol.Dependency{{IssueID: "oro-bl.1", DependsOnID: "oro-op.1", Type: "blocks"}},
+			},
+			{ID: "oro-cl.1", Title: "Setup CI pipeline", Status: "closed", Priority: 2, Type: "task"},
+			{ID: "oro-cl.2", Title: "Initial scaffolding", Status: "closed", Priority: 3, Type: "task"},
+		}
+	}
+
+	t.Run("Normal", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads(mixedBeads())
+		lm.cursor = 1 // highlight first bead row
+		output := lm.View(theme, styles, 120, 40)
+		assertGolden(t, output)
+	})
+
+	t.Run("Filtered", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads(mixedBeads())
+		lm = lm.setFilter("o") // open filter: in_progress + open
+		output := lm.View(theme, styles, 120, 40)
+		assertGolden(t, output)
+	})
+
+	t.Run("Collapsed", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads(mixedBeads())
+		// Collapse the "open" group (second group in render order)
+		lm.collapsed = map[string]bool{"open": true}
+		output := lm.View(theme, styles, 120, 40)
+		assertGolden(t, output)
+	})
+
+	t.Run("Narrow", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads(mixedBeads())
+		lm.cursor = 1
+		output := lm.View(theme, styles, 70, 40)
+		assertGolden(t, output)
+	})
+
+	t.Run("DetailFocused", func(t *testing.T) {
+		lm := NewListModel()
+		beads := mixedBeads()
+		// Give the first in_progress bead acceptance criteria for the detail pane
+		beads[0].AcceptanceCriteria = "Must pass all unit tests and linting"
+		lm = lm.updateBeads(beads)
+		lm.cursor = 1 // first bead row (oro-ip.2 — priority 0 sorts first)
+		lm.detailFocused = true
+		lm.detailSections = defaultDetailSections()
+		// Add a worker assignment so the detail pane has worker info
+		lm = lm.updateWorkers(
+			[]WorkerStatus{{ID: "worker-snap", Status: "working", ContextPct: 42}},
+			map[string]string{"oro-ip.2": "worker-snap"},
+		)
+		output := lm.View(theme, styles, 120, 40)
+		assertGolden(t, output)
+	})
+
+	t.Run("ZeroBeads", func(t *testing.T) {
+		lm := NewListModel()
+		output := lm.View(theme, styles, 120, 40)
+		assertGolden(t, output)
+	})
+
+	t.Run("OneBead", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads([]protocol.Bead{
+			{ID: "oro-solo.1", Title: "The only bead", Status: "open", Priority: 1, Type: "task"},
+		})
+		output := lm.View(theme, styles, 120, 40)
+		assertGolden(t, output)
+	})
+
+	t.Run("AllSameStatus", func(t *testing.T) {
+		lm := NewListModel()
+		lm = lm.updateBeads([]protocol.Bead{
+			{ID: "oro-all.1", Title: "First open task", Status: "open", Priority: 0, Type: "bug"},
+			{ID: "oro-all.2", Title: "Second open task", Status: "open", Priority: 1, Type: "task"},
+			{ID: "oro-all.3", Title: "Third open task", Status: "open", Priority: 2, Type: "feature"},
+			{ID: "oro-all.4", Title: "Fourth open task", Status: "open", Priority: 3, Type: "task"},
+		})
+		output := lm.View(theme, styles, 120, 40)
+		assertGolden(t, output)
+	})
+}
