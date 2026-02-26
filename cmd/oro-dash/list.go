@@ -298,3 +298,69 @@ func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string 
 
 	return fmt.Sprintf("  %s %s %s  %-*s%s", icon, priority, id, maxTitle, title, workerPart)
 }
+
+// defaultDetailSections returns the default expanded/collapsed state for detail sections.
+// Acceptance and Worker are expanded; Deps and Notes are collapsed.
+func defaultDetailSections() map[string]bool {
+	return map[string]bool{
+		"acceptance": true,
+		"worker":     true,
+		"deps":       false,
+		"notes":      false,
+	}
+}
+
+// renderSection renders a collapsible section with a title and body.
+// expanded=true shows ▼ + title + body; expanded=false shows ▶ + title only.
+func renderSection(title, body string, expanded bool, styles Styles) string {
+	indicator := "▶"
+	if expanded {
+		indicator = "▼"
+	}
+	header := fmt.Sprintf("%s %s", indicator, styles.StatusLabel.Render(title))
+	if !expanded {
+		return header
+	}
+	return header + "\n" + styles.Muted.Render(body)
+}
+
+// renderDetailPane renders the detail pane for a bead with expandable sections.
+func renderDetailPane(b protocol.Bead, workers []WorkerStatus, assignments map[string]string, sections map[string]bool, styles Styles, width, height int) string {
+	var out strings.Builder
+
+	// Header: ID + title + status
+	out.WriteString(styles.Header.Render(b.ID) + "\n")
+	out.WriteString(b.Title + "\n")
+	out.WriteString(styles.Muted.Render(b.Status) + "\n\n")
+
+	// Acceptance section (only if content exists)
+	if b.AcceptanceCriteria != "" {
+		out.WriteString(renderSection("Acceptance", b.AcceptanceCriteria, sections["acceptance"], styles) + "\n\n")
+	}
+
+	// Worker section (only if assigned)
+	if assignments != nil {
+		if workerID, ok := assignments[b.ID]; ok && workerID != "" {
+			ctxPct := 0
+			for _, w := range workers {
+				if w.ID == workerID {
+					ctxPct = w.ContextPct
+					break
+				}
+			}
+			body := fmt.Sprintf("%s  %d%%", workerID, ctxPct)
+			out.WriteString(renderSection("Worker", body, sections["worker"], styles) + "\n\n")
+		}
+	}
+
+	// Dependencies section (only if deps exist)
+	if len(b.Dependencies) > 0 {
+		depLines := make([]string, 0, len(b.Dependencies))
+		for _, dep := range b.Dependencies {
+			depLines = append(depLines, fmt.Sprintf("%s: %s", dep.Type, dep.DependsOnID))
+		}
+		out.WriteString(renderSection("Dependencies", strings.Join(depLines, "\n"), sections["deps"], styles) + "\n\n")
+	}
+
+	return lipgloss.NewStyle().Width(width).Height(height).Render(out.String())
+}

@@ -589,3 +589,142 @@ func TestListRow_Render(t *testing.T) {
 		}
 	})
 }
+
+// TestListDetail_FollowsCursor verifies the split-pane detail rendering.
+func TestListDetail_FollowsCursor(t *testing.T) {
+	styles := NewStyles(DefaultTheme())
+
+	makeBead := func() protocol.Bead {
+		return protocol.Bead{
+			ID:                 "test-1",
+			Title:              "Test bead",
+			Status:             "open",
+			Priority:           2,
+			Type:               "task",
+			AcceptanceCriteria: "Must pass all tests",
+			Dependencies: []protocol.Dependency{
+				{Type: "blocks", DependsOnID: "dep-1"},
+			},
+		}
+	}
+
+	t.Run("detail pane shows cursor bead title and ID", func(t *testing.T) {
+		b := makeBead()
+		sections := map[string]bool{"acceptance": true, "worker": true}
+		out := renderDetailPane(b, nil, nil, sections, styles, 40, 20)
+		if !strings.Contains(out, "test-1") {
+			t.Errorf("detail pane missing bead ID: %q", out)
+		}
+		if !strings.Contains(out, "Test bead") {
+			t.Errorf("detail pane missing bead title: %q", out)
+		}
+	})
+
+	t.Run("Acceptance section expanded by default", func(t *testing.T) {
+		b := makeBead()
+		sections := map[string]bool{"acceptance": true}
+		out := renderDetailPane(b, nil, nil, sections, styles, 40, 20)
+		if !strings.Contains(out, "▼") {
+			t.Errorf("expanded section missing ▼ indicator: %q", out)
+		}
+		if !strings.Contains(out, "Must pass all tests") {
+			t.Errorf("expanded Acceptance section missing content: %q", out)
+		}
+	})
+
+	t.Run("Deps section collapsed by default", func(t *testing.T) {
+		b := makeBead()
+		// deps not in sections map → collapsed
+		sections := map[string]bool{"acceptance": true}
+		out := renderDetailPane(b, nil, nil, sections, styles, 40, 20)
+		if !strings.Contains(out, "▶") {
+			t.Errorf("collapsed section missing ▶ indicator: %q", out)
+		}
+		// Collapsed deps section should NOT show the dep ID
+		if strings.Contains(out, "dep-1") {
+			t.Errorf("collapsed Deps section should not show dep content: %q", out)
+		}
+	})
+
+	t.Run("Worker section expanded shows worker info when assigned", func(t *testing.T) {
+		b := makeBead()
+		workers := []WorkerStatus{{ID: "w-1", Status: "working", ContextPct: 42}}
+		assignments := map[string]string{"test-1": "w-1"}
+		sections := map[string]bool{"worker": true}
+		out := renderDetailPane(b, workers, assignments, sections, styles, 40, 20)
+		if !strings.Contains(out, "w-1") {
+			t.Errorf("worker section missing worker ID: %q", out)
+		}
+		if !strings.Contains(out, "42%") {
+			t.Errorf("worker section missing context pct: %q", out)
+		}
+	})
+
+	t.Run("Deps section collapsed hides content", func(t *testing.T) {
+		b := makeBead()
+		// deps not in sections → collapsed
+		sections := map[string]bool{}
+		out := renderDetailPane(b, nil, nil, sections, styles, 40, 20)
+		if strings.Contains(out, "dep-1") {
+			t.Errorf("collapsed Deps section should hide content: %q", out)
+		}
+	})
+
+	t.Run("Deps section expanded shows content", func(t *testing.T) {
+		b := makeBead()
+		sections := map[string]bool{"deps": true}
+		out := renderDetailPane(b, nil, nil, sections, styles, 40, 30)
+		if !strings.Contains(out, "dep-1") {
+			t.Errorf("expanded Deps section missing dep ID: %q", out)
+		}
+	})
+
+	t.Run("renderSection with expanded=true shows content", func(t *testing.T) {
+		out := renderSection("Test Section", "Body text here", true, styles)
+		if !strings.Contains(out, "▼") {
+			t.Errorf("expanded section missing ▼: %q", out)
+		}
+		if !strings.Contains(out, "Test Section") {
+			t.Errorf("section missing title: %q", out)
+		}
+		if !strings.Contains(out, "Body text here") {
+			t.Errorf("expanded section missing body: %q", out)
+		}
+	})
+
+	t.Run("renderSection with expanded=false hides content", func(t *testing.T) {
+		out := renderSection("Test Section", "Body text here", false, styles)
+		if !strings.Contains(out, "▶") {
+			t.Errorf("collapsed section missing ▶: %q", out)
+		}
+		if strings.Contains(out, "Body text here") {
+			t.Errorf("collapsed section should hide body: %q", out)
+		}
+	})
+
+	t.Run("detail pane with no acceptance criteria hides section", func(t *testing.T) {
+		b := makeBead()
+		b.AcceptanceCriteria = ""
+		sections := map[string]bool{"acceptance": true}
+		out := renderDetailPane(b, nil, nil, sections, styles, 60, 20)
+		if strings.Contains(out, "Acceptance") {
+			t.Errorf("detail pane should hide empty Acceptance section: %q", out)
+		}
+	})
+
+	t.Run("default sections: acceptance expanded, deps/notes collapsed", func(t *testing.T) {
+		sections := defaultDetailSections()
+		if !sections["acceptance"] {
+			t.Error("acceptance should be expanded by default")
+		}
+		if !sections["worker"] {
+			t.Error("worker should be expanded by default")
+		}
+		if sections["deps"] {
+			t.Error("deps should be collapsed by default")
+		}
+		if sections["notes"] {
+			t.Error("notes should be collapsed by default")
+		}
+	})
+}
