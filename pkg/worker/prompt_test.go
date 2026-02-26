@@ -1297,3 +1297,42 @@ func TestPromptSoftThresholdSaysGitCommit(t *testing.T) {
 		t.Errorf("soft threshold instruction must contain 'git commit' (not just 'commit current work'). Got:\n%s", handoffSection)
 	}
 }
+
+// TestPromptConstrainsDeadCodeNoOps verifies that the Constraints section warns
+// against replacing function calls with blank identifier assignments — a pattern
+// observed across multiple workers during QG retry cycles (oro-7nzy).
+func TestPromptConstrainsDeadCodeNoOps(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-noop-guard",
+		Title:              "Dead-code no-op guard test",
+		Description:        "Test that prompt forbids blank assignment replacement",
+		AcceptanceCriteria: "Prompt warns against _, _ = fn patterns",
+		WorktreePath:       "/tmp/wt-noop-guard",
+		Model:              "sonnet",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract Constraints section
+	constraintsStart := strings.Index(prompt, "## Constraints")
+	if constraintsStart == -1 {
+		t.Fatal("expected prompt to contain ## Constraints section")
+	}
+	constraintsEnd := strings.Index(prompt[constraintsStart+1:], "## ")
+	var constraintsSection string
+	if constraintsEnd == -1 {
+		constraintsSection = prompt[constraintsStart:]
+	} else {
+		constraintsSection = prompt[constraintsStart : constraintsStart+1+constraintsEnd]
+	}
+
+	// Must warn about blank identifier replacement of function calls
+	if !strings.Contains(constraintsSection, "_ =") {
+		t.Errorf("Constraints must warn against '_ =' blank assignment pattern. Got:\n%s", constraintsSection)
+	}
+	if !strings.Contains(strings.ToLower(constraintsSection), "never replace") {
+		t.Errorf("Constraints must say NEVER replace function calls with blank assignments. Got:\n%s", constraintsSection)
+	}
+}

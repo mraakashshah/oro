@@ -197,6 +197,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"- Do no git push",
 		"- Do not modify files outside your worktree",
 		"- Do not modify the main branch",
+		"- NEVER replace function/method calls with blank identifier assignments (`_, _ = fn, arg`). If a linter reports an unused variable, remove the declaration — do not silence it by replacing the call with `_ =`.",
 	}, "\n"))
 
 	// Context Handoff (Layer 1 threshold instructions)
