@@ -30,7 +30,23 @@ type DaemonSpawner interface {
 }
 
 // ExecDaemonSpawner spawns a real child process running `oro start --daemon-only`.
-type ExecDaemonSpawner struct{}
+// Optional timeout fields are forwarded as CLI flags to the child process.
+type ExecDaemonSpawner struct {
+	ProgressTimeout time.Duration
+	ReviewTimeout   time.Duration
+}
+
+// buildArgs constructs the CLI arguments for the daemon child process.
+func (e *ExecDaemonSpawner) buildArgs(workers int) []string {
+	args := []string{"start", "--daemon-only", "--workers", strconv.Itoa(workers)}
+	if e.ProgressTimeout > 0 {
+		args = append(args, "--progress-timeout="+e.ProgressTimeout.String())
+	}
+	if e.ReviewTimeout > 0 {
+		args = append(args, "--review-timeout="+e.ReviewTimeout.String())
+	}
+	return args
+}
 
 // SpawnDaemon forks a child process running the current binary with --daemon-only.
 // The child is placed in its own session (Setsid) so it survives parent exit
@@ -39,7 +55,7 @@ func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers int) (int, error
 	// Use exec.Command (not CommandContext) — the daemon is a long-lived child
 	// that must survive parent exit. CommandContext starts an internal goroutine
 	// tied to the parent process lifecycle; plain Command avoids this entirely.
-	child := exec.Command(os.Args[0], "start", "--daemon-only", "--workers", strconv.Itoa(workers)) //nolint:gosec,noctx // intentionally re-executing self; no context — daemon must outlive parent
+	child := exec.Command(os.Args[0], e.buildArgs(workers)...) //nolint:gosec,noctx // intentionally re-executing self; no context — daemon must outlive parent
 
 	// Redirect daemon stdout/stderr to a log file. Inheriting the parent's
 	// stdout/stderr causes SIGPIPE when the parent exits (broken pipe),
@@ -241,10 +257,12 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 // newStartCmd creates the "oro start" subcommand.
 func newStartCmd() *cobra.Command {
 	var (
-		workers    int
-		daemonOnly bool
-		detach     bool
-		model      string
+		workers         int
+		daemonOnly      bool
+		detach          bool
+		model           string
+		progressTimeout time.Duration
+		reviewTimeout   time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -261,7 +279,7 @@ func newStartCmd() *cobra.Command {
 			}
 
 			if daemonOnly {
-				return runDaemonOnly(cmd, pidPath, workers)
+				return runDaemonOnly(cmd, pidPath, workers, progressTimeout, reviewTimeout)
 			}
 
 			// Read project identity from .oro/config.yaml (if present).
@@ -284,7 +302,9 @@ func newStartCmd() *cobra.Command {
 				return fmt.Errorf("set ORO_HOME: %w", err)
 			}
 
-			return runFullStart(cmd.OutOrStdout(), workers, model, project, &ExecDaemonSpawner{}, &ExecRunner{},
+			return runFullStart(cmd.OutOrStdout(), workers, model, project,
+				&ExecDaemonSpawner{ProgressTimeout: progressTimeout, ReviewTimeout: reviewTimeout},
+				&ExecRunner{},
 				func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
 				socketPollTimeout, nil, 0, isDetached(detach))
 		},
@@ -294,6 +314,8 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&daemonOnly, "daemon-only", "d", false, "start dispatcher without tmux/sessions (for CI or testing)")
 	cmd.Flags().StringVar(&model, "model", "sonnet", "model for manager session")
 	cmd.Flags().BoolVarP(&detach, "detach", "D", false, "start in detached mode (don't attach to tmux session)")
+	cmd.Flags().DurationVar(&progressTimeout, "progress-timeout", 0, "max time without worker progress before STUCK_WORKER (default 10m)")
+	cmd.Flags().DurationVar(&reviewTimeout, "review-timeout", 0, "max time a reviewing worker can stall (default 15m)")
 
 	return cmd
 }
@@ -311,7 +333,7 @@ func cleanWorkerLogs(oroHome string) {
 }
 
 // runDaemonOnly runs the dispatcher in the foreground (used for testing/CI).
-func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
+func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTimeout, reviewTimeout time.Duration) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
 	if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
@@ -326,7 +348,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int) error {
 	// Build dispatcher first so we can wire its shutdown authorization flag
 	// into the signal handler. This makes the daemon immune to raw SIGTERM
 	// until the "shutdown" directive authorizes it.
-	d, db, err := buildDispatcher(workers)
+	d, db, err := buildDispatcher(workers, progressTimeout, reviewTimeout)
 	if err != nil {
 		return fmt.Errorf("build dispatcher: %w", err)
 	}
@@ -384,7 +406,8 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 
 // buildDispatcher constructs a Dispatcher with all production dependencies.
 // The caller owns the returned *sql.DB and must close it.
-func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
+// Zero-value timeouts use dispatcher defaults (ProgressTimeout=10m, ReviewTimeout=15m).
+func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duration) (*dispatcher.Dispatcher, *sql.DB, error) {
 	paths, err := ResolvePaths()
 	if err != nil {
 		return nil, nil, err
@@ -436,9 +459,11 @@ func buildDispatcher(maxWorkers int) (*dispatcher.Dispatcher, *sql.DB, error) {
 	opsSpawner := ops.NewSpawner(&ops.ClaudeOpsSpawner{})
 
 	cfg := dispatcher.Config{
-		SocketPath: sockPath,
-		MaxWorkers: maxWorkers,
-		DBPath:     dbPath,
+		SocketPath:      sockPath,
+		MaxWorkers:      maxWorkers,
+		DBPath:          dbPath,
+		ProgressTimeout: progressTimeout,
+		ReviewTimeout:   reviewTimeout,
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)

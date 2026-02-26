@@ -363,6 +363,78 @@ func TestWireDependencies_SetsPaneRestarter(t *testing.T) {
 	})
 }
 
+// TestStartProgressTimeoutFlag verifies that --progress-timeout and --review-timeout
+// flags wire through to buildDispatcher's Config.
+func TestStartProgressTimeoutFlag(t *testing.T) {
+	t.Run("explicit flags set Config timeouts", func(t *testing.T) {
+		cmd := newStartCmd()
+		cmd.SetArgs([]string{"--progress-timeout=20m", "--review-timeout=30m"})
+		if err := cmd.ParseFlags([]string{"--progress-timeout=20m", "--review-timeout=30m"}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+
+		pt, err := cmd.Flags().GetDuration("progress-timeout")
+		if err != nil {
+			t.Fatalf("GetDuration progress-timeout: %v", err)
+		}
+		if pt != 20*time.Minute {
+			t.Errorf("progress-timeout: got %v, want 20m", pt)
+		}
+
+		rt, err := cmd.Flags().GetDuration("review-timeout")
+		if err != nil {
+			t.Fatalf("GetDuration review-timeout: %v", err)
+		}
+		if rt != 30*time.Minute {
+			t.Errorf("review-timeout: got %v, want 30m", rt)
+		}
+	})
+
+	t.Run("omitted flags default to zero (dispatcher applies 10m/15m)", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+
+		pt, _ := cmd.Flags().GetDuration("progress-timeout")
+		if pt != 0 {
+			t.Errorf("progress-timeout default: got %v, want 0 (dispatcher default)", pt)
+		}
+
+		rt, _ := cmd.Flags().GetDuration("review-timeout")
+		if rt != 0 {
+			t.Errorf("review-timeout default: got %v, want 0 (dispatcher default)", rt)
+		}
+	})
+
+	t.Run("ExecDaemonSpawner forwards timeout flags to child", func(t *testing.T) {
+		spawner := &ExecDaemonSpawner{
+			ProgressTimeout: 20 * time.Minute,
+			ReviewTimeout:   30 * time.Minute,
+		}
+		args := spawner.buildArgs(3)
+		argStr := strings.Join(args, " ")
+		if !strings.Contains(argStr, "--progress-timeout=20m0s") {
+			t.Errorf("expected --progress-timeout=20m0s in args, got: %s", argStr)
+		}
+		if !strings.Contains(argStr, "--review-timeout=30m0s") {
+			t.Errorf("expected --review-timeout=30m0s in args, got: %s", argStr)
+		}
+	})
+
+	t.Run("ExecDaemonSpawner omits zero-value timeouts", func(t *testing.T) {
+		spawner := &ExecDaemonSpawner{}
+		args := spawner.buildArgs(2)
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, "progress-timeout") {
+			t.Errorf("zero progress-timeout should not appear in args, got: %s", argStr)
+		}
+		if strings.Contains(argStr, "review-timeout") {
+			t.Errorf("zero review-timeout should not appear in args, got: %s", argStr)
+		}
+	})
+}
+
 // fakeCommandRunner is a mock CommandRunner for testing.
 type fakeCommandRunner struct{}
 

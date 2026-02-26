@@ -150,7 +150,7 @@ func TestBuildDispatcher_WALMode(t *testing.T) {
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
 
-	d, db, err := buildDispatcher(1)
+	d, db, err := buildDispatcher(1, 0, 0)
 	if err != nil {
 		t.Fatalf("buildDispatcher: %v", err)
 	}

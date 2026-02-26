@@ -34,7 +34,7 @@ func TestBuildDispatcher_BuildsIndex(t *testing.T) {
 	}
 	defer func() { _ = os.Chdir(origWd) }()
 
-	d, db, err := buildDispatcher(1)
+	d, db, err := buildDispatcher(1, 0, 0)
 	if err != nil {
 		t.Fatalf("buildDispatcher: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestBuildDispatcher_IndexBuildDoesNotBlockStartup(t *testing.T) {
 
 	// buildDispatcher should succeed immediately regardless of index build status.
 	// The index builds asynchronously in a goroutine.
-	d, db, err := buildDispatcher(1)
+	d, db, err := buildDispatcher(1, 0, 0)
 	if err != nil {
 		t.Fatalf("buildDispatcher failed (should not block on index build): %v", err)
 	}
