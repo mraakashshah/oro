@@ -36,7 +36,8 @@ func defaultMemoryStore() (*memory.Store, error) {
 	_, _ = db.ExecContext(context.Background(), protocol.MigratePinnedMemories)
 	_, _ = db.ExecContext(context.Background(), protocol.MigrateKVStore)
 	_, _ = db.ExecContext(context.Background(), protocol.MigrateProjectColumn)
-
+	_, _ = db.ExecContext(context.Background(), protocol.MigrateRejectionHistory)
+	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_rejection_bead ON rejection_history(bead_id)")
 	// Backfill project column for existing rows
 	_, _ = db.ExecContext(context.Background(), `UPDATE memories SET project = 'oro' WHERE project IS NULL OR project = ''`)
 

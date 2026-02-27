@@ -48,4 +48,6 @@ func migrateStateDB(db *sql.DB) {
 	_, _ = db.ExecContext(ctx, protocol.MigrateFileTracking)
 	_, _ = db.ExecContext(ctx, protocol.MigratePinnedMemories)
 	_, _ = db.ExecContext(ctx, protocol.MigrateKVStore)
+	_, _ = db.ExecContext(ctx, protocol.MigrateRejectionHistory)
+	_, _ = db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_rejection_bead ON rejection_history(bead_id)")
 }
