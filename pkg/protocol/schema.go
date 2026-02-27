@@ -83,6 +83,16 @@ CREATE TABLE IF NOT EXISTS kv_store (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Reviewer rejection history: stored separately from learnings so rejections
+-- don't pollute the memory search index.
+CREATE TABLE IF NOT EXISTS rejection_history (
+    id INTEGER PRIMARY KEY,
+    bead_id TEXT NOT NULL,
+    worker_id TEXT,
+    feedback TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- FTS5 full-text index over memories for BM25-ranked search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
@@ -141,4 +151,28 @@ CREATE TABLE IF NOT EXISTS kv_store (
 // After running, execute: UPDATE memories SET project = 'oro' WHERE project IS NULL
 const MigrateProjectColumn = `
 ALTER TABLE memories ADD COLUMN project TEXT DEFAULT 'oro';
+`
+
+// MigrateRejectionHistory creates the rejection_history table and backfills it
+// from memories rows that look like rejection feedback
+// (content LIKE 'Reviewer rejected%'). After backfill those rows are deleted
+// from memories so they no longer appear in oro memories list.
+// Safe to apply on a fresh DB (rejection_history already exists via SchemaDDL).
+const MigrateRejectionHistory = `
+CREATE TABLE IF NOT EXISTS rejection_history (
+    id INTEGER PRIMARY KEY,
+    bead_id TEXT NOT NULL,
+    worker_id TEXT,
+    feedback TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO rejection_history (bead_id, worker_id, feedback, created_at)
+SELECT
+    COALESCE(bead_id, ''),
+    COALESCE(worker_id, ''),
+    SUBSTR(content, LENGTH('Reviewer rejected this bead: ') + 1),
+    created_at
+FROM memories
+WHERE content LIKE 'Reviewer rejected this bead: %';
+DELETE FROM memories WHERE content LIKE 'Reviewer rejected this bead: %';
 `

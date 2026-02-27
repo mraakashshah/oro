@@ -2503,3 +2503,96 @@ func TestInsertQualityGate(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Rejection history tests (oro-jwwt.1.2.1)
+// ---------------------------------------------------------------------------
+
+// TestInsertRejection verifies that InsertRejection writes to rejection_history,
+// NOT to the memories table.
+func TestInsertRejection(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	err := store.InsertRejection(ctx, "oro-bead1", "worker1", "missing edge case tests")
+	if err != nil {
+		t.Fatalf("InsertRejection: %v", err)
+	}
+
+	// Verify it's in rejection_history.
+	var histCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM rejection_history WHERE bead_id = 'oro-bead1'`,
+	).Scan(&histCount); err != nil {
+		t.Fatalf("query rejection_history: %v", err)
+	}
+	if histCount != 1 {
+		t.Errorf("expected 1 entry in rejection_history, got %d", histCount)
+	}
+
+	// Verify memories table has NO rejection entry.
+	var memCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE content LIKE 'Reviewer rejected%'`,
+	).Scan(&memCount); err != nil {
+		t.Fatalf("query memories: %v", err)
+	}
+	if memCount != 0 {
+		t.Errorf("expected 0 rejection entries in memories, got %d", memCount)
+	}
+}
+
+// TestGetRejections verifies that GetRejections returns rejection entries for
+// the specified bead only.
+func TestGetRejections(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	if err := store.InsertRejection(ctx, "oro-bead1", "w1", "missing tests"); err != nil {
+		t.Fatalf("InsertRejection 1: %v", err)
+	}
+	if err := store.InsertRejection(ctx, "oro-bead1", "w2", "wrong implementation"); err != nil {
+		t.Fatalf("InsertRejection 2: %v", err)
+	}
+	if err := store.InsertRejection(ctx, "oro-bead2", "w1", "different bead"); err != nil {
+		t.Fatalf("InsertRejection 3: %v", err)
+	}
+
+	rejections, err := store.GetRejections(ctx, "oro-bead1")
+	if err != nil {
+		t.Fatalf("GetRejections: %v", err)
+	}
+	if len(rejections) != 2 {
+		t.Errorf("expected 2 rejections for oro-bead1, got %d", len(rejections))
+	}
+	for _, r := range rejections {
+		if r.BeadID != "oro-bead1" {
+			t.Errorf("expected BeadID 'oro-bead1', got %q", r.BeadID)
+		}
+		if r.Feedback == "" {
+			t.Error("expected non-empty Feedback")
+		}
+	}
+
+	rejections2, err := store.GetRejections(ctx, "oro-bead2")
+	if err != nil {
+		t.Fatalf("GetRejections bead2: %v", err)
+	}
+	if len(rejections2) != 1 {
+		t.Errorf("expected 1 rejection for oro-bead2, got %d", len(rejections2))
+	}
+	if rejections2[0].Feedback != "different bead" {
+		t.Errorf("expected feedback 'different bead', got %q", rejections2[0].Feedback)
+	}
+
+	// GetRejections on a bead with no rejections returns empty slice.
+	empty, err := store.GetRejections(ctx, "oro-no-such-bead")
+	if err != nil {
+		t.Fatalf("GetRejections empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected 0 rejections for unknown bead, got %d", len(empty))
+	}
+}

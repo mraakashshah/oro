@@ -1148,3 +1148,53 @@ func mergeDuplicates(ctx context.Context, store *Store, threshold float64, dryRu
 
 	return merged, nil
 }
+
+// Rejection holds a single reviewer rejection record from rejection_history.
+type Rejection struct {
+	ID        int64
+	BeadID    string
+	WorkerID  string
+	Feedback  string
+	CreatedAt string
+}
+
+// InsertRejection stores reviewer feedback in the rejection_history table.
+// It never writes to the memories table, so rejections do not pollute memory
+// search results.
+func (s *Store) InsertRejection(ctx context.Context, beadID, workerID, feedback string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO rejection_history (bead_id, worker_id, feedback) VALUES (?, ?, ?)`,
+		beadID, workerID, feedback,
+	)
+	if err != nil {
+		return fmt.Errorf("insert rejection: %w", err)
+	}
+	return nil
+}
+
+// GetRejections returns all rejection_history entries for the given bead,
+// ordered by created_at ascending (oldest first).
+func (s *Store) GetRejections(ctx context.Context, beadID string) ([]Rejection, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, bead_id, COALESCE(worker_id, ''), feedback, created_at
+		 FROM rejection_history WHERE bead_id = ? ORDER BY created_at ASC, id ASC`,
+		beadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get rejections: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []Rejection
+	for rows.Next() {
+		var r Rejection
+		if err := rows.Scan(&r.ID, &r.BeadID, &r.WorkerID, &r.Feedback, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("get rejections scan: %w", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("get rejections rows: %w", err)
+	}
+	return results, nil
+}

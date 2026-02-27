@@ -976,46 +976,59 @@ func (d *Dispatcher) fetchBeadMemories(ctx context.Context, beadID string) strin
 	return memCtx
 }
 
-// storeRejectionFeedback persists reviewer feedback as a "gotcha" memory so
-// it becomes part of the bead's cross-session memory history. This allows
-// subsequent re-assigns to retrieve the full rejection history via ForPrompt.
-// Best-effort: errors are silently ignored.
+// storeRejectionFeedback persists reviewer feedback in the rejection_history
+// table (not memories), so rejections accumulate across retry cycles without
+// polluting the memory search index. Best-effort: errors are silently ignored.
 func (d *Dispatcher) storeRejectionFeedback(ctx context.Context, beadID, feedback string) {
 	if d.memories == nil || feedback == "" {
 		return
 	}
-	content := fmt.Sprintf("Reviewer rejected this bead: %s", feedback)
-	_, _ = d.memories.Insert(ctx, memory.InsertParams{
-		Content:    content,
-		Type:       "gotcha",
-		Source:     "daemon_extracted",
-		BeadID:     beadID,
-		Confidence: 0.9,
-	})
+	_ = d.memories.InsertRejection(ctx, beadID, "", feedback)
 }
 
-// buildRejectionMemoryContext stores the current reviewer feedback as a memory
-// and returns a MemoryContext that includes the rejection feedback prepended to
-// any general memories retrieved for the bead. This ensures the worker always
-// sees why it was rejected, even when the memory store has no prior entries.
+// buildRejectionMemoryContext stores the current reviewer feedback in
+// rejection_history and returns a MemoryContext that combines:
+//   - a "## Review Rejection Feedback" section with the current feedback
+//   - prior rejections fetched from rejection_history via GetRejections
+//   - general bead memories fetched from memories via ForPrompt
+//
+// This ensures the worker always sees why it was rejected even when the
+// memory store has no prior entries.
 func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, feedback string) string {
-	// Persist the rejection feedback so it accumulates across retry cycles.
+	// Persist the rejection feedback to rejection_history.
 	d.storeRejectionFeedback(ctx, beadID, feedback)
 
-	// Fetch general memories (now includes the just-stored feedback).
+	// Fetch general memories via ForPrompt.
 	generalMemCtx := d.fetchBeadMemories(ctx, beadID)
 
-	// Always prepend a rejection section so the worker sees the current
-	// rejection reason even if ForPrompt returns nothing (cold store).
+	// Fetch prior rejections from rejection_history.
+	var priorCtx string
+	if d.memories != nil {
+		if rejections, err := d.memories.GetRejections(ctx, beadID); err == nil && len(rejections) > 0 {
+			lines := make([]string, 0, len(rejections)+2)
+			lines = append(lines, "## Prior Rejection History")
+			for _, r := range rejections {
+				lines = append(lines, fmt.Sprintf("- %s", r.Feedback))
+			}
+			priorCtx = strings.Join(lines, "\n")
+		}
+	}
+
+	// Always prepend the current rejection section.
 	if feedback == "" {
 		return generalMemCtx
 	}
 
 	rejectionSection := fmt.Sprintf("## Review Rejection Feedback\n%s", feedback)
-	if generalMemCtx == "" {
-		return rejectionSection
+
+	parts := []string{rejectionSection}
+	if priorCtx != "" {
+		parts = append(parts, priorCtx)
 	}
-	return rejectionSection + "\n\n" + generalMemCtx
+	if generalMemCtx != "" {
+		parts = append(parts, generalMemCtx)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // mergeAndComplete runs merge.Coordinator.Merge and handles the result.

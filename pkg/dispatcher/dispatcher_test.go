@@ -12201,3 +12201,46 @@ func TestCheckHeartbeats_PrevSessionWorker(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildRejectionMemoryContextWithSeparateTable verifies that
+// buildRejectionMemoryContext writes rejection feedback to rejection_history
+// (NOT memories), and that the returned context still contains the feedback.
+// This satisfies acceptance assertions (1), (3) from oro-jwwt.1.2.1.
+func TestBuildRejectionMemoryContextWithSeparateTable(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	feedback := "tests are missing edge cases"
+	result := d.buildRejectionMemoryContext(ctx, "oro-sep-tbl", feedback)
+
+	// Result must contain the rejection header and feedback.
+	if !strings.Contains(result, "## Review Rejection Feedback") {
+		t.Errorf("result should contain rejection header, got: %q", result)
+	}
+	if !strings.Contains(result, feedback) {
+		t.Errorf("result should contain feedback %q, got: %q", feedback, result)
+	}
+
+	// Rejection must NOT appear in memories table.
+	var memCount int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE content LIKE 'Reviewer rejected%'`,
+	).Scan(&memCount); err != nil {
+		t.Fatalf("query memories: %v", err)
+	}
+	if memCount != 0 {
+		t.Errorf("expected 0 rejection entries in memories, got %d (rejections must go to rejection_history)", memCount)
+	}
+
+	// Rejection must appear in rejection_history.
+	var histCount int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM rejection_history WHERE bead_id = ? AND feedback = ?`,
+		"oro-sep-tbl", feedback,
+	).Scan(&histCount); err != nil {
+		t.Fatalf("query rejection_history: %v", err)
+	}
+	if histCount != 1 {
+		t.Errorf("expected 1 rejection in rejection_history, got %d", histCount)
+	}
+}
