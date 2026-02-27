@@ -95,7 +95,7 @@ uv run pytest path/to/test_file.py::test_fn_name -v
 
 **Verify:** Test fails for the expected reason (missing feature, not a typo).
 
-**If bead is too large** (see `bead-craft` size heuristics): **DECOMPOSE AND STOP** (see Mid-Bead Decomposition below).
+**If bead is too large** (see `beadcraft` size heuristics): **DECOMPOSE AND STOP** (see Mid-Bead Decomposition below).
 
 ### Step 5: GREEN
 
@@ -193,7 +193,7 @@ If during RED the bead needs multiple unrelated tests:
 5. Delete branch: `git checkout main && git branch -D bead/<id>`
 6. **STOP.** Report what was decomposed. Next invocation picks up a child.
 
-**Too-large signals:** See `bead-craft` size heuristics for the full list.
+**Too-large signals:** See `beadcraft` size heuristics for the full list.
 
 ## Error Handling
 
