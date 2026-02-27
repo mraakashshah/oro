@@ -796,6 +796,123 @@ func TestStatusResponse_NewFields(t *testing.T) {
 	})
 }
 
+// --- fetchBeadDetail ---
+
+// writeFakeBdShow writes a fake bd that returns a JSON array for the "show" subcommand.
+// When called with `show <id> --json`, it returns a single-element array with that ID.
+// When called with any other subcommand, it returns an empty array.
+func writeFakeBdShow(t *testing.T, fakeBin string) {
+	t.Helper()
+	script := `#!/bin/sh
+if [ "$1" = "show" ]; then
+  printf '[{"id":"%s","title":"Fetched Bead","status":"open","issue_type":"task","acceptance_criteria":"AC text"}]\n' "$2"
+  exit 0
+fi
+echo '[]'
+`
+	path := filepath.Join(fakeBin, "bd")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil { //nolint:gosec // G306: test-only executable stub
+		t.Fatalf("write fake bd show: %v", err)
+	}
+}
+
+func TestFetchBeadDetail(t *testing.T) {
+	t.Run("ParsesBeadFromArray", func(t *testing.T) {
+		fakeBin := t.TempDir()
+		writeFakeBdShow(t, fakeBin)
+		t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+		bead, err := fetchBeadDetail(context.Background(), "oro-test")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if bead == nil {
+			t.Fatal("expected non-nil bead, got nil")
+		}
+		if bead.ID != "oro-test" {
+			t.Errorf("bead.ID = %q, want %q", bead.ID, "oro-test")
+		}
+		if bead.Title != "Fetched Bead" {
+			t.Errorf("bead.Title = %q, want %q", bead.Title, "Fetched Bead")
+		}
+		if bead.AcceptanceCriteria != "AC text" {
+			t.Errorf("bead.AcceptanceCriteria = %q, want %q", bead.AcceptanceCriteria, "AC text")
+		}
+	})
+
+	t.Run("ReturnsErrorOnBdFailure", func(t *testing.T) {
+		fakeBin := t.TempDir()
+		script := "#!/bin/sh\nexit 1\n"
+		path := filepath.Join(fakeBin, "bd")
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil { //nolint:gosec // G306: test-only executable stub
+			t.Fatalf("write fake bd: %v", err)
+		}
+		t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+		_, err := fetchBeadDetail(context.Background(), "oro-test")
+		if err == nil {
+			t.Fatal("expected error when bd exits non-zero, got nil")
+		}
+	})
+
+	t.Run("ReturnsErrorOnEmptyArray", func(t *testing.T) {
+		fakeBin := t.TempDir()
+		script := "#!/bin/sh\necho '[]'\n"
+		path := filepath.Join(fakeBin, "bd")
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil { //nolint:gosec // G306: test-only executable stub
+			t.Fatalf("write fake bd: %v", err)
+		}
+		t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+		_, err := fetchBeadDetail(context.Background(), "oro-test")
+		if err == nil {
+			t.Fatal("expected error for empty array, got nil")
+		}
+	})
+
+	t.Run("MergeHandlerPreservesExistingDependencies", func(t *testing.T) {
+		// Bead already cached in m.beads with dependencies from bd list --json
+		existingDeps := []protocol.Dependency{
+			{IssueID: "oro-001", DependsOnID: "oro-002", Type: "blocks"},
+		}
+		m := newModel()
+		m.beads = []protocol.Bead{
+			{ID: "oro-001", Title: "Existing", Dependencies: existingDeps},
+		}
+
+		// beadDetailMsg arrives with a bead that has no deps (bd show uses different JSON keys)
+		incoming := &protocol.Bead{ID: "oro-001", Title: "Updated Title", AcceptanceCriteria: "New AC"}
+		msg := beadDetailMsg{bead: incoming}
+
+		// Set up a detail model showing oro-001
+		dm := newDetailModel(protocol.BeadDetail{
+			ID: "oro-001", Title: "Existing", Dependencies: existingDeps,
+		}, m.theme, m.styles)
+		m.detailModel = &dm
+
+		updated, _ := m.Update(msg)
+		um, ok := updated.(Model)
+		if !ok {
+			t.Fatal("expected Model type from Update")
+		}
+
+		if um.detailModel == nil {
+			t.Fatal("expected detailModel to be set after beadDetailMsg")
+		}
+		// Dependencies must be preserved from m.beads since incoming had none
+		if len(um.detailModel.bead.Dependencies) != 1 {
+			t.Errorf("expected 1 dependency preserved, got %d", len(um.detailModel.bead.Dependencies))
+		}
+		if um.detailModel.bead.Dependencies[0].IssueID != "oro-001" {
+			t.Errorf("dep IssueID = %q, want %q", um.detailModel.bead.Dependencies[0].IssueID, "oro-001")
+		}
+		// Title should be updated from the incoming bead
+		if um.detailModel.bead.Title != "Updated Title" {
+			t.Errorf("bead.Title = %q, want %q", um.detailModel.bead.Title, "Updated Title")
+		}
+	})
+}
+
 // --- sample collection wiring (oro-yqvn.4) ---
 
 func TestSampleCollection(t *testing.T) {

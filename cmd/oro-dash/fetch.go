@@ -31,6 +31,24 @@ func parseBeadsOutput(output string) ([]protocol.Bead, error) {
 	return beads, nil
 }
 
+// fetchBeadDetail fetches a single bead by ID using `bd show <id> --json`.
+// bd show returns a JSON array [{...}] (not a bare object); returns the first element.
+func fetchBeadDetail(ctx context.Context, beadID string) (*protocol.Bead, error) {
+	cmd := exec.CommandContext(ctx, "bd", "show", beadID, "--json") //nolint:gosec // G204: "bd" is a trusted internal CLI
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("bd show: %w", err)
+	}
+	var beads []protocol.Bead
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &beads); err != nil {
+		return nil, fmt.Errorf("parse bd show JSON: %w", err)
+	}
+	if len(beads) == 0 {
+		return nil, fmt.Errorf("bd show %s: no bead returned", beadID)
+	}
+	return &beads[0], nil
+}
+
 // fetchBeadsWithStatus fetches beads with a specific status filter.
 func fetchBeadsWithStatus(ctx context.Context, status string) ([]protocol.Bead, error) {
 	var cmd *exec.Cmd

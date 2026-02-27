@@ -41,6 +41,13 @@ type healthDataMsg struct {
 	data *HealthData
 }
 
+// beadDetailMsg carries a freshly-fetched bead from `bd show --json`.
+// Used to refresh detail view data asynchronously after drill-down.
+type beadDetailMsg struct {
+	bead *protocol.Bead
+	err  error
+}
+
 // tickCmd returns a command that sends a tickMsg after 2 seconds.
 func tickCmd() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
@@ -300,6 +307,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.samplePending = true
 		return m, tea.Batch(fetchBeadsCmd(), fetchWorkersCmd(), fetchHealthCmd(), tickCmd())
 
+	case beadDetailMsg:
+		m = m.applyBeadDetailMsg(msg)
+
 	case navigateToDepMsg:
 		return m.handleNavigateToDep(msg.beadID)
 	case fsChangeMsg:
@@ -376,6 +386,49 @@ func (m Model) applyBeadsMsg(msg beadsMsg) Model {
 	m = m.clampCursor()
 	m.listModel = m.listModel.updateBeads(m.allBeads())
 	m = m.maybeRecordSample()
+	return m
+}
+
+// applyBeadDetailMsg refreshes the active detail view with data from `bd show --json`.
+// Merge strategy: if the incoming bead has no Dependencies (bd show uses different JSON
+// keys than bd list, so deps unmarshal as nil), preserve the existing deps from m.beads.
+func (m Model) applyBeadDetailMsg(msg beadDetailMsg) Model {
+	if msg.err != nil || msg.bead == nil {
+		return m
+	}
+	bead := *msg.bead
+
+	// Merge: preserve existing Dependencies when bd show returned none.
+	if len(bead.Dependencies) == 0 {
+		for _, existing := range m.beads {
+			if existing.ID == bead.ID {
+				bead.Dependencies = existing.Dependencies
+				break
+			}
+		}
+	}
+
+	// Refresh the detail model if it is currently showing this bead.
+	if m.detailModel != nil && m.detailModel.bead.ID == bead.ID {
+		updated := newDetailModel(protocol.BeadDetail{
+			ID:                 bead.ID,
+			Title:              bead.Title,
+			Description:        bead.Description,
+			AcceptanceCriteria: bead.AcceptanceCriteria,
+			Status:             bead.Status,
+			Model:              bead.Model,
+			Owner:              bead.Owner,
+			Dependencies:       bead.Dependencies,
+			// Preserve live worker fields from the existing detail model.
+			WorkerID:       m.detailModel.bead.WorkerID,
+			ContextPercent: m.detailModel.bead.ContextPercent,
+			LastHeartbeat:  m.detailModel.bead.LastHeartbeat,
+		}, m.theme, m.styles)
+		updated.activeTab = m.detailModel.activeTab
+		updated.workerEvents = m.detailModel.workerEvents
+		updated.workerOutput = m.detailModel.workerOutput
+		m.detailModel = &updated
+	}
 	return m
 }
 
