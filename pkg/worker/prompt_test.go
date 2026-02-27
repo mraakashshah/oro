@@ -1195,8 +1195,8 @@ func TestPromptContainsContextThresholds(t *testing.T) {
 		}
 	}
 
-	// Must contain hard threshold percentages for all models (soft + 20)
-	for _, pct := range []string{"85%", "70%", "60%"} {
+	// Must contain hard threshold percentages for all models (soft + 10)
+	for _, pct := range []string{"75%", "60%", "50%"} {
 		if !strings.Contains(prompt, pct) {
 			t.Errorf("expected prompt to contain hard threshold %q", pct)
 		}

@@ -688,7 +688,7 @@ func BuildPrompt(beadID, worktree, memoryContext string) string {
 
 // watchContext polls .oro/context_pct in the current worktree and triggers
 // a single-stage hard stop when context usage exceeds the model-specific
-// hard threshold (soft threshold + 20). Layer 1 prompt handles the soft
+// hard threshold (soft threshold + 10). Layer 1 prompt handles the soft
 // threshold; the Go worker enforces the hard stop via SendHandoff + killProc.
 //
 // It also monitors subprocess health: if the subprocess dies unexpectedly
@@ -767,9 +767,9 @@ func (w *Worker) checkHandoffFile(ctx context.Context, wt string) bool {
 }
 
 // handleContextThreshold checks context percentage and handles threshold breaches.
-// Single-stage hard stop: if pct > threshold+20, send handoff and kill.
+// Single-stage hard stop: if pct > threshold+10, send handoff and kill.
 // Layer 1 prompt handles the soft threshold (the raw threshold value);
-// this function enforces the hard stop 20 points above.
+// this function enforces the hard stop 10 points above.
 // Returns true if handoff was triggered (caller should return).
 func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshold int) bool {
 	if wt == "" {
@@ -782,7 +782,7 @@ func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshol
 		return false
 	}
 
-	hardStop := threshold + 20
+	hardStop := threshold + 10
 	pct, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pct <= hardStop {
 		return false
