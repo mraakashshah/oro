@@ -473,11 +473,6 @@ func groupBeads(beads []protocol.Bead) map[string][]protocol.Bead {
 		groups[status] = group
 	}
 
-	// Cap Done (closed) at 10.
-	if len(groups["closed"]) > 10 {
-		groups["closed"] = groups["closed"][:10]
-	}
-
 	return groups
 }
 

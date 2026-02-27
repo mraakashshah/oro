@@ -59,6 +59,22 @@ func fetchBeadsWithStatus(ctx context.Context, status string) ([]protocol.Bead, 
 	return parseBeadsOutput(string(out))
 }
 
+// fetchMoreClosed fetches the next page of closed beads using cursor-based pagination.
+// cursor is the oldest ClosedAt RFC3339 timestamp from the previous batch; pass empty
+// string to fetch from the beginning. Uses --closed-before to page backwards in time.
+func fetchMoreClosed(ctx context.Context, cursor string) ([]protocol.Bead, error) {
+	args := []string{"list", "--status", "closed", "--sort", "closed", "--reverse", "--json"}
+	if cursor != "" {
+		args = append(args, "--closed-before="+cursor)
+	}
+	cmd := exec.CommandContext(ctx, "bd", args...) //nolint:gosec // G204: "bd" is a trusted internal CLI, args are hardcoded constants
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("bd list more closed: %w", err)
+	}
+	return parseBeadsOutput(string(out))
+}
+
 // fetchBeads fetches beads across all statuses (open, in_progress, blocked, closed).
 // Returns an empty slice on exec errors (bd not found, non-zero exit, etc).
 func fetchBeads(ctx context.Context) ([]protocol.Bead, error) {

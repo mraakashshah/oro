@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -1891,6 +1892,98 @@ func TestDrillDownWiresWorkerData(t *testing.T) {
 		// But Dependencies should still be populated
 		if len(model.detailModel.bead.Dependencies) != 1 {
 			t.Errorf("BeadDetail.Dependencies should be populated even for unassigned bead, got length %d", len(model.detailModel.bead.Dependencies))
+		}
+	})
+}
+
+// TestLoadMoreClosed verifies load-more pagination for closed beads.
+func TestLoadMoreClosed(t *testing.T) {
+	t.Run("moreClosedMsg appends to extraClosed and sets cursor to oldest ClosedAt", func(t *testing.T) {
+		m := newModel()
+
+		// Send a batch of 3 closed beads sorted by ClosedAt descending (most recent first).
+		batch := moreClosedMsg{
+			{ID: "oro-c.1", Status: "closed", ClosedAt: "2024-03-01T12:00:00Z"},
+			{ID: "oro-c.2", Status: "closed", ClosedAt: "2024-02-15T08:00:00Z"},
+			{ID: "oro-c.3", Status: "closed", ClosedAt: "2024-01-10T06:00:00Z"},
+		}
+
+		updated, _ := m.Update(batch)
+		got, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if len(got.extraClosed) != 3 {
+			t.Errorf("extraClosed length = %d, want 3", len(got.extraClosed))
+		}
+
+		// Cursor should be oldest ClosedAt from the batch (last element when sorted desc).
+		wantCursor := "2024-01-10T06:00:00Z"
+		if got.closedCursor != wantCursor {
+			t.Errorf("closedCursor = %q, want %q", got.closedCursor, wantCursor)
+		}
+	})
+
+	t.Run("moreClosedMsg appends to existing extraClosed (cumulative)", func(t *testing.T) {
+		m := newModel()
+		m.extraClosed = []protocol.Bead{
+			{ID: "oro-c.0", Status: "closed", ClosedAt: "2024-04-01T00:00:00Z"},
+		}
+
+		batch := moreClosedMsg{
+			{ID: "oro-c.1", Status: "closed", ClosedAt: "2024-03-01T12:00:00Z"},
+		}
+
+		updated, _ := m.Update(batch)
+		got, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if len(got.extraClosed) != 2 {
+			t.Errorf("extraClosed length = %d, want 2 (cumulative append)", len(got.extraClosed))
+		}
+	})
+
+	t.Run("applyBeadsMsg preserves extraClosed", func(t *testing.T) {
+		m := newModel()
+		m.extraClosed = []protocol.Bead{
+			{ID: "oro-extra.1", Status: "closed", ClosedAt: "2024-01-01T00:00:00Z"},
+		}
+
+		// beadsMsg should not wipe extraClosed.
+		msg := beadsMsg{
+			{ID: "oro-open.1", Status: "open"},
+			{ID: "oro-closed.1", Status: "closed", ClosedAt: "2024-03-01T00:00:00Z"},
+		}
+
+		updated, _ := m.Update(msg)
+		got, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if len(got.extraClosed) != 1 {
+			t.Errorf("extraClosed after beadsMsg = %d, want 1 (preserved)", len(got.extraClosed))
+		}
+		if got.extraClosed[0].ID != "oro-extra.1" {
+			t.Errorf("extraClosed[0].ID = %q, want %q", got.extraClosed[0].ID, "oro-extra.1")
+		}
+	})
+
+	t.Run("groupBeads does not cap closed at 10", func(t *testing.T) {
+		var beads []protocol.Bead
+		for i := range 15 {
+			beads = append(beads, protocol.Bead{
+				ID:     fmt.Sprintf("oro-c.%d", i),
+				Status: "closed",
+			})
+		}
+
+		groups := groupBeads(beads)
+		if len(groups["closed"]) != 15 {
+			t.Errorf("groupBeads closed count = %d, want 15 (no cap)", len(groups["closed"]))
 		}
 	})
 }

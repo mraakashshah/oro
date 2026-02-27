@@ -23,6 +23,9 @@ type tickMsg time.Time
 // beadsMsg carries fetched beads from the bd CLI.
 type beadsMsg []protocol.Bead
 
+// moreClosedMsg carries additional closed beads fetched via load-more pagination.
+type moreClosedMsg []protocol.Bead
+
 // workerDataMsg carries worker status, assignments, and focused epic from the dispatcher.
 type workerDataMsg struct {
 	workers             []WorkerStatus
@@ -43,6 +46,15 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// fetchMoreClosedCmd returns a tea.Cmd that fetches the next page of closed beads.
+// cursor is the oldest ClosedAt from the previous batch (m.closedCursor).
+func fetchMoreClosedCmd(cursor string) tea.Cmd {
+	return func() tea.Msg {
+		beads, _ := fetchMoreClosed(context.Background(), cursor)
+		return moreClosedMsg(beads)
+	}
 }
 
 // fetchBeadsCmd returns a tea.Cmd that fetches beads from the bd CLI.
@@ -137,7 +149,12 @@ type Model struct {
 	focusedEpic string            // Epic ID currently focused by dispatcher
 
 	// Enriched dispatcher fields (oro-yqvn.3)
-	closedCount         int
+	closedCount int
+
+	// Load-more pagination state for closed beads (oro-tm8m.11)
+	extraClosed  []protocol.Bead // additional closed beads appended via moreClosedMsg
+	closedCursor string          // oldest ClosedAt from last closed batch; used as cursor for next fetch
+
 	uptimeSeconds       float64
 	pendingHandoffCount int
 	attemptCounts       map[string]int
@@ -262,6 +279,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case beadsMsg:
 		m = m.applyBeadsMsg(msg)
 
+	case moreClosedMsg:
+		m = m.applyMoreClosedMsg(msg)
+
 	case workerDataMsg:
 		m = m.applyWorkerDataMsg(msg)
 
@@ -332,6 +352,7 @@ func (m Model) maybeRecordSample() Model {
 }
 
 // applyBeadsMsg updates the model with fetched bead data, recomputing status counts.
+// extraClosed is preserved so that beads loaded via load-more survive periodic refreshes.
 func (m Model) applyBeadsMsg(msg beadsMsg) Model {
 	m.initialLoad = false
 	m.beads = []protocol.Bead(msg)
@@ -349,10 +370,49 @@ func (m Model) applyBeadsMsg(msg beadsMsg) Model {
 			m.closedCount++
 		}
 	}
+	// Set closedCursor to oldest ClosedAt among closed beads in this batch so that
+	// fetchMoreClosed knows where to start the next page.
+	m.closedCursor = oldestClosedAt([]protocol.Bead(msg))
 	m = m.clampCursor()
-	m.listModel = m.listModel.updateBeads(m.beads)
+	m.listModel = m.listModel.updateBeads(m.allBeads())
 	m = m.maybeRecordSample()
 	return m
+}
+
+// applyMoreClosedMsg appends load-more results to extraClosed and advances the cursor.
+func (m Model) applyMoreClosedMsg(msg moreClosedMsg) Model {
+	m.extraClosed = append(m.extraClosed, []protocol.Bead(msg)...)
+	if len(msg) > 0 {
+		m.closedCursor = oldestClosedAt([]protocol.Bead(msg))
+	}
+	m.listModel = m.listModel.updateBeads(m.allBeads())
+	return m
+}
+
+// allBeads returns the combined slice of main beads plus any extra closed beads.
+func (m Model) allBeads() []protocol.Bead {
+	if len(m.extraClosed) == 0 {
+		return m.beads
+	}
+	all := make([]protocol.Bead, len(m.beads), len(m.beads)+len(m.extraClosed))
+	copy(all, m.beads)
+	return append(all, m.extraClosed...)
+}
+
+// oldestClosedAt returns the oldest ClosedAt timestamp from a slice of beads.
+// Assumes beads are sorted by ClosedAt descending (most recent first), so the last
+// non-empty ClosedAt is the oldest. Falls back to linear scan for safety.
+func oldestClosedAt(beads []protocol.Bead) string {
+	oldest := ""
+	for _, b := range beads {
+		if b.ClosedAt == "" {
+			continue
+		}
+		if oldest == "" || b.ClosedAt < oldest {
+			oldest = b.ClosedAt
+		}
+	}
+	return oldest
 }
 
 // applyWorkerDataMsg updates the model with worker status from the dispatcher.
@@ -524,6 +584,9 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 	case "a":
 		m.treeModel = NewTreeModel(m.beads)
 		m.activeView = TreeView
+	case "m":
+		// Load more closed beads (pagination).
+		return m, fetchMoreClosedCmd(m.closedCursor)
 	}
 	return m, nil
 }

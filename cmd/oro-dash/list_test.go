@@ -540,7 +540,7 @@ func TestListRow_Render(t *testing.T) {
 		}
 	})
 
-	t.Run("groupBeads caps closed group at 10", func(t *testing.T) {
+	t.Run("groupBeads does not cap closed group (load-more handles pagination)", func(t *testing.T) {
 		beads := make([]protocol.Bead, 15)
 		for i := range beads {
 			beads[i] = protocol.Bead{
@@ -549,8 +549,8 @@ func TestListRow_Render(t *testing.T) {
 			}
 		}
 		groups := groupBeads(beads)
-		if len(groups["closed"]) > 10 {
-			t.Errorf("groupBeads closed group not capped: got %d, want <= 10", len(groups["closed"]))
+		if len(groups["closed"]) != 15 {
+			t.Errorf("groupBeads closed group = %d, want 15 (no cap)", len(groups["closed"]))
 		}
 	})
 
