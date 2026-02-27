@@ -161,6 +161,16 @@ This feeds into knowledge.jsonl and gets resurfaced in future sessions. Examples
 - "LEARNED: modernc sqlite doesn't support FTS5 bm25() — use rank column instead"
 - "LEARNED: git rebase fails if branch is checked out in any worktree — remove worktree first"
 
+### 6. Write Sentinel File
+
+After writing the handoff YAML, write the sentinel file so the dispatcher detects the handoff:
+
+```bash
+mkdir -p .oro && touch .oro/handoff_done
+```
+
+This file signals to the dispatcher that the handoff document is complete and the worker is ready to be cycled.
+
 ## Principles
 
 - **More information, not less** — this is the minimum, always add more if needed

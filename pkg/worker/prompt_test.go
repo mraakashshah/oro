@@ -1413,3 +1413,32 @@ func TestAssemblePrompt_BugP0Rule(t *testing.T) {
 		t.Errorf("Failure section must contain 'All bug beads MUST use --priority=0'. Got:\n%s", failureSection)
 	}
 }
+
+func TestCreateHandoffWritesSentinel(t *testing.T) {
+	t.Parallel()
+
+	// Walk up from the working directory to find .claude/skills/.
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	for {
+		candidate := filepath.Join(dir, ".claude", "skills", "create-handoff", "SKILL.md")
+		if _, err := os.Stat(candidate); err == nil {
+			data, readErr := os.ReadFile(candidate) //nolint:gosec // reads fixed path under .claude/
+			if readErr != nil {
+				t.Fatalf("failed to read %s: %v", candidate, readErr)
+			}
+			content := string(data)
+			if !strings.Contains(content, "handoff_done") {
+				t.Error("create-handoff SKILL.md must contain instruction to write .oro/handoff_done sentinel file")
+			}
+			return
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find .claude/skills/create-handoff/SKILL.md by walking up from working directory")
+		}
+		dir = parent
+	}
+}
