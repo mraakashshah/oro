@@ -133,6 +133,17 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		})
 	}
 	d.mu.Unlock()
+
+	// Worker is idle (no handoff was dispatched) — wake the assign loop so it
+	// can call tryAssign immediately instead of waiting for the next poll tick.
+	// Non-blocking send: if the channel is already full, a tryAssign is already
+	// queued and this signal is redundant.
+	if h == nil {
+		select {
+		case d.workerReadyCh <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // ConnectedWorkers returns the number of currently connected workers.

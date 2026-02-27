@@ -340,6 +340,13 @@ type Dispatcher struct {
 	// Reset to 0 by applyScaleDirective when the target changes.
 	unexpectedManagedExits int
 
+	// workerReadyCh is signaled (non-blocking) when a worker becomes idle without
+	// a pending handoff. assignLoop and assignLoopPoll listen on it to call
+	// tryAssign immediately instead of waiting for the next poll tick.
+	// Buffered with capacity 1: multiple concurrent registrations coalesce into
+	// a single tryAssign call.
+	workerReadyCh chan struct{}
+
 	// shutdownCh is closed when a shutdown directive is received, causing Run() to exit.
 	shutdownCh chan struct{}
 	// shutdownAuthorized gates whether SIGTERM is honored by the signal handler.
@@ -399,6 +406,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		},
 		priorityBeads:     make(map[string]bool),
 		pendingManagedIDs: make(map[string]bool),
+		workerReadyCh:     make(chan struct{}, 1),
 		shutdownCh:        make(chan struct{}),
 		beadsDir:          protocol.BeadsDir,
 		panesDir:          filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
@@ -1851,6 +1859,9 @@ func (d *Dispatcher) assignLoop(ctx context.Context) {
 			if err != nil {
 				_ = d.logEvent(ctx, "watcher_error", "dispatcher", "", "", err.Error())
 			}
+		case <-d.workerReadyCh:
+			// A new idle worker connected — assign immediately without waiting for poll.
+			d.tryAssign(ctx)
 		case <-fallbackTicker.C:
 			// Safety net poll
 			d.tryAssign(ctx)
@@ -1869,6 +1880,9 @@ func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 			return
 		case <-d.shutdownCh:
 			return
+		case <-d.workerReadyCh:
+			// A new idle worker connected — assign immediately without waiting for poll.
+			d.tryAssign(ctx)
 		case <-ticker.C:
 			d.tryAssign(ctx)
 		}
