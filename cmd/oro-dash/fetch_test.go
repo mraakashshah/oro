@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -359,6 +360,89 @@ func TestFetchBeads_SkipsStatusOnError(t *testing.T) {
 	if len(beads) != 0 {
 		t.Errorf("expected 0 beads when all statuses fail, got %d", len(beads))
 	}
+}
+
+// --- fetchBeadsWithStatus: closed sort order ---
+
+// writeFakeBdArgCapture writes a fake bd that dumps all received args
+// to a capture file, then echoes a minimal bead array.
+func writeFakeBdArgCapture(t *testing.T, fakeBin, captureFile string) {
+	t.Helper()
+	// Each invocation appends a line with all args to the capture file.
+	script := `#!/bin/sh
+echo "$@" >> "` + captureFile + `"
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--status" ]; then
+    printf '[{"id":"oro-cap","title":"Captured","status":"%s","issue_type":"task"}]\n' "$arg"
+    exit 0
+  fi
+  prev="$arg"
+done
+echo '[]'
+`
+	path := filepath.Join(fakeBin, "bd")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil { //nolint:gosec // G306: test-only executable stub
+		t.Fatalf("write fake bd arg-capture: %v", err)
+	}
+}
+
+func TestFetchBeads_ClosedSortedByMostRecent(t *testing.T) {
+	fakeBin := t.TempDir()
+	captureFile := filepath.Join(t.TempDir(), "args.log")
+	writeFakeBdArgCapture(t, fakeBin, captureFile)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	_, err := fetchBeads(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read captured args
+	data, err := os.ReadFile(captureFile) //nolint:gosec // G304: captureFile is a test-controlled temp path
+	if err != nil {
+		t.Fatalf("read capture file: %v", err)
+	}
+
+	lines := splitNonEmpty(string(data))
+
+	// Find the closed status call
+	var closedArgs string
+	for _, line := range lines {
+		if containsAll(line, "--status", "closed") {
+			closedArgs = line
+			break
+		}
+	}
+	if closedArgs == "" {
+		t.Fatal("no bd call with --status closed found in captured args")
+	}
+
+	// Closed beads must be sorted by close date, most recent first
+	if !containsAll(closedArgs, "--sort", "closed", "--reverse") {
+		t.Errorf("closed fetch missing sort flags; got args: %s", closedArgs)
+	}
+}
+
+// splitNonEmpty splits s by newline and returns non-empty lines.
+func splitNonEmpty(s string) []string {
+	var result []string
+	for _, line := range strings.Split(s, "\n") {
+		if line != "" {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+// containsAll returns true if s contains all substrings.
+func containsAll(s string, substrings ...string) bool {
+	for _, sub := range substrings {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 // --- fetchWorkerStatus (via UDS) ---

@@ -34,11 +34,18 @@ func parseBeadsOutput(output string) ([]protocol.Bead, error) {
 // fetchBeadsWithStatus fetches beads with a specific status filter.
 func fetchBeadsWithStatus(ctx context.Context, status string) ([]protocol.Bead, error) {
 	var cmd *exec.Cmd
-	if status == "" {
-		cmd = exec.CommandContext(ctx, "bd", "list", "--json") //nolint:gosec // G204: "bd" is a trusted internal CLI, not user input
-	} else {
-		cmd = exec.CommandContext(ctx, "bd", "list", "--status", status, "--json") //nolint:gosec // G204: "bd" is a trusted internal CLI, status is an enum value
+	var args []string
+	// Closed beads: sort by close date (most recent first) so the default
+	// limit=50 returns the 50 most recently closed, not the 50 oldest by ID.
+	switch status {
+	case "closed":
+		args = []string{"list", "--status", status, "--sort", "closed", "--reverse", "--json"}
+	case "":
+		args = []string{"list", "--json"}
+	default:
+		args = []string{"list", "--status", status, "--json"}
 	}
+	cmd = exec.CommandContext(ctx, "bd", args...) //nolint:gosec // G204: "bd" is a trusted internal CLI, args are hardcoded constants
 
 	out, err := cmd.Output()
 	if err != nil {
