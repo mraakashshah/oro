@@ -135,10 +135,16 @@ func TestShouldRetryEscalation(t *testing.T) {
 			want: false, // should NOT retry - bead was assigned
 		},
 		{
-			name:    "empty beadID - always retry",
+			name:    "empty beadID STUCK_WORKER - always retry",
 			escType: "STUCK_WORKER",
 			beadID:  "",
 			want:    true, // should retry - no bead context
+		},
+		{
+			name:    "empty beadID WORKER_CRASH - auto-ack stale escalation",
+			escType: "WORKER_CRASH",
+			beadID:  "",
+			want:    false, // should NOT retry - stale crash alert from prev-session worker with no bead (oro-p2ey)
 		},
 		{
 			name:    "beads.Show error - always retry",

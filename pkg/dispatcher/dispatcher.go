@@ -3107,13 +3107,16 @@ func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
 // if the escalation should be retried.
 //
 // Edge cases:
-// - Empty beadID: always retry (no bead context to check)
-// - beads.Show error: always retry (don't suppress on error)
-// - Unknown escType: always retry (don't block future escalation types)
+//   - Empty beadID + WORKER_CRASH: auto-ack — stale alert from a prev-session
+//     worker with no bead assigned, stops the 2-minute replay loop (oro-p2ey)
+//   - Empty beadID (other types): always retry (no bead context to check)
+//   - beads.Show error: always retry (don't suppress on error)
+//   - Unknown escType: always retry (don't block future escalation types)
 func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID string) bool {
-	// Always retry if no bead context
+	// Empty beadID: WORKER_CRASH auto-acks (stale prev-session alert, oro-p2ey);
+	// all other types retry because there's no bead context to check.
 	if beadID == "" {
-		return true
+		return protocol.EscalationType(escType) != protocol.EscWorkerCrash
 	}
 
 	// Check per-type conditions

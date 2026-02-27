@@ -1892,3 +1892,48 @@ func TestHeartbeatTimeoutIgnoresPrevSessionWorkers(t *testing.T) {
 		t.Errorf("expected WORKER_CRASH alert for current-session worker %q, got messages: %v", currWorkerID, msgs)
 	}
 }
+
+// TestPrevSessionWorkerDoesNotResetBead verifies that when a prev-session worker
+// times out its heartbeat, the bead is NOT reset to "open". Only current-session
+// workers should trigger a bead reset — prev-session workers carry stale bead
+// assignments that may have already been closed (oro-p2ey).
+func TestPrevSessionWorkerDoesNotResetBead(t *testing.T) {
+	t.Parallel()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	beadID := "bead-prev-session-reset"
+	workerID := "w-prev-session-reset"
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:          workerID,
+		conn:        server,
+		state:       protocol.WorkerBusy,
+		beadID:      beadID,
+		worktree:    "/tmp/worktree-prev-session",
+		lastSeen:    now,
+		encoder:     json.NewEncoder(server),
+		prevSession: true, // worker from a previous dispatcher session
+	}
+	d.mu.Unlock()
+
+	// Advance time past HeartbeatTimeout to trigger dead-worker detection.
+	d.nowFunc = func() time.Time { return now.Add(600 * time.Millisecond) }
+
+	d.checkHeartbeats(context.Background())
+
+	// Assert: beads.Update must NOT be called for a prev-session worker.
+	// Calling it would reopen a bead that was already closed in a previous session.
+	beadSrc.mu.Lock()
+	_, ok := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if ok {
+		t.Fatal("beads.Update must not be called for a prev-session worker timeout; bead must not be reopened")
+	}
+}
