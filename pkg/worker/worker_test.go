@@ -3798,3 +3798,123 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 		})
 	}
 }
+
+func TestHandoffFileTriggersShutdown(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-hf", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// Create temp worktree with .oro/
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+		t.Fatal(err)
+	}
+
+	// Send ASSIGN
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-hf",
+			Worktree: tmpDir,
+		},
+	})
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// Write .oro/handoff_done to trigger graceful shutdown
+	handoffDone := filepath.Join(oroDir, "handoff_done")
+	if err := os.WriteFile(handoffDone, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker should detect handoff_done and send HANDOFF within one poll interval
+	_ = dispatcherConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	scanner := bufio.NewScanner(dispatcherConn)
+	gotHandoff := false
+	for scanner.Scan() {
+		var msg protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.Type == protocol.MsgHandoff {
+			gotHandoff = true
+			if msg.Handoff.BeadID != "bead-hf" {
+				t.Errorf("expected bead_id bead-hf, got %s", msg.Handoff.BeadID)
+			}
+			break
+		}
+	}
+	if !gotHandoff {
+		t.Fatal("did not receive HANDOFF message after writing handoff_done")
+	}
+
+	// Subprocess should be killed after handoff
+	waitFor(t, func() bool {
+		return spawner.process.Killed()
+	}, 500*time.Millisecond)
+
+	// handoff_done file should be deleted after detection
+	if _, err := os.Stat(handoffDone); !os.IsNotExist(err) {
+		t.Error("expected handoff_done to be deleted after detection")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestStaleHandoffFileCleanedOnAssign(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-stale", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create temp worktree with a pre-existing stale handoff_done
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+		t.Fatal(err)
+	}
+	handoffDone := filepath.Join(oroDir, "handoff_done")
+	if err := os.WriteFile(handoffDone, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// Send ASSIGN — handleAssign should clean up stale handoff_done before watchContext starts
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-stale",
+			Worktree: tmpDir,
+		},
+	})
+	// Drain STATUS
+	_ = readMessage(t, dispatcherConn)
+
+	// handoff_done should be gone — deleted during handleAssign before watchContext starts
+	if _, err := os.Stat(handoffDone); !os.IsNotExist(err) {
+		t.Error("expected stale handoff_done to be deleted during handleAssign")
+	}
+
+	cancel()
+	<-errCh
+}

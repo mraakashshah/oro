@@ -362,6 +362,12 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.isEpicDecomposition = msg.Assign.IsEpicDecomposition
 	w.mu.Unlock()
 
+	// Remove stale handoff_done from a previous worker so watchContext does
+	// not immediately trigger a spurious handoff on the new assignment.
+	if msg.Assign.Worktree != "" {
+		_ = os.Remove(filepath.Join(msg.Assign.Worktree, protocol.OroDir, "handoff_done"))
+	}
+
 	// Truncate log file for new assignment (best-effort; continue if fails)
 	w.closeLogFile()
 	_ = w.openLogFile()
@@ -728,12 +734,36 @@ func (w *Worker) watchContext(ctx context.Context) {
 			wt = w.worktree
 			w.mu.Unlock()
 
+			// Check for handoff_done file written by the agent
+			if w.checkHandoffFile(ctx, wt) {
+				return
+			}
+
 			// Check context percentage and handle threshold breaches
 			if w.handleContextThreshold(ctx, wt, threshold) {
 				return
 			}
 		}
 	}
+}
+
+// checkHandoffFile checks for .oro/handoff_done in the worktree. When found,
+// it deletes the file, sends HANDOFF, and kills the subprocess.
+// Returns true if the handoff was triggered (caller should return).
+// Edges: file missing → no-op; subprocess already exited → killProc is a no-op.
+func (w *Worker) checkHandoffFile(ctx context.Context, wt string) bool {
+	if wt == "" {
+		return false
+	}
+	handoffPath := filepath.Join(wt, protocol.OroDir, "handoff_done")
+	if _, err := os.Stat(handoffPath); err != nil {
+		return false // file missing → no-op
+	}
+	// Delete before sending to prevent double-trigger on next tick.
+	_ = os.Remove(handoffPath)
+	_ = w.SendHandoff(ctx)
+	w.killProc()
+	return true
 }
 
 // handleContextThreshold checks context percentage and handles threshold breaches.
