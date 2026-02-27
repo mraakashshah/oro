@@ -16,6 +16,9 @@ func TestBuildDispatcher_BuildsIndex(t *testing.T) {
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
 	t.Setenv("ORO_HOME", tmpDir)
+	// Clear ORO_PROJECT so ResolveProjectDBPaths does not route to a
+	// project-scoped path whose parent directory does not exist.
+	t.Setenv("ORO_PROJECT", "")
 
 	// Create a test repo structure (minimal Go file to index).
 	repoRoot := filepath.Join(tmpDir, "test-repo")

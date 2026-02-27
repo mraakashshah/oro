@@ -445,6 +445,12 @@ func TestMemoriesListJSON(t *testing.T) {
 func TestCLIAndDispatcherUseSameDB(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ORO_HOME", tmpDir)
+	// Clear ORO_PROJECT and chdir to tmpDir so ResolveProjectDBPaths does not
+	// pick up the project name from the repo's .oro/config.yaml or an outer
+	// ORO_PROJECT env var set by `oro work`.  Without this the paths resolve to
+	// <tmpDir>/projects/oro/state.db whose parent directory does not exist.
+	t.Setenv("ORO_PROJECT", "")
+	t.Chdir(tmpDir)
 
 	// Resolve paths the same way the dispatcher does.
 	paths, err := ResolvePaths()

@@ -178,6 +178,8 @@ func TestBuildDispatcher_WALMode(t *testing.T) {
 // database with WAL and busy_timeout. We test via the openDB path.
 func TestDefaultMemoryStore_WALMode(t *testing.T) {
 	tmpDir := t.TempDir()
+	// Unset ORO_PROJECT so ResolveProjectDBPaths uses ORO_DB_PATH, not a project-scoped path.
+	t.Setenv("ORO_PROJECT", "")
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
 
 	store, err := defaultMemoryStore()
