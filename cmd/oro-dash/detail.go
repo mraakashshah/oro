@@ -85,6 +85,16 @@ func fetchWorkerOutputCmd(socketPath, workerID string) tea.Cmd {
 	}
 }
 
+// getTabsForBead returns the list of tabs to display based on bead status.
+// Closed beads show only Overview and Deps tabs.
+// Open/in_progress beads show all 6 tabs: Overview, Worker, Diff, Deps, Memory, Output.
+func getTabsForBead(bead protocol.BeadDetail) []string {
+	if bead.Status == "closed" {
+		return []string{"Overview", "Deps"}
+	}
+	return []string{"Overview", "Worker", "Diff", "Deps", "Memory", "Output"}
+}
+
 // newDetailModel creates a new DetailModel for the given bead.
 // Worker events are fetched asynchronously - use fetchWorkerEventsCmd to initiate the fetch.
 func newDetailModel(bead protocol.BeadDetail, theme Theme, styles Styles) DetailModel {
@@ -97,7 +107,7 @@ func newDetailModel(bead protocol.BeadDetail, theme Theme, styles Styles) Detail
 	d := DetailModel{
 		bead:              bead,
 		activeTab:         0,
-		tabs:              []string{"Overview", "Worker", "Diff", "Deps", "Memory", "Output"},
+		tabs:              getTabsForBead(bead),
 		workerEvents:      nil,
 		loadingEvents:     loading,
 		eventError:        nil,
@@ -133,9 +143,12 @@ func (d DetailModel) prevTab() DetailModel {
 	return d
 }
 
-// depsTabActive returns true when the Deps tab (index 3) is the active tab.
+// depsTabActive returns true when the Deps tab is the active tab.
 func (d DetailModel) depsTabActive() bool {
-	return d.activeTab == 3
+	if d.activeTab < 0 || d.activeTab >= len(d.tabs) {
+		return false
+	}
+	return d.tabs[d.activeTab] == "Deps"
 }
 
 // handleDepsKey processes j/k/enter keys when the Deps tab is active.
@@ -223,18 +236,21 @@ func (d *DetailModel) setViewportContent(content string) {
 
 // getActiveTabContent returns the content for the currently active tab.
 func (d DetailModel) getActiveTabContent() string {
-	switch d.activeTab {
-	case 0:
+	if d.activeTab < 0 || d.activeTab >= len(d.tabs) {
+		return "Unknown tab"
+	}
+	switch d.tabs[d.activeTab] {
+	case "Overview":
 		return d.renderOverviewTab(d.styles)
-	case 1:
+	case "Worker":
 		return d.renderWorkerTab(d.theme, d.styles)
-	case 2:
+	case "Diff":
 		return d.renderDiffTab(d.styles)
-	case 3:
+	case "Deps":
 		return d.renderDepsTab(d.styles)
-	case 4:
+	case "Memory":
 		return d.renderMemoryTab(d.styles)
-	case 5:
+	case "Output":
 		return d.renderOutputTab(d.styles)
 	default:
 		return "Unknown tab"

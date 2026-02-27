@@ -792,6 +792,110 @@ func TestDetailOutputTab(t *testing.T) {
 	})
 }
 
+// TestDetailTabsForClosedBead verifies that closed beads show only Overview+Deps tabs,
+// while open beads show all 6 tabs (Overview+Worker+Diff+Deps+Memory+Output).
+func TestDetailTabsForClosedBead(t *testing.T) {
+	t.Run("closed bead shows only Overview and Deps tabs", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:     "oro-test.closed",
+			Title:  "Closed bead",
+			Status: "closed",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		view := model.View(styles)
+
+		// Assert: closed bead shows only Overview and Deps tabs
+		if !strings.Contains(view, "Overview") {
+			t.Errorf("expected 'Overview' tab for closed bead, but it's missing from:\n%s", view)
+		}
+		if !strings.Contains(view, "Deps") {
+			t.Errorf("expected 'Deps' tab for closed bead, but it's missing from:\n%s", view)
+		}
+
+		// Hidden tabs should not appear
+		hiddenTabs := []string{"Worker", "Diff", "Memory", "Output"}
+		for _, tab := range hiddenTabs {
+			if strings.Contains(view, tab) {
+				t.Errorf("expected %q tab to be hidden for closed bead, but found it in:\n%s", tab, view)
+			}
+		}
+	})
+
+	t.Run("open bead shows all 6 tabs", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:     "oro-test.open",
+			Title:  "Open bead",
+			Status: "open",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		view := model.View(styles)
+
+		// Assert: open bead shows all 6 tabs
+		expectedTabs := []string{"Overview", "Worker", "Diff", "Deps", "Memory", "Output"}
+		for _, tab := range expectedTabs {
+			if !strings.Contains(view, tab) {
+				t.Errorf("expected %q tab for open bead, but it's missing from:\n%s", tab, view)
+			}
+		}
+	})
+
+	t.Run("in_progress bead shows all 6 tabs", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:     "oro-test.inprog",
+			Title:  "In progress bead",
+			Status: "in_progress",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+		view := model.View(styles)
+
+		// Assert: in_progress bead shows all 6 tabs
+		expectedTabs := []string{"Overview", "Worker", "Diff", "Deps", "Memory", "Output"}
+		for _, tab := range expectedTabs {
+			if !strings.Contains(view, tab) {
+				t.Errorf("expected %q tab for in_progress bead, but it's missing from:\n%s", tab, view)
+			}
+		}
+	})
+
+	t.Run("closed bead allows only Overview/Deps tab switching", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:     "oro-test.closed-nav",
+			Title:  "Closed bead navigation",
+			Status: "closed",
+		}
+
+		theme := DefaultTheme()
+		styles := NewStyles(theme)
+		model := newDetailModel(bead, theme, styles)
+
+		// Should start on Overview (tab 0)
+		if model.activeTab != 0 {
+			t.Errorf("expected initial activeTab to be 0, got %d", model.activeTab)
+		}
+
+		// nextTab should move to Deps (tab 1 in closed bead)
+		model = model.nextTab()
+		if model.activeTab != 1 {
+			t.Errorf("expected activeTab to be 1 after nextTab(), got %d", model.activeTab)
+		}
+
+		// nextTab should wrap around to Overview (tab 0)
+		model = model.nextTab()
+		if model.activeTab != 0 {
+			t.Errorf("expected activeTab to wrap to 0, got %d", model.activeTab)
+		}
+	})
+}
+
 // TestDepsTab verifies the Deps tab shows an interactive dependency tree,
 // cursor navigation, and Enter navigates to a dependency's detail view.
 func TestDepsTab(t *testing.T) {
