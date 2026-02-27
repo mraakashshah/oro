@@ -117,3 +117,61 @@ func resolvePathWithEnv(envKey, base, suffix string) string {
 	}
 	return filepath.Join(base, suffix)
 }
+
+// migrateGlobalDBs copies global ~/.oro/state.db and ~/.oro/code_index.db to
+// per-project directories (~/.oro/projects/<projectName>/) on first use.
+// This provides backward compatibility when transitioning from global to per-project DBs.
+//
+// Behavior:
+// - If per-project DB already exists → no-op
+// - If global DB missing → no-op (no source to copy from)
+// - If copy fails → returns error, does not corrupt existing files
+func migrateGlobalDBs(projectName string) error {
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		return err
+	}
+
+	projDir := filepath.Join(oroHome, "projects", projectName)
+
+	// List of DBs to migrate: (srcPath, destPath)
+	dbs := []struct {
+		src string
+		dst string
+	}{
+		{filepath.Join(oroHome, "state.db"), filepath.Join(projDir, "state.db")},
+		{filepath.Join(oroHome, "code_index.db"), filepath.Join(projDir, "code_index.db")},
+	}
+
+	for _, db := range dbs {
+		// Skip if per-project DB already exists
+		if _, err := os.Stat(db.dst); err == nil {
+			continue
+		}
+
+		// Skip if global DB doesn't exist
+		if _, err := os.Stat(db.src); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat global DB %q: %w", db.src, err)
+		}
+
+		// Ensure project directory exists
+		if err := os.MkdirAll(projDir, 0o750); err != nil {
+			return fmt.Errorf("mkdir %q: %w", projDir, err)
+		}
+
+		// Copy global DB to project directory
+		data, err := os.ReadFile(db.src) //nolint:gosec // db.src is constructed from trusted paths
+		if err != nil {
+			return fmt.Errorf("read global DB %q: %w", db.src, err)
+		}
+
+		if err := os.WriteFile(db.dst, data, 0o600); err != nil {
+			return fmt.Errorf("write project DB %q: %w", db.dst, err)
+		}
+	}
+
+	return nil
+}

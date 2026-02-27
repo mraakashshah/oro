@@ -292,3 +292,133 @@ func TestResolvePaths_OroHomeOverride(t *testing.T) {
 		t.Errorf("CodeIndexDBPath = %q, want %q", paths.CodeIndexDBPath, filepath.Join(tmpDir, "code_index.db"))
 	}
 }
+
+// --- migrateGlobalDBs tests ---
+
+func TestMigrateGlobalDBsToProject(t *testing.T) {
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	// Create global DBs
+	globalStateDB := filepath.Join(oroHome, "state.db")
+	globalCodeIndexDB := filepath.Join(oroHome, "code_index.db")
+	if err := os.WriteFile(globalStateDB, []byte("global-state"), 0o600); err != nil {
+		t.Fatalf("create global state.db: %v", err)
+	}
+	if err := os.WriteFile(globalCodeIndexDB, []byte("global-code"), 0o600); err != nil {
+		t.Fatalf("create global code_index.db: %v", err)
+	}
+
+	projectName := "foo"
+	projectDir := filepath.Join(oroHome, "projects", projectName)
+	projStateDB := filepath.Join(projectDir, "state.db")
+	projCodeIndexDB := filepath.Join(projectDir, "code_index.db")
+
+	t.Run("MigrateStateDB", func(t *testing.T) {
+		// Clean project dir between tests
+		_ = os.RemoveAll(projectDir) //nolint:errcheck
+
+		err := migrateGlobalDBs(projectName)
+		if err != nil {
+			t.Fatalf("migrateGlobalDBs(%q) error: %v", projectName, err)
+		}
+
+		// Check that state.db was copied
+		projData, err := os.ReadFile(projStateDB) //nolint:gosec
+		if err != nil {
+			t.Fatalf("read project state.db: %v", err)
+		}
+		if string(projData) != "global-state" {
+			t.Errorf("state.db content = %q, want %q", string(projData), "global-state")
+		}
+
+		// Check that code_index.db was copied
+		codeData, err := os.ReadFile(projCodeIndexDB) //nolint:gosec
+		if err != nil {
+			t.Fatalf("read project code_index.db: %v", err)
+		}
+		if string(codeData) != "global-code" {
+			t.Errorf("code_index.db content = %q, want %q", string(codeData), "global-code")
+		}
+	})
+
+	t.Run("NoOpIfProjectDBExists", func(t *testing.T) {
+		// Clean and create project dir with existing DBs
+		_ = os.RemoveAll(projectDir) //nolint:errcheck
+		if err := os.MkdirAll(projectDir, 0o750); err != nil {
+			t.Fatalf("mkdir project dir: %v", err)
+		}
+		if err := os.WriteFile(projStateDB, []byte("project-state"), 0o600); err != nil {
+			t.Fatalf("create project state.db: %v", err)
+		}
+		if err := os.WriteFile(projCodeIndexDB, []byte("project-code"), 0o600); err != nil {
+			t.Fatalf("create project code_index.db: %v", err)
+		}
+
+		err := migrateGlobalDBs(projectName)
+		if err != nil {
+			t.Fatalf("migrateGlobalDBs(%q) error: %v", projectName, err)
+		}
+
+		// Check that existing project DBs were not overwritten
+		projData, err := os.ReadFile(projStateDB) //nolint:gosec
+		if err != nil {
+			t.Fatalf("read project state.db: %v", err)
+		}
+		if string(projData) != "project-state" {
+			t.Errorf("state.db was overwritten, content = %q, want %q", string(projData), "project-state")
+		}
+	})
+
+	t.Run("NoOpIfGlobalDBMissing", func(t *testing.T) {
+		// Clean project dir and remove global DBs
+		_ = os.RemoveAll(projectDir)     //nolint:errcheck
+		_ = os.Remove(globalStateDB)     //nolint:errcheck
+		_ = os.Remove(globalCodeIndexDB) //nolint:errcheck
+
+		err := migrateGlobalDBs(projectName)
+		if err != nil {
+			t.Fatalf("migrateGlobalDBs(%q) error: %v", projectName, err)
+		}
+
+		// Check that no project DBs were created
+		if _, err := os.Stat(projStateDB); err == nil {
+			t.Error("project state.db should not exist when global DB is missing")
+		}
+		if _, err := os.Stat(projCodeIndexDB); err == nil {
+			t.Error("project code_index.db should not exist when global DB is missing")
+		}
+	})
+
+	t.Run("ErrorOnCopyFailure", func(t *testing.T) {
+		// Recreate global DBs
+		if err := os.WriteFile(globalStateDB, []byte("global-state"), 0o600); err != nil {
+			t.Fatalf("create global state.db: %v", err)
+		}
+		if err := os.WriteFile(globalCodeIndexDB, []byte("global-code"), 0o600); err != nil {
+			t.Fatalf("create global code_index.db: %v", err)
+		}
+
+		// Clean project dir
+		_ = os.RemoveAll(projectDir) //nolint:errcheck
+
+		// Create a file where the project dir should be to cause copy to fail
+		if err := os.WriteFile(projectDir, []byte("not-a-dir"), 0o600); err != nil {
+			t.Fatalf("create blocking file: %v", err)
+		}
+
+		err := migrateGlobalDBs(projectName)
+		if err == nil {
+			t.Errorf("migrateGlobalDBs(%q) expected error, got nil", projectName)
+		}
+
+		// Verify global DBs are untouched
+		globalData, err := os.ReadFile(globalStateDB) //nolint:gosec
+		if err != nil {
+			t.Fatalf("read global state.db: %v", err)
+		}
+		if string(globalData) != "global-state" {
+			t.Error("global state.db was corrupted")
+		}
+	})
+}
