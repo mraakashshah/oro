@@ -71,6 +71,7 @@ When breaking work into beads, follow these principles:
 - **Dependency edges**: use `bd dep add` to declare ordering constraints.
 - **Split rule**: if a bead touches >3 files or has >3 acceptance criteria bullets, split it.
 - **Vertical slices preferred**: favor end-to-end slices over horizontal layers.
+- **Bug priority**: All bug beads MUST use `--priority=0`. Bugs are always P0.
 
 ## Epic Focus
 

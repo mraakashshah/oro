@@ -216,6 +216,8 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 
 	// 11. Failure
 	section(b, "Failure", strings.Join([]string{
+		"All bug beads MUST use --priority=0. Bugs are always P0.",
+		"",
 		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
 		"  `bd create --title=\"P0: <bead-title> test failure\" --type=bug --priority=0 --description=\"QG output: <paste error>\"`",
 		"- Bead too big: decompose with `bd create`, then exit.",

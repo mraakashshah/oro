@@ -1336,3 +1336,37 @@ func TestPromptConstrainsDeadCodeNoOps(t *testing.T) {
 		t.Errorf("Constraints must say NEVER replace function calls with blank assignments. Got:\n%s", constraintsSection)
 	}
 }
+
+// TestAssemblePrompt_BugP0Rule verifies that the Failure section contains
+// the mandatory rule: all bug beads must use --priority=0.
+func TestAssemblePrompt_BugP0Rule(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-p0-rule",
+		Title:              "Bug P0 rule test",
+		Description:        "Verify bug P0 rule in prompt",
+		AcceptanceCriteria: "Prompt contains bug P0 rule",
+		WorktreePath:       "/tmp/wt-p0-rule",
+		Model:              "sonnet",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract Failure section
+	failureStart := strings.Index(prompt, "## Failure")
+	if failureStart == -1 {
+		t.Fatal("expected prompt to contain ## Failure section")
+	}
+	failureEnd := strings.Index(prompt[failureStart+1:], "## ")
+	var failureSection string
+	if failureEnd == -1 {
+		failureSection = prompt[failureStart:]
+	} else {
+		failureSection = prompt[failureStart : failureStart+1+failureEnd]
+	}
+
+	if !strings.Contains(failureSection, "All bug beads MUST use --priority=0") {
+		t.Errorf("Failure section must contain 'All bug beads MUST use --priority=0'. Got:\n%s", failureSection)
+	}
+}
