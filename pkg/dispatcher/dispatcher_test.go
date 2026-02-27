@@ -11820,6 +11820,92 @@ func TestStatusDirective_Throttled(t *testing.T) {
 	}
 }
 
+// TestExternalCloseBlockedDuringPendingMerge verifies that when a merge is
+// already in-flight for a bead, an external close (bd close) does not trigger
+// a second merge attempt. The dispatcher tracks in-flight merges in mergingBeads
+// and blocks the external-close handler from spawning a duplicate merge goroutine.
+func TestExternalCloseBlockedDuringPendingMerge(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const beadID = "bead-pending-merge"
+	const workerID = "w-pending"
+	const worktree = "/tmp/worktree-pending"
+
+	// Simulate a merge already in-flight by marking the bead in mergingBeads.
+	d.mu.Lock()
+	d.mergingBeads[beadID] = true
+	d.mu.Unlock()
+
+	// Register a worker as busy with the bead.
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn,
+		beadID:   beadID,
+		state:    protocol.WorkerBusy,
+		worktree: worktree,
+		encoder:  json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	// Externally close the bead.
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:     beadID,
+		Status: "closed",
+	}
+	beadSrc.mu.Unlock()
+
+	// Trigger the handler that detects externally-closed beads.
+	d.checkClosedBeadAssignments(ctx)
+
+	// Give any async goroutines time to run (there should be none).
+	time.Sleep(50 * time.Millisecond)
+
+	// SHUTDOWN must NOT have been sent: merge is in-flight so external close is blocked.
+	conn.mu.Lock()
+	var gotShutdown bool
+	for _, data := range conn.written {
+		if strings.Contains(string(data), string(protocol.MsgShutdown)) {
+			gotShutdown = true
+			break
+		}
+	}
+	conn.mu.Unlock()
+
+	if gotShutdown {
+		t.Error("expected external close to be blocked (no SHUTDOWN) while merge is pending, but SHUTDOWN was sent")
+	}
+
+	// Worker must still be tracked as busy — state must not have been cleared.
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	var wState protocol.WorkerState
+	var wBead string
+	if ok {
+		wState = w.state
+		wBead = w.beadID
+	}
+	d.mu.Unlock()
+
+	if !ok {
+		t.Fatal("expected worker to still exist in tracking")
+	}
+	if wState != protocol.WorkerBusy {
+		t.Errorf("expected worker state to remain Busy, got %v", wState)
+	}
+	if wBead != beadID {
+		t.Errorf("expected worker beadID to remain %q, got %q", beadID, wBead)
+	}
+}
+
 // TestBeadClosedExternally_TriggersMerge verifies that when a bead is closed
 // externally (e.g., via `bd close`) while a worker is assigned, the dispatcher
 // triggers mergeAndComplete for the worker's branch so that committed code

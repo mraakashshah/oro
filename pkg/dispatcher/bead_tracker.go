@@ -26,6 +26,7 @@ type BeadTracker struct {
 	worktreeFailures map[string]time.Time       // bead ID -> last worktree creation failure time
 	exhaustedBeads   map[string]bool            // bead ID -> true if QG retries exhausted (blocks re-assignment)
 	assigningBeads   map[string]bool            // bead ID -> true if assignment in progress (oro-ptp2: prevents concurrent assignment)
+	mergingBeads     map[string]bool            // bead ID -> true if mergeAndComplete is in-flight (oro-x4x8: prevents duplicate merge on external close)
 	worktreeByBead   map[string]string          // bead ID -> worktree path (preserved on timeout/kill for respawn reuse, oro-1eo8)
 }
 
@@ -45,6 +46,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.worktreeFailures, beadID)
 	delete(d.exhaustedBeads, beadID)
 	delete(d.assigningBeads, beadID)
+	delete(d.mergingBeads, beadID)
 	d.mu.Unlock()
 }
 
@@ -131,6 +133,7 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 		delete(d.worktreeFailures, beadID)
 		delete(d.exhaustedBeads, beadID)
 		delete(d.assigningBeads, beadID)
+		delete(d.mergingBeads, beadID)
 		delete(d.worktreeByBead, beadID)
 	}
 	return len(orphaned)
@@ -165,6 +168,9 @@ func (d *Dispatcher) allTrackingKeys() []string {
 		seen[id] = true
 	}
 	for id := range d.assigningBeads {
+		seen[id] = true
+	}
+	for id := range d.mergingBeads {
 		seen[id] = true
 	}
 	for id := range d.worktreeByBead {

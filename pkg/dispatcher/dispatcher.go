@@ -394,6 +394,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			worktreeFailures: make(map[string]time.Time),
 			exhaustedBeads:   make(map[string]bool),
 			assigningBeads:   make(map[string]bool),
+			mergingBeads:     make(map[string]bool),
 			worktreeByBead:   make(map[string]string),
 		},
 		priorityBeads:     make(map[string]bool),
@@ -1010,7 +1011,22 @@ func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, fe
 }
 
 // mergeAndComplete runs merge.Coordinator.Merge and handles the result.
+// guardMerge marks a bead as merging and returns a cleanup function.
+// Used to prevent duplicate mergeAndComplete from external close (oro-x4x8).
+func (d *Dispatcher) guardMerge(beadID string) func() {
+	d.mu.Lock()
+	d.mergingBeads[beadID] = true
+	d.mu.Unlock()
+	return func() {
+		d.mu.Lock()
+		delete(d.mergingBeads, beadID)
+		d.mu.Unlock()
+	}
+}
+
 func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch string) {
+	defer d.guardMerge(beadID)()
+
 	result, err := d.merger.Merge(ctx, merge.Opts{
 		Branch:   branch,
 		Worktree: worktree,
@@ -1983,6 +1999,14 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 	d.mu.Unlock()
 
 	for _, a := range active {
+		// Skip beads with in-flight merges to prevent duplicate mergeAndComplete (oro-x4x8).
+		d.mu.Lock()
+		merging := d.mergingBeads[a.beadID]
+		d.mu.Unlock()
+		if merging {
+			continue
+		}
+
 		detail, err := d.beads.Show(ctx, a.beadID)
 		if err != nil {
 			// Transient lookup error — don't kill the worker, retry next cycle.
