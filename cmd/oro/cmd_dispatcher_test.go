@@ -197,6 +197,9 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 		}()
 
 		cmd := newDispatcherCmd()
+		// Use start without --force so it goes through preflightAndCheckRunning.
+		// When preflight tools are missing, skip the test entirely.
+		skipIfToolsMissing(t)
 		cmd.SetArgs([]string{"start"})
 		var stdout bytes.Buffer
 		cmd.SetOut(&stdout)

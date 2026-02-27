@@ -209,6 +209,8 @@ func TestBootstrapOroDir_Idempotent(t *testing.T) {
 }
 
 func TestStartCommandPreflightChecks(t *testing.T) {
+	skipIfToolsMissing(t)
+
 	// Test that the start command runs preflight checks before attempting to start.
 	// Since we can't easily mock exec.LookPath, this test verifies that with all
 	// tools present, preflight doesn't block the start command.
@@ -266,6 +268,8 @@ func TestStartCommandPreflightChecks(t *testing.T) {
 }
 
 func TestDaemonOnlyStartsDispatcher(t *testing.T) {
+	skipIfToolsMissing(t)
+
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	sockPath := filepath.Join(tmpDir, "oro.sock")

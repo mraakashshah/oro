@@ -342,6 +342,8 @@ func TestResolveProjectRoot(t *testing.T) {
 		// and make an initial commit (worktree add requires a commit).
 		run(repoDir, "git", "init")
 		run(repoDir, "git", "config", "core.hooksPath", "/dev/null")
+		run(repoDir, "git", "config", "user.email", "test@ci.local")
+		run(repoDir, "git", "config", "user.name", "CI Test")
 		run(repoDir, "git", "commit", "--allow-empty", "-m", "init")
 
 		worktreeDir := filepath.Join(t.TempDir(), "wt")

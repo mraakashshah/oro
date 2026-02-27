@@ -635,6 +635,8 @@ type (
 // ---------------------------------------------------------------------------
 
 func TestChunkFile(t *testing.T) {
+	requireAstGrep(t)
+
 	tests := []struct {
 		name        string
 		filePath    string

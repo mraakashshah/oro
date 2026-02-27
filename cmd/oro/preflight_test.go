@@ -14,6 +14,8 @@ import (
 )
 
 func TestPreflightChecks_AllToolsPresent(t *testing.T) {
+	skipIfToolsMissing(t)
+
 	// When all tools are present, preflight should return nil.
 	if err := runPreflightChecks(); err != nil {
 		t.Errorf("preflight checks failed with all tools present: %v", err)
@@ -399,13 +401,34 @@ func getCodingRules(cfg *config.Config) string {
 	})
 }
 
-// initGitRepo initializes a git repository in the given directory.
+// initGitRepo initializes a git repository in the given directory with
+// minimal user identity so commits work in CI environments.
 func initGitRepo(dir string) error {
-	cmd := exec.Command("git", "init")
-	cmd.Dir = dir
-	cmd.Stderr = io.Discard
-	cmd.Stdout = io.Discard
-	return cmd.Run()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@ci.local"},
+		{"config", "user.name", "CI Test"},
+	} {
+		cmd := exec.Command("git", args...) //nolint:gosec // test helper with controlled inputs
+		cmd.Dir = dir
+		cmd.Stderr = io.Discard
+		cmd.Stdout = io.Discard
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("git %s: %w", args[0], err)
+		}
+	}
+	return nil
+}
+
+// skipIfToolsMissing skips the test when any oro-required tool (tmux, claude, bd)
+// is not in PATH. Git is assumed present in all CI environments.
+func skipIfToolsMissing(t *testing.T) {
+	t.Helper()
+	for _, tool := range []string{"tmux", "claude", "bd"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("required tool %q not in PATH, skipping", tool)
+		}
+	}
 }
 
 // addAndCommitFile adds a file to git and commits it.

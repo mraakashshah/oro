@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,6 +73,10 @@ type hookResponse struct {
 }
 
 func TestHookDispatch(t *testing.T) {
+	if _, err := exec.LookPath("ast-grep"); err != nil {
+		t.Skip("ast-grep not installed, skipping")
+	}
+
 	// Create a large Go file (>3KB) for testing summarization.
 	largeGoFile := writeTempGoFile(t, 200)
 	// Create a small Go file (<3KB) for bypass testing.
