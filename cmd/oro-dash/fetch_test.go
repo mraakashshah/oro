@@ -362,7 +362,7 @@ func TestFetchBeads_SkipsStatusOnError(t *testing.T) {
 	}
 }
 
-// --- fetchBeadsWithStatus: closed sort order ---
+// --- fetchBeadsWithStatus: sort order ---
 
 // writeFakeBdArgCapture writes a fake bd that dumps all received args
 // to a capture file, then echoes a minimal bead array.
@@ -421,6 +421,45 @@ func TestFetchBeads_ClosedSortedByMostRecent(t *testing.T) {
 	// Closed beads must be sorted by close date, most recent first
 	if !containsAll(closedArgs, "--sort", "closed", "--reverse") {
 		t.Errorf("closed fetch missing sort flags; got args: %s", closedArgs)
+	}
+}
+
+func TestFetchBeads_PrioritySortForOpenStatuses(t *testing.T) {
+	fakeBin := t.TempDir()
+	captureFile := filepath.Join(t.TempDir(), "args.log")
+	writeFakeBdArgCapture(t, fakeBin, captureFile)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	_, err := fetchBeads(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Read captured args
+	data, err := os.ReadFile(captureFile) //nolint:gosec // G304: captureFile is a test-controlled temp path
+	if err != nil {
+		t.Fatalf("read capture file: %v", err)
+	}
+
+	lines := splitNonEmpty(string(data))
+
+	// Check that open, in_progress, and blocked all have --sort priority
+	statusesToCheck := []string{"open", "in_progress", "blocked"}
+	for _, status := range statusesToCheck {
+		var statusArgs string
+		for _, line := range lines {
+			if containsAll(line, "--status", status) {
+				statusArgs = line
+				break
+			}
+		}
+		if statusArgs == "" {
+			t.Fatalf("no bd call with --status %s found in captured args", status)
+		}
+
+		if !containsAll(statusArgs, "--sort", "priority") {
+			t.Errorf("%s fetch missing --sort priority; got args: %s", status, statusArgs)
+		}
 	}
 }
 

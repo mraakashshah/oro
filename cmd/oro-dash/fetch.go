@@ -37,9 +37,12 @@ func fetchBeadsWithStatus(ctx context.Context, status string) ([]protocol.Bead, 
 	var args []string
 	// Closed beads: sort by close date (most recent first) so the default
 	// limit=50 returns the 50 most recently closed, not the 50 oldest by ID.
+	// Open/in_progress/blocked beads: sort by priority (ascending, 0 = most critical).
 	switch status {
 	case "closed":
 		args = []string{"list", "--status", status, "--sort", "closed", "--reverse", "--json"}
+	case "open", "in_progress", "blocked":
+		args = []string{"list", "--status", status, "--sort", "priority", "--json"}
 	case "":
 		args = []string{"list", "--json"}
 	default:
