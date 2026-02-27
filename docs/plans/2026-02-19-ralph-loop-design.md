@@ -82,7 +82,7 @@ Each gate follows the same shape: **verify → if fail → fix → verify → re
 **Now (this session):**
 - `adversarial-spec-review` skill — covers Gates 1 and 2
 - Updated `brainstorming` skill — wires in the adversarial review as a mandatory gate
-- Updated `bead-craft` skill — epics require executable acceptance criteria
+- Updated `beadcraft` skill — epics require executable acceptance criteria
 
 **Later (separate bead):**
 - `oro run <epic-id>` command — automates Gate 4 (epic verification loop)

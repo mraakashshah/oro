@@ -101,7 +101,7 @@ type EpicPromptParams struct {
 }
 
 // BuildEpicDecompositionPrompt builds a prompt for decomposing an epic into
-// child beads using bead-craft. No TDD/QG/worktree sections — this is planning only.
+// child beads using beadcraft. No TDD/QG/worktree sections — this is planning only.
 func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	var b strings.Builder
 
@@ -114,7 +114,7 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	section(&b, "Workflow", strings.Join([]string{
 		"1. **Explore**: Read the codebase to understand what this epic requires.",
 		"2. **Premortem**: Before decomposing, identify what could go wrong — tigers (likely failures), elephants (unlikely but catastrophic), paper tigers (seem scary but aren't).",
-		"3. **Decompose with bead-craft**: Break the epic into task/bug beads using `bd create`.",
+		"3. **Decompose with beadcraft**: Break the epic into task/bug beads using `bd create`.",
 		"   - Each bead must have full acceptance criteria: `Test: | Cmd: | Assert:`",
 		"   - Each bead must have `Read:`, `Signature:` (when adding functions), and `Edges:` fields",
 		"   - Run the Rule of Five (P1-P5) on every bead before creating it",
@@ -141,7 +141,7 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 		"- Do NOT write code or create worktrees — only create beads",
 		"- Do NOT close the epic — children must complete first",
 		"- Do NOT push to git",
-		"- Every bead must pass bead-craft Rule of Five before creation",
+		"- Every bead must pass beadcraft Rule of Five before creation",
 	}, "\n"))
 
 	section(&b, "Exit", "When all child beads are created and dependencies wired, your work is complete. Exit cleanly.")

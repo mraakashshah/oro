@@ -811,9 +811,9 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 			IsEpicDecomposition: true,
 		})
 
-		// Must contain bead-craft instructions
-		if !strings.Contains(prompt, "bead-craft") {
-			t.Errorf("expected epic decomp prompt to contain 'bead-craft', got:\n%s", prompt)
+		// Must contain beadcraft instructions
+		if !strings.Contains(prompt, "beadcraft") {
+			t.Errorf("expected epic decomp prompt to contain 'beadcraft', got:\n%s", prompt)
 		}
 		// Must contain bd create and --parent= flag for child bead creation
 		if !strings.Contains(prompt, "bd create") {
@@ -996,8 +996,8 @@ func TestBuildEpicDecompositionPrompt(t *testing.T) {
 
 	t.Run("contains_bead_craft_instructions", func(t *testing.T) {
 		t.Parallel()
-		if !strings.Contains(prompt, "bead-craft") || !strings.Contains(prompt, "bd create") {
-			t.Error("expected prompt to contain bead-craft decomposition instructions")
+		if !strings.Contains(prompt, "beadcraft") || !strings.Contains(prompt, "bd create") {
+			t.Error("expected prompt to contain beadcraft decomposition instructions")
 		}
 	})
 
