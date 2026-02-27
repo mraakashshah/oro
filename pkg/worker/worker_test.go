@@ -229,8 +229,7 @@ func TestReceiveShutdown_ExitsCleanly(t *testing.T) {
 
 	w := worker.NewWithConn("w-2", workerConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -1040,8 +1039,7 @@ func TestGracefulShutdown_NilPayload(t *testing.T) {
 
 	w := worker.NewWithConn("w-graceful-nil", workerConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -1290,8 +1288,7 @@ func TestHandleMessage_UnknownType(t *testing.T) {
 
 	w := worker.NewWithConn("w-unk", workerConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -1395,8 +1392,7 @@ func TestHandleAssign_MissingPayload(t *testing.T) {
 
 	w := worker.NewWithConn("w-nilassign", workerConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -1426,8 +1422,7 @@ func TestHandleAssign_SpawnError(t *testing.T) {
 
 	w := worker.NewWithConn("w-spawnerr", workerConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -1603,8 +1598,7 @@ func TestRun_MalformedJSON_Skipped(t *testing.T) {
 
 	w := worker.NewWithConn("w-malform", workerConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -1634,8 +1628,7 @@ func TestRun_ConnectionClosedNoSocketPath_ReturnsError(t *testing.T) {
 
 	w := worker.NewWithConn("w-nopath", workerConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -1703,8 +1696,7 @@ func TestRun_ScannerError(t *testing.T) {
 
 	w := worker.NewWithConn("w-scanerr", wrappedConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -1735,8 +1727,7 @@ func TestContextWatcher_EmptyWorktree_NoCrash(t *testing.T) {
 	w := worker.NewWithConn("w-empty-wt", workerConn, spawner)
 	w.SetContextPollInterval(50 * time.Millisecond)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -2086,8 +2077,7 @@ func TestHandleAssign_SendStatusError(t *testing.T) {
 
 	w := worker.NewWithConn("w-statuserr", workerConn, closingSpawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
@@ -2789,8 +2779,7 @@ func TestWorkerSendsInitialHeartbeat(t *testing.T) {
 
 	w := worker.NewWithConn("w-announce", workerConn, spawner)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go func() { _ = w.Run(ctx) }()
 
@@ -3716,7 +3705,6 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -3755,7 +3743,7 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 			_ = readMessage(t, dispatcherConn)
 
 			// Write pct AT hard stop boundary — should NOT trigger handoff
-			if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte(fmt.Sprintf("%d", tc.hardStop)), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), fmt.Appendf(nil, "%d", tc.hardStop), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -3766,7 +3754,7 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 			}
 
 			// Write pct ABOVE hard stop — should trigger handoff + kill
-			if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte(fmt.Sprintf("%d", tc.hardStop+1)), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), fmt.Appendf(nil, "%d", tc.hardStop+1), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
