@@ -219,9 +219,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 			// Guard: bail out if claude produced no commits.
 			if !deps.hasNewWork(deps.repoRoot, branch) {
-				logStep("No commits on branch — claude produced no work")
-				_ = deps.wtMgr.Remove(ctx, worktree)
-				return fmt.Errorf("claude exited without producing commits on bead %s", cfg.beadID)
+				return noCommitsResult(ctx, cfg, deps, worktree, &merged)
 			}
 		}
 		skipClaude = false // Only skip the first iteration.
@@ -500,6 +498,23 @@ func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree,
 			cfg.beadID, conflictErr.Files)
 	}
 	return nil, fmt.Errorf("merge: %w", err)
+}
+
+// noCommitsResult handles the case where claude exits without producing commits.
+// If AC already passes the bead was satisfied upstream — close it and return nil.
+// Otherwise clean up the worktree and return an error.
+func noCommitsResult(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, merged *bool) error {
+	acPassed, _, acErr := deps.runQG(ctx, worktree, true)
+	if acErr == nil && acPassed {
+		logStep("AC already satisfied — closing bead and exiting cleanly")
+		*merged = true // prevent deferred reset to open
+		_ = deps.beadSrc.Close(ctx, cfg.beadID, "AC already satisfied before worker made changes")
+		_ = deps.wtMgr.Remove(ctx, worktree)
+		return nil
+	}
+	logStep("No commits on branch — claude produced no work")
+	_ = deps.wtMgr.Remove(ctx, worktree)
+	return fmt.Errorf("claude exited without producing commits on bead %s", cfg.beadID)
 }
 
 // truncate shortens a string to maxLen, appending "..." if truncated.

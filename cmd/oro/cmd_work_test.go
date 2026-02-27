@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
+	"oro/pkg/merge"
 	"oro/pkg/protocol"
 )
 
@@ -162,5 +164,54 @@ func TestSetupWorktree_NoWorktreeCreatesNew(t *testing.T) {
 	}
 	if gotBranch != protocol.BranchPrefix+"oro-test" {
 		t.Fatalf("expected branch %s, got %s", protocol.BranchPrefix+"oro-test", gotBranch)
+	}
+}
+
+func TestWorkAlreadySatisfiedBead(t *testing.T) {
+	// When AC already passes and worker produces 0 commits, oro work should
+	// close the bead and exit 0 — not return an error.
+	// Observed with oro-30o which was already fixed before the worker ran.
+
+	bs := &mockBeadSource{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+
+	// hasNewWork=false (no commits produced), qgPassed=true (AC already satisfied)
+	deps := testDeps(bs, wt, sp, mg, false, true)
+
+	cfg := &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	err := executeWork(context.Background(), cfg, deps)
+	// Must NOT return an error — AC was already satisfied.
+	if err != nil {
+		t.Fatalf("expected clean exit when AC already passes, got: %v", err)
+	}
+
+	// Bead must be closed.
+	if bs.closeID != "oro-test" {
+		t.Errorf("expected bead to be closed, closeID=%q", bs.closeID)
+	}
+
+	// Bead must NOT be reset to open.
+	for _, u := range bs.updates {
+		if u == "open" {
+			t.Error("bead should not be reset to open when AC already passes")
+		}
+	}
+
+	// Merger must NOT be called — no commits to merge.
+	if mg.called {
+		t.Error("merger should not be called when no commits were produced")
+	}
+
+	// Worktree must be cleaned up.
+	if len(wt.removed) == 0 {
+		t.Error("expected worktree to be removed")
 	}
 }

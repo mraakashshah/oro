@@ -165,8 +165,8 @@ func TestExecuteWork_NoCommits_BailsOut(t *testing.T) {
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
 
-	// hasNewWork=false: no commits were made
-	deps := testDeps(bs, wt, sp, mg, false, true)
+	// hasNewWork=false: no commits were made, qgPassed=false: AC not yet satisfied either
+	deps := testDeps(bs, wt, sp, mg, false, false)
 
 	cfg := &workConfig{
 		beadID:     "oro-test",
