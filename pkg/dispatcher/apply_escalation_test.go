@@ -1,6 +1,7 @@
 package dispatcher //nolint:testpackage // internal white-box tests need access to unexported fields
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -153,5 +154,29 @@ func TestApplyEscalations_AckAlreadyAckedReturnsNotFound(t *testing.T) {
 	}
 	if !strings.Contains(msg, "not found or already acked") {
 		t.Errorf("expected 'not found or already acked' in message, got %q", msg)
+	}
+}
+
+// TestShouldRetryEscalation_EmptyBeadIDWorkerCrashAutoAcks verifies that
+// WORKER_CRASH escalations with an empty beadID are NOT retried (auto-acked),
+// preventing the 2-minute replay loop for stale prev-session alerts (oro-p2ey).
+func TestShouldRetryEscalation_EmptyBeadIDWorkerCrashAutoAcks(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// WORKER_CRASH with empty beadID → should NOT retry (auto-ack)
+	if d.shouldRetryEscalation(ctx, string(protocol.EscWorkerCrash), "") {
+		t.Error("shouldRetryEscalation returned true for WORKER_CRASH with empty beadID; want false (auto-ack)")
+	}
+
+	// Other escalation types with empty beadID → should still retry
+	for _, escType := range []protocol.EscalationType{
+		protocol.EscMissingAC,
+		protocol.EscStuckWorker,
+		protocol.EscMergeConflict,
+	} {
+		if !d.shouldRetryEscalation(ctx, string(escType), "") {
+			t.Errorf("shouldRetryEscalation returned false for %s with empty beadID; want true (retry)", escType)
+		}
 	}
 }

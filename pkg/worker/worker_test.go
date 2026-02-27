@@ -2615,7 +2615,7 @@ func TestHandleContextThreshold(t *testing.T) {
 	w := worker.NewWithConn("w-threshold", workerConn, spawner)
 	w.SetContextPollInterval(50 * time.Millisecond)
 
-	// Create worktree with thresholds.json (opus=65, hard stop = 85)
+	// Create worktree with thresholds.json (opus=65, hard stop = 75)
 	tmpDir := t.TempDir()
 	oroDir := filepath.Join(tmpDir, ".oro")
 	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
@@ -3695,11 +3695,11 @@ func TestClaudeSpawnerSetsStdinToDevNull(t *testing.T) {
 }
 
 // TestHardStopThresholds verifies that each model family triggers a hard stop
-// at exactly threshold+20, derived from thresholds.json:
+// at exactly threshold+10, derived from thresholds.json:
 //
-//	opus:   65 + 20 = 85
-//	sonnet: 50 + 20 = 70
-//	haiku:  40 + 20 = 60
+//	opus:   65 + 10 = 75
+//	sonnet: 50 + 10 = 60
+//	haiku:  40 + 10 = 50
 func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven integration test with parallel subtests
 	t.Parallel()
 
@@ -3710,9 +3710,9 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 		model    string
 		hardStop int
 	}{
-		{name: "opus", model: "opus", hardStop: 85},     // 65 + 20
-		{name: "sonnet", model: "sonnet", hardStop: 70}, // 50 + 20
-		{name: "haiku", model: "haiku", hardStop: 60},   // 40 + 20
+		{name: "opus", model: "opus", hardStop: 75},     // 65 + 10
+		{name: "sonnet", model: "sonnet", hardStop: 60}, // 50 + 10
+		{name: "haiku", model: "haiku", hardStop: 50},   // 40 + 10
 	}
 
 	for _, tc := range cases {
