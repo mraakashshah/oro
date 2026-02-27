@@ -24,10 +24,10 @@ class TestIsOutsideRoot:
     def test_cd_to_root(self, tmp_path):
         assert is_outside_root(str(tmp_path), str(tmp_path)) is False
 
-    def test_cd_to_subdir(self, tmp_path):
+    def test_cd_to_subdir_is_blocked(self, tmp_path):
         sub = tmp_path / "src"
         sub.mkdir()
-        assert is_outside_root(str(sub), str(tmp_path)) is False
+        assert is_outside_root(str(sub), str(tmp_path)) is True
 
     def test_cd_to_worktree(self, tmp_path):
         wt = tmp_path / ".worktrees" / "agent-123"
@@ -137,9 +137,10 @@ class TestBuildDecision:
         assert result["permissionDecision"] == "deny"
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
-    def test_allows_cd_to_subdir(self):
+    def test_blocks_cd_to_subdir(self):
         result = build_decision(self._hook_input("cd /project/src"))
-        assert result is None
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
 
     def test_ignores_non_bash(self):
         result = build_decision({"tool_name": "Read", "tool_input": {"command": "cd /tmp"}})
