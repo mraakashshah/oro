@@ -1103,6 +1103,111 @@ func TestFilterLabelRendered(t *testing.T) {
 	})
 }
 
+// TestTopoSortBeads verifies topological + priority sorting of beads.
+func TestTopoSortBeads(t *testing.T) {
+	t.Run("empty input returns empty", func(t *testing.T) {
+		result := topoSortBeads(nil)
+		if len(result) != 0 {
+			t.Errorf("empty input: expected empty, got %v", result)
+		}
+	})
+
+	t.Run("no deps returns beads sorted by priority", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "a", Priority: 2, Status: "open"},
+			{ID: "b", Priority: 0, Status: "open"},
+			{ID: "c", Priority: 1, Status: "open"},
+		}
+		result := topoSortBeads(beads)
+		if len(result) != 3 {
+			t.Fatalf("expected 3 beads, got %d", len(result))
+		}
+		// All at same topo level (no edges) → sorted by priority: b(P0) c(P1) a(P2)
+		ids := make([]string, len(result))
+		for i, r := range result {
+			ids[i] = r.ID
+		}
+		if result[0].ID != "b" || result[1].ID != "c" || result[2].ID != "a" {
+			t.Errorf("no-dep sort: got %v, want [b c a]", ids)
+		}
+	})
+
+	t.Run("prerequisites come before dependents", func(t *testing.T) {
+		// a blocks b means a is a prereq of b: a must come first
+		beads := []protocol.Bead{
+			{ID: "b", Priority: 0, Status: "open", Dependencies: []protocol.Dependency{
+				{Type: "blocks", DependsOnID: "a"},
+			}},
+			{ID: "a", Priority: 1, Status: "open"},
+		}
+		result := topoSortBeads(beads)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 beads, got %d", len(result))
+		}
+		if result[0].ID != "a" || result[1].ID != "b" {
+			t.Errorf("prereq before dependent: got [%s %s], want [a b]", result[0].ID, result[1].ID)
+		}
+	})
+
+	t.Run("P0 before P1 at same topo level", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "p1", Priority: 1, Status: "open"},
+			{ID: "p0", Priority: 0, Status: "open"},
+		}
+		result := topoSortBeads(beads)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 beads, got %d", len(result))
+		}
+		if result[0].ID != "p0" {
+			t.Errorf("P0 before P1: got %s first, want p0", result[0].ID)
+		}
+		if result[1].ID != "p1" {
+			t.Errorf("P0 before P1: got %s second, want p1", result[1].ID)
+		}
+	})
+
+	t.Run("cycle falls back to priority-only sort", func(t *testing.T) {
+		// a depends on b, b depends on a → cycle
+		beads := []protocol.Bead{
+			{ID: "a", Priority: 1, Status: "open", Dependencies: []protocol.Dependency{
+				{Type: "blocks", DependsOnID: "b"},
+			}},
+			{ID: "b", Priority: 0, Status: "open", Dependencies: []protocol.Dependency{
+				{Type: "blocks", DependsOnID: "a"},
+			}},
+		}
+		result := topoSortBeads(beads)
+		if len(result) != 2 {
+			t.Fatalf("cycle fallback: expected 2 beads, got %d", len(result))
+		}
+		// Fallback to priority sort: b(P0) before a(P1)
+		if result[0].ID != "b" {
+			t.Errorf("cycle fallback: got %s first, want b (P0)", result[0].ID)
+		}
+		if result[1].ID != "a" {
+			t.Errorf("cycle fallback: got %s second, want a (P1)", result[1].ID)
+		}
+	})
+
+	t.Run("non-blocks deps are ignored", func(t *testing.T) {
+		// a has a parent-child dep on b → treated as no-op (ignored)
+		beads := []protocol.Bead{
+			{ID: "a", Priority: 1, Status: "open", Dependencies: []protocol.Dependency{
+				{Type: "parent-child", DependsOnID: "b"},
+			}},
+			{ID: "b", Priority: 0, Status: "open"},
+		}
+		result := topoSortBeads(beads)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 beads, got %d", len(result))
+		}
+		// No blocks dep → sorted by priority: b(P0) first
+		if result[0].ID != "b" {
+			t.Errorf("non-blocks dep ignored: got %s first, want b (P0)", result[0].ID)
+		}
+	})
+}
+
 // TestListResponsive verifies responsive column visibility by terminal width.
 func TestListResponsive(t *testing.T) {
 	theme := DefaultTheme()

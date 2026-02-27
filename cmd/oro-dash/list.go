@@ -363,6 +363,91 @@ func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	return lm.renderList(styles, width, height)
 }
 
+// topoGraph holds the data structures for topological sort.
+type topoGraph struct {
+	beadMap     map[string]protocol.Bead
+	prereqCount map[string]int
+	successors  map[string][]string
+}
+
+// buildTopoGraph builds prereqCount and successors from "blocks" deps only.
+// prereqCount[id] = number of prerequisites bead id must wait for.
+// successors[id] = beads that list id as a prerequisite.
+func buildTopoGraph(beads []protocol.Bead) topoGraph {
+	g := topoGraph{
+		beadMap:     make(map[string]protocol.Bead, len(beads)),
+		prereqCount: make(map[string]int, len(beads)),
+		successors:  make(map[string][]string, len(beads)),
+	}
+	for _, b := range beads {
+		g.beadMap[b.ID] = b
+		g.prereqCount[b.ID] = 0
+	}
+	for _, b := range beads {
+		for _, dep := range b.Dependencies {
+			if dep.Type != "blocks" {
+				continue
+			}
+			g.prereqCount[b.ID]++
+			g.successors[dep.DependsOnID] = append(g.successors[dep.DependsOnID], b.ID)
+		}
+	}
+	return g
+}
+
+// topoSortBeads returns beads in topological order (prerequisites before dependents).
+// Within the same topological level, beads are sorted by priority ascending (P0 first).
+// Only "blocks"-type dependencies are considered. If a cycle is detected, falls back
+// to a pure priority sort.
+func topoSortBeads(beads []protocol.Bead) []protocol.Bead {
+	if len(beads) == 0 {
+		return beads
+	}
+
+	g := buildTopoGraph(beads)
+
+	byPriority := func(a, b string) int { return g.beadMap[a].Priority - g.beadMap[b].Priority }
+
+	// Seed queue with nodes that have no prerequisites, sorted by priority.
+	queue := make([]string, 0, len(beads))
+	for _, b := range beads {
+		if g.prereqCount[b.ID] == 0 {
+			queue = append(queue, b.ID)
+		}
+	}
+	slices.SortStableFunc(queue, byPriority)
+
+	// Kahn's algorithm: always pick the highest-priority ready node.
+	order := make([]string, 0, len(beads))
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		order = append(order, node)
+
+		for _, succ := range g.successors[node] {
+			g.prereqCount[succ]--
+			if g.prereqCount[succ] == 0 {
+				queue = append(queue, succ)
+			}
+		}
+		slices.SortStableFunc(queue, byPriority)
+	}
+
+	// Cycle detected → fall back to priority-only sort.
+	if len(order) != len(beads) {
+		result := make([]protocol.Bead, len(beads))
+		copy(result, beads)
+		slices.SortStableFunc(result, func(a, b protocol.Bead) int { return a.Priority - b.Priority })
+		return result
+	}
+
+	result := make([]protocol.Bead, 0, len(beads))
+	for _, id := range order {
+		result = append(result, g.beadMap[id])
+	}
+	return result
+}
+
 // groupBeads groups beads by status, sorts each group by priority (ascending),
 // and caps the "closed" group at 10.
 func groupBeads(beads []protocol.Bead) map[string][]protocol.Bead {
