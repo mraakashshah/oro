@@ -21,6 +21,13 @@ if [ -f .git ]; then
 fi
 unset GIT_DIR GIT_WORK_TREE
 
+# Isolate golangci-lint cache per worktree to prevent "parallel golangci-lint
+# is running" errors when multiple workers run QG simultaneously.
+if [ "$QG_IS_WORKTREE" = true ]; then
+	wt_name="$(basename "$(pwd)")"
+	export GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-cache-${wt_name}"
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
