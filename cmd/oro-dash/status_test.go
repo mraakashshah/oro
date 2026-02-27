@@ -13,8 +13,6 @@ import (
 // TestStatusView_Scaffold verifies the StatusView scaffold:
 // - StatusView is appended to the ViewType enum
 // - s key from ListView/BoardView opens StatusView
-// - H key still opens HealthView (not StatusView)
-// - w key still opens WorkersView (not StatusView)
 // - handleStatusViewKeys handles j/k/Enter/Esc
 // - System section shows daemon+uptime+panes
 // - Nil healthData shows "Connecting..."
@@ -23,8 +21,7 @@ func TestStatusView_Scaffold(t *testing.T) {
 		// StatusView should be defined and distinct from other views
 		sv := StatusView
 		if sv == BoardView || sv == InsightsView || sv == DetailView ||
-			sv == SearchView || sv == HelpView || sv == HealthView ||
-			sv == WorkersView || sv == TreeView || sv == ListView {
+			sv == SearchView || sv == HelpView || sv == ListView {
 			t.Error("StatusView must be a distinct ViewType")
 		}
 	})
@@ -59,38 +56,6 @@ func TestStatusView_Scaffold(t *testing.T) {
 
 		if model.activeView != StatusView {
 			t.Errorf("expected StatusView after s key from BoardView, got %v", model.activeView)
-		}
-	})
-
-	t.Run("H key from ListView still opens HealthView", func(t *testing.T) {
-		m := newModel()
-		m.activeView = ListView
-		m.initialLoad = false
-
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("H")})
-		model, ok := updated.(Model)
-		if !ok {
-			t.Fatal("Update() did not return Model")
-		}
-
-		if model.activeView != HealthView {
-			t.Errorf("expected HealthView after H key, got %v", model.activeView)
-		}
-	})
-
-	t.Run("w key from ListView still opens WorkersView", func(t *testing.T) {
-		m := newModel()
-		m.activeView = ListView
-		m.initialLoad = false
-
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
-		model, ok := updated.(Model)
-		if !ok {
-			t.Fatal("Update() did not return Model")
-		}
-
-		if model.activeView != WorkersView {
-			t.Errorf("expected WorkersView after w key, got %v", model.activeView)
 		}
 	})
 

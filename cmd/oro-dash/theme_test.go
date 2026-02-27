@@ -141,11 +141,10 @@ func TestListViewStyles(t *testing.T) {
 }
 
 func TestNoInlineNewStyleInViews(t *testing.T) {
-	// Assert that insights.go and workers_table.go contain zero inline
-	// lipgloss.NewStyle() calls — all styles must be pre-computed in theme.go.
+	// Assert that view files contain zero inline lipgloss.NewStyle() calls
+	// — all styles must be pre-computed in theme.go.
 	files := []string{
 		"insights.go",
-		"workers_table.go",
 	}
 	for _, file := range files {
 		t.Run(file, func(t *testing.T) {

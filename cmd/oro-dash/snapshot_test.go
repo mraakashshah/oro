@@ -427,39 +427,6 @@ func TestSnapshot_InsightsView_WithCycle(t *testing.T) {
 	assertGolden(t, output)
 }
 
-// ── Workers table view snapshots ──────────────────────────────────────────────
-
-func TestSnapshot_WorkersView_Empty(t *testing.T) {
-	wt := NewWorkersTableModel(nil, nil, false)
-	theme := DefaultTheme()
-	styles := NewStyles(theme)
-
-	output := wt.View(theme, styles, 80)
-	assertGolden(t, output)
-}
-
-func TestSnapshot_WorkersView_MultipleWorkers(t *testing.T) {
-	workers := []WorkerStatus{
-		{ID: "worker-green", Status: "busy", BeadID: "oro-w.1", LastProgressSecs: 1.5, ContextPct: 20},
-		{ID: "worker-amber", Status: "busy", BeadID: "oro-w.2", LastProgressSecs: 9.0, ContextPct: 55},
-		{ID: "worker-red", Status: "stale", BeadID: "oro-w.3", LastProgressSecs: 25.0, ContextPct: 90},
-		{ID: "worker-idle", Status: "idle", BeadID: "", LastProgressSecs: 0.5, ContextPct: 0},
-	}
-
-	assignments := map[string]string{
-		"oro-w.1": "worker-green",
-		"oro-w.2": "worker-amber",
-		"oro-w.3": "worker-red",
-	}
-
-	wt := NewWorkersTableModel(workers, assignments, true)
-	theme := DefaultTheme()
-	styles := NewStyles(theme)
-
-	output := wt.View(theme, styles, 80)
-	assertGolden(t, output)
-}
-
 // ── List view snapshots ───────────────────────────────────────────────────────
 
 func TestSnapshot_ListView(t *testing.T) {

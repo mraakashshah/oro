@@ -72,26 +72,18 @@ def find_cd_targets(command: str) -> list[str]:
 
 
 def is_outside_root(target: str, root: str) -> bool:
-    """Check if a cd target resolves outside the project root.
+    """Check if a cd target is anything other than the project root.
 
-    Allows cd to the root itself, or any subdirectory of root
-    that is NOT inside .worktrees/.
+    Only allows cd to the exact project root itself. ALL other cd
+    commands are blocked — changing CWD to any subdirectory breaks
+    hook scripts that use relative paths to .claude/hooks/.
     """
     try:
         resolved = Path(target).resolve()
         root_path = Path(root).resolve()
 
-        # Allow cd to root itself
-        if resolved == root_path:
-            return False
-
-        # Block if outside root entirely
-        if root_path not in resolved.parents:
-            return True
-
-        # Block if going into .worktrees/
-        rel = resolved.relative_to(root_path)
-        return bool(str(rel).startswith(".worktrees"))
+        # Only allow cd to root itself — block everything else
+        return resolved != root_path
     except (OSError, ValueError):
         return True
 
@@ -114,10 +106,10 @@ def build_decision(hook_input: dict) -> dict | None:
             return {
                 "permissionDecision": "deny",
                 "message": (
-                    f"BLOCKED: `cd {target}` leaves the project root ({_PROJECT_ROOT}). "
-                    f"Use absolute paths instead of cd. "
-                    f"Never cd into worktrees — it causes shell corruption when combined "
-                    f"with git operations. Use absolute paths in all commands."
+                    f"BLOCKED: `cd {target}` changes CWD away from project root ({_PROJECT_ROOT}). "
+                    f"ALL cd commands are blocked except `cd {_PROJECT_ROOT}`. "
+                    f"Changing CWD breaks hook scripts that use relative paths. "
+                    f"Use absolute paths or tool-specific path parameters instead."
                 ),
             }
 

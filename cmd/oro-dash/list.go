@@ -631,3 +631,36 @@ func renderDetailPane(b protocol.Bead, workers []WorkerStatus, assignments map[s
 
 	return lipgloss.NewStyle().Width(width).Height(height).Render(out.String())
 }
+
+// renderTreePriorityBadge returns a compact priority badge string with color.
+func renderTreePriorityBadge(priority int, styles Styles) string {
+	badge := fmt.Sprintf("[P%d]", priority)
+	switch priority {
+	case 0:
+		return styles.BadgeP0.Render(badge)
+	case 1:
+		return styles.BadgeP1.Render(badge)
+	case 2:
+		return styles.BadgeP2.Render(badge)
+	case 3:
+		return styles.BadgeP3.Render(badge)
+	default:
+		return styles.BadgeP4.Render(badge)
+	}
+}
+
+// renderTreeTypeIcon returns a single-character icon for a bead type.
+func renderTreeTypeIcon(beadType string) string {
+	switch beadType {
+	case "task":
+		return "□"
+	case "bug":
+		return "⚠"
+	case "feature":
+		return "✦"
+	case "epic":
+		return "◈"
+	default:
+		return "•"
+	}
+}

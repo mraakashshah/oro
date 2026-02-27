@@ -12,13 +12,6 @@ import (
 
 // TestListModel_NewAndEmpty verifies the ListModel scaffold and ViewType wiring.
 func TestListModel_NewAndEmpty(t *testing.T) {
-	t.Run("ListView is in ViewType enum", func(t *testing.T) {
-		// ListView should be appended after TreeView (not inserted at 0)
-		if ListView <= TreeView {
-			t.Errorf("ListView (%d) should be greater than TreeView (%d)", ListView, TreeView)
-		}
-	})
-
 	t.Run("default view is ListView", func(t *testing.T) {
 		m := newModel()
 		if m.activeView != ListView {
@@ -69,42 +62,6 @@ func TestListModel_NewAndEmpty(t *testing.T) {
 		rm, _ := updated.(Model)
 		if rm.activeView != ListView {
 			t.Errorf("esc from InsightsView: activeView = %d, want ListView (%d)", rm.activeView, ListView)
-		}
-	})
-
-	t.Run("esc from HealthView returns to previousNavView", func(t *testing.T) {
-		m := newModel()
-		m.activeView = HealthView
-		m.previousNavView = ListView
-
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		rm, _ := updated.(Model)
-		if rm.activeView != ListView {
-			t.Errorf("esc from HealthView: activeView = %d, want ListView (%d)", rm.activeView, ListView)
-		}
-	})
-
-	t.Run("esc from WorkersView returns to previousNavView", func(t *testing.T) {
-		m := newModel()
-		m.activeView = WorkersView
-		m.previousNavView = ListView
-
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		rm, _ := updated.(Model)
-		if rm.activeView != ListView {
-			t.Errorf("esc from WorkersView: activeView = %d, want ListView (%d)", rm.activeView, ListView)
-		}
-	})
-
-	t.Run("esc from TreeView returns to previousNavView", func(t *testing.T) {
-		m := newModel()
-		m.activeView = TreeView
-		m.previousNavView = ListView
-
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-		rm, _ := updated.(Model)
-		if rm.activeView != ListView {
-			t.Errorf("esc from TreeView: activeView = %d, want ListView (%d)", rm.activeView, ListView)
 		}
 	})
 

@@ -126,17 +126,27 @@ const (
 	SearchView
 	// HelpView shows the help overlay.
 	HelpView
-	// HealthView shows system health status.
-	HealthView
-	// WorkersView shows the workers table.
-	WorkersView
-	// TreeView shows the hierarchical all-beads tree view.
-	TreeView
 	// ListView shows the dense list view with split-pane detail.
 	ListView
 	// StatusView shows system status with sections for daemon, panes, workers.
 	StatusView
 )
+
+// HealthData represents the health status of the oro swarm.
+type HealthData struct {
+	DaemonPID     int
+	DaemonState   string
+	ArchitectPane PaneHealth
+	ManagerPane   PaneHealth
+	WorkerCount   int
+}
+
+// PaneHealth represents the health status of a tmux pane.
+type PaneHealth struct {
+	Name         string
+	Alive        bool
+	LastActivity string
+}
 
 // Model is the Bubble Tea model for the oro dashboard.
 type Model struct {
@@ -191,9 +201,6 @@ type Model struct {
 	searchInput         textinput.Model // Bubbles textinput for search query
 	searchSelectedIndex int             // Index of the selected search result
 	searchModel         *SearchModel
-
-	// Tree view state
-	treeModel TreeModel
 
 	// List view state
 	listModel ListModel
@@ -528,12 +535,6 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleInsightsViewKeys(key)
 	case SearchView:
 		return m.handleSearchViewKeys(key, msg)
-	case HealthView:
-		return m.handleHealthViewKeys(key)
-	case WorkersView:
-		return m.handleWorkersViewKeys(key)
-	case TreeView:
-		return m.handleTreeViewKeys(key)
 	case StatusView:
 		return m.handleStatusViewKeys(key)
 	case ListView:
@@ -628,15 +629,8 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.searchInput.Focus()
 		m.searchInput.SetValue("")
 		m.searchSelectedIndex = 0
-	case "H":
-		m.activeView = HealthView
-	case "w":
-		m.activeView = WorkersView
 	case "s":
 		m.activeView = StatusView
-	case "a":
-		m.treeModel = NewTreeModel(m.beads)
-		m.activeView = TreeView
 	case "m":
 		// Load more closed beads (pagination).
 		return m, fetchMoreClosedCmd(m.closedCursor)
@@ -721,13 +715,6 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.searchSelectedIndex = 0
 	case "s":
 		m.activeView = StatusView
-	case "H":
-		m.activeView = HealthView
-	case "w":
-		m.activeView = WorkersView
-	case "a":
-		m.treeModel = NewTreeModel(m.beads)
-		m.activeView = TreeView
 	case "m":
 		// Load more closed beads (pagination).
 		return m, fetchMoreClosedCmd(m.closedCursor)
@@ -839,13 +826,6 @@ func (m Model) View() string {
 		return board.RenderWithScroll(m.activeCol, m.activeBead, colWidth, m.colScrollOffsets, m.maxVisibleBeads(), m.theme, m.styles) + "\n" + statusBar
 	case SearchView:
 		return m.renderSearchOverlay() + "\n" + statusBar
-	case HealthView:
-		return m.renderHealthView() + "\n" + statusBar
-	case WorkersView:
-		workersTable := NewWorkersTableModel(m.workers, m.assignments, m.daemonHealthy)
-		return workersTable.View(m.theme, m.styles, max(m.width, 80)) + "\n" + statusBar
-	case TreeView:
-		return m.treeModel.View(m.theme, m.styles) + "\n" + statusBar
 	case StatusView:
 		return m.statusModel.View(m.theme, m.styles, m.healthData, m.workers, m.pendingHandoffCount, m.attemptCounts, m.metricsBuffer, m.width, m.height) + "\n" + statusBar
 	case ListView:
@@ -947,7 +927,7 @@ func helpHintsForView(view ViewType, width int) string {
 	}
 	switch view {
 	case BoardView:
-		return "hjkl nav  enter detail  / search  i insights  w workers  ? help  q quit"
+		return "hjkl nav  enter detail  / search  i insights  s status  ? help  q quit"
 	case DetailView:
 		return "esc back  ←→ resize  ? help  q quit"
 	case SearchView:
@@ -956,14 +936,8 @@ func helpHintsForView(view ViewType, width int) string {
 		return "esc close"
 	case InsightsView:
 		return "esc back  ? help  q quit"
-	case HealthView:
-		return "esc back  ? help  q quit"
-	case WorkersView:
-		return "esc back  ? help  q quit"
 	case StatusView:
 		return "j/k navigate  enter expand  esc back  ? help  q quit"
-	case TreeView:
-		return "j/k navigate  space expand/collapse  esc back  ? help  q quit"
 	case ListView:
 		return "j/k navigate  space collapse  enter detail  b board  / search  ? help  q quit"
 	default:
