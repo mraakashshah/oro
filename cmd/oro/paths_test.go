@@ -14,7 +14,6 @@ func TestResolvePaths_Defaults(t *testing.T) {
 	t.Setenv("ORO_PID_PATH", "")
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
-	t.Setenv("ORO_MEMORY_DB", "")
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -41,9 +40,6 @@ func TestResolvePaths_Defaults(t *testing.T) {
 	if paths.StateDBPath != filepath.Join(expectedBase, "state.db") {
 		t.Errorf("StateDBPath = %q, want %q", paths.StateDBPath, filepath.Join(expectedBase, "state.db"))
 	}
-	if paths.MemoryDBPath != filepath.Join(expectedBase, "memories.db") {
-		t.Errorf("MemoryDBPath = %q, want %q", paths.MemoryDBPath, filepath.Join(expectedBase, "memories.db"))
-	}
 	if paths.CodeIndexDBPath != filepath.Join(expectedBase, "code_index.db") {
 		t.Errorf("CodeIndexDBPath = %q, want %q", paths.CodeIndexDBPath, filepath.Join(expectedBase, "code_index.db"))
 	}
@@ -57,7 +53,6 @@ func TestResolvePaths_EnvOverrides(t *testing.T) {
 	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "custom.pid"))
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "custom.sock"))
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "custom-state.db"))
-	t.Setenv("ORO_MEMORY_DB", filepath.Join(tmpDir, "custom-memories.db"))
 
 	paths, err := ResolvePaths()
 	if err != nil {
@@ -76,9 +71,6 @@ func TestResolvePaths_EnvOverrides(t *testing.T) {
 	}
 	if paths.StateDBPath != filepath.Join(tmpDir, "custom-state.db") {
 		t.Errorf("StateDBPath = %q, want %q", paths.StateDBPath, filepath.Join(tmpDir, "custom-state.db"))
-	}
-	if paths.MemoryDBPath != filepath.Join(tmpDir, "custom-memories.db") {
-		t.Errorf("MemoryDBPath = %q, want %q", paths.MemoryDBPath, filepath.Join(tmpDir, "custom-memories.db"))
 	}
 
 	// CodeIndexDBPath respects ORO_HOME when set.
@@ -99,7 +91,6 @@ func TestResolvePaths_PartialEnvOverrides(t *testing.T) {
 	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "custom.pid"))
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
-	t.Setenv("ORO_MEMORY_DB", "")
 
 	paths, err := ResolvePaths()
 	if err != nil {
@@ -228,7 +219,6 @@ func TestResolveProjectDBPaths_FallbackToGlobal(t *testing.T) {
 	t.Setenv("ORO_DB_PATH", "")
 	t.Setenv("ORO_PID_PATH", "")
 	t.Setenv("ORO_SOCKET_PATH", "")
-	t.Setenv("ORO_MEMORY_DB", "")
 
 	// No config.yaml in CWD — should fall back to global
 	noConfigDir := t.TempDir()
@@ -279,7 +269,6 @@ func TestResolvePaths_OroHomeOverride(t *testing.T) {
 	t.Setenv("ORO_PID_PATH", "")
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
-	t.Setenv("ORO_MEMORY_DB", "")
 
 	paths, err := ResolvePaths()
 	if err != nil {
@@ -298,9 +287,6 @@ func TestResolvePaths_OroHomeOverride(t *testing.T) {
 	}
 	if paths.StateDBPath != filepath.Join(tmpDir, "state.db") {
 		t.Errorf("StateDBPath = %q, want %q", paths.StateDBPath, filepath.Join(tmpDir, "state.db"))
-	}
-	if paths.MemoryDBPath != filepath.Join(tmpDir, "memories.db") {
-		t.Errorf("MemoryDBPath = %q, want %q", paths.MemoryDBPath, filepath.Join(tmpDir, "memories.db"))
 	}
 	if paths.CodeIndexDBPath != filepath.Join(tmpDir, "code_index.db") {
 		t.Errorf("CodeIndexDBPath = %q, want %q", paths.CodeIndexDBPath, filepath.Join(tmpDir, "code_index.db"))

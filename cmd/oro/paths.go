@@ -16,7 +16,6 @@ type Paths struct {
 	PIDPath         string // oro.pid or ORO_PID_PATH
 	SocketPath      string // oro.sock or ORO_SOCKET_PATH
 	StateDBPath     string // state.db or ORO_DB_PATH
-	MemoryDBPath    string // memories.db or ORO_MEMORY_DB
 	CodeIndexDBPath string // code_index.db (respects ORO_HOME)
 }
 
@@ -43,7 +42,6 @@ func ResolvePaths() (*Paths, error) {
 		PIDPath:         resolvePathWithEnv("ORO_PID_PATH", oroHome, "oro.pid"),
 		SocketPath:      resolvePathWithEnv("ORO_SOCKET_PATH", oroHome, "oro.sock"),
 		StateDBPath:     resolvePathWithEnv("ORO_DB_PATH", oroHome, "state.db"),
-		MemoryDBPath:    resolvePathWithEnv("ORO_MEMORY_DB", oroHome, "memories.db"),
 		CodeIndexDBPath: filepath.Join(oroHome, "code_index.db"),
 	}
 
