@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -139,5 +140,134 @@ func TestCountReadFiles(t *testing.T) {
 				t.Errorf("CountReadFiles() = %d, want %d", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestBeadUnmarshalNewFields(t *testing.T) {
+	tests := []struct {
+		name            string
+		jsonStr         string
+		wantID          string
+		wantTitle       string
+		wantStatus      string
+		wantPriority    int
+		wantClosedAt    string
+		wantCreatedAt   string
+		wantDescription string
+		wantCloseReason string
+		wantOwner       string
+	}{
+		{
+			name: "Bead with all new fields",
+			jsonStr: `{
+				"id": "oro-123",
+				"title": "Test Bead",
+				"status": "closed",
+				"priority": 1,
+				"closed_at": "2025-02-27T10:00:00Z",
+				"created_at": "2025-02-20T08:00:00Z",
+				"description": "Test description",
+				"close_reason": "Completed",
+				"owner": "agent-1"
+			}`,
+			wantID:          "oro-123",
+			wantTitle:       "Test Bead",
+			wantStatus:      "closed",
+			wantPriority:    1,
+			wantClosedAt:    "2025-02-27T10:00:00Z",
+			wantCreatedAt:   "2025-02-20T08:00:00Z",
+			wantDescription: "Test description",
+			wantCloseReason: "Completed",
+			wantOwner:       "agent-1",
+		},
+		{
+			name: "Bead with partial new fields",
+			jsonStr: `{
+				"id": "oro-456",
+				"title": "Another Bead",
+				"priority": 2,
+				"created_at": "2025-02-25T12:00:00Z",
+				"owner": "agent-2"
+			}`,
+			wantID:        "oro-456",
+			wantTitle:     "Another Bead",
+			wantPriority:  2,
+			wantCreatedAt: "2025-02-25T12:00:00Z",
+			wantOwner:     "agent-2",
+		},
+		{
+			name: "Bead without new fields (backwards compatibility)",
+			jsonStr: `{
+				"id": "oro-789",
+				"title": "Old Bead",
+				"priority": 0
+			}`,
+			wantID:       "oro-789",
+			wantTitle:    "Old Bead",
+			wantPriority: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got protocol.Bead
+			if err := json.Unmarshal([]byte(tt.jsonStr), &got); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if got.ID != tt.wantID {
+				t.Errorf("ID = %s, want %s", got.ID, tt.wantID)
+			}
+			if got.Title != tt.wantTitle {
+				t.Errorf("Title = %s, want %s", got.Title, tt.wantTitle)
+			}
+			if got.Status != tt.wantStatus {
+				t.Errorf("Status = %s, want %s", got.Status, tt.wantStatus)
+			}
+			if got.Priority != tt.wantPriority {
+				t.Errorf("Priority = %d, want %d", got.Priority, tt.wantPriority)
+			}
+			if got.ClosedAt != tt.wantClosedAt {
+				t.Errorf("ClosedAt = %s, want %s", got.ClosedAt, tt.wantClosedAt)
+			}
+			if got.CreatedAt != tt.wantCreatedAt {
+				t.Errorf("CreatedAt = %s, want %s", got.CreatedAt, tt.wantCreatedAt)
+			}
+			if got.Description != tt.wantDescription {
+				t.Errorf("Description = %s, want %s", got.Description, tt.wantDescription)
+			}
+			if got.CloseReason != tt.wantCloseReason {
+				t.Errorf("CloseReason = %s, want %s", got.CloseReason, tt.wantCloseReason)
+			}
+			if got.Owner != tt.wantOwner {
+				t.Errorf("Owner = %s, want %s", got.Owner, tt.wantOwner)
+			}
+		})
+	}
+}
+
+func TestBeadDetailUnmarshalOwner(t *testing.T) {
+	jsonStr := `{
+		"id": "oro-detail-123",
+		"title": "Detail Test",
+		"acceptance_criteria": "Test AC",
+		"owner": "agent-3"
+	}`
+
+	var got protocol.BeadDetail
+	if err := json.Unmarshal([]byte(jsonStr), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+
+	if got.ID != "oro-detail-123" {
+		t.Errorf("ID = %s, want %s", got.ID, "oro-detail-123")
+	}
+	if got.Title != "Detail Test" {
+		t.Errorf("Title = %s, want %s", got.Title, "Detail Test")
+	}
+	if got.AcceptanceCriteria != "Test AC" {
+		t.Errorf("AcceptanceCriteria = %s, want %s", got.AcceptanceCriteria, "Test AC")
+	}
+	if got.Owner != "agent-3" {
+		t.Errorf("Owner = %s, want %s", got.Owner, "agent-3")
 	}
 }

@@ -25,6 +25,11 @@ type Bead struct {
 	AcceptanceCriteria string       `json:"acceptance_criteria,omitempty"` // acceptance criteria text
 	Dependencies       []Dependency `json:"dependencies,omitempty"`        // dependency relationships
 	UpdatedAt          string       `json:"updated_at,omitempty"`          // RFC3339 timestamp of last update
+	ClosedAt           string       `json:"closed_at,omitempty"`           // RFC3339 timestamp of when closed
+	CreatedAt          string       `json:"created_at,omitempty"`          // RFC3339 timestamp of creation
+	Description        string       `json:"description,omitempty"`         // detailed description
+	CloseReason        string       `json:"close_reason,omitempty"`        // reason for closing
+	Owner              string       `json:"owner,omitempty"`               // owner/assignee identifier
 }
 
 // BeadDetail holds extended information about a single bead.
@@ -41,6 +46,7 @@ type BeadDetail struct {
 	GitDiff            string       `json:"git_diff,omitempty"`
 	Memory             string       `json:"memory,omitempty"`
 	Dependencies       []Dependency `json:"dependencies,omitempty"`
+	Owner              string       `json:"owner,omitempty"` // owner/assignee identifier
 }
 
 // Model constants for routing.
