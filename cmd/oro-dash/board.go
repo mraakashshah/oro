@@ -69,13 +69,11 @@ func NewBoardModelWithWorkers(beads []protocol.Bead, workers []WorkerStatus, ass
 		beadsInCol := buckets[t]
 		totalCount := len(beadsInCol)
 
-		// Sort Done column by UpdatedAt descending (most recent first), then cap at 10.
+		// Sort all columns by UpdatedAt descending (most recent first).
 		// Beads with empty UpdatedAt parse as zero-time and sort as oldest.
-		if t == "Done" {
-			slices.SortStableFunc(beadsInCol, func(a, b protocol.Bead) int {
-				return parseBeadTime(b.UpdatedAt).Compare(parseBeadTime(a.UpdatedAt))
-			})
-		}
+		slices.SortStableFunc(beadsInCol, func(a, b protocol.Bead) int {
+			return parseBeadTime(b.UpdatedAt).Compare(parseBeadTime(a.UpdatedAt))
+		})
 
 		columns = append(columns, boardColumn{
 			title:      t,

@@ -623,3 +623,59 @@ func TestBoardRender_EmptyColumnShowsNoItems(t *testing.T) {
 		t.Errorf("Render() empty columns should show 'no items' placeholder\ngot:\n%s", output)
 	}
 }
+
+// TestBoardRecencySort verifies that all 4 columns (Ready, In Progress, Blocked, Done)
+// sort beads by UpdatedAt descending (most recent first).
+func TestBoardRecencySort(t *testing.T) {
+	// Create 3 beads for each of the 4 columns, with UpdatedAt in unsorted order.
+	// We'll input them as: day 1, day 3, day 2 (unsorted).
+	// After sorting, they should appear as: day 3, day 2, day 1 (descending).
+	beads := []protocol.Bead{
+		// Ready column
+		{ID: "ready-1", Title: "Ready Day 1", Status: "open", UpdatedAt: "2024-01-01T00:00:00Z"},
+		{ID: "ready-3", Title: "Ready Day 3", Status: "open", UpdatedAt: "2024-01-03T00:00:00Z"},
+		{ID: "ready-2", Title: "Ready Day 2", Status: "open", UpdatedAt: "2024-01-02T00:00:00Z"},
+		// In Progress column
+		{ID: "wip-1", Title: "WIP Day 1", Status: "in_progress", UpdatedAt: "2024-01-01T00:00:00Z"},
+		{ID: "wip-3", Title: "WIP Day 3", Status: "in_progress", UpdatedAt: "2024-01-03T00:00:00Z"},
+		{ID: "wip-2", Title: "WIP Day 2", Status: "in_progress", UpdatedAt: "2024-01-02T00:00:00Z"},
+		// Blocked column
+		{ID: "blocked-1", Title: "Blocked Day 1", Status: "blocked", UpdatedAt: "2024-01-01T00:00:00Z"},
+		{ID: "blocked-3", Title: "Blocked Day 3", Status: "blocked", UpdatedAt: "2024-01-03T00:00:00Z"},
+		{ID: "blocked-2", Title: "Blocked Day 2", Status: "blocked", UpdatedAt: "2024-01-02T00:00:00Z"},
+		// Done column
+		{ID: "done-1", Title: "Done Day 1", Status: "closed", UpdatedAt: "2024-01-01T00:00:00Z"},
+		{ID: "done-3", Title: "Done Day 3", Status: "closed", UpdatedAt: "2024-01-03T00:00:00Z"},
+		{ID: "done-2", Title: "Done Day 2", Status: "closed", UpdatedAt: "2024-01-02T00:00:00Z"},
+	}
+
+	board := NewBoardModel(beads)
+	theme := DefaultTheme()
+	output := board.Render(theme, NewStyles(theme))
+
+	// Helper to verify column sort order
+	verifyColumnOrder := func(colName string, expectedOrder []string) {
+		indices := make([]int, len(expectedOrder))
+		for i, id := range expectedOrder {
+			idx := strings.Index(output, id)
+			if idx == -1 {
+				t.Errorf("%s column missing bead %q\ngot:\n%s", colName, id, output)
+				return
+			}
+			indices[i] = idx
+		}
+		// Verify indices are in ascending order (first ID appears before last ID)
+		for i := 0; i < len(indices)-1; i++ {
+			if indices[i] > indices[i+1] {
+				t.Errorf("%s column: expected %q before %q, got reverse order\noutput:\n%s",
+					colName, expectedOrder[i], expectedOrder[i+1], output)
+			}
+		}
+	}
+
+	// Each column should show: day-3, day-2, day-1 (descending by UpdatedAt)
+	verifyColumnOrder("Ready", []string{"ready-3", "ready-2", "ready-1"})
+	verifyColumnOrder("In Progress", []string{"wip-3", "wip-2", "wip-1"})
+	verifyColumnOrder("Blocked", []string{"blocked-3", "blocked-2", "blocked-1"})
+	verifyColumnOrder("Done", []string{"done-3", "done-2", "done-1"})
+}
