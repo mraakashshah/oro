@@ -59,11 +59,9 @@ func TestStageAssetsUsesRepoAssetsDir(t *testing.T) {
 	if _, err := os.Stat(markerFile); os.IsNotExist(err) {
 		t.Fatal("_assets/.test-marker not found - stage-assets is still copying from ~/.oro/ instead of repo assets/")
 	}
-
-	// Clean up
-	if err := os.RemoveAll(assetsDir); err != nil {
-		t.Logf("warning: failed to clean up _assets: %v", err)
-	}
+	// Note: _assets/ is intentionally NOT removed here. The go:embed directive in
+	// embed.go requires _assets/ to exist for subsequent go build steps in CI.
+	// CI cleans up via 'make clean-assets' after all build/test steps complete.
 }
 
 // TestStageAssetsFailsWhenAssetsDirMissing verifies that stage-assets
