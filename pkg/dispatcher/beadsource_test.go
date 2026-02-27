@@ -574,10 +574,10 @@ func TestCLIBeadSource_Create(t *testing.T) {
 			t.Errorf("ID: got %q, want %q", id, "oro-test")
 		}
 
-		// Verify --acceptance-criteria flag is present.
+		// Verify --acceptance flag is present.
 		call := runner.calls[0]
-		if !sliceContains(call.Args, "--acceptance-criteria="+ac) {
-			t.Errorf("expected '--acceptance-criteria=%s' in args, got %v", ac, call.Args)
+		if !sliceContains(call.Args, "--acceptance="+ac) {
+			t.Errorf("expected '--acceptance=%s' in args, got %v", ac, call.Args)
 		}
 	})
 
@@ -593,11 +593,11 @@ func TestCLIBeadSource_Create(t *testing.T) {
 			t.Errorf("ID: got %q, want %q", id, "oro-test2")
 		}
 
-		// Verify --acceptance-criteria flag is NOT in args when empty.
+		// Verify --acceptance flag is NOT in args when empty.
 		call := runner.calls[0]
 		for _, arg := range call.Args {
-			if strings.HasPrefix(arg, "--acceptance-criteria=") {
-				t.Errorf("expected no --acceptance-criteria arg when AC is empty, got %v", call.Args)
+			if strings.HasPrefix(arg, "--acceptance=") {
+				t.Errorf("expected no --acceptance arg when AC is empty, got %v", call.Args)
 			}
 		}
 	})
@@ -878,13 +878,13 @@ func TestCLIBeadSource_CreateWithAcceptanceCriteria(t *testing.T) {
 			t.Errorf("ID: got %q, want %q", id, "oro-test")
 		}
 
-		// Verify --acceptance-criteria flag is present with the AC value.
+		// Verify --acceptance flag is present with the AC value.
 		if len(runner.calls) != 1 {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if !sliceContains(call.Args, "--acceptance-criteria=Test passes and verified") {
-			t.Errorf("expected '--acceptance-criteria=Test passes and verified' in args, got %v", call.Args)
+		if !sliceContains(call.Args, "--acceptance=Test passes and verified") {
+			t.Errorf("expected '--acceptance=Test passes and verified' in args, got %v", call.Args)
 		}
 	})
 
@@ -900,11 +900,11 @@ func TestCLIBeadSource_CreateWithAcceptanceCriteria(t *testing.T) {
 			t.Errorf("ID: got %q, want %q", id, "oro-test2")
 		}
 
-		// Verify --acceptance-criteria flag is NOT present when empty.
+		// Verify --acceptance flag is NOT present when empty.
 		call := runner.calls[0]
 		for _, arg := range call.Args {
-			if strings.HasPrefix(arg, "--acceptance-criteria=") {
-				t.Errorf("expected no --acceptance-criteria arg when AC is empty, got %v", call.Args)
+			if strings.HasPrefix(arg, "--acceptance=") {
+				t.Errorf("expected no --acceptance arg when AC is empty, got %v", call.Args)
 			}
 		}
 	})
@@ -921,13 +921,13 @@ func TestCLIBeadSource_CreateWithAcceptanceCriteria(t *testing.T) {
 			t.Errorf("ID: got %q, want %q", id, "oro-test3")
 		}
 
-		// Verify both --parent and --acceptance-criteria are present.
+		// Verify both --parent and --acceptance are present.
 		call := runner.calls[0]
 		if !sliceContains(call.Args, "--parent=oro-parent") {
 			t.Errorf("expected '--parent=oro-parent' in args, got %v", call.Args)
 		}
-		if !sliceContains(call.Args, "--acceptance-criteria=Subtask completed") {
-			t.Errorf("expected '--acceptance-criteria=Subtask completed' in args, got %v", call.Args)
+		if !sliceContains(call.Args, "--acceptance=Subtask completed") {
+			t.Errorf("expected '--acceptance=Subtask completed' in args, got %v", call.Args)
 		}
 	})
 }
@@ -1052,7 +1052,7 @@ func TestCLIBeadSource_Create_Assertions(t *testing.T) {
 		}
 	})
 
-	// (d) Create(acceptanceCriteria="do X") → args include "--acceptance-criteria=do X".
+	// (d) Create(acceptanceCriteria="do X") → args include "--acceptance=do X".
 	t.Run("d_acceptance_criteria_do_x_included", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-d"}`)}
 		src := NewCLIBeadSource(runner)
@@ -1062,8 +1062,8 @@ func TestCLIBeadSource_Create_Assertions(t *testing.T) {
 			t.Fatalf("Create: %v", err)
 		}
 		call := runner.calls[0]
-		if !sliceContains(call.Args, "--acceptance-criteria=do X") {
-			t.Errorf("(d) expected '--acceptance-criteria=do X' in args, got %v", call.Args)
+		if !sliceContains(call.Args, "--acceptance=do X") {
+			t.Errorf("(d) expected '--acceptance=do X' in args, got %v", call.Args)
 		}
 	})
 
