@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -1807,5 +1808,87 @@ func TestSendToWorker_AppendNewlineThenWrite(t *testing.T) {
 	written := conn.written[0]
 	if len(written) == 0 || written[len(written)-1] != '\n' {
 		t.Error("written data should end with newline")
+	}
+}
+
+// TestHeartbeatTimeoutIgnoresPrevSessionWorkers verifies that WORKER_CRASH
+// escalation is suppressed for workers from a previous dispatcher session,
+// while current-session workers still receive the alert (oro-x7ru).
+// Workers are identified as previous-session when their embedded nanosecond
+// timestamp predates d.startTime.
+func TestHeartbeatTimeoutIgnoresPrevSessionWorkers(t *testing.T) {
+	t.Parallel()
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+
+	// Fix a session start time.
+	sessionStart := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	d.mu.Lock()
+	d.startTime = sessionStart
+	d.mu.Unlock()
+
+	// "now" is well past the heartbeat timeout from sessionStart.
+	now := sessionStart.Add(10 * time.Minute)
+	d.nowFunc = func() time.Time { return now }
+
+	// Build worker IDs embedding nanosecond timestamps relative to sessionStart.
+	// parseWorkerEpoch extracts \b(\d{15,19})\b from the ID.
+	prevNano := sessionStart.Add(-1 * time.Second).UnixNano() // before session → prevSession=true
+	currNano := sessionStart.Add(1 * time.Second).UnixNano()  // after session → prevSession=false
+	prevWorkerID := fmt.Sprintf("worker-%d-0", prevNano)
+	currWorkerID := fmt.Sprintf("worker-%d-0", currNano)
+
+	conn1 := newMockConn()
+	conn2 := newMockConn()
+
+	// Register workers — upsertWorker computes prevSession from the embedded timestamp.
+	d.mu.Lock()
+	d.upsertWorker(prevWorkerID, conn1, false)
+	d.upsertWorker(currWorkerID, conn2, false)
+
+	// Verify prevSession flags before proceeding.
+	if !d.workers[prevWorkerID].prevSession {
+		t.Fatal("prevWorkerID should have prevSession=true")
+	}
+	if d.workers[currWorkerID].prevSession {
+		t.Fatal("currWorkerID should have prevSession=false")
+	}
+
+	// Force both workers' lastSeen to be stale (past heartbeat timeout).
+	stale := now.Add(-(d.cfg.HeartbeatTimeout + time.Second))
+	d.workers[prevWorkerID].lastSeen = stale
+	d.workers[currWorkerID].lastSeen = stale
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	// Both workers should be removed (heartbeat timeout applies to all sessions).
+	d.mu.Lock()
+	_, prevStillPresent := d.workers[prevWorkerID]
+	_, currStillPresent := d.workers[currWorkerID]
+	d.mu.Unlock()
+
+	if prevStillPresent {
+		t.Error("previous-session worker should be removed by heartbeat timeout")
+	}
+	if currStillPresent {
+		t.Error("current-session worker should be removed by heartbeat timeout")
+	}
+
+	// WORKER_CRASH must NOT be emitted for the previous-session worker.
+	// WORKER_CRASH MUST be emitted for the current-session worker.
+	msgs := esc.Messages()
+	for _, msg := range msgs {
+		if strings.Contains(msg, "WORKER_CRASH") && strings.Contains(msg, prevWorkerID) {
+			t.Errorf("unexpected WORKER_CRASH alert for previous-session worker %q: %s", prevWorkerID, msg)
+		}
+	}
+	var foundCurrCrash bool
+	for _, msg := range msgs {
+		if strings.Contains(msg, "WORKER_CRASH") && strings.Contains(msg, currWorkerID) {
+			foundCurrCrash = true
+		}
+	}
+	if !foundCurrCrash {
+		t.Errorf("expected WORKER_CRASH alert for current-session worker %q, got messages: %v", currWorkerID, msgs)
 	}
 }
