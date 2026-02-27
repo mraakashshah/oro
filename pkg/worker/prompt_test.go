@@ -1337,6 +1337,49 @@ func TestPromptConstrainsDeadCodeNoOps(t *testing.T) {
 	}
 }
 
+// TestContextHandoffPrompt verifies that the Context Handoff section explicitly
+// tells the agent to exit immediately after invoking create-handoff, preventing
+// agents from continuing work after handing off (which defeats the handoff).
+func TestContextHandoffPrompt(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-ctx-handoff",
+		Title:              "Context handoff exit test",
+		Description:        "Verify prompt tells agent to stop after handoff",
+		AcceptanceCriteria: "Prompt contains exit instruction after create-handoff",
+		WorktreePath:       "/tmp/wt-ctx-handoff",
+		Model:              "sonnet",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Extract Context Handoff section for focused assertions
+	handoffStart := strings.Index(prompt, "## Context Handoff")
+	if handoffStart == -1 {
+		t.Fatal("expected prompt to contain ## Context Handoff section")
+	}
+	handoffEnd := strings.Index(prompt[handoffStart+1:], "## ")
+	var handoffSection string
+	if handoffEnd == -1 {
+		handoffSection = prompt[handoffStart:]
+	} else {
+		handoffSection = prompt[handoffStart : handoffStart+1+handoffEnd]
+	}
+
+	// Find the create-handoff instruction within the section
+	createHandoffIdx := strings.Index(handoffSection, "create-handoff")
+	if createHandoffIdx == -1 {
+		t.Fatal("expected Context Handoff section to contain 'create-handoff' instruction")
+	}
+
+	// The text after the create-handoff mention must include an explicit stop instruction
+	afterHandoff := handoffSection[createHandoffIdx:]
+	if !strings.Contains(afterHandoff, "exit immediately") && !strings.Contains(afterHandoff, "do not continue") {
+		t.Errorf("expected Context Handoff section to contain 'exit immediately' or 'do not continue' after create-handoff instruction.\nGot (after create-handoff):\n%s", afterHandoff)
+	}
+}
+
 // TestAssemblePrompt_BugP0Rule verifies that the Failure section contains
 // the mandatory rule: all bug beads must use --priority=0.
 func TestAssemblePrompt_BugP0Rule(t *testing.T) {
