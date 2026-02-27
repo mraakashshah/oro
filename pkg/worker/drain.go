@@ -44,6 +44,12 @@ func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter
 				params.BeadID = beadID
 				_, _ = store.Insert(ctx, *params)
 			}
+			// Implicit patterns ("I learned...", "Gotcha:", etc.)
+			for _, p := range memory.ExtractImplicit(line) {
+				p.BeadID = beadID
+				p.Source = "worker_implicit"
+				_, _ = store.Insert(ctx, p)
+			}
 		}
 	}
 }

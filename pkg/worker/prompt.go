@@ -41,14 +41,20 @@ func memoryBody(ctx string) string {
 // savingLearningsBody returns the Saving Learnings section content with examples.
 func savingLearningsBody() string {
 	return strings.Join([]string{
-		"As you work, capture learnings for the next session using [MEMORY] markers. Examples:",
+		"As you work, capture learnings for future sessions. Three methods:",
 		"",
-		"- `[MEMORY] I learned that the FTS5 trigger must be on INSERT only`",
-		"- `[MEMORY] Gotcha: Race condition in channel close — must use sync.Once`",
-		"- `[MEMORY] Note: The dispatcher retries with exponential backoff`",
-		"- `[MEMORY] Decision: Use pure functions for business logic to enable testing`",
+		"**Natural language** (just write normally — these are extracted automatically):",
+		"  I learned that the FTS5 trigger must be on INSERT only",
+		"  Gotcha: ruff --fix must run BEFORE pyright or types break",
+		"  Note: the dispatcher retries with exponential backoff",
+		"  Decision: use table-driven tests for the parser package",
 		"",
-		"Record these in `.oro/learnings.json` (array of strings). The next worker will see them in their Memory section.",
+		"**Explicit markers** (for structured entries):",
+		"  [MEMORY] type=gotcha tags=sqlite: WAL mode required for concurrent writes",
+		"  [MEMORY] type=lesson tags=go,test: table-driven tests catch edge cases",
+		"",
+		"Types: lesson, decision, gotcha, pattern",
+		"Only save genuinely useful discoveries — not obvious facts.",
 	}, "\n")
 }
 

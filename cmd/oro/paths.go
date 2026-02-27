@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"oro/pkg/protocol"
 )
@@ -47,6 +48,56 @@ func ResolvePaths() (*Paths, error) {
 	}
 
 	return paths, nil
+}
+
+// ResolveProjectDBPaths returns paths with DB paths scoped to the current project.
+// Resolution order for project name:
+//  1. ORO_PROJECT env var (set by dispatcher for workers, and by oro work)
+//  2. .oro/config.yaml "project" field in CWD
+//  3. Empty string → fall back to global ~/.oro/ paths
+//
+// When a project name is found, StateDBPath and CodeIndexDBPath resolve to
+// ~/.oro/projects/<name>/. PIDPath and SocketPath remain global.
+func ResolveProjectDBPaths() (*Paths, error) {
+	base, err := ResolvePaths()
+	if err != nil {
+		return nil, err
+	}
+
+	project := readProjectName()
+	if project == "" {
+		return base, nil
+	}
+
+	projDir := filepath.Join(base.OroHome, "projects", project)
+	base.StateDBPath = filepath.Join(projDir, "state.db")
+	base.CodeIndexDBPath = filepath.Join(projDir, "code_index.db")
+
+	return base, nil
+}
+
+// readProjectName returns the current project name from ORO_PROJECT env var
+// or .oro/config.yaml in CWD. Returns empty string if neither is available.
+func readProjectName() string {
+	if v := os.Getenv("ORO_PROJECT"); v != "" {
+		return v
+	}
+
+	// Try .oro/config.yaml in CWD.
+	data, err := os.ReadFile(filepath.Join(".oro", "config.yaml"))
+	if err != nil {
+		return ""
+	}
+
+	// Minimal YAML parse: look for "project: <name>" line.
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "project:") {
+			val := strings.TrimSpace(strings.TrimPrefix(line, "project:"))
+			return val
+		}
+	}
+	return ""
 }
 
 // resolveOroHome returns the oro home directory from ORO_HOME env var or ~/.oro.

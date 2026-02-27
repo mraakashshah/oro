@@ -1140,7 +1140,15 @@ func TestAssemblePrompt_SavingLearningsSection(t *testing.T) {
 			learningsSection = prompt[learningsStart : learningsStart+1+learningsEnd]
 		}
 
-		// Check for required content
+		// Must NOT contain learnings.json reference (removed in favor of implicit extraction)
+		if strings.Contains(learningsSection, "learnings.json") {
+			t.Error("Saving Learnings section must NOT contain 'learnings.json' reference")
+		}
+
+		// Must contain both capture methods
+		if !strings.Contains(learningsSection, "Natural language") {
+			t.Error("expected Saving Learnings section to contain 'Natural language' capture method")
+		}
 		if !strings.Contains(learningsSection, "[MEMORY]") {
 			t.Error("expected Saving Learnings section to contain '[MEMORY]' marker")
 		}
