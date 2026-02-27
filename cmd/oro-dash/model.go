@@ -445,9 +445,9 @@ func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.activeView = m.previousNavView
 		m.detailModel = nil
 	case "tab", "right":
-		_, _, _ = m.detailModel,
-			m.detailModel, m.detailModel.nextTab
-
+		if m.detailModel != nil {
+			*m.detailModel = m.detailModel.nextTab()
+		}
 	case "shift+tab", "left":
 		if m.detailModel != nil {
 			*m.detailModel = m.detailModel.prevTab()
