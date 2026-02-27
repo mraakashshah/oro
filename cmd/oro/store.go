@@ -10,11 +10,12 @@ import (
 )
 
 // defaultMemoryStore opens (or creates) the default SQLite memory store at
-// ~/.oro/state.db and ensures the schema is applied.
-// Uses StateDBPath (same as the dispatcher and workers) so that CLI commands
-// read and write the same database as running workers.
+// ~/.oro/state.db (or ~/.oro/projects/<project>/state.db if a project is set)
+// and ensures the schema is applied.
+// Uses ResolveProjectDBPaths to respect project context, so that CLI commands
+// read and write the same database as running workers in the current project.
 func defaultMemoryStore() (*memory.Store, error) {
-	paths, err := ResolvePaths()
+	paths, err := ResolveProjectDBPaths()
 	if err != nil {
 		return nil, fmt.Errorf("resolve paths: %w", err)
 	}

@@ -51,7 +51,7 @@ func newLogsCmd() *cobra.Command {
 			}
 
 			// Handle normal database mode
-			paths, err := ResolvePaths()
+			paths, err := ResolveProjectDBPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}

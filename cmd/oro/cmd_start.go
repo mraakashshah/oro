@@ -408,13 +408,19 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 // The caller owns the returned *sql.DB and must close it.
 // Zero-value timeouts use dispatcher defaults (ProgressTimeout=10m, ReviewTimeout=15m).
 func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duration) (*dispatcher.Dispatcher, *sql.DB, error) {
-	paths, err := ResolvePaths()
+	// Get socket path from global paths (daemon control)
+	globalPaths, err := ResolvePaths()
 	if err != nil {
 		return nil, nil, err
 	}
+	sockPath := globalPaths.SocketPath
 
-	sockPath := paths.SocketPath
-	dbPath := paths.StateDBPath
+	// Get DB paths from project-scoped paths (project data)
+	projPaths, err := ResolveProjectDBPaths()
+	if err != nil {
+		return nil, nil, err
+	}
+	dbPath := projPaths.StateDBPath
 
 	db, err := openDB(dbPath)
 	if err != nil {
@@ -439,14 +445,14 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 	// Build runs in the background to refresh the index without blocking startup.
 	var codeIdx dispatcher.CodeIndex
 	reranker := codesearch.NewReranker(&codesearch.ClaudeRerankSpawner{})
-	idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath, reranker)
+	idx, idxErr := codesearch.NewCodeIndex(projPaths.CodeIndexDBPath, reranker)
 	if idxErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to open code index: %v\n", idxErr)
 	} else {
 		codeIdx = &codeIndexAdapter{idx: idx}
 		// Launch best-effort code index build in background (non-blocking).
 		go func() {
-			_ = buildCodeIndex(context.Background(), repoRoot, paths.CodeIndexDBPath)
+			_ = buildCodeIndex(context.Background(), repoRoot, projPaths.CodeIndexDBPath)
 		}()
 	}
 

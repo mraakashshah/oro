@@ -44,7 +44,7 @@ func newIndexBuildCmd() *cobra.Command {
 				rootDir = cwd
 			}
 
-			paths, err := ResolvePaths()
+			paths, err := ResolveProjectDBPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
@@ -68,7 +68,7 @@ func newIndexSearchCmd() *cobra.Command {
 		Long:  "Search the code index using FTS5 full-text search with Claude reranking.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveProjectDBPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}

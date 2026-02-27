@@ -60,7 +60,7 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 
 	// Wire memory store so [MEMORY] markers and implicit patterns are captured.
 	var memStore *memory.Store
-	paths, pathsErr := ResolvePaths()
+	paths, pathsErr := ResolveProjectDBPaths()
 	if pathsErr == nil {
 		db, dbErr := openDB(paths.StateDBPath)
 		if dbErr == nil {
