@@ -995,13 +995,11 @@ func (d *Dispatcher) storeRejectionFeedback(ctx context.Context, beadID, feedbac
 // This ensures the worker always sees why it was rejected even when the
 // memory store has no prior entries.
 func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, feedback string) string {
-	// Persist the rejection feedback to rejection_history.
-	d.storeRejectionFeedback(ctx, beadID, feedback)
-
 	// Fetch general memories via ForPrompt.
 	generalMemCtx := d.fetchBeadMemories(ctx, beadID)
 
-	// Fetch prior rejections from rejection_history.
+	// Fetch prior rejections BEFORE storing the current one so "prior"
+	// truly means prior and the current feedback doesn't appear twice.
 	var priorCtx string
 	if d.memories != nil {
 		if rejections, err := d.memories.GetRejections(ctx, beadID); err == nil && len(rejections) > 0 {
@@ -1013,6 +1011,9 @@ func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, fe
 			priorCtx = strings.Join(lines, "\n")
 		}
 	}
+
+	// Persist AFTER fetching so the current feedback is not duplicated.
+	d.storeRejectionFeedback(ctx, beadID, feedback)
 
 	// Always prepend the current rejection section.
 	if feedback == "" {

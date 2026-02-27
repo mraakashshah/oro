@@ -89,6 +89,28 @@ func TestSchemaDDL(t *testing.T) {
 	}
 }
 
+func TestSchemaDDL_RejectionBeadIndex(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec(protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("exec schema DDL: %v", err)
+	}
+
+	// idx_rejection_bead must exist after applying only SchemaDDL (no migrations).
+	var name string
+	err = db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_rejection_bead'",
+	).Scan(&name)
+	if err != nil {
+		t.Fatalf("idx_rejection_bead index not found in SchemaDDL: %v", err)
+	}
+}
+
 func TestSchemaIsIdempotent(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

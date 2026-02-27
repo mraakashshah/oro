@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS rejection_history (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_rejection_bead ON rejection_history(bead_id);
+
 -- FTS5 full-text index over memories for BM25-ranked search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
@@ -166,6 +168,7 @@ CREATE TABLE IF NOT EXISTS rejection_history (
     feedback TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+BEGIN;
 INSERT INTO rejection_history (bead_id, worker_id, feedback, created_at)
 SELECT
     COALESCE(bead_id, ''),
@@ -175,4 +178,5 @@ SELECT
 FROM memories
 WHERE content LIKE 'Reviewer rejected this bead: %';
 DELETE FROM memories WHERE content LIKE 'Reviewer rejected this bead: %';
+COMMIT;
 `

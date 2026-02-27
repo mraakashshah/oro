@@ -12244,3 +12244,38 @@ func TestBuildRejectionMemoryContextWithSeparateTable(t *testing.T) {
 		t.Errorf("expected 1 rejection in rejection_history, got %d", histCount)
 	}
 }
+
+// TestBuildRejectionMemoryContext_NoDuplicateInPrior verifies that calling
+// buildRejectionMemoryContext twice produces output where the second call
+// contains the first feedback exactly once (in "Prior") and the second
+// feedback exactly once (in "Current"), not twice.
+func TestBuildRejectionMemoryContext_NoDuplicateInPrior(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// First rejection cycle.
+	_ = d.buildRejectionMemoryContext(ctx, "oro-dup-test", "first feedback")
+
+	// Second rejection cycle.
+	result := d.buildRejectionMemoryContext(ctx, "oro-dup-test", "second feedback")
+
+	// "second feedback" must appear exactly once — in the current rejection section.
+	if count := strings.Count(result, "second feedback"); count != 1 {
+		t.Errorf("second feedback should appear exactly once (current section), appeared %d times in:\n%s", count, result)
+	}
+
+	// "first feedback" must appear exactly once — in the prior rejection history.
+	if count := strings.Count(result, "first feedback"); count != 1 {
+		t.Errorf("first feedback should appear exactly once (prior section), appeared %d times in:\n%s", count, result)
+	}
+
+	// The prior section must NOT contain the current feedback.
+	priorIdx := strings.Index(result, "## Prior Rejection History")
+	if priorIdx == -1 {
+		t.Fatal("expected '## Prior Rejection History' section in output")
+	}
+	priorSection := result[priorIdx:]
+	if strings.Contains(priorSection, "second feedback") {
+		t.Errorf("prior section should not contain current feedback 'second feedback', got:\n%s", priorSection)
+	}
+}
