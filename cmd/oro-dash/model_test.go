@@ -1755,3 +1755,142 @@ func TestStatusBar_UsesSeparator(t *testing.T) {
 		t.Errorf("renderStatusBar() should not use ASCII | separator, got: %s", bar)
 	}
 }
+
+// TestDrillDownWiresWorkerData verifies drill-down paths include WorkerID, ContextPercent, and Dependencies.
+func TestDrillDownWiresWorkerData(t *testing.T) {
+	t.Run("drillDownToDetail (board) includes WorkerID and ContextPercent", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{
+				ID:     "oro-board.1",
+				Title:  "Board task",
+				Status: "open",
+				Dependencies: []protocol.Dependency{
+					{IssueID: "oro-board.1", DependsOnID: "oro-dep.1", Type: "depends_on"},
+				},
+			},
+		}
+		workers := []WorkerStatus{
+			{ID: "worker-2", ContextPct: 60},
+		}
+
+		m := newModel()
+		m.beads = beads
+		m.workers = workers
+		m.assignments = map[string]string{"oro-board.1": "worker-2"}
+		m.activeView = BoardView
+		m.activeCol = 0
+		m.activeBead = 0
+
+		// Drill down via Enter key
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.detailModel == nil {
+			t.Fatal("detailModel should be set after drillDownToDetail")
+		}
+
+		// Verify WorkerID and ContextPercent are populated
+		if model.detailModel.bead.WorkerID != "worker-2" {
+			t.Errorf("BeadDetail.WorkerID = %q, want %q", model.detailModel.bead.WorkerID, "worker-2")
+		}
+		if model.detailModel.bead.ContextPercent != 60 {
+			t.Errorf("BeadDetail.ContextPercent = %d, want %d", model.detailModel.bead.ContextPercent, 60)
+		}
+
+		// Verify Dependencies are included
+		if len(model.detailModel.bead.Dependencies) != 1 {
+			t.Errorf("BeadDetail.Dependencies length = %d, want 1", len(model.detailModel.bead.Dependencies))
+		}
+	})
+
+	t.Run("search view includes WorkerID and Dependencies", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{
+				ID:    "oro-search.1",
+				Title: "Searchable task",
+				Dependencies: []protocol.Dependency{
+					{IssueID: "oro-search.1", DependsOnID: "oro-parent.1", Type: "blocks"},
+					{IssueID: "oro-search.1", DependsOnID: "oro-parent.2", Type: "depends_on"},
+				},
+			},
+		}
+		workers := []WorkerStatus{
+			{ID: "worker-3", ContextPct: 75},
+		}
+
+		m := newModel()
+		m.beads = beads
+		m.workers = workers
+		m.assignments = map[string]string{"oro-search.1": "worker-3"}
+		m.activeView = SearchView
+		m.searchInput.SetValue("searchable")
+		m.searchSelectedIndex = 0
+
+		// Navigate to detail via search result
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.detailModel == nil {
+			t.Fatal("detailModel should be set after search Enter")
+		}
+
+		// Verify WorkerID and ContextPercent are populated
+		if model.detailModel.bead.WorkerID != "worker-3" {
+			t.Errorf("BeadDetail.WorkerID = %q, want %q", model.detailModel.bead.WorkerID, "worker-3")
+		}
+		if model.detailModel.bead.ContextPercent != 75 {
+			t.Errorf("BeadDetail.ContextPercent = %d, want %d", model.detailModel.bead.ContextPercent, 75)
+		}
+
+		// Verify Dependencies are included
+		if len(model.detailModel.bead.Dependencies) != 2 {
+			t.Errorf("BeadDetail.Dependencies length = %d, want 2", len(model.detailModel.bead.Dependencies))
+		}
+	})
+
+	t.Run("unassigned bead has empty WorkerID but still has Dependencies", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{
+				ID:    "oro-unassigned.1",
+				Title: "Unassigned task",
+				Dependencies: []protocol.Dependency{
+					{IssueID: "oro-unassigned.1", DependsOnID: "oro-blocker.1", Type: "depends_on"},
+				},
+			},
+		}
+
+		m := newModel()
+		m.beads = beads
+		m.workers = []WorkerStatus{}
+		m.assignments = make(map[string]string) // No assignment
+		m.activeView = BoardView
+		m.activeCol = 0
+		m.activeBead = 0
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+
+		if model.detailModel == nil {
+			t.Fatal("detailModel should be set")
+		}
+
+		// WorkerID should be empty for unassigned beads
+		if model.detailModel.bead.WorkerID != "" {
+			t.Errorf("BeadDetail.WorkerID should be empty for unassigned bead, got %q", model.detailModel.bead.WorkerID)
+		}
+
+		// But Dependencies should still be populated
+		if len(model.detailModel.bead.Dependencies) != 1 {
+			t.Errorf("BeadDetail.Dependencies should be populated even for unassigned bead, got length %d", len(model.detailModel.bead.Dependencies))
+		}
+	})
+}

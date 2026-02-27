@@ -445,9 +445,9 @@ func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.activeView = m.previousNavView
 		m.detailModel = nil
 	case "tab", "right":
-		if m.detailModel != nil {
-			*m.detailModel = m.detailModel.nextTab()
-		}
+		_, _, _ = m.detailModel,
+			m.detailModel, m.detailModel.nextTab
+
 	case "shift+tab", "left":
 		if m.detailModel != nil {
 			*m.detailModel = m.detailModel.prevTab()
@@ -567,6 +567,7 @@ func (m Model) listDrillDown() (tea.Model, tea.Cmd) {
 			Model:              b.Model,
 			Dependencies:       b.Dependencies,
 		}
+		m.wireWorkerDataToBeadDetail(&beadDetail)
 		dm := newDetailModel(beadDetail, m.theme, m.styles)
 		m.detailModel = &dm
 		m.activeView = DetailView
@@ -636,7 +637,9 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 				Title:              selectedBead.Title,
 				AcceptanceCriteria: selectedBead.AcceptanceCriteria,
 				Model:              selectedBead.Model,
+				Dependencies:       selectedBead.Dependencies,
 			}
+			m.wireWorkerDataToBeadDetail(&beadDetail)
 			dm := newDetailModel(beadDetail, m.theme, m.styles)
 			m.detailModel = &dm
 			m.activeView = DetailView
@@ -672,6 +675,20 @@ func (m Model) filterBeads() []protocol.Bead {
 		return m.beads
 	}
 	return m.searchModel.Filter(m.beads, query)
+}
+
+// wireWorkerDataToBeadDetail populates WorkerID and ContextPercent in a BeadDetail
+// from the Model's assignments and workers lists.
+func (m Model) wireWorkerDataToBeadDetail(detail *protocol.BeadDetail) {
+	if workerID, ok := m.assignments[detail.ID]; ok {
+		detail.WorkerID = workerID
+		for _, w := range m.workers {
+			if w.ID == workerID {
+				detail.ContextPercent = w.ContextPct
+				break
+			}
+		}
+	}
 }
 
 // View implements tea.Model.
@@ -1162,8 +1179,10 @@ func (m Model) drillDownToDetail() (Model, tea.Cmd) {
 		Title:              selectedBead.Title,
 		AcceptanceCriteria: selectedBead.AcceptanceCriteria,
 		Model:              selectedBead.Model,
-		// Other fields would be populated from fetched data in a real implementation
+		Dependencies:       selectedBead.Dependencies,
 	}
+
+	m.wireWorkerDataToBeadDetail(&beadDetail)
 
 	// Create detail model
 	m.detailModel = &DetailModel{}
