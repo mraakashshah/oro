@@ -46,7 +46,7 @@ NODE_BIN="$REPO_ROOT/node_modules/.bin"
 # GIT_DIR is unset globally to prevent leakage into test subprocesses, but
 # mutation testing needs ref resolution (git rev-parse --verify main, git diff
 # main). This wrapper temporarily sets GIT_DIR for the git command only.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 qg_git() {
 	if $QG_IS_WORKTREE; then
 		GIT_DIR="$QG_GIT_COMMON_DIR" git "$@"
