@@ -1285,3 +1285,52 @@ func TestListResponsive(t *testing.T) {
 		}
 	})
 }
+
+// TestListLoadMoreUI verifies that pressing M key fires load-more command.
+func TestListLoadMoreUI(t *testing.T) {
+	t.Run("M key in list view fires fetchMoreClosedCmd", func(t *testing.T) {
+		m := newModel()
+		m.activeView = ListView
+		m.beads = []protocol.Bead{
+			{ID: "b-1", Title: "Open task", Status: "open"},
+			{ID: "b-2", Title: "Closed task", Status: "closed", ClosedAt: "2024-03-01T00:00:00Z"},
+		}
+		m.closedCursor = "2024-03-01T00:00:00Z"
+
+		// Press M key
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+		if cmd == nil {
+			t.Fatal("M key should return a command, got nil")
+		}
+
+		// Execute cmd to verify it returns moreClosedMsg type
+		msg := cmd()
+		if _, ok := msg.(moreClosedMsg); !ok {
+			t.Errorf("M key cmd() should return moreClosedMsg, got %T", msg)
+		}
+
+		// Model should still be in ListView
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update should return Model")
+		}
+		if model.activeView != ListView {
+			t.Errorf("activeView = %d, want ListView (%d)", model.activeView, ListView)
+		}
+	})
+
+	t.Run("M key does not fire when detail pane is focused", func(t *testing.T) {
+		m := newModel()
+		m.activeView = ListView
+		m.listModel.detailFocused = true
+		m.beads = []protocol.Bead{
+			{ID: "b-1", Title: "Open task", Status: "open"},
+		}
+
+		// Press M key - should not fire load-more
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+		if cmd != nil {
+			t.Error("M key should not fire when detail pane is focused")
+		}
+	})
+}

@@ -675,6 +675,9 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 	case "a":
 		m.treeModel = NewTreeModel(m.beads)
 		m.activeView = TreeView
+	case "m":
+		// Load more closed beads (pagination).
+		return m, fetchMoreClosedCmd(m.closedCursor)
 	}
 	return m, cmd
 }

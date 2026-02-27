@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"oro/pkg/protocol"
 )
 
@@ -678,4 +680,38 @@ func TestBoardRecencySort(t *testing.T) {
 	verifyColumnOrder("In Progress", []string{"wip-3", "wip-2", "wip-1"})
 	verifyColumnOrder("Blocked", []string{"blocked-3", "blocked-2", "blocked-1"})
 	verifyColumnOrder("Done", []string{"done-3", "done-2", "done-1"})
+}
+
+// TestBoardLoadMoreUI verifies that pressing M key fires load-more command in board view.
+func TestBoardLoadMoreUI(t *testing.T) {
+	t.Run("M key in board view fires fetchMoreClosedCmd", func(t *testing.T) {
+		m := newModel()
+		m.activeView = BoardView
+		m.beads = []protocol.Bead{
+			{ID: "b-1", Title: "Open task", Status: "open"},
+			{ID: "b-2", Title: "Closed task", Status: "closed", ClosedAt: "2024-03-01T00:00:00Z"},
+		}
+		m.closedCursor = "2024-03-01T00:00:00Z"
+
+		// Press M key
+		updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+		if cmd == nil {
+			t.Fatal("M key should return a command, got nil")
+		}
+
+		// Execute cmd to verify it returns moreClosedMsg type
+		msg := cmd()
+		if _, ok := msg.(moreClosedMsg); !ok {
+			t.Errorf("M key cmd() should return moreClosedMsg, got %T", msg)
+		}
+
+		// Model should still be in BoardView
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update should return Model")
+		}
+		if model.activeView != BoardView {
+			t.Errorf("activeView = %d, want BoardView (%d)", model.activeView, BoardView)
+		}
+	})
 }
