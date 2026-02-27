@@ -44,7 +44,8 @@ func (s *Server) Stop() {
 
 	dbPath := filepath.Join(t.TempDir(), "test_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	// Signature must be NewCodeIndex(dbPath string) — no reranker param.
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -73,7 +74,7 @@ func (s *Server) Stop() {
 func TestCodeIndex_SearchEmpty(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "empty_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -102,7 +103,7 @@ func F() {}
 
 	dbPath := filepath.Join(t.TempDir(), "topk_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -131,7 +132,7 @@ func OldFunction() {}
 
 	dbPath := filepath.Join(t.TempDir(), "rebuild_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -173,7 +174,7 @@ func Main() {}
 
 	dbPath := filepath.Join(t.TempDir(), "skip_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -226,11 +227,12 @@ func (s *Server) Stop() {
 	spawner := &searchMockSpawner{}
 	reranker := codesearch.NewReranker(spawner)
 
-	idx, err := codesearch.NewCodeIndex(dbPath, reranker)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
 	defer idx.Close()
+	idx.SetReranker(reranker)
 
 	ctx := context.Background()
 	if _, err := idx.Build(ctx, rootDir); err != nil {
@@ -265,7 +267,7 @@ func (s *Server) Stop() {
 
 	t.Run("nil reranker uses FTS5 only", func(t *testing.T) {
 		dbPath2 := filepath.Join(t.TempDir(), "fts_only_index.db")
-		idx2, err := codesearch.NewCodeIndex(dbPath2, nil)
+		idx2, err := codesearch.NewCodeIndex(dbPath2)
 		if err != nil {
 			t.Fatalf("NewCodeIndex: %v", err)
 		}
@@ -329,7 +331,7 @@ func (s *Server) Stop() {
 
 	dbPath := filepath.Join(t.TempDir(), "fts5_test_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -406,7 +408,7 @@ func TestFunc() {
 
 	dbPath := filepath.Join(t.TempDir(), "atomic_index.db")
 
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -453,7 +455,7 @@ func TestFunc() {
 	}
 
 	// Also verify on a separate connection to ensure atomicity across connections.
-	idx2, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx2, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex for separate connection: %v", err)
 	}
@@ -495,7 +497,7 @@ func ConcurrentFunc%d() string {
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "concurrent_test.db")
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -587,7 +589,7 @@ func ScoreC() string { return "score test gamma" }
 `)
 
 	dbPath := t.TempDir() + "/score_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -653,7 +655,7 @@ func BoundaryE() string { return "boundary epsilon five" }
 `)
 
 	dbPath := t.TempDir() + "/boundary_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -700,7 +702,7 @@ func LimitTwo() string { return "limitone secondary marker" }
 `)
 
 	dbPath := t.TempDir() + "/topk1_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -742,11 +744,12 @@ func RerankedB() string { return "rerank target beta" }
 	}
 	reranker := codesearch.NewReranker(spawner)
 
-	idx, err := codesearch.NewCodeIndex(dbPath, reranker)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
 	defer idx.Close()
+	idx.SetReranker(reranker)
 
 	ctx := context.Background()
 	if _, err := idx.Build(ctx, rootDir); err != nil {
@@ -802,7 +805,7 @@ func DotRootFunc() string { return "dot root content" }
 `)
 
 	dbPath := t.TempDir() + "/dotroot_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -843,7 +846,7 @@ func VisibleFunc() string { return "visible content" }
 `)
 
 	dbPath := t.TempDir() + "/hidden_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -882,7 +885,7 @@ func MainFunc() string { return "main function" }
 `)
 
 	dbPath := t.TempDir() + "/vendor_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -929,7 +932,7 @@ func AppFunc() string { return "application logic" }
 `)
 
 	dbPath := t.TempDir() + "/nodemodules_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -967,7 +970,7 @@ func ImplFunc() string { return "implementation logic" }
 `)
 
 	dbPath := t.TempDir() + "/testdata_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -1002,7 +1005,7 @@ func FuncC() {}
 `)
 
 	dbPath := t.TempDir() + "/stats_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -1032,7 +1035,7 @@ func ChunkThree() string { return "chunk three" }
 `)
 
 	dbPath := t.TempDir() + "/chunks_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -1060,7 +1063,7 @@ func IndexedFunc() string { return "indexed searchable content unique" }
 `)
 
 	dbPath := t.TempDir() + "/fts5_results_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -1109,7 +1112,7 @@ type KindType struct{}
 `)
 
 	dbPath := t.TempDir() + "/kind_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -1150,7 +1153,7 @@ func OrderedBeta() string { return "ordered search term two" }
 `)
 
 	dbPath := t.TempDir() + "/multi_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
@@ -1201,11 +1204,12 @@ func NoopFunc() {}
 	spawner := &panicSpawner{}
 	reranker := codesearch.NewReranker(spawner)
 
-	idx, err := codesearch.NewCodeIndex(dbPath, reranker)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}
 	defer idx.Close()
+	idx.SetReranker(reranker)
 
 	ctx := context.Background()
 	if _, err := idx.Build(ctx, rootDir); err != nil {
@@ -1239,7 +1243,7 @@ func DurationFunc() {}
 `)
 
 	dbPath := t.TempDir() + "/duration_test.db"
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		t.Fatalf("NewCodeIndex: %v", err)
 	}

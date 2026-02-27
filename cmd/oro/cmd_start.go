@@ -387,7 +387,7 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 	}
 
 	// Open the index with no reranker (building only).
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to open code index for building: %v\n", err)
 		return nil // open failure is not fatal
@@ -444,11 +444,11 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 	// dispatcher can serve queries on any previously-built index data.
 	// Build runs in the background to refresh the index without blocking startup.
 	var codeIdx dispatcher.CodeIndex
-	reranker := codesearch.NewReranker(&codesearch.ClaudeRerankSpawner{})
-	idx, idxErr := codesearch.NewCodeIndex(projPaths.CodeIndexDBPath, reranker)
+	idx, idxErr := codesearch.NewCodeIndex(projPaths.CodeIndexDBPath)
 	if idxErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to open code index: %v\n", idxErr)
 	} else {
+		idx.SetReranker(codesearch.NewReranker(&codesearch.ClaudeRerankSpawner{}))
 		codeIdx = &codeIndexAdapter{idx: idx}
 		// Launch best-effort code index build in background (non-blocking).
 		go func() {

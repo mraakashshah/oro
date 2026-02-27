@@ -84,7 +84,7 @@ func newIndexSearchCmd() *cobra.Command {
 
 // runIndexBuild is the core logic for building the index, separated for testability.
 func runIndexBuild(w io.Writer, rootDir, dbPath string) error {
-	idx, err := codesearch.NewCodeIndex(dbPath, nil)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		return fmt.Errorf("open code index: %w", err)
 	}
@@ -108,15 +108,14 @@ func runIndexBuild(w io.Writer, rootDir, dbPath string) error {
 // runIndexSearch is the core logic for searching the index, separated for testability.
 // If spawner is nil, search uses FTS5-only (no reranking).
 func runIndexSearch(w io.Writer, query, dbPath string, topK int, spawner codesearch.RerankSpawner) error {
-	var reranker *codesearch.Reranker
-	if spawner != nil {
-		reranker = codesearch.NewReranker(spawner)
-	}
-	idx, err := codesearch.NewCodeIndex(dbPath, reranker)
+	idx, err := codesearch.NewCodeIndex(dbPath)
 	if err != nil {
 		return fmt.Errorf("open code index: %w", err)
 	}
 	defer idx.Close()
+	if spawner != nil {
+		idx.SetReranker(codesearch.NewReranker(spawner))
+	}
 
 	ctx := context.Background()
 	results, err := idx.Search(ctx, query, topK)

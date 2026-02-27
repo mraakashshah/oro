@@ -76,9 +76,9 @@ END;
 `
 
 // NewCodeIndex opens or creates a code index at the given database path.
-// If reranker is non-nil, Search uses FTS5 pre-filter + Claude reranking.
-// If nil, Search returns FTS5-only results (for build-only or offline usage).
-func NewCodeIndex(dbPath string, reranker *Reranker) (*CodeIndex, error) {
+// By default Search uses FTS5-only results. Call SetReranker to enable
+// FTS5 pre-filter + Claude reranking.
+func NewCodeIndex(dbPath string) (*CodeIndex, error) {
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o750); err != nil {
 		return nil, fmt.Errorf("create index dir: %w", err)
@@ -111,7 +111,14 @@ func NewCodeIndex(dbPath string, reranker *Reranker) (*CodeIndex, error) {
 		return nil, fmt.Errorf("apply code index schema: %w", err)
 	}
 
-	return &CodeIndex{db: db, reranker: reranker}, nil
+	return &CodeIndex{db: db}, nil
+}
+
+// SetReranker configures the reranker used by Search. If non-nil, Search
+// uses FTS5 pre-filter + Claude reranking. If nil (default), Search returns
+// FTS5-only results.
+func (ci *CodeIndex) SetReranker(r *Reranker) {
+	ci.reranker = r
 }
 
 // Close closes the underlying database connection.
