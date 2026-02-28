@@ -2183,9 +2183,9 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		return title, acceptance, false
 	}
 	if acceptance == "" {
-		_ = d.logEvent(ctx, "missing_acceptance_warning", "dispatcher", bead.ID, workerID,
-			"bead has no acceptance criteria — assigning with warning")
-		return title, "", true
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMissingAC, bead.ID, "no acceptance criteria — spawning AC writer", ""), bead.ID, workerID)
+		d.recordAssignmentFailure(bead.ID) // 60-second cooldown prevents re-triggering
+		return title, "", false            // skip assignment this cycle
 	}
 	return title, acceptance, true
 }
@@ -3291,14 +3291,28 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 		}
 	}
 
-	resultCh := d.ops.Escalate(ctx, ops.EscalationOpts{
-		EscalationType: escType,
-		BeadID:         beadID,
-		BeadTitle:      beadTitle,
-		BeadContext:    beadContext,
-		RecentHistory:  msg,
-		Workdir:        ".",
-	})
+	var resultCh <-chan ops.Result
+	if protocol.EscalationType(escType) == protocol.EscMissingAC {
+		// Dedup guard: skip if a WriteAC agent is already running for this bead.
+		if d.ops.HasActiveForBead(beadID) {
+			return
+		}
+		resultCh = d.ops.WriteAC(ctx, ops.WriteACOpts{
+			BeadID:          beadID,
+			BeadTitle:       beadTitle,
+			BeadDescription: beadContext,
+			Workdir:         ".",
+		})
+	} else {
+		resultCh = d.ops.Escalate(ctx, ops.EscalationOpts{
+			EscalationType: escType,
+			BeadID:         beadID,
+			BeadTitle:      beadTitle,
+			BeadContext:    beadContext,
+			RecentHistory:  msg,
+			Workdir:        ".",
+		})
+	}
 
 	d.safeGo(func() {
 		d.handleEscalationResult(ctx, escalationID, escType, beadID, workerID, resultCh)

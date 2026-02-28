@@ -925,7 +925,7 @@ func TestDispatcher_AssignBead(t *testing.T) {
 }
 
 func TestDispatcher_AssignBead_SkipsBeadWithoutAcceptance(t *testing.T) {
-	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -946,19 +946,21 @@ func TestDispatcher_AssignBead_SkipsBeadWithoutAcceptance(t *testing.T) {
 	beadSrc.mu.Unlock()
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-no-ac", Title: "No acceptance", Priority: 1}})
 
-	// Bead should be assigned with a warning (acceptance criteria missing is non-blocking)
-	msg, ok := readMsg(t, conn, 2*time.Second)
-	if !ok {
-		t.Fatal("expected ASSIGN even without acceptance criteria (warning-only)")
-	}
-	if msg.Type != protocol.MsgAssign {
-		t.Fatalf("expected ASSIGN message, got %s", msg.Type)
+	// Bead must NOT be assigned — a MISSING_AC escalation is fired instead.
+	msg, ok := readMsg(t, conn, 1*time.Second)
+	if ok && msg.Type == protocol.MsgAssign {
+		t.Fatal("bead without AC should not be assigned; MISSING_AC escalation should fire instead")
 	}
 
-	// Verify warning was logged
+	// Verify MISSING_AC escalation was sent.
 	waitFor(t, func() bool {
-		return eventCount(t, d.db, "missing_acceptance_warning") > 0
-	}, 1*time.Second)
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, string(protocol.EscMissingAC)) {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
 }
 
 func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
@@ -8502,10 +8504,10 @@ func TestQGExhaustionPreventsReassignment(t *testing.T) {
 }
 
 // TestAssignBeadSkipsMissingAcceptanceBeforeWorktree verifies that beads
-// without acceptance criteria are assigned with a warning (not rejected).
-// This is after the downgrade from escalation to warning.
+// without acceptance criteria are NOT assigned — a MISSING_AC escalation fires
+// and the worktree is never created.
 func TestAssignBeadSkipsMissingAcceptanceBeforeWorktree(t *testing.T) {
-	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
 	defer cancel()
 
@@ -8530,25 +8532,37 @@ func TestAssignBeadSkipsMissingAcceptanceBeforeWorktree(t *testing.T) {
 
 	d.setState(StateRunning)
 
-	// Manually assign the bead.
+	// Manually attempt to assign the bead.
 	w := &trackedWorker{id: "w1", conn: conn, state: protocol.WorkerIdle}
 	_ = d.assignBead(context.Background(), w, protocol.Bead{ID: "bead-noac", Title: "No AC bead", Priority: 1, Type: "task"})
 
-	// Worktree SHOULD be created (downgraded to warning).
+	// Worktree must NOT be created (bead skipped — awaiting AC).
 	wtMgr.mu.Lock()
 	_, created := wtMgr.created["bead-noac"]
 	wtMgr.mu.Unlock()
 
-	if !created {
-		t.Fatal("worktree should be created for bead without acceptance criteria (downgraded to warning)")
+	if created {
+		t.Fatal("worktree must not be created for bead without acceptance criteria")
 	}
 
-	// Worker state should be BUSY (assignment succeeded).
+	// Worker must remain IDLE.
 	d.mu.Lock()
-	workerBusy := w.state == protocol.WorkerBusy
+	workerIdle := w.state == protocol.WorkerIdle
 	d.mu.Unlock()
-	if !workerBusy {
-		t.Fatal("worker should be in BUSY state after assignment of bead without AC")
+	if !workerIdle {
+		t.Fatal("worker should remain IDLE when bead has no AC")
+	}
+
+	// A MISSING_AC escalation must have been dispatched.
+	found := false
+	for _, m := range esc.Messages() {
+		if strings.Contains(m, string(protocol.EscMissingAC)) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected MISSING_AC escalation, got none")
 	}
 }
 
@@ -8628,8 +8642,11 @@ func TestFilterAssignableHonorsInProgressStatus(t *testing.T) {
 	}
 }
 
-// --- missing acceptance criteria warning tests (downgraded from escalation) ---
+// --- missing acceptance criteria escalation tests ---
 
+// TestAssignBead_MissingAcceptanceEscalatesToManager verifies that beads
+// without acceptance criteria trigger a MISSING_AC escalation (not a warning)
+// and are not assigned to the worker.
 func TestAssignBead_MissingAcceptanceEscalatesToManager(t *testing.T) {
 	d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
@@ -8656,31 +8673,34 @@ func TestAssignBead_MissingAcceptanceEscalatesToManager(t *testing.T) {
 	w := &trackedWorker{id: "w1", conn: conn, state: protocol.WorkerIdle}
 	err := d.assignBead(context.Background(), w, protocol.Bead{ID: "bead-no-ac", Title: "Test bead without AC", Type: "task"})
 	if err != nil {
-		t.Fatalf("assignBead should succeed (downgraded to warning), got error: %v", err)
+		t.Fatalf("assignBead returned unexpected error: %v", err)
 	}
 
-	// Verify NO escalation was sent (downgraded to warning).
-	esc.mu.Lock()
-	escalated := len(esc.messages) > 0
-	esc.mu.Unlock()
-
-	if escalated {
-		t.Fatal("no escalation should be sent for missing AC (downgraded to warning)")
+	// Verify MISSING_AC escalation was sent.
+	found := false
+	for _, m := range esc.Messages() {
+		if strings.Contains(m, string(protocol.EscMissingAC)) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected MISSING_AC escalation for bead with no AC, got none")
 	}
 
-	// Verify worktree WAS created (assignment should proceed).
+	// Verify worktree was NOT created (assignment skipped).
 	wtMgr.mu.Lock()
 	_, created := wtMgr.created["bead-no-ac"]
 	wtMgr.mu.Unlock()
-	if !created {
-		t.Fatal("worktree should be created for bead without AC (downgraded to warning)")
+	if created {
+		t.Fatal("worktree must not be created for bead without AC")
 	}
 }
 
-// TestAssignBead_MissingAC_AssignsWithWarning verifies that beads without
-// acceptance criteria are assigned (not rejected) and a warning event is logged
-// (not an escalation to the manager).
-func TestAssignBead_MissingAC_AssignsWithWarning(t *testing.T) {
+// TestAssignBead_MissingAC_EscalatesAndSkips verifies that beads without
+// acceptance criteria fire a MISSING_AC escalation, skip worktree creation,
+// and leave the worker IDLE.
+func TestAssignBead_MissingAC_EscalatesAndSkips(t *testing.T) {
 	d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
 	defer cancel()
@@ -8706,43 +8726,35 @@ func TestAssignBead_MissingAC_AssignsWithWarning(t *testing.T) {
 	w := &trackedWorker{id: "w1", conn: conn, state: protocol.WorkerIdle}
 	err := d.assignBead(context.Background(), w, protocol.Bead{ID: "bead-no-ac", Title: "Test bead without AC", Type: "task"})
 	if err != nil {
-		t.Fatalf("assignBead should not return error, got: %v", err)
+		t.Fatalf("assignBead returned unexpected error: %v", err)
 	}
 
-	// (1) Verify worktree WAS created (assignment should proceed).
+	// (1) Worktree must NOT be created.
 	wtMgr.mu.Lock()
 	_, created := wtMgr.created["bead-no-ac"]
 	wtMgr.mu.Unlock()
-	if !created {
-		t.Fatal("worktree should be created for bead without AC (downgraded from escalation)")
+	if created {
+		t.Fatal("worktree must not be created for bead without AC")
 	}
 
-	// (2) Verify NO escalation was sent to manager.
-	esc.mu.Lock()
-	escalated := len(esc.messages) > 0
-	esc.mu.Unlock()
-	if escalated {
-		t.Fatal("no escalation should be sent for missing AC (downgraded to warning)")
+	// (2) A MISSING_AC escalation must have been sent.
+	found := false
+	for _, m := range esc.Messages() {
+		if strings.Contains(m, string(protocol.EscMissingAC)) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected MISSING_AC escalation, got none")
 	}
 
-	// (3) Verify 'missing_acceptance_warning' event was logged.
-	var eventCount int
-	err = d.db.QueryRow(
-		`SELECT COUNT(*) FROM events WHERE type='missing_acceptance_warning' AND bead_id='bead-no-ac'`,
-	).Scan(&eventCount)
-	if err != nil {
-		t.Fatalf("query events: %v", err)
-	}
-	if eventCount == 0 {
-		t.Fatal("missing_acceptance_warning event should be logged for bead-no-ac")
-	}
-
-	// (4) Verify worker state changed to BUSY (assignment succeeded).
+	// (3) Worker must remain IDLE (assignment did not proceed).
 	d.mu.Lock()
-	workerBusy := w.state == protocol.WorkerBusy
+	workerIdle := w.state == protocol.WorkerIdle
 	d.mu.Unlock()
-	if !workerBusy {
-		t.Fatal("worker should be in BUSY state after successful assignment")
+	if !workerIdle {
+		t.Fatal("worker should remain IDLE when bead has no AC")
 	}
 }
 

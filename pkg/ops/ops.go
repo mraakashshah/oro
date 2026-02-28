@@ -257,6 +257,19 @@ func (s *Spawner) Active() []string {
 	return ids
 }
 
+// HasActiveForBead reports whether any ops agent is currently running for the
+// given bead ID. Used for dedup checks (e.g. MISSING_AC one-shot guard).
+func (s *Spawner) HasActiveForBead(beadID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, agent := range s.active {
+		if agent.BeadID == beadID {
+			return true
+		}
+	}
+	return false
+}
+
 // run is the internal engine that spawns a subprocess and manages its lifecycle.
 func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, prompt string) <-chan Result {
 	ch := make(chan Result, 1)
