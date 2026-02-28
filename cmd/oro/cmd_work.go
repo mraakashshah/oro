@@ -12,8 +12,10 @@ import (
 	"syscall"
 	"time"
 
+	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
 	"oro/pkg/langprofile"
+	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -92,6 +94,8 @@ type workDeps struct {
 	opsMgr     *ops.Spawner
 	merger     merger
 	repoRoot   string
+	memStore   *memory.Store
+	codeIndex  *codesearch.CodeIndex
 	hasNewWork func(repoRoot, branch string) bool                                                  // defaults to hasCommitsAhead
 	runQG      func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
 }
@@ -112,6 +116,20 @@ func newProductionDeps() (*workDeps, error) {
 		return nil, fmt.Errorf("getwd: %w", err)
 	}
 	runner := &dispatcher.ExecCommandRunner{}
+
+	// Initialize memory store and code index from project-scoped DB paths.
+	// Both are nil on failure — errors are non-fatal, the worker degrades gracefully.
+	var memStore *memory.Store
+	var codeIdx *codesearch.CodeIndex
+	if paths, pathsErr := ResolveProjectDBPaths(); pathsErr == nil {
+		if db, dbErr := openDB(paths.StateDBPath); dbErr == nil {
+			memStore = memory.NewStore(db)
+		}
+		if idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath); idxErr == nil {
+			codeIdx = idx
+		}
+	}
+
 	return &workDeps{
 		beadSrc:    dispatcher.NewCLIBeadSource(runner),
 		wtMgr:      dispatcher.NewGitWorktreeManager(repoRoot, runner),
@@ -119,6 +137,8 @@ func newProductionDeps() (*workDeps, error) {
 		opsMgr:     ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
 		merger:     merge.NewCoordinator(&merge.ExecGitRunner{}),
 		repoRoot:   repoRoot,
+		memStore:   memStore,
+		codeIndex:  codeIdx,
 		hasNewWork: hasCommitsAhead,
 		runQG:      worker.RunQualityGate,
 	}, nil
@@ -186,6 +206,13 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 			_ = deps.beadSrc.Update(context.Background(), cfg.beadID, "open")
 		}
 	}()
+
+	// Propagate project name to subprocesses. readProjectName reads from
+	// ORO_PROJECT env var first, then .oro/config.yaml in CWD. Setting it
+	// ensures worker subprocesses inherit it even when it came from config.yaml.
+	if project := readProjectName(); project != "" {
+		_ = os.Setenv("ORO_PROJECT", project)
+	}
 
 	// Step 3: Create or resume worktree.
 	worktree, branch, err := setupWorktree(ctx, cfg, deps)

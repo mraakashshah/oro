@@ -1987,3 +1987,92 @@ func TestLoadMoreClosed(t *testing.T) {
 		}
 	})
 }
+
+// TestDrillDownPreservesStatusForClosedBead verifies that drillDownToDetail and
+// handleSearchViewKeys pass the bead's Status to BeadDetail, so getTabsForBead
+// can correctly limit closed beads to Overview+Deps tabs.
+func TestDrillDownPreservesStatusForClosedBead(t *testing.T) {
+	t.Run("board drilldown — closed bead gets 2 tabs", func(t *testing.T) {
+		bead := protocol.Bead{
+			ID:     "oro-closed.1",
+			Title:  "Closed task",
+			Status: "closed",
+		}
+
+		m := newModel()
+		m.beads = []protocol.Bead{bead}
+		m.activeView = BoardView
+		m.activeCol = 3 // "Done" column (closed beads) — order: Ready(0), InProgress(1), Blocked(2), Done(3)
+		m.activeBead = 0
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if model.detailModel == nil {
+			t.Fatal("detailModel should be set")
+		}
+
+		got := model.detailModel.tabs
+		if len(got) != 2 {
+			t.Errorf("closed bead tabs = %v (len %d), want [Overview Deps] (len 2)", got, len(got))
+		}
+	})
+
+	t.Run("search drilldown — closed bead gets 2 tabs", func(t *testing.T) {
+		bead := protocol.Bead{
+			ID:     "oro-closed.2",
+			Title:  "Closed search result",
+			Status: "closed",
+		}
+
+		m := newModel()
+		m.beads = []protocol.Bead{bead}
+		m.activeView = SearchView
+		m.searchInput.SetValue("closed")
+		m.searchSelectedIndex = 0
+
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		model, ok := updated.(Model)
+		if !ok {
+			t.Fatal("Update() did not return Model")
+		}
+		if model.detailModel == nil {
+			t.Fatal("detailModel should be set")
+		}
+
+		got := model.detailModel.tabs
+		if len(got) != 2 {
+			t.Errorf("closed bead tabs = %v (len %d), want [Overview Deps] (len 2)", got, len(got))
+		}
+	})
+}
+
+// TestViewTypeEnum verifies the ViewType enum contains exactly the 6 expected
+// views after the tm8m.1 refactor removed TreeView, HealthView, and WorkersView.
+// Deletion of those constants is enforced at compile time; this test asserts
+// the remaining views all have distinct values and no duplicates crept in.
+func TestViewTypeEnum(t *testing.T) {
+	views := []struct {
+		name  string
+		value ViewType
+	}{
+		{"BoardView", BoardView},
+		{"DetailView", DetailView},
+		{"SearchView", SearchView},
+		{"ListView", ListView},
+		{"StatusView", StatusView},
+		{"HelpView", HelpView},
+	}
+	seen := make(map[ViewType]string)
+	for _, v := range views {
+		if prev, dup := seen[v.value]; dup {
+			t.Errorf("ViewType collision: %s and %s share value %d", prev, v.name, int(v.value))
+		}
+		seen[v.value] = v.name
+	}
+	if len(seen) != 6 {
+		t.Errorf("expected 6 distinct ViewType values, got %d", len(seen))
+	}
+}

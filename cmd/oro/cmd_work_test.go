@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -215,3 +216,87 @@ func TestWorkAlreadySatisfiedBead(t *testing.T) {
 		t.Error("expected worktree to be removed")
 	}
 }
+
+// TestWorkDepsMemoryAndCodeIndex verifies that newProductionDeps initializes
+// memStore and codeIndex from ResolveProjectDBPaths, and that executeWork sets
+// the ORO_PROJECT env var from readProjectName before worktree creation.
+func TestWorkDepsMemoryAndCodeIndex(t *testing.T) {
+	t.Run("newProductionDeps sets memStore and codeIndex when paths valid", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_HOME", tmpDir)
+		t.Setenv("ORO_PROJECT", "")
+		t.Chdir(tmpDir) // avoid picking up project from repo .oro/config.yaml
+
+		deps, err := newProductionDeps()
+		if err != nil {
+			t.Fatalf("newProductionDeps: %v", err)
+		}
+		if deps.memStore == nil {
+			t.Error("memStore should be non-nil when StateDBPath is valid")
+		}
+		if deps.codeIndex == nil {
+			t.Error("codeIndex should be non-nil when CodeIndexDBPath is valid")
+		}
+	})
+
+	t.Run("executeWork sets ORO_PROJECT from config.yaml before worktree creation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte("project: testproject\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(tmpDir)
+		t.Setenv("ORO_PROJECT", "") // project name must come from config.yaml
+
+		var capturedProject string
+		spyWt := &envCapturingWorktreeManager{
+			captureEnv:   func() { capturedProject = os.Getenv("ORO_PROJECT") },
+			createPath:   filepath.Join(tmpDir, ".worktrees", "oro-test"),
+			createBranch: "bead/oro-test",
+		}
+
+		bs := &mockBeadSource{showDetail: testBead()}
+		deps := &workDeps{
+			beadSrc:    bs,
+			wtMgr:      spyWt,
+			spawner:    &mockSpawner{proc: &mockProcess{}},
+			merger:     &mockMerger{result: &merge.Result{CommitSHA: "abc"}},
+			repoRoot:   tmpDir,
+			hasNewWork: func(_, _ string) bool { return false },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+
+		_ = executeWork(context.Background(), cfg, deps)
+
+		if capturedProject != "testproject" {
+			t.Errorf("ORO_PROJECT at worktree creation = %q, want %q", capturedProject, "testproject")
+		}
+	})
+}
+
+// envCapturingWorktreeManager implements dispatcher.WorktreeManager and
+// captures the value of ORO_PROJECT at the moment Create() is called.
+type envCapturingWorktreeManager struct {
+	captureEnv   func()
+	createPath   string
+	createBranch string
+}
+
+func (m *envCapturingWorktreeManager) Create(_ context.Context, _ string) (string, string, error) {
+	if m.captureEnv != nil {
+		m.captureEnv()
+	}
+	return m.createPath, m.createBranch, nil
+}
+func (m *envCapturingWorktreeManager) Remove(_ context.Context, _ string) error       { return nil }
+func (m *envCapturingWorktreeManager) Prune(_ context.Context) error                  { return nil }
+func (m *envCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }

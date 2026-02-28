@@ -741,6 +741,7 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 			beadDetail := protocol.BeadDetail{
 				ID:                 selectedBead.ID,
 				Title:              selectedBead.Title,
+				Status:             selectedBead.Status,
 				AcceptanceCriteria: selectedBead.AcceptanceCriteria,
 				Model:              selectedBead.Model,
 				Dependencies:       selectedBead.Dependencies,
@@ -1270,6 +1271,7 @@ func (m Model) drillDownToDetail() (Model, tea.Cmd) {
 	beadDetail := protocol.BeadDetail{
 		ID:                 selectedBead.ID,
 		Title:              selectedBead.Title,
+		Status:             selectedBead.Status,
 		AcceptanceCriteria: selectedBead.AcceptanceCriteria,
 		Model:              selectedBead.Model,
 		Dependencies:       selectedBead.Dependencies,
