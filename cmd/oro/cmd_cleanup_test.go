@@ -20,6 +20,8 @@ func TestCleanup_NothingToClean(t *testing.T) {
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns empty JSON array
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+	// bd daemon not running
+	fake.errs[key("bd", "daemon", "stop")] = fmt.Errorf("no daemon running")
 
 	tmpDir := t.TempDir()
 	var buf bytes.Buffer
@@ -590,6 +592,7 @@ func TestCleanupWorktreeDir(t *testing.T) {
 		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 		fake.output[key("git", "branch", "--list", "agent/*")] = ""
 		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+		fake.errs[key("bd", "daemon", "stop")] = fmt.Errorf("no daemon running")
 
 		tmpDir := t.TempDir()
 
@@ -630,4 +633,45 @@ func TestCleanupWorktreeDir(t *testing.T) {
 			t.Errorf("expected 'nothing to clean' in output, got: %s", out)
 		}
 	})
+}
+
+func TestCleanup_KillsBdDaemon(t *testing.T) {
+	fake := newFakeCmd()
+	// tmux has-session fails (no session)
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	// no workers
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	// no agent branches
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	// no in_progress beads
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+
+	tmpDir := t.TempDir()
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:   fake,
+		w:        &buf,
+		tmuxName: "oro",
+		pidPath:  filepath.Join(tmpDir, "oro.pid"),
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		signalFn: func(int) error { return nil },
+		aliveFn:  func(int) bool { return false },
+	}
+
+	err := runCleanup(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify bd daemon stop was called.
+	found := false
+	for _, call := range fake.calls {
+		if len(call) >= 3 && call[0] == "bd" && call[1] == "daemon" && call[2] == "stop" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'bd daemon stop' call; calls = %v", fake.calls)
+	}
 }

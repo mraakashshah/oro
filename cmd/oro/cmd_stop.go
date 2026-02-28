@@ -139,8 +139,9 @@ func confirmStop(cfg *stopConfig) error {
 //  3. If process won't exit: SIGKILL as emergency fallback
 //  4. Clean up pane-died hooks
 //  5. Kill the tmux session
-//  6. Run bd sync
-//  7. Remove PID file
+//  6. Stop the bd daemon (prevents orphaned daemon after file cleanup)
+//  7. Run bd sync
+//  8. Remove PID file
 func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 	status, pid, err := DaemonStatus(cfg.pidPath, cfg.sockPath)
 	if err != nil {
@@ -189,7 +190,12 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 		fmt.Fprintf(cfg.w, "warning: tmux kill: %v\n", err)
 	}
 
-	// 6. Run bd sync as a safety net.
+	// 6. Stop the bd daemon (prevents orphaned daemon with no socket after cleanup).
+	if _, err := cfg.runner.Run("bd", "daemon", "stop"); err != nil {
+		fmt.Fprintf(cfg.w, "warning: bd daemon stop: %v\n", err)
+	}
+
+	// 7. Run bd sync as a safety net.
 	if _, err := cfg.runner.Run("bd", "sync", "--flush-only"); err != nil {
 		fmt.Fprintf(cfg.w, "warning: bd sync: %v\n", err)
 	}
