@@ -2050,9 +2050,8 @@ func TestDrillDownPreservesStatusForClosedBead(t *testing.T) {
 }
 
 // TestViewTypeEnum verifies the ViewType enum contains exactly the 6 expected
-// views after the tm8m.1 refactor removed TreeView, HealthView, and WorkersView.
-// Deletion of those constants is enforced at compile time; this test asserts
-// the remaining views all have distinct values and no duplicates crept in.
+// views. Deletion of any constant is enforced at compile time; this test asserts
+// all remaining views have distinct values and no duplicates crept in.
 func TestViewTypeEnum(t *testing.T) {
 	views := []struct {
 		name  string
