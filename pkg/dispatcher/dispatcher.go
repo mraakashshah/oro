@@ -181,6 +181,7 @@ type pendingHandoff struct {
 type Config struct {
 	SocketPath            string        // UDS socket path.
 	DBPath                string        // SQLite database path.
+	RepoRoot              string        // Absolute path to the repository root. Used so bd commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
 	MaxWorkers            int           // Worker pool size (default 10).
 	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
 	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
@@ -293,6 +294,11 @@ type Dispatcher struct {
 	targetWorkers               int
 	completionsSinceConsolidate int // counts completed beads since last context consolidation
 
+	// shutdownRunner is the CommandRunner used by shutdownResetActiveBeads to run
+	// `bd update` from the repo root. Initialised by New() to
+	// &ExecCommandRunner{Dir: cfg.RepoRoot}; overridable in tests.
+	shutdownRunner CommandRunner
+
 	// beadsDir is the directory to watch for bead changes (defaults to protocol.BeadsDir)
 	beadsDir string
 
@@ -373,21 +379,28 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if err := resolved.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	// Determine the effective repo root for bd commands.
+	// Falls back to the process working directory when RepoRoot is not set.
+	rootDir := resolved.RepoRoot
+	if rootDir == "" {
+		rootDir, _ = os.Getwd()
+	}
 	memStore := memory.NewStore(db)
 	memStore.SetEmbedder(memory.NewEmbedder())
 	return &Dispatcher{
-		cfg:           resolved,
-		db:            db,
-		merger:        merger,
-		ops:           opsSpawner,
-		beads:         beads,
-		worktrees:     wt,
-		escalator:     esc,
-		memories:      memStore,
-		codeIndex:     codeIdx,
-		acceptance:    &ShellAcceptanceRunner{},
-		state:         StateInert,
-		targetWorkers: resolved.MaxWorkers,
+		cfg:            resolved,
+		db:             db,
+		merger:         merger,
+		ops:            opsSpawner,
+		beads:          beads,
+		worktrees:      wt,
+		escalator:      esc,
+		memories:       memStore,
+		codeIndex:      codeIdx,
+		shutdownRunner: &ExecCommandRunner{Dir: rootDir},
+		acceptance:     &ShellAcceptanceRunner{},
+		state:          StateInert,
+		targetWorkers:  resolved.MaxWorkers,
 		WorkerPool: WorkerPool{
 			workers: make(map[string]*trackedWorker),
 		},
@@ -3512,6 +3525,10 @@ func (d *Dispatcher) shutdownRemoveWorktrees(paths []string) {
 // shutdownResetActiveBeads queries active assignments and resets each bead to
 // "open" so it becomes re-assignable on next dispatcher start. Best-effort:
 // failures are logged but do not block shutdown.
+//
+// It uses d.shutdownRunner (anchored to cfg.RepoRoot) so that `bd update`
+// always runs from the repository root, not from a worker worktree that may
+// lack a .beads/ database.
 func (d *Dispatcher) shutdownResetActiveBeads() {
 	ctx := context.Background()
 	rows, err := d.db.QueryContext(ctx, `SELECT bead_id FROM assignments WHERE status='active'`)
@@ -3521,13 +3538,17 @@ func (d *Dispatcher) shutdownResetActiveBeads() {
 	}
 	defer func() { _ = rows.Close() }()
 
+	// Use a CLIBeadSource backed by the shutdown runner so bd commands are
+	// executed from the repo root regardless of the process working directory.
+	rootBeads := NewCLIBeadSource(d.shutdownRunner)
+
 	for rows.Next() {
 		var beadID string
 		if scanErr := rows.Scan(&beadID); scanErr != nil {
 			_ = d.logEvent(ctx, "shutdown_reset_scan_failed", "dispatcher", "", "", scanErr.Error())
 			continue
 		}
-		if updateErr := d.beads.Update(ctx, beadID, "open"); updateErr != nil {
+		if updateErr := rootBeads.Update(ctx, beadID, "open"); updateErr != nil {
 			_ = d.logEvent(ctx, "shutdown_reset_bead_failed", "dispatcher", beadID, "", updateErr.Error())
 		}
 	}

@@ -5860,8 +5860,13 @@ func TestShutdownCleanup_CallsBeadSync(t *testing.T) {
 // on the next dispatcher start. This is phase 3b: between shutdownWaitForWorkers
 // and shutdownRemoveWorktrees.
 func TestShutdownResetsInProgressBeads(t *testing.T) {
-	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
+
+	// Replace shutdownRunner with a recording mock so we can assert calls
+	// without requiring a real bd binary.
+	captureRunner := &mockCommandRunner{}
+	d.shutdownRunner = captureRunner
 
 	// Insert two active assignments directly into the DB.
 	for _, beadID := range []string{"bead-reset-a", "bead-reset-b"} {
@@ -5885,24 +5890,103 @@ func TestShutdownResetsInProgressBeads(t *testing.T) {
 	// all active assignments to open.
 	d.shutdownSequence()
 
-	beadSrc.mu.Lock()
-	updated := beadSrc.updated
-	beadSrc.mu.Unlock()
+	// Build a map of beadID -> status from the recorded `bd update` calls.
+	updated := make(map[string]string)
+	for _, call := range captureRunner.calls {
+		if call.Name == "bd" && len(call.Args) >= 3 && call.Args[0] == "update" {
+			beadID := call.Args[1]
+			// args[2] is "--status=open"
+			status := strings.TrimPrefix(call.Args[2], "--status=")
+			updated[beadID] = status
+		}
+	}
 
 	for _, beadID := range []string{"bead-reset-a", "bead-reset-b"} {
 		status, ok := updated[beadID]
 		if !ok {
-			t.Errorf("expected beads.Update(%q, open) to be called, but it was not", beadID)
+			t.Errorf("expected bd update %q --status=open to be called, but it was not", beadID)
 			continue
 		}
 		if status != "open" {
-			t.Errorf("expected beads.Update(%q, open), got status=%q", beadID, status)
+			t.Errorf("expected bd update %q --status=open, got status=%q", beadID, status)
 		}
 	}
 
 	// Completed assignment must not be reset.
 	if status, ok := updated["bead-done"]; ok {
-		t.Errorf("expected completed bead to be left alone, but beads.Update was called with status=%q", status)
+		t.Errorf("expected completed bead to be left alone, but bd update was called with status=%q", status)
+	}
+}
+
+// TestShutdownResetBeadUsesRepoRoot verifies that shutdownResetActiveBeads runs
+// `bd update` with CWD set to the repo root (cfg.RepoRoot), not from the
+// worker worktree or process CWD. This prevents "Error: no beads database found"
+// when the process is started from a worktree that lacks a .beads/ directory.
+func TestShutdownResetBeadUsesRepoRoot(t *testing.T) {
+	// Part 1: New() wires shutdownRunner.Dir = cfg.RepoRoot.
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	db := newTestDB(t)
+	beadSrc := &mockBeadSource{shown: make(map[string]*protocol.BeadDetail)}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+	merger := merge.NewCoordinator(&mockGitRunner{})
+	opsSpawner := ops.NewSpawner(&mockBatchSpawner{verdict: "APPROVED: looks good"})
+
+	repoRoot := t.TempDir()
+	cfg := Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		MaxWorkers:       1,
+		HeartbeatTimeout: 500 * time.Millisecond,
+		PollInterval:     50 * time.Millisecond,
+		RepoRoot:         repoRoot,
+	}
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	// shutdownRunner must be wired to ExecCommandRunner with Dir = repoRoot.
+	execRunner, ok := d.shutdownRunner.(*ExecCommandRunner)
+	if !ok {
+		t.Fatalf("expected d.shutdownRunner to be *ExecCommandRunner, got %T", d.shutdownRunner)
+	}
+	if execRunner.Dir != repoRoot {
+		t.Errorf("shutdownRunner.Dir = %q, want %q", execRunner.Dir, repoRoot)
+	}
+
+	// Part 2: shutdownResetActiveBeads uses shutdownRunner (not d.beads.Update).
+	// Replace shutdownRunner with a recording mock so we can assert calls.
+	captureRunner := &mockCommandRunner{}
+	d.shutdownRunner = captureRunner
+
+	ctx := context.Background()
+	_, insertErr := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		"bead-root-check", "w-test", "/tmp/worktrees/bead-root-check")
+	if insertErr != nil {
+		t.Fatalf("insert assignment: %v", insertErr)
+	}
+
+	d.shutdownResetActiveBeads()
+
+	// The mock runner must have been called with `bd update bead-root-check --status=open`.
+	if len(captureRunner.calls) == 0 {
+		t.Fatal("shutdownRunner was never called; shutdownResetActiveBeads must use d.shutdownRunner")
+	}
+	found := false
+	for _, call := range captureRunner.calls {
+		if call.Name == "bd" && len(call.Args) >= 3 &&
+			call.Args[0] == "update" &&
+			call.Args[1] == "bead-root-check" &&
+			call.Args[2] == "--status=open" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected call `bd update bead-root-check --status=open`, got calls: %v", captureRunner.calls)
 	}
 }
 

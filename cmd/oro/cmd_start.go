@@ -468,6 +468,7 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 		SocketPath:      sockPath,
 		MaxWorkers:      maxWorkers,
 		DBPath:          dbPath,
+		RepoRoot:        repoRoot,
 		ProgressTimeout: progressTimeout,
 		ReviewTimeout:   reviewTimeout,
 	}

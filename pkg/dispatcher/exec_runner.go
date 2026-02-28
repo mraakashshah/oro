@@ -9,11 +9,17 @@ import (
 )
 
 // ExecCommandRunner implements CommandRunner using os/exec.
-type ExecCommandRunner struct{}
+// Dir, if non-empty, is set as cmd.Dir so the command runs from that directory.
+type ExecCommandRunner struct {
+	Dir string
+}
 
 // Run executes a command and returns its stdout as bytes.
 func (r *ExecCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if r.Dir != "" {
+		cmd.Dir = r.Dir
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
