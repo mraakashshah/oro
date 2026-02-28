@@ -2300,6 +2300,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		w.isEpicDecomp = false
 		w.worktree = ""
 		w.model = ""
+		delete(d.worktreeByBead, bead.ID) // clear stale entry so next assignment creates a fresh worktree (oro-fhn3)
 	}
 	// Clear assignment-in-progress flag now that worker state is updated (oro-ptp2).
 	delete(d.assigningBeads, bead.ID)

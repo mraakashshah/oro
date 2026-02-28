@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -935,6 +936,43 @@ func TestPruneStaleTracking_PerMapAssertions(t *testing.T) {
 		_, ok = d.assigningBeads["bead-1"]
 		require.True(t, ok, "assigningBeads should be preserved for active bead")
 	})
+}
+
+// TestWorktreeByBeadClearedOnSendFailure verifies that worktreeByBead is
+// deleted when sendToWorker fails in assignBead. Previously, the worktree
+// was removed via d.worktrees.Remove but the map entry leaked, causing the
+// next assignment to reuse a ghost worktree (oro-fhn3).
+func TestWorktreeByBeadClearedOnSendFailure(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Create a broken connection — dispatcher writes will fail immediately.
+	workerConn, dispatcherConn := net.Pipe()
+	_ = workerConn.Close()
+
+	beadID := "oro-send-fail"
+	workerID := "w-send-fail"
+
+	w := &trackedWorker{
+		id:       workerID,
+		conn:     dispatcherConn,
+		state:    protocol.WorkerIdle,
+		lastSeen: d.nowFunc(),
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = w
+	d.mu.Unlock()
+
+	bead := protocol.Bead{ID: beadID, Title: "Send fail test", Type: "task", Priority: 1}
+	_ = d.assignBead(context.Background(), w, bead)
+
+	d.mu.Lock()
+	_, exists := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+
+	if exists {
+		t.Errorf("worktreeByBead[%s] was not cleared after sendToWorker failure", beadID)
+	}
 }
 
 // TestAllTrackingKeys verifies that allTrackingKeys returns keys from every
