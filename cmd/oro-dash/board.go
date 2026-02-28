@@ -255,9 +255,9 @@ func (bm BoardModel) renderCardHeader(b protocol.Bead, styles Styles) string {
 	priorityBadge := bm.renderPriorityBadge(b.Priority, styles)
 
 	// Type indicator icon
-	typeIcon := bm.renderTypeIndicator(b.Type)
+	icon := typeIcon(b.Type)
 
-	headerParts = append(headerParts, priorityBadge, typeIcon, b.Title)
+	headerParts = append(headerParts, priorityBadge, icon, b.Title)
 
 	return strings.Join(headerParts, " ")
 }
@@ -283,22 +283,6 @@ func (bm BoardModel) renderPriorityBadge(priority int, styles Styles) string {
 	}
 
 	return style.Render(badge)
-}
-
-// renderTypeIndicator returns an icon for the bead type.
-func (bm BoardModel) renderTypeIndicator(beadType string) string {
-	switch beadType {
-	case "task":
-		return "□"
-	case "bug":
-		return "⚠"
-	case "feature":
-		return "✦"
-	case "epic":
-		return "◈"
-	default:
-		return "•"
-	}
 }
 
 // renderWorkerInfo renders worker ID, health badge, and context percentage for in-progress cards.

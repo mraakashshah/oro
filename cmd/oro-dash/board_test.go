@@ -183,12 +183,12 @@ func TestCardRendering_TypeIndicators(t *testing.T) {
 	theme := DefaultTheme()
 	output := board.Render(theme, NewStyles(theme))
 
-	// Verify type indicators appear in output (using emoji or short codes)
+	// Verify type indicators appear in output.
 	typeIndicators := map[string]string{
-		"task":    "□", // or "TSK" or similar
-		"bug":     "⚠", // or "BUG"
-		"feature": "✦", // or "FTR"
-		"epic":    "◈", // or "EPC"
+		"task":    "📋",
+		"bug":     "🐛",
+		"feature": "🪶",
+		"epic":    "👑",
 	}
 
 	for beadType, indicator := range typeIndicators {
@@ -714,6 +714,25 @@ func TestBoardColumnHeadersVisible(t *testing.T) {
 		// No header should use ColorMutedFg (#889096).
 		if strings.Contains(rendered, mutedFgANSI) {
 			t.Errorf("renderColumnHeader(%q) uses ColorMutedFg (#889096); use a visible color instead\ngot: %q", title, rendered)
+		}
+	}
+}
+
+// TestTypeIcons verifies the shared typeIcon function returns the correct descriptive emoji.
+func TestTypeIcons(t *testing.T) {
+	cases := []struct {
+		beadType string
+		want     string
+	}{
+		{"bug", "🐛"},
+		{"feature", "🪶"},
+		{"task", "📋"},
+		{"epic", "👑"},
+	}
+	for _, tc := range cases {
+		got := typeIcon(tc.beadType)
+		if got != tc.want {
+			t.Errorf("typeIcon(%q) = %q, want %q", tc.beadType, got, tc.want)
 		}
 	}
 }
