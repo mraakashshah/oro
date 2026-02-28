@@ -364,6 +364,16 @@ func hasCommitsAhead(repoRoot, branch string) bool {
 	return strings.TrimSpace(stdout) != "0"
 }
 
+// codeSearchContext runs a timed FTS5 search against the code index and
+// formats the top results for prompt injection. Returns empty string on
+// error or timeout (5 s) — errors are non-fatal so the worker always runs.
+func codeSearchContext(ctx context.Context, idx *codesearch.CodeIndex, query string) string {
+	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	results, _ := idx.Search(sctx, query, 5)
+	return codesearch.FormatResults(results)
+}
+
 // spawnAndWait spawns claude -p and waits for it to exit, with timeout.
 // logFile, when non-nil, receives a copy of Claude's stdout alongside stderr.
 func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, model string, attempt int, feedback string, logFile *os.File) error {
@@ -378,12 +388,18 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		memCtx, _ = memory.ForPrompt(ctx, deps.memStore, nil, cfg.bead.Title, 0)
 	}
 
+	var codeCtx string
+	if deps.codeIndex != nil {
+		codeCtx = codeSearchContext(ctx, deps.codeIndex, cfg.bead.Title)
+	}
+
 	prompt := worker.AssemblePrompt(worker.PromptParams{
 		BeadID:             cfg.beadID,
 		Title:              cfg.bead.Title,
 		Description:        cfg.bead.Description,
 		AcceptanceCriteria: cfg.bead.AcceptanceCriteria,
 		MemoryContext:      memCtx,
+		CodeSearchContext:  codeCtx,
 		WorktreePath:       worktree,
 		Model:              model,
 		Attempt:            attempt,

@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"oro/pkg/codesearch"
+	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/protocol"
 )
@@ -300,3 +303,159 @@ func (m *envCapturingWorktreeManager) Create(_ context.Context, _ string) (strin
 func (m *envCapturingWorktreeManager) Remove(_ context.Context, _ string) error       { return nil }
 func (m *envCapturingWorktreeManager) Prune(_ context.Context) error                  { return nil }
 func (m *envCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+
+// TestSpawnAndWaitWithMemoryAndCodeContext verifies that spawnAndWait wires
+// MemoryContext and CodeSearchContext into AssemblePrompt, and passes memStore
+// to DrainOutput.
+func TestSpawnAndWaitWithMemoryAndCodeContext(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("non-nil memStore with memories gives non-empty MemoryContext", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		store := memory.NewStore(db)
+		_, err := store.Insert(ctx, memory.InsertParams{
+			Content:    "Test bead dependency injection pattern works well",
+			Type:       "lesson",
+			Source:     "test",
+			Confidence: 0.9,
+		})
+		if err != nil {
+			t.Fatalf("seed memory: %v", err)
+		}
+
+		sp := &captureSpawner{proc: &mockProcess{}}
+		deps := &workDeps{
+			spawner:    sp,
+			memStore:   store,
+			hasNewWork: func(_, _ string) bool { return false },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead:    testBead(),
+		}
+
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait: %v", err)
+		}
+
+		if !strings.Contains(sp.capturedPrompt, "dependency injection") {
+			t.Errorf("MemoryContext not injected: seeded memory content missing from prompt")
+		}
+	})
+
+	t.Run("non-nil codeIndex with indexed code gives non-empty CodeSearchContext", func(t *testing.T) {
+		// Create a temp CodeIndex backed by an on-disk SQLite file.
+		dbPath := filepath.Join(t.TempDir(), "code.db")
+		idx, err := codesearch.NewCodeIndex(dbPath)
+		if err != nil {
+			t.Fatalf("NewCodeIndex: %v", err)
+		}
+		defer idx.Close() //nolint:errcheck // test cleanup
+
+		// Write a Go file whose content matches the bead title "Test bead".
+		srcDir := t.TempDir()
+		goSrc := `package work
+
+// TestBeadHelper executes a test bead cycle.
+func TestBeadHelper() string {
+	return "test bead result"
+}
+`
+		if err := os.WriteFile(filepath.Join(srcDir, "work.go"), []byte(goSrc), 0o600); err != nil {
+			t.Fatalf("write go file: %v", err)
+		}
+
+		if _, err := idx.Build(ctx, srcDir); err != nil {
+			t.Fatalf("Build code index: %v", err)
+		}
+
+		sp := &captureSpawner{proc: &mockProcess{}}
+		deps := &workDeps{
+			spawner:    sp,
+			codeIndex:  idx,
+			hasNewWork: func(_, _ string) bool { return false },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead:    testBead(),
+		}
+
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait: %v", err)
+		}
+
+		if !strings.Contains(sp.capturedPrompt, "Relevant Code") {
+			t.Errorf("CodeSearchContext not injected: 'Relevant Code' section missing from prompt")
+		}
+		if !strings.Contains(sp.capturedPrompt, "TestBeadHelper") {
+			t.Errorf("CodeSearchContext missing indexed function; prompt snippet: %q",
+				sp.capturedPrompt[:min(500, len(sp.capturedPrompt))])
+		}
+	})
+
+	t.Run("both nil assembles prompt without error", func(t *testing.T) {
+		sp := &captureSpawner{proc: &mockProcess{}}
+		deps := &workDeps{
+			spawner:    sp,
+			memStore:   nil,
+			codeIndex:  nil,
+			hasNewWork: func(_, _ string) bool { return false },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead:    testBead(),
+		}
+
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+			t.Errorf("spawnAndWait with nil deps should not error: %v", err)
+		}
+		if sp.capturedPrompt == "" {
+			t.Error("expected non-empty prompt even with nil context fields")
+		}
+	})
+
+	t.Run("DrainOutput receives deps.memStore", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		store := memory.NewStore(db)
+
+		// [MEMORY] marker in claude stdout should be captured into memStore via DrainOutput.
+		marker := "[MEMORY] type=gotcha tags=test: code search requires indexed content to return results"
+		sp := &captureSpawner{proc: &mockProcess{}, stdout: marker}
+		deps := &workDeps{
+			spawner:    sp,
+			memStore:   store,
+			hasNewWork: func(_, _ string) bool { return false },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead:    testBead(),
+		}
+
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait: %v", err)
+		}
+
+		mems, listErr := store.List(ctx, memory.ListOpts{Limit: 10})
+		if listErr != nil {
+			t.Fatalf("store.List: %v", listErr)
+		}
+		found := false
+		for _, m := range mems {
+			if strings.Contains(m.Content, "code search requires indexed content") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DrainOutput did not receive memStore: [MEMORY] marker not captured (got %d memories)", len(mems))
+		}
+	})
+}
