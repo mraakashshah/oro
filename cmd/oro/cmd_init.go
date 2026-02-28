@@ -689,7 +689,7 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 // paths under oroHome. Shell variable $HOME is used for portability.
 // Permissions include Context7 MCP tools so workers can look up library/API
 // documentation during implementation (same capability as interactive sessions).
-func generateSettings(oroHome string) ([]byte, error) {
+func generateSettings(oroHome string) ([]byte, error) { //nolint:unparam // callers always pass "$HOME/.oro" but the parameter is intentional for future flexibility
 	settings := struct {
 		Permissions map[string][]string    `json:"permissions"`
 		Hooks       map[string][]hookGroup `json:"hooks"`

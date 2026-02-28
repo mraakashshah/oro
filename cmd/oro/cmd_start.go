@@ -216,8 +216,12 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 	}
 
 	// Re-extract assets if the binary's embedded version differs from the on-disk stamp.
-	if _, err := checkAssetVersion(paths.OroHome, EmbeddedAssets); err != nil {
+	reExtracted, err := checkAssetVersion(paths.OroHome, EmbeddedAssets)
+	if err != nil {
 		return "", err
+	}
+	if reExtracted {
+		regenerateProjectSettings(w, paths.OroHome, readProjectName())
 	}
 
 	// Warn if oro-search-hook binary is absent — do NOT build it here since
@@ -252,6 +256,28 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 	}
 
 	return pidPath, nil
+}
+
+// regenerateProjectSettings writes an updated settings.json for the current project
+// when assets have been re-extracted on version bump. No-op when projectName is empty.
+func regenerateProjectSettings(w io.Writer, oroHome, projectName string) {
+	if projectName == "" {
+		return
+	}
+	projectDir := filepath.Join(oroHome, "projects", projectName)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil { //nolint:gosec // project dir needs to be readable
+		fmt.Fprintf(w, "warning: could not create project dir for settings update: %v\n", err)
+		return
+	}
+	data, err := generateSettings("$HOME/.oro")
+	if err != nil {
+		fmt.Fprintf(w, "warning: could not generate settings: %v\n", err)
+		return
+	}
+	settingsPath := filepath.Join(projectDir, "settings.json")
+	if err := os.WriteFile(settingsPath, data, 0o644); err != nil { //nolint:gosec // settings file needs to be readable
+		fmt.Fprintf(w, "warning: could not write settings.json: %v\n", err)
+	}
 }
 
 // newStartCmd creates the "oro start" subcommand.

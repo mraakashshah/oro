@@ -435,6 +435,55 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 	})
 }
 
+func TestRegenerateProjectSettings_WritesFile(t *testing.T) {
+	t.Run("WritesFile", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		var w bytes.Buffer
+
+		regenerateProjectSettings(&w, tmpHome, "myproject")
+
+		settingsPath := filepath.Join(tmpHome, "projects", "myproject", "settings.json")
+		data, err := os.ReadFile(settingsPath) //nolint:gosec // test reads from TempDir path
+		if err != nil {
+			t.Fatalf("expected settings.json to be written: %v", err)
+		}
+		if !strings.Contains(string(data), "compact_trigger.py") {
+			t.Errorf("expected settings.json to contain 'compact_trigger.py', got: %s", string(data))
+		}
+	})
+
+	t.Run("EmptyProjectName_Noop", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		var w bytes.Buffer
+
+		regenerateProjectSettings(&w, tmpHome, "")
+
+		entries, err := os.ReadDir(tmpHome)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("expected no files written for empty project name, got %d entries", len(entries))
+		}
+	})
+
+	t.Run("CreatesProjectDir", func(t *testing.T) {
+		tmpHome := t.TempDir()
+		var w bytes.Buffer
+
+		regenerateProjectSettings(&w, tmpHome, "myproject")
+
+		projDir := filepath.Join(tmpHome, "projects", "myproject")
+		if _, err := os.Stat(projDir); err != nil {
+			t.Errorf("expected project dir to be created: %v", err)
+		}
+		settingsPath := filepath.Join(projDir, "settings.json")
+		if _, err := os.Stat(settingsPath); err != nil {
+			t.Errorf("expected settings.json to be created: %v", err)
+		}
+	})
+}
+
 // fakeCommandRunner is a mock CommandRunner for testing.
 type fakeCommandRunner struct{}
 
