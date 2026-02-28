@@ -315,9 +315,23 @@ func (d DetailModel) renderOverviewTab(styles Styles) string {
 		"ID: "+d.bead.ID,
 	)
 
+	// Owner (if specified)
+	if d.bead.Owner != "" {
+		lines = append(lines, "Owner: "+d.bead.Owner)
+	}
+
 	// Model (if specified)
 	if d.bead.Model != "" {
 		lines = append(lines, "Model: "+d.bead.Model)
+	}
+
+	// Description (if specified)
+	if d.bead.Description != "" {
+		lines = append(lines,
+			"",
+			styles.DetailBold.Render("Description:"),
+			d.bead.Description,
+		)
 	}
 
 	// Acceptance Criteria
