@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -29,10 +30,38 @@ func NewReranker(spawner RerankSpawner) *Reranker {
 	return &Reranker{spawner: spawner}
 }
 
+// flexIntID accepts both JSON integers (1) and JSON strings ("1") during unmarshaling.
+// Claude occasionally returns IDs as strings rather than integers.
+type flexIntID int
+
+// UnmarshalJSON implements json.Unmarshaler; called implicitly by encoding/json, not by name.
+// Accepts both JSON integers (1) and JSON strings ("1") for compatibility with Claude's output.
+//
+//oro:testonly
+func (f *flexIntID) UnmarshalJSON(data []byte) error {
+	// Try integer first (common case).
+	var i int
+	if err := json.Unmarshal(data, &i); err == nil {
+		*f = flexIntID(i)
+		return nil
+	}
+	// Fall back to string.
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("rerankEntry.ID: expected number or string, got %s", data)
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("rerankEntry.ID: cannot parse %q as integer", s)
+	}
+	*f = flexIntID(n)
+	return nil
+}
+
 // rerankEntry is the JSON structure expected from the reranker output.
 type rerankEntry struct {
-	ID     int    `json:"id"`
-	Reason string `json:"reason"`
+	ID     flexIntID `json:"id"`
+	Reason string    `json:"reason"`
 }
 
 // Rerank sends chunks to Claude for relevance ranking and returns reordered results.
@@ -66,7 +95,7 @@ func (r *Reranker) Rerank(ctx context.Context, query string, chunks []Chunk, top
 
 	var results []ScoredChunk
 	for rank, entry := range entries {
-		c, ok := chunkByID[entry.ID]
+		c, ok := chunkByID[int(entry.ID)]
 		if !ok {
 			continue // skip unknown IDs
 		}

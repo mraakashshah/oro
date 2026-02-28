@@ -2,6 +2,7 @@ package codesearch_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -136,6 +137,110 @@ func TestRerank(t *testing.T) {
 			t.Fatal("expected context error, got nil")
 		}
 	})
+}
+
+// TestRerank_ParsesStringIDs verifies that Rerank succeeds when the reranker
+// returns IDs as JSON strings ("1") rather than integers (1).
+func TestRerank_ParsesStringIDs(t *testing.T) {
+	chunks := []codesearch.Chunk{
+		{FilePath: "a.go", Name: "handleAuth", Kind: codesearch.ChunkFunc, Content: "func handleAuth() {}"},
+		{FilePath: "b.go", Name: "Server", Kind: codesearch.ChunkType, Content: "type Server struct{}"},
+	}
+	spawner := &mockSpawner{
+		output: `[{"id":"1","reason":"primary"},{"id":"2","reason":"secondary"}]`,
+	}
+	r := codesearch.NewReranker(spawner)
+
+	results, err := r.Rerank(context.Background(), "authentication", chunks, 2)
+	if err != nil {
+		t.Fatalf("Rerank with string IDs: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Chunk.Name != "handleAuth" {
+		t.Errorf("rank 1: want handleAuth, got %s", results[0].Chunk.Name)
+	}
+	if results[1].Chunk.Name != "Server" {
+		t.Errorf("rank 2: want Server, got %s", results[1].Chunk.Name)
+	}
+}
+
+// TestRerank_ParsesIntIDs verifies that Rerank still works with integer IDs (backwards compat).
+func TestRerank_ParsesIntIDs(t *testing.T) {
+	chunks := []codesearch.Chunk{
+		{FilePath: "a.go", Name: "handleAuth", Kind: codesearch.ChunkFunc, Content: "func handleAuth() {}"},
+	}
+	spawner := &mockSpawner{
+		output: `[{"id":1,"reason":"most relevant"}]`,
+	}
+	r := codesearch.NewReranker(spawner)
+
+	results, err := r.Rerank(context.Background(), "auth", chunks, 1)
+	if err != nil {
+		t.Fatalf("Rerank with int ID: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Chunk.Name != "handleAuth" {
+		t.Errorf("expected handleAuth, got %s", results[0].Chunk.Name)
+	}
+}
+
+// mockEnvelopeExtractSpawner simulates ClaudeRerankSpawner after the fix:
+// it holds a raw Claude --output-format json envelope and uses
+// ExtractResultFromEnvelope to return clean JSON to the Reranker.
+type mockEnvelopeExtractSpawner struct {
+	rawEnvelope string
+}
+
+func (m *mockEnvelopeExtractSpawner) Spawn(_ context.Context, _ string) (string, error) {
+	return codesearch.ExtractResultFromEnvelope([]byte(m.rawEnvelope))
+}
+
+// TestRerank_EnvelopeParsing_EndToEnd verifies the full round-trip:
+// a spawner that returns a real Claude JSON envelope → Rerank extracts and parses → ranked results.
+func TestRerank_EnvelopeParsing_EndToEnd(t *testing.T) {
+	chunks := []codesearch.Chunk{
+		{FilePath: "a.go", Name: "handleAuth", Kind: codesearch.ChunkFunc, Content: "func handleAuth() {}"},
+		{FilePath: "b.go", Name: "Server", Kind: codesearch.ChunkType, Content: "type Server struct{}"},
+	}
+
+	inner := `[{"id":"1","reason":"most relevant"},{"id":"2","reason":"less relevant"}]`
+	type envelopeData struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		Result  string `json:"result"`
+		IsError bool   `json:"is_error"`
+	}
+	ed := envelopeData{
+		Type:    "result",
+		Subtype: "success",
+		Result:  "```json\n" + inner + "\n```",
+		IsError: false,
+	}
+	envelopeBytes, err := json.Marshal(ed)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	spawner := &mockEnvelopeExtractSpawner{rawEnvelope: string(envelopeBytes)}
+	r := codesearch.NewReranker(spawner)
+
+	results, err := r.Rerank(context.Background(), "authentication", chunks, 2)
+	if err != nil {
+		t.Fatalf("end-to-end Rerank: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Chunk.Name != "handleAuth" {
+		t.Errorf("rank 1: want handleAuth, got %s", results[0].Chunk.Name)
+	}
+	if results[1].Chunk.Name != "Server" {
+		t.Errorf("rank 2: want Server, got %s", results[1].Chunk.Name)
+	}
 }
 
 func contains(s, sub string) bool {
