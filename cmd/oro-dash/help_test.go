@@ -305,7 +305,94 @@ func TestHelpBindings_AllKeysPresent(t *testing.T) {
 		bm := keyMap(getDetailHelpBindings())
 		assertBinding(t, bm, "DetailView", "j/k", "scroll")
 		assertBinding(t, bm, "DetailView", "enter", "dep")
-		assertBinding(t, bm, "DetailView", "</>", "resize")
+		assertBinding(t, bm, "DetailView", "</>", "split")
+	})
+}
+
+// TestHelpBindingsComplete verifies all functional key bindings are documented.
+func TestHelpBindingsComplete(t *testing.T) {
+	keyMap := func(bindings []helpBinding) map[string]string {
+		m := make(map[string]string, len(bindings))
+		for _, b := range bindings {
+			m[b.key] = b.desc
+		}
+		return m
+	}
+	hasKey := func(bm map[string]string, key string) bool {
+		_, ok := bm[key]
+		return ok
+	}
+	descContains := func(bm map[string]string, key, sub string) bool {
+		d, ok := bm[key]
+		return ok && strings.Contains(strings.ToLower(d), strings.ToLower(sub))
+	}
+
+	// (1) ListView help section contains 'm' key with 'load more closed' description.
+	t.Run("ListView_m_load_more_closed", func(t *testing.T) {
+		bm := keyMap(getListViewHelpBindings())
+		if !descContains(bm, "m", "load more closed") {
+			t.Errorf("ListView bindings: 'm' desc should contain 'load more closed', got %q", bm["m"])
+		}
+	})
+
+	// (2) DetailView help section contains '<' and '>' keys with 'adjust split width' description.
+	t.Run("DetailView_split_resize_keys", func(t *testing.T) {
+		bm := keyMap(getDetailHelpBindings())
+		// accept either separate keys or combined "</>", but desc must contain "adjust split"
+		foundLt := hasKey(bm, "<") || hasKey(bm, "</>")
+		foundGt := hasKey(bm, ">") || hasKey(bm, "</>")
+		if !foundLt || !foundGt {
+			t.Errorf("DetailView bindings missing '<' and/or '>' key (keys present: %v)", bm)
+		}
+		for _, k := range []string{"<", ">", "</>"} {
+			if d, ok := bm[k]; ok {
+				if !strings.Contains(strings.ToLower(d), "split") {
+					t.Errorf("DetailView binding %q desc = %q, want it to contain 'split'", k, d)
+				}
+			}
+		}
+	})
+
+	// (3) BoardView help section contains all keys currently handled in handleBoardViewKeys.
+	// Specifically: H/w (status) and L (list view) must be present.
+	t.Run("BoardView_HwL_present", func(t *testing.T) {
+		bm := keyMap(getBoardHelpBindings())
+		hwKey := hasKey(bm, "H/w") || hasKey(bm, "H") || hasKey(bm, "w")
+		if !hwKey {
+			t.Error("BoardView bindings missing H/w key for status navigation")
+		}
+		if !hasKey(bm, "L") {
+			t.Error("BoardView bindings missing 'L' key for list view")
+		}
+	})
+
+	// (4) H/w and L keys documented in all views that handle them.
+	t.Run("AllViews_HwL_documented", func(t *testing.T) {
+		views := []struct {
+			name     string
+			bindings []helpBinding
+			hasHw    bool
+			hasL     bool
+		}{
+			{"BoardView", getBoardHelpBindings(), true, true},
+			{"DetailView", getDetailHelpBindings(), true, true},
+			{"InsightsView", getInsightsHelpBindings(), true, true},
+			{"ListView", getListViewHelpBindings(), true, false}, // L is no-op in ListView
+		}
+		for _, v := range views {
+			bm := keyMap(v.bindings)
+			if v.hasHw {
+				hwFound := hasKey(bm, "H/w") || hasKey(bm, "H") || hasKey(bm, "w")
+				if !hwFound {
+					t.Errorf("%s bindings missing H/w key for status navigation", v.name)
+				}
+			}
+			if v.hasL {
+				if !hasKey(bm, "L") {
+					t.Errorf("%s bindings missing 'L' key for list view", v.name)
+				}
+			}
+		}
 	})
 }
 

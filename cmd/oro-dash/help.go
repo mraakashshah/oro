@@ -21,6 +21,8 @@ func getBoardHelpBindings() []helpBinding {
 		{"enter", "View bead details"},
 		{"i", "Show insights view"},
 		{"s", "Open status view"},
+		{"H/w", "Open status view"},
+		{"L", "Switch to list view"},
 		{"m", "Load more closed beads"},
 		{"</>", "Resize detail pane"},
 		{"/", "Open search"},
@@ -35,7 +37,9 @@ func getDetailHelpBindings() []helpBinding {
 		{"j/k", "Scroll / navigate deps"},
 		{"enter", "Drill into dep bead"},
 		{"tab/shift+tab", "Switch between tabs"},
-		{"</>", "Resize detail pane"},
+		{"</>", "Adjust split width"},
+		{"H/w", "Open status view"},
+		{"L", "Switch to list view"},
 		{"esc or backspace", "Return to board"},
 		{"?", "Toggle help"},
 		{"q or ctrl+c", "Quit"},
@@ -46,6 +50,8 @@ func getDetailHelpBindings() []helpBinding {
 func getInsightsHelpBindings() []helpBinding {
 	return []helpBinding{
 		{"esc", "Return to board"},
+		{"H/w", "Open status view"},
+		{"L", "Switch to list view"},
 		{"?", "Toggle help"},
 		{"q or ctrl+c", "Quit"},
 	}
@@ -61,6 +67,7 @@ func getListViewHelpBindings() []helpBinding {
 		{"b", "Switch to board view"},
 		{"i", "Show insights view"},
 		{"s", "Open status view"},
+		{"H/w", "Open status view"},
 		{"m", "Load more closed beads"},
 		{"</>", "Resize list/detail pane"},
 		{"y", "Copy bead ID to clipboard"},

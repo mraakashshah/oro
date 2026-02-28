@@ -149,9 +149,17 @@ func (lm ListModel) cursorBeadID() string {
 }
 
 // restoreCursor finds a bead by ID in the flat rows and sets the cursor to it.
+// If beadID is empty (first load), advances to the first non-header row.
 // If the bead is not found, clamps the cursor to the valid range.
 func (lm *ListModel) restoreCursor(beadID string) {
 	if beadID == "" {
+		rows := lm.flatRows()
+		for i, row := range rows {
+			if row.bead != nil {
+				lm.cursor = i
+				return
+			}
+		}
 		return
 	}
 	rows := lm.flatRows()
