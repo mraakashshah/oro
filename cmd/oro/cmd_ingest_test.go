@@ -253,7 +253,7 @@ func TestResolveKnowledgeFile_BeadsMemoryFallback(t *testing.T) {
 			name: "beads_memory_only",
 			setupFiles: func(tmpDir string) {
 				path := filepath.Join(tmpDir, ".beads", "memory")
-				if err := os.MkdirAll(path, 0o755); err != nil {
+				if err := os.MkdirAll(path, 0o750); err != nil {
 					t.Fatalf("mkdir: %v", err)
 				}
 				knowledgeFile := filepath.Join(path, "knowledge.jsonl")
@@ -270,7 +270,7 @@ func TestResolveKnowledgeFile_BeadsMemoryFallback(t *testing.T) {
 			setupFiles: func(tmpDir string) {
 				// Create .beads/memory/knowledge.jsonl
 				path := filepath.Join(tmpDir, ".beads", "memory")
-				if err := os.MkdirAll(path, 0o755); err != nil {
+				if err := os.MkdirAll(path, 0o750); err != nil {
 					t.Fatalf("mkdir: %v", err)
 				}
 				knowledgeFile := filepath.Join(path, "knowledge.jsonl")
@@ -280,7 +280,7 @@ func TestResolveKnowledgeFile_BeadsMemoryFallback(t *testing.T) {
 
 				// Also create .oro/knowledge.jsonl
 				oroPath := filepath.Join(tmpDir, ".oro")
-				if err := os.MkdirAll(oroPath, 0o755); err != nil {
+				if err := os.MkdirAll(oroPath, 0o750); err != nil {
 					t.Fatalf("mkdir: %v", err)
 				}
 				oroFile := filepath.Join(oroPath, "knowledge.jsonl")
@@ -297,7 +297,7 @@ func TestResolveKnowledgeFile_BeadsMemoryFallback(t *testing.T) {
 			setupFiles: func(tmpDir string) {
 				// Create only .oro/knowledge.jsonl
 				oroPath := filepath.Join(tmpDir, ".oro")
-				if err := os.MkdirAll(oroPath, 0o755); err != nil {
+				if err := os.MkdirAll(oroPath, 0o750); err != nil {
 					t.Fatalf("mkdir: %v", err)
 				}
 				oroFile := filepath.Join(oroPath, "knowledge.jsonl")
@@ -343,13 +343,13 @@ func TestResolveKnowledgeFile_BeadsMemoryFallback(t *testing.T) {
 				if err == nil {
 					t.Errorf("%s: expected error, got nil", tt.description)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("%s: unexpected error: %v", tt.description, err)
-				}
-				if result != tt.expectedPath {
-					t.Errorf("%s: expected %q, got %q", tt.description, tt.expectedPath, result)
-				}
+				return
+			}
+			if err != nil {
+				t.Errorf("%s: unexpected error: %v", tt.description, err)
+			}
+			if result != tt.expectedPath {
+				t.Errorf("%s: expected %q, got %q", tt.description, tt.expectedPath, result)
 			}
 		})
 	}
