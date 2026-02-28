@@ -186,10 +186,17 @@ func (bm BoardModel) renderColumnWithScroll(col boardColumn, colIdx, activeCol, 
 
 // renderColumnHeader renders a column header with title and optional count.
 func (bm BoardModel) renderColumnHeader(col boardColumn, colWidth int, theme Theme, styles Styles) string {
-	// Use Success (green) for Done column, ColorMutedFg (dim gray) for Ready/In Progress/Blocked
-	headerColor := theme.ColorMutedFg
-	if col.title == "Done" {
+	// Use status-appropriate colors: each column gets its semantic color.
+	var headerColor lipgloss.Color
+	switch col.title {
+	case "Done":
 		headerColor = theme.Success
+	case "Blocked":
+		headerColor = theme.ColorBlocked
+	case "In Progress":
+		headerColor = theme.ColorInProgress
+	default: // "Ready" and any unknown column
+		headerColor = theme.ColorReady
 	}
 
 	// Use pre-computed header style and override color/width

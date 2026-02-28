@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"oro/pkg/protocol"
 )
@@ -680,6 +682,40 @@ func TestBoardRecencySort(t *testing.T) {
 	verifyColumnOrder("In Progress", []string{"wip-3", "wip-2", "wip-1"})
 	verifyColumnOrder("Blocked", []string{"blocked-3", "blocked-2", "blocked-1"})
 	verifyColumnOrder("Done", []string{"done-3", "done-2", "done-1"})
+}
+
+// TestBoardColumnHeadersVisible verifies that column headers use a visible
+// (non-muted) foreground color. Ready, In Progress, and Blocked headers
+// must NOT use ColorMutedFg (#889096). Done keeps theme.Success (green).
+func TestBoardColumnHeadersVisible(t *testing.T) {
+	// Force 24-bit ANSI output so we can inspect color codes in the rendered string.
+	// SetColorProfile is designed for testing (see lipgloss renderer.go docs).
+	lipgloss.DefaultRenderer().SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.DefaultRenderer().SetColorProfile(termenv.Ascii)
+	})
+
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+	board := NewBoardModel(nil)
+
+	// ColorMutedFg (#889096 = RGB 136,144,150) as 24-bit ANSI foreground: "38;2;136;144;150".
+	mutedFgANSI := "38;2;136;144;150"
+
+	for _, title := range []string{"Ready", "In Progress", "Blocked", "Done"} {
+		col := boardColumn{title: title}
+		rendered := board.renderColumnHeader(col, 30, theme, styles)
+
+		// Each header must contain its title text.
+		if !strings.Contains(rendered, title) {
+			t.Errorf("renderColumnHeader(%q): title missing from output\ngot: %q", title, rendered)
+		}
+
+		// No header should use ColorMutedFg (#889096).
+		if strings.Contains(rendered, mutedFgANSI) {
+			t.Errorf("renderColumnHeader(%q) uses ColorMutedFg (#889096); use a visible color instead\ngot: %q", title, rendered)
+		}
+	}
 }
 
 // TestBoardLoadMoreUI verifies that pressing M key fires load-more command in board view.
