@@ -28,7 +28,9 @@ docs/alternative-architecture-analysis/reference/
 node_modules/
 
 # Build artifacts
+oro
 oro-dash
+oro-search-hook
 coverage.out
 report.json
 __pycache__/
