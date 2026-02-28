@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: block Bash commands that cd outside the project root.
+"""PreToolUse hook: block Bash commands that cd outside the project root or modify worktrees.
 
 Agents (architect, manager, dispatcher, subagents doing merges) must always
 operate from the project root using absolute paths. Changing directory into
 worktrees or other locations causes shell state corruption when combined
 with git operations (worktree remove, rebase chains, etc.).
 
-Blocks commands containing `cd <path>` where path resolves outside the
-project root. Allows `cd /project/root` (returning home) explicitly.
+Blocks:
+  - `cd <path>` where path resolves outside the project root
+  - `git worktree remove` and `git worktree add` (workers must not alter worktree structure)
+
+Allows:
+  - `cd /project/root` (returning home)
+  - `git worktree list` and bare `git worktree` (read-only)
 
 Input: JSON on stdin with tool_name, tool_input, etc.
 Output: JSON with permissionDecision=deny if dangerous, nothing otherwise (passthrough).
@@ -25,6 +30,14 @@ _CD_RE = re.compile(
     r"(?:^|&&\s*|;\s*|\|\|\s*)cd\s+"
     r"""(?:["']([^"']+)["']|(\S+))"""
 )
+
+# Match `git worktree <subcommand>` at command boundaries only.
+# Uses same boundary markers as _CD_RE so it won't fire on commit messages or
+# heredoc content that happens to contain the text "git worktree remove".
+_WORKTREE_RE = re.compile(r"(?:^|&&\s*|;\s*|\|\|\s*)git\s+worktree\s+(\w+)")
+
+# Subcommands that mutate the worktree list — workers must never run these
+_BLOCKED_WORKTREE_SUBCMDS = frozenset({"remove", "add", "prune", "lock", "unlock", "repair", "move"})
 
 
 def _git_repo_root() -> str:
@@ -64,6 +77,30 @@ def _git_repo_root() -> str:
 _PROJECT_ROOT = _git_repo_root()
 
 
+def check_git_command(command: str) -> dict | None:
+    """Detect and block dangerous git worktree subcommands.
+
+    Blocks 'git worktree remove', 'git worktree add', and other mutating
+    subcommands. Allows bare 'git worktree' and 'git worktree list' (read-only).
+    """
+    if not command:
+        return None
+    match = _WORKTREE_RE.search(command)
+    if match is None:
+        return None
+    subcmd = match.group(1)
+    if subcmd not in _BLOCKED_WORKTREE_SUBCMDS:
+        return None
+    return {
+        "permissionDecision": "deny",
+        "message": (
+            f"BLOCKED: `git worktree {subcmd}` is not allowed in workers. "
+            f"Workers must not modify the worktree structure. "
+            f"Only read-only git worktree commands (e.g. git worktree list) are permitted."
+        ),
+    }
+
+
 def find_cd_targets(command: str) -> list[str]:
     """Extract all cd target paths from a command string."""
     if not command:
@@ -97,7 +134,14 @@ def build_decision(hook_input: dict) -> dict | None:
         return None
 
     command = tool_input.get("command", "")
-    if not command or "cd " not in command:
+    if not command:
+        return None
+
+    result = check_git_command(command)
+    if result is not None:
+        return result
+
+    if "cd " not in command:
         return None
 
     targets = find_cd_targets(command)

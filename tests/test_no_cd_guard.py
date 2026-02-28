@@ -3,7 +3,7 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
-from no_cd_guard import _git_repo_root, build_decision, find_cd_targets, is_outside_root
+from no_cd_guard import _git_repo_root, build_decision, check_git_command, find_cd_targets, is_outside_root
 
 
 class TestFindCdTargets:
@@ -144,4 +144,93 @@ class TestBuildDecision:
 
     def test_ignores_non_bash(self):
         result = build_decision({"tool_name": "Read", "tool_input": {"command": "cd /tmp"}})
+        assert result is None
+
+
+class TestCheckGitCommand:
+    def test_blocks_worktree_remove(self):
+        result = check_git_command("git worktree remove .worktrees/agent-123")
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+
+    def test_blocks_worktree_add(self):
+        result = check_git_command("git worktree add .worktrees/new-branch new-branch")
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+
+    def test_allows_git_status(self):
+        assert check_git_command("git status") is None
+
+    def test_allows_git_log(self):
+        assert check_git_command("git log --oneline") is None
+
+    def test_allows_bare_git_worktree(self):
+        assert check_git_command("git worktree") is None
+
+    def test_allows_git_worktree_list(self):
+        assert check_git_command("git worktree list") is None
+
+    def test_allows_commit_message_containing_worktree_text(self):
+        # Commit messages that mention "git worktree remove" must not be blocked.
+        cmd = 'git commit -m "fix: block git worktree remove in workers"'
+        assert check_git_command(cmd) is None
+
+    def test_allows_heredoc_commit_with_worktree_text(self):
+        # Multi-line heredoc commit messages must not be blocked.
+        cmd = (
+            "git commit -m \"$(cat <<'EOF'\n"
+            "fix(no_cd_guard): block git worktree remove/add\n\n"
+            "Workers could delete their own worktree via\n"
+            "git worktree remove, causing quality gate failure.\n"
+            'EOF\n)"'
+        )
+        assert check_git_command(cmd) is None
+
+
+class TestBlockWorktreeRemove:
+    def _hook_input(self, command: str) -> dict:
+        return {"tool_name": "Bash", "tool_input": {"command": command}}
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_blocks_git_worktree_remove(self):
+        result = build_decision(self._hook_input("git worktree remove .worktrees/agent-123"))
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_blocks_git_worktree_add(self):
+        result = build_decision(self._hook_input("git worktree add .worktrees/new-branch new-branch"))
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_allows_git_status(self):
+        result = build_decision(self._hook_input("git status"))
+        assert result is None
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_allows_git_log(self):
+        result = build_decision(self._hook_input("git log --oneline"))
+        assert result is None
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_allows_bare_git_worktree(self):
+        result = build_decision(self._hook_input("git worktree"))
+        assert result is None
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_allows_git_worktree_list(self):
+        result = build_decision(self._hook_input("git worktree list"))
+        assert result is None
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_allows_commit_message_with_worktree_text(self):
+        # Commit message body containing "git worktree remove" must not be blocked.
+        cmd = (
+            "git commit -m \"$(cat <<'EOF'\n"
+            "fix(no_cd_guard): block git worktree remove/add\n\n"
+            "git worktree remove, causing quality gate failure.\n"
+            'EOF\n)"'
+        )
+        result = build_decision(self._hook_input(cmd))
         assert result is None
