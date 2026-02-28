@@ -2194,3 +2194,158 @@ func TestKeyBindings_HWRouteToStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestDetailViewKeys_ForwardToDetailModel verifies that j/k/enter/pgup/pgdown
+// in DetailView are forwarded to DetailModel.Update() as required by AC (oro-tm8m.14).
+func TestDetailViewKeys_ForwardToDetailModel(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	makeModel := func(dm DetailModel) Model {
+		m := newModel()
+		m.activeView = DetailView
+		m.detailModel = &dm
+		return m
+	}
+
+	t.Run("j_scrolls_viewport_down_on_non-Deps_tab", func(t *testing.T) {
+		bead := protocol.BeadDetail{Status: "in_progress", Title: "Test"}
+		dm := newDetailModel(bead, theme, styles)
+		dm.tabViewport.SetContent(strings.Repeat("line\n", 50))
+		dm.activeTab = 0
+		dm.viewportActiveTab = 0
+
+		m := makeModel(dm)
+		initialY := m.detailModel.tabViewport.YOffset
+
+		result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		updated, ok := result.(Model)
+		if !ok {
+			t.Fatal("j: handleKeyPress did not return Model")
+		}
+		if updated.detailModel.tabViewport.YOffset <= initialY {
+			t.Errorf("j: viewport YOffset = %d, want > %d", updated.detailModel.tabViewport.YOffset, initialY)
+		}
+	})
+
+	t.Run("k_scrolls_viewport_up_on_non-Deps_tab", func(t *testing.T) {
+		bead := protocol.BeadDetail{Status: "in_progress", Title: "Test"}
+		dm := newDetailModel(bead, theme, styles)
+		dm.tabViewport.SetContent(strings.Repeat("line\n", 50))
+		dm.tabViewport.SetYOffset(10)
+		dm.activeTab = 0
+		dm.viewportActiveTab = 0
+
+		m := makeModel(dm)
+		initialY := m.detailModel.tabViewport.YOffset
+
+		result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		updated, ok := result.(Model)
+		if !ok {
+			t.Fatal("k: handleKeyPress did not return Model")
+		}
+		if updated.detailModel.tabViewport.YOffset >= initialY {
+			t.Errorf("k: viewport YOffset = %d, want < %d", updated.detailModel.tabViewport.YOffset, initialY)
+		}
+	})
+
+	t.Run("j_moves_dep_cursor_down_on_Deps_tab", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			Status: "in_progress",
+			Title:  "Test",
+			Dependencies: []protocol.Dependency{
+				{DependsOnID: "oro-dep1"},
+				{DependsOnID: "oro-dep2"},
+			},
+		}
+		dm := newDetailModel(bead, theme, styles)
+		for dm.tabs[dm.activeTab] != "Deps" {
+			dm = dm.nextTab()
+		}
+		dm.viewportActiveTab = dm.activeTab
+		dm.depSelectedIdx = 0
+
+		m := makeModel(dm)
+
+		result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		updated, ok := result.(Model)
+		if !ok {
+			t.Fatal("j on Deps: handleKeyPress did not return Model")
+		}
+		if updated.detailModel.depSelectedIdx != 1 {
+			t.Errorf("j on Deps: depSelectedIdx = %d, want 1", updated.detailModel.depSelectedIdx)
+		}
+	})
+
+	t.Run("enter_on_Deps_tab_navigates_to_dep_bead", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			Status: "in_progress",
+			Title:  "Test",
+			Dependencies: []protocol.Dependency{
+				{DependsOnID: "oro-dep1"},
+			},
+		}
+		dm := newDetailModel(bead, theme, styles)
+		for dm.tabs[dm.activeTab] != "Deps" {
+			dm = dm.nextTab()
+		}
+		dm.viewportActiveTab = dm.activeTab
+		dm.depSelectedIdx = 0
+
+		m := makeModel(dm)
+
+		_, cmd := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatal("enter on Deps: expected non-nil command")
+		}
+		msg := cmd()
+		nav, ok := msg.(navigateToDepMsg)
+		if !ok {
+			t.Fatalf("enter on Deps: expected navigateToDepMsg, got %T", msg)
+		}
+		if nav.beadID != "oro-dep1" {
+			t.Errorf("enter on Deps: beadID = %q, want %q", nav.beadID, "oro-dep1")
+		}
+	})
+
+	t.Run("pgup_scrolls_viewport_up_on_non-Deps_tab", func(t *testing.T) {
+		bead := protocol.BeadDetail{Status: "in_progress", Title: "Test"}
+		dm := newDetailModel(bead, theme, styles)
+		dm.tabViewport.SetContent(strings.Repeat("line\n", 50))
+		dm.tabViewport.SetYOffset(20)
+		dm.activeTab = 0
+		dm.viewportActiveTab = 0
+
+		m := makeModel(dm)
+		initialY := m.detailModel.tabViewport.YOffset
+
+		result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyPgUp})
+		updated, ok := result.(Model)
+		if !ok {
+			t.Fatal("pgup: handleKeyPress did not return Model")
+		}
+		if updated.detailModel.tabViewport.YOffset >= initialY {
+			t.Errorf("pgup: viewport YOffset = %d, want < %d", updated.detailModel.tabViewport.YOffset, initialY)
+		}
+	})
+
+	t.Run("pgdn_scrolls_viewport_down_on_non-Deps_tab", func(t *testing.T) {
+		bead := protocol.BeadDetail{Status: "in_progress", Title: "Test"}
+		dm := newDetailModel(bead, theme, styles)
+		dm.tabViewport.SetContent(strings.Repeat("line\n", 50))
+		dm.activeTab = 0
+		dm.viewportActiveTab = 0
+
+		m := makeModel(dm)
+		initialY := m.detailModel.tabViewport.YOffset
+
+		result, _ := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyPgDown})
+		updated, ok := result.(Model)
+		if !ok {
+			t.Fatal("pgdn: handleKeyPress did not return Model")
+		}
+		if updated.detailModel.tabViewport.YOffset <= initialY {
+			t.Errorf("pgdn: viewport YOffset = %d, want > %d", updated.detailModel.tabViewport.YOffset, initialY)
+		}
+	})
+}

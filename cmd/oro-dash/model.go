@@ -530,7 +530,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case HelpView:
 		return m.handleHelpViewKeys(key)
 	case DetailView:
-		return m.handleDetailViewKeys(key)
+		return m.handleDetailViewKeys(key, msg)
 	case InsightsView:
 		return m.handleInsightsViewKeys(key)
 	case SearchView:
@@ -553,7 +553,9 @@ func (m Model) handleHelpViewKeys(key string) (tea.Model, tea.Cmd) {
 }
 
 // handleDetailViewKeys processes keyboard input in DetailView.
-func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
+//
+//nolint:gocyclo,funlen // switch dispatch over key bindings; complexity is inherent in key routing
+func (m Model) handleDetailViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "backspace":
 		m.activeView = m.previousNavView
@@ -565,6 +567,12 @@ func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
 	case "shift+tab", "left":
 		if m.detailModel != nil {
 			*m.detailModel = m.detailModel.prevTab()
+		}
+	case "j", "k", "enter", "pgup", "pgdown":
+		if m.detailModel != nil {
+			updated, cmd := m.detailModel.Update(msg)
+			*m.detailModel = updated
+			return m, cmd
 		}
 	case "<":
 		// Decrease board width (increase detail width)
