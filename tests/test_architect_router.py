@@ -19,12 +19,13 @@ class TestRouteCommand:
         assert architect_router.route_command("  bd list") == "architect"
         assert architect_router.route_command("bd sync --from-main") == "architect"
 
-    def test_oro_commands_forward_to_manager(self):
-        assert architect_router.route_command("oro start") == "manager"
-        assert architect_router.route_command("oro stop") == "manager"
-        assert architect_router.route_command("oro directive status") == "manager"
-        assert architect_router.route_command("oro directive scale 3") == "manager"
-        assert architect_router.route_command("  oro directive pause") == "manager"
+    def test_oro_commands_stay_local(self):
+        """route_command always returns architect — no manager forwarding."""
+        assert architect_router.route_command("oro start") == "architect"
+        assert architect_router.route_command("oro stop") == "architect"
+        assert architect_router.route_command("oro directive status") == "architect"
+        assert architect_router.route_command("oro directive scale 3") == "architect"
+        assert architect_router.route_command("  oro directive pause") == "architect"
 
     def test_git_readonly_commands_stay_local(self):
         """git status and other read-only commands now stay with architect."""
@@ -32,11 +33,11 @@ class TestRouteCommand:
         assert architect_router.route_command("git log") == "architect"
         assert architect_router.route_command("git diff") == "architect"
 
-    def test_build_commands_forward_to_manager(self):
-        """Build commands should forward to manager."""
-        assert architect_router.route_command("make test") == "manager"
-        assert architect_router.route_command("go build") == "manager"
-        assert architect_router.route_command("go test ./...") == "manager"
+    def test_build_commands_stay_local(self):
+        """route_command always returns architect — build commands stay local (blocked by build_decision)."""
+        assert architect_router.route_command("make test") == "architect"
+        assert architect_router.route_command("go build") == "architect"
+        assert architect_router.route_command("go test ./...") == "architect"
 
     def test_empty_commands_stay_local(self):
         """Empty commands now stay with architect (safe default)."""
@@ -109,8 +110,8 @@ class TestBuildDecision:
         assert architect_router.build_decision(hook_input) is None
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    @patch("architect_router.send_to_manager_pane", return_value=True)
-    def test_blocks_and_forwards_oro_commands(self, mock_send):
+    def test_blocks_oro_commands(self):
+        """oro commands are blocked without forwarding."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "oro directive scale 3"},
@@ -119,13 +120,11 @@ class TestBuildDecision:
 
         assert result is not None
         assert result["permissionDecision"] == "deny"
-        assert result["message"] == "[forwarded to manager] oro directive scale 3"
-        mock_send.assert_called_once_with("oro directive scale 3")
+        assert "[BLOCKED]" in result["message"]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    @patch("architect_router.send_to_manager_pane", return_value=True)
-    def test_blocks_and_forwards_build_commands(self, mock_send):
-        """Build commands should be forwarded to manager."""
+    def test_blocks_build_commands(self):
+        """Build commands are blocked without forwarding."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "make test"},
@@ -134,20 +133,21 @@ class TestBuildDecision:
 
         assert result is not None
         assert result["permissionDecision"] == "deny"
-        mock_send.assert_called_once_with("make test")
+        assert "[BLOCKED]" in result["message"]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    @patch("architect_router.send_to_manager_pane", return_value=False)
-    def test_passthrough_when_tmux_send_fails(self, mock_send):
-        # If tmux send-keys fails, don't block the command
+    @patch("architect_router.send_to_manager_pane")
+    def test_oro_blocked_regardless_of_tmux(self, mock_send):
+        """oro commands are blocked even when tmux is unavailable."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "oro status"},
         }
         result = architect_router.build_decision(hook_input)
 
-        assert result is None
-        mock_send.assert_called_once()
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+        mock_send.assert_not_called()
 
 
 class TestSendToManagerPane:
@@ -179,6 +179,119 @@ class TestSendToManagerPane:
     def test_returns_false_when_tmux_not_found(self, _mock_run):
         result = architect_router.send_to_manager_pane("oro status")
         assert result is False
+
+
+class TestArchitectRouterPolicy:
+    """Policy tests: block mutating commands, allow read-only, never forward."""
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane")
+    def test_oro_commands_blocked_not_forwarded(self, mock_send):
+        """oro start/work/status are blocked but NOT forwarded to manager."""
+        for cmd in ["oro start", "oro work", "oro status", "oro directive scale 3"]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is not None, f"Expected block for: {cmd}"
+            assert result["permissionDecision"] == "deny", f"Expected deny for: {cmd}"
+            mock_send.assert_not_called()
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane")
+    def test_go_commands_blocked(self, mock_send):
+        """go test/build/install are blocked."""
+        for cmd in ["go test ./...", "go build ./...", "go install ./..."]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is not None, f"Expected block for: {cmd}"
+            assert result["permissionDecision"] == "deny", f"Expected deny for: {cmd}"
+            mock_send.assert_not_called()
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane")
+    def test_make_commands_blocked(self, mock_send):
+        """make <anything> is blocked."""
+        for cmd in ["make test", "make build", "make install", "make"]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is not None, f"Expected block for: {cmd}"
+            assert result["permissionDecision"] == "deny", f"Expected deny for: {cmd}"
+            mock_send.assert_not_called()
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane")
+    def test_git_mutating_commands_blocked(self, mock_send):
+        """git add/commit/push are all blocked regardless of file types."""
+        for cmd in ["git add .", "git add main.go", "git add README.md", "git commit -m 'test'", "git push"]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is not None, f"Expected block for: {cmd}"
+            assert result["permissionDecision"] == "deny", f"Expected deny for: {cmd}"
+            mock_send.assert_not_called()
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    def test_git_readonly_commands_allowed(self):
+        """git status/log/diff/branch/show pass through."""
+        for cmd in ["git status", "git log", "git log --oneline", "git diff", "git branch", "git show HEAD"]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is None, f"Expected passthrough for: {cmd}"
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    def test_bd_commands_allowed(self):
+        """bd create/update/show pass through."""
+        for cmd in ["bd create --title='test'", "bd update bd-123", "bd show bd-456", "bd ready", "bd stats"]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is None, f"Expected passthrough for: {cmd}"
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane")
+    def test_build_decision_never_calls_send_to_manager(self, mock_send):
+        """build_decision() never calls send_to_manager_pane for any command."""
+        commands = [
+            "oro start",
+            "oro work",
+            "oro status",
+            "go test ./...",
+            "go build ./...",
+            "go install",
+            "make test",
+            "make build",
+            "git add main.go",
+            "git commit -m 'test'",
+            "git push",
+            "bd create --title='test'",
+            "bd update bd-123",
+            "git status",
+            "git log",
+            "ls -la",
+            "echo hello",
+        ]
+        for cmd in commands:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            architect_router.build_decision(hook_input)
+        mock_send.assert_not_called()
 
 
 class TestNotifyOnBeadCreate:

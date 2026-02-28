@@ -49,31 +49,29 @@ class TestGitMarkdownWorkflow:
         assert result is None
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    def test_git_add_markdown_allowed(self):
-        """git add with .md files should be allowed."""
+    def test_git_add_markdown_blocked(self):
+        """git add is blocked for all files including .md (no staging from architect pane)."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "git add docs/plans/spec.md"},
         }
         result = architect_router.build_decision(hook_input)
-        assert result is None
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+        assert "[BLOCKED]" in result["message"]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    def test_git_add_yaml_allowed(self):
-        """git add with .yaml/.yml files should be allowed."""
-        hook_input = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "git add handoff.yaml"},
-        }
-        result = architect_router.build_decision(hook_input)
-        assert result is None
-
-        hook_input = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "git add config.yml"},
-        }
-        result = architect_router.build_decision(hook_input)
-        assert result is None
+    def test_git_add_yaml_blocked(self):
+        """git add is blocked for all files including .yaml/.yml."""
+        for cmd in ["git add handoff.yaml", "git add config.yml"]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is not None, f"Expected block for: {cmd}"
+            assert result["permissionDecision"] == "deny"
+            assert "[BLOCKED]" in result["message"]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     def test_git_add_code_blocked(self):
@@ -97,21 +95,20 @@ class TestGitMarkdownWorkflow:
             assert "[BLOCKED]" in result["message"]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    @patch("architect_router.verify_staged_files", return_value=True)
-    def test_git_commit_allowed_when_markdown_staged(self, mock_verify):
-        """git commit should be allowed when only markdown/yaml is staged."""
+    def test_git_commit_blocked(self):
+        """git commit is always blocked regardless of what is staged."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "git commit -m 'docs: add spec'"},
         }
         result = architect_router.build_decision(hook_input)
-        assert result is None
-        mock_verify.assert_called_once()
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+        assert "[BLOCKED]" in result["message"]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    @patch("architect_router.verify_staged_files", return_value=False)
-    def test_git_commit_blocked_when_code_staged(self, mock_verify):
-        """git commit should be blocked when code files are staged."""
+    def test_git_commit_blocked_when_code_staged(self):
+        """git commit is blocked regardless of staged files."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "git commit -m 'feat: add feature'"},
@@ -120,18 +117,18 @@ class TestGitMarkdownWorkflow:
         assert result is not None
         assert result["permissionDecision"] == "deny"
         assert "[BLOCKED]" in result["message"]
-        assert "code" in result["message"].lower()
-        mock_verify.assert_called_once()
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    def test_git_push_allowed(self):
-        """git push should be allowed."""
+    def test_git_push_blocked(self):
+        """git push is blocked in architect pane."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "git push"},
         }
         result = architect_router.build_decision(hook_input)
-        assert result is None
+        assert result is not None
+        assert result["permissionDecision"] == "deny"
+        assert "[BLOCKED]" in result["message"]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     def test_bd_sync_allowed(self):
@@ -209,12 +206,12 @@ class TestVerifyStagedFiles:
 
 
 class TestBuildCommandsBlocked:
-    """Test that build/test commands are forwarded to manager."""
+    """Test that build/test commands are blocked without forwarding."""
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    @patch("architect_router.send_to_manager_pane", return_value=True)
-    def test_make_commands_forwarded(self, mock_send):
-        """make commands should be forwarded to manager."""
+    @patch("architect_router.send_to_manager_pane")
+    def test_make_commands_blocked_without_forwarding(self, mock_send):
+        """make commands are blocked; send_to_manager_pane is NOT called."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "make test"},
@@ -222,21 +219,20 @@ class TestBuildCommandsBlocked:
         result = architect_router.build_decision(hook_input)
         assert result is not None
         assert result["permissionDecision"] == "deny"
-        mock_send.assert_called_once()
+        mock_send.assert_not_called()
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    @patch("architect_router.send_to_manager_pane", return_value=True)
-    def test_go_build_commands_forwarded(self, mock_send):
-        """go build/test/install should be forwarded."""
+    @patch("architect_router.send_to_manager_pane")
+    def test_go_build_commands_blocked_without_forwarding(self, mock_send):
+        """go build/test/install are blocked; send_to_manager_pane is NOT called."""
         test_cases = ["go build", "go test ./...", "go install"]
 
         for command in test_cases:
-            mock_send.reset_mock()
             hook_input = {
                 "tool_name": "Bash",
                 "tool_input": {"command": command},
             }
             result = architect_router.build_decision(hook_input)
-            assert result is not None, f"Expected {command} to be forwarded"
+            assert result is not None, f"Expected {command} to be blocked"
             assert result["permissionDecision"] == "deny"
-            mock_send.assert_called_once()
+        mock_send.assert_not_called()

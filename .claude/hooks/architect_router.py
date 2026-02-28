@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
-"""PreToolUse Bash hook: route architect commands to manager pane.
+"""PreToolUse Bash hook: block mutating commands in architect pane.
 
-When ORO_ROLE=architect, intercepts Bash commands and routes them:
-  - Commands starting with "bd " stay with the architect (passthrough)
-  - Commands starting with "oro " forward to manager pane via tmux send-keys
-  - Git read-only commands (status, log, diff) stay with architect
-  - Git add of .md/.yaml/.yml files allowed; code files (.go/.py/.sh/.js/.ts) blocked
-  - Git commit allowed only when staged files are all markdown/YAML
-  - Git push allowed
-  - Build commands (make, go build/test/install) forwarded to manager
-  - All other commands (ls, cat, etc.) stay with architect (safe default)
+When ORO_ROLE=architect, intercepts Bash commands and enforces policy:
+  - bd commands: allowed (bd create, bd update, bd show, etc.)
+  - Read-only git (status, log, diff, branch, show): allowed
+  - git pull: allowed
+  - All other git (add, commit, push): BLOCKED
+  - oro commands (oro start, oro work, etc.): BLOCKED
+  - Build commands (make, go build/test/install): BLOCKED
+  - All other commands (ls, cat, grep, etc.): allowed (safe default)
 
-Forwarded commands are sent to the manager pane and blocked from execution
-in the architect pane. The architect receives feedback like:
-  "[forwarded to manager] oro directive scale 3"
+Blocked commands are denied with a [BLOCKED] message. No forwarding to
+the manager pane occurs from build_decision(). The send_to_manager_pane
+helper is used ONLY by notify_on_bead_create (PostToolUse notification).
 
 Input: JSON on stdin with tool_name, tool_input, etc.
-Output: JSON with permissionDecision=deny + additionalContext for forwarded commands.
+Output: JSON with permissionDecision=deny + additionalContext for blocked commands.
 """
 
 import json
@@ -33,36 +32,9 @@ def get_oro_role() -> str:
 def route_command(command: str) -> str:
     """Determine routing destination.
 
-    Returns "architect" or "manager".
-
-    Routing logic:
-      - Empty commands stay with architect (safe default)
-      - Commands starting with "bd " stay with architect
-      - Commands starting with "oro " go to manager
-      - Build commands (make, go build/test/install) go to manager
-      - Git commands stay with architect (read-only safe default)
-      - All other commands (ls, cat, etc.) stay with architect (safe default)
+    Returns "architect" for all commands. Forwarding to manager has been
+    removed; build_decision() handles blocking directly without forwarding.
     """
-    trimmed = command.strip()
-    if not trimmed:
-        return "architect"
-
-    if trimmed.startswith("bd "):
-        return "architect"
-
-    if trimmed.startswith("oro "):
-        return "manager"
-
-    # Build commands forward to manager
-    for build_prefix in ("make ", "go build", "go test", "go install"):
-        if trimmed.startswith(build_prefix):
-            return "manager"
-
-    # Git commands stay with architect
-    if trimmed.startswith("git "):
-        return "architect"
-
-    # All other commands stay with architect (safe default)
     return "architect"
 
 
@@ -112,6 +84,7 @@ def _check_git_command(command: str) -> dict | None:
     """Check a git command and return a block decision or None to allow.
 
     Returns a deny dict if the command should be blocked, or None to passthrough.
+    Read-only commands are allowed; all mutating commands (add/commit/push) are blocked.
     """
     trimmed = command.strip()
 
@@ -120,48 +93,35 @@ def _check_git_command(command: str) -> dict | None:
         if trimmed.startswith(prefix):
             return None
 
-    # git push — allowed
-    if trimmed.startswith("git push"):
-        return None
-
     # git pull — allowed
     if trimmed.startswith("git pull"):
         return None
 
-    # git add — check file extensions
+    # Block all mutating commands
     if trimmed.startswith("git add"):
-        args = trimmed[len("git add") :].strip()
-        if not args:
-            return None  # bare "git add" with no args — passthrough
-
-        # Parse file paths from the arguments (skip flags like -A, -u, etc.)
-        paths = [a for a in args.split() if not a.startswith("-")]
-        if not paths:
-            return None
-
-        # Block if any path is a code file
-        if any(_is_code_file(p) for p in paths):
-            blocked_files = [p for p in paths if _is_code_file(p)]
-            return {
-                "permissionDecision": "deny",
-                "message": format_forward_message(
-                    trimmed,
-                    blocked_reason=f"Cannot add code files from architect pane ({', '.join(blocked_files)})",
-                ),
-            }
-
-        # All files are allowed (markdown/yaml) or unrecognized (allow)
-        return None
-
-    # git commit — check staged files
-    if trimmed.startswith("git commit"):
-        if verify_staged_files():
-            return None
         return {
             "permissionDecision": "deny",
             "message": format_forward_message(
                 trimmed,
-                blocked_reason="Cannot commit — code files are staged",
+                blocked_reason="git add not allowed in architect pane",
+            ),
+        }
+
+    if trimmed.startswith("git commit"):
+        return {
+            "permissionDecision": "deny",
+            "message": format_forward_message(
+                trimmed,
+                blocked_reason="git commit not allowed in architect pane",
+            ),
+        }
+
+    if trimmed.startswith("git push"):
+        return {
+            "permissionDecision": "deny",
+            "message": format_forward_message(
+                trimmed,
+                blocked_reason="git push not allowed in architect pane",
             ),
         }
 
@@ -209,10 +169,11 @@ def send_to_manager_pane(command: str, session_name: str = "oro") -> bool:
 
 
 def build_decision(hook_input: dict) -> dict | None:
-    """Decide whether to block and forward a command.
+    """Decide whether to block a command.
 
     Returns a dict with permissionDecision=deny + additionalContext if the
-    command should be forwarded, or None to passthrough (execute locally).
+    command should be blocked, or None to passthrough (execute locally).
+    Never calls send_to_manager_pane — no forwarding occurs here.
     """
     # Only intercept when running as architect
     if get_oro_role() != "architect":
@@ -231,34 +192,32 @@ def build_decision(hook_input: dict) -> dict | None:
 
     trimmed = command.strip()
 
-    # Check git commands for markdown/code restrictions
+    # Check git commands (read-only allowed, mutating blocked)
     if trimmed.startswith("git "):
-        git_decision = _check_git_command(command)
-        if git_decision is not None:
-            return git_decision
-        # If _check_git_command returns None, it's allowed — passthrough
-        return None
+        return _check_git_command(command)
 
-    destination = route_command(command)
+    # Block oro commands — architect must not run oro directly
+    if trimmed.startswith("oro "):
+        return {
+            "permissionDecision": "deny",
+            "message": format_forward_message(
+                trimmed,
+                blocked_reason="oro commands not allowed in architect pane",
+            ),
+        }
 
-    # If staying with architect, passthrough
-    if destination == "architect":
-        return None
+    # Block build commands
+    if trimmed.startswith("make ") or trimmed == "make" or trimmed.startswith(("go build", "go test", "go install")):
+        return {
+            "permissionDecision": "deny",
+            "message": format_forward_message(
+                trimmed,
+                blocked_reason="Build commands not allowed in architect pane",
+            ),
+        }
 
-    # Forward to manager pane
-    forward_msg = format_forward_message(command)
-    send_success = send_to_manager_pane(command)
-
-    if not send_success:
-        # If tmux send-keys fails, don't block the command
-        # (maybe we're not in a tmux session, or manager pane doesn't exist)
-        return None
-
-    # Block execution in architect pane and show feedback
-    return {
-        "permissionDecision": "deny",
-        "message": forward_msg,
-    }
+    # All other commands passthrough (bd, ls, cat, grep, etc.)
+    return None
 
 
 def notify_on_bead_create(hook_input: dict) -> dict | None:
