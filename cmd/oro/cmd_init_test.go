@@ -1605,3 +1605,55 @@ func TestExtractThresholdsJSON(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildHookConfigContainsCompactTrigger verifies that compact_trigger.py
+// appears in the blank-matcher PostToolUse group, between context_pct_writer.py
+// and context_pruner.py.
+func TestBuildHookConfigContainsCompactTrigger(t *testing.T) {
+	cfg := buildHookConfig("/hooks")
+	postToolUse, ok := cfg["PostToolUse"]
+	if !ok {
+		t.Fatal("PostToolUse key missing from hook config")
+	}
+
+	// Find the blank-matcher group.
+	var blankHooks []hookEntry
+	for _, g := range postToolUse {
+		if g.Matcher == "" {
+			blankHooks = g.Hooks
+			break
+		}
+	}
+	if blankHooks == nil {
+		t.Fatal("no blank-matcher group found in PostToolUse")
+	}
+
+	// Collect commands in order.
+	var cmds []string
+	for _, h := range blankHooks {
+		cmds = append(cmds, h.Command)
+	}
+
+	idxPctWriter := -1
+	idxCompact := -1
+	idxPruner := -1
+	for i, cmd := range cmds {
+		if strings.Contains(cmd, "context_pct_writer.py") {
+			idxPctWriter = i
+		}
+		if strings.Contains(cmd, "compact_trigger.py") {
+			idxCompact = i
+		}
+		if strings.Contains(cmd, "context_pruner.py") {
+			idxPruner = i
+		}
+	}
+
+	if idxCompact == -1 {
+		t.Fatal("compact_trigger.py not found in blank-matcher PostToolUse hooks")
+	}
+	if idxPctWriter >= idxCompact || idxCompact >= idxPruner {
+		t.Errorf("order wrong: context_pct_writer.py[%d] < compact_trigger.py[%d] < context_pruner.py[%d] not satisfied",
+			idxPctWriter, idxCompact, idxPruner)
+	}
+}
