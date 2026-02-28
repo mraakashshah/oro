@@ -636,6 +636,11 @@ func renderDetailPane(b protocol.Bead, workers []WorkerStatus, assignments map[s
 		out.WriteString(renderSection("Dependencies", strings.Join(depLines, "\n"), sections["deps"], styles) + "\n\n")
 	}
 
+	// Notes section (only if notes exist)
+	if b.Notes != "" {
+		out.WriteString(renderSection("Notes", b.Notes, sections["notes"], styles) + "\n\n")
+	}
+
 	return lipgloss.NewStyle().Width(width).Height(height).Render(out.String())
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -1419,6 +1420,108 @@ func TestListLoadMoreUI(t *testing.T) {
 		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
 		if cmd != nil {
 			t.Error("M key should not fire when detail pane is focused")
+		}
+	})
+}
+
+// TestDetailPaneRendersNotes verifies Notes field on Bead/BeadDetail and rendering.
+func TestDetailPaneRendersNotes(t *testing.T) {
+	styles := NewStyles(DefaultTheme())
+
+	t.Run("protocol.Bead has Notes field with json tag 'notes'", func(t *testing.T) {
+		b := protocol.Bead{Notes: "some notes here"}
+		data, err := json.Marshal(b)
+		if err != nil {
+			t.Fatalf("failed to marshal Bead: %v", err)
+		}
+		if !strings.Contains(string(data), `"notes"`) {
+			t.Errorf("Bead json missing 'notes' key: %q", string(data))
+		}
+		var b2 protocol.Bead
+		if err := json.Unmarshal([]byte(`{"notes":"hello"}`), &b2); err != nil {
+			t.Fatalf("failed to unmarshal Bead notes: %v", err)
+		}
+		if b2.Notes != "hello" {
+			t.Errorf("Bead.Notes = %q, want 'hello'", b2.Notes)
+		}
+	})
+
+	t.Run("renderDetailPane shows Notes section when Notes non-empty", func(t *testing.T) {
+		b := protocol.Bead{
+			ID:     "n-1",
+			Title:  "Bead with notes",
+			Status: "open",
+			Notes:  "Important context here",
+		}
+		sections := map[string]bool{"notes": true}
+		out := renderDetailPane(b, nil, nil, sections, styles, 60, 30)
+		if !strings.Contains(out, "Notes") {
+			t.Errorf("renderDetailPane missing 'Notes' section header: %q", out)
+		}
+		if !strings.Contains(out, "Important context here") {
+			t.Errorf("renderDetailPane missing Notes content: %q", out)
+		}
+	})
+
+	t.Run("renderDetailPane omits Notes section when Notes empty", func(t *testing.T) {
+		b := protocol.Bead{
+			ID:     "n-2",
+			Title:  "Bead without notes",
+			Status: "open",
+			Notes:  "",
+		}
+		sections := map[string]bool{"notes": true}
+		out := renderDetailPane(b, nil, nil, sections, styles, 60, 30)
+		if strings.Contains(out, "Notes") {
+			t.Errorf("renderDetailPane should omit Notes section when empty: %q", out)
+		}
+	})
+
+	t.Run("renderDetailPane Notes section collapsed hides content", func(t *testing.T) {
+		b := protocol.Bead{
+			ID:     "n-3",
+			Title:  "Bead with notes",
+			Status: "open",
+			Notes:  "Secret notes",
+		}
+		sections := map[string]bool{"notes": false}
+		out := renderDetailPane(b, nil, nil, sections, styles, 60, 30)
+		if strings.Contains(out, "Secret notes") {
+			t.Errorf("collapsed Notes section should hide content: %q", out)
+		}
+		if !strings.Contains(out, "Notes") {
+			t.Errorf("collapsed Notes section should still show header: %q", out)
+		}
+	})
+
+	t.Run("Overview tab renders Notes when BeadDetail.Notes non-empty", func(t *testing.T) {
+		theme := DefaultTheme()
+		bead := protocol.BeadDetail{
+			ID:    "n-4",
+			Title: "Bead with notes detail",
+			Notes: "Notes from detail view",
+		}
+		d := newDetailModel(bead, theme, styles)
+		out := d.renderOverviewTab(styles)
+		if !strings.Contains(out, "Notes") {
+			t.Errorf("renderOverviewTab missing Notes section: %q", out)
+		}
+		if !strings.Contains(out, "Notes from detail view") {
+			t.Errorf("renderOverviewTab missing Notes content: %q", out)
+		}
+	})
+
+	t.Run("Overview tab omits Notes when BeadDetail.Notes empty", func(t *testing.T) {
+		theme := DefaultTheme()
+		bead := protocol.BeadDetail{
+			ID:    "n-5",
+			Title: "Bead without notes detail",
+			Notes: "",
+		}
+		d := newDetailModel(bead, theme, styles)
+		out := d.renderOverviewTab(styles)
+		if strings.Contains(out, "Notes") {
+			t.Errorf("renderOverviewTab should omit Notes when empty: %q", out)
 		}
 	})
 }

@@ -343,6 +343,15 @@ func (d DetailModel) renderOverviewTab(styles Styles) string {
 		)
 	}
 
+	// Notes (if specified)
+	if d.bead.Notes != "" {
+		lines = append(lines,
+			"",
+			styles.DetailBold.Render("Notes:"),
+			d.bead.Notes,
+		)
+	}
+
 	return strings.Join(lines, "\n")
 }
 

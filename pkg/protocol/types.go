@@ -30,6 +30,7 @@ type Bead struct {
 	Description        string       `json:"description,omitempty"`         // detailed description
 	CloseReason        string       `json:"close_reason,omitempty"`        // reason for closing
 	Owner              string       `json:"owner,omitempty"`               // owner/assignee identifier
+	Notes              string       `json:"notes,omitempty"`               // freeform notes
 }
 
 // BeadDetail holds extended information about a single bead.
@@ -47,6 +48,7 @@ type BeadDetail struct {
 	Memory             string       `json:"memory,omitempty"`
 	Dependencies       []Dependency `json:"dependencies,omitempty"`
 	Owner              string       `json:"owner,omitempty"` // owner/assignee identifier
+	Notes              string       `json:"notes,omitempty"` // freeform notes
 }
 
 // Model constants for routing.
