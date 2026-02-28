@@ -155,7 +155,8 @@ Use --dry-run to preview what would be ingested without writing to the database.
 // resolveKnowledgeFile determines the knowledge file path from:
 // 1. Explicit filePath argument (if non-empty)
 // 2. ORO_KNOWLEDGE_FILE environment variable
-// 3. Project config discovery (.oro/knowledge.jsonl)
+// 3. Beads memory knowledge file (.beads/memory/knowledge.jsonl)
+// 4. Project config discovery (.oro/knowledge.jsonl)
 // Returns an error if no file is found.
 func resolveKnowledgeFile(filePath string) (string, error) {
 	// Priority 1: --file flag
@@ -174,13 +175,19 @@ func resolveKnowledgeFile(filePath string) (string, error) {
 		return "", fmt.Errorf("ORO_KNOWLEDGE_FILE not found: %s", envPath)
 	}
 
-	// Priority 3: Project config discovery (.oro/knowledge.jsonl)
+	// Priority 3: Beads memory knowledge file (.beads/memory/knowledge.jsonl)
+	beadsPath := filepath.Join(".beads", "memory", "knowledge.jsonl")
+	if _, err := os.Stat(beadsPath); err == nil {
+		return beadsPath, nil
+	}
+
+	// Priority 4: Project config discovery (.oro/knowledge.jsonl)
 	projectPath := filepath.Join(".oro", "knowledge.jsonl")
 	if _, err := os.Stat(projectPath); err == nil {
 		return projectPath, nil
 	}
 
-	return "", fmt.Errorf("no knowledge file found (checked --file, ORO_KNOWLEDGE_FILE, .oro/knowledge.jsonl)")
+	return "", fmt.Errorf("no knowledge file found (checked --file, ORO_KNOWLEDGE_FILE, .beads/memory/knowledge.jsonl, .oro/knowledge.jsonl)")
 }
 
 // countKnowledgeEntries counts valid JSONL entries in the file without inserting.

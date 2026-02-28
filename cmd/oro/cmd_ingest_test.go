@@ -240,3 +240,117 @@ func TestCmdIngest_MissingFile(t *testing.T) {
 		t.Logf("output: %s", output)
 	}
 }
+
+func TestResolveKnowledgeFile_BeadsMemoryFallback(t *testing.T) {
+	tests := []struct {
+		name         string
+		setupFiles   func(tmpDir string) // Setup files in tmpDir
+		expectedPath string
+		expectError  bool
+		description  string
+	}{
+		{
+			name: "beads_memory_only",
+			setupFiles: func(tmpDir string) {
+				path := filepath.Join(tmpDir, ".beads", "memory")
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				knowledgeFile := filepath.Join(path, "knowledge.jsonl")
+				if err := os.WriteFile(knowledgeFile, []byte(`{"key":"test","content":"test"}`), 0o600); err != nil {
+					t.Fatalf("write file: %v", err)
+				}
+			},
+			expectedPath: filepath.Join(".beads", "memory", "knowledge.jsonl"),
+			expectError:  false,
+			description:  ".beads/memory/knowledge.jsonl exists, .oro/knowledge.jsonl does not",
+		},
+		{
+			name: "beads_memory_preferred_over_oro",
+			setupFiles: func(tmpDir string) {
+				// Create .beads/memory/knowledge.jsonl
+				path := filepath.Join(tmpDir, ".beads", "memory")
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				knowledgeFile := filepath.Join(path, "knowledge.jsonl")
+				if err := os.WriteFile(knowledgeFile, []byte(`{"key":"beads","content":"beads"}`), 0o600); err != nil {
+					t.Fatalf("write file: %v", err)
+				}
+
+				// Also create .oro/knowledge.jsonl
+				oroPath := filepath.Join(tmpDir, ".oro")
+				if err := os.MkdirAll(oroPath, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				oroFile := filepath.Join(oroPath, "knowledge.jsonl")
+				if err := os.WriteFile(oroFile, []byte(`{"key":"oro","content":"oro"}`), 0o600); err != nil {
+					t.Fatalf("write file: %v", err)
+				}
+			},
+			expectedPath: filepath.Join(".beads", "memory", "knowledge.jsonl"),
+			expectError:  false,
+			description:  "both files exist, should prefer .beads/memory/knowledge.jsonl",
+		},
+		{
+			name: "oro_fallback_when_beads_not_present",
+			setupFiles: func(tmpDir string) {
+				// Create only .oro/knowledge.jsonl
+				oroPath := filepath.Join(tmpDir, ".oro")
+				if err := os.MkdirAll(oroPath, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				oroFile := filepath.Join(oroPath, "knowledge.jsonl")
+				if err := os.WriteFile(oroFile, []byte(`{"key":"oro","content":"oro"}`), 0o600); err != nil {
+					t.Fatalf("write file: %v", err)
+				}
+			},
+			expectedPath: filepath.Join(".oro", "knowledge.jsonl"),
+			expectError:  false,
+			description:  "only .oro/knowledge.jsonl exists",
+		},
+		{
+			name: "no_file_found",
+			setupFiles: func(tmpDir string) {
+				// Don't create any files
+			},
+			expectedPath: "",
+			expectError:  true,
+			description:  "neither .beads/memory/knowledge.jsonl nor .oro/knowledge.jsonl exist",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			oldCwd, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("get cwd: %v", err)
+			}
+			if err := os.Chdir(tmpDir); err != nil {
+				t.Fatalf("chdir: %v", err)
+			}
+			defer func() {
+				if err := os.Chdir(oldCwd); err != nil {
+					t.Fatalf("restore cwd: %v", err)
+				}
+			}()
+
+			tt.setupFiles(tmpDir)
+
+			result, err := resolveKnowledgeFile("")
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("%s: expected error, got nil", tt.description)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("%s: unexpected error: %v", tt.description, err)
+				}
+				if result != tt.expectedPath {
+					t.Errorf("%s: expected %q, got %q", tt.description, tt.expectedPath, result)
+				}
+			}
+		})
+	}
+}
