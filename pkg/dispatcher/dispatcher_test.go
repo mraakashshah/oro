@@ -82,11 +82,14 @@ type mockBeadSource struct {
 	created              []createCall
 	createID             string // ID returned by Create; defaults to "oro-new1"
 	synced               bool
-	readyErr             error           // if set, Ready() returns this error
-	allChildrenClosedMap map[string]bool // epicID -> allClosed
-	allChildrenClosedErr error           // if set, AllChildrenClosed() returns this error
-	hasChildrenMap       map[string]bool // epicID -> hasChildren
-	hasChildrenErr       error           // if set, HasChildren() returns this error
+	readyErr             error            // if set, Ready() returns this error
+	allChildrenClosedMap map[string]bool  // epicID -> allClosed
+	allChildrenClosedErr error            // if set, AllChildrenClosed() returns this error
+	hasChildrenMap       map[string]bool  // epicID -> hasChildren
+	hasChildrenErr       error            // if set, HasChildren() returns this error
+	inProgressBeads      []protocol.Bead  // returned by InProgress(); nil means no beads
+	inProgressErr        error            // if set, InProgress() returns this error
+	updateErrs           map[string]error // beadID -> error returned by Update()
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -123,6 +126,11 @@ func (m *mockBeadSource) Close(_ context.Context, id string, reason string) erro
 func (m *mockBeadSource) Update(_ context.Context, id, status string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.updateErrs != nil {
+		if err, ok := m.updateErrs[id]; ok {
+			return err
+		}
+	}
 	if m.updated == nil {
 		m.updated = make(map[string]string)
 	}
@@ -178,7 +186,12 @@ func (m *mockBeadSource) HasChildren(_ context.Context, epicID string) (bool, er
 }
 
 func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.inProgressErr != nil {
+		return nil, m.inProgressErr
+	}
+	return m.inProgressBeads, nil
 }
 
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
@@ -12378,4 +12391,115 @@ func TestBuildRejectionMemoryContext_NoDuplicateInPrior(t *testing.T) {
 	if strings.Contains(priorSection, "second feedback") {
 		t.Errorf("prior section should not contain current feedback 'second feedback', got:\n%s", priorSection)
 	}
+}
+
+// TestDispatcher_ResetOrphanedBeads verifies startup crash recovery: any
+// in_progress beads are reset to open before the assign loop starts.
+func TestDispatcher_ResetOrphanedBeads(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("resets_all_in_progress_beads_to_open", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		beadSrc.inProgressBeads = []protocol.Bead{
+			{ID: "oro-x"},
+			{ID: "oro-y"},
+		}
+
+		d.resetOrphanedBeads(ctx)
+
+		beadSrc.mu.Lock()
+		updated := beadSrc.updated
+		beadSrc.mu.Unlock()
+
+		for _, id := range []string{"oro-x", "oro-y"} {
+			status, ok := updated[id]
+			if !ok {
+				t.Errorf("expected Update(%q, 'open') to be called, but it was not", id)
+				continue
+			}
+			if status != "open" {
+				t.Errorf("expected status 'open' for %q, got %q", id, status)
+			}
+		}
+	})
+
+	t.Run("in_progress_error_logs_startup_reset_list_failed_and_continues", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		beadSrc.inProgressErr = fmt.Errorf("bd not found")
+
+		d.resetOrphanedBeads(ctx)
+
+		// No Update() calls should have been made.
+		beadSrc.mu.Lock()
+		updated := beadSrc.updated
+		beadSrc.mu.Unlock()
+		if len(updated) > 0 {
+			t.Errorf("expected no Update() calls, got %v", updated)
+		}
+
+		// The startup_reset_list_failed event must be logged.
+		rows, queryErr := d.db.QueryContext(ctx, `SELECT type FROM events WHERE type='startup_reset_list_failed'`)
+		if queryErr != nil {
+			t.Fatalf("query events: %v", queryErr)
+		}
+		defer func() { _ = rows.Close() }()
+		if !rows.Next() {
+			t.Error("expected 'startup_reset_list_failed' event to be logged")
+		}
+	})
+
+	t.Run("per_bead_update_error_logs_startup_reset_bead_failed_and_continues", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		beadSrc.inProgressBeads = []protocol.Bead{
+			{ID: "oro-x"},
+			{ID: "oro-y"},
+		}
+		beadSrc.updateErrs = map[string]error{
+			"oro-x": fmt.Errorf("bd update failed"),
+		}
+
+		d.resetOrphanedBeads(ctx)
+
+		// oro-y must still be updated despite oro-x error.
+		beadSrc.mu.Lock()
+		updated := beadSrc.updated
+		beadSrc.mu.Unlock()
+		if updated["oro-y"] != "open" {
+			t.Errorf("expected oro-y to be updated to 'open', got %q", updated["oro-y"])
+		}
+
+		// The startup_reset_bead_failed event must be logged for oro-x.
+		rows, queryErr := d.db.QueryContext(ctx, `SELECT bead_id FROM events WHERE type='startup_reset_bead_failed'`)
+		if queryErr != nil {
+			t.Fatalf("query events: %v", queryErr)
+		}
+		defer func() { _ = rows.Close() }()
+		found := false
+		for rows.Next() {
+			var beadID string
+			if scanErr := rows.Scan(&beadID); scanErr != nil {
+				t.Fatalf("scan: %v", scanErr)
+			}
+			if beadID == "oro-x" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("expected 'startup_reset_bead_failed' event for 'oro-x' to be logged")
+		}
+	})
+
+	t.Run("no_in_progress_beads_is_noop", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		// Default: inProgressBeads is nil → InProgress returns nil.
+
+		d.resetOrphanedBeads(ctx)
+
+		beadSrc.mu.Lock()
+		updated := beadSrc.updated
+		beadSrc.mu.Unlock()
+		if len(updated) > 0 {
+			t.Errorf("expected no Update() calls for empty InProgress, got %v", updated)
+		}
+	})
 }

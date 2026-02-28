@@ -497,6 +497,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		return fmt.Errorf("restore state: %w", err)
 	}
 
+	// Reset any in_progress beads left over from a previous crash so they
+	// become re-assignable. Non-fatal: errors are logged and startup continues.
+	d.resetOrphanedBeads(ctx)
+
 	// Clean up stale socket from a previous crash (if any). If another
 	// dispatcher is actively listening, this returns an error so we don't
 	// clobber it.
@@ -3386,6 +3390,23 @@ func (d *Dispatcher) persistBeadCount(ctx context.Context, beadID, column string
 	if err != nil {
 		_ = d.logEvent(ctx, "persist_count_failed", "dispatcher", beadID, "",
 			fmt.Sprintf(`{"column":%q,"value":%d,"error":%q}`, column, value, err.Error()))
+	}
+}
+
+// resetOrphanedBeads resets any in_progress beads back to open on startup.
+// This handles crash recovery: if the dispatcher crashed while beads were
+// in_progress, they would remain stuck in that state without this reset.
+// Errors are non-fatal — logged via logEvent and startup continues.
+func (d *Dispatcher) resetOrphanedBeads(ctx context.Context) {
+	beads, err := d.beads.InProgress(ctx)
+	if err != nil {
+		_ = d.logEvent(ctx, "startup_reset_list_failed", "dispatcher", "", "", err.Error())
+		return
+	}
+	for _, b := range beads {
+		if updateErr := d.beads.Update(ctx, b.ID, "open"); updateErr != nil {
+			_ = d.logEvent(ctx, "startup_reset_bead_failed", "dispatcher", b.ID, "", updateErr.Error())
+		}
 	}
 }
 
