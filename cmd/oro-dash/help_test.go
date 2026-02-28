@@ -261,6 +261,54 @@ func TestHelpContentSearch(t *testing.T) {
 	}
 }
 
+// TestHelpBindings_AllKeysPresent verifies that all functional key bindings are
+// documented in the help overlay for BoardView, ListView, and DetailView.
+func TestHelpBindings_AllKeysPresent(t *testing.T) {
+	// helper: build key → desc map from a slice of bindings.
+	keyMap := func(bindings []helpBinding) map[string]string {
+		m := make(map[string]string, len(bindings))
+		for _, b := range bindings {
+			m[b.key] = b.desc
+		}
+		return m
+	}
+
+	// helper: assert a binding exists and its description contains a substring.
+	assertBinding := func(t *testing.T, bm map[string]string, view, key, wantSubstr string) {
+		t.Helper()
+		desc, ok := bm[key]
+		if !ok {
+			t.Errorf("%s help missing key %q", view, key)
+			return
+		}
+		if !strings.Contains(strings.ToLower(desc), strings.ToLower(wantSubstr)) {
+			t.Errorf("%s help key %q desc = %q, want it to contain %q", view, key, desc, wantSubstr)
+		}
+	}
+
+	t.Run("BoardView", func(t *testing.T) {
+		bm := keyMap(getBoardHelpBindings())
+		assertBinding(t, bm, "BoardView", "s", "status")
+		assertBinding(t, bm, "BoardView", "m", "load")
+		assertBinding(t, bm, "BoardView", "</>", "resize")
+	})
+
+	t.Run("ListView", func(t *testing.T) {
+		bm := keyMap(getListViewHelpBindings())
+		assertBinding(t, bm, "ListView", "s", "status")
+		assertBinding(t, bm, "ListView", "m", "load")
+		assertBinding(t, bm, "ListView", "</>", "resize")
+		assertBinding(t, bm, "ListView", "i", "insights")
+	})
+
+	t.Run("DetailView", func(t *testing.T) {
+		bm := keyMap(getDetailHelpBindings())
+		assertBinding(t, bm, "DetailView", "j/k", "scroll")
+		assertBinding(t, bm, "DetailView", "enter", "dep")
+		assertBinding(t, bm, "DetailView", "</>", "resize")
+	})
+}
+
 // TestHelpRendersWithoutCrashing verifies help view renders successfully.
 func TestHelpRendersWithoutCrashing(t *testing.T) {
 	m := newModel()
