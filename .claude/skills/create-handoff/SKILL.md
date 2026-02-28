@@ -161,12 +161,30 @@ This feeds into knowledge.jsonl and gets resurfaced in future sessions. Examples
 - "LEARNED: modernc sqlite doesn't support FTS5 bm25() — use rank column instead"
 - "LEARNED: git rebase fails if branch is checked out in any worktree — remove worktree first"
 
-### 6. Write Sentinel File
+### 6. Write Context Summary
 
-After writing the handoff YAML, write the sentinel file so the dispatcher detects the handoff:
+**Before** touching `.oro/handoff_done`, write a compact context summary so the dispatcher can embed it in the continuation bead description. Without this file, continuation beads have no context and workers must start blind.
+
+Use the `goal:` and `now:` values from your handoff YAML:
 
 ```bash
-mkdir -p .oro && touch .oro/handoff_done
+python3 ~/.oro/hooks/write_context_summary.py \
+  --goal "<goal value from your handoff YAML>" \
+  --now "<now value from your handoff YAML>"
+```
+
+This writes `.oro/context_summary.txt` relative to the current worktree root. The dispatcher reads this file in `handleHandoffExhaustion()` (`pkg/worker/worker.go`) to populate `ContextSummary` in the continuation bead.
+
+**Edges:**
+- `.oro/` does not exist → the script creates it automatically
+- `context_summary.txt` already exists → it will be overwritten
+
+### 7. Write Sentinel File
+
+After writing the context summary, write the sentinel file so the dispatcher detects the handoff:
+
+```bash
+touch .oro/handoff_done
 ```
 
 This file signals to the dispatcher that the handoff document is complete and the worker is ready to be cycled.
