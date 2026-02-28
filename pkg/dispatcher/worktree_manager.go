@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,24 +43,27 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
 		"worktree", "add", path, "-b", branch, "main",
 	)
-	if err != nil {
-		// If the branch already exists from a previous crashed run,
-		// prune stale worktree state and delete the branch, then retry once.
-		if strings.Contains(err.Error(), "already exists") {
-			g.pruneStale(ctx, path, branch)
+	if err == nil {
+		g.stageAssets(ctx, path)
+		return path, branch, nil
+	}
 
-			_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
-				"worktree", "add", path, "-b", branch, "main",
-			)
-			if err != nil {
-				return "", "", fmt.Errorf("worktree add %s (after prune): %w", beadID, err)
-			}
-			g.stageAssets(ctx, path)
-			return path, branch, nil
-		}
+	// Non-recoverable error — fail immediately.
+	if !strings.Contains(err.Error(), "already exists") {
 		return "", "", fmt.Errorf("worktree add %s: %w", beadID, err)
 	}
 
+	// Branch already exists from a previous crashed run: prune stale state and retry once.
+	if pruneErr := g.pruneStale(ctx, path, branch); pruneErr != nil {
+		slog.WarnContext(ctx, "worktree_create_prune_failed", "error", pruneErr.Error())
+	}
+
+	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
+		"worktree", "add", path, "-b", branch, "main",
+	)
+	if err != nil {
+		return "", "", fmt.Errorf("worktree add %s (after prune): %w", beadID, err)
+	}
 	g.stageAssets(ctx, path)
 	return path, branch, nil
 }
@@ -75,13 +79,22 @@ func (g *GitWorktreeManager) stageAssets(ctx context.Context, path string) {
 // pruneStale cleans up a stale worktree and branch left by a previous crash.
 // It force-removes the worktree directory first (handles locked worktrees),
 // then prunes stale git metadata, then deletes the branch.
-func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string) {
+// Returns the first non-nil error from any git step; all steps still run.
+func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string) error {
+	var firstErr error
 	// Force-remove worktree reference (handles locked or stale worktrees).
-	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "remove", path, "--force")
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "remove", path, "--force"); err != nil {
+		firstErr = err
+	}
 	// Prune stale worktree metadata from git's internal tracking.
-	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune")
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune"); err != nil && firstErr == nil {
+		firstErr = err
+	}
 	// Delete the stale branch now that it's no longer checked out.
-	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-D", branch)
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-D", branch); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // Remove runs `git worktree remove <path> --force`.

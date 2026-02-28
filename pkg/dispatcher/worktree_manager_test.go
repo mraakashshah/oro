@@ -1,8 +1,10 @@
 package dispatcher //nolint:testpackage // white-box tests for worktree manager
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -827,4 +829,96 @@ func TestGitWorktreeManager_Create_StageAssetsFailureNonFatal(t *testing.T) {
 	if path == "" || branch == "" {
 		t.Fatal("path and branch should be non-empty")
 	}
+}
+
+// TestPruneStaleReturnsFirstError verifies:
+//  1. pruneStale returns the first non-nil error from any git step.
+//  2. Create() logs a worktree_create_prune_failed slog event when pruneStale
+//     returns non-nil, and still retries (does not abort).
+func TestPruneStaleReturnsFirstError(t *testing.T) {
+	// Subtest 1: first step (worktree remove) fails → that error is returned.
+	t.Run("worktree_remove_fails_returns_error", func(t *testing.T) {
+		callCount := 0
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				callCount++
+				if callCount == 1 {
+					return nil, fmt.Errorf("fatal: worktree is locked")
+				}
+				return nil, nil
+			},
+		}
+		mgr := NewGitWorktreeManager("/repo/root", runner)
+		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err")
+		if err == nil {
+			t.Fatal("expected pruneStale to return error when worktree remove fails")
+		}
+		if !strings.Contains(err.Error(), "worktree is locked") {
+			t.Fatalf("expected error to contain 'worktree is locked', got: %v", err)
+		}
+	})
+
+	// Subtest 2: only the third step (branch -D) fails → that error is returned.
+	t.Run("branch_delete_fails_returns_error", func(t *testing.T) {
+		callCount := 0
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				callCount++
+				if callCount == 3 { // worktree remove=1, prune=2, branch -D=3
+					return nil, fmt.Errorf("error: branch not yet merged")
+				}
+				return nil, nil
+			},
+		}
+		mgr := NewGitWorktreeManager("/repo/root", runner)
+		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err")
+		if err == nil {
+			t.Fatal("expected pruneStale to return error when branch -D fails")
+		}
+		if !strings.Contains(err.Error(), "branch not yet merged") {
+			t.Fatalf("expected error about 'branch not yet merged', got: %v", err)
+		}
+	})
+
+	// Subtest 3: Create() logs worktree_create_prune_failed and still retries.
+	t.Run("create_logs_event_and_retries_on_prune_failure", func(t *testing.T) {
+		// Redirect slog default logger to capture output.
+		var logBuf bytes.Buffer
+		h := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
+		origLogger := slog.Default()
+		slog.SetDefault(slog.New(h))
+		defer slog.SetDefault(origLogger)
+
+		callCount := 0
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				callCount++
+				// Call 1: initial git worktree add → fails with "already exists"
+				if callCount == 1 {
+					return nil, fmt.Errorf("fatal: a branch named 'agent/retry-bead' already exists")
+				}
+				// Call 2: git worktree remove (pruneStale step 1) → fails
+				if callCount == 2 {
+					return nil, fmt.Errorf("fatal: worktree is locked")
+				}
+				// Calls 3+ (prune, branch -D, retry add, stage-assets) → succeed
+				return nil, nil
+			},
+		}
+		mgr := NewGitWorktreeManager("/repo/root", runner)
+		_, _, err := mgr.Create(context.Background(), "retry-bead")
+		if err != nil {
+			t.Fatalf("Create should succeed after prune failure (retry works): %v", err)
+		}
+
+		// Verify the worktree_create_prune_failed event was logged.
+		if !strings.Contains(logBuf.String(), "worktree_create_prune_failed") {
+			t.Fatalf("expected worktree_create_prune_failed to be logged, got: %q", logBuf.String())
+		}
+
+		// Verify retry still executed (6 total calls: initial add, 3 prune steps, retry add, stage-assets).
+		if callCount != 6 {
+			t.Fatalf("expected 6 total calls (retry ran), got %d", callCount)
+		}
+	})
 }
