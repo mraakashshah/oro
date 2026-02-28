@@ -1602,9 +1602,9 @@ func TestModel_InitialLoadState(t *testing.T) {
 			t.Errorf("View() after beadsMsg should contain bead ID, got: %s", view)
 		}
 
-		// Board structure should be present (column headers)
-		if !strings.Contains(view, "Ready") {
-			t.Errorf("View() after beadsMsg should contain board structure, got: %s", view)
+		// List structure should be present (group headers)
+		if !strings.Contains(view, "Open (") {
+			t.Errorf("View() after beadsMsg should contain list structure, got: %s", view)
 		}
 	})
 

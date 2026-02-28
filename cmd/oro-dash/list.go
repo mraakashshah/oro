@@ -70,7 +70,7 @@ func (lm ListModel) resize(width, height int) ListModel {
 
 // listRenderOrder returns the canonical order for status groups.
 func listRenderOrder() []string {
-	return []string{"in_progress", "open", "blocked", "closed"}
+	return []string{"open", "closed"}
 }
 
 // flatRows returns the visible rows: headers + bead rows for expanded groups.
@@ -448,30 +448,39 @@ func topoSortBeads(beads []protocol.Bead) []protocol.Bead {
 	return result
 }
 
-// groupBeads groups beads by status, sorts each group by priority (ascending),
-// and caps the "closed" group at 10.
+// groupBeads groups beads into two buckets:
+//   - "open": in_progress, open, blocked, and any unknown status — sorted by priority ascending.
+//   - "closed": closed beads — sorted by UpdatedAt descending (newest first).
 func groupBeads(beads []protocol.Bead) map[string][]protocol.Bead {
 	groups := map[string][]protocol.Bead{
-		"in_progress": {},
-		"open":        {},
-		"blocked":     {},
-		"closed":      {},
+		"open":   {},
+		"closed": {},
 	}
 	for _, b := range beads {
-		status := b.Status
-		if _, ok := groups[status]; !ok {
-			status = "open"
+		if b.Status == "closed" {
+			groups["closed"] = append(groups["closed"], b)
+		} else {
+			groups["open"] = append(groups["open"], b)
 		}
-		groups[status] = append(groups[status], b)
 	}
 
-	// Sort each group by priority ascending (0 = most critical).
-	for status, group := range groups {
-		slices.SortStableFunc(group, func(a, b protocol.Bead) int {
-			return a.Priority - b.Priority
-		})
-		groups[status] = group
-	}
+	// Sort open by priority ascending (P0 = most critical).
+	slices.SortStableFunc(groups["open"], func(a, b protocol.Bead) int {
+		return a.Priority - b.Priority
+	})
+
+	// Sort closed by UpdatedAt descending (newest first).
+	slices.SortStableFunc(groups["closed"], func(a, b protocol.Bead) int {
+		ta := parseBeadTime(a.UpdatedAt)
+		tb := parseBeadTime(b.UpdatedAt)
+		if ta.After(tb) {
+			return -1
+		}
+		if tb.After(ta) {
+			return 1
+		}
+		return 0
+	})
 
 	return groups
 }
@@ -489,13 +498,11 @@ func (lm ListModel) renderHeaderRow(status string, count int, active bool, style
 	return header
 }
 
-// renderGroupHeader renders a group header like "In Progress (3)".
+// renderGroupHeader renders a group header like "Open (3)".
 func renderGroupHeader(status string, count int, styles Styles) string {
 	labels := map[string]string{
-		"in_progress": "In Progress",
-		"open":        "Ready",
-		"blocked":     "Blocked",
-		"closed":      "Done",
+		"open":   "Open",
+		"closed": "Closed",
 	}
 	label := labels[status]
 	if label == "" {

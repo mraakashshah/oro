@@ -1,15 +1,15 @@
- ▼  In Progress (2)                                                                                                     
-  ⚠ [P0] oro-ip.2  Fix login timeout                                                                                    
-  □ [P1] oro-ip.1  Refactor auth module                                                                                 
+ ▶  Open (5)                                                                                                            
                                                                                                                         
-▶  Ready (2)                                                                                                            
-                                                                                                                        
-▼  Blocked (1)                                                                                                          
-  □ [P1] oro-bl.1  Blocked on infra                                                                                     
-                                                                                                                        
-▼  Done (2)                                                                                                             
+▼  Closed (2)                                                                                                           
   □ [P2] oro-cl.1  Setup CI pipeline                                                                                    
   □ [P3] oro-cl.2  Initial scaffolding                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
