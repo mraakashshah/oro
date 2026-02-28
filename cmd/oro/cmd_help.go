@@ -13,6 +13,7 @@ Lifecycle:
   init       Bootstrap dependencies and generate config
   setup      User-friendly project setup with prereq checks and health verification
   start      Launch the swarm (tmux + dispatcher + workers)
+  attach     Connect to a running swarm session
   stop       Graceful shutdown
   cleanup    Clean all stale state after a crash
 
