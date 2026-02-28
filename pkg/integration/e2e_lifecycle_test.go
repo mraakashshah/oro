@@ -62,6 +62,10 @@ func (m *trackingBeadSource) HasChildren(_ context.Context, _ string) (bool, err
 	return false, nil
 }
 
+func (m *trackingBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) {
+	return nil, nil
+}
+
 func (m *trackingBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

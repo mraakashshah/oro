@@ -1160,6 +1160,87 @@ func TestCLIBeadSource_Update(t *testing.T) {
 	})
 }
 
+func TestCLIBeadSource_InProgress(t *testing.T) {
+	t.Run("shells_out_to_bd_list_status_in_progress_json", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "oro-1", Title: "Work in progress", Priority: 1},
+			{ID: "oro-2", Title: "Another active bead", Priority: 2},
+		}
+		data, err := json.Marshal(beads)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		runner := &mockCommandRunner{output: data}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.InProgress(context.Background())
+		if err != nil {
+			t.Fatalf("InProgress: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("expected 2 beads, got %d", len(got))
+		}
+		if got[0].ID != "oro-1" {
+			t.Errorf("bead[0].ID: got %q, want %q", got[0].ID, "oro-1")
+		}
+		if got[1].Title != "Another active bead" {
+			t.Errorf("bead[1].Title: got %q, want %q", got[1].Title, "Another active bead")
+		}
+
+		// Verify the correct command was called.
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "list") {
+			t.Errorf("expected 'list' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--status=in_progress") {
+			t.Errorf("expected '--status=in_progress' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--json") {
+			t.Errorf("expected '--json' in args, got %v", call.Args)
+		}
+	})
+
+	t.Run("empty_json_array_returns_nil_slice", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("[]")}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.InProgress(context.Background())
+		if err != nil {
+			t.Fatalf("InProgress: %v", err)
+		}
+		if got != nil {
+			t.Errorf("InProgress: got %v, want nil slice for empty JSON array", got)
+		}
+	})
+
+	t.Run("command_error_wrapped_and_returned", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("bd not found")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.InProgress(context.Background())
+		if err == nil {
+			t.Fatal("expected error from InProgress when command fails")
+		}
+	})
+
+	t.Run("invalid_json_returns_error", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("not json")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.InProgress(context.Background())
+		if err == nil {
+			t.Fatal("expected error from InProgress when output is invalid JSON")
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {

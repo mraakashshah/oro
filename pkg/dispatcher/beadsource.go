@@ -39,6 +39,24 @@ func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
 	return beads, nil
 }
 
+// InProgress runs `bd list --status=in_progress --json` and parses the output into a slice of Bead.
+// Returns nil slice (not empty slice) when bd reports no in-progress beads.
+func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error) {
+	out, err := s.runner.Run(ctx, "bd", "list", "--status=in_progress", "--json")
+	if err != nil {
+		return nil, fmt.Errorf("bd list --status=in_progress: %w", err)
+	}
+
+	var beads []protocol.Bead
+	if err := json.Unmarshal(out, &beads); err != nil {
+		return nil, fmt.Errorf("parse bd list output: %w", err)
+	}
+	if len(beads) == 0 {
+		return nil, nil
+	}
+	return beads, nil
+}
+
 // Show runs `bd show <id> --json` and parses the output into a BeadDetail.
 func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
 	out, err := s.runner.Run(ctx, "bd", "show", id, "--json")

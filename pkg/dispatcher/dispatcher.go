@@ -63,6 +63,7 @@ const statusThrottleWindow = 5 * time.Second
 // BeadSource provides ready work items. Production impl shells out to `bd ready`.
 type BeadSource interface {
 	Ready(ctx context.Context) ([]protocol.Bead, error)
+	InProgress(ctx context.Context) ([]protocol.Bead, error)
 	Show(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	Close(ctx context.Context, id string, reason string) error
 	Create(ctx context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error)

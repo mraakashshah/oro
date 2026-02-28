@@ -68,6 +68,10 @@ func (m *mockBeadSource) HasChildren(_ context.Context, _ string) (bool, error) 
 	return false, nil
 }
 
+func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) {
+	return nil, nil
+}
+
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
