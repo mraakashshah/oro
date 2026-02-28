@@ -2596,3 +2596,99 @@ func TestGetRejections(t *testing.T) {
 		t.Errorf("expected 0 rejections for unknown bead, got %d", len(empty))
 	}
 }
+
+// TestGetRejectionsAfterMigration verifies assertions (4) and (5) from oro-jwwt.1:
+// (4) MigrateRejectionHistory backfills rejection_history from memories WHERE
+// content LIKE 'Reviewer rejected this bead: %', then deletes those rows from
+// memories. (5) After migration, List returns zero rejection entries.
+func TestGetRejectionsAfterMigration(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Seed old-style rejection entries directly into memories,
+	// simulating rows created before rejection_history existed.
+	seeds := []struct {
+		beadID  string
+		content string
+	}{
+		{"oro-mig-bead", "Reviewer rejected this bead: needs more tests"},
+		{"oro-mig-bead", "Reviewer rejected this bead: wrong implementation"},
+		{"oro-mig-other", "Reviewer rejected this bead: missing edge cases"},
+	}
+	for _, s := range seeds {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, source, bead_id, confidence, tags) VALUES (?, 'lesson', 'self_report', ?, 0.8, '[]')`,
+			s.content, s.beadID,
+		); err != nil {
+			t.Fatalf("seed memories: %v", err)
+		}
+	}
+
+	// Confirm seed: memories table has the rejection rows.
+	var preMigCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE content LIKE 'Reviewer rejected this bead: %'`,
+	).Scan(&preMigCount); err != nil {
+		t.Fatalf("pre-migration count: %v", err)
+	}
+	if preMigCount != 3 {
+		t.Fatalf("expected 3 seeded rows in memories, got %d", preMigCount)
+	}
+
+	// Run migration (assertion 4).
+	if _, err := db.ExecContext(ctx, protocol.MigrateRejectionHistory); err != nil {
+		t.Fatalf("MigrateRejectionHistory: %v", err)
+	}
+
+	// (4a) rejection_history must contain the backfilled entries.
+	var histCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM rejection_history`,
+	).Scan(&histCount); err != nil {
+		t.Fatalf("query rejection_history count: %v", err)
+	}
+	if histCount != 3 {
+		t.Errorf("expected 3 entries in rejection_history after migration, got %d", histCount)
+	}
+
+	// (4b) memories table must have zero 'Reviewer rejected' rows (assertion 4).
+	var postMigCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE content LIKE 'Reviewer rejected%'`,
+	).Scan(&postMigCount); err != nil {
+		t.Fatalf("post-migration memories count: %v", err)
+	}
+	if postMigCount != 0 {
+		t.Errorf("expected 0 rejection entries in memories after migration, got %d", postMigCount)
+	}
+
+	// GetRejections returns the migrated entries for each bead.
+	rejections, err := store.GetRejections(ctx, "oro-mig-bead")
+	if err != nil {
+		t.Fatalf("GetRejections: %v", err)
+	}
+	if len(rejections) != 2 {
+		t.Errorf("expected 2 rejections for oro-mig-bead, got %d", len(rejections))
+	}
+	for _, r := range rejections {
+		if r.Feedback == "" {
+			t.Error("expected non-empty Feedback after migration")
+		}
+		// Feedback must NOT retain the "Reviewer rejected this bead: " prefix.
+		if strings.HasPrefix(r.Feedback, "Reviewer rejected") {
+			t.Errorf("feedback should not contain prefix after migration, got %q", r.Feedback)
+		}
+	}
+
+	// (5) List returns zero rejection entries after migration.
+	all, err := store.List(ctx, ListOpts{Limit: 200})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, m := range all {
+		if strings.HasPrefix(m.Content, "Reviewer rejected") {
+			t.Errorf("List returned rejection entry that should have been migrated: %q", m.Content)
+		}
+	}
+}
