@@ -40,6 +40,7 @@ const (
 	OpsDiagnosis  Type = "diagnosis"
 	OpsEscalation Type = "escalation"
 	OpsEpicFix    Type = "epic_fix" // spawned when epic acceptance test fails
+	OpsWriteAC    Type = "write_ac"
 )
 
 // Model returns the preferred Claude model for this ops type.
@@ -49,11 +50,23 @@ func (t Type) Model() string {
 		return "opus" // judgment-heavy
 	case OpsReview:
 		return "opus" // full code review requires judgment
+	case OpsWriteAC:
+		return "opus" // acceptance-criteria writing requires careful reasoning
 	case OpsEscalation:
 		return "sonnet" // one-shot triage is fast, not judgment-heavy
 	default:
 		return "sonnet"
 	}
+}
+
+// Timeout returns the per-type process timeout. Returns 0 for all types except
+// OpsWriteAC, which needs 10 minutes for careful acceptance-criteria generation.
+// When 0, the Spawner falls back to its default timeout.
+func (t Type) Timeout() time.Duration {
+	if t == OpsWriteAC {
+		return 10 * time.Minute
+	}
+	return 0
 }
 
 // Verdict is the outcome of an ops agent run.
@@ -117,6 +130,14 @@ type DiagOpts struct {
 	Symptom  string
 }
 
+// WriteACOpts configures an acceptance-criteria writing agent.
+type WriteACOpts struct {
+	BeadID          string
+	BeadTitle       string
+	BeadDescription string
+	Workdir         string
+}
+
 // EpicFixOpts configures an epic acceptance-failure diagnostic agent.
 type EpicFixOpts struct {
 	EpicID string // the parent epic whose acceptance test failed
@@ -178,6 +199,14 @@ func (s *Spawner) DiagnoseEpicFailure(ctx context.Context, opts EpicFixOpts) <-c
 func (s *Spawner) Escalate(ctx context.Context, opts EscalationOpts) <-chan Result {
 	prompt := buildEscalationPrompt(opts)
 	return s.run(ctx, OpsEscalation, opts.BeadID, opts.Workdir, prompt)
+}
+
+// WriteAC spawns an agent that writes acceptance criteria for a bead.
+//
+//oro:testonly — wired into production by dispatcher (OpsWriteAC escalation path)
+func (s *Spawner) WriteAC(ctx context.Context, opts WriteACOpts) <-chan Result {
+	prompt := buildWriteACPrompt(opts)
+	return s.run(ctx, OpsWriteAC, opts.BeadID, opts.Workdir, prompt)
 }
 
 // Cancel kills a running ops agent by task ID.
@@ -288,7 +317,12 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 		done <- proc.Wait()
 	}()
 
-	timer := time.NewTimer(s.timeout)
+	timeout := s.timeout
+	if t := opsType.Timeout(); t > 0 {
+		timeout = t
+	}
+
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	select {
@@ -300,7 +334,7 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 			Type:    opsType,
 			BeadID:  beadID,
 			Verdict: VerdictFailed,
-			Err:     fmt.Errorf("ops: process exceeded %v timeout", s.timeout),
+			Err:     fmt.Errorf("ops: process exceeded %v timeout", timeout),
 		}
 		return false, nil
 	case <-ctx.Done():

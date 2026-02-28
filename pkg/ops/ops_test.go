@@ -694,6 +694,45 @@ func findSubstring(s, sub string) bool {
 	return false
 }
 
+func TestOpsWriteAC(t *testing.T) {
+	// Verify OpsWriteAC.Model() returns "opus"
+	if OpsWriteAC.Model() != "opus" {
+		t.Fatalf("OpsWriteAC.Model() = %q, want %q", OpsWriteAC.Model(), "opus")
+	}
+
+	// Verify OpsWriteAC.Timeout() returns 10*time.Minute
+	if OpsWriteAC.Timeout() != 10*time.Minute {
+		t.Fatalf("OpsWriteAC.Timeout() = %v, want %v", OpsWriteAC.Timeout(), 10*time.Minute)
+	}
+
+	// Verify OpsReview.Timeout() returns 0 (no per-type timeout)
+	if OpsReview.Timeout() != 0 {
+		t.Fatalf("OpsReview.Timeout() = %v, want 0", OpsReview.Timeout())
+	}
+
+	// Verify WriteAC spawns with model "opus"
+	proc := newReadyMockProcess("", nil)
+	mock := &mockBatchSpawner{process: proc}
+	s := NewSpawner(mock)
+
+	ch := s.WriteAC(context.Background(), WriteACOpts{
+		BeadID:          "oro-wac",
+		BeadTitle:       "Test bead",
+		BeadDescription: "Test description",
+		Workdir:         "/tmp/wt",
+	})
+
+	waitResult(t, ch)
+
+	calls := mock.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 spawn call, got %d", len(calls))
+	}
+	if calls[0].model != "opus" {
+		t.Fatalf("WriteAC expected model %q, got %q", "opus", calls[0].model)
+	}
+}
+
 func TestMergePromptContainsBranch(t *testing.T) {
 	proc := newReadyMockProcess("", nil)
 	mock := &mockBatchSpawner{process: proc}
