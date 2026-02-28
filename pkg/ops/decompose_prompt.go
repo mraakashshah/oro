@@ -1,0 +1,53 @@
+package ops
+
+import (
+	"fmt"
+	"strings"
+)
+
+// BuildDecomposePrompt assembles the bead decomposition agent prompt from the
+// bead ID and quality gate output that triggered the decomposition request.
+func BuildDecomposePrompt(opts DecomposeOpts) string {
+	var b strings.Builder
+
+	b.WriteString("You are a bead decomposition agent. A bead has exhausted all worker retry attempts.\n\n")
+	b.WriteString("CRITICAL: Do NOT use TaskOutput or run tasks in the background.\n")
+	b.WriteString("Use the Read tool to check output files. Run all commands in foreground.\n\n")
+
+	fmt.Fprintf(&b, "## Bead\n")
+	fmt.Fprintf(&b, "Bead ID: %s\n\n", opts.BeadID)
+
+	if opts.QGOutput != "" {
+		b.WriteString("## Quality Gate Output\n")
+		b.WriteString(opts.QGOutput)
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString("## Steps\n")
+	fmt.Fprintf(&b, "1. Run `bd show %s` to read the full bead details and acceptance criteria.\n", opts.BeadID)
+	b.WriteString("2. Analyze why the bead is too large or ambiguous.\n")
+	b.WriteString("3. Create 2-4 smaller child beads with:\n")
+	fmt.Fprintf(&b, "   `bd create --parent %s --title \"...\" --type task --acceptance \"...\" --estimate <min>`\n", opts.BeadID)
+	fmt.Fprintf(&b, "4. Convert parent to epic: `bd update %s --type epic`\n", opts.BeadID)
+	b.WriteString("5. If all steps succeed, print exactly:\n")
+	b.WriteString("   VERDICT: resolved\n\n")
+	b.WriteString("   If unable to decompose, print:\n")
+	b.WriteString("   VERDICT: failed: <one-line reason>\n\n")
+
+	b.WriteString("## Constraint\n")
+	b.WriteString("Do not write code. Only create beads and update bead type.\n")
+
+	return b.String()
+}
+
+// parseDecomposeOutput extracts the VERDICT from decomposition agent output.
+func parseDecomposeOutput(stdout string) (verdict Verdict, feedback string) {
+	upper := strings.ToUpper(stdout)
+	if strings.Contains(upper, "VERDICT: RESOLVED") {
+		return VerdictResolved, extractFeedback(stdout, "VERDICT: RESOLVED")
+	}
+	if strings.Contains(upper, "VERDICT: FAILED") {
+		return VerdictFailed, extractFeedback(stdout, "VERDICT: FAILED")
+	}
+	return VerdictFailed, "no verdict in output"
+}

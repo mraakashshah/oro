@@ -41,6 +41,7 @@ const (
 	OpsEscalation Type = "escalation"
 	OpsEpicFix    Type = "epic_fix" // spawned when epic acceptance test fails
 	OpsWriteAC    Type = "write_ac"
+	OpsDecompose  Type = "decompose" // spawned when a bead exhausts all worker retry attempts
 )
 
 // Model returns the preferred Claude model for this ops type.
@@ -54,6 +55,8 @@ func (t Type) Model() string {
 		return "opus" // acceptance-criteria writing requires careful reasoning
 	case OpsEscalation:
 		return "sonnet" // one-shot triage is fast, not judgment-heavy
+	case OpsDecompose:
+		return "opus" // bead decomposition requires careful judgment
 	default:
 		return "sonnet"
 	}
@@ -138,6 +141,12 @@ type WriteACOpts struct {
 	Workdir         string
 }
 
+// DecomposeOpts configures a bead decomposition agent.
+type DecomposeOpts struct {
+	BeadID   string
+	QGOutput string // quality gate output that triggered decomposition
+}
+
 // EpicFixOpts configures an epic acceptance-failure diagnostic agent.
 type EpicFixOpts struct {
 	EpicID string // the parent epic whose acceptance test failed
@@ -207,6 +216,13 @@ func (s *Spawner) Escalate(ctx context.Context, opts EscalationOpts) <-chan Resu
 func (s *Spawner) WriteAC(ctx context.Context, opts WriteACOpts) <-chan Result {
 	prompt := buildWriteACPrompt(opts)
 	return s.run(ctx, OpsWriteAC, opts.BeadID, opts.Workdir, prompt)
+}
+
+// Decompose spawns a one-shot agent that decomposes a bead into smaller child
+// beads when a bead has exhausted all worker retry attempts.
+func (s *Spawner) Decompose(ctx context.Context, opts DecomposeOpts) <-chan Result {
+	prompt := BuildDecomposePrompt(opts)
+	return s.run(ctx, OpsDecompose, opts.BeadID, "", prompt)
 }
 
 // Cancel kills a running ops agent by task ID.
@@ -400,6 +416,8 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 		r.Feedback = stdout
 	case OpsEscalation:
 		r.Verdict, r.Feedback = parseEscalationOutput(stdout)
+	case OpsDecompose:
+		r.Verdict, r.Feedback = parseDecomposeOutput(stdout)
 	}
 
 	return r
