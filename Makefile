@@ -19,6 +19,7 @@ stage-assets:
 	@cp -r assets/beacons/* cmd/oro/_assets/beacons/ 2>/dev/null || true
 	@test -d assets/commands && cp -r assets/commands/* cmd/oro/_assets/commands/ 2>/dev/null || true
 	@test -f assets/CLAUDE.md && cp assets/CLAUDE.md cmd/oro/_assets/ || true
+	@test -f assets/thresholds.json && cp assets/thresholds.json cmd/oro/_assets/ || true
 	@test -f assets/.test-marker && cp assets/.test-marker cmd/oro/_assets/ || true
 	@echo "$(VERSION)" > cmd/oro/_assets/.version
 
@@ -44,6 +45,7 @@ dev-sync:
 	@cp -r assets/beacons/* ~/.oro/beacons/ && echo "  ✓ beacons"
 	@cp -r assets/commands/* ~/.oro/.claude/commands/ && echo "  ✓ commands"
 	@cp assets/CLAUDE.md ~/.oro/.claude/CLAUDE.md && echo "  ✓ CLAUDE.md"
+	@test -f assets/thresholds.json && cp assets/thresholds.json ~/.oro/thresholds.json && echo "  ✓ thresholds.json" || true
 	@echo "Sanity check..."
 	@test -f ~/.oro/hooks/enforce-skills.sh && echo "  ✓ ~/.oro/hooks/ ok" || (echo "  ✗ ~/.oro/hooks/ FAILED" && exit 1)
 	@test -d ~/.oro/.claude/skills/test-driven-development && echo "  ✓ ~/.oro/.claude/skills/ ok" || (echo "  ✗ ~/.oro/.claude/skills/ FAILED" && exit 1)

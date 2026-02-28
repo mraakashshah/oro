@@ -1555,3 +1555,53 @@ func TestExtractAssets_Additive(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractThresholdsJSON(t *testing.T) {
+	const wantJSON = `{ "opus": 65, "sonnet": 50, "haiku": 40 }`
+
+	t.Run("writes thresholds.json when absent", func(t *testing.T) {
+		dest := t.TempDir()
+		assets := fstest.MapFS{
+			"thresholds.json": &fstest.MapFile{Data: []byte(wantJSON)},
+		}
+		if err := extractThresholdsJSON(dest, assets, false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dest, "thresholds.json")) //nolint:gosec // test temp file
+		if err != nil {
+			t.Fatalf("thresholds.json not written: %v", err)
+		}
+		if string(got) != wantJSON {
+			t.Errorf("content mismatch: got %q, want %q", string(got), wantJSON)
+		}
+	})
+
+	t.Run("no overwrite when force=false and file exists", func(t *testing.T) {
+		dest := t.TempDir()
+		existing := []byte(`{"opus": 99}`)
+		if err := os.WriteFile(filepath.Join(dest, "thresholds.json"), existing, 0o644); err != nil { //nolint:gosec // test temp file
+			t.Fatalf("setup: %v", err)
+		}
+		assets := fstest.MapFS{
+			"thresholds.json": &fstest.MapFile{Data: []byte(wantJSON)},
+		}
+		if err := extractThresholdsJSON(dest, assets, false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got, _ := os.ReadFile(filepath.Join(dest, "thresholds.json")) //nolint:gosec // test temp file
+		if string(got) != string(existing) {
+			t.Errorf("file should not be overwritten: got %q, want %q", string(got), string(existing))
+		}
+	})
+
+	t.Run("absent from FS returns nil", func(t *testing.T) {
+		dest := t.TempDir()
+		assets := fstest.MapFS{} // no thresholds.json
+		if err := extractThresholdsJSON(dest, assets, false); err != nil {
+			t.Fatalf("expected nil error for absent file, got: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "thresholds.json")); err == nil {
+			t.Error("thresholds.json should not exist when absent from FS")
+		}
+	})
+}

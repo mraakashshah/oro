@@ -785,6 +785,24 @@ func extractAssetDir(srcFS fs.FS, srcDir, destBase, destDir string, force bool) 
 	})
 }
 
+// extractThresholdsJSON extracts thresholds.json from assets to dest/thresholds.json.
+// Skips writing if force is false and the file already exists.
+// Returns nil if thresholds.json is absent from the embedded FS (optional asset).
+func extractThresholdsJSON(dest string, assets fs.FS, force bool) error {
+	data, err := fs.ReadFile(assets, "thresholds.json")
+	if err != nil {
+		return nil //nolint:nilerr // thresholds.json is optional in assets
+	}
+	destPath := filepath.Join(dest, "thresholds.json")
+	if !force && fileExists(destPath) {
+		return nil
+	}
+	if err := os.WriteFile(destPath, data, 0o644); err != nil { //nolint:gosec // needs to be readable
+		return fmt.Errorf("write thresholds.json: %w", err)
+	}
+	return nil
+}
+
 // extractAssets walks the embedded FS and copies files to oroHome.
 // Directory mapping: skills → .claude/skills/, hooks → hooks/, beacons → beacons/,
 // commands → .claude/commands/, CLAUDE.md → .claude/CLAUDE.md.
@@ -793,6 +811,9 @@ func extractAssetDir(srcFS fs.FS, srcDir, destBase, destDir string, force bool) 
 // The version stamp is always written regardless of the force flag.
 func extractAssets(dest string, assets fs.FS, force bool) error {
 	if err := extractClaudeMD(dest, assets, force); err != nil {
+		return err
+	}
+	if err := extractThresholdsJSON(dest, assets, force); err != nil {
 		return err
 	}
 
