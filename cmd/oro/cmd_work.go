@@ -123,7 +123,7 @@ func newProductionDeps() (*workDeps, error) {
 	var codeIdx *codesearch.CodeIndex
 	if paths, pathsErr := ResolveProjectDBPaths(); pathsErr == nil {
 		if db, dbErr := openDB(paths.StateDBPath); dbErr == nil {
-			memStore = memory.NewStore(db)
+			memStore = openWorkerMemoryStore(db)
 		}
 		if idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath); idxErr == nil {
 			codeIdx = idx
@@ -367,11 +367,17 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		projectRoot = resolved
 	}
 
+	var memCtx string
+	if deps.memStore != nil {
+		memCtx, _ = memory.ForPrompt(ctx, deps.memStore, nil, cfg.bead.Title, 0)
+	}
+
 	prompt := worker.AssemblePrompt(worker.PromptParams{
 		BeadID:             cfg.beadID,
 		Title:              cfg.bead.Title,
 		Description:        cfg.bead.Description,
 		AcceptanceCriteria: cfg.bead.AcceptanceCriteria,
+		MemoryContext:      memCtx,
 		WorktreePath:       worktree,
 		Model:              model,
 		Attempt:            attempt,
@@ -393,7 +399,11 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		if logFile != nil {
 			writers = append(writers, logFile)
 		}
-		worker.DrainOutput(ctx, stdout, nil, cfg.beadID, writers...)
+		var memInserter worker.MemoryInserter
+		if deps.memStore != nil {
+			memInserter = deps.memStore
+		}
+		worker.DrainOutput(ctx, stdout, memInserter, cfg.beadID, writers...)
 	}
 
 	if err := proc.Wait(); err != nil {

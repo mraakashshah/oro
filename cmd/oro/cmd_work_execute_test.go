@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
@@ -452,4 +453,131 @@ func TestWorkWritesLogFile(t *testing.T) {
 	if !strings.Contains(logContent, "Spawning claude") {
 		t.Errorf("log file missing phase marker, got:\n%s", logContent)
 	}
+}
+
+// captureSpawner captures the prompt passed to Spawn and returns configurable stdout.
+type captureSpawner struct {
+	proc           worker.Process
+	capturedPrompt string
+	stdout         string
+}
+
+func (m *captureSpawner) Spawn(_ context.Context, _, prompt, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	m.capturedPrompt = prompt
+	return m.proc, io.NopCloser(strings.NewReader(m.stdout)), nil, nil
+}
+
+// TestSpawnAndWait_MemoryWired verifies that deps.memStore is wired into both
+// the prompt (via ForPrompt) and DrainOutput ([MEMORY] marker capture).
+func TestSpawnAndWait_MemoryWired(t *testing.T) {
+	t.Run("seeded memory appears in prompt", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		store := memory.NewStore(db)
+		ctx := context.Background()
+
+		// Seed a memory whose content contains both words from bead title "Test bead"
+		// so FTS5 search will return it.
+		_, err := store.Insert(ctx, memory.InsertParams{
+			Content:    "Test bead approach works well for automation",
+			Type:       "lesson",
+			Source:     "test",
+			Confidence: 0.9,
+		})
+		if err != nil {
+			t.Fatalf("seed memory: %v", err)
+		}
+
+		sp := &captureSpawner{proc: &mockProcess{}, stdout: ""}
+		deps := &workDeps{
+			beadSrc:    &mockBeadSource{showDetail: testBead()},
+			wtMgr:      &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"},
+			spawner:    sp,
+			merger:     &mockMerger{},
+			repoRoot:   "/tmp",
+			memStore:   store,
+			hasNewWork: func(_, _ string) bool { return false },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+			bead:       testBead(),
+		}
+
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait: %v", err)
+		}
+
+		if !strings.Contains(sp.capturedPrompt, "Test bead approach") {
+			t.Errorf("prompt does not contain seeded memory; prompt snippet: %q",
+				sp.capturedPrompt[:min(300, len(sp.capturedPrompt))])
+		}
+	})
+
+	t.Run("[MEMORY] marker in stdout captured to store", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		store := memory.NewStore(db)
+
+		marker := "[MEMORY] type=lesson tags=go: table tests are great"
+		sp := &captureSpawner{proc: &mockProcess{}, stdout: marker}
+		deps := &workDeps{
+			beadSrc:    &mockBeadSource{showDetail: testBead()},
+			wtMgr:      &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"},
+			spawner:    sp,
+			merger:     &mockMerger{},
+			repoRoot:   "/tmp",
+			memStore:   store,
+			hasNewWork: func(_, _ string) bool { return false },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+			bead:       testBead(),
+		}
+
+		if err := spawnAndWait(context.Background(), cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait: %v", err)
+		}
+
+		mems, listErr := store.List(context.Background(), memory.ListOpts{Limit: 10})
+		if listErr != nil {
+			t.Fatalf("store.List: %v", listErr)
+		}
+		if len(mems) != 1 {
+			t.Errorf("expected 1 captured memory, got %d", len(mems))
+		}
+		if len(mems) > 0 && !strings.Contains(mems[0].Content, "table tests are great") {
+			t.Errorf("captured memory content = %q, want to contain 'table tests are great'", mems[0].Content)
+		}
+	})
+
+	t.Run("nil memStore is safe", func(t *testing.T) {
+		sp := &captureSpawner{proc: &mockProcess{}, stdout: "[MEMORY] type=lesson: orphan marker"}
+		deps := &workDeps{
+			beadSrc:    &mockBeadSource{showDetail: testBead()},
+			wtMgr:      &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"},
+			spawner:    sp,
+			merger:     &mockMerger{},
+			repoRoot:   "/tmp",
+			memStore:   nil,
+			hasNewWork: func(_, _ string) bool { return false },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+			bead:       testBead(),
+		}
+
+		if err := spawnAndWait(context.Background(), cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+			t.Errorf("spawnAndWait with nil memStore should not error: %v", err)
+		}
+	})
 }
