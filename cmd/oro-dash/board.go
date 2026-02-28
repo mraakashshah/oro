@@ -255,7 +255,7 @@ func (bm BoardModel) renderCardHeader(b protocol.Bead, styles Styles) string {
 	priorityBadge := bm.renderPriorityBadge(b.Priority, styles)
 
 	// Type indicator icon
-	icon := typeIcon(b.Type)
+	icon := renderTreeTypeIcon(b.Type)
 
 	headerParts = append(headerParts, priorityBadge, icon, b.Title)
 

@@ -527,7 +527,7 @@ func renderGroupHeader(status string, count int, styles Styles) string {
 //   - <100: no worker info (list-only mode)
 //   - <80: truncate bead ID (first 5 chars + "...")
 func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string {
-	icon := typeIcon(b.Type)
+	icon := renderTreeTypeIcon(b.Type)
 	priority := renderTreePriorityBadge(b.Priority, styles)
 
 	// Truncate bead ID at narrow widths (<80).
@@ -669,9 +669,9 @@ func renderTreePriorityBadge(priority int, styles Styles) string {
 	}
 }
 
-// typeIcon returns a descriptive emoji icon for a bead type.
+// renderTreeTypeIcon returns the emoji icon for a bead type.
 // Used by both the list and board views.
-func typeIcon(beadType string) string {
+func renderTreeTypeIcon(beadType string) string {
 	switch beadType {
 	case "task":
 		return "📋"
@@ -680,8 +680,8 @@ func typeIcon(beadType string) string {
 	case "feature":
 		return "🪶"
 	case "epic":
-		return "👑"
+		return "🎯"
 	default:
-		return "•"
+		return ""
 	}
 }

@@ -188,7 +188,7 @@ func TestCardRendering_TypeIndicators(t *testing.T) {
 		"task":    "📋",
 		"bug":     "🐛",
 		"feature": "🪶",
-		"epic":    "👑",
+		"epic":    "🎯",
 	}
 
 	for beadType, indicator := range typeIndicators {
@@ -718,7 +718,7 @@ func TestBoardColumnHeadersVisible(t *testing.T) {
 	}
 }
 
-// TestTypeIcons verifies the shared typeIcon function returns the correct descriptive emoji.
+// TestTypeIcons verifies the shared renderTreeTypeIcon function returns the correct descriptive emoji.
 func TestTypeIcons(t *testing.T) {
 	cases := []struct {
 		beadType string
@@ -727,12 +727,12 @@ func TestTypeIcons(t *testing.T) {
 		{"bug", "🐛"},
 		{"feature", "🪶"},
 		{"task", "📋"},
-		{"epic", "👑"},
+		{"epic", "🎯"},
 	}
 	for _, tc := range cases {
-		got := typeIcon(tc.beadType)
+		got := renderTreeTypeIcon(tc.beadType)
 		if got != tc.want {
-			t.Errorf("typeIcon(%q) = %q, want %q", tc.beadType, got, tc.want)
+			t.Errorf("renderTreeTypeIcon(%q) = %q, want %q", tc.beadType, got, tc.want)
 		}
 	}
 }

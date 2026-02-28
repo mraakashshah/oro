@@ -1547,3 +1547,23 @@ func TestListModel_InitialCursorOnBead(t *testing.T) {
 		t.Error("cursorBeadID() returned empty string after updateBeads — cursor is on a group header, not a bead row")
 	}
 }
+
+// TestTypeIconEmoji verifies renderTreeTypeIcon returns the correct emoji per type.
+func TestTypeIconEmoji(t *testing.T) {
+	cases := []struct {
+		beadType string
+		want     string
+	}{
+		{"bug", "🐛"},
+		{"feature", "🪶"},
+		{"task", "📋"},
+		{"epic", "🎯"},
+		{"unknown", ""},
+	}
+	for _, tc := range cases {
+		got := renderTreeTypeIcon(tc.beadType)
+		if got != tc.want {
+			t.Errorf("renderTreeTypeIcon(%q) = %q, want %q", tc.beadType, got, tc.want)
+		}
+	}
+}
