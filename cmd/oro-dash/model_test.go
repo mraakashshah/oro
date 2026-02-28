@@ -2349,3 +2349,59 @@ func TestDetailViewKeys_ForwardToDetailModel(t *testing.T) {
 		}
 	})
 }
+
+// TestInsightsModelCached verifies that InsightsModel is cached on the Model struct and
+// rebuilt only when a beadsMsg arrives, not on every View() call.
+func TestInsightsModelCached(t *testing.T) {
+	beads := []protocol.Bead{
+		{ID: "b1", Status: "open", Title: "Bead 1"},
+		{ID: "b2", Status: "in_progress", Title: "Bead 2"},
+	}
+
+	m := newModel()
+
+	// (1) After beadsMsg, insightsModel is non-nil on Model struct.
+	result1, _ := m.Update(beadsMsg(beads))
+	m1, ok := result1.(Model)
+	if !ok {
+		t.Fatal("Update did not return Model")
+	}
+	if m1.insightsModel == nil {
+		t.Fatal("(1) insightsModel is nil after beadsMsg")
+	}
+
+	// (2) On second View() call insightsModel is the SAME pointer (not rebuilt).
+	// View() is a pure value-receiver; the cached field must not change between calls.
+	m1.activeView = InsightsView
+	ptr1 := m1.insightsModel
+	_ = m1.View()
+	ptr2 := m1.insightsModel
+	if ptr1 != ptr2 {
+		t.Error("(2) insightsModel pointer changed after View() call — View() must not rebuild it")
+	}
+
+	// (3) After a new beadsMsg the model is rebuilt (new pointer).
+	result2, _ := m1.Update(beadsMsg(beads))
+	m2, ok := result2.(Model)
+	if !ok {
+		t.Fatal("second Update did not return Model")
+	}
+	if m2.insightsModel == nil {
+		t.Fatal("(3) insightsModel is nil after second beadsMsg")
+	}
+	if m2.insightsModel == ptr1 {
+		t.Error("(3) insightsModel was NOT rebuilt after new beadsMsg — expected a fresh pointer")
+	}
+
+	// Phase2 results become non-nil within 600ms of first build.
+	deadline := time.Now().Add(600 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if m2.insightsModel.Phase2() != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if m2.insightsModel.Phase2() == nil {
+		t.Error("Phase2 results did not become non-nil within 600ms of insightsModel creation")
+	}
+}

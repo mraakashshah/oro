@@ -197,6 +197,10 @@ type Model struct {
 	// Detail view state
 	detailModel *DetailModel // Set when drilling down into a bead
 
+	// Insights view state — cached to avoid recomputing on every View() call.
+	// Rebuilt in applyBeadsMsg; nil until first beadsMsg arrives.
+	insightsModel *InsightsModel
+
 	// Search view state
 	searchInput         textinput.Model // Bubbles textinput for search query
 	searchSelectedIndex int             // Index of the selected search result
@@ -392,6 +396,7 @@ func (m Model) applyBeadsMsg(msg beadsMsg) Model {
 	m.closedCursor = oldestClosedAt([]protocol.Bead(msg))
 	m = m.clampCursor()
 	m.listModel = m.listModel.updateBeads(m.allBeads())
+	m.insightsModel = m.buildInsightsModel()
 	m = m.maybeRecordSample()
 	return m
 }
@@ -839,8 +844,11 @@ func (m Model) View() string {
 	case HelpView:
 		return m.renderHelpOverlay() + "\n" + statusBar
 	case InsightsView:
-		insights := m.buildInsightsModel()
-		return insights.Render(m.styles) + "\n" + statusBar
+		im := m.insightsModel
+		if im == nil {
+			im = m.buildInsightsModel()
+		}
+		return im.Render(m.styles) + "\n" + statusBar
 	case DetailView:
 		if m.detailModel != nil {
 			if m.width >= 100 {
