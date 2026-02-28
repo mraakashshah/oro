@@ -9,7 +9,7 @@ After compaction completes, this hook reads the saved state from
 ~/.oro/compaction-state/<session_id>.json and injects it as additionalContext
 so the post-compaction agent knows what was in progress.
 
-Input:  JSON with session_id, source ("compact")
+Input:  JSON with session_id, source ("compact"), optional role
 Output: JSON with additionalContext: "..."
 """
 
@@ -22,6 +22,29 @@ import subprocess
 import sys
 from pathlib import Path
 
+PANES_DIR = os.path.expanduser("~/.oro/panes")
+
+
+def _clear_debounce(role: str) -> None:
+    """Remove the debounce file for the given role."""
+    debounce_path = Path(PANES_DIR) / f"debounce_{role}"
+    with contextlib.suppress(OSError):
+        debounce_path.unlink()
+
+
+def _live_swarm_context() -> str:
+    """Return live swarm context from oro status, or empty string on failure."""
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        result = subprocess.run(
+            ["oro", "status"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        return result.stdout
+    return ""
+
 
 def main() -> None:
     """Main hook entry point."""
@@ -30,6 +53,16 @@ def main() -> None:
     except (json.JSONDecodeError, EOFError):
         print(json.dumps({}))
         return
+
+    role = input_data.get("role", "")
+    if role:
+        if not role.startswith("worker"):
+            # Non-worker role: inject live swarm context and return early.
+            context = _live_swarm_context()
+            print(json.dumps({"additionalContext": context}))
+            return
+        # Worker role: clear debounce file, then fall through to transcript path.
+        _clear_debounce(role)
 
     session_id = input_data.get("session_id", "")
     if not session_id:
