@@ -3605,20 +3605,12 @@ func (d *Dispatcher) cancelOpsAgents(ctx context.Context, beadID, workerID, reas
 }
 
 // handleQGExhausted handles the case when quality gate retries are exhausted.
-// It creates a P0 bug bead, completes the assignment, and escalates to the manager.
+// It releases the worker, cancels in-flight ops, marks the bead as exhausted,
+// then spawns a Decompose ops agent as a fallback. If Decompose succeeds
+// (VerdictResolved), no P0 bug is created. If it fails, handleQGExhaustedFallback
+// runs the existing P0 bug + EscStuck escalation path.
 func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
 	d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
-
-	// Create a P0 bug bead so the failure is tracked as actionable work.
-	p0Title := fmt.Sprintf("P0: QG exhausted for %s", beadID)
-	p0Desc := fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput)
-	newID, createErr := d.beads.Create(ctx, p0Title, "bug", 0, p0Desc, beadID, "")
-	if createErr != nil {
-		_ = d.logEvent(ctx, "p0_bead_create_failed", workerID, beadID, workerID, createErr.Error())
-	} else {
-		_ = d.logEvent(ctx, "p0_bead_created", workerID, beadID, workerID,
-			fmt.Sprintf(`{"new_bead_id":%q}`, newID))
-	}
 
 	_ = d.completeAssignment(ctx, beadID)
 
@@ -3636,11 +3628,6 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qg
 
 	// Cancel any in-flight ops agents for this bead to prevent stale escalations.
 	d.cancelOpsAgents(ctx, beadID, workerID, "qg_exhausted")
-
-	_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
-		fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
-	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
-		fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
 
 	// Release worker and mark bead as exhausted atomically.
 	// Worker must be released to prevent heartbeat/progress timeout from
@@ -3661,9 +3648,59 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qg
 	delete(d.escalatedBeads, beadID)
 	delete(d.worktreeFailures, beadID)
 	delete(d.assigningBeads, beadID)
-	// Set exhaustedBeads last, within same lock, to block re-assignment.
+	// Set exhaustedBeads before spawning goroutine to block re-assignment.
 	d.exhaustedBeads[beadID] = true
 	d.mu.Unlock()
+
+	// Spawn a Decompose agent as a fallback. On VerdictResolved, no P0 bug is
+	// created. On VerdictFailed (or error), the existing P0 + escalation path runs.
+	d.safeGo(func() {
+		ch := d.ops.Decompose(ctx, ops.DecomposeOpts{BeadID: beadID, QGOutput: qgOutput})
+		result := <-ch
+		d.handleDecomposeResult(ctx, workerID, beadID, result, qgOutput, attempt, qgErr)
+	})
+}
+
+// handleDecomposeResult processes the outcome of a Decompose ops agent.
+// On VerdictResolved, it logs success and returns without creating a P0 bug.
+// On VerdictFailed or error, it calls handleQGExhaustedFallback to run the
+// standard P0 bug + EscStuck escalation path.
+func (d *Dispatcher) handleDecomposeResult(ctx context.Context, workerID, beadID string, result ops.Result, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
+	if result.Err != nil {
+		_ = d.logEvent(ctx, "decompose_error", "ops", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, result.Err.Error()))
+		d.handleQGExhaustedFallback(ctx, workerID, beadID, qgOutput, attempt, qgErr)
+		return
+	}
+	if result.Verdict != ops.VerdictResolved {
+		_ = d.logEvent(ctx, "decompose_failed", "ops", beadID, workerID,
+			fmt.Sprintf(`{"verdict":%q,"feedback":%q}`, result.Verdict, result.Feedback))
+		d.handleQGExhaustedFallback(ctx, workerID, beadID, qgOutput, attempt, qgErr)
+		return
+	}
+	_ = d.logEvent(ctx, "decompose_resolved", "ops", beadID, workerID,
+		fmt.Sprintf(`{"feedback":%q}`, result.Feedback))
+}
+
+// handleQGExhaustedFallback creates a P0 bug bead and escalates to the manager.
+// Called when the Decompose agent fails or returns VerdictFailed after QG retries
+// are exhausted.
+func (d *Dispatcher) handleQGExhaustedFallback(ctx context.Context, workerID, beadID, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
+	// Create a P0 bug bead so the failure is tracked as actionable work.
+	p0Title := fmt.Sprintf("P0: QG exhausted for %s", beadID)
+	p0Desc := fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput)
+	newID, createErr := d.beads.Create(ctx, p0Title, "bug", 0, p0Desc, beadID, "")
+	if createErr != nil {
+		_ = d.logEvent(ctx, "p0_bead_create_failed", workerID, beadID, workerID, createErr.Error())
+	} else {
+		_ = d.logEvent(ctx, "p0_bead_created", workerID, beadID, workerID,
+			fmt.Sprintf(`{"new_bead_id":%q}`, newID))
+	}
+
+	_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
+		fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
+		fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
 }
 
 // formatSearchResults formats code search results into markdown for prompt injection.
