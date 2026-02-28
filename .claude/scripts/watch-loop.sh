@@ -23,9 +23,13 @@ cleanup_and_stop() {
 	fi
 	rm -f .beads/daemon.pid .beads/daemon.lock .beads/bd.sock .beads/bd.sock.startlock
 
-	# Remove worktrees
+	# Remove worktrees and their tracking branches
 	for wt in .worktrees/oro-*/; do
-		[ -d "$wt" ] && git worktree remove --force "$wt" 2>/dev/null || true
+		if [ -d "$wt" ]; then
+			bead_id="$(basename "$wt")"
+			git worktree remove --force "$wt" 2>/dev/null || true
+			git branch -D "agent/${bead_id}" 2>/dev/null || true
+		fi
 	done
 }
 
@@ -55,10 +59,14 @@ launch_cycle() {
 	fi
 	rm -f .beads/daemon.pid .beads/daemon.lock .beads/bd.sock .beads/bd.sock.startlock
 
-	# Remove old worktrees
+	# Remove old worktrees and their tracking branches
 	echo "[watch-loop] Cleaning worktrees..."
 	for wt in .worktrees/oro-*/; do
-		[ -d "$wt" ] && git worktree remove --force "$wt" 2>/dev/null && echo "  removed $wt" || true
+		if [ -d "$wt" ]; then
+			bead_id="$(basename "$wt")"
+			git worktree remove --force "$wt" 2>/dev/null && echo "  removed $wt" || true
+			git branch -D "agent/${bead_id}" 2>/dev/null && echo "  deleted branch agent/${bead_id}" || true
+		fi
 	done
 
 	# Rebuild
