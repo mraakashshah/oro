@@ -402,6 +402,10 @@ func (m Model) handleStatusViewKeys(key string) (tea.Model, tea.Cmd) {
 		if m.statusModel.cursor == statusSectionWorkers {
 			return m.navigateToWorkerBead()
 		}
+	case "H", "w":
+		// Already in StatusView, no-op
+	case "L":
+		m.activeView = ListView
 	}
 	return m, nil
 }

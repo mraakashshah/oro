@@ -2075,3 +2075,122 @@ func TestViewTypeEnum(t *testing.T) {
 		t.Errorf("expected 6 distinct ViewType values, got %d", len(seen))
 	}
 }
+
+// TestKeyBindings_HWRouteToStatus verifies H and w keys navigate to StatusView,
+// and L (uppercase) navigates to ListView from all views.
+func TestKeyBindings_HWRouteToStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		startView  ViewType
+		key        string
+		wantView   ViewType
+		wantStatus string
+	}{
+		// H key routes to StatusView from various views
+		{
+			name:      "H key from BoardView to StatusView",
+			startView: BoardView,
+			key:       "H",
+			wantView:  StatusView,
+		},
+		{
+			name:      "H key from InsightsView to StatusView",
+			startView: InsightsView,
+			key:       "H",
+			wantView:  StatusView,
+		},
+		{
+			name:      "H key from ListView to StatusView",
+			startView: ListView,
+			key:       "H",
+			wantView:  StatusView,
+		},
+		{
+			name:      "H key from DetailView to StatusView",
+			startView: DetailView,
+			key:       "H",
+			wantView:  StatusView,
+		},
+		// w key routes to StatusView from various views
+		{
+			name:      "w key from BoardView to StatusView",
+			startView: BoardView,
+			key:       "w",
+			wantView:  StatusView,
+		},
+		{
+			name:      "w key from InsightsView to StatusView",
+			startView: InsightsView,
+			key:       "w",
+			wantView:  StatusView,
+		},
+		{
+			name:      "w key from ListView to StatusView",
+			startView: ListView,
+			key:       "w",
+			wantView:  StatusView,
+		},
+		{
+			name:      "w key from DetailView to StatusView",
+			startView: DetailView,
+			key:       "w",
+			wantView:  StatusView,
+		},
+		// L key routes to ListView from various views
+		{
+			name:      "L key from StatusView to ListView",
+			startView: StatusView,
+			key:       "L",
+			wantView:  ListView,
+		},
+		{
+			name:      "L key from BoardView to ListView",
+			startView: BoardView,
+			key:       "L",
+			wantView:  ListView,
+		},
+		{
+			name:      "L key from InsightsView to ListView",
+			startView: InsightsView,
+			key:       "L",
+			wantView:  ListView,
+		},
+		{
+			name:      "L key from DetailView to ListView",
+			startView: DetailView,
+			key:       "L",
+			wantView:  ListView,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newModel()
+			m.activeView = tt.startView
+
+			// For DetailView, set up a bead detail model
+			if tt.startView == DetailView {
+				m.detailModel = &DetailModel{
+					bead: protocol.BeadDetail{
+						ID:    "test-001",
+						Title: "Test Bead",
+					},
+					theme:  m.theme,
+					styles: m.styles,
+				}
+			}
+
+			// Send the key press
+			keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)}
+			updated, _ := m.Update(keyMsg)
+			mUpdated, ok := updated.(Model)
+			if !ok {
+				t.Fatalf("Update() returned %T, expected Model", updated)
+			}
+
+			if mUpdated.activeView != tt.wantView {
+				t.Errorf("key %q: got view %v, want %v", tt.key, mUpdated.activeView, tt.wantView)
+			}
+		})
+	}
+}

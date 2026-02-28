@@ -578,14 +578,25 @@ func (m Model) handleDetailViewKeys(key string) (tea.Model, tea.Cmd) {
 		if m.splitRatio > 0.8 {
 			m.splitRatio = 0.8
 		}
+	case "H", "w":
+		m.activeView = StatusView
+		m.detailModel = nil
+	case "L":
+		m.activeView = ListView
+		m.detailModel = nil
 	}
 	return m, nil
 }
 
 // handleInsightsViewKeys processes keyboard input in InsightsView.
 func (m Model) handleInsightsViewKeys(key string) (tea.Model, tea.Cmd) {
-	if key == "esc" {
+	switch key {
+	case "esc":
 		m.activeView = m.previousNavView
+	case "H", "w":
+		m.activeView = StatusView
+	case "L":
+		m.activeView = ListView
 	}
 	return m, nil
 }
@@ -631,6 +642,10 @@ func (m Model) handleListViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.searchSelectedIndex = 0
 	case "s":
 		m.activeView = StatusView
+	case "H", "w":
+		m.activeView = StatusView
+	case "L":
+		// Already in ListView, no-op
 	case "m":
 		// Load more closed beads (pagination).
 		return m, fetchMoreClosedCmd(m.closedCursor)
@@ -715,6 +730,10 @@ func (m Model) handleBoardViewKeys(key string) (tea.Model, tea.Cmd) {
 		m.searchSelectedIndex = 0
 	case "s":
 		m.activeView = StatusView
+	case "H", "w":
+		m.activeView = StatusView
+	case "L":
+		m.activeView = ListView
 	case "m":
 		// Load more closed beads (pagination).
 		return m, fetchMoreClosedCmd(m.closedCursor)
