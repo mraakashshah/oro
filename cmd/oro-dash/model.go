@@ -885,7 +885,14 @@ func (m Model) renderContextSplit() string {
 	d := m.detailModel
 	var ctx strings.Builder
 	ctx.WriteString(m.styles.Header.Render(d.bead.ID) + "\n")
+	ctx.WriteString(d.bead.Title + "\n")
 	ctx.WriteString(m.styles.Muted.Render(d.bead.Status) + "\n\n")
+
+	// Description
+	if d.bead.Description != "" {
+		ctx.WriteString(m.styles.StatusLabel.Render("Description:") + "\n")
+		ctx.WriteString(m.styles.Muted.Render(d.bead.Description) + "\n\n")
+	}
 
 	// Dependencies
 	if len(d.bead.Dependencies) > 0 {

@@ -2405,3 +2405,100 @@ func TestInsightsModelCached(t *testing.T) {
 		t.Error("Phase2 results did not become non-nil within 600ms of insightsModel creation")
 	}
 }
+
+// TestContextSplitPanelShowsTitle verifies that renderContextSplit includes bead Title
+// and Description in the left context panel.
+func TestContextSplitPanelShowsTitle(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	t.Run("title rendered in left panel", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:     "oro-abc.1",
+			Title:  "My task",
+			Status: "open",
+		}
+		dm := newDetailModel(bead, theme, styles)
+		m := Model{
+			width:       120,
+			height:      40,
+			detailModel: &dm,
+			theme:       theme,
+			styles:      styles,
+		}
+		out := stripANSI(m.renderContextSplit())
+		if !strings.Contains(out, "My task") {
+			t.Errorf("renderContextSplit() left panel missing title; got:\n%s", out)
+		}
+	})
+
+	t.Run("description rendered in left panel", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:          "oro-abc.1",
+			Title:       "My task",
+			Status:      "open",
+			Description: "desc",
+		}
+		dm := newDetailModel(bead, theme, styles)
+		m := Model{
+			width:       120,
+			height:      40,
+			detailModel: &dm,
+			theme:       theme,
+			styles:      styles,
+		}
+		out := stripANSI(m.renderContextSplit())
+		if !strings.Contains(out, "desc") {
+			t.Errorf("renderContextSplit() left panel missing description; got:\n%s", out)
+		}
+	})
+
+	t.Run("title appears before status in output", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:     "oro-abc.1",
+			Title:  "My task",
+			Status: "open",
+		}
+		dm := newDetailModel(bead, theme, styles)
+		m := Model{
+			width:       120,
+			height:      40,
+			detailModel: &dm,
+			theme:       theme,
+			styles:      styles,
+		}
+		out := stripANSI(m.renderContextSplit())
+		titleIdx := strings.Index(out, "My task")
+		statusIdx := strings.Index(out, "open")
+		if titleIdx < 0 {
+			t.Fatal("renderContextSplit() missing title in output")
+		}
+		if statusIdx < 0 {
+			t.Fatal("renderContextSplit() missing status in output")
+		}
+		if titleIdx >= statusIdx {
+			t.Errorf("title should appear before status; title at %d, status at %d\nout:\n%s", titleIdx, statusIdx, out)
+		}
+	})
+
+	t.Run("empty description omits Description section", func(t *testing.T) {
+		bead := protocol.BeadDetail{
+			ID:          "oro-abc.1",
+			Title:       "My task",
+			Status:      "open",
+			Description: "",
+		}
+		dm := newDetailModel(bead, theme, styles)
+		m := Model{
+			width:       120,
+			height:      40,
+			detailModel: &dm,
+			theme:       theme,
+			styles:      styles,
+		}
+		out := stripANSI(m.renderContextSplit())
+		if strings.Contains(out, "Description:") {
+			t.Error("renderContextSplit() should not render Description: section when description is empty")
+		}
+	})
+}
