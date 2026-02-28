@@ -581,3 +581,84 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 		}
 	})
 }
+
+// TestExecuteWork_SavesVocabOnExit verifies that executeWork persists the
+// embedder vocabulary (SaveVocab) when deps.memStore is non-nil with an embedder.
+func TestExecuteWork_SavesVocabOnExit(t *testing.T) {
+	t.Run("saves vocab to kv_store when memStore has embedder", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		store := openWorkerMemoryStore(db)
+		ctx := context.Background()
+
+		// Seed a memory so the embedder vocab is non-empty.
+		_, err := store.Insert(ctx, memory.InsertParams{
+			Content:    "save vocab test: embedder vocabulary must persist",
+			Type:       "lesson",
+			Source:     "test",
+			Confidence: 0.9,
+		})
+		if err != nil {
+			t.Fatalf("seed memory: %v", err)
+		}
+
+		tmpDir := t.TempDir()
+		bs := &mockBeadSource{showDetail: testBead()}
+		wt := &mockWorktreeManager{createPath: tmpDir + "/wt", createBranch: "bead/oro-test"}
+		sp := &mockSpawner{proc: &mockProcess{}}
+		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
+		deps := &workDeps{
+			beadSrc:    bs,
+			wtMgr:      wt,
+			spawner:    sp,
+			merger:     mg,
+			repoRoot:   tmpDir,
+			memStore:   store,
+			hasNewWork: func(_, _ string) bool { return true }, // skip claude spawn
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+
+		_ = executeWork(ctx, cfg, deps)
+
+		// Verify vocab was saved to kv_store.
+		var count int
+		row := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM kv_store WHERE key = 'embedder_vocab'`)
+		if err := row.Scan(&count); err != nil {
+			t.Fatalf("query kv_store: %v", err)
+		}
+		if count == 0 {
+			t.Error("expected embedder_vocab row in kv_store after executeWork, got 0 rows")
+		}
+	})
+
+	t.Run("nil memStore does not panic", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		bs := &mockBeadSource{showDetail: testBead()}
+		wt := &mockWorktreeManager{createPath: tmpDir + "/wt", createBranch: "bead/oro-test"}
+		sp := &mockSpawner{proc: &mockProcess{}}
+		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
+		deps := &workDeps{
+			beadSrc:    bs,
+			wtMgr:      wt,
+			spawner:    sp,
+			merger:     mg,
+			repoRoot:   tmpDir,
+			memStore:   nil,
+			hasNewWork: func(_, _ string) bool { return true },
+			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+		// Should complete without panic.
+		_ = executeWork(context.Background(), cfg, deps)
+	})
+}

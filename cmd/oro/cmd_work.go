@@ -167,6 +167,12 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 
 // executeWork is the testable core of the work command.
 func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { //nolint:funlen,gocognit,cyclop,gocyclo // orchestration logic, splitting would obscure the linear flow
+	// Persist embedder vocabulary on exit so future sessions start with the
+	// same vector space. Mirrors the SaveVocab call in cmd_worker.go:runWorker.
+	if deps.memStore != nil {
+		defer func() { _ = deps.memStore.SaveVocab(context.Background()) }()
+	}
+
 	// Step 1: Load bead.
 	detail, err := deps.beadSrc.Show(ctx, cfg.beadID)
 	if err != nil {
