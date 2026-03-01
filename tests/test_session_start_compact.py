@@ -82,7 +82,9 @@ class TestSessionStartCompactRole:
 
         panes_dir = tmp_path / "panes"
         panes_dir.mkdir(parents=True)
-        debounce_file = panes_dir / "debounce_worker123"
+        worker_dir = panes_dir / "worker123"
+        worker_dir.mkdir(parents=True)
+        debounce_file = worker_dir / "compact_debounce"
         debounce_file.write_text("1")
 
         sys.stdin = io.StringIO(json.dumps({"session_id": "no-state", "role": "worker123"}))
@@ -94,6 +96,32 @@ class TestSessionStartCompactRole:
             session_start_main()
 
         assert not debounce_file.exists()
+
+    def test_clears_debounce_non_worker_manager(self, tmp_path: Path, capsys) -> None:
+        """Non-worker (manager) role clears debounce AND injects live swarm context."""
+        import io
+
+        panes_dir = tmp_path / "panes"
+        manager_dir = panes_dir / "manager"
+        manager_dir.mkdir(parents=True)
+        debounce_file = manager_dir / "compact_debounce"
+        debounce_file.write_text("1")
+
+        sys.stdin = io.StringIO(json.dumps({"session_id": "s1", "role": "manager"}))
+
+        mock_result = MagicMock()
+        mock_result.stdout = "status output"
+        mock_result.returncode = 0
+
+        with (
+            patch("session_start_compact.PANES_DIR", str(panes_dir)),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            session_start_main()
+
+        assert not debounce_file.exists()
+        output = json.loads(capsys.readouterr().out)
+        assert "additionalContext" in output
 
     def test_injects_live_state(self, capsys) -> None:
         """Non-worker role injects live swarm context and returns early."""

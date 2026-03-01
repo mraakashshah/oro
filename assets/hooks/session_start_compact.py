@@ -27,7 +27,7 @@ PANES_DIR = os.path.expanduser("~/.oro/panes")
 
 def _clear_debounce(role: str) -> None:
     """Remove the debounce file for the given role."""
-    debounce_path = Path(PANES_DIR) / f"debounce_{role}"
+    debounce_path = Path(PANES_DIR) / role / "compact_debounce"
     with contextlib.suppress(OSError):
         debounce_path.unlink()
 
@@ -57,7 +57,8 @@ def main() -> None:
     role = input_data.get("role", "")
     if role:
         if not role.startswith("worker"):
-            # Non-worker role: inject live swarm context and return early.
+            # Non-worker role: clear debounce, inject live swarm context and return early.
+            _clear_debounce(role)
             context = _live_swarm_context()
             print(json.dumps({"additionalContext": context}))
             return
