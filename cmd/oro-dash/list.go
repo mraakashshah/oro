@@ -337,17 +337,20 @@ func (lm ListModel) renderList(styles Styles, width, height int) string {
 }
 
 // renderColumnPane renders a single pane of beads with a header for the two-column layout.
+// Cursor highlighting uses bead ID matching (not index) since the cursor tracks flat row indices.
 func (lm ListModel) renderColumnPane(title string, beads []protocol.Bead, paneWidth, height int, styles Styles, isCursorPane bool) string {
+	cursorID := lm.cursorBeadID()
+
 	var out strings.Builder
 	out.WriteString(styles.Header.Render(fmt.Sprintf("%s (%d)", title, len(beads))) + "\n\n")
 
-	for i, b := range beads {
+	for _, b := range beads {
 		line := lm.renderRow(b, paneWidth, styles)
-		// Add inline blocker info for blocked beads
-		if b.Status == "blocked" && len(b.Dependencies) > 0 {
-			line += renderBlockerSuffix(b, styles)
+		// Add inline dependency info for any bead with dependencies
+		if len(b.Dependencies) > 0 {
+			line += renderDepSuffix(b, styles)
 		}
-		if isCursorPane && i == lm.cursor {
+		if isCursorPane && b.ID == cursorID {
 			line = styles.Highlight.Render(line)
 		}
 		out.WriteString(line + "\n")
@@ -356,18 +359,28 @@ func (lm ListModel) renderColumnPane(title string, beads []protocol.Bead, paneWi
 	return lipgloss.NewStyle().Width(paneWidth).Height(height).Render(out.String())
 }
 
-// renderBlockerSuffix returns a compact inline blocker indicator for a bead's dependencies.
-func renderBlockerSuffix(b protocol.Bead, styles Styles) string {
-	var blockerIDs []string
+// renderDepSuffix returns a compact inline dependency indicator showing all dep relationships.
+// "blocks" deps shown as 🚧, others shown as →.
+func renderDepSuffix(b protocol.Bead, styles Styles) string {
+	var blockerIDs, otherIDs []string
 	for _, dep := range b.Dependencies {
 		if dep.Type == "blocks" {
 			blockerIDs = append(blockerIDs, dep.DependsOnID)
+		} else {
+			otherIDs = append(otherIDs, dep.DependsOnID)
 		}
 	}
-	if len(blockerIDs) == 0 {
+	var parts []string
+	if len(blockerIDs) > 0 {
+		parts = append(parts, "🚧 "+strings.Join(blockerIDs, ", "))
+	}
+	if len(otherIDs) > 0 {
+		parts = append(parts, "→ "+strings.Join(otherIDs, ", "))
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-	return " " + styles.BlockerStyle.Render("🚧 "+strings.Join(blockerIDs, ", "))
+	return " " + styles.BlockerStyle.Render(strings.Join(parts, " "))
 }
 
 // View renders the list view as a dense table of beads grouped by status.
@@ -499,10 +512,8 @@ func groupBeads(beads []protocol.Bead) map[string][]protocol.Bead {
 		}
 	}
 
-	// Sort open by priority ascending (P0 = most critical).
-	slices.SortStableFunc(groups["open"], func(a, b protocol.Bead) int {
-		return a.Priority - b.Priority
-	})
+	// Sort open by topological order (prerequisites before dependents, then by priority).
+	groups["open"] = topoSortBeads(groups["open"])
 
 	// Sort closed by UpdatedAt descending (newest first).
 	slices.SortStableFunc(groups["closed"], func(a, b protocol.Bead) int {

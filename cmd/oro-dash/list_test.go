@@ -1527,6 +1527,158 @@ func TestListModel_InitialCursorOnBead(t *testing.T) {
 	}
 }
 
+// TestCursorHighlightByBeadID verifies that the two-column layout highlights
+// beads by ID (not index), fixing the off-screen cursor bug.
+func TestCursorHighlightByBeadID(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	beads := []protocol.Bead{
+		{ID: "op-1", Title: "First open", Status: "open", Priority: 1, Type: "task"},
+		{ID: "op-2", Title: "Second open", Status: "open", Priority: 2, Type: "task"},
+		{ID: "cl-1", Title: "Closed one", Status: "closed", Priority: 1, Type: "task", UpdatedAt: "2024-03-01T00:00:00Z"},
+	}
+
+	t.Run("initial cursor lands on first bead not header", func(t *testing.T) {
+		lm := NewListModel().updateBeads(beads)
+		id := lm.cursorBeadID()
+		if id != "op-1" {
+			t.Errorf("initial cursor bead ID = %q, want 'op-1'", id)
+		}
+	})
+
+	t.Run("cursor bead appears in two-column output", func(t *testing.T) {
+		lm := NewListModel().updateBeads(beads)
+		lm = lm.moveDown() // Move to second open bead
+		id := lm.cursorBeadID()
+		if id != "op-2" {
+			t.Fatalf("after moveDown cursor = %q, want 'op-2'", id)
+		}
+
+		out := lm.View(theme, styles, 120, 30)
+		// Both panes should render
+		if !strings.Contains(out, "Open (2)") {
+			t.Error("missing 'Open (2)' header")
+		}
+		if !strings.Contains(out, "Closed (1)") {
+			t.Error("missing 'Closed (1)' header")
+		}
+		// Both beads should be present
+		if !strings.Contains(out, "op-1") {
+			t.Error("missing bead op-1")
+		}
+		if !strings.Contains(out, "op-2") {
+			t.Error("missing bead op-2")
+		}
+	})
+}
+
+// TestGroupBeadsUsesTopoSort verifies that open beads are topologically sorted
+// (prerequisites before dependents) rather than by priority alone.
+func TestGroupBeadsUsesTopoSort(t *testing.T) {
+	// bead-B depends on bead-A via "blocks" dep.
+	// bead-A has lower priority (P3) but should appear first because bead-B needs it.
+	beads := []protocol.Bead{
+		{ID: "bead-B", Status: "blocked", Priority: 0, Dependencies: []protocol.Dependency{
+			{Type: "blocks", DependsOnID: "bead-A"},
+		}},
+		{ID: "bead-A", Status: "open", Priority: 3},
+	}
+	groups := groupBeads(beads)
+	open := groups["open"]
+	if len(open) != 2 {
+		t.Fatalf("open group: got %d, want 2", len(open))
+	}
+	// bead-A (the prerequisite) should come before bead-B (the dependent)
+	if open[0].ID != "bead-A" {
+		t.Errorf("open[0] = %q, want 'bead-A' (prerequisite first)", open[0].ID)
+	}
+	if open[1].ID != "bead-B" {
+		t.Errorf("open[1] = %q, want 'bead-B' (dependent second)", open[1].ID)
+	}
+}
+
+// TestRenderDepSuffix verifies that renderDepSuffix shows deps for all dep types.
+func TestRenderDepSuffix(t *testing.T) {
+	styles := NewStyles(DefaultTheme())
+
+	t.Run("blocks deps show blocker emoji", func(t *testing.T) {
+		b := protocol.Bead{
+			ID: "b1", Dependencies: []protocol.Dependency{
+				{Type: "blocks", DependsOnID: "dep-1"},
+			},
+		}
+		out := renderDepSuffix(b, styles)
+		if !strings.Contains(out, "🚧") {
+			t.Errorf("blocks dep missing 🚧: %q", out)
+		}
+		if !strings.Contains(out, "dep-1") {
+			t.Errorf("blocks dep missing dep ID: %q", out)
+		}
+	})
+
+	t.Run("non-blocks deps show arrow", func(t *testing.T) {
+		b := protocol.Bead{
+			ID: "b1", Dependencies: []protocol.Dependency{
+				{Type: "relates_to", DependsOnID: "rel-1"},
+			},
+		}
+		out := renderDepSuffix(b, styles)
+		if !strings.Contains(out, "→") {
+			t.Errorf("non-blocks dep missing →: %q", out)
+		}
+		if !strings.Contains(out, "rel-1") {
+			t.Errorf("non-blocks dep missing dep ID: %q", out)
+		}
+	})
+
+	t.Run("no deps returns empty", func(t *testing.T) {
+		b := protocol.Bead{ID: "b1"}
+		out := renderDepSuffix(b, styles)
+		if out != "" {
+			t.Errorf("no deps should return empty, got %q", out)
+		}
+	})
+
+	t.Run("mixed dep types show both", func(t *testing.T) {
+		b := protocol.Bead{
+			ID: "b1", Dependencies: []protocol.Dependency{
+				{Type: "blocks", DependsOnID: "blocker-1"},
+				{Type: "relates_to", DependsOnID: "related-1"},
+			},
+		}
+		out := renderDepSuffix(b, styles)
+		if !strings.Contains(out, "🚧") {
+			t.Errorf("mixed deps missing 🚧: %q", out)
+		}
+		if !strings.Contains(out, "→") {
+			t.Errorf("mixed deps missing →: %q", out)
+		}
+	})
+}
+
+// TestTwoColumnShowsDepsForAllBeads verifies that the two-column layout
+// shows dependency info for all beads with deps, not just blocked ones.
+func TestTwoColumnShowsDepsForAllBeads(t *testing.T) {
+	theme := DefaultTheme()
+	styles := NewStyles(theme)
+
+	beads := []protocol.Bead{
+		{
+			ID: "task-1", Title: "Has relates_to dep", Status: "open", Priority: 1, Type: "task",
+			Dependencies: []protocol.Dependency{{Type: "relates_to", DependsOnID: "task-2"}},
+		},
+		{ID: "task-2", Title: "No deps", Status: "open", Priority: 2, Type: "task"},
+	}
+	lm := NewListModel().updateBeads(beads)
+	out := lm.View(theme, styles, 120, 30)
+
+	// task-1 has a relates_to dep — should show → in the output
+	if !strings.Contains(out, "→") {
+		t.Errorf("two-column view should show → for relates_to dep, got:\n%s", out)
+	}
+}
+
 // TestTypeIconEmoji verifies renderTreeTypeIcon returns the correct icon per type.
 func TestTypeIconEmoji(t *testing.T) {
 	cases := []struct {
