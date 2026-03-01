@@ -30,12 +30,6 @@ if command -v bd >/dev/null 2>&1; then
 			echo "Run 'bd sync --flush-only' manually to diagnose" >&2
 			exit 1
 		fi
-
-		if [ -f "$BEADS_DIR/issues.jsonl" ]; then
-			if [ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ]; then
-				git add "$BEADS_DIR/issues.jsonl" 2>/dev/null || true
-			fi
-		fi
 	fi
 fi
 

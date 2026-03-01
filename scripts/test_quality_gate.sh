@@ -60,7 +60,7 @@ languages:
 EOF
 
 	# Copy quality_gate.sh
-	cp "$oldpwd/quality_gate.sh" .
+	cp "$SCRIPT_DIR/quality_gate.sh" .
 
 	# Run and capture output
 	output=$(./quality_gate.sh 2>&1 || true)
@@ -98,7 +98,7 @@ go 1.22
 EOF
 
 	# Copy quality_gate.sh
-	cp "$oldpwd/quality_gate.sh" .
+	cp "$SCRIPT_DIR/quality_gate.sh" .
 
 	# Run and verify it works with hardcoded checks
 	output=$(./quality_gate.sh 2>&1 || true)
@@ -142,7 +142,7 @@ go 1.22
 EOF
 
 	# Copy quality_gate.sh
-	cp "$oldpwd/quality_gate.sh" .
+	cp "$SCRIPT_DIR/quality_gate.sh" .
 
 	# Run and verify SKIP behavior
 	output=$(./quality_gate.sh 2>&1 || true)
@@ -184,7 +184,7 @@ test_quality_gate_mutation_trap_present() {
 test_makefile_mutate_go_trap_present() {
 	# Extract lines from mutate-go: target to next target and check for trap
 	local target_body
-	target_body=$(awk '/^mutate-go:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go:/{f=0} f' "$SCRIPT_DIR/Makefile")
+	target_body=$(awk '/^mutate-go:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go:/{f=0} f' "$SCRIPT_DIR/../Makefile")
 	if echo "$target_body" | grep -q 'trap'; then
 		return 0
 	fi
@@ -198,7 +198,7 @@ test_makefile_mutate_go_trap_present() {
 test_makefile_mutate_go_diff_trap_present() {
 	# Extract lines from mutate-go-diff: target to next target and check for trap
 	local target_body
-	target_body=$(awk '/^mutate-go-diff:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go-diff:/{f=0} f' "$SCRIPT_DIR/Makefile")
+	target_body=$(awk '/^mutate-go-diff:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go-diff:/{f=0} f' "$SCRIPT_DIR/../Makefile")
 	if echo "$target_body" | grep -q 'trap'; then
 		return 0
 	fi
@@ -502,7 +502,7 @@ test_quality_gate_changed_is_quoted() {
 # shellcheck disable=SC2317,SC2329
 test_makefile_git_diff_stderr_redirect() {
 	local target_body
-	target_body=$(awk '/^mutate-go-diff:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go-diff:/{f=0} f' "$SCRIPT_DIR/Makefile")
+	target_body=$(awk '/^mutate-go-diff:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go-diff:/{f=0} f' "$SCRIPT_DIR/../Makefile")
 
 	if echo "$target_body" | grep 'git diff' | grep -q '2>/dev/null'; then
 		return 0
@@ -517,7 +517,7 @@ test_makefile_git_diff_stderr_redirect() {
 # shellcheck disable=SC2317,SC2329
 test_makefile_changed_is_quoted() {
 	local target_body
-	target_body=$(awk '/^mutate-go-diff:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go-diff:/{f=0} f' "$SCRIPT_DIR/Makefile")
+	target_body=$(awk '/^mutate-go-diff:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-go-diff:/{f=0} f' "$SCRIPT_DIR/../Makefile")
 
 	# Check go-mutesting line doesn't use unquoted $$changed
 	# shellcheck disable=SC2016
@@ -538,7 +538,7 @@ test_makefile_changed_is_quoted() {
 # shellcheck disable=SC2317,SC2329
 test_makefile_mutate_py_pid_isolated() {
 	local target_body
-	target_body=$(awk '/^mutate-py:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-py:/{f=0} f' "$SCRIPT_DIR/Makefile")
+	target_body=$(awk '/^mutate-py:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-py:/{f=0} f' "$SCRIPT_DIR/../Makefile")
 
 	if echo "$target_body" | grep -q '/tmp/cr-session\.sqlite'; then
 		echo "FAIL: mutate-py uses hardcoded /tmp/cr-session.sqlite"
@@ -557,7 +557,7 @@ test_makefile_mutate_py_pid_isolated() {
 # shellcheck disable=SC2317,SC2329
 test_makefile_mutate_py_full_pid_isolated() {
 	local target_body
-	target_body=$(awk '/^mutate-py-full:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-py-full:/{f=0} f' "$SCRIPT_DIR/Makefile")
+	target_body=$(awk '/^mutate-py-full:/{f=1} f && /^[a-zA-Z]/ && !/^mutate-py-full:/{f=0} f' "$SCRIPT_DIR/../Makefile")
 
 	if echo "$target_body" | grep -q '/tmp/cr-full-session\.sqlite'; then
 		echo "FAIL: mutate-py-full uses hardcoded /tmp/cr-full-session.sqlite"

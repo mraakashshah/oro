@@ -8,10 +8,10 @@
 set -e
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-GATE="$REPO_ROOT/quality_gate.sh"
+GATE="$REPO_ROOT/scripts/quality_gate.sh"
 
 if [ ! -x "$GATE" ]; then
-	echo "pre-push: quality_gate.sh not found or not executable at $GATE"
+	echo "pre-push: scripts/quality_gate.sh not found or not executable at $GATE"
 	exit 1
 fi
 

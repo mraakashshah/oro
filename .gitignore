@@ -33,6 +33,7 @@ oro-dash
 oro-search-hook
 coverage.out
 report.json
+state.db
 __pycache__/
 .claude/hooks/oro-search-hook
 cmd/oro/_assets/
@@ -41,6 +42,5 @@ cmd/oro/_assets/
 .claude/settings.local.json
 .perles/
 uv.lock
-.beads
 docs/handoffs/
 archive/yap/reference/

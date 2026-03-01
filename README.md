@@ -46,7 +46,7 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
 It's also the heart of ***ouro*boros** — the serpent that eats its own tail. Workers consume their own context, write a handoff, and a fresh worker picks up where they left off. The loop never ends. The serpent never stops eating. Context is finite; the work is not.
 
 Also, our cute mascot is Oro, the *oro* ouroboros !
-![Oro, the *oro* ouroboros](oro-mascot.png)
+![Oro, the *oro* ouroboros](assets/oro-mascot.png)
 
 ## Philosophy
 

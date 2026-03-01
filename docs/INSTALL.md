@@ -83,7 +83,7 @@ go install ./cmd/oro-search-hook
 ```bash
 make stage-assets         # embed skills, hooks, and beacons into the binary
 go test ./...             # run the test suite
-./quality_gate.sh         # full quality gate (lint + test + build)
+./scripts/quality_gate.sh # full quality gate (lint + test + build)
 make clean-assets         # remove staged assets
 ```
 

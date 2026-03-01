@@ -109,7 +109,7 @@ vet: stage-assets
 	@$(MAKE) clean-assets
 
 gate: stage-assets
-	./quality_gate.sh
+	./scripts/quality_gate.sh
 	@$(MAKE) clean-assets
 
 clean: clean-assets
