@@ -32,13 +32,23 @@ func (s StatusModel) View(
 	}
 
 	sparkW := width / 3
-	sections := append(make([]string, 0, statusSectionCount),
+	rawSections := []string{
 		renderSystemSection(healthData, styles),
 		renderPanesStatusSection(healthData, styles),
 		renderWorkersSection(workers, buf, sparkW, theme, styles, width),
 		renderPipelineSection(buf, width, theme, styles),
 		renderSessionSection(pendingHandoffs, attemptCounts, buf, styles),
-	)
+	}
+
+	// Apply cursor highlight to the active section.
+	sections := make([]string, len(rawSections))
+	for i, sec := range rawSections {
+		if i == s.cursor {
+			sections[i] = "▸ " + sec
+		} else {
+			sections[i] = "  " + sec
+		}
+	}
 
 	return lipgloss.NewStyle().Width(width).Height(height).
 		Render(lipgloss.JoinVertical(lipgloss.Left, sections...))

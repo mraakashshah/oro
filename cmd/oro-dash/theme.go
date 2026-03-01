@@ -196,7 +196,7 @@ func NewStyles(theme Theme) Styles {
 func (s *Styles) initStatusBarStyles(theme Theme) {
 	s.DaemonOnline = lipgloss.NewStyle().Foreground(theme.Success)
 	s.DaemonOffline = lipgloss.NewStyle().Foreground(theme.Error)
-	s.StatusLabel = lipgloss.NewStyle()
+	s.StatusLabel = lipgloss.NewStyle().Foreground(theme.ColorMutedFg)
 	s.StatusPrimary = lipgloss.NewStyle().Foreground(theme.Primary)
 	s.StatusWarning = lipgloss.NewStyle().Foreground(theme.Warning)
 	s.StatusSuccess = lipgloss.NewStyle().Foreground(theme.Success)
@@ -214,7 +214,10 @@ func (s *Styles) initCommonStyles(theme Theme) {
 
 func (s *Styles) initBoardStyles(theme Theme) {
 	s.Card = lipgloss.NewStyle().Padding(0, 1).MarginBottom(1)
-	s.ActiveCard = lipgloss.NewStyle().Padding(0, 1).MarginBottom(1).Background(theme.ColorFocus)
+	s.ActiveCard = lipgloss.NewStyle().Padding(0, 1).MarginBottom(1).
+		Background(theme.ColorFocus).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(theme.Primary)
 	s.Column = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.ColorBorder).Padding(0)
 	s.Header = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Padding(0, 1)
 	s.IDMuted = lipgloss.NewStyle().Foreground(theme.Muted)
@@ -226,7 +229,7 @@ func (s *Styles) initSearchStyles(theme Theme) {
 	s.SearchHelp = lipgloss.NewStyle().Foreground(theme.Muted).Padding(1, 0)
 	s.SearchResults = lipgloss.NewStyle().Padding(1, 0)
 	s.NoResults = lipgloss.NewStyle().Foreground(theme.Muted)
-	s.Highlight = lipgloss.NewStyle().Background(theme.Primary).Foreground(lipgloss.Color("#ffffff")).Bold(true).Padding(0, 1)
+	s.Highlight = lipgloss.NewStyle().Background(theme.ColorFocus).Bold(true).Padding(0, 1)
 }
 
 func (s *Styles) initHelpStyles(theme Theme) {

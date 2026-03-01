@@ -357,14 +357,20 @@ func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 		return styles.Muted.Render("No beads match")
 	}
 
-	if lm.detailFocused && width >= 100 {
+	if width >= 100 {
 		bead := lm.cursorBead()
 		if bead != nil {
 			listWidth := int(float64(width) * lm.splitRatio)
-			detailWidth := width - listWidth
+			detailWidth := width - listWidth - 1 // -1 for separator
 			listPane := lm.renderList(styles, listWidth, height)
+			// Use brighter border when detail pane is focused.
+			borderStyle := styles.ListDetailBorderDim
+			if lm.detailFocused {
+				borderStyle = styles.ListDetailBorder
+			}
+			separator := buildVerticalSeparator(height, borderStyle)
 			detailPane := renderDetailPane(*bead, lm.workers, lm.assignments, lm.detailSections, styles, detailWidth, height)
-			return lipgloss.JoinHorizontal(lipgloss.Top, listPane, detailPane)
+			return lipgloss.JoinHorizontal(lipgloss.Top, listPane, separator, detailPane)
 		}
 	}
 
@@ -519,14 +525,30 @@ func renderGroupHeader(status string, count int, styles Styles) string {
 	return styles.Header.Render(fmt.Sprintf("%s (%d)", label, count))
 }
 
+// renderStatusDot returns a colored status dot for the bead's status.
+// ● in_progress (amber), ⊘ blocked (red), ✓ closed (green), empty for open.
+func renderStatusDot(status string, styles Styles) string {
+	switch status {
+	case "in_progress":
+		return styles.BadgeInProgress.Render("●")
+	case "blocked":
+		return styles.BadgeBlocked.Render("⊘")
+	case "closed":
+		return styles.Success.Render("✓")
+	default:
+		return " "
+	}
+}
+
 // renderRow renders a single bead as a compact list row showing
-// icon + priority + ID + title + worker + ctx%.
+// status + icon + priority + ID + title + worker + ctx%.
 // Column visibility adapts to terminal width:
 //   - >120: worker ID + ctx%
 //   - 100-120: worker ID only (hide ctx%)
 //   - <100: no worker info (list-only mode)
 //   - <80: truncate bead ID (first 5 chars + "...")
 func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string {
+	statusDot := renderStatusDot(b.Status, styles)
 	icon := renderTreeTypeIcon(b.Type)
 	priority := renderTreePriorityBadge(b.Priority, styles)
 
@@ -538,8 +560,8 @@ func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string 
 	id := styles.IDMuted.Render(idText)
 
 	// Truncate title to fit within available width.
-	// Reserve space for: 2 indent + icon(1) + 1 + priority(4) + 1 + id + 2 + worker(~15) + margin.
-	maxTitle := width - 40
+	// Reserve: 2 indent + statusDot(1) + 1 + icon(2) + 1 + priority(4) + 1 + id + 2 + worker(~15) + margin.
+	maxTitle := width - 42
 	if maxTitle < 10 {
 		maxTitle = 10
 	}
@@ -551,7 +573,7 @@ func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string 
 	// Look up worker assignment — only shown when width >= 100.
 	workerPart := renderWorkerPart(lm.workers, lm.assignments, b.ID, width, styles)
 
-	return fmt.Sprintf("  %s %s %s  %-*s%s", icon, priority, id, maxTitle, title, workerPart)
+	return fmt.Sprintf("  %s %s %s %s  %-*s%s", statusDot, icon, priority, id, maxTitle, title, workerPart)
 }
 
 // renderWorkerPart returns the styled worker portion of a list row.
@@ -650,6 +672,16 @@ func renderDetailPane(b protocol.Bead, workers []WorkerStatus, assignments map[s
 	}
 
 	return lipgloss.NewStyle().Width(width).Height(height).Render(out.String())
+}
+
+// buildVerticalSeparator renders a vertical line of │ characters styled with the given style.
+func buildVerticalSeparator(height int, style lipgloss.Style) string {
+	lines := make([]string, height)
+	bar := style.Render("│")
+	for i := range lines {
+		lines[i] = bar
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderTreePriorityBadge returns a compact priority badge string with color.

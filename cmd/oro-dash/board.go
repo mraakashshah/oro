@@ -75,6 +75,12 @@ func NewBoardModelWithWorkers(beads []protocol.Bead, workers []WorkerStatus, ass
 			return parseBeadTime(b.UpdatedAt).Compare(parseBeadTime(a.UpdatedAt))
 		})
 
+		// Cap Done column to 10 most recent to keep the board scannable.
+		const doneLimit = 10
+		if t == "Done" && len(beadsInCol) > doneLimit {
+			beadsInCol = beadsInCol[:doneLimit]
+		}
+
 		columns = append(columns, boardColumn{
 			title:      t,
 			beads:      beadsInCol,
@@ -248,6 +254,7 @@ func (bm BoardModel) renderCardContent(b protocol.Bead, styles Styles) string {
 }
 
 // renderCardHeader renders the first line of a card: priority badge + type icon + title.
+// Title is truncated to fit within the available card width.
 func (bm BoardModel) renderCardHeader(b protocol.Bead, styles Styles) string {
 	headerParts := make([]string, 0, 3)
 
@@ -257,7 +264,15 @@ func (bm BoardModel) renderCardHeader(b protocol.Bead, styles Styles) string {
 	// Type indicator icon
 	icon := renderTreeTypeIcon(b.Type)
 
-	headerParts = append(headerParts, priorityBadge, icon, b.Title)
+	// Truncate title — badge(4) + space + icon(2) + space = ~8 chars overhead.
+	// Use a reasonable max to prevent overflow.
+	title := b.Title
+	const maxTitleLen = 30
+	if len([]rune(title)) > maxTitleLen {
+		title = string([]rune(title)[:maxTitleLen-3]) + "..."
+	}
+
+	headerParts = append(headerParts, priorityBadge, icon, title)
 
 	return strings.Join(headerParts, " ")
 }

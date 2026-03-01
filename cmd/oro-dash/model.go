@@ -293,6 +293,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.listModel = m.listModel.resize(msg.Width, msg.Height)
+		if m.detailModel != nil {
+			updated := m.detailModel.handleWindowResize(msg)
+			m.detailModel = &updated
+		}
 
 	case beadsMsg:
 		m = m.applyBeadsMsg(msg)
@@ -913,9 +917,10 @@ func (m Model) renderContextSplit() string {
 	}
 
 	leftPanel := lipgloss.NewStyle().Width(leftWidth).Render(ctx.String())
-	rightPanel := lipgloss.NewStyle().Width(rightWidth).Render(m.detailModel.View(m.styles))
+	separator := lipgloss.NewStyle().Foreground(m.theme.ColorBorder).Render("│")
+	rightPanel := lipgloss.NewStyle().Width(rightWidth - 1).Render(m.detailModel.View(m.styles))
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, separator, rightPanel)
 }
 
 // calculateDaysSinceUpdate calculates days since the bead was last updated.

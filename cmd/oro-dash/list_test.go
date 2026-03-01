@@ -987,7 +987,7 @@ func TestListView_SplitPaneRendersDetailPane(t *testing.T) {
 		}
 	})
 
-	t.Run("detailFocused=false renders list only without detail pane content", func(t *testing.T) {
+	t.Run("detailFocused=false still shows detail pane at width>=100", func(t *testing.T) {
 		lm := NewListModel()
 		lm = lm.updateBeads([]protocol.Bead{makeBead()})
 		lm.detailFocused = false
@@ -995,9 +995,9 @@ func TestListView_SplitPaneRendersDetailPane(t *testing.T) {
 
 		out := lm.View(theme, styles, 120, 30)
 
-		// Acceptance criteria only appears in detail pane — must be absent in list-only mode
-		if strings.Contains(out, "Must pass all tests") {
-			t.Errorf("list-only view should not show acceptance criteria: %q", out)
+		// Detail pane now always shows at width >= 100, with dimmer border when unfocused
+		if !strings.Contains(out, "test-1") {
+			t.Errorf("detail pane should show bead ID even when unfocused: %q", out)
 		}
 	})
 
@@ -1200,14 +1200,14 @@ func TestListResponsive(t *testing.T) {
 		}
 	})
 
-	t.Run("width 100-120 shows worker ID but hides ctx%", func(t *testing.T) {
+	t.Run("width 100-120 shows worker info in detail pane not in list rows", func(t *testing.T) {
 		lm := makeLM()
 		out := lm.View(theme, styles, 110, 30)
+		// At width 110 with split pane, list pane width is ~55 (below 100 threshold),
+		// so worker info appears in the detail pane instead of list rows.
+		// The worker ID should still be visible somewhere (in the detail pane).
 		if !strings.Contains(out, "worker-a") {
-			t.Errorf("width 110: missing worker ID 'worker-a': %q", out)
-		}
-		if strings.Contains(out, "55%") {
-			t.Errorf("width 110: should not show ctx%% '55%%': %q", out)
+			t.Errorf("width 110: missing worker ID 'worker-a' in detail pane: %q", out)
 		}
 	})
 

@@ -133,17 +133,26 @@ func TestDoneColumn_MostRecent(t *testing.T) {
 			readyIdx, inProgIdx, blockedIdx, doneIdx)
 	}
 
-	// 3. Verify header shows total count: "Done (15/15)"
-	if !strings.Contains(output, "Done (15/15)") {
-		t.Errorf("Done column header should show 'Done (15/15)'\ngot:\n%s", output)
+	// 3. Verify header shows visible/total count: "Done (10/15)"
+	if !strings.Contains(output, "Done (10/15)") {
+		t.Errorf("Done column header should show 'Done (10/15)'\ngot:\n%s", output)
 	}
 
-	// 4. Verify all 15 closed beads are present (no cap)
-	for i := 0; i < 15; i++ {
+	// 4. Verify only 10 most recent closed beads are shown (capped).
+	// The 10 most recent are F..O (indices 5..14).
+	for i := 5; i < 15; i++ {
 		expectedTitle := "Closed task " + string(rune('A'+i))
 		if !strings.Contains(output, expectedTitle) {
-			t.Errorf("Done column should show all closed beads, missing %q\ngot:\n%s",
+			t.Errorf("Done column should show most recent 10, missing %q\ngot:\n%s",
 				expectedTitle, output)
+		}
+	}
+	// The 5 oldest (A..E) should NOT be shown.
+	for i := 0; i < 5; i++ {
+		excludedTitle := "Closed task " + string(rune('A'+i))
+		if strings.Contains(output, excludedTitle) {
+			t.Errorf("Done column should cap at 10, but found old bead %q\ngot:\n%s",
+				excludedTitle, output)
 		}
 	}
 }
@@ -531,27 +540,33 @@ func TestDoneColumnSortedByUpdatedAtDescending(t *testing.T) {
 		theme := DefaultTheme()
 		output := board.Render(theme, NewStyles(theme))
 
-		// Header: all 12 visible.
-		if !strings.Contains(output, "Done (12/12)") {
-			t.Errorf("expected 'Done (12/12)' in header\ngot:\n%s", output)
+		// Header: 10 shown out of 12 total.
+		if !strings.Contains(output, "Done (10/12)") {
+			t.Errorf("expected 'Done (10/12)' in header\ngot:\n%s", output)
 		}
 
-		// All 12 beads must appear (no cap).
-		for day := 1; day <= 12; day++ {
+		// Top 10 most recent (done-12..done-03) must appear; oldest 2 (done-01, done-02) must not.
+		for day := 3; day <= 12; day++ {
 			id := fmt.Sprintf("done-%02d", day)
 			if !strings.Contains(output, id) {
-				t.Errorf("Done column missing bead %q\ngot:\n%s", id, output)
+				t.Errorf("Done column missing recent bead %q\ngot:\n%s", id, output)
+			}
+		}
+		for day := 1; day <= 2; day++ {
+			id := fmt.Sprintf("done-%02d", day)
+			if strings.Contains(output, id) {
+				t.Errorf("Done column should cap at 10, but found old bead %q\ngot:\n%s", id, output)
 			}
 		}
 
-		// Sort order: done-12 (newest) must appear before done-01 (oldest).
+		// Sort order: done-12 (newest) must appear before done-03 (oldest visible).
 		idx12 := strings.Index(output, "done-12")
-		idx01 := strings.Index(output, "done-01")
-		if idx12 == -1 || idx01 == -1 {
-			t.Fatal("done-12 and done-01 must both appear in output")
+		idx03 := strings.Index(output, "done-03")
+		if idx12 == -1 || idx03 == -1 {
+			t.Fatal("done-12 and done-03 must both appear in output")
 		}
-		if idx12 >= idx01 {
-			t.Errorf("done-12 (pos %d) should appear before done-01 (pos %d)", idx12, idx01)
+		if idx12 >= idx03 {
+			t.Errorf("done-12 (pos %d) should appear before done-03 (pos %d)", idx12, idx03)
 		}
 	})
 
@@ -579,24 +594,29 @@ func TestDoneColumnSortedByUpdatedAtDescending(t *testing.T) {
 		theme := DefaultTheme()
 		output := board.Render(theme, NewStyles(theme))
 
-		// Header: all 12 visible.
-		if !strings.Contains(output, "Done (12/12)") {
-			t.Errorf("expected 'Done (12/12)' in header\ngot:\n%s", output)
+		// Header: 10 shown out of 12 total.
+		if !strings.Contains(output, "Done (10/12)") {
+			t.Errorf("expected 'Done (10/12)' in header\ngot:\n%s", output)
 		}
 
-		// All beads appear (no cap), but empty-UpdatedAt sorts last (oldest).
-		if !strings.Contains(output, "no-ts") {
-			t.Errorf("bead with empty UpdatedAt should appear (no cap)\ngot:\n%s", output)
+		// Empty-UpdatedAt bead sorts as oldest and should be capped off (not visible).
+		if strings.Contains(output, "no-ts") {
+			t.Errorf("bead with empty UpdatedAt should be capped off\ngot:\n%s", output)
 		}
 
-		// Sort order: ts-11 (newest) before no-ts (oldest/zero-time).
+		// ts-01 (oldest stamped) should also be capped off.
+		if strings.Contains(output, "ts-01") {
+			t.Errorf("oldest stamped bead ts-01 should be capped off\ngot:\n%s", output)
+		}
+
+		// Top 10: ts-11..ts-02 must appear. ts-11 (newest) before ts-02 (oldest visible).
 		idx11 := strings.Index(output, "ts-11")
-		idxNoTs := strings.Index(output, "no-ts")
-		if idx11 == -1 || idxNoTs == -1 {
-			t.Fatal("ts-11 and no-ts must both appear")
+		idx02 := strings.Index(output, "ts-02")
+		if idx11 == -1 || idx02 == -1 {
+			t.Fatal("ts-11 and ts-02 must both appear")
 		}
-		if idx11 >= idxNoTs {
-			t.Errorf("ts-11 (pos %d) should appear before no-ts (pos %d)", idx11, idxNoTs)
+		if idx11 >= idx02 {
+			t.Errorf("ts-11 (pos %d) should appear before ts-02 (pos %d)", idx11, idx02)
 		}
 	})
 }
