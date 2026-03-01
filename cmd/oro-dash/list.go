@@ -367,7 +367,7 @@ func renderBlockerSuffix(b protocol.Bead, styles Styles) string {
 	if len(blockerIDs) == 0 {
 		return ""
 	}
-	return " " + styles.BlockerStyle.Render("blocked: "+strings.Join(blockerIDs, ", "))
+	return " " + styles.BlockerStyle.Render("🚧 "+strings.Join(blockerIDs, ", "))
 }
 
 // View renders the list view as a dense table of beads grouped by status.
@@ -727,14 +727,14 @@ func renderTreePriorityBadge(priority int, styles Styles) string {
 func renderTreeTypeIcon(beadType string) string {
 	switch beadType {
 	case "task":
-		return "■"
+		return "[T]"
 	case "bug":
-		return "▲"
+		return "[B]"
 	case "feature":
-		return "★"
+		return "[F]"
 	case "epic":
-		return "◎"
+		return "[E]"
 	default:
-		return "●"
+		return "[·]"
 	}
 }

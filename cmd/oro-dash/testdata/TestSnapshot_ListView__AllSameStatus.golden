@@ -1,9 +1,9 @@
  Open (4)                                                 │ Closed (0)                                               
                                                           │                                                          
-    ▲ [P0] oro-a...  First open task                      │                                                          
-     ■ [P1] oro-a...  Second open task                    │                                                          
-    ★ [P2] oro-a...  Third open task                      │                                                          
-    ■ [P3] oro-a...  Fourth open task                     │                                                          
+    [B] [P0] oro-a...  First open task                    │                                                          
+     [T] [P1] oro-a...  Second open task                  │                                                          
+    [F] [P2] oro-a...  Third open task                    │                                                          
+    [T] [P3] oro-a...  Fourth open task                   │                                                          
                                                           │                                                          
                                                           │                                                          
                                                           │                                                          

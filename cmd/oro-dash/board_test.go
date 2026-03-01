@@ -194,10 +194,10 @@ func TestCardRendering_TypeIndicators(t *testing.T) {
 
 	// Verify type indicators appear in output.
 	typeIndicators := map[string]string{
-		"task":    "■",
-		"bug":     "▲",
-		"feature": "★",
-		"epic":    "◎",
+		"task":    "[T]",
+		"bug":     "[B]",
+		"feature": "[F]",
+		"epic":    "[E]",
 	}
 
 	for beadType, indicator := range typeIndicators {
@@ -744,10 +744,10 @@ func TestTypeIcons(t *testing.T) {
 		beadType string
 		want     string
 	}{
-		{"bug", "▲"},
-		{"feature", "★"},
-		{"task", "■"},
-		{"epic", "◎"},
+		{"bug", "[B]"},
+		{"feature", "[F]"},
+		{"task", "[T]"},
+		{"epic", "[E]"},
 	}
 	for _, tc := range cases {
 		got := renderTreeTypeIcon(tc.beadType)
