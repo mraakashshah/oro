@@ -33,7 +33,8 @@ def _clear_debounce(role: str) -> None:
 
 
 def _live_swarm_context() -> str:
-    """Return live swarm context from oro status, or empty string on failure."""
+    """Return live swarm context from oro status and bd list, or empty string on failure."""
+    parts = []
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         result = subprocess.run(
             ["oro", "status"],
@@ -42,8 +43,17 @@ def _live_swarm_context() -> str:
             timeout=10,
             check=False,
         )
-        return result.stdout
-    return ""
+        parts.append(result.stdout)
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        result = subprocess.run(
+            ["bd", "list", "--status=in_progress"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        parts.append(result.stdout)
+    return "\n".join(parts)
 
 
 def main() -> None:

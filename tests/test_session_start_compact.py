@@ -124,21 +124,31 @@ class TestSessionStartCompactRole:
         assert "additionalContext" in output
 
     def test_injects_live_state(self, capsys) -> None:
-        """Non-worker role injects live swarm context and returns early."""
+        """Non-worker role injects live swarm context from BOTH oro status and bd list."""
         import io
 
         sys.stdin = io.StringIO(json.dumps({"session_id": "s1", "role": "manager"}))
 
-        mock_result = MagicMock()
-        mock_result.stdout = "status output"
-        mock_result.returncode = 0
+        mock_status = MagicMock()
+        mock_status.stdout = "status output"
+        mock_status.returncode = 0
 
-        with patch("subprocess.run", return_value=mock_result):
+        mock_bd = MagicMock()
+        mock_bd.stdout = "bd list output"
+        mock_bd.returncode = 0
+
+        with patch("subprocess.run", side_effect=[mock_status, mock_bd]) as mock_run:
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
         assert "additionalContext" in output
         assert "status output" in output["additionalContext"]
+        assert "bd list output" in output["additionalContext"]
+        assert mock_run.call_count == 2
+        first_cmd = mock_run.call_args_list[0][0][0]
+        second_cmd = mock_run.call_args_list[1][0][0]
+        assert first_cmd[0] == "oro"
+        assert second_cmd[0] == "bd"
 
     def test_oro_status_failure_suppressed(self, capsys) -> None:
         """OSError/TimeoutExpired from oro status is suppressed; output still valid."""
@@ -146,11 +156,49 @@ class TestSessionStartCompactRole:
 
         sys.stdin = io.StringIO(json.dumps({"session_id": "s1", "role": "manager"}))
 
-        with patch("subprocess.run", side_effect=OSError("not found")):
+        mock_bd = MagicMock()
+        mock_bd.stdout = "bd list output"
+        mock_bd.returncode = 0
+
+        with patch("subprocess.run", side_effect=[OSError("not found"), mock_bd]):
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
         assert "additionalContext" in output
+
+    def test_oro_status_failure_still_injects_bd_list(self, capsys) -> None:
+        """When oro status raises OSError, bd list output is still in additionalContext."""
+        import io
+
+        sys.stdin = io.StringIO(json.dumps({"session_id": "s1", "role": "manager"}))
+
+        mock_bd = MagicMock()
+        mock_bd.stdout = "bd list output"
+        mock_bd.returncode = 0
+
+        with patch("subprocess.run", side_effect=[OSError("not found"), mock_bd]):
+            session_start_main()
+
+        output = json.loads(capsys.readouterr().out)
+        assert "additionalContext" in output
+        assert "bd list output" in output["additionalContext"]
+
+    def test_bd_list_failure_still_injects_oro_status(self, capsys) -> None:
+        """When bd list raises OSError, oro status output is still in additionalContext."""
+        import io
+
+        sys.stdin = io.StringIO(json.dumps({"session_id": "s1", "role": "manager"}))
+
+        mock_status = MagicMock()
+        mock_status.stdout = "status output"
+        mock_status.returncode = 0
+
+        with patch("subprocess.run", side_effect=[mock_status, OSError("not found")]):
+            session_start_main()
+
+        output = json.loads(capsys.readouterr().out)
+        assert "additionalContext" in output
+        assert "status output" in output["additionalContext"]
 
     def test_worker_path_unchanged(self, tmp_path: Path, capsys) -> None:
         """Worker role falls through to transcript path after clearing debounce."""
