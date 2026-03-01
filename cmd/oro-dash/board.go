@@ -318,7 +318,7 @@ func (bm BoardModel) renderWorkerInfo(workerID string, styles Styles) string {
 
 	// If worker not found in list, just show worker ID (no health badge/context)
 	if worker == nil {
-		return styles.WorkerStyle.Render(fmt.Sprintf("👷 %s", workerID))
+		return styles.WorkerStyle.Render(fmt.Sprintf("W: %s", workerID))
 	}
 
 	// Determine health style based on heartbeat age
@@ -334,7 +334,7 @@ func (bm BoardModel) renderWorkerInfo(workerID string, styles Styles) string {
 		parts = append(parts, contextStr)
 	}
 
-	return styles.WorkerStyle.Render(fmt.Sprintf("👷 %s", strings.Join(parts, " ")))
+	return styles.WorkerStyle.Render(fmt.Sprintf("W: %s", strings.Join(parts, " ")))
 }
 
 // healthStyleForWorker returns the health badge style based on heartbeat age.
@@ -380,6 +380,6 @@ func (bm BoardModel) renderBlockerInfo(b protocol.Bead, styles Styles) string {
 	}
 
 	// Join with non-breaking spaces after commas
-	blockerText := "🚧 " + strings.Join(blockerIDs, ",\u00A0")
+	blockerText := "blocked: " + strings.Join(blockerIDs, ",\u00A0")
 	return styles.BlockerStyle.Render(blockerText)
 }

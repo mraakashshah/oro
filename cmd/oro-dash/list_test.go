@@ -361,8 +361,8 @@ func TestListRow_Render(t *testing.T) {
 		b := protocol.Bead{ID: "abc-1", Title: "Do the thing", Status: "open", Priority: 2, Type: "task"}
 		lm := NewListModel()
 		row := lm.renderRow(b, 80, styles)
-		if !strings.Contains(row, "📋") {
-			t.Errorf("renderRow missing task icon '📋': %q", row)
+		if !strings.Contains(row, "■") {
+			t.Errorf("renderRow missing task icon '■': %q", row)
 		}
 	})
 
@@ -370,8 +370,8 @@ func TestListRow_Render(t *testing.T) {
 		b := protocol.Bead{ID: "bug-1", Title: "Fix crash", Status: "open", Priority: 0, Type: "bug"}
 		lm := NewListModel()
 		row := lm.renderRow(b, 80, styles)
-		if !strings.Contains(row, "🐛") {
-			t.Errorf("renderRow missing bug icon '🐛': %q", row)
+		if !strings.Contains(row, "▲") {
+			t.Errorf("renderRow missing bug icon '▲': %q", row)
 		}
 	})
 
@@ -1527,17 +1527,17 @@ func TestListModel_InitialCursorOnBead(t *testing.T) {
 	}
 }
 
-// TestTypeIconEmoji verifies renderTreeTypeIcon returns the correct emoji per type.
+// TestTypeIconEmoji verifies renderTreeTypeIcon returns the correct icon per type.
 func TestTypeIconEmoji(t *testing.T) {
 	cases := []struct {
 		beadType string
 		want     string
 	}{
-		{"bug", "🐛"},
-		{"feature", "🪶"},
-		{"task", "📋"},
-		{"epic", "🎯"},
-		{"unknown", "📌"},
+		{"bug", "▲"},
+		{"feature", "★"},
+		{"task", "■"},
+		{"epic", "◎"},
+		{"unknown", "●"},
 	}
 	for _, tc := range cases {
 		got := renderTreeTypeIcon(tc.beadType)
