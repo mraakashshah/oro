@@ -64,8 +64,8 @@ launch_cycle() {
 	for wt in .worktrees/oro-*/; do
 		if [ -d "$wt" ]; then
 			bead_id="$(basename "$wt")"
-			git worktree remove --force "$wt" 2>/dev/null && echo "  removed $wt" || true
-			git branch -D "agent/${bead_id}" 2>/dev/null && echo "  deleted branch agent/${bead_id}" || true
+			if git worktree remove --force "$wt" 2>/dev/null; then echo "  removed $wt"; fi
+			if git branch -D "agent/${bead_id}" 2>/dev/null; then echo "  deleted branch agent/${bead_id}"; fi
 		fi
 	done
 
