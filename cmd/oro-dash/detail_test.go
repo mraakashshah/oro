@@ -792,10 +792,10 @@ func TestDetailOutputTab(t *testing.T) {
 	})
 }
 
-// TestDetailTabsForClosedBead verifies that closed beads show only Overview+Deps tabs,
-// while open beads show all 6 tabs (Overview+Worker+Diff+Deps+Memory+Output).
+// TestDetailTabsForClosedBead verifies that all beads (including closed) show all 6 tabs.
+// Tab content renders appropriate empty states for closed beads.
 func TestDetailTabsForClosedBead(t *testing.T) {
-	t.Run("closed bead shows only Overview and Deps tabs", func(t *testing.T) {
+	t.Run("closed bead shows all 6 tabs", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:     "oro-test.closed",
 			Title:  "Closed bead",
@@ -807,19 +807,11 @@ func TestDetailTabsForClosedBead(t *testing.T) {
 		model := newDetailModel(bead, theme, styles)
 		view := model.View(styles)
 
-		// Assert: closed bead shows only Overview and Deps tabs
-		if !strings.Contains(view, "Overview") {
-			t.Errorf("expected 'Overview' tab for closed bead, but it's missing from:\n%s", view)
-		}
-		if !strings.Contains(view, "Deps") {
-			t.Errorf("expected 'Deps' tab for closed bead, but it's missing from:\n%s", view)
-		}
-
-		// Hidden tabs should not appear
-		hiddenTabs := []string{"Worker", "Diff", "Memory", "Output"}
-		for _, tab := range hiddenTabs {
-			if strings.Contains(view, tab) {
-				t.Errorf("expected %q tab to be hidden for closed bead, but found it in:\n%s", tab, view)
+		// Assert: closed bead shows all 6 tabs
+		expectedTabs := []string{"Overview", "Worker", "Diff", "Deps", "Memory", "Output"}
+		for _, tab := range expectedTabs {
+			if !strings.Contains(view, tab) {
+				t.Errorf("expected %q tab for closed bead, but it's missing from:\n%s", tab, view)
 			}
 		}
 	})
@@ -866,7 +858,7 @@ func TestDetailTabsForClosedBead(t *testing.T) {
 		}
 	})
 
-	t.Run("closed bead allows only Overview/Deps tab switching", func(t *testing.T) {
+	t.Run("closed bead cycles through all 6 tabs", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:     "oro-test.closed-nav",
 			Title:  "Closed bead navigation",
@@ -882,16 +874,13 @@ func TestDetailTabsForClosedBead(t *testing.T) {
 			t.Errorf("expected initial activeTab to be 0, got %d", model.activeTab)
 		}
 
-		// nextTab should move to Deps (tab 1 in closed bead)
-		model = model.nextTab()
-		if model.activeTab != 1 {
-			t.Errorf("expected activeTab to be 1 after nextTab(), got %d", model.activeTab)
-		}
-
-		// nextTab should wrap around to Overview (tab 0)
-		model = model.nextTab()
-		if model.activeTab != 0 {
-			t.Errorf("expected activeTab to wrap to 0, got %d", model.activeTab)
+		// Cycle through all 6 tabs and wrap back to 0
+		for i := 1; i <= 6; i++ {
+			model = model.nextTab()
+			want := i % 6
+			if model.activeTab != want {
+				t.Errorf("after %d nextTab() calls, expected activeTab %d, got %d", i, want, model.activeTab)
+			}
 		}
 	})
 }

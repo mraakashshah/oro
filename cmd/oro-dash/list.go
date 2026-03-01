@@ -37,6 +37,7 @@ type ListModel struct {
 // NewListModel creates a new empty ListModel.
 func NewListModel() ListModel {
 	return ListModel{
+		cursor:         -1, // unset until first updateBeads populates rows
 		splitRatio:     0.5,
 		detailSections: defaultDetailSections(),
 	}
@@ -152,13 +153,16 @@ func (lm ListModel) cursorBeadID() string {
 // If beadID is empty (first load), advances to the first non-header row.
 // If the bead is not found, clamps the cursor to the valid range.
 func (lm *ListModel) restoreCursor(beadID string) {
-	if beadID == "" {
+	if beadID == "" || lm.cursor < 0 {
 		rows := lm.flatRows()
 		for i, row := range rows {
 			if row.bead != nil {
 				lm.cursor = i
 				return
 			}
+		}
+		if lm.cursor < 0 {
+			lm.cursor = 0
 		}
 		return
 	}
@@ -300,19 +304,6 @@ func (lm ListModel) hasVisibleBeads() bool {
 	return false
 }
 
-// cursorBead returns the bead at the current cursor position, or nil if on a header row.
-func (lm ListModel) cursorBead() *protocol.Bead {
-	rows := lm.flatRows()
-	if lm.cursor < 0 || lm.cursor >= len(rows) {
-		return nil
-	}
-	row := rows[lm.cursor]
-	if row.isHeader || row.bead == nil {
-		return nil
-	}
-	return row.bead
-}
-
 // renderList renders the flat bead list with headers and row highlighting.
 func (lm ListModel) renderList(styles Styles, width, height int) string {
 	rows := lm.flatRows()
@@ -345,9 +336,43 @@ func (lm ListModel) renderList(styles Styles, width, height int) string {
 	return lipgloss.NewStyle().Width(width).Height(height).Render(out.String())
 }
 
+// renderColumnPane renders a single pane of beads with a header for the two-column layout.
+func (lm ListModel) renderColumnPane(title string, beads []protocol.Bead, paneWidth, height int, styles Styles, isCursorPane bool) string {
+	var out strings.Builder
+	out.WriteString(styles.Header.Render(fmt.Sprintf("%s (%d)", title, len(beads))) + "\n\n")
+
+	for i, b := range beads {
+		line := lm.renderRow(b, paneWidth, styles)
+		// Add inline blocker info for blocked beads
+		if b.Status == "blocked" && len(b.Dependencies) > 0 {
+			line += renderBlockerSuffix(b, styles)
+		}
+		if isCursorPane && i == lm.cursor {
+			line = styles.Highlight.Render(line)
+		}
+		out.WriteString(line + "\n")
+	}
+
+	return lipgloss.NewStyle().Width(paneWidth).Height(height).Render(out.String())
+}
+
+// renderBlockerSuffix returns a compact inline blocker indicator for a bead's dependencies.
+func renderBlockerSuffix(b protocol.Bead, styles Styles) string {
+	var blockerIDs []string
+	for _, dep := range b.Dependencies {
+		if dep.Type == "blocks" {
+			blockerIDs = append(blockerIDs, dep.DependsOnID)
+		}
+	}
+	if len(blockerIDs) == 0 {
+		return ""
+	}
+	return " " + styles.BlockerStyle.Render("🚧 "+strings.Join(blockerIDs, ", "))
+}
+
 // View renders the list view as a dense table of beads grouped by status.
-// When detailFocused=true and width >= 100, renders a split-pane layout with
-// the list on the left and detail pane on the right.
+// At width >= 100: two-column layout with Open beads on the left and Closed on the right.
+// At narrow widths (<100): stacked vertical list as before.
 func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	if len(lm.beads) == 0 {
 		return styles.Muted.Render("No beads found. Run `bd create` to get started.")
@@ -358,20 +383,16 @@ func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	}
 
 	if width >= 100 {
-		bead := lm.cursorBead()
-		if bead != nil {
-			listWidth := int(float64(width) * lm.splitRatio)
-			detailWidth := width - listWidth - 1 // -1 for separator
-			listPane := lm.renderList(styles, listWidth, height)
-			// Use brighter border when detail pane is focused.
-			borderStyle := styles.ListDetailBorderDim
-			if lm.detailFocused {
-				borderStyle = styles.ListDetailBorder
-			}
-			separator := buildVerticalSeparator(height, borderStyle)
-			detailPane := renderDetailPane(*bead, lm.workers, lm.assignments, lm.detailSections, styles, detailWidth, height)
-			return lipgloss.JoinHorizontal(lipgloss.Top, listPane, separator, detailPane)
-		}
+		groups := groupBeads(lm.filteredBeads())
+		openBeads := groups["open"]
+		closedBeads := groups["closed"]
+
+		paneWidth := (width - 3) / 2 // -3 for separator + margins
+		leftPane := lm.renderColumnPane("Open", openBeads, paneWidth, height, styles, true)
+		separator := buildVerticalSeparator(height, styles.ListDetailBorderDim)
+		// Closed pane is not cursor-tracked (cursor stays in open pane)
+		rightPane := lm.renderColumnPane("Closed", closedBeads, paneWidth, height, styles, false)
+		return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, separator, rightPane)
 	}
 
 	return lm.renderList(styles, width, height)
@@ -714,6 +735,6 @@ func renderTreeTypeIcon(beadType string) string {
 	case "epic":
 		return "🎯"
 	default:
-		return ""
+		return "📌"
 	}
 }

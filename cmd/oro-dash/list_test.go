@@ -950,68 +950,47 @@ func TestListFilter_Toggle(t *testing.T) {
 	})
 }
 
-// TestListView_SplitPaneRendersDetailPane verifies the split-pane layout wiring in View().
-func TestListView_SplitPaneRendersDetailPane(t *testing.T) {
+// TestListView_TwoColumnLayout verifies the two-column Open/Closed layout at width >= 100.
+func TestListView_TwoColumnLayout(t *testing.T) {
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
-	makeBead := func() protocol.Bead {
-		return protocol.Bead{
-			ID:                 "test-1",
-			Title:              "Test bead title",
-			Status:             "open",
-			Priority:           2,
-			Type:               "task",
-			AcceptanceCriteria: "Must pass all tests",
+	makeBeads := func() []protocol.Bead {
+		return []protocol.Bead{
+			{ID: "test-1", Title: "Open task", Status: "open", Priority: 2, Type: "task"},
+			{ID: "test-2", Title: "Closed task", Status: "closed", Priority: 2, Type: "task"},
 		}
 	}
 
-	t.Run("detailFocused=true shows bead ID title and acceptance criteria", func(t *testing.T) {
+	t.Run("wide layout shows Open and Closed columns", func(t *testing.T) {
 		lm := NewListModel()
-		lm = lm.updateBeads([]protocol.Bead{makeBead()})
-		lm.detailFocused = true
-		lm.cursor = 1 // row 0 = header, row 1 = bead
-		lm.detailSections = defaultDetailSections()
+		lm = lm.updateBeads(makeBeads())
 
 		out := lm.View(theme, styles, 120, 30)
 
+		if !strings.Contains(out, "Open") {
+			t.Errorf("two-column layout missing 'Open' header: %q", out)
+		}
+		if !strings.Contains(out, "Closed") {
+			t.Errorf("two-column layout missing 'Closed' header: %q", out)
+		}
 		if !strings.Contains(out, "test-1") {
-			t.Errorf("split pane missing bead ID 'test-1': %q", out)
+			t.Errorf("two-column layout missing open bead ID 'test-1': %q", out)
 		}
-		if !strings.Contains(out, "Test bead title") {
-			t.Errorf("split pane missing bead title: %q", out)
-		}
-		// Acceptance criteria content only appears in detail pane, not in list rows
-		if !strings.Contains(out, "Must pass all tests") {
-			t.Errorf("split pane missing acceptance criteria content: %q", out)
+		if !strings.Contains(out, "test-2") {
+			t.Errorf("two-column layout missing closed bead ID 'test-2': %q", out)
 		}
 	})
 
-	t.Run("detailFocused=false still shows detail pane at width>=100", func(t *testing.T) {
+	t.Run("narrow layout stacks vertically", func(t *testing.T) {
 		lm := NewListModel()
-		lm = lm.updateBeads([]protocol.Bead{makeBead()})
-		lm.detailFocused = false
-		lm.cursor = 1
-
-		out := lm.View(theme, styles, 120, 30)
-
-		// Detail pane now always shows at width >= 100, with dimmer border when unfocused
-		if !strings.Contains(out, "test-1") {
-			t.Errorf("detail pane should show bead ID even when unfocused: %q", out)
-		}
-	})
-
-	t.Run("width < 100 forces list-only even when detailFocused=true", func(t *testing.T) {
-		lm := NewListModel()
-		lm = lm.updateBeads([]protocol.Bead{makeBead()})
-		lm.detailFocused = true
-		lm.cursor = 1
-		lm.detailSections = defaultDetailSections()
+		lm = lm.updateBeads(makeBeads())
 
 		out := lm.View(theme, styles, 90, 30)
 
-		if strings.Contains(out, "Must pass all tests") {
-			t.Errorf("narrow view (width<100) should not show detail pane: %q", out)
+		// At narrow width, should use vertical list (no side-by-side separator)
+		if !strings.Contains(out, "test-1") {
+			t.Errorf("narrow layout missing bead ID 'test-1': %q", out)
 		}
 	})
 }
@@ -1189,25 +1168,25 @@ func TestListResponsive(t *testing.T) {
 		return lm
 	}
 
-	t.Run("width>120 shows worker ID and ctx%", func(t *testing.T) {
+	t.Run("width>120 two-column layout shows both Open and Closed headers", func(t *testing.T) {
 		lm := makeLM()
 		out := lm.View(theme, styles, 140, 30)
-		if !strings.Contains(out, "worker-a") {
-			t.Errorf("width 140: missing worker ID 'worker-a': %q", out)
+		// Two-column layout: each pane ~68 chars (below 100 threshold for worker info).
+		// Worker info is not shown in per-pane rows, but bead data is present.
+		if !strings.Contains(out, "Task one") {
+			t.Errorf("width 140: missing bead title 'Task one': %q", out)
 		}
-		if !strings.Contains(out, "55%") {
-			t.Errorf("width 140: missing ctx%% '55%%': %q", out)
+		if !strings.Contains(out, "Open") {
+			t.Errorf("width 140: missing 'Open' column header: %q", out)
 		}
 	})
 
-	t.Run("width 100-120 shows worker info in detail pane not in list rows", func(t *testing.T) {
+	t.Run("width 100-120 two-column layout shows bead info", func(t *testing.T) {
 		lm := makeLM()
 		out := lm.View(theme, styles, 110, 30)
-		// At width 110 with split pane, list pane width is ~55 (below 100 threshold),
-		// so worker info appears in the detail pane instead of list rows.
-		// The worker ID should still be visible somewhere (in the detail pane).
-		if !strings.Contains(out, "worker-a") {
-			t.Errorf("width 110: missing worker ID 'worker-a' in detail pane: %q", out)
+		// Two-column layout at 110 chars: each pane ~53 chars.
+		if !strings.Contains(out, "Task one") {
+			t.Errorf("width 110: missing bead title: %q", out)
 		}
 	})
 
@@ -1558,7 +1537,7 @@ func TestTypeIconEmoji(t *testing.T) {
 		{"feature", "🪶"},
 		{"task", "📋"},
 		{"epic", "🎯"},
-		{"unknown", ""},
+		{"unknown", "📌"},
 	}
 	for _, tc := range cases {
 		got := renderTreeTypeIcon(tc.beadType)

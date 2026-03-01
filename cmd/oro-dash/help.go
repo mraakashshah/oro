@@ -68,6 +68,7 @@ func getListViewHelpBindings() []helpBinding {
 		{"i", "Show insights view"},
 		{"s", "Open status view"},
 		{"H/w", "Open status view"},
+		{"L", "Switch to list view"},
 		{"m", "Load more closed beads"},
 		{"</>", "Resize list/detail pane"},
 		{"y", "Copy bead ID to clipboard"},
@@ -94,6 +95,7 @@ func getStatusHelpBindings() []helpBinding {
 	return []helpBinding{
 		{"j/k or ↑/↓", "Navigate sections"},
 		{"enter", "Expand section / open bead"},
+		{"L", "Switch to list view"},
 		{"esc", "Return to previous view"},
 		{"?", "Toggle help"},
 		{"q or ctrl+c", "Quit"},

@@ -218,7 +218,7 @@ func (s *Styles) initBoardStyles(theme Theme) {
 		Background(theme.ColorFocus).
 		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(theme.Primary)
-	s.Column = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.ColorBorder).Padding(0)
+	s.Column = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(theme.ColorBorder).Padding(1, 0)
 	s.Header = lipgloss.NewStyle().Bold(true).Foreground(theme.Primary).Padding(0, 1)
 	s.IDMuted = lipgloss.NewStyle().Foreground(theme.Muted)
 }

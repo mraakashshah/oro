@@ -815,9 +815,9 @@ func (m Model) handleSearchViewKeys(key string, msg tea.KeyMsg) (tea.Model, tea.
 func (m Model) filterBeads() []protocol.Bead {
 	query := m.searchInput.Value()
 	if query == "" {
-		return m.beads
+		return m.allBeads()
 	}
-	return m.searchModel.Filter(m.beads, query)
+	return m.searchModel.Filter(m.allBeads(), query)
 }
 
 // wireWorkerDataToBeadDetail populates WorkerID and ContextPercent in a BeadDetail
@@ -855,9 +855,6 @@ func (m Model) View() string {
 		return im.Render(m.styles) + "\n" + statusBar
 	case DetailView:
 		if m.detailModel != nil {
-			if m.width >= 100 {
-				return m.renderContextSplit() + "\n" + statusBar
-			}
 			return m.detailModel.View(m.styles) + "\n" + statusBar
 		}
 		// Fallback to board if detailModel is nil
@@ -875,52 +872,6 @@ func (m Model) View() string {
 		colWidth := m.calculateColumnWidth()
 		return board.RenderWithScroll(m.activeCol, m.activeBead, colWidth, m.colScrollOffsets, m.maxVisibleBeads(), m.theme, m.styles) + "\n" + statusBar
 	}
-}
-
-// renderContextSplit renders DetailView with a bead context panel on the left and detail on the right.
-func (m Model) renderContextSplit() string {
-	leftWidth := int(float64(m.width) * 0.3)
-	if leftWidth < 25 {
-		leftWidth = 25
-	}
-	rightWidth := m.width - leftWidth - 1
-
-	// Build context panel
-	d := m.detailModel
-	var ctx strings.Builder
-	ctx.WriteString(m.styles.Header.Render(d.bead.ID) + "\n")
-	ctx.WriteString(d.bead.Title + "\n")
-	ctx.WriteString(m.styles.Muted.Render(d.bead.Status) + "\n\n")
-
-	// Description
-	if d.bead.Description != "" {
-		ctx.WriteString(m.styles.StatusLabel.Render("Description:") + "\n")
-		ctx.WriteString(m.styles.Muted.Render(d.bead.Description) + "\n\n")
-	}
-
-	// Dependencies
-	if len(d.bead.Dependencies) > 0 {
-		ctx.WriteString(m.styles.StatusLabel.Render("Dependencies:") + "\n")
-		for _, dep := range d.bead.Dependencies {
-			ctx.WriteString("  " + m.styles.Muted.Render(dep.Type+": ") + dep.DependsOnID + "\n")
-		}
-	}
-
-	// Acceptance criteria summary
-	if d.bead.AcceptanceCriteria != "" {
-		ctx.WriteString("\n" + m.styles.StatusLabel.Render("Acceptance:") + "\n")
-		ac := d.bead.AcceptanceCriteria
-		if len(ac) > leftWidth*6 {
-			ac = ac[:leftWidth*6] + "..."
-		}
-		ctx.WriteString(m.styles.Muted.Render(ac) + "\n")
-	}
-
-	leftPanel := lipgloss.NewStyle().Width(leftWidth).Render(ctx.String())
-	separator := lipgloss.NewStyle().Foreground(m.theme.ColorBorder).Render("│")
-	rightPanel := lipgloss.NewStyle().Width(rightWidth - 1).Render(m.detailModel.View(m.styles))
-
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, separator, rightPanel)
 }
 
 // calculateDaysSinceUpdate calculates days since the bead was last updated.
@@ -1029,7 +980,7 @@ func (m Model) renderStatusBar(width int) string {
 	hints := helpHintsForView(m.activeView, width)
 	if hints == "" || m.height < 30 {
 		// Single line: metrics only
-		return metrics
+		return lipgloss.NewStyle().MaxWidth(width).Render(metrics)
 	}
 
 	// Wide bar: metrics left, hints right (right-aligned with gap fill)
@@ -1046,7 +997,9 @@ func (m Model) renderStatusBar(width int) string {
 	}
 
 	gapStr := strings.Repeat(" ", gap)
-	return lipgloss.JoinHorizontal(lipgloss.Left, metrics, gapStr, hintsStyled)
+	return lipgloss.NewStyle().MaxWidth(width).Render(
+		lipgloss.JoinHorizontal(lipgloss.Left, metrics, gapStr, hintsStyled),
+	)
 }
 
 // renderSearchOverlay renders the search overlay with text input and filtered results.
@@ -1223,8 +1176,8 @@ func (m Model) moveToPrevBead() Model {
 
 // maxVisibleBeads returns the number of beads that fit in the terminal height.
 func (m Model) maxVisibleBeads() int {
-	// Overhead: column header (~3 lines) + status bar (~2 lines) + column border (~2 lines)
-	const overhead = 7
+	// Overhead: column header (~3 lines) + status bar (~2 lines) + column border (~2 lines) + padding (~2 lines)
+	const overhead = 9
 	const cardHeight = 4 // content(3) + margin(1), no borders
 	available := m.height - overhead
 	if available < cardHeight {

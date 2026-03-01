@@ -85,13 +85,9 @@ func fetchWorkerOutputCmd(socketPath, workerID string) tea.Cmd {
 	}
 }
 
-// getTabsForBead returns the list of tabs to display based on bead status.
-// Closed beads show only Overview and Deps tabs.
-// Open/in_progress beads show all 6 tabs: Overview, Worker, Diff, Deps, Memory, Output.
-func getTabsForBead(bead protocol.BeadDetail) []string {
-	if bead.Status == "closed" {
-		return []string{"Overview", "Deps"}
-	}
+// getTabsForBead returns the list of tabs to display for any bead.
+// All 6 tabs are always shown; each tab's render function handles empty/missing data gracefully.
+func getTabsForBead(_ protocol.BeadDetail) []string {
 	return []string{"Overview", "Worker", "Diff", "Deps", "Memory", "Output"}
 }
 

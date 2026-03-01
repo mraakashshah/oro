@@ -161,7 +161,7 @@ func TestStatusView_Scaffold(t *testing.T) {
 		}
 	})
 
-	t.Run("nil healthData shows Connecting...", func(t *testing.T) {
+	t.Run("nil healthData shows Daemon offline", func(t *testing.T) {
 		m := newModel()
 		m.activeView = StatusView
 		m.initialLoad = false
@@ -172,8 +172,11 @@ func TestStatusView_Scaffold(t *testing.T) {
 		view := m.View()
 		plain := stripANSI(view)
 
-		if !strings.Contains(plain, "Connecting...") {
-			t.Errorf("StatusView with nil healthData should show 'Connecting...', got:\n%s", plain)
+		if !strings.Contains(plain, "Daemon: offline") {
+			t.Errorf("StatusView with nil healthData should show 'Daemon: offline', got:\n%s", plain)
+		}
+		if !strings.Contains(plain, "oro start") {
+			t.Errorf("StatusView with nil healthData should show 'oro start' hint, got:\n%s", plain)
 		}
 	})
 
@@ -782,13 +785,13 @@ func TestStatusResponsive(t *testing.T) {
 	})
 
 	t.Run("VeryNarrowNoSparklines", func(t *testing.T) {
-		m := mkModel(70, 50)
+		m := mkModel(50, 50) // Below 60 threshold to hide worker line2
 		view := m.View()
 		plain := stripANSI(view)
 
-		// <80: no worker line2 (1-line workers)
+		// <60: no worker line2 (1-line workers)
 		if strings.Contains(plain, "done:") {
-			t.Errorf("very narrow (<80) should hide worker line2, got:\n%s", plain)
+			t.Errorf("very narrow (<60) should hide worker line2, got:\n%s", plain)
 		}
 		// System section still present
 		if !strings.Contains(plain, "System") {
@@ -881,7 +884,7 @@ func TestStatusSnapshot(t *testing.T) {
 	})
 
 	t.Run("NarrowSnapshot", func(t *testing.T) {
-		m := buildStatusModel(70, 50)
+		m := buildStatusModel(50, 50) // Below 60 threshold to hide worker line2
 		view := m.View()
 		plain := stripANSI(view)
 
@@ -912,8 +915,11 @@ func TestStatusSnapshot(t *testing.T) {
 		view := m.View()
 		plain := stripANSI(view)
 
-		if !strings.Contains(plain, "Connecting...") {
-			t.Error("nil health snapshot missing 'Connecting...'")
+		if !strings.Contains(plain, "Daemon: offline") {
+			t.Error("nil health snapshot missing 'Daemon: offline'")
+		}
+		if !strings.Contains(plain, "oro start") {
+			t.Error("nil health snapshot missing 'oro start' hint")
 		}
 	})
 }

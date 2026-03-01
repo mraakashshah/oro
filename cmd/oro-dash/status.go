@@ -27,8 +27,15 @@ func (s StatusModel) View(
 	buf *MetricsBuffer, width, height int,
 ) string {
 	if healthData == nil {
-		return lipgloss.NewStyle().Width(width).Height(height).
-			Render(styles.Muted.Render("Connecting..."))
+		offlineInfo := lipgloss.JoinVertical(lipgloss.Left,
+			styles.SectionTitle.Render("System"),
+			styles.Muted.Render("Daemon: offline"),
+			styles.Muted.Render(fmt.Sprintf("Socket: %s", defaultSocketPath())),
+			styles.Muted.Render("Try: oro start"),
+			"",
+			renderWorkersSection(workers, buf, width/3, theme, styles, width),
+		)
+		return lipgloss.NewStyle().Width(width).Height(height).Render(offlineInfo)
 	}
 
 	sparkW := width / 3
@@ -58,8 +65,9 @@ func (s StatusModel) View(
 func renderSystemSection(hd *HealthData, styles Styles) string {
 	title := styles.SectionTitle.Render("System")
 	stateLine := fmt.Sprintf("Daemon: %s (PID %d)", hd.DaemonState, hd.DaemonPID)
+	socketLine := fmt.Sprintf("Socket: %s", defaultSocketPath())
 
-	return lipgloss.JoinVertical(lipgloss.Left, title, stateLine)
+	return lipgloss.JoinVertical(lipgloss.Left, title, stateLine, socketLine)
 }
 
 // renderPanesStatusSection renders the Panes section with architect and manager status.
@@ -147,7 +155,7 @@ func renderWorkerCard(
 ) string {
 	l1 := formatWorkerLine1(w)
 
-	if viewWidth < 80 {
+	if viewWidth < 60 {
 		if w.Status == "idle" {
 			return styles.Muted.Render(l1)
 		}

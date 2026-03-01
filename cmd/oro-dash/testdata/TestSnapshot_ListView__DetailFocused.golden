@@ -1,40 +1,40 @@
-▼  Open (5)                                                 │ oro-ip.2                                                  
-   ● 🐛 [P0] oro-ip.2  Fix login timeout                    │Fix login timeout                                          
-  ● 📋 [P1] oro-ip.1  Refactor auth m...                    │in_progress                                                
-  ⊘ 📋 [P1] oro-bl.1  Blocked on infra                      │                                                           
-    🪶 [P2] oro-op.1  Add caching layer                     │▼ Worker                                                   
-    📋 [P3] oro-op.2  Write API docs                        │worker-snap  42%                                           
-                                                            │                                                           
-▼  Closed (2)                                               │                                                           
-  ✓ 📋 [P2] oro-cl.1  Setup CI pipeline                     │                                                           
-  ✓ 📋 [P3] oro-cl.2  Initial scaffol...                    │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
-                                                            │                                                           
+ Open (5)                                                 │ Closed (2)                                               
+                                                          │                                                          
+  ● 🐛 [P0] oro-ip.2  Fix login tim...                    │  ✓ 📋 [P2] oro-cl.1  Setup CI pipe...                    
+   ● 📋 [P1] oro-ip.1  Refactor auth...                   │  ✓ 📋 [P3] oro-cl.2  Initial scaff...                    
+  ⊘ 📋 [P1] oro-bl.1  Blocked on infra 🚧 oro-op.1        │                                                          
+    🪶 [P2] oro-op.1  Add caching l...                    │                                                          
+    📋 [P3] oro-op.2  Write API docs                      │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          
+                                                          │                                                          

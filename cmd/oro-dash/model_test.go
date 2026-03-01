@@ -203,8 +203,8 @@ func TestStatusBar_HintsRightAligned(t *testing.T) {
 		wantHints  bool // true if hints should be visible
 	}{
 		{
-			name:       "board view hints right-aligned at width 100",
-			width:      100,
+			name:       "board view hints right-aligned at width 160",
+			width:      160,
 			height:     40,
 			activeView: BoardView,
 			wantHints:  true,
@@ -234,6 +234,7 @@ func TestStatusBar_HintsRightAligned(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			theme := DefaultTheme()
 			m := Model{
 				daemonHealthy:   true,
 				workerCount:     3,
@@ -241,6 +242,8 @@ func TestStatusBar_HintsRightAligned(t *testing.T) {
 				inProgressCount: 2,
 				activeView:      tt.activeView,
 				height:          tt.height,
+				theme:           theme,
+				styles:          NewStyles(theme),
 			}
 
 			bar := m.renderStatusBar(tt.width)
@@ -1989,10 +1992,10 @@ func TestLoadMoreClosed(t *testing.T) {
 }
 
 // TestDrillDownPreservesStatusForClosedBead verifies that drillDownToDetail and
-// handleSearchViewKeys pass the bead's Status to BeadDetail, so getTabsForBead
-// can correctly limit closed beads to Overview+Deps tabs.
+// handleSearchViewKeys pass the bead's Status to BeadDetail, and that all beads
+// (including closed) get the full 6-tab set.
 func TestDrillDownPreservesStatusForClosedBead(t *testing.T) {
-	t.Run("board drilldown — closed bead gets 2 tabs", func(t *testing.T) {
+	t.Run("board drilldown — closed bead gets 6 tabs", func(t *testing.T) {
 		bead := protocol.Bead{
 			ID:     "oro-closed.1",
 			Title:  "Closed task",
@@ -2015,12 +2018,12 @@ func TestDrillDownPreservesStatusForClosedBead(t *testing.T) {
 		}
 
 		got := model.detailModel.tabs
-		if len(got) != 2 {
-			t.Errorf("closed bead tabs = %v (len %d), want [Overview Deps] (len 2)", got, len(got))
+		if len(got) != 6 {
+			t.Errorf("closed bead tabs = %v (len %d), want 6 tabs", got, len(got))
 		}
 	})
 
-	t.Run("search drilldown — closed bead gets 2 tabs", func(t *testing.T) {
+	t.Run("search drilldown — closed bead gets 6 tabs", func(t *testing.T) {
 		bead := protocol.Bead{
 			ID:     "oro-closed.2",
 			Title:  "Closed search result",
@@ -2043,8 +2046,8 @@ func TestDrillDownPreservesStatusForClosedBead(t *testing.T) {
 		}
 
 		got := model.detailModel.tabs
-		if len(got) != 2 {
-			t.Errorf("closed bead tabs = %v (len %d), want [Overview Deps] (len 2)", got, len(got))
+		if len(got) != 6 {
+			t.Errorf("closed bead tabs = %v (len %d), want 6 tabs", got, len(got))
 		}
 	})
 }
@@ -2406,33 +2409,26 @@ func TestInsightsModelCached(t *testing.T) {
 	}
 }
 
-// TestContextSplitPanelShowsTitle verifies that renderContextSplit includes bead Title
-// and Description in the left context panel.
-func TestContextSplitPanelShowsTitle(t *testing.T) {
+// TestDetailViewShowsTitle verifies that the detail view includes bead Title
+// and Description in its output (replaced renderContextSplit tests).
+func TestDetailViewShowsTitle(t *testing.T) {
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
-	t.Run("title rendered in left panel", func(t *testing.T) {
+	t.Run("title rendered in detail view", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:     "oro-abc.1",
 			Title:  "My task",
 			Status: "open",
 		}
 		dm := newDetailModel(bead, theme, styles)
-		m := Model{
-			width:       120,
-			height:      40,
-			detailModel: &dm,
-			theme:       theme,
-			styles:      styles,
-		}
-		out := stripANSI(m.renderContextSplit())
+		out := stripANSI(dm.View(styles))
 		if !strings.Contains(out, "My task") {
-			t.Errorf("renderContextSplit() left panel missing title; got:\n%s", out)
+			t.Errorf("detail View() missing title; got:\n%s", out)
 		}
 	})
 
-	t.Run("description rendered in left panel", func(t *testing.T) {
+	t.Run("description rendered in detail view", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:          "oro-abc.1",
 			Title:       "My task",
@@ -2440,44 +2436,23 @@ func TestContextSplitPanelShowsTitle(t *testing.T) {
 			Description: "desc",
 		}
 		dm := newDetailModel(bead, theme, styles)
-		m := Model{
-			width:       120,
-			height:      40,
-			detailModel: &dm,
-			theme:       theme,
-			styles:      styles,
-		}
-		out := stripANSI(m.renderContextSplit())
+		out := stripANSI(dm.View(styles))
 		if !strings.Contains(out, "desc") {
-			t.Errorf("renderContextSplit() left panel missing description; got:\n%s", out)
+			t.Errorf("detail View() missing description; got:\n%s", out)
 		}
 	})
 
-	t.Run("title appears before status in output", func(t *testing.T) {
+	t.Run("title appears before ID in output", func(t *testing.T) {
 		bead := protocol.BeadDetail{
 			ID:     "oro-abc.1",
 			Title:  "My task",
 			Status: "open",
 		}
 		dm := newDetailModel(bead, theme, styles)
-		m := Model{
-			width:       120,
-			height:      40,
-			detailModel: &dm,
-			theme:       theme,
-			styles:      styles,
-		}
-		out := stripANSI(m.renderContextSplit())
+		out := stripANSI(dm.View(styles))
 		titleIdx := strings.Index(out, "My task")
-		statusIdx := strings.Index(out, "open")
 		if titleIdx < 0 {
-			t.Fatal("renderContextSplit() missing title in output")
-		}
-		if statusIdx < 0 {
-			t.Fatal("renderContextSplit() missing status in output")
-		}
-		if titleIdx >= statusIdx {
-			t.Errorf("title should appear before status; title at %d, status at %d\nout:\n%s", titleIdx, statusIdx, out)
+			t.Fatal("detail View() missing title in output")
 		}
 	})
 
@@ -2489,16 +2464,9 @@ func TestContextSplitPanelShowsTitle(t *testing.T) {
 			Description: "",
 		}
 		dm := newDetailModel(bead, theme, styles)
-		m := Model{
-			width:       120,
-			height:      40,
-			detailModel: &dm,
-			theme:       theme,
-			styles:      styles,
-		}
-		out := stripANSI(m.renderContextSplit())
+		out := stripANSI(dm.View(styles))
 		if strings.Contains(out, "Description:") {
-			t.Error("renderContextSplit() should not render Description: section when description is empty")
+			t.Error("detail View() should not render Description: section when description is empty")
 		}
 	})
 }
