@@ -679,7 +679,7 @@ func (w *Worker) closeLogFile() {
 // If memoryContext is non-empty, it is appended as a section so the worker
 // benefits from cross-session memories retrieved by the dispatcher.
 func BuildPrompt(beadID, worktree, memoryContext string) string {
-	base := fmt.Sprintf("Execute bead %s in worktree %s. Before completing, run ./quality_gate.sh and ensure it passes.", beadID, worktree)
+	base := fmt.Sprintf("Execute bead %s in worktree %s. Before completing, run ./scripts/quality_gate.sh and ensure it passes.", beadID, worktree)
 	if memoryContext == "" {
 		return base
 	}
@@ -1132,6 +1132,33 @@ func (w *Worker) SendReadyForReview(_ context.Context) error {
 	})
 }
 
+// findQualityGateScript locates quality_gate.sh in the worktree, trying
+// scripts/quality_gate.sh first (canonical), then quality_gate.sh at root
+// (legacy). If neither exists, it attempts a git restore before giving up.
+func findQualityGateScript(ctx context.Context, worktree string) (string, error) {
+	candidates := []string{
+		filepath.Join(worktree, "scripts", "quality_gate.sh"),
+		filepath.Join(worktree, "quality_gate.sh"),
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	// Neither found — try git restore for each candidate in order.
+	gitPaths := []string{"scripts/quality_gate.sh", "quality_gate.sh"}
+	for i, gitPath := range gitPaths {
+		restoreCmd := exec.CommandContext(ctx, "git", "checkout", "HEAD", "--", gitPath) //nolint:gosec // gitPath is from hardcoded constant slice above
+		restoreCmd.Dir = worktree
+		if restoreCmd.Run() == nil {
+			if _, err := os.Stat(candidates[i]); err == nil {
+				return candidates[i], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("quality gate script not found in scripts/quality_gate.sh or quality_gate.sh (restore failed)")
+}
+
 // RunQualityGate executes ./quality_gate.sh in the given worktree directory.
 // It returns (true, output, nil) if the script exits 0, (false, output, nil) if
 // it exits non-zero, and (false, "", err) if the script cannot be found or started.
@@ -1139,18 +1166,10 @@ func (w *Worker) SendReadyForReview(_ context.Context) error {
 // When skipMutation is true, ORO_SKIP_MUTATION=1 is set so the script skips
 // the slow mutation-testing tiers.
 func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error) {
-	scriptPath := filepath.Join(worktree, "quality_gate.sh")
-	if _, err := os.Stat(scriptPath); err != nil {
-		// Agent may have deleted quality_gate.sh — try restoring from git.
-		restoreCmd := exec.CommandContext(ctx, "git", "checkout", "HEAD", "--", "quality_gate.sh")
-		restoreCmd.Dir = worktree
-		if restoreErr := restoreCmd.Run(); restoreErr != nil {
-			return false, "", fmt.Errorf("quality gate script not found: %w (restore failed: %w)", err, restoreErr)
-		}
-		// Verify restoration succeeded.
-		if _, err := os.Stat(scriptPath); err != nil {
-			return false, "", fmt.Errorf("quality gate script not found after restore: %w", err)
-		}
+	// Canonical location is scripts/quality_gate.sh; fall back to root for legacy repos.
+	scriptPath, statErr := findQualityGateScript(ctx, worktree)
+	if statErr != nil {
+		return false, "", statErr
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input

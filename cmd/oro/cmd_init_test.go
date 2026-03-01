@@ -904,7 +904,7 @@ func TestBootstrapGeneratesQualityGate(t *testing.T) {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
 
-		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		qgPath := filepath.Join(projectDir, "scripts", "quality_gate.sh")
 		info, err := os.Stat(qgPath)
 		if err != nil {
 			t.Fatalf("quality_gate.sh not created: %v", err)
@@ -928,7 +928,7 @@ func TestBootstrapGeneratesQualityGate(t *testing.T) {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
 
-		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		qgPath := filepath.Join(projectDir, "scripts", "quality_gate.sh")
 		data, err := os.ReadFile(qgPath) //nolint:gosec // test file
 		if err != nil {
 			t.Fatalf("quality_gate.sh not created: %v", err)
@@ -952,8 +952,12 @@ func TestBootstrapGeneratesQualityGate(t *testing.T) {
 			t.Fatalf("write go.mod: %v", err)
 		}
 
-		// Pre-create quality_gate.sh with custom content.
-		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		// Pre-create scripts/quality_gate.sh with custom content.
+		scriptsDir := filepath.Join(projectDir, "scripts")
+		if err := os.MkdirAll(scriptsDir, 0o750); err != nil {
+			t.Fatalf("mkdir scripts: %v", err)
+		}
+		qgPath := filepath.Join(scriptsDir, "quality_gate.sh")
 		custom := []byte("#!/bin/bash\n# custom user script\n")
 		if err := os.WriteFile(qgPath, custom, 0o755); err != nil { //nolint:gosec // test file
 			t.Fatalf("write existing quality_gate.sh: %v", err)
@@ -982,8 +986,12 @@ func TestBootstrapGeneratesQualityGate(t *testing.T) {
 			t.Fatalf("write go.mod: %v", err)
 		}
 
-		// Pre-create quality_gate.sh with custom content.
-		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		// Pre-create scripts/quality_gate.sh with custom content.
+		scriptsDir2 := filepath.Join(projectDir, "scripts")
+		if err := os.MkdirAll(scriptsDir2, 0o750); err != nil {
+			t.Fatalf("mkdir scripts: %v", err)
+		}
+		qgPath := filepath.Join(scriptsDir2, "quality_gate.sh")
 		custom := []byte("#!/bin/bash\n# custom user script\n")
 		if err := os.WriteFile(qgPath, custom, 0o755); err != nil { //nolint:gosec // test file
 			t.Fatalf("write existing quality_gate.sh: %v", err)
@@ -1016,7 +1024,7 @@ func TestBootstrapGeneratesQualityGate(t *testing.T) {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
 
-		qgPath := filepath.Join(projectDir, "quality_gate.sh")
+		qgPath := filepath.Join(projectDir, "scripts", "quality_gate.sh")
 		if _, err := os.Stat(qgPath); err == nil {
 			t.Error("quality_gate.sh should NOT be created when no languages detected")
 		}

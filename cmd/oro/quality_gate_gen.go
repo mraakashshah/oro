@@ -277,7 +277,11 @@ func generateQualityGateScript(cfg *langprofile.Config) (string, error) {
 // detected language config. Skips if the file already exists (unless force is
 // true). Uses atomic write (tmp + rename) for safety.
 func writeQualityGateScript(projectRoot string, cfg *langprofile.Config, force bool) error {
-	dest := filepath.Join(projectRoot, "quality_gate.sh")
+	scriptsDir := filepath.Join(projectRoot, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o750); err != nil {
+		return fmt.Errorf("creating scripts/ dir: %w", err)
+	}
+	dest := filepath.Join(scriptsDir, "quality_gate.sh")
 
 	// Skip if file exists and not forcing.
 	if !force && fileExists(dest) {

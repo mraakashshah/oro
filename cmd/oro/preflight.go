@@ -96,36 +96,36 @@ func warnIfSearchHookMissing(w io.Writer, binPath string) {
 // warnIfQualityGateUntracked writes a warning if quality_gate.sh exists in the
 // given directory but is untracked in git. The directory is typically the repo root.
 func warnIfQualityGateUntracked(w io.Writer, dir string) {
-	qualityGatePath := filepath.Join(dir, "quality_gate.sh")
-
-	// Check if the file exists
-	if _, err := os.Stat(qualityGatePath); err != nil {
-		// File doesn't exist — other functions handle this case
+	// Check scripts/quality_gate.sh (canonical) then root (legacy).
+	type candidate struct{ path, gitPath string }
+	for _, c := range []candidate{
+		{filepath.Join(dir, "scripts", "quality_gate.sh"), "scripts/quality_gate.sh"},
+		{filepath.Join(dir, "quality_gate.sh"), "quality_gate.sh"},
+	} {
+		if _, err := os.Stat(c.path); err != nil {
+			continue
+		}
+		isTracked, err := isFileTrackedInGit(dir, c.gitPath)
+		if err != nil {
+			return
+		}
+		if !isTracked {
+			fmt.Fprintf(w, "warning: %s exists but is untracked in git — commit it with: git add %s && git commit\n", c.gitPath, c.gitPath)
+		}
 		return
-	}
-
-	// File exists. Check if it's tracked in git.
-	isTracked, err := isFileTrackedInGit(dir, "quality_gate.sh")
-	if err != nil {
-		// We're either not in a git repo or git command failed — skip warning
-		return
-	}
-
-	if !isTracked {
-		fmt.Fprintf(w, "warning: quality_gate.sh exists but is untracked in git — commit it with: git add quality_gate.sh && git commit\n")
 	}
 }
 
 // warnIfQualityGateMissing writes a warning if quality_gate.sh does not exist
 // in the given directory. The directory is typically the repo root.
+// Checks scripts/quality_gate.sh (canonical) then root (legacy).
 func warnIfQualityGateMissing(w io.Writer, dir string) {
-	qualityGatePath := filepath.Join(dir, "quality_gate.sh")
-
-	if _, err := os.Stat(qualityGatePath); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintf(w, "warning: quality_gate.sh is missing — run oro init to generate it\n")
+	for _, rel := range []string{"scripts/quality_gate.sh", "quality_gate.sh"} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); err == nil {
+			return
 		}
 	}
+	fmt.Fprintf(w, "warning: quality_gate.sh is missing — run oro init to generate it\n")
 }
 
 // isFileTrackedInGit returns true if the given filename is tracked in git within

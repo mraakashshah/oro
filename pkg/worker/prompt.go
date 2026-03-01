@@ -191,7 +191,7 @@ func collectCodingRules(projectRoot string) []string {
 func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Coding Rules", strings.Join(collectCodingRules(params.ProjectRoot), "\n"))
 	section(b, "TDD", "Write tests FIRST. Red-green-refactor. Every feature/fix needs a test.")
-	section(b, "Quality Gate", "Before completing, run `./quality_gate.sh` and ensure it passes.")
+	section(b, "Quality Gate", "Before completing, run `./scripts/quality_gate.sh` and ensure it passes.")
 	section(b, "Worktree", fmt.Sprintf(
 		"You are in `%s`. Commit to branch `%s%s`.", params.WorktreePath, protocol.BranchPrefix, params.BeadID,
 	))

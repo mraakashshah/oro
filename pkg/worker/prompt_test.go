@@ -274,8 +274,8 @@ func TestAssemblePrompt_QualityGateContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "./quality_gate.sh") {
-		t.Error("expected Quality Gate section to contain './quality_gate.sh'")
+	if !strings.Contains(prompt, "./scripts/quality_gate.sh") {
+		t.Error("expected Quality Gate section to contain './scripts/quality_gate.sh'")
 	}
 }
 
