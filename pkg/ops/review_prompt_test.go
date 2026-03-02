@@ -86,14 +86,14 @@ func TestBuildReviewPrompt_IncludesRules(t *testing.T) {
 func TestBuildReviewPrompt_IncludesAntiPatterns(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create .claude/review-patterns.md
-	claudeDir := filepath.Join(tmpDir, ".claude")
+	// Create assets/review-patterns.md
+	assetsDir := filepath.Join(tmpDir, "assets")
 	//nolint:gosec // Test directory permissions
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	//nolint:gosec // Test file permissions
-	if err := os.WriteFile(filepath.Join(claudeDir, "review-patterns.md"),
+	if err := os.WriteFile(filepath.Join(assetsDir, "review-patterns.md"),
 		[]byte("loose-match: strings.Contains for exact lookup\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestBuildReviewPrompt_IncludesAntiPatterns(t *testing.T) {
 func TestBuildReviewPrompt_MissingFilesGraceful(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// No CLAUDE.md, no .claude/rules, no review-patterns.md
+	// No CLAUDE.md, no .claude/rules, no assets/review-patterns.md
 	opts := ReviewOpts{
 		BeadID:      "oro-test",
 		Worktree:    tmpDir,
@@ -514,10 +514,10 @@ func TestExtractPatterns_EmptyPatternValue(t *testing.T) {
 }
 
 // TestReadAntiPatterns_MissingFile verifies that readAntiPatterns returns an
-// empty string when .claude/review-patterns.md does not exist.
+// empty string when assets/review-patterns.md does not exist.
 func TestReadAntiPatterns_MissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	// No .claude/review-patterns.md created
+	// No assets/review-patterns.md created
 
 	result := readAntiPatterns(tmpDir)
 

@@ -37,7 +37,7 @@ Acceptance: {acceptance_criteria}
 {contents of .claude/rules/*.md}
 
 ## Known Anti-Patterns
-{contents of .claude/review-patterns.md, if it exists}
+{contents of assets/review-patterns.md, if it exists}
 
 ## Phase 1: Understand
 1. git diff {base_branch} --stat (scope)
@@ -83,7 +83,7 @@ PATTERN: tag: trigger → fix
 
 ### Pattern Capture (Living Anti-Pattern File)
 
-When the reviewer outputs `PATTERN:` lines, the dispatcher appends them to `.claude/review-patterns.md`. Format:
+When the reviewer outputs `PATTERN:` lines, the dispatcher appends them to `assets/review-patterns.md`. Format:
 
 ```
 loose-match: strings.Contains for exact lookup → use map key or ==
@@ -125,6 +125,6 @@ Rationale: Sonnet handles most beads. When a design issue is caught, Opus is bet
 | File | Change |
 |------|--------|
 | `pkg/ops/ops.go` | Replace `buildReviewPrompt()` with call to new prompt builder. Change review model to Opus. Parse `PATTERN:` lines from output. |
-| `pkg/ops/review_prompt.go` | **New file.** Prompt assembly: reads CLAUDE.md, .claude/rules/*, .claude/review-patterns.md, templates the full prompt. |
+| `pkg/ops/review_prompt.go` | **New file.** Prompt assembly: reads CLAUDE.md, .claude/rules/*, assets/review-patterns.md, templates the full prompt. |
 | `pkg/dispatcher/dispatcher.go` | `handleReviewResult()`: append captured patterns to review-patterns.md. `handleReviewRejection()`: set Model to Opus on re-assign. |
 | `pkg/protocol/message.go` | Add `Patterns []string` to `ReviewResultPayload`. |

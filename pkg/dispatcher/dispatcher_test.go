@@ -10104,16 +10104,16 @@ func TestAppendReviewPatterns_LogsErrorWhenUnwritable(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
-	// Create .claude directory and a read-only review-patterns.md file
+	// Create assets directory and a read-only review-patterns.md file
 	beadsDir := t.TempDir()
 	root := beadsDir
-	claudeDir := root + "/.claude"
+	assetsDir := root + "/assets"
 	//nolint:gosec // test fixture: intentional directory permission
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
-		t.Fatalf("failed to create .claude dir: %v", err)
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("failed to create assets dir: %v", err)
 	}
 
-	patternsFile := claudeDir + "/review-patterns.md"
+	patternsFile := assetsDir + "/review-patterns.md"
 	//nolint:gosec // test fixture: intentional file permission to simulate read-only file
 	if err := os.WriteFile(patternsFile, []byte("existing content\n"), 0o444); err != nil {
 		t.Fatalf("failed to create read-only patterns file: %v", err)

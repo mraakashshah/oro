@@ -1633,19 +1633,19 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	)
 }
 
-// appendReviewPatterns appends captured anti-patterns to .claude/review-patterns.md
+// appendReviewPatterns appends captured anti-patterns to assets/review-patterns.md
 // in the main repository root. Returns error if directory is unwritable or file cannot be opened.
 func (d *Dispatcher) appendReviewPatterns(ctx context.Context, beadID, workerID string, patterns []string) error {
 	// Derive project root from beadsDir (which is the repo root's .beads/)
 	root := filepath.Dir(d.beadsDir)
-	patternsFile := filepath.Join(root, ".claude", "review-patterns.md")
+	patternsFile := filepath.Join(root, "assets", "review-patterns.md")
 
-	// Ensure .claude/ directory exists
-	claudeDir := filepath.Dir(patternsFile)
+	// Ensure assets/ directory exists
+	assetsDir := filepath.Dir(patternsFile)
 	//nolint:gosec // directory permissions for project config
-	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
 		_ = d.logEvent(ctx, "append_review_patterns_failed", "ops", beadID, workerID, fmt.Sprintf("mkdir failed: %v", err))
-		return fmt.Errorf("create .claude directory: %w", err)
+		return fmt.Errorf("create assets directory: %w", err)
 	}
 
 	//nolint:gosec // patternsFile is derived from trusted beadsDir

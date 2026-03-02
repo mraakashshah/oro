@@ -113,7 +113,7 @@ type ReviewOpts struct {
 	Worktree           string
 	AcceptanceCriteria string
 	BaseBranch         string // defaults to "main" if empty
-	ProjectRoot        string // for reading CLAUDE.md, .claude/rules/, .claude/review-patterns.md
+	ProjectRoot        string // for reading CLAUDE.md, .claude/rules/, assets/review-patterns.md
 }
 
 // MergeOpts configures a merge conflict agent.

@@ -7,7 +7,7 @@ import (
 )
 
 // buildReviewPrompt assembles a comprehensive code review prompt from project
-// files (CLAUDE.md, .claude/rules/, .claude/review-patterns.md) and bead context.
+// files (CLAUDE.md, .claude/rules/, assets/review-patterns.md) and bead context.
 func buildReviewPrompt(opts ReviewOpts) string {
 	base := opts.BaseBranch
 	if base == "" {
@@ -148,9 +148,9 @@ func readProjectStandards(root string) string {
 	return strings.Join(parts, "\n")
 }
 
-// readAntiPatterns reads .claude/review-patterns.md if it exists.
+// readAntiPatterns reads assets/review-patterns.md if it exists.
 func readAntiPatterns(root string) string {
-	return readFileIfExists(filepath.Join(root, ".claude", "review-patterns.md"))
+	return readFileIfExists(filepath.Join(root, "assets", "review-patterns.md"))
 }
 
 // readFileIfExists reads a file and returns its contents, or empty string if

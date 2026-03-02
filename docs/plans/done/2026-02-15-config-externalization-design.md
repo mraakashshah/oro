@@ -17,7 +17,7 @@ Oro currently takes over the target project's `.claude/` directory and commits `
 - `.claude/hooks/beacons/` — `architect.md`, `manager.md` role prompts
 - `.claude/skills/` — 35 skills
 - `.claude/commands/` — `restart-oro`, `toggle-priming`
-- `.claude/review-patterns.md` — code review patterns
+- `assets/review-patterns.md` — code review patterns
 - `.beads/` — SQLite DB, issues.jsonl, config, formulas, memory
 - `docs/handoffs/` — session handoff YAMLs
 - `docs/decisions-and-discoveries.md` — architectural log
@@ -336,7 +336,7 @@ Worker in worktree (.worktrees/bead-abc123/)
 | `.claude/hooks/` (20+ scripts) | `~/.oro/hooks/` |
 | `.claude/hooks/beacons/` | `~/.oro/beacons/` |
 | `.claude/commands/` | `~/.oro/.claude/commands/` |
-| `.claude/review-patterns.md` | `~/.oro/projects/<name>/review-patterns.md` |
+| `assets/review-patterns.md` | `~/.oro/projects/<name>/review-patterns.md` |
 | `CLAUDE.md` (oro instructions) | `~/.oro/.claude/CLAUDE.md` |
 | `docs/handoffs/` | `~/.oro/projects/<name>/handoffs/` |
 | `docs/decisions-and-discoveries.md` | `~/.oro/projects/<name>/decisions.md` |
