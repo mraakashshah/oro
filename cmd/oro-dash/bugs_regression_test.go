@@ -54,14 +54,15 @@ func TestBug01_TypeIconsAreTextBadges(t *testing.T) {
 	}
 }
 
-func TestBug01_IconsAppearInListView(t *testing.T) {
+func TestBug01_IconsNotInListView(t *testing.T) {
 	_, styles := testThemeAndStyles()
 	lm := NewListModel().updateBeads(sampleBeads())
 	out := lm.View(DefaultTheme(), styles, 120, 30)
 
+	// Spec: list view has NO type badge column (board view still uses them)
 	for _, badge := range []string{"[T]", "[F]", "[B]"} {
-		if !strings.Contains(out, badge) {
-			t.Errorf("list view missing type badge %q", badge)
+		if strings.Contains(out, badge) {
+			t.Errorf("list view should NOT show type badge %q (removed per spec)", badge)
 		}
 	}
 }
@@ -78,54 +79,67 @@ func TestBug01_IconsAppearInBoardView(t *testing.T) {
 	}
 }
 
-// --- Bug 2: List view should be two-column (Open left, Closed right) with deps ---
+// --- Bug 2: List view should be list+detail split-pane with 4 groups ---
 
-func TestBug02_TwoColumnLayoutAtWideWidth(t *testing.T) {
+func TestBug02_SplitPaneLayoutAtWideWidth(t *testing.T) {
 	_, styles := testThemeAndStyles()
 	lm := NewListModel().updateBeads(sampleBeads())
 
 	out := lm.View(DefaultTheme(), styles, 120, 30)
-	if !strings.Contains(out, "Open (") {
-		t.Error("two-column layout missing 'Open' header")
+	// Should show 4-group headers
+	if !strings.Contains(out, "In Progress (") {
+		t.Error("split-pane layout missing 'In Progress' header")
 	}
-	if !strings.Contains(out, "Closed (") {
-		t.Error("two-column layout missing 'Closed' header")
+	if !strings.Contains(out, "Done (") {
+		t.Error("split-pane layout missing 'Done' header")
 	}
-	// Separator should be present (vertical bar)
+	// Separator should be present (vertical bar for split-pane)
 	if !strings.Contains(out, "│") {
-		t.Error("two-column layout missing vertical separator")
+		t.Error("split-pane layout missing vertical separator")
 	}
 }
 
-func TestBug02_OpenBeadsBeforeClosedInNarrowView(t *testing.T) {
+func TestBug02_GroupOrderInNarrowView(t *testing.T) {
 	_, styles := testThemeAndStyles()
 	lm := NewListModel().updateBeads(sampleBeads())
 
 	out := lm.View(DefaultTheme(), styles, 80, 30) // narrow = stacked
-	openIdx := strings.Index(out, "Open (")
-	closedIdx := strings.Index(out, "Closed (")
-	if openIdx == -1 || closedIdx == -1 {
-		t.Fatalf("missing headers: open=%d, closed=%d", openIdx, closedIdx)
+	ipIdx := strings.Index(out, "In Progress (")
+	doneIdx := strings.Index(out, "Done (")
+	if ipIdx == -1 || doneIdx == -1 {
+		t.Fatalf("missing headers: in_progress=%d, done=%d", ipIdx, doneIdx)
 	}
-	if openIdx > closedIdx {
-		t.Error("narrow view: Open group should appear before Closed group")
+	if ipIdx > doneIdx {
+		t.Error("narrow view: In Progress group should appear before Done group")
 	}
 }
 
-func TestBug02_DepsShownInTwoColumnView(t *testing.T) {
+func TestBug02_DepsShownInDetailPane(t *testing.T) {
 	_, styles := testThemeAndStyles()
-	lm := NewListModel().updateBeads(sampleBeads())
+	beads := sampleBeads()
+	lm := NewListModel().updateBeads(beads)
 
-	out := lm.View(DefaultTheme(), styles, 120, 30)
-	// bl-1 has a "blocks" dep on op-1 — should show 🚧
-	if !strings.Contains(out, "🚧") {
-		t.Error("two-column view should show 🚧 for blocked bead deps")
+	// Navigate to the blocked bead and check detail pane shows deps
+	rows := lm.flatRows()
+	for i, row := range rows {
+		if row.bead != nil && row.bead.ID == "bl-1" {
+			lm.cursor = i
+			break
+		}
+	}
+	sections := map[string]bool{"deps": true}
+	b := *lm.getCursorBead()
+	out := renderDetailPane(b, nil, nil, sections, styles, 40, 20)
+	if !strings.Contains(out, "op-1") {
+		t.Error("detail pane should show dependency on op-1 for blocked bead")
 	}
 }
 
 func TestBug02_TopoSortPrereqsBeforeDependents(t *testing.T) {
+	// With 4 groups, child (blocked) goes to "blocked" bucket, parent (open) to "open" bucket.
+	// Topo sort applies within the "open" bucket only.
 	groups := groupBeads([]protocol.Bead{
-		{ID: "child", Status: "blocked", Priority: 0, Dependencies: []protocol.Dependency{
+		{ID: "child", Status: "open", Priority: 0, Dependencies: []protocol.Dependency{
 			{Type: "blocks", DependsOnID: "parent"},
 		}},
 		{ID: "parent", Status: "open", Priority: 3},

@@ -1606,7 +1606,7 @@ func TestModel_InitialLoadState(t *testing.T) {
 		}
 
 		// List structure should be present (group headers)
-		if !strings.Contains(view, "Open (") {
+		if !strings.Contains(view, "Ready (") {
 			t.Errorf("View() after beadsMsg should contain list structure, got: %s", view)
 		}
 	})
@@ -1975,7 +1975,7 @@ func TestLoadMoreClosed(t *testing.T) {
 		}
 	})
 
-	t.Run("groupBeads does not cap closed at 10", func(t *testing.T) {
+	t.Run("groupBeads caps closed at 10", func(t *testing.T) {
 		var beads []protocol.Bead
 		for i := range 15 {
 			beads = append(beads, protocol.Bead{
@@ -1985,8 +1985,8 @@ func TestLoadMoreClosed(t *testing.T) {
 		}
 
 		groups := groupBeads(beads)
-		if len(groups["closed"]) != 15 {
-			t.Errorf("groupBeads closed count = %d, want 15 (no cap)", len(groups["closed"]))
+		if len(groups["closed"]) != 10 {
+			t.Errorf("groupBeads closed count = %d, want 10 (capped)", len(groups["closed"]))
 		}
 	})
 }

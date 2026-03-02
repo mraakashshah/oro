@@ -71,7 +71,7 @@ func (lm ListModel) resize(width, height int) ListModel {
 
 // listRenderOrder returns the canonical order for status groups.
 func listRenderOrder() []string {
-	return []string{"open", "closed"}
+	return []string{"in_progress", "open", "blocked", "closed"}
 }
 
 // flatRows returns the visible rows: headers + bead rows for expanded groups.
@@ -322,7 +322,7 @@ func (lm ListModel) renderList(styles Styles, width, height int) string {
 			if lastStatus != "" {
 				out.WriteString("\n")
 			}
-			out.WriteString(lm.renderHeaderRow(row.status, len(groups[row.status]), active, styles) + "\n")
+			out.WriteString(lm.renderHeaderRow(row.status, len(groups[row.status]), active, width, styles) + "\n")
 			lastStatus = row.status
 			continue
 		}
@@ -334,29 +334,6 @@ func (lm ListModel) renderList(styles Styles, width, height int) string {
 	}
 
 	return lipgloss.NewStyle().Width(width).Height(height).Render(out.String())
-}
-
-// renderColumnPane renders a single pane of beads with a header for the two-column layout.
-// Cursor highlighting uses bead ID matching (not index) since the cursor tracks flat row indices.
-func (lm ListModel) renderColumnPane(title string, beads []protocol.Bead, paneWidth, height int, styles Styles, isCursorPane bool) string {
-	cursorID := lm.cursorBeadID()
-
-	var out strings.Builder
-	out.WriteString(styles.Header.Render(fmt.Sprintf("%s (%d)", title, len(beads))) + "\n\n")
-
-	for _, b := range beads {
-		line := lm.renderRow(b, paneWidth, styles)
-		// Add inline dependency info for any bead with dependencies
-		if len(b.Dependencies) > 0 {
-			line += renderDepSuffix(b, styles)
-		}
-		if isCursorPane && b.ID == cursorID {
-			line = styles.Highlight.Render(line)
-		}
-		out.WriteString(line + "\n")
-	}
-
-	return lipgloss.NewStyle().Width(paneWidth).Height(height).Render(out.String())
 }
 
 // renderDepSuffix returns a compact inline dependency indicator showing all dep relationships.
@@ -384,8 +361,9 @@ func renderDepSuffix(b protocol.Bead, styles Styles) string {
 }
 
 // View renders the list view as a dense table of beads grouped by status.
-// At width >= 100: two-column layout with Open beads on the left and Closed on the right.
-// At narrow widths (<100): stacked vertical list as before.
+// At width > 120: split-pane list (55%) + detail (45%).
+// At width 100-120: split-pane list (60%) + detail (40%), hide Ctx% column.
+// At width < 100: list only (full width), stacked groups with headers.
 func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	if len(lm.beads) == 0 {
 		return styles.Muted.Render("No beads found. Run `bd create` to get started.")
@@ -396,19 +374,46 @@ func (lm ListModel) View(_ Theme, styles Styles, width, height int) string {
 	}
 
 	if width >= 100 {
-		groups := groupBeads(lm.filteredBeads())
-		openBeads := groups["open"]
-		closedBeads := groups["closed"]
-
-		paneWidth := (width - 3) / 2 // -3 for separator + margins
-		leftPane := lm.renderColumnPane("Open", openBeads, paneWidth, height, styles, true)
-		separator := buildVerticalSeparator(height, styles.ListDetailBorderDim)
-		// Closed pane is not cursor-tracked (cursor stays in open pane)
-		rightPane := lm.renderColumnPane("Closed", closedBeads, paneWidth, height, styles, false)
-		return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, separator, rightPane)
+		return lm.renderSplitPane(styles, width, height)
 	}
 
 	return lm.renderList(styles, width, height)
+}
+
+// renderSplitPane renders the list+detail split-pane layout for wide terminals.
+func (lm ListModel) renderSplitPane(styles Styles, width, height int) string {
+	listRatio := lm.splitRatio
+	if width <= 120 {
+		listRatio = 0.6
+	}
+	listWidth := int(float64(width-1) * listRatio) // -1 for separator
+	detailWidth := width - listWidth - 1
+
+	listPane := lm.renderList(styles, listWidth, height)
+	separator := buildVerticalSeparator(height, styles.ListDetailBorderDim)
+
+	cursorBead := lm.getCursorBead()
+	var detailPane string
+	if cursorBead != nil {
+		sections := lm.detailSections
+		if sections == nil {
+			sections = defaultDetailSections()
+		}
+		detailPane = renderDetailPane(*cursorBead, lm.workers, lm.assignments, sections, styles, detailWidth, height)
+	} else {
+		detailPane = lipgloss.NewStyle().Width(detailWidth).Height(height).Render("")
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, listPane, separator, detailPane)
+}
+
+// getCursorBead returns the bead at the current cursor position, or nil if on a header or out of range.
+func (lm ListModel) getCursorBead() *protocol.Bead {
+	rows := lm.flatRows()
+	if lm.cursor < 0 || lm.cursor >= len(rows) {
+		return nil
+	}
+	return rows[lm.cursor].bead
 }
 
 // topoGraph holds the data structures for topological sort.
@@ -496,26 +501,40 @@ func topoSortBeads(beads []protocol.Bead) []protocol.Bead {
 	return result
 }
 
-// groupBeads groups beads into two buckets:
-//   - "open": in_progress, open, blocked, and any unknown status — sorted by priority ascending.
-//   - "closed": closed beads — sorted by UpdatedAt descending (newest first).
+// groupBeads groups beads into four buckets:
+//   - "in_progress": actively being worked on — sorted by priority ascending.
+//   - "open": ready to work — topologically sorted (prerequisites first, then priority).
+//   - "blocked": waiting on dependencies — sorted by priority ascending.
+//   - "closed": completed — sorted by UpdatedAt descending (newest first), capped at 10.
 func groupBeads(beads []protocol.Bead) map[string][]protocol.Bead {
 	groups := map[string][]protocol.Bead{
-		"open":   {},
-		"closed": {},
+		"in_progress": {},
+		"open":        {},
+		"blocked":     {},
+		"closed":      {},
 	}
 	for _, b := range beads {
-		if b.Status == "closed" {
+		switch b.Status {
+		case "in_progress":
+			groups["in_progress"] = append(groups["in_progress"], b)
+		case "blocked":
+			groups["blocked"] = append(groups["blocked"], b)
+		case "closed":
 			groups["closed"] = append(groups["closed"], b)
-		} else {
+		default:
 			groups["open"] = append(groups["open"], b)
 		}
 	}
 
-	// Sort open by topological order (prerequisites before dependents, then by priority).
+	// Sort in_progress and blocked by priority ascending.
+	byPriority := func(a, b protocol.Bead) int { return a.Priority - b.Priority }
+	slices.SortStableFunc(groups["in_progress"], byPriority)
+	slices.SortStableFunc(groups["blocked"], byPriority)
+
+	// Topo sort applies only to open (ready) beads.
 	groups["open"] = topoSortBeads(groups["open"])
 
-	// Sort closed by UpdatedAt descending (newest first).
+	// Sort closed by UpdatedAt descending (newest first), cap at 10.
 	slices.SortStableFunc(groups["closed"], func(a, b protocol.Bead) int {
 		ta := parseBeadTime(a.UpdatedAt)
 		tb := parseBeadTime(b.UpdatedAt)
@@ -527,44 +546,55 @@ func groupBeads(beads []protocol.Bead) map[string][]protocol.Bead {
 		}
 		return 0
 	})
+	if len(groups["closed"]) > 10 {
+		groups["closed"] = groups["closed"][:10]
+	}
 
 	return groups
 }
 
-// renderHeaderRow renders a group header with collapse indicator and optional cursor highlight.
-func (lm ListModel) renderHeaderRow(status string, count int, active bool, styles Styles) string {
+// renderHeaderRow renders a group header with collapse indicator, ── fill, and optional cursor highlight.
+// Format: ▼── In Progress (2) ──────────
+func (lm ListModel) renderHeaderRow(status string, count int, active bool, width int, styles Styles) string {
 	indicator := "▼"
 	if lm.collapsed[status] {
 		indicator = "▶"
 	}
-	header := fmt.Sprintf("%s %s", indicator, renderGroupHeader(status, count, styles))
+	label := renderGroupHeader(status, count, styles)
+	prefix := fmt.Sprintf("%s── %s ", indicator, label)
+	prefixLen := len([]rune(prefix))
+	remaining := max(width-prefixLen, 0)
+	fill := strings.Repeat("─", remaining)
+	line := prefix + fill
 	if active {
-		header = styles.Highlight.Render(header)
+		return styles.Highlight.Render(line)
 	}
-	return header
+	return styles.Muted.Render(line)
 }
 
-// renderGroupHeader renders a group header like "Open (3)".
-func renderGroupHeader(status string, count int, styles Styles) string {
+// renderGroupHeader renders a group header label like "In Progress (2)".
+func renderGroupHeader(status string, count int, _ Styles) string {
 	labels := map[string]string{
-		"open":   "Open",
-		"closed": "Closed",
+		"in_progress": "In Progress",
+		"open":        "Ready",
+		"blocked":     "Blocked",
+		"closed":      "Done",
 	}
 	label := labels[status]
 	if label == "" {
 		label = status
 	}
-	return styles.Header.Render(fmt.Sprintf("%s (%d)", label, count))
+	return fmt.Sprintf("%s (%d)", label, count)
 }
 
 // renderStatusDot returns a colored status dot for the bead's status.
-// ● in_progress (amber), ⊘ blocked (red), ✓ closed (green), empty for open.
+// ● in_progress (amber), ⊥ blocked (red), ✓ closed (green), empty for open.
 func renderStatusDot(status string, styles Styles) string {
 	switch status {
 	case "in_progress":
 		return styles.BadgeInProgress.Render("●")
 	case "blocked":
-		return styles.BadgeBlocked.Render("⊘")
+		return styles.BadgeBlocked.Render("⊥")
 	case "closed":
 		return styles.Success.Render("✓")
 	default:
@@ -573,7 +603,7 @@ func renderStatusDot(status string, styles Styles) string {
 }
 
 // renderRow renders a single bead as a compact list row showing
-// status + icon + priority + ID + title + worker + ctx%.
+// status + priority + ID + title + worker + ctx%.
 // Column visibility adapts to terminal width:
 //   - >120: worker ID + ctx%
 //   - 100-120: worker ID only (hide ctx%)
@@ -581,7 +611,6 @@ func renderStatusDot(status string, styles Styles) string {
 //   - <80: truncate bead ID (first 5 chars + "...")
 func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string {
 	statusDot := renderStatusDot(b.Status, styles)
-	icon := renderTreeTypeIcon(b.Type)
 	priority := renderTreePriorityBadge(b.Priority, styles)
 
 	// Truncate bead ID at narrow widths (<80).
@@ -592,11 +621,8 @@ func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string 
 	id := styles.IDMuted.Render(idText)
 
 	// Truncate title to fit within available width.
-	// Reserve: 2 indent + statusDot(1) + 1 + icon(2) + 1 + priority(4) + 1 + id + 2 + worker(~15) + margin.
-	maxTitle := width - 42
-	if maxTitle < 10 {
-		maxTitle = 10
-	}
+	// Reserve: 2 indent + statusDot(1) + 1 + priority(4) + 1 + id + 2 + worker(~15) + margin.
+	maxTitle := max(width-38, 10)
 	title := b.Title
 	if len([]rune(title)) > maxTitle {
 		title = string([]rune(title)[:maxTitle-3]) + "..."
@@ -605,7 +631,7 @@ func (lm ListModel) renderRow(b protocol.Bead, width int, styles Styles) string 
 	// Look up worker assignment — only shown when width >= 100.
 	workerPart := renderWorkerPart(lm.workers, lm.assignments, b.ID, width, styles)
 
-	return fmt.Sprintf("  %s %s %s %s  %-*s%s", statusDot, icon, priority, id, maxTitle, title, workerPart)
+	return fmt.Sprintf("  %s %s %s  %-*s%s", statusDot, priority, id, maxTitle, title, workerPart)
 }
 
 // renderWorkerPart returns the styled worker portion of a list row.

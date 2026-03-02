@@ -135,10 +135,10 @@ func TestListNav_JK(t *testing.T) {
 	t.Run("flatRows includes headers and bead rows for expanded groups", func(t *testing.T) {
 		lm := NewListModel().updateBeads(makeBeads())
 		rows := lm.flatRows()
-		// 1 group: open(1 header + 4 beads: in_progress+open+blocked all merged)
-		// = 1 header + 4 beads = 5 rows (no closed beads in makeBeads)
-		if len(rows) != 5 {
-			t.Errorf("flatRows: got %d rows, want 5", len(rows))
+		// 3 groups: in_progress(1 header + 1 bead), open(1 header + 2 beads), blocked(1 header + 1 bead)
+		// = 3 headers + 4 beads = 7 rows (no closed beads in makeBeads)
+		if len(rows) != 7 {
+			t.Errorf("flatRows: got %d rows, want 7", len(rows))
 		}
 		// First row should be a header
 		if !rows[0].isHeader {
@@ -247,10 +247,10 @@ func TestListNav_JK(t *testing.T) {
 
 	t.Run("cursorBeadID returns bead ID when on bead row", func(t *testing.T) {
 		lm := NewListModel().updateBeads(makeBeads())
-		lm.cursor = 1 // first bead row; open group sorted by priority: bl-1(P0) is first
+		lm.cursor = 1 // first bead row; in_progress group has ip-1
 		id := lm.cursorBeadID()
-		if id != "bl-1" {
-			t.Errorf("cursorBeadID on bead row: got %q, want %q", id, "bl-1")
+		if id != "ip-1" {
+			t.Errorf("cursorBeadID on bead row: got %q, want %q", id, "ip-1")
 		}
 	})
 
@@ -265,7 +265,7 @@ func TestListNav_JK(t *testing.T) {
 
 	t.Run("cursor persists by bead ID across refresh", func(t *testing.T) {
 		lm := NewListModel().updateBeads(makeBeads())
-		lm.cursor = 4 // should be op-2 (open header=3, op-2=4 due to priority sort)
+		lm.cursor = 4 // open group: op-1 (P2) at row 4 (in_progress header=0, ip-1=1, open header=2, op-2=3, op-1=4)
 		savedID := lm.cursorBeadID()
 		if savedID == "" {
 			t.Fatal("expected a bead ID at cursor 4")
@@ -357,21 +357,12 @@ func TestListRow_Render(t *testing.T) {
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
-	t.Run("renderRow shows type icon for task", func(t *testing.T) {
+	t.Run("renderRow does not show type icon (spec: no badge column)", func(t *testing.T) {
 		b := protocol.Bead{ID: "abc-1", Title: "Do the thing", Status: "open", Priority: 2, Type: "task"}
 		lm := NewListModel()
 		row := lm.renderRow(b, 80, styles)
-		if !strings.Contains(row, "[T]") {
-			t.Errorf("renderRow missing task icon '[T]': %q", row)
-		}
-	})
-
-	t.Run("renderRow shows type icon for bug", func(t *testing.T) {
-		b := protocol.Bead{ID: "bug-1", Title: "Fix crash", Status: "open", Priority: 0, Type: "bug"}
-		lm := NewListModel()
-		row := lm.renderRow(b, 80, styles)
-		if !strings.Contains(row, "[B]") {
-			t.Errorf("renderRow missing bug icon '[B]': %q", row)
+		if strings.Contains(row, "[T]") {
+			t.Errorf("renderRow should not show type icon in list view: %q", row)
 		}
 	})
 
@@ -441,7 +432,7 @@ func TestListRow_Render(t *testing.T) {
 		}
 	})
 
-	t.Run("groupBeads partitions beads by status", func(t *testing.T) {
+	t.Run("groupBeads partitions beads by status into 4 buckets", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "a", Status: "open", Priority: 2},
 			{ID: "b", Status: "in_progress", Priority: 1},
@@ -449,16 +440,20 @@ func TestListRow_Render(t *testing.T) {
 			{ID: "d", Status: "closed", Priority: 3},
 		}
 		groups := groupBeads(beads)
-		// in_progress, open, and blocked are all merged into the "open" bucket
-		if len(groups["open"]) != 3 {
-			t.Errorf("groupBeads open group: got %d beads, want 3 (open+in_progress+blocked)", len(groups["open"]))
+		if len(groups["in_progress"]) != 1 || groups["in_progress"][0].ID != "b" {
+			t.Errorf("groupBeads in_progress: got %v", groups["in_progress"])
+		}
+		if len(groups["open"]) != 1 || groups["open"][0].ID != "a" {
+			t.Errorf("groupBeads open: got %v", groups["open"])
+		}
+		if len(groups["blocked"]) != 1 || groups["blocked"][0].ID != "c" {
+			t.Errorf("groupBeads blocked: got %v", groups["blocked"])
 		}
 		if len(groups["closed"]) != 1 || groups["closed"][0].ID != "d" {
-			t.Errorf("groupBeads closed group: got %v", groups["closed"])
+			t.Errorf("groupBeads closed: got %v", groups["closed"])
 		}
-		// Only two keys should exist
-		if len(groups) != 2 {
-			t.Errorf("groupBeads: got %d groups, want 2", len(groups))
+		if len(groups) != 4 {
+			t.Errorf("groupBeads: got %d groups, want 4", len(groups))
 		}
 	})
 
@@ -504,7 +499,7 @@ func TestListRow_Render(t *testing.T) {
 		}
 	})
 
-	t.Run("groupBeads does not cap closed group (load-more handles pagination)", func(t *testing.T) {
+	t.Run("groupBeads caps closed group at 10", func(t *testing.T) {
 		beads := make([]protocol.Bead, 15)
 		for i := range beads {
 			beads[i] = protocol.Bead{
@@ -513,8 +508,8 @@ func TestListRow_Render(t *testing.T) {
 			}
 		}
 		groups := groupBeads(beads)
-		if len(groups["closed"]) != 15 {
-			t.Errorf("groupBeads closed group = %d, want 15 (no cap)", len(groups["closed"]))
+		if len(groups["closed"]) != 10 {
+			t.Errorf("groupBeads closed group = %d, want 10 (capped)", len(groups["closed"]))
 		}
 	})
 
@@ -524,12 +519,12 @@ func TestListRow_Render(t *testing.T) {
 			{ID: "only-open", Title: "An open task", Status: "open", Priority: 2, Type: "task"},
 		})
 		out := lm.View(theme, styles, 80, 24)
-		if !strings.Contains(out, "Open (") {
-			t.Errorf("View missing Open group header")
+		if !strings.Contains(out, "Ready (") {
+			t.Errorf("View missing Ready group header")
 		}
-		// Closed group must not appear when empty
-		if strings.Contains(out, "Closed (") {
-			t.Errorf("View shows empty Closed group")
+		// Done group must not appear when empty
+		if strings.Contains(out, "Done (") {
+			t.Errorf("View shows empty Done group")
 		}
 	})
 
@@ -543,8 +538,8 @@ func TestListRow_Render(t *testing.T) {
 
 	t.Run("renderGroupHeader shows label and count", func(t *testing.T) {
 		header := renderGroupHeader("open", 7, styles)
-		if !strings.Contains(header, "Open") {
-			t.Errorf("renderGroupHeader missing label 'Open': %q", header)
+		if !strings.Contains(header, "Ready") {
+			t.Errorf("renderGroupHeader missing label 'Ready': %q", header)
 		}
 		if !strings.Contains(header, "7") {
 			t.Errorf("renderGroupHeader missing count '7': %q", header)
@@ -950,39 +945,45 @@ func TestListFilter_Toggle(t *testing.T) {
 	})
 }
 
-// TestListView_TwoColumnLayout verifies the two-column Open/Closed layout at width >= 100.
-func TestListView_TwoColumnLayout(t *testing.T) {
+// TestListView_SplitPaneLayout verifies the list+detail split-pane layout at width >= 100.
+func TestListView_SplitPaneLayout(t *testing.T) {
 	theme := DefaultTheme()
 	styles := NewStyles(theme)
 
 	makeBeads := func() []protocol.Bead {
 		return []protocol.Bead{
-			{ID: "test-1", Title: "Open task", Status: "open", Priority: 2, Type: "task"},
-			{ID: "test-2", Title: "Closed task", Status: "closed", Priority: 2, Type: "task"},
+			{
+				ID: "test-1", Title: "Open task", Status: "open", Priority: 2, Type: "task",
+				AcceptanceCriteria: "Must work",
+			},
+			{
+				ID: "test-2", Title: "Closed task", Status: "closed", Priority: 2, Type: "task",
+				UpdatedAt: "2024-03-01T00:00:00Z",
+			},
 		}
 	}
 
-	t.Run("wide layout shows Open and Closed columns", func(t *testing.T) {
+	t.Run("wide layout shows list and detail panes with separator", func(t *testing.T) {
 		lm := NewListModel()
 		lm = lm.updateBeads(makeBeads())
 
 		out := lm.View(theme, styles, 120, 30)
 
-		if !strings.Contains(out, "Open") {
-			t.Errorf("two-column layout missing 'Open' header: %q", out)
+		// List pane should show group headers
+		if !strings.Contains(out, "Ready") {
+			t.Errorf("split-pane layout missing 'Ready' group header: %q", out)
 		}
-		if !strings.Contains(out, "Closed") {
-			t.Errorf("two-column layout missing 'Closed' header: %q", out)
+		// Separator should be present
+		if !strings.Contains(out, "│") {
+			t.Error("split-pane layout missing vertical separator")
 		}
+		// Detail pane should show cursor bead info
 		if !strings.Contains(out, "test-1") {
-			t.Errorf("two-column layout missing open bead ID 'test-1': %q", out)
-		}
-		if !strings.Contains(out, "test-2") {
-			t.Errorf("two-column layout missing closed bead ID 'test-2': %q", out)
+			t.Errorf("split-pane layout missing bead ID 'test-1': %q", out)
 		}
 	})
 
-	t.Run("narrow layout stacks vertically", func(t *testing.T) {
+	t.Run("narrow layout stacks vertically without detail pane", func(t *testing.T) {
 		lm := NewListModel()
 		lm = lm.updateBeads(makeBeads())
 
@@ -1168,23 +1169,24 @@ func TestListResponsive(t *testing.T) {
 		return lm
 	}
 
-	t.Run("width>120 two-column layout shows both Open and Closed headers", func(t *testing.T) {
+	t.Run("width>120 split-pane shows list and detail", func(t *testing.T) {
 		lm := makeLM()
 		out := lm.View(theme, styles, 140, 30)
-		// Two-column layout: each pane ~68 chars (below 100 threshold for worker info).
-		// Worker info is not shown in per-pane rows, but bead data is present.
 		if !strings.Contains(out, "Task one") {
 			t.Errorf("width 140: missing bead title 'Task one': %q", out)
 		}
-		if !strings.Contains(out, "Open") {
-			t.Errorf("width 140: missing 'Open' column header: %q", out)
+		if !strings.Contains(out, "Ready") {
+			t.Errorf("width 140: missing 'Ready' group header: %q", out)
+		}
+		// Detail pane should be present (separator visible)
+		if !strings.Contains(out, "│") {
+			t.Error("width 140: missing split-pane separator")
 		}
 	})
 
-	t.Run("width 100-120 two-column layout shows bead info", func(t *testing.T) {
+	t.Run("width 100-120 split-pane shows bead info", func(t *testing.T) {
 		lm := makeLM()
 		out := lm.View(theme, styles, 110, 30)
-		// Two-column layout at 110 chars: each pane ~53 chars.
 		if !strings.Contains(out, "Task one") {
 			t.Errorf("width 110: missing bead title: %q", out)
 		}
@@ -1227,23 +1229,23 @@ func TestListResponsive(t *testing.T) {
 	})
 }
 
-// TestListTwoColumnLayout verifies that the list view merges in_progress, open, and blocked
-// into a single 'open' group sorted by priority, and shows closed sorted by UpdatedAt desc.
-func TestListTwoColumnLayout(t *testing.T) {
-	t.Run("listRenderOrder returns two groups", func(t *testing.T) {
+// TestListFourGroupLayout verifies that the list view uses 4 separate status groups
+// (in_progress, open/ready, blocked, closed/done) with proper sorting.
+func TestListFourGroupLayout(t *testing.T) {
+	t.Run("listRenderOrder returns four groups", func(t *testing.T) {
 		order := listRenderOrder()
-		if len(order) != 2 {
-			t.Fatalf("listRenderOrder: got %d groups, want 2: %v", len(order), order)
+		if len(order) != 4 {
+			t.Fatalf("listRenderOrder: got %d groups, want 4: %v", len(order), order)
 		}
-		if order[0] != "open" {
-			t.Errorf("listRenderOrder[0] = %q, want 'open'", order[0])
-		}
-		if order[1] != "closed" {
-			t.Errorf("listRenderOrder[1] = %q, want 'closed'", order[1])
+		expected := []string{"in_progress", "open", "blocked", "closed"}
+		for i, want := range expected {
+			if order[i] != want {
+				t.Errorf("listRenderOrder[%d] = %q, want %q", i, order[i], want)
+			}
 		}
 	})
 
-	t.Run("groupBeads merges in_progress open blocked into open bucket", func(t *testing.T) {
+	t.Run("groupBeads separates statuses into 4 buckets", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "ip-1", Status: "in_progress", Priority: 1},
 			{ID: "op-1", Status: "open", Priority: 2},
@@ -1251,40 +1253,49 @@ func TestListTwoColumnLayout(t *testing.T) {
 			{ID: "cl-1", Status: "closed", Priority: 3, UpdatedAt: "2024-03-01T00:00:00Z"},
 		}
 		groups := groupBeads(beads)
-		if len(groups["open"]) != 3 {
-			t.Errorf("groupBeads open: got %d beads, want 3 (in_progress+open+blocked)", len(groups["open"]))
+		if len(groups["in_progress"]) != 1 {
+			t.Errorf("groupBeads in_progress: got %d beads, want 1", len(groups["in_progress"]))
 		}
-		for _, b := range groups["open"] {
-			switch b.Status {
-			case "in_progress", "open", "blocked":
-				// ok
-			default:
-				t.Errorf("open bucket has unexpected status %q for bead %s", b.Status, b.ID)
-			}
+		if len(groups["open"]) != 1 {
+			t.Errorf("groupBeads open: got %d beads, want 1", len(groups["open"]))
+		}
+		if len(groups["blocked"]) != 1 {
+			t.Errorf("groupBeads blocked: got %d beads, want 1", len(groups["blocked"]))
 		}
 		if len(groups["closed"]) != 1 {
 			t.Errorf("groupBeads closed: got %d beads, want 1", len(groups["closed"]))
 		}
 	})
 
-	t.Run("open group sorted by priority ascending", func(t *testing.T) {
+	t.Run("open group sorted by topo then priority", func(t *testing.T) {
 		beads := []protocol.Bead{
-			{ID: "ip-1", Status: "in_progress", Priority: 2},
 			{ID: "op-1", Status: "open", Priority: 3},
-			{ID: "bl-1", Status: "blocked", Priority: 0},
 			{ID: "op-2", Status: "open", Priority: 1},
+			{ID: "op-3", Status: "open", Priority: 0},
 		}
 		groups := groupBeads(beads)
 		open := groups["open"]
-		if len(open) != 4 {
-			t.Fatalf("open group: got %d beads, want 4", len(open))
+		if len(open) != 3 {
+			t.Fatalf("open group: got %d beads, want 3", len(open))
 		}
-		// Should be sorted by priority ascending: bl-1(0), op-2(1), ip-1(2), op-1(3)
-		expectedOrder := []string{"bl-1", "op-2", "ip-1", "op-1"}
+		// No deps → sorted by priority: op-3(0), op-2(1), op-1(3)
+		expectedOrder := []string{"op-3", "op-2", "op-1"}
 		for i, id := range expectedOrder {
 			if open[i].ID != id {
 				t.Errorf("open group[%d] = %q, want %q", i, open[i].ID, id)
 			}
+		}
+	})
+
+	t.Run("in_progress group sorted by priority ascending", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "ip-2", Status: "in_progress", Priority: 2},
+			{ID: "ip-0", Status: "in_progress", Priority: 0},
+		}
+		groups := groupBeads(beads)
+		ip := groups["in_progress"]
+		if len(ip) != 2 || ip[0].ID != "ip-0" || ip[1].ID != "ip-2" {
+			t.Errorf("in_progress not sorted by priority: got [%s %s]", ip[0].ID, ip[1].ID)
 		}
 	})
 
@@ -1299,7 +1310,6 @@ func TestListTwoColumnLayout(t *testing.T) {
 		if len(closed) != 3 {
 			t.Fatalf("closed group: got %d beads, want 3", len(closed))
 		}
-		// Should be sorted newest first: cl-new, cl-mid, cl-old
 		if closed[0].ID != "cl-new" {
 			t.Errorf("closed[0] = %q, want 'cl-new' (newest)", closed[0].ID)
 		}
@@ -1311,20 +1321,21 @@ func TestListTwoColumnLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("group headers show Open and Closed labels", func(t *testing.T) {
+	t.Run("group headers show 4-group labels", func(t *testing.T) {
 		theme := DefaultTheme()
 		styles := NewStyles(theme)
 		lm := NewListModel()
 		lm = lm.updateBeads([]protocol.Bead{
+			{ID: "ip-1", Status: "in_progress", Priority: 1, Type: "task", Title: "WIP"},
 			{ID: "op-1", Status: "open", Priority: 2, Type: "task", Title: "Open task"},
-			{ID: "cl-1", Status: "closed", Priority: 3, Type: "task", Title: "Closed task", UpdatedAt: "2024-03-01T00:00:00Z"},
+			{ID: "bl-1", Status: "blocked", Priority: 0, Type: "bug", Title: "Blocked"},
+			{ID: "cl-1", Status: "closed", Priority: 3, Type: "task", Title: "Done task", UpdatedAt: "2024-03-01T00:00:00Z"},
 		})
 		out := lm.View(theme, styles, 80, 24)
-		if !strings.Contains(out, "Open (") {
-			t.Errorf("View missing 'Open (N)' header: %q", out)
-		}
-		if !strings.Contains(out, "Closed (") {
-			t.Errorf("View missing 'Closed (N)' header: %q", out)
+		for _, label := range []string{"In Progress (", "Ready (", "Blocked (", "Done ("} {
+			if !strings.Contains(out, label) {
+				t.Errorf("View missing group header %q", label)
+			}
 		}
 	})
 
@@ -1338,24 +1349,24 @@ func TestListTwoColumnLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("all open beads omits closed group in flatRows", func(t *testing.T) {
+	t.Run("all open beads omits other groups in flatRows", func(t *testing.T) {
 		lm := NewListModel().updateBeads([]protocol.Bead{
 			{ID: "op-1", Status: "open", Priority: 1, Type: "task", Title: "Open"},
 		})
 		for _, row := range lm.flatRows() {
-			if row.status == "closed" {
-				t.Error("all-open beads: closed group should not appear in flatRows")
+			if row.status != "open" {
+				t.Errorf("all-open beads: unexpected group %q in flatRows", row.status)
 			}
 		}
 	})
 
-	t.Run("all closed beads omits open group in flatRows", func(t *testing.T) {
+	t.Run("all closed beads omits other groups in flatRows", func(t *testing.T) {
 		lm := NewListModel().updateBeads([]protocol.Bead{
 			{ID: "cl-1", Status: "closed", Priority: 1, Type: "task", Title: "Closed", UpdatedAt: "2024-03-01T00:00:00Z"},
 		})
 		for _, row := range lm.flatRows() {
-			if row.status == "open" {
-				t.Error("all-closed beads: open group should not appear in flatRows")
+			if row.status != "closed" {
+				t.Errorf("all-closed beads: unexpected group %q in flatRows", row.status)
 			}
 		}
 	})
@@ -1527,7 +1538,7 @@ func TestListModel_InitialCursorOnBead(t *testing.T) {
 	}
 }
 
-// TestCursorHighlightByBeadID verifies that the two-column layout highlights
+// TestCursorHighlightByBeadID verifies that the split-pane layout highlights
 // beads by ID (not index), fixing the off-screen cursor bug.
 func TestCursorHighlightByBeadID(t *testing.T) {
 	theme := DefaultTheme()
@@ -1547,7 +1558,7 @@ func TestCursorHighlightByBeadID(t *testing.T) {
 		}
 	})
 
-	t.Run("cursor bead appears in two-column output", func(t *testing.T) {
+	t.Run("cursor bead appears in split-pane output", func(t *testing.T) {
 		lm := NewListModel().updateBeads(beads)
 		lm = lm.moveDown() // Move to second open bead
 		id := lm.cursorBeadID()
@@ -1556,12 +1567,9 @@ func TestCursorHighlightByBeadID(t *testing.T) {
 		}
 
 		out := lm.View(theme, styles, 120, 30)
-		// Both panes should render
-		if !strings.Contains(out, "Open (2)") {
-			t.Error("missing 'Open (2)' header")
-		}
-		if !strings.Contains(out, "Closed (1)") {
-			t.Error("missing 'Closed (1)' header")
+		// List pane should show Ready group header
+		if !strings.Contains(out, "Ready (2)") {
+			t.Error("missing 'Ready (2)' header")
 		}
 		// Both beads should be present
 		if !strings.Contains(out, "op-1") {
@@ -1573,13 +1581,13 @@ func TestCursorHighlightByBeadID(t *testing.T) {
 	})
 }
 
-// TestGroupBeadsUsesTopoSort verifies that open beads are topologically sorted
+// TestGroupBeadsUsesTopoSort verifies that open (ready) beads are topologically sorted
 // (prerequisites before dependents) rather than by priority alone.
 func TestGroupBeadsUsesTopoSort(t *testing.T) {
-	// bead-B depends on bead-A via "blocks" dep.
+	// bead-B depends on bead-A via "blocks" dep. Both are "open" status.
 	// bead-A has lower priority (P3) but should appear first because bead-B needs it.
 	beads := []protocol.Bead{
-		{ID: "bead-B", Status: "blocked", Priority: 0, Dependencies: []protocol.Dependency{
+		{ID: "bead-B", Status: "open", Priority: 0, Dependencies: []protocol.Dependency{
 			{Type: "blocks", DependsOnID: "bead-A"},
 		}},
 		{ID: "bead-A", Status: "open", Priority: 3},
@@ -1657,25 +1665,21 @@ func TestRenderDepSuffix(t *testing.T) {
 	})
 }
 
-// TestTwoColumnShowsDepsForAllBeads verifies that the two-column layout
-// shows dependency info for all beads with deps, not just blocked ones.
-func TestTwoColumnShowsDepsForAllBeads(t *testing.T) {
-	theme := DefaultTheme()
-	styles := NewStyles(theme)
+// TestDetailPaneShowsDepsForAllBeads verifies that the detail pane
+// shows dependency info for beads with deps.
+func TestDetailPaneShowsDepsForAllBeads(t *testing.T) {
+	styles := NewStyles(DefaultTheme())
 
-	beads := []protocol.Bead{
-		{
-			ID: "task-1", Title: "Has relates_to dep", Status: "open", Priority: 1, Type: "task",
-			Dependencies: []protocol.Dependency{{Type: "relates_to", DependsOnID: "task-2"}},
-		},
-		{ID: "task-2", Title: "No deps", Status: "open", Priority: 2, Type: "task"},
+	bead := protocol.Bead{
+		ID: "task-1", Title: "Has relates_to dep", Status: "open", Priority: 1, Type: "task",
+		Dependencies: []protocol.Dependency{{Type: "relates_to", DependsOnID: "task-2"}},
 	}
-	lm := NewListModel().updateBeads(beads)
-	out := lm.View(theme, styles, 120, 30)
+	sections := map[string]bool{"deps": true}
+	out := renderDetailPane(bead, nil, nil, sections, styles, 40, 20)
 
-	// task-1 has a relates_to dep — should show → in the output
-	if !strings.Contains(out, "→") {
-		t.Errorf("two-column view should show → for relates_to dep, got:\n%s", out)
+	// task-1 has a relates_to dep — detail pane should show task-2
+	if !strings.Contains(out, "task-2") {
+		t.Errorf("detail pane should show dep ID 'task-2', got:\n%s", out)
 	}
 }
 
