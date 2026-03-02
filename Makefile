@@ -78,7 +78,8 @@ install: stage-assets
 	fi
 	@if [ -d cmd/oro-dash ]; then \
 		mkdir -p $(ORO_HOME)/bin && \
-		go build $(LDFLAGS) -o $(ORO_HOME)/bin/oro-dash ./cmd/oro-dash; \
+		go build $(LDFLAGS) -o $(ORO_HOME)/bin/oro-dash ./cmd/oro-dash && \
+		go install $(LDFLAGS) ./cmd/oro-dash; \
 	else \
 		echo "Warning: cmd/oro-dash/ not found, skipping oro-dash build"; \
 	fi
