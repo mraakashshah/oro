@@ -840,57 +840,6 @@ func ExtractMarkers(ctx context.Context, r io.Reader, store *Store, workerID, be
 	return count, nil
 }
 
-// implicitPatterns maps regex patterns to memory types for implicit extraction.
-//
-//nolint:gochecknoglobals // compile-once regex table, safe as package-level var
-var implicitPatterns = []struct {
-	re      *regexp.Regexp
-	memType string
-}{
-	{regexp.MustCompile(`(?i)I learned\s+(.+?)\.?\s*$`), "lesson"},
-	{regexp.MustCompile(`(?i)^Note:\s+(.+?)\.?\s*$`), "lesson"},
-	{regexp.MustCompile(`(?i)^Gotcha:\s+(.+?)\.?\s*$`), "gotcha"},
-	{regexp.MustCompile(`(?i)^Pattern:\s+(.+?)\.?\s*$`), "pattern"},
-	{regexp.MustCompile(`(?i)^Decision:\s+(.+?)\.?\s*$`), "decision"},
-	{regexp.MustCompile(`(?i)^Decided:\s+(.+?)\.?\s*$`), "decision"},
-	{regexp.MustCompile(`(?i)^Important:\s+(.+?)\.?\s*$`), "lesson"},
-}
-
-// ExtractImplicit scans text for implicit learning patterns and returns
-// InsertParams for each match. Does NOT insert — caller decides.
-//
-//oro:testonly — production caller removed in drain.go; deletion tracked in bead oro-eyrq.7
-func ExtractImplicit(text string) []InsertParams {
-	lines := strings.Split(text, "\n")
-	var results []InsertParams
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		for _, p := range implicitPatterns {
-			m := p.re.FindStringSubmatch(line)
-			if m == nil {
-				continue
-			}
-			content := strings.TrimSpace(m[1])
-			if content == "" {
-				continue
-			}
-			results = append(results, InsertParams{
-				Content:    content,
-				Type:       p.memType,
-				Source:     "daemon_extracted",
-				Confidence: 0.6,
-			})
-			break // one match per line
-		}
-	}
-
-	return results
-}
-
 // maxInjectedMemories is the maximum number of memories injected into a prompt.
 // Per search spec: 5 memories max, but token budget is the binding constraint.
 const maxInjectedMemories = 5

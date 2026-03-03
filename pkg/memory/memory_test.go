@@ -586,54 +586,6 @@ Done.
 	}
 }
 
-func TestExtractImplicit(t *testing.T) {
-	text := `
-I learned that ruff should always run before pyright.
-Some random text here.
-Note: Always check the return value of db.Exec
-Gotcha: FTS5 requires content sync triggers
-Pattern: functional core with imperative shell
-Decision: Use modernc.org/sqlite for pure Go builds
-Decided: All configs go in YAML not JSON
-Important: Never skip error wrapping
-Just some normal text.
-`
-
-	results := ExtractImplicit(text)
-
-	expected := []struct {
-		memType string
-		substr  string
-	}{
-		{"lesson", "ruff should always run before pyright"},
-		{"lesson", "Always check the return value"},
-		{"gotcha", "FTS5 requires content sync triggers"},
-		{"pattern", "functional core with imperative shell"},
-		{"decision", "Use modernc.org/sqlite for pure Go builds"},
-		{"decision", "All configs go in YAML not JSON"},
-		{"lesson", "Never skip error wrapping"},
-	}
-
-	if len(results) != len(expected) {
-		t.Fatalf("expected %d extractions, got %d", len(expected), len(results))
-	}
-
-	for i, exp := range expected {
-		if results[i].Type != exp.memType {
-			t.Errorf("[%d] type: got %q, want %q", i, results[i].Type, exp.memType)
-		}
-		if !strings.Contains(results[i].Content, exp.substr) {
-			t.Errorf("[%d] content: got %q, want substring %q", i, results[i].Content, exp.substr)
-		}
-		if results[i].Source != "daemon_extracted" {
-			t.Errorf("[%d] source: got %q, want 'daemon_extracted'", i, results[i].Source)
-		}
-		if results[i].Confidence != 0.6 {
-			t.Errorf("[%d] confidence: got %f, want 0.6", i, results[i].Confidence)
-		}
-	}
-}
-
 func TestForPrompt(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewStore(db)
