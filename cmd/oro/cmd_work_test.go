@@ -171,17 +171,18 @@ func TestSetupWorktree_NoWorktreeCreatesNew(t *testing.T) {
 	}
 }
 
-func TestWorkAlreadySatisfiedBead(t *testing.T) {
-	// When AC already passes and worker produces 0 commits, oro work should
-	// close the bead and exit 0 — not return an error.
-	// Observed with oro-30o which was already fixed before the worker ran.
+func TestWorkNoCommits_AlwaysFails(t *testing.T) {
+	// When worker produces 0 commits, oro work must always return an error —
+	// even if the quality gate passes on the unmodified worktree. The QG
+	// passing on a clean main checkout is not evidence of AC satisfaction;
+	// it caused false-close bugs (oro-eyrq.2, .5, .6).
 
 	bs := &mockBeadSource{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
 
-	// hasNewWork=false (no commits produced), qgPassed=true (AC already satisfied)
+	// hasNewWork=false (no commits produced), qgPassed=true (QG passes on clean checkout)
 	deps := testDeps(bs, wt, sp, mg, false, true)
 
 	cfg := &workConfig{
@@ -192,21 +193,17 @@ func TestWorkAlreadySatisfiedBead(t *testing.T) {
 	}
 
 	err := executeWork(context.Background(), cfg, deps)
-	// Must NOT return an error — AC was already satisfied.
-	if err != nil {
-		t.Fatalf("expected clean exit when AC already passes, got: %v", err)
+	// MUST return an error — no commits means no work was done.
+	if err == nil {
+		t.Fatal("expected error when worker produces no commits, got nil")
+	}
+	if !strings.Contains(err.Error(), "without producing commits") {
+		t.Errorf("expected 'without producing commits' error, got: %v", err)
 	}
 
-	// Bead must be closed.
-	if bs.closeID != "oro-test" {
-		t.Errorf("expected bead to be closed, closeID=%q", bs.closeID)
-	}
-
-	// Bead must NOT be reset to open.
-	for _, u := range bs.updates {
-		if u == "open" {
-			t.Error("bead should not be reset to open when AC already passes")
-		}
+	// Bead must NOT be closed.
+	if bs.closeID != "" {
+		t.Errorf("bead should not be closed when no commits produced, closeID=%q", bs.closeID)
 	}
 
 	// Merger must NOT be called — no commits to merge.
