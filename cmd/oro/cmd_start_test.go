@@ -64,45 +64,72 @@ func TestStartReadsProjectConfig(t *testing.T) {
 	})
 }
 
-func TestDaemonStartupCleansWorkerLogs(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("ORO_HOME", tmpDir)
+func TestCleanStaleWorkerLogs(t *testing.T) {
+	t.Run("old dirs deleted, new dirs survive", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		workersDir := filepath.Join(tmpDir, "workers")
+		if err := os.MkdirAll(workersDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 
-	// Create workers dir with some files to simulate stale logs.
-	workersDir := tmpDir + "/workers"
-	if err := os.MkdirAll(workersDir, 0o700); err != nil {
-		t.Fatalf("setup workers dir: %v", err)
-	}
-	staleLog := workersDir + "/worker-123.log"
-	if err := os.WriteFile(staleLog, []byte("stale log content"), 0o600); err != nil {
-		t.Fatalf("create stale log: %v", err)
-	}
+		// Create an "old" directory and backdate its modtime to 8 days ago.
+		oldDir := filepath.Join(workersDir, "worker-old")
+		if err := os.MkdirAll(oldDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		eightDaysAgo := time.Now().Add(-8 * 24 * time.Hour)
+		if err := os.Chtimes(oldDir, eightDaysAgo, eightDaysAgo); err != nil {
+			t.Fatal(err)
+		}
 
-	// cleanWorkerLogs should wipe the directory and recreate it empty.
-	cleanWorkerLogs(tmpDir)
+		// Create a "new" directory (default modtime = now).
+		newDir := filepath.Join(workersDir, "worker-new")
+		if err := os.MkdirAll(newDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 
-	// Assert: workers dir exists but is empty.
-	entries, err := os.ReadDir(workersDir)
-	if err != nil {
-		t.Fatalf("ReadDir workers: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("expected workers dir to be empty, got %d entries", len(entries))
-	}
-}
+		cleanStaleWorkerLogs(tmpDir, 7*24*time.Hour)
 
-func TestDaemonStartupCleansWorkerLogs_MissingDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("ORO_HOME", tmpDir)
+		// Old dir should be gone.
+		if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+			t.Errorf("expected old dir to be removed, got err: %v", err)
+		}
+		// New dir should survive.
+		if _, err := os.Stat(newDir); err != nil {
+			t.Errorf("expected new dir to survive, got: %v", err)
+		}
+	})
 
-	// cleanWorkerLogs should not fail when workers dir doesn't exist yet.
-	cleanWorkerLogs(tmpDir)
+	t.Run("missing workers dir no error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// workers dir does not exist — should not panic or error.
+		cleanStaleWorkerLogs(tmpDir, 7*24*time.Hour)
+	})
 
-	// workers dir should be created.
-	workersDir := tmpDir + "/workers"
-	if _, err := os.Stat(workersDir); err != nil {
-		t.Errorf("expected workers dir to be created, got: %v", err)
-	}
+	t.Run("non-directory entries ignored", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		workersDir := filepath.Join(tmpDir, "workers")
+		if err := os.MkdirAll(workersDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create a regular file (not a directory) with an old modtime.
+		oldFile := filepath.Join(workersDir, "stale.log")
+		if err := os.WriteFile(oldFile, []byte("log"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		eightDaysAgo := time.Now().Add(-8 * 24 * time.Hour)
+		if err := os.Chtimes(oldFile, eightDaysAgo, eightDaysAgo); err != nil {
+			t.Fatal(err)
+		}
+
+		cleanStaleWorkerLogs(tmpDir, 7*24*time.Hour)
+
+		// File should still exist — only directories are cleaned.
+		if _, err := os.Stat(oldFile); err != nil {
+			t.Errorf("expected non-dir file to survive, got: %v", err)
+		}
+	})
 }
 
 func TestStartPrintsQuitHint(t *testing.T) {

@@ -346,15 +346,26 @@ func newStartCmd() *cobra.Command {
 	return cmd
 }
 
-// cleanWorkerLogs wipes and recreates the workers log directory at oroHome/workers.
-// Errors are logged as warnings and do not block startup.
-func cleanWorkerLogs(oroHome string) {
+// cleanStaleWorkerLogs deletes worker log directories older than maxAge.
+// Skips non-directories and tolerates individual removal failures.
+func cleanStaleWorkerLogs(oroHome string, maxAge time.Duration) { //nolint:unparam // maxAge parameterized for testability
 	dir := filepath.Join(oroHome, "workers")
-	if err := os.RemoveAll(dir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cleanWorkerLogs: remove %s: %v\n", dir, err)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // dir doesn't exist or unreadable — nothing to clean
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cleanWorkerLogs: mkdir %s: %v\n", dir, err)
+	cutoff := time.Now().Add(-maxAge)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
 	}
 }
 
@@ -369,7 +380,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
 	}
-	cleanWorkerLogs(paths.OroHome)
+	cleanStaleWorkerLogs(paths.OroHome, 7*24*time.Hour)
 
 	// Build dispatcher first so we can wire its shutdown authorization flag
 	// into the signal handler. This makes the daemon immune to raw SIGTERM
