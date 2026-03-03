@@ -69,6 +69,7 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 			w.SetMemoryStore(memStore)
 		}
 	}
+	w.SetExtractSpawner(&memory.CLISpawner{})
 
 	if err := w.Run(ctx); err != nil {
 		return fmt.Errorf("worker %s: %w", id, err)
