@@ -150,6 +150,7 @@ When acceptance criteria pass and quality gate is green:
 | `[MEMORY]` capture in `DrainOutput()` | `drain.go:43` | Same — real-time capture remains |
 | `persistHandoffContext()` | `dispatcher.go:1438` | Works if workers populate handoff fields |
 | `ForPrompt()` | `memory.go:901-963` | Memory retrieval/injection is working fine |
+| `ExtractMarkers()` | `memory.go:812-841` | `//oro:testonly` — wraps ParseMarker with Store. Keep for test convenience. |
 
 ### Log File Lifecycle
 
@@ -170,12 +171,12 @@ Per-worker log rotation already works: `openLogFile()` (worker.go:641) uses `O_A
 
 | File | Change |
 |------|--------|
-| `pkg/worker/worker.go` | `extractImplicitMemories()` → calls `ExtractWithLLM()`. Add `SetSpawner()` method. Remove `extractImplicitMemories()` calls from `SendDone` (line 1034) and `SendHandoff` (line 1057). |
+| `pkg/worker/worker.go` | `extractImplicitMemories()` → calls `ExtractWithLLM()`. Add `SetExtractSpawner(s memory.Spawner)` method (mirrors `SetMemoryStore` pattern — stores `s` in `w.extractSpawner`, passed to `ExtractWithLLM` calls). Remove `extractImplicitMemories()` calls from `SendDone` (line 1034) and `SendHandoff` (line 1057). **Mutex note:** `extractImplicitMemories` must snapshot `w.extractSpawner`, `w.memStore`, `w.sessionText`, `w.ID`, and `w.beadID` under `w.mu`, then release the lock before calling `ExtractWithLLM` (which may block up to 30s). Follow the existing pattern at worker.go:618-623. |
 | `pkg/worker/drain.go` | Add `strings.Builder` accumulator. Add `spawner Spawner` param. Call `ExtractWithLLM()` after loop. |
 | `pkg/worker/prompt.go` | Move learnings to exit section, slim section 3a |
 | `pkg/dispatcher/extractor.go` | `extractAndStoreLearnings()` becomes log-only no-op (worker-side is authoritative) |
 | `cmd/oro/cmd_start.go` | Replace `cleanWorkerLogs()` with `cleanStaleWorkerLogs()` |
-| `cmd/oro/cmd_worker.go` | Create and pass `CLISpawner` to worker via `SetSpawner()` |
+| `cmd/oro/cmd_worker.go` | Create `memory.CLISpawner{}` and pass to worker via `w.SetExtractSpawner()` (after `w.SetMemoryStore()`, line 69) |
 | `cmd/oro/cmd_work.go` | Pass `CLISpawner{}` to `DrainOutput()` |
 
 ## Broken Tests (must update)
@@ -187,7 +188,7 @@ Removing `ExtractImplicit()`, `ExtractLearnings()`, and `cleanWorkerLogs()` brea
 | `pkg/memory/memory_test.go` | `TestExtractImplicit` calls deleted `ExtractImplicit()` | Delete test (function removed) |
 | `pkg/dispatcher/extractor_test.go` | 10+ `TestExtractLearnings_*` tests call deleted `ExtractLearnings()` | Delete tests. Add new tests for the no-op `extractAndStoreLearnings()`. |
 | `pkg/dispatcher/extractor_test.go` | 25+ tests for `extractAndStoreLearnings()` verify event-payload parsing | Replace with tests verifying the new log-only behavior |
-| `pkg/worker/drain_test.go` | Tests call `DrainOutput()` with old signature (no spawner param) | Update call sites to pass `nil` spawner (extraction skipped) |
+| `pkg/worker/drain_test.go` | Tests call `DrainOutput()` with old signature (no spawner param). 4 tests (`TestDrainOutput_ImplicitExtraction_Lesson`, `_Gotcha`, `_ExplicitMarkerStillWorks`, `_NilStore`) verify per-line `ExtractImplicit` behavior that no longer exists. | Update all call sites to pass `nil` spawner. Delete the 4 `ImplicitExtraction` tests (behavior removed). Add new tests for post-drain `ExtractWithLLM` invocation via mock spawner. |
 | `cmd/oro/cmd_start_test.go` | `TestDaemonStartupCleansWorkerLogs` calls deleted `cleanWorkerLogs()` | Replace with tests for `cleanStaleWorkerLogs()` |
 
 ## Testing Strategy
