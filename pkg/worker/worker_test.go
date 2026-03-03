@@ -2246,6 +2246,10 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	// Force single connection so all operations share the same in-memory DB.
+	// Without this, the connection pool may open multiple connections, each
+	// with its own empty :memory: database (schema not applied).
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
@@ -2262,6 +2266,13 @@ func TestWorkerExtractsMemories(t *testing.T) { //nolint:funlen // integration t
 	db := setupTestDB(t)
 	store := memory.NewStore(db)
 
+	// Mock extract spawner returns [MEMORY] lines simulating LLM extraction.
+	extractSpawner := &mockExtractSpawner{
+		output: "[MEMORY] type=lesson tags=sqlite: WAL mode needs a single writer\n" +
+			"[MEMORY] type=gotcha tags=sqlite: FTS5 requires content sync triggers\n" +
+			"[MEMORY] type=lesson tags=go: Always check error returns in Go\n",
+	}
+
 	// Create an io.Pipe to simulate subprocess stdout.
 	pr, pw := io.Pipe()
 
@@ -2275,6 +2286,7 @@ func TestWorkerExtractsMemories(t *testing.T) { //nolint:funlen // integration t
 
 	w := worker.NewWithConn("w-mem", workerConn, spawner)
 	w.SetMemoryStore(store)
+	w.SetExtractSpawner(extractSpawner)
 	w.SetContextPollInterval(50 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2311,65 +2323,52 @@ func TestWorkerExtractsMemories(t *testing.T) { //nolint:funlen // integration t
 	}
 	_ = pw.Close()
 
-	// Allow time for the processOutput goroutine to read and process all lines.
-	justWait(200 * time.Millisecond)
+	// Wait for LLM-extracted memories to appear in the store (full pipeline completion).
+	waitFor(t, func() bool {
+		all, listErr := store.List(context.Background(), memory.ListOpts{})
+		if listErr != nil {
+			return false
+		}
+		count := 0
+		for _, m := range all {
+			if m.Source == "llm_extracted" {
+				count++
+			}
+		}
+		return count >= 3
+	}, 2*time.Second)
 
-	// Verify [MEMORY] markers were extracted in real-time.
+	// Verify [MEMORY] markers were extracted in real-time (self_report)
+	// and LLM extraction ran on processOutput exit (llm_extracted).
 	all, err := store.List(ctx, memory.ListOpts{})
 	if err != nil {
 		t.Fatalf("list memories: %v", err)
 	}
 
-	// At this point, only explicit [MEMORY] markers should be stored (2 markers).
 	markerCount := 0
+	llmCount := 0
 	for _, m := range all {
 		if m.Source == "self_report" {
 			markerCount++
 		}
+		if m.Source == "llm_extracted" {
+			llmCount++
+		}
 	}
+
 	if markerCount != 2 {
 		t.Errorf("expected 2 explicit memory markers, got %d", markerCount)
 	}
 
-	// Now trigger handoff to extract implicit memories.
-	handoffCh := readMessageAsync(t, dispatcherConn)
-	if err := w.SendHandoff(ctx); err != nil {
-		t.Fatalf("send handoff: %v", err)
-	}
-
-	select {
-	case msg := <-handoffCh:
-		if msg.Type != protocol.MsgHandoff {
-			t.Fatalf("expected HANDOFF, got %s", msg.Type)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for handoff message")
-	}
-
-	// After handoff, implicit memories should also be stored.
-	all, err = store.List(ctx, memory.ListOpts{})
-	if err != nil {
-		t.Fatalf("list memories after handoff: %v", err)
-	}
-
-	// Count daemon_extracted (implicit) memories.
-	implicitCount := 0
-	for _, m := range all {
-		if m.Source == "daemon_extracted" {
-			implicitCount++
-		}
-	}
-
-	// Expected implicit: "WAL mode needs a single writer" (I learned),
-	// "Always check error returns in Go" (Note:), "FTS5 requires content sync triggers" (Gotcha:)
-	if implicitCount != 3 {
-		t.Errorf("expected 3 implicit memories after handoff, got %d", implicitCount)
+	// LLM extraction happens on processOutput exit (not on SendHandoff/SendDone).
+	if llmCount != 3 {
+		t.Errorf("expected 3 llm_extracted memories, got %d", llmCount)
 		for _, m := range all {
 			t.Logf("  memory: source=%s type=%s content=%q", m.Source, m.Type, m.Content)
 		}
 	}
 
-	// Verify total: 2 explicit + 3 implicit = 5.
+	// Verify total: 2 explicit + 3 LLM-extracted = 5.
 	if len(all) != 5 {
 		t.Errorf("expected 5 total memories, got %d", len(all))
 		for _, m := range all {
@@ -2396,6 +2395,11 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 	db := setupTestDB(t)
 	store := memory.NewStore(db)
 
+	// Mock extract spawner returns a [MEMORY] line simulating LLM extraction.
+	extractSpawner := &mockExtractSpawner{
+		output: "[MEMORY] type=pattern tags=arch: functional core with imperative shell\n",
+	}
+
 	pr, pw := io.Pipe()
 
 	spawner := &mockSpawner{
@@ -2408,6 +2412,7 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 
 	w := worker.NewWithConn("w-mem-done", workerConn, spawner)
 	w.SetMemoryStore(store)
+	w.SetExtractSpawner(extractSpawner)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2426,14 +2431,29 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 	// Drain STATUS
 	_ = readMessage(t, dispatcherConn)
 
-	// Simulate subprocess output with implicit patterns.
+	// Simulate subprocess output with implicit patterns, then close stdout.
+	// LLM extraction happens when processOutput finishes (stdout closes),
+	// not when SendDone is called.
 	output := "Pattern: functional core with imperative shell\nDone.\n"
 	_, _ = pw.Write([]byte(output))
 	_ = pw.Close()
 
-	justWait(200 * time.Millisecond)
+	// Wait for LLM extraction to run on processOutput exit.
+	// Wait for LLM-extracted memory to appear in the store (full pipeline completion).
+	waitFor(t, func() bool {
+		all, listErr := store.List(context.Background(), memory.ListOpts{})
+		if listErr != nil {
+			return false
+		}
+		for _, m := range all {
+			if m.Source == "llm_extracted" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
 
-	// SendDone should extract implicit memories.
+	// SendDone no longer triggers extraction (it happens on processOutput exit).
 	doneCh := readMessageAsync(t, dispatcherConn)
 	if err := w.SendDone(ctx, true, ""); err != nil {
 		t.Fatalf("send done: %v", err)
@@ -2448,13 +2468,13 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 		t.Fatal("timeout waiting for done message")
 	}
 
-	// Verify implicit memory was extracted.
+	// Verify LLM-extracted memory was stored.
 	all, err := store.List(ctx, memory.ListOpts{})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
 	if len(all) != 1 {
-		t.Errorf("expected 1 implicit memory, got %d", len(all))
+		t.Errorf("expected 1 llm_extracted memory, got %d", len(all))
 		for _, m := range all {
 			t.Logf("  memory: source=%s type=%s content=%q", m.Source, m.Type, m.Content)
 		}
@@ -2683,14 +2703,20 @@ func TestHandleContextThreshold(t *testing.T) {
 }
 
 // TestProcessExitExtractsMemories verifies that when a subprocess exits
-// (stdout closes) without calling SendDone or SendHandoff, implicit
-// memories are still extracted from the session text. This ensures
+// (stdout closes) without calling SendDone or SendHandoff, LLM-based
+// memory extraction still runs via extractImplicitMemories. This ensures
 // learnings from failed attempts are persisted before dispatcher re-assigns.
 func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integration test
 	t.Parallel()
 
 	db := setupTestDB(t)
 	store := memory.NewStore(db)
+
+	// Mock extract spawner returns [MEMORY] lines simulating LLM extraction output.
+	extractSpawner := &mockExtractSpawner{
+		output: "[MEMORY] type=lesson tags=sqlite: WAL mode needs a single writer\n" +
+			"[MEMORY] type=gotcha tags=sqlite: FTS5 requires content sync triggers\n",
+	}
 
 	// io.Pipe simulates subprocess stdout.
 	pr, pw := io.Pipe()
@@ -2705,6 +2731,7 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 
 	w := worker.NewWithConn("w-exit-mem", workerConn, spawner)
 	w.SetMemoryStore(store)
+	w.SetExtractSpawner(extractSpawner)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2723,7 +2750,7 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 	// Drain STATUS message.
 	_ = readMessage(t, dispatcherConn)
 
-	// Simulate subprocess output with implicit patterns, then close stdout
+	// Simulate subprocess output, then close stdout
 	// (simulating subprocess exit) WITHOUT calling SendDone or SendHandoff.
 	output := strings.Join([]string{
 		"Running quality gate...",
@@ -2738,27 +2765,37 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 	// Close stdout to simulate subprocess exit.
 	_ = pw.Close()
 
-	// Wait for processOutput to finish and extract memories.
-	// processOutput calls extractImplicitMemories on exit.
-	justWait(500 * time.Millisecond)
+	// Wait for LLM-extracted memories to appear in the store (full pipeline completion).
+	waitFor(t, func() bool {
+		all, listErr := store.List(context.Background(), memory.ListOpts{})
+		if listErr != nil {
+			return false
+		}
+		count := 0
+		for _, m := range all {
+			if m.Source == "llm_extracted" {
+				count++
+			}
+		}
+		return count >= 2
+	}, 2*time.Second)
 
-	// Verify implicit memories were extracted even without SendDone/SendHandoff.
+	// Verify LLM-extracted memories were inserted even without SendDone/SendHandoff.
 	all, err := store.List(ctx, memory.ListOpts{})
 	if err != nil {
 		t.Fatalf("list memories: %v", err)
 	}
 
-	implicitCount := 0
+	llmCount := 0
 	for _, m := range all {
-		if m.Source == "daemon_extracted" {
-			implicitCount++
+		if m.Source == "llm_extracted" {
+			llmCount++
 		}
 	}
 
-	// Expected: "WAL mode needs a single writer" (I learned),
-	// "FTS5 requires content sync triggers" (Gotcha:)
-	if implicitCount != 2 {
-		t.Errorf("expected 2 implicit memories after process exit, got %d", implicitCount)
+	// Expected: 2 memories from the mock LLM output.
+	if llmCount != 2 {
+		t.Errorf("expected 2 llm_extracted memories after process exit, got %d", llmCount)
 		for _, m := range all {
 			t.Logf("  memory: source=%s type=%s content=%q", m.Source, m.Type, m.Content)
 		}
@@ -2766,6 +2803,203 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 
 	cancel()
 	<-errCh
+}
+
+// mockExtractSpawner implements memory.Spawner for testing ExtractWithLLM integration.
+type mockExtractSpawner struct {
+	mu        sync.Mutex
+	callCount int
+	output    string // simulated LLM output
+}
+
+func (m *mockExtractSpawner) Spawn(_ context.Context, _, _ string) (io.ReadCloser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount++
+	return io.NopCloser(strings.NewReader(m.output)), nil
+}
+
+func (m *mockExtractSpawner) CallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
+
+// TestExtractImplicitMemories_CallsExtractWithLLM verifies that when a subprocess
+// exits (stdout closes), extractImplicitMemories calls memory.ExtractWithLLM with
+// the worker's extractSpawner, session text, beadID, and memStore.
+func TestExtractImplicitMemories_CallsExtractWithLLM(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	store := memory.NewStore(db)
+
+	// Mock extract spawner returns a [MEMORY] line so we can verify it was called.
+	extractSpawner := &mockExtractSpawner{
+		output: "[MEMORY] type=lesson tags=test: LLM extraction works\n",
+	}
+
+	// io.Pipe simulates subprocess stdout.
+	pr, pw := io.Pipe()
+
+	spawner := &mockSpawner{
+		process: newMockProcess(),
+		stdout:  pr,
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-llm-extract", workerConn, spawner)
+	w.SetMemoryStore(store)
+	w.SetExtractSpawner(extractSpawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	// Send ASSIGN to start the subprocess.
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-llm",
+			Worktree: "/tmp/wt-llm",
+		},
+	})
+
+	// Drain STATUS message.
+	_ = readMessage(t, dispatcherConn)
+
+	// Write session text then close stdout to trigger extractImplicitMemories.
+	_, err := pw.Write([]byte("Some session output for LLM extraction\n"))
+	if err != nil {
+		t.Fatalf("write to pipe: %v", err)
+	}
+	_ = pw.Close()
+
+	// Wait for LLM-extracted memory to appear in the store.
+	// This confirms the full pipeline: processOutput -> extractImplicitMemories -> ExtractWithLLM -> Insert.
+	waitFor(t, func() bool {
+		all, listErr := store.List(context.Background(), memory.ListOpts{})
+		if listErr != nil {
+			return false
+		}
+		for _, m := range all {
+			if m.Source == "llm_extracted" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
+
+	if extractSpawner.CallCount() != 1 {
+		t.Errorf("expected 1 ExtractWithLLM call, got %d", extractSpawner.CallCount())
+	}
+
+	// Verify the memory was inserted into the store (proves ExtractWithLLM ran end-to-end).
+	all, err := store.List(ctx, memory.ListOpts{})
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
+
+	llmExtracted := 0
+	for _, m := range all {
+		if m.Source == "llm_extracted" {
+			llmExtracted++
+		}
+	}
+	if llmExtracted != 1 {
+		t.Errorf("expected 1 llm_extracted memory, got %d", llmExtracted)
+		for _, m := range all {
+			t.Logf("  memory: source=%s type=%s content=%q", m.Source, m.Type, m.Content)
+		}
+	}
+
+	cancel()
+	<-errCh
+}
+
+// TestExtractImplicitMemories_NilSpawner verifies that extractImplicitMemories
+// is a no-op when extractSpawner is nil (default state).
+func TestExtractImplicitMemories_NilSpawner(t *testing.T) {
+	t.Parallel()
+
+	db := setupTestDB(t)
+	store := memory.NewStore(db)
+
+	pr, pw := io.Pipe()
+	spawner := &mockSpawner{
+		process: newMockProcess(),
+		stdout:  pr,
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-nil-spawner", workerConn, spawner)
+	w.SetMemoryStore(store)
+	// NOTE: SetExtractSpawner NOT called — extractSpawner remains nil.
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-nil",
+			Worktree: "/tmp/wt-nil",
+		},
+	})
+
+	_ = readMessage(t, dispatcherConn)
+
+	_, err := pw.Write([]byte("Session text that should NOT trigger LLM extraction\n"))
+	if err != nil {
+		t.Fatalf("write to pipe: %v", err)
+	}
+	_ = pw.Close()
+
+	// Wait for processOutput to complete.
+	justWait(500 * time.Millisecond)
+
+	// No LLM-extracted memories should exist.
+	all, err := store.List(ctx, memory.ListOpts{})
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
+
+	for _, m := range all {
+		if m.Source == "llm_extracted" {
+			t.Errorf("unexpected llm_extracted memory: %q", m.Content)
+		}
+	}
+
+	cancel()
+	<-errCh
+}
+
+// TestSetExtractSpawner verifies that SetExtractSpawner stores the spawner
+// in the worker and it's retrievable through the extraction path.
+func TestSetExtractSpawner(t *testing.T) {
+	t.Parallel()
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() {
+		_ = dispatcherConn.Close()
+		_ = workerConn.Close()
+	}()
+
+	w := worker.NewWithConn("w-set-spawner", workerConn, newMockSpawner())
+
+	// Should not panic when called with a non-nil spawner.
+	extractSpawner := &mockExtractSpawner{output: ""}
+	w.SetExtractSpawner(extractSpawner)
+
+	// Should not panic when called with nil (reset).
+	w.SetExtractSpawner(nil)
 }
 
 // TestWorkerSendsInitialHeartbeat verifies that Run() sends a HEARTBEAT

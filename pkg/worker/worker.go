@@ -96,6 +96,7 @@ type Worker struct {
 	contextPollInterval time.Duration
 	reconnectInterval   time.Duration // base retry interval for reconnection
 	memStore            *memory.Store
+	extractSpawner      memory.Spawner
 	sessionText         strings.Builder
 	outputWg            sync.WaitGroup // tracks processOutput goroutine completion
 	reconnectDialHook   func(net.Conn) // test hook: called after dial, before sendMessage
@@ -186,6 +187,14 @@ func (w *Worker) SetMemoryStore(s *memory.Store) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.memStore = s
+}
+
+// SetExtractSpawner attaches a memory.Spawner for LLM-based memory extraction.
+// When set, extractImplicitMemories uses ExtractWithLLM instead of the regex-based fallback.
+func (w *Worker) SetExtractSpawner(s memory.Spawner) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.extractSpawner = s
 }
 
 // SessionText returns the accumulated subprocess output text. Thread-safe.
@@ -612,25 +621,24 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 	w.extractImplicitMemories(ctx)
 }
 
-// extractImplicitMemories runs ExtractImplicit on accumulated session text
-// and inserts results into the memory store. Called on handoff/completion.
+// extractImplicitMemories runs LLM-based memory extraction on accumulated
+// session text and inserts results into the memory store. Called when
+// processOutput finishes (subprocess stdout closes). Requires both
+// extractSpawner and memStore to be set; no-op otherwise.
 func (w *Worker) extractImplicitMemories(ctx context.Context) {
 	w.mu.Lock()
+	spawner := w.extractSpawner
 	store := w.memStore
 	text := w.sessionText.String()
-	workerID := w.ID
 	beadID := w.beadID
 	w.mu.Unlock()
 
-	if store == nil || text == "" {
+	if spawner == nil || store == nil {
 		return
 	}
 
-	results := memory.ExtractImplicit(text)
-	for i := range results {
-		results[i].WorkerID = workerID
-		results[i].BeadID = beadID
-		_, _ = store.Insert(ctx, results[i]) // best-effort
+	if err := memory.ExtractWithLLM(ctx, spawner, text, beadID, store); err != nil {
+		fmt.Fprintf(os.Stderr, "worker %s: extract implicit memories: %v\n", w.ID, err)
 	}
 }
 
@@ -1029,10 +1037,7 @@ func (w *Worker) SendStatus(_ context.Context, state, result string) error {
 }
 
 // SendDone sends a DONE message to the Dispatcher with the quality gate result.
-// Before sending, it extracts implicit memories from accumulated session text.
 func (w *Worker) SendDone(ctx context.Context, qualityGatePassed bool, qgOutput string) error {
-	w.extractImplicitMemories(ctx)
-
 	w.mu.Lock()
 	beadID := w.beadID
 	w.mu.Unlock()
@@ -1049,12 +1054,10 @@ func (w *Worker) SendDone(ctx context.Context, qualityGatePassed bool, qgOutput 
 }
 
 // SendHandoff sends a HANDOFF message to the Dispatcher.
-// Before sending, it extracts implicit memories from accumulated session text
-// and reads typed context files from .oro/ in the worktree to populate the
+// It reads typed context files from .oro/ in the worktree to populate the
 // HandoffPayload with learnings, decisions, files modified, and a context
 // summary for cross-session memory persistence.
 func (w *Worker) SendHandoff(ctx context.Context) error {
-	w.extractImplicitMemories(ctx)
 	w.mu.Lock()
 	beadID := w.beadID
 	worktree := w.worktree
