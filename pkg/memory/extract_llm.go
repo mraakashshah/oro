@@ -58,9 +58,25 @@ type Inserter interface {
 // CLISpawner is the production Spawner that invokes `claude -p`.
 type CLISpawner struct{}
 
+// waitCloser wraps a pipe reader and calls cmd.Wait() on Close to reap the child process.
+type waitCloser struct {
+	io.ReadCloser
+	cmd *exec.Cmd
+}
+
+// Close closes the pipe and reaps the child process to prevent zombies.
+func (w *waitCloser) Close() error {
+	_ = w.ReadCloser.Close()
+	if err := w.cmd.Wait(); err != nil {
+		return fmt.Errorf("wait for subprocess: %w", err)
+	}
+	return nil
+}
+
 // Spawn starts a `claude -p` subprocess with the given model and prompt.
 // Stdin is set to /dev/null to prevent the process from inheriting parent stdin
 // and hanging (see pkg/worker/worker.go:1249-1256 for full rationale).
+// The returned ReadCloser's Close method reaps the child process via cmd.Wait().
 func (c CLISpawner) Spawn(ctx context.Context, model, prompt string) (io.ReadCloser, error) {
 	args := []string{"-p", prompt, "--model", model}
 	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args constructed internally
@@ -81,7 +97,7 @@ func (c CLISpawner) Spawn(ctx context.Context, model, prompt string) (io.ReadClo
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 
-	return stdout, nil
+	return &waitCloser{ReadCloser: stdout, cmd: cmd}, nil
 }
 
 // ExtractWithLLM runs a lightweight LLM extraction pass over sessionText and
@@ -141,6 +157,9 @@ func ExtractWithLLM(_ context.Context, spawner Spawner, sessionText, beadID stri
 		if _, err := store.Insert(extractCtx, *params); err != nil {
 			log.Printf("memory extract: insert error: %v", err)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("memory extract: scan error: %v", err)
 	}
 
 	return nil
