@@ -38,26 +38,6 @@ func memoryBody(ctx string) string {
 	return ctx
 }
 
-// savingLearningsBody returns the Saving Learnings section content with examples.
-func savingLearningsBody() string {
-	return strings.Join([]string{
-		"As you work, capture learnings for future sessions. Three methods:",
-		"",
-		"**Natural language** (just write normally — these are extracted automatically):",
-		"  I learned that the FTS5 trigger must be on INSERT only",
-		"  Gotcha: ruff --fix must run BEFORE pyright or types break",
-		"  Note: the dispatcher retries with exponential backoff",
-		"  Decision: use table-driven tests for the parser package",
-		"",
-		"**Explicit markers** (for structured entries):",
-		"  [MEMORY] type=gotcha tags=sqlite: WAL mode required for concurrent writes",
-		"  [MEMORY] type=lesson tags=go,test: table-driven tests catch edge cases",
-		"",
-		"Types: lesson, decision, gotcha, pattern",
-		"Only save genuinely useful discoveries — not obvious facts.",
-	}, "\n")
-}
-
 // AssemblePrompt builds the complete 12-section worker prompt from bead details
 // and context. This prompt is passed to `claude -p` when spawning a worker.
 func AssemblePrompt(params PromptParams) string {
@@ -85,9 +65,6 @@ func AssemblePrompt(params PromptParams) string {
 
 	// 3. Memory
 	section(&b, "Memory", memoryBody(params.MemoryContext))
-
-	// 3a. Saving Learnings
-	section(&b, "Saving Learnings", savingLearningsBody())
 
 	// 3b. Relevant Code (only if CodeSearchContext is non-empty)
 	if params.CodeSearchContext != "" {
@@ -239,11 +216,16 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Exit", strings.Join([]string{
 		"When acceptance criteria pass and quality gate is green:",
 		"",
-		"Your work is complete. The dispatcher will:",
-		"1. Receive your completion signal",
-		"2. Merge your worktree branch to main",
-		"3. Close the bead if merge succeeds",
-		"4. Escalate to the manager if merge fails",
+		"1. Reflect: did you discover anything non-obvious? Run `oro remember` for each:",
+		"   `oro remember \"lesson: <what you learned\"`",
+		"   `oro remember \"gotcha: <trap to avoid>\"`",
+		"   `oro remember \"decision: <what you chose and why>\"`",
+		"",
+		"2. Your work is complete. The dispatcher will:",
+		"   - Receive your completion signal",
+		"   - Merge your worktree branch to main",
+		"   - Close the bead if merge succeeds",
+		"   - Escalate to the manager if merge fails",
 		"",
 		"You do NOT need to merge to main or close the bead yourself.",
 	}, "\n"))
