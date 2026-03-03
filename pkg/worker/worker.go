@@ -191,6 +191,8 @@ func (w *Worker) SetMemoryStore(s *memory.Store) {
 
 // SetExtractSpawner attaches a memory.Spawner for LLM-based memory extraction.
 // When set, extractImplicitMemories uses ExtractWithLLM instead of the regex-based fallback.
+//
+//oro:testonly — wired into production by bead oro-eyrq.8 (Wire CLISpawner into CLI commands)
 func (w *Worker) SetExtractSpawner(s memory.Spawner) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
