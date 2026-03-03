@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"oro/pkg/memory"
 )
@@ -15,9 +16,11 @@ type MemoryInserter interface {
 }
 
 // DrainOutput reads subprocess stdout line by line, echoes each line to writers,
-// and extracts [MEMORY] markers into the memory store. Safe when store is nil.
+// and extracts [MEMORY] markers into the memory store in real time. After the
+// stream is fully drained, it runs LLM-based extraction on the accumulated text
+// via memory.ExtractWithLLM. Safe when store or spawner is nil.
 // Nil writers in the slice are filtered out. Empty writers slice is a no-op for output.
-func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter, beadID string, writers ...io.Writer) {
+func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter, beadID string, spawner memory.Spawner, writers ...io.Writer) {
 	defer func() { _ = stdout.Close() }()
 
 	// Filter nil writers.
@@ -32,6 +35,8 @@ func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter
 		out = io.MultiWriter(valid...)
 	}
 
+	var accumulated strings.Builder
+
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -39,17 +44,19 @@ func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter
 			fmt.Fprintln(out, line)
 		}
 
+		accumulated.WriteString(line)
+		accumulated.WriteString("\n")
+
 		if store != nil {
 			if params := memory.ParseMarker(line); params != nil {
 				params.BeadID = beadID
 				_, _ = store.Insert(ctx, *params)
 			}
-			// Implicit patterns ("I learned...", "Gotcha:", etc.)
-			for _, p := range memory.ExtractImplicit(line) {
-				p.BeadID = beadID
-				p.Source = "worker_implicit"
-				_, _ = store.Insert(ctx, p)
-			}
 		}
+	}
+
+	// Post-drain LLM extraction on accumulated session text.
+	if spawner != nil && store != nil {
+		_ = memory.ExtractWithLLM(ctx, spawner, accumulated.String(), beadID, store)
 	}
 }

@@ -858,6 +858,8 @@ var implicitPatterns = []struct {
 
 // ExtractImplicit scans text for implicit learning patterns and returns
 // InsertParams for each match. Does NOT insert — caller decides.
+//
+//oro:testonly — production caller removed in drain.go; deletion tracked in bead oro-eyrq.7
 func ExtractImplicit(text string) []InsertParams {
 	lines := strings.Split(text, "\n")
 	var results []InsertParams
