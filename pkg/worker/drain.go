@@ -17,25 +17,15 @@ type MemoryInserter interface {
 
 // DrainOutput reads subprocess stdout line by line (NDJSON from
 // --output-format stream-json), parses each event, writes formatted
-// tool-call activity to writers, and extracts [MEMORY] markers from text
-// content in real time. After the stream is fully drained, it runs
-// LLM-based extraction on the accumulated text via memory.ExtractWithLLM.
+// tool-call activity and text content to writers, and extracts [MEMORY]
+// markers from text in real time. After the stream is fully drained, it
+// runs LLM-based extraction on the accumulated text via memory.ExtractWithLLM.
 // Safe when store or spawner is nil.
 // Nil writers in the slice are filtered out. Empty writers slice is a no-op for output.
 func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter, beadID string, spawner memory.Spawner, writers ...io.Writer) {
 	defer func() { _ = stdout.Close() }()
 
-	// Filter nil writers.
-	valid := make([]io.Writer, 0, len(writers))
-	for _, w := range writers {
-		if w != nil {
-			valid = append(valid, w)
-		}
-	}
-	var out io.Writer
-	if len(valid) > 0 {
-		out = io.MultiWriter(valid...)
-	}
+	out := filterWriters(writers)
 
 	var accumulated strings.Builder
 	var lineBuf strings.Builder
@@ -43,35 +33,67 @@ func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		activity := ParseStreamEvent(scanner.Bytes())
-
-		// Write formatted tool-call activity to output writers.
-		if formatted := FormatActivity(activity); formatted != "" && out != nil {
-			fmt.Fprintln(out, formatted)
-		}
-
-		// Accumulate text content and process complete lines.
-		if activity.Text != "" {
-			lineBuf.WriteString(activity.Text)
-			drainFlushLines(ctx, &lineBuf, &accumulated, store, beadID)
-		}
+		drainWriteActivity(out, activity)
+		drainAccumulateText(ctx, activity, &lineBuf, &accumulated, store, beadID)
 	}
 
-	// Flush any remaining buffered text.
-	if lineBuf.Len() > 0 {
-		remaining := lineBuf.String()
-		accumulated.WriteString(remaining)
-		accumulated.WriteString("\n")
-		if store != nil {
-			if params := memory.ParseMarker(remaining); params != nil {
-				params.BeadID = beadID
-				_, _ = store.Insert(ctx, *params)
-			}
-		}
-	}
+	drainFlushRemaining(ctx, &lineBuf, &accumulated, store, beadID)
 
 	// Post-drain LLM extraction on accumulated session text.
 	if spawner != nil && store != nil {
 		_ = memory.ExtractWithLLM(ctx, spawner, accumulated.String(), beadID, store)
+	}
+}
+
+// filterWriters returns a multi-writer for non-nil writers, or nil.
+func filterWriters(writers []io.Writer) io.Writer {
+	valid := make([]io.Writer, 0, len(writers))
+	for _, w := range writers {
+		if w != nil {
+			valid = append(valid, w)
+		}
+	}
+	if len(valid) == 0 {
+		return nil
+	}
+	return io.MultiWriter(valid...)
+}
+
+// drainWriteActivity writes formatted tool activity and text to the output writer.
+func drainWriteActivity(out io.Writer, activity Activity) {
+	if out == nil {
+		return
+	}
+	if formatted := FormatActivity(activity); formatted != "" {
+		fmt.Fprintln(out, formatted)
+	}
+	if activity.Text != "" {
+		_, _ = io.WriteString(out, activity.Text)
+	}
+}
+
+// drainAccumulateText buffers text content and flushes complete lines for memory extraction.
+func drainAccumulateText(ctx context.Context, activity Activity, lineBuf, accumulated *strings.Builder, store MemoryInserter, beadID string) {
+	if activity.Text == "" {
+		return
+	}
+	lineBuf.WriteString(activity.Text)
+	drainFlushLines(ctx, lineBuf, accumulated, store, beadID)
+}
+
+// drainFlushRemaining flushes any buffered text that doesn't end with a newline.
+func drainFlushRemaining(ctx context.Context, lineBuf, accumulated *strings.Builder, store MemoryInserter, beadID string) {
+	if lineBuf.Len() == 0 {
+		return
+	}
+	remaining := lineBuf.String()
+	accumulated.WriteString(remaining)
+	accumulated.WriteString("\n")
+	if store != nil {
+		if params := memory.ParseMarker(remaining); params != nil {
+			params.BeadID = beadID
+			_, _ = store.Insert(ctx, *params)
+		}
 	}
 }
 

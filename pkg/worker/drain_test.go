@@ -81,9 +81,15 @@ func TestDrainOutput_FormatsToolActivity(t *testing.T) {
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf)
 
 	got := buf.String()
-	want := "-> Read\n-> Bash\n"
-	if got != want {
-		t.Fatalf("expected formatted output %q, got %q", want, got)
+	// Tool activity and text content both echoed to output.
+	if !strings.Contains(got, "-> Read") {
+		t.Fatalf("expected '-> Read' in output, got %q", got)
+	}
+	if !strings.Contains(got, "-> Bash") {
+		t.Fatalf("expected '-> Bash' in output, got %q", got)
+	}
+	if !strings.Contains(got, "reading file...") {
+		t.Fatalf("expected text echo in output, got %q", got)
 	}
 }
 
@@ -125,9 +131,9 @@ func TestDrainOutput_NilStore(t *testing.T) {
 	// Should not panic with nil store.
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf)
 
-	// No tool calls → no output in buf (text deltas don't produce formatted output).
-	if buf.Len() != 0 {
-		t.Fatalf("expected no formatted output for text-only events, got %q", buf.String())
+	// Text content should be echoed to output for debugging visibility.
+	if !strings.Contains(buf.String(), "regular line") {
+		t.Errorf("expected text echo in output, got %q", buf.String())
 	}
 }
 
@@ -225,9 +231,9 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 		t.Errorf("expected llm_extracted memory with 'table-driven', got %v", store.inserted)
 	}
 
-	// No tool calls → no formatted output.
-	if buf.Len() != 0 {
-		t.Errorf("expected no formatted output for text-only events, got %q", buf.String())
+	// Text content should be echoed to output for debugging visibility.
+	if !strings.Contains(buf.String(), "doing work") {
+		t.Errorf("expected text echo in output, got %q", buf.String())
 	}
 }
 
@@ -252,8 +258,8 @@ func TestDrainOutput_NilSpawner(t *testing.T) {
 		t.Errorf("expected Source=self_report, got %q", store.inserted[0].Source)
 	}
 
-	// No tool calls → no formatted output.
-	if buf.Len() != 0 {
-		t.Errorf("expected no formatted output for text-only events, got %q", buf.String())
+	// Text content should be echoed to output for debugging visibility.
+	if !strings.Contains(buf.String(), "doing work") {
+		t.Errorf("expected text echo in output, got %q", buf.String())
 	}
 }
