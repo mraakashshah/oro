@@ -147,12 +147,11 @@ func TestDrainOutput_MultiWriter(t *testing.T) {
 
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf1, &buf2)
 
-	want := "-> Read\n-> Edit\n"
-	if buf1.String() != want {
-		t.Fatalf("writer 1: expected %q, got %q", want, buf1.String())
-	}
-	if buf2.String() != want {
-		t.Fatalf("writer 2: expected %q, got %q", want, buf2.String())
+	for i, buf := range []*bytes.Buffer{&buf1, &buf2} {
+		s := buf.String()
+		if !strings.Contains(s, "-> Read") || !strings.Contains(s, "-> Edit") {
+			t.Fatalf("writer %d: expected '-> Read' and '-> Edit', got %q", i+1, s)
+		}
 	}
 }
 
@@ -164,9 +163,8 @@ func TestDrainOutput_NilWriterFiltered(t *testing.T) {
 	// nil writer in slice should not panic
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf, nil)
 
-	want := "-> Bash\n"
-	if buf.String() != want {
-		t.Fatalf("expected %q, got %q", want, buf.String())
+	if !strings.Contains(buf.String(), "-> Bash") {
+		t.Fatalf("expected '-> Bash' in output, got %q", buf.String())
 	}
 }
 
@@ -184,8 +182,9 @@ func TestDrainOutput_EmptyInput(t *testing.T) {
 
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf)
 
-	if buf.Len() != 0 {
-		t.Fatalf("expected empty output, got %q", buf.String())
+	// Only stats line expected (no actual content).
+	if !strings.Contains(buf.String(), "0 lines") {
+		t.Fatalf("expected stats showing 0 lines, got %q", buf.String())
 	}
 }
 

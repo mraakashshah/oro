@@ -1,6 +1,7 @@
 package worker_test
 
 import (
+	"strings"
 	"testing"
 
 	"oro/pkg/worker"
@@ -37,7 +38,7 @@ func TestParseStreamEvent(t *testing.T) {
 		},
 		{
 			name:     "result success",
-			input:    `{"type":"result","result":"Final output","is_error":false}`,
+			input:    `{"type":"result","subtype":"success","result":"Final output","is_error":false,"num_turns":3,"stop_reason":"end_turn","duration_ms":5000,"total_cost_usd":0.005,"permission_denials":[]}`,
 			wantKind: worker.ActivityResult,
 			wantText: "Final output",
 			wantErr:  false,
@@ -107,6 +108,76 @@ func TestParseStreamEvent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseStreamEvent_ResultMetadata(t *testing.T) {
+	t.Parallel()
+
+	input := `{"type":"result","subtype":"success","result":"done","is_error":false,"num_turns":5,"stop_reason":"end_turn","duration_ms":8000,"total_cost_usd":0.0042,"permission_denials":["Read","Bash"]}`
+	got := worker.ParseStreamEvent([]byte(input))
+
+	if got.NumTurns != 5 {
+		t.Errorf("NumTurns = %d, want 5", got.NumTurns)
+	}
+	if got.StopReason != "end_turn" {
+		t.Errorf("StopReason = %q, want %q", got.StopReason, "end_turn")
+	}
+	if got.DurationMs != 8000 {
+		t.Errorf("DurationMs = %d, want 8000", got.DurationMs)
+	}
+	if got.CostUSD != 0.0042 {
+		t.Errorf("CostUSD = %f, want 0.0042", got.CostUSD)
+	}
+	if len(got.PermissionDenials) != 2 || got.PermissionDenials[0] != "Read" {
+		t.Errorf("PermissionDenials = %v, want [Read Bash]", got.PermissionDenials)
+	}
+	if got.ResultSubtype != "success" {
+		t.Errorf("ResultSubtype = %q, want %q", got.ResultSubtype, "success")
+	}
+}
+
+func TestFormatResult(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success with metadata", func(t *testing.T) {
+		t.Parallel()
+		a := worker.Activity{
+			Kind:          worker.ActivityResult,
+			ResultSubtype: "success",
+			NumTurns:      3,
+			DurationMs:    5000,
+			CostUSD:       0.005,
+			StopReason:    "end_turn",
+		}
+		got := worker.FormatResult(a)
+		if got == "" {
+			t.Fatal("expected non-empty result summary")
+		}
+		if !strings.Contains(got, "turns=3") {
+			t.Errorf("missing turns in %q", got)
+		}
+	})
+
+	t.Run("with permission denials", func(t *testing.T) {
+		t.Parallel()
+		a := worker.Activity{
+			Kind:              worker.ActivityResult,
+			ResultSubtype:     "success",
+			PermissionDenials: []string{"Read", "Bash"},
+		}
+		got := worker.FormatResult(a)
+		if !strings.Contains(got, "PERMISSION DENIALS") {
+			t.Errorf("missing permission denials in %q", got)
+		}
+	})
+
+	t.Run("non-result returns empty", func(t *testing.T) {
+		t.Parallel()
+		a := worker.Activity{Kind: worker.ActivityToolUse, Tool: "Read"}
+		if got := worker.FormatResult(a); got != "" {
+			t.Errorf("expected empty for non-result, got %q", got)
+		}
+	})
 }
 
 func TestFormatActivity(t *testing.T) {

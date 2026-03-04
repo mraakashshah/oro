@@ -30,11 +30,23 @@ func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter
 	var accumulated strings.Builder
 	var lineBuf strings.Builder
 
+	var totalLines, unknownLines int
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	for scanner.Scan() {
+		totalLines++
 		activity := ParseStreamEvent(scanner.Bytes())
+		if activity.Kind == ActivityUnknown {
+			unknownLines++
+		}
 		drainWriteActivity(out, activity)
 		drainAccumulateText(ctx, activity, &lineBuf, &accumulated, store, beadID)
+	}
+	if err := scanner.Err(); err != nil && out != nil {
+		fmt.Fprintf(out, "--- Scanner error: %v\n", err)
+	}
+	if out != nil {
+		fmt.Fprintf(out, "--- Stream stats: %d lines (%d unknown)\n", totalLines, unknownLines)
 	}
 
 	drainFlushRemaining(ctx, &lineBuf, &accumulated, store, beadID)
@@ -66,6 +78,9 @@ func drainWriteActivity(out io.Writer, activity Activity) {
 	}
 	if formatted := FormatActivity(activity); formatted != "" {
 		fmt.Fprintln(out, formatted)
+	}
+	if resultSummary := FormatResult(activity); resultSummary != "" {
+		fmt.Fprintln(out, resultSummary)
 	}
 	if activity.Text != "" {
 		_, _ = io.WriteString(out, activity.Text)
