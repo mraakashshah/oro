@@ -10,9 +10,9 @@ func TestBuildClaudeArgs_NoEnv(t *testing.T) {
 	t.Setenv("ORO_PROJECT", "")
 
 	got := buildClaudeArgs("claude-opus-4-6", "hello")
-	want := []string{"-p", "hello", "--model", "claude-opus-4-6", "--output-format", "stream-json"}
-	if len(got) != 6 {
-		t.Fatalf("expected length 6, got %d: %v", len(got), got)
+	want := []string{"-p", "hello", "--model", "claude-opus-4-6", "--verbose", "--output-format", "stream-json"}
+	if len(got) != 7 {
+		t.Fatalf("expected length 7, got %d: %v", len(got), got)
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -29,7 +29,7 @@ func TestBuildClaudeArgs_WithORO(t *testing.T) {
 	want := []string{
 		"-p", "hello",
 		"--model", "claude-opus-4-6",
-		"--output-format", "stream-json",
+		"--verbose", "--output-format", "stream-json",
 		"--add-dir", "/tmp/h",
 		"--settings", "/tmp/h/projects/p/settings.json",
 	}
@@ -47,8 +47,8 @@ func TestBuildClaudeArgs_WithORO(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 
 		got := buildClaudeArgs("claude-opus-4-6", "hello")
-		if len(got) != 6 {
-			t.Fatalf("expected length 6 without ORO_PROJECT, got %d: %v", len(got), got)
+		if len(got) != 7 {
+			t.Fatalf("expected length 7 without ORO_PROJECT, got %d: %v", len(got), got)
 		}
 	})
 }

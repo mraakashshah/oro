@@ -1238,7 +1238,7 @@ type ClaudeSpawner struct{}
 // When both ORO_HOME and ORO_PROJECT env vars are set, it appends
 // --add-dir and --settings flags to point claude at the shared oro config.
 func buildClaudeArgs(model, prompt string) []string {
-	args := []string{"-p", prompt, "--model", model, "--output-format", "stream-json"}
+	args := []string{"-p", prompt, "--model", model, "--verbose", "--output-format", "stream-json"}
 
 	oroHome := os.Getenv("ORO_HOME")
 	oroProject := os.Getenv("ORO_PROJECT")
