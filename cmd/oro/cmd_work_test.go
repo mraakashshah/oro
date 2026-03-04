@@ -172,12 +172,11 @@ func TestSetupWorktree_NoWorktreeCreatesNew(t *testing.T) {
 }
 
 func TestWorkNoCommits_AlwaysFails(t *testing.T) {
-	// When worker produces 0 commits, oro work must always return an error —
-	// even if the quality gate passes on the unmodified worktree. The QG
-	// passing on a clean main checkout is not evidence of AC satisfaction;
-	// it caused false-close bugs (oro-eyrq.2, .5, .6).
+	// When worker produces 0 commits and AC is unparseable (no structured
+	// Cmd: field), oro work must return an error. The general QG passing on
+	// a clean checkout is NOT evidence of AC satisfaction.
 
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &mockBeadSource{showDetail: testBead()} // testBead has AC="Tests pass" (unparseable)
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
@@ -193,7 +192,7 @@ func TestWorkNoCommits_AlwaysFails(t *testing.T) {
 	}
 
 	err := executeWork(context.Background(), cfg, deps)
-	// MUST return an error — no commits means no work was done.
+	// MUST return an error — no commits and no parseable AC to verify.
 	if err == nil {
 		t.Fatal("expected error when worker produces no commits, got nil")
 	}
@@ -214,6 +213,252 @@ func TestWorkNoCommits_AlwaysFails(t *testing.T) {
 	// Worktree must be cleaned up.
 	if len(wt.removed) == 0 {
 		t.Error("expected worktree to be removed")
+	}
+}
+
+func TestWorkNoCommits_ACAlreadySatisfied(t *testing.T) {
+	// When worker produces 0 commits BUT the bead's specific acceptance
+	// test already passes on main (code already implemented), oro work
+	// should close the bead and return nil (success).
+
+	// Bead with structured AC containing Cmd: and Test: fields.
+	bead := &protocol.BeadDetail{
+		ID:                 "oro-test",
+		Title:              "Test bead",
+		AcceptanceCriteria: "Test: pkg/foo/foo_test.go:TestFoo | Cmd: go test ./pkg/foo/... -run TestFoo | Assert: PASS",
+	}
+
+	// Create a temp worktree dir with the test file present.
+	wtDir := t.TempDir()
+	testFileDir := filepath.Join(wtDir, "pkg", "foo")
+	if err := os.MkdirAll(testFileDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(testFileDir, "foo_test.go"), []byte("package foo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bs := &mockBeadSource{showDetail: bead}
+	wt := &mockWorktreeManager{createPath: wtDir, createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+
+	deps := testDeps(bs, wt, sp, mg, false, true)
+	// AC command passes (code already on main).
+	deps.runShellCmd = func(_ context.Context, _, _ string) (bool, error) {
+		return true, nil
+	}
+
+	cfg := &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	err := executeWork(context.Background(), cfg, deps)
+	// Must succeed — AC already satisfied.
+	if err != nil {
+		t.Fatalf("expected nil error (AC satisfied), got: %v", err)
+	}
+
+	// Bead must be closed with reason.
+	if bs.closeID != "oro-test" {
+		t.Errorf("expected bead to be closed, closeID=%q", bs.closeID)
+	}
+
+	// Merger must NOT be called — no commits to merge.
+	if mg.called {
+		t.Error("merger should not be called when no commits were produced")
+	}
+
+	// Worktree must be cleaned up.
+	if len(wt.removed) == 0 {
+		t.Error("expected worktree to be removed")
+	}
+}
+
+func TestWorkNoCommits_ACAlreadySatisfied_TestFileMissing(t *testing.T) {
+	// When AC has structured Cmd:/Test: but the test file doesn't exist
+	// on main, the feature is NOT done — return error as usual.
+
+	bead := &protocol.BeadDetail{
+		ID:                 "oro-test",
+		Title:              "Test bead",
+		AcceptanceCriteria: "Test: pkg/foo/foo_test.go:TestFoo | Cmd: go test ./pkg/foo/... -run TestFoo | Assert: PASS",
+	}
+
+	wtDir := t.TempDir() // empty — no test file
+
+	bs := &mockBeadSource{showDetail: bead}
+	wt := &mockWorktreeManager{createPath: wtDir, createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+
+	deps := testDeps(bs, wt, sp, mg, false, true)
+	deps.runShellCmd = func(_ context.Context, _, _ string) (bool, error) {
+		t.Error("runShellCmd should not be called when test file is missing")
+		return false, nil
+	}
+
+	cfg := &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	err := executeWork(context.Background(), cfg, deps)
+
+	// Must fail — test file missing means feature not implemented.
+	if err == nil {
+		t.Fatal("expected error when test file missing, got nil")
+	}
+	if bs.closeID != "" {
+		t.Errorf("bead should not be closed, closeID=%q", bs.closeID)
+	}
+}
+
+func TestWorkNoCommits_ACAlreadySatisfied_CmdFails(t *testing.T) {
+	// When AC has structured Cmd:/Test:, test file exists, but the AC
+	// command fails — feature is NOT done, return error.
+
+	bead := &protocol.BeadDetail{
+		ID:                 "oro-test",
+		Title:              "Test bead",
+		AcceptanceCriteria: "Test: pkg/foo/foo_test.go:TestFoo | Cmd: go test ./pkg/foo/... -run TestFoo | Assert: PASS",
+	}
+
+	wtDir := t.TempDir()
+	testFileDir := filepath.Join(wtDir, "pkg", "foo")
+	if err := os.MkdirAll(testFileDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(testFileDir, "foo_test.go"), []byte("package foo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bs := &mockBeadSource{showDetail: bead}
+	wt := &mockWorktreeManager{createPath: wtDir, createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+
+	deps := testDeps(bs, wt, sp, mg, false, true)
+	// AC command fails (feature not done).
+	deps.runShellCmd = func(_ context.Context, _, _ string) (bool, error) {
+		return false, nil
+	}
+
+	cfg := &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	err := executeWork(context.Background(), cfg, deps)
+
+	if err == nil {
+		t.Fatal("expected error when AC cmd fails, got nil")
+	}
+	if bs.closeID != "" {
+		t.Errorf("bead should not be closed, closeID=%q", bs.closeID)
+	}
+}
+
+func TestParseACCmd(t *testing.T) {
+	tests := []struct {
+		name string
+		ac   string
+		want string
+		ok   bool
+	}{
+		{
+			name: "standard format",
+			ac:   "Test: pkg/foo/foo_test.go:TestFoo | Cmd: go test ./pkg/foo/... -run TestFoo | Assert: PASS",
+			want: "go test ./pkg/foo/... -run TestFoo",
+			ok:   true,
+		},
+		{
+			name: "no cmd field",
+			ac:   "Tests pass",
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "cmd at end (no Assert)",
+			ac:   "Test: foo_test.go:TestBar | Cmd: pytest tests/test_bar.py",
+			want: "pytest tests/test_bar.py",
+			ok:   true,
+		},
+		{
+			name: "empty string",
+			ac:   "",
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "multiline ac with Cmd on second line",
+			ac:   "Test: pkg/x_test.go:TestX\nCmd: go test ./pkg/... -run TestX\nAssert: PASS",
+			want: "go test ./pkg/... -run TestX",
+			ok:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseACCmd(tt.ac)
+			if ok != tt.ok {
+				t.Errorf("parseACCmd ok = %v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Errorf("parseACCmd = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseACTestFile(t *testing.T) {
+	tests := []struct {
+		name string
+		ac   string
+		want string
+		ok   bool
+	}{
+		{
+			name: "standard format",
+			ac:   "Test: pkg/foo/foo_test.go:TestFoo | Cmd: go test ./pkg/foo/...",
+			want: "pkg/foo/foo_test.go",
+			ok:   true,
+		},
+		{
+			name: "no test field",
+			ac:   "Cmd: go test ./...",
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "test without function name",
+			ac:   "Test: pkg/foo/foo_test.go | Cmd: go test",
+			want: "pkg/foo/foo_test.go",
+			ok:   true,
+		},
+		{
+			name: "empty string",
+			ac:   "",
+			want: "",
+			ok:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseACTestFile(tt.ac)
+			if ok != tt.ok {
+				t.Errorf("parseACTestFile ok = %v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Errorf("parseACTestFile = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

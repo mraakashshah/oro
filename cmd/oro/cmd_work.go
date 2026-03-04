@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -88,16 +90,17 @@ type merger interface {
 
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
-	beadSrc    dispatcher.BeadSource
-	wtMgr      dispatcher.WorktreeManager
-	spawner    worker.StreamingSpawner
-	opsMgr     *ops.Spawner
-	merger     merger
-	repoRoot   string
-	memStore   *memory.Store
-	codeIndex  *codesearch.CodeIndex
-	hasNewWork func(repoRoot, branch string) bool                                                  // defaults to hasCommitsAhead
-	runQG      func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
+	beadSrc     dispatcher.BeadSource
+	wtMgr       dispatcher.WorktreeManager
+	spawner     worker.StreamingSpawner
+	opsMgr      *ops.Spawner
+	merger      merger
+	repoRoot    string
+	memStore    *memory.Store
+	codeIndex   *codesearch.CodeIndex
+	hasNewWork  func(repoRoot, branch string) bool                                                  // defaults to hasCommitsAhead
+	runQG       func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
+	runShellCmd func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
 }
 
 // exitError carries an exit code through the normal error return path,
@@ -131,16 +134,17 @@ func newProductionDeps() (*workDeps, error) {
 	}
 
 	return &workDeps{
-		beadSrc:    dispatcher.NewCLIBeadSource(runner),
-		wtMgr:      dispatcher.NewGitWorktreeManager(repoRoot, runner),
-		spawner:    &worker.ClaudeSpawner{},
-		opsMgr:     ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
-		merger:     merge.NewCoordinator(&merge.ExecGitRunner{}),
-		repoRoot:   repoRoot,
-		memStore:   memStore,
-		codeIndex:  codeIdx,
-		hasNewWork: hasCommitsAhead,
-		runQG:      worker.RunQualityGate,
+		beadSrc:     dispatcher.NewCLIBeadSource(runner),
+		wtMgr:       dispatcher.NewGitWorktreeManager(repoRoot, runner),
+		spawner:     &worker.ClaudeSpawner{},
+		opsMgr:      ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
+		merger:      merge.NewCoordinator(&merge.ExecGitRunner{}),
+		repoRoot:    repoRoot,
+		memStore:    memStore,
+		codeIndex:   codeIdx,
+		hasNewWork:  hasCommitsAhead,
+		runQG:       worker.RunQualityGate,
+		runShellCmd: defaultRunShellCmd,
 	}, nil
 }
 
@@ -560,13 +564,79 @@ func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree,
 }
 
 // noCommitsResult handles the case where claude exits without producing commits.
-// Always returns an error — no commits means no work was done. The quality gate
-// passes on an unmodified main checkout, so using it as a proxy for AC satisfaction
-// causes false-close bugs (the bead gets closed even though no changes landed).
-func noCommitsResult(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, _ *bool) error {
+// If the bead has structured acceptance criteria (Test: + Cmd: fields) and the
+// specific AC test file exists and the AC command passes, the code is already on
+// main — close the bead. Otherwise return an error.
+func noCommitsResult(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, merged *bool) error {
+	if acAlreadySatisfied(ctx, cfg, deps, worktree) {
+		logStep("AC already satisfied — closing bead (code already on main)")
+		*merged = true
+		_ = deps.beadSrc.Close(ctx, cfg.beadID, "AC already satisfied — code already on main")
+		_ = deps.wtMgr.Remove(ctx, worktree)
+		return nil
+	}
+
 	logStep("No commits on branch — claude produced no work")
 	_ = deps.wtMgr.Remove(ctx, worktree)
 	return fmt.Errorf("claude exited without producing commits on bead %s", cfg.beadID)
+}
+
+// acAlreadySatisfied checks if the bead's structured acceptance criteria
+// (Test: + Cmd: fields) are already satisfied on the unmodified worktree.
+// Returns false if AC is unparseable, test file is missing, or command fails.
+func acAlreadySatisfied(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string) bool {
+	if cfg.bead == nil || deps.runShellCmd == nil {
+		return false
+	}
+	testFile, hasFile := parseACTestFile(cfg.bead.AcceptanceCriteria)
+	cmd, hasCmd := parseACCmd(cfg.bead.AcceptanceCriteria)
+	if !hasFile || !hasCmd {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(worktree, testFile)); err != nil {
+		return false
+	}
+	passed, err := deps.runShellCmd(ctx, worktree, cmd)
+	return err == nil && passed
+}
+
+// acCmdRe matches "Cmd: <command>" in acceptance criteria, delimited by " | " or newline.
+var acCmdRe = regexp.MustCompile(`(?m)(?:^|[|\n]\s*)Cmd:\s*(.+?)(?:\s*\||\s*$)`)
+
+// parseACCmd extracts the Cmd field from structured acceptance criteria.
+func parseACCmd(ac string) (string, bool) {
+	m := acCmdRe.FindStringSubmatch(ac)
+	if m == nil {
+		return "", false
+	}
+	return strings.TrimSpace(m[1]), true
+}
+
+// acTestFileRe matches "Test: <filepath>[:FnName]" in acceptance criteria.
+var acTestFileRe = regexp.MustCompile(`(?:^|[|\n]\s*)Test:\s*(\S+?)(?::\S+)?(?:\s*\||\s*$)`)
+
+// parseACTestFile extracts the test file path from structured acceptance criteria.
+func parseACTestFile(ac string) (string, bool) {
+	m := acTestFileRe.FindStringSubmatch(ac)
+	if m == nil {
+		return "", false
+	}
+	return strings.TrimSpace(m[1]), true
+}
+
+// defaultRunShellCmd runs a shell command in a directory and returns whether it exited 0.
+// The cmd argument comes from bead acceptance criteria (trusted internal data).
+func defaultRunShellCmd(ctx context.Context, dir, cmd string) (bool, error) {
+	c := exec.CommandContext(ctx, "bash", "-c", cmd) //nolint:gosec // cmd from trusted AC field
+	c.Dir = dir
+	if err := c.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("run AC command: %w", err)
+	}
+	return true, nil
 }
 
 // truncate shortens a string to maxLen, appending "..." if truncated.
