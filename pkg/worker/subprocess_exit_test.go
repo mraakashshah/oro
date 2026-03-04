@@ -67,7 +67,7 @@ func TestSubprocessExitDetection_DuringReview(t *testing.T) {
 		}
 
 		// Subprocess finishes (simulates normal exit)
-		_, _ = pw.Write([]byte("implementation done\n"))
+		_, _ = pw.Write([]byte(textDeltaLine("implementation done\n") + "\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
 
@@ -168,7 +168,7 @@ func TestSubprocessExitDetection_DuringReview(t *testing.T) {
 		_ = scanMsg() // drain STATUS running
 
 		// Subprocess exits normally
-		_, _ = pw.Write([]byte("work done\n"))
+		_, _ = pw.Write([]byte(textDeltaLine("work done\n") + "\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
 

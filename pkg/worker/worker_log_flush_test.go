@@ -26,11 +26,12 @@ func TestProcessOutputDoesNotBlockOnHighThroughput(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
-	// Generate many lines to simulate high-throughput output
+	// Generate many tool-use events to simulate high-throughput output.
+	// Tool-use events produce "-> ToolName" log lines.
 	const numLines = 1000
 	lines := make([]string, numLines)
 	for i := 0; i < numLines; i++ {
-		lines[i] = strings.Repeat("x", 100) // 100-char lines
+		lines[i] = toolUseLine("Read")
 	}
 
 	// Create mock spawner with high-throughput stdout
@@ -105,11 +106,12 @@ func TestProcessOutputBuffersCorrectly(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
+	// Use tool-use events which produce "-> ToolName" log output.
 	testLines := []string{
-		"START: task execution",
-		"PROGRESS: step 1 complete",
-		"PROGRESS: step 2 complete",
-		"END: task finished",
+		toolUseLine("Read"),
+		toolUseLine("Bash"),
+		toolUseLine("Edit"),
+		toolUseLine("Write"),
 	}
 
 	spawner := newMockSpawner()
@@ -146,7 +148,7 @@ func TestProcessOutputBuffersCorrectly(t *testing.T) {
 	// Allow time for buffer flush
 	time.Sleep(300 * time.Millisecond)
 
-	// Verify all lines made it to the log file
+	// Verify all tool activities made it to the log file
 	logPath := filepath.Join(tempHome, ".oro", "workers", "test-worker-buffer", "output.log")
 	// #nosec G304 -- test code reading from test temp directory
 	content, err := os.ReadFile(logPath)
@@ -155,9 +157,15 @@ func TestProcessOutputBuffersCorrectly(t *testing.T) {
 	}
 
 	logContent := string(content)
-	for _, expectedLine := range testLines {
-		if !strings.Contains(logContent, expectedLine) {
-			t.Errorf("Log file missing expected line: %q\nLog content:\n%s", expectedLine, logContent)
+	expectedActivities := []string{
+		"-> Read",
+		"-> Bash",
+		"-> Edit",
+		"-> Write",
+	}
+	for _, expected := range expectedActivities {
+		if !strings.Contains(logContent, expected) {
+			t.Errorf("Log file missing expected activity: %q\nLog content:\n%s", expected, logContent)
 		}
 	}
 }

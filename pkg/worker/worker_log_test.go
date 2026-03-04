@@ -33,18 +33,21 @@ func (p *pipeReader) Close() error {
 }
 
 // TestProcessOutputWritesToLogFile verifies that processOutput tees
-// subprocess stdout to ~/.oro/workers/<worker-id>/output.log
+// formatted tool-call activity to ~/.oro/workers/<worker-id>/output.log
 func TestProcessOutputWritesToLogFile(t *testing.T) {
 	// Create temp home directory for test isolation
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
-	// Create mock spawner with simulated stdout
+	// Create mock spawner with simulated stdout (NDJSON stream-json events).
+	// Tool-use events produce log output; text-delta events do not.
 	spawner := newMockSpawner()
 	spawner.stdout = newPipeReader([]string{
-		"line 1: starting work",
-		"line 2: doing something",
-		"line 3: finished",
+		toolUseLine("Read"),
+		textDeltaLine("reading file...\n"),
+		toolUseLine("Edit"),
+		textDeltaLine("editing done\n"),
+		toolUseLine("Bash"),
 	})
 
 	// Create worker with pipe connection
@@ -81,7 +84,7 @@ func TestProcessOutputWritesToLogFile(t *testing.T) {
 	// Give processOutput time to complete
 	time.Sleep(200 * time.Millisecond)
 
-	// Verify log file exists and contains expected lines
+	// Verify log file exists and contains formatted tool-call activity
 	logPath := filepath.Join(tempHome, ".oro", "workers", "test-worker-1", "output.log")
 	// #nosec G304 -- test code reading from test temp directory
 	content, err := os.ReadFile(logPath)
@@ -91,9 +94,9 @@ func TestProcessOutputWritesToLogFile(t *testing.T) {
 
 	logContent := string(content)
 	expectedLines := []string{
-		"line 1: starting work",
-		"line 2: doing something",
-		"line 3: finished",
+		"-> Read",
+		"-> Edit",
+		"-> Bash",
 	}
 	for _, expectedLine := range expectedLines {
 		if !strings.Contains(logContent, expectedLine) {
@@ -111,7 +114,7 @@ func TestOpenLogFileAppendsInsteadOfTruncating(t *testing.T) {
 
 	// Create mock spawner
 	spawner := newMockSpawner()
-	spawner.stdout = newPipeReader([]string{"first assignment output"})
+	spawner.stdout = newPipeReader([]string{toolUseLine("Read")})
 
 	// Create worker with pipe connection
 	dispatcherConn, workerConn := net.Pipe()
@@ -154,12 +157,12 @@ func TestOpenLogFileAppendsInsteadOfTruncating(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to read first log file: %v", err)
 	}
-	if !strings.Contains(string(firstContent), "first assignment output") {
+	if !strings.Contains(string(firstContent), "-> Read") {
 		t.Errorf("First log file missing expected content")
 	}
 
 	// Second assignment with different stdout
-	spawner.stdout = newPipeReader([]string{"second assignment output"})
+	spawner.stdout = newPipeReader([]string{toolUseLine("Bash")})
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
@@ -185,10 +188,10 @@ func TestOpenLogFileAppendsInsteadOfTruncating(t *testing.T) {
 	}
 
 	finalStr := string(finalContent)
-	if !strings.Contains(finalStr, "first assignment output") {
+	if !strings.Contains(finalStr, "-> Read") {
 		t.Errorf("Log file should contain first assignment output after second ASSIGN (appended, not truncated).\nContent:\n%s", finalStr)
 	}
-	if !strings.Contains(finalStr, "second assignment output") {
+	if !strings.Contains(finalStr, "-> Bash") {
 		t.Errorf("Log file should contain second assignment output.\nContent:\n%s", finalStr)
 	}
 }

@@ -422,7 +422,7 @@ func TestBeadHelper() string {
 		store := memory.NewStore(db)
 
 		// [MEMORY] marker in claude stdout should be captured into memStore via DrainOutput.
-		marker := "[MEMORY] type=gotcha tags=test: code search requires indexed content to return results"
+		marker := sjNDJSON(sjTextDelta("[MEMORY] type=gotcha tags=test: code search requires indexed content to return results\n"))
 		sp := &captureSpawner{proc: &mockProcess{}, stdout: marker}
 		deps := &workDeps{
 			spawner:    sp,

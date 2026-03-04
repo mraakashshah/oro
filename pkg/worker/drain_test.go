@@ -3,6 +3,7 @@ package worker_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -35,21 +36,63 @@ func (m *mockLLMSpawner) Spawn(_ context.Context, _, prompt string) (io.ReadClos
 	return io.NopCloser(strings.NewReader(m.output)), nil
 }
 
-func TestDrainOutput_EchoesLines(t *testing.T) {
-	input := "line one\nline two\nline three\n"
+// --- stream-json test helpers ---
+
+// textDeltaLine wraps text in a stream-json assistant text event.
+func textDeltaLine(text string) string {
+	b, _ := json.Marshal(map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": text},
+			},
+		},
+	})
+	return string(b)
+}
+
+// toolUseLine wraps a tool name in a stream-json assistant tool_use event.
+func toolUseLine(name string) string {
+	b, _ := json.Marshal(map[string]interface{}{
+		"type": "assistant",
+		"message": map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "tool_use", "name": name},
+			},
+		},
+	})
+	return string(b)
+}
+
+// ndjsonInput joins stream-json lines with newlines into a single reader input.
+func ndjsonInput(lines ...string) string {
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func TestDrainOutput_FormatsToolActivity(t *testing.T) {
+	input := ndjsonInput(
+		toolUseLine("Read"),
+		textDeltaLine("reading file...\n"),
+		toolUseLine("Bash"),
+	)
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf bytes.Buffer
 
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf)
 
 	got := buf.String()
-	if got != input {
-		t.Fatalf("expected echoed output %q, got %q", input, got)
+	want := "-> Read\n-> Bash\n"
+	if got != want {
+		t.Fatalf("expected formatted output %q, got %q", want, got)
 	}
 }
 
 func TestDrainOutput_ExtractsMemoryMarkers(t *testing.T) {
-	input := "doing work\n[MEMORY] type=lesson: sqlite WAL mode is required for concurrent access\nmore work\n"
+	input := ndjsonInput(
+		textDeltaLine("doing work\n"),
+		textDeltaLine("[MEMORY] type=lesson: sqlite WAL mode is required for concurrent access\n"),
+		textDeltaLine("more work\n"),
+	)
 	reader := io.NopCloser(strings.NewReader(input))
 	store := &mockMemStore{}
 	var buf bytes.Buffer
@@ -72,48 +115,57 @@ func TestDrainOutput_ExtractsMemoryMarkers(t *testing.T) {
 }
 
 func TestDrainOutput_NilStore(t *testing.T) {
-	input := "[MEMORY] type=lesson: should not panic\nregular line\n"
+	input := ndjsonInput(
+		textDeltaLine("[MEMORY] type=lesson: should not panic\n"),
+		textDeltaLine("regular line\n"),
+	)
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf bytes.Buffer
 
+	// Should not panic with nil store.
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf)
 
-	got := buf.String()
-	if got != input {
-		t.Fatalf("expected echoed output %q, got %q", input, got)
+	// No tool calls → no output in buf (text deltas don't produce formatted output).
+	if buf.Len() != 0 {
+		t.Fatalf("expected no formatted output for text-only events, got %q", buf.String())
 	}
 }
 
 func TestDrainOutput_MultiWriter(t *testing.T) {
-	input := "line one\nline two\n"
+	input := ndjsonInput(
+		toolUseLine("Read"),
+		toolUseLine("Edit"),
+	)
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf1, buf2 bytes.Buffer
 
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf1, &buf2)
 
-	if buf1.String() != input {
-		t.Fatalf("writer 1: expected %q, got %q", input, buf1.String())
+	want := "-> Read\n-> Edit\n"
+	if buf1.String() != want {
+		t.Fatalf("writer 1: expected %q, got %q", want, buf1.String())
 	}
-	if buf2.String() != input {
-		t.Fatalf("writer 2: expected %q, got %q", input, buf2.String())
+	if buf2.String() != want {
+		t.Fatalf("writer 2: expected %q, got %q", want, buf2.String())
 	}
 }
 
 func TestDrainOutput_NilWriterFiltered(t *testing.T) {
-	input := "hello\n"
+	input := ndjsonInput(toolUseLine("Bash"))
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf bytes.Buffer
 
 	// nil writer in slice should not panic
 	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf, nil)
 
-	if buf.String() != input {
-		t.Fatalf("expected %q, got %q", input, buf.String())
+	want := "-> Bash\n"
+	if buf.String() != want {
+		t.Fatalf("expected %q, got %q", want, buf.String())
 	}
 }
 
 func TestDrainOutput_NoWriters(t *testing.T) {
-	input := "hello\n"
+	input := ndjsonInput(textDeltaLine("hello\n"))
 	reader := io.NopCloser(strings.NewReader(input))
 
 	// empty writers slice — should not panic
@@ -138,7 +190,11 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 	}
 	store := &mockMemStore{}
 
-	input := "doing work\nfound a pattern\nfinished\n"
+	input := ndjsonInput(
+		textDeltaLine("doing work\n"),
+		textDeltaLine("found a pattern\n"),
+		textDeltaLine("finished\n"),
+	)
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf bytes.Buffer
 
@@ -169,16 +225,20 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 		t.Errorf("expected llm_extracted memory with 'table-driven', got %v", store.inserted)
 	}
 
-	// Output should still be echoed.
-	if buf.String() != input {
-		t.Errorf("expected echoed output %q, got %q", input, buf.String())
+	// No tool calls → no formatted output.
+	if buf.Len() != 0 {
+		t.Errorf("expected no formatted output for text-only events, got %q", buf.String())
 	}
 }
 
 func TestDrainOutput_NilSpawner(t *testing.T) {
 	// With nil spawner, ExtractWithLLM should be skipped (no panic, no LLM call).
 	store := &mockMemStore{}
-	input := "doing work\n[MEMORY] type=lesson: explicit marker still captured\nmore work\n"
+	input := ndjsonInput(
+		textDeltaLine("doing work\n"),
+		textDeltaLine("[MEMORY] type=lesson: explicit marker still captured\n"),
+		textDeltaLine("more work\n"),
+	)
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf bytes.Buffer
 
@@ -192,8 +252,8 @@ func TestDrainOutput_NilSpawner(t *testing.T) {
 		t.Errorf("expected Source=self_report, got %q", store.inserted[0].Source)
 	}
 
-	// Output should still be echoed.
-	if buf.String() != input {
-		t.Errorf("expected echoed output %q, got %q", input, buf.String())
+	// No tool calls → no formatted output.
+	if buf.Len() != 0 {
+		t.Errorf("expected no formatted output for text-only events, got %q", buf.String())
 	}
 }

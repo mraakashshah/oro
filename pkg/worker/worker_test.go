@@ -2307,17 +2307,18 @@ func TestWorkerExtractsMemories(t *testing.T) { //nolint:funlen // integration t
 	_ = readMessage(t, dispatcherConn)
 
 	// Simulate subprocess output with [MEMORY] markers and implicit patterns.
-	output := strings.Join([]string{
-		"Starting work on bead...",
-		"[MEMORY] type=gotcha: ruff --fix must run before pyright",
-		"[MEMORY] type=lesson tags=go,testing: table-driven tests are cleaner",
-		"I learned that WAL mode needs a single writer.",
-		"Note: Always check error returns in Go",
-		"Some regular output line",
-		"Gotcha: FTS5 requires content sync triggers",
-		"Done with bead.",
-	}, "\n")
-	_, err := pw.Write([]byte(output + "\n"))
+	// Each line is wrapped in a stream-json text event (NDJSON).
+	output := ndjsonInput(
+		textDeltaLine("Starting work on bead...\n"),
+		textDeltaLine("[MEMORY] type=gotcha: ruff --fix must run before pyright\n"),
+		textDeltaLine("[MEMORY] type=lesson tags=go,testing: table-driven tests are cleaner\n"),
+		textDeltaLine("I learned that WAL mode needs a single writer.\n"),
+		textDeltaLine("Note: Always check error returns in Go\n"),
+		textDeltaLine("Some regular output line\n"),
+		textDeltaLine("Gotcha: FTS5 requires content sync triggers\n"),
+		textDeltaLine("Done with bead.\n"),
+	)
+	_, err := pw.Write([]byte(output))
 	if err != nil {
 		t.Fatalf("write to pipe: %v", err)
 	}
@@ -2434,7 +2435,10 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 	// Simulate subprocess output with implicit patterns, then close stdout.
 	// LLM extraction happens when processOutput finishes (stdout closes),
 	// not when SendDone is called.
-	output := "Pattern: functional core with imperative shell\nDone.\n"
+	output := ndjsonInput(
+		textDeltaLine("Pattern: functional core with imperative shell\n"),
+		textDeltaLine("Done.\n"),
+	)
 	_, _ = pw.Write([]byte(output))
 	_ = pw.Close()
 
@@ -2521,7 +2525,10 @@ func TestWorkerNoMemoryStore_NoCrash(t *testing.T) {
 	_ = readMessage(t, dispatcherConn)
 
 	// Write output with markers (should not crash even without store).
-	_, _ = pw.Write([]byte("[MEMORY] type=gotcha: should not crash\nDone.\n"))
+	_, _ = pw.Write([]byte(ndjsonInput(
+		textDeltaLine("[MEMORY] type=gotcha: should not crash\n"),
+		textDeltaLine("Done.\n"),
+	)))
 	_ = pw.Close()
 
 	justWait(200 * time.Millisecond)
@@ -2752,13 +2759,13 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 
 	// Simulate subprocess output, then close stdout
 	// (simulating subprocess exit) WITHOUT calling SendDone or SendHandoff.
-	output := strings.Join([]string{
-		"Running quality gate...",
-		"I learned that WAL mode needs a single writer.",
-		"Gotcha: FTS5 requires content sync triggers",
-		"Quality gate failed, exiting.",
-	}, "\n")
-	_, err := pw.Write([]byte(output + "\n"))
+	output := ndjsonInput(
+		textDeltaLine("Running quality gate...\n"),
+		textDeltaLine("I learned that WAL mode needs a single writer.\n"),
+		textDeltaLine("Gotcha: FTS5 requires content sync triggers\n"),
+		textDeltaLine("Quality gate failed, exiting.\n"),
+	)
+	_, err := pw.Write([]byte(output))
 	if err != nil {
 		t.Fatalf("write to pipe: %v", err)
 	}
@@ -2872,7 +2879,7 @@ func TestExtractImplicitMemories_CallsExtractWithLLM(t *testing.T) {
 	_ = readMessage(t, dispatcherConn)
 
 	// Write session text then close stdout to trigger extractImplicitMemories.
-	_, err := pw.Write([]byte("Some session output for LLM extraction\n"))
+	_, err := pw.Write([]byte(textDeltaLine("Some session output for LLM extraction\n") + "\n"))
 	if err != nil {
 		t.Fatalf("write to pipe: %v", err)
 	}
@@ -2956,7 +2963,7 @@ func TestExtractImplicitMemories_NilSpawner(t *testing.T) {
 
 	_ = readMessage(t, dispatcherConn)
 
-	_, err := pw.Write([]byte("Session text that should NOT trigger LLM extraction\n"))
+	_, err := pw.Write([]byte(textDeltaLine("Session text that should NOT trigger LLM extraction\n") + "\n"))
 	if err != nil {
 		t.Fatalf("write to pipe: %v", err)
 	}
@@ -3077,7 +3084,7 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		_ = readMessage(t, dispatcherConn) // drain STATUS
 
 		// Subprocess finishes
-		_, _ = pw.Write([]byte("implementation done\n"))
+		_, _ = pw.Write([]byte(textDeltaLine("implementation done\n") + "\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
 
@@ -3159,7 +3166,7 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		})
 		_ = readMessage(t, dispatcherConn) // drain STATUS
 
-		_, _ = pw.Write([]byte("work done\n"))
+		_, _ = pw.Write([]byte(textDeltaLine("work done\n") + "\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
 
@@ -3218,7 +3225,7 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		})
 		_ = readMessage(t, dispatcherConn) // drain STATUS
 
-		_, _ = pw.Write([]byte("done\n"))
+		_, _ = pw.Write([]byte(textDeltaLine("done\n") + "\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
 
@@ -3303,7 +3310,7 @@ func TestSubprocessExit_RunsQGAndSendsDone(t *testing.T) {
 		_ = readMessage(t, dispatcherConn)
 
 		// Write some output, then close stdout and let process exit
-		_, _ = pw.Write([]byte("doing work...\n"))
+		_, _ = pw.Write([]byte(textDeltaLine("doing work...\n") + "\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
 
@@ -3388,7 +3395,7 @@ func TestSubprocessExit_RunsQGAndSendsDone(t *testing.T) {
 		_ = readMessage(t, dispatcherConn)
 
 		// Write some output, then close stdout and let process exit
-		_, _ = pw.Write([]byte("doing work...\n"))
+		_, _ = pw.Write([]byte(textDeltaLine("doing work...\n") + "\n"))
 		_ = pw.Close()
 		close(proc.waitCh)
 
@@ -3851,7 +3858,7 @@ func TestEpicDecompositionSkipsQG(t *testing.T) {
 	}
 
 	// Subprocess finishes (decomposition complete)
-	_, _ = pw.Write([]byte("decomposed epic into 5 beads\n"))
+	_, _ = pw.Write([]byte(textDeltaLine("decomposed epic into 5 beads\n") + "\n"))
 	_ = pw.Close()
 	close(proc.waitCh)
 

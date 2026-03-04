@@ -569,49 +569,45 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	_ = w.SendReadyForReview(ctx)
 }
 
-// processOutput reads subprocess stdout line by line, accumulates session text
-// for later implicit extraction, and extracts [MEMORY] markers in real-time.
+// processOutput reads subprocess stdout line by line (NDJSON from
+// --output-format stream-json), parses each event, logs tool-call activity
+// to the log file, and accumulates text content for memory extraction.
 // When stdout closes (subprocess exits), it extracts implicit memories so that
 // learnings from failed attempts are persisted before the dispatcher re-assigns.
 func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 	defer w.outputWg.Done()
 	defer func() { _ = stdout.Close() }()
 
+	var lineBuf strings.Builder
+
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
-		line := scanner.Text()
+		activity := ParseStreamEvent(scanner.Bytes())
 
-		w.mu.Lock()
-		w.sessionText.WriteString(line)
-		w.sessionText.WriteString("\n")
-		store := w.memStore
-		workerID := w.ID
-		beadID := w.beadID
-		logWriter := w.logWriter
-		w.mu.Unlock()
-
-		// Tee line to log file (best-effort; don't block on I/O errors).
-		// NOTE: No Flush() here — flushing every line blocks on disk I/O and
-		// deadlocks the pipe when the buffer fills (root cause of oro-jyvo).
-		// closeLogFile() flushes once when the subprocess exits.
-		if logWriter != nil {
-			_, _ = logWriter.WriteString(line)
-			_, _ = logWriter.WriteString("\n")
+		// Log formatted tool-call activity (best-effort; don't block on I/O errors).
+		if formatted := FormatActivity(activity); formatted != "" {
+			w.mu.Lock()
+			lw := w.logWriter
+			w.mu.Unlock()
+			if lw != nil {
+				_, _ = lw.WriteString(formatted)
+				_, _ = lw.WriteString("\n")
+			}
 		}
 
-		// Extract [MEMORY] markers in real-time.
-		if store != nil {
-			if params := memory.ParseMarker(line); params != nil {
-				params.WorkerID = workerID
-				params.BeadID = beadID
-				_, _ = store.Insert(ctx, *params) // best-effort; don't block on errors
-			}
+		// Accumulate text content and process complete lines.
+		if activity.Text != "" {
+			lineBuf.WriteString(activity.Text)
+			w.flushCompleteLines(ctx, &lineBuf)
 		}
 	}
 
-	// Flush log buffer once after all lines are processed (not per-line).
-	// Per-line Flush() was the root cause of oro-jyvo: it blocked on disk I/O
-	// and deadlocked the pipe when the OS buffer filled.
+	// Flush any remaining buffered text (incomplete final line).
+	if lineBuf.Len() > 0 {
+		w.processTextLine(ctx, lineBuf.String())
+	}
+
+	// Flush log buffer once after all events are processed (not per-event).
 	w.mu.Lock()
 	if w.logWriter != nil {
 		_ = w.logWriter.Flush()
@@ -621,6 +617,45 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 	// Subprocess stdout closed — extract implicit memories so learnings from
 	// failed attempts (e.g. QG failure) are persisted regardless of outcome.
 	w.extractImplicitMemories(ctx)
+}
+
+// flushCompleteLines extracts complete newline-terminated lines from buf,
+// processes each via processTextLine, and leaves any trailing incomplete
+// content in buf for the next call.
+func (w *Worker) flushCompleteLines(ctx context.Context, buf *strings.Builder) {
+	content := buf.String()
+	lastNL := strings.LastIndex(content, "\n")
+	if lastNL < 0 {
+		return
+	}
+	complete := content[:lastNL]
+	buf.Reset()
+	if lastNL+1 < len(content) {
+		buf.WriteString(content[lastNL+1:])
+	}
+	for _, line := range strings.Split(complete, "\n") {
+		w.processTextLine(ctx, line)
+	}
+}
+
+// processTextLine appends a single text line to sessionText and extracts
+// any [MEMORY] marker from it.
+func (w *Worker) processTextLine(ctx context.Context, line string) {
+	w.mu.Lock()
+	w.sessionText.WriteString(line)
+	w.sessionText.WriteString("\n")
+	store := w.memStore
+	workerID := w.ID
+	beadID := w.beadID
+	w.mu.Unlock()
+
+	if store != nil {
+		if params := memory.ParseMarker(line); params != nil {
+			params.WorkerID = workerID
+			params.BeadID = beadID
+			_, _ = store.Insert(ctx, *params)
+		}
+	}
 }
 
 // extractImplicitMemories runs LLM-based memory extraction on accumulated
@@ -1203,7 +1238,7 @@ type ClaudeSpawner struct{}
 // When both ORO_HOME and ORO_PROJECT env vars are set, it appends
 // --add-dir and --settings flags to point claude at the shared oro config.
 func buildClaudeArgs(model, prompt string) []string {
-	args := []string{"-p", prompt, "--model", model}
+	args := []string{"-p", prompt, "--model", model, "--output-format", "stream-json"}
 
 	oroHome := os.Getenv("ORO_HOME")
 	oroProject := os.Getenv("ORO_PROJECT")

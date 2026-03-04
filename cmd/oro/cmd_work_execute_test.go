@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -393,7 +394,12 @@ func TestWorkWritesLogFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ORO_HOME", tmpDir)
 
-	claudeOutput := "implementing feature X\ntest passed\n"
+	claudeOutput := sjNDJSON(
+		sjToolUse("Read"),
+		sjTextDelta("implementing feature X\n"),
+		sjToolUse("Bash"),
+		sjTextDelta("test passed\n"),
+	)
 	sp := &contentSpawner{proc: &mockProcess{}, content: claudeOutput}
 	bs := &mockBeadSource{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
@@ -440,9 +446,9 @@ func TestWorkWritesLogFile(t *testing.T) {
 	}
 	logContent := string(data)
 
-	// Must contain Claude output.
-	if !strings.Contains(logContent, "implementing feature X") {
-		t.Errorf("log file missing Claude output, got:\n%s", logContent)
+	// Must contain formatted tool-call activity from stream-json parsing.
+	if !strings.Contains(logContent, "-> Read") {
+		t.Errorf("log file missing tool activity, got:\n%s", logContent)
 	}
 
 	// Must contain attempt separator.
@@ -457,6 +463,7 @@ func TestWorkWritesLogFile(t *testing.T) {
 }
 
 // captureSpawner captures the prompt passed to Spawn and returns configurable stdout.
+// stdout must be NDJSON (stream-json format). Use sjTextDelta/sjToolUse/sjResult helpers.
 type captureSpawner struct {
 	proc           worker.Process
 	capturedPrompt string
@@ -466,6 +473,25 @@ type captureSpawner struct {
 func (m *captureSpawner) Spawn(_ context.Context, _, prompt, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	m.capturedPrompt = prompt
 	return m.proc, io.NopCloser(strings.NewReader(m.stdout)), nil, nil
+}
+
+// --- stream-json NDJSON helpers for cmd/oro tests ---
+
+// sjTextDelta wraps text in a stream-json assistant text event.
+func sjTextDelta(text string) string {
+	escaped, _ := json.Marshal(text) // JSON-encodes the string with proper escaping
+	return `{"type":"assistant","message":{"content":[{"type":"text","text":` + string(escaped) + `}]}}`
+}
+
+// sjToolUse wraps a tool name in a stream-json assistant tool_use event.
+func sjToolUse(name string) string {
+	escaped, _ := json.Marshal(name)
+	return `{"type":"assistant","message":{"content":[{"type":"tool_use","name":` + string(escaped) + `}]}}`
+}
+
+// sjNDJSON joins stream-json lines with newlines into NDJSON input.
+func sjNDJSON(lines ...string) string {
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // TestSpawnAndWait_MemoryWired verifies that deps.memStore is wired into both
@@ -521,7 +547,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 		db := setupTestMemoryDB(t)
 		store := memory.NewStore(db)
 
-		marker := "[MEMORY] type=lesson tags=go: table tests are great"
+		marker := sjNDJSON(sjTextDelta("[MEMORY] type=lesson tags=go: table tests are great\n"))
 		sp := &captureSpawner{proc: &mockProcess{}, stdout: marker}
 		deps := &workDeps{
 			beadSrc:    &mockBeadSource{showDetail: testBead()},
@@ -558,7 +584,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 	})
 
 	t.Run("nil memStore is safe", func(t *testing.T) {
-		sp := &captureSpawner{proc: &mockProcess{}, stdout: "[MEMORY] type=lesson: orphan marker"}
+		sp := &captureSpawner{proc: &mockProcess{}, stdout: sjNDJSON(sjTextDelta("[MEMORY] type=lesson: orphan marker\n"))}
 		deps := &workDeps{
 			beadSrc:    &mockBeadSource{showDetail: testBead()},
 			wtMgr:      &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"},
