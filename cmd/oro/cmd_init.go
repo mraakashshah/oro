@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"oro/pkg/langprofile"
 
@@ -418,6 +419,37 @@ func installMissingTools(w io.Writer, results []toolResult) error {
 	return nil
 }
 
+// ensureGitRepo runs "git init" in projectRoot if it's not already a git repo.
+// Fail-open: logs a warning on error but never blocks init.
+func ensureGitRepo(projectRoot string) {
+	if _, err := os.Stat(filepath.Join(projectRoot, ".git")); err == nil {
+		return // already a git repo
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "init")
+	cmd.Dir = projectRoot
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: git init failed: %v\n%s\n", err, out)
+	}
+}
+
+// initBeadsDB runs "bd init" in projectRoot if the beads database doesn't exist yet.
+// Fail-open: logs a warning on error but never blocks init.
+func initBeadsDB(projectRoot string) {
+	dbPath := filepath.Join(projectRoot, ".beads", "beads.db")
+	if _, err := os.Stat(dbPath); err == nil {
+		return // already initialized
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bd", "init") //nolint:gosec // trusted command
+	cmd.Dir = projectRoot
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: bd init failed: %v\n%s\n", err, out)
+	}
+}
+
 // resolveProjectName returns the project name from the argument or derives it from the directory.
 func resolveProjectName(projectRoot, projectName string) (string, error) {
 	if projectName != "" {
@@ -458,11 +490,17 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		return nil, fmt.Errorf("create project dir: %w", err)
 	}
 
+	// 3b. Initialize git repo if not already present.
+	ensureGitRepo(projectRoot)
+
 	// 4. Set up beads symlink: .beads → oroHome/projects/<name>/beads/
 	beadsTarget := filepath.Join(projectDir, "beads")
 	if err := setupBeadsSymlink(projectRoot, beadsTarget); err != nil {
 		return nil, fmt.Errorf("setup beads symlink: %w", err)
 	}
+
+	// 4b. Initialize beads database if not already present.
+	initBeadsDB(projectRoot)
 
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
