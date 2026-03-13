@@ -161,7 +161,7 @@ func migrateGlobalDBs(projectName string) error {
 			return fmt.Errorf("read global DB %q: %w", db.src, err)
 		}
 
-		if err := os.WriteFile(db.dst, data, 0o600); err != nil {
+		if err := os.WriteFile(db.dst, data, 0o600); err != nil { //nolint:gosec // db.dst is constructed from trusted paths
 			return fmt.Errorf("write project DB %q: %w", db.dst, err)
 		}
 	}
