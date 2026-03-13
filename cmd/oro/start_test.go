@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -421,6 +422,88 @@ func TestStartSendsDirective(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for start directive")
 	}
+}
+
+func TestReconnectTmuxRecreatesUnhealthySession(t *testing.T) {
+	t.Run("unhealthy session is killed and recreated", func(t *testing.T) {
+		fake := newFakeCmd()
+
+		// Simulate existing but unhealthy session:
+		// has-session → success (session exists)
+		// display-message for architect → "zsh" (shell = unhealthy)
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = nil
+
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = "zsh"
+
+		// Kill succeeds
+		fake.output[key("tmux", "kill-session", "-t", "oro")] = ""
+
+		// After kill, has-session fails (session gone) — so Create() creates fresh session
+		// But fakeCmd returns same result for same key. We need sequential output for has-session.
+		// First call: exists (from Create's Exists() check)
+		// After kill, Create() tries new-session which should succeed.
+		fake.seqOut[key("tmux", "has-session", "-t", "oro")] = []string{
+			"", // first check in Create(): Exists() → true
+			"", // not called again after kill, but safe fallback
+		}
+
+		// Stub new-session and new-window for recreation
+		fake.output[key("tmux", "new-session", "-d", "-s", "oro", "-n", "architect")] = "" // partial match won't work
+
+		// Stub pane readiness for the recreated session
+		stubPaneReady(fake, "oro", ArchitectNudge(), ManagerNudge())
+
+		var buf bytes.Buffer
+		err := reconnectTmux(&buf, fake, "", true, noopSleep, 50*time.Millisecond)
+		if err != nil {
+			t.Fatalf("reconnectTmux should succeed with detach=true, got: %v", err)
+		}
+
+		// Verify kill-session was called (zombie was killed)
+		calls := fake.getCalls()
+		found := false
+		for _, c := range calls {
+			if len(c) >= 3 && c[0] == "tmux" && c[1] == "kill-session" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected tmux kill-session to be called for unhealthy session")
+		}
+
+		// Verify output mentions reconnection
+		out := buf.String()
+		if !strings.Contains(out, "session unhealthy") {
+			t.Errorf("expected 'session unhealthy' in output, got: %s", out)
+		}
+	})
+
+	t.Run("healthy session skips recreation", func(t *testing.T) {
+		fake := newFakeCmd()
+
+		// Simulate existing healthy session:
+		// has-session → success
+		// display-message → "claude" for both panes (healthy)
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = "claude"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
+
+		var buf bytes.Buffer
+		err := reconnectTmux(&buf, fake, "", true, noopSleep, 50*time.Millisecond)
+		if err != nil {
+			t.Fatalf("reconnectTmux should succeed, got: %v", err)
+		}
+
+		// Verify kill-session was NOT called
+		calls := fake.getCalls()
+		for _, c := range calls {
+			if len(c) >= 3 && c[0] == "tmux" && c[1] == "kill-session" {
+				t.Error("kill-session should not be called for healthy session")
+			}
+		}
+	})
 }
 
 // mockDaemonSpawner implements DaemonSpawner for testing.

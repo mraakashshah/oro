@@ -258,6 +258,30 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 	return pidPath, nil
 }
 
+// reconnectTmux ensures the tmux session is healthy when the daemon is already
+// running. If the session is unhealthy (Claude crashed back to shell), it kills
+// and recreates it. With detach=true, prints attach instructions instead of
+// attaching interactively.
+func reconnectTmux(w io.Writer, runner CmdRunner, project string, detach bool, sleeper func(time.Duration), beaconTimeout time.Duration) error {
+	sess := &TmuxSession{Name: "oro", Project: project, Runner: runner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
+
+	wasHealthy := sess.Exists() && sess.isHealthy()
+	if !wasHealthy {
+		fmt.Fprintf(w, "session unhealthy — recreating tmux panes\n")
+	}
+
+	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
+		return fmt.Errorf("recreate tmux session: %w", err)
+	}
+
+	if detach {
+		fmt.Fprintln(w, "detached — attach with: tmux attach -t oro")
+		return nil
+	}
+	fmt.Fprintln(w, "ctrl-b 0/1: switch panes | ctrl-b d: detach | oro stop: quit")
+	return sess.AttachInteractive()
+}
+
 // regenerateProjectSettings writes an updated settings.json for the current project
 // when assets have been re-extracted on version bump. No-op when projectName is empty.
 func regenerateProjectSettings(w io.Writer, oroHome, projectName string) {
@@ -294,45 +318,24 @@ func newStartCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
-		Long:  "Creates a tmux session with the full Oro layout and begins autonomous execution.\nStarts the dispatcher daemon and worker pool in the background.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pidPath, err := preflightAndCheckRunning(cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
 			if pidPath == "" {
-				return nil // already running
+				// Daemon running — ensure tmux session is healthy and reconnect.
+				if daemonOnly {
+					return nil
+				}
+				project, _ := readProjectConfig(".")
+				return reconnectTmux(cmd.OutOrStdout(), &ExecRunner{}, project,
+					isDetached(detach), nil, 0)
 			}
-
 			if daemonOnly {
 				return runDaemonOnly(cmd, pidPath, workers, progressTimeout, reviewTimeout)
 			}
-
-			// Read project identity from .oro/config.yaml (if present).
-			project, err := readProjectConfig(".")
-			if err != nil {
-				return fmt.Errorf("read project config: %w", err)
-			}
-
-			// Set ORO_PROJECT and ORO_HOME for child processes (daemon inherits env).
-			if project != "" {
-				if err := os.Setenv("ORO_PROJECT", project); err != nil {
-					return fmt.Errorf("set ORO_PROJECT: %w", err)
-				}
-			}
-			oroHome, err := resolveOroHome()
-			if err != nil {
-				return err
-			}
-			if err := os.Setenv("ORO_HOME", oroHome); err != nil {
-				return fmt.Errorf("set ORO_HOME: %w", err)
-			}
-
-			return runFullStart(cmd.OutOrStdout(), workers, model, project,
-				&ExecDaemonSpawner{ProgressTimeout: progressTimeout, ReviewTimeout: reviewTimeout},
-				&ExecRunner{},
-				func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
-				socketPollTimeout, nil, 0, isDetached(detach))
+			return startFreshSwarm(cmd.OutOrStdout(), workers, model, detach, progressTimeout, reviewTimeout)
 		},
 	}
 
@@ -344,6 +347,31 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&reviewTimeout, "review-timeout", 0, "max time a reviewing worker can stall (default 15m)")
 
 	return cmd
+}
+
+// startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
+func startFreshSwarm(w io.Writer, workers int, model string, detach bool, progressTimeout, reviewTimeout time.Duration) error {
+	project, err := readProjectConfig(".")
+	if err != nil {
+		return fmt.Errorf("read project config: %w", err)
+	}
+	if project != "" {
+		if err := os.Setenv("ORO_PROJECT", project); err != nil {
+			return fmt.Errorf("set ORO_PROJECT: %w", err)
+		}
+	}
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		return err
+	}
+	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
+		return fmt.Errorf("set ORO_HOME: %w", err)
+	}
+	return runFullStart(w, workers, model, project,
+		&ExecDaemonSpawner{ProgressTimeout: progressTimeout, ReviewTimeout: reviewTimeout},
+		&ExecRunner{},
+		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
+		socketPollTimeout, nil, 0, isDetached(detach))
 }
 
 // cleanStaleWorkerLogs deletes worker log directories older than maxAge.
