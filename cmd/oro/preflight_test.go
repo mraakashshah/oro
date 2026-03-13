@@ -150,6 +150,45 @@ func TestEnsureSearchHookMissingSrcDir(t *testing.T) {
 	}
 }
 
+// TestEnsureSearchHookSilentWhenBinaryExistsButNoSource verifies that
+// ensureSearchHook returns nil WITHOUT printing a warning when the binary
+// already exists but the source directory is missing. This is the normal
+// case for external projects where make install already built the hook.
+func TestEnsureSearchHookSilentWhenBinaryExistsButNoSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "oro-search-hook")
+
+	// Create a fake binary so binPath exists.
+	if err := os.WriteFile(binPath, []byte("fake-binary"), 0o755); err != nil { //nolint:gosec // test-only
+		t.Fatal(err)
+	}
+
+	// Capture stderr to verify no warning is printed.
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+
+	hookErr := ensureSearchHook(binPath, "/nonexistent/source/dir")
+
+	_ = w.Close()
+	os.Stderr = origStderr
+
+	var stderrBuf bytes.Buffer
+	if _, err := stderrBuf.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+
+	if hookErr != nil {
+		t.Fatalf("expected nil error, got: %v", hookErr)
+	}
+	if stderrBuf.Len() > 0 {
+		t.Errorf("expected no stderr output when binary exists, got: %q", stderrBuf.String())
+	}
+}
+
 // TestPreflightWarnsOnMissingSearchHook verifies that warnIfSearchHookMissing
 // writes a warning when the binary is absent and stays silent when it exists.
 func TestPreflightWarnsOnMissingSearchHook(t *testing.T) {

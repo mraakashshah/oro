@@ -45,6 +45,11 @@ func runPreflightChecks() error {
 func ensureSearchHook(binPath, srcDir string) error {
 	// Verify source directory exists — fail-open for go-install users.
 	if _, err := os.Stat(srcDir); err != nil {
+		// If the binary already exists (e.g. installed by make install),
+		// skip silently — no need to rebuild from source.
+		if _, binErr := os.Stat(binPath); binErr == nil {
+			return nil
+		}
 		fmt.Fprintf(os.Stderr, "warning: oro-search-hook source dir not found (%s) — skipping build\n", srcDir)
 		return nil
 	}
