@@ -453,6 +453,14 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 	sockPath := paths.SocketPath
 	dbPath := paths.StateDBPath
 
+	// Migrate global DBs to per-project directory on first use.
+	// No-op when: no project set, project DB exists, or global DB missing.
+	if project := readProjectName(); project != "" {
+		if err := migrateGlobalDBs(project); err != nil {
+			return nil, nil, fmt.Errorf("migrate global DBs: %w", err)
+		}
+	}
+
 	db, err := openStateDB(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)

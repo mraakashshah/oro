@@ -511,6 +511,67 @@ func TestRegenerateProjectSettings_WritesFile(t *testing.T) {
 	})
 }
 
+// TestBuildDispatcherCallsMigrateGlobalDBs verifies that buildDispatcher
+// copies global state.db to the per-project directory when ORO_PROJECT is set
+// and the per-project DB does not yet exist.
+func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set up directory structure: global ~/.oro with state.db
+	oroHome := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroHome, 0o750); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+
+	// Create a global state.db with schema via openStateDB.
+	globalDBPath := filepath.Join(oroHome, "state.db")
+	globalDB, err := openStateDB(globalDBPath)
+	if err != nil {
+		t.Fatalf("create global state.db: %v", err)
+	}
+	// Insert a marker row to verify the copy happened.
+	if _, err := globalDB.Exec(`INSERT INTO events (type, source) VALUES ('test_marker', 'migration_test')`); err != nil {
+		t.Fatalf("insert marker: %v", err)
+	}
+	_ = globalDB.Close()
+
+	// Configure env to use our temp oro home and a project name.
+	projectName := "test_project"
+	projectDir := filepath.Join(oroHome, "projects", projectName)
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", projectName)
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+	// Do NOT set ORO_DB_PATH — let it resolve via project scoping.
+
+	// Per-project state.db should not exist yet.
+	projectDBPath := filepath.Join(projectDir, "state.db")
+	if _, err := os.Stat(projectDBPath); err == nil {
+		t.Fatal("per-project state.db should not exist before buildDispatcher")
+	}
+
+	// buildDispatcher should call migrateGlobalDBs, copying global state.db.
+	d, db, err := buildDispatcher(1, 0, 0)
+	if err != nil {
+		t.Fatalf("buildDispatcher: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	_ = d
+
+	// Verify per-project state.db was created.
+	if _, err := os.Stat(projectDBPath); err != nil {
+		t.Fatalf("per-project state.db not created by migrateGlobalDBs: %v", err)
+	}
+
+	// Verify the marker row was copied.
+	var eventType string
+	if err := db.QueryRow(`SELECT type FROM events WHERE source = 'migration_test'`).Scan(&eventType); err != nil {
+		t.Fatalf("marker row not found in per-project DB: %v", err)
+	}
+	if eventType != "test_marker" {
+		t.Errorf("expected test_marker, got %q", eventType)
+	}
+}
+
 // fakeCommandRunner is a mock CommandRunner for testing.
 type fakeCommandRunner struct{}
 
