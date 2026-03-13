@@ -116,33 +116,96 @@ func TestResolvePaths_PartialEnvOverrides(t *testing.T) {
 	}
 }
 
-// --- ResolveProjectDBPaths tests ---
+// --- ResolvePaths project-scoping tests ---
 
+func TestResolvePaths_ProjectScopesAllPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", tmpDir)
+	t.Setenv("ORO_PROJECT", "foo")
+	t.Setenv("ORO_PID_PATH", "")
+	t.Setenv("ORO_SOCKET_PATH", "")
+	t.Setenv("ORO_DB_PATH", "")
+
+	paths, err := ResolvePaths()
+	if err != nil {
+		t.Fatalf("ResolvePaths() error: %v", err)
+	}
+
+	projDir := filepath.Join(tmpDir, "projects", "foo")
+
+	// OroHome stays global (used for worker logs, hooks, etc.)
+	if paths.OroHome != tmpDir {
+		t.Errorf("OroHome = %q, want global %q", paths.OroHome, tmpDir)
+	}
+
+	// All state paths scoped to project dir
+	if paths.PIDPath != filepath.Join(projDir, "oro.pid") {
+		t.Errorf("PIDPath = %q, want %q", paths.PIDPath, filepath.Join(projDir, "oro.pid"))
+	}
+	if paths.SocketPath != filepath.Join(projDir, "oro.sock") {
+		t.Errorf("SocketPath = %q, want %q", paths.SocketPath, filepath.Join(projDir, "oro.sock"))
+	}
+	if paths.StateDBPath != filepath.Join(projDir, "state.db") {
+		t.Errorf("StateDBPath = %q, want %q", paths.StateDBPath, filepath.Join(projDir, "state.db"))
+	}
+	if paths.CodeIndexDBPath != filepath.Join(projDir, "code_index.db") {
+		t.Errorf("CodeIndexDBPath = %q, want %q", paths.CodeIndexDBPath, filepath.Join(projDir, "code_index.db"))
+	}
+}
+
+func TestResolvePaths_EnvOverridesProjectScope(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", tmpDir)
+	t.Setenv("ORO_PROJECT", "foo")
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "override.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "override.sock"))
+	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "override.db"))
+
+	paths, err := ResolvePaths()
+	if err != nil {
+		t.Fatalf("ResolvePaths() error: %v", err)
+	}
+
+	// Explicit env vars override project scoping
+	if paths.PIDPath != filepath.Join(tmpDir, "override.pid") {
+		t.Errorf("PIDPath = %q, want env override %q", paths.PIDPath, filepath.Join(tmpDir, "override.pid"))
+	}
+	if paths.SocketPath != filepath.Join(tmpDir, "override.sock") {
+		t.Errorf("SocketPath = %q, want env override %q", paths.SocketPath, filepath.Join(tmpDir, "override.sock"))
+	}
+	if paths.StateDBPath != filepath.Join(tmpDir, "override.db") {
+		t.Errorf("StateDBPath = %q, want env override %q", paths.StateDBPath, filepath.Join(tmpDir, "override.db"))
+	}
+}
+
+// ResolveProjectDBPaths is now an alias for ResolvePaths.
 func TestResolveProjectDBPaths_WithEnvVar(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ORO_HOME", tmpDir)
 	t.Setenv("ORO_PROJECT", "foo")
+	t.Setenv("ORO_PID_PATH", "")
+	t.Setenv("ORO_SOCKET_PATH", "")
+	t.Setenv("ORO_DB_PATH", "")
 
 	paths, err := ResolveProjectDBPaths()
 	if err != nil {
 		t.Fatalf("ResolveProjectDBPaths() error: %v", err)
 	}
 
-	wantState := filepath.Join(tmpDir, "projects", "foo", "state.db")
-	wantCode := filepath.Join(tmpDir, "projects", "foo", "code_index.db")
+	projDir := filepath.Join(tmpDir, "projects", "foo")
 
-	if paths.StateDBPath != wantState {
-		t.Errorf("StateDBPath = %q, want %q", paths.StateDBPath, wantState)
+	if paths.StateDBPath != filepath.Join(projDir, "state.db") {
+		t.Errorf("StateDBPath = %q, want %q", paths.StateDBPath, filepath.Join(projDir, "state.db"))
 	}
-	if paths.CodeIndexDBPath != wantCode {
-		t.Errorf("CodeIndexDBPath = %q, want %q", paths.CodeIndexDBPath, wantCode)
+	if paths.CodeIndexDBPath != filepath.Join(projDir, "code_index.db") {
+		t.Errorf("CodeIndexDBPath = %q, want %q", paths.CodeIndexDBPath, filepath.Join(projDir, "code_index.db"))
 	}
-	// PID/Socket remain global
-	if paths.PIDPath != filepath.Join(tmpDir, "oro.pid") {
-		t.Errorf("PIDPath = %q, want global %q", paths.PIDPath, filepath.Join(tmpDir, "oro.pid"))
+	// PID/Socket are now also project-scoped
+	if paths.PIDPath != filepath.Join(projDir, "oro.pid") {
+		t.Errorf("PIDPath = %q, want project-scoped %q", paths.PIDPath, filepath.Join(projDir, "oro.pid"))
 	}
-	if paths.SocketPath != filepath.Join(tmpDir, "oro.sock") {
-		t.Errorf("SocketPath = %q, want global %q", paths.SocketPath, filepath.Join(tmpDir, "oro.sock"))
+	if paths.SocketPath != filepath.Join(projDir, "oro.sock") {
+		t.Errorf("SocketPath = %q, want project-scoped %q", paths.SocketPath, filepath.Join(projDir, "oro.sock"))
 	}
 }
 

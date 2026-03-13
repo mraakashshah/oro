@@ -1,5 +1,11 @@
 # Decisions and Discoveries
 
+## 2026-03-13: Per-project daemon isolation (PID/socket scoping)
+**Tags:** #architecture #multi-project #daemon #paths
+**Context:** Running `oro start` in two different projects simultaneously clashed because PID file and UDS socket were global at `~/.oro/oro.pid` and `~/.oro/oro.sock`. Only one daemon could run at a time.
+**Decision/Discovery:** Made `ResolvePaths()` project-aware: when a project name is detected (via `ORO_PROJECT` env var or `.oro/config.yaml`), PID, socket, state DB, and code index all resolve to `~/.oro/projects/<name>/`. Without a project name, paths fall back to global `~/.oro/` for backward compatibility. Env var overrides (`ORO_PID_PATH`, `ORO_SOCKET_PATH`) still take precedence. `ResolveProjectDBPaths()` is now a deprecated alias for `ResolvePaths()`. Added `oro stop --all` to discover and stop daemons across all projects. Updated `oro-dash` to resolve project-scoped socket paths.
+**Implications:** Multiple oro instances can run concurrently without ORO_HOME workarounds. Existing single-project setups are unaffected. Legacy global PID files are detected by `oro stop --all` and `discoverProjectDaemons()`.
+
 ## 2026-02-19: Hook audit: settings.local.json and worker settings.json are identical
 
 **Tags:** #hooks #audit #worker #settings #no-gap
@@ -133,3 +139,9 @@ Hook inventory (same in both files):
 **Context:** Evaluated whether to enforce "read reference implementations before proposing designs" via a PreToolUse hook or via skill discipline (oro-2md). Analyzed existing hooks (worktree_guard, inject_context_usage, memory_capture) for patterns.
 **Decision:** Skill-only enforcement. A hook is not viable for three reasons: (1) Design proposals are text output, not tool calls -- there is no tool to intercept that signals "proposing a design without research." (2) Determining what counts as "sufficient research" requires judgment (how many files? which files?) that cannot be reduced to a mechanical check. (3) The hook would fire on every Edit/Write call and cannot distinguish brainstorming context from routine edits, producing overwhelming false positives. Instead, strengthened the brainstorming skill with an explicit research gate: a mandatory checklist that must be completed before Step 3 (Explore Approaches), a "what counts as research" table, and a self-check question ("Can I cite specific files I read?").
 **Implications:** Not every process enforcement belongs in a hook. Hooks work for mechanical invariants (cwd inside worktree, context token count, git command patterns). Judgment-dependent gates belong in skills where the agent self-enforces with clear checklists. The brainstorming skill's research gate is now the strongest-worded step in the skill.
+
+## 2026-03-04: Early-exit worker pattern is already-done detection
+**Tags:** #workers #debugging #oro-work
+**Context:** Handoff flagged "4 tool calls then quit" pattern in worker runs. Investigated all available worker logs (oro-tm8m.2, .14, .17, .19).
+**Discovery:** All early-exit runs were the same root cause — code already implemented on main. Workers confirmed AC satisfied, produced zero commits, oro work reported failure. No distinct "premature quit" pattern exists beyond already-done detection. Scanner buffer overflow (fixed with 10MB buffer in prior session) may have been a separate historical issue but is no longer reproducing.
+**Implications:** Fixed in commit 1393331 (bd-oro-ummw). `noCommitsResult` now parses structured AC (Test:/Cmd: fields), verifies test file exists, runs the specific AC command, and closes the bead on success. No further investigation needed.

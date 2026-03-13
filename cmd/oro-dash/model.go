@@ -100,7 +100,11 @@ func fetchWorkersCmd() tea.Cmd {
 	}
 }
 
-// defaultSocketPath returns the dispatcher socket path from env or default.
+// defaultSocketPath returns the dispatcher socket path, respecting project scoping.
+// Resolution order:
+//  1. ORO_SOCKET_PATH env var (explicit override)
+//  2. Project-scoped: ~/.oro/projects/<name>/oro.sock (via ORO_PROJECT or .oro/config.yaml)
+//  3. Global fallback: ~/.oro/oro.sock
 func defaultSocketPath() string {
 	if v := os.Getenv("ORO_SOCKET_PATH"); v != "" {
 		return v
@@ -109,7 +113,25 @@ func defaultSocketPath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, protocol.OroDir, "oro.sock")
+	base := filepath.Join(home, protocol.OroDir)
+
+	// Check for project name (same resolution as oro CLI).
+	if project := os.Getenv("ORO_PROJECT"); project != "" {
+		return filepath.Join(base, "projects", project, "oro.sock")
+	}
+	// Try .oro/config.yaml in CWD.
+	if data, err := os.ReadFile(filepath.Join(".oro", "config.yaml")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "project:") {
+				if name := strings.TrimSpace(strings.TrimPrefix(line, "project:")); name != "" {
+					return filepath.Join(base, "projects", name, "oro.sock")
+				}
+			}
+		}
+	}
+
+	return filepath.Join(base, "oro.sock")
 }
 
 // ViewType represents different views in the dashboard.
@@ -886,7 +908,10 @@ func calculateDaysSinceUpdate(updatedAt string) int {
 		return 0
 	}
 
-	days := int(time.Since(t).Hours() / 24)
+	// Truncate to midnight to avoid sub-day rounding errors.
+	now := time.Now().Truncate(24 * time.Hour)
+	then := t.Truncate(24 * time.Hour)
+	days := int(now.Sub(then).Hours() / 24)
 	if days <= 0 {
 		return 0
 	}

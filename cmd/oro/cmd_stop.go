@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,58 @@ type stopConfig struct {
 	killFn   func(int) error // sends SIGKILL; injectable for testing
 	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
 	force    bool            // --force flag: skip interactive confirmation
+	oroHome  string          // base directory for daemon discovery
+}
+
+// projectDaemon describes a running daemon discovered in a project directory.
+type projectDaemon struct {
+	Project string // project name or "(global)" for legacy
+	PID     int
+	PIDPath string
+}
+
+// discoverProjectDaemons scans oroHome/projects/*/oro.pid for running daemons.
+// Also checks the legacy global oroHome/oro.pid.
+func discoverProjectDaemons(oroHome string) []projectDaemon {
+	var daemons []projectDaemon
+
+	// Check legacy global PID file.
+	globalPID := filepath.Join(oroHome, "oro.pid")
+	if pid, err := ReadPIDFile(globalPID); err == nil && IsProcessAlive(pid) {
+		daemons = append(daemons, projectDaemon{
+			Project: "(global)",
+			PID:     pid,
+			PIDPath: globalPID,
+		})
+	}
+
+	// Scan per-project PID files.
+	projectsDir := filepath.Join(oroHome, "projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return daemons // projects dir doesn't exist yet
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		pidPath := filepath.Join(projectsDir, e.Name(), "oro.pid")
+		pid, err := ReadPIDFile(pidPath)
+		if err != nil {
+			continue
+		}
+		if !IsProcessAlive(pid) {
+			continue
+		}
+		daemons = append(daemons, projectDaemon{
+			Project: e.Name(),
+			PID:     pid,
+			PIDPath: pidPath,
+		})
+	}
+
+	return daemons
 }
 
 // drainTimeout is how long to wait for the dispatcher to exit after SIGTERM.
@@ -45,15 +98,25 @@ func isStdinTTY() bool {
 
 // newStopCmd creates the "oro stop" subcommand.
 func newStopCmd() *cobra.Command {
-	var force bool
+	var (
+		force bool
+		all   bool
+	)
 	cmd := &cobra.Command{
 		Use:   "stop",
 		Short: "Graceful shutdown of the Oro swarm",
-		Long:  "Sends a stop directive to the dispatcher, waits for workers to finish,\nkills the tmux session, and runs bd sync.",
+		Long: `Sends a stop directive to the dispatcher, waits for workers to finish,
+kills the tmux session, and runs bd sync.
+
+Use --all to stop daemons in all projects simultaneously.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, err := ResolvePaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
+			}
+
+			if all {
+				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout())
 			}
 
 			cfg := &stopConfig{
@@ -68,13 +131,69 @@ func newStopCmd() *cobra.Command {
 				killFn:   defaultKill,
 				isTTY:    isStdinTTY,
 				force:    force,
+				oroHome:  paths.OroHome,
 			}
 
 			return runStopSequence(cmd.Context(), cfg)
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "skip interactive confirmation (requires ORO_HUMAN_CONFIRMED=1)")
+	cmd.Flags().BoolVar(&all, "all", false, "stop daemons in all projects")
 	return cmd
+}
+
+// suggestStopAll prints a hint about other running daemons when the current
+// project's daemon is not running.
+func suggestStopAll(w io.Writer, oroHome string) {
+	if oroHome == "" {
+		return
+	}
+	others := discoverProjectDaemons(oroHome)
+	if len(others) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nFound %d running daemon(s) in other projects:\n", len(others))
+	for _, d := range others {
+		fmt.Fprintf(w, "  - %s (PID %d)\n", d.Project, d.PID)
+	}
+	fmt.Fprintln(w, "\nUse 'oro stop --all' to stop all daemons.")
+}
+
+// runStopAll discovers and stops all running project daemons.
+func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) error {
+	daemons := discoverProjectDaemons(oroHome)
+	if len(daemons) == 0 {
+		fmt.Fprintln(w, "no running daemons found")
+		return nil
+	}
+
+	fmt.Fprintf(w, "found %d running daemon(s):\n", len(daemons))
+	for _, d := range daemons {
+		fmt.Fprintf(w, "  - %s (PID %d)\n", d.Project, d.PID)
+	}
+
+	for _, d := range daemons {
+		sockPath := strings.TrimSuffix(d.PIDPath, "oro.pid") + "oro.sock"
+		cfg := &stopConfig{
+			pidPath:  d.PIDPath,
+			sockPath: sockPath,
+			tmuxName: "oro",
+			runner:   &ExecRunner{},
+			w:        w,
+			stdin:    os.Stdin,
+			signalFn: defaultSignalINT,
+			aliveFn:  IsProcessAlive,
+			killFn:   defaultKill,
+			isTTY:    isStdinTTY,
+			force:    force,
+		}
+
+		fmt.Fprintf(w, "\nstopping %s (PID %d)...\n", d.Project, d.PID)
+		if err := runStopSequence(ctx, cfg); err != nil {
+			fmt.Fprintf(w, "warning: failed to stop %s: %v\n", d.Project, err)
+		}
+	}
+	return nil
 }
 
 // defaultSignalINT sends SIGINT to the given PID.
@@ -151,6 +270,7 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 	switch status {
 	case StatusStopped:
 		fmt.Fprintln(cfg.w, "dispatcher is not running")
+		suggestStopAll(cfg.w, cfg.oroHome)
 		return nil
 	case StatusStale:
 		fmt.Fprintln(cfg.w, "removing stale PID file (process already dead)")

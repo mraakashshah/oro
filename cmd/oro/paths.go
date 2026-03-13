@@ -19,59 +19,52 @@ type Paths struct {
 	CodeIndexDBPath string // code_index.db (respects ORO_HOME)
 }
 
-// ResolvePaths returns all oro paths, respecting env var overrides.
+// ResolvePaths returns all oro paths, respecting project scoping and env var overrides.
+//
+// When a project name is available (ORO_PROJECT env var or .oro/config.yaml),
+// all state paths (PID, socket, DB, code index) resolve to
+// ~/.oro/projects/<name>/. This enables multiple oro instances to run
+// simultaneously in different projects without clashing.
+//
+// When no project name is found, paths fall back to ~/.oro/ (backward compat).
+//
 // Environment variables:
 //   - ORO_HOME: base directory for all oro state (default: ~/.oro)
-//   - ORO_PID_PATH: dispatcher PID file (default: $ORO_HOME/oro.pid)
-//   - ORO_SOCKET_PATH: dispatcher UDS socket (default: $ORO_HOME/oro.sock)
-//   - ORO_DB_PATH: dispatcher state database (default: $ORO_HOME/state.db)
+//   - ORO_PID_PATH: dispatcher PID file (overrides project scoping)
+//   - ORO_SOCKET_PATH: dispatcher UDS socket (overrides project scoping)
+//   - ORO_DB_PATH: dispatcher state database (overrides project scoping)
 //   - ORO_MEMORY_DB: memory store database (default: $ORO_HOME/memories.db)
 //
-// If ORO_HOME is set, it becomes the base for all default paths.
-// Specific env vars (ORO_PID_PATH, etc.) override both the default and ORO_HOME base.
+// OroHome always remains the global ~/.oro directory (used for worker logs,
+// hooks, skills, etc.). Only per-daemon state is project-scoped.
 func ResolvePaths() (*Paths, error) {
-	// 1. Resolve OroHome (ORO_HOME or ~/.oro).
 	oroHome, err := resolveOroHome()
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Resolve each path with env overrides.
-	paths := &Paths{
-		OroHome:         oroHome,
-		PIDPath:         resolvePathWithEnv("ORO_PID_PATH", oroHome, "oro.pid"),
-		SocketPath:      resolvePathWithEnv("ORO_SOCKET_PATH", oroHome, "oro.sock"),
-		StateDBPath:     resolvePathWithEnv("ORO_DB_PATH", oroHome, "state.db"),
-		CodeIndexDBPath: filepath.Join(oroHome, "code_index.db"),
+	// Determine base directory for per-daemon state files.
+	// With a project name, state scopes to ~/.oro/projects/<name>/.
+	// Without, falls back to ~/.oro/ (backward compat).
+	stateBase := oroHome
+	if project := readProjectName(); project != "" {
+		stateBase = filepath.Join(oroHome, "projects", project)
 	}
 
-	return paths, nil
+	return &Paths{
+		OroHome:         oroHome,
+		PIDPath:         resolvePathWithEnv("ORO_PID_PATH", stateBase, "oro.pid"),
+		SocketPath:      resolvePathWithEnv("ORO_SOCKET_PATH", stateBase, "oro.sock"),
+		StateDBPath:     resolvePathWithEnv("ORO_DB_PATH", stateBase, "state.db"),
+		CodeIndexDBPath: filepath.Join(stateBase, "code_index.db"),
+	}, nil
 }
 
-// ResolveProjectDBPaths returns paths with DB paths scoped to the current project.
-// Resolution order for project name:
-//  1. ORO_PROJECT env var (set by dispatcher for workers, and by oro work)
-//  2. .oro/config.yaml "project" field in CWD
-//  3. Empty string → fall back to global ~/.oro/ paths
+// ResolveProjectDBPaths is an alias for ResolvePaths.
 //
-// When a project name is found, StateDBPath and CodeIndexDBPath resolve to
-// ~/.oro/projects/<name>/. PIDPath and SocketPath remain global.
+// Deprecated: use ResolvePaths directly. Kept for backward compatibility.
 func ResolveProjectDBPaths() (*Paths, error) {
-	base, err := ResolvePaths()
-	if err != nil {
-		return nil, err
-	}
-
-	project := readProjectName()
-	if project == "" {
-		return base, nil
-	}
-
-	projDir := filepath.Join(base.OroHome, "projects", project)
-	base.StateDBPath = filepath.Join(projDir, "state.db")
-	base.CodeIndexDBPath = filepath.Join(projDir, "code_index.db")
-
-	return base, nil
+	return ResolvePaths()
 }
 
 // readProjectName returns the current project name from ORO_PROJECT env var

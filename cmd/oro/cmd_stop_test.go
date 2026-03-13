@@ -256,3 +256,114 @@ func TestStop_ForceRequiresEnvVar(t *testing.T) {
 		}
 	})
 }
+
+// --- discoverProjectDaemons tests ---
+
+func TestDiscoverProjectDaemons_FindsRunning(t *testing.T) {
+	oroHome := t.TempDir()
+
+	// Create two project dirs with PID files — use our own PID (known alive).
+	for _, name := range []string{"alpha", "beta"} {
+		projDir := filepath.Join(oroHome, "projects", name)
+		if err := os.MkdirAll(projDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := WritePIDFile(filepath.Join(projDir, "oro.pid"), os.Getpid()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	daemons := discoverProjectDaemons(oroHome)
+	if len(daemons) != 2 {
+		t.Fatalf("expected 2 daemons, got %d: %+v", len(daemons), daemons)
+	}
+
+	names := map[string]bool{}
+	for _, d := range daemons {
+		names[d.Project] = true
+		if d.PID != os.Getpid() {
+			t.Errorf("expected PID %d, got %d for project %s", os.Getpid(), d.PID, d.Project)
+		}
+	}
+	if !names["alpha"] || !names["beta"] {
+		t.Errorf("expected projects alpha and beta, got %v", names)
+	}
+}
+
+func TestDiscoverProjectDaemons_SkipsStalePIDs(t *testing.T) {
+	oroHome := t.TempDir()
+
+	projDir := filepath.Join(oroHome, "projects", "stale")
+	if err := os.MkdirAll(projDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// PID 4000000 is almost certainly not running.
+	if err := WritePIDFile(filepath.Join(projDir, "oro.pid"), 4000000); err != nil {
+		t.Fatal(err)
+	}
+
+	daemons := discoverProjectDaemons(oroHome)
+	if len(daemons) != 0 {
+		t.Errorf("expected 0 daemons (stale PID), got %d: %+v", len(daemons), daemons)
+	}
+}
+
+func TestDiscoverProjectDaemons_IncludesLegacyGlobal(t *testing.T) {
+	oroHome := t.TempDir()
+
+	// Legacy global PID file at ~/.oro/oro.pid
+	if err := WritePIDFile(filepath.Join(oroHome, "oro.pid"), os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+
+	daemons := discoverProjectDaemons(oroHome)
+	if len(daemons) != 1 {
+		t.Fatalf("expected 1 daemon (legacy global), got %d: %+v", len(daemons), daemons)
+	}
+	if daemons[0].Project != "(global)" {
+		t.Errorf("expected project name '(global)', got %q", daemons[0].Project)
+	}
+}
+
+func TestStop_NotRunning_SuggestsAllWhenOtherDaemonsExist(t *testing.T) {
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "myproject")
+	t.Setenv("ORO_PID_PATH", "")
+	t.Setenv("ORO_SOCKET_PATH", "")
+
+	// Create project dir for myproject (no daemon running)
+	myProjDir := filepath.Join(oroHome, "projects", "myproject")
+	if err := os.MkdirAll(myProjDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create another project with a running daemon
+	otherDir := filepath.Join(oroHome, "projects", "other")
+	if err := os.MkdirAll(otherDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := WritePIDFile(filepath.Join(otherDir, "oro.pid"), os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &stopConfig{
+		pidPath:  filepath.Join(myProjDir, "oro.pid"),
+		sockPath: filepath.Join(myProjDir, "oro.sock"),
+		w:        &buf,
+		oroHome:  oroHome,
+	}
+
+	if err := runStopSequence(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "not running") {
+		t.Errorf("expected 'not running' message, got %q", output)
+	}
+	if !strings.Contains(output, "oro stop --all") {
+		t.Errorf("expected suggestion to use --all, got %q", output)
+	}
+}
