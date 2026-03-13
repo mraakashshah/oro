@@ -56,7 +56,7 @@ func newLogsCmd() *cobra.Command {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
 
-			db, err := openDB(paths.StateDBPath)
+			db, err := openStateDB(paths.StateDBPath)
 			if err != nil {
 				return fmt.Errorf("open db: %w", err)
 			}

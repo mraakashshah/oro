@@ -39,6 +39,27 @@ func openDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// openStateDB opens the dispatcher state database and ensures the full schema
+// (tables, indexes) exists. It wraps openDB with SchemaDDL + migrations so
+// that any consumer (oro logs, oro status, buildDispatcher) gets a usable DB
+// even if the file was just created. Safe to call on existing DBs — all DDL
+// uses CREATE TABLE IF NOT EXISTS.
+func openStateDB(path string) (*sql.DB, error) {
+	db, err := openDB(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := db.ExecContext(context.Background(), protocol.SchemaDDL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("apply state schema on %s: %w", path, err)
+	}
+
+	migrateStateDB(db)
+
+	return db, nil
+}
+
 // migrateStateDB applies schema migrations to the dispatcher state database.
 // Each migration uses ALTER TABLE which errors if the column already exists;
 // errors are intentionally ignored (try/ignore pattern).

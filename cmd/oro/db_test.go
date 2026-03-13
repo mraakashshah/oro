@@ -143,6 +143,51 @@ func TestMigrationsAppliedOnStartup(t *testing.T) {
 	migrateStateDB(db)
 }
 
+// TestOpenStateDBCreatesSchema verifies that openStateDB applies SchemaDDL
+// so that tables like events are immediately queryable on a fresh database.
+func TestOpenStateDBCreatesSchema(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// The events table must exist and be queryable on a fresh DB.
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM events").Scan(&count); err != nil {
+		t.Fatalf("query events table: %v — schema was not applied", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 rows in fresh events table, got %d", count)
+	}
+}
+
+// TestOpenStateDBIdempotent verifies that calling openStateDB on an existing
+// DB with schema already applied does not error (CREATE TABLE IF NOT EXISTS).
+func TestOpenStateDBIdempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+
+	// First call — creates schema.
+	db1, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("first openStateDB: %v", err)
+	}
+	_ = db1.Close()
+
+	// Second call — schema already exists, should be idempotent.
+	db2, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("second openStateDB: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	var count int
+	if err := db2.QueryRow("SELECT COUNT(*) FROM events").Scan(&count); err != nil {
+		t.Fatalf("query events after idempotent open: %v", err)
+	}
+}
+
 // TestBuildDispatcher_UsesOpenDB verifies that buildDispatcher produces a
 // database with WAL mode and busy_timeout set (indirectly tests that it uses openDB).
 func TestBuildDispatcher_WALMode(t *testing.T) {

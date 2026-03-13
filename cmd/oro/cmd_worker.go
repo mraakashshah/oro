@@ -62,7 +62,7 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 	var memStore *memory.Store
 	paths, pathsErr := ResolveProjectDBPaths()
 	if pathsErr == nil {
-		db, dbErr := openDB(paths.StateDBPath)
+		db, dbErr := openStateDB(paths.StateDBPath)
 		if dbErr == nil {
 			defer func() { _ = db.Close() }()
 			memStore = openWorkerMemoryStore(db)

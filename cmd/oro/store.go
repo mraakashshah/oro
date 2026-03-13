@@ -21,23 +21,13 @@ func defaultMemoryStore() (*memory.Store, error) {
 	}
 	dbPath := paths.StateDBPath
 
-	db, err := openDB(dbPath)
+	db, err := openStateDB(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open memory db: %w", err)
 	}
 
-	if _, err := db.ExecContext(context.Background(), protocol.SchemaDDL); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-
-	// Apply migrations for existing databases (columns may already exist).
-	_, _ = db.ExecContext(context.Background(), protocol.MigrateFileTracking)
-	_, _ = db.ExecContext(context.Background(), protocol.MigratePinnedMemories)
-	_, _ = db.ExecContext(context.Background(), protocol.MigrateKVStore)
+	// Apply store-specific migrations not covered by migrateStateDB.
 	_, _ = db.ExecContext(context.Background(), protocol.MigrateProjectColumn)
-	_, _ = db.ExecContext(context.Background(), protocol.MigrateRejectionHistory)
-	_, _ = db.ExecContext(context.Background(), "CREATE INDEX IF NOT EXISTS idx_rejection_bead ON rejection_history(bead_id)")
 	// Backfill project column for existing rows
 	_, _ = db.ExecContext(context.Background(), `UPDATE memories SET project = 'oro' WHERE project IS NULL OR project = ''`)
 

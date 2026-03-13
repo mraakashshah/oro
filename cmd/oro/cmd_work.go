@@ -125,7 +125,7 @@ func newProductionDeps() (*workDeps, error) {
 	var memStore *memory.Store
 	var codeIdx *codesearch.CodeIndex
 	if paths, pathsErr := ResolveProjectDBPaths(); pathsErr == nil {
-		if db, dbErr := openDB(paths.StateDBPath); dbErr == nil {
+		if db, dbErr := openStateDB(paths.StateDBPath); dbErr == nil {
 			memStore = openWorkerMemoryStore(db)
 		}
 		if idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath); idxErr == nil {

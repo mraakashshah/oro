@@ -453,13 +453,10 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 	sockPath := paths.SocketPath
 	dbPath := paths.StateDBPath
 
-	db, err := openDB(dbPath)
+	db, err := openStateDB(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
 	}
-
-	// Apply schema migrations for older databases (columns may already exist).
-	migrateStateDB(db)
 
 	// Best-effort knowledge ingest on startup (missing file is not an error).
 	ingestKnowledgeOnStartup(db)
