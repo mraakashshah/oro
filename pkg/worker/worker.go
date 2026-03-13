@@ -218,11 +218,19 @@ func (w *Worker) Run(ctx context.Context) error {
 		return fmt.Errorf("send initial heartbeat: %w", err)
 	}
 
+	// Idle heartbeat ticker keeps the dispatcher from timing us out
+	// while we wait for assignment. Stopped when watchContext takes over.
+	idleTicker := time.NewTicker(DefaultHeartbeatInterval)
+	defer idleTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			w.killProc()
 			return nil
+
+		case <-idleTicker.C:
+			_ = w.SendHeartbeat(ctx, 0)
 
 		case msg := <-msgCh:
 			if done, err := w.handleMessage(ctx, msg); err != nil || done {
