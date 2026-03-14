@@ -11,6 +11,7 @@ import (
 func TestResolvePaths_Defaults(t *testing.T) {
 	// Clear all env overrides.
 	t.Setenv("ORO_HOME", "")
+	t.Setenv("ORO_PROJECT", "")
 	t.Setenv("ORO_PID_PATH", "")
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
@@ -50,6 +51,7 @@ func TestResolvePaths_EnvOverrides(t *testing.T) {
 
 	// Set all env overrides to temp dir paths.
 	t.Setenv("ORO_HOME", filepath.Join(tmpDir, "custom-oro"))
+	t.Setenv("ORO_PROJECT", "")
 	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "custom.pid"))
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "custom.sock"))
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "custom-state.db"))
@@ -88,6 +90,7 @@ func TestResolvePaths_PartialEnvOverrides(t *testing.T) {
 
 	// Override only some paths.
 	t.Setenv("ORO_HOME", "")
+	t.Setenv("ORO_PROJECT", "")
 	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "custom.pid"))
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
@@ -329,6 +332,7 @@ func TestResolvePaths_OroHomeOverride(t *testing.T) {
 
 	// ORO_HOME should affect the default base for other paths if they're not overridden.
 	t.Setenv("ORO_HOME", tmpDir)
+	t.Setenv("ORO_PROJECT", "")
 	t.Setenv("ORO_PID_PATH", "")
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
