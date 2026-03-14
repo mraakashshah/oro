@@ -26,7 +26,7 @@ func TestCleanup_NothingToClean(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  filepath.Join(tmpDir, "oro.pid"),  // no file
 		sockPath: filepath.Join(tmpDir, "oro.sock"), // no file
 		signalFn: func(int) error { return nil },
@@ -68,7 +68,7 @@ func TestCleanup_KillsRunningDispatcher(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  pidPath,
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(pid int) error {
@@ -118,7 +118,7 @@ func TestCleanup_KillsTmux(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  filepath.Join(tmpDir, "oro.pid"),
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(int) error { return nil },
@@ -170,7 +170,7 @@ func TestCleanup_RemovesStaleFiles(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  pidPath,
 		sockPath: sockPath,
 		signalFn: func(int) error { return nil },
@@ -214,7 +214,7 @@ func TestCleanup_PrunesWorktrees(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  filepath.Join(tmpDir, "oro.pid"),
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(int) error { return nil },
@@ -254,7 +254,7 @@ func TestCleanup_DeletesAgentBranches(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  filepath.Join(tmpDir, "oro.pid"),
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(int) error { return nil },
@@ -311,7 +311,7 @@ func TestCleanup_ResetsInProgressBeads(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  filepath.Join(tmpDir, "oro.pid"),
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(int) error { return nil },
@@ -378,7 +378,7 @@ func TestCleanup_ContinuesOnErrors(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  pidPath,
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(int) error { return fmt.Errorf("signal failed") },
@@ -432,7 +432,7 @@ func TestCleanup_KillsWorkerProcesses(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  filepath.Join(tmpDir, "oro.pid"),
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(pid int) error {
@@ -473,7 +473,7 @@ func TestCleanup_RefusedWhenNotTTY(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   newFakeCmd(),
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  pidPath,
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		isTTY:    func() bool { return false },
@@ -506,7 +506,7 @@ func TestCleanup_SendsSIGINTToDispatcher(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  pidPath,
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(pid int) error { signaled = true; return nil },
@@ -560,7 +560,7 @@ func TestCleanupWorktreeDir(t *testing.T) {
 		cfg := &cleanupConfig{
 			runner:   fake,
 			w:        &buf,
-			tmuxName: "oro",
+			tmuxName: TmuxSessionName(""),
 			pidPath:  filepath.Join(tmpDir, "oro.pid"),
 			sockPath: filepath.Join(tmpDir, "oro.sock"),
 			signalFn: func(int) error { return nil },
@@ -611,7 +611,7 @@ func TestCleanupWorktreeDir(t *testing.T) {
 		cfg := &cleanupConfig{
 			runner:   fake,
 			w:        &buf,
-			tmuxName: "oro",
+			tmuxName: TmuxSessionName(""),
 			pidPath:  filepath.Join(tmpDir, "oro.pid"),
 			sockPath: filepath.Join(tmpDir, "oro.sock"),
 			signalFn: func(int) error { return nil },
@@ -648,7 +648,7 @@ func TestCleanup_DoesNotCallBdDaemon(t *testing.T) {
 	cfg := &cleanupConfig{
 		runner:   fake,
 		w:        &buf,
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		pidPath:  filepath.Join(tmpDir, "oro.pid"),
 		sockPath: filepath.Join(tmpDir, "oro.sock"),
 		signalFn: func(int) error { return nil },

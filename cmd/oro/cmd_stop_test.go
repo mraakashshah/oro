@@ -15,7 +15,7 @@ func ttyStop(pidFile string, fake *fakeCmd, buf *bytes.Buffer) *stopConfig {
 	return &stopConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(filepath.Dir(pidFile), "nonexistent.sock"),
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		runner:   fake,
 		w:        buf,
 		stdin:    strings.NewReader("YES\n"),
@@ -140,7 +140,7 @@ func TestStop_RefusedWhenNotTTY(t *testing.T) {
 	cfg := &stopConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		runner:   newFakeCmd(),
 		w:        &buf,
 		stdin:    strings.NewReader(""),
@@ -167,7 +167,7 @@ func TestStop_RefusedWhenConfirmationNotYES(t *testing.T) {
 	cfg := &stopConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		runner:   newFakeCmd(),
 		w:        &buf,
 		stdin:    strings.NewReader("no\n"),
@@ -197,7 +197,7 @@ func TestStop_ForceRequiresEnvVar(t *testing.T) {
 		cfg := &stopConfig{
 			pidPath:  pidFile,
 			sockPath: filepath.Join(filepath.Dir(pidFile), "nonexistent.sock"),
-			tmuxName: "oro",
+			tmuxName: TmuxSessionName(""),
 			runner:   newFakeCmd(),
 			w:        &buf,
 			force:    true,

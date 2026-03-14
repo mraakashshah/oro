@@ -273,7 +273,7 @@ func TestCreateWithNudges(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "You are a test architect.", "You are a test manager.")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("You are a test architect.", "You are a test manager.")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -318,7 +318,7 @@ func TestCreateWithNudges(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)

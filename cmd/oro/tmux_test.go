@@ -128,7 +128,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
 		stubPaneReady(fake, "oro", "architect beacon", "manager beacon")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -178,7 +178,7 @@ func TestTmuxLayout(t *testing.T) {
 		// has-session succeeds (session exists)
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -195,7 +195,7 @@ func TestTmuxLayout(t *testing.T) {
 
 	t.Run("Kill destroys the session", func(t *testing.T) {
 		fake := newFakeCmd()
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.Kill()
 		if err != nil {
 			t.Fatalf("Kill returned error: %v", err)
@@ -217,7 +217,7 @@ func TestTmuxLayout(t *testing.T) {
 		// has-session succeeds
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		if !sess.Exists() {
 			t.Error("expected Exists to return true when has-session succeeds")
 		}
@@ -227,7 +227,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		if sess.Exists() {
 			t.Error("expected Exists to return false when has-session fails")
 		}
@@ -237,7 +237,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		panes, err := sess.ListPanes()
 		if err != nil {
 			t.Fatalf("ListPanes returned error: %v", err)
@@ -254,7 +254,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = fmt.Errorf("no session")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		_, err := sess.ListPanes()
 		if err == nil {
 			t.Error("expected error when list-panes fails")
@@ -267,7 +267,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.output[key("tmux", "list-panes", "-t", "oro", "-F", "#{pane_index}")] = "0\n1\n"
 		stubPaneReady(fake, "oro", "architect nudge text", "manager nudge text")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge text", "manager nudge text")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -294,7 +294,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -343,7 +343,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge text here", "manager nudge text here")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge text here", "manager nudge text here")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -407,7 +407,7 @@ func TestTmuxLayout(t *testing.T) {
 
 	t.Run("stop command kills tmux session", func(t *testing.T) {
 		fake := newFakeCmd()
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 
 		err := sess.Kill()
 		if err != nil {
@@ -429,7 +429,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		exists := sess.Exists()
 		if !exists {
 			t.Error("expected session to exist")
@@ -452,7 +452,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect beacon", "manager beacon")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -484,7 +484,7 @@ func TestTmuxLayout(t *testing.T) {
 		// capture-pane never shows prompt indicator — Claude never becomes ready.
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "loading..."
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect beacon", "manager beacon")
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
@@ -505,7 +505,7 @@ func TestWaitForCommand(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[displayKey("oro:architect")] = "claude"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.WaitForCommand("oro:architect")
 		if err != nil {
 			t.Fatalf("WaitForCommand returned error: %v", err)
@@ -520,7 +520,7 @@ func TestWaitForCommand(t *testing.T) {
 			"claude",
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
 		err := sess.WaitForCommand("oro:architect")
 		if err != nil {
 			t.Fatalf("WaitForCommand returned error: %v", err)
@@ -542,7 +542,7 @@ func TestWaitForCommand(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[displayKey("oro:architect")] = "zsh"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
 		err := sess.WaitForCommand("oro:architect")
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
@@ -566,7 +566,7 @@ func TestWaitForCommand(t *testing.T) {
 			"claude",
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
 		err := sess.WaitForCommand("oro:manager")
 		if err != nil {
 			t.Fatalf("WaitForCommand returned error: %v", err)
@@ -581,7 +581,7 @@ func TestWaitForCommand(t *testing.T) {
 			"claude", // ready
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
 		err := sess.WaitForCommand("oro:architect")
 		if err != nil {
 			t.Fatalf("WaitForCommand returned error: %v", err)
@@ -592,7 +592,7 @@ func TestWaitForCommand(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[displayKey("oro:architect")] = "claude"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.WaitForCommand("oro:architect")
 		if err != nil {
 			t.Fatalf("WaitForCommand returned error: %v", err)
@@ -605,7 +605,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "some output\nbd stats\nmore output"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
@@ -621,7 +621,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 			"running bd stats\noutput here",
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 5*time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
@@ -643,7 +643,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "stuck on loading screen"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 50*time.Millisecond)
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
@@ -664,7 +664,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "some text with > prompt visible"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.VerifyBeaconReceived("oro:architect", ">", time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
@@ -680,7 +680,7 @@ func TestVerifyBeaconReceived(t *testing.T) {
 			"bd stats\nsome output",
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 5*time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
@@ -703,7 +703,7 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 			"bd stats\n❯ output visible\n",         // VerifyBeaconReceived
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -737,7 +737,7 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 			"no beacon output",                     // VerifyBeaconReceived times out
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		// Create should succeed even if nudge verification fails — it's a warning
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
@@ -1144,7 +1144,7 @@ func TestSendKeysVerified(t *testing.T) {
 		// capture-pane returns the nudge text on first check
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "some output\nmy nudge text\nprompt"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.SendKeysVerified("oro:architect", "my nudge text", 3*time.Second)
 		if err != nil {
 			t.Fatalf("SendKeysVerified returned error: %v", err)
@@ -1173,7 +1173,7 @@ func TestSendKeysVerified(t *testing.T) {
 			"my nudge text visible now",
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.SendKeysVerified("oro:manager", "my nudge text", 5*time.Second)
 		if err != nil {
 			t.Fatalf("SendKeysVerified returned error: %v", err)
@@ -1196,7 +1196,7 @@ func TestSendKeysVerified(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "nothing here"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.SendKeysVerified("oro:architect", "expected text", 50*time.Millisecond)
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
@@ -1210,7 +1210,7 @@ func TestSendKeysVerified(t *testing.T) {
 func TestAttach(t *testing.T) {
 	t.Run("Attach calls tmux attach-session via CmdRunner", func(t *testing.T) {
 		fake := newFakeCmd()
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.Attach()
 		if err != nil {
 			t.Fatalf("Attach returned error: %v", err)
@@ -1269,7 +1269,7 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 			"bd stats\n❯ output\n",                 // VerifyBeaconReceived
 		}
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -1298,7 +1298,7 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = "claude"
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -1326,7 +1326,7 @@ func TestSendKeys_SendsEscapeBeforeEnter(t *testing.T) {
 	// wakeIfDetached: session is attached (no resize needed)
 	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
 
-	sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+	sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 	err := sess.SendKeys("oro:architect", "hello world")
 	if err != nil {
 		t.Fatalf("SendKeys returned error: %v", err)
@@ -1364,7 +1364,7 @@ func TestSendKeys_WakesAfterEscapeInDetachedSession(t *testing.T) {
 	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
 	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
 
-	sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+	sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 	err := sess.SendKeys("oro:architect", "hello world")
 	if err != nil {
 		t.Fatalf("SendKeys returned error: %v", err)
@@ -1412,7 +1412,7 @@ func TestWakeIfDetached_SendsSIGWINCH(t *testing.T) {
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		sess.wakeIfDetached("oro:architect")
 
 		// Should call kill -WINCH 12345.
@@ -1434,7 +1434,7 @@ func TestWakeIfDetached_SendsSIGWINCH(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		sess.wakeIfDetached("oro:architect")
 
 		for _, call := range fake.calls {
@@ -1451,7 +1451,7 @@ func TestTmuxStatusBarColor(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -1478,7 +1478,7 @@ func TestTmuxStatusBarColor(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -1529,7 +1529,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubExecEnvReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -1599,7 +1599,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubExecEnvReady(fake, "oro", "arch nudge", "mgr nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("arch nudge", "mgr nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -1622,7 +1622,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubExecEnvReady(fake, "oro", "arch nudge", "mgr nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("arch nudge", "mgr nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -1643,7 +1643,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 func TestPaneDiedHooks(t *testing.T) {
 	t.Run("RegisterPaneDiedHooks registers hooks for both panes", func(t *testing.T) {
 		fake := newFakeCmd()
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 
 		err := sess.RegisterPaneDiedHooks()
 		if err != nil {
@@ -1745,7 +1745,7 @@ func TestPaneDiedHooks(t *testing.T) {
 		// Session exists
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 
 		err := sess.CleanupPaneDiedHooks()
 		if err != nil {
@@ -1779,7 +1779,7 @@ func TestPaneDiedHooks(t *testing.T) {
 		// Session does not exist
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 
 		err := sess.CleanupPaneDiedHooks()
 		if err != nil {
@@ -1953,7 +1953,7 @@ func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 		// new-window fails
 		fake.errs[key("tmux", "new-window", "-t", "oro", "-n", "manager", execEnvCmd("manager", ""))] = fmt.Errorf("new-window failed")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err == nil {
 			t.Fatal("expected error from Create when new-window fails, got nil")
@@ -1981,7 +1981,7 @@ func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 		// capture-pane never shows prompt indicator — WaitForPrompt times out.
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "loading..."
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err == nil {
 			t.Fatal("expected error from Create when WaitForPrompt times out, got nil")
@@ -2008,7 +2008,7 @@ func TestNudgeSerialization(t *testing.T) {
 		// wakeIfDetached: session is attached (no wake needed)
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 
 		// Track execution order with a channel
 		order := make(chan string, 10)
@@ -2069,7 +2069,7 @@ func TestNudgeSerialization(t *testing.T) {
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{session_attached}")] = "1"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 
 		done := make(chan struct{}, 2)
 
@@ -2126,7 +2126,7 @@ func TestKillWithProcessCleanup(t *testing.T) {
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_pid}")] = "12346"
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.Kill()
 		if err != nil {
 			t.Fatalf("Kill returned error: %v", err)
@@ -2170,7 +2170,7 @@ func TestKillWithProcessCleanup(t *testing.T) {
 		fake.errs[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = fmt.Errorf("no pane")
 		fake.errs[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_pid}")] = fmt.Errorf("no pane")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.Kill()
 		if err != nil {
 			t.Fatalf("Kill should succeed even when PID lookup fails: %v", err)
@@ -2195,7 +2195,7 @@ func TestStatusBarLabels(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -2234,7 +2234,7 @@ func TestScrollbackConfiguration(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -2268,7 +2268,7 @@ func TestMouseModeEnabled(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -2302,7 +2302,7 @@ func TestRemainOnExit(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 		err := sess.Create("architect nudge", "manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
@@ -2336,7 +2336,7 @@ func TestRemainOnExit(t *testing.T) {
 
 	t.Run("RespawnPane calls tmux respawn-pane", func(t *testing.T) {
 		fake := newFakeCmd()
-		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.RespawnPane("oro:architect", "exec env ORO_ROLE=architect claude")
 		if err != nil {
 			t.Fatalf("RespawnPane returned error: %v", err)
@@ -2360,7 +2360,7 @@ func TestRemainOnExit(t *testing.T) {
 func TestAttachInteractiveFocusesArchitectPane(t *testing.T) {
 	t.Run("calls select-window to focus architect before attaching", func(t *testing.T) {
 		fake := newFakeCmd()
-		sess := &TmuxSession{Name: "oro", Runner: fake}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake}
 
 		// AttachInteractive will fail since it tries to exec.Command, but
 		// we can test that select-window is called before the attach fails
@@ -2385,7 +2385,7 @@ func TestAttachInteractiveFocusesArchitectPane(t *testing.T) {
 	t.Run("focuses architect even when reattaching to existing session", func(t *testing.T) {
 		fake := newFakeCmd()
 		// Simulate an existing session where manager window is currently focused
-		sess := &TmuxSession{Name: "oro", Runner: fake}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake}
 
 		// Call AttachInteractive (simulates reattach scenario)
 		_ = sess.AttachInteractive()
@@ -2409,7 +2409,7 @@ func TestAttachInteractiveFocusesArchitectPane(t *testing.T) {
 		fake := newFakeCmd()
 		// Make select-window fail (e.g., window doesn't exist)
 		fake.errs[key("tmux", "select-window", "-t", "oro:architect")] = fmt.Errorf("no such window")
-		sess := &TmuxSession{Name: "oro", Runner: fake}
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake}
 
 		// AttachInteractive should still attempt the attach (won't error on select-window failure)
 		_ = sess.AttachInteractive()
@@ -2433,7 +2433,7 @@ func TestStatusBarShowsQuitHint(t *testing.T) {
 	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 	stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
-	sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+	sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
 	err := sess.Create("architect nudge", "manager nudge")
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)

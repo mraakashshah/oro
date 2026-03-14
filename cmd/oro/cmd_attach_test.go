@@ -56,7 +56,7 @@ func TestAttachDaemonOnly(t *testing.T) {
 	cfg := &attachConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		runner:   fake,
 		isTTY:    func() bool { return true },
 	}
@@ -83,7 +83,7 @@ func TestAttachUnhealthy(t *testing.T) {
 	cfg := &attachConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		runner:   fake,
 		isTTY:    func() bool { return true },
 	}
@@ -110,7 +110,7 @@ func TestAttachNoTTY(t *testing.T) {
 	cfg := &attachConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		runner:   fake,
 		isTTY:    func() bool { return false },
 	}
@@ -139,7 +139,7 @@ func TestAttachSuccess(t *testing.T) {
 	cfg := &attachConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
-		tmuxName: "oro",
+		tmuxName: TmuxSessionName(""),
 		runner:   fake,
 		isTTY:    func() bool { return true },
 		attachFn: func() error { attached = true; return nil },
