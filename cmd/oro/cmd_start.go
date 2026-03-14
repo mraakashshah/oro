@@ -16,7 +16,6 @@ import (
 
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
-	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 
@@ -503,9 +502,6 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 		return nil, nil, fmt.Errorf("open state db: %w", err)
 	}
 
-	// Best-effort knowledge ingest on startup (missing file is not an error).
-	ingestKnowledgeOnStartup(db)
-
 	// Get repo root for worktree manager.
 	repoRoot, err := os.Getwd()
 	if err != nil {
@@ -674,37 +670,4 @@ func sendStartDirective(sockPath string) error {
 		return fmt.Errorf("read ack: %w", err)
 	}
 	return nil
-}
-
-// ingestKnowledgeOnStartup attempts to ingest knowledge.jsonl on dispatcher startup.
-// Best-effort: missing file or errors are silently ignored (logged to stderr).
-func ingestKnowledgeOnStartup(db *sql.DB) {
-	// Resolve knowledge file path (same priority as oro ingest command)
-	knowledgePath, err := resolveKnowledgeFile("")
-	if err != nil {
-		// No knowledge file found - skip silently
-		return
-	}
-
-	// Open file
-	f, err := os.Open(knowledgePath) //nolint:gosec // path from trusted sources
-	if err != nil {
-		// Can't open file - skip silently
-		return
-	}
-	defer f.Close()
-
-	// Create memory store and ingest
-	store := memory.NewStore(db)
-	ctx := context.Background()
-	count, err := memory.IngestKnowledge(ctx, store, f)
-	if err != nil {
-		// Ingest error - log but don't block startup
-		fmt.Fprintf(os.Stderr, "warning: knowledge ingest failed: %v\n", err)
-		return
-	}
-
-	if count > 0 {
-		fmt.Fprintf(os.Stderr, "info: ingested %d knowledge entries from %s\n", count, knowledgePath) //nolint:gosec // G705: writing to stderr, not an HTTP response
-	}
 }

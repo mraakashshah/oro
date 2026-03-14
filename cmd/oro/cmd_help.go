@@ -27,7 +27,6 @@ Memory:
   recall     Search memories
   forget     Delete memories by ID
   memories   Browse and manage the memory store
-  ingest     Import knowledge from JSONL file into memory store
 
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)

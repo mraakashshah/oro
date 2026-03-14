@@ -33,7 +33,7 @@ func TestHelpOutput(t *testing.T) {
 		}
 	}
 
-	// Verify all 15 subcommands are listed (all commands except "help" itself).
+	// Verify all subcommands are listed (all commands except "help" itself).
 	subcommands := []string{
 		"init",
 		"start",
@@ -49,7 +49,6 @@ func TestHelpOutput(t *testing.T) {
 		"directive",
 		"index",
 		"worker",
-		"ingest",
 		"work",
 	}
 	for _, cmd := range subcommands {

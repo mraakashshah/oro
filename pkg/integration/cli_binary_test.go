@@ -88,10 +88,10 @@ func stageAssets(t *testing.T, projectRoot string) {
 // TestOroBinary_AllSubcommandsHelp verifies that every top-level and nested
 // subcommand responds to --help with exit code 0 and non-empty stdout.
 //
-// The 26 subcommands under test match the acceptance criteria:
+// The 25 subcommands under test:
 // oro, start, stop, status, dispatcher, dispatcher start, dispatcher stop,
 // worker, worker launch, worker stop, logs, cleanup, init, remember, recall,
-// forget, ingest, memories, memories list, memories consolidate,
+// forget, memories, memories list, memories consolidate,
 // index, index build, index search, work, dash, directive.
 func TestOroBinary_AllSubcommandsHelp(t *testing.T) {
 	binPath := buildOroBinary(t)
@@ -113,7 +113,6 @@ func TestOroBinary_AllSubcommandsHelp(t *testing.T) {
 		{"remember", "--help"},
 		{"recall", "--help"},
 		{"forget", "--help"},
-		{"ingest", "--help"},
 		{"memories", "--help"},
 		{"memories", "list", "--help"},
 		{"memories", "consolidate", "--help"},
