@@ -298,6 +298,49 @@ func TestDispatcherCmdStructure(t *testing.T) {
 	}
 }
 
+// TestDispatcherStopDocNoBdSync verifies that godoc comments for the dispatcher stop
+// functions do not reference "bd sync" (removed in oro-i8rd.4). This prevents
+// documentation drift where stale comments describe behavior that no longer exists.
+func TestDispatcherStopDocNoBdSync(t *testing.T) {
+	src, err := os.ReadFile("cmd_dispatcher.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	content := string(src)
+
+	// The godoc for newDispatcherStopCmd must not mention "bd sync".
+	// Extract the comment block before func newDispatcherStopCmd.
+	idx := strings.Index(content, "func newDispatcherStopCmd()")
+	if idx < 0 {
+		t.Fatal("could not find newDispatcherStopCmd function")
+	}
+	stopCmdDoc := content[:idx]
+	if strings.Contains(stopCmdDoc, "bd sync") {
+		t.Error("newDispatcherStopCmd godoc still references 'bd sync' — remove stale comment")
+	}
+
+	// The godoc for runDispatcherStopSequence must not mention "bd sync".
+	idx = strings.Index(content, "func runDispatcherStopSequence(")
+	if idx < 0 {
+		t.Fatal("could not find runDispatcherStopSequence function")
+	}
+	// Look at the 500 chars before the function signature for the godoc block.
+	start := idx - 500
+	if start < 0 {
+		start = 0
+	}
+	seqDoc := content[start:idx]
+	if strings.Contains(seqDoc, "bd sync") {
+		t.Error("runDispatcherStopSequence godoc still references 'bd sync' — remove stale step")
+	}
+
+	// Step numbering: the godoc should list steps 0-4 (not 0-5).
+	// After removing bd sync, step "Remove PID file" should be step 4, not 5.
+	if strings.Contains(seqDoc, "5.") {
+		t.Error("runDispatcherStopSequence godoc still has a step 5 — renumber after removing bd sync step")
+	}
+}
+
 // TestDispatcherStopSendsSignalAndWaits is the acceptance-criteria test for oro-18c5.6.
 // It verifies that `oro dispatcher stop` sends SIGINT to the daemon PID, waits for exit,
 // removes PID file, and does NOT call tmux kill-session or bd sync.

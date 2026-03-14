@@ -25,7 +25,7 @@ func newDispatcherCmd() *cobra.Command {
 
 // newDispatcherStopCmd creates the "oro dispatcher stop" subcommand.
 // It sends SIGINT to the dispatcher daemon, waits for it to drain and exit,
-// runs bd sync --flush-only, and removes the PID file.
+// and removes the PID file.
 // Unlike "oro stop", it does NOT kill the tmux session or clean up pane-died hooks.
 func newDispatcherStopCmd() *cobra.Command {
 	var force bool
@@ -66,8 +66,7 @@ Requires an interactive terminal (TTY) or --force with ORO_HUMAN_CONFIRMED=1.`,
 //  1. Send SIGINT to the dispatcher (triggers graceful drain)
 //  2. Wait for the dispatcher process to exit
 //  3. If process won't exit: SIGKILL as emergency fallback
-//  4. Run bd sync as a safety net
-//  5. Remove PID file
+//  4. Remove PID file
 //
 // Key difference from runStopSequence: does NOT kill the tmux session and
 // does NOT clean up pane-died hooks.
