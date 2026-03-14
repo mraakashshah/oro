@@ -158,7 +158,7 @@ def test_budget_from_config():
     Edges:
     - Known key (1m_beta) → 1_000_000
     - Unknown key → falls back to "default" value (200_000)
-    - Missing file → falls back to DEFAULT_CONTEXT_WINDOW (200_000)
+    - Missing file → falls back to DEFAULT_CONTEXT_WINDOW (1_000_000)
     """
     import importlib
     import sys

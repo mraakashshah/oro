@@ -23,9 +23,10 @@ import os
 import sys
 from pathlib import Path
 
-DEFAULT_CONTEXT_WINDOW = 200_000  # Fallback if budget not provided
+DEFAULT_CONTEXT_WINDOW = 1_000_000  # Fallback: assume largest context (Opus)
 PANES_DIR = os.path.expanduser("~/.oro/panes")
-BUDGETS_FILE = Path(__file__).resolve().parent.parent.parent / "context_budgets.json"
+ORO_HOME = Path(os.environ.get("ORO_HOME", os.path.expanduser("~/.oro")))
+BUDGETS_FILE = ORO_HOME / "context_budgets.json"
 
 
 def load_budget_from_config(model_key: str, config_path: Path | None = None) -> int:
