@@ -372,6 +372,38 @@ context_pct_writer.main()
             Path(transcript_path).unlink(missing_ok=True)
 
 
+def test_budget_for_model():
+    """budget_for_model detects context window from model ID.
+
+    Edges:
+    - Opus model → 1M
+    - Sonnet model → 200K
+    - Unknown model → DEFAULT_CONTEXT_WINDOW (1M)
+    """
+    import importlib
+    import sys
+
+    if HOOKS_DIR not in sys.path:
+        sys.path.insert(0, HOOKS_DIR)
+    cpw = importlib.import_module("context_pct_writer")
+    importlib.reload(cpw)
+
+    # Opus models get 1M
+    assert cpw.budget_for_model("claude-opus-4-6") == 1_000_000
+    assert cpw.budget_for_model("claude-opus-4-20260301") == 1_000_000
+
+    # Sonnet models get 200K
+    assert cpw.budget_for_model("claude-sonnet-4-6") == 200_000
+    assert cpw.budget_for_model("claude-sonnet-4-5-20251001") == 200_000
+
+    # Haiku models get 200K
+    assert cpw.budget_for_model("claude-haiku-4-5-20251001") == 200_000
+
+    # Unknown/empty falls back to DEFAULT_CONTEXT_WINDOW
+    assert cpw.budget_for_model("") == cpw.DEFAULT_CONTEXT_WINDOW
+    assert cpw.budget_for_model("some-future-model") == cpw.DEFAULT_CONTEXT_WINDOW
+
+
 if __name__ == "__main__":
     test_writes_correct_percentage_with_1m_budget()
     test_clamps_percentage_at_100()
@@ -379,4 +411,5 @@ if __name__ == "__main__":
     test_writes_worktree_context_pct_when_oro_worker()
     test_writes_both_pane_and_worktree_when_both_set()
     test_main_role_default_writes_pane_file()
+    test_budget_for_model()
     print("All tests passed!")

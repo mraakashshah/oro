@@ -49,9 +49,21 @@ def load_budget_from_config(model_key: str, config_path: Path | None = None) -> 
         return DEFAULT_CONTEXT_WINDOW
 
 
-def get_last_usage(transcript_path: str) -> dict | None:
-    """Read transcript JSONL and return the usage dict from the last assistant message."""
+# Known context windows by model family. Used when context_budgets.json is
+# missing or doesn't have the model. Keys are substrings matched against the
+# full model ID from the transcript (e.g. "claude-opus-4" matches
+# "claude-opus-4-20260301").
+MODEL_BUDGETS = {
+    "opus": 1_000_000,
+    "sonnet": 200_000,
+    "haiku": 200_000,
+}
+
+
+def get_last_usage(transcript_path: str) -> tuple[dict | None, str]:
+    """Read transcript JSONL and return (usage_dict, model_id) from the last assistant message."""
     last_usage = None
+    last_model = ""
     try:
         with open(transcript_path) as f:
             for line in f:
@@ -65,9 +77,33 @@ def get_last_usage(transcript_path: str) -> dict | None:
                 msg = entry.get("message")
                 if isinstance(msg, dict) and msg.get("usage"):
                     last_usage = msg["usage"]
+                    last_model = msg.get("model", last_model)
     except OSError:
-        return None
-    return last_usage
+        return None, ""
+    return last_usage, last_model
+
+
+def budget_for_model(model_id: str) -> int:
+    """Return context window budget for a model ID.
+
+    Priority: exact key in context_budgets.json → MODEL_BUDGETS family match
+    → DEFAULT_CONTEXT_WINDOW.
+    """
+    # Try exact match in config file (skip "default" fallback)
+    try:
+        budgets = json.loads(BUDGETS_FILE.read_text())
+        if model_id in budgets:
+            return budgets[model_id]
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    # Match by model family substring
+    model_lower = model_id.lower()
+    for family, budget in MODEL_BUDGETS.items():
+        if family in model_lower:
+            return budget
+
+    return DEFAULT_CONTEXT_WINDOW
 
 
 def calculate_context_pct(usage: dict, budget: int) -> int:
@@ -104,13 +140,12 @@ def main() -> None:
     if not transcript_path:
         return
 
-    usage = get_last_usage(transcript_path)
+    usage, model_id = get_last_usage(transcript_path)
     if not usage:
         return
 
-    # Budget lookup: hook_input["budget"] overrides; otherwise use context_budgets.json
-    model_key = hook_input.get("model_key", "default")
-    budget = hook_input.get("budget") or load_budget_from_config(model_key)
+    # Budget lookup: hook_input["budget"] overrides; otherwise detect from transcript model
+    budget = hook_input.get("budget") or budget_for_model(model_id)
 
     pct = calculate_context_pct(usage, budget)
 
