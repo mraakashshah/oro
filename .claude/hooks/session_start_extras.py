@@ -593,55 +593,6 @@ def _format_output(stale: list[dict], merged: list[dict], learnings: list[dict])
     return "\n\n".join(sections)
 
 
-def _restart_bd_daemon_if_unresponsive() -> None:
-    """Restart the bd daemon if it's running but unresponsive (database closed bug).
-
-    Detects the symptom: 'Daemon took too long to start (>5s)' in stderr output
-    when the daemon PID exists but its RPC socket isn't serving requests.
-    Safe to call on every SessionStart — fast-path exits immediately if daemon responds.
-    """
-    # Quick probe: run a lightweight bd command with a short timeout
-    try:
-        probe = subprocess.run(
-            ["bd", "list", "--limit=0", "--status=open"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except subprocess.TimeoutExpired:
-        probe = None
-
-    # If the probe succeeded quickly (no warning), daemon is healthy
-    if probe is not None and "Daemon took too long to start" not in probe.stderr:
-        return
-
-    # Daemon is unresponsive — kill the stale process and restart
-    # Find the daemon PID via `bd daemon status`
-    try:
-        status = subprocess.run(
-            ["bd", "daemon", "status"],
-            capture_output=True,
-            text=True,
-            timeout=6,
-        )
-        for line in status.stdout.splitlines():
-            if "PID" in line:
-                pid_str = line.split()[-1].strip("()")
-                with contextlib.suppress(ValueError, ProcessLookupError, PermissionError):
-                    import signal
-
-                    os.kill(int(pid_str), signal.SIGKILL)
-                time.sleep(0.5)
-                break
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-
-    # Start a fresh daemon
-    with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-        subprocess.run(["bd", "daemon", "start"], capture_output=True, text=True, timeout=10)
-        time.sleep(1)
-
-
 def main() -> None:
     # Read hook input from stdin (SessionStart event)
     hook_input = {}
@@ -650,9 +601,6 @@ def main() -> None:
 
     # Determine session source: "startup", "resume", "clear", "compact"
     session_source = hook_input.get("source", "startup")
-
-    # 0. Ensure bd daemon is healthy before making any bd calls
-    _restart_bd_daemon_if_unresponsive()
 
     # 1. Stale bead detection
     stale = []
