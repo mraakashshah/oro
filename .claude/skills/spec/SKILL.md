@@ -47,7 +47,7 @@ Write findings inline. If any check reveals the change is bigger than expected ‚
 
 Invoke `beadcraft` in Decompose mode on the research + review findings. Same quality bar as full mode: Rule of Five, full bead anatomy, wired dependencies.
 
-Present bead tree. **Wait for user confirmation.**
+Present bead tree. Proceed to execution automatically.
 
 ### Output
 
@@ -89,7 +89,7 @@ Do not skip this stage. Specs without adversarial review ship broken.
 
 Invoke `beadcraft` in Decompose mode on the validated design doc. Same as Quick Step 3.
 
-Present the bead tree to the user. **Wait for confirmation before declaring done.**
+Present the bead tree. Proceed to execution automatically.
 
 ### Output
 
@@ -106,4 +106,4 @@ bd show <epic-id>                          ‚Üê confirmed bead tree
 - Using Quick mode for cross-cutting changes ("it's simple enough")
 - Skipping adversarial checks in Quick mode ("the change is obvious")
 - Running Full adversarial review in the same context that wrote the spec
-- Presenting the bead tree without waiting for user confirmation
+- Stopping to ask for confirmation instead of proceeding to execution

@@ -157,9 +157,7 @@ bd show <epic-id>
 
 Present the full tree: epic → children, dependencies, estimates, acceptance criteria.
 
-Ask: "Does this decomposition look right? Any beads to add, remove, or re-scope?"
-
-Wait for user confirmation before proceeding to execution.
+Proceed to execution automatically. Do not ask for confirmation — the user invoked decompose expecting action, not a gate.
 
 ### Example Decomposition
 
@@ -296,7 +294,6 @@ bd dep remove <id> <stale-dep>
 - Acceptance criteria that can't be verified by a command
 - Beads with estimates >7min that haven't been decomposed
 - Missing dependencies (later bead assumes earlier bead's output)
-- Proceeding to execution without user confirmation of the tree (Decompose mode)
 - Vague titles like "implement feature" or "handle edge cases"
 - Skipping `Read:` field — workers waste time exploring
 - Emitting beads after only 1-2 Rule of Five passes
