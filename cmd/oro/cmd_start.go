@@ -60,7 +60,7 @@ func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers int) (int, error
 	// Redirect daemon stdout/stderr to a log file. Inheriting the parent's
 	// stdout/stderr causes SIGPIPE when the parent exits (broken pipe),
 	// silently killing the daemon.
-	logPath := filepath.Join(os.TempDir(), "oro-daemon.log")
+	logPath := daemonLogPath(readProjectName())
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // log path is deterministic
 	if err != nil {
 		return 0, fmt.Errorf("open daemon log %s: %w", logPath, err)
