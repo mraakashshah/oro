@@ -20,8 +20,6 @@ func TestCleanup_NothingToClean(t *testing.T) {
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	// bd list returns empty JSON array
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
-	// bd daemon not running
-	fake.errs[key("bd", "daemon", "stop")] = fmt.Errorf("no daemon running")
 
 	tmpDir := t.TempDir()
 	var buf bytes.Buffer
@@ -592,7 +590,6 @@ func TestCleanupWorktreeDir(t *testing.T) {
 		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 		fake.output[key("git", "branch", "--list", "agent/*")] = ""
 		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
-		fake.errs[key("bd", "daemon", "stop")] = fmt.Errorf("no daemon running")
 
 		tmpDir := t.TempDir()
 
@@ -635,7 +632,7 @@ func TestCleanupWorktreeDir(t *testing.T) {
 	})
 }
 
-func TestCleanup_KillsBdDaemon(t *testing.T) {
+func TestCleanup_DoesNotCallBdDaemon(t *testing.T) {
 	fake := newFakeCmd()
 	// tmux has-session fails (no session)
 	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
@@ -663,15 +660,10 @@ func TestCleanup_KillsBdDaemon(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify bd daemon stop was called.
-	found := false
+	// Verify bd daemon stop was NOT called.
 	for _, call := range fake.calls {
 		if len(call) >= 3 && call[0] == "bd" && call[1] == "daemon" && call[2] == "stop" {
-			found = true
-			break
+			t.Errorf("unexpected 'bd daemon stop' call; calls = %v", fake.calls)
 		}
-	}
-	if !found {
-		t.Errorf("expected 'bd daemon stop' call; calls = %v", fake.calls)
 	}
 }

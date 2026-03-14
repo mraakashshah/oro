@@ -88,12 +88,7 @@ func runCleanup(_ context.Context, cfg *cleanupConfig) error {
 		cleaned = true
 	}
 
-	// 4. Stop bd daemon (prevents orphaned daemon when socket/lock files are removed).
-	if cleanedDaemon := cleanupBdDaemon(cfg); cleanedDaemon {
-		cleaned = true
-	}
-
-	// 5. Remove stale PID file.
+	// 4. Remove stale PID file.
 	if cleanedPID := cleanupPIDFile(cfg); cleanedPID {
 		cleaned = true
 	}
@@ -205,16 +200,6 @@ func parseWorkerPIDs(output string) []int {
 		pids = append(pids, pid)
 	}
 	return pids
-}
-
-// cleanupBdDaemon stops the bd daemon. Returns true if the command succeeded.
-// Must run before PID/socket file removal to prevent orphaned daemon.
-func cleanupBdDaemon(cfg *cleanupConfig) bool {
-	if _, err := cfg.runner.Run("bd", "daemon", "stop"); err != nil {
-		return false
-	}
-	fmt.Fprintln(cfg.w, "stopped bd daemon")
-	return true
 }
 
 // cleanupPIDFile removes a stale PID file. Returns true if the file existed and was removed.
