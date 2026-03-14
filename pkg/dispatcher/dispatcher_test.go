@@ -11148,8 +11148,8 @@ func TestWithDefaults_AllFieldsSet(t *testing.T) {
 	if resolved.ConsolidateAfterN != 5 {
 		t.Errorf("ConsolidateAfterN: got %d, want 5", resolved.ConsolidateAfterN)
 	}
-	if resolved.PaneContextThreshold != 60 {
-		t.Errorf("PaneContextThreshold: got %d, want 60", resolved.PaneContextThreshold)
+	if resolved.PaneContextThreshold != 50 {
+		t.Errorf("PaneContextThreshold: got %d, want 50", resolved.PaneContextThreshold)
 	}
 }
 

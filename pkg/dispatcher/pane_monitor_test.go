@@ -49,7 +49,7 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 	managerPctFile := filepath.Join(managerDir, "context_pct")
 
 	//nolint:gosec // test file permissions
-	if err := os.WriteFile(architectPctFile, []byte("50"), 0o644); err != nil {
+	if err := os.WriteFile(architectPctFile, []byte("40"), 0o644); err != nil {
 		t.Fatalf("failed to write architect context_pct: %v", err)
 	}
 	//nolint:gosec // test file permissions
@@ -69,7 +69,7 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 	}
 
 	cfg := Config{
-		PaneContextThreshold: 60,
+		PaneContextThreshold: 50,
 		PaneMonitorInterval:  100 * time.Millisecond, // Fast polling for test
 	}
 	cfg = cfg.withDefaults()
@@ -112,7 +112,7 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 
 	// Update architect to exceed threshold
 	//nolint:gosec // test file permissions
-	if err := os.WriteFile(architectPctFile, []byte("65"), 0o644); err != nil {
+	if err := os.WriteFile(architectPctFile, []byte("55"), 0o644); err != nil {
 		t.Fatalf("failed to update architect context_pct: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 
 	// Update architect back below threshold
 	//nolint:gosec // test file permissions
-	if err := os.WriteFile(architectPctFile, []byte("50"), 0o644); err != nil {
+	if err := os.WriteFile(architectPctFile, []byte("40"), 0o644); err != nil {
 		t.Fatalf("failed to update architect context_pct: %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestPaneMonitorLoop_SkipsMissingFiles(t *testing.T) {
 	}
 
 	cfg := Config{
-		PaneContextThreshold: 60,
+		PaneContextThreshold: 50,
 		PaneMonitorInterval:  100 * time.Millisecond, // Fast polling for test
 	}
 	cfg = cfg.withDefaults()
@@ -271,7 +271,7 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 	}
 
 	cfg := Config{
-		PaneContextThreshold: 60,
+		PaneContextThreshold: 50,
 		PaneMonitorInterval:  100 * time.Millisecond, // Fast polling for test
 	}
 	cfg = cfg.withDefaults()

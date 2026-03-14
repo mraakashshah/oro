@@ -221,7 +221,7 @@ func (c *Config) withDefaults() Config {
 		out.ConsolidateAfterN = 5
 	}
 	if out.PaneContextThreshold == 0 {
-		out.PaneContextThreshold = 60
+		out.PaneContextThreshold = 50
 	}
 	if out.PaneMonitorInterval == 0 {
 		out.PaneMonitorInterval = 5 * time.Second
