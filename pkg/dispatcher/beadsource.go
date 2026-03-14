@@ -207,12 +207,8 @@ func (s *CLIBeadSource) Create(ctx context.Context, title, beadType string, prio
 	return result.ID, nil
 }
 
-// Sync runs `bd sync --flush-only` to flush bead state to disk.
+// Sync is a no-op. Beads syncing is now handled elsewhere.
 func (s *CLIBeadSource) Sync(ctx context.Context) error {
-	_, err := s.runner.Run(ctx, "bd", "sync", "--flush-only")
-	if err != nil {
-		return fmt.Errorf("bd sync: %w", err)
-	}
 	return nil
 }
 

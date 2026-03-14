@@ -365,28 +365,9 @@ func TestCLIBeadSource_Sync_Success(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(runner.calls))
-	}
-	call := runner.calls[0]
-	if call.Name != "bd" {
-		t.Errorf("command name: got %q, want %q", call.Name, "bd")
-	}
-	if !sliceContains(call.Args, "sync") {
-		t.Errorf("expected 'sync' in args, got %v", call.Args)
-	}
-	if !sliceContains(call.Args, "--flush-only") {
-		t.Errorf("expected '--flush-only' in args, got %v", call.Args)
-	}
-}
-
-func TestCLIBeadSource_Sync_CommandError(t *testing.T) {
-	runner := &mockCommandRunner{err: fmt.Errorf("sync failed")}
-	src := NewCLIBeadSource(runner)
-
-	err := src.Sync(context.Background())
-	if err == nil {
-		t.Fatal("expected error from Sync when command fails")
+	// Sync() should be a no-op: returns nil without calling any bd command.
+	if len(runner.calls) != 0 {
+		t.Fatalf("expected 0 calls, got %d: Sync should not call bd", len(runner.calls))
 	}
 }
 
