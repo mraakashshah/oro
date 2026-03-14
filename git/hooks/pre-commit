@@ -1,37 +1,9 @@
 #!/bin/sh
 # shellcheck disable=SC2086  # word splitting on staged file lists is intentional
 #
-# Pre-commit hook: bd flush + language-aware lint/format checks
+# Pre-commit hook: language-aware lint/format checks + author identity guard
 #
-# 1. Flushes bd issue changes to .beads/issues.jsonl
-# 2. Checks staged files: ruff (Python), gofumpt/golangci-lint (Go), sh, biome (JSON)
-
-# --- bd (beads) flush ---
-
-if command -v bd >/dev/null 2>&1; then
-	BEADS_DIR=""
-	if git rev-parse --git-dir >/dev/null 2>&1; then
-		if [ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ]; then
-			MAIN_REPO_ROOT="$(git rev-parse --git-common-dir)"
-			MAIN_REPO_ROOT="$(dirname "$MAIN_REPO_ROOT")"
-			if [ -d "$MAIN_REPO_ROOT/.beads" ]; then
-				BEADS_DIR="$MAIN_REPO_ROOT/.beads"
-			fi
-		else
-			if [ -d .beads ]; then
-				BEADS_DIR=".beads"
-			fi
-		fi
-	fi
-
-	if [ -n "$BEADS_DIR" ]; then
-		if ! bd sync --flush-only >/dev/null 2>&1; then
-			echo "Error: Failed to flush bd changes to JSONL" >&2
-			echo "Run 'bd sync --flush-only' manually to diagnose" >&2
-			exit 1
-		fi
-	fi
-fi
+# Checks staged files: ruff (Python), gofumpt/golangci-lint (Go), sh, biome (JSON), etc.
 
 # --- Author identity guard ---
 # Reject commits from test/placeholder identities (env var leakage from hooks)
