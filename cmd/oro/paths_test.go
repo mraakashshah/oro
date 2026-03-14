@@ -50,6 +50,7 @@ func TestResolvePaths_EnvOverrides(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Set all env overrides to temp dir paths.
+	t.Setenv("ORO_PROJECT", "")
 	t.Setenv("ORO_HOME", filepath.Join(tmpDir, "custom-oro"))
 	t.Setenv("ORO_PROJECT", "")
 	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "custom.pid"))

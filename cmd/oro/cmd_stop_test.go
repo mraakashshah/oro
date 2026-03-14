@@ -183,34 +183,6 @@ func TestStop_RefusedWhenConfirmationNotYES(t *testing.T) {
 	}
 }
 
-func TestStop_KillsBdDaemon(t *testing.T) {
-	tmpDir := t.TempDir()
-	pidFile := filepath.Join(tmpDir, "oro.pid")
-	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
-		t.Fatalf("setup PID: %v", err)
-	}
-
-	fake := newFakeCmd()
-	var buf bytes.Buffer
-	cfg := ttyStop(pidFile, fake, &buf)
-
-	if err := runStopSequence(context.Background(), cfg); err != nil {
-		t.Fatalf("runStopSequence: %v", err)
-	}
-
-	// Verify bd daemon stop was called.
-	found := false
-	for _, call := range fake.calls {
-		if len(call) >= 3 && call[0] == "bd" && call[1] == "daemon" && call[2] == "stop" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected 'bd daemon stop' call; calls = %v", fake.calls)
-	}
-}
-
 func TestStop_ForceRequiresEnvVar(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
@@ -255,6 +227,43 @@ func TestStop_ForceRequiresEnvVar(t *testing.T) {
 			t.Fatalf("unexpected error with --force and ORO_HUMAN_CONFIRMED=1: %v", err)
 		}
 	})
+}
+
+// TestRunStopSequence verifies the full stop sequence completes successfully and
+// does NOT invoke bd daemon stop or bd sync (those are handled by the dispatcher
+// itself on shutdown and the pre-commit hook, respectively).
+func TestRunStopSequence(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
+
+	fake := newFakeCmd()
+	var buf bytes.Buffer
+	cfg := ttyStop(pidFile, fake, &buf)
+
+	if err := runStopSequence(context.Background(), cfg); err != nil {
+		t.Fatalf("runStopSequence: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "shutdown complete") {
+		t.Errorf("expected 'shutdown complete' message, got %q", buf.String())
+	}
+
+	// Verify bd daemon stop was NOT called.
+	for _, call := range fake.calls {
+		if len(call) >= 3 && call[0] == "bd" && call[1] == "daemon" && call[2] == "stop" {
+			t.Errorf("unexpected 'bd daemon stop' call; calls = %v", fake.calls)
+		}
+	}
+
+	// Verify bd sync was NOT called.
+	for _, call := range fake.calls {
+		if len(call) >= 2 && call[0] == "bd" && call[1] == "sync" {
+			t.Errorf("unexpected 'bd sync' call; calls = %v", fake.calls)
+		}
+	}
 }
 
 // --- discoverProjectDaemons tests ---

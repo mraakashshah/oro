@@ -106,7 +106,7 @@ func newStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Graceful shutdown of the Oro swarm",
 		Long: `Sends a stop directive to the dispatcher, waits for workers to finish,
-kills the tmux session, and runs bd sync.
+and kills the tmux session.
 
 Use --all to stop daemons in all projects simultaneously.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -258,9 +258,7 @@ func confirmStop(cfg *stopConfig) error {
 //  3. If process won't exit: SIGKILL as emergency fallback
 //  4. Clean up pane-died hooks
 //  5. Kill the tmux session
-//  6. Stop the bd daemon (prevents orphaned daemon after file cleanup)
-//  7. Run bd sync
-//  8. Remove PID file
+//  6. Remove PID file
 func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 	status, pid, err := DaemonStatus(cfg.pidPath, cfg.sockPath)
 	if err != nil {
@@ -310,17 +308,7 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 		fmt.Fprintf(cfg.w, "warning: tmux kill: %v\n", err)
 	}
 
-	// 6. Stop the bd daemon (prevents orphaned daemon with no socket after cleanup).
-	if _, err := cfg.runner.Run("bd", "daemon", "stop"); err != nil {
-		fmt.Fprintf(cfg.w, "warning: bd daemon stop: %v\n", err)
-	}
-
-	// 7. Run bd sync as a safety net.
-	if _, err := cfg.runner.Run("bd", "sync", "--flush-only"); err != nil {
-		fmt.Fprintf(cfg.w, "warning: bd sync: %v\n", err)
-	}
-
-	// 7. Remove PID file (belt and suspenders — signal handler may have already done it).
+	// 6. Remove PID file (belt and suspenders — signal handler may have already done it).
 	_ = RemovePIDFile(cfg.pidPath)
 
 	fmt.Fprintln(cfg.w, "shutdown complete")
