@@ -94,7 +94,8 @@ func cleanEnvForDaemon(env []string) []string {
 }
 
 // socketPollTimeout is the maximum time to wait for the dispatcher socket.
-const socketPollTimeout = 5 * time.Second
+// 15s allows for DB migrations, code indexing, and schema init on first run.
+const socketPollTimeout = 15 * time.Second
 
 // socketPollInterval is how often to check for the socket file.
 const socketPollInterval = 50 * time.Millisecond
