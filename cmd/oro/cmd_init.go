@@ -437,8 +437,8 @@ func ensureGitRepo(projectRoot string) {
 // initBeadsDB runs "bd init" in projectRoot if the beads database doesn't exist yet.
 // Fail-open: logs a warning on error but never blocks init.
 func initBeadsDB(projectRoot string) {
-	dbPath := filepath.Join(projectRoot, ".beads", "beads.db")
-	if _, err := os.Stat(dbPath); err == nil {
+	beadsPath := filepath.Join(projectRoot, ".beads")
+	if _, err := os.Stat(beadsPath); err == nil {
 		return // already initialized
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

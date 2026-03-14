@@ -1665,3 +1665,34 @@ func TestBuildHookConfigContainsCompactTrigger(t *testing.T) {
 			idxPctWriter, idxCompact, idxPruner)
 	}
 }
+
+func TestInitBeadsDB(t *testing.T) {
+	// Setup: create temporary project root and beads directory
+	projectRoot := t.TempDir()
+	beadsDir := t.TempDir()
+
+	// Create .beads symlink pointing to beads directory
+	beadsLink := filepath.Join(projectRoot, ".beads")
+	if err := os.Symlink(beadsDir, beadsLink); err != nil {
+		t.Fatalf("failed to create .beads symlink: %v", err)
+	}
+
+	// Verify symlink is followed by os.Stat (directory exists)
+	if info, err := os.Stat(beadsLink); err != nil {
+		t.Fatalf("os.Stat should follow symlink and find directory: %v", err)
+	} else if !info.IsDir() {
+		t.Fatal("os.Stat should return directory info for symlink")
+	}
+
+	// Call initBeadsDB - should detect existing .beads/ directory and return early
+	initBeadsDB(projectRoot)
+
+	// Verify that bd init was NOT called by checking that beads.db doesn't exist
+	// (if it existed, bd init would have created it)
+	dbPath := filepath.Join(projectRoot, ".beads", "beads.db")
+	if _, err := os.Stat(dbPath); err == nil {
+		t.Error("beads.db should not exist after initBeadsDB with existing .beads/")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected error checking beads.db: %v", err)
+	}
+}
