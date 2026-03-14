@@ -110,12 +110,7 @@ func runDispatcherStopSequence(ctx context.Context, cfg *stopConfig) error {
 		}
 	}
 
-	// 4. Run bd sync as a safety net.
-	if _, err := cfg.runner.Run("bd", "sync", "--flush-only"); err != nil {
-		fmt.Fprintf(cfg.w, "warning: bd sync: %v\n", err)
-	}
-
-	// 5. Remove PID file (belt and suspenders — signal handler may have already done it).
+	// 4. Remove PID file (belt and suspenders — signal handler may have already done it).
 	_ = RemovePIDFile(cfg.pidPath)
 
 	fmt.Fprintln(cfg.w, "shutdown complete")

@@ -300,9 +300,9 @@ func TestDispatcherCmdStructure(t *testing.T) {
 
 // TestDispatcherStopSendsSignalAndWaits is the acceptance-criteria test for oro-18c5.6.
 // It verifies that `oro dispatcher stop` sends SIGINT to the daemon PID, waits for exit,
-// runs bd sync, removes PID file, and does NOT call tmux kill-session.
+// removes PID file, and does NOT call tmux kill-session or bd sync.
 func TestDispatcherStopSendsSignalAndWaits(t *testing.T) {
-	t.Run("sends SIGINT, waits, runs bd sync, removes PID file, no tmux kill-session", func(t *testing.T) {
+	t.Run("sends SIGINT, waits, removes PID file, no bd sync or tmux kill-session", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pidFile := filepath.Join(tmpDir, "oro.pid")
 		sockPath := filepath.Join(tmpDir, "nonexistent.sock")
@@ -342,7 +342,7 @@ func TestDispatcherStopSendsSignalAndWaits(t *testing.T) {
 			t.Error("expected signalFn (SIGINT) to be called")
 		}
 
-		// 2. bd sync must be called.
+		// 2. bd sync must NOT be called.
 		bdSyncCalled := false
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "bd" && call[1] == "sync" {
@@ -350,8 +350,8 @@ func TestDispatcherStopSendsSignalAndWaits(t *testing.T) {
 				break
 			}
 		}
-		if !bdSyncCalled {
-			t.Errorf("expected 'bd sync --flush-only' to be called; calls = %v", fake.calls)
+		if bdSyncCalled {
+			t.Errorf("expected 'bd sync' NOT to be called; calls = %v", fake.calls)
 		}
 
 		// 3. PID file must be removed.
