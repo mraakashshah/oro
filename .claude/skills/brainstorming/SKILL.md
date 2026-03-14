@@ -24,7 +24,7 @@ Before proposing anything, gather evidence. **You must not proceed to Step 3 unt
 
 #### Research checklist
 
-- [ ] **Check institutional knowledge** -- Grep `docs/decisions&discoveries.md` for keywords related to the task (module names, technical terms, problem indicators). Also grep `.beads/memory/knowledge.jsonl` for relevant `tag` or `content` matches. If hits found, read and incorporate before proposing anything new. This prevents re-solving solved problems.
+- [ ] **Check institutional knowledge** -- Grep `docs/decisions&discoveries.md` for keywords related to the task (module names, technical terms, problem indicators). Use `oro recall` to search memory store if needed. If hits found, read and incorporate before proposing anything new. This prevents re-solving solved problems.
 - [ ] **Read internal references** -- existing specs in `docs/plans/`, related code mentioned in the bead/task description, and reference implementations in the codebase. Use `Read`, `Grep`, `Glob` to find and read them.
 - [ ] **Read external references** (when applicable) -- Use `WebSearch` / `WebFetch` when the problem domain has established solutions worth comparing (algorithms, protocols, libraries). Skip for project-internal design.
 - [ ] **Present research summary to the user** -- before proposing anything, show:
