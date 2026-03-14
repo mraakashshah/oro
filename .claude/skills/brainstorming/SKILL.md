@@ -24,6 +24,7 @@ Before proposing anything, gather evidence. **You must not proceed to Step 3 unt
 
 #### Research checklist
 
+- [ ] **Check institutional knowledge** -- Grep `docs/decisions&discoveries.md` for keywords related to the task (module names, technical terms, problem indicators). Also grep `.beads/memory/knowledge.jsonl` for relevant `tag` or `content` matches. If hits found, read and incorporate before proposing anything new. This prevents re-solving solved problems.
 - [ ] **Read internal references** -- existing specs in `docs/plans/`, related code mentioned in the bead/task description, and reference implementations in the codebase. Use `Read`, `Grep`, `Glob` to find and read them.
 - [ ] **Read external references** (when applicable) -- Use `WebSearch` / `WebFetch` when the problem domain has established solutions worth comparing (algorithms, protocols, libraries). Skip for project-internal design.
 - [ ] **Present research summary to the user** -- before proposing anything, show:
@@ -35,6 +36,7 @@ Before proposing anything, gather evidence. **You must not proceed to Step 3 unt
 
 | Sufficient | Insufficient |
 |------------|-------------|
+| Grepped `docs/decisions&discoveries.md` for related terms | Skipped institutional knowledge check |
 | Read 2+ reference files and summarized findings | Read 0 files, jumped to proposals |
 | Searched codebase for related patterns | Assumed you know the codebase |
 | Checked `docs/plans/` for prior designs | Skipped because "this is new" |
@@ -48,6 +50,7 @@ Before proposing anything, gather evidence. **You must not proceed to Step 3 unt
 
 ### 2. Understand the Idea
 
+- **Scope assessment first**: Does the request describe multiple independent subsystems? If yes, help the user decompose into sub-projects before designing. Each sub-project gets its own spec → plan → implementation cycle.
 - Check current project state (files, docs, recent commits)
 - Ask questions **one at a time** — never multiple questions per message
 - Prefer multiple choice questions when possible

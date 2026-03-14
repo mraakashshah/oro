@@ -7,6 +7,12 @@ description: Use when the user says "make a spec", "spec out X", or "brainstorm 
 
 Two modes, auto-detected. Both produce the same output: a validated bead dependency graph.
 
+## Scope Assessment
+
+Before mode detection, check: does the request describe **multiple independent subsystems** (e.g., "build X with auth, billing, and notifications")? If yes, decompose first — each subsystem gets its own spec → plan → implementation cycle. Don't try to spec everything at once.
+
+If the request is a single coherent feature (even if cross-cutting), proceed to mode detection.
+
 ## Mode Detection
 
 **Full** (default) — any of: cross-cutting (2+ packages), architectural decisions, unclear requirements, >5 beads likely.
