@@ -392,9 +392,9 @@ def test_budget_for_model():
     assert cpw.budget_for_model("claude-opus-4-6") == 1_000_000
     assert cpw.budget_for_model("claude-opus-4-20260301") == 1_000_000
 
-    # Sonnet models get 200K
-    assert cpw.budget_for_model("claude-sonnet-4-6") == 200_000
-    assert cpw.budget_for_model("claude-sonnet-4-5-20251001") == 200_000
+    # Sonnet models get 1M
+    assert cpw.budget_for_model("claude-sonnet-4-6") == 1_000_000
+    assert cpw.budget_for_model("claude-sonnet-4-5-20251001") == 1_000_000
 
     # Haiku models get 200K
     assert cpw.budget_for_model("claude-haiku-4-5-20251001") == 200_000
