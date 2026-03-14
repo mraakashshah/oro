@@ -21,7 +21,6 @@ def pytest_collection_modifyitems(config, items):
 
     # Tests that require oro hooks to exist
     hook_dependent_tests = [
-        "test_memory_capture.py",
         "test_session_start_extras.py",
         "test_validate_agent_completion.py",
         "test_worktree_guard.py",

@@ -8,10 +8,16 @@ Entry format: {key, type, content, bead, tags, ts}
 
 import json
 import os
+import re
 from collections import Counter
 from pathlib import Path
 
-from memory_capture import slugify
+
+def slugify(text: str) -> str:
+    """Convert text to a URL-safe slug for dedup keys."""
+    slug = re.sub(r"[^a-z0-9\s-]", "", text.lower())
+    slug = re.sub(r"[\s-]+", "-", slug).strip("-")
+    return slug[:80]
 
 
 def oro_home():
