@@ -183,7 +183,7 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 
 	// 5. Attach interactively, or print instructions if detached.
 	if detach {
-		fmt.Fprintln(w, "detached — attach with: tmux attach -t oro")
+		fmt.Fprintln(w, "detached — attach with: oro attach")
 		return nil
 	}
 	fmt.Fprintln(w, "ctrl-b 0/1: switch panes | ctrl-b d: detach | oro stop: quit")
@@ -283,7 +283,7 @@ func reconnectTmux(w io.Writer, runner CmdRunner, project string, detach bool, s
 	}
 
 	if detach {
-		fmt.Fprintln(w, "detached — attach with: tmux attach -t oro")
+		fmt.Fprintln(w, "detached — attach with: oro attach")
 		return nil
 	}
 	fmt.Fprintln(w, "ctrl-b 0/1: switch panes | ctrl-b d: detach | oro stop: quit")

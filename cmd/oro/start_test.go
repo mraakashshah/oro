@@ -123,7 +123,7 @@ func TestRunFullStart_Detached(t *testing.T) {
 		}
 
 		out := buf.String()
-		if !contains(out, "tmux attach -t oro") {
+		if !contains(out, "oro attach") {
 			t.Errorf("expected attach instructions in output, got: %s", out)
 		}
 		if !contains(out, "detached") {
