@@ -64,7 +64,7 @@ func newAttachCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
-			sess := &TmuxSession{Name: "oro", Runner: &ExecRunner{}}
+			sess := &TmuxSession{Name: TmuxSessionName(readProjectName()), Runner: &ExecRunner{}}
 			cfg := &attachConfig{
 				pidPath:  paths.PIDPath,
 				sockPath: paths.SocketPath,

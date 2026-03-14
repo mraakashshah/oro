@@ -122,7 +122,7 @@ Use --all to stop daemons in all projects simultaneously.`,
 			cfg := &stopConfig{
 				pidPath:  paths.PIDPath,
 				sockPath: paths.SocketPath,
-				tmuxName: "oro",
+				tmuxName: TmuxSessionName(readProjectName()),
 				runner:   &ExecRunner{},
 				w:        cmd.OutOrStdout(),
 				stdin:    os.Stdin,
@@ -177,7 +177,7 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) er
 		cfg := &stopConfig{
 			pidPath:  d.PIDPath,
 			sockPath: sockPath,
-			tmuxName: "oro",
+			tmuxName: TmuxSessionName(d.Project),
 			runner:   &ExecRunner{},
 			w:        w,
 			stdin:    os.Stdin,

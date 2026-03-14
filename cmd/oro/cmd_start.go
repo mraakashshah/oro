@@ -165,7 +165,7 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 	}
 
 	// 3. Create tmux session with short nudges (full role context injected by SessionStart hook).
-	sess := &TmuxSession{Name: "oro", Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
+	sess := &TmuxSession{Name: TmuxSessionName(project), Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
 	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
 		// Best-effort cleanup: kill the orphaned daemon so the user does not
 		// need to run `oro stop` manually. Swallow killFn errors (daemon may
@@ -272,7 +272,7 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 // and recreates it. With detach=true, prints attach instructions instead of
 // attaching interactively.
 func reconnectTmux(w io.Writer, runner CmdRunner, project string, detach bool, sleeper func(time.Duration), beaconTimeout time.Duration) error {
-	sess := &TmuxSession{Name: "oro", Project: project, Runner: runner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
+	sess := &TmuxSession{Name: TmuxSessionName(project), Project: project, Runner: runner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
 
 	wasHealthy := sess.Exists() && sess.isHealthy()
 	if !wasHealthy {
@@ -532,7 +532,7 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := dispatcher.NewCLIBeadSource(runner)
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, runner)
-	esc := dispatcher.NewTmuxEscalator("", "", runner) // defaults: session "oro", pane "oro:manager"
+	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectName()), TmuxPaneTarget(readProjectName(), "manager"), runner)
 
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
 	opsSpawner := ops.NewSpawner(&ops.ClaudeOpsSpawner{})
@@ -562,7 +562,7 @@ func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string, runner
 		// Build the manager pane command using execEnvCmd with the project context
 		project := os.Getenv("ORO_PROJECT")
 		managerCmd := execEnvCmd("manager", project)
-		d.SetPaneRestarter(dispatcher.NewTmuxPaneRestarter("oro", managerCmd, runner))
+		d.SetPaneRestarter(dispatcher.NewTmuxPaneRestarter(TmuxSessionName(project), managerCmd, runner))
 	}
 }
 
