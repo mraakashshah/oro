@@ -124,27 +124,15 @@ ORO_HUMAN_CONFIRMED=1 ./oro stop --force
 # 2. Kill zombie workers (old workers reconnect to new dispatcher)
 pkill -f "oro work" 2>/dev/null
 
-# 3. Kill bd daemon BEFORE cleaning its files
-#    CRITICAL: never delete .beads/bd.sock or daemon.lock while daemon is alive.
-#    Deleting files under a running daemon orphans it — it holds flocks on
-#    deleted fds, blocks all new daemon starts, and every bd command falls
-#    back to 10s direct-mode reads.
-if [ -f .beads/daemon.pid ]; then
-  kill "$(cat .beads/daemon.pid)" 2>/dev/null
-  sleep 0.5
-  kill -9 "$(cat .beads/daemon.pid)" 2>/dev/null  # force if graceful failed
-fi
-rm -f .beads/daemon.pid .beads/daemon.lock .beads/bd.sock .beads/bd.sock.startlock
-
-# 4. Clean worktrees
+# 3. Clean worktrees
 for wt in .worktrees/oro-*/; do
   [ -d "$wt" ] && git worktree remove --force "$wt" 2>/dev/null
 done
 
-# 5. Rebuild
+# 4. Rebuild
 make build
 
-# 6. Relaunch
+# 5. Relaunch
 ./oro start --workers 3 --detach
 ./oro status
 ```
@@ -164,4 +152,3 @@ make build
 - Fixing oro runtime bugs via workers (they can't rebuild themselves)
 - Continuing to observe after 3+ cycles with no new defects (declare clean)
 - Skipping rebuild after merging a fix (stale binary = stale bugs)
-- Deleting `.beads/bd.sock` or `daemon.lock` without killing the daemon first (orphans it)

@@ -93,7 +93,7 @@ make install-git-hooks
 
 This symlinks `git/hooks/pre-commit` and `git/hooks/pre-push` into `.git/hooks/`.
 
-- **pre-commit**: Runs `bd sync --flush-only` and language-aware lint/format checks on staged files.
+- **pre-commit**: Runs language-aware lint/format checks on staged files.
 - **pre-push**: Runs the full quality gate (`quality_gate.sh`) before allowing a push.
 
 ## Linting

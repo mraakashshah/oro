@@ -15,14 +15,6 @@ cleanup_and_stop() {
 	ORO_HUMAN_CONFIRMED=1 ./oro stop --force 2>/dev/null || true
 	pkill -f "oro work" 2>/dev/null || true
 
-	# Kill bd daemon cleanly
-	if [ -f .beads/daemon.pid ]; then
-		kill "$(cat .beads/daemon.pid)" 2>/dev/null || true
-		sleep 0.5
-		kill -9 "$(cat .beads/daemon.pid)" 2>/dev/null || true
-	fi
-	rm -f .beads/daemon.pid .beads/daemon.lock .beads/bd.sock .beads/bd.sock.startlock
-
 	# Remove worktrees and their tracking branches
 	for wt in .worktrees/oro-*/; do
 		if [ -d "$wt" ]; then
@@ -49,15 +41,6 @@ launch_cycle() {
 		pkill -f "oro work" 2>/dev/null || true
 		sleep 2
 	fi
-
-	# Kill bd daemon cleanly before cleaning its files
-	if [ -f .beads/daemon.pid ]; then
-		echo "[watch-loop] Killing bd daemon..."
-		kill "$(cat .beads/daemon.pid)" 2>/dev/null || true
-		sleep 0.5
-		kill -9 "$(cat .beads/daemon.pid)" 2>/dev/null || true
-	fi
-	rm -f .beads/daemon.pid .beads/daemon.lock .beads/bd.sock .beads/bd.sock.startlock
 
 	# Remove old worktrees and their tracking branches
 	echo "[watch-loop] Cleaning worktrees..."
