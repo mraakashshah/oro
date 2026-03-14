@@ -114,7 +114,7 @@ This writes `.oro/context_summary.txt` relative to the current worktree root. Th
 - `.oro/` does not exist → the script creates it automatically
 - `context_summary.txt` already exists → it will be overwritten
 
-### 7. Write Sentinel File
+### 6. Write Sentinel File
 
 After writing the context summary, write the sentinel file so the dispatcher detects the handoff:
 
