@@ -1,84 +1,51 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: surface undocumented learnings on git commit with bead reference.
+"""PostToolUse hook: surface recent memories as a reminder on git commit.
 
-Intercepts `git commit` commands run via Bash tool. Parses the commit message
-for a bead reference (bd-xyz or (bd-xyz)). If found, loads the knowledge base
-and checks for undocumented learnings for that bead. If entries exist, injects
-an additionalContext reminder to document them.
-
-Also runs frequency analysis across ALL knowledge entries. If any tag from the
-matched bead's entries has reached 3+ frequency, appends a codification proposal
-to the reminder (per the session-end learning synthesis spec).
+Intercepts `git commit` commands run via Bash tool. After a commit,
+fetches recent memories from memories.db (via `oro memories list`) and
+injects an additionalContext reminder to review them.
 
 Input: JSON on stdin with tool_name, tool_input, etc.
 Output: JSON with additionalContext reminder, or nothing.
 """
 
 import json
-import os
 import re
+import subprocess
 import sys
-from pathlib import Path
-
-from learning_analysis import frequency_level, load_knowledge, tag_frequency
-
-# Allow override via env var for testing; default to the standard location.
-KNOWLEDGE_FILE = os.environ.get("ORO_KNOWLEDGE_FILE", ".beads/memory/knowledge.jsonl")
 
 # Match "git commit" commands — must start with git commit (possibly with flags)
 _GIT_COMMIT_RE = re.compile(r"\bgit\s+commit\b")
 
-# Extract bead reference from commit message: bd-xyz, (bd-xyz), bd-zw5.4, etc.
-# The bead ID part after "bd-" can contain word chars and dots.
-_BEAD_REF_RE = re.compile(r"\bbd-([\w.]+)")
 
-# Decision tree mapping for codification proposals
-_CODIFY_DECISION_TREE = (
-    "Repeatable sequence -> skill (.claude/skills/), "
-    "Event-triggered -> hook (.claude/hooks/), "
-    "Heuristic/constraint -> rule (.claude/rules/), "
-    "Solved problem -> solution doc (~/.oro/projects/<name>/decisions&discoveries.md)"
-)
+def _is_git_commit(command: str) -> bool:
+    """Return True if the command contains a git commit invocation."""
+    return bool(_GIT_COMMIT_RE.search(command))
 
 
-def _parse_bead_ref(command: str) -> str | None:
-    """Extract bead ID from a git commit command, returning 'oro-<id>' or None."""
-    if not _GIT_COMMIT_RE.search(command):
-        return None
-    m = _BEAD_REF_RE.search(command)
-    if not m:
-        return None
-    return f"oro-{m.group(1)}"
+def _fetch_recent_memories(limit: int = 3) -> list[dict]:
+    """Fetch recent memories from memories.db via `oro memories list`.
 
-
-def _filter_by_bead(entries: list[dict], bead_id: str) -> list[dict]:
-    """Filter entries by bead field."""
-    return [e for e in entries if e.get("bead") == bead_id]
-
-
-def _codification_proposals(matched: list[dict], all_entries: list[dict]) -> list[str]:
-    """Build codification proposal strings for tags that hit 3+ frequency.
-
-    Checks tags from the matched (bead-specific) entries against global
-    tag frequency across all entries. Returns a proposal line per qualifying tag.
+    Returns empty list when oro is not on PATH, exits non-zero, or outputs invalid JSON.
     """
-    global_freq = tag_frequency(all_entries)
+    try:
+        result = subprocess.run(
+            ["oro", "memories", "list", "--format=json", f"--limit={limit}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+    except (subprocess.TimeoutExpired, OSError):
+        return []
 
-    # Collect unique tags from matched entries
-    bead_tags: set[str] = set()
-    for entry in matched:
-        for tag in entry.get("tags", []):
-            bead_tags.add(tag)
+    try:
+        entries = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return []
 
-    proposals: list[str] = []
-    for tag in sorted(bead_tags):
-        count = global_freq.get(tag, 0)
-        if frequency_level(count) == "create":
-            proposals.append(
-                f"Tag '{tag}' has reached {count} occurrences — consider codification: {_CODIFY_DECISION_TREE}"
-            )
-
-    return proposals
+    return entries if isinstance(entries, list) else []
 
 
 def main() -> None:
@@ -88,30 +55,25 @@ def main() -> None:
         return
 
     command = hook_input.get("tool_input", {}).get("command", "")
-    bead_id = _parse_bead_ref(command)
-    if not bead_id:
+    if not _is_git_commit(command):
         return
 
-    all_entries = load_knowledge(Path(KNOWLEDGE_FILE))
-    matched = _filter_by_bead(all_entries, bead_id)
-    if not matched:
+    memories = _fetch_recent_memories(limit=3)
+    if not memories:
         return
 
-    count = len(matched)
-    s = "s" if count != 1 else ""
-    context_parts = [
-        f"{count} undocumented learning{s} for bead {bead_id}. "
-        f"Consider adding to the project decisions&discoveries.md or running oro remember."
-    ]
+    memory_lines = [f"- {m.get('content', '')}" for m in memories if m.get("content")]
+    if not memory_lines:
+        return
 
-    # Frequency analysis: check if any tag from this bead's entries hit 3+
-    proposals = _codification_proposals(matched, all_entries)
-    context_parts.extend(proposals)
+    count = len(memory_lines)
+    noun = "memory" if count == 1 else "memories"
+    context = f"{count} recent {noun} — review before next session:\n" + "\n".join(memory_lines)
 
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
-            "additionalContext": " ".join(context_parts),
+            "additionalContext": context,
         }
     }
     json.dump(output, sys.stdout)
