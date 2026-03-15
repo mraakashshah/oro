@@ -241,7 +241,7 @@ Phase 2 (feature):
 
 ## Test Plan
 
-### Phase 1 tests:
+### Phase 1 tests
 1. `discoverPIDByPort`: port with listener returns PID
 2. `discoverPIDByPort`: port with no listener returns error
 3. `discoverPIDByPort`: `lsof` not in PATH returns exec.ErrNotFound
@@ -255,10 +255,11 @@ Phase 2 (feature):
 11. `cleanupDolt`: no PID file, orphan dolt running → killed
 12. `cleanupDolt`: no PID file, no orphans → no-op
 
-### Phase 2 tests:
-13. `oro dolt status`: shows port, PID, listening state
-14. `oro dolt stop`: refuses when dispatcher running (no --force)
-15. `oro dolt stop --force`: kills dolt even with dispatcher running
+### Phase 2 tests
+
+1. `oro dolt status`: shows port, PID, listening state
+2. `oro dolt stop`: refuses when dispatcher running (no --force)
+3. `oro dolt stop --force`: kills dolt even with dispatcher running
 
 ## Out of Scope
 

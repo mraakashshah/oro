@@ -1,10 +1,9 @@
 package ui
 
 import (
+	"image/color"
 	"math"
 	"strings"
-
-	"image/color"
 
 	"charm.land/lipgloss/v2"
 	"github.com/lucasb-eyer/go-colorful"

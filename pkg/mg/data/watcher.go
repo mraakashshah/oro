@@ -26,8 +26,10 @@ type FileWatchErrorMsg struct {
 	Err error
 }
 
-const watchInterval = 1200 * time.Millisecond
-const cliPollInterval = 5 * time.Second
+const (
+	watchInterval   = 1200 * time.Millisecond
+	cliPollInterval = 5 * time.Second
+)
 
 // WatchFile polls a JSONL file and emits a single message (changed, unchanged, or error).
 // Callers should schedule it again after handling the returned message.

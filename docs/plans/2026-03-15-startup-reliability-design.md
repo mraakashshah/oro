@@ -211,7 +211,7 @@ Add `_ = os.Remove(sockPath)` to each. This is belt-and-suspenders — `cleanSta
 
 ## Test Plan
 
-### Fix 1 tests:
+### Fix 1 tests
 1. `preflightAndCheckRunning`: StatusStale removes both PID file and socket file
 2. `pollForSocket`: stale socket file present → waits for new connectable socket (not short-circuit)
 3. `pollForSocket`: no socket file → waits and succeeds when socket appears
@@ -222,20 +222,22 @@ Add `_ = os.Remove(sockPath)` to each. This is belt-and-suspenders — `cleanSta
 8. `runDispatcherStopSequence` StatusStale: removes both PID file and socket file
 9. `runAttach` StatusStale: removes socket file before returning error
 
-### Fix 2 tests:
-10. `startDoltServer`: port already in use → returns (0, nil) not error
-11. `runStopSequence`: does NOT call stopDoltServer
-12. `SetupSignalHandler`: cleanup does NOT stop dolt; beadsDir param removed
-13. `startDoltIfNeeded`: cleanup closure is no-op even when dolt was started
-14. `cleanupDolt`: healthy dolt server (PID alive) → not killed, no pgrep scan
-15. `cleanupDolt`: stale PID file with dead process → PID file removed
-16. `cleanupDolt`: no PID file → returns false (no pgrep scan)
-17. `runStopAll`: does NOT call stopDoltServer per daemon
+### Fix 2 tests
 
-### Fix 3 tests:
-18. `bootstrapProject`: starts dolt server after metadata setup
-19. `bootstrapProject`: dolt already running → adopts (no error)
-20. `bootstrapProject`: dolt binary missing → warns, continues
+1. `startDoltServer`: port already in use → returns (0, nil) not error
+2. `runStopSequence`: does NOT call stopDoltServer
+3. `SetupSignalHandler`: cleanup does NOT stop dolt; beadsDir param removed
+4. `startDoltIfNeeded`: cleanup closure is no-op even when dolt was started
+5. `cleanupDolt`: healthy dolt server (PID alive) → not killed, no pgrep scan
+6. `cleanupDolt`: stale PID file with dead process → PID file removed
+7. `cleanupDolt`: no PID file → returns false (no pgrep scan)
+8. `runStopAll`: does NOT call stopDoltServer per daemon
+
+### Fix 3 tests
+
+1. `bootstrapProject`: starts dolt server after metadata setup
+2. `bootstrapProject`: dolt already running → adopts (no error)
+3. `bootstrapProject`: dolt binary missing → warns, continues
 
 ## Out of Scope
 
