@@ -66,6 +66,24 @@ Write the simplest code that makes the test pass.
 
 Clean up while tests stay green. No new behavior.
 
+### Step 5b: Integration Side-Effect Check
+
+Before declaring implementation complete, pause and ask these questions about the code you just changed:
+
+| Question | What to do |
+|----------|------------|
+| What fires when this runs? | Read actual code for callbacks, middleware, hooks, event handlers triggered by your change |
+| Do my tests exercise the real chain? | Verify integration tests use real objects, not mocks that hide side-effects |
+| Can failure leave orphaned state? | Trace the failure path — partial writes, leaked goroutines, unclosed resources |
+| What other interfaces expose this? | Grep for the changed function/type in CLI commands, API handlers, worker prompts |
+| Do error strategies align? | Check that error types at each layer are consistent (don't wrap then unwrap) |
+
+Skip this check for trivial changes (rename, docs, config). Apply for any change touching shared interfaces, error handling, or cross-package boundaries.
+
+### Step 5c: Spec Check
+
+Invoke `review-implementation` against the bead's acceptance criteria and description. Confirm every requirement is met before proceeding to the quality gate.
+
 ### Step 6: Quality Gate
 
 Run the project quality gate:
@@ -118,7 +136,7 @@ If during Step 3 the bead needs multiple unrelated tests:
 
 1. **STOP** — do not continue implementation
 2. Promote: `bd update <id> --type epic`
-3. Create children: `bd create --parent <id> --type task --acceptance "..." --estimate <min>` for each piece
+3. Create children: `bd create --type task --acceptance "..." --estimate <min>`, then `bd update <child> --parent <id>` + `bd dep add <id> <child>` for each piece (do NOT use `bd create --parent` — it adds a backwards dependency)
 4. Wire dependencies: `bd dep add` where ordering matters
 5. Return to Step 1 with the first child bead
 

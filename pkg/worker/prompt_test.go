@@ -471,7 +471,7 @@ func TestAssemblePrompt_FailureSectionHasBdCreateExamples(t *testing.T) {
 	}{
 		{"bd create --title flag", `bd create --title=`},
 		{"test failure bug type+priority", `--type=bug --priority=0`},
-		{"decompose with parent", `--parent=`},
+		{"decompose sets parent after create", `bd update <child-id> --parent`},
 		{"context limit handoff", `bd create --title="Continue:`},
 		{"blocker bug creation", `bd create --title="Blocker:`},
 		{"bd dep add example", `bd dep add`},
@@ -717,9 +717,9 @@ func TestPromptHandoffTemplate(t *testing.T) {
 		failureSection = prompt[failStart : failStart+1+failEnd]
 	}
 
-	// Check that handoff template contains --parent flag with actual bead-id (not placeholder)
-	if !strings.Contains(failureSection, "--parent=oro-xyz123") {
-		t.Error("expected handoff template to contain --parent=oro-xyz123 (actual bead-id, not placeholder)")
+	// Check that handoff template sets parent via bd update (not bd create --parent)
+	if !strings.Contains(failureSection, "--parent oro-xyz123") {
+		t.Error("expected handoff template to contain 'bd update <child-id> --parent oro-xyz123' (not --parent on create)")
 	}
 
 	// Check that handoff template contains --acceptance-criteria flag
@@ -818,12 +818,12 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 		if !strings.Contains(prompt, "beadcraft") {
 			t.Errorf("expected epic decomp prompt to contain 'beadcraft', got:\n%s", prompt)
 		}
-		// Must contain bd create and --parent= flag for child bead creation
+		// Must contain bd create and parent wiring via bd update (not --parent on create)
 		if !strings.Contains(prompt, "bd create") {
 			t.Errorf("expected epic decomp prompt to contain 'bd create', got:\n%s", prompt)
 		}
-		if !strings.Contains(prompt, "--parent=") {
-			t.Errorf("expected epic decomp prompt to contain '--parent=', got:\n%s", prompt)
+		if !strings.Contains(prompt, "bd update <child-id> --parent") {
+			t.Errorf("expected epic decomp prompt to contain 'bd update <child-id> --parent', got:\n%s", prompt)
 		}
 		// Must NOT contain standard worker sections
 		if strings.Contains(prompt, "## Quality Gate") {

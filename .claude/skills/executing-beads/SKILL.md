@@ -136,7 +136,7 @@ If during Step 3 the bead needs multiple unrelated tests:
 
 1. **STOP** — do not continue implementation
 2. Promote: `bd update <id> --type epic`
-3. Create children: `bd create --parent <id> --type task --acceptance "..." --estimate <min>` for each piece
+3. Create children: `bd create --type task --acceptance "..." --estimate <min>`, then `bd update <child> --parent <id>` + `bd dep add <id> <child>` for each piece (do NOT use `bd create --parent` — it adds a backwards dependency)
 4. Wire dependencies: `bd dep add` where ordering matters
 5. Return to Step 1 with the first child bead
 

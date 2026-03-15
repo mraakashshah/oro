@@ -107,16 +107,20 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	}, "\n"))
 
 	section(&b, "Bead Creation", strings.Join([]string{
-		"Use this command for each child bead:",
+		"Use this command for each child bead (do NOT use `--parent` flag on create — it adds a backwards dependency):",
 		"```",
 		"bd create --title=\"<specific task>\" \\",
-		"  --parent=" + params.BeadID + " \\",
 		"  --type=task \\",
 		"  --acceptance=\"Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>",
 		"Read: <file1>:<Symbol1>, <file2>:<Symbol2>",
 		"Signature: <func signature if applicable>",
 		"Edges: <error conditions if applicable>\" \\",
 		"  --estimate=<minutes>",
+		"```",
+		"Then set parent and wire dep (epic depends on child, not the other way around):",
+		"```",
+		"bd update <child-id> --parent " + params.BeadID,
+		"bd dep add " + params.BeadID + " <child-id>",
 		"```",
 	}, "\n"))
 
@@ -203,10 +207,12 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"",
 		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
 		"  `bd create --title=\"P0: <bead-title> test failure\" --type=bug --priority=0 --description=\"QG output: <paste error>\"`",
-		"- Bead too big: decompose with `bd create`, then exit.",
-		"  `bd create --title=\"<subtask>\" --type=task --parent=<bead-id>` for each piece",
+		"- Bead too big: decompose with `bd create`, then set parent and wire deps. Do NOT use `bd create --parent` (it adds a backwards dependency).",
+		"  `bd create --title=\"<subtask>\" --type=task` for each piece",
+		"  then `bd update <child-id> --parent <bead-id>` + `bd dep add <bead-id> <child-id>` for each child",
 		"- Context limit reached: create handoff beads, then exit.",
-		fmt.Sprintf("  `bd create --title=\"Continue: <bead-title>\" --type=task --parent=%s --acceptance-criteria=\"<copy same acceptance criteria from above>\" --description=\"Remaining: <what's left>\"`", params.BeadID),
+		fmt.Sprintf("  `bd create --title=\"Continue: <bead-title>\" --type=task --acceptance-criteria=\"<copy same acceptance criteria from above>\" --description=\"Remaining: <what's left>\"`"),
+		fmt.Sprintf("  then `bd update <child-id> --parent %s` + `bd dep add %s <child-id>`", params.BeadID, params.BeadID),
 		"- Blocked: create a blocker bead, then declare the dependency and exit.",
 		"  `bd create --title=\"Blocker: <what's blocking>\" --type=bug --priority=0`",
 		"  then `bd dep add <this-bead> <blocker-bead>`",

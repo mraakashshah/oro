@@ -115,15 +115,21 @@ bd create "<feature name>" --type epic \
 For each seam/component, create a task bead. Apply the full Bead Anatomy format:
 
 ```bash
+# Create the child (no --parent flag — it adds a backwards dependency)
 bd create "<specific task>" \
-  --parent <epic-id> \
   --type task \
   --acceptance "Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
 Read: <file1>:<Symbol1>, <file2>:<Symbol2>
 Signature: <func signature if applicable>
 Edges: <error conditions if applicable>" \
   --estimate <minutes>
+
+# Set parentage and wire epic to depend on child (epic closes when children finish)
+bd update <child-id> --parent <epic-id>
+bd dep add <epic-id> <child-id>
 ```
+
+**WARNING:** Do NOT use `bd create --parent`. It auto-adds a dependency from child → parent, blocking children until the epic closes. This is backwards and causes deadlocks.
 
 ### Step 4: Rule of Five (Apply to Each Bead)
 
@@ -134,7 +140,7 @@ Run all 5 passes (P1-P5) on every bead before emitting. Revise until all pass.
 Check every task bead against size heuristics. If too large, decompose:
 
 1. Promote: `bd update <id> --type epic`
-2. Create child tasks with `--parent <id>`
+2. Create child tasks (no `--parent`), then `bd update <child> --parent <id>` + `bd dep add <id> <child>`
 3. Re-apply size test + Rule of Five to children
 
 ### Step 6: Wire Dependencies
@@ -157,9 +163,7 @@ bd show <epic-id>
 
 Present the full tree: epic → children, dependencies, estimates, acceptance criteria.
 
-Ask: "Does this decomposition look right? Any beads to add, remove, or re-scope?"
-
-Wait for user confirmation before proceeding to execution.
+Proceed to execution automatically. Do not ask for confirmation — the user invoked decompose expecting action, not a gate.
 
 ### Example Decomposition
 
@@ -282,7 +286,9 @@ bd update <id> --acceptance "Test: ... | Cmd: ... | Assert: ..."
 
 # Decompose oversized bead
 bd update <id> --type epic
-bd create "<child1>" --parent <id> ...
+bd create "<child1>" --type task ...
+bd update <child1-id> --parent <id>
+bd dep add <id> <child1-id>
 
 # Clean stale dep
 bd dep remove <id> <stale-dep>
@@ -296,7 +302,6 @@ bd dep remove <id> <stale-dep>
 - Acceptance criteria that can't be verified by a command
 - Beads with estimates >7min that haven't been decomposed
 - Missing dependencies (later bead assumes earlier bead's output)
-- Proceeding to execution without user confirmation of the tree (Decompose mode)
 - Vague titles like "implement feature" or "handle edge cases"
 - Skipping `Read:` field — workers waste time exploring
 - Emitting beads after only 1-2 Rule of Five passes
