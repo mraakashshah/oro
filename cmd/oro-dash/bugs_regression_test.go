@@ -40,11 +40,11 @@ func sampleBeads() []protocol.Bead {
 
 func TestBug01_TypeIconsAreTextBadges(t *testing.T) {
 	cases := map[string]string{
-		"task":    "[T]",
-		"bug":     "[B]",
-		"feature": "[F]",
-		"epic":    "[E]",
-		"other":   "[·]",
+		"task":    "📋",
+		"bug":     "🐛",
+		"feature": "🪶",
+		"epic":    "🎯",
+		"other":   "",
 	}
 	for beadType, want := range cases {
 		got := renderTreeTypeIcon(beadType)
@@ -60,7 +60,7 @@ func TestBug01_IconsNotInListView(t *testing.T) {
 	out := lm.View(DefaultTheme(), styles, 120, 30)
 
 	// Spec: list view has NO type badge column (board view still uses them)
-	for _, badge := range []string{"[T]", "[F]", "[B]"} {
+	for _, badge := range []string{"📋", "🪶", "🐛"} {
 		if strings.Contains(out, badge) {
 			t.Errorf("list view should NOT show type badge %q (removed per spec)", badge)
 		}
@@ -72,7 +72,7 @@ func TestBug01_IconsAppearInBoardView(t *testing.T) {
 	board := NewBoardModel(sampleBeads())
 	out := board.Render(theme, styles)
 
-	for _, badge := range []string{"[T]", "[F]", "[B]"} {
+	for _, badge := range []string{"📋", "🪶", "🐛"} {
 		if !strings.Contains(out, badge) {
 			t.Errorf("board view missing type badge %q", badge)
 		}
