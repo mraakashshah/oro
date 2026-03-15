@@ -27,49 +27,7 @@ func newMgCmd() *cobra.Command {
 		Short: "Mardi Gras parade view for beads issues",
 		Long:  "Launch the Mardi Gras TUI — a parade-based view of beads issues with colors, confetti, and live updates.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			blockingTypes := parseBlockingTypes(blockTypes)
-
-			cwd, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("getting working directory: %w", err)
-			}
-
-			source := resolveSource(cwd, path)
-			if source.Mode == data.SourceJSONL && source.Path == "" {
-				return fmt.Errorf("no .beads/ directory found and bd not on PATH\n\nRun from inside a project with Beads, or specify a path:\n  oro mg --path /path/to/.beads/issues.jsonl")
-			}
-
-			var issues []data.Issue
-			switch source.Mode {
-			case data.SourceCLI:
-				issues, err = data.FetchIssuesCLI(source.ProjectDir)
-				if err != nil {
-					return fmt.Errorf("loading issues via bd list: %w", err)
-				}
-			default:
-				var skipped int
-				issues, skipped, err = data.LoadIssues(source.Path)
-				if err != nil {
-					return fmt.Errorf("loading issues from %s: %w", source.Path, err)
-				}
-				if skipped > 0 {
-					fmt.Fprintf(os.Stderr, "Warning: skipped %d malformed line(s) in %s\n", skipped, source.Path)
-				}
-			}
-
-			if statusMode {
-				groups := data.GroupByParade(issues, blockingTypes)
-				fmt.Print(mgTmux.StatusLine(groups))
-				return nil
-			}
-
-			guard := app.NewOSCGuard()
-			model := app.NewWithGuard(issues, source, blockingTypes, guard)
-			p := tea.NewProgram(model, tea.WithFilter(guard.Filter()))
-			if _, err := p.Run(); err != nil {
-				return fmt.Errorf("TUI error: %w", err)
-			}
-			return nil
+			return runMg(path, blockTypes, statusMode)
 		},
 	}
 
@@ -78,6 +36,52 @@ func newMgCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&statusMode, "status", false, "output tmux status line and exit")
 
 	return cmd
+}
+
+func runMg(path, blockTypes string, statusMode bool) error {
+	blockingTypes := parseBlockingTypes(blockTypes)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	source := resolveSource(cwd, path)
+	if source.Mode == data.SourceJSONL && source.Path == "" {
+		return fmt.Errorf("no .beads/ directory found and bd not on PATH\n\nRun from inside a project with Beads, or specify a path:\n  oro mg --path /path/to/.beads/issues.jsonl")
+	}
+
+	var issues []data.Issue
+	switch source.Mode {
+	case data.SourceCLI:
+		issues, err = data.FetchIssuesCLI(source.ProjectDir)
+		if err != nil {
+			return fmt.Errorf("loading issues via bd list: %w", err)
+		}
+	default:
+		var skipped int
+		issues, skipped, err = data.LoadIssues(source.Path)
+		if err != nil {
+			return fmt.Errorf("loading issues from %s: %w", source.Path, err)
+		}
+		if skipped > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: skipped %d malformed line(s) in %s\n", skipped, source.Path)
+		}
+	}
+
+	if statusMode {
+		groups := data.GroupByParade(issues, blockingTypes)
+		fmt.Print(mgTmux.StatusLine(groups))
+		return nil
+	}
+
+	guard := app.NewOSCGuard()
+	model := app.NewWithGuard(issues, source, blockingTypes, guard)
+	p := tea.NewProgram(model, tea.WithFilter(guard.Filter()))
+	if _, err := p.Run(); err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+	return nil
 }
 
 // parseBlockingTypes builds the blocking types set from flag, env var, or default.

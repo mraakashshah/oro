@@ -120,7 +120,7 @@ func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration
 	}
 	deadline := time.Now().Add(socketTimeout)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+		conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond) //nolint:noctx // unix socket probe, no HTTP context needed
 		if err == nil {
 			_ = conn.Close()
 			break
@@ -128,7 +128,7 @@ func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration
 		time.Sleep(socketPollInterval)
 	}
 	// Final check: must be connectable.
-	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond) //nolint:noctx // unix socket probe
 	if err != nil {
 		if stopSpinner != nil {
 			stopSpinner()

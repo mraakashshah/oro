@@ -9,6 +9,8 @@ import (
 // FilterIssues returns a new slice of issues that match the search query.
 // It supports explicit tokens (type:bug, p1, priority:high) and fuzzy free-text
 // search on ID and Title. All tokens in the query must match (AND logic).
+//
+//oro:testonly
 func FilterIssues(issues []Issue, query string) []Issue {
 	query = strings.TrimSpace(query)
 	if query == "" {

@@ -39,6 +39,8 @@ func (s Source) Label() string {
 
 // CheckBdVersion runs `bd --version` and returns a warning if the installed
 // version is known to be broken. Returns "" for any safe or unparseable version.
+//
+//oro:testonly
 func CheckBdVersion() string {
 	return checkBdVersionOutput(nil)
 }
@@ -205,6 +207,8 @@ type DoctorResult struct {
 
 // FetchDoctorDiagnostics runs `bd doctor --agent --json` and returns findings.
 // Only returns error/warning diagnostics (not passed checks).
+//
+//oro:testonly
 func FetchDoctorDiagnostics() (*DoctorResult, error) {
 	out, err := runWithTimeout(timeoutMedium, "bd", "doctor", "--agent", "--json")
 	if err != nil {
