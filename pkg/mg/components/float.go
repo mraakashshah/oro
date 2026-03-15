@@ -1,8 +1,9 @@
 package components
 
 import (
-	"charm.land/lipgloss/v2"
 	"oro/pkg/mg/ui"
+
+	"charm.land/lipgloss/v2"
 )
 
 // Float renders a decorative ASCII parade float. Stub for v1.
