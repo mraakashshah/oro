@@ -92,7 +92,7 @@ func stageAssets(t *testing.T, projectRoot string) {
 // oro, start, stop, status, dispatcher, dispatcher start, dispatcher stop,
 // worker, worker launch, worker stop, logs, cleanup, init, remember, recall,
 // forget, memories, memories list, memories consolidate,
-// index, index build, index search, work, dash, directive.
+// index, index build, index search, work, mg, directive.
 func TestOroBinary_AllSubcommandsHelp(t *testing.T) {
 	binPath := buildOroBinary(t)
 
@@ -120,7 +120,7 @@ func TestOroBinary_AllSubcommandsHelp(t *testing.T) {
 		{"index", "build", "--help"},
 		{"index", "search", "--help"},
 		{"work", "--help"},
-		{"dash", "--help"},
+		{"mg", "--help"},
 		{"directive", "--help"},
 	}
 
