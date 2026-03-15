@@ -1,135 +1,24 @@
-#!/bin/sh
-# shellcheck disable=SC2086  # word splitting on staged file lists is intentional
+#!/usr/bin/env sh
+# bd-shim v1
+# bd-hooks-version: 0.49.4
 #
-# Pre-commit hook: language-aware lint/format checks + author identity guard
+# bd (beads) pre-commit hook - thin shim
 #
-# Checks staged files: ruff (Python), gofumpt/golangci-lint (Go), sh, biome (JSON), etc.
+# This shim delegates to 'bd hook pre-commit' which contains
+# the actual hook logic. This pattern ensures hook behavior is always
+# in sync with the installed bd version - no manual updates needed.
+#
+# The 'bd hook' command (singular) supports:
+# - Per-worktree export state tracking
+# - Dolt branch-then-merge pattern for cell-level conflict resolution
+# - Hook chaining configuration
 
-# --- Author identity guard ---
-# Reject commits from test/placeholder identities (env var leakage from hooks)
-author_email=$(git config user.email 2>/dev/null || echo "")
-author_name=$(git config user.name 2>/dev/null || echo "")
-case "$author_email" in
-test@test.com | test@example.com | t@t.com | "")
-	echo "Error: git user.email is '$author_email' — looks like a test identity." >&2
-	echo "Fix: git config --local --unset user.email  (or set the correct value)" >&2
-	exit 1
-	;;
-esac
-case "$author_name" in
-Test | "Test User" | T | "")
-	echo "Error: git user.name is '$author_name' — looks like a test identity." >&2
-	echo "Fix: git config --local --unset user.name  (or set the correct value)" >&2
-	exit 1
-	;;
-esac
-
-# --- Language-aware lint/format checks ---
-
-errors=0
-
-# Python: ruff format check + lint
-staged_py=$(git diff --cached --name-only --diff-filter=d -- '*.py')
-if [ -n "$staged_py" ] && command -v ruff >/dev/null 2>&1; then
-	if ! ruff format --check $staged_py 2>/dev/null; then
-		echo "Error: Python formatting issues. Run: ruff format <files>" >&2
-		errors=1
-	fi
-	if ! ruff check $staged_py 2>/dev/null; then
-		echo "Error: Python lint issues. Run: ruff check --fix <files>" >&2
-		errors=1
-	fi
+# Check if bd is available
+if ! command -v bd >/dev/null 2>&1; then
+    echo "Warning: bd command not found in PATH, skipping pre-commit hook" >&2
+    echo "  Install bd: brew install beads" >&2
+    echo "  Or add bd to your PATH" >&2
+    exit 0
 fi
 
-# Go: gofumpt + golangci-lint (staged files only)
-staged_go=$(git diff --cached --name-only --diff-filter=d -- '*.go')
-if [ -n "$staged_go" ]; then
-	if command -v gofumpt >/dev/null 2>&1; then
-		unformatted=$(gofumpt -l $staged_go 2>/dev/null)
-		if [ -n "$unformatted" ]; then
-			echo "Error: Go formatting issues (gofumpt) in:" >&2
-			echo "$unformatted" >&2
-			echo "Run: gofumpt -w <files>" >&2
-			errors=1
-		fi
-	fi
-	if command -v golangci-lint >/dev/null 2>&1; then
-		staged_go_dirs=$(echo "$staged_go" | xargs -n1 dirname | sort -u | sed 's|^|./|;s|$|/...|')
-		if ! golangci-lint run --timeout 2m $staged_go_dirs 2>/dev/null; then
-			echo "Error: golangci-lint issues found." >&2
-			errors=1
-		fi
-	fi
-	# Go tests on staged packages
-	staged_go_dirs=$(echo "$staged_go" | xargs -n1 dirname | sort -u | sed 's|^|./|;s|$|/...|')
-	if ! env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE go test -race -shuffle=on $staged_go_dirs 2>&1; then
-		echo "Error: Go tests failed." >&2
-		errors=1
-	fi
-fi
-
-# Shell: shfmt + shellcheck
-staged_sh=$(git diff --cached --name-only --diff-filter=d -- '*.sh')
-if [ -n "$staged_sh" ]; then
-	if command -v shfmt >/dev/null 2>&1; then
-		# shellcheck disable=SC2086
-		if ! shfmt -d $staged_sh 2>/dev/null; then
-			echo "Error: Shell formatting issues. Run: shfmt -w <files>" >&2
-			errors=1
-		fi
-	fi
-	if command -v shellcheck >/dev/null 2>&1; then
-		# shellcheck disable=SC2086
-		if ! shellcheck $staged_sh 2>/dev/null; then
-			echo "Error: shellcheck issues found." >&2
-			errors=1
-		fi
-	fi
-fi
-
-# JSON: biome check (format + lint)
-# Prefer project-local biome (./node_modules/.bin/biome) over system install
-# Exclude package-lock.json — biome treats it as a protected auto-generated file
-# and exits 1 when all provided files are ignored.
-staged_json=$(git diff --cached --name-only --diff-filter=d -- '*.json' | grep -v '^package-lock\.json$')
-if [ -n "$staged_json" ]; then
-	if [ -x "./node_modules/.bin/biome" ]; then
-		BIOME_CMD="./node_modules/.bin/biome"
-	elif command -v biome >/dev/null 2>&1; then
-		BIOME_CMD="biome"
-	else
-		BIOME_CMD=""
-	fi
-	if [ -n "$BIOME_CMD" ]; then
-		# shellcheck disable=SC2086
-		if ! $BIOME_CMD check --files-ignore-unknown=true $staged_json 2>/dev/null; then
-			echo "Error: JSON issues found. Run: biome check --write <files>" >&2
-			errors=1
-		fi
-	fi
-fi
-
-# Markdown: markdownlint
-staged_md=$(git diff --cached --name-only --diff-filter=d -- '*.md')
-if [ -n "$staged_md" ] && command -v markdownlint >/dev/null 2>&1; then
-	if ! markdownlint --config .markdownlint.yml $staged_md 2>/dev/null; then
-		echo "Error: markdownlint issues found." >&2
-		errors=1
-	fi
-fi
-
-# YAML: yamllint
-staged_yaml=$(git diff --cached --name-only --diff-filter=d -- '*.yml' '*.yaml')
-if [ -n "$staged_yaml" ] && command -v yamllint >/dev/null 2>&1; then
-	if ! yamllint -d relaxed --no-warnings $staged_yaml 2>/dev/null; then
-		echo "Error: yamllint issues found." >&2
-		errors=1
-	fi
-fi
-
-if [ "$errors" -ne 0 ]; then
-	echo "Pre-commit checks failed. Fix issues above or commit with --no-verify." >&2
-	exit 1
-fi
-
-exit 0
+exec bd hook pre-commit "$@"
