@@ -159,11 +159,34 @@ linters:
           - dupl
           - prealloc
           - gocritic
+          - errcheck
+          - gosec
 
       - path: main\.go
         linters:
           - gochecknoinits
           - gochecknoglobals
+
+      # Bubbletea TUI: View/Update funcs are naturally long, models use
+      # type assertions, package-level style vars, math/rand for
+      # animations (not security), and nested conditionals in rendering.
+      - path: pkg/mg/
+        linters:
+          - funlen
+          - gocyclo
+          - gocognit
+          - nestif
+          - noctx
+          - gochecknoglobals
+          - errcheck
+          - gocritic
+          - gosec
+          - nilerr
+          - prealloc
+          - revive
+          - testpackage
+          - unparam
+          - wrapcheck
 
       # CLI tools legitimately exec subprocesses and write user-supplied
       # paths to stdout — not a web context.
