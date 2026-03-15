@@ -206,7 +206,14 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 
 func appendFailureAndExit(b *strings.Builder, beadID string) {
 	// 11. Failure
-	section(b, "Failure", strings.Join([]string{
+	section(b, "Failure", failureSectionContent(params.BeadID))
+
+	// 12. Exit
+	section(b, "Exit", exitSectionContent())
+}
+
+func failureSectionContent(beadID string) string {
+	return strings.Join([]string{
 		"All bug beads MUST use --priority=0. Bugs are always P0.",
 		"",
 		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
@@ -220,10 +227,11 @@ func appendFailureAndExit(b *strings.Builder, beadID string) {
 		"- Blocked: create a blocker bead, then declare the dependency and exit.",
 		"  `bd create --title=\"Blocker: <what's blocking>\" --type=bug --priority=0`",
 		"  then `bd dep add <this-bead> <blocker-bead>`",
-	}, "\n"))
+	}, "\n")
+}
 
-	// 12. Exit
-	section(b, "Exit", strings.Join([]string{
+func exitSectionContent() string {
+	return strings.Join([]string{
 		"When acceptance criteria pass and quality gate is green:",
 		"",
 		"1. Reflect: did you discover anything non-obvious? Run `oro remember` for each:",
@@ -238,5 +246,5 @@ func appendFailureAndExit(b *strings.Builder, beadID string) {
 		"   - Escalate to the manager if merge fails",
 		"",
 		"You do NOT need to merge to main or close the bead yourself.",
-	}, "\n"))
+	}, "\n")
 }
