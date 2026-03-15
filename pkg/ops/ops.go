@@ -221,7 +221,7 @@ func (s *Spawner) WriteAC(ctx context.Context, opts WriteACOpts) <-chan Result {
 // Decompose spawns a one-shot agent that decomposes a bead into smaller child
 // beads when a bead has exhausted all worker retry attempts.
 func (s *Spawner) Decompose(ctx context.Context, opts DecomposeOpts) <-chan Result {
-	prompt := BuildDecomposePrompt(opts)
+	prompt := buildDecomposePrompt(opts)
 	return s.run(ctx, OpsDecompose, opts.BeadID, "", prompt)
 }
 

@@ -50,8 +50,11 @@ func TestBuildDecomposePromptContainsBeadID(t *testing.T) {
 		BeadID:   "oro-test123",
 		QGOutput: "some output",
 	}
-	prompt := BuildDecomposePrompt(opts)
+	prompt := buildDecomposePrompt(opts)
 	if !strings.Contains(prompt, "oro-test123") {
 		t.Errorf("prompt does not contain BeadID %q", opts.BeadID)
+	}
+	if strings.Contains(prompt, "create --parent") {
+		t.Error("prompt must not use bd create --parent (creates circular dependency deadlock)")
 	}
 }

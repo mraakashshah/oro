@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-// BuildDecomposePrompt assembles the bead decomposition agent prompt from the
+// buildDecomposePrompt assembles the bead decomposition agent prompt from the
 // bead ID and quality gate output that triggered the decomposition request.
-func BuildDecomposePrompt(opts DecomposeOpts) string {
+func buildDecomposePrompt(opts DecomposeOpts) string {
 	var b strings.Builder
 
 	b.WriteString("You are a bead decomposition agent. A bead has exhausted all worker retry attempts.\n\n")
@@ -26,8 +26,11 @@ func BuildDecomposePrompt(opts DecomposeOpts) string {
 	b.WriteString("## Steps\n")
 	fmt.Fprintf(&b, "1. Run `bd show %s` to read the full bead details and acceptance criteria.\n", opts.BeadID)
 	b.WriteString("2. Analyze why the bead is too large or ambiguous.\n")
-	b.WriteString("3. Create 2-4 smaller child beads with:\n")
-	fmt.Fprintf(&b, "   `bd create --parent %s --title \"...\" --type task --acceptance \"...\" --estimate <min>`\n", opts.BeadID)
+	b.WriteString("3. Create 2-4 smaller child beads:\n")
+	b.WriteString("   For each child bead:\n")
+	fmt.Fprintf(&b, "   a. `bd create --title \"...\" --type task --acceptance \"...\" --estimate <min>`\n")
+	fmt.Fprintf(&b, "   b. `bd update <child-id> --parent %s`  (sets hierarchy only, no dep)\n", opts.BeadID)
+	fmt.Fprintf(&b, "   c. `bd dep add %s <child-id>`  (epic depends on child — correct direction)\n", opts.BeadID)
 	fmt.Fprintf(&b, "4. Convert parent to epic: `bd update %s --type epic`\n", opts.BeadID)
 	b.WriteString("5. If all steps succeed, print exactly:\n")
 	b.WriteString("   VERDICT: resolved\n\n")
