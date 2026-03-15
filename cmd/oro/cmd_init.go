@@ -520,6 +520,15 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		fmt.Fprintf(os.Stderr, "warning: dolt metadata setup failed: %v\n", err)
 	}
 
+	// 4d. Start dolt server if not already running.
+	// Fail-open: warn but continue. Dolt can be started later via bd or oro start.
+	// With adopt behavior, this is idempotent if dolt is already running.
+	if meta, _ := readDoltMeta(beadsPath); meta != nil {
+		if _, startErr := startDoltServer(beadsPath, port); startErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: dolt server start failed: %v\n", startErr)
+		}
+	}
+
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
 	if err != nil {
