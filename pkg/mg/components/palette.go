@@ -179,6 +179,8 @@ func (p *Palette) refilter() {
 }
 
 // SelectedName returns the Name of the currently highlighted command.
+//
+//oro:testonly
 func (p Palette) SelectedName() string {
 	if p.cursor >= 0 && p.cursor < len(p.filtered) {
 		return p.filtered[p.cursor].Name

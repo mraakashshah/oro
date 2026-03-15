@@ -33,6 +33,8 @@ func NewOSCGuard() *OSCGuard {
 // NewOSCGuardFilter returns a standalone tea.WithFilter function.
 //
 // This is preserved for tests and callers that only need the filter.
+//
+//oro:testonly
 func NewOSCGuardFilter() func(tea.Model, tea.Msg) tea.Msg {
 	return NewOSCGuard().Filter()
 }

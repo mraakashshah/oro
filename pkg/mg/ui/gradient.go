@@ -139,6 +139,8 @@ func (g Gradient) At(pct int) lipgloss.Style {
 
 // GradientBar renders a progress bar where each filled block is colored
 // by its position along the gradient. Unfilled portion uses dim blocks.
+//
+//oro:testonly
 func GradientBar(pct float64, width int, g Gradient) string {
 	if width <= 0 {
 		return ""
