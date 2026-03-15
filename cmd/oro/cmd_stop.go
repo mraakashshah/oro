@@ -177,18 +177,30 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) er
 
 	for _, d := range daemons {
 		sockPath := strings.TrimSuffix(d.PIDPath, "oro.pid") + "oro.sock"
+
+		// Derive beadsDir and set doltStopFn if beads dir exists.
+		beadsDir := strings.TrimSuffix(d.PIDPath, "oro.pid") + ".beads"
+		var doltStopFn func() error
+		if _, err := os.Stat(beadsDir); err == nil {
+			// beadsDir exists; capture it in closure for stopDoltServer.
+			doltStopFn = func() error {
+				return stopDoltServer(beadsDir)
+			}
+		}
+
 		cfg := &stopConfig{
-			pidPath:  d.PIDPath,
-			sockPath: sockPath,
-			tmuxName: TmuxSessionName(d.Project),
-			runner:   &ExecRunner{},
-			w:        w,
-			stdin:    os.Stdin,
-			signalFn: defaultSignalINT,
-			aliveFn:  IsProcessAlive,
-			killFn:   defaultKill,
-			isTTY:    isStdinTTY,
-			force:    force,
+			pidPath:    d.PIDPath,
+			sockPath:   sockPath,
+			tmuxName:   TmuxSessionName(d.Project),
+			runner:     &ExecRunner{},
+			w:          w,
+			stdin:      os.Stdin,
+			signalFn:   defaultSignalINT,
+			aliveFn:    IsProcessAlive,
+			killFn:     defaultKill,
+			isTTY:      isStdinTTY,
+			force:      force,
+			doltStopFn: doltStopFn,
 		}
 
 		fmt.Fprintf(w, "\nstopping %s (PID %d)...\n", d.Project, d.PID)
