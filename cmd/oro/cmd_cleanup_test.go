@@ -632,6 +632,171 @@ func TestCleanupWorktreeDir(t *testing.T) {
 	})
 }
 
+func TestCleanup_KillsDoltServer(t *testing.T) {
+	t.Run("returns true and removes PID file when dolt-server.pid exists", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		pidPath := filepath.Join(beadsDir, "dolt-server.pid")
+		portPath := filepath.Join(beadsDir, "dolt-server.port")
+		if err := os.WriteFile(pidPath, []byte("99999"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(portPath, []byte("13307"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		fake := newFakeCmd()
+		fake.errs[key("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")] = fmt.Errorf("no match")
+
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:   fake,
+			w:        &buf,
+			beadsDir: beadsDir,
+			signalFn: func(int) error { return nil },
+		}
+
+		result := cleanupDolt(cfg)
+
+		if !result {
+			t.Error("expected cleanupDolt to return true when PID file exists")
+		}
+		if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+			t.Error("expected PID file to be removed after cleanupDolt")
+		}
+
+		var pgrepCalled bool
+		for _, call := range fake.calls {
+			if call[0] == "pgrep" && call[1] == "-f" {
+				pgrepCalled = true
+			}
+		}
+		if !pgrepCalled {
+			t.Error("expected pgrep to be called to scan for orphan dolt processes")
+		}
+	})
+
+	t.Run("returns false when PID file does not exist", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		fake := newFakeCmd()
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:   fake,
+			w:        &buf,
+			beadsDir: beadsDir,
+			signalFn: func(int) error { return nil },
+		}
+
+		if cleanupDolt(cfg) {
+			t.Error("expected cleanupDolt to return false when no PID file")
+		}
+	})
+
+	t.Run("returns false when beadsDir is empty", func(t *testing.T) {
+		fake := newFakeCmd()
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:   fake,
+			w:        &buf,
+			beadsDir: "",
+			signalFn: func(int) error { return nil },
+		}
+
+		if cleanupDolt(cfg) {
+			t.Error("expected cleanupDolt to return false when beadsDir is empty")
+		}
+	})
+
+	t.Run("kills orphan dolt processes found by pgrep", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		pidPath := filepath.Join(beadsDir, "dolt-server.pid")
+		if err := os.WriteFile(pidPath, []byte("99999"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		fake := newFakeCmd()
+		fake.output[key("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")] = "11111\n22222\n"
+
+		var signaledPIDs []int
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:   fake,
+			w:        &buf,
+			beadsDir: beadsDir,
+			signalFn: func(pid int) error {
+				signaledPIDs = append(signaledPIDs, pid)
+				return nil
+			},
+		}
+
+		cleanupDolt(cfg)
+
+		found := map[int]bool{}
+		for _, pid := range signaledPIDs {
+			found[pid] = true
+		}
+		if !found[11111] || !found[22222] {
+			t.Errorf("expected orphan PIDs 11111 and 22222 to be signaled, got: %v", signaledPIDs)
+		}
+	})
+
+	t.Run("wired into runCleanup sets cleaned when dolt server stopped", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		pidPath := filepath.Join(beadsDir, "dolt-server.pid")
+		if err := os.WriteFile(pidPath, []byte("99999"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+		fake.errs[key("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")] = fmt.Errorf("no match")
+		fake.output[key("git", "branch", "--list", "agent/*")] = ""
+		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:   fake,
+			w:        &buf,
+			tmuxName: TmuxSessionName(""),
+			pidPath:  filepath.Join(tmpDir, "oro.pid"),
+			sockPath: filepath.Join(tmpDir, "oro.sock"),
+			beadsDir: beadsDir,
+			signalFn: func(int) error { return nil },
+			aliveFn:  func(int) bool { return false },
+		}
+
+		err := runCleanup(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		out := buf.String()
+		if strings.Contains(out, "nothing to clean") {
+			t.Error("expected 'nothing to clean' NOT to appear when dolt cleanup was performed")
+		}
+	})
+}
+
 func TestCleanup_DoesNotCallBdDaemon(t *testing.T) {
 	fake := newFakeCmd()
 	// tmux has-session fails (no session)

@@ -21,6 +21,7 @@ type cleanupConfig struct {
 	tmuxName string
 	pidPath  string
 	sockPath string
+	beadsDir string          // path to .beads directory; empty disables dolt cleanup
 	signalFn func(int) error // sends SIGINT; injectable for testing
 	aliveFn  func(int) bool  // checks process liveness; injectable for testing
 	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
@@ -48,6 +49,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				tmuxName: TmuxSessionName(readProjectName()),
 				pidPath:  paths.PIDPath,
 				sockPath: paths.SocketPath,
+				beadsDir: filepath.Join(".", ".beads"),
 				signalFn: defaultSignalINT,
 				aliveFn:  IsProcessAlive,
 				isTTY:    isStdinTTY,
@@ -80,6 +82,11 @@ func runCleanup(_ context.Context, cfg *cleanupConfig) error {
 
 	// 2. Kill dispatcher process if running (read PID file).
 	if cleanedDispatcher := cleanupDispatcher(cfg); cleanedDispatcher {
+		cleaned = true
+	}
+
+	// 2.5. Kill dolt server if running.
+	if cleanedDolt := cleanupDolt(cfg); cleanedDolt {
 		cleaned = true
 	}
 
@@ -283,6 +290,42 @@ func parseBranchNames(output string) []string {
 		branches = append(branches, line)
 	}
 	return branches
+}
+
+// cleanupDolt stops the dolt server if a PID file exists in beadsDir.
+// Returns true if dolt cleanup was performed. Idempotent: returns false when
+// beadsDir is empty, the .beads directory is absent, or no PID file exists.
+// Also scans for orphaned dolt sql-server processes via pgrep and kills them.
+func cleanupDolt(cfg *cleanupConfig) bool {
+	if cfg.beadsDir == "" {
+		return false
+	}
+
+	pidPath := filepath.Join(cfg.beadsDir, "dolt-server.pid")
+	if _, err := os.Stat(pidPath); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+
+	fmt.Fprintf(cfg.w, "stopping dolt server\n")
+	if err := stopDoltServer(cfg.beadsDir); err != nil {
+		fmt.Fprintf(cfg.w, "warning: stop dolt server: %v\n", err)
+	}
+
+	// Scan for orphan dolt processes.
+	out, err := cfg.runner.Run("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")
+	if err == nil {
+		pids := parseWorkerPIDs(out)
+		if len(pids) > 0 {
+			fmt.Fprintf(cfg.w, "killing %d orphan dolt process(es)\n", len(pids))
+			for _, pid := range pids {
+				if err := cfg.signalFn(pid); err != nil {
+					fmt.Fprintf(cfg.w, "warning: signal dolt PID %d: %v\n", pid, err)
+				}
+			}
+		}
+	}
+
+	return true
 }
 
 // cleanupBeads resets in_progress beads back to open. Returns true if beads were reset.
