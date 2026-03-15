@@ -764,14 +764,14 @@ func renderTreePriorityBadge(priority int, styles Styles) string {
 func renderTreeTypeIcon(beadType string) string {
 	switch beadType {
 	case "task":
-		return "📋"
+		return "✅"
 	case "bug":
 		return "🐛"
 	case "feature":
-		return "🪶"
+		return "✨"
 	case "epic":
 		return "🎯"
 	default:
-		return ""
+		return "❓"
 	}
 }

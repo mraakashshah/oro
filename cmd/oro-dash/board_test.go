@@ -194,9 +194,9 @@ func TestCardRendering_TypeIndicators(t *testing.T) {
 
 	// Verify type indicators appear in output.
 	typeIndicators := map[string]string{
-		"task":    "📋",
+		"task":    "✅",
 		"bug":     "🐛",
-		"feature": "🪶",
+		"feature": "✨",
 		"epic":    "🎯",
 	}
 
@@ -745,8 +745,8 @@ func TestTypeIcons(t *testing.T) {
 		want     string
 	}{
 		{"bug", "🐛"},
-		{"feature", "🪶"},
-		{"task", "📋"},
+		{"feature", "✨"},
+		{"task", "✅"},
 		{"epic", "🎯"},
 	}
 	for _, tc := range cases {
