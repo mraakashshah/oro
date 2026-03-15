@@ -484,7 +484,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 	// Convert beads directory to absolute path (daemon may change cwd).
 	repoRoot, err := os.Getwd()
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return fmt.Errorf("get working dir: %w", err)
 	}
 	beadsDir := filepath.Join(repoRoot, ".beads")
