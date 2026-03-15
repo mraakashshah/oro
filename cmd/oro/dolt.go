@@ -21,8 +21,6 @@ const (
 )
 
 // doltMeta holds the fields from .beads/metadata.json relevant to dolt lifecycle.
-//
-//nolint:unused // used by other beads in the dolt lifecycle epic
 type doltMeta struct {
 	Backend        string `json:"backend"`
 	DoltServerPort int    `json:"dolt_server_port"`
@@ -32,8 +30,6 @@ type doltMeta struct {
 // DerivePort computes a stable port in [13307, 14306] for the given beads
 // directory using FNV-32a hash of the absolute path. Two calls with the same
 // resolved absolute path always return the same port.
-//
-//nolint:unused // used by other beads in the dolt lifecycle epic
 func DerivePort(beadsDir string) int {
 	abs, err := filepath.Abs(beadsDir)
 	if err != nil {
@@ -47,8 +43,6 @@ func DerivePort(beadsDir string) int {
 // readDoltMeta reads .beads/metadata.json and returns its contents if the
 // backend is "dolt". Returns nil (no error) for missing directories, missing
 // metadata.json, or any non-dolt backend.
-//
-//nolint:unused // used by other beads in the dolt lifecycle epic
 func readDoltMeta(beadsDir string) (*doltMeta, error) {
 	metaPath := filepath.Join(beadsDir, "metadata.json")
 	data, err := os.ReadFile(metaPath) //nolint:gosec // beadsDir is caller-controlled
@@ -72,8 +66,6 @@ func readDoltMeta(beadsDir string) (*doltMeta, error) {
 
 // isDoltServerRunning returns true if a TCP listener is accepting connections
 // on 127.0.0.1:<port> within a 200ms timeout.
-//
-//nolint:unused // used by other beads in the dolt lifecycle epic
 func isDoltServerRunning(port int) bool {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -92,8 +84,6 @@ func isDoltServerRunning(port int) bool {
 //
 // Returns exec.ErrNotFound if dolt is not in PATH.
 // Returns an error if the port is already occupied by a non-dolt process.
-//
-//nolint:unused // used by other beads in the dolt lifecycle epic
 func startDoltServer(beadsDir string, port int) (int, error) {
 	doltPath, err := exec.LookPath("dolt")
 	if err != nil {
@@ -185,8 +175,6 @@ func stopDoltServer(beadsDir string) error {
 // given port under the key "dolt_server_port". If the file already exists, it
 // merges the port into the existing JSON object. If the file does not exist,
 // it creates a minimal metadata.json with backend="dolt" and the given port.
-//
-//nolint:unused // used by other beads in the dolt lifecycle epic
 func ensureDoltMetadata(beadsDir string, port int) error {
 	metaPath := filepath.Join(beadsDir, "metadata.json")
 

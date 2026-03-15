@@ -131,7 +131,7 @@ func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration
 	return nil
 }
 
-func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, killFn func(int) error, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
+func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, killFn func(int) error, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool, doltStartFn func() (int, error), doltStopFn func() error) error {
 	// Initialize startup logger (TTY detection for spinner vs static output)
 	isTTY := isatty.IsTerminal(os.Stdout.Fd())
 	log := newStartupLog(w, isTTY)
@@ -145,9 +145,17 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 
 	log.Step("Preflight checks passed")
 
+	// 0. Start dolt server before daemon (dolt must be up before dispatcher connects).
+	// doltCleanup is a no-op unless dolt was successfully started.
+	doltCleanup, err := startDoltIfNeeded(doltStartFn, doltStopFn)
+	if err != nil {
+		return err
+	}
+
 	// 1. Spawn the daemon subprocess.
 	pid, err := spawner.SpawnDaemon(pidPath, workers)
 	if err != nil {
+		doltCleanup()
 		return fmt.Errorf("spawn daemon: %w", err)
 	}
 
@@ -166,12 +174,12 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 	// 3. Create tmux session with short nudges (full role context injected by SessionStart hook).
 	sess := &TmuxSession{Name: TmuxSessionName(project), Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
 	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
-		// Best-effort cleanup: kill the orphaned daemon so the user does not
-		// need to run `oro stop` manually. Swallow killFn errors (daemon may
-		// already be gone) and log a warning.
+		// Best-effort cleanup: kill the orphaned daemon and dolt server so the
+		// user does not need to run `oro stop` manually.
 		if killErr := killFn(pid); killErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to kill orphaned daemon (PID %d): %v\n", pid, killErr)
 		}
+		doltCleanup()
 		return fmt.Errorf("create tmux session: %w", err)
 	}
 
@@ -357,6 +365,41 @@ func newStartCmd() *cobra.Command {
 	return cmd
 }
 
+// startDoltIfNeeded starts the dolt server when doltStartFn is non-nil and
+// returns a cleanup function that stops dolt on error. Returns a no-op cleanup
+// and nil error when doltStartFn is nil (non-dolt project).
+func startDoltIfNeeded(doltStartFn func() (int, error), doltStopFn func() error) (cleanup func(), err error) {
+	noop := func() {}
+	if doltStartFn == nil {
+		return noop, nil
+	}
+	if _, err := doltStartFn(); err != nil {
+		return noop, fmt.Errorf("start dolt: %w", err)
+	}
+	return func() {
+		if doltStopFn != nil {
+			_ = doltStopFn()
+		}
+	}, nil
+}
+
+// makeDoltLifecycle reads .beads/metadata.json from workDir and returns start/stop
+// functions for the dolt server if the backend is "dolt". Returns (nil, nil) for
+// non-dolt projects or when the metadata file is missing or unreadable.
+func makeDoltLifecycle(workDir string) (func() (int, error), func() error) { //nolint:gocritic // named results hurt readability here
+	beadsDir := filepath.Join(workDir, ".beads")
+	meta, err := readDoltMeta(beadsDir)
+	if err != nil || meta == nil {
+		return nil, nil
+	}
+	port := meta.DoltServerPort
+	if port == 0 {
+		port = DerivePort(beadsDir)
+	}
+	return func() (int, error) { return startDoltServer(beadsDir, port) },
+		func() error { return stopDoltServer(beadsDir) }
+}
+
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
 func startFreshSwarm(w io.Writer, workers int, model string, detach bool, progressTimeout, reviewTimeout time.Duration) error {
 	project, err := readProjectConfig(".")
@@ -375,11 +418,13 @@ func startFreshSwarm(w io.Writer, workers int, model string, detach bool, progre
 	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
 		return fmt.Errorf("set ORO_HOME: %w", err)
 	}
+	doltStart, doltStop := makeDoltLifecycle(".")
 	return runFullStart(w, workers, model, project,
 		&ExecDaemonSpawner{ProgressTimeout: progressTimeout, ReviewTimeout: reviewTimeout},
 		&ExecRunner{},
 		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
-		socketPollTimeout, nil, 0, isDetached(detach))
+		socketPollTimeout, nil, 0, isDetached(detach),
+		doltStart, doltStop)
 }
 
 // cleanStaleWorkerLogs deletes worker log directories older than maxAge.

@@ -155,7 +155,7 @@ func TestStartPrintsQuitHint(t *testing.T) {
 
 		var stdout bytes.Buffer
 		// detach=false means attach, so hint should be printed
-		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false)
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil, nil)
 		// Expect error because AttachInteractive tries to attach to real tmux
 		if err == nil {
 			t.Fatal("expected error from AttachInteractive in test environment")
@@ -196,7 +196,7 @@ func TestStartPrintsQuitHint(t *testing.T) {
 
 		var stdout bytes.Buffer
 		// detach=true means no attach, so hint should NOT be printed
-		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true)
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true, nil, nil)
 		if err != nil {
 			t.Fatalf("runFullStart with detach should succeed, got: %v", err)
 		}
@@ -273,7 +273,7 @@ func TestRunFullStartKillsDaemonOnSessionCreateError(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runFullStart(&stdout, 2, "sonnet", "", spawnerFn, fakeTmux, killFn, 200*time.Millisecond, noopSleep, 50*time.Millisecond, false)
+	err := runFullStart(&stdout, 2, "sonnet", "", spawnerFn, fakeTmux, killFn, 200*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil, nil)
 	if err == nil {
 		t.Fatal("expected runFullStart to return error when tmux session create fails")
 	}
@@ -570,6 +570,181 @@ func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
 	if eventType != "test_marker" {
 		t.Errorf("expected test_marker, got %q", eventType)
 	}
+}
+
+// callOrderSpawner delegates to an inner fakeSpawner but records its call
+// in callOrder so tests can verify dolt is started before the daemon.
+type callOrderSpawner struct {
+	callOrder *[]string
+	inner     *fakeSpawner
+}
+
+func (s *callOrderSpawner) SpawnDaemon(pidPath string, workers int) (int, error) {
+	*s.callOrder = append(*s.callOrder, "daemon")
+	return s.inner.SpawnDaemon(pidPath, workers)
+}
+
+// TestDoltStartedBeforeDaemon verifies that runFullStart calls doltStartFn before
+// SpawnDaemon, and that doltStopFn is called for cleanup on subsequent errors.
+func TestDoltStartedBeforeDaemon(t *testing.T) {
+	t.Run("dolt started before daemon spawn", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := fmt.Sprintf("/tmp/oro-dolt-ord-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+		t.Setenv("ORO_PID_PATH", pidFile)
+		t.Setenv("ORO_SOCKET_PATH", sockPath)
+		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+
+		var callOrder []string
+
+		doltStartFn := func() (int, error) {
+			callOrder = append(callOrder, "dolt")
+			return 42, nil
+		}
+
+		spawner := &callOrderSpawner{
+			callOrder: &callOrder,
+			inner:     &fakeSpawner{returnPID: 12345, socketPath: sockPath},
+		}
+
+		fakeTmux := newFakeCmd()
+		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+
+		var stdout bytes.Buffer
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux,
+			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true,
+			doltStartFn, nil)
+		if err != nil {
+			t.Fatalf("runFullStart failed: %v", err)
+		}
+
+		doltIdx, daemonIdx := -1, -1
+		for i, c := range callOrder {
+			switch c {
+			case "dolt":
+				doltIdx = i
+			case "daemon":
+				daemonIdx = i
+			}
+		}
+		if doltIdx == -1 {
+			t.Fatal("doltStartFn was not called")
+		}
+		if daemonIdx == -1 {
+			t.Fatal("SpawnDaemon was not called")
+		}
+		if doltIdx >= daemonIdx {
+			t.Errorf("expected dolt before daemon, got call order: %v", callOrder)
+		}
+	})
+
+	t.Run("dolt cleanup called when daemon spawn fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+
+		doltStarted, doltStopped := false, false
+		doltStartFn := func() (int, error) {
+			doltStarted = true
+			return 42, nil
+		}
+		doltStopFn := func() error {
+			doltStopped = true
+			return nil
+		}
+
+		spawner := &fakeSpawner{returnErr: fmt.Errorf("spawn failed")}
+
+		var stdout bytes.Buffer
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, newFakeCmd(),
+			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false,
+			doltStartFn, doltStopFn)
+		if err == nil {
+			t.Fatal("expected error when daemon spawn fails")
+		}
+		if !doltStarted {
+			t.Error("doltStartFn should have been called before spawn attempt")
+		}
+		if !doltStopped {
+			t.Error("doltStopFn should have been called for cleanup after spawn failure")
+		}
+	})
+
+	t.Run("dolt cleanup called when tmux create fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := fmt.Sprintf("/tmp/oro-dolt-tmuxfail-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+		claudeConfigDir := filepath.Join(tmpDir, "claude-config")
+		if err := os.MkdirAll(claudeConfigDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Setenv("ORO_PID_PATH", pidFile)
+		t.Setenv("ORO_SOCKET_PATH", sockPath)
+		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+		t.Setenv("CLAUDE_CONFIG_DIR", claudeConfigDir)
+
+		archConfigDir := filepath.Join(claudeConfigDir, "roles", "architect")
+		newSessionCmd := fmt.Sprintf(
+			"exec env ORO_ROLE=architect BD_ACTOR=architect GIT_AUTHOR_NAME=architect CLAUDE_CONFIG_DIR=%s claude",
+			archConfigDir,
+		)
+		newSessionKey := key("tmux", "new-session", "-d", "-s", "oro", "-n", "architect", newSessionCmd)
+
+		doltStopped := false
+		doltStopFn := func() error {
+			doltStopped = true
+			return nil
+		}
+
+		fakeTmux := newFakeCmd()
+		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		fakeTmux.errs[newSessionKey] = fmt.Errorf("tmux new-session: simulated failure")
+
+		spawner := &fakeSpawner{returnPID: 12345, socketPath: sockPath}
+
+		var stdout bytes.Buffer
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux,
+			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false,
+			func() (int, error) { return 42, nil }, doltStopFn)
+		if err == nil {
+			t.Fatal("expected error when tmux create fails")
+		}
+		if !doltStopped {
+			t.Error("doltStopFn should have been called for cleanup after tmux failure")
+		}
+	})
+
+	t.Run("nil doltStartFn skips dolt for non-dolt projects", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		sockPath := fmt.Sprintf("/tmp/oro-nodolt-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+		t.Setenv("ORO_PID_PATH", pidFile)
+		t.Setenv("ORO_SOCKET_PATH", sockPath)
+		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+
+		fakeTmux := newFakeCmd()
+		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+
+		spawner := &fakeSpawner{returnPID: 12345, socketPath: sockPath}
+
+		var stdout bytes.Buffer
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux,
+			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true,
+			nil, nil)
+		if err != nil {
+			t.Fatalf("runFullStart with nil dolt should succeed: %v", err)
+		}
+	})
 }
 
 // fakeCommandRunner is a mock CommandRunner for testing.
