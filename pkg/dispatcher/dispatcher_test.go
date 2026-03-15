@@ -740,6 +740,58 @@ func eventCount(t *testing.T, db *sql.DB, evType string) int {
 
 // --- Tests ---
 
+// TestDirectiveACKReceivedByClient verifies that a raw socket client sending a
+// directive JSON message receives an ACK JSON response within 2 seconds.
+// This is the exact path oro-dash uses when querying the dispatcher for status.
+func TestDirectiveACKReceivedByClient(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect as a raw socket client — exactly as oro-dash does.
+	conn, err := net.Dial("unix", d.cfg.SocketPath)
+	if err != nil {
+		t.Fatalf("connect to dispatcher: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Send a directive JSON message.
+	msg := protocol.Message{
+		Type:      protocol.MsgDirective,
+		Directive: &protocol.DirectivePayload{Op: "status"},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal directive: %v", err)
+	}
+	data = append(data, '\n')
+	if _, err := conn.Write(data); err != nil {
+		t.Fatalf("write directive: %v", err)
+	}
+
+	// Read ACK within 2 seconds.
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		t.Fatal("no ACK response received from dispatcher within 2 seconds")
+	}
+
+	var ack protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &ack); err != nil {
+		t.Fatalf("parse ACK response: %v", err)
+	}
+	if ack.Type != protocol.MsgACK {
+		t.Fatalf("expected ACK message type, got %q", ack.Type)
+	}
+	if ack.ACK == nil {
+		t.Fatal("ACK payload is nil")
+	}
+	if !ack.ACK.OK {
+		t.Fatalf("ACK.OK=false, detail: %q", ack.ACK.Detail)
+	}
+}
+
 func TestDispatcher_StartsInert(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)

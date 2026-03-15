@@ -64,7 +64,7 @@ func TestBuildDecomposePromptNoCreateParent(t *testing.T) {
 		BeadID:   "oro-test",
 		QGOutput: "lint failed",
 	}
-	prompt := BuildDecomposePrompt(opts)
+	prompt := buildDecomposePrompt(opts)
 	if strings.Contains(prompt, "create --parent") {
 		t.Error("prompt must not use bd create --parent (creates circular dependency deadlock)")
 	}
