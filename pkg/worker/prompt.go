@@ -201,6 +201,10 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"At the hard threshold: the dispatcher will force-stop the worker.",
 	}, "\n"))
 
+	appendFailureAndExit(b, params.BeadID)
+}
+
+func appendFailureAndExit(b *strings.Builder, beadID string) {
 	// 11. Failure
 	section(b, "Failure", strings.Join([]string{
 		"All bug beads MUST use --priority=0. Bugs are always P0.",
@@ -211,8 +215,8 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"  `bd create --title=\"<subtask>\" --type=task` for each piece",
 		"  then `bd update <child-id> --parent <bead-id>` + `bd dep add <bead-id> <child-id>` for each child",
 		"- Context limit reached: create handoff beads, then exit.",
-		fmt.Sprintf("  `bd create --title=\"Continue: <bead-title>\" --type=task --acceptance-criteria=\"<copy same acceptance criteria from above>\" --description=\"Remaining: <what's left>\"`"),
-		fmt.Sprintf("  then `bd update <child-id> --parent %s` + `bd dep add %s <child-id>`", params.BeadID, params.BeadID),
+		"  `bd create --title=\"Continue: <bead-title>\" --type=task --acceptance-criteria=\"<copy same acceptance criteria from above>\" --description=\"Remaining: <what's left>\"`",
+		fmt.Sprintf("  then `bd update <child-id> --parent %s` + `bd dep add %s <child-id>`", beadID, beadID),
 		"- Blocked: create a blocker bead, then declare the dependency and exit.",
 		"  `bd create --title=\"Blocker: <what's blocking>\" --type=bug --priority=0`",
 		"  then `bd dep add <this-bead> <blocker-bead>`",
