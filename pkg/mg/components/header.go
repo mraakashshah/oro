@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/lipgloss/v2"
 	"oro/pkg/mg/data"
 	"oro/pkg/mg/ui"
+
+	"charm.land/lipgloss/v2"
 )
 
 // Header renders the top title bar with bead string and counts.

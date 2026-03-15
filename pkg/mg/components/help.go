@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"oro/pkg/mg/ui"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"oro/pkg/mg/ui"
 )
 
 // Help renders the global ? help modal with pagination.
@@ -28,6 +29,8 @@ type helpSection struct {
 }
 
 // NewHelp creates a new help rendering component.
+//
+//oro:testonly
 func NewHelp(width, height int) Help {
 	return Help{Width: width, Height: height}
 }

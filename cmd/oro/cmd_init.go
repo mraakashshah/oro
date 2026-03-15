@@ -509,25 +509,9 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		return nil, fmt.Errorf("setup beads symlink: %w", err)
 	}
 
-	// 4b. Initialize beads database if not already present.
+	// 4b. Initialize beads database and dolt server (fail-open).
 	initBeadsDB(projectRoot)
-
-	// 4c. Ensure dolt metadata is written to .beads/metadata.json.
-	// Fail-open: log warning but continue. Dolt is not critical for init.
-	beadsPath := filepath.Join(projectRoot, ".beads")
-	port := DerivePort(beadsPath)
-	if err := ensureDoltMetadata(beadsPath, port); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: dolt metadata setup failed: %v\n", err)
-	}
-
-	// 4d. Start dolt server if not already running.
-	// Fail-open: warn but continue. Dolt can be started later via bd or oro start.
-	// With adopt behavior, this is idempotent if dolt is already running.
-	if meta, _ := readDoltMeta(beadsPath); meta != nil {
-		if _, startErr := startDoltServer(beadsPath, port); startErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: dolt server start failed: %v\n", startErr)
-		}
-	}
+	initDoltForProject(filepath.Join(projectRoot, ".beads"))
 
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
@@ -554,11 +538,26 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	// warning and returns nil when srcDir is missing (go-install users lack
 	// the source tree). oro init always runs from the repo root so the
 	// source is normally available.
-	searchHookSrc := filepath.Join(absProjectRoot, "cmd", "oro-search-hook")
-	searchHookBin := filepath.Join(oroHome, "hooks", "oro-search-hook")
-	_ = ensureSearchHook(searchHookBin, searchHookSrc)
+	_ = ensureSearchHook(
+		filepath.Join(oroHome, "hooks", "oro-search-hook"),
+		filepath.Join(absProjectRoot, "cmd", "oro-search-hook"),
+	)
 
 	return cfg, nil
+}
+
+// initDoltForProject ensures dolt metadata and server are ready for a .beads path.
+// Fail-open: logs warnings but does not return errors.
+func initDoltForProject(beadsPath string) {
+	port := DerivePort(beadsPath)
+	if err := ensureDoltMetadata(beadsPath, port); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: dolt metadata setup failed: %v\n", err)
+	}
+	if meta, _ := readDoltMeta(beadsPath); meta != nil {
+		if _, startErr := startDoltServer(beadsPath, port); startErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: dolt server start failed: %v\n", startErr)
+		}
+	}
 }
 
 // createProjectAnchor writes the .oro/config.yaml anchor file in the project root.

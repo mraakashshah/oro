@@ -6,9 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"oro/pkg/mg/data"
 	"oro/pkg/mg/ui"
+
+	"charm.land/lipgloss/v2"
 )
 
 // FooterBinding is a key-description pair.
@@ -118,21 +119,6 @@ func NewFooter(width int, detailFocused bool) Footer {
 		bindings = DetailBindings
 	}
 	return Footer{Width: width, Bindings: bindings}
-}
-
-// insertBefore inserts extra bindings before the binding with the given key.
-func insertBefore(bindings []FooterBinding, key string, extra ...FooterBinding) []FooterBinding {
-	for i, b := range bindings {
-		if b.Key != key {
-			continue
-		}
-		result := make([]FooterBinding, 0, len(bindings)+len(extra))
-		result = append(result, bindings[:i]...)
-		result = append(result, extra...)
-		result = append(result, bindings[i:]...)
-		return result
-	}
-	return append(bindings, extra...)
 }
 
 // BulkFooter renders the footer bar shown during multi-select.

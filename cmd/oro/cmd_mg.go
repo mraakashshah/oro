@@ -28,12 +28,10 @@ func newMgCmd() *cobra.Command {
 		Long:  "Launch the Mardi Gras TUI — a parade-based view of beads issues with colors, confetti, and live updates.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			blockingTypes := parseBlockingTypes(blockTypes)
-
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("getting working directory: %w", err)
 			}
-
 			source := resolveSource(cwd, path)
 			if source.Mode == data.SourceJSONL && source.Path == "" {
 				return fmt.Errorf("no .beads/ directory found and bd not on PATH\n\nRun from inside a project with Beads, or specify a path:\n  oro mg --path /path/to/.beads/issues.jsonl")

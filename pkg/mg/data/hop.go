@@ -31,6 +31,8 @@ type Validation struct {
 }
 
 // QualityStars converts a 0.0-1.0 quality score to a 0-5 star rating.
+//
+//oro:testonly
 func QualityStars(score float32) int {
 	stars := int(score*5 + 0.5) // round to nearest
 	if stars < 0 {

@@ -3,9 +3,10 @@ package components
 import (
 	"time"
 
+	"oro/pkg/mg/ui"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"oro/pkg/mg/ui"
 )
 
 // ToastLevel controls the style of a toast message.
