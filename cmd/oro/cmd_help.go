@@ -20,7 +20,7 @@ Lifecycle:
 Monitoring:
   status     Show current swarm state
   logs       Query and tail dispatcher event logs
-  dash       Launch interactive dashboard
+  mg         Mardi Gras parade view for beads issues
 
 Memory:
   remember   Store a memory
