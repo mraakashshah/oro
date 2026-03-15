@@ -1,0 +1,331 @@
+package components
+
+import (
+	"fmt"
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"oro/pkg/mg/ui"
+)
+
+// Help renders the global ? help modal with pagination.
+type Help struct {
+	Width  int
+	Height int
+	page   int // current page (0-indexed)
+}
+
+type helpBinding struct {
+	key  string
+	desc string
+}
+
+type helpSection struct {
+	title    string
+	bindings []helpBinding
+}
+
+// NewHelp creates a new help rendering component.
+func NewHelp(width, height int) Help {
+	return Help{Width: width, Height: height}
+}
+
+// SetSize updates the help dimensions.
+func (h *Help) SetSize(width, height int) {
+	h.Width = width
+	h.Height = height
+}
+
+// Update handles key events for the help overlay (pagination).
+func (h Help) Update(msg tea.Msg) (Help, bool) {
+	km, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return h, false
+	}
+
+	pages := h.pageCount()
+
+	switch km.String() {
+	case "l", "right":
+		if h.page < pages-1 {
+			h.page++
+		}
+		return h, true
+	case "h", "left":
+		if h.page > 0 {
+			h.page--
+		}
+		return h, true
+	}
+
+	return h, false
+}
+
+func allSections() []helpSection {
+	return []helpSection{
+		{
+			title: "GLOBAL",
+			bindings: []helpBinding{
+				{key: "q", desc: "Quit application"},
+				{key: "tab", desc: "Switch active pane"},
+				{key: "?", desc: "Toggle help"},
+				{key: ": / Ctrl+K", desc: "Open command palette"},
+			},
+		},
+		{
+			title: "PARADE",
+			bindings: []helpBinding{
+				{key: "j / k", desc: "Navigate up/down"},
+				{key: "g / G", desc: "Jump to top/bottom"},
+				{key: "enter", desc: "Focus detail pane"},
+				{key: "c", desc: "Toggle closed issues"},
+				{key: "/", desc: "Enter filter mode (fuzzy)"},
+				{key: "f", desc: "Toggle focus mode (my work + top priority)"},
+				{key: "w", desc: "Launch oro work on issue"},
+				{key: "W", desc: "Kill active worker on issue"},
+			},
+		},
+		{
+			title: "QUICK ACTIONS",
+			bindings: []helpBinding{
+				{key: "1", desc: "Set status: in_progress"},
+				{key: "2", desc: "Set status: open"},
+				{key: "3", desc: "Close issue"},
+				{key: "!", desc: "Set priority: P1 (high)"},
+				{key: "@", desc: "Set priority: P2 (medium)"},
+				{key: "#", desc: "Set priority: P3 (low)"},
+				{key: "$", desc: "Set priority: P4 (backlog)"},
+				{key: "b", desc: "Copy branch name to clipboard"},
+				{key: "B", desc: "Create + checkout git branch"},
+				{key: "N", desc: "Create new issue"},
+			},
+		},
+		{
+			title: "MULTI-SELECT",
+			bindings: []helpBinding{
+				{key: "space / x", desc: "Toggle select on cursor issue"},
+				{key: "Shift+J/K", desc: "Select and move down/up"},
+				{key: "X", desc: "Clear all selections"},
+				{key: "1/2/3", desc: "Bulk set status on selected"},
+			},
+		},
+		{
+			title: "DETAIL",
+			bindings: []helpBinding{
+				{key: "j / k", desc: "Scroll up/down"},
+				{key: "esc", desc: "Back to parade pane"},
+				{key: "/", desc: "Enter filter mode"},
+				{key: "w", desc: "Launch oro work on issue"},
+				{key: "W", desc: "Kill active worker on issue"},
+			},
+		},
+		{
+			title: "FILTER",
+			bindings: []helpBinding{
+				{key: "esc", desc: "Clear query and exit"},
+				{key: "enter", desc: "Apply query and exit"},
+				{key: "type:bug", desc: "Match issue type"},
+				{key: "p0, p1...", desc: "Match priority level"},
+			},
+		},
+	}
+}
+
+// sectionHeight returns the number of lines a section takes up,
+// including the title line and one blank line separator after it.
+func sectionHeight(s helpSection) int {
+	return 1 + len(s.bindings) + 1 // title + bindings + blank separator
+}
+
+// paginateSections splits sections into pages that fit within maxLines.
+func paginateSections(sections []helpSection, maxLines int) [][]helpSection {
+	if maxLines <= 0 {
+		return [][]helpSection{sections}
+	}
+
+	var pages [][]helpSection
+	var currentPage []helpSection
+	used := 0
+
+	for _, s := range sections {
+		sh := sectionHeight(s)
+		// If adding this section exceeds the page, start a new page
+		// (unless current page is empty — always add at least one section)
+		if used+sh > maxLines && len(currentPage) > 0 {
+			pages = append(pages, currentPage)
+			currentPage = nil
+			used = 0
+		}
+		currentPage = append(currentPage, s)
+		used += sh
+	}
+	if len(currentPage) > 0 {
+		pages = append(pages, currentPage)
+	}
+
+	if len(pages) == 0 {
+		pages = [][]helpSection{sections}
+	}
+	return pages
+}
+
+// bodyLines returns the available height for section content.
+func (h Help) bodyLines() int {
+	// header (title 3 lines + subtitle 1 + blank 1) + footer (blank 1 + hint 1 + page indicator 1)
+	overhead := 8
+	return max(h.Height-overhead-6, 10) // 6 for box padding/border
+}
+
+// pageCount returns the total number of pages.
+func (h Help) pageCount() int {
+	pages := paginateSections(allSections(), h.bodyLines())
+	return len(pages)
+}
+
+// View returns the rendered modal block positioned at the center of the terminal.
+func (h Help) View() string {
+	contentWidth := h.Width - 8
+	if contentWidth > 84 {
+		contentWidth = 84
+	}
+	if contentWidth < 44 {
+		contentWidth = 44
+	}
+
+	sections := allSections()
+	pages := paginateSections(sections, h.bodyLines())
+
+	// Clamp page
+	page := h.page
+	if page >= len(pages) {
+		page = len(pages) - 1
+	}
+	if page < 0 {
+		page = 0
+	}
+
+	var titleBlock string
+	if contentWidth >= 44 {
+		titleBlock = renderTitle(contentWidth)
+	} else {
+		titleBlock = ui.HelpTitle.Width(contentWidth).Render("[ MARDI GRAS HELP ]")
+	}
+
+	header := lipgloss.JoinVertical(
+		lipgloss.Left,
+		titleBlock,
+		ui.HelpSubtitle.Width(contentWidth).Render("Navigation and filter shortcuts"),
+	)
+
+	body := h.renderSections(contentWidth, pages[page])
+
+	// Footer with page indicator
+	footerParts := []string{}
+	if len(pages) > 1 {
+		pageStyle := lipgloss.NewStyle().Foreground(ui.Muted)
+		pageLabel := pageStyle.Render(fmt.Sprintf("Page %d/%d", page+1, len(pages)))
+		navHint := lipgloss.NewStyle().Foreground(ui.Dim).Render("  h/l or ←/→ to navigate")
+		footerParts = append(footerParts, pageLabel+navHint)
+	}
+	footerParts = append(footerParts, ui.HelpHint.Width(contentWidth).Render("Press esc, q, or ? to close"))
+
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
+		header,
+		"",
+		body,
+		"",
+		strings.Join(footerParts, "\n"),
+	)
+
+	box := ui.HelpOverlayBg.Width(contentWidth + 4).Render(content)
+
+	return lipgloss.Place(h.Width, h.Height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func (h Help) renderSections(width int, sections []helpSection) string {
+	blocks := make([]string, 0, len(sections))
+	for i := range sections {
+		blocks = append(blocks, h.renderSection(width, sections[i], h.maxKeyWidth(allSections())))
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
+func (h Help) renderSection(width int, section helpSection, keyWidth int) string {
+	rows := make([]string, 0, len(section.bindings))
+	descWidth := width - keyWidth - 3
+	if descWidth < 16 {
+		descWidth = 16
+	}
+
+	for i := range section.bindings {
+		b := section.bindings[i]
+		key := ui.HelpKey.Width(keyWidth).Render(b.key)
+		desc := ansi.Truncate(b.desc, descWidth, "...")
+		row := lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			key,
+			" ",
+			ui.HelpDesc.Width(descWidth).Render(desc),
+		)
+		rows = append(rows, row)
+	}
+
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
+		ui.HelpSection.Render(section.title),
+		strings.Join(rows, "\n"),
+	)
+	return content
+}
+
+// asciiTitle is a compact block-element rendering of "Mardi Gras".
+var asciiTitle = [3]string{
+	`░█▄█░█▀█░█▀▄░█▀▄░▀█▀░░░█▀▀░█▀▄░█▀█░█▀▀`,
+	`░█░█░█▀█░█▀▄░█░█░░█░░░░█░█░█▀▄░█▀█░▀▀█`,
+	`░▀░▀░▀░▀░▀░▀░▀▀░░▀▀▀░░░▀▀▀░▀░▀░▀░▀░▀▀▀`,
+}
+
+// renderTitle renders the ASCII title with Mardi Gras color stripes.
+// Each row cycles through purple → gold → green.
+func renderTitle(maxWidth int) string {
+	colors := [3]lipgloss.Style{
+		lipgloss.NewStyle().Foreground(ui.BrightPurple).Bold(true),
+		lipgloss.NewStyle().Foreground(ui.BrightGold).Bold(true),
+		lipgloss.NewStyle().Foreground(ui.BrightGreen).Bold(true),
+	}
+
+	rows := make([]string, len(asciiTitle))
+	for i, line := range asciiTitle {
+		runes := []rune(line)
+		if len(runes) > maxWidth {
+			runes = runes[:maxWidth]
+		}
+		styled := colors[i%3].Render(string(runes))
+		// Center within maxWidth
+		pad := (maxWidth - len(runes)) / 2
+		if pad > 0 {
+			styled = strings.Repeat(" ", pad) + styled
+		}
+		rows[i] = styled
+	}
+	return strings.Join(rows, "\n")
+}
+
+func (h Help) maxKeyWidth(sections []helpSection) int {
+	keyWidth := 10
+	for i := range sections {
+		for j := range sections[i].bindings {
+			l := len(sections[i].bindings[j].key)
+			if l > keyWidth {
+				keyWidth = l
+			}
+		}
+	}
+	if keyWidth > 12 {
+		return 12
+	}
+	return keyWidth
+}
