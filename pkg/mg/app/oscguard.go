@@ -141,9 +141,10 @@ func (g *OSCGuard) filterMsg(msg tea.Msg) tea.Msg {
 
 	// Layer 2: timing-based suppression window. During the window
 	// drop all printable keys including shift/alt-modified ones.
+	// Do NOT extend the window here — suppressed user keys must not
+	// push the deadline forward, or the window never closes.
 	if now.Before(g.suppressUntil) {
 		g.lastPrintableTime = now
-		g.markSuspicious(now, oscGuardWindow)
 		dbg("  GUARD-WINDOW suppressed: %q (mod=%d)", kp.String(), kp.Mod)
 		return nil
 	}

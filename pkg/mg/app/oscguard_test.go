@@ -156,6 +156,31 @@ func TestOSCGuardWindowExpires(t *testing.T) {
 	}
 }
 
+func TestOSCGuardWindowDoesNotExtendIndefinitely(t *testing.T) {
+	filter := NewOSCGuardFilter()
+
+	// Trigger burst to open a 500ms window.
+	filter(nil, tea.KeyPressMsg{Code: '1', Text: "1"})
+	filter(nil, tea.KeyPressMsg{Code: ';', Text: ";"})
+
+	// Press keys throughout the window — they should be suppressed
+	// but must NOT extend the window. After 500ms from the original
+	// trigger, keys should pass through even if we kept pressing.
+	for i := 0; i < 5; i++ {
+		time.Sleep(80 * time.Millisecond) // 5 × 80ms = 400ms total, still within original window
+		filter(nil, tea.KeyPressMsg{Code: 'j', Text: "j"})
+	}
+
+	// Now wait for the window to expire from the ORIGINAL trigger time.
+	// 5 × 80ms = 400ms already elapsed. Wait 200ms more = 600ms total.
+	time.Sleep(200 * time.Millisecond)
+
+	msg := tea.KeyPressMsg{Code: 'q', Text: "q"}
+	if filter(nil, msg) == nil {
+		t.Fatal("expected 'q' to pass through after original window expired — window was extended indefinitely by suppressed keys")
+	}
+}
+
 func TestOSCGuardSuppressesAllCharsInWindow(t *testing.T) {
 	filter := NewOSCGuardFilter()
 
