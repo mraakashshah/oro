@@ -36,6 +36,17 @@ func TestGradientBar(t *testing.T) {
 	}
 }
 
+func TestApplyPartialGradientSingleChar(t *testing.T) {
+	// totalLength=1 should not produce NaN/Inf — the single char gets t=0.0
+	result := ApplyPartialMardiGrasGradient("X", 1)
+	if result == "" {
+		t.Fatal("expected non-empty output for single-char totalLength=1")
+	}
+	if !strings.Contains(result, "X") {
+		t.Error("result should contain the input character")
+	}
+}
+
 func TestGradientBarEdgeCases(t *testing.T) {
 	if got := GradientBar(0, 10, GradientProgress); got == "" {
 		t.Error("0% bar should still render empty blocks")
