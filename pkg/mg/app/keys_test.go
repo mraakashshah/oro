@@ -278,11 +278,81 @@ func TestKeyGGJumpsToBottom(t *testing.T) {
 	if got.parade.Items[got.parade.Cursor].IsHeader {
 		t.Fatal("expected cursor to be on a non-header item after pressing G")
 	}
-	// Verify no non-header items exist after the cursor
+	// Verify no selectable items exist after the cursor
 	for i := got.parade.Cursor + 1; i < len(got.parade.Items); i++ {
-		if !got.parade.Items[i].IsHeader {
-			t.Fatalf("expected no non-header items after cursor at %d, but item %d is selectable", got.parade.Cursor, i)
+		if !got.parade.Items[i].IsHeader && !got.parade.Items[i].IsFooter {
+			t.Fatalf("expected no selectable items after cursor at %d, but item %d is selectable", got.parade.Cursor, i)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 11b. g syncs SelectedIssue with cursor
+// ---------------------------------------------------------------------------
+
+func TestKeyGSyncsSelectedIssue(t *testing.T) {
+	got := setupModel(t)
+
+	// Move down so SelectedIssue changes from the first item
+	model, _ := got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got = model.(Model)
+	model, _ = got.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	got = model.(Model)
+
+	// Confirm we're NOT on the first selectable item
+	if got.parade.SelectedIssue == nil {
+		t.Fatal("expected SelectedIssue to be set after j navigation")
+	}
+	movedID := got.parade.SelectedIssue.ID
+
+	// Press g to jump to top
+	model, _ = got.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
+	got = model.(Model)
+
+	// SelectedIssue must point to the item under the cursor (first selectable)
+	if got.parade.SelectedIssue == nil {
+		t.Fatal("expected SelectedIssue to be set after pressing g")
+	}
+	if got.parade.SelectedIssue.ID == movedID {
+		t.Fatalf("g should update SelectedIssue to first item, but it still points to %s", movedID)
+	}
+	cursorItem := got.parade.Items[got.parade.Cursor]
+	if got.parade.SelectedIssue.ID != cursorItem.Issue.ID {
+		t.Fatalf("SelectedIssue (%s) does not match cursor item (%s)", got.parade.SelectedIssue.ID, cursorItem.Issue.ID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 12b. G syncs SelectedIssue with cursor
+// ---------------------------------------------------------------------------
+
+func TestKeyGGSyncsSelectedIssue(t *testing.T) {
+	got := setupModel(t)
+
+	// Expand closed to have more items
+	model, _ := got.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	got = model.(Model)
+
+	// Remember initial selection
+	if got.parade.SelectedIssue == nil {
+		t.Fatal("expected SelectedIssue to be set initially")
+	}
+	initialID := got.parade.SelectedIssue.ID
+
+	// Press G to jump to bottom
+	model, _ = got.Update(tea.KeyPressMsg{Code: 'G', Text: "G"})
+	got = model.(Model)
+
+	// SelectedIssue must point to the item under the cursor (last selectable)
+	if got.parade.SelectedIssue == nil {
+		t.Fatal("expected SelectedIssue to be set after pressing G")
+	}
+	if got.parade.SelectedIssue.ID == initialID {
+		t.Fatalf("G should update SelectedIssue to last item, but it still points to %s", initialID)
+	}
+	cursorItem := got.parade.Items[got.parade.Cursor]
+	if got.parade.SelectedIssue.ID != cursorItem.Issue.ID {
+		t.Fatalf("SelectedIssue (%s) does not match cursor item (%s)", got.parade.SelectedIssue.ID, cursorItem.Issue.ID)
 	}
 }
 

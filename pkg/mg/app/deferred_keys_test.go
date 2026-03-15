@@ -38,17 +38,62 @@ func sendFiltered(t *testing.T, m Model, filter func(tea.Model, tea.Msg) tea.Msg
 	return model.(Model), cmd, true
 }
 
+func TestNavigationKeysProcessedImmediately(t *testing.T) {
+	// Navigation keys should NOT be deferred — they should process immediately
+	// without going through the 60ms deferral buffer.
+	navKeys := []rune{'j', 'k', 'g', 'q', 'c', 'f', 'w', '/', '?'}
+	for _, key := range navKeys {
+		// Fresh model per key to avoid OSC guard accumulator interference.
+		m, filter := setupDeferredKeyModel(t)
+		m2, cmd, ok := sendFiltered(t, m, filter, tea.KeyPressMsg{Code: key, Text: string(key)})
+		if !ok {
+			t.Fatalf("expected %q to pass filter", string(key))
+		}
+		// Non-deferred keys should NOT produce a deferredKeyMsg command.
+		// They should be processed inline (cmd may be nil or a real action, but NOT a deferred staging).
+		if cmd != nil {
+			msg := cmd()
+			if _, isDef := msg.(deferredKeyMsg); isDef {
+				t.Fatalf("key %q was deferred but should be processed immediately", string(key))
+			}
+		}
+		if len(m2.pendingKeys) != 0 {
+			t.Fatalf("key %q staged a pending key but should be processed immediately", string(key))
+		}
+	}
+}
+
+func TestFragmentStarterKeysStillDeferred(t *testing.T) {
+	// Keys that can start a control-sequence fragment pair should still be deferred.
+	fragKeys := []rune{'[', ']', ';', '0', '5', '9'}
+	for _, key := range fragKeys {
+		// Fresh model per key to avoid OSC guard accumulator interference.
+		m, filter := setupDeferredKeyModel(t)
+		m2, cmd, ok := sendFiltered(t, m, filter, tea.KeyPressMsg{Code: key, Text: string(key)})
+		if !ok {
+			t.Fatalf("expected %q to pass filter", string(key))
+		}
+		if cmd == nil {
+			t.Fatalf("expected %q to be deferred (produce a staging command)", string(key))
+		}
+		if len(m2.pendingKeys) != 1 {
+			t.Fatalf("expected %q to stage 1 pending key, got %d", string(key), len(m2.pendingKeys))
+		}
+	}
+}
+
 func TestDeferredKeyPassesAfterDelay(t *testing.T) {
 	m, filter := setupDeferredKeyModel(t)
 
+	// Use a fragment-starter key (;) since navigation keys are no longer deferred.
 	var cmd tea.Cmd
 	var ok bool
-	m, cmd, ok = sendFiltered(t, m, filter, tea.KeyPressMsg{Code: 'q', Text: "q"})
+	m, cmd, ok = sendFiltered(t, m, filter, tea.KeyPressMsg{Code: ';', Text: ";"})
 	if !ok {
-		t.Fatal("expected q to pass filter")
+		t.Fatal("expected ; to pass filter")
 	}
 	if cmd == nil {
-		t.Fatal("expected deferred command after staging q")
+		t.Fatal("expected deferred command after staging ;")
 	}
 
 	msg := cmd()
@@ -57,15 +102,10 @@ func TestDeferredKeyPassesAfterDelay(t *testing.T) {
 		t.Fatalf("expected deferredKeyMsg, got %T", msg)
 	}
 
-	model, quitCmd := m.Update(deferred)
+	model, resolvedCmd := m.Update(deferred)
 	m = model.(Model)
-	if quitCmd == nil {
-		t.Fatal("expected q to produce a quit command after delay")
-	}
-	quitMsg := quitCmd()
-	if _, ok := quitMsg.(tea.QuitMsg); !ok {
-		t.Fatalf("expected tea.QuitMsg, got %T", quitMsg)
-	}
+	// ; is not a bound key, so it produces no action — but it should resolve without error.
+	_ = resolvedCmd
 	if len(m.pendingKeys) != 0 {
 		t.Fatal("expected pending key queue to be cleared after deferred delivery")
 	}

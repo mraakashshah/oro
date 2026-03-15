@@ -69,7 +69,27 @@ func (m Model) shouldDeferKey(msg tea.KeyPressMsg) bool {
 	if msg.Mod&tea.ModCtrl != 0 {
 		return false
 	}
-	return isPrintableKey(msg)
+	if !isPrintableKey(msg) {
+		return false
+	}
+	// Only defer keys that can start a control-sequence fragment pair.
+	// Navigation keys (j, k, g, q, c, f, /, ?, etc.) can never be
+	// fragment starters and should be processed immediately.
+	return canStartFragmentPair(msg.Code)
+}
+
+// canStartFragmentPair returns true for characters that appear as the first
+// element in isLikelyDeferredFragmentPair: CSI/OSC openers, parameter
+// digits, and separators.
+func canStartFragmentPair(code rune) bool {
+	switch {
+	case code == '[', code == ']', code == ';':
+		return true
+	case code >= '0' && code <= '9':
+		return true
+	default:
+		return false
+	}
 }
 
 func (m Model) handleDeferredKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

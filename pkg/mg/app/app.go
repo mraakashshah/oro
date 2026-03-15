@@ -737,17 +737,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "g":
 			m.parade.Cursor = 0
 			m.parade.ScrollOffset = 0
-			for i, item := range m.parade.Items {
-				if !item.IsHeader {
+			for i := range m.parade.Items {
+				if !m.parade.Items[i].IsHeader && !m.parade.Items[i].IsFooter {
 					m.parade.Cursor = i
+					m.parade.SelectedIssue = m.parade.Items[i].Issue
 					break
 				}
 			}
 			m.syncSelection()
 		case "G":
 			for i := len(m.parade.Items) - 1; i >= 0; i-- {
-				if !m.parade.Items[i].IsHeader {
+				if !m.parade.Items[i].IsHeader && !m.parade.Items[i].IsFooter {
 					m.parade.Cursor = i
+					m.parade.SelectedIssue = m.parade.Items[i].Issue
 					break
 				}
 			}
