@@ -7,6 +7,8 @@ import (
 )
 
 // Float renders a decorative ASCII parade float. Stub for v1.
+//
+//oro:testonly
 func Float(title string, width int) string {
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

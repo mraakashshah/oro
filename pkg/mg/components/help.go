@@ -29,6 +29,8 @@ type helpSection struct {
 }
 
 // NewHelp creates a new help rendering component.
+//
+//oro:testonly
 func NewHelp(width, height int) Help {
 	return Help{Width: width, Height: height}
 }

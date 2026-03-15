@@ -207,6 +207,19 @@ linters:
         linters:
           - gosec
 
+      # CLI command setup functions are naturally long; not business logic.
+      - path: cmd/oro/cmd_mg\.go
+        linters:
+          - funlen
+      - path: cmd/oro/cmd_init\.go
+        linters:
+          - funlen
+
+      # Socket probe uses net.DialTimeout intentionally (no request context needed).
+      - path: cmd/oro/cmd_start\.go
+        linters:
+          - noctx
+
 formatters:
   enable:
     - goimports

@@ -40,6 +40,8 @@ func CrossRigDeps(issue *Issue) []ExternalRef {
 
 // CrossRigSummary computes a summary of cross-rig dependencies across all issues.
 // Returns a map of rig name → count of dependencies to/from that rig.
+//
+//oro:testonly
 func CrossRigSummary(issues []Issue) map[string]int {
 	rigs := make(map[string]int)
 	for i := range issues {
