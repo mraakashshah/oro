@@ -216,6 +216,7 @@ func TestExecutePaletteActions(t *testing.T) {
 			name:   "ActionHelp sets showHelp",
 			action: components.ActionHelp,
 			check: func(t *testing.T, m Model, cmd tea.Cmd) {
+				t.Helper()
 				if !m.showHelp {
 					t.Fatal("expected showHelp to be true after ActionHelp")
 				}
@@ -225,6 +226,7 @@ func TestExecutePaletteActions(t *testing.T) {
 			name:   "ActionFilter sets filtering",
 			action: components.ActionFilter,
 			check: func(t *testing.T, m Model, cmd tea.Cmd) {
+				t.Helper()
 				if !m.filtering {
 					t.Fatal("expected filtering to be true after ActionFilter")
 				}
@@ -234,6 +236,7 @@ func TestExecutePaletteActions(t *testing.T) {
 			name:   "ActionToggleFocus flips focusMode",
 			action: components.ActionToggleFocus,
 			check: func(t *testing.T, m Model, cmd tea.Cmd) {
+				t.Helper()
 				if !m.focusMode {
 					t.Fatal("expected focusMode to be true after ActionToggleFocus (was false)")
 				}
@@ -243,6 +246,7 @@ func TestExecutePaletteActions(t *testing.T) {
 			name:   "ActionQuit produces QuitMsg",
 			action: components.ActionQuit,
 			check: func(t *testing.T, m Model, cmd tea.Cmd) {
+				t.Helper()
 				if cmd == nil {
 					t.Fatal("expected non-nil cmd from ActionQuit")
 				}
@@ -256,6 +260,7 @@ func TestExecutePaletteActions(t *testing.T) {
 			name:   "ActionNewIssue sets creating",
 			action: components.ActionNewIssue,
 			check: func(t *testing.T, m Model, cmd tea.Cmd) {
+				t.Helper()
 				if !m.creating {
 					t.Fatal("expected creating to be true after ActionNewIssue")
 				}
@@ -265,6 +270,7 @@ func TestExecutePaletteActions(t *testing.T) {
 			name:   "ActionToggleClosed flips ShowClosed",
 			action: components.ActionToggleClosed,
 			check: func(t *testing.T, m Model, cmd tea.Cmd) {
+				t.Helper()
 				if !m.parade.ShowClosed {
 					t.Fatal("expected parade.ShowClosed to be true after ActionToggleClosed (was false)")
 				}
