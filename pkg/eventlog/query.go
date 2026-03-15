@@ -87,6 +87,8 @@ func (r *Reader) Close() error {
 
 // QueryWorkerEvents retrieves events matching the given filter criteria.
 // Returns an empty slice if no events match.
+//
+//oro:testonly
 func (r *Reader) QueryWorkerEvents(ctx context.Context, opts QueryOpts) ([]Event, error) {
 	query, args := buildQuery(opts)
 
