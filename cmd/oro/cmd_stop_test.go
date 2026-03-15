@@ -383,26 +383,22 @@ func TestStopSequenceCleansDolt(t *testing.T) {
 	})
 }
 
-// TestStopSequenceCallsStopDolt verifies that runStopSequence calls stopDoltFn
-// with the beadsDir after daemon shutdown when the new interface is configured.
-func TestStopSequenceCallsStopDolt(t *testing.T) {
+// TestStopSequence_NoDuplicateDoltStop verifies that runStopSequence only calls
+// dolt cleanup once (via doltStopFn), not through a redundant second interface.
+func TestStopSequence_NoDuplicateDoltStop(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
 		t.Fatalf("setup PID: %v", err)
 	}
 
-	beadsDir := filepath.Join(tmpDir, ".beads")
-	stopDoltCalled := false
-	var passedBeadsDir string
-
+	doltStopCount := 0
 	fake := newFakeCmd()
 	var buf bytes.Buffer
 	cfg := ttyStop(pidFile, fake, &buf)
-	cfg.beadsDir = beadsDir
+	cfg.beadsDir = filepath.Join(tmpDir, ".beads")
 	cfg.stopDoltFn = func(dir string) error {
-		stopDoltCalled = true
-		passedBeadsDir = dir
+		doltStopCount++
 		return nil
 	}
 
@@ -410,11 +406,8 @@ func TestStopSequenceCallsStopDolt(t *testing.T) {
 		t.Fatalf("runStopSequence: %v", err)
 	}
 
-	if !stopDoltCalled {
-		t.Error("stopDoltFn should have been called during stop sequence")
-	}
-	if passedBeadsDir != beadsDir {
-		t.Errorf("stopDoltFn should have been called with beadsDir %q, got %q", beadsDir, passedBeadsDir)
+	if doltStopCount != 1 {
+		t.Errorf("doltStopFn should have been called exactly once, got %d calls", doltStopCount)
 	}
 }
 
