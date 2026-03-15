@@ -481,8 +481,16 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 
 	wireDependencies(d, paths.SocketPath, paths.OroHome, &dispatcher.ExecCommandRunner{}, true /* daemonOnly */)
 
+	// Convert beads directory to absolute path (daemon may change cwd).
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		db.Close()
+		return fmt.Errorf("get working dir: %w", err)
+	}
+	beadsDir := filepath.Join(repoRoot, ".beads")
+
 	ctx := cmd.Context()
-	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized(), ".beads")
+	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized(), beadsDir)
 	defer cleanup()
 
 	if err := d.Run(shutdownCtx); err != nil {

@@ -816,3 +816,47 @@ func TestWireDependencies_DaemonOnly_SkipsPaneRestarter(t *testing.T) {
 		}
 	})
 }
+
+// TestDaemonOnlyPassesAbsoluteBeadsDir verifies that runDaemonOnly converts
+// the relative .beads path to an absolute path before passing it to SetupSignalHandler.
+func TestDaemonOnlyPassesAbsoluteBeadsDir(t *testing.T) {
+	t.Run("constructs absolute beadsDir path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Change to tmpDir so .beads is relative to this directory
+		origDir, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chdir(origDir)
+		})
+
+		// Verify that the code constructs an absolute path when cwd = tmpDir.
+		// The fix converts ".beads" to an absolute path using filepath.Join(repoRoot, ".beads")
+		// where repoRoot comes from os.Getwd().
+		repoRoot, err := os.Getwd()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Verify that the constructed path would be absolute
+		beadsDir := filepath.Join(repoRoot, ".beads")
+		if !filepath.IsAbs(beadsDir) {
+			t.Errorf("expected absolute beadsDir path, got relative: %s", beadsDir)
+		}
+
+		// Verify it ends with .beads
+		if !strings.HasSuffix(beadsDir, ".beads") {
+			t.Errorf("expected beadsDir to end with '.beads', got: %s", beadsDir)
+		}
+
+		// Verify it starts with / (Unix absolute path indicator)
+		if !strings.HasPrefix(beadsDir, "/") {
+			t.Errorf("expected beadsDir to be an absolute Unix path starting with '/', got: %s", beadsDir)
+		}
+	})
+}

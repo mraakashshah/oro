@@ -292,26 +292,28 @@ func parseBranchNames(output string) []string {
 	return branches
 }
 
-// cleanupDolt stops the dolt server if a PID file exists in beadsDir.
-// Returns true if dolt cleanup was performed. Idempotent: returns false when
-// beadsDir is empty, the .beads directory is absent, or no PID file exists.
-// Also scans for orphaned dolt sql-server processes via pgrep and kills them.
+// cleanupDolt stops the dolt server if a PID file exists in beadsDir and
+// scans for orphaned dolt sql-server processes via pgrep and kills them.
+// Returns true if anything was cleaned (PID file existed or orphans found).
+// Idempotent: returns false when beadsDir is empty or nothing to clean.
 func cleanupDolt(cfg *cleanupConfig) bool {
 	if cfg.beadsDir == "" {
 		return false
 	}
 
+	cleaned := false
+
+	// Try to stop the dolt server if PID file exists.
 	pidPath := filepath.Join(cfg.beadsDir, "dolt-server.pid")
-	if _, err := os.Stat(pidPath); errors.Is(err, os.ErrNotExist) {
-		return false
+	if _, err := os.Stat(pidPath); !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(cfg.w, "stopping dolt server\n")
+		if err := stopDoltServer(cfg.beadsDir); err != nil {
+			fmt.Fprintf(cfg.w, "warning: stop dolt server: %v\n", err)
+		}
+		cleaned = true
 	}
 
-	fmt.Fprintf(cfg.w, "stopping dolt server\n")
-	if err := stopDoltServer(cfg.beadsDir); err != nil {
-		fmt.Fprintf(cfg.w, "warning: stop dolt server: %v\n", err)
-	}
-
-	// Scan for orphan dolt processes.
+	// Always scan for orphan dolt processes, even if PID file doesn't exist.
 	out, err := cfg.runner.Run("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")
 	if err == nil {
 		pids := parseWorkerPIDs(out)
@@ -322,10 +324,11 @@ func cleanupDolt(cfg *cleanupConfig) bool {
 					fmt.Fprintf(cfg.w, "warning: signal dolt PID %d: %v\n", pid, err)
 				}
 			}
+			cleaned = true
 		}
 	}
 
-	return true
+	return cleaned
 }
 
 // cleanupBeads resets in_progress beads back to open. Returns true if beads were reset.
