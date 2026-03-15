@@ -6,9 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"oro/pkg/mg/data"
 	"oro/pkg/mg/ui"
+
+	"charm.land/lipgloss/v2"
 )
 
 // FooterBinding is a key-description pair.

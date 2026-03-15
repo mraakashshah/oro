@@ -3,12 +3,13 @@ package components
 import (
 	"strings"
 
+	"oro/pkg/mg/ui"
+
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/sahilm/fuzzy"
-	"oro/pkg/mg/ui"
 )
 
 // PaletteAction identifies an executable command from the palette.
@@ -178,6 +179,8 @@ func (p *Palette) refilter() {
 }
 
 // SelectedName returns the Name of the currently highlighted command.
+//
+//oro:testonly
 func (p Palette) SelectedName() string {
 	if p.cursor >= 0 && p.cursor < len(p.filtered) {
 		return p.filtered[p.cursor].Name

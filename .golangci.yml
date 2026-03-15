@@ -142,6 +142,10 @@ linters:
       range-loops: true
       for-loops: true
 
+    gosec:
+      excludes:
+        - G115  # gosec v2.23.0 panics on float constants in pkg/mg TUI packages
+
   exclusions:
     generated: lax
     presets:

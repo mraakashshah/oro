@@ -6,11 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/mg/data"
+	"oro/pkg/mg/ui"
+
 	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
-	"oro/pkg/mg/data"
-	"oro/pkg/mg/ui"
 )
 
 // Detail renders the right-panel issue details with a scrollable viewport.

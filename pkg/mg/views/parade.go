@@ -6,10 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 	"oro/pkg/mg/data"
 	"oro/pkg/mg/ui"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // paradeSection defines how each parade group renders.
