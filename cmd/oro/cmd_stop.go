@@ -28,9 +28,8 @@ type stopConfig struct {
 	isTTY      func() bool        // returns true if stdin is a TTY; injectable for testing
 	force      bool               // --force flag: skip interactive confirmation
 	oroHome    string             // base directory for daemon discovery
-	doltStopFn func() error       // stops dolt server (old interface); nil for non-dolt projects
 	beadsDir   string             // directory containing .beads (for dolt cleanup)
-	stopDoltFn func(string) error // stops dolt server (new interface); injectable for testing
+	stopDoltFn func(string) error // stops dolt server; injectable for testing
 }
 
 // projectDaemon describes a running daemon discovered in a project directory.
@@ -119,10 +118,9 @@ Use --all to stop daemons in all projects simultaneously.`,
 			}
 
 			if all {
-				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout())
+				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout(), stopDoltServer)
 			}
 
-			_, doltStop := makeDoltLifecycle(".")
 			cfg := &stopConfig{
 				pidPath:    paths.PIDPath,
 				sockPath:   paths.SocketPath,
@@ -136,7 +134,6 @@ Use --all to stop daemons in all projects simultaneously.`,
 				isTTY:      isStdinTTY,
 				force:      force,
 				oroHome:    paths.OroHome,
-				doltStopFn: doltStop,
 				beadsDir:   ".beads",
 				stopDoltFn: stopDoltServer,
 			}
@@ -167,7 +164,8 @@ func suggestStopAll(w io.Writer, oroHome string) {
 }
 
 // runStopAll discovers and stops all running project daemons.
-func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) error {
+// stopDoltFn is injectable for testing; pass stopDoltServer for production use.
+func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer, stopDoltFn func(string) error) error {
 	daemons := discoverProjectDaemons(oroHome)
 	if len(daemons) == 0 {
 		fmt.Fprintln(w, "no running daemons found")
@@ -182,14 +180,15 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) er
 	for _, d := range daemons {
 		sockPath := strings.TrimSuffix(d.PIDPath, "oro.pid") + "oro.sock"
 
-		// Derive beadsDir and set doltStopFn if beads dir exists.
-		beadsDir := strings.TrimSuffix(d.PIDPath, "oro.pid") + ".beads"
-		var doltStopFn func() error
-		if _, err := os.Stat(beadsDir); err == nil {
-			// beadsDir exists; capture it in closure for stopDoltServer.
-			doltStopFn = func() error {
-				return stopDoltServer(beadsDir)
-			}
+		// Read project.root from the project dir to derive beadsDir.
+		// Graceful degradation: if project.root is missing, skip dolt cleanup.
+		var beadsDir string
+		projectRootFile := filepath.Join(filepath.Dir(d.PIDPath), "project.root")
+		rootBytes, err := os.ReadFile(projectRootFile) //nolint:gosec // path derived from trusted oroHome
+		if err != nil {
+			fmt.Fprintf(w, "warning: cannot read project.root for %s, skipping dolt cleanup\n", d.Project)
+		} else {
+			beadsDir = filepath.Join(strings.TrimSpace(string(rootBytes)), ".beads")
 		}
 
 		cfg := &stopConfig{
@@ -204,9 +203,8 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) er
 			killFn:     defaultKill,
 			isTTY:      isStdinTTY,
 			force:      force,
-			doltStopFn: doltStopFn,
 			beadsDir:   beadsDir,
-			stopDoltFn: stopDoltServer,
+			stopDoltFn: stopDoltFn,
 		}
 
 		fmt.Fprintf(w, "\nstopping %s (PID %d)...\n", d.Project, d.PID)
@@ -334,13 +332,6 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 
 	// 7. Stop dolt server (idempotent — may have been stopped by daemon's own
 	// signal handler on graceful exit, but SIGKILL fallback skips that cleanup).
-	if cfg.doltStopFn != nil {
-		if err := cfg.doltStopFn(); err != nil {
-			fmt.Fprintf(cfg.w, "warning: dolt cleanup: %v\n", err)
-		}
-	}
-
-	// 7b. Stop dolt server with beads directory (new interface).
 	if cfg.stopDoltFn != nil && cfg.beadsDir != "" {
 		if err := cfg.stopDoltFn(cfg.beadsDir); err != nil {
 			fmt.Fprintf(cfg.w, "warning: dolt cleanup: %v\n", err)

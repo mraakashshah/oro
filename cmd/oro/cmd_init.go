@@ -490,6 +490,16 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		return nil, fmt.Errorf("create project dir: %w", err)
 	}
 
+	// 3a. Write project.root with the absolute path of the project root.
+	// Used by runStopAll to locate the project's .beads directory.
+	absProjectRoot, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve absolute project root: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "project.root"), []byte(absProjectRoot), 0o644); err != nil { //nolint:gosec // readable file
+		return nil, fmt.Errorf("write project.root: %w", err)
+	}
+
 	// 3b. Initialize git repo if not already present.
 	ensureGitRepo(projectRoot)
 
@@ -535,7 +545,6 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	// warning and returns nil when srcDir is missing (go-install users lack
 	// the source tree). oro init always runs from the repo root so the
 	// source is normally available.
-	absProjectRoot, _ := filepath.Abs(projectRoot)
 	searchHookSrc := filepath.Join(absProjectRoot, "cmd", "oro-search-hook")
 	searchHookBin := filepath.Join(oroHome, "hooks", "oro-search-hook")
 	_ = ensureSearchHook(searchHookBin, searchHookSrc)

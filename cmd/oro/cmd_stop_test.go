@@ -335,11 +335,11 @@ func TestDiscoverProjectDaemons_IncludesLegacyGlobal(t *testing.T) {
 	}
 }
 
-// TestStopSequenceCleansDolt verifies that runStopSequence calls doltStopFn
+// TestStopSequenceCleansDolt verifies that runStopSequence calls stopDoltFn
 // after daemon shutdown — belt-and-suspenders cleanup for cases where the
 // daemon's own signal handler didn't run (e.g. SIGKILL fallback).
 func TestStopSequenceCleansDolt(t *testing.T) {
-	t.Run("doltStopFn called during stop sequence", func(t *testing.T) {
+	t.Run("stopDoltFn called during stop sequence", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pidFile := filepath.Join(tmpDir, "oro.pid")
 		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
@@ -350,7 +350,8 @@ func TestStopSequenceCleansDolt(t *testing.T) {
 		fake := newFakeCmd()
 		var buf bytes.Buffer
 		cfg := ttyStop(pidFile, fake, &buf)
-		cfg.doltStopFn = func() error {
+		cfg.beadsDir = filepath.Join(tmpDir, ".beads")
+		cfg.stopDoltFn = func(dir string) error {
 			doltStopped = true
 			return nil
 		}
@@ -360,11 +361,11 @@ func TestStopSequenceCleansDolt(t *testing.T) {
 		}
 
 		if !doltStopped {
-			t.Error("doltStopFn should have been called during stop sequence")
+			t.Error("stopDoltFn should have been called during stop sequence")
 		}
 	})
 
-	t.Run("nil doltStopFn is safe for non-dolt projects", func(t *testing.T) {
+	t.Run("nil stopDoltFn is safe for non-dolt projects", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pidFile := filepath.Join(tmpDir, "oro.pid")
 		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
@@ -374,10 +375,10 @@ func TestStopSequenceCleansDolt(t *testing.T) {
 		fake := newFakeCmd()
 		var buf bytes.Buffer
 		cfg := ttyStop(pidFile, fake, &buf)
-		// cfg.doltStopFn is nil (default) — should not panic.
+		// cfg.stopDoltFn is nil (default) — should not panic.
 
 		if err := runStopSequence(context.Background(), cfg); err != nil {
-			t.Fatalf("runStopSequence with nil doltStopFn: %v", err)
+			t.Fatalf("runStopSequence with nil stopDoltFn: %v", err)
 		}
 	})
 }
@@ -460,15 +461,118 @@ func TestStop_NotRunning_SuggestsAllWhenOtherDaemonsExist(t *testing.T) {
 	}
 }
 
-// TestStopAll_CleansDolt verifies that runStopAll sets doltStopFn for each
-// discovered daemon when the project's beads directory exists, and that the
-// dolt PID file is removed after stop.
+// TestStopAllCorrectBeadsDir verifies that runStopAll reads project.root from the
+// project dir to derive beadsDir as <projectRoot>/.beads (not from the PID path),
+// and that missing project.root logs a warning and skips dolt cleanup.
+func TestStopAllCorrectBeadsDir(t *testing.T) {
+	t.Run("reads project.root to derive beadsDir", func(t *testing.T) {
+		oroHome := t.TempDir()
+		projectRoot := t.TempDir() // real project root, separate from oroHome
+
+		// Start a fake daemon subprocess.
+		cmd := exec.CommandContext(context.Background(), "sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep process: %v", err)
+		}
+		defer func() { _ = cmd.Process.Signal(os.Kill) }()
+
+		pid := cmd.Process.Pid
+		projName := "myproject"
+		projDir := filepath.Join(oroHome, "projects", projName)
+		if err := os.MkdirAll(projDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// Write project.root with absolute project root path.
+		if err := os.WriteFile(filepath.Join(projDir, "project.root"), []byte(projectRoot), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Write daemon PID file.
+		if err := WritePIDFile(filepath.Join(projDir, "oro.pid"), pid); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create beads dir at projectRoot/.beads (not projDir/.beads).
+		beadsDir := filepath.Join(projectRoot, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// Capture which beadsDirs are passed to stopDoltFn.
+		var capturedBeadsDirs []string
+		injectStopDolt := func(dir string) error {
+			capturedBeadsDirs = append(capturedBeadsDirs, dir)
+			return nil
+		}
+
+		t.Setenv("ORO_HUMAN_CONFIRMED", "1")
+		var buf bytes.Buffer
+		if err := runStopAll(context.Background(), oroHome, true, &buf, injectStopDolt); err != nil {
+			t.Fatalf("runStopAll: %v", err)
+		}
+
+		if len(capturedBeadsDirs) != 1 {
+			t.Fatalf("expected stopDoltFn called once, got %d times", len(capturedBeadsDirs))
+		}
+		if capturedBeadsDirs[0] != beadsDir {
+			t.Errorf("stopDoltFn called with beadsDir %q, want %q", capturedBeadsDirs[0], beadsDir)
+		}
+	})
+
+	t.Run("missing project.root logs warning and skips dolt cleanup", func(t *testing.T) {
+		oroHome := t.TempDir()
+
+		// Start a fake daemon subprocess.
+		cmd := exec.CommandContext(context.Background(), "sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep process: %v", err)
+		}
+		defer func() { _ = cmd.Process.Signal(os.Kill) }()
+
+		pid := cmd.Process.Pid
+		projName := "myproject"
+		projDir := filepath.Join(oroHome, "projects", projName)
+		if err := os.MkdirAll(projDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// No project.root file written — graceful degradation expected.
+		if err := WritePIDFile(filepath.Join(projDir, "oro.pid"), pid); err != nil {
+			t.Fatal(err)
+		}
+
+		doltCalled := false
+		injectStopDolt := func(dir string) error {
+			doltCalled = true
+			return nil
+		}
+
+		t.Setenv("ORO_HUMAN_CONFIRMED", "1")
+		var buf bytes.Buffer
+		if err := runStopAll(context.Background(), oroHome, true, &buf, injectStopDolt); err != nil {
+			t.Fatalf("runStopAll: %v", err)
+		}
+
+		if doltCalled {
+			t.Error("stopDoltFn should not have been called when project.root is missing")
+		}
+		if !strings.Contains(buf.String(), "warning") {
+			t.Errorf("expected warning in output when project.root is missing, got %q", buf.String())
+		}
+	})
+}
+
+// TestStopAll_CleansDolt verifies that runStopAll invokes stopDoltFn with the
+// project's beads directory for each daemon with a valid project.root, and that
+// the dolt PID file is cleaned up.
 func TestStopAll_CleansDolt(t *testing.T) {
 	oroHome := t.TempDir()
 
 	// Start two temporary subprocesses that will stay alive for the test.
 	// We'll use them as fake daemons.
 	var pids []int
+	var projectRoots []string
 	var cleanupProcs func()
 	{
 		cleanupFns := []func(){}
@@ -479,6 +583,7 @@ func TestStopAll_CleansDolt(t *testing.T) {
 			}
 			pid := cmd.Process.Pid
 			pids = append(pids, pid)
+			projectRoots = append(projectRoots, t.TempDir())
 			cleanupFns = append(cleanupFns, func(p *os.Process) func() {
 				return func() { _ = p.Signal(os.Kill) }
 			}(cmd.Process))
@@ -491,11 +596,15 @@ func TestStopAll_CleansDolt(t *testing.T) {
 	}
 	defer cleanupProcs()
 
-	// Create two projects with the fake daemon PIDs and beads dirs.
+	// Create two projects with the fake daemon PIDs, project.root files, and beads dirs.
 	for i, projName := range []string{"alpha", "beta"} {
 		projDir := filepath.Join(oroHome, "projects", projName)
-		beadsDir := filepath.Join(projDir, ".beads")
-		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		if err := os.MkdirAll(projDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// Write project.root pointing to the project's real root.
+		if err := os.WriteFile(filepath.Join(projDir, "project.root"), []byte(projectRoots[i]), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
@@ -504,7 +613,11 @@ func TestStopAll_CleansDolt(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Create fake dolt PID file in beads dir.
+		// Create beads dir and fake dolt PID file at <projectRoot>/.beads/.
+		beadsDir := filepath.Join(projectRoots[i], ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
 		doltPIDPath := filepath.Join(beadsDir, "dolt-server.pid")
 		if err := os.WriteFile(doltPIDPath, []byte("9999"), 0o600); err != nil {
 			t.Fatal(err)
@@ -516,15 +629,13 @@ func TestStopAll_CleansDolt(t *testing.T) {
 
 	var buf bytes.Buffer
 
-	if err := runStopAll(context.Background(), oroHome, true, &buf); err != nil {
+	if err := runStopAll(context.Background(), oroHome, true, &buf, stopDoltServer); err != nil {
 		t.Fatalf("runStopAll: %v", err)
 	}
 
-	// Verify both dolt PID files were cleaned up (runStopAll invokes
-	// doltStopFn for each daemon, which calls stopDoltServer and removes
-	// the dolt-server.pid file).
-	for _, projName := range []string{"alpha", "beta"} {
-		doltPIDPath := filepath.Join(oroHome, "projects", projName, ".beads", "dolt-server.pid")
+	// Verify both dolt PID files were cleaned up at <projectRoot>/.beads/.
+	for i, projName := range []string{"alpha", "beta"} {
+		doltPIDPath := filepath.Join(projectRoots[i], ".beads", "dolt-server.pid")
 		if _, err := os.Stat(doltPIDPath); !os.IsNotExist(err) {
 			t.Errorf("dolt PID file for project %s should have been removed, but still exists", projName)
 		}
