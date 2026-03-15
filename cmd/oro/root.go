@@ -41,6 +41,7 @@ func newRootCmd() *cobra.Command {
 		newCleanupCmd(),
 		newHelpCmd(cmd),
 		newWorkCmd(),
+		newMgCmd(),
 	)
 
 	return cmd
