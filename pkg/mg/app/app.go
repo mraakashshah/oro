@@ -6,16 +6,17 @@ import (
 	"os/exec"
 	"time"
 
-	"charm.land/bubbles/v2/textinput"
-	"charm.land/bubbles/v2/viewport"
-	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
-	"github.com/atotto/clipboard"
 	"oro/pkg/mg"
 	"oro/pkg/mg/components"
 	"oro/pkg/mg/data"
 	"oro/pkg/mg/ui"
 	"oro/pkg/mg/views"
+
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 )
 
 // Pane tracks which panel is focused.
