@@ -13,6 +13,8 @@ var sparkBlocks = []string{"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█
 // RenderSparkline renders a compact sparkline from integer values.
 // Each value maps to one block character (8 height levels).
 // Colors follow a green→gold→red gradient based on value intensity.
+//
+//oro:testonly
 func RenderSparkline(values []int, width int) string {
 	if len(values) == 0 || width <= 0 {
 		return strings.Repeat(" ", width)
@@ -63,6 +65,8 @@ func RenderSparkline(values []int, width int) string {
 
 // HeatChar returns a single character with color indicating activity level.
 // 0 events = dim dot, low = green, medium = gold, high = red.
+//
+//oro:testonly
 func HeatChar(eventCount, maxCount int) string {
 	if eventCount == 0 {
 		return lipgloss.NewStyle().Foreground(Dim).Render("·")
@@ -105,6 +109,8 @@ var brailleTable = [5][5]rune{
 // BrailleSparkline renders a compact sparkline using braille characters.
 // Each character cell encodes two data points for double horizontal resolution.
 // The style is applied uniformly; use a gradient externally for colored sparklines.
+//
+//oro:testonly
 func BrailleSparkline(data []float64, width int, style lipgloss.Style) string {
 	if len(data) == 0 || width <= 0 {
 		return strings.Repeat(" ", width)
@@ -154,6 +160,8 @@ func BrailleSparkline(data []float64, width int, style lipgloss.Style) string {
 // MiniSparkline renders a compact 3-character activity indicator using block elements.
 // Values should be recent activity counts (e.g. last 3 time periods).
 // Returns empty string if all values are zero.
+//
+//oro:testonly
 func MiniSparkline(values [3]int) string {
 	maxVal := 0
 	allZero := true
@@ -189,6 +197,8 @@ func MiniSparkline(values [3]int) string {
 // DualSparkline renders two datasets stacked vertically in the same row.
 // Top data uses upper blocks (▀), bottom uses lower blocks (▄), overlap uses (█).
 // This doubles the information density — e.g. cost rate above, velocity below.
+//
+//oro:testonly
 func DualSparkline(top, bottom []float64, width int, topStyle, bottomStyle lipgloss.Style) string {
 	if width <= 0 {
 		return ""
