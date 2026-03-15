@@ -292,43 +292,35 @@ func parseBranchNames(output string) []string {
 	return branches
 }
 
-// cleanupDolt stops the dolt server if a PID file exists in beadsDir and
-// scans for orphaned dolt sql-server processes via pgrep and kills them.
-// Returns true if anything was cleaned (PID file existed or orphans found).
-// Idempotent: returns false when beadsDir is empty or nothing to clean.
+// cleanupDolt removes stale dolt PID/port files when the referenced process
+// is dead. Does NOT kill healthy running dolt servers — dolt persists across
+// sessions. Does NOT scan for orphans via pgrep.
+// Returns true if stale files were cleaned. Idempotent.
 func cleanupDolt(cfg *cleanupConfig) bool {
 	if cfg.beadsDir == "" {
 		return false
 	}
 
-	cleaned := false
-
-	// Try to stop the dolt server if PID file exists.
 	pidPath := filepath.Join(cfg.beadsDir, "dolt-server.pid")
-	if _, err := os.Stat(pidPath); !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(cfg.w, "stopping dolt server\n")
-		if err := stopDoltServer(cfg.beadsDir); err != nil {
-			fmt.Fprintf(cfg.w, "warning: stop dolt server: %v\n", err)
-		}
-		cleaned = true
+	data, err := os.ReadFile(pidPath) //nolint:gosec // beadsDir is caller-controlled
+	if err != nil {
+		return false // no PID file, nothing to clean
 	}
 
-	// Always scan for orphan dolt processes, even if PID file doesn't exist.
-	out, err := cfg.runner.Run("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")
-	if err == nil {
-		pids := parseWorkerPIDs(out)
-		if len(pids) > 0 {
-			fmt.Fprintf(cfg.w, "killing %d orphan dolt process(es)\n", len(pids))
-			for _, pid := range pids {
-				if err := cfg.signalFn(pid); err != nil {
-					fmt.Fprintf(cfg.w, "warning: signal dolt PID %d: %v\n", pid, err)
-				}
-			}
-			cleaned = true
-		}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		// Corrupt PID file — remove it.
+		removeDoltServerFiles(cfg.beadsDir)
+		return true
 	}
 
-	return cleaned
+	if !IsProcessAlive(pid) {
+		removeDoltServerFiles(cfg.beadsDir)
+		fmt.Fprintf(cfg.w, "removed stale dolt PID file (process %d dead)\n", pid)
+		return true
+	}
+
+	return false // dolt is healthy, leave it alone
 }
 
 // cleanupBeads resets in_progress beads back to open. Returns true if beads were reset.

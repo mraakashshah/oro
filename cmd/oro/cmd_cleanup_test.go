@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -632,8 +633,8 @@ func TestCleanupWorktreeDir(t *testing.T) {
 	})
 }
 
-func TestCleanup_KillsDoltServer(t *testing.T) {
-	t.Run("returns true and removes PID file when dolt-server.pid exists", func(t *testing.T) {
+func TestCleanupDoltPIDOnly(t *testing.T) {
+	t.Run("stale PID (dead process) removes files and returns true", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		beadsDir := filepath.Join(tmpDir, ".beads")
 		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
@@ -642,6 +643,7 @@ func TestCleanup_KillsDoltServer(t *testing.T) {
 
 		pidPath := filepath.Join(beadsDir, "dolt-server.pid")
 		portPath := filepath.Join(beadsDir, "dolt-server.port")
+		// PID 99999 is almost certainly dead.
 		if err := os.WriteFile(pidPath, []byte("99999"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -650,8 +652,6 @@ func TestCleanup_KillsDoltServer(t *testing.T) {
 		}
 
 		fake := newFakeCmd()
-		fake.errs[key("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")] = fmt.Errorf("no match")
-
 		var buf bytes.Buffer
 		cfg := &cleanupConfig{
 			runner:   fake,
@@ -663,24 +663,24 @@ func TestCleanup_KillsDoltServer(t *testing.T) {
 		result := cleanupDolt(cfg)
 
 		if !result {
-			t.Error("expected cleanupDolt to return true when PID file exists")
+			t.Error("expected cleanupDolt to return true for stale PID")
 		}
 		if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-			t.Error("expected PID file to be removed after cleanupDolt")
+			t.Error("expected PID file to be removed")
+		}
+		if _, err := os.Stat(portPath); !os.IsNotExist(err) {
+			t.Error("expected port file to be removed")
 		}
 
-		var pgrepCalled bool
+		// Must NOT call pgrep — no orphan scan.
 		for _, call := range fake.calls {
-			if call[0] == "pgrep" && call[1] == "-f" {
-				pgrepCalled = true
+			if len(call) > 0 && call[0] == "pgrep" {
+				t.Error("cleanupDolt should not call pgrep (no orphan scan)")
 			}
-		}
-		if !pgrepCalled {
-			t.Error("expected pgrep to be called to scan for orphan dolt processes")
 		}
 	})
 
-	t.Run("returns false when PID file does not exist", func(t *testing.T) {
+	t.Run("no PID file returns false with no pgrep scan", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		beadsDir := filepath.Join(tmpDir, ".beads")
 		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
@@ -699,77 +699,28 @@ func TestCleanup_KillsDoltServer(t *testing.T) {
 		if cleanupDolt(cfg) {
 			t.Error("expected cleanupDolt to return false when no PID file")
 		}
-	})
 
-	t.Run("scans for orphan dolt processes even without PID file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		beadsDir := filepath.Join(tmpDir, ".beads")
-		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-
-		fake := newFakeCmd()
-		// pgrep finds orphan processes even though dolt-server.pid doesn't exist
-		fake.output[key("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")] = "11111\n22222\n"
-
-		var signaledPIDs []int
-		var buf bytes.Buffer
-		cfg := &cleanupConfig{
-			runner:   fake,
-			w:        &buf,
-			beadsDir: beadsDir,
-			signalFn: func(pid int) error {
-				signaledPIDs = append(signaledPIDs, pid)
-				return nil
-			},
-		}
-
-		result := cleanupDolt(cfg)
-
-		// Should return true because orphans were found and killed
-		if !result {
-			t.Error("expected cleanupDolt to return true when orphans were found and killed")
-		}
-
-		// Verify pgrep was called
-		var pgrepCalled bool
 		for _, call := range fake.calls {
-			if call[0] == "pgrep" && call[1] == "-f" {
-				pgrepCalled = true
-				break
+			if len(call) > 0 && call[0] == "pgrep" {
+				t.Error("cleanupDolt should not call pgrep when no PID file")
 			}
 		}
-		if !pgrepCalled {
-			t.Error("expected pgrep to be called even when dolt-server.pid doesn't exist")
-		}
-
-		// Verify orphan PIDs were signaled
-		found := map[int]bool{}
-		for _, pid := range signaledPIDs {
-			found[pid] = true
-		}
-		if !found[11111] || !found[22222] {
-			t.Errorf("expected orphan PIDs 11111 and 22222 to be signaled, got: %v", signaledPIDs)
-		}
-
-		// Verify output mentions orphan killing
-		out := buf.String()
-		if !strings.Contains(out, "killing") {
-			t.Errorf("expected output to mention killing orphans, got: %s", out)
-		}
 	})
 
-	t.Run("returns false when PID file missing and no orphans found", func(t *testing.T) {
+	t.Run("healthy dolt (PID alive) not killed, no pgrep scan", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		beadsDir := filepath.Join(tmpDir, ".beads")
 		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
 			t.Fatal(err)
 		}
 
-		fake := newFakeCmd()
-		// pgrep finds no orphans
-		fake.errs[key("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")] = fmt.Errorf("no match")
+		pidPath := filepath.Join(beadsDir, "dolt-server.pid")
+		// Use current process PID — guaranteed alive.
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
+		fake := newFakeCmd()
 		var buf bytes.Buffer
 		cfg := &cleanupConfig{
 			runner:   fake,
@@ -778,23 +729,19 @@ func TestCleanup_KillsDoltServer(t *testing.T) {
 			signalFn: func(int) error { return nil },
 		}
 
-		result := cleanupDolt(cfg)
-
-		// Should return false since nothing was cleaned
-		if result {
-			t.Error("expected cleanupDolt to return false when no PID file and no orphans")
+		if cleanupDolt(cfg) {
+			t.Error("expected cleanupDolt to return false for healthy dolt")
 		}
 
-		// Verify pgrep was called
-		var pgrepCalled bool
+		// PID file should still exist.
+		if _, err := os.Stat(pidPath); err != nil {
+			t.Error("PID file should NOT be removed for healthy dolt")
+		}
+
 		for _, call := range fake.calls {
-			if call[0] == "pgrep" && call[1] == "-f" {
-				pgrepCalled = true
-				break
+			if len(call) > 0 && call[0] == "pgrep" {
+				t.Error("cleanupDolt should not call pgrep")
 			}
-		}
-		if !pgrepCalled {
-			t.Error("expected pgrep to be called to scan for orphans")
 		}
 	})
 
@@ -813,45 +760,7 @@ func TestCleanup_KillsDoltServer(t *testing.T) {
 		}
 	})
 
-	t.Run("kills orphan dolt processes found by pgrep", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		beadsDir := filepath.Join(tmpDir, ".beads")
-		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-
-		pidPath := filepath.Join(beadsDir, "dolt-server.pid")
-		if err := os.WriteFile(pidPath, []byte("99999"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		fake := newFakeCmd()
-		fake.output[key("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")] = "11111\n22222\n"
-
-		var signaledPIDs []int
-		var buf bytes.Buffer
-		cfg := &cleanupConfig{
-			runner:   fake,
-			w:        &buf,
-			beadsDir: beadsDir,
-			signalFn: func(pid int) error {
-				signaledPIDs = append(signaledPIDs, pid)
-				return nil
-			},
-		}
-
-		cleanupDolt(cfg)
-
-		found := map[int]bool{}
-		for _, pid := range signaledPIDs {
-			found[pid] = true
-		}
-		if !found[11111] || !found[22222] {
-			t.Errorf("expected orphan PIDs 11111 and 22222 to be signaled, got: %v", signaledPIDs)
-		}
-	})
-
-	t.Run("wired into runCleanup sets cleaned when dolt server stopped", func(t *testing.T) {
+	t.Run("wired into runCleanup sets cleaned when stale dolt PID found", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		beadsDir := filepath.Join(tmpDir, ".beads")
 		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
@@ -866,7 +775,6 @@ func TestCleanup_KillsDoltServer(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
-		fake.errs[key("pgrep", "-f", "dolt sql-server.*\\.beads/dolt")] = fmt.Errorf("no match")
 		fake.output[key("git", "branch", "--list", "agent/*")] = ""
 		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
