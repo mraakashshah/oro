@@ -68,16 +68,15 @@ func TestGoReleaserConfigValid(t *testing.T) {
 		}
 	})
 
-	t.Run("has_3_builds", func(t *testing.T) {
-		if len(cfg.Builds) != 3 {
-			t.Errorf("expected 3 builds, got %d", len(cfg.Builds))
+	t.Run("has_2_builds", func(t *testing.T) {
+		if len(cfg.Builds) != 2 {
+			t.Errorf("expected 2 builds, got %d", len(cfg.Builds))
 		}
 	})
 
 	t.Run("build_binaries", func(t *testing.T) {
 		wantBinaries := map[string]string{
 			"oro":             "./cmd/oro",
-			"oro-dash":        "./cmd/oro-dash",
 			"oro-search-hook": "./cmd/oro-search-hook",
 		}
 		for _, b := range cfg.Builds {
@@ -166,9 +165,9 @@ func TestGoReleaserConfigValid(t *testing.T) {
 		if archive.Format != "tar.gz" {
 			t.Errorf("expected archive format tar.gz, got %s", archive.Format)
 		}
-		// The archive should reference all 3 build IDs.
-		if len(archive.Builds) != 3 {
-			t.Errorf("expected archive to reference 3 builds, got %d: %v", len(archive.Builds), archive.Builds)
+		// The archive should reference all 2 build IDs.
+		if len(archive.Builds) != 2 {
+			t.Errorf("expected archive to reference 2 builds, got %d: %v", len(archive.Builds), archive.Builds)
 		}
 	})
 

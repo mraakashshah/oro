@@ -1,5 +1,5 @@
 // Package eventlog provides read-only access to the dispatcher's SQLite event log.
-// It enables querying worker-related events for display in oro-dash and other tools.
+// It enables querying worker-related events for display in CLI tools.
 package eventlog
 
 import (

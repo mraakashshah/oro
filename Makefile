@@ -1,4 +1,4 @@
-.PHONY: build build-dash build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync mutate-go mutate-go-diff mutate-py mutate-py-full
+.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync mutate-go mutate-go-diff mutate-py mutate-py-full
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -61,11 +61,6 @@ build: stage-assets
 		go build -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook && \
 		cp .claude/hooks/oro-search-hook $(ORO_HOME)/hooks/oro-search-hook; \
 	fi
-	@if [ -d cmd/oro-dash ]; then \
-		mkdir -p bin $(ORO_HOME)/bin && \
-		go build $(LDFLAGS) -o bin/oro-dash ./cmd/oro-dash && \
-		cp bin/oro-dash $(ORO_HOME)/bin/oro-dash; \
-	fi
 	@$(MAKE) clean-assets
 
 install: stage-assets
@@ -76,17 +71,7 @@ install: stage-assets
 	else \
 		echo "Warning: cmd/oro-search-hook/ not found, skipping oro-search-hook build"; \
 	fi
-	@if [ -d cmd/oro-dash ]; then \
-		mkdir -p $(ORO_HOME)/bin && \
-		go build $(LDFLAGS) -o $(ORO_HOME)/bin/oro-dash ./cmd/oro-dash; \
-	else \
-		echo "Warning: cmd/oro-dash/ not found, skipping oro-dash build"; \
-	fi
 	@$(MAKE) clean-assets
-
-build-dash:
-	@mkdir -p $(ORO_HOME)/bin
-	go build $(LDFLAGS) -o $(ORO_HOME)/bin/oro-dash ./cmd/oro-dash
 
 build-search-hook:
 	@mkdir -p $(ORO_HOME)/hooks

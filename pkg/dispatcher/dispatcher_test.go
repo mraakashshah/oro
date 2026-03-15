@@ -742,12 +742,12 @@ func eventCount(t *testing.T, db *sql.DB, evType string) int {
 
 // TestDirectiveACKReceivedByClient verifies that a raw socket client sending a
 // directive JSON message receives an ACK JSON response within 2 seconds.
-// This is the exact path oro-dash uses when querying the dispatcher for status.
+// This is the path a raw socket client uses when querying the dispatcher for status.
 func TestDirectiveACKReceivedByClient(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
-	// Connect as a raw socket client — exactly as oro-dash does.
+	// Connect as a raw socket client.
 	conn, err := net.Dial("unix", d.cfg.SocketPath)
 	if err != nil {
 		t.Fatalf("connect to dispatcher: %v", err)

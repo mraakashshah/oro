@@ -1,5 +1,5 @@
 # GoReleaser configuration for oro
-# Builds 3 darwin binaries (oro, oro-dash, oro-search-hook) into a single archive.
+# Builds 2 darwin binaries (oro, oro-search-hook) into a single archive.
 # See https://goreleaser.com for documentation.
 
 version: 2
@@ -12,19 +12,6 @@ builds:
   - id: oro
     main: ./cmd/oro
     binary: oro
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - darwin
-    goarch:
-      - amd64
-      - arm64
-    ldflags:
-      - -s -w -X oro/internal/appversion.version={{.Version}}
-
-  - id: oro-dash
-    main: ./cmd/oro-dash
-    binary: oro-dash
     env:
       - CGO_ENABLED=0
     goos:
@@ -54,7 +41,6 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     builds:
       - oro
-      - oro-dash
       - oro-search-hook
 
 checksum:

@@ -14,7 +14,7 @@ import (
 )
 
 // TestAcceptanceCriteria_QuerySupport verifies AC:
-// "oro-dash can query dispatcher SQLite event log for worker-related events"
+// "tools can query dispatcher SQLite event log for worker-related events"
 func TestAcceptanceCriteria_QuerySupport(t *testing.T) {
 	ctx := context.Background()
 
@@ -42,10 +42,10 @@ func TestAcceptanceCriteria_QuerySupport(t *testing.T) {
 	}
 	_ = db.Close()
 
-	// Verify: oro-dash can query event log
+	// Verify: tools can query event log
 	reader, err := eventlog.NewReader(dbPath)
 	if err != nil {
-		t.Fatalf("oro-dash cannot query event log: %v", err)
+		t.Fatalf("cannot query event log: %v", err)
 	}
 	defer reader.Close()
 

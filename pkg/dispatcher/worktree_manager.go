@@ -71,7 +71,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 // stageAssets runs `make stage-assets` in the worktree to prepare embedded
 // assets (skills, hooks, beacons) required by go:embed directives.
 // Best-effort: failures are silently ignored since some worktrees may not
-// need assets (e.g., non-oro-dash beads still compile without them).
+// need assets (e.g., some beads still compile without them).
 func (g *GitWorktreeManager) stageAssets(ctx context.Context, path string) {
 	_, _ = g.runner.Run(ctx, "make", "-C", path, "stage-assets")
 }

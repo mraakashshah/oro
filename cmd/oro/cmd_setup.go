@@ -309,13 +309,6 @@ func runDoctor(w io.Writer, projectRoot, projectName, oroHome string) {
 		fmt.Fprintf(w, "  %-20s %s\n", checks[i].Name+":", checks[i].Status)
 	}
 
-	// Check companion binaries (non-fatal).
-	if _, err := discoverCompanion("oro-dash"); err == nil {
-		fmt.Fprintf(w, "  %-20s %s\n", "oro-dash:", "OK")
-	} else {
-		fmt.Fprintf(w, "  %-20s %s\n", "oro-dash:", "MISSING (optional)")
-	}
-
 	fmt.Fprintln(w)
 	if allOK {
 		fmt.Fprintln(w, "  Health check passed.")
