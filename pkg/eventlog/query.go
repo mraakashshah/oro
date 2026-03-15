@@ -184,6 +184,8 @@ func buildQuery(opts QueryOpts) (query string, args []any) {
 }
 
 // DefaultDBPath returns the default path to the dispatcher's event database.
+//
+//oro:testonly
 func DefaultDBPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
