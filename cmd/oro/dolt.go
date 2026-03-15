@@ -93,7 +93,7 @@ func startDoltServer(beadsDir string, port int) (int, error) {
 
 	// If something is already listening on the port, adopt it (skip spawn).
 	if isDoltServerRunning(port) {
-		return 0, fmt.Errorf("port %d is already in use by another process", port)
+		return 0, nil
 	}
 
 	dataDir := filepath.Join(beadsDir, "dolt")

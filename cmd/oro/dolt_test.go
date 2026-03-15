@@ -205,6 +205,28 @@ func TestStartDoltServer(t *testing.T) {
 	})
 }
 
+func TestStartDoltServerAdoptsRunning(t *testing.T) {
+	t.Run("port already in use returns success not error", func(t *testing.T) {
+		// Start a TCP listener on a free port to simulate a running dolt server.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		port := ln.Addr().(*net.TCPAddr).Port
+		tmpDir := t.TempDir()
+
+		pid, err := startDoltServer(tmpDir, port)
+		if err != nil {
+			t.Fatalf("startDoltServer should adopt running server, got error: %v", err)
+		}
+		if pid != 0 {
+			t.Errorf("adopted server should return pid=0, got %d", pid)
+		}
+	})
+}
+
 func TestStopDoltServer(t *testing.T) {
 	t.Run("returns nil when no PID file exists (idempotent)", func(t *testing.T) {
 		tmpDir := t.TempDir()
