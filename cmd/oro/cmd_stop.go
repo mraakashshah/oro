@@ -16,18 +16,19 @@ import (
 
 // stopConfig holds injectable dependencies for the graceful shutdown sequence.
 type stopConfig struct {
-	pidPath  string
-	sockPath string
-	tmuxName string
-	runner   CmdRunner
-	w        io.Writer
-	stdin    io.Reader       // stdin for interactive confirmation
-	signalFn func(int) error // sends SIGINT; injectable for testing
-	aliveFn  func(int) bool  // checks process liveness; injectable for testing
-	killFn   func(int) error // sends SIGKILL; injectable for testing
-	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
-	force    bool            // --force flag: skip interactive confirmation
-	oroHome  string          // base directory for daemon discovery
+	pidPath    string
+	sockPath   string
+	tmuxName   string
+	runner     CmdRunner
+	w          io.Writer
+	stdin      io.Reader       // stdin for interactive confirmation
+	signalFn   func(int) error // sends SIGINT; injectable for testing
+	aliveFn    func(int) bool  // checks process liveness; injectable for testing
+	killFn     func(int) error // sends SIGKILL; injectable for testing
+	isTTY      func() bool     // returns true if stdin is a TTY; injectable for testing
+	force      bool            // --force flag: skip interactive confirmation
+	oroHome    string          // base directory for daemon discovery
+	doltStopFn func() error    // stops dolt server; nil for non-dolt projects
 }
 
 // projectDaemon describes a running daemon discovered in a project directory.
@@ -119,19 +120,21 @@ Use --all to stop daemons in all projects simultaneously.`,
 				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout())
 			}
 
+			_, doltStop := makeDoltLifecycle(".")
 			cfg := &stopConfig{
-				pidPath:  paths.PIDPath,
-				sockPath: paths.SocketPath,
-				tmuxName: TmuxSessionName(readProjectName()),
-				runner:   &ExecRunner{},
-				w:        cmd.OutOrStdout(),
-				stdin:    os.Stdin,
-				signalFn: defaultSignalINT,
-				aliveFn:  IsProcessAlive,
-				killFn:   defaultKill,
-				isTTY:    isStdinTTY,
-				force:    force,
-				oroHome:  paths.OroHome,
+				pidPath:    paths.PIDPath,
+				sockPath:   paths.SocketPath,
+				tmuxName:   TmuxSessionName(readProjectName()),
+				runner:     &ExecRunner{},
+				w:          cmd.OutOrStdout(),
+				stdin:      os.Stdin,
+				signalFn:   defaultSignalINT,
+				aliveFn:    IsProcessAlive,
+				killFn:     defaultKill,
+				isTTY:      isStdinTTY,
+				force:      force,
+				oroHome:    paths.OroHome,
+				doltStopFn: doltStop,
 			}
 
 			return runStopSequence(cmd.Context(), cfg)
@@ -310,6 +313,14 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 
 	// 6. Remove PID file (belt and suspenders — signal handler may have already done it).
 	_ = RemovePIDFile(cfg.pidPath)
+
+	// 7. Stop dolt server (idempotent — may have been stopped by daemon's own
+	// signal handler on graceful exit, but SIGKILL fallback skips that cleanup).
+	if cfg.doltStopFn != nil {
+		if err := cfg.doltStopFn(); err != nil {
+			fmt.Fprintf(cfg.w, "warning: dolt cleanup: %v\n", err)
+		}
+	}
 
 	fmt.Fprintln(cfg.w, "shutdown complete")
 	return nil

@@ -334,6 +334,53 @@ func TestDiscoverProjectDaemons_IncludesLegacyGlobal(t *testing.T) {
 	}
 }
 
+// TestStopSequenceCleansDolt verifies that runStopSequence calls doltStopFn
+// after daemon shutdown — belt-and-suspenders cleanup for cases where the
+// daemon's own signal handler didn't run (e.g. SIGKILL fallback).
+func TestStopSequenceCleansDolt(t *testing.T) {
+	t.Run("doltStopFn called during stop sequence", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+			t.Fatalf("setup PID: %v", err)
+		}
+
+		doltStopped := false
+		fake := newFakeCmd()
+		var buf bytes.Buffer
+		cfg := ttyStop(pidFile, fake, &buf)
+		cfg.doltStopFn = func() error {
+			doltStopped = true
+			return nil
+		}
+
+		if err := runStopSequence(context.Background(), cfg); err != nil {
+			t.Fatalf("runStopSequence: %v", err)
+		}
+
+		if !doltStopped {
+			t.Error("doltStopFn should have been called during stop sequence")
+		}
+	})
+
+	t.Run("nil doltStopFn is safe for non-dolt projects", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+			t.Fatalf("setup PID: %v", err)
+		}
+
+		fake := newFakeCmd()
+		var buf bytes.Buffer
+		cfg := ttyStop(pidFile, fake, &buf)
+		// cfg.doltStopFn is nil (default) — should not panic.
+
+		if err := runStopSequence(context.Background(), cfg); err != nil {
+			t.Fatalf("runStopSequence with nil doltStopFn: %v", err)
+		}
+	})
+}
+
 func TestStop_NotRunning_SuggestsAllWhenOtherDaemonsExist(t *testing.T) {
 	oroHome := t.TempDir()
 	t.Setenv("ORO_HOME", oroHome)
