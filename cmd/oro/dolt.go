@@ -142,7 +142,7 @@ func discoverPIDByPort(port int) (int, error) {
 	}
 
 	//nolint:gosec // args constructed from trusted internal values
-	out, err := exec.Command(lsofPath, "-ti", fmt.Sprintf("TCP:%d", port), "-s", "TCP:LISTEN").Output()
+	out, err := exec.CommandContext(context.Background(), lsofPath, "-ti", fmt.Sprintf("TCP:%d", port), "-s", "TCP:LISTEN").Output()
 	if err != nil || strings.TrimSpace(string(out)) == "" {
 		return 0, fmt.Errorf("no process found listening on port %d", port)
 	}

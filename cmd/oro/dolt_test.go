@@ -321,7 +321,7 @@ func writeMetadata(t *testing.T, beadsDir string, data map[string]interface{}) {
 func startListeningProcess(t *testing.T, port int) *exec.Cmd {
 	t.Helper()
 	// -k: keep listening after each connection (macOS/BSD nc).
-	cmd := exec.Command("nc", "-k", "-l", strconv.Itoa(port))
+	cmd := exec.Command("nc", "-k", "-l", strconv.Itoa(port)) //nolint:gosec // test helper with controlled port argument
 	if err := cmd.Start(); err != nil {
 		t.Skipf("nc not available or failed to start: %v", err)
 	}
@@ -362,8 +362,8 @@ func TestDiscoverPIDByPort(t *testing.T) {
 		if err != nil {
 			t.Fatalf("net.Listen: %v", err)
 		}
-		defer ln.Close()
-		port := ln.Addr().(*net.TCPAddr).Port
+		defer ln.Close()                      //nolint:errcheck // test cleanup
+		port := ln.Addr().(*net.TCPAddr).Port //nolint:errcheck // type assertion safe after net.Listen("tcp",...)
 
 		pid, err := discoverPIDByPort(port)
 		if errors.Is(err, exec.ErrNotFound) {
@@ -462,8 +462,8 @@ func TestStopDoltServerPortFallback(t *testing.T) {
 		if err != nil {
 			t.Fatalf("net.Listen: %v", err)
 		}
-		port := ln.Addr().(*net.TCPAddr).Port
-		ln.Close()
+		port := ln.Addr().(*net.TCPAddr).Port //nolint:errcheck // type assertion safe after net.Listen("tcp",...)
+		_ = ln.Close()
 
 		cmd := startListeningProcess(t, port)
 		t.Cleanup(func() { _ = cmd.Process.Kill() })
