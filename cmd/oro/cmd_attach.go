@@ -30,7 +30,9 @@ func runAttach(cfg *attachConfig) error {
 	case StatusStopped:
 		return fmt.Errorf("no running session — use `oro start`")
 	case StatusStale:
-		return fmt.Errorf("stale PID found — run `oro cleanup` then `oro start`")
+		_ = RemovePIDFile(cfg.pidPath)
+		_ = os.Remove(cfg.sockPath)
+		return fmt.Errorf("stale PID found — run `oro start`")
 	}
 
 	// 2. Check tmux session exists.

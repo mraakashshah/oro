@@ -291,6 +291,7 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 		return nil
 	case StatusStale:
 		fmt.Fprintln(cfg.w, "removing stale PID file (process already dead)")
+		_ = os.Remove(cfg.sockPath)
 		return RemovePIDFile(cfg.pidPath)
 	}
 

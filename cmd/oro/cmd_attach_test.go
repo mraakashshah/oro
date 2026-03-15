@@ -31,17 +31,28 @@ func TestAttachStale(t *testing.T) {
 	if err := WritePIDFile(pidFile, 4000000); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
+	sockFile := filepath.Join(tmpDir, "oro.sock")
+	if err := os.WriteFile(sockFile, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("setup socket: %v", err)
+	}
 	cfg := &attachConfig{
 		pidPath:  pidFile,
-		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
+		sockPath: sockFile,
 		isTTY:    func() bool { return true },
 	}
 	err := runAttach(cfg)
 	if err == nil {
 		t.Fatal("expected error for stale PID")
 	}
-	if !strings.Contains(err.Error(), "oro cleanup") {
-		t.Errorf("expected 'oro cleanup' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "oro start") {
+		t.Errorf("expected 'oro start' in error, got: %v", err)
+	}
+	// Both PID file and socket should be cleaned up.
+	if _, statErr := os.Stat(pidFile); !os.IsNotExist(statErr) {
+		t.Error("expected PID file to be removed")
+	}
+	if _, statErr := os.Stat(sockFile); !os.IsNotExist(statErr) {
+		t.Error("expected socket file to be removed")
 	}
 }
 

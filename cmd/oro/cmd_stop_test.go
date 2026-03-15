@@ -130,6 +130,39 @@ func TestStop_Stale(t *testing.T) {
 	}
 }
 
+func TestStopStatusStaleRemovesSocket(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	sockFile := filepath.Join(tmpDir, "oro.sock")
+
+	// PID 4000000 is almost certainly not running.
+	if err := WritePIDFile(pidFile, 4000000); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
+	// Create a stale socket file.
+	if err := os.WriteFile(sockFile, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("setup socket: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &stopConfig{
+		pidPath:  pidFile,
+		sockPath: sockFile,
+		w:        &buf,
+	}
+
+	if err := runStopSequence(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Error("expected PID file to be removed")
+	}
+	if _, err := os.Stat(sockFile); !os.IsNotExist(err) {
+		t.Error("expected socket file to be removed")
+	}
+}
+
 func TestStop_RefusedWhenNotTTY(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
