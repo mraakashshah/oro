@@ -41,7 +41,7 @@ func TestHelpOutput(t *testing.T) {
 		"cleanup",
 		"status",
 		"logs",
-		"dash",
+		"mg",
 		"remember",
 		"recall",
 		"forget",

@@ -467,7 +467,7 @@ func resolveProjectName(projectRoot, projectName string) (string, error) {
 // per-project settings.json, creates handoffs dir, and extracts embedded assets.
 // Returns the detected language config (threaded from createProjectAnchor) so
 // callers avoid a redundant disk read.
-func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) {
+func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) { //nolint:funlen // sequential bootstrap steps
 	// 1. Create local anchor: .oro/config.yaml with project name.
 	// Thread the detected config back to the caller.
 	cfg, err := createProjectAnchor(projectRoot, projectName)

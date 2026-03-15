@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"math"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -8,7 +9,7 @@ import (
 
 // RenderStars returns a star rating string like "★★★★☆" for a 0.0-1.0 score.
 func RenderStars(score float32) string {
-	stars := max(min(int(score*5+0.5), 5), 0)
+	stars := max(min(int(math.Round(float64(score*5))), 5), 0)
 
 	color := QualityColor(score)
 	filledStyle := lipgloss.NewStyle().Foreground(color)
@@ -26,7 +27,7 @@ func RenderStars(score float32) string {
 
 // RenderStarsCompact returns a compact star badge like "★4" for parade rows.
 func RenderStarsCompact(score float32) string {
-	stars := max(min(int(score*5+0.5), 5), 0)
+	stars := max(min(int(math.Round(float64(score*5))), 5), 0)
 
 	color := QualityColor(score)
 	return lipgloss.NewStyle().Foreground(color).Render(SymStar + string(rune('0'+stars)))
