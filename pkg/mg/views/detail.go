@@ -29,6 +29,8 @@ type Detail struct {
 }
 
 // NewDetail creates a detail panel.
+//
+//oro:testonly
 func NewDetail(width, height int, issues []data.Issue) Detail {
 	vp := viewport.New(viewport.WithWidth(width-2), viewport.WithHeight(height))
 	return Detail{

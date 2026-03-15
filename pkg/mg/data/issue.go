@@ -174,6 +174,8 @@ func (i *Issue) IsBlocked(issueMap map[string]*Issue) bool {
 
 // BlockedByIDs returns the IDs of open issues blocking this one.
 // Delegates to EvaluateDependencies with DefaultBlockingTypes.
+//
+//oro:testonly
 func (i *Issue) BlockedByIDs(issueMap map[string]*Issue) []string {
 	eval := i.EvaluateDependencies(issueMap, DefaultBlockingTypes)
 	return eval.BlockingIDs

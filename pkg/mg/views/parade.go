@@ -61,6 +61,8 @@ type Parade struct {
 }
 
 // NewParade creates a parade view from a set of issues.
+//
+//oro:testonly
 func NewParade(issues []data.Issue, width, height int, blockingTypes map[string]bool) Parade {
 	groups := data.GroupByParade(issues, blockingTypes)
 	issueMap := data.BuildIssueMap(issues)
