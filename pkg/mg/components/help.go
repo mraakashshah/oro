@@ -130,6 +130,15 @@ func allSections() []helpSection {
 				{key: "p0, p1...", desc: "Match priority level"},
 			},
 		},
+		{
+			title: "PROBLEMS",
+			bindings: []helpBinding{
+				{key: "j / k", desc: "Navigate problems"},
+				{key: "g / G", desc: "Jump to first/last"},
+				{key: "w", desc: "Launch oro work on problem issue"},
+				{key: "R", desc: "Retry failed worker"},
+			},
+		},
 	}
 }
 
