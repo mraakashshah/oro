@@ -554,9 +554,10 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	// warning and returns nil when srcDir is missing (go-install users lack
 	// the source tree). oro init always runs from the repo root so the
 	// source is normally available.
-	searchHookSrc := filepath.Join(absProjectRoot, "cmd", "oro-search-hook")
-	searchHookBin := filepath.Join(oroHome, "hooks", "oro-search-hook")
-	_ = ensureSearchHook(searchHookBin, searchHookSrc)
+	_ = ensureSearchHook(
+		filepath.Join(oroHome, "hooks", "oro-search-hook"),
+		filepath.Join(absProjectRoot, "cmd", "oro-search-hook"),
+	)
 
 	return cfg, nil
 }

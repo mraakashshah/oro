@@ -118,9 +118,10 @@ func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration
 	if log != nil {
 		stopSpinner = log.StartSpinner("Waiting for dispatcher socket...")
 	}
+	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
 	deadline := time.Now().Add(socketTimeout)
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+		conn, err := dialer.DialContext(context.Background(), "unix", sockPath)
 		if err == nil {
 			_ = conn.Close()
 			break
@@ -128,7 +129,7 @@ func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration
 		time.Sleep(socketPollInterval)
 	}
 	// Final check: must be connectable.
-	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+	conn, err := dialer.DialContext(context.Background(), "unix", sockPath)
 	if err != nil {
 		if stopSpinner != nil {
 			stopSpinner()

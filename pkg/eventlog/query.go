@@ -87,6 +87,8 @@ func (r *Reader) Close() error {
 
 // QueryWorkerEvents retrieves events matching the given filter criteria.
 // Returns an empty slice if no events match.
+//
+//oro:testonly
 func (r *Reader) QueryWorkerEvents(ctx context.Context, opts QueryOpts) ([]Event, error) {
 	query, args := buildQuery(opts)
 
@@ -184,6 +186,8 @@ func buildQuery(opts QueryOpts) (query string, args []any) {
 }
 
 // DefaultDBPath returns the default path to the dispatcher's event database.
+//
+//oro:testonly
 func DefaultDBPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
