@@ -37,27 +37,34 @@ func (f *fakeSpawner) SpawnDaemon(pidPath string, workers int) (pid int, err err
 		return 0, err
 	}
 	if f.socketPath != "" {
-		// Start a real UDS listener so sendStartDirective can connect.
+		// Start a real UDS listener so pollForSocket and sendStartDirective
+		// can connect. Accept multiple connections: pollForSocket does a
+		// connect-check first, then sendStartDirective sends the directive.
 		ln, listenErr := net.Listen("unix", f.socketPath)
 		if listenErr != nil {
 			return 0, listenErr
 		}
-		// Accept one connection and ACK the directive.
 		go func() {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			defer func() { _ = conn.Close(); _ = ln.Close() }()
-			scanner := bufio.NewScanner(conn)
-			if scanner.Scan() {
-				ack := protocol.Message{
-					Type: protocol.MsgACK,
-					ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+			defer ln.Close()
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return // listener closed
 				}
-				data, _ := json.Marshal(ack)
-				data = append(data, '\n')
-				_, _ = conn.Write(data)
+				go func(c net.Conn) {
+					defer c.Close()
+					scanner := bufio.NewScanner(c)
+					if scanner.Scan() {
+						ack := protocol.Message{
+							Type: protocol.MsgACK,
+							ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+						}
+						data, _ := json.Marshal(ack)
+						data = append(data, '\n')
+						_, _ = c.Write(data)
+					}
+					// If no data read (connect-check), just close.
+				}(conn)
 			}
 		}()
 	}

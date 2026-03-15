@@ -114,20 +114,34 @@ func isDetached(flag bool) bool {
 // waitForSocket polls sockPath until it appears or socketTimeout elapses.
 // It manages the spinner on the startup log.
 func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration) error {
-	socketSpinner := log.StartSpinner("Waiting for dispatcher socket...")
+	var stopSpinner func()
+	if log != nil {
+		stopSpinner = log.StartSpinner("Waiting for dispatcher socket...")
+	}
 	deadline := time.Now().Add(socketTimeout)
 	for time.Now().Before(deadline) {
-		if _, statErr := os.Stat(sockPath); statErr == nil {
+		conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
 			break
 		}
 		time.Sleep(socketPollInterval)
 	}
-	if _, err := os.Stat(sockPath); err != nil {
-		socketSpinner()
+	// Final check: must be connectable.
+	conn, err := net.DialTimeout("unix", sockPath, 200*time.Millisecond)
+	if err != nil {
+		if stopSpinner != nil {
+			stopSpinner()
+		}
 		return fmt.Errorf("dispatcher socket not ready at %s: %w", sockPath, err)
 	}
-	socketSpinner()
-	log.Step("Dispatcher socket ready")
+	_ = conn.Close()
+	if stopSpinner != nil {
+		stopSpinner()
+	}
+	if log != nil {
+		log.Step("Dispatcher socket ready")
+	}
 	return nil
 }
 
@@ -274,6 +288,7 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 		return "", nil
 	case StatusStale:
 		_ = RemovePIDFile(pidPath)
+		_ = os.Remove(sockPath)
 	case StatusStopped:
 		// Good to go.
 	}
