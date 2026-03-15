@@ -64,7 +64,7 @@ func TestWrapExitErrorWithStderr(t *testing.T) {
 func TestWrapExitErrorNonExitError(t *testing.T) {
 	orig := errors.New("timeout")
 	got := wrapExitError("bd list", orig)
-	if got != orig {
+	if !errors.Is(got, orig) {
 		t.Errorf("wrapExitError should return original error for non-ExitError, got %v", got)
 	}
 }
@@ -75,7 +75,7 @@ func TestWrapExitErrorEmptyStderr(t *testing.T) {
 	}
 	got := wrapExitError("bd list", exitErr)
 	// Should return original error when no stderr to parse
-	if got != exitErr {
+	if !errors.Is(got, exitErr) {
 		t.Errorf("wrapExitError should return original error for empty stderr, got %v", got)
 	}
 }

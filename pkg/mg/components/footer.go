@@ -121,21 +121,6 @@ func NewFooter(width int, detailFocused bool) Footer {
 	return Footer{Width: width, Bindings: bindings}
 }
 
-// insertBefore inserts extra bindings before the binding with the given key.
-func insertBefore(bindings []FooterBinding, key string, extra ...FooterBinding) []FooterBinding {
-	for i, b := range bindings {
-		if b.Key != key {
-			continue
-		}
-		result := make([]FooterBinding, 0, len(bindings)+len(extra))
-		result = append(result, bindings[:i]...)
-		result = append(result, extra...)
-		result = append(result, bindings[i:]...)
-		return result
-	}
-	return append(bindings, extra...)
-}
-
 // BulkFooter renders the footer bar shown during multi-select.
 func BulkFooter(width, count int) string {
 	label := ui.FooterKey.Render(fmt.Sprintf(" %d selected: ", count))
