@@ -3,6 +3,7 @@
 
 import os
 import subprocess
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 # Import the module under test
@@ -359,3 +360,30 @@ class TestNotifyOnBeadCreate:
         # Should return None (fail open) when tmux fails
         assert result is None
         mock_send.assert_called_once()
+
+
+class TestAssetSync:
+    """Verify .claude/hooks/ and assets/hooks/ are kept in sync."""
+
+    def test_hooks_and_assets_copies_identical(self):
+        """Every hook in assets/hooks/ must have an identical copy in .claude/hooks/."""
+        repo_root = Path(__file__).parent.parent
+        assets_hooks = repo_root / "assets" / "hooks"
+        claude_hooks = repo_root / ".claude" / "hooks"
+
+        hook_files = [
+            p
+            for p in assets_hooks.iterdir()
+            if p.is_file() and not p.name.startswith("test_") and p.name != "__pycache__"
+        ]
+        assert hook_files, "No hook files found in assets/hooks/"
+
+        for assets_file in sorted(hook_files):
+            claude_file = claude_hooks / assets_file.name
+            assert claude_file.exists(), f"Missing in .claude/hooks/: {assets_file.name}"
+
+            assets_content = assets_file.read_text()
+            claude_content = claude_file.read_text()
+            assert assets_content == claude_content, (
+                f"Content mismatch: {assets_file.name}\nassets/hooks/ and .claude/hooks/ copies differ"
+            )
