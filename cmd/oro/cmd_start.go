@@ -145,7 +145,7 @@ func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration
 	return nil
 }
 
-func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, killFn func(int) error, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool, doltStartFn func() (int, error), doltStopFn func() error) error {
+func runFullStart(w io.Writer, workers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, killFn func(int) error, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool, doltStartFn func() (int, error)) error {
 	// Initialize startup logger (TTY detection for spinner vs static output)
 	isTTY := isatty.IsTerminal(os.Stdout.Fd())
 	log := newStartupLog(w, isTTY)
@@ -161,7 +161,7 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 
 	// 0. Start dolt server before daemon (dolt must be up before dispatcher connects).
 	// doltCleanup is a no-op unless dolt was successfully started.
-	doltCleanup, err := startDoltIfNeeded(doltStartFn, doltStopFn)
+	doltCleanup, err := startDoltIfNeeded(doltStartFn)
 	if err != nil {
 		return err
 	}
@@ -390,7 +390,7 @@ func newStartCmd() *cobra.Command {
 // startDoltIfNeeded starts the dolt server when doltStartFn is non-nil and
 // returns a cleanup function that stops dolt on error. Returns a no-op cleanup
 // and nil error when doltStartFn is nil (non-dolt project).
-func startDoltIfNeeded(doltStartFn func() (int, error), doltStopFn func() error) (cleanup func(), err error) {
+func startDoltIfNeeded(doltStartFn func() (int, error)) (cleanup func(), err error) {
 	noop := func() {}
 	if doltStartFn == nil {
 		return noop, nil
@@ -398,11 +398,8 @@ func startDoltIfNeeded(doltStartFn func() (int, error), doltStopFn func() error)
 	if _, err := doltStartFn(); err != nil {
 		return noop, fmt.Errorf("start dolt: %w", err)
 	}
-	return func() {
-		if doltStopFn != nil {
-			_ = doltStopFn()
-		}
-	}, nil
+	// Dolt persists across sessions — never stop it on cleanup.
+	return noop, nil
 }
 
 // makeDoltLifecycle reads .beads/metadata.json from workDir and returns start/stop
@@ -440,13 +437,13 @@ func startFreshSwarm(w io.Writer, workers int, model string, detach bool, progre
 	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
 		return fmt.Errorf("set ORO_HOME: %w", err)
 	}
-	doltStart, doltStop := makeDoltLifecycle(".")
+	doltStart, _ := makeDoltLifecycle(".")
 	return runFullStart(w, workers, model, project,
 		&ExecDaemonSpawner{ProgressTimeout: progressTimeout, ReviewTimeout: reviewTimeout},
 		&ExecRunner{},
 		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
 		socketPollTimeout, nil, 0, isDetached(detach),
-		doltStart, doltStop)
+		doltStart)
 }
 
 // cleanStaleWorkerLogs deletes worker log directories older than maxAge.
@@ -496,14 +493,8 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 
 	wireDependencies(d, paths.SocketPath, paths.OroHome, &dispatcher.ExecCommandRunner{}, true /* daemonOnly */)
 
-	// Convert beads directory to absolute path (daemon may change cwd).
-	beadsDir, err := absoluteBeadsDir()
-	if err != nil {
-		return fmt.Errorf("absolute beads dir: %w", err)
-	}
-
 	ctx := cmd.Context()
-	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized(), beadsDir)
+	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized())
 	defer cleanup()
 
 	if err := d.Run(shutdownCtx); err != nil {

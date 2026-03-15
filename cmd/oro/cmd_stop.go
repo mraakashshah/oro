@@ -331,13 +331,8 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 	// 6. Remove PID file (belt and suspenders — signal handler may have already done it).
 	_ = RemovePIDFile(cfg.pidPath)
 
-	// 7. Stop dolt server (idempotent — may have been stopped by daemon's own
-	// signal handler on graceful exit, but SIGKILL fallback skips that cleanup).
-	if cfg.stopDoltFn != nil && cfg.beadsDir != "" {
-		if err := cfg.stopDoltFn(cfg.beadsDir); err != nil {
-			fmt.Fprintf(cfg.w, "warning: dolt cleanup: %v\n", err)
-		}
-	}
+	// Note: dolt server is intentionally NOT stopped here. Dolt persists
+	// across sessions so standalone bd commands continue to work.
 
 	fmt.Fprintln(cfg.w, "shutdown complete")
 	return nil
