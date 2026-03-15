@@ -61,6 +61,10 @@ linters:
     - prealloc
 
   settings:
+    gosec:
+      excludes:
+        - G115 # upstream panic on float constants in ui package
+
     gocyclo:
       min-complexity: 15
 

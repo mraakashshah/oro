@@ -275,6 +275,8 @@ var (
 )
 
 // StateBadge returns a styled badge for an agent state.
+//
+//oro:testonly
 func StateBadge(state string) string {
 	sym := SymIdle
 	switch state {
@@ -300,6 +302,8 @@ func StateBadge(state string) string {
 
 // SectionDivider renders a btop-style section divider: ── ⚜ TITLE ──────────
 // When focused, the fleur-de-lis and cursor glow bright gold.
+//
+//oro:testonly
 func SectionDivider(title string, width int, focused bool) string {
 	// Visible prefix: "── ⚜ " or "> ── ⚜ " when focused
 	cursorPrefix := ""
