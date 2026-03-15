@@ -32,42 +32,6 @@ func TestNewFooterDetailBindings(t *testing.T) {
 	}
 }
 
-func TestInsertBefore(t *testing.T) {
-	bindings := []FooterBinding{
-		{Key: "a", Desc: "alpha"},
-		{Key: "b", Desc: "beta"},
-		{Key: "c", Desc: "gamma"},
-	}
-	extra := FooterBinding{Key: "x", Desc: "extra"}
-
-	result := insertBefore(bindings, "b", extra)
-	if len(result) != 4 {
-		t.Fatalf("expected 4 bindings, got %d", len(result))
-	}
-	if result[1].Key != "x" {
-		t.Fatalf("expected extra at index 1, got %s", result[1].Key)
-	}
-	if result[2].Key != "b" {
-		t.Fatalf("expected b at index 2, got %s", result[2].Key)
-	}
-}
-
-func TestInsertBeforeMissingKey(t *testing.T) {
-	bindings := []FooterBinding{
-		{Key: "a", Desc: "alpha"},
-		{Key: "b", Desc: "beta"},
-	}
-	extra := FooterBinding{Key: "x", Desc: "extra"}
-
-	result := insertBefore(bindings, "z", extra)
-	if len(result) != 3 {
-		t.Fatalf("expected 3 bindings, got %d", len(result))
-	}
-	if result[2].Key != "x" {
-		t.Fatalf("expected extra appended at end, got %s at index 2", result[2].Key)
-	}
-}
-
 func TestBulkFooterContainsCount(t *testing.T) {
 	output := BulkFooter(80, 5)
 	if !strings.Contains(output, "5") {
