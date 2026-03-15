@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -125,50 +126,141 @@ func startDoltServer(beadsDir string, port int) (int, error) {
 	return pid, nil
 }
 
-// stopDoltServer reads <beadsDir>/dolt-server.pid, sends SIGTERM to the
-// process, waits up to 5 seconds, then sends SIGKILL. Removes the PID and
-// port files regardless of whether the process was found. Idempotent: returns
-// nil if no PID file exists.
-func stopDoltServer(beadsDir string) error {
-	pidPath := filepath.Join(beadsDir, "dolt-server.pid")
-	portPath := filepath.Join(beadsDir, "dolt-server.port")
+const (
+	doltKillTimeout      = 5 * time.Second
+	doltKillPollInterval = 100 * time.Millisecond
+)
 
-	data, err := os.ReadFile(pidPath) //nolint:gosec // beadsDir is caller-controlled
+// discoverPIDByPort uses lsof to find the PID of the process listening on the
+// given TCP port. Returns exec.ErrNotFound if lsof is not in PATH. Returns an
+// error if no LISTEN process is found. If multiple PIDs are reported, the
+// first is used.
+func discoverPIDByPort(port int) (int, error) {
+	lsofPath, err := exec.LookPath("lsof")
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		return 0, exec.ErrNotFound
+	}
+
+	//nolint:gosec // args constructed from trusted internal values
+	out, err := exec.Command(lsofPath, "-ti", fmt.Sprintf("TCP:%d", port), "-s", "TCP:LISTEN").Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return 0, fmt.Errorf("no process found listening on port %d", port)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil {
+		return 0, fmt.Errorf("parse lsof output %q: %w", lines[0], err)
+	}
+	return pid, nil
+}
+
+// killAndWait sends SIGTERM to the given PID and polls IsProcessAlive until
+// the process exits or 5 seconds elapse, then falls back to SIGKILL. Removes
+// <beadsDir>/dolt-server.pid and <beadsDir>/dolt-server.port on completion.
+//
+// A background goroutine calls proc.Wait() to reap the zombie if we are the
+// parent; this allows the IsProcessAlive poll to detect the process exit via
+// ESRCH once the zombie is reaped.
+func killAndWait(pid int, beadsDir string) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		removeDoltServerFiles(beadsDir)
+		return nil
+	}
+
+	_ = proc.Signal(syscall.SIGTERM)
+
+	// Reap zombie in background so IsProcessAlive returns false once the process
+	// exits. If we are not the parent, Wait returns ECHILD immediately (no-op).
+	go func() { _, _ = proc.Wait() }()
+
+	deadline := time.After(doltKillTimeout)
+	ticker := time.NewTicker(doltKillPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if !IsProcessAlive(pid) {
+				removeDoltServerFiles(beadsDir)
+				return nil
+			}
+		case <-deadline:
+			_ = proc.Signal(syscall.SIGKILL)
+			removeDoltServerFiles(beadsDir)
 			return nil
 		}
+	}
+}
+
+// removeDoltServerFiles removes the dolt-server.pid and dolt-server.port
+// files from beadsDir. Errors are silently ignored (best-effort cleanup).
+func removeDoltServerFiles(beadsDir string) {
+	_ = os.Remove(filepath.Join(beadsDir, "dolt-server.pid"))
+	_ = os.Remove(filepath.Join(beadsDir, "dolt-server.port"))
+}
+
+// stopDoltServer stops the dolt server for the given beads directory.
+//
+// Strategy:
+//  1. PID file present + process alive → SIGTERM via killAndWait.
+//  2. PID file missing → read metadata.json to get port; if port is listening
+//     → discover PID via lsof (discoverPIDByPort) → killAndWait.
+//  3. PID file missing + port not listening → no-op (nil).
+//  4. PID file missing + metadata.json missing → no-op (nil).
+//
+// Idempotent: safe to call when the server is already stopped.
+func stopDoltServer(beadsDir string) error {
+	pidPath := filepath.Join(beadsDir, "dolt-server.pid")
+
+	data, err := os.ReadFile(pidPath) //nolint:gosec // beadsDir is caller-controlled
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read dolt PID file: %w", err)
 	}
 
-	pid, err := strconv.Atoi(string(data))
-	if err != nil {
-		// Malformed PID file — clean up and return.
-		_ = os.Remove(pidPath)
-		_ = os.Remove(portPath)
-		return fmt.Errorf("parse dolt PID file: %w", err)
-	}
-
-	proc, err := os.FindProcess(pid)
 	if err == nil {
-		_ = proc.Signal(syscall.SIGTERM)
-
-		done := make(chan struct{})
-		go func() {
-			_, _ = proc.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			_ = proc.Signal(syscall.SIGKILL)
+		// PID file present — try to kill by PID.
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr != nil {
+			removeDoltServerFiles(beadsDir)
+			return fmt.Errorf("parse dolt PID file: %w", parseErr)
 		}
+		if IsProcessAlive(pid) {
+			return killAndWait(pid, beadsDir)
+		}
+		// Process already dead — just clean up.
+		removeDoltServerFiles(beadsDir)
+		return nil
 	}
 
-	_ = os.Remove(pidPath)
-	_ = os.Remove(portPath)
-	return nil
+	// PID file missing — fall back to port-based discovery.
+	meta, err := readDoltMeta(beadsDir)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		return nil // not a dolt project or metadata missing
+	}
+
+	port := meta.DoltServerPort
+	if port == 0 {
+		port = DerivePort(beadsDir)
+	}
+
+	if !isDoltServerRunning(port) {
+		return nil // nothing listening on the expected port
+	}
+
+	pid, err := discoverPIDByPort(port)
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil // lsof not available — degrade gracefully
+	}
+	if err != nil {
+		return fmt.Errorf("discover PID on port %d: %w", port, err)
+	}
+
+	return killAndWait(pid, beadsDir)
 }
 
 // ensureDoltMetadata creates or updates <beadsDir>/metadata.json with the

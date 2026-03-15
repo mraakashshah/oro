@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func TestDerivePort(t *testing.T) {
@@ -309,4 +312,242 @@ func writeMetadata(t *testing.T, beadsDir string, data map[string]interface{}) {
 	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), b, 0o600); err != nil {
 		t.Fatalf("write metadata: %v", err)
 	}
+}
+
+// startListeningProcess starts a subprocess that persistently listens on the
+// given port and returns the process. Uses nc -k (keep-open) so a single
+// probe connection from isDoltServerRunning does not cause nc to exit.
+// The caller is responsible for cleanup.
+func startListeningProcess(t *testing.T, port int) *exec.Cmd {
+	t.Helper()
+	// -k: keep listening after each connection (macOS/BSD nc).
+	cmd := exec.Command("nc", "-k", "-l", strconv.Itoa(port))
+	if err := cmd.Start(); err != nil {
+		t.Skipf("nc not available or failed to start: %v", err)
+	}
+	// Wait until port is accepting connections (up to 2s).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if isDoltServerRunning(port) {
+			return cmd
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	_ = cmd.Process.Kill()
+	t.Skip("nc listener did not become ready in time")
+	return nil
+}
+
+func TestDiscoverPIDByPort(t *testing.T) {
+	t.Run("returns ErrNotFound when lsof not in PATH", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		_, err := discoverPIDByPort(19997)
+		if !errors.Is(err, exec.ErrNotFound) {
+			t.Errorf("discoverPIDByPort error = %v, want exec.ErrNotFound", err)
+		}
+	})
+
+	t.Run("returns error when no process on port", func(t *testing.T) {
+		_, err := discoverPIDByPort(19997)
+		if err == nil {
+			t.Error("discoverPIDByPort should return error when no process listening on port")
+		}
+		if errors.Is(err, exec.ErrNotFound) {
+			t.Skip("lsof not available")
+		}
+	})
+
+	t.Run("returns our PID when we are listening", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("net.Listen: %v", err)
+		}
+		defer ln.Close()
+		port := ln.Addr().(*net.TCPAddr).Port
+
+		pid, err := discoverPIDByPort(port)
+		if errors.Is(err, exec.ErrNotFound) {
+			t.Skip("lsof not available")
+		}
+		if err != nil {
+			t.Fatalf("discoverPIDByPort(%d) = error %v", port, err)
+		}
+		if pid != os.Getpid() {
+			t.Errorf("discoverPIDByPort = PID %d, want own PID %d", pid, os.Getpid())
+		}
+	})
+}
+
+func TestKillAndWait(t *testing.T) {
+	t.Run("sends SIGTERM and waits for process to die", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cmd := exec.Command("sleep", "100")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep: %v", err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+		pid := cmd.Process.Pid
+		if err := killAndWait(pid, tmpDir); err != nil {
+			t.Errorf("killAndWait error: %v", err)
+		}
+		if IsProcessAlive(pid) {
+			t.Error("process should be dead after killAndWait")
+		}
+	})
+
+	t.Run("removes PID and port files on completion", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidPath := filepath.Join(tmpDir, "dolt-server.pid")
+		portPath := filepath.Join(tmpDir, "dolt-server.port")
+		if err := os.WriteFile(pidPath, []byte("0"), 0o600); err != nil {
+			t.Fatalf("write pid: %v", err)
+		}
+		if err := os.WriteFile(portPath, []byte("13400"), 0o600); err != nil {
+			t.Fatalf("write port: %v", err)
+		}
+
+		cmd := exec.Command("sleep", "100")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep: %v", err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+		_ = killAndWait(cmd.Process.Pid, tmpDir)
+
+		if _, err := os.Stat(pidPath); !errors.Is(err, os.ErrNotExist) {
+			t.Error("dolt-server.pid should be removed after killAndWait")
+		}
+		if _, err := os.Stat(portPath); !errors.Is(err, os.ErrNotExist) {
+			t.Error("dolt-server.port should be removed after killAndWait")
+		}
+	})
+}
+
+func TestStopDoltServerPortFallback(t *testing.T) {
+	t.Run("(1) PID file present + process alive → killed via SIGTERM", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		cmd := exec.Command("sleep", "100")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep: %v", err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+		pid := cmd.Process.Pid
+		pidPath := filepath.Join(beadsDir, "dolt-server.pid")
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o600); err != nil {
+			t.Fatalf("write PID file: %v", err)
+		}
+
+		if err := stopDoltServer(beadsDir); err != nil {
+			t.Errorf("stopDoltServer error: %v", err)
+		}
+
+		if IsProcessAlive(pid) {
+			t.Error("process should be dead after stopDoltServer")
+		}
+		if _, err := os.Stat(pidPath); !errors.Is(err, os.ErrNotExist) {
+			t.Error("PID file should be removed")
+		}
+	})
+
+	t.Run("(2) PID file missing + port listening → killed via lsof fallback", func(t *testing.T) {
+		// Find a free port, then start a listener subprocess on it.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("net.Listen: %v", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		ln.Close()
+
+		cmd := startListeningProcess(t, port)
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		writeMetadata(t, beadsDir, map[string]interface{}{
+			"backend":          "dolt",
+			"dolt_server_port": port,
+			"dolt_database":    "beads",
+		})
+		// No PID file written.
+
+		if err := stopDoltServer(beadsDir); err != nil {
+			t.Errorf("stopDoltServer error: %v", err)
+		}
+
+		// Allow brief settling time.
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) && IsProcessAlive(cmd.Process.Pid) {
+			time.Sleep(50 * time.Millisecond)
+		}
+		if IsProcessAlive(cmd.Process.Pid) {
+			t.Errorf("nc process (PID %d) should be dead after lsof fallback", cmd.Process.Pid)
+		}
+	})
+
+	t.Run("(3) PID file missing + port not listening → returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		writeMetadata(t, beadsDir, map[string]interface{}{
+			"backend":          "dolt",
+			"dolt_server_port": 19996,
+			"dolt_database":    "beads",
+		})
+
+		if err := stopDoltServer(beadsDir); err != nil {
+			t.Errorf("stopDoltServer = %v, want nil when port not listening", err)
+		}
+	})
+
+	t.Run("(4) PID file missing + metadata.json missing → returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		// Neither PID file nor metadata.json.
+
+		if err := stopDoltServer(beadsDir); err != nil {
+			t.Errorf("stopDoltServer = %v, want nil when metadata missing", err)
+		}
+	})
+
+	t.Run("(5) poll wait uses IsProcessAlive loop not proc.Wait", func(t *testing.T) {
+		// Verify killAndWait is used (poll loop) by ensuring a process started
+		// with os.StartProcess (which would cause proc.Wait deadlock if misused)
+		// is handled correctly. We use sleep as a proxy.
+		tmpDir := t.TempDir()
+		cmd := exec.Command("sleep", "100")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start sleep: %v", err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+		pid := cmd.Process.Pid
+		done := make(chan error, 1)
+		go func() {
+			done <- killAndWait(pid, tmpDir)
+		}()
+
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("killAndWait error: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("killAndWait timed out — suggests blocking wait instead of poll")
+		}
+	})
 }
