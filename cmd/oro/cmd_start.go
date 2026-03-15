@@ -482,12 +482,10 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 	wireDependencies(d, paths.SocketPath, paths.OroHome, &dispatcher.ExecCommandRunner{}, true /* daemonOnly */)
 
 	// Convert beads directory to absolute path (daemon may change cwd).
-	repoRoot, err := os.Getwd()
+	beadsDir, err := absoluteBeadsDir()
 	if err != nil {
-		_ = db.Close()
-		return fmt.Errorf("get working dir: %w", err)
+		return fmt.Errorf("absolute beads dir: %w", err)
 	}
-	beadsDir := filepath.Join(repoRoot, ".beads")
 
 	ctx := cmd.Context()
 	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized(), beadsDir)
@@ -498,6 +496,16 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "dispatcher stopped")
 	return nil
+}
+
+// absoluteBeadsDir returns the absolute path to the .beads directory
+// relative to the current working directory.
+func absoluteBeadsDir() (string, error) {
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working dir: %w", err)
+	}
+	return filepath.Join(repoRoot, ".beads"), nil
 }
 
 // bootstrapOroDir creates the oro state directory with 0700 permissions.
