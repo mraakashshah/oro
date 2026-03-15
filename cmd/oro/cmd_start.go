@@ -159,37 +159,45 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 		return fmt.Errorf("spawn daemon: %w", err)
 	}
 
+	// cleanupOrphans kills the daemon and stops dolt on error after spawn.
+	cleanupOrphans := func() {
+		if killErr := killFn(pid); killErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to kill orphaned daemon (PID %d): %v\n", pid, killErr)
+		}
+		doltCleanup()
+	}
+
 	log.Step(fmt.Sprintf("Daemon started (PID %d)", pid))
 
 	// 2. Wait for the dispatcher socket to appear.
 	if err := pollForSocket(log, sockPath, socketTimeout); err != nil {
+		cleanupOrphans()
 		return err
 	}
 
 	// 2b. Send start directive so dispatcher transitions from Inert to Running.
 	if err := sendStartDirective(sockPath); err != nil {
+		cleanupOrphans()
 		return fmt.Errorf("send start directive: %w", err)
 	}
 
 	// 3. Create tmux session with short nudges (full role context injected by SessionStart hook).
 	sess := &TmuxSession{Name: TmuxSessionName(project), Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
 	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
-		// Best-effort cleanup: kill the orphaned daemon and dolt server so the
-		// user does not need to run `oro stop` manually.
-		if killErr := killFn(pid); killErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to kill orphaned daemon (PID %d): %v\n", pid, killErr)
-		}
-		doltCleanup()
+		cleanupOrphans()
 		return fmt.Errorf("create tmux session: %w", err)
 	}
 
 	log.Step("Tmux session created")
 	log.Step("Beacon verified")
-
-	// 4. Print status.
 	fmt.Fprintf(w, "oro swarm started (PID %d, workers=%d, model=%s)\n", pid, workers, model)
 
-	// 5. Attach interactively, or print instructions if detached.
+	return attachOrDetach(w, sess, detach)
+}
+
+// attachOrDetach prints status and either attaches to the tmux session
+// interactively or prints detach instructions.
+func attachOrDetach(w io.Writer, sess *TmuxSession, detach bool) error {
 	if detach {
 		fmt.Fprintln(w, "detached — attach with: oro attach")
 		return nil
@@ -198,7 +206,6 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 	if err := sess.AttachInteractive(); err != nil {
 		return fmt.Errorf("attach to tmux session: %w", err)
 	}
-
 	return nil
 }
 

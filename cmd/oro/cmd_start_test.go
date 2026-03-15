@@ -721,6 +721,38 @@ func TestDoltStartedBeforeDaemon(t *testing.T) {
 		}
 	})
 
+	t.Run("dolt cleanup on socket poll failure", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidFile := filepath.Join(tmpDir, "oro.pid")
+
+		t.Setenv("ORO_PID_PATH", pidFile)
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "nonexistent.sock"))
+		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+
+		doltStopped := false
+		daemonKilled := false
+
+		// Spawner succeeds but does NOT create a socket — pollForSocket will timeout.
+		spawner := &fakeSpawner{returnPID: 12345}
+
+		var stdout bytes.Buffer
+		err := runFullStart(&stdout, 2, "sonnet", "", spawner, newFakeCmd(),
+			func(int) error { daemonKilled = true; return nil },
+			1*time.Millisecond, noopSleep, 50*time.Millisecond, false,
+			func() (int, error) { return 42, nil },
+			func() error { doltStopped = true; return nil })
+
+		if err == nil {
+			t.Fatal("expected error when socket poll times out")
+		}
+		if !doltStopped {
+			t.Error("doltStopFn should have been called for cleanup after socket poll failure")
+		}
+		if !daemonKilled {
+			t.Error("daemon should have been killed after socket poll failure")
+		}
+	})
+
 	t.Run("nil doltStartFn skips dolt for non-dolt projects", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pidFile := filepath.Join(tmpDir, "oro.pid")
