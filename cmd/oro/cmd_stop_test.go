@@ -382,6 +382,41 @@ func TestStopSequenceCleansDolt(t *testing.T) {
 	})
 }
 
+// TestStopSequenceCallsStopDolt verifies that runStopSequence calls stopDoltFn
+// with the beadsDir after daemon shutdown when the new interface is configured.
+func TestStopSequenceCallsStopDolt(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
+
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	stopDoltCalled := false
+	var passedBeadsDir string
+
+	fake := newFakeCmd()
+	var buf bytes.Buffer
+	cfg := ttyStop(pidFile, fake, &buf)
+	cfg.beadsDir = beadsDir
+	cfg.stopDoltFn = func(dir string) error {
+		stopDoltCalled = true
+		passedBeadsDir = dir
+		return nil
+	}
+
+	if err := runStopSequence(context.Background(), cfg); err != nil {
+		t.Fatalf("runStopSequence: %v", err)
+	}
+
+	if !stopDoltCalled {
+		t.Error("stopDoltFn should have been called during stop sequence")
+	}
+	if passedBeadsDir != beadsDir {
+		t.Errorf("stopDoltFn should have been called with beadsDir %q, got %q", beadsDir, passedBeadsDir)
+	}
+}
+
 func TestStop_NotRunning_SuggestsAllWhenOtherDaemonsExist(t *testing.T) {
 	oroHome := t.TempDir()
 	t.Setenv("ORO_HOME", oroHome)

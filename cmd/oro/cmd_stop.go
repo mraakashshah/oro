@@ -21,14 +21,16 @@ type stopConfig struct {
 	tmuxName   string
 	runner     CmdRunner
 	w          io.Writer
-	stdin      io.Reader       // stdin for interactive confirmation
-	signalFn   func(int) error // sends SIGINT; injectable for testing
-	aliveFn    func(int) bool  // checks process liveness; injectable for testing
-	killFn     func(int) error // sends SIGKILL; injectable for testing
-	isTTY      func() bool     // returns true if stdin is a TTY; injectable for testing
-	force      bool            // --force flag: skip interactive confirmation
-	oroHome    string          // base directory for daemon discovery
-	doltStopFn func() error    // stops dolt server; nil for non-dolt projects
+	stdin      io.Reader          // stdin for interactive confirmation
+	signalFn   func(int) error    // sends SIGINT; injectable for testing
+	aliveFn    func(int) bool     // checks process liveness; injectable for testing
+	killFn     func(int) error    // sends SIGKILL; injectable for testing
+	isTTY      func() bool        // returns true if stdin is a TTY; injectable for testing
+	force      bool               // --force flag: skip interactive confirmation
+	oroHome    string             // base directory for daemon discovery
+	doltStopFn func() error       // stops dolt server (old interface); nil for non-dolt projects
+	beadsDir   string             // directory containing .beads (for dolt cleanup)
+	stopDoltFn func(string) error // stops dolt server (new interface); injectable for testing
 }
 
 // projectDaemon describes a running daemon discovered in a project directory.
@@ -135,6 +137,8 @@ Use --all to stop daemons in all projects simultaneously.`,
 				force:      force,
 				oroHome:    paths.OroHome,
 				doltStopFn: doltStop,
+				beadsDir:   ".beads",
+				stopDoltFn: stopDoltServer,
 			}
 
 			return runStopSequence(cmd.Context(), cfg)
@@ -201,6 +205,8 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) er
 			isTTY:      isStdinTTY,
 			force:      force,
 			doltStopFn: doltStopFn,
+			beadsDir:   beadsDir,
+			stopDoltFn: stopDoltServer,
 		}
 
 		fmt.Fprintf(w, "\nstopping %s (PID %d)...\n", d.Project, d.PID)
@@ -330,6 +336,13 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 	// signal handler on graceful exit, but SIGKILL fallback skips that cleanup).
 	if cfg.doltStopFn != nil {
 		if err := cfg.doltStopFn(); err != nil {
+			fmt.Fprintf(cfg.w, "warning: dolt cleanup: %v\n", err)
+		}
+	}
+
+	// 7b. Stop dolt server with beads directory (new interface).
+	if cfg.stopDoltFn != nil && cfg.beadsDir != "" {
+		if err := cfg.stopDoltFn(cfg.beadsDir); err != nil {
 			fmt.Fprintf(cfg.w, "warning: dolt cleanup: %v\n", err)
 		}
 	}
