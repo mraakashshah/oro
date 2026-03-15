@@ -174,16 +174,9 @@ func runDispatcherStart(w io.Writer, workers int, spawner DaemonSpawner, socketT
 		return fmt.Errorf("spawn daemon: %w", err)
 	}
 
-	// Wait for the dispatcher socket to appear.
-	deadline := time.Now().Add(socketTimeout)
-	for time.Now().Before(deadline) {
-		if _, statErr := os.Stat(sockPath); statErr == nil {
-			break
-		}
-		time.Sleep(socketPollInterval)
-	}
-	if _, err := os.Stat(sockPath); err != nil {
-		return fmt.Errorf("dispatcher socket not ready at %s: %w", sockPath, err)
+	// Wait for the dispatcher socket to be connectable (not just file-exists).
+	if err := pollForSocket(nil, sockPath, socketTimeout); err != nil {
+		return err
 	}
 
 	// Send start directive so dispatcher transitions from Inert to Running.

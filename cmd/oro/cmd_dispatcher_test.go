@@ -43,22 +43,28 @@ func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers int) (int, e
 		if err != nil {
 			return 0, err
 		}
-		// Accept one connection, send ACK for start directive.
+		// Accept multiple connections: pollForSocket does a connect-check
+		// first, then sendStartDirective sends the directive.
 		go func() {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			defer func() { _ = conn.Close(); _ = ln.Close() }()
-			scanner := bufio.NewScanner(conn)
-			if scanner.Scan() {
-				ack := protocol.Message{
-					Type: protocol.MsgACK,
-					ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+			defer ln.Close()
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return // listener closed
 				}
-				data, _ := json.Marshal(ack)
-				data = append(data, '\n')
-				_, _ = conn.Write(data)
+				go func(c net.Conn) {
+					defer c.Close()
+					scanner := bufio.NewScanner(c)
+					if scanner.Scan() {
+						ack := protocol.Message{
+							Type: protocol.MsgACK,
+							ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+						}
+						data, _ := json.Marshal(ack)
+						data = append(data, '\n')
+						_, _ = c.Write(data)
+					}
+				}(conn)
 			}
 		}()
 	}
