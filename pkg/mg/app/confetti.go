@@ -6,9 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/mg/ui"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"oro/pkg/mg/ui"
 )
 
 const (
@@ -19,12 +20,14 @@ const (
 	necklaceLength    = 5 // beads per necklace
 )
 
-var confettiGlyphs = []string{"●", "◆", "⚜", "✦", "✧", "★", "♦"}
-var necklaceGlyphs = []string{"●", "◆", "●", "◆", "●"} // alternating bead shapes
-var confettiColors = []color.Color{
-	ui.Purple, ui.Gold, ui.Green,
-	ui.BrightPurple, ui.BrightGold, ui.BrightGreen,
-}
+var (
+	confettiGlyphs = []string{"●", "◆", "⚜", "✦", "✧", "★", "♦"}
+	necklaceGlyphs = []string{"●", "◆", "●", "◆", "●"} // alternating bead shapes
+	confettiColors = []color.Color{
+		ui.Purple, ui.Gold, ui.Green,
+		ui.BrightPurple, ui.BrightGold, ui.BrightGreen,
+	}
+)
 
 type particle struct {
 	x, y   float64

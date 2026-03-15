@@ -138,7 +138,7 @@ Import paths change from `github.com/matt-wright86/mardi-gras/internal/...` to `
 
 This is the hardest file. The gastown integration is deeply woven in.
 
-### Model struct — Remove these fields:
+### Model struct — Remove these fields
 
 ```
 gtEnv, townStatus, gasTown, showGasTown          # Gas Town core
@@ -152,7 +152,7 @@ mailComposeSubject, mailComposeInput              # Mail compose
 showProblems, doctorProblems                      # Problems view
 ```
 
-### Model struct — Modify:
+### Model struct — Modify
 
 ```
 agentAvail    → workAvail bool        # Whether oro binary is on PATH
@@ -160,7 +160,7 @@ agentRuntime  → (remove)              # No runtime detection needed
 activeAgents  → activeWorkers map[string]string  # beadID -> pane/process
 ```
 
-### Message types — Remove all 20 gastown messages. Keep:
+### Message types — Remove all 20 gastown messages, keep
 
 ```
 workLaunchedMsg   { beadID, paneID string }
@@ -169,7 +169,7 @@ workErrorMsg      { beadID string; err error }
 workerStatusMsg   { active map[string]string }
 ```
 
-### Key handlers — Strip all GT key handlers. Modify:
+### Key handlers — Strip all GT key handlers, modify
 
 ```
 "a" → "w"  :  Launch oro work (not agent/sling)
@@ -177,11 +177,11 @@ workerStatusMsg   { active map[string]string }
 ctrl+g      :  Remove (was Gas Town panel toggle)
 ```
 
-### Update() — Remove ~460 lines of gastown message handling (lines 817-1278). Remove all fetch/poll functions for GT data.
+### Update() — Remove ~460 lines of gastown message handling (lines 817-1278) and all fetch/poll functions for GT data
 
-### View() — Remove Gas Town panel rendering, problems overlay. Keep parade + detail split.
+### View() — Remove Gas Town panel rendering and problems overlay, keep parade + detail split
 
-### propagateAgentState() → propagateWorkerState():
+### propagateAgentState() → propagateWorkerState()
 - Remove townStatus propagation
 - Remove orphanedIDs calculation
 - Keep activeWorkers sync to parade/detail/header
