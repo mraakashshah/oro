@@ -1606,7 +1606,7 @@ func TestModel_InitialLoadState(t *testing.T) {
 		}
 
 		// List structure should be present (group headers)
-		if !strings.Contains(view, "Ready (") {
+		if !strings.Contains(view, "Open (") {
 			t.Errorf("View() after beadsMsg should contain list structure, got: %s", view)
 		}
 	})

@@ -135,10 +135,9 @@ func TestListNav_JK(t *testing.T) {
 	t.Run("flatRows includes headers and bead rows for expanded groups", func(t *testing.T) {
 		lm := NewListModel().updateBeads(makeBeads())
 		rows := lm.flatRows()
-		// 3 groups: in_progress(1 header + 1 bead), open(1 header + 2 beads), blocked(1 header + 1 bead)
-		// = 3 headers + 4 beads = 7 rows (no closed beads in makeBeads)
-		if len(rows) != 7 {
-			t.Errorf("flatRows: got %d rows, want 7", len(rows))
+		// 1 group: open(1 header + 4 beads) = 5 rows (no closed beads in makeBeads)
+		if len(rows) != 5 {
+			t.Errorf("flatRows: got %d rows, want 5", len(rows))
 		}
 		// First row should be a header
 		if !rows[0].isHeader {
@@ -247,10 +246,10 @@ func TestListNav_JK(t *testing.T) {
 
 	t.Run("cursorBeadID returns bead ID when on bead row", func(t *testing.T) {
 		lm := NewListModel().updateBeads(makeBeads())
-		lm.cursor = 1 // first bead row; in_progress group has ip-1
+		lm.cursor = 1 // first bead row; open group sorted by priority, bl-1(P0) is first
 		id := lm.cursorBeadID()
-		if id != "ip-1" {
-			t.Errorf("cursorBeadID on bead row: got %q, want %q", id, "ip-1")
+		if id != "bl-1" {
+			t.Errorf("cursorBeadID on bead row: got %q, want %q", id, "bl-1")
 		}
 	})
 
@@ -432,7 +431,7 @@ func TestListRow_Render(t *testing.T) {
 		}
 	})
 
-	t.Run("groupBeads partitions beads by status into 4 buckets", func(t *testing.T) {
+	t.Run("groupBeads partitions beads by status into 2 buckets", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "a", Status: "open", Priority: 2},
 			{ID: "b", Status: "in_progress", Priority: 1},
@@ -440,20 +439,14 @@ func TestListRow_Render(t *testing.T) {
 			{ID: "d", Status: "closed", Priority: 3},
 		}
 		groups := groupBeads(beads)
-		if len(groups["in_progress"]) != 1 || groups["in_progress"][0].ID != "b" {
-			t.Errorf("groupBeads in_progress: got %v", groups["in_progress"])
-		}
-		if len(groups["open"]) != 1 || groups["open"][0].ID != "a" {
-			t.Errorf("groupBeads open: got %v", groups["open"])
-		}
-		if len(groups["blocked"]) != 1 || groups["blocked"][0].ID != "c" {
-			t.Errorf("groupBeads blocked: got %v", groups["blocked"])
+		if len(groups["open"]) != 3 {
+			t.Errorf("groupBeads open: got %d, want 3 (open+in_progress+blocked)", len(groups["open"]))
 		}
 		if len(groups["closed"]) != 1 || groups["closed"][0].ID != "d" {
 			t.Errorf("groupBeads closed: got %v", groups["closed"])
 		}
-		if len(groups) != 4 {
-			t.Errorf("groupBeads: got %d groups, want 4", len(groups))
+		if len(groups) != 2 {
+			t.Errorf("groupBeads: got %d groups, want 2", len(groups))
 		}
 	})
 
@@ -519,12 +512,12 @@ func TestListRow_Render(t *testing.T) {
 			{ID: "only-open", Title: "An open task", Status: "open", Priority: 2, Type: "task"},
 		})
 		out := lm.View(theme, styles, 80, 24)
-		if !strings.Contains(out, "Ready (") {
-			t.Errorf("View missing Ready group header")
+		if !strings.Contains(out, "Open (") {
+			t.Errorf("View missing Open group header")
 		}
-		// Done group must not appear when empty
-		if strings.Contains(out, "Done (") {
-			t.Errorf("View shows empty Done group")
+		// Closed group must not appear when empty
+		if strings.Contains(out, "Closed (") {
+			t.Errorf("View shows empty Closed group")
 		}
 	})
 
@@ -538,8 +531,8 @@ func TestListRow_Render(t *testing.T) {
 
 	t.Run("renderGroupHeader shows label and count", func(t *testing.T) {
 		header := renderGroupHeader("open", 7, styles)
-		if !strings.Contains(header, "Ready") {
-			t.Errorf("renderGroupHeader missing label 'Ready': %q", header)
+		if !strings.Contains(header, "Open") {
+			t.Errorf("renderGroupHeader missing label 'Open': %q", header)
 		}
 		if !strings.Contains(header, "7") {
 			t.Errorf("renderGroupHeader missing count '7': %q", header)
@@ -835,17 +828,17 @@ func TestListFilter_Toggle(t *testing.T) {
 		{ID: "cl-1", Status: "closed", Priority: 3, Type: "task"},
 	}
 
-	t.Run("o filter shows open and in_progress only", func(t *testing.T) {
+	t.Run("o filter shows all non-closed", func(t *testing.T) {
 		lm := NewListModel().updateBeads(allBeads)
 		lm = lm.setFilter("o")
 		filtered := lm.filteredBeads()
 		for _, b := range filtered {
-			if b.Status != "open" && b.Status != "in_progress" {
-				t.Errorf("o filter: unexpected status %q for %s", b.Status, b.ID)
+			if b.Status == "closed" {
+				t.Errorf("o filter: unexpected closed bead %s", b.ID)
 			}
 		}
-		if len(filtered) != 2 {
-			t.Errorf("o filter: got %d beads, want 2", len(filtered))
+		if len(filtered) != 3 {
+			t.Errorf("o filter: got %d beads, want 3 (open+in_progress+blocked)", len(filtered))
 		}
 	})
 
@@ -970,8 +963,8 @@ func TestListView_SplitPaneLayout(t *testing.T) {
 		out := lm.View(theme, styles, 120, 30)
 
 		// List pane should show group headers
-		if !strings.Contains(out, "Ready") {
-			t.Errorf("split-pane layout missing 'Ready' group header: %q", out)
+		if !strings.Contains(out, "Open") {
+			t.Errorf("split-pane layout missing 'Open' group header: %q", out)
 		}
 		// Separator should be present
 		if !strings.Contains(out, "│") {
@@ -1175,8 +1168,8 @@ func TestListResponsive(t *testing.T) {
 		if !strings.Contains(out, "Task one") {
 			t.Errorf("width 140: missing bead title 'Task one': %q", out)
 		}
-		if !strings.Contains(out, "Ready") {
-			t.Errorf("width 140: missing 'Ready' group header: %q", out)
+		if !strings.Contains(out, "Open") {
+			t.Errorf("width 140: missing 'Open' group header: %q", out)
 		}
 		// Detail pane should be present (separator visible)
 		if !strings.Contains(out, "│") {
@@ -1229,15 +1222,15 @@ func TestListResponsive(t *testing.T) {
 	})
 }
 
-// TestListFourGroupLayout verifies that the list view uses 4 separate status groups
-// (in_progress, open/ready, blocked, closed/done) with proper sorting.
-func TestListFourGroupLayout(t *testing.T) {
-	t.Run("listRenderOrder returns four groups", func(t *testing.T) {
+// TestListTwoColumnLayout verifies that the list view uses 2 status groups
+// (open, closed) with open sorted by priority and closed by date descending.
+func TestListTwoColumnLayout(t *testing.T) {
+	t.Run("listRenderOrder returns two groups", func(t *testing.T) {
 		order := listRenderOrder()
-		if len(order) != 4 {
-			t.Fatalf("listRenderOrder: got %d groups, want 4: %v", len(order), order)
+		if len(order) != 2 {
+			t.Fatalf("listRenderOrder: got %d groups, want 2: %v", len(order), order)
 		}
-		expected := []string{"in_progress", "open", "blocked", "closed"}
+		expected := []string{"open", "closed"}
 		for i, want := range expected {
 			if order[i] != want {
 				t.Errorf("listRenderOrder[%d] = %q, want %q", i, order[i], want)
@@ -1245,7 +1238,7 @@ func TestListFourGroupLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("groupBeads separates statuses into 4 buckets", func(t *testing.T) {
+	t.Run("groupBeads merges in_progress open blocked into open bucket", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "ip-1", Status: "in_progress", Priority: 1},
 			{ID: "op-1", Status: "open", Priority: 2},
@@ -1253,49 +1246,34 @@ func TestListFourGroupLayout(t *testing.T) {
 			{ID: "cl-1", Status: "closed", Priority: 3, UpdatedAt: "2024-03-01T00:00:00Z"},
 		}
 		groups := groupBeads(beads)
-		if len(groups["in_progress"]) != 1 {
-			t.Errorf("groupBeads in_progress: got %d beads, want 1", len(groups["in_progress"]))
-		}
-		if len(groups["open"]) != 1 {
-			t.Errorf("groupBeads open: got %d beads, want 1", len(groups["open"]))
-		}
-		if len(groups["blocked"]) != 1 {
-			t.Errorf("groupBeads blocked: got %d beads, want 1", len(groups["blocked"]))
+		if len(groups["open"]) != 3 {
+			t.Errorf("groupBeads open: got %d beads, want 3 (in_progress+open+blocked)", len(groups["open"]))
 		}
 		if len(groups["closed"]) != 1 {
 			t.Errorf("groupBeads closed: got %d beads, want 1", len(groups["closed"]))
 		}
+		if len(groups) != 2 {
+			t.Errorf("groupBeads: got %d groups, want 2", len(groups))
+		}
 	})
 
-	t.Run("open group sorted by topo then priority", func(t *testing.T) {
+	t.Run("open group sorted by priority ascending", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "op-1", Status: "open", Priority: 3},
-			{ID: "op-2", Status: "open", Priority: 1},
-			{ID: "op-3", Status: "open", Priority: 0},
+			{ID: "ip-1", Status: "in_progress", Priority: 1},
+			{ID: "bl-1", Status: "blocked", Priority: 0},
 		}
 		groups := groupBeads(beads)
 		open := groups["open"]
 		if len(open) != 3 {
 			t.Fatalf("open group: got %d beads, want 3", len(open))
 		}
-		// No deps → sorted by priority: op-3(0), op-2(1), op-1(3)
-		expectedOrder := []string{"op-3", "op-2", "op-1"}
+		// Sorted by priority: bl-1(0), ip-1(1), op-1(3)
+		expectedOrder := []string{"bl-1", "ip-1", "op-1"}
 		for i, id := range expectedOrder {
 			if open[i].ID != id {
 				t.Errorf("open group[%d] = %q, want %q", i, open[i].ID, id)
 			}
-		}
-	})
-
-	t.Run("in_progress group sorted by priority ascending", func(t *testing.T) {
-		beads := []protocol.Bead{
-			{ID: "ip-2", Status: "in_progress", Priority: 2},
-			{ID: "ip-0", Status: "in_progress", Priority: 0},
-		}
-		groups := groupBeads(beads)
-		ip := groups["in_progress"]
-		if len(ip) != 2 || ip[0].ID != "ip-0" || ip[1].ID != "ip-2" {
-			t.Errorf("in_progress not sorted by priority: got [%s %s]", ip[0].ID, ip[1].ID)
 		}
 	})
 
@@ -1321,7 +1299,7 @@ func TestListFourGroupLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("group headers show 4-group labels", func(t *testing.T) {
+	t.Run("group headers show Open and Closed labels", func(t *testing.T) {
 		theme := DefaultTheme()
 		styles := NewStyles(theme)
 		lm := NewListModel()
@@ -1332,10 +1310,11 @@ func TestListFourGroupLayout(t *testing.T) {
 			{ID: "cl-1", Status: "closed", Priority: 3, Type: "task", Title: "Done task", UpdatedAt: "2024-03-01T00:00:00Z"},
 		})
 		out := lm.View(theme, styles, 80, 24)
-		for _, label := range []string{"In Progress (", "Ready (", "Blocked (", "Done ("} {
-			if !strings.Contains(out, label) {
-				t.Errorf("View missing group header %q", label)
-			}
+		if !strings.Contains(out, "Open (3)") {
+			t.Errorf("View missing 'Open (3)' header in output:\n%s", out)
+		}
+		if !strings.Contains(out, "Closed (1)") {
+			t.Errorf("View missing 'Closed (1)' header in output:\n%s", out)
 		}
 	})
 
@@ -1349,7 +1328,7 @@ func TestListFourGroupLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("all open beads omits other groups in flatRows", func(t *testing.T) {
+	t.Run("all open beads omits closed group in flatRows", func(t *testing.T) {
 		lm := NewListModel().updateBeads([]protocol.Bead{
 			{ID: "op-1", Status: "open", Priority: 1, Type: "task", Title: "Open"},
 		})
@@ -1360,7 +1339,7 @@ func TestListFourGroupLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("all closed beads omits other groups in flatRows", func(t *testing.T) {
+	t.Run("all closed beads omits open group in flatRows", func(t *testing.T) {
 		lm := NewListModel().updateBeads([]protocol.Bead{
 			{ID: "cl-1", Status: "closed", Priority: 1, Type: "task", Title: "Closed", UpdatedAt: "2024-03-01T00:00:00Z"},
 		})
@@ -1567,9 +1546,9 @@ func TestCursorHighlightByBeadID(t *testing.T) {
 		}
 
 		out := lm.View(theme, styles, 120, 30)
-		// List pane should show Ready group header
-		if !strings.Contains(out, "Ready (2)") {
-			t.Error("missing 'Ready (2)' header")
+		// List pane should show Open group header
+		if !strings.Contains(out, "Open (2)") {
+			t.Error("missing 'Open (2)' header")
 		}
 		// Both beads should be present
 		if !strings.Contains(out, "op-1") {
@@ -1581,11 +1560,8 @@ func TestCursorHighlightByBeadID(t *testing.T) {
 	})
 }
 
-// TestGroupBeadsUsesTopoSort verifies that open (ready) beads are topologically sorted
-// (prerequisites before dependents) rather than by priority alone.
-func TestGroupBeadsUsesTopoSort(t *testing.T) {
-	// bead-B depends on bead-A via "blocks" dep. Both are "open" status.
-	// bead-A has lower priority (P3) but should appear first because bead-B needs it.
+// TestGroupBeadsSortsByPriority verifies that open beads are sorted by priority ascending.
+func TestGroupBeadsSortsByPriority(t *testing.T) {
 	beads := []protocol.Bead{
 		{ID: "bead-B", Status: "open", Priority: 0, Dependencies: []protocol.Dependency{
 			{Type: "blocks", DependsOnID: "bead-A"},
@@ -1597,12 +1573,12 @@ func TestGroupBeadsUsesTopoSort(t *testing.T) {
 	if len(open) != 2 {
 		t.Fatalf("open group: got %d, want 2", len(open))
 	}
-	// bead-A (the prerequisite) should come before bead-B (the dependent)
-	if open[0].ID != "bead-A" {
-		t.Errorf("open[0] = %q, want 'bead-A' (prerequisite first)", open[0].ID)
+	// Priority sort: bead-B (P0) before bead-A (P3)
+	if open[0].ID != "bead-B" {
+		t.Errorf("open[0] = %q, want 'bead-B' (P0 first)", open[0].ID)
 	}
-	if open[1].ID != "bead-B" {
-		t.Errorf("open[1] = %q, want 'bead-B' (dependent second)", open[1].ID)
+	if open[1].ID != "bead-A" {
+		t.Errorf("open[1] = %q, want 'bead-A' (P3 second)", open[1].ID)
 	}
 }
 

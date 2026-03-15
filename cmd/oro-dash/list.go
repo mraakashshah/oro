@@ -71,7 +71,7 @@ func (lm ListModel) resize(width, height int) ListModel {
 
 // listRenderOrder returns the canonical order for status groups.
 func listRenderOrder() []string {
-	return []string{"in_progress", "open", "blocked", "closed"}
+	return []string{"open", "closed"}
 }
 
 // flatRows returns the visible rows: headers + bead rows for expanded groups.
@@ -210,7 +210,7 @@ func (lm ListModel) filteredBeads() []protocol.Bead {
 func (lm ListModel) matchesFilter(b protocol.Bead) bool {
 	switch lm.activeFilter {
 	case "o":
-		return b.Status == "open" || b.Status == "in_progress"
+		return b.Status != "closed"
 	case "c":
 		return b.Status == "closed"
 	case "r":
@@ -501,38 +501,25 @@ func topoSortBeads(beads []protocol.Bead) []protocol.Bead {
 	return result
 }
 
-// groupBeads groups beads into four buckets:
-//   - "in_progress": actively being worked on — sorted by priority ascending.
-//   - "open": ready to work — topologically sorted (prerequisites first, then priority).
-//   - "blocked": waiting on dependencies — sorted by priority ascending.
+// groupBeads groups beads into two buckets:
+//   - "open": all non-closed beads (in_progress, open, blocked, unknown) — sorted by priority ascending.
 //   - "closed": completed — sorted by UpdatedAt descending (newest first), capped at 10.
 func groupBeads(beads []protocol.Bead) map[string][]protocol.Bead {
 	groups := map[string][]protocol.Bead{
-		"in_progress": {},
-		"open":        {},
-		"blocked":     {},
-		"closed":      {},
+		"open":   {},
+		"closed": {},
 	}
 	for _, b := range beads {
-		switch b.Status {
-		case "in_progress":
-			groups["in_progress"] = append(groups["in_progress"], b)
-		case "blocked":
-			groups["blocked"] = append(groups["blocked"], b)
-		case "closed":
+		if b.Status == "closed" {
 			groups["closed"] = append(groups["closed"], b)
-		default:
+		} else {
 			groups["open"] = append(groups["open"], b)
 		}
 	}
 
-	// Sort in_progress and blocked by priority ascending.
+	// Sort open by priority ascending.
 	byPriority := func(a, b protocol.Bead) int { return a.Priority - b.Priority }
-	slices.SortStableFunc(groups["in_progress"], byPriority)
-	slices.SortStableFunc(groups["blocked"], byPriority)
-
-	// Topo sort applies only to open (ready) beads.
-	groups["open"] = topoSortBeads(groups["open"])
+	slices.SortStableFunc(groups["open"], byPriority)
 
 	// Sort closed by UpdatedAt descending (newest first), cap at 10.
 	slices.SortStableFunc(groups["closed"], func(a, b protocol.Bead) int {
@@ -575,10 +562,8 @@ func (lm ListModel) renderHeaderRow(status string, count int, active bool, width
 // renderGroupHeader renders a group header label like "In Progress (2)".
 func renderGroupHeader(status string, count int, _ Styles) string {
 	labels := map[string]string{
-		"in_progress": "In Progress",
-		"open":        "Ready",
-		"blocked":     "Blocked",
-		"closed":      "Done",
+		"open":   "Open",
+		"closed": "Closed",
 	}
 	label := labels[status]
 	if label == "" {

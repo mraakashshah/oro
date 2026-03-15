@@ -79,19 +79,19 @@ func TestBug01_IconsAppearInBoardView(t *testing.T) {
 	}
 }
 
-// --- Bug 2: List view should be list+detail split-pane with 4 groups ---
+// --- Bug 2: List view should be list+detail split-pane with 2 groups ---
 
 func TestBug02_SplitPaneLayoutAtWideWidth(t *testing.T) {
 	_, styles := testThemeAndStyles()
 	lm := NewListModel().updateBeads(sampleBeads())
 
 	out := lm.View(DefaultTheme(), styles, 120, 30)
-	// Should show 4-group headers
-	if !strings.Contains(out, "In Progress (") {
-		t.Error("split-pane layout missing 'In Progress' header")
+	// Should show 2-group headers
+	if !strings.Contains(out, "Open (") {
+		t.Error("split-pane layout missing 'Open' header")
 	}
-	if !strings.Contains(out, "Done (") {
-		t.Error("split-pane layout missing 'Done' header")
+	if !strings.Contains(out, "Closed (") {
+		t.Error("split-pane layout missing 'Closed' header")
 	}
 	// Separator should be present (vertical bar for split-pane)
 	if !strings.Contains(out, "│") {
@@ -104,13 +104,13 @@ func TestBug02_GroupOrderInNarrowView(t *testing.T) {
 	lm := NewListModel().updateBeads(sampleBeads())
 
 	out := lm.View(DefaultTheme(), styles, 80, 30) // narrow = stacked
-	ipIdx := strings.Index(out, "In Progress (")
-	doneIdx := strings.Index(out, "Done (")
-	if ipIdx == -1 || doneIdx == -1 {
-		t.Fatalf("missing headers: in_progress=%d, done=%d", ipIdx, doneIdx)
+	openIdx := strings.Index(out, "Open (")
+	closedIdx := strings.Index(out, "Closed (")
+	if openIdx == -1 || closedIdx == -1 {
+		t.Fatalf("missing headers: open=%d, closed=%d", openIdx, closedIdx)
 	}
-	if ipIdx > doneIdx {
-		t.Error("narrow view: In Progress group should appear before Done group")
+	if openIdx > closedIdx {
+		t.Error("narrow view: Open group should appear before Closed group")
 	}
 }
 
@@ -135,9 +135,8 @@ func TestBug02_DepsShownInDetailPane(t *testing.T) {
 	}
 }
 
-func TestBug02_TopoSortPrereqsBeforeDependents(t *testing.T) {
-	// With 4 groups, child (blocked) goes to "blocked" bucket, parent (open) to "open" bucket.
-	// Topo sort applies within the "open" bucket only.
+func TestBug02_OpenGroupSortedByPriority(t *testing.T) {
+	// With 2 groups, all non-closed beads merge into "open" sorted by priority ascending.
 	groups := groupBeads([]protocol.Bead{
 		{ID: "child", Status: "open", Priority: 0, Dependencies: []protocol.Dependency{
 			{Type: "blocks", DependsOnID: "parent"},
@@ -148,8 +147,9 @@ func TestBug02_TopoSortPrereqsBeforeDependents(t *testing.T) {
 	if len(open) != 2 {
 		t.Fatalf("expected 2 open beads, got %d", len(open))
 	}
-	if open[0].ID != "parent" {
-		t.Errorf("topo sort: open[0]=%q, want 'parent' (prerequisite first)", open[0].ID)
+	// Priority sort: child(P0) before parent(P3)
+	if open[0].ID != "child" {
+		t.Errorf("priority sort: open[0]=%q, want 'child' (P0 first)", open[0].ID)
 	}
 }
 
