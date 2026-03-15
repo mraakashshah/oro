@@ -430,7 +430,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 	wireDependencies(d, paths.SocketPath, paths.OroHome, &dispatcher.ExecCommandRunner{}, true /* daemonOnly */)
 
 	ctx := cmd.Context()
-	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized())
+	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized(), ".beads")
 	defer cleanup()
 
 	if err := d.Run(shutdownCtx); err != nil {

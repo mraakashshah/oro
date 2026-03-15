@@ -165,7 +165,8 @@ func StopDaemon(pidPath string) error {
 
 // SetupSignalHandler installs a SIGTERM/SIGINT handler that cancels the
 // returned context when a signal is received. It also returns a cleanup
-// function that removes the PID file — callers should defer it.
+// function that removes the PID file and stops dolt server if running.
+// Callers should defer the cleanup function.
 //
 // The authorized flag gates SIGTERM handling:
 //   - nil: SIGTERM always honored (backward compatibility)
@@ -175,7 +176,10 @@ func StopDaemon(pidPath string) error {
 // SIGINT is always honored regardless of authorization (human Ctrl+C).
 // SIGPIPE is explicitly ignored so the daemon survives broken stdout/stderr
 // pipes after the parent process exits.
-func SetupSignalHandler(parent context.Context, pidPath string, authorized *atomic.Bool) (shutdownCtx context.Context, cleanup func()) {
+//
+// The beadsDir parameter allows the cleanup function to stop any running dolt
+// server. If beadsDir is empty, dolt cleanup is skipped.
+func SetupSignalHandler(parent context.Context, pidPath string, authorized *atomic.Bool, beadsDir string) (shutdownCtx context.Context, cleanup func()) {
 	ctx, cancel := context.WithCancel(parent)
 
 	signal.Ignore(syscall.SIGPIPE)
@@ -214,6 +218,9 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 	cleanup = func() {
 		cancel()
 		_ = RemovePIDFile(pidPath)
+		if beadsDir != "" {
+			_ = stopDoltServer(beadsDir)
+		}
 	}
 
 	return ctx, cleanup
