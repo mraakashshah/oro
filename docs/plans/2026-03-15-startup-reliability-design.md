@@ -136,15 +136,77 @@ With Fix 2a (adopt if running), this is idempotent. If dolt is already running, 
 - *Tiger*: `oro init` runs before dolt is installed → `startDoltServer` returns `exec.ErrNotFound`. Mitigated: fail-open pattern, warning printed, init continues.
 - *Paper tiger*: Starting dolt during init slows down init → dolt spawns async, `startDoltServer` returns after `cmd.Start()`, not after server is ready. Minimal latency added.
 
+#### 2f. cleanupDolt: remove orphan-kill pgrep scan
+
+The current `cleanupDolt` (cmd_cleanup.go:316-329) runs `pgrep -f "dolt sql-server.*\.beads/dolt"` and kills ALL matching processes, including healthy running servers. With persistent dolt, this orphan scan must be removed entirely. Only the PID-file-based cleanup (stale PID pointing to dead process) should remain.
+
+```go
+func cleanupDolt(cfg *cleanupConfig) bool {
+    if cfg.beadsDir == "" {
+        return false
+    }
+    // Only clean up stale PID files (dead process). Do NOT scan/kill live dolt processes.
+    pidPath := filepath.Join(cfg.beadsDir, "dolt-server.pid")
+    data, err := os.ReadFile(pidPath)
+    if err != nil {
+        return false // no PID file, nothing to clean
+    }
+    pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+    if err != nil {
+        removeDoltServerFiles(cfg.beadsDir)
+        return true
+    }
+    if !IsProcessAlive(pid) {
+        removeDoltServerFiles(cfg.beadsDir)
+        fmt.Fprintf(cfg.w, "removed stale dolt PID file (process %d dead)\n", pid)
+        return true
+    }
+    return false // dolt is healthy, leave it alone
+}
+```
+
+### Fix 1c: Refactor runDispatcherStart to use pollForSocket
+
+`runDispatcherStart` (cmd_dispatcher.go:178-186) has an inline copy of the same `os.Stat`-based socket polling that Fix 1b fixes in `pollForSocket`. Refactor to reuse `pollForSocket`:
+
+```go
+func runDispatcherStart(w io.Writer, workers int, spawner DaemonSpawner, socketTimeout time.Duration) error {
+    // ... existing path resolution and spawn ...
+
+    // Wait for the dispatcher socket to be connectable (not just file-exists).
+    // Reuse pollForSocket which does a UDS connect-check.
+    if err := pollForSocket(nil, sockPath, socketTimeout); err != nil {
+        return err
+    }
+    // ... sendStartDirective ...
+}
+```
+
+Note: `pollForSocket` takes a `*startupLog` which can be nil (no spinner in dispatcher-only mode). The function must tolerate a nil log — add a nil guard on the spinner calls.
+
+### Fix 1d: Add socket cleanup to all StatusStale branches
+
+Three other `StatusStale` handlers only remove the PID file, not the socket:
+
+1. `cmd_stop.go:runStopSequence` (line 292-294)
+2. `cmd_dispatcher.go:runDispatcherStopSequence` (line 83-85)
+3. `cmd_attach.go` (line 32)
+
+Add `_ = os.Remove(sockPath)` to each. This is belt-and-suspenders — `cleanStaleSocket` in `pkg/dispatcher/stale_socket.go` already handles stale sockets on the dispatcher bind path, but cleaning up early is better.
+
+**Note:** `pkg/dispatcher/stale_socket.go:cleanStaleSocket` already handles stale sockets when the dispatcher binds its listener (connect-check, remove if stale, error if active). This is the secondary defense. Fix 1d adds cleanup at the oro CLI layer as the primary defense.
+
 ## Change Surface
 
 | File | Change | Fix |
 |------|--------|-----|
-| `cmd/oro/cmd_start.go` | Remove stale socket in StatusStale; connect-check in pollForSocket; simplify startDoltIfNeeded cleanup | 1, 2 |
-| `cmd/oro/dolt.go` | Adopt running dolt in startDoltServer (return nil instead of error) | 2 |
-| `cmd/oro/cmd_stop.go` | Remove stopDoltFn call from runStopSequence and runStopAll | 2 |
-| `cmd/oro/daemon.go` | Remove dolt cleanup from SetupSignalHandler; drop beadsDir param | 2 |
-| `cmd/oro/cmd_cleanup.go` | Only clean up stale PID files, don't kill healthy dolt servers | 2 |
+| `cmd/oro/cmd_start.go` | Remove stale socket in StatusStale; connect-check in pollForSocket; simplify startDoltIfNeeded cleanup; nil-guard startupLog in pollForSocket | 1a, 1b, 2d |
+| `cmd/oro/cmd_dispatcher.go` | Refactor runDispatcherStart to use pollForSocket; add socket cleanup to StatusStale in runDispatcherStopSequence | 1c, 1d |
+| `cmd/oro/cmd_stop.go` | Remove stopDoltFn call from runStopSequence and runStopAll; add socket cleanup to StatusStale | 1d, 2b |
+| `cmd/oro/cmd_attach.go` | Add socket cleanup to StatusStale branch | 1d |
+| `cmd/oro/dolt.go` | Adopt running dolt in startDoltServer (return nil instead of error) | 2a |
+| `cmd/oro/daemon.go` | Remove dolt cleanup from SetupSignalHandler; drop beadsDir param | 2c |
+| `cmd/oro/cmd_cleanup.go` | Rewrite cleanupDolt: PID-file-only cleanup, remove pgrep orphan scan | 2f |
 | `cmd/oro/cmd_init.go` | Start dolt server after ensureDoltMetadata in bootstrapProject | 3 |
 
 ## Test Plan
@@ -154,19 +216,25 @@ With Fix 2a (adopt if running), this is idempotent. If dolt is already running, 
 2. `pollForSocket`: stale socket file present → waits for new connectable socket (not short-circuit)
 3. `pollForSocket`: no socket file → waits and succeeds when socket appears
 4. `pollForSocket`: timeout with no socket → returns error
+5. `pollForSocket`: nil startupLog → no panic (nil guard)
+6. `runDispatcherStart`: uses connect-check polling (no os.Stat short-circuit)
+7. `runStopSequence` StatusStale: removes both PID file and socket file
+8. `runDispatcherStopSequence` StatusStale: removes both PID file and socket file
 
 ### Fix 2 tests:
-5. `startDoltServer`: port already in use → returns (0, nil) not error
-6. `runStopSequence`: does NOT call stopDoltServer
-7. `SetupSignalHandler`: cleanup does NOT stop dolt
-8. `startDoltIfNeeded`: cleanup closure is no-op even when dolt was started
-9. `cleanupDolt`: healthy dolt server → not killed
-10. `cleanupDolt`: stale PID file with dead process → PID file removed
+9. `startDoltServer`: port already in use → returns (0, nil) not error
+10. `runStopSequence`: does NOT call stopDoltServer
+11. `SetupSignalHandler`: cleanup does NOT stop dolt; beadsDir param removed
+12. `startDoltIfNeeded`: cleanup closure is no-op even when dolt was started
+13. `cleanupDolt`: healthy dolt server (PID alive) → not killed, no pgrep scan
+14. `cleanupDolt`: stale PID file with dead process → PID file removed
+15. `cleanupDolt`: no PID file → returns false (no pgrep scan)
+16. `runStopAll`: does NOT call stopDoltServer per daemon
 
 ### Fix 3 tests:
-11. `bootstrapProject`: starts dolt server after metadata setup
-12. `bootstrapProject`: dolt already running → adopts (no error)
-13. `bootstrapProject`: dolt binary missing → warns, continues
+17. `bootstrapProject`: starts dolt server after metadata setup
+18. `bootstrapProject`: dolt already running → adopts (no error)
+19. `bootstrapProject`: dolt binary missing → warns, continues
 
 ## Out of Scope
 
