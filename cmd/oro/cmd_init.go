@@ -502,6 +502,14 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	// 4b. Initialize beads database if not already present.
 	initBeadsDB(projectRoot)
 
+	// 4c. Ensure dolt metadata is written to .beads/metadata.json.
+	// Fail-open: log warning but continue. Dolt is not critical for init.
+	beadsPath := filepath.Join(projectRoot, ".beads")
+	port := DerivePort(beadsPath)
+	if err := ensureDoltMetadata(beadsPath, port); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: dolt metadata setup failed: %v\n", err)
+	}
+
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
 	if err != nil {

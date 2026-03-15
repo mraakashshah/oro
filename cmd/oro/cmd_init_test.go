@@ -1696,3 +1696,48 @@ func TestInitBeadsDB(t *testing.T) {
 		t.Fatalf("unexpected error checking beads.db: %v", err)
 	}
 }
+
+func TestInitWritesDoltPort(t *testing.T) {
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+
+	// Create minimal embedded FS for assets.
+	assets := fstest.MapFS{
+		".version":          &fstest.MapFile{Data: []byte("test-version")},
+		"hooks/.gitkeep":    &fstest.MapFile{Data: []byte("")},
+		"skills/.gitkeep":   &fstest.MapFile{Data: []byte("")},
+		"beacons/.gitkeep":  &fstest.MapFile{Data: []byte("")},
+		"commands/.gitkeep": &fstest.MapFile{Data: []byte("")},
+	}
+
+	_, err := bootstrapProject(projectDir, "testproject", oroHome, assets, false)
+	if err != nil {
+		t.Fatalf("bootstrapProject failed: %v", err)
+	}
+
+	// Verify metadata.json was created in .beads/ with dolt_server_port.
+	beadsLink := filepath.Join(projectDir, ".beads")
+	metaPath := filepath.Join(beadsLink, "metadata.json")
+
+	data, err := os.ReadFile(metaPath) //nolint:gosec // metaPath is constructed from trusted t.TempDir()
+	if err != nil {
+		t.Fatalf("metadata.json not found: %v", err)
+	}
+
+	var meta map[string]interface{}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("failed to parse metadata.json: %v", err)
+	}
+
+	if _, ok := meta["dolt_server_port"]; !ok {
+		t.Error("metadata.json missing dolt_server_port field")
+	}
+
+	if _, ok := meta["backend"]; !ok {
+		t.Error("metadata.json missing backend field")
+	}
+
+	if backend, ok := meta["backend"].(string); ok && backend != "dolt" {
+		t.Errorf("expected backend=dolt, got %q", backend)
+	}
+}
