@@ -220,21 +220,22 @@ Add `_ = os.Remove(sockPath)` to each. This is belt-and-suspenders — `cleanSta
 6. `runDispatcherStart`: uses connect-check polling (no os.Stat short-circuit)
 7. `runStopSequence` StatusStale: removes both PID file and socket file
 8. `runDispatcherStopSequence` StatusStale: removes both PID file and socket file
+9. `runAttach` StatusStale: removes socket file before returning error
 
 ### Fix 2 tests:
-9. `startDoltServer`: port already in use → returns (0, nil) not error
-10. `runStopSequence`: does NOT call stopDoltServer
-11. `SetupSignalHandler`: cleanup does NOT stop dolt; beadsDir param removed
-12. `startDoltIfNeeded`: cleanup closure is no-op even when dolt was started
-13. `cleanupDolt`: healthy dolt server (PID alive) → not killed, no pgrep scan
-14. `cleanupDolt`: stale PID file with dead process → PID file removed
-15. `cleanupDolt`: no PID file → returns false (no pgrep scan)
-16. `runStopAll`: does NOT call stopDoltServer per daemon
+10. `startDoltServer`: port already in use → returns (0, nil) not error
+11. `runStopSequence`: does NOT call stopDoltServer
+12. `SetupSignalHandler`: cleanup does NOT stop dolt; beadsDir param removed
+13. `startDoltIfNeeded`: cleanup closure is no-op even when dolt was started
+14. `cleanupDolt`: healthy dolt server (PID alive) → not killed, no pgrep scan
+15. `cleanupDolt`: stale PID file with dead process → PID file removed
+16. `cleanupDolt`: no PID file → returns false (no pgrep scan)
+17. `runStopAll`: does NOT call stopDoltServer per daemon
 
 ### Fix 3 tests:
-17. `bootstrapProject`: starts dolt server after metadata setup
-18. `bootstrapProject`: dolt already running → adopts (no error)
-19. `bootstrapProject`: dolt binary missing → warns, continues
+18. `bootstrapProject`: starts dolt server after metadata setup
+19. `bootstrapProject`: dolt already running → adopts (no error)
+20. `bootstrapProject`: dolt binary missing → warns, continues
 
 ## Out of Scope
 
