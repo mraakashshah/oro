@@ -75,6 +75,24 @@ type ActiveIssuesMsg struct {
 	Issues []Issue
 }
 
+// ClosedIssuesMsg carries closed issues fetched lazily on first toggle.
+type ClosedIssuesMsg struct {
+	Issues []Issue
+	Err    error
+}
+
+// FetchClosedIssues returns a tea.Cmd that fetches all issues (including closed)
+// in the background. Used for lazy-loading closed issues on first 'c' press.
+func FetchClosedIssues(projectDir string) tea.Cmd {
+	return func() tea.Msg {
+		issues, err := FetchIssuesCLI(projectDir)
+		if err != nil {
+			return ClosedIssuesMsg{Err: err}
+		}
+		return ClosedIssuesMsg{Issues: issues}
+	}
+}
+
 // FileModTime returns the file's modification time.
 func FileModTime(path string) (time.Time, error) {
 	info, err := os.Stat(path)

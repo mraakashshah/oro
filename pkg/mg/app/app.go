@@ -65,6 +65,9 @@ type Model struct {
 	inTmux        bool
 	activeWorkers map[string]string // beadID -> tmux paneID
 
+	// Lazy-loaded closed issues: only fetched when user presses 'c'.
+	closedLoaded bool
+
 	// Toast notification
 	toast components.Toast
 
@@ -421,6 +424,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rebuildParade()
 		return m, tea.Batch(cmds...)
 
+	case data.ClosedIssuesMsg:
+		if msg.Err != nil {
+			toast, cmd := components.ShowToast("Failed to load closed issues", components.ToastError, toastDuration)
+			m.toast = toast
+			m.closedLoaded = false // allow retry
+			return m, cmd
+		}
+		// Merge: full set replaces everything, then toggle closed on.
+		m.issues = msg.Issues
+		m.groups = data.GroupByParade(msg.Issues, m.blockingTypes)
+		m.prevIssueMap = make(map[string]data.Status, len(msg.Issues))
+		for _, iss := range msg.Issues {
+			m.prevIssueMap[iss.ID] = iss.Status
+		}
+		m.rebuildParade()
+		m.parade.ToggleClosed()
+		m.syncSelection()
+		return m, nil
+
 	case data.FileUnchangedMsg:
 		if !msg.LastMod.IsZero() {
 			m.lastFileMod = msg.LastMod
@@ -655,6 +677,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case "c":
+		if !m.closedLoaded && m.sourceMode == data.SourceCLI {
+			// First press: fetch closed issues in background, then toggle.
+			m.closedLoaded = true
+			toast, toastCmd := components.ShowToast("Loading closed issues…", components.ToastInfo, toastDuration)
+			m.toast = toast
+			return m, tea.Batch(toastCmd, data.FetchClosedIssues(m.projectDir))
+		}
 		m.parade.ToggleClosed()
 		m.syncSelection()
 		return m, nil
@@ -1056,9 +1085,7 @@ func (m Model) executePaletteAction(action components.PaletteAction) (tea.Model,
 		m.toast = toast
 		return m, cmd
 	case components.ActionToggleClosed:
-		m.parade.ToggleClosed()
-		m.syncSelection()
-		return m, nil
+		return m.handleKey(tea.KeyPressMsg{Code: 'c', Text: "c"})
 	case components.ActionFilter:
 		m.filtering = true
 		m.filterInput.Focus()

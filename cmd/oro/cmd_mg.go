@@ -40,7 +40,7 @@ func newMgCmd() *cobra.Command {
 			var issues []data.Issue
 			switch source.Mode {
 			case data.SourceCLI:
-				issues, err = data.FetchIssuesCLI(source.ProjectDir)
+				issues, err = data.FetchActiveIssuesCLI(source.ProjectDir)
 				if err != nil {
 					return fmt.Errorf("loading issues via bd list: %w", err)
 				}

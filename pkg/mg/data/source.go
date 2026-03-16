@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -267,14 +266,15 @@ func FetchIssueDetail(issueID string) (*Issue, error) {
 	return &issues[0], nil
 }
 
-// FetchIssuesNow returns a tea.Cmd that fetches issues via bd CLI immediately
-// (no timer delay). Emits FileChangedMsg on success, FileWatchErrorMsg on failure.
+// FetchIssuesNow returns a tea.Cmd that fetches active issues via bd CLI
+// immediately (no timer delay). Emits ActiveIssuesMsg for merge with cached
+// closed issues, or FileWatchErrorMsg on failure.
 func FetchIssuesNow(projectDir string) tea.Cmd {
 	return func() tea.Msg {
-		issues, err := FetchIssuesCLI(projectDir)
+		issues, err := FetchActiveIssuesCLI(projectDir)
 		if err != nil {
 			return FileWatchErrorMsg{Err: err}
 		}
-		return FileChangedMsg{Issues: issues, LastMod: time.Now()}
+		return ActiveIssuesMsg{Issues: issues}
 	}
 }
