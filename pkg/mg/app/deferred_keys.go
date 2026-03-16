@@ -28,14 +28,13 @@ func deferredKeyCmd(id uint64) tea.Cmd {
 func (m Model) handleKeyPress(msg tea.KeyPressMsg, allowDeferredBuffer bool) (tea.Model, tea.Cmd) {
 	// BubbleTea v2's terminal capability negotiation (DECRPM, Kitty
 	// keyboard, etc.) can produce reply traffic that arrives fragmented.
-	// Suppress only plausible fragment keys during the startup window;
-	// safe navigation keys (j, k, q, etc.) pass through immediately
-	// so the user can interact from the moment the TUI appears.
+	// During the startup window, only allow quit keys through. Other
+	// keys (including phantom fragments) are suppressed.
 	if time.Since(m.startedAt) < 500*time.Millisecond {
-		if msg.String() == "ctrl+c" {
-			return m, tea.Quit
-		}
-		if isPlausibleFragment(msg) {
+		switch msg.String() {
+		case "ctrl+c", "q", "esc":
+			// Allow quit/escape during startup
+		default:
 			dbg("  SUPPRESSED startup key: %q", msg.String())
 			return m, nil
 		}
