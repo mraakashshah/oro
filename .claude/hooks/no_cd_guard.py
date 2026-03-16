@@ -25,9 +25,10 @@ import sys
 from pathlib import Path
 
 # Match cd commands, including inside chains (&& cd, ; cd, || cd)
+# and after newlines in multiline commands.
 # Captures the target path
 _CD_RE = re.compile(
-    r"(?:^|&&\s*|;\s*|\|\|\s*)cd\s+"
+    r"(?:^|\n\s*|&&\s*|;\s*|\|\|\s*)cd\s+"
     r"""(?:["']([^"']+)["']|(\S+))"""
 )
 
