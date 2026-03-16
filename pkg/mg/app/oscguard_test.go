@@ -196,7 +196,6 @@ func TestOSCGuardSuppressesFragmentCharsInWindow(t *testing.T) {
 		text string
 	}{
 		{'r', "r"},
-		{'g', "g"},
 		{'b', "b"},
 		{':', ":"},
 		{'0', "0"},
@@ -218,15 +217,12 @@ func TestOSCGuardWindowAllowsSafeNavigationKeys(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond) // still well within window
 
-	// Safe navigation keys should pass through even during window,
-	// because they never appear in control-sequence fragments.
+	// Only low-risk navigation keys pass through the window.
 	safeKeys := []struct {
 		code rune
 		text string
 	}{
-		{'j', "j"}, {'k', "k"}, {'q', "q"}, {'c', "c"},
-		{'f', "f"}, {'w', "w"}, {'x', "x"}, {'n', "n"},
-		{'?', "?"}, {'/', "/"},
+		{'j', "j"}, {'k', "k"}, {'g', "g"}, {'q', "q"},
 	}
 	for _, ch := range safeKeys {
 		msg := tea.KeyPressMsg{Code: ch.code, Text: ch.text}
@@ -258,6 +254,30 @@ func TestOSCGuardWindowStillSuppressesFragmentChars(t *testing.T) {
 		msg := tea.KeyPressMsg{Code: ch.code, Text: ch.text}
 		if filter(nil, msg) != nil {
 			t.Fatalf("expected fragment char %q to be suppressed within window", ch.text)
+		}
+	}
+}
+
+func TestOSCGuardWindowSuppressesModeActivatingKeys(t *testing.T) {
+	filter := NewOSCGuardFilter()
+
+	filter(nil, tea.KeyPressMsg{Code: '1', Text: "1"})
+	filter(nil, tea.KeyPressMsg{Code: ';', Text: ";"})
+
+	time.Sleep(5 * time.Millisecond)
+
+	// Mode-activating keys must be suppressed during window to prevent
+	// phantom keypresses from trapping the user in a mode.
+	for _, ch := range []struct {
+		code rune
+		text string
+	}{
+		{'/', "/"}, {'?', "?"}, {'c', "c"}, {'f', "f"},
+		{'w', "w"}, {'N', "N"}, {':', ":"},
+	} {
+		msg := tea.KeyPressMsg{Code: ch.code, Text: ch.text}
+		if filter(nil, msg) != nil {
+			t.Fatalf("expected mode key %q to be suppressed within window", ch.text)
 		}
 	}
 }

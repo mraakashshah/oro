@@ -140,16 +140,17 @@ func (g *OSCGuard) filterMsg(msg tea.Msg) tea.Msg {
 	}
 
 	// Layer 2: timing-based suppression window. During the window,
-	// only suppress keys that could plausibly be control-sequence
-	// fragments. Safe navigation keys (j, k, q, etc.) pass through
-	// because they never appear in CSI/OSC/DECRPM sequences.
+	// only allow low-risk navigation keys through. Everything else
+	// is suppressed — the whitelist approach is safer than trying to
+	// enumerate all possible fragment characters.
 	if now.Before(g.suppressUntil) {
 		g.lastPrintableTime = now
-		if isPlausibleFragment(kp) {
+		if isSafeNavKey(kp) {
+			dbg("  GUARD-WINDOW passed safe key: %q", kp.String())
+		} else {
 			dbg("  GUARD-WINDOW suppressed: %q (mod=%d)", kp.String(), kp.Mod)
 			return nil
 		}
-		dbg("  GUARD-WINDOW passed safe key: %q", kp.String())
 	}
 
 	// Outside the window, modified printable keys pass through normally.
@@ -292,6 +293,24 @@ func isCSIFinalByte(b byte) bool {
 
 func isDigitASCII(b byte) bool {
 	return b >= '0' && b <= '9'
+}
+
+// isSafeNavKey returns true for keys that have low-risk, reversible effects
+// when triggered accidentally. Only these pass through the suppression window.
+func isSafeNavKey(kp tea.KeyPressMsg) bool {
+	if kp.Mod != 0 {
+		return false
+	}
+	switch kp.Code {
+	case 'j', 'k': // cursor movement
+		return true
+	case 'g': // jump to top (G is shift+g, handled separately)
+		return true
+	case 'q': // quit
+		return true
+	default:
+		return false
+	}
 }
 
 // isPlausibleFragment returns true for keys that commonly appear in torn
