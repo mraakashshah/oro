@@ -77,6 +77,14 @@ func parseBdVersionWarning(output string) string {
 func FetchIssuesCLI(projectDir string) ([]Issue, error) {
 	out, err := runWithTimeout(timeoutMedium, "bd", bdListArgs()...)
 	if err != nil {
+		// bd may exit non-zero for warnings (orphaned processes, deprecated
+		// config) while still producing valid JSON on stdout. Try parsing
+		// stdout before giving up.
+		if len(out) > 0 {
+			if issues, parseErr := parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir)); parseErr == nil {
+				return issues, nil
+			}
+		}
 		return nil, wrapExitError("bd list --json", err)
 	}
 	return parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir))
