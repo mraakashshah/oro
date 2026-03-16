@@ -158,8 +158,8 @@ func TestViewNotReady(t *testing.T) {
 
 	// Do NOT send WindowSizeMsg, so ready remains false.
 	output := m.View()
-	if !strings.Contains(output.Content, "Loading...") {
-		t.Fatalf("expected View() to contain %q when not ready, got %q", "Loading...", output.Content)
+	if !strings.Contains(output.Content, "Loading beads") {
+		t.Fatalf("expected View() to contain %q when not ready, got %q", "Loading beads", output.Content)
 	}
 }
 

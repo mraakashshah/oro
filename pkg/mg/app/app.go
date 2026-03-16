@@ -1288,7 +1288,8 @@ func altView(s string) tea.View {
 // View implements tea.Model.
 func (m Model) View() tea.View {
 	if !m.ready {
-		return altView("Loading...")
+		return altView(lipgloss.Place(80, 24, lipgloss.Center, lipgloss.Center,
+			lipgloss.NewStyle().Foreground(ui.Muted).Render("⚜ Loading beads…  press q to quit")))
 	}
 
 	header := m.header.View()
