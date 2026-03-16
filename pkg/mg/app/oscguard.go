@@ -139,14 +139,17 @@ func (g *OSCGuard) filterMsg(msg tea.Msg) tea.Msg {
 		return msg
 	}
 
-	// Layer 2: timing-based suppression window. During the window
-	// drop all printable keys including shift/alt-modified ones.
-	// Do NOT extend the window here — suppressed user keys must not
-	// push the deadline forward, or the window never closes.
+	// Layer 2: timing-based suppression window. During the window,
+	// only suppress keys that could plausibly be control-sequence
+	// fragments. Safe navigation keys (j, k, q, etc.) pass through
+	// because they never appear in CSI/OSC/DECRPM sequences.
 	if now.Before(g.suppressUntil) {
 		g.lastPrintableTime = now
-		dbg("  GUARD-WINDOW suppressed: %q (mod=%d)", kp.String(), kp.Mod)
-		return nil
+		if isPlausibleFragment(kp) {
+			dbg("  GUARD-WINDOW suppressed: %q (mod=%d)", kp.String(), kp.Mod)
+			return nil
+		}
+		dbg("  GUARD-WINDOW passed safe key: %q", kp.String())
 	}
 
 	// Outside the window, modified printable keys pass through normally.
@@ -289,6 +292,56 @@ func isCSIFinalByte(b byte) bool {
 
 func isDigitASCII(b byte) bool {
 	return b >= '0' && b <= '9'
+}
+
+// isPlausibleFragment returns true for keys that commonly appear in torn
+// terminal control sequences (CSI params, OSC data, DECRPM responses).
+// Keys that never appear in fragments (j, k, q, f, etc.) return false
+// so the user can navigate even during a suppression window.
+func isPlausibleFragment(kp tea.KeyPressMsg) bool {
+	// Shift+letter or Alt+\ can be torn CSI/OSC tail bytes.
+	// BubbleTea decodes bare 'A' as shift+a, so check the uppercase
+	// form against CSI final bytes, then fall through to check the
+	// raw code against other fragment chars.
+	if kp.Mod&tea.ModShift != 0 {
+		upper := kp.Code
+		if upper >= 'a' && upper <= 'z' {
+			upper -= 'a' - 'A'
+		}
+		if isCSIFinalByte(byte(upper)) {
+			return true
+		}
+		return isPlausibleFragment(tea.KeyPressMsg{Code: kp.Code})
+	}
+	if kp.Mod&tea.ModAlt != 0 && kp.Code == '\\' {
+		return true
+	}
+	// Other modified keys are real user input.
+	if kp.Mod != 0 {
+		return false
+	}
+	switch {
+	case kp.Code >= '0' && kp.Code <= '9': // CSI/OSC parameters
+		return true
+	case kp.Code == ';', kp.Code == ':': // parameter separators
+		return true
+	case kp.Code == '[', kp.Code == ']': // CSI/OSC openers
+		return true
+	case kp.Code == '$': // DECRPM prefix
+		return true
+	case kp.Code == '\\': // ST terminator
+		return true
+	case kp.Code == 'r', kp.Code == 'g', kp.Code == 'b': // rgb color components
+		return true
+	case kp.Code == 'y': // DECRPM final byte
+		return true
+	case kp.Code >= 'A' && kp.Code <= 'D': // CSI final bytes (cursor movement)
+		return true
+	case kp.Code == 'R': // CPR (cursor position report)
+		return true
+	default:
+		return false
+	}
 }
 
 // seqPatterns are substrings of torn terminal control sequences. When any

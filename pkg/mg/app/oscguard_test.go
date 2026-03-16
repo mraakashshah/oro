@@ -181,14 +181,14 @@ func TestOSCGuardWindowDoesNotExtendIndefinitely(t *testing.T) {
 	}
 }
 
-func TestOSCGuardSuppressesAllCharsInWindow(t *testing.T) {
+func TestOSCGuardSuppressesFragmentCharsInWindow(t *testing.T) {
 	filter := NewOSCGuardFilter()
 
 	// Trigger burst with two fast chars.
 	filter(nil, tea.KeyPressMsg{Code: '1', Text: "1"})
 	filter(nil, tea.KeyPressMsg{Code: ';', Text: ";"})
 
-	// All printable chars should be suppressed during window.
+	// Plausible fragment chars should be suppressed during window.
 	time.Sleep(5 * time.Millisecond)
 
 	for _, ch := range []struct {
@@ -199,12 +199,65 @@ func TestOSCGuardSuppressesAllCharsInWindow(t *testing.T) {
 		{'g', "g"},
 		{'b', "b"},
 		{':', ":"},
-		{'x', "x"},
-		{'z', "z"},
+		{'0', "0"},
+		{';', ";"},
 	} {
 		msg := tea.KeyPressMsg{Code: ch.code, Text: ch.text}
 		if filter(nil, msg) != nil {
-			t.Fatalf("expected %q to be suppressed within window", ch.text)
+			t.Fatalf("expected fragment char %q to be suppressed within window", ch.text)
+		}
+	}
+}
+
+func TestOSCGuardWindowAllowsSafeNavigationKeys(t *testing.T) {
+	filter := NewOSCGuardFilter()
+
+	// Trigger burst to open a 500ms suppression window.
+	filter(nil, tea.KeyPressMsg{Code: '1', Text: "1"})
+	filter(nil, tea.KeyPressMsg{Code: ';', Text: ";"})
+
+	time.Sleep(50 * time.Millisecond) // still well within window
+
+	// Safe navigation keys should pass through even during window,
+	// because they never appear in control-sequence fragments.
+	safeKeys := []struct {
+		code rune
+		text string
+	}{
+		{'j', "j"}, {'k', "k"}, {'q', "q"}, {'c', "c"},
+		{'f', "f"}, {'w', "w"}, {'x', "x"}, {'n', "n"},
+		{'?', "?"}, {'/', "/"},
+	}
+	for _, ch := range safeKeys {
+		msg := tea.KeyPressMsg{Code: ch.code, Text: ch.text}
+		if filter(nil, msg) == nil {
+			t.Fatalf("expected safe key %q to pass through during window", ch.text)
+		}
+	}
+}
+
+func TestOSCGuardWindowStillSuppressesFragmentChars(t *testing.T) {
+	filter := NewOSCGuardFilter()
+
+	// Trigger burst to open window.
+	filter(nil, tea.KeyPressMsg{Code: '1', Text: "1"})
+	filter(nil, tea.KeyPressMsg{Code: ';', Text: ";"})
+
+	time.Sleep(5 * time.Millisecond) // within window
+
+	// Characters that appear in control-sequence fragments should still be suppressed.
+	fragKeys := []struct {
+		code rune
+		text string
+	}{
+		{';', ";"}, {':', ":"}, {'$', "$"},
+		{'[', "["}, {']', "]"},
+		{'0', "0"}, {'5', "5"},
+	}
+	for _, ch := range fragKeys {
+		msg := tea.KeyPressMsg{Code: ch.code, Text: ch.text}
+		if filter(nil, msg) != nil {
+			t.Fatalf("expected fragment char %q to be suppressed within window", ch.text)
 		}
 	}
 }
