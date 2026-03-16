@@ -387,6 +387,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rebuildParade()
 		return m, tea.Batch(cmds...)
 
+	case data.ActiveIssuesMsg:
+		cmds := []tea.Cmd{m.startPoll()}
+		if m.inTmux {
+			cmds = append(cmds, pollWorkerState)
+		}
+
+		// Merge: keep cached closed issues, replace active ones.
+		merged := mergeActiveWithClosed(msg.Issues, m.issues)
+
+		changes := m.diffIssues(merged)
+		if changes > 0 {
+			m.changedAt = time.Now()
+			toast, toastCmd := components.ShowToast(
+				fmt.Sprintf("%d issue%s changed", changes, plural(changes)),
+				components.ToastInfo, toastDuration,
+			)
+			m.toast = toast
+			cmds = append(cmds, toastCmd)
+			cmds = append(cmds, tea.Tick(changeIndicatorDuration, func(time.Time) tea.Msg {
+				return changeIndicatorExpiredMsg{}
+			}))
+		}
+
+		m.prevIssueMap = make(map[string]data.Status, len(merged))
+		for _, iss := range merged {
+			m.prevIssueMap[iss.ID] = iss.Status
+		}
+
+		m.issues = merged
+		m.groups = data.GroupByParade(merged, m.blockingTypes)
+		m.lastFileMod = time.Now()
+		m.rebuildParade()
+		return m, tea.Batch(cmds...)
+
 	case data.FileUnchangedMsg:
 		if !msg.LastMod.IsZero() {
 			m.lastFileMod = msg.LastMod
@@ -1160,6 +1194,31 @@ func (m *Model) layout() {
 	if m.parade.SelectedIssue != nil {
 		m.detail.SetIssue(m.parade.SelectedIssue)
 	}
+}
+
+// mergeActiveWithClosed replaces active issues with the fresh snapshot while
+// retaining cached closed issues. If an issue that was previously closed now
+// appears in the active set (reopened), the active version wins.
+func mergeActiveWithClosed(active []data.Issue, cached []data.Issue) []data.Issue {
+	activeByID := make(map[string]bool, len(active))
+	for _, iss := range active {
+		activeByID[iss.ID] = true
+	}
+
+	merged := make([]data.Issue, 0, len(active)+len(cached))
+	merged = append(merged, active...)
+
+	for _, iss := range cached {
+		if activeByID[iss.ID] {
+			continue // already in active set (possibly reopened)
+		}
+		if iss.Status == data.StatusClosed {
+			merged = append(merged, iss)
+		}
+	}
+
+	data.SortIssues(merged)
+	return merged
 }
 
 // rebuildParade reconstructs the parade from current issues, preserving selection if possible.

@@ -56,16 +56,23 @@ func WatchFile(path string, lastMod time.Time) tea.Cmd {
 	})
 }
 
-// PollCLI polls bd list --json --flat on a timer and emits FileChangedMsg or FileWatchErrorMsg.
-// The app's diffIssues() handles no-op detection when nothing changed.
+// PollCLI polls bd list --json on a timer and emits ActiveIssuesMsg.
+// Only fetches non-closed issues to keep the poll fast (5 active vs 1150+ closed).
+// The app merges the active snapshot with its cached closed issues.
 func PollCLI(projectDir string) tea.Cmd {
 	return tea.Tick(cliPollInterval, func(time.Time) tea.Msg {
-		issues, err := FetchIssuesCLI(projectDir)
+		issues, err := FetchActiveIssuesCLI(projectDir)
 		if err != nil {
 			return FileWatchErrorMsg{Err: err}
 		}
-		return FileChangedMsg{Issues: issues, LastMod: time.Now()}
+		return ActiveIssuesMsg{Issues: issues}
 	})
+}
+
+// ActiveIssuesMsg carries only non-closed issues from a poll cycle.
+// The app merges these with its cached closed issues.
+type ActiveIssuesMsg struct {
+	Issues []Issue
 }
 
 // FileModTime returns the file's modification time.

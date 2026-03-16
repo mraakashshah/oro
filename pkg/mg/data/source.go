@@ -94,6 +94,23 @@ func bdListArgs() []string {
 	return []string{"list", "--json", "--limit", "0", "--all"}
 }
 
+// FetchActiveIssuesCLI fetches only non-closed issues (much faster for
+// large projects). Used by the poll loop; the initial full load uses
+// FetchIssuesCLI with --all.
+func FetchActiveIssuesCLI(projectDir string) ([]Issue, error) {
+	args := []string{"list", "--json", "--limit", "0"}
+	out, err := runWithTimeout(timeoutMedium, "bd", args...)
+	if err != nil {
+		if len(out) > 0 {
+			if issues, parseErr := parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir)); parseErr == nil {
+				return issues, nil
+			}
+		}
+		return nil, wrapExitError("bd list --json", err)
+	}
+	return parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir))
+}
+
 func parseIssuesCLIOutput(out []byte, expectedPrefix string) ([]Issue, error) {
 	var issues []Issue
 	if err := json.Unmarshal(out, &issues); err != nil {
