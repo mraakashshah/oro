@@ -94,10 +94,24 @@ func bdListArgs() []string {
 }
 
 // FetchActiveIssuesCLI fetches only non-closed issues (much faster for
-// large projects). Used by the poll loop; the initial full load uses
-// FetchIssuesCLI with --all.
+// large projects). Used by the poll loop.
 func FetchActiveIssuesCLI(projectDir string) ([]Issue, error) {
-	args := []string{"list", "--json", "--limit", "0"}
+	return fetchIssuesCLIWithArgs(projectDir, "list", "--json", "--limit", "0")
+}
+
+// FetchRecentClosedCLI fetches the N most recently closed issues.
+func FetchRecentClosedCLI(projectDir string, limit int) ([]Issue, error) {
+	return fetchIssuesCLIWithArgs(projectDir,
+		"list", "--json", "--status=closed", "--sort=closed", "--limit", fmt.Sprintf("%d", limit))
+}
+
+// FetchAllClosedCLI fetches all closed issues (for background hydration).
+func FetchAllClosedCLI(projectDir string) ([]Issue, error) {
+	return fetchIssuesCLIWithArgs(projectDir,
+		"list", "--json", "--status=closed", "--limit", "0")
+}
+
+func fetchIssuesCLIWithArgs(projectDir string, args ...string) ([]Issue, error) {
 	out, err := runWithTimeout(timeoutMedium, "bd", args...)
 	if err != nil {
 		if len(out) > 0 {

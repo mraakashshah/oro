@@ -81,11 +81,11 @@ type ClosedIssuesMsg struct {
 	Err    error
 }
 
-// FetchClosedIssues returns a tea.Cmd that fetches all issues (including closed)
-// in the background. Used for lazy-loading closed issues on first 'c' press.
-func FetchClosedIssues(projectDir string) tea.Cmd {
+// FetchAllClosed returns a tea.Cmd that fetches all closed issues in the
+// background. Used to hydrate the full closed set after startup.
+func FetchAllClosed(projectDir string) tea.Cmd {
 	return func() tea.Msg {
-		issues, err := FetchIssuesCLI(projectDir)
+		issues, err := FetchAllClosedCLI(projectDir)
 		if err != nil {
 			return ClosedIssuesMsg{Err: err}
 		}

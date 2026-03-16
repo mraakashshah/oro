@@ -185,6 +185,8 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.sourceMode == data.SourceCLI {
 		cmds = append(cmds, fetchCurrentIssue, fetchBeadsContext)
+		// Background-hydrate the full closed set after the initial 50.
+		cmds = append(cmds, data.FetchAllClosed(m.projectDir))
 	}
 	return tea.Batch(cmds...)
 }
@@ -426,21 +428,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case data.ClosedIssuesMsg:
 		if msg.Err != nil {
-			toast, cmd := components.ShowToast("Failed to load closed issues", components.ToastError, toastDuration)
-			m.toast = toast
-			m.closedLoaded = false // allow retry
-			return m, cmd
+			return m, nil // silent failure — user still has the initial 50
 		}
-		// Merge: full set replaces everything, then toggle closed on.
-		m.issues = msg.Issues
-		m.groups = data.GroupByParade(msg.Issues, m.blockingTypes)
-		m.prevIssueMap = make(map[string]data.Status, len(msg.Issues))
-		for _, iss := range msg.Issues {
+		// Merge background-fetched closed issues into current set.
+		merged := mergeActiveWithClosed(m.issues, msg.Issues)
+		m.issues = merged
+		m.groups = data.GroupByParade(merged, m.blockingTypes)
+		m.prevIssueMap = make(map[string]data.Status, len(merged))
+		for _, iss := range merged {
 			m.prevIssueMap[iss.ID] = iss.Status
 		}
+		m.closedLoaded = true
 		m.rebuildParade()
-		m.parade.ToggleClosed()
-		m.syncSelection()
 		return m, nil
 
 	case data.FileUnchangedMsg:
@@ -677,13 +676,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case "c":
-		if !m.closedLoaded && m.sourceMode == data.SourceCLI {
-			// First press: fetch closed issues in background, then toggle.
-			m.closedLoaded = true
-			toast, toastCmd := components.ShowToast("Loading closed issues…", components.ToastInfo, toastDuration)
-			m.toast = toast
-			return m, tea.Batch(toastCmd, data.FetchClosedIssues(m.projectDir))
-		}
 		m.parade.ToggleClosed()
 		m.syncSelection()
 		return m, nil
