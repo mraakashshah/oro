@@ -342,6 +342,56 @@ func TestRunGlobalOroApproach_SkipsOroSpecificHooks(t *testing.T) {
 	}
 }
 
+func TestRunGlobalOroApproach_RemovesStaleHooksFromDest(t *testing.T) {
+	tmp := t.TempDir()
+
+	srcHooks := filepath.Join(tmp, "src", "hooks")
+	dstHooks := filepath.Join(tmp, "dst", "hooks")
+
+	// Source has only auto-format.sh as the portable hook
+	makeHooksDir(t, srcHooks, map[string]string{
+		"auto-format.sh": "#!/bin/bash\n",
+	})
+
+	// Destination already has a stale hook from a previous run
+	if err := os.MkdirAll(dstHooks, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dstHooks, "old-hook.sh")
+	if err := os.WriteFile(stale, []byte("#!/bin/bash\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := globalOroApproachConfig{
+		oroSkillsDir:    filepath.Join(tmp, "src", "skills"),
+		claudeSkillsDir: filepath.Join(tmp, "dst", "skills"),
+		oroHooksDir:     srcHooks,
+		claudeHooksDir:  dstHooks,
+		settingsPath:    filepath.Join(tmp, "settings.json"),
+		portableHooks:   []string{"auto-format.sh"},
+	}
+	if err := os.MkdirAll(cfg.oroSkillsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.settingsPath, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runGlobalOroApproach(cfg, os.Stdout); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// old-hook.sh should have been removed from dst
+	if _, err := os.Stat(stale); err == nil {
+		t.Error("old-hook.sh should have been removed from dst hooks dir")
+	}
+
+	// auto-format.sh should still be present
+	if _, err := os.Stat(filepath.Join(dstHooks, "auto-format.sh")); err != nil {
+		t.Errorf("auto-format.sh should still be present: %v", err)
+	}
+}
+
 // jsonContains is a simple substring check on JSON text.
 func jsonContains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && (func() bool {

@@ -29,11 +29,12 @@ var portableHooks = []string{ //nolint:gochecknoglobals // static config
 
 // globalOroApproachConfig holds injectable paths for testability.
 type globalOroApproachConfig struct {
-	oroSkillsDir    string // source: ~/.oro/.claude/skills/
-	oroHooksDir     string // source: ~/.oro/hooks/
-	claudeSkillsDir string // dest: ~/.claude/skills/
-	claudeHooksDir  string // dest: ~/.claude/hooks/
-	settingsPath    string // ~/.claude/settings.json
+	oroSkillsDir    string   // source: ~/.oro/.claude/skills/
+	oroHooksDir     string   // source: ~/.oro/hooks/
+	claudeSkillsDir string   // dest: ~/.claude/skills/
+	claudeHooksDir  string   // dest: ~/.claude/hooks/
+	settingsPath    string   // ~/.claude/settings.json
+	portableHooks   []string // nil means use the package-level portableHooks default
 }
 
 func newGlobalOroApproachCmd() *cobra.Command {
@@ -115,14 +116,26 @@ func copySkills(cfg globalOroApproachConfig, w io.Writer) error {
 	return nil
 }
 
-// copyHooks copies the portable hooks and fixes hardcoded ~/.oro paths.
+// copyHooks copies the portable hooks, fixes hardcoded ~/.oro paths, and
+// removes any stale files from claudeHooksDir that are no longer in the list.
 func copyHooks(cfg globalOroApproachConfig, w io.Writer) error {
 	if err := os.MkdirAll(cfg.claudeHooksDir, 0o750); err != nil {
 		return fmt.Errorf("create hooks dest: %w", err)
 	}
 
+	hooks := cfg.portableHooks
+	if hooks == nil {
+		hooks = portableHooks
+	}
+
+	// Build allow-set for stale-file removal.
+	allow := make(map[string]bool, len(hooks))
+	for _, name := range hooks {
+		allow[name] = true
+	}
+
 	copied := 0
-	for _, name := range portableHooks {
+	for _, name := range hooks {
 		src := filepath.Join(cfg.oroHooksDir, name)
 		data, err := os.ReadFile(src) //nolint:gosec // path is from trusted config
 		if err != nil {
@@ -146,6 +159,17 @@ func copyHooks(cfg globalOroApproachConfig, w io.Writer) error {
 		}
 		copied++
 	}
+
+	// Remove stale files in the destination that are no longer portable.
+	if existing, err := os.ReadDir(cfg.claudeHooksDir); err == nil {
+		for _, entry := range existing {
+			if entry.IsDir() || allow[entry.Name()] {
+				continue
+			}
+			_ = os.Remove(filepath.Join(cfg.claudeHooksDir, entry.Name()))
+		}
+	}
+
 	fmt.Fprintf(w, "hooks: copied %d to %s\n", copied, cfg.claudeHooksDir)
 	return nil
 }

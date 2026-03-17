@@ -40,14 +40,14 @@ dev-sync:
 	fi
 	@echo "Syncing assets/ to ~/.oro/..."
 	@mkdir -p ~/.oro/hooks ~/.oro/.claude/skills ~/.oro/beacons ~/.oro/.claude/commands
-	@cp -r assets/hooks/* ~/.oro/hooks/ && echo "  ✓ hooks"
+	@rsync --archive --delete assets/hooks/ ~/.oro/hooks/ && echo "  ✓ hooks"
 	@cp -r assets/skills/* ~/.oro/.claude/skills/ && echo "  ✓ skills"
 	@cp -r assets/beacons/* ~/.oro/beacons/ && echo "  ✓ beacons"
 	@cp -r assets/commands/* ~/.oro/.claude/commands/ && echo "  ✓ commands"
 	@cp assets/CLAUDE.md ~/.oro/.claude/CLAUDE.md && echo "  ✓ CLAUDE.md"
 	@test -f assets/thresholds.json && cp assets/thresholds.json ~/.oro/thresholds.json && echo "  ✓ thresholds.json" || true
 	@echo "Sanity check..."
-	@test -f ~/.oro/hooks/enforce-skills.sh && echo "  ✓ ~/.oro/hooks/ ok" || (echo "  ✗ ~/.oro/hooks/ FAILED" && exit 1)
+	@test -f ~/.oro/hooks/enforce_skills.py && echo "  ✓ ~/.oro/hooks/ ok" || (echo "  ✗ ~/.oro/hooks/ FAILED" && exit 1)
 	@test -d ~/.oro/.claude/skills/test-driven-development && echo "  ✓ ~/.oro/.claude/skills/ ok" || (echo "  ✗ ~/.oro/.claude/skills/ FAILED" && exit 1)
 	@test -d ~/.oro/beacons && echo "  ✓ ~/.oro/beacons/ ok" || (echo "  ✗ ~/.oro/beacons/ FAILED" && exit 1)
 	@test -d ~/.oro/.claude/commands && echo "  ✓ ~/.oro/.claude/commands/ ok" || (echo "  ✗ ~/.oro/.claude/commands/ FAILED" && exit 1)
