@@ -22,6 +22,7 @@ type doltCmdConfig struct {
 	stopFn          func(string) error        // stopDoltServer for oroHome
 	force           bool
 	dispatcherPIDFn func() int // returns dispatcher PID (0 = not running)
+	beadsDirs       []string   // per-project .beads directories (used by teardown)
 }
 
 // newDoltCmd creates the "oro dolt" parent command with status/start/stop/setup/teardown subcommands.
@@ -332,11 +333,12 @@ This does not migrate databases back to per-project directories.`,
 				return fmt.Errorf("get home dir: %w", err)
 			}
 			cfg := &doltCmdConfig{
-				oroHome:  paths.OroHome,
-				aliveFn:  IsProcessAlive,
-				isPortUp: isDoltServerRunning,
-				force:    force,
-				stopFn:   stopDoltServer,
+				oroHome:   paths.OroHome,
+				aliveFn:   IsProcessAlive,
+				isPortUp:  isDoltServerRunning,
+				force:     force,
+				stopFn:    stopDoltServer,
+				beadsDirs: discoverBreadsDirs(paths.OroHome),
 				dispatcherPIDFn: func() int {
 					pid, pidErr := ReadPIDFile(paths.PIDPath)
 					if pidErr != nil {
@@ -355,7 +357,8 @@ This does not migrate databases back to per-project directories.`,
 	return cmd
 }
 
-// runDoltTeardown stops the shared server and uninstalls the launchd agent.
+// runDoltTeardown stops the shared server, uninstalls the launchd agent,
+// and copies databases back to per-project directories.
 func runDoltTeardown(cfg *doltCmdConfig, homeDir string, w io.Writer) error {
 	if err := runDoltStop(cfg, w); err != nil {
 		return err
@@ -363,7 +366,55 @@ func runDoltTeardown(cfg *doltCmdConfig, homeDir string, w io.Writer) error {
 	if err := uninstallLaunchAgent(homeDir); err != nil {
 		return fmt.Errorf("uninstall launch agent: %w", err)
 	}
+	if err := restorePerProjectDBs(cfg, w); err != nil {
+		return err
+	}
 	fmt.Fprintln(w, "dolt teardown complete")
+	return nil
+}
+
+// restorePerProjectDBs copies each project's dolt database from the shared
+// ~/.oro/dolt/<dbName> directory back to <beadsDir>/dolt/<dbName> and resets
+// the per-project metadata port to the derived per-project value.
+//
+// Edges:
+//   - <beadsDir>/dolt/<dbName> already exists → skip copy, emit warning.
+//   - No dolt metadata for a beadsDir → skip that project.
+func restorePerProjectDBs(cfg *doltCmdConfig, w io.Writer) error {
+	for _, beadsDir := range cfg.beadsDirs {
+		meta, err := readDoltMeta(beadsDir)
+		if err != nil {
+			return fmt.Errorf("read dolt meta for %s: %w", beadsDir, err)
+		}
+		if meta == nil {
+			continue
+		}
+
+		dbName := meta.DoltDatabase
+		if dbName == "" {
+			dbName = "beads"
+		}
+
+		srcDir := filepath.Join(cfg.oroHome, "dolt", dbName)
+		destLocal := filepath.Join(beadsDir, "dolt", dbName)
+
+		if _, statErr := os.Stat(destLocal); statErr == nil {
+			fmt.Fprintf(w, "warning: %s already exists; skipping copy back for %q\n", destLocal, dbName)
+			continue
+		}
+
+		destParent := filepath.Join(beadsDir, "dolt")
+		if err := atomicCopyDir(srcDir, destParent, dbName); err != nil {
+			return fmt.Errorf("copy DB %q back to %s: %w", dbName, beadsDir, err)
+		}
+
+		perProjectPort := DerivePort(beadsDir)
+		if err := setDoltPort(beadsDir, perProjectPort); err != nil {
+			return fmt.Errorf("restore per-project port for %s: %w", beadsDir, err)
+		}
+
+		fmt.Fprintf(w, "  restored %q → %s (port %d)\n", dbName, beadsDir, perProjectPort)
+	}
 	return nil
 }
 

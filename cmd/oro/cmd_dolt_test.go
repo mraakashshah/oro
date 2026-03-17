@@ -543,3 +543,202 @@ func TestDoltStop_AlreadyStopped(t *testing.T) {
 		t.Errorf("should say not running, got: %s", out)
 	}
 }
+
+// ---------- oro dolt teardown ----------
+
+func TestDoltTeardown(t *testing.T) {
+	t.Run("happy path: stops server, uninstalls plist, copies DBs back to per-project dirs", func(t *testing.T) {
+		oroHome := t.TempDir()
+		homeDir := t.TempDir()
+
+		// Write PID/port files so server appears running.
+		if err := os.WriteFile(filepath.Join(oroHome, "dolt-server.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(oroHome, "dolt-server.port"), []byte("13307"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Set up shared dolt dir with database.
+		const dbName = "beads"
+		sharedDBDir := filepath.Join(oroHome, "dolt", dbName)
+		if err := os.MkdirAll(sharedDBDir, 0o750); err != nil {
+			t.Fatalf("mkdir shared dolt: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sharedDBDir, "data.db"), []byte("shared-db-data"), 0o600); err != nil {
+			t.Fatalf("write data.db: %v", err)
+		}
+
+		// Install a plist so we can verify it's removed.
+		if err := os.MkdirAll(launchAgentsDir(homeDir), 0o750); err != nil {
+			t.Fatalf("mkdir LaunchAgents: %v", err)
+		}
+		if err := os.WriteFile(launchAgentPlistPath(homeDir), []byte("fake-plist"), 0o600); err != nil {
+			t.Fatalf("write plist: %v", err)
+		}
+
+		// Per-project beads dir pointing at shared server.
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir beadsDir: %v", err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend": "dolt", "dolt_server_port": SharedDoltPort, "dolt_database": dbName,
+		})
+
+		stopped := false
+		cfg := &doltCmdConfig{
+			oroHome:         oroHome,
+			aliveFn:         func(int) bool { return true },
+			isPortUp:        func(int) bool { return true },
+			force:           false,
+			dispatcherPIDFn: func() int { return 0 },
+			stopFn:          func(string) error { stopped = true; return nil },
+			beadsDirs:       []string{beadsDir},
+		}
+
+		var buf bytes.Buffer
+		if err := runDoltTeardown(cfg, homeDir, &buf); err != nil {
+			t.Fatalf("runDoltTeardown error: %v", err)
+		}
+
+		if !stopped {
+			t.Error("stopFn should have been called")
+		}
+		if _, err := os.Stat(launchAgentPlistPath(homeDir)); !errors.Is(err, os.ErrNotExist) {
+			t.Error("plist should have been removed")
+		}
+
+		copiedData, err := os.ReadFile(filepath.Join(beadsDir, "dolt", dbName, "data.db"))
+		if err != nil {
+			t.Fatalf("DB not copied back to per-project dir: %v", err)
+		}
+		if string(copiedData) != "shared-db-data" {
+			t.Errorf("copied data = %q, want %q", string(copiedData), "shared-db-data")
+		}
+
+		meta, err := readDoltMeta(beadsDir)
+		if err != nil {
+			t.Fatalf("readDoltMeta: %v", err)
+		}
+		if meta == nil {
+			t.Fatal("metadata should exist after teardown")
+		}
+		if meta.DoltServerPort == SharedDoltPort {
+			t.Errorf("metadata should have per-project port, not shared port %d", SharedDoltPort)
+		}
+
+		if !strings.Contains(buf.String(), "teardown complete") {
+			t.Errorf("should report teardown complete, got: %s", buf.String())
+		}
+	})
+
+	t.Run("edge: .beads/dolt already exists → skip copy, warn", func(t *testing.T) {
+		oroHome := t.TempDir()
+		homeDir := t.TempDir()
+
+		const dbName = "beads"
+		sharedDBDir := filepath.Join(oroHome, "dolt", dbName)
+		if err := os.MkdirAll(sharedDBDir, 0o750); err != nil {
+			t.Fatalf("mkdir shared dolt: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sharedDBDir, "shared.db"), []byte("shared-data"), 0o600); err != nil {
+			t.Fatalf("write shared.db: %v", err)
+		}
+
+		// Per-project beads dir that already has a local dolt/<dbName> dir.
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		existingLocalDolt := filepath.Join(beadsDir, "dolt", dbName)
+		if err := os.MkdirAll(existingLocalDolt, 0o750); err != nil {
+			t.Fatalf("mkdir existing local dolt: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(existingLocalDolt, "existing.db"), []byte("existing-data"), 0o600); err != nil {
+			t.Fatalf("write existing.db: %v", err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend": "dolt", "dolt_server_port": SharedDoltPort, "dolt_database": dbName,
+		})
+
+		cfg := &doltCmdConfig{
+			oroHome:         oroHome,
+			aliveFn:         func(int) bool { return false },
+			isPortUp:        func(int) bool { return false },
+			force:           false,
+			dispatcherPIDFn: func() int { return 0 },
+			stopFn:          func(string) error { return nil },
+			beadsDirs:       []string{beadsDir},
+		}
+
+		var buf bytes.Buffer
+		if err := runDoltTeardown(cfg, homeDir, &buf); err != nil {
+			t.Fatalf("runDoltTeardown error: %v", err)
+		}
+
+		// Existing data must NOT be overwritten.
+		existingData, err := os.ReadFile(filepath.Join(existingLocalDolt, "existing.db"))
+		if err != nil {
+			t.Fatalf("existing.db should still be there: %v", err)
+		}
+		if string(existingData) != "existing-data" {
+			t.Errorf("existing data was overwritten: got %q", string(existingData))
+		}
+
+		out := buf.String()
+		if !strings.Contains(strings.ToLower(out), "warning") &&
+			!strings.Contains(strings.ToLower(out), "skip") &&
+			!strings.Contains(strings.ToLower(out), "already") {
+			t.Errorf("should warn about existing dir, got: %s", out)
+		}
+	})
+
+	t.Run("edge: shared server not running → skip stop, still copies DBs back", func(t *testing.T) {
+		oroHome := t.TempDir()
+		homeDir := t.TempDir()
+
+		const dbName = "beads"
+		sharedDBDir := filepath.Join(oroHome, "dolt", dbName)
+		if err := os.MkdirAll(sharedDBDir, 0o750); err != nil {
+			t.Fatalf("mkdir shared dolt: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sharedDBDir, "data.db"), []byte("db-content"), 0o600); err != nil {
+			t.Fatalf("write data.db: %v", err)
+		}
+
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir beadsDir: %v", err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend": "dolt", "dolt_server_port": SharedDoltPort, "dolt_database": dbName,
+		})
+
+		stopCalled := false
+		cfg := &doltCmdConfig{
+			oroHome:         oroHome,
+			aliveFn:         func(int) bool { return false },
+			isPortUp:        func(int) bool { return false },
+			force:           false,
+			dispatcherPIDFn: func() int { return 0 },
+			stopFn:          func(string) error { stopCalled = true; return nil },
+			beadsDirs:       []string{beadsDir},
+		}
+
+		var buf bytes.Buffer
+		if err := runDoltTeardown(cfg, homeDir, &buf); err != nil {
+			t.Fatalf("runDoltTeardown error: %v", err)
+		}
+
+		if stopCalled {
+			t.Error("stopFn should not be called when server is not running")
+		}
+
+		// DB should still be copied back even though server wasn't running.
+		if _, err := os.ReadFile(filepath.Join(beadsDir, "dolt", dbName, "data.db")); err != nil {
+			t.Errorf("DB should be copied back even when server was not running: %v", err)
+		}
+
+		if !strings.Contains(buf.String(), "not running") {
+			t.Errorf("should say 'not running', got: %s", buf.String())
+		}
+	})
+}
