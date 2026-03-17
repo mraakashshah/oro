@@ -8711,6 +8711,32 @@ func TestFilterAssignableHonorsInProgressStatus(t *testing.T) {
 	}
 }
 
+// TestFilterAssignableSkipsMergingBeads verifies that filterAssignable excludes
+// beads currently being merged. Without this check, the race window between
+// mergeAndComplete setting mergingBeads and bd close propagating the status
+// causes rapid re-assignment spam (bead_closed_externally).
+func TestFilterAssignableSkipsMergingBeads(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	d.mu.Lock()
+	d.mergingBeads["bead-merging"] = true
+	d.mu.Unlock()
+
+	beads := []protocol.Bead{
+		{ID: "bead-merging", Title: "Being merged", Priority: 1, Type: "task"},
+		{ID: "bead-ready", Title: "Available", Priority: 2, Type: "task"},
+	}
+
+	result := d.filterAssignable(beads)
+
+	if len(result) != 1 {
+		t.Fatalf("expected 1 assignable bead, got %d", len(result))
+	}
+	if result[0].ID != "bead-ready" {
+		t.Fatalf("expected bead-ready, got %s", result[0].ID)
+	}
+}
+
 // --- missing acceptance criteria escalation tests ---
 
 // TestAssignBead_MissingAcceptanceEscalatesToManager verifies that beads

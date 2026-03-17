@@ -2151,6 +2151,13 @@ func (d *Dispatcher) isBeadAssignable(b protocol.Bead, now time.Time, activeBead
 	if d.assigningBeads[b.ID] {
 		return false
 	}
+	// Skip beads currently being merged and closed. There's a race window
+	// between mergeAndComplete setting mergingBeads and bd close propagating
+	// the status change — without this check the bead appears "ready" to
+	// bd ready --json and gets re-assigned, causing bead_closed_externally spam.
+	if d.mergingBeads[b.ID] {
+		return false
+	}
 	if d.exhaustedBeads[b.ID] {
 		return false
 	}
