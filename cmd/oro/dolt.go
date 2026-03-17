@@ -333,23 +333,9 @@ func isSharedServer(port int) bool {
 // diagnose the conflict.
 //
 // Returns exec.ErrNotFound if dolt is not in PATH.
-func startSharedDoltServer(oroHome string) (int, error) {
+func startSharedDoltServer(oroHome string) (int, error) { //nolint:unparam // PID return will be used by downstream callers (oro-4zky, oro-hcuy)
 	if isDoltServerRunning(SharedDoltPort) {
-		// Check whether we own this server via the PID file.
-		pidPath := filepath.Join(oroHome, "dolt-server.pid")
-		data, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
-		if err == nil {
-			if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil && IsProcessAlive(pid) {
-				return 0, nil // adopt our own server
-			}
-		}
-
-		// Port occupied by a foreign process — report the blocker.
-		blockerPID, lsofErr := discoverPIDByPort(SharedDoltPort)
-		if lsofErr == nil {
-			return 0, fmt.Errorf("port %d already in use by PID %d (not a managed dolt server)", SharedDoltPort, blockerPID)
-		}
-		return 0, fmt.Errorf("port %d already in use by an unidentified process", SharedDoltPort)
+		return 0, checkSharedPortConflict(oroHome)
 	}
 
 	doltPath, err := exec.LookPath("dolt")
@@ -388,4 +374,24 @@ func startSharedDoltServer(oroHome string) (int, error) {
 	}
 
 	return pid, nil
+}
+
+// checkSharedPortConflict checks whether we own the server on SharedDoltPort.
+// Returns nil if we own it (adoption). Returns an error if a foreign process
+// holds the port.
+func checkSharedPortConflict(oroHome string) error {
+	pidPath := filepath.Join(oroHome, "dolt-server.pid")
+	data, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
+	if err == nil {
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr == nil && IsProcessAlive(pid) {
+			return nil // adopt our own server
+		}
+	}
+
+	blockerPID, lsofErr := discoverPIDByPort(SharedDoltPort)
+	if lsofErr == nil {
+		return fmt.Errorf("port %d already in use by PID %d (not a managed dolt server)", SharedDoltPort, blockerPID)
+	}
+	return fmt.Errorf("port %d already in use by an unidentified process", SharedDoltPort)
 }
