@@ -182,9 +182,11 @@ class TestMain:
             if env is None or "ORO_WORKER" not in (env or {}):
                 os.environ.pop("ORO_WORKER", None)
             # Use a fresh tmp state file for each test
-            with tempfile.TemporaryDirectory() as td:
-                with mock.patch.object(es, "state_file", return_value=Path(td) / "state"):
-                    es.main()
+            with (
+                tempfile.TemporaryDirectory() as td,
+                mock.patch.object(es, "state_file", return_value=Path(td) / "state"),
+            ):
+                es.main()
         return mock_stdout.getvalue()
 
     def test_edit_first_call_produces_output(self):

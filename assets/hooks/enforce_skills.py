@@ -6,6 +6,7 @@ Fires before Edit, Write, Agent, Task tool calls. Suppressed for workers
 WINDOW calls after that — approximates "once per task cluster".
 """
 
+import contextlib
 import json
 import os
 import sys
@@ -27,10 +28,8 @@ def read_counter(path: Path) -> int:
 
 
 def write_counter(path: Path, count: int) -> None:
-    try:
+    with contextlib.suppress(OSError):
         path.write_text(str(count))
-    except OSError:
-        pass
 
 
 def should_remind(counter: int, window: int = WINDOW) -> bool:
