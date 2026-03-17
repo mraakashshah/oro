@@ -43,6 +43,7 @@ func newRootCmd() *cobra.Command {
 		newWorkCmd(),
 		newMgCmd(),
 		newDoltCmd(),
+		newGlobalOroApproachCmd(),
 	)
 
 	return cmd
