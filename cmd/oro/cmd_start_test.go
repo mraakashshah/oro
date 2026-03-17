@@ -324,21 +324,28 @@ func (s *killTestSpawner) SpawnDaemon(pidPath string, workers int) (int, error) 
 		if listenErr != nil {
 			return 0, listenErr
 		}
+		// Accept connections in a loop so pollForSocket probes don't consume
+		// the only handler. The start directive arrives on a later connection.
 		go func() {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			defer func() { _ = conn.Close(); _ = ln.Close() }()
-			scanner := bufio.NewScanner(conn)
-			if scanner.Scan() {
-				ack := protocol.Message{
-					Type: protocol.MsgACK,
-					ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+			defer ln.Close()
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
 				}
-				data, _ := json.Marshal(ack)
-				data = append(data, '\n')
-				_, _ = conn.Write(data)
+				go func(c net.Conn) {
+					defer c.Close()
+					scanner := bufio.NewScanner(c)
+					if scanner.Scan() {
+						ack := protocol.Message{
+							Type: protocol.MsgACK,
+							ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+						}
+						data, _ := json.Marshal(ack)
+						data = append(data, '\n')
+						_, _ = c.Write(data)
+					}
+				}(conn)
 			}
 		}()
 	}
@@ -819,7 +826,8 @@ func TestPollForSocketConnectCheck(t *testing.T) {
 		sockPath := fmt.Sprintf("/tmp/oro-live-%d.sock", time.Now().UnixNano())
 		t.Cleanup(func() { _ = os.Remove(sockPath) })
 
-		// Start a real listener after a short delay.
+		// Start a real listener after a short delay. Accept multiple connections
+		// because pollForSocket dials twice (loop probe + final check).
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			ln, err := net.Listen("unix", sockPath)
@@ -827,12 +835,13 @@ func TestPollForSocketConnectCheck(t *testing.T) {
 				return
 			}
 			defer ln.Close()
-			// Accept one connection to prove connectivity.
-			conn, err := ln.Accept()
-			if err != nil {
-				return
+			for i := 0; i < 3; i++ {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				_ = conn.Close()
 			}
-			_ = conn.Close()
 		}()
 
 		log := newStartupLog(&bytes.Buffer{}, false)

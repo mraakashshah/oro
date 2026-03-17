@@ -86,14 +86,15 @@ func isDoltServerRunning(port int) bool {
 // Returns exec.ErrNotFound if dolt is not in PATH.
 // Returns an error if the port is already occupied by a non-dolt process.
 func startDoltServer(beadsDir string, port int) (int, error) {
+	// If something is already listening on the port, adopt it (skip spawn).
+	// Check before LookPath so adoption works even when dolt isn't in PATH.
+	if isDoltServerRunning(port) {
+		return 0, nil
+	}
+
 	doltPath, err := exec.LookPath("dolt")
 	if err != nil {
 		return 0, exec.ErrNotFound
-	}
-
-	// If something is already listening on the port, adopt it (skip spawn).
-	if isDoltServerRunning(port) {
-		return 0, nil
 	}
 
 	dataDir := filepath.Join(beadsDir, "dolt")

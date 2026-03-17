@@ -43,6 +43,7 @@ func TestRunFullStart_Detached(t *testing.T) {
 		t.Setenv("ORO_SOCKET_PATH", sockPath)
 
 		// Start a fake UDS listener that ACKs the start directive.
+		// Accept multiple connections because pollForSocket probes first.
 		ln, err := net.Listen("unix", sockPath)
 		if err != nil {
 			t.Fatalf("listen: %v", err)
@@ -50,21 +51,24 @@ func TestRunFullStart_Detached(t *testing.T) {
 		defer func() { _ = ln.Close() }()
 
 		go func() {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			defer func() { _ = conn.Close() }()
-
-			scanner := bufio.NewScanner(conn)
-			if scanner.Scan() {
-				ack := protocol.Message{
-					Type: protocol.MsgACK,
-					ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
 				}
-				data, _ := json.Marshal(ack)
-				data = append(data, '\n')
-				_, _ = conn.Write(data)
+				go func(c net.Conn) {
+					defer c.Close()
+					scanner := bufio.NewScanner(c)
+					if scanner.Scan() {
+						ack := protocol.Message{
+							Type: protocol.MsgACK,
+							ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+						}
+						data, _ := json.Marshal(ack)
+						data = append(data, '\n')
+						_, _ = c.Write(data)
+					}
+				}(conn)
 			}
 		}()
 
@@ -95,21 +99,24 @@ func TestRunFullStart_Detached(t *testing.T) {
 		defer func() { _ = ln.Close() }()
 
 		go func() {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			defer func() { _ = conn.Close() }()
-
-			scanner := bufio.NewScanner(conn)
-			if scanner.Scan() {
-				ack := protocol.Message{
-					Type: protocol.MsgACK,
-					ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
 				}
-				data, _ := json.Marshal(ack)
-				data = append(data, '\n')
-				_, _ = conn.Write(data)
+				go func(c net.Conn) {
+					defer c.Close()
+					scanner := bufio.NewScanner(c)
+					if scanner.Scan() {
+						ack := protocol.Message{
+							Type: protocol.MsgACK,
+							ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+						}
+						data, _ := json.Marshal(ack)
+						data = append(data, '\n')
+						_, _ = c.Write(data)
+					}
+				}(conn)
 			}
 		}()
 
@@ -375,28 +382,30 @@ func TestStartSendsDirective(t *testing.T) {
 
 	directiveCh := make(chan string, 1)
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		scanner := bufio.NewScanner(conn)
-		if scanner.Scan() {
-			var msg protocol.Message
-			if json.Unmarshal(scanner.Bytes(), &msg) == nil && msg.Directive != nil {
-				directiveCh <- msg.Directive.Op
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
 			}
+			go func(c net.Conn) {
+				defer c.Close()
+				scanner := bufio.NewScanner(c)
+				if scanner.Scan() {
+					var msg protocol.Message
+					if json.Unmarshal(scanner.Bytes(), &msg) == nil && msg.Directive != nil {
+						directiveCh <- msg.Directive.Op
+					}
+					// Send ACK
+					ack := protocol.Message{
+						Type: protocol.MsgACK,
+						ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+					}
+					data, _ := json.Marshal(ack)
+					data = append(data, '\n')
+					_, _ = c.Write(data)
+				}
+			}(conn)
 		}
-
-		// Send ACK
-		ack := protocol.Message{
-			Type: protocol.MsgACK,
-			ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
-		}
-		data, _ := json.Marshal(ack)
-		data = append(data, '\n')
-		_, _ = conn.Write(data)
 	}()
 
 	// Mock spawner that does nothing (socket already exists).
@@ -542,22 +551,24 @@ func TestRunFullStartAttachesSession(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		scanner := bufio.NewScanner(conn)
-		if scanner.Scan() {
-			// Send ACK
-			ack := protocol.Message{
-				Type: protocol.MsgACK,
-				ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
 			}
-			data, _ := json.Marshal(ack)
-			data = append(data, '\n')
-			_, _ = conn.Write(data)
+			go func(c net.Conn) {
+				defer c.Close()
+				scanner := bufio.NewScanner(c)
+				if scanner.Scan() {
+					ack := protocol.Message{
+						Type: protocol.MsgACK,
+						ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+					}
+					data, _ := json.Marshal(ack)
+					data = append(data, '\n')
+					_, _ = c.Write(data)
+				}
+			}(conn)
 		}
 	}()
 

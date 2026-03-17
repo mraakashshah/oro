@@ -246,9 +246,13 @@ func TestOSCGuardWindowStillSuppressesFragmentChars(t *testing.T) {
 		code rune
 		text string
 	}{
-		{';', ";"}, {':', ":"}, {'$', "$"},
-		{'[', "["}, {']', "]"},
-		{'0', "0"}, {'5', "5"},
+		{';', ";"},
+		{':', ":"},
+		{'$', "$"},
+		{'[', "["},
+		{']', "]"},
+		{'0', "0"},
+		{'5', "5"},
 	}
 	for _, ch := range fragKeys {
 		msg := tea.KeyPressMsg{Code: ch.code, Text: ch.text}
@@ -272,8 +276,13 @@ func TestOSCGuardWindowSuppressesModeActivatingKeys(t *testing.T) {
 		code rune
 		text string
 	}{
-		{'/', "/"}, {'?', "?"}, {'c', "c"}, {'f', "f"},
-		{'w', "w"}, {'N', "N"}, {':', ":"},
+		{'/', "/"},
+		{'?', "?"},
+		{'c', "c"},
+		{'f', "f"},
+		{'w', "w"},
+		{'N', "N"},
+		{':', ":"},
 	} {
 		msg := tea.KeyPressMsg{Code: ch.code, Text: ch.text}
 		if filter(nil, msg) != nil {
