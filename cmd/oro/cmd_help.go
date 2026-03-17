@@ -41,6 +41,9 @@ Workflow:
   work       Execute a bead through the full lifecycle
   shell      Launch interactive claude with oro settings
 
+Database:
+  dolt       Manage the shared Dolt SQL server (status, start, stop)
+
 Internal:
   worker     Run an oro worker process (used by the dispatcher)
 
