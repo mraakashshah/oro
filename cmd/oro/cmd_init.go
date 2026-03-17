@@ -511,7 +511,7 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 
 	// 4b. Initialize beads database and dolt server (fail-open).
 	initBeadsDB(projectRoot)
-	initDoltForProject(filepath.Join(projectRoot, ".beads"))
+	initDoltForProject(filepath.Join(projectRoot, ".beads"), oroHome)
 
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
@@ -547,9 +547,11 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 }
 
 // initDoltForProject ensures dolt metadata and server are ready for a .beads path.
+// When oroHome contains a dolt-server.port file (shared server mode), port 13307
+// is used. Otherwise the port is derived per-project from the beads path hash.
 // Fail-open: logs warnings but does not return errors.
-func initDoltForProject(beadsPath string) {
-	port := DerivePort(beadsPath)
+func initDoltForProject(beadsPath, oroHome string) {
+	port := deriveEffectivePort(beadsPath, oroHome)
 	if err := ensureDoltMetadata(beadsPath, port); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: dolt metadata setup failed: %v\n", err)
 	}
@@ -558,6 +560,19 @@ func initDoltForProject(beadsPath string) {
 			fmt.Fprintf(os.Stderr, "warning: dolt server start failed: %v\n", startErr)
 		}
 	}
+}
+
+// deriveEffectivePort returns SharedDoltPort when the shared server is present
+// (indicated by a dolt-server.port file in oroHome), otherwise returns the
+// per-project port derived from beadsPath.
+func deriveEffectivePort(beadsPath, oroHome string) int {
+	if oroHome != "" {
+		portPath := filepath.Join(oroHome, "dolt-server.port")
+		if _, err := os.Stat(portPath); err == nil {
+			return SharedDoltPort
+		}
+	}
+	return DerivePort(beadsPath)
 }
 
 // createProjectAnchor writes the .oro/config.yaml anchor file in the project root.

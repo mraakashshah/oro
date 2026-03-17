@@ -1790,3 +1790,68 @@ func TestInitWritesDoltPort(t *testing.T) {
 		t.Errorf("expected backend=dolt, got %q", backend)
 	}
 }
+
+// TestInitDetectsSharedServer verifies that initDoltForProject sets port 13307
+// when ~/.oro/dolt-server.port exists (shared server mode), and falls back to
+// the per-project derived port when that file is absent.
+func TestInitDetectsSharedServer(t *testing.T) {
+	t.Run("uses SharedDoltPort when dolt-server.port file exists in oroHome", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := filepath.Join(tmpDir, "oro")
+		beadsDir := filepath.Join(tmpDir, ".beads")
+
+		if err := os.MkdirAll(oroHome, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// Simulate shared server: write dolt-server.port to oroHome.
+		portPath := filepath.Join(oroHome, "dolt-server.port")
+		if err := os.WriteFile(portPath, []byte("13307"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		initDoltForProject(beadsDir, oroHome)
+
+		meta, err := readDoltMeta(beadsDir)
+		if err != nil {
+			t.Fatalf("readDoltMeta: %v", err)
+		}
+		if meta == nil {
+			t.Fatal("expected metadata.json to be written, got nil")
+		}
+		if meta.DoltServerPort != SharedDoltPort {
+			t.Errorf("expected port %d when shared server exists, got %d", SharedDoltPort, meta.DoltServerPort)
+		}
+	})
+
+	t.Run("falls back to per-project port when dolt-server.port absent from oroHome", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := filepath.Join(tmpDir, "oro")
+		beadsDir := filepath.Join(tmpDir, ".beads")
+
+		if err := os.MkdirAll(oroHome, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// No dolt-server.port in oroHome.
+		initDoltForProject(beadsDir, oroHome)
+
+		meta, err := readDoltMeta(beadsDir)
+		if err != nil {
+			t.Fatalf("readDoltMeta: %v", err)
+		}
+		if meta == nil {
+			t.Fatal("expected metadata.json to be written, got nil")
+		}
+		expectedPort := DerivePort(beadsDir)
+		if meta.DoltServerPort != expectedPort {
+			t.Errorf("expected per-project port %d when no shared server, got %d", expectedPort, meta.DoltServerPort)
+		}
+	})
+}

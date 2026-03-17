@@ -21,7 +21,8 @@ type cleanupConfig struct {
 	tmuxName string
 	pidPath  string
 	sockPath string
-	beadsDir string          // path to .beads directory; empty disables dolt cleanup
+	beadsDir string          // path to .beads directory; empty disables per-project dolt cleanup
+	oroHome  string          // path to ~/.oro; empty disables shared dolt PID cleanup
 	signalFn func(int) error // sends SIGINT; injectable for testing
 	aliveFn  func(int) bool  // checks process liveness; injectable for testing
 	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
@@ -50,6 +51,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				pidPath:  paths.PIDPath,
 				sockPath: paths.SocketPath,
 				beadsDir: filepath.Join(".", ".beads"),
+				oroHome:  paths.OroHome,
 				signalFn: defaultSignalINT,
 				aliveFn:  IsProcessAlive,
 				isTTY:    isStdinTTY,
@@ -85,8 +87,11 @@ func runCleanup(_ context.Context, cfg *cleanupConfig) error {
 		cleaned = true
 	}
 
-	// 2.5. Kill dolt server if running.
+	// 2.5. Kill dolt server if running (per-project and shared).
 	if cleanedDolt := cleanupDolt(cfg); cleanedDolt {
+		cleaned = true
+	}
+	if cleanedShared := cleanupSharedDoltPID(cfg); cleanedShared {
 		cleaned = true
 	}
 
@@ -321,6 +326,38 @@ func cleanupDolt(cfg *cleanupConfig) bool {
 	}
 
 	return false // dolt is healthy, leave it alone
+}
+
+// cleanupSharedDoltPID removes a stale ~/.oro/dolt-server.pid when the referenced
+// process is dead. Does NOT kill a running shared server. Returns true if stale
+// files were cleaned. Idempotent.
+func cleanupSharedDoltPID(cfg *cleanupConfig) bool {
+	if cfg.oroHome == "" {
+		return false
+	}
+
+	pidPath := filepath.Join(cfg.oroHome, "dolt-server.pid")
+	data, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
+	if err != nil {
+		return false // no PID file, nothing to clean
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		// Corrupt PID file — remove it.
+		_ = os.Remove(pidPath)
+		_ = os.Remove(filepath.Join(cfg.oroHome, "dolt-server.port"))
+		return true
+	}
+
+	if !IsProcessAlive(pid) {
+		_ = os.Remove(pidPath)
+		_ = os.Remove(filepath.Join(cfg.oroHome, "dolt-server.port"))
+		fmt.Fprintf(cfg.w, "removed stale shared dolt PID file (process %d dead)\n", pid)
+		return true
+	}
+
+	return false // shared server is healthy, leave it alone
 }
 
 // cleanupBeads resets in_progress beads back to open. Returns true if beads were reset.

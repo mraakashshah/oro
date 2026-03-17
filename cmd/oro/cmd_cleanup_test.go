@@ -837,3 +837,107 @@ func TestCleanup_DoesNotCallBdDaemon(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanupSharedDoltPID verifies that cleanup handles stale ~/.oro/dolt-server.pid
+// correctly: removes it when the process is dead, skips it when the server is active.
+func TestCleanupSharedDoltPID(t *testing.T) {
+	t.Run("removes stale shared PID file when process is dead", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := filepath.Join(tmpDir, "oro")
+		if err := os.MkdirAll(oroHome, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		pidPath := filepath.Join(oroHome, "dolt-server.pid")
+		portPath := filepath.Join(oroHome, "dolt-server.port")
+		// PID 99999 is almost certainly dead.
+		if err := os.WriteFile(pidPath, []byte("99999"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(portPath, []byte("13307"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:  newFakeCmd(),
+			w:       &buf,
+			oroHome: oroHome,
+		}
+
+		result := cleanupSharedDoltPID(cfg)
+
+		if !result {
+			t.Error("expected cleanupSharedDoltPID to return true for stale PID")
+		}
+		if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+			t.Error("expected PID file to be removed")
+		}
+		if _, err := os.Stat(portPath); !os.IsNotExist(err) {
+			t.Error("expected port file to be removed")
+		}
+		if !strings.Contains(buf.String(), "stale") {
+			t.Errorf("expected output to mention stale, got: %s", buf.String())
+		}
+	})
+
+	t.Run("skips when shared server is active", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := filepath.Join(tmpDir, "oro")
+		if err := os.MkdirAll(oroHome, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		pidPath := filepath.Join(oroHome, "dolt-server.pid")
+		// Use current process PID — guaranteed alive.
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:  newFakeCmd(),
+			w:       &buf,
+			oroHome: oroHome,
+		}
+
+		if cleanupSharedDoltPID(cfg) {
+			t.Error("expected cleanupSharedDoltPID to return false when server is active")
+		}
+		if _, err := os.Stat(pidPath); err != nil {
+			t.Error("PID file should NOT be removed when server is active")
+		}
+	})
+
+	t.Run("returns false when oroHome is empty", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:  newFakeCmd(),
+			w:       &buf,
+			oroHome: "",
+		}
+
+		if cleanupSharedDoltPID(cfg) {
+			t.Error("expected false when oroHome is empty")
+		}
+	})
+
+	t.Run("returns false when no PID file exists", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := filepath.Join(tmpDir, "oro")
+		if err := os.MkdirAll(oroHome, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		var buf bytes.Buffer
+		cfg := &cleanupConfig{
+			runner:  newFakeCmd(),
+			w:       &buf,
+			oroHome: oroHome,
+		}
+
+		if cleanupSharedDoltPID(cfg) {
+			t.Error("expected false when no PID file")
+		}
+	})
+}
