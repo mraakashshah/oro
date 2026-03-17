@@ -313,56 +313,6 @@ func isSafeNavKey(kp tea.KeyPressMsg) bool {
 	}
 }
 
-// isPlausibleFragment returns true for keys that commonly appear in torn
-// terminal control sequences (CSI params, OSC data, DECRPM responses).
-// Keys that never appear in fragments (j, k, q, f, etc.) return false
-// so the user can navigate even during a suppression window.
-func isPlausibleFragment(kp tea.KeyPressMsg) bool {
-	// Shift+letter or Alt+\ can be torn CSI/OSC tail bytes.
-	// BubbleTea decodes bare 'A' as shift+a, so check the uppercase
-	// form against CSI final bytes, then fall through to check the
-	// raw code against other fragment chars.
-	if kp.Mod&tea.ModShift != 0 {
-		upper := kp.Code
-		if upper >= 'a' && upper <= 'z' {
-			upper -= 'a' - 'A'
-		}
-		if isCSIFinalByte(byte(upper)) {
-			return true
-		}
-		return isPlausibleFragment(tea.KeyPressMsg{Code: kp.Code})
-	}
-	if kp.Mod&tea.ModAlt != 0 && kp.Code == '\\' {
-		return true
-	}
-	// Other modified keys are real user input.
-	if kp.Mod != 0 {
-		return false
-	}
-	switch {
-	case kp.Code >= '0' && kp.Code <= '9': // CSI/OSC parameters
-		return true
-	case kp.Code == ';', kp.Code == ':': // parameter separators
-		return true
-	case kp.Code == '[', kp.Code == ']': // CSI/OSC openers
-		return true
-	case kp.Code == '$': // DECRPM prefix
-		return true
-	case kp.Code == '\\': // ST terminator
-		return true
-	case kp.Code == 'r', kp.Code == 'g', kp.Code == 'b': // rgb color components
-		return true
-	case kp.Code == 'y': // DECRPM final byte
-		return true
-	case kp.Code >= 'A' && kp.Code <= 'D': // CSI final bytes (cursor movement)
-		return true
-	case kp.Code == 'R': // CPR (cursor position report)
-		return true
-	default:
-		return false
-	}
-}
-
 // seqPatterns are substrings of torn terminal control sequences. When any
 // pattern appears in the recent-character accumulator, the triggering
 // character is suppressed and a 500ms window opens.

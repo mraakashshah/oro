@@ -73,6 +73,8 @@ func parseBdVersionWarning(output string) string {
 }
 
 // FetchIssuesCLI runs `bd list --json --limit 0 --all` and parses the result.
+//
+//oro:testonly
 func FetchIssuesCLI(projectDir string) ([]Issue, error) {
 	out, err := runWithTimeout(timeoutMedium, "bd", bdListArgs()...)
 	if err != nil {
