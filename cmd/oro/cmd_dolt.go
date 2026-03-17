@@ -37,7 +37,7 @@ Subcommands:
   status   Show shared server status, PID, port, and databases
   start    Start the shared server (idempotent)
   stop     Stop the shared server (requires --force if dispatcher is running)
-  teardown Remove the shared server and uninstall launchd agent`,
+  teardown Copy databases back to per-project dirs, stop shared server, uninstall launchd agent`,
 	}
 
 	cmd.AddCommand(newDoltSetupCmd())
@@ -319,10 +319,15 @@ func newDoltTeardownCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "teardown",
-		Short: "Stop the shared Dolt server and uninstall the launchd agent",
-		Long: `Stop the shared Dolt server and remove the launchd launch agent.
+		Short: "Reverse setup: restore per-project databases, stop shared server, uninstall launchd agent",
+		Long: `Reverse of oro dolt setup: stop the shared Dolt server, uninstall the
+launchd launch agent, and copy databases back to per-project .beads/dolt/
+directories. Each project's metadata port is restored to its derived
+per-project value.
 
-This does not migrate databases back to per-project directories.`,
+Skips copy-back for a project whose .beads/dolt/<dbName> already exists
+(emits a warning instead). Aborts if the dispatcher is running unless
+--force is specified.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			paths, err := ResolvePaths()
 			if err != nil {

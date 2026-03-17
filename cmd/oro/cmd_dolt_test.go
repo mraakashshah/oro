@@ -691,6 +691,21 @@ func TestDoltTeardown(t *testing.T) {
 		}
 	})
 
+	t.Run("help text mentions database copy-back", func(t *testing.T) {
+		cmd := newDoltTeardownCmd()
+		if !strings.Contains(cmd.Long, "copy databases back") {
+			t.Errorf("Long help should mention copying databases back, got: %s", cmd.Long)
+		}
+		if !strings.Contains(cmd.Short, "restore per-project") {
+			t.Errorf("Short help should mention restoring per-project databases, got: %s", cmd.Short)
+		}
+
+		parent := newDoltCmd()
+		if !strings.Contains(parent.Long, "Copy databases back") {
+			t.Errorf("parent Long help should mention database copy-back for teardown, got: %s", parent.Long)
+		}
+	})
+
 	t.Run("edge: shared server not running → skip stop, still copies DBs back", func(t *testing.T) {
 		oroHome := t.TempDir()
 		homeDir := t.TempDir()
