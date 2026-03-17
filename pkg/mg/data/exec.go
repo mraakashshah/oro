@@ -50,16 +50,16 @@ func parseBdStderr(stderr []byte) string {
 		return ""
 	}
 
-	// Try structured JSON parse first
+	// Try structured JSON parse first. bd may prefix stderr with warning
+	// lines before the JSON object, so also try from the first '{'.
 	var bdErr bdStderrError
 	if json.Unmarshal(stderr, &bdErr) == nil && bdErr.Error != "" {
-		msg := bdErr.Error
-		for _, d := range bdErr.Details {
-			if d.Message != "" {
-				msg += ": " + d.Message
-			}
+		return formatBdError(bdErr)
+	}
+	if idx := strings.IndexByte(trimmed, '{'); idx > 0 {
+		if json.Unmarshal([]byte(trimmed[idx:]), &bdErr) == nil && bdErr.Error != "" {
+			return formatBdError(bdErr)
 		}
-		return msg
 	}
 
 	// Fall back to raw text (strip common prefixes)
@@ -69,6 +69,16 @@ func parseBdStderr(stderr []byte) string {
 	// Take first line only for toast display
 	if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
 		msg = msg[:idx]
+	}
+	return msg
+}
+
+func formatBdError(bdErr bdStderrError) string {
+	msg := bdErr.Error
+	for _, d := range bdErr.Details {
+		if d.Message != "" {
+			msg += ": " + d.Message
+		}
 	}
 	return msg
 }

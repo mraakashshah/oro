@@ -50,6 +50,15 @@ func TestParseBdStderrEmpty(t *testing.T) {
 	}
 }
 
+func TestParseBdStderrWarningPrefixedJSON(t *testing.T) {
+	// bd may emit warning lines before the JSON error on stderr.
+	stderr := []byte("Warning: dolt_server_port in metadata.json is deprecated.\n  Remove it to silence this warning.\n{\"error\":\"dolt circuit breaker is open\"}\n")
+	got := parseBdStderr(stderr)
+	if got != "dolt circuit breaker is open" {
+		t.Errorf("parseBdStderr() = %q, want %q", got, "dolt circuit breaker is open")
+	}
+}
+
 func TestWrapExitErrorWithStderr(t *testing.T) {
 	exitErr := &exec.ExitError{
 		Stderr: []byte(`{"error":"issue not found"}`),
