@@ -406,7 +406,7 @@ func startDoltIfNeeded(doltStartFn func() (int, error)) (cleanup func(), err err
 // makeDoltLifecycle reads .beads/metadata.json from workDir and returns start/stop
 // functions for the dolt server if the backend is "dolt". Returns (nil, nil) for
 // non-dolt projects or when the metadata file is missing or unreadable.
-func makeDoltLifecycle(workDir string) (func() (int, error), func() error) { //nolint:gocritic // named results hurt readability here
+func makeDoltLifecycle(workDir, oroHome string) (func() (int, error), func() error) { //nolint:gocritic // named results hurt readability here
 	beadsDir := filepath.Join(workDir, ".beads")
 	meta, err := readDoltMeta(beadsDir)
 	if err != nil || meta == nil {
@@ -415,6 +415,10 @@ func makeDoltLifecycle(workDir string) (func() (int, error), func() error) { //n
 	port := meta.DoltServerPort
 	if port == 0 {
 		port = DerivePort(beadsDir)
+	}
+	if isSharedServer(port) {
+		// Shared server is machine-wide — never stopped from oro start.
+		return func() (int, error) { return ensureSharedDoltRunning(oroHome) }, nil
 	}
 	return func() (int, error) { return startDoltServer(beadsDir, port) },
 		func() error { return stopDoltServer(beadsDir) }
@@ -438,7 +442,7 @@ func startFreshSwarm(w io.Writer, workers int, model string, detach bool, progre
 	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
 		return fmt.Errorf("set ORO_HOME: %w", err)
 	}
-	doltStart, _ := makeDoltLifecycle(".")
+	doltStart, _ := makeDoltLifecycle(".", oroHome)
 	return runFullStart(w, workers, model, project,
 		&ExecDaemonSpawner{ProgressTimeout: progressTimeout, ReviewTimeout: reviewTimeout},
 		&ExecRunner{},

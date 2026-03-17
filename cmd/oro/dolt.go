@@ -376,6 +376,53 @@ func startSharedDoltServer(oroHome string) (int, error) { //nolint:unparam // PI
 	return pid, nil
 }
 
+// ensureSharedDoltRunning verifies the shared Dolt server on SharedDoltPort is
+// reachable. If not, it attempts launchctl kickstart (launchd auto-start) and
+// falls back to startSharedDoltServer (direct spawn) when kickstart fails.
+func ensureSharedDoltRunning(oroHome string) (int, error) {
+	// Already running — adopt.
+	if isDoltServerRunning(SharedDoltPort) {
+		return 0, nil
+	}
+
+	// Try launchctl kickstart (macOS launchd service).
+	if tryLaunchctlKickstart() {
+		if waitForPort(SharedDoltPort, 3*time.Second) {
+			return 0, nil
+		}
+	}
+
+	// Fall back to direct spawn.
+	return startSharedDoltServer(oroHome)
+}
+
+// tryLaunchctlKickstart attempts to start the shared Dolt server via the
+// macOS launchd service com.oro.dolt-server. Returns true if the kickstart
+// command succeeds, false otherwise (not macOS, service not installed, etc.).
+func tryLaunchctlKickstart() bool {
+	launchctlPath, err := exec.LookPath("launchctl")
+	if err != nil {
+		return false
+	}
+	//nolint:gosec // uid from trusted os.Getuid()
+	cmd := exec.CommandContext(context.Background(), launchctlPath, "kickstart", "-k",
+		fmt.Sprintf("gui/%d/com.oro.dolt-server", os.Getuid()))
+	return cmd.Run() == nil
+}
+
+// waitForPort polls isDoltServerRunning until the port is reachable or timeout
+// elapses. Used after launchctl kickstart to give the server time to bind.
+func waitForPort(port int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if isDoltServerRunning(port) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
 // checkSharedPortConflict checks whether we own the server on SharedDoltPort.
 // Returns nil if we own it (adoption). Returns an error if a foreign process
 // holds the port.

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -914,4 +915,125 @@ func TestPreflightStatusStaleRemovesSocket(t *testing.T) {
 	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
 		t.Error("socket file should be removed after StatusStale")
 	}
+}
+
+// TestMakeDoltLifecycleSharedServer verifies that makeDoltLifecycle returns a
+// shared-server-aware startFn when port==SharedDoltPort, and preserves the
+// existing per-project behavior for all other ports.
+func TestMakeDoltLifecycleSharedServer(t *testing.T) {
+	t.Run("shared port dials 13307 and adopts running server", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend":          "dolt",
+			"dolt_server_port": SharedDoltPort,
+			"dolt_database":    "beads",
+		})
+
+		oroHome := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroHome, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// Start a TCP listener on SharedDoltPort to simulate running shared server.
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", SharedDoltPort))
+		if err != nil {
+			t.Skipf("cannot bind port %d: %v", SharedDoltPort, err)
+		}
+		defer ln.Close()
+
+		startFn, stopFn := makeDoltLifecycle(tmpDir, oroHome)
+		if startFn == nil {
+			t.Fatal("expected non-nil startFn for shared server")
+		}
+		// Shared server is never stopped from oro start.
+		if stopFn != nil {
+			t.Error("expected nil stopFn for shared server")
+		}
+
+		pid, err := startFn()
+		if err != nil {
+			t.Fatalf("startFn should adopt running shared server: %v", err)
+		}
+		if pid != 0 {
+			t.Errorf("expected PID 0 (adoption), got %d", pid)
+		}
+	})
+
+	t.Run("shared unreachable falls back to startSharedDoltServer", func(t *testing.T) {
+		if isDoltServerRunning(SharedDoltPort) {
+			t.Skipf("port %d already in use — cannot test fallback", SharedDoltPort)
+		}
+
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend":          "dolt",
+			"dolt_server_port": SharedDoltPort,
+			"dolt_database":    "beads",
+		})
+
+		oroHome := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroHome, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		startFn, _ := makeDoltLifecycle(tmpDir, oroHome)
+		if startFn == nil {
+			t.Fatal("expected non-nil startFn for shared server")
+		}
+
+		// dial 13307 → fail, launchctl kickstart → fail,
+		// fall back to startSharedDoltServer: either exec.ErrNotFound (no dolt)
+		// or actual spawn (dolt in PATH).
+		pid, err := startFn()
+		if errors.Is(err, exec.ErrNotFound) {
+			return // dolt not in PATH — correct fallback behavior
+		}
+		if err != nil {
+			t.Fatalf("unexpected error from fallback: %v", err)
+		}
+		// dolt in PATH — startSharedDoltServer actually spawned a server.
+		if pid == 0 {
+			t.Error("expected pid > 0 when dolt spawns via fallback")
+		}
+		t.Cleanup(func() {
+			_ = killAndWait(pid, oroHome)
+		})
+	})
+
+	t.Run("non-shared port returns startFn that calls startDoltServer", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend":          "dolt",
+			"dolt_server_port": 14000,
+			"dolt_database":    "beads",
+		})
+
+		oroHome := filepath.Join(tmpDir, ".oro")
+
+		startFn, stopFn := makeDoltLifecycle(tmpDir, oroHome)
+		if startFn == nil {
+			t.Fatal("expected non-nil startFn for non-shared server")
+		}
+		if stopFn == nil {
+			t.Fatal("expected non-nil stopFn for non-shared server")
+		}
+
+		// startFn calls startDoltServer → exec.ErrNotFound (no dolt binary)
+		_, err := startFn()
+		if err != nil && !errors.Is(err, exec.ErrNotFound) {
+			t.Fatalf("expected nil or exec.ErrNotFound, got: %v", err)
+		}
+	})
 }
