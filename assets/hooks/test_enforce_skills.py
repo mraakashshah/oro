@@ -48,7 +48,7 @@ class TestShouldRemind:
 
 class TestStateIO:
     def test_state_file_uses_ppid(self, tmp_path):
-        p = es.state_file.__wrapped__(99) if hasattr(es.state_file, "__wrapped__") else es.state_file(99)
+        p = es.state_file.__wrapped__(99) if hasattr(es.state_file, "__wrapped__") else es.state_file(99)  # pyright: ignore[reportFunctionMemberAccess]
         assert "99" in str(p)
 
     def test_read_missing_returns_zero(self, tmp_path):
