@@ -93,7 +93,7 @@ func TestRunGlobalOroApproach_CopiesPortableHooks(t *testing.T) {
 		"pre_compact.py":            "# compact\n",
 		"context_pruner.py":         "# pruner\n",
 		"stop-checklist.sh":         "#!/bin/bash\necho '{}'\n",
-		"enforce-skills.sh":         "# marker\n",
+		"enforce_skills.py":         "# marker\n",
 		"memory_capture.py":         "# oro-specific - should not copy\n",
 	})
 
@@ -119,7 +119,7 @@ func TestRunGlobalOroApproach_CopiesPortableHooks(t *testing.T) {
 	// Portable hooks should be present
 	for _, want := range []string{
 		"auto-format.sh", "prompt_injection_guard.py", "pre_compact.py",
-		"context_pruner.py", "stop-checklist.sh", "enforce-skills.sh",
+		"context_pruner.py", "stop-checklist.sh", "enforce_skills.py",
 	} {
 		if _, err := os.Stat(filepath.Join(dstHooks, want)); err != nil {
 			t.Errorf("expected hook %q to be copied, got: %v", want, err)
@@ -144,7 +144,7 @@ func TestRunGlobalOroApproach_FixesHardcodedOroPaths(t *testing.T) {
 		"auto-format.sh":            "#!/bin/bash\n",
 		"prompt_injection_guard.py": "# no .oro refs\n",
 		"stop-checklist.sh":         "#!/bin/bash\n",
-		"enforce-skills.sh":         "# marker\n",
+		"enforce_skills.py":         "# marker\n",
 	})
 
 	cfg := globalOroApproachConfig{

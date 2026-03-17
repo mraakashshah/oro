@@ -24,7 +24,7 @@ var portableHooks = []string{ //nolint:gochecknoglobals // static config
 	"pre_compact.py",
 	"context_pruner.py",
 	"stop-checklist.sh",
-	"enforce-skills.sh",
+	"enforce_skills.py",
 }
 
 // globalOroApproachConfig holds injectable paths for testability.
@@ -162,7 +162,7 @@ func globalHooks(hooksDir string) map[string][]hookGroup {
 		}},
 		"PreToolUse": {{
 			Matcher: "",
-			Hooks:   []hookEntry{{Type: "command", Command: sh("enforce-skills.sh")}},
+			Hooks:   []hookEntry{{Type: "command", Command: py("enforce_skills.py")}},
 		}},
 		"PostToolUse": {
 			{Matcher: "Read|WebFetch|Bash", Hooks: []hookEntry{
