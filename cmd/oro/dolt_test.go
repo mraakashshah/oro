@@ -324,6 +324,67 @@ func TestEnsureDoltMetadata(t *testing.T) {
 	})
 }
 
+func TestIsSharedServer(t *testing.T) {
+	t.Run("returns true for port 13307", func(t *testing.T) {
+		if !isSharedServer(SharedDoltPort) {
+			t.Errorf("isSharedServer(%d) = false, want true", SharedDoltPort)
+		}
+	})
+
+	t.Run("returns false for port below 13307", func(t *testing.T) {
+		if isSharedServer(13306) {
+			t.Error("isSharedServer(13306) = true, want false")
+		}
+	})
+
+	t.Run("returns false for port above 13307", func(t *testing.T) {
+		if isSharedServer(13308) {
+			t.Error("isSharedServer(13308) = true, want false")
+		}
+	})
+
+	t.Run("returns false for port 0", func(t *testing.T) {
+		if isSharedServer(0) {
+			t.Error("isSharedServer(0) = true, want false")
+		}
+	})
+}
+
+func TestStartSharedDoltServer(t *testing.T) {
+	t.Run("returns ErrNotFound when dolt not in PATH", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		tmpDir := t.TempDir()
+		_, err := startSharedDoltServer(tmpDir)
+		if err == nil {
+			t.Fatal("startSharedDoltServer should return error when dolt not in PATH")
+		}
+		if !errors.Is(err, exec.ErrNotFound) {
+			t.Errorf("startSharedDoltServer error = %v, want exec.ErrNotFound", err)
+		}
+	})
+
+	t.Run("returns error with blocker PID when port 13307 occupied by foreign process", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:13307")
+		if err != nil {
+			t.Skipf("cannot bind to port 13307 (already in use): %v", err)
+		}
+		defer ln.Close()
+
+		// Wait until port is confirmed listening.
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) && !isDoltServerRunning(SharedDoltPort) {
+			time.Sleep(20 * time.Millisecond)
+		}
+
+		tmpDir := t.TempDir()
+		// No PID file written — port is occupied by a foreign (non-dolt) process.
+		_, err = startSharedDoltServer(tmpDir)
+		if err == nil {
+			t.Fatal("startSharedDoltServer should return error when port 13307 occupied by foreign process")
+		}
+	})
+}
+
 // writeMetadata writes a JSON object to <beadsDir>/metadata.json.
 func writeMetadata(t *testing.T, beadsDir string, data map[string]interface{}) {
 	t.Helper()

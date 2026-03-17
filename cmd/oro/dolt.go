@@ -19,6 +19,10 @@ import (
 const (
 	doltPortBase  = 13307
 	doltPortRange = 1000
+
+	// SharedDoltPort is the fixed TCP port for the machine-wide shared Dolt server
+	// stored in ~/.oro/. All projects that opt into shared-server mode connect here.
+	SharedDoltPort = 13307
 )
 
 // doltMeta holds the fields from .beads/metadata.json relevant to dolt lifecycle.
@@ -309,4 +313,79 @@ func ensureDoltMetadata(beadsDir string, port int) error {
 	}
 
 	return nil
+}
+
+// isSharedServer reports whether port is the machine-wide shared Dolt port
+// (SharedDoltPort = 13307).
+func isSharedServer(port int) bool {
+	return port == SharedDoltPort
+}
+
+// startSharedDoltServer starts a shared Dolt server bound to 127.0.0.1:13307
+// with data directory at <oroHome>/dolt. It writes the PID to
+// <oroHome>/dolt-server.pid and the port to <oroHome>/dolt-server.port.
+//
+// If port 13307 is already occupied by our own server (valid PID file present
+// and process alive), it returns (0, nil) — adoption, no new process spawned.
+//
+// If port 13307 is occupied by a foreign process (no PID file or stale PID),
+// it returns an error that includes the blocking PID so the caller can
+// diagnose the conflict.
+//
+// Returns exec.ErrNotFound if dolt is not in PATH.
+func startSharedDoltServer(oroHome string) (int, error) {
+	if isDoltServerRunning(SharedDoltPort) {
+		// Check whether we own this server via the PID file.
+		pidPath := filepath.Join(oroHome, "dolt-server.pid")
+		data, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
+		if err == nil {
+			if pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil && IsProcessAlive(pid) {
+				return 0, nil // adopt our own server
+			}
+		}
+
+		// Port occupied by a foreign process — report the blocker.
+		blockerPID, lsofErr := discoverPIDByPort(SharedDoltPort)
+		if lsofErr == nil {
+			return 0, fmt.Errorf("port %d already in use by PID %d (not a managed dolt server)", SharedDoltPort, blockerPID)
+		}
+		return 0, fmt.Errorf("port %d already in use by an unidentified process", SharedDoltPort)
+	}
+
+	doltPath, err := exec.LookPath("dolt")
+	if err != nil {
+		return 0, exec.ErrNotFound
+	}
+
+	dataDir := filepath.Join(oroHome, "dolt")
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		return 0, fmt.Errorf("mkdir %s: %w", dataDir, err)
+	}
+
+	//nolint:gosec // args constructed from trusted internal values
+	cmd := exec.CommandContext(context.Background(), doltPath, //nolint:noctx // background context appropriate for long-lived server process
+		"sql-server",
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(SharedDoltPort),
+		"--data-dir", dataDir,
+	)
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("start shared dolt server: %w", err)
+	}
+
+	pid := cmd.Process.Pid
+
+	pidPath := filepath.Join(oroHome, "dolt-server.pid")
+	portPath := filepath.Join(oroHome, "dolt-server.port")
+
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o600); err != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		return 0, fmt.Errorf("write dolt PID file: %w", err)
+	}
+	if err := os.WriteFile(portPath, []byte(strconv.Itoa(SharedDoltPort)), 0o600); err != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		return 0, fmt.Errorf("write dolt port file: %w", err)
+	}
+
+	return pid, nil
 }
