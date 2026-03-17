@@ -443,7 +443,7 @@ func initBeadsDB(projectRoot string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bd", "init") //nolint:gosec // trusted command
+	cmd := exec.CommandContext(ctx, "bd", "init", "--agents-template", os.DevNull) //nolint:gosec // trusted command
 	cmd.Dir = projectRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: bd init failed: %v\n%s\n", err, out)
