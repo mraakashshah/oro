@@ -277,6 +277,71 @@ func TestRunGlobalOroApproach_UpdatesSettingsJSON(t *testing.T) {
 	}
 }
 
+func TestRunGlobalOroApproach_InvalidSettingsJSON(t *testing.T) {
+	tmp := t.TempDir()
+
+	settingsPath := filepath.Join(tmp, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`not valid json`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := globalOroApproachConfig{
+		oroSkillsDir:    filepath.Join(tmp, "src", "skills"),
+		claudeSkillsDir: filepath.Join(tmp, "dst", "skills"),
+		oroHooksDir:     filepath.Join(tmp, "src", "hooks"),
+		claudeHooksDir:  filepath.Join(tmp, "dst", "hooks"),
+		settingsPath:    settingsPath,
+	}
+	for _, d := range []string{cfg.oroSkillsDir, cfg.oroHooksDir} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := runGlobalOroApproach(cfg, os.Stdout); err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestRunGlobalOroApproach_SkipsOroSpecificHooks(t *testing.T) {
+	tmp := t.TempDir()
+
+	srcHooks := filepath.Join(tmp, "src", "hooks")
+	dstHooks := filepath.Join(tmp, "dst", "hooks")
+
+	// Only provide oro-specific hooks — none of the portable ones
+	makeHooksDir(t, srcHooks, map[string]string{
+		"architect_router.py": "# oro-specific\n",
+		"compact_trigger.py":  "# oro-specific\n",
+		"no_cd_guard.py":      "# oro-specific\n",
+	})
+
+	cfg := globalOroApproachConfig{
+		oroSkillsDir:    filepath.Join(tmp, "src", "skills"),
+		claudeSkillsDir: filepath.Join(tmp, "dst", "skills"),
+		oroHooksDir:     srcHooks,
+		claudeHooksDir:  dstHooks,
+		settingsPath:    filepath.Join(tmp, "settings.json"),
+	}
+	if err := os.MkdirAll(cfg.oroSkillsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.settingsPath, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runGlobalOroApproach(cfg, os.Stdout); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// None of the oro-specific hooks should appear in dst
+	for _, name := range []string{"architect_router.py", "compact_trigger.py", "no_cd_guard.py"} {
+		if _, err := os.Stat(filepath.Join(dstHooks, name)); err == nil {
+			t.Errorf("oro-specific hook %q should not have been copied", name)
+		}
+	}
+}
+
 // jsonContains is a simple substring check on JSON text.
 func jsonContains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && (func() bool {
