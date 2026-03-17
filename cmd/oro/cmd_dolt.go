@@ -24,7 +24,7 @@ type doltCmdConfig struct {
 	dispatcherPIDFn func() int // returns dispatcher PID (0 = not running)
 }
 
-// newDoltCmd creates the "oro dolt" parent command with status/start/stop subcommands.
+// newDoltCmd creates the "oro dolt" parent command with status/start/stop/setup/teardown subcommands.
 func newDoltCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dolt",
@@ -32,16 +32,339 @@ func newDoltCmd() *cobra.Command {
 		Long: `Manage the machine-wide shared Dolt server used by beads.
 
 Subcommands:
+  setup    Migrate per-project dolt databases to the shared server and install launchd agent
   status   Show shared server status, PID, port, and databases
   start    Start the shared server (idempotent)
-  stop     Stop the shared server (requires --force if dispatcher is running)`,
+  stop     Stop the shared server (requires --force if dispatcher is running)
+  teardown Remove the shared server and uninstall launchd agent`,
 	}
 
+	cmd.AddCommand(newDoltSetupCmd())
 	cmd.AddCommand(newDoltStatusCmd())
 	cmd.AddCommand(newDoltStartCmd())
 	cmd.AddCommand(newDoltStopCmd())
+	cmd.AddCommand(newDoltTeardownCmd())
 
 	return cmd
+}
+
+// ---------- oro dolt setup ----------
+
+// doltSetupConfig holds injectable dependencies for the dolt setup command.
+type doltSetupConfig struct {
+	oroHome         string
+	homeDir         string   // user's ~ for plist installation
+	beadsDirs       []string // per-project .beads directories to scan
+	aliveFn         func(int) bool
+	dispatcherPIDFn func() int
+	startFn         func(string) (int, error) // starts shared server, writes PID/port
+	generatePlistFn func(string, string, int) ([]byte, error)
+	installPlistFn  func([]byte, string) error
+	force           bool
+}
+
+func newDoltSetupCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Migrate per-project dolt databases to the shared server",
+		Long: `Migrate per-project dolt databases to the shared ~/.oro/dolt/ directory,
+update each project's metadata to point at the shared server (port 13307),
+install the launchd agent so the server auto-starts, and start the server.
+
+Aborts if the dispatcher is running. Use --force to override.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			paths, err := ResolvePaths()
+			if err != nil {
+				return fmt.Errorf("resolve paths: %w", err)
+			}
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("get home dir: %w", err)
+			}
+			cfg := &doltSetupConfig{
+				oroHome:         paths.OroHome,
+				homeDir:         homeDir,
+				aliveFn:         IsProcessAlive,
+				force:           force,
+				startFn:         startSharedDoltServer,
+				generatePlistFn: generatePlist,
+				installPlistFn:  installLaunchAgent,
+				dispatcherPIDFn: func() int {
+					pid, pidErr := ReadPIDFile(paths.PIDPath)
+					if pidErr != nil {
+						return 0
+					}
+					if !IsProcessAlive(pid) {
+						return 0
+					}
+					return pid
+				},
+			}
+			cfg.beadsDirs = discoverBreadsDirs(paths.OroHome)
+			return runDoltSetup(cfg, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "proceed even if the dispatcher is running")
+	return cmd
+}
+
+// discoverBreadsDirs scans ~/.oro/projects/ for registered project beads paths.
+// For each project directory it looks for a beads_path file.
+// Falls back to an empty list when no projects are registered.
+func discoverBreadsDirs(oroHome string) []string {
+	projectsDir := filepath.Join(oroHome, "projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		beadsLink := filepath.Join(projectsDir, e.Name(), "beads_path")
+		data, readErr := os.ReadFile(beadsLink) //nolint:gosec // path from trusted oroHome
+		if readErr == nil {
+			if beadsDir := strings.TrimSpace(string(data)); beadsDir != "" {
+				dirs = append(dirs, beadsDir)
+			}
+		}
+	}
+	return dirs
+}
+
+// doltProject holds per-project information discovered during setup.
+type doltProject struct {
+	beadsDir string
+	dbName   string
+}
+
+// findDoltProjects scans beadsDirs for directories with dolt backend metadata.
+func findDoltProjects(beadsDirs []string) ([]doltProject, error) {
+	var projects []doltProject
+	for _, beadsDir := range beadsDirs {
+		meta, err := readDoltMeta(beadsDir)
+		if err != nil {
+			return nil, fmt.Errorf("read dolt meta for %s: %w", beadsDir, err)
+		}
+		if meta == nil {
+			continue
+		}
+		dbName := meta.DoltDatabase
+		if dbName == "" {
+			dbName = "beads"
+		}
+		projects = append(projects, doltProject{beadsDir: beadsDir, dbName: dbName})
+	}
+	return projects, nil
+}
+
+// checkDBCollisions returns an error if two projects share the same database name.
+func checkDBCollisions(projects []doltProject) error {
+	seen := make(map[string]string) // dbName → beadsDir
+	for _, p := range projects {
+		if existing, ok := seen[p.dbName]; ok {
+			return fmt.Errorf("database name collision: %q already used by %q and %q", p.dbName, existing, p.beadsDir)
+		}
+		seen[p.dbName] = p.beadsDir
+	}
+	return nil
+}
+
+// migrateProjects copies each project's dolt DB to the shared dir and updates its metadata.
+func migrateProjects(projects []doltProject, doltDir string, w io.Writer) error {
+	for _, p := range projects {
+		srcDir := filepath.Join(p.beadsDir, "dolt", p.dbName)
+		if err := atomicCopyDir(srcDir, doltDir, p.dbName); err != nil {
+			return fmt.Errorf("copy dolt DB %q: %w", p.dbName, err)
+		}
+		if err := setDoltPort(p.beadsDir, SharedDoltPort); err != nil {
+			return fmt.Errorf("update metadata for %s: %w", p.beadsDir, err)
+		}
+		fmt.Fprintf(w, "  migrated %q → shared server (port %d)\n", p.dbName, SharedDoltPort)
+	}
+	return nil
+}
+
+// installDoltPlist generates and installs the launchd plist for the shared server.
+func installDoltPlist(cfg *doltSetupConfig, w io.Writer) error {
+	doltPath, _ := exec.LookPath("dolt")
+	plistBytes, err := cfg.generatePlistFn(doltPath, cfg.homeDir, SharedDoltPort)
+	if err != nil {
+		fmt.Fprintf(w, "warning: could not generate plist (%v); skipping launchd installation\n", err)
+		return nil
+	}
+	if err := cfg.installPlistFn(plistBytes, cfg.homeDir); err != nil {
+		return fmt.Errorf("install launch agent: %w", err)
+	}
+	fmt.Fprintln(w, "launch agent installed")
+	return nil
+}
+
+// runDoltSetup migrates per-project dolt databases to the shared server,
+// installs the launchd agent, and starts the server.
+func runDoltSetup(cfg *doltSetupConfig, w io.Writer) error {
+	if cfg.dispatcherPIDFn != nil {
+		if dispPID := cfg.dispatcherPIDFn(); dispPID > 0 && !cfg.force {
+			return fmt.Errorf("dispatcher is running (PID %d); stop it first or use --force", dispPID)
+		}
+	}
+
+	projects, err := findDoltProjects(cfg.beadsDirs)
+	if err != nil {
+		return err
+	}
+	if len(projects) == 0 {
+		fmt.Fprintln(w, "no dolt projects found; nothing to do")
+		return nil
+	}
+
+	if err := checkDBCollisions(projects); err != nil {
+		return err
+	}
+
+	doltDir := filepath.Join(cfg.oroHome, "dolt")
+	if err := os.MkdirAll(doltDir, 0o750); err != nil {
+		return fmt.Errorf("create shared dolt dir: %w", err)
+	}
+
+	if err := migrateProjects(projects, doltDir, w); err != nil {
+		return err
+	}
+
+	if err := installDoltPlist(cfg, w); err != nil {
+		return err
+	}
+
+	if cfg.startFn != nil {
+		if _, startErr := cfg.startFn(cfg.oroHome); startErr != nil {
+			return fmt.Errorf("start shared dolt server: %w", startErr)
+		}
+	}
+
+	fmt.Fprintln(w, "dolt setup complete")
+	return nil
+}
+
+// atomicCopyDir copies the directory at srcDir into destParent/<dbName> atomically
+// using a temp directory and os.Rename. Any stale <dbName>.doltsetup-tmp directory
+// in destParent is removed first (cleanup from a previous crashed run).
+//
+// If srcDir does not exist the copy is skipped (no source to migrate).
+func atomicCopyDir(srcDir, destParent, dbName string) error {
+	if _, err := os.Stat(srcDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	tmpDir := filepath.Join(destParent, dbName+".doltsetup-tmp")
+	destDir := filepath.Join(destParent, dbName)
+
+	if err := os.RemoveAll(tmpDir); err != nil {
+		return fmt.Errorf("clean stale temp dir %s: %w", tmpDir, err)
+	}
+
+	if err := copyDirRecursive(srcDir, tmpDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("copy %s → %s: %w", srcDir, tmpDir, err)
+	}
+
+	if err := os.RemoveAll(destDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("remove existing dest %s: %w", destDir, err)
+	}
+
+	if err := os.Rename(tmpDir, destDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("rename %s → %s: %w", tmpDir, destDir, err)
+	}
+
+	return nil
+}
+
+// copyDirRecursive recursively copies src directory tree to dst.
+func copyDirRecursive(src, dst string) error {
+	if err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error { //nolint:wrapcheck // inner errors wrapped
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(src, path)
+		if relErr != nil {
+			return fmt.Errorf("rel path for %s: %w", path, relErr)
+		}
+		target := filepath.Join(dst, rel)
+
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode()) //nolint:wrapcheck // os error; target path is clear
+		}
+
+		data, readErr := os.ReadFile(path) //nolint:gosec // path is walk-derived from trusted src
+		if readErr != nil {
+			return fmt.Errorf("read %s: %w", path, readErr)
+		}
+		if writeErr := os.WriteFile(target, data, info.Mode()); writeErr != nil { //nolint:gosec // target derived from trusted dst
+			return fmt.Errorf("write %s: %w", target, writeErr)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("walk %s: %w", src, err)
+	}
+	return nil
+}
+
+// ---------- oro dolt teardown ----------
+
+func newDoltTeardownCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "teardown",
+		Short: "Stop the shared Dolt server and uninstall the launchd agent",
+		Long: `Stop the shared Dolt server and remove the launchd launch agent.
+
+This does not migrate databases back to per-project directories.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			paths, err := ResolvePaths()
+			if err != nil {
+				return fmt.Errorf("resolve paths: %w", err)
+			}
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("get home dir: %w", err)
+			}
+			cfg := &doltCmdConfig{
+				oroHome:  paths.OroHome,
+				aliveFn:  IsProcessAlive,
+				isPortUp: isDoltServerRunning,
+				force:    force,
+				stopFn:   stopDoltServer,
+				dispatcherPIDFn: func() int {
+					pid, pidErr := ReadPIDFile(paths.PIDPath)
+					if pidErr != nil {
+						return 0
+					}
+					if !IsProcessAlive(pid) {
+						return 0
+					}
+					return pid
+				},
+			}
+			return runDoltTeardown(cfg, homeDir, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "stop even if the dispatcher is running")
+	return cmd
+}
+
+// runDoltTeardown stops the shared server and uninstalls the launchd agent.
+func runDoltTeardown(cfg *doltCmdConfig, homeDir string, w io.Writer) error {
+	if err := runDoltStop(cfg, w); err != nil {
+		return err
+	}
+	if err := uninstallLaunchAgent(homeDir); err != nil {
+		return fmt.Errorf("uninstall launch agent: %w", err)
+	}
+	fmt.Fprintln(w, "dolt teardown complete")
+	return nil
 }
 
 // ---------- oro dolt status ----------

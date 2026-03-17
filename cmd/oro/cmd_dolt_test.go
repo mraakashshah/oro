@@ -12,6 +12,239 @@ import (
 	"testing"
 )
 
+// ---------- oro dolt setup ----------
+
+func TestDoltSetup(t *testing.T) {
+	t.Run("happy path: creates shared dolt dir, migrates DB, updates metadata, installs plist", func(t *testing.T) {
+		oroHome := t.TempDir()
+		homeDir := t.TempDir()
+
+		projectDir := t.TempDir()
+		beadsDir := filepath.Join(projectDir, ".beads")
+		if err := os.MkdirAll(filepath.Join(beadsDir, "dolt", "beads"), 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(beadsDir, "dolt", "beads", "test.db"), []byte("fake-dolt-data"), 0o600); err != nil {
+			t.Fatalf("write test.db: %v", err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend":          "dolt",
+			"dolt_server_port": 13350,
+			"dolt_database":    "beads",
+		})
+
+		var plistInstalled bool
+		cfg := &doltSetupConfig{
+			oroHome:         oroHome,
+			homeDir:         homeDir,
+			beadsDirs:       []string{beadsDir},
+			aliveFn:         func(int) bool { return false },
+			dispatcherPIDFn: func() int { return 0 },
+			startFn: func(home string) (int, error) {
+				pidPath := filepath.Join(home, "dolt-server.pid")
+				portPath := filepath.Join(home, "dolt-server.port")
+				if err := os.WriteFile(pidPath, []byte("42"), 0o600); err != nil {
+					return 0, err
+				}
+				if err := os.WriteFile(portPath, []byte("13307"), 0o600); err != nil {
+					return 0, err
+				}
+				return 42, nil
+			},
+			generatePlistFn: func(_, _ string, _ int) ([]byte, error) {
+				return []byte("<?xml version=\"1.0\"?><plist>fake</plist>"), nil
+			},
+			installPlistFn: func(data []byte, hd string) error {
+				plistInstalled = true
+				return installLaunchAgent(data, hd)
+			},
+		}
+
+		var buf bytes.Buffer
+		if err := runDoltSetup(cfg, &buf); err != nil {
+			t.Fatalf("runDoltSetup error: %v", err)
+		}
+
+		doltDir := filepath.Join(oroHome, "dolt")
+		if _, err := os.Stat(doltDir); err != nil {
+			t.Errorf("shared dolt dir not created: %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(doltDir, "beads", "test.db"))
+		if err != nil {
+			t.Fatalf("database not copied to shared dir: %v", err)
+		}
+		if string(data) != "fake-dolt-data" {
+			t.Errorf("copied data = %q, want %q", string(data), "fake-dolt-data")
+		}
+
+		meta, err := readDoltMeta(beadsDir)
+		if err != nil {
+			t.Fatalf("readDoltMeta error: %v", err)
+		}
+		if meta == nil || meta.DoltServerPort != SharedDoltPort {
+			port := 0
+			if meta != nil {
+				port = meta.DoltServerPort
+			}
+			t.Errorf("metadata port = %d, want %d (shared)", port, SharedDoltPort)
+		}
+
+		if _, err := os.Stat(filepath.Join(oroHome, "dolt-server.pid")); err != nil {
+			t.Errorf("PID file not written to oroHome: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(oroHome, "dolt-server.port")); err != nil {
+			t.Errorf("port file not written to oroHome: %v", err)
+		}
+
+		if !plistInstalled {
+			t.Error("plist should have been installed")
+		}
+		if _, err := os.Stat(launchAgentPlistPath(homeDir)); err != nil {
+			t.Errorf("plist file not found: %v", err)
+		}
+	})
+
+	t.Run("aborts when dispatcher is running", func(t *testing.T) {
+		cfg := &doltSetupConfig{
+			oroHome:         t.TempDir(),
+			homeDir:         t.TempDir(),
+			beadsDirs:       []string{},
+			aliveFn:         func(int) bool { return true },
+			dispatcherPIDFn: func() int { return 5678 },
+		}
+
+		var buf bytes.Buffer
+		err := runDoltSetup(cfg, &buf)
+		if err == nil {
+			t.Fatal("runDoltSetup should return error when dispatcher is running")
+		}
+		if !strings.Contains(err.Error(), "dispatcher") {
+			t.Errorf("error should mention dispatcher, got: %v", err)
+		}
+	})
+
+	t.Run("no-op when no dolt projects found", func(t *testing.T) {
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend":  "sqlite",
+			"database": "issues.db",
+		})
+
+		cfg := &doltSetupConfig{
+			oroHome:         t.TempDir(),
+			homeDir:         t.TempDir(),
+			beadsDirs:       []string{beadsDir},
+			dispatcherPIDFn: func() int { return 0 },
+		}
+
+		var buf bytes.Buffer
+		if err := runDoltSetup(cfg, &buf); err != nil {
+			t.Fatalf("runDoltSetup error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "no dolt projects") {
+			t.Errorf("should report 'no dolt projects', got: %s", buf.String())
+		}
+	})
+
+	t.Run("error on database name collision", func(t *testing.T) {
+		beads1 := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(beads1, 0o750); err != nil {
+			t.Fatalf("mkdir beads1: %v", err)
+		}
+		writeMetadata(t, beads1, map[string]any{
+			"backend": "dolt", "dolt_server_port": 13350, "dolt_database": "beads",
+		})
+
+		beads2 := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(beads2, 0o750); err != nil {
+			t.Fatalf("mkdir beads2: %v", err)
+		}
+		writeMetadata(t, beads2, map[string]any{
+			"backend": "dolt", "dolt_server_port": 13351, "dolt_database": "beads",
+		})
+
+		cfg := &doltSetupConfig{
+			oroHome:         t.TempDir(),
+			homeDir:         t.TempDir(),
+			beadsDirs:       []string{beads1, beads2},
+			dispatcherPIDFn: func() int { return 0 },
+		}
+
+		var buf bytes.Buffer
+		err := runDoltSetup(cfg, &buf)
+		if err == nil {
+			t.Fatal("runDoltSetup should return error on DB name collision")
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "collision") && !strings.Contains(err.Error(), "already used") {
+			t.Errorf("error should mention collision, got: %v", err)
+		}
+	})
+
+	t.Run("cleans up stale temp dir on retry after partial migration", func(t *testing.T) {
+		oroHome := t.TempDir()
+		homeDir := t.TempDir()
+
+		doltDir := filepath.Join(oroHome, "dolt")
+		if err := os.MkdirAll(doltDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		staleTmpDir := filepath.Join(doltDir, "beads.doltsetup-tmp")
+		if err := os.MkdirAll(staleTmpDir, 0o750); err != nil {
+			t.Fatalf("mkdir stale tmp: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(staleTmpDir, "stale.db"), []byte("stale"), 0o600); err != nil {
+			t.Fatalf("write stale.db: %v", err)
+		}
+
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(filepath.Join(beadsDir, "dolt", "beads"), 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(beadsDir, "dolt", "beads", "data.db"), []byte("fresh"), 0o600); err != nil {
+			t.Fatalf("write data.db: %v", err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend": "dolt", "dolt_server_port": 13350, "dolt_database": "beads",
+		})
+
+		cfg := &doltSetupConfig{
+			oroHome:         oroHome,
+			homeDir:         homeDir,
+			beadsDirs:       []string{beadsDir},
+			aliveFn:         func(int) bool { return false },
+			dispatcherPIDFn: func() int { return 0 },
+			startFn:         func(string) (int, error) { return 42, nil },
+			generatePlistFn: func(_, _ string, _ int) ([]byte, error) {
+				return []byte("<?xml version=\"1.0\"?><plist/>"), nil
+			},
+			installPlistFn: func(data []byte, hd string) error {
+				return installLaunchAgent(data, hd)
+			},
+		}
+
+		var buf bytes.Buffer
+		if err := runDoltSetup(cfg, &buf); err != nil {
+			t.Fatalf("runDoltSetup error: %v", err)
+		}
+
+		if _, err := os.Stat(staleTmpDir); !errors.Is(err, os.ErrNotExist) {
+			t.Error("stale temp dir should have been cleaned up")
+		}
+
+		copiedData, err := os.ReadFile(filepath.Join(doltDir, "beads", "data.db"))
+		if err != nil {
+			t.Fatalf("copied data.db not found: %v", err)
+		}
+		if string(copiedData) != "fresh" {
+			t.Errorf("copied data.db = %q, want %q", string(copiedData), "fresh")
+		}
+	})
+}
+
 // ---------- oro dolt status ----------
 
 func TestDoltStatus_SharedServerRunning(t *testing.T) {

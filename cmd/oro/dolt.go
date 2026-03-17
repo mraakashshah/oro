@@ -315,6 +315,41 @@ func ensureDoltMetadata(beadsDir string, port int) error {
 	return nil
 }
 
+// setDoltPort unconditionally overwrites the "dolt_server_port" field in
+// <beadsDir>/metadata.json. Used by dolt setup to migrate projects to the
+// shared server port regardless of any previously-set custom port.
+func setDoltPort(beadsDir string, port int) error {
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+
+	existing := map[string]any{}
+	data, err := os.ReadFile(metaPath) //nolint:gosec // beadsDir is caller-controlled
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read metadata.json: %w", err)
+	}
+	if err == nil {
+		if jsonErr := json.Unmarshal(data, &existing); jsonErr != nil {
+			return fmt.Errorf("parse metadata.json: %w", jsonErr)
+		}
+	}
+
+	existing["dolt_server_port"] = port
+
+	out, marshalErr := json.MarshalIndent(existing, "", "  ")
+	if marshalErr != nil {
+		return fmt.Errorf("marshal metadata.json: %w", marshalErr)
+	}
+
+	if mkdirErr := os.MkdirAll(beadsDir, 0o750); mkdirErr != nil {
+		return fmt.Errorf("mkdir %s: %w", beadsDir, mkdirErr)
+	}
+
+	if writeErr := os.WriteFile(metaPath, append(out, '\n'), 0o600); writeErr != nil { //nolint:gosec // beadsDir is caller-controlled
+		return fmt.Errorf("write metadata.json: %w", writeErr)
+	}
+
+	return nil
+}
+
 // isSharedServer reports whether port is the machine-wide shared Dolt port
 // (SharedDoltPort = 13307).
 func isSharedServer(port int) bool {

@@ -31,6 +31,9 @@ Memory:
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
 
+Database:
+  dolt       Manage the shared Dolt server (setup, status, start, stop, teardown)
+
 Search:
   index      Semantic code search (build, search)
 
