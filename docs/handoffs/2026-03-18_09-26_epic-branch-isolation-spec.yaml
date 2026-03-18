@@ -1,0 +1,105 @@
+---
+date: 2026-03-18
+status: partial
+---
+
+goal: >
+  Designed and spec'd epic branch isolation feature. Design doc went through
+  2 rounds of adversarial review (10 blocking issues found and fixed). Decomposed
+  into 14 original task beads under epic oro-p1pj. Workers completed 6 beads
+  during the session. 28% done.
+
+now: >
+  1. Complete oro-pwvf (protocol types) — it's in_progress but may need finishing
+  2. Then unblock Layer 2: oro-4g6f (BeadSource), oro-r1uq (WorktreeManager Create),
+     oro-4v05 (merge TargetBranch), oro-9czl (BranchExists/MergeFFOnly)
+  3. Critical path: pwvf → r1uq → 9czl → me2s → m0m1 → 5pvr (tryCloseEpic)
+  4. Some beads were duplicated by workers (e.g., oro-b31b duplicates oro-5pvr,
+     oro-7lim duplicates oro-4de2) — check for overlap before executing
+
+test: |
+  go test ./pkg/dispatcher/... ./pkg/merge/... ./cmd/oro/... -count=1 -timeout 180s
+  bd show oro-p1pj
+
+done_this_session:
+  - task: "Design doc: epic branch isolation"
+    files: [docs/plans/2026-03-17-epic-branch-isolation-design.md]
+    commit: b7625f3
+    notes: >
+      3 iterations. Key decisions: epic branches created at decomposition,
+      rebase bead as final child (not special-cased), two-level locking
+      (per-target rebase + global FF), standalone beads unchanged.
+
+  - task: "Adversarial review — round 1"
+    notes: >
+      6 blocking issues (B1-B6): handleDone epicID race, tryCloseEpic needs
+      git access, rebase bead identification, cmd_work.go missing, merge.go
+      hardcoded main, Abort redesign. All fixed.
+
+  - task: "Adversarial review — round 2"
+    notes: >
+      4 new blocking issues (B7-B10): BeadSource lacks tag support,
+      integration test mock missing, handleHandoff epicID race (same B1
+      pattern), per-branch locking HEAD race (solved with two-level locking).
+      All fixed.
+
+  - task: "Bead decomposition"
+    notes: >
+      14 task beads across 6 dependency layers. Workers picked up and
+      completed 6 beads: oro-5fau, oro-7lim, oro-9dih, oro-b3h7, oro-ieb6,
+      oro-psuy.
+
+decisions:
+  - epic_branch_rebase_timing: >
+      Only at epic completion via dedicated rebase bead — maximum isolation.
+      The rebase bead is its own child that depends on all siblings.
+  - two_level_locking: >
+      Per-target-branch rebase lock + global FF lock. Rebase runs in isolated
+      worktree (no primary repo contention). Only the instant FF merge step
+      needs global serialization.
+  - standalone_beads_unchanged: >
+      Non-epic beads still merge directly to main. Zero change for simple work.
+  - rebase_bead_not_special_cased: >
+      Merges to epic branch like any child. tryCloseEpic detects all-children-done
+      and does the final FF merge. Only special case: FF failure re-opens rebase
+      bead via FindByParentAndTag(tag:rebase).
+
+findings:
+  - handleDone_and_handleHandoff_clear_epicID_before_use: >
+      Both clear w.epicID before autoCloseEpicIfComplete reads it. Must
+      capture-before-clear in both code paths.
+  - merge_coordinator_HEAD_race: >
+      Per-branch locking allows concurrent FF merges to different branches,
+      but git merge --ff-only operates on HEAD. Two concurrent FF merges
+      corrupt the repo. Solved with global ffLock (FF is instant anyway).
+  - five_mock_worktreemanager_implementations: >
+      dispatcher_test.go, integration test, cmd_work_execute_test.go,
+      cmd_work_test.go (2 mocks). All must update when interface changes.
+
+worked:
+  - Two rounds of fresh-context adversarial review caught 10 real blocking issues
+  - Two-level locking insight — rebase is the slow part and runs in isolated worktree
+
+failed:
+  - Per-branch-only locking (B10) — HEAD race makes it unsafe for FF step
+  - bd dep add for epic→child — "epics can only block other epics" restriction
+
+next:
+  - Finish oro-pwvf (protocol types) if not already complete
+  - Execute Layer 2 beads in parallel (4g6f, r1uq, 4v05 are independent)
+  - Deduplicate worker-created beads (b31b vs 5pvr, 7lim vs 4de2)
+  - After all beads done, run full quality gate
+
+files:
+  created:
+    - docs/plans/2026-03-17-epic-branch-isolation-design.md
+    - docs/handoffs/2026-03-18_09-26_epic-branch-isolation-spec.yaml
+  modified:
+    - .beads/issues.jsonl
+
+beads:
+  completed: [oro-5fau, oro-7lim, oro-9dih, oro-b3h7, oro-ieb6, oro-psuy]
+  in_progress: [oro-pwvf, oro-b31b]
+  remaining: [oro-4g6f, oro-4v05, oro-5pvr, oro-6r6t, oro-9czl, oro-c9e0, oro-l6y0, oro-m0m1, oro-me2s, oro-p9ax, oro-r1uq, oro-ursr, oro-4de2]
+  epic: oro-p1pj
+  duplicates_to_check: [oro-b31b vs oro-5pvr, oro-7lim vs oro-4de2, oro-psuy vs oro-c9e0]
