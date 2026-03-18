@@ -129,6 +129,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 				Worktree:      h.worktree,
 				Model:         h.model,
 				MemoryContext: memCtx,
+				TargetBranch:  h.targetBranch,
 			},
 		})
 	}

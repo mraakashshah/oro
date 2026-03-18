@@ -1937,3 +1937,87 @@ func TestPrevSessionWorkerDoesNotResetBead(t *testing.T) {
 		t.Fatal("beads.Update must not be called for a prev-session worker timeout; bead must not be reopened")
 	}
 }
+
+// TestRegisterWorkerIncludesTargetBranch verifies that when a pendingHandoff
+// has TargetBranch set, the ASSIGN message includes TargetBranch in the payload.
+// When TargetBranch is empty, it must be omitted from the payload (backward compat).
+func TestRegisterWorkerIncludesTargetBranch(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	conn := newMockConn()
+	workerID := "target-branch-worker"
+	beadID := "target-branch-bead"
+	targetBranch := "agent/target-branch"
+
+	d.mu.Lock()
+	d.pendingHandoffs[beadID] = &pendingHandoff{
+		beadID:       beadID,
+		worktree:     "/tmp/wt",
+		model:        "haiku",
+		targetBranch: targetBranch,
+	}
+	d.mu.Unlock()
+
+	d.registerWorker(workerID, conn)
+
+	if len(conn.written) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(conn.written))
+	}
+
+	var msg protocol.Message
+	err := json.Unmarshal(conn.written[0], &msg)
+	if err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+
+	if msg.Type != protocol.MsgAssign {
+		t.Errorf("message type = %v, want ASSIGN", msg.Type)
+	}
+	if msg.Assign == nil {
+		t.Fatal("message Assign payload is nil")
+	}
+
+	if msg.Assign.TargetBranch != targetBranch {
+		t.Errorf("TargetBranch = %q, want %q", msg.Assign.TargetBranch, targetBranch)
+	}
+
+	if msg.Assign.BeadID != beadID {
+		t.Errorf("BeadID = %q, want %q", msg.Assign.BeadID, beadID)
+	}
+	if msg.Assign.Model != "haiku" {
+		t.Errorf("Model = %q, want %q", msg.Assign.Model, "haiku")
+	}
+}
+
+// TestRegisterWorkerOmitsEmptyTargetBranch verifies that when TargetBranch is
+// empty in the pendingHandoff, it is omitted from the ASSIGN payload.
+func TestRegisterWorkerOmitsEmptyTargetBranch(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	conn := newMockConn()
+	workerID := "no-target-branch-worker"
+	beadID := "no-target-branch-bead"
+
+	d.mu.Lock()
+	d.pendingHandoffs[beadID] = &pendingHandoff{
+		beadID:       beadID,
+		worktree:     "/tmp/wt",
+		model:        "sonnet",
+		targetBranch: "",
+	}
+	d.mu.Unlock()
+
+	d.registerWorker(workerID, conn)
+
+	var msg protocol.Message
+	err := json.Unmarshal(conn.written[0], &msg)
+	if err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+
+	if msg.Assign.TargetBranch != "" {
+		t.Errorf("TargetBranch = %q, want empty string", msg.Assign.TargetBranch)
+	}
+}

@@ -65,6 +65,7 @@ type Message struct {
 // CodeSearchContext contains formatted code search results from FTS5Search,
 // injected by the dispatcher based on the bead title.
 // ProjectRoot is the path to the project root for loading .oro/config.yaml.
+// TargetBranch is the git branch to check out (used for handoff reassignment).
 type AssignPayload struct {
 	BeadID              string `json:"bead_id"`
 	Worktree            string `json:"worktree"`
@@ -78,6 +79,7 @@ type AssignPayload struct {
 	Attempt             int    `json:"attempt,omitempty"`
 	IsEpicDecomposition bool   `json:"is_epic_decomposition,omitempty"`
 	ProjectRoot         string `json:"project_root,omitempty"`
+	TargetBranch        string `json:"target_branch,omitempty"`
 }
 
 // Validate checks that the AssignPayload has required fields populated.

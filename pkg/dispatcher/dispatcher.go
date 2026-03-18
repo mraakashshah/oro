@@ -171,9 +171,10 @@ type trackedWorker struct {
 // during a ralph handoff. The next worker to connect will be assigned this
 // bead+worktree instead of going through normal assignment.
 type pendingHandoff struct {
-	beadID   string
-	worktree string
-	model    string
+	beadID       string
+	worktree     string
+	model        string
+	targetBranch string
 }
 
 // --- Config ---
