@@ -1,5 +1,17 @@
 # Decisions and Discoveries
 
+## 2026-03-17: Dolt server persists across oro sessions — stop tests updated
+**Tags:** #dolt #testing #ci #architecture
+**Context:** Commit 38ffe1f removed dolt-stop from `runStopSequence` so dolt persists across sessions (standalone `bd` commands keep working). But 4 stop tests in `cmd_stop_test.go` were not updated and still expected `stopDoltFn` to be called, breaking CI. Additional CI failures: `startDoltServer` checked `LookPath("dolt")` before `isDoltServerRunning(port)` so adoption failed in CI (no dolt installed); UDS test spawners only accepted one connection but `pollForSocket` consumed it first; child processes in stop-all tests weren't reaped causing zombie timeouts.
+**Decision/Discovery:** (1) Dolt is intentionally NOT stopped during `oro stop` — it's a shared resource. (2) `startDoltServer` must check `isDoltServerRunning` before `LookPath` so adoption works without dolt in PATH. (3) All UDS test helpers must accept connections in a loop. (4) Test subprocesses must be reaped with `go cmd.Wait()` to prevent zombies.
+**Implications:** Tests now verify dolt is NOT stopped. Future dolt lifecycle changes must audit both `cmd_stop.go` and `cmd_stop_test.go`. The `stopDoltFn` field in `stopConfig` is now dead code — candidate for removal.
+
+## 2026-03-17: bd stderr may contain warning lines before JSON error
+**Tags:** #bd #mg #error-handling #resilience
+**Context:** `bd list --json` emitted a "dolt_server_port deprecated" warning to stderr before the JSON error object. `parseBdStderr` tried `json.Unmarshal` on the full stderr, failed, and fell back to showing the first line (the warning) instead of the real error. Users saw "Warning: dolt_server_port..." instead of "dolt circuit breaker is open".
+**Decision/Discovery:** `parseBdStderr` now scans for the first `{` in stderr and tries to parse JSON from there. Also removed the deprecated `dolt_server_port` field from `.beads/metadata.json` and cleaned up a stale `.beads/.doltcfg` directory that prevented dolt startup.
+**Implications:** bd error messages are now correctly surfaced even when warnings are present. The `.beads/.doltcfg` stale directory issue may recur if dolt upgrades change config layout — monitor after dolt version bumps.
+
 ## 2026-03-13: Per-project daemon isolation (PID/socket scoping)
 **Tags:** #architecture #multi-project #daemon #paths
 **Context:** Running `oro start` in two different projects simultaneously clashed because PID file and UDS socket were global at `~/.oro/oro.pid` and `~/.oro/oro.sock`. Only one daemon could run at a time.

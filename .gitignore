@@ -44,3 +44,7 @@ uv.lock
 docs/handoffs/
 archive/yap/reference/
 .beads
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
