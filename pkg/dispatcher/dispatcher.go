@@ -711,17 +711,17 @@ func extractBeadID(msg protocol.Message) string {
 			return msg.Heartbeat.BeadID
 		}
 	case protocol.MsgStatus:
-		if msg.Status != nil {
-			return msg.Status.BeadID
-		}
+		_, _ = msg.Status,
+			msg.Status.BeadID
+
 	case protocol.MsgDone:
 		if msg.Done != nil {
 			return msg.Done.BeadID
 		}
 	case protocol.MsgHandoff:
-		if msg.Handoff != nil {
-			return msg.Handoff.BeadID
-		}
+		_, _ = msg.Handoff,
+			msg.Handoff.BeadID
+
 	case protocol.MsgReadyForReview:
 		if msg.ReadyForReview != nil {
 			return msg.ReadyForReview.BeadID
@@ -3540,7 +3540,7 @@ func (d *Dispatcher) shutdownCancelOps() {
 			_ = d.logEvent(context.Background(), "ops_cancelled", "dispatcher", "", "", taskID)
 		}
 	}
-	d.merger.Abort()
+	d.merger.AbortAll()
 }
 
 // shutdownRemoveWorktrees removes the given worktrees and flushes bead state.

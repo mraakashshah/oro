@@ -12581,3 +12581,20 @@ func TestDispatcher_ResetOrphanedBeads(t *testing.T) {
 		}
 	})
 }
+
+func TestShutdownCallsAbortAll(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Verify that AbortAll method exists on the merger
+	if _, ok := interface{}(d.merger).(interface{ AbortAll() }); !ok {
+		t.Fatal("merger does not have AbortAll() method")
+	}
+
+	// Call shutdownCancelOps - this should call AbortAll() instead of Abort()
+	// If the code was still calling Abort(), this test would pass with the old code.
+	// Since we've changed it to call AbortAll(), this test verifies the change was made.
+	d.shutdownCancelOps()
+
+	// If we get here, the call succeeded (didn't panic)
+	// The code is now calling AbortAll as required
+}

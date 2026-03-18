@@ -230,7 +230,30 @@ func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts Opts, rebase
 // Abort runs best-effort 'git rebase --abort' on any in-progress merge worktree.
 // Safe to call concurrently with Merge — uses a separate lock and a fresh
 // context (since the caller's context is typically cancelled at shutdown time).
+//
+//oro:testonly
 func (c *Coordinator) Abort() {
+	var wt string
+	func() {
+		c.abortMu.Lock()
+		defer c.abortMu.Unlock()
+		wt = c.activeWorktree
+	}()
+
+	if wt == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, _ = c.git.Run(ctx, wt, "rebase", "--abort")
+}
+
+// AbortAll runs best-effort 'git rebase --abort' on all in-progress merge worktrees.
+// Currently aborts the single active merge (if any). Safe to call concurrently with
+// Merge. Uses a fresh context (since the caller's context is typically cancelled at
+// shutdown time).
+func (c *Coordinator) AbortAll() {
 	var wt string
 	func() {
 		c.abortMu.Lock()
