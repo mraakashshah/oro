@@ -1033,6 +1033,56 @@ func TestBuildEpicDecompositionPrompt(t *testing.T) {
 	})
 }
 
+// TestEpicDecompPromptCreatesBranch verifies that the epic decomposition prompt
+// includes instructions for creating a feature branch and a rebase bead.
+func TestEpicDecompPromptCreatesBranch(t *testing.T) {
+	t.Parallel()
+
+	params := worker.EpicPromptParams{
+		BeadID:      "oro-epic-42",
+		Title:       "Refactor authentication system",
+		Description: "Break apart and modernize the auth subsystem",
+	}
+
+	prompt := worker.BuildEpicDecompositionPrompt(params)
+
+	// Check for git branch instruction with epic/<epicID> main format
+	if !strings.Contains(prompt, "git branch") || !strings.Contains(prompt, "epic/oro-epic-42") {
+		t.Error("expected prompt to contain instruction to create branch: git branch epic/oro-epic-42 main")
+	}
+
+	// Check for rebase bead creation instruction with --tag rebase
+	if !strings.Contains(prompt, "--tag rebase") {
+		t.Error("expected prompt to contain instruction to create rebase bead with --tag rebase")
+	}
+
+	// Check for instruction to make rebase bead depend on all siblings
+	if !strings.Contains(prompt, "depend") || !strings.Contains(prompt, "sibling") {
+		t.Error("expected prompt to contain instruction to make rebase bead depend on all siblings")
+	}
+}
+
+// TestEpicDecompPromptOmitsBranchWhenBeadIDEmpty verifies that when BeadID is
+// empty, the epic decomposition prompt omits the Branch & Rebase Bead section.
+func TestEpicDecompPromptOmitsBranchWhenBeadIDEmpty(t *testing.T) {
+	t.Parallel()
+
+	params := worker.EpicPromptParams{
+		BeadID:      "",
+		Title:       "Refactor authentication system",
+		Description: "Break apart and modernize the auth subsystem",
+	}
+
+	prompt := worker.BuildEpicDecompositionPrompt(params)
+
+	if strings.Contains(prompt, "Branch & Rebase Bead") {
+		t.Error("expected prompt to omit Branch & Rebase Bead section when BeadID is empty")
+	}
+	if strings.Contains(prompt, "git branch epic/") {
+		t.Error("expected prompt to omit git branch instruction when BeadID is empty")
+	}
+}
+
 // TestPromptContainsContextThresholds verifies that the worker prompt includes
 // Layer 1 context handoff instructions: "atomic step" guidance, per-model soft and
 // hard threshold percentages (opus 65/85, sonnet 50/70, haiku 40/60), and a

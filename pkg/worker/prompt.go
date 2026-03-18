@@ -83,6 +83,31 @@ type EpicPromptParams struct {
 	Description string
 }
 
+// buildBranchAndRebaseBead builds the Branch & Rebase Bead section for epic decomposition.
+func buildBranchAndRebaseBead(epicID string) string {
+	return strings.Join([]string{
+		"After decomposing all child beads:",
+		"",
+		"1. **Create feature branch**:",
+		"   ```",
+		"   git branch epic/" + epicID + " main",
+		"   ```",
+		"2. **Create rebase bead**: After all sibling task/feature beads are complete, create a final rebase bead that integrates all changes onto your epic branch.",
+		"   ```",
+		"   bd create --title=\"rebase: integrate " + epicID + " into epic branch\" \\",
+		"     --type=task \\",
+		"     --tag rebase \\",
+		"     --acceptance-criteria=\"Rebase all child commits onto epic/" + epicID + " branch\"",
+		"   ```",
+		"3. **Wire rebase dependency**: Make the rebase bead depend on all sibling beads so it runs last:",
+		"   ```",
+		"   bd dep add <rebase-bead-id> <sibling-1-id>",
+		"   bd dep add <rebase-bead-id> <sibling-2-id>",
+		"   # ...for each sibling bead",
+		"   ```",
+	}, "\n")
+}
+
 // BuildEpicDecompositionPrompt builds a prompt for decomposing an epic into
 // child beads using beadcraft. No TDD/QG/worktree sections — this is planning only.
 func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
@@ -105,6 +130,10 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 		"4. **Wire dependencies**: `bd dep add <later> <earlier>` where ordering matters.",
 		"5. **Verify**: Run `bd show " + params.BeadID + "` to confirm the tree looks correct.",
 	}, "\n"))
+
+	if params.BeadID != "" {
+		section(&b, "Branch & Rebase Bead", buildBranchAndRebaseBead(params.BeadID))
+	}
 
 	section(&b, "Bead Creation", strings.Join([]string{
 		"Use this command for each child bead (do NOT use `--parent` flag on create — it adds a backwards dependency):",
