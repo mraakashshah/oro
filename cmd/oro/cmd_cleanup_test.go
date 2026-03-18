@@ -19,6 +19,8 @@ func TestCleanup_NothingToClean(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns empty (no agent branches)
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	// no epic branches
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns empty JSON array
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
@@ -53,6 +55,7 @@ func TestCleanup_KillsRunningDispatcher(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns empty
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
@@ -111,6 +114,7 @@ func TestCleanup_KillsTmux(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns empty
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
@@ -150,6 +154,7 @@ func TestCleanup_RemovesStaleFiles(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns empty
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
@@ -207,6 +212,7 @@ func TestCleanup_PrunesWorktrees(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns empty
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
@@ -247,6 +253,7 @@ func TestCleanup_DeletesAgentBranches(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns agent branches
 	fake.output[key("git", "branch", "--list", "agent/*")] = "  agent/cleanup-cli\n  agent/fix-bug\n"
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns empty
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
@@ -304,6 +311,7 @@ func TestCleanup_ResetsInProgressBeads(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns beads in progress
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = `[{"id":"oro-abc1"},{"id":"oro-xyz2"}]`
 
@@ -364,6 +372,7 @@ func TestCleanup_ContinuesOnErrors(t *testing.T) {
 	fake.errs[key("git", "worktree", "prune")] = fmt.Errorf("prune failed")
 	// git branch --list fails
 	fake.errs[key("git", "branch", "--list", "agent/*")] = fmt.Errorf("branch list failed")
+	fake.errs[key("git", "branch", "--list", "epic/*")] = fmt.Errorf("branch list failed")
 	// bd list fails
 	fake.errs[key("bd", "list", "--status=in_progress", "--json")] = fmt.Errorf("bd failed")
 
@@ -424,6 +433,7 @@ func TestCleanup_KillsWorkerProcesses(t *testing.T) {
 	fake.output[key("pgrep", "-f", "ORO_ROLE")] = "11111\n22222"
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns empty
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
@@ -494,6 +504,7 @@ func TestCleanup_SendsSIGINTToDispatcher(t *testing.T) {
 	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 	tmpDir := t.TempDir()
@@ -530,6 +541,7 @@ func TestCleanupWorktreeDir(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 		fake.output[key("git", "branch", "--list", "agent/*")] = ""
+		fake.output[key("git", "branch", "--list", "epic/*")] = ""
 		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 		tmpDir := t.TempDir()
@@ -590,6 +602,7 @@ func TestCleanupWorktreeDir(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 		fake.output[key("git", "branch", "--list", "agent/*")] = ""
+		fake.output[key("git", "branch", "--list", "epic/*")] = ""
 		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 		tmpDir := t.TempDir()
@@ -776,6 +789,7 @@ func TestCleanupDoltPIDOnly(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 		fake.output[key("git", "branch", "--list", "agent/*")] = ""
+		fake.output[key("git", "branch", "--list", "epic/*")] = ""
 		fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 
 		var buf bytes.Buffer
@@ -802,6 +816,130 @@ func TestCleanupDoltPIDOnly(t *testing.T) {
 	})
 }
 
+func TestCleanup_DeletesEpicBranches(t *testing.T) {
+	fake := newFakeCmd()
+	// tmux has-session fails
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	// pgrep finds no workers
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	// git branch --list returns epic branches
+	fake.output[key("git", "branch", "--list", "epic/*")] = "  epic/oro-5bsn\n  epic/oro-xyz9\n"
+	// no agent branches (testing epic separately from agent)
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	// bd list returns empty
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+
+	tmpDir := t.TempDir()
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:   fake,
+		w:        &buf,
+		tmuxName: TmuxSessionName(""),
+		pidPath:  filepath.Join(tmpDir, "oro.pid"),
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		signalFn: func(int) error { return nil },
+		aliveFn:  func(int) bool { return false },
+	}
+
+	err := runCleanup(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify git branch -D was called for each epic branch
+	var deletedBranches []string
+	for _, call := range fake.calls {
+		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" && call[2] == "-D" {
+			deletedBranches = append(deletedBranches, call[3])
+		}
+	}
+
+	if len(deletedBranches) != 2 {
+		t.Fatalf("expected 2 branch deletions, got %d: %v", len(deletedBranches), deletedBranches)
+	}
+
+	found := map[string]bool{}
+	for _, b := range deletedBranches {
+		found[b] = true
+	}
+	if !found["epic/oro-5bsn"] {
+		t.Error("expected epic/oro-5bsn to be deleted")
+	}
+	if !found["epic/oro-xyz9"] {
+		t.Error("expected epic/oro-xyz9 to be deleted")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "epic/oro-5bsn") || !strings.Contains(out, "epic/oro-xyz9") {
+		t.Errorf("expected output to mention deleted epic branches, got: %s", out)
+	}
+}
+
+func TestCleanup_DeletesAgentAndEpicBranches(t *testing.T) {
+	fake := newFakeCmd()
+	// tmux has-session fails
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	// pgrep finds no workers
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	// git branch --list returns both agent and epic branches
+	fake.output[key("git", "branch", "--list", "agent/*")] = "  agent/cleanup-cli\n  agent/fix-bug\n"
+	fake.output[key("git", "branch", "--list", "epic/*")] = "  epic/oro-5bsn\n  epic/oro-xyz9\n"
+	// bd list returns empty
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+
+	tmpDir := t.TempDir()
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:   fake,
+		w:        &buf,
+		tmuxName: TmuxSessionName(""),
+		pidPath:  filepath.Join(tmpDir, "oro.pid"),
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		signalFn: func(int) error { return nil },
+		aliveFn:  func(int) bool { return false },
+	}
+
+	err := runCleanup(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify git branch -D was called for each agent and epic branch
+	var deletedBranches []string
+	for _, call := range fake.calls {
+		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" && call[2] == "-D" {
+			deletedBranches = append(deletedBranches, call[3])
+		}
+	}
+
+	if len(deletedBranches) != 4 {
+		t.Fatalf("expected 4 branch deletions, got %d: %v", len(deletedBranches), deletedBranches)
+	}
+
+	found := map[string]bool{}
+	for _, b := range deletedBranches {
+		found[b] = true
+	}
+	if !found["agent/cleanup-cli"] {
+		t.Error("expected agent/cleanup-cli to be deleted")
+	}
+	if !found["agent/fix-bug"] {
+		t.Error("expected agent/fix-bug to be deleted")
+	}
+	if !found["epic/oro-5bsn"] {
+		t.Error("expected epic/oro-5bsn to be deleted")
+	}
+	if !found["epic/oro-xyz9"] {
+		t.Error("expected epic/oro-xyz9 to be deleted")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "agent/cleanup-cli") || !strings.Contains(out, "agent/fix-bug") ||
+		!strings.Contains(out, "epic/oro-5bsn") || !strings.Contains(out, "epic/oro-xyz9") {
+		t.Errorf("expected output to mention all deleted branches, got: %s", out)
+	}
+}
+
 func TestCleanup_DoesNotCallBdDaemon(t *testing.T) {
 	fake := newFakeCmd()
 	// tmux has-session fails (no session)
@@ -810,6 +948,8 @@ func TestCleanup_DoesNotCallBdDaemon(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// no agent branches
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	// no epic branches
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// no in_progress beads
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
 

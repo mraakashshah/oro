@@ -118,7 +118,7 @@ func runCleanup(_ context.Context, cfg *cleanupConfig) error {
 		cleaned = true
 	}
 
-	// 8. Delete agent/* branches.
+	// 8. Delete agent/* and epic/* branches.
 	if cleanedBranches := cleanupAgentBranches(cfg); cleanedBranches {
 		cleaned = true
 	}
@@ -261,26 +261,45 @@ func cleanupWorktreeDir(cfg *cleanupConfig) bool {
 	return true
 }
 
-// cleanupAgentBranches deletes local agent/* branches. Returns true if branches were deleted.
+// cleanupAgentBranches deletes local agent/* and epic/* branches. Returns true if branches were deleted.
 func cleanupAgentBranches(cfg *cleanupConfig) bool {
+	cleaned := false
+
+	// Delete agent/* branches
 	out, err := cfg.runner.Run("git", "branch", "--list", "agent/*")
 	if err != nil {
 		fmt.Fprintf(cfg.w, "warning: list agent branches: %v\n", err)
-		return false
-	}
-
-	branches := parseBranchNames(out)
-	if len(branches) == 0 {
-		return false
-	}
-
-	for _, branch := range branches {
-		fmt.Fprintf(cfg.w, "deleting branch %s\n", branch)
-		if _, err := cfg.runner.Run("git", "branch", "-D", branch); err != nil {
-			fmt.Fprintf(cfg.w, "warning: delete branch %s: %v\n", branch, err)
+	} else {
+		branches := parseBranchNames(out)
+		for _, branch := range branches {
+			fmt.Fprintf(cfg.w, "deleting branch %s\n", branch)
+			if _, err := cfg.runner.Run("git", "branch", "-D", branch); err != nil {
+				fmt.Fprintf(cfg.w, "warning: delete branch %s: %v\n", branch, err)
+			}
+		}
+		if len(branches) > 0 {
+			cleaned = true
 		}
 	}
-	return true
+
+	// Delete epic/* branches
+	out, err = cfg.runner.Run("git", "branch", "--list", "epic/*")
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: list epic branches: %v\n", err)
+	} else {
+		branches := parseBranchNames(out)
+		for _, branch := range branches {
+			fmt.Fprintf(cfg.w, "deleting branch %s\n", branch)
+			if _, err := cfg.runner.Run("git", "branch", "-D", branch); err != nil {
+				fmt.Fprintf(cfg.w, "warning: delete branch %s: %v\n", branch, err)
+			}
+		}
+		if len(branches) > 0 {
+			cleaned = true
+		}
+	}
+
+	return cleaned
 }
 
 // parseBranchNames parses branch names from git branch output (strips leading whitespace and *).
