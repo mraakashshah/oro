@@ -1383,8 +1383,8 @@ func TestAssemblePromptIncludesTargetBranch(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	// Should contain a merge target instruction referencing the branch
-	if !strings.Contains(prompt, "develop") {
+	// Should contain the specific merge target rendering
+	if !strings.Contains(prompt, "merges to branch `develop`") {
 		t.Error("expected prompt to contain explicit target branch 'develop'")
 	}
 
@@ -1401,8 +1401,8 @@ func TestAssemblePromptIncludesTargetBranch(t *testing.T) {
 
 	promptEmpty := worker.AssemblePrompt(paramsEmpty)
 
-	// Should mention main as the default merge target
-	if !strings.Contains(promptEmpty, "main") {
+	// Should mention main as the default merge target (not just in constraints)
+	if !strings.Contains(promptEmpty, "merges to branch `main`") {
 		t.Error("expected prompt to default to 'main' when TargetBranch is empty")
 	}
 }
