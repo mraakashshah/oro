@@ -9,7 +9,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": ".claude/hooks/enforce-skills.sh"
+						"command": "python3 .claude/hooks/enforce_skills.py"
 					},
 					{
 						"type": "command",
