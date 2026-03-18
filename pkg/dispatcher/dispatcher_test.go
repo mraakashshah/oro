@@ -205,16 +205,16 @@ type mockWorktreeManager struct {
 	created         map[string]string // beadID -> worktree path
 	removed         []string
 	deletedBranches []string
-	createFn        func(ctx context.Context, beadID string) (string, string, error)
+	createFn        func(ctx context.Context, beadID, baseBranch string) (string, string, error)
 	removeFn        func(ctx context.Context, path string) error
 	deleteBranchFn  func(branch string) error
 }
 
-func (m *mockWorktreeManager) Create(ctx context.Context, beadID string) (string, string, error) {
+func (m *mockWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.createFn != nil {
-		return m.createFn(ctx, beadID)
+		return m.createFn(ctx, beadID, baseBranch)
 	}
 	path := "/tmp/worktree-" + beadID
 	branch := "agent/" + beadID
@@ -6356,7 +6356,7 @@ func TestTryAssignSkipsBeadAfterWorktreeFailure(t *testing.T) {
 
 	// Make worktree creation fail for bead-bad.
 	wtMgr.mu.Lock()
-	wtMgr.createFn = func(_ context.Context, beadID string) (string, string, error) {
+	wtMgr.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
 		if beadID == "bead-bad" {
 			return "", "", fmt.Errorf("fatal: a branch named 'agent/bead-bad' already exists")
 		}

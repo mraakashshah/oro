@@ -31,7 +31,7 @@ func TestSpawnFor_WorkerImmediatelyReceivesAssignment(t *testing.T) {
 	d.cfg.FallbackPollInterval = 10 * time.Second
 
 	beadID := "oro-spawnfor-test"
-	wt.createFn = func(_ context.Context, bID string) (string, string, error) {
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
 		return "/tmp/worktree-" + bID, "agent/" + bID, nil
 	}
 	beads.SetBeads([]protocol.Bead{{ID: beadID, Priority: 2}})
@@ -96,7 +96,7 @@ func TestIdleWorker_PicksUpQueuedBeadImmediately(t *testing.T) {
 	d.cfg.FallbackPollInterval = 10 * time.Second
 
 	beadID := "oro-idle-pickup-test"
-	wt.createFn = func(_ context.Context, bID string) (string, string, error) {
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
 		return "/tmp/worktree-" + bID, "agent/" + bID, nil
 	}
 	beads.SetBeads([]protocol.Bead{{ID: beadID, Priority: 2}})

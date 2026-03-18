@@ -34,7 +34,7 @@ func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
 	createStarted := make(chan struct{}, 2)
 	createProceed := make(chan struct{})
 
-	wtMgr.createFn = func(_ context.Context, beadID string) (string, string, error) {
+	wtMgr.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
 		if beadID == "oro-test1" {
 			createStarted <- struct{}{}
 			<-createProceed // block until test signals to proceed

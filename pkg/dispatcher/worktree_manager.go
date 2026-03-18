@@ -28,9 +28,10 @@ func NewGitWorktreeManager(repoRoot string, runner CommandRunner) *GitWorktreeMa
 	}
 }
 
-// Create runs `git worktree add <path> -b agent/<beadID> main` and returns
-// the worktree path and branch name.
-func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, branch string, err error) {
+// Create runs `git worktree add <path> -b agent/<beadID> <baseBranch>` and returns
+// the worktree path and branch name. baseBranch is the branch to branch from
+// (e.g. "main" for standalone beads, "agent/<epicID>" for epic child beads).
+func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (path, branch string, err error) {
 	// Validate bead ID before using it in filepath operations to prevent
 	// directory traversal attacks.
 	if err := protocol.ValidateBeadID(beadID); err != nil {
@@ -41,7 +42,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 	branch = protocol.BranchPrefix + beadID
 
 	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
-		"worktree", "add", path, "-b", branch, "main",
+		"worktree", "add", path, "-b", branch, baseBranch,
 	)
 	if err == nil {
 		g.stageAssets(ctx, path)
@@ -59,7 +60,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID string) (path, b
 	}
 
 	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
-		"worktree", "add", path, "-b", branch, "main",
+		"worktree", "add", path, "-b", branch, baseBranch,
 	)
 	if err != nil {
 		return "", "", fmt.Errorf("worktree add %s (after prune): %w", beadID, err)

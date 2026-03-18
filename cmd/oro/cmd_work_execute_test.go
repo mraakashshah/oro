@@ -60,14 +60,16 @@ func (m *mockBeadSource) Sync(_ context.Context) error                          
 
 // mockWorktreeManager records Create/Remove calls.
 type mockWorktreeManager struct {
-	createPath   string
-	createBranch string
-	createErr    error
-	removed      []string
-	removeErr    error
+	createPath         string
+	createBranch       string
+	createErr          error
+	capturedBaseBranch string
+	removed            []string
+	removeErr          error
 }
 
-func (m *mockWorktreeManager) Create(_ context.Context, beadID string) (string, string, error) {
+func (m *mockWorktreeManager) Create(_ context.Context, _, baseBranch string) (string, string, error) {
+	m.capturedBaseBranch = baseBranch
 	if m.createErr != nil {
 		return "", "", m.createErr
 	}
@@ -133,7 +135,7 @@ func testDeps(bs *mockBeadSource, wt *mockWorktreeManager, sp *mockSpawner, mg *
 		spawner:  sp,
 		merger:   mg,
 		repoRoot: "/tmp/test-repo",
-		hasNewWork: func(_, _ string) bool {
+		hasNewWork: func(_, _, _ string) bool {
 			return hasWork
 		},
 		runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) {
@@ -413,7 +415,7 @@ func TestWorkWritesLogFile(t *testing.T) {
 		spawner:  sp,
 		merger:   mg,
 		repoRoot: "/tmp/test-repo",
-		hasNewWork: func(_, _ string) bool {
+		hasNewWork: func(_, _, _ string) bool {
 			callCount++
 			return callCount > 1
 		},
@@ -522,7 +524,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 			merger:     &mockMerger{},
 			repoRoot:   "/tmp",
 			memStore:   store,
-			hasNewWork: func(_, _ string) bool { return false },
+			hasNewWork: func(_, _, _ string) bool { return false },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -556,7 +558,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 			merger:     &mockMerger{},
 			repoRoot:   "/tmp",
 			memStore:   store,
-			hasNewWork: func(_, _ string) bool { return false },
+			hasNewWork: func(_, _, _ string) bool { return false },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -592,7 +594,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 			merger:     &mockMerger{},
 			repoRoot:   "/tmp",
 			memStore:   nil,
-			hasNewWork: func(_, _ string) bool { return false },
+			hasNewWork: func(_, _, _ string) bool { return false },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -640,7 +642,7 @@ func TestExecuteWork_SavesVocabOnExit(t *testing.T) {
 			merger:     mg,
 			repoRoot:   tmpDir,
 			memStore:   store,
-			hasNewWork: func(_, _ string) bool { return true }, // skip claude spawn
+			hasNewWork: func(_, _, _ string) bool { return true }, // skip claude spawn
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -676,7 +678,7 @@ func TestExecuteWork_SavesVocabOnExit(t *testing.T) {
 			merger:     mg,
 			repoRoot:   tmpDir,
 			memStore:   nil,
-			hasNewWork: func(_, _ string) bool { return true },
+			hasNewWork: func(_, _, _ string) bool { return true },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{

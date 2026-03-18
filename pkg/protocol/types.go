@@ -40,6 +40,7 @@ type BeadDetail struct {
 	Description        string       `json:"description,omitempty"`
 	AcceptanceCriteria string       `json:"acceptance_criteria"`
 	Status             string       `json:"status,omitempty"`
+	Epic               string       `json:"epic,omitempty"` // parent epic ID; empty for standalone beads
 	Model              string       `json:"model,omitempty"`
 	WorkerID           string       `json:"worker_id,omitempty"`
 	ContextPercent     int          `json:"context_percent,omitempty"`

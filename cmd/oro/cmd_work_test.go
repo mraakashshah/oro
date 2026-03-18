@@ -11,6 +11,7 @@ import (
 	"oro/pkg/codesearch"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
@@ -148,7 +149,7 @@ func TestSetupWorktree_ExistingWorktreeAutoResumes(t *testing.T) {
 
 func TestSetupWorktree_NoWorktreeCreatesNew(t *testing.T) {
 	// When worktree dir does not exist, setupWorktree should call Create.
-	cfg := &workConfig{beadID: "oro-test"}
+	cfg := &workConfig{beadID: "oro-test", bead: &protocol.BeadDetail{ID: "oro-test"}}
 	repoRoot := t.TempDir()
 	wtPath := repoRoot + "/.worktrees/oro-test"
 	deps := &workDeps{
@@ -510,7 +511,7 @@ func TestWorkDepsMemoryAndCodeIndex(t *testing.T) {
 			spawner:    &mockSpawner{proc: &mockProcess{}},
 			merger:     &mockMerger{result: &merge.Result{CommitSHA: "abc"}},
 			repoRoot:   tmpDir,
-			hasNewWork: func(_, _ string) bool { return false },
+			hasNewWork: func(_, _, _ string) bool { return false },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -536,7 +537,7 @@ type envCapturingWorktreeManager struct {
 	createBranch string
 }
 
-func (m *envCapturingWorktreeManager) Create(_ context.Context, _ string) (string, string, error) {
+func (m *envCapturingWorktreeManager) Create(_ context.Context, _, _ string) (string, string, error) {
 	if m.captureEnv != nil {
 		m.captureEnv()
 	}
@@ -569,7 +570,7 @@ func TestSpawnAndWaitWithMemoryAndCodeContext(t *testing.T) {
 		deps := &workDeps{
 			spawner:    sp,
 			memStore:   store,
-			hasNewWork: func(_, _ string) bool { return false },
+			hasNewWork: func(_, _, _ string) bool { return false },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -617,7 +618,7 @@ func TestBeadHelper() string {
 		deps := &workDeps{
 			spawner:    sp,
 			codeIndex:  idx,
-			hasNewWork: func(_, _ string) bool { return false },
+			hasNewWork: func(_, _, _ string) bool { return false },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -645,7 +646,7 @@ func TestBeadHelper() string {
 			spawner:    sp,
 			memStore:   nil,
 			codeIndex:  nil,
-			hasNewWork: func(_, _ string) bool { return false },
+			hasNewWork: func(_, _, _ string) bool { return false },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -672,7 +673,7 @@ func TestBeadHelper() string {
 		deps := &workDeps{
 			spawner:    sp,
 			memStore:   store,
-			hasNewWork: func(_, _ string) bool { return false },
+			hasNewWork: func(_, _, _ string) bool { return false },
 			runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 		}
 		cfg := &workConfig{
@@ -698,6 +699,174 @@ func TestBeadHelper() string {
 		}
 		if !found {
 			t.Errorf("DrainOutput did not receive memStore: [MEMORY] marker not captured (got %d memories)", len(mems))
+		}
+	})
+}
+
+// --- Epic branch test helpers ---
+
+// spyOpsReviewer implements opsReviewer and records the BaseBranch used in Review calls.
+type spyOpsReviewer struct {
+	capturedBaseBranch string
+}
+
+func (s *spyOpsReviewer) Review(_ context.Context, opts ops.ReviewOpts) <-chan ops.Result {
+	s.capturedBaseBranch = opts.BaseBranch
+	ch := make(chan ops.Result, 1)
+	ch <- ops.Result{Verdict: ops.VerdictApproved}
+	return ch
+}
+
+// captureMerger implements merger and records the Opts passed to Merge.
+type captureMerger struct {
+	capturedOpts merge.Opts
+	result       *merge.Result
+}
+
+func (m *captureMerger) Merge(_ context.Context, opts merge.Opts) (*merge.Result, error) {
+	m.capturedOpts = opts
+	return m.result, nil
+}
+
+// TestWorkCommandEpicBranch verifies that when a bead has an Epic set,
+// the epic branch is used as baseBranch/targetBranch throughout the pipeline:
+//   - setupWorktree passes baseBranch from BeadDetail.Epic to Create
+//   - hasCommitsAhead uses targetBranch not hardcoded main
+//   - reviewLoop passes targetBranch as BaseBranch to ops review
+//   - mergeToMain passes TargetBranch in merge.Opts
+func TestWorkCommandEpicBranch(t *testing.T) {
+	epicBead := &protocol.BeadDetail{
+		ID:                 "oro-child",
+		Title:              "Child bead",
+		AcceptanceCriteria: "Tests pass",
+		Epic:               "oro-epic",
+	}
+	epicTargetBranch := protocol.BranchPrefix + "oro-epic" // "agent/oro-epic"
+
+	t.Run("setupWorktree passes baseBranch from Epic to Create", func(t *testing.T) {
+		cfg := &workConfig{beadID: "oro-child", bead: epicBead}
+		repoRoot := t.TempDir()
+		wt := &mockWorktreeManager{
+			createPath:   filepath.Join(repoRoot, ".worktrees", "oro-child"),
+			createBranch: protocol.BranchPrefix + "oro-child",
+		}
+		deps := &workDeps{repoRoot: repoRoot, wtMgr: wt}
+
+		_, _, err := setupWorktree(context.Background(), cfg, deps)
+		if err != nil {
+			t.Fatalf("setupWorktree: %v", err)
+		}
+		if wt.capturedBaseBranch != epicTargetBranch {
+			t.Errorf("baseBranch passed to Create = %q, want %q", wt.capturedBaseBranch, epicTargetBranch)
+		}
+	})
+
+	t.Run("hasNewWork uses targetBranch from Epic not main", func(t *testing.T) {
+		var capturedTarget string
+		bs := &mockBeadSource{showDetail: epicBead}
+		wt := &mockWorktreeManager{createPath: "/tmp/wt", createBranch: protocol.BranchPrefix + "oro-child"}
+		sp := &mockSpawner{proc: &mockProcess{}}
+		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
+
+		deps := &workDeps{
+			beadSrc:  bs,
+			wtMgr:    wt,
+			spawner:  sp,
+			merger:   mg,
+			repoRoot: "/tmp",
+			hasNewWork: func(_, _, target string) bool {
+				capturedTarget = target
+				return true
+			},
+			runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-child",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+
+		_ = executeWork(context.Background(), cfg, deps)
+
+		if capturedTarget != epicTargetBranch {
+			t.Errorf("targetBranch passed to hasNewWork = %q, want %q", capturedTarget, epicTargetBranch)
+		}
+	})
+
+	t.Run("reviewLoop passes targetBranch as BaseBranch", func(t *testing.T) {
+		spy := &spyOpsReviewer{}
+		cfg := &workConfig{beadID: "oro-child", bead: epicBead}
+		deps := &workDeps{opsMgr: spy}
+
+		model := "sonnet"
+		attempt := 0
+		feedback := ""
+		err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", epicTargetBranch, &model, &attempt, &feedback, nil)
+		if err != nil {
+			t.Fatalf("reviewLoop: %v", err)
+		}
+		if spy.capturedBaseBranch != epicTargetBranch {
+			t.Errorf("BaseBranch in ReviewOpts = %q, want %q", spy.capturedBaseBranch, epicTargetBranch)
+		}
+	})
+
+	t.Run("mergeToMain passes TargetBranch in merge.Opts", func(t *testing.T) {
+		mg := &captureMerger{result: &merge.Result{CommitSHA: "abc"}}
+		cfg := &workConfig{beadID: "oro-child", bead: epicBead}
+		deps := &workDeps{merger: mg}
+
+		_, err := mergeToMain(context.Background(), cfg, deps, "/tmp/wt", protocol.BranchPrefix+"oro-child", epicTargetBranch)
+		if err != nil {
+			t.Fatalf("mergeToMain: %v", err)
+		}
+		if mg.capturedOpts.TargetBranch != epicTargetBranch {
+			t.Errorf("TargetBranch in merge.Opts = %q, want %q", mg.capturedOpts.TargetBranch, epicTargetBranch)
+		}
+	})
+
+	t.Run("standalone bead (empty Epic) uses main for baseBranch and targetBranch", func(t *testing.T) {
+		standaloneBead := &protocol.BeadDetail{
+			ID:                 "oro-standalone",
+			Title:              "Standalone bead",
+			AcceptanceCriteria: "Tests pass",
+			Epic:               "",
+		}
+		var capturedTarget string
+		bs := &mockBeadSource{showDetail: standaloneBead}
+		wt := &mockWorktreeManager{
+			createPath:   "/tmp/wt-standalone",
+			createBranch: protocol.BranchPrefix + "oro-standalone",
+		}
+		sp := &mockSpawner{proc: &mockProcess{}}
+		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
+
+		deps := &workDeps{
+			beadSrc:  bs,
+			wtMgr:    wt,
+			spawner:  sp,
+			merger:   mg,
+			repoRoot: "/tmp",
+			hasNewWork: func(_, _, target string) bool {
+				capturedTarget = target
+				return true
+			},
+			runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-standalone",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+
+		_ = executeWork(context.Background(), cfg, deps)
+
+		if capturedTarget != "main" {
+			t.Errorf("standalone targetBranch = %q, want %q", capturedTarget, "main")
+		}
+		if wt.capturedBaseBranch != "main" {
+			t.Errorf("standalone baseBranch = %q, want %q", wt.capturedBaseBranch, "main")
 		}
 	})
 }

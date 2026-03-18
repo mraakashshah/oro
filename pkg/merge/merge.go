@@ -30,9 +30,10 @@ type WorktreeRemover interface {
 
 // Opts holds parameters for a single merge operation.
 type Opts struct {
-	Branch   string // branch to merge (e.g., "bead/abc")
-	Worktree string // path to the worktree
-	BeadID   string // for logging/context
+	Branch       string // branch to merge (e.g., "agent/abc")
+	Worktree     string // path to the worktree
+	BeadID       string // for logging/context
+	TargetBranch string // branch to merge into; empty defaults to "main"
 }
 
 // Result holds the outcome of a successful merge.

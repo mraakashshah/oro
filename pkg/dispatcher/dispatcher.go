@@ -75,7 +75,7 @@ type BeadSource interface {
 
 // WorktreeManager creates and removes git worktrees.
 type WorktreeManager interface {
-	Create(ctx context.Context, beadID string) (path string, branch string, err error)
+	Create(ctx context.Context, beadID, baseBranch string) (path string, branch string, err error)
 	Remove(ctx context.Context, path string) error
 	Prune(ctx context.Context) error
 	DeleteBranch(ctx context.Context, branch string) error
@@ -2259,8 +2259,12 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "worktree_reused", "dispatcher", bead.ID, w.id,
 			fmt.Sprintf(`{"worktree":%q}`, worktree))
 	} else {
-		// Create new worktree.
-		worktree, branch, err = d.worktrees.Create(ctx, bead.ID)
+		// Create new worktree, branching from the epic branch when set.
+		baseBranch := "main"
+		if bead.Epic != "" {
+			baseBranch = protocol.BranchPrefix + bead.Epic
+		}
+		worktree, branch, err = d.worktrees.Create(ctx, bead.ID, baseBranch)
 		if err != nil {
 			_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())
 			d.recordAssignmentFailure(bead.ID)

@@ -83,7 +83,7 @@ type mockWorktreeManager struct {
 	created map[string]string
 }
 
-func (m *mockWorktreeManager) Create(_ context.Context, beadID string) (string, string, error) {
+func (m *mockWorktreeManager) Create(_ context.Context, beadID, _ string) (string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	path := "/tmp/worktree-" + beadID

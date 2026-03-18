@@ -88,17 +88,22 @@ type merger interface {
 	Merge(ctx context.Context, opts merge.Opts) (*merge.Result, error)
 }
 
+// opsReviewer abstracts ops review for testability.
+type opsReviewer interface {
+	Review(ctx context.Context, opts ops.ReviewOpts) <-chan ops.Result
+}
+
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
 	beadSrc     dispatcher.BeadSource
 	wtMgr       dispatcher.WorktreeManager
 	spawner     worker.StreamingSpawner
-	opsMgr      *ops.Spawner
+	opsMgr      opsReviewer
 	merger      merger
 	repoRoot    string
 	memStore    *memory.Store
 	codeIndex   *codesearch.CodeIndex
-	hasNewWork  func(repoRoot, branch string) bool                                                  // defaults to hasCommitsAhead
+	hasNewWork  func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
 	runQG       func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
 	runShellCmd func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
 }
@@ -225,6 +230,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	// Step 3: Create or resume worktree.
+	// targetBranch is where this bead's branch will eventually merge into.
+	// For epic child beads it's the epic's agent branch; for standalone beads it's "main".
+	targetBranch := epicTargetBranch(cfg.bead.Epic)
 	worktree, branch, err := setupWorktree(ctx, cfg, deps)
 	if err != nil {
 		return fmt.Errorf("worktree setup: %w", err)
@@ -235,8 +243,8 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	var feedback string
 	var attempt int
 
-	// Auto-resume: if worktree has commits ahead, skip first claude spawn.
-	skipClaude := deps.hasNewWork(deps.repoRoot, branch)
+	// Auto-resume: if worktree has commits ahead of targetBranch, skip first claude spawn.
+	skipClaude := deps.hasNewWork(deps.repoRoot, branch, targetBranch)
 	if skipClaude {
 		logStep("Resuming — branch %s has commits, skipping to QG", branch)
 	}
@@ -255,7 +263,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 			logStep("Claude completed")
 
 			// Guard: bail out if claude produced no commits.
-			if !deps.hasNewWork(deps.repoRoot, branch) {
+			if !deps.hasNewWork(deps.repoRoot, branch, targetBranch) {
 				return noCommitsResult(ctx, cfg, deps, worktree, &merged)
 			}
 		}
@@ -292,7 +300,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 	// Step 8: Ops review.
 	if !cfg.skipReview {
-		if err := reviewLoop(ctx, cfg, deps, worktree, &model, &attempt, &feedback, logFile); err != nil {
+		if err := reviewLoop(ctx, cfg, deps, worktree, targetBranch, &model, &attempt, &feedback, logFile); err != nil {
 			return err
 		}
 	} else {
@@ -314,7 +322,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	logStep("Mutation testing passed")
 
 	// Step 10: Merge to main.
-	mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch)
+	mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch, targetBranch)
 	if mergeErr != nil {
 		return &exitError{
 			code: exitCodeMergeFail,
@@ -338,9 +346,18 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	return nil
 }
 
+// epicTargetBranch returns the target branch for a bead based on its Epic field.
+// If Epic is set, the target is the epic's agent branch; otherwise it's "main".
+func epicTargetBranch(epic string) string {
+	if epic == "" {
+		return "main"
+	}
+	return protocol.BranchPrefix + epic
+}
+
 // setupWorktree auto-detects worktree state:
 //   - exists → resume from it
-//   - doesn't exist → create new
+//   - doesn't exist → create new, branching from baseBranch (epic or main)
 func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps) (wtPath, branch string, err error) {
 	wtPath = filepath.Join(deps.repoRoot, ".worktrees", cfg.beadID)
 	branch = protocol.BranchPrefix + cfg.beadID
@@ -350,7 +367,8 @@ func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps) (wtPath
 		return wtPath, branch, nil
 	}
 
-	wtPath, branch, err = deps.wtMgr.Create(ctx, cfg.beadID)
+	baseBranch := epicTargetBranch(cfg.bead.Epic)
+	wtPath, branch, err = deps.wtMgr.Create(ctx, cfg.beadID, baseBranch)
 	if err != nil {
 		return "", "", fmt.Errorf("create worktree: %w", err)
 	}
@@ -358,10 +376,10 @@ func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps) (wtPath
 	return wtPath, branch, nil
 }
 
-// hasCommitsAhead checks if a branch has commits ahead of main.
-func hasCommitsAhead(repoRoot, branch string) bool {
+// hasCommitsAhead checks if a branch has commits ahead of targetBranch.
+func hasCommitsAhead(repoRoot, branch, targetBranch string) bool {
 	runner := &merge.ExecGitRunner{}
-	stdout, _, err := runner.Run(context.Background(), repoRoot, "rev-list", "--count", "main.."+branch)
+	stdout, _, err := runner.Run(context.Background(), repoRoot, "rev-list", "--count", targetBranch+".."+branch)
 	if err != nil {
 		return false
 	}
@@ -440,7 +458,8 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 }
 
 // reviewLoop runs ops review and handles rejection retries.
-func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, model *string, attempt *int, feedback *string, logFile *os.File) error {
+// targetBranch is the branch the worker merges into (epic branch or "main").
+func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, targetBranch string, model *string, attempt *int, feedback *string, logFile *os.File) error {
 	for rejects := 0; ; {
 		logStep("Running ops review (opus)...")
 		resultCh := deps.opsMgr.Review(ctx, ops.ReviewOpts{
@@ -448,7 +467,7 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree s
 			BeadTitle:          cfg.bead.Title,
 			Worktree:           worktree,
 			AcceptanceCriteria: cfg.bead.AcceptanceCriteria,
-			BaseBranch:         "main",
+			BaseBranch:         targetBranch,
 			ProjectRoot:        worktree,
 		})
 		result := <-resultCh
@@ -544,12 +563,14 @@ func modelShort(model string) string {
 }
 
 // mergeToMain performs the merge and handles conflict errors.
-func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, branch string) (*merge.Result, error) {
+// targetBranch is the branch to merge into (epic branch or "main").
+func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, branch, targetBranch string) (*merge.Result, error) {
 	logStep("Merging to main...")
 	result, err := deps.merger.Merge(ctx, merge.Opts{
-		Branch:   branch,
-		Worktree: worktree,
-		BeadID:   cfg.beadID,
+		Branch:       branch,
+		Worktree:     worktree,
+		BeadID:       cfg.beadID,
+		TargetBranch: targetBranch,
 	})
 	if err == nil {
 		return result, nil

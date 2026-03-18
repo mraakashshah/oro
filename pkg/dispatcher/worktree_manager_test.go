@@ -18,7 +18,7 @@ func TestGitWorktreeManager_Create_Success(t *testing.T) {
 	runner := &mockCommandRunner{}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
-	path, branch, err := mgr.Create(context.Background(), "abc123")
+	path, branch, err := mgr.Create(context.Background(), "abc123", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestGitWorktreeManager_Create_Error(t *testing.T) {
 	}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
-	_, _, err := mgr.Create(context.Background(), "abc123")
+	_, _, err := mgr.Create(context.Background(), "abc123", "main")
 	if err == nil {
 		t.Fatal("expected error from Create")
 	}
@@ -131,7 +131,7 @@ func TestGitWorktreeManager_Create_DifferentBeadIDs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.beadID, func(t *testing.T) {
-			path, branch, err := mgr.Create(context.Background(), tt.beadID)
+			path, branch, err := mgr.Create(context.Background(), tt.beadID, "main")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -273,7 +273,7 @@ func TestWorktreeManager_PrunesStaleBeforeCreate(t *testing.T) {
 	}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
-	path, branch, err := mgr.Create(context.Background(), "oro-stale")
+	path, branch, err := mgr.Create(context.Background(), "oro-stale", "main")
 	if err != nil {
 		t.Fatalf("expected Create to succeed after pruning stale branch, got: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestGitWorktreeManager_Create_PathContainsBeadID(t *testing.T) {
 	runner := &mockCommandRunner{}
 	mgr := NewGitWorktreeManager("/my/repo", runner)
 
-	path, _, err := mgr.Create(context.Background(), "oro-xyz.5")
+	path, _, err := mgr.Create(context.Background(), "oro-xyz.5", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestGitWorktreeManager_Create_BranchContainsBeadID(t *testing.T) {
 	runner := &mockCommandRunner{}
 	mgr := NewGitWorktreeManager("/my/repo", runner)
 
-	_, branch, err := mgr.Create(context.Background(), "oro-xyz.5")
+	_, branch, err := mgr.Create(context.Background(), "oro-xyz.5", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestGitWorktreeManager_PruneStale_CommandSequence(t *testing.T) {
 	}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
-	_, _, err := mgr.Create(context.Background(), "seq-bead")
+	_, _, err := mgr.Create(context.Background(), "seq-bead", "main")
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestGitWorktreeManager_Create_PruneStaleCalledOnAlreadyExists(t *testing.T)
 	}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
-	path, branch, err := mgr.Create(context.Background(), "prune-bead")
+	path, branch, err := mgr.Create(context.Background(), "prune-bead", "main")
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
 	}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
-	path, branch, err := mgr.Create(context.Background(), "oro-locked")
+	path, branch, err := mgr.Create(context.Background(), "oro-locked", "main")
 	if err != nil {
 		t.Fatalf("expected Create to succeed after stale cleanup, got: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestGitWorktreeManager_Create_InvalidBeadID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := mgr.Create(context.Background(), tt.beadID)
+			_, _, err := mgr.Create(context.Background(), tt.beadID, "main")
 			if err == nil {
 				t.Fatalf("Create with invalid bead ID %q should return error", tt.beadID)
 			}
@@ -788,7 +788,7 @@ func TestGitWorktreeManager_Create_RunsStageAssets(t *testing.T) {
 	runner := &mockCommandRunner{}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
-	_, _, err := mgr.Create(context.Background(), "abc123")
+	_, _, err := mgr.Create(context.Background(), "abc123", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -822,7 +822,7 @@ func TestGitWorktreeManager_Create_StageAssetsFailureNonFatal(t *testing.T) {
 	}
 	mgr := NewGitWorktreeManager("/repo/root", runner)
 
-	path, branch, err := mgr.Create(context.Background(), "abc123")
+	path, branch, err := mgr.Create(context.Background(), "abc123", "main")
 	if err != nil {
 		t.Fatalf("Create should succeed even if stage-assets fails: %v", err)
 	}
@@ -906,7 +906,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 			},
 		}
 		mgr := NewGitWorktreeManager("/repo/root", runner)
-		_, _, err := mgr.Create(context.Background(), "retry-bead")
+		_, _, err := mgr.Create(context.Background(), "retry-bead", "main")
 		if err != nil {
 			t.Fatalf("Create should succeed after prune failure (retry works): %v", err)
 		}

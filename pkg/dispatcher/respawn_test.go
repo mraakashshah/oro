@@ -21,7 +21,7 @@ func TestWorkerRespawn_PreservesUncommittedChanges(t *testing.T) {
 	// Track worktree Create calls to verify reuse.
 	var worktreeCreates []string
 	var firstWorktreePath string
-	wt.createFn = func(ctx context.Context, bID string) (string, string, error) {
+	wt.createFn = func(ctx context.Context, bID, _ string) (string, string, error) {
 		worktreeCreates = append(worktreeCreates, bID)
 		path := "/tmp/worktree-" + bID
 		if firstWorktreePath == "" {
