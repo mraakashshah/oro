@@ -65,7 +65,7 @@ type Message struct {
 // CodeSearchContext contains formatted code search results from FTS5Search,
 // injected by the dispatcher based on the bead title.
 // ProjectRoot is the path to the project root for loading .oro/config.yaml.
-// TargetBranch is the git branch to check out (used for handoff reassignment).
+// TargetBranch is the branch that work will merge to; defaults to "main" if empty.
 type AssignPayload struct {
 	BeadID              string `json:"bead_id"`
 	Worktree            string `json:"worktree"`

@@ -22,6 +22,7 @@ type PromptParams struct {
 	Attempt            int    // QG retry attempt (0 = first attempt)
 	Feedback           string // rejection/QG failure feedback from previous attempt
 	ProjectRoot        string // optional: path to project root for reading .oro/config.yaml
+	TargetBranch       string // merge target branch; defaults to "main" if empty
 }
 
 // section writes a markdown section (## header + body) to the builder.
@@ -205,6 +206,14 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Worktree", fmt.Sprintf(
 		"You are in `%s`. Commit to branch `%s%s`.", params.WorktreePath, protocol.BranchPrefix, params.BeadID,
 	))
+
+	// Default to "main" if TargetBranch is empty
+	targetBranch := params.TargetBranch
+	if targetBranch == "" {
+		targetBranch = "main"
+	}
+	section(b, "Merge Target", fmt.Sprintf("Your work merges to branch `%s`.", targetBranch))
+
 	section(b, "Git", "Use conventional commits (`feat(scope): msg`, `fix(scope): msg`, `test(scope): msg`).\nNo amend, new commits only.")
 	section(b, "Beads Tools",
 		"- `bd create` — decompose a bead into smaller sub-beads\n"+

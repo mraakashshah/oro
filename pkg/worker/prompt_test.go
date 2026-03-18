@@ -1366,3 +1366,43 @@ func TestCreateHandoffWritesSentinel(t *testing.T) {
 		dir = parent
 	}
 }
+
+func TestAssemblePromptIncludesTargetBranch(t *testing.T) {
+	t.Parallel()
+
+	// Test 1: TargetBranch set explicitly
+	params := worker.PromptParams{
+		BeadID:             "bead-branch",
+		Title:              "Implement feature",
+		Description:        "Feature description",
+		AcceptanceCriteria: "Tests pass",
+		WorktreePath:       "/tmp/wt-branch",
+		Model:              "opus",
+		TargetBranch:       "develop",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Should contain a merge target instruction referencing the branch
+	if !strings.Contains(prompt, "develop") {
+		t.Error("expected prompt to contain explicit target branch 'develop'")
+	}
+
+	// Test 2: TargetBranch empty, should default to main
+	paramsEmpty := worker.PromptParams{
+		BeadID:             "bead-mainbranch",
+		Title:              "Implement feature",
+		Description:        "Feature description",
+		AcceptanceCriteria: "Tests pass",
+		WorktreePath:       "/tmp/wt-mainbranch",
+		Model:              "opus",
+		TargetBranch:       "", // Empty should default to main
+	}
+
+	promptEmpty := worker.AssemblePrompt(paramsEmpty)
+
+	// Should mention main as the default merge target
+	if !strings.Contains(promptEmpty, "main") {
+		t.Error("expected prompt to default to 'main' when TargetBranch is empty")
+	}
+}
