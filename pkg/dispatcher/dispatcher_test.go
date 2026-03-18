@@ -12582,19 +12582,54 @@ func TestDispatcher_ResetOrphanedBeads(t *testing.T) {
 	})
 }
 
+// mergeAbortSpy is a merge.GitRunner that blocks non-abort calls so we can
+// verify AbortAll is invoked during shutdown while a merge is in progress.
+type mergeAbortSpy struct {
+	started     chan struct{} // closed when the first non-abort Run arrives
+	startOnce   sync.Once
+	blockCh     chan struct{} // blocks non-abort Run calls until closed
+	abortCalled atomic.Bool
+}
+
+func (s *mergeAbortSpy) Run(_ context.Context, _ string, args ...string) (string, string, error) {
+	if len(args) >= 2 && args[0] == "rebase" && args[1] == "--abort" {
+		s.abortCalled.Store(true)
+		return "", "", nil
+	}
+	s.startOnce.Do(func() { close(s.started) })
+	<-s.blockCh
+	return "", "", fmt.Errorf("blocked call released")
+}
+
 func TestShutdownCallsAbortAll(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
-	// Verify that AbortAll method exists on the merger
-	if _, ok := interface{}(d.merger).(interface{ AbortAll() }); !ok {
-		t.Fatal("merger does not have AbortAll() method")
+	spy := &mergeAbortSpy{
+		started: make(chan struct{}),
+		blockCh: make(chan struct{}),
+	}
+	d.merger = merge.NewCoordinator(spy)
+
+	// Start a merge that will block inside isBranchMerged, keeping activeWorktree set.
+	go func() {
+		_, _ = d.merger.Merge(context.Background(), merge.Opts{
+			Branch: "test-branch", Worktree: "/tmp/test-wt", BeadID: "test-bead",
+		})
+	}()
+
+	// Wait for the merge goroutine to enter spy.Run (activeWorktree is now set).
+	select {
+	case <-spy.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("merge did not start within timeout")
 	}
 
-	// Call shutdownCancelOps - this should call AbortAll() instead of Abort()
-	// If the code was still calling Abort(), this test would pass with the old code.
-	// Since we've changed it to call AbortAll(), this test verifies the change was made.
+	// shutdownCancelOps → AbortAll → Abort → spy.Run("rebase","--abort")
 	d.shutdownCancelOps()
 
-	// If we get here, the call succeeded (didn't panic)
-	// The code is now calling AbortAll as required
+	if !spy.abortCalled.Load() {
+		t.Fatal("shutdownCancelOps did not call merger.AbortAll()")
+	}
+
+	close(spy.blockCh) // unblock the merge goroutine so it can exit
 }

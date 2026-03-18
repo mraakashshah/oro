@@ -711,17 +711,17 @@ func extractBeadID(msg protocol.Message) string {
 			return msg.Heartbeat.BeadID
 		}
 	case protocol.MsgStatus:
-		_, _ = msg.Status,
-			msg.Status.BeadID
-
+		if msg.Status != nil {
+			return msg.Status.BeadID
+		}
 	case protocol.MsgDone:
 		if msg.Done != nil {
 			return msg.Done.BeadID
 		}
 	case protocol.MsgHandoff:
-		_, _ = msg.Handoff,
-			msg.Handoff.BeadID
-
+		if msg.Handoff != nil {
+			return msg.Handoff.BeadID
+		}
 	case protocol.MsgReadyForReview:
 		if msg.ReadyForReview != nil {
 			return msg.ReadyForReview.BeadID
