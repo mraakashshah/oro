@@ -1042,6 +1042,121 @@ func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
 	}
 }
 
+func TestTargetBranch(t *testing.T) {
+	t.Run("custom TargetBranch used in rebase, rev-list, diff, rev-parse, ff-merge", func(t *testing.T) {
+		mock := &mockGitRunner{
+			results: []mockResult{
+				// 0. rev-list --count epic/feat..bead/abc — not merged yet
+				{Stdout: "2\n", Stderr: "", Err: nil},
+				// 1. rebase epic/feat bead/abc — success
+				{Stdout: "", Stderr: "", Err: nil},
+				// 2. rev-parse --git-common-dir
+				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+				// 3. worktree remove (fallback via GitRunner)
+				{Stdout: "", Stderr: "", Err: nil},
+				// 4. merge --ff-only bead/abc
+				{Stdout: "", Stderr: "", Err: nil},
+				// 5. rev-parse HEAD
+				{Stdout: "abc123def456\n", Stderr: "", Err: nil},
+			},
+		}
+
+		coord := NewCoordinator(mock)
+		result, err := coord.Merge(context.Background(), Opts{
+			Branch:       "bead/abc",
+			Worktree:     "/tmp/wt-abc",
+			BeadID:       "oro-abc",
+			TargetBranch: "epic/feat",
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+		if result.CommitSHA != "abc123def456" {
+			t.Errorf("expected commit SHA abc123def456, got %q", result.CommitSHA)
+		}
+
+		calls := mock.getCalls()
+		if len(calls) != 6 {
+			t.Fatalf("expected 6 git calls, got %d: %+v", len(calls), calls)
+		}
+		// rev-list uses TargetBranch (not "main")
+		assertArgs(t, calls[0], "/tmp/wt-abc", "rev-list", "--count", "epic/feat..bead/abc")
+		// rebase uses TargetBranch (not "main")
+		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "epic/feat", "bead/abc")
+		// ff-merge uses branch (not hardcoded "main" ref)
+		assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/abc")
+	})
+
+	t.Run("empty TargetBranch defaults to main", func(t *testing.T) {
+		mock := &mockGitRunner{
+			results: []mockResult{
+				{Stdout: "2\n", Stderr: "", Err: nil},
+				{Stdout: "", Stderr: "", Err: nil},
+				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+				{Stdout: "", Stderr: "", Err: nil},
+				{Stdout: "", Stderr: "", Err: nil},
+				{Stdout: "deadbeef\n", Stderr: "", Err: nil},
+			},
+		}
+		coord := NewCoordinator(mock)
+		result, err := coord.Merge(context.Background(), Opts{
+			Branch:   "bead/default",
+			Worktree: "/tmp/wt-default",
+			BeadID:   "oro-default",
+			// TargetBranch empty — should default to "main"
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+		if result.CommitSHA != "deadbeef" {
+			t.Errorf("expected deadbeef, got %q", result.CommitSHA)
+		}
+
+		calls := mock.getCalls()
+		if len(calls) != 6 {
+			t.Fatalf("expected 6 git calls, got %d: %+v", len(calls), calls)
+		}
+		// Defaults to "main"
+		assertArgs(t, calls[0], "/tmp/wt-default", "rev-list", "--count", "main..bead/default")
+		assertArgs(t, calls[1], "/tmp/wt-default", "rebase", "main", "bead/default")
+	})
+
+	t.Run("already merged uses TargetBranch for rev-list, diff, rev-parse", func(t *testing.T) {
+		mock := &mockGitRunner{
+			results: []mockResult{
+				// rev-list --count epic/feat..bead/done — 0 commits ahead
+				{Stdout: "0\n", Stderr: "", Err: nil},
+				// diff epic/feat..bead/done — empty
+				{Stdout: "", Stderr: "", Err: nil},
+				// rev-parse epic/feat
+				{Stdout: "epicsha\n", Stderr: "", Err: nil},
+			},
+		}
+
+		coord := NewCoordinator(mock)
+		result, err := coord.Merge(context.Background(), Opts{
+			Branch:       "bead/done",
+			Worktree:     "/tmp/wt-done",
+			BeadID:       "oro-done",
+			TargetBranch: "epic/feat",
+		})
+		if err != nil {
+			t.Fatalf("expected no error for already-merged branch, got: %v", err)
+		}
+		if result.CommitSHA != "epicsha" {
+			t.Errorf("expected epicsha, got %q", result.CommitSHA)
+		}
+
+		calls := mock.getCalls()
+		if len(calls) != 3 {
+			t.Fatalf("expected 3 git calls, got %d: %+v", len(calls), calls)
+		}
+		assertArgs(t, calls[0], "/tmp/wt-done", "rev-list", "--count", "epic/feat..bead/done")
+		assertArgs(t, calls[1], "/tmp/wt-done", "diff", "epic/feat..bead/done")
+		assertArgs(t, calls[2], "/tmp/wt-done", "rev-parse", "epic/feat")
+	})
+}
+
 // waitFor polls condition every tick until it returns true or timeout expires.
 func waitFor(t *testing.T, condition func() bool, timeout time.Duration) {
 	t.Helper()

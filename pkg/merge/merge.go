@@ -16,6 +16,15 @@ import (
 	"time"
 )
 
+// effectiveTarget returns the branch to merge into: Opts.TargetBranch if set,
+// otherwise "main".
+func effectiveTarget(opts Opts) string {
+	if opts.TargetBranch != "" {
+		return opts.TargetBranch
+	}
+	return "main"
+}
+
 // GitRunner abstracts git command execution for testability.
 type GitRunner interface {
 	Run(ctx context.Context, dir string, args ...string) (stdout string, stderr string, err error)
@@ -107,8 +116,8 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 		return &Result{CommitSHA: sha}, nil
 	}
 
-	// Step 1: Rebase branch onto main
-	_, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", "main", opts.Branch)
+	// Step 1: Rebase branch onto target
+	_, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", effectiveTarget(opts), opts.Branch)
 	if err != nil {
 		// Context cancelled/deadline exceeded takes priority over conflict handling
 		if ctx.Err() != nil {
@@ -188,29 +197,30 @@ func (c *Coordinator) removeWorktree(ctx context.Context, primaryRepo, worktreeP
 	return nil
 }
 
-// isBranchMerged checks if all commits on branch are already reachable from main.
-// This handles the case where an agent merged to main inside the worktree.
+// isBranchMerged checks if all commits on branch are already reachable from target.
+// This handles the case where an agent merged to target inside the worktree.
 func (c *Coordinator) isBranchMerged(ctx context.Context, opts Opts) (merged bool, commitSHA string, err error) {
-	// Check if branch has any commits not on main.
-	out, _, err := c.git.Run(ctx, opts.Worktree, "rev-list", "--count", "main.."+opts.Branch)
+	target := effectiveTarget(opts)
+	// Check if branch has any commits not on target.
+	out, _, err := c.git.Run(ctx, opts.Worktree, "rev-list", "--count", target+".."+opts.Branch)
 	if err != nil {
 		return false, "", fmt.Errorf("rev-list --count failed: %w", err)
 	}
 	if strings.TrimSpace(out) != "0" {
 		return false, "", nil
 	}
-	// Verify no uncommitted diff between main and branch (fail-open: diff error → not merged).
-	diffOut, _, diffErr := c.git.Run(ctx, opts.Worktree, "diff", "main.."+opts.Branch)
+	// Verify no uncommitted diff between target and branch (fail-open: diff error → not merged).
+	diffOut, _, diffErr := c.git.Run(ctx, opts.Worktree, "diff", target+".."+opts.Branch)
 	if diffErr != nil {
 		return false, "", nil //nolint:nilerr // fail-open: diff error means proceed to rebase
 	}
 	if strings.TrimSpace(diffOut) != "" {
 		return false, "", nil
 	}
-	// Branch is fully merged — return main HEAD as the merge commit.
-	sha, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "main")
+	// Branch is fully merged — return target HEAD as the merge commit.
+	sha, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", target)
 	if err != nil {
-		return false, "", fmt.Errorf("rev-parse main failed: %w", err)
+		return false, "", fmt.Errorf("rev-parse %s failed: %w", target, err)
 	}
 	return true, strings.TrimSpace(sha), nil
 }
