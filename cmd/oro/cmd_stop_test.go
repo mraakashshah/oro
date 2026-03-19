@@ -368,78 +368,66 @@ func TestDiscoverProjectDaemons_IncludesLegacyGlobal(t *testing.T) {
 	}
 }
 
-// TestStopSequenceDoesNotStopDolt verifies that runStopSequence does NOT call
-// stopDoltFn — dolt persists across sessions so standalone bd commands work.
+// TestStopSequenceDoesNotStopDolt verifies that runStopSequence completes
+// successfully with a beadsDir set — dolt persists across sessions and is
+// never stopped by the stop sequence (structural guarantee: stopConfig has no
+// stopDoltFn field). See also TestStopSequenceCleansDolt for a richer assertion.
 func TestStopSequenceDoesNotStopDolt(t *testing.T) {
-	t.Run("stopDoltFn not called during stop sequence", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		pidFile := filepath.Join(tmpDir, "oro.pid")
-		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
-			t.Fatalf("setup PID: %v", err)
-		}
-
-		doltStopped := false
-		fake := newFakeCmd()
-		var buf bytes.Buffer
-		cfg := ttyStop(pidFile, fake, &buf)
-		cfg.beadsDir = filepath.Join(tmpDir, ".beads")
-		cfg.stopDoltFn = func(dir string) error {
-			doltStopped = true
-			return nil
-		}
-
-		if err := runStopSequence(context.Background(), cfg); err != nil {
-			t.Fatalf("runStopSequence: %v", err)
-		}
-
-		if doltStopped {
-			t.Error("stopDoltFn should NOT have been called — dolt persists across sessions")
-		}
-	})
-
-	t.Run("nil stopDoltFn is safe for non-dolt projects", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		pidFile := filepath.Join(tmpDir, "oro.pid")
-		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
-			t.Fatalf("setup PID: %v", err)
-		}
-
-		fake := newFakeCmd()
-		var buf bytes.Buffer
-		cfg := ttyStop(pidFile, fake, &buf)
-		// cfg.stopDoltFn is nil (default) — should not panic.
-
-		if err := runStopSequence(context.Background(), cfg); err != nil {
-			t.Fatalf("runStopSequence with nil stopDoltFn: %v", err)
-		}
-	})
-}
-
-// TestStopSequence_DoltNotStopped verifies that runStopSequence never invokes
-// stopDoltFn — dolt server persists across oro sessions.
-func TestStopSequence_DoltNotStopped(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
 		t.Fatalf("setup PID: %v", err)
 	}
 
-	doltStopCount := 0
 	fake := newFakeCmd()
 	var buf bytes.Buffer
 	cfg := ttyStop(pidFile, fake, &buf)
 	cfg.beadsDir = filepath.Join(tmpDir, ".beads")
-	cfg.stopDoltFn = func(dir string) error {
-		doltStopCount++
-		return nil
-	}
 
 	if err := runStopSequence(context.Background(), cfg); err != nil {
 		t.Fatalf("runStopSequence: %v", err)
 	}
 
-	if doltStopCount != 0 {
-		t.Errorf("stopDoltFn should not have been called, got %d calls", doltStopCount)
+	if !strings.Contains(buf.String(), "shutdown complete") {
+		t.Errorf("expected 'shutdown complete', got %q", buf.String())
+	}
+}
+
+// TestStopSequenceCleansDolt verifies that runStopSequence completes successfully
+// when beadsDir is set, and that no dolt stop occurs — dolt persists across sessions.
+func TestStopSequenceCleansDolt(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
+
+	// Create a fake beadsDir (mimics a project with dolt).
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	doltPIDPath := filepath.Join(beadsDir, "dolt-server.pid")
+	if err := os.WriteFile(doltPIDPath, []byte("9999"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := newFakeCmd()
+	var buf bytes.Buffer
+	cfg := ttyStop(pidFile, fake, &buf)
+	cfg.beadsDir = beadsDir
+
+	if err := runStopSequence(context.Background(), cfg); err != nil {
+		t.Fatalf("runStopSequence: %v", err)
+	}
+
+	// dolt PID file must still exist — stopDoltFn is not part of runStopSequence.
+	if _, err := os.Stat(doltPIDPath); os.IsNotExist(err) {
+		t.Error("dolt PID file should still exist — runStopSequence must not stop dolt")
+	}
+
+	if !strings.Contains(buf.String(), "shutdown complete") {
+		t.Errorf("expected 'shutdown complete', got %q", buf.String())
 	}
 }
 
@@ -516,20 +504,15 @@ func TestStopAllCorrectBeadsDir(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		doltCalled := false
-		injectStopDolt := func(dir string) error {
-			doltCalled = true
-			return nil
-		}
-
 		t.Setenv("ORO_HUMAN_CONFIRMED", "1")
 		var buf bytes.Buffer
-		if err := runStopAll(context.Background(), oroHome, true, &buf, injectStopDolt); err != nil {
+		if err := runStopAll(context.Background(), oroHome, true, &buf); err != nil {
 			t.Fatalf("runStopAll: %v", err)
 		}
 
-		if doltCalled {
-			t.Error("stopDoltFn should NOT have been called — dolt persists across sessions")
+		// Dolt is not stopped — structural guarantee (stopConfig has no stopDoltFn field).
+		if !strings.Contains(buf.String(), "stopping") {
+			t.Errorf("expected stopping output, got %q", buf.String())
 		}
 	})
 
@@ -555,21 +538,12 @@ func TestStopAllCorrectBeadsDir(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		doltCalled := false
-		injectStopDolt := func(dir string) error {
-			doltCalled = true
-			return nil
-		}
-
 		t.Setenv("ORO_HUMAN_CONFIRMED", "1")
 		var buf bytes.Buffer
-		if err := runStopAll(context.Background(), oroHome, true, &buf, injectStopDolt); err != nil {
+		if err := runStopAll(context.Background(), oroHome, true, &buf); err != nil {
 			t.Fatalf("runStopAll: %v", err)
 		}
 
-		if doltCalled {
-			t.Error("stopDoltFn should not have been called when project.root is missing")
-		}
 		if !strings.Contains(buf.String(), "warning") {
 			t.Errorf("expected warning in output when project.root is missing, got %q", buf.String())
 		}
@@ -636,7 +610,7 @@ func TestStopAll_DoltPersists(t *testing.T) {
 	t.Setenv("ORO_HUMAN_CONFIRMED", "1")
 
 	var buf bytes.Buffer
-	if err := runStopAll(context.Background(), oroHome, true, &buf, stopDoltServer); err != nil {
+	if err := runStopAll(context.Background(), oroHome, true, &buf); err != nil {
 		t.Fatalf("runStopAll: %v", err)
 	}
 

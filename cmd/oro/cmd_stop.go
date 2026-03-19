@@ -16,20 +16,19 @@ import (
 
 // stopConfig holds injectable dependencies for the graceful shutdown sequence.
 type stopConfig struct {
-	pidPath    string
-	sockPath   string
-	tmuxName   string
-	runner     CmdRunner
-	w          io.Writer
-	stdin      io.Reader          // stdin for interactive confirmation
-	signalFn   func(int) error    // sends SIGINT; injectable for testing
-	aliveFn    func(int) bool     // checks process liveness; injectable for testing
-	killFn     func(int) error    // sends SIGKILL; injectable for testing
-	isTTY      func() bool        // returns true if stdin is a TTY; injectable for testing
-	force      bool               // --force flag: skip interactive confirmation
-	oroHome    string             // base directory for daemon discovery
-	beadsDir   string             // directory containing .beads (for dolt cleanup)
-	stopDoltFn func(string) error // stops dolt server; injectable for testing
+	pidPath  string
+	sockPath string
+	tmuxName string
+	runner   CmdRunner
+	w        io.Writer
+	stdin    io.Reader       // stdin for interactive confirmation
+	signalFn func(int) error // sends SIGINT; injectable for testing
+	aliveFn  func(int) bool  // checks process liveness; injectable for testing
+	killFn   func(int) error // sends SIGKILL; injectable for testing
+	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
+	force    bool            // --force flag: skip interactive confirmation
+	oroHome  string          // base directory for daemon discovery
+	beadsDir string          // directory containing .beads (unused by runStopSequence; dolt persists across sessions)
 }
 
 // projectDaemon describes a running daemon discovered in a project directory.
@@ -118,24 +117,23 @@ Use --all to stop daemons in all projects simultaneously.`,
 			}
 
 			if all {
-				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout(), stopDoltServer)
+				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout())
 			}
 
 			cfg := &stopConfig{
-				pidPath:    paths.PIDPath,
-				sockPath:   paths.SocketPath,
-				tmuxName:   TmuxSessionName(readProjectName()),
-				runner:     &ExecRunner{},
-				w:          cmd.OutOrStdout(),
-				stdin:      os.Stdin,
-				signalFn:   defaultSignalINT,
-				aliveFn:    IsProcessAlive,
-				killFn:     defaultKill,
-				isTTY:      isStdinTTY,
-				force:      force,
-				oroHome:    paths.OroHome,
-				beadsDir:   ".beads",
-				stopDoltFn: stopDoltServer,
+				pidPath:  paths.PIDPath,
+				sockPath: paths.SocketPath,
+				tmuxName: TmuxSessionName(readProjectName()),
+				runner:   &ExecRunner{},
+				w:        cmd.OutOrStdout(),
+				stdin:    os.Stdin,
+				signalFn: defaultSignalINT,
+				aliveFn:  IsProcessAlive,
+				killFn:   defaultKill,
+				isTTY:    isStdinTTY,
+				force:    force,
+				oroHome:  paths.OroHome,
+				beadsDir: ".beads",
 			}
 
 			return runStopSequence(cmd.Context(), cfg)
@@ -164,8 +162,9 @@ func suggestStopAll(w io.Writer, oroHome string) {
 }
 
 // runStopAll discovers and stops all running project daemons.
-// stopDoltFn is injectable for testing; pass stopDoltServer for production use.
-func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer, stopDoltFn func(string) error) error {
+// Dolt server is intentionally NOT stopped — it persists across sessions so
+// standalone bd commands continue to work.
+func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) error {
 	daemons := discoverProjectDaemons(oroHome)
 	if len(daemons) == 0 {
 		fmt.Fprintln(w, "no running daemons found")
@@ -192,19 +191,18 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer, st
 		}
 
 		cfg := &stopConfig{
-			pidPath:    d.PIDPath,
-			sockPath:   sockPath,
-			tmuxName:   TmuxSessionName(d.Project),
-			runner:     &ExecRunner{},
-			w:          w,
-			stdin:      os.Stdin,
-			signalFn:   defaultSignalINT,
-			aliveFn:    IsProcessAlive,
-			killFn:     defaultKill,
-			isTTY:      isStdinTTY,
-			force:      force,
-			beadsDir:   beadsDir,
-			stopDoltFn: stopDoltFn,
+			pidPath:  d.PIDPath,
+			sockPath: sockPath,
+			tmuxName: TmuxSessionName(d.Project),
+			runner:   &ExecRunner{},
+			w:        w,
+			stdin:    os.Stdin,
+			signalFn: defaultSignalINT,
+			aliveFn:  IsProcessAlive,
+			killFn:   defaultKill,
+			isTTY:    isStdinTTY,
+			force:    force,
+			beadsDir: beadsDir,
 		}
 
 		fmt.Fprintf(w, "\nstopping %s (PID %d)...\n", d.Project, d.PID)
