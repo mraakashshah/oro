@@ -188,12 +188,6 @@ bd list --status=in_progress
 # Detailed bead view
 bd show <bead-id>
 
-# Watch issues.jsonl for changes (macOS)
-fswatch .beads/issues.jsonl | while read -r _; do
-  echo "=== Bead change at $(date +%H:%M:%S) ==="
-  bd list --status=in_progress
-  echo "---"
-done
 ```
 
 ### Bead assignment tracking

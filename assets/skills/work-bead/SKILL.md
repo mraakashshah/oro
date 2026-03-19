@@ -172,8 +172,6 @@ If `--ff-only` fails (main moved since rebase): re-run Step 10 rebase, then retr
 git push
 ```
 
-Note: `bd sync --flush-only` is not needed here — the pre-commit hook runs it automatically on every commit.
-
 If push fails (no remote): report. Commit is local.
 
 ### Step 14: CLEANUP

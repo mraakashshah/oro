@@ -174,4 +174,3 @@ When the human requests shutdown:
 3. Run `oro stop` to shut down the dispatcher.
 4. Report final status to the human: beads completed, beads remaining, any issues encountered.
 
-Note: `bd sync` is not needed — the pre-commit hook automatically runs `bd sync --flush-only` and stages `.beads/issues.jsonl` on every commit.
