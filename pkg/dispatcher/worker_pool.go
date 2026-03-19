@@ -252,13 +252,16 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 }
 
 // heartbeatLoop checks for workers that have exceeded the heartbeat timeout
-// and periodically prunes stale tracking map entries (hourly).
+// and periodically prunes stale tracking map entries and GCs closed worktrees (hourly).
 func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.HeartbeatTimeout / 3)
 	defer ticker.Stop()
 
 	pruneTicker := time.NewTicker(1 * time.Hour)
 	defer pruneTicker.Stop()
+
+	gcTicker := time.NewTicker(1 * time.Hour)
+	defer gcTicker.Stop()
 
 	for {
 		select {
@@ -270,6 +273,8 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 			d.checkHeartbeats(ctx)
 		case <-pruneTicker.C:
 			d.pruneStaleTracking(ctx)
+		case <-gcTicker.C:
+			d.gcWorktrees(ctx)
 		}
 	}
 }

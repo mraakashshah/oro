@@ -277,6 +277,10 @@ func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string)
 	return "", nil
 }
 
+func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
+	return nil
+}
+
 type mockEscalator struct {
 	mu       sync.Mutex
 	messages []string

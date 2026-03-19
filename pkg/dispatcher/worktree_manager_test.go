@@ -1078,6 +1078,124 @@ func TestRemove_AlreadyRemoved(t *testing.T) {
 	}
 }
 
+func TestGCClosedWorktrees(t *testing.T) {
+	t.Run("removes_closed_preserves_open", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		worktreesDir := filepath.Join(tmpDir, ".worktrees")
+
+		closedID := "oro-closed.1"
+		openID := "oro-open.2"
+
+		for _, id := range []string{closedID, openID} {
+			if err := os.MkdirAll(filepath.Join(worktreesDir, id), 0o750); err != nil {
+				t.Fatalf("mkdir %s: %v", id, err)
+			}
+		}
+
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager(tmpDir, runner)
+
+		err := mgr.GCClosedWorktrees(context.Background(), func(id string) bool {
+			return id == closedID
+		})
+		if err != nil {
+			t.Fatalf("GCClosedWorktrees returned error: %v", err)
+		}
+
+		closedPath := filepath.Join(worktreesDir, closedID)
+		closedBranch := "agent/" + closedID
+		openPath := filepath.Join(worktreesDir, openID)
+
+		var foundRemove, foundBranchDelete bool
+		for _, c := range runner.calls {
+			if c.Name != "git" {
+				continue
+			}
+			argsStr := strings.Join(c.Args, " ")
+			if strings.Contains(argsStr, "worktree") && strings.Contains(argsStr, "remove") && strings.Contains(argsStr, closedPath) {
+				foundRemove = true
+			}
+			if strings.Contains(argsStr, "branch") && strings.Contains(argsStr, closedBranch) {
+				foundBranchDelete = true
+			}
+			if strings.Contains(argsStr, openPath) {
+				t.Fatalf("open bead %s should not be touched, got call: %s %v", openID, c.Name, c.Args)
+			}
+		}
+
+		if !foundRemove {
+			t.Fatalf("expected git worktree remove for closed bead, calls: %v", runner.calls)
+		}
+		if !foundBranchDelete {
+			t.Fatalf("expected git branch -d for closed bead, calls: %v", runner.calls)
+		}
+	})
+
+	t.Run("no_worktrees_dir_returns_nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager(tmpDir, runner)
+
+		err := mgr.GCClosedWorktrees(context.Background(), func(string) bool { return true })
+		if err != nil {
+			t.Fatalf("expected nil with no .worktrees dir, got: %v", err)
+		}
+		if len(runner.calls) != 0 {
+			t.Fatalf("expected no git calls with no .worktrees dir, got %d", len(runner.calls))
+		}
+	})
+
+	t.Run("remove_failure_continues_processing_other_beads", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		worktreesDir := filepath.Join(tmpDir, ".worktrees")
+
+		// Names sort alphabetically so aaa is processed first, zzz second.
+		failID := "oro-aaa.1"
+		okID := "oro-zzz.2"
+
+		for _, id := range []string{failID, okID} {
+			if err := os.MkdirAll(filepath.Join(worktreesDir, id), 0o750); err != nil {
+				t.Fatalf("mkdir %s: %v", id, err)
+			}
+		}
+
+		failPath := filepath.Join(worktreesDir, failID)
+		okPath := filepath.Join(worktreesDir, okID)
+
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "git" {
+					argsStr := strings.Join(args, " ")
+					if strings.Contains(argsStr, "worktree") && strings.Contains(argsStr, "remove") && strings.Contains(argsStr, failPath) {
+						return nil, fmt.Errorf("worktree locked")
+					}
+				}
+				return nil, nil
+			},
+		}
+		mgr := NewGitWorktreeManager(tmpDir, runner)
+
+		err := mgr.GCClosedWorktrees(context.Background(), func(string) bool { return true })
+		if err != nil {
+			t.Fatalf("GCClosedWorktrees should return nil even when Remove fails, got: %v", err)
+		}
+
+		// The ok bead must still be processed.
+		var foundOKRemove bool
+		for _, c := range runner.calls {
+			if c.Name == "git" {
+				argsStr := strings.Join(c.Args, " ")
+				if strings.Contains(argsStr, "worktree") && strings.Contains(argsStr, "remove") && strings.Contains(argsStr, okPath) {
+					foundOKRemove = true
+				}
+			}
+		}
+		if !foundOKRemove {
+			t.Fatalf("expected git worktree remove for ok bead after failure, calls: %v", runner.calls)
+		}
+	})
+}
+
 func TestMergeFFOnly(t *testing.T) {
 	t.Run("success_returns_trimmed_sha", func(t *testing.T) {
 		wantSHA := "abc123def456abc123def456abc123def456abc123"

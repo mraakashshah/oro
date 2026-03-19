@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -137,6 +138,22 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 		delete(d.worktreeByBead, beadID)
 	}
 	return len(orphaned)
+}
+
+// gcWorktrees removes filesystem worktrees and branches for closed beads.
+// It calls GCClosedWorktrees with an isBeadClosed callback that uses
+// beads.Show to check status; Show failures return false (conservative).
+func (d *Dispatcher) gcWorktrees(ctx context.Context) {
+	isBeadClosed := func(beadID string) bool {
+		detail, err := d.beads.Show(ctx, beadID)
+		if err != nil {
+			return false
+		}
+		return detail.Status == "closed"
+	}
+	if err := d.worktrees.GCClosedWorktrees(ctx, isBeadClosed); err != nil {
+		slog.WarnContext(ctx, "gc_worktrees_failed", "error", err.Error())
+	}
 }
 
 // allTrackingKeys returns all bead IDs referenced across tracking maps.

@@ -197,6 +197,43 @@ func (g *GitWorktreeManager) MergeFFOnly(ctx context.Context, branch, target str
 	return strings.TrimSpace(string(out)), nil
 }
 
+// GCClosedWorktrees removes worktree directories and branches for beads that
+// are closed. It calls isBeadClosed for each directory found under .worktrees/;
+// entries for which isBeadClosed returns false are skipped conservatively.
+// ReadDir failure returns nil (same as Prune). Remove failures are logged and
+// do not prevent other entries from being processed.
+func (g *GitWorktreeManager) GCClosedWorktrees(ctx context.Context, isBeadClosed func(string) bool) error {
+	worktreesDir := filepath.Join(g.repoRoot, protocol.WorktreesDir)
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		return nil //nolint:nilerr // missing dir is expected, not an error
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		beadID := entry.Name()
+		if !isBeadClosed(beadID) {
+			continue
+		}
+
+		path := filepath.Join(worktreesDir, beadID)
+		branch := protocol.BranchPrefix + beadID
+
+		if err := g.Remove(ctx, path); err != nil {
+			slog.WarnContext(ctx, "gc_closed_worktrees_remove_failed", "bead_id", beadID, "error", err.Error())
+			continue
+		}
+
+		if err := g.DeleteBranch(ctx, branch); err != nil {
+			slog.WarnContext(ctx, "gc_closed_worktrees_branch_delete_failed", "bead_id", beadID, "error", err.Error())
+		}
+	}
+
+	return nil
+}
+
 // Prune cleans up orphaned worktree state left by a previous crash.
 // It runs `git worktree prune` to clean git's internal tracking, then
 // removes all directories under .worktrees/. Errors are logged but

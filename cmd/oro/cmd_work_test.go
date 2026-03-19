@@ -554,6 +554,10 @@ func (m *envCapturingWorktreeManager) MergeFFOnly(_ context.Context, _ string, _
 	return "", nil
 }
 
+func (m *envCapturingWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
+	return nil
+}
+
 // TestSpawnAndWaitWithMemoryAndCodeContext verifies that spawnAndWait wires
 // MemoryContext and CodeSearchContext into AssemblePrompt, and passes memStore
 // to DrainOutput.
