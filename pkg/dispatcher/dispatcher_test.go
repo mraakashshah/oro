@@ -12270,6 +12270,42 @@ func TestRemoveWorktreeAndClearTracking_DeletesBranch(t *testing.T) {
 	})
 }
 
+// TestRemoveWorktreeAndClearTracking_ClearsTrackingOnRemoveError verifies that
+// worktreeByBead[beadID] is deleted even when d.worktrees.Remove returns an error.
+func TestRemoveWorktreeAndClearTracking_ClearsTrackingOnRemoveError(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	beadID := "oro-test"
+	workerID := "w1"
+	worktreePath := "/tmp/worktree-" + beadID
+
+	// Set up worktreeByBead tracking entry
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktreePath
+	d.mu.Unlock()
+
+	// Verify entry exists before calling removeWorktreeAndClearTracking
+	d.mu.Lock()
+	if _, exists := d.worktreeByBead[beadID]; !exists {
+		t.Fatalf("expected worktreeByBead[%s] to exist before call", beadID)
+	}
+	d.mu.Unlock()
+
+	// Make Remove return an error
+	wtMgr.removeFn = func(_ context.Context, _ string) error {
+		return fmt.Errorf("worktree stuck")
+	}
+
+	// Call removeWorktreeAndClearTracking (error from Remove should not prevent tracking clear)
+	d.removeWorktreeAndClearTracking(context.Background(), beadID, workerID, worktreePath)
+
+	// Assert: worktreeByBead[beadID] should be deleted despite Remove error
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, exists := d.worktreeByBead[beadID]; exists {
+		t.Errorf("expected worktreeByBead[%s] to be deleted even when Remove fails", beadID)
+	}
+}
+
 // TestSnapshotWorkers_IncludesLastHeartbeat verifies that snapshotWorkers
 // includes LastHeartbeatSecs calculated from now.Sub(w.lastSeen).
 func TestSnapshotWorkers_IncludesLastHeartbeat(t *testing.T) {

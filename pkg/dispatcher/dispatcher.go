@@ -1148,12 +1148,13 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID, workerID, worktree string) {
 	if err := d.worktrees.Remove(ctx, worktree); err != nil {
 		_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
-	} else {
-		// Clear worktree tracking entry after successful removal (oro-1eo8).
-		d.mu.Lock()
-		delete(d.worktreeByBead, beadID)
-		d.mu.Unlock()
 	}
+
+	// Clear worktree tracking entry unconditionally (oro-4mu1.2).
+	// Even if Remove fails, we must clear tracking to prevent stale entries.
+	d.mu.Lock()
+	delete(d.worktreeByBead, beadID)
+	d.mu.Unlock()
 
 	// Best-effort branch cleanup — branch was merged, safe to delete.
 	branch := protocol.BranchPrefix + beadID
