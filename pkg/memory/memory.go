@@ -768,7 +768,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 
 // UpdateConfidence updates the confidence score for a memory.
 func (s *Store) UpdateConfidence(ctx context.Context, id int64, confidence float64) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.db.ExecContext(ctx, //nolint:gosec // G701: query uses parameterized placeholders, not string interpolation
 		`UPDATE memories SET confidence = ? WHERE id = ?`,
 		confidence, id,
 	)
