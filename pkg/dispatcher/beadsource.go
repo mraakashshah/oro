@@ -298,19 +298,27 @@ func (s *CLIBeadSource) FindByParentAndTag(ctx context.Context, parentID, tag st
 }
 
 // AllChildrenClosed checks whether all children of the given epic are closed.
-// Returns true if the epic has no open children (all children are closed),
-// false if there are open children or the bead is not an epic.
+// Fetches all children and checks status locally to avoid bd query filter quirks.
+// Returns true only if every child has status "closed".
 func (s *CLIBeadSource) AllChildrenClosed(ctx context.Context, epicID string) (bool, error) {
-	out, err := s.runner.Run(ctx, "bd", "list", "--parent="+epicID, "--status=open", "--json")
+	out, err := s.runner.Run(ctx, "bd", "list", "--parent="+epicID, "--json")
 	if err != nil {
-		return false, fmt.Errorf("bd list --parent=%s --status=open: %w", epicID, err)
+		return false, fmt.Errorf("bd list --parent=%s: %w", epicID, err)
 	}
 
-	var openChildren []protocol.Bead
-	if err := json.Unmarshal(out, &openChildren); err != nil {
+	var children []protocol.Bead
+	if err := json.Unmarshal(out, &children); err != nil {
 		return false, fmt.Errorf("parse bd list output: %w", err)
 	}
 
-	// If the list is empty, all children are closed.
-	return len(openChildren) == 0, nil
+	if len(children) == 0 {
+		return false, nil // no children → not "all closed"
+	}
+
+	for _, child := range children {
+		if child.Status != "closed" {
+			return false, nil
+		}
+	}
+	return true, nil
 }

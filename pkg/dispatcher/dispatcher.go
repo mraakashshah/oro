@@ -2400,8 +2400,11 @@ func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead
 		return false, true
 	}
 	if allClosed {
-		_ = d.beads.Close(ctx, bead.ID, "All children completed")
-		_ = d.logEvent(ctx, "epic_auto_closed_on_assign", "dispatcher", bead.ID, workerID, "")
+		if closeErr := d.beads.Close(ctx, bead.ID, "All children completed"); closeErr != nil {
+			_ = d.logEvent(ctx, "epic_auto_close_failed", "dispatcher", bead.ID, workerID, closeErr.Error())
+		} else {
+			_ = d.logEvent(ctx, "epic_auto_closed_on_assign", "dispatcher", bead.ID, workerID, "")
+		}
 	}
 	return false, true
 }

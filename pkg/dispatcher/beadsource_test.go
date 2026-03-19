@@ -771,9 +771,13 @@ func TestCLIBeadSource_ImplementsBeadSource(t *testing.T) {
 }
 
 func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
-	t.Run("returns true when no open children", func(t *testing.T) {
-		// bd list --parent=epic-123 --status=open --json returns []
-		runner := &mockCommandRunner{output: []byte("[]")}
+	t.Run("returns true when all children are closed", func(t *testing.T) {
+		children := []protocol.Bead{
+			{ID: "child-1", Title: "Done task", Status: "closed"},
+			{ID: "child-2", Title: "Also done", Status: "closed"},
+		}
+		data, _ := json.Marshal(children)
+		runner := &mockCommandRunner{output: data}
 		src := NewCLIBeadSource(runner)
 
 		got, err := src.AllChildrenClosed(context.Background(), "epic-123")
@@ -781,10 +785,10 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 			t.Fatalf("AllChildrenClosed: %v", err)
 		}
 		if !got {
-			t.Errorf("AllChildrenClosed: got false, want true (no open children)")
+			t.Errorf("AllChildrenClosed: got false, want true (all children closed)")
 		}
 
-		// Verify correct command.
+		// Verify correct command — no --status filter.
 		if len(runner.calls) != 1 {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
@@ -798,21 +802,23 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 		if !sliceContains(call.Args, "--parent=epic-123") {
 			t.Errorf("expected '--parent=epic-123' in args, got %v", call.Args)
 		}
-		if !sliceContains(call.Args, "--status=open") {
-			t.Errorf("expected '--status=open' in args, got %v", call.Args)
-		}
 		if !sliceContains(call.Args, "--json") {
 			t.Errorf("expected '--json' in args, got %v", call.Args)
+		}
+		// Must NOT have --status filter — we fetch all and check locally.
+		for _, arg := range call.Args {
+			if strings.HasPrefix(arg, "--status=") {
+				t.Errorf("unexpected --status filter in args: %v", call.Args)
+			}
 		}
 	})
 
 	t.Run("returns false when open children exist", func(t *testing.T) {
-		// bd list returns a non-empty list of open children
-		openChildren := []protocol.Bead{
-			{ID: "child-1", Title: "Child task 1", Priority: 2},
-			{ID: "child-2", Title: "Child task 2", Priority: 2},
+		children := []protocol.Bead{
+			{ID: "child-1", Title: "Done task", Status: "closed"},
+			{ID: "child-2", Title: "Open task", Status: "open"},
 		}
-		data, _ := json.Marshal(openChildren)
+		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
 		src := NewCLIBeadSource(runner)
 
@@ -822,6 +828,37 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 		}
 		if got {
 			t.Errorf("AllChildrenClosed: got true, want false (open children exist)")
+		}
+	})
+
+	t.Run("returns false when in_progress children exist", func(t *testing.T) {
+		children := []protocol.Bead{
+			{ID: "child-1", Title: "Done task", Status: "closed"},
+			{ID: "child-2", Title: "WIP task", Status: "in_progress"},
+		}
+		data, _ := json.Marshal(children)
+		runner := &mockCommandRunner{output: data}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.AllChildrenClosed(context.Background(), "epic-456")
+		if err != nil {
+			t.Fatalf("AllChildrenClosed: %v", err)
+		}
+		if got {
+			t.Errorf("AllChildrenClosed: got true, want false (in_progress child exists)")
+		}
+	})
+
+	t.Run("returns false when no children", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("[]")}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.AllChildrenClosed(context.Background(), "epic-empty")
+		if err != nil {
+			t.Fatalf("AllChildrenClosed: %v", err)
+		}
+		if got {
+			t.Errorf("AllChildrenClosed: got true, want false (no children)")
 		}
 	})
 
