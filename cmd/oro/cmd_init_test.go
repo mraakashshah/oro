@@ -1880,3 +1880,36 @@ func TestInitDetectsSharedServer(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildHookConfig_NoStaleHookRefs verifies that every .py/.sh hook filename
+// referenced in buildHookConfig exists in the assets/hooks/ directory.
+// This catches stale references to deleted hooks (e.g. memory_capture.py).
+func TestBuildHookConfig_NoStaleHookRefs(t *testing.T) {
+	const dummyDir = "__hooksdir__"
+	cfg := buildHookConfig(dummyDir)
+
+	// Real hooks directory, relative to the cmd/oro package directory at test time.
+	realHooksDir := "../../assets/hooks"
+	prefix := dummyDir + "/"
+
+	for phase, groups := range cfg {
+		for _, group := range groups {
+			for _, hook := range group.Hooks {
+				_, filename, found := strings.Cut(hook.Command, prefix)
+				if !found {
+					continue // not a local hook file reference
+				}
+				// Only check script files (.py, .sh) — binaries like
+				// oro-search-hook are installed separately and won't be in assets/hooks/.
+				ext := filepath.Ext(filename)
+				if ext != ".py" && ext != ".sh" {
+					continue
+				}
+				fullPath := filepath.Join(realHooksDir, filename)
+				if _, err := os.Stat(fullPath); err != nil {
+					t.Errorf("phase %s: hook references %q but file does not exist at %s", phase, filename, fullPath)
+				}
+			}
+		}
+	}
+}
