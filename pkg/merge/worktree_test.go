@@ -56,8 +56,8 @@ func TestMergeToMain(t *testing.T) {
 		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 		// Verify rev-parse --git-common-dir
 		assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
-		// Verify worktree remove (fallback via git, in primary repo)
-		assertArgs(t, calls[3], "/path/to/repo", "worktree", "remove", "/tmp/wt-abc")
+		// Verify worktree remove --force (fallback via git, in primary repo)
+		assertArgs(t, calls[3], "/path/to/repo", "worktree", "remove", "--force", "/tmp/wt-abc")
 		// Verify ff-only merge happened in primary repo (NOT cherry-pick)
 		assertArgs(t, calls[4], "/path/to/repo", "merge", "--ff-only", "bead/abc")
 		// Verify final rev-parse in primary repo

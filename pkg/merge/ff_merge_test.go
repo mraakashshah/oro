@@ -205,8 +205,8 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 		if len(calls) != 6 {
 			t.Fatalf("expected 6 git calls, got %d: %+v", len(calls), calls)
 		}
-		// call[3] should be the worktree remove via git
-		assertArgs(t, calls[3], "/repo", "worktree", "remove", "/tmp/wt-fallback")
+		// call[3] should be the worktree remove --force via git
+		assertArgs(t, calls[3], "/repo", "worktree", "remove", "--force", "/tmp/wt-fallback")
 		assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/fallback")
 	})
 }

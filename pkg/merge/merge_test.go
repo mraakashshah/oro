@@ -101,8 +101,8 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 	assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 	// Call 2: rev-parse --git-common-dir
 	assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
-	// Call 3: git worktree remove (fallback via GitRunner in primary repo)
-	assertArgs(t, calls[3], "/repo", "worktree", "remove", "/tmp/wt-abc")
+	// Call 3: git worktree remove --force (fallback via GitRunner in primary repo)
+	assertArgs(t, calls[3], "/repo", "worktree", "remove", "--force", "/tmp/wt-abc")
 	// Call 4: ff-only merge
 	assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/abc")
 	// Call 5: rev-parse HEAD
@@ -500,6 +500,42 @@ func TestMerge_RevParseFails(t *testing.T) {
 	if errors.As(err, &conflictErr) {
 		t.Error("worktree remove failure should not produce ConflictError")
 	}
+}
+
+// TestMerge_WorktreeRemoveUsesForceFlag verifies that the fallback git worktree
+// remove command includes --force so that untracked .tmp files left by workers
+// do not block cleanup.
+func TestMerge_WorktreeRemoveUsesForceFlag(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// 0. git rev-list --count main..bead/force — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
+			// 1. git rebase main bead/force — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 2. git rev-parse --git-common-dir
+			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+			// 3. git worktree remove --force <path> — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 4. git merge --ff-only bead/force
+			{Stdout: "", Stderr: "", Err: nil},
+			// 5. git rev-parse HEAD
+			{Stdout: "deadbeef\n", Stderr: "", Err: nil},
+		},
+	}
+
+	coord := NewCoordinator(mock) // no worktreeRemover — uses git fallback
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/force",
+		Worktree: "/tmp/wt-force",
+		BeadID:   "oro-force",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	calls := mock.getCalls()
+	// Call 3 must be git worktree remove --force <path>
+	assertArgs(t, calls[3], "/repo", "worktree", "remove", "--force", "/tmp/wt-force")
 }
 
 func TestMerge_ContextCancelledDuringRebase(t *testing.T) {

@@ -189,8 +189,10 @@ func (c *Coordinator) removeWorktree(ctx context.Context, primaryRepo, worktreeP
 		}
 		return nil
 	}
-	// Fallback: use "git worktree remove" via the GitRunner.
-	_, _, err := c.git.Run(ctx, primaryRepo, "worktree", "remove", worktreePath)
+	// Fallback: use "git worktree remove --force" via the GitRunner.
+	// --force ensures untracked files (e.g. .tmp artifacts left by workers)
+	// do not block cleanup.
+	_, _, err := c.git.Run(ctx, primaryRepo, "worktree", "remove", "--force", worktreePath)
 	if err != nil {
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
