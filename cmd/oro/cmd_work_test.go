@@ -26,7 +26,7 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 		name     string
 		defValue string
 	}{
-		{"model", protocol.DefaultModel},
+		{"model", ""}, // empty means "use bead metadata then default"; resolved at runtime
 		{"timeout", "15m0s"},
 		{"skip-review", "false"},
 		{"dry-run", "false"},
