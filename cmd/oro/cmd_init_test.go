@@ -1117,6 +1117,31 @@ func TestGenerateSettings_NoBdCreateNotifier(t *testing.T) {
 	}
 }
 
+func TestDefaultHookEntries_NoGhostHooks(t *testing.T) {
+	// Test that buildHookConfig contains no Bash PostToolUse matcher
+	// with memory_capture or learning_reminder (oro-pw0d)
+	hooks := buildHookConfig("$HOME/.oro/hooks")
+
+	postToolUseHooks, ok := hooks["PostToolUse"]
+	if !ok {
+		t.Fatal("PostToolUse key missing from hook config")
+	}
+
+	for _, group := range postToolUseHooks {
+		if group.Matcher == "Bash" {
+			t.Errorf("Bash PostToolUse matcher should be removed, found with hooks: %v", group.Hooks)
+		}
+		for _, hook := range group.Hooks {
+			if strings.Contains(hook.Command, "memory_capture") {
+				t.Errorf("memory_capture.py hook should not exist, found in command: %s", hook.Command)
+			}
+			if strings.Contains(hook.Command, "learning_reminder") {
+				t.Errorf("learning_reminder.py hook should not exist, found in command: %s", hook.Command)
+			}
+		}
+	}
+}
+
 func TestExtractAssets(t *testing.T) {
 	assets := testAssets()
 	dest := t.TempDir()

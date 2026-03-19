@@ -749,10 +749,6 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 			{Matcher: "Edit|Write", Hooks: []hookEntry{
 				{Type: "command", Command: sh("auto-format.sh")},
 			}},
-			{Matcher: "Bash", Hooks: []hookEntry{
-				{Type: "command", Command: py("memory_capture.py")},
-				{Type: "command", Command: py("learning_reminder.py")},
-			}},
 			{Matcher: "Task", Hooks: []hookEntry{
 				{Type: "command", Command: py("validate_agent_completion.py")},
 			}},
