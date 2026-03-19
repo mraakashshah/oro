@@ -66,6 +66,8 @@ type Message struct {
 // injected by the dispatcher based on the bead title.
 // ProjectRoot is the path to the project root for loading .oro/config.yaml.
 // TargetBranch is the branch that work will merge to; defaults to "main" if empty.
+// GitLog contains the git log context for the bead (omitted when empty).
+// WorkerProgram contains the worker program invocation string (omitted when empty).
 type AssignPayload struct {
 	BeadID              string `json:"bead_id"`
 	Worktree            string `json:"worktree"`
@@ -80,6 +82,8 @@ type AssignPayload struct {
 	IsEpicDecomposition bool   `json:"is_epic_decomposition,omitempty"`
 	ProjectRoot         string `json:"project_root,omitempty"`
 	TargetBranch        string `json:"target_branch,omitempty"`
+	GitLog              string `json:"git_log,omitempty"`
+	WorkerProgram       string `json:"worker_program,omitempty"`
 }
 
 // Validate checks that the AssignPayload has required fields populated.

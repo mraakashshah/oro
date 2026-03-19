@@ -564,3 +564,87 @@ func TestValidateBeadID(t *testing.T) {
 		})
 	}
 }
+
+// TestAssignPayloadValidate_NewFields verifies GitLog and WorkerProgram fields
+// serialize/deserialize correctly via JSON round-trip with omitempty behavior.
+func TestAssignPayloadValidate_NewFields(t *testing.T) {
+	t.Parallel()
+
+	// Test with both new fields populated
+	t.Run("with_new_fields", func(t *testing.T) {
+		t.Parallel()
+		original := protocol.AssignPayload{
+			BeadID:        "oro-kjje",
+			Worktree:      "/tmp/worktree",
+			GitLog:        "commit abc123\nAuthor: Test <test@example.com>\nDate: 2026-03-19\nMessage: test commit",
+			WorkerProgram: "claude --model opus -p /path/to/prompt.md",
+		}
+
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+
+		var decoded protocol.AssignPayload
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+
+		if decoded.GitLog != original.GitLog {
+			t.Errorf("GitLog mismatch: got %q, want %q", decoded.GitLog, original.GitLog)
+		}
+		if decoded.WorkerProgram != original.WorkerProgram {
+			t.Errorf("WorkerProgram mismatch: got %q, want %q", decoded.WorkerProgram, original.WorkerProgram)
+		}
+	})
+
+	// Test omitempty: empty fields should not appear in JSON
+	t.Run("omitempty_behavior", func(t *testing.T) {
+		t.Parallel()
+		original := protocol.AssignPayload{
+			BeadID:   "oro-test",
+			Worktree: "/tmp/wt",
+			// GitLog and WorkerProgram are empty
+		}
+
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+
+		jsonStr := string(data)
+		if strings.Contains(jsonStr, "git_log") {
+			t.Errorf("expected git_log to be omitted when empty, got: %s", jsonStr)
+		}
+		if strings.Contains(jsonStr, "worker_program") {
+			t.Errorf("expected worker_program to be omitted when empty, got: %s", jsonStr)
+		}
+	})
+
+	// Test partial: only GitLog populated
+	t.Run("only_git_log", func(t *testing.T) {
+		t.Parallel()
+		original := protocol.AssignPayload{
+			BeadID:   "oro-1",
+			Worktree: "/tmp/wt",
+			GitLog:   "commit xyz",
+		}
+
+		data, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		var decoded protocol.AssignPayload
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if decoded.GitLog != "commit xyz" {
+			t.Errorf("GitLog: got %q, want %q", decoded.GitLog, "commit xyz")
+		}
+		if decoded.WorkerProgram != "" {
+			t.Errorf("WorkerProgram: got %q, want empty", decoded.WorkerProgram)
+		}
+	})
+}

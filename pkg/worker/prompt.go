@@ -23,6 +23,8 @@ type PromptParams struct {
 	Feedback           string // rejection/QG failure feedback from previous attempt
 	ProjectRoot        string // optional: path to project root for reading .oro/config.yaml
 	TargetBranch       string // merge target branch; defaults to "main" if empty
+	GitLog             string // git log context; may be empty
+	WorkerProgram      string // worker program invocation string; may be empty
 }
 
 // section writes a markdown section (## header + body) to the builder.
