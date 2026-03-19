@@ -63,20 +63,32 @@ func (e *ConflictError) Error() string {
 		e.BeadID, strings.Join(e.Files, ", "))
 }
 
-// Coordinator serializes merge operations behind a mutex so only one
-// merge runs at a time. This prevents the FF-only merge races observed
-// in BCR (main moves during agent rebase).
+// Coordinator implements two-level locking for merge operations:
+//
+//   - Level 1 (rebaseLocks): per-target branch mutex. Allows concurrent
+//     rebases to different targets while serializing rebases to the same target.
+//
+//   - Level 2 (ffLock): global mutex. Serializes all FF merges regardless of
+//     target, preventing races where main moves between rebase and FF.
+//
+// activeWorktrees maps targetBranch → worktreePath for the duration of the
+// rebase phase, enabling targeted abort via Abort(targetBranch).
 type Coordinator struct {
-	mu  sync.Mutex
 	git GitRunner
 
 	// worktreeRemover is called to remove the agent worktree after a successful
 	// rebase. If nil, falls back to "git worktree remove <path>" via GitRunner.
 	worktreeRemover WorktreeRemover
 
-	// abortMu protects activeWorktree for concurrent access from Abort().
-	abortMu        sync.Mutex
-	activeWorktree string // non-empty while a merge is in progress
+	// rebaseLocks stores *sync.Mutex values keyed by targetBranch.
+	// Loaded-or-stored atomically so concurrent goroutines share the same lock.
+	rebaseLocks sync.Map
+
+	// ffLock serializes the FF merge step globally.
+	ffLock sync.Mutex
+
+	// activeWorktrees maps targetBranch → worktreePath for the rebase phase.
+	activeWorktrees sync.Map
 }
 
 // NewCoordinator creates a Coordinator with the given GitRunner.
@@ -84,31 +96,43 @@ func NewCoordinator(git GitRunner) *Coordinator {
 	return &Coordinator{git: git}
 }
 
-// Merge performs a sequential rebase-merge using worktree-remove + ff-merge:
-//  1. git rebase main <branch> (in worktree)
-//  2. If clean: remove the agent worktree
-//  3. git merge --ff-only <branch> (in primary repo)
-//  4. If conflict: git rebase --abort, return *ConflictError
+// getOrCreateRebaseLock returns the per-target rebase mutex, creating it if needed.
+// LoadOrStore ensures concurrent callers for the same target share the same mutex.
+func (c *Coordinator) getOrCreateRebaseLock(target string) *sync.Mutex {
+	mu := &sync.Mutex{}
+	actual, _ := c.rebaseLocks.LoadOrStore(target, mu)
+	return actual.(*sync.Mutex) //nolint:forcetypeassert // only *sync.Mutex stored here
+}
+
+// Merge performs a rebase-merge using two-level locking:
+//
+//  1. Level-1 (per-target rebaseLocks): serializes merges to the same target;
+//     merges to different targets run their rebase phases in parallel.
+//  2. Level-2 (global ffLock): serializes all FF merges regardless of target.
+//
+// Merge flow:
+//  1. Acquire per-target rebase lock.
+//  2. Register worktree in activeWorktrees for abort support.
+//  3. git rebase <target> <branch> (in worktree)
+//  4. If conflict: git rebase --abort, return *ConflictError.
+//  5. Deregister from activeWorktrees (rebase done; abort no longer applicable).
+//  6. Acquire global ffLock.
+//  7. Remove agent worktree + git merge --ff-only <branch> (in primary repo).
 //
 // This approach produces identical commit hashes on main as on the branch
 // (no cherry-pick hash mismatch). It also avoids "git checkout main" which
 // fails when main is already checked out in the primary worktree.
-//
-// Only one Merge runs at a time (mutex-protected).
 func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	target := effectiveTarget(opts)
 
-	func() {
-		c.abortMu.Lock()
-		defer c.abortMu.Unlock()
-		c.activeWorktree = opts.Worktree
-	}()
-	defer func() {
-		c.abortMu.Lock()
-		defer c.abortMu.Unlock()
-		c.activeWorktree = ""
-	}()
+	// Level 1: Acquire per-target rebase lock.
+	targetMu := c.getOrCreateRebaseLock(target)
+	targetMu.Lock()
+	defer targetMu.Unlock()
+
+	// Register worktree for abort support during the rebase phase.
+	c.activeWorktrees.Store(target, opts.Worktree)
+	defer c.activeWorktrees.Delete(target)
 
 	// Step 0: Check if branch is already merged (agent may have merged inside worktree).
 	alreadyMerged, sha, checkErr := c.isBranchMerged(ctx, opts)
@@ -116,18 +140,25 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 		return &Result{CommitSHA: sha}, nil
 	}
 
-	// Step 1: Rebase branch onto target
-	_, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", effectiveTarget(opts), opts.Branch)
+	// Step 1: Rebase branch onto target.
+	_, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", target, opts.Branch)
 	if err != nil {
-		// Context cancelled/deadline exceeded takes priority over conflict handling
+		// Context cancelled/deadline exceeded takes priority over conflict handling.
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("merge cancelled: %w", ctx.Err())
 		}
-		// Rebase failed — abort and return conflict error
+		// Rebase failed — abort and return conflict error.
 		return nil, c.handleRebaseFailure(ctx, opts, stderr)
 	}
 
-	// Steps 2-4: Remove worktree, ff-merge branch onto main in primary repo
+	// Rebase done — deregister from activeWorktrees (abort no longer applicable).
+	c.activeWorktrees.Delete(target)
+
+	// Level 2: Acquire global FF merge lock.
+	c.ffLock.Lock()
+	defer c.ffLock.Unlock()
+
+	// Steps 2-4: Remove worktree, ff-merge branch onto target in primary repo.
 	return c.worktreeRemoveAndFFMerge(ctx, opts)
 }
 
@@ -240,34 +271,32 @@ func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts Opts, rebase
 	}
 }
 
-// Abort runs best-effort 'git rebase --abort' on any in-progress merge worktree.
-// Safe to call concurrently with Merge — uses a separate lock and a fresh
-// context (since the caller's context is typically cancelled at shutdown time).
-//
-//oro:testonly
-func (c *Coordinator) Abort() {
-	var wt string
-	func() {
-		c.abortMu.Lock()
-		defer c.abortMu.Unlock()
-		wt = c.activeWorktree
-	}()
-
-	if wt == "" {
-		return
+// Abort runs best-effort 'git rebase --abort' on the worktree currently rebasing
+// onto targetBranch. Returns nil if no merge is active for that target (no-op).
+// Safe to call concurrently with Merge — reads activeWorktrees without locking.
+// Uses a fresh context (the caller's context is typically cancelled at shutdown).
+func (c *Coordinator) Abort(targetBranch string) error {
+	wt, ok := c.activeWorktrees.Load(targetBranch)
+	if !ok {
+		return nil
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _, _ = c.git.Run(ctx, wt, "rebase", "--abort")
+	_, _, _ = c.git.Run(ctx, wt.(string), "rebase", "--abort") //nolint:forcetypeassert // only string stored here
+	return nil
 }
 
 // AbortAll runs best-effort 'git rebase --abort' on all in-progress merge worktrees.
-// Currently delegates to Abort (single active merge). Safe to call concurrently with
-// Merge. Uses a fresh context (since the caller's context is typically cancelled at
-// shutdown time).
-func (c *Coordinator) AbortAll() {
-	c.Abort()
+// Returns nil when no merges are active (no-op). Safe to call concurrently with Merge.
+// Uses a fresh context (the caller's context is typically cancelled at shutdown).
+func (c *Coordinator) AbortAll() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c.activeWorktrees.Range(func(_, value any) bool {
+		_, _, _ = c.git.Run(ctx, value.(string), "rebase", "--abort") //nolint:forcetypeassert // only string stored here
+		return true
+	})
+	return nil
 }
 
 // conflictPattern matches git's CONFLICT output lines.

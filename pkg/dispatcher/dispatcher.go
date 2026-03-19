@@ -3574,7 +3574,7 @@ func (d *Dispatcher) shutdownCancelOps() {
 			_ = d.logEvent(context.Background(), "ops_cancelled", "dispatcher", "", "", taskID)
 		}
 	}
-	d.merger.AbortAll()
+	_ = d.merger.AbortAll()
 }
 
 // shutdownRemoveWorktrees removes the given worktrees and flushes bead state.

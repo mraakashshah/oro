@@ -969,8 +969,8 @@ func TestCoordinatorAbortOnCancel(t *testing.T) {
 	// Wait for rebase to start
 	<-rebaseStarted
 
-	// Abort while merge is in progress
-	coord.Abort()
+	// Abort while merge is in progress (target defaults to "main").
+	_ = coord.Abort("main")
 
 	select {
 	case dir := <-abortCalled:
@@ -1037,7 +1037,7 @@ func TestAbortMu_PanicSafety(t *testing.T) {
 	// --- Phase 2: Abort() must not deadlock ---
 	abortDone := make(chan struct{})
 	go func() {
-		coord.Abort()
+		_ = coord.Abort("main")
 		close(abortDone)
 	}()
 	select {
@@ -1070,7 +1070,7 @@ func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
 	coord := NewCoordinator(mock)
 
 	// Abort with no merge in progress — should be a no-op
-	coord.Abort()
+	_ = coord.Abort("main")
 
 	calls := mock.getCalls()
 	if len(calls) != 0 {
@@ -1190,6 +1190,390 @@ func TestTargetBranch(t *testing.T) {
 		assertArgs(t, calls[0], "/tmp/wt-done", "rev-list", "--count", "epic/feat..bead/done")
 		assertArgs(t, calls[1], "/tmp/wt-done", "diff", "epic/feat..bead/done")
 		assertArgs(t, calls[2], "/tmp/wt-done", "rev-parse", "epic/feat")
+	})
+}
+
+// TestTwoLevelLocking verifies the two-level locking semantics of Coordinator.Merge:
+//   - Level 1 (rebaseLocks): per-target; allows concurrent rebases to different targets
+//   - Level 2 (ffLock): global; serializes all FF merges
+func TestTwoLevelLocking(t *testing.T) {
+	t.Run("concurrent rebases to different targets run in parallel", func(t *testing.T) {
+		// Each rebase blocks until both have started.
+		// If rebases were serialized (old single-mutex design), the second would
+		// never start until the first finished, causing a timeout.
+		rebaseStarted := make(chan struct{}, 2) // buffered: each rebase sends once
+		rebaseBlock := make(chan struct{})      // closed to unblock all rebases
+
+		runner := &funcGitRunner{fn: func(_ context.Context, _ string, args ...string) (string, string, error) {
+			switch {
+			case len(args) >= 2 && args[0] == "rebase" && args[1] != "--abort":
+				rebaseStarted <- struct{}{} // signal: rebase started
+				<-rebaseBlock               // wait for release
+			case len(args) >= 1 && args[0] == "rev-list":
+				return "1\n", "", nil
+			case len(args) == 2 && args[0] == "rev-parse" && args[1] == "--git-common-dir":
+				return "/repo/.git\n", "", nil
+			case len(args) == 2 && args[0] == "rev-parse" && args[1] == "HEAD":
+				return "sha\n", "", nil
+			}
+			return "", "", nil
+		}}
+
+		coord := NewCoordinator(runner)
+
+		var wg sync.WaitGroup
+		for _, tgt := range []string{"main", "epic/feat"} {
+			wg.Add(1)
+			tgt := tgt
+			go func() {
+				defer wg.Done()
+				_, _ = coord.Merge(context.Background(), Opts{
+					Branch:       "bead/" + tgt,
+					Worktree:     "/tmp/wt-" + tgt,
+					TargetBranch: tgt,
+				})
+			}()
+		}
+
+		// Wait for both rebases to signal start. Timeout means they were serialized.
+		timeout := time.After(2 * time.Second)
+		for i := 0; i < 2; i++ {
+			select {
+			case <-rebaseStarted:
+			case <-timeout:
+				close(rebaseBlock) // unblock to prevent goroutine leak
+				t.Fatal("rebases to different targets were serialized — expected parallel execution")
+			}
+		}
+
+		// Both rebases are running concurrently. Release them.
+		close(rebaseBlock)
+		wg.Wait()
+	})
+
+	t.Run("same-target rebases serialize", func(t *testing.T) {
+		// Two merges to the same target. The second rebase must not start
+		// until the first merge (rebase + FF) fully completes.
+		var callOrder []string
+		var orderMu sync.Mutex
+
+		firstRebaseStarted := make(chan struct{})
+		unblockFirst := make(chan struct{}) // test-controlled; unblocks first rebase
+
+		var callCount atomic.Int32
+
+		runner := &funcGitRunner{fn: func(_ context.Context, _ string, args ...string) (string, string, error) {
+			isRebase := len(args) >= 2 && args[0] == "rebase" && args[1] != "--abort"
+			if isRebase {
+				n := callCount.Add(1)
+				orderMu.Lock()
+				callOrder = append(callOrder, fmt.Sprintf("rebase%d", n))
+				orderMu.Unlock()
+				if n == 1 {
+					close(firstRebaseStarted)
+					<-unblockFirst // wait for test to release
+				}
+			}
+			if len(args) >= 1 && args[0] == "rev-list" {
+				return "1\n", "", nil
+			}
+			if len(args) == 2 && args[0] == "rev-parse" && args[1] == "--git-common-dir" {
+				return "/repo/.git\n", "", nil
+			}
+			if len(args) == 2 && args[0] == "rev-parse" && args[1] == "HEAD" {
+				return "sha\n", "", nil
+			}
+			return "", "", nil
+		}}
+
+		coord := NewCoordinator(runner)
+
+		var wg sync.WaitGroup
+
+		// First merge — blocks in rebase until unblockFirst is closed.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = coord.Merge(context.Background(), Opts{
+				Branch: "bead/first", Worktree: "/tmp/wt-1", TargetBranch: "main",
+			})
+		}()
+
+		// Wait for first rebase to start.
+		select {
+		case <-firstRebaseStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("first rebase did not start in time")
+		}
+
+		// Start second merge — it must block on the per-target lock.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = coord.Merge(context.Background(), Opts{
+				Branch: "bead/second", Worktree: "/tmp/wt-2", TargetBranch: "main",
+			})
+		}()
+
+		// Briefly yield so the second goroutine can reach the per-target lock.
+		waitFor(t, func() bool { return true }, 50*time.Millisecond)
+
+		// Only rebase1 should have started — second is blocked on the lock.
+		orderMu.Lock()
+		if len(callOrder) != 1 || callOrder[0] != "rebase1" {
+			orderMu.Unlock()
+			t.Fatalf("expected [rebase1] before unlock, got %v", callOrder)
+		}
+		orderMu.Unlock()
+
+		// Unblock first rebase. First merge completes; second then proceeds.
+		close(unblockFirst)
+		wg.Wait()
+
+		// Verify: rebase1 happened before rebase2 (serialized).
+		orderMu.Lock()
+		defer orderMu.Unlock()
+		if len(callOrder) != 2 {
+			t.Fatalf("expected 2 rebase calls, got %d: %v", len(callOrder), callOrder)
+		}
+		if callOrder[0] != "rebase1" || callOrder[1] != "rebase2" {
+			t.Errorf("expected [rebase1 rebase2], got %v", callOrder)
+		}
+	})
+
+	t.Run("global ffLock serializes all ff merges", func(t *testing.T) {
+		// Two merges to different targets. Rebases run in parallel (level-1 allows this),
+		// but FF merges must be serialized (level-2 global ffLock).
+		rebaseDone := make(chan struct{}, 2)
+		ffBlock := make(chan struct{})   // blocks first FF until signaled
+		ffStarted := make(chan struct{}) // signals when first FF starts
+
+		var ffOrder []string
+		var ffOrderMu sync.Mutex
+		var ffCount atomic.Int32
+		var ffStartedOnce sync.Once
+
+		runner := &funcGitRunner{fn: func(_ context.Context, _ string, args ...string) (string, string, error) {
+			switch {
+			case len(args) >= 2 && args[0] == "rebase" && args[1] != "--abort":
+				rebaseDone <- struct{}{} // signal rebase done
+			case len(args) >= 2 && args[0] == "merge" && args[1] == "--ff-only":
+				n := ffCount.Add(1)
+				ffOrderMu.Lock()
+				ffOrder = append(ffOrder, fmt.Sprintf("ff%d", n))
+				ffOrderMu.Unlock()
+				if n == 1 {
+					ffStartedOnce.Do(func() { close(ffStarted) })
+					<-ffBlock // block first FF
+				}
+			case len(args) >= 1 && args[0] == "rev-list":
+				return "1\n", "", nil
+			case len(args) == 2 && args[0] == "rev-parse" && args[1] == "--git-common-dir":
+				return "/repo/.git\n", "", nil
+			case len(args) == 2 && args[0] == "rev-parse" && args[1] == "HEAD":
+				return "sha\n", "", nil
+			}
+			return "", "", nil
+		}}
+
+		coord := NewCoordinator(runner)
+
+		var wg sync.WaitGroup
+		for _, tgt := range []string{"main", "epic/feat"} {
+			wg.Add(1)
+			tgt := tgt
+			go func() {
+				defer wg.Done()
+				_, _ = coord.Merge(context.Background(), Opts{
+					Branch:       "bead/" + tgt,
+					Worktree:     "/tmp/wt-" + tgt,
+					TargetBranch: tgt,
+				})
+			}()
+		}
+
+		// Wait for both rebases to finish.
+		for i := 0; i < 2; i++ {
+			select {
+			case <-rebaseDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("rebase did not complete in time")
+			}
+		}
+
+		// Wait for first FF to start, then verify second FF hasn't started yet.
+		select {
+		case <-ffStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("first FF merge did not start in time")
+		}
+
+		// At this point, first FF is blocked. Second FF must NOT have started.
+		ffOrderMu.Lock()
+		currentCount := len(ffOrder)
+		ffOrderMu.Unlock()
+		if currentCount != 1 {
+			t.Errorf("expected exactly 1 FF in progress while first blocks, got %d: %v", currentCount, ffOrder)
+		}
+
+		// Unblock first FF, let both complete.
+		close(ffBlock)
+		wg.Wait()
+
+		// Both FFs must have run sequentially (total = 2).
+		ffOrderMu.Lock()
+		defer ffOrderMu.Unlock()
+		if len(ffOrder) != 2 {
+			t.Errorf("expected 2 FF merges total, got %d: %v", len(ffOrder), ffOrder)
+		}
+	})
+}
+
+// TestAbortAll verifies AbortAll iterates all activeWorktrees and
+// Abort(target) aborts a single branch.
+func TestAbortAll(t *testing.T) {
+	t.Run("AbortAll iterates all active worktrees", func(t *testing.T) {
+		abortedWorktrees := make(chan string, 10)
+		rebaseStarted := make(chan struct{}, 2)
+		rebaseBlock := make(chan struct{})
+
+		runner := &funcGitRunner{fn: func(_ context.Context, dir string, args ...string) (string, string, error) {
+			switch {
+			case len(args) >= 2 && args[0] == "rebase" && args[1] == "--abort":
+				abortedWorktrees <- dir
+			case len(args) >= 2 && args[0] == "rebase":
+				rebaseStarted <- struct{}{}
+				<-rebaseBlock
+				return "", "", fmt.Errorf("aborted")
+			case len(args) >= 1 && args[0] == "rev-list":
+				return "1\n", "", nil
+			}
+			return "", "", nil
+		}}
+
+		coord := NewCoordinator(runner)
+
+		var wg sync.WaitGroup
+		for _, tgt := range []string{"main", "epic/feat"} {
+			wg.Add(1)
+			tgt := tgt
+			go func() {
+				defer wg.Done()
+				_, _ = coord.Merge(context.Background(), Opts{
+					Branch: "bead/" + tgt, Worktree: "/tmp/wt-" + tgt, TargetBranch: tgt,
+				})
+			}()
+		}
+
+		// Wait for both rebases to start.
+		for i := 0; i < 2; i++ {
+			select {
+			case <-rebaseStarted:
+			case <-time.After(2 * time.Second):
+				close(rebaseBlock)
+				t.Fatal("rebase did not start in time")
+			}
+		}
+
+		// Both rebases are in progress. Call AbortAll.
+		if err := coord.AbortAll(); err != nil {
+			t.Errorf("AbortAll returned error: %v", err)
+		}
+
+		// Unblock rebases so goroutines can finish.
+		close(rebaseBlock)
+		wg.Wait()
+
+		// Verify abort was called for each active worktree.
+		// AbortAll sends one abort per active worktree (2 total).
+		// handleRebaseFailure also sends abort calls after the rebase fails,
+		// so there may be more than 2 entries. We check that both distinct
+		// worktree paths appear at least once.
+		close(abortedWorktrees)
+		seen := make(map[string]bool)
+		for wt := range abortedWorktrees {
+			seen[wt] = true
+		}
+		if !seen["/tmp/wt-main"] || !seen["/tmp/wt-epic/feat"] {
+			t.Errorf("expected both worktrees aborted, got: %v", seen)
+		}
+	})
+
+	t.Run("AbortAll with no active merges is a no-op", func(t *testing.T) {
+		mock := &mockGitRunner{}
+		coord := NewCoordinator(mock)
+
+		if err := coord.AbortAll(); err != nil {
+			t.Errorf("AbortAll no-op returned error: %v", err)
+		}
+		if len(mock.getCalls()) != 0 {
+			t.Errorf("expected no git calls for no-op AbortAll, got %d", len(mock.getCalls()))
+		}
+	})
+
+	t.Run("Abort(target) aborts single branch", func(t *testing.T) {
+		abortDir := make(chan string, 1)
+		rebaseStarted := make(chan struct{})
+		rebaseBlock := make(chan struct{})
+
+		runner := &funcGitRunner{fn: func(_ context.Context, dir string, args ...string) (string, string, error) {
+			switch {
+			case len(args) >= 2 && args[0] == "rebase" && args[1] == "--abort":
+				abortDir <- dir
+			case len(args) >= 2 && args[0] == "rebase":
+				close(rebaseStarted)
+				<-rebaseBlock
+				return "", "", fmt.Errorf("aborted")
+			case len(args) >= 1 && args[0] == "rev-list":
+				return "1\n", "", nil
+			}
+			return "", "", nil
+		}}
+
+		coord := NewCoordinator(runner)
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := coord.Merge(context.Background(), Opts{
+				Branch: "bead/abc", Worktree: "/tmp/wt-abc", TargetBranch: "main",
+			})
+			done <- err
+		}()
+
+		select {
+		case <-rebaseStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatal("rebase did not start")
+		}
+
+		// Abort the single active merge by target.
+		if err := coord.Abort("main"); err != nil {
+			t.Errorf("Abort returned error: %v", err)
+		}
+
+		select {
+		case dir := <-abortDir:
+			if dir != "/tmp/wt-abc" {
+				t.Errorf("expected abort on /tmp/wt-abc, got %s", dir)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected git rebase --abort to be called")
+		}
+
+		close(rebaseBlock)
+		<-done
+	})
+
+	t.Run("Abort on non-existent target is a no-op", func(t *testing.T) {
+		mock := &mockGitRunner{}
+		coord := NewCoordinator(mock)
+
+		if err := coord.Abort("nonexistent"); err != nil {
+			t.Errorf("Abort no-op returned error: %v", err)
+		}
+		if len(mock.getCalls()) != 0 {
+			t.Errorf("expected no git calls, got %d", len(mock.getCalls()))
+		}
 	})
 }
 
