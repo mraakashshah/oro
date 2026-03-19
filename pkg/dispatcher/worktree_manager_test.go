@@ -1085,7 +1085,7 @@ func TestMergeFFOnly(t *testing.T) {
 	})
 
 	t.Run("not_ff_returns_error", func(t *testing.T) {
-		runner := &mockCommandRunner{err: fmt.Errorf("fatal: Not possible to fast-forward, aborting.")}
+		runner := &mockCommandRunner{err: fmt.Errorf("fatal: not possible to fast-forward, aborting")}
 		mgr := NewGitWorktreeManager("/repo", runner)
 
 		_, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/repo")

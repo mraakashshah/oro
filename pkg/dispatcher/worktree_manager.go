@@ -179,7 +179,7 @@ func (g *GitWorktreeManager) BranchExists(ctx context.Context, branch string) (b
 // path of the repository (or worktree) to run the merge in.
 // If the merge cannot be fast-forwarded, the git error (including stderr) is
 // returned wrapped.
-func (g *GitWorktreeManager) MergeFFOnly(ctx context.Context, branch string, target string) (commitSHA string, err error) {
+func (g *GitWorktreeManager) MergeFFOnly(ctx context.Context, branch, target string) (commitSHA string, err error) {
 	_, err = g.runner.Run(ctx, "git", "-C", target, "merge", "--ff-only", branch)
 	if err != nil {
 		return "", fmt.Errorf("ff-only merge of %s: %w", branch, err)
