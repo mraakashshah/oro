@@ -3137,6 +3137,135 @@ func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
 	}
 }
 
+func TestHandleDonePreservesEpicID(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Initialize database schema
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	epicID := "epic-test-1"
+	childID := "child-1"
+	workerID := "worker-epic-done"
+	worktree := "/tmp/worktree-" + childID
+
+	// Configure mock: after the child closes, AllChildrenClosed returns true.
+	beadSrc.allChildrenClosedMap = map[string]bool{
+		epicID: true,
+	}
+
+	// Manually set up a tracked worker with the child bead and epicID.
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		beadID:   childID,
+		epicID:   epicID, // parent epic
+		worktree: worktree,
+		state:    protocol.WorkerBusy,
+		encoder:  json.NewEncoder(nil), // dummy encoder
+	}
+	d.mu.Unlock()
+
+	// Send DONE message with QualityGatePassed=true
+	d.handleDone(ctx, workerID, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            childID,
+			WorkerID:          workerID,
+			QualityGatePassed: true,
+		},
+	})
+
+	// Wait for async merge and auto-close goroutine.
+	waitFor(t, func() bool {
+		beadSrc.mu.Lock()
+		defer beadSrc.mu.Unlock()
+		for _, id := range beadSrc.closed {
+			if id == epicID {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
+
+	// Verify the epic was auto-closed (proves epicID was captured and used).
+	beadSrc.mu.Lock()
+	epicClosed := false
+	for _, id := range beadSrc.closed {
+		if id == epicID {
+			epicClosed = true
+			break
+		}
+	}
+	beadSrc.mu.Unlock()
+
+	if !epicClosed {
+		t.Error("expected epic to be auto-closed when child completed with epicID preserved")
+	}
+}
+
+func TestHandleHandoffPreservesEpicContext(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	epicID := "epic-handoff-1"
+	childID := "child-handoff-1"
+	workerID := "worker-handoff-epic"
+	worktree := "/tmp/worktree-" + childID
+	baseBranch := "epic/" + epicID
+	targetBranch := "epic/" + epicID
+
+	// Set up a tracked worker with child bead, epicID, baseBranch, and targetBranch.
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		beadID:       childID,
+		epicID:       epicID,
+		worktree:     worktree,
+		baseBranch:   baseBranch,
+		targetBranch: targetBranch,
+		state:        protocol.WorkerBusy,
+		conn:         newMockConn(),        // provide mock connection for sendToWorker
+		encoder:      json.NewEncoder(nil), // dummy encoder
+	}
+	d.mu.Unlock()
+
+	// Send HANDOFF message
+	d.handleHandoff(ctx, workerID, protocol.Message{
+		Type: protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{
+			BeadID:         childID,
+			WorkerID:       workerID,
+			ContextSummary: "Test handoff with epic context",
+		},
+	})
+
+	// Verify pendingHandoff was populated with epic context.
+	d.mu.Lock()
+	pending, hasPending := d.pendingHandoffs[childID]
+	d.mu.Unlock()
+
+	if !hasPending {
+		t.Fatal("expected pendingHandoff to be created")
+	}
+
+	if pending.epicID != epicID {
+		t.Errorf("pending.epicID = %q, want %q", pending.epicID, epicID)
+	}
+	if pending.baseBranch != baseBranch {
+		t.Errorf("pending.baseBranch = %q, want %q", pending.baseBranch, baseBranch)
+	}
+	if pending.targetBranch != targetBranch {
+		t.Errorf("pending.targetBranch = %q, want %q", pending.targetBranch, targetBranch)
+	}
+	if pending.worktree != worktree {
+		t.Errorf("pending.worktree = %q, want %q", pending.worktree, worktree)
+	}
+}
+
 func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -6098,7 +6227,7 @@ func TestMergeClosesBead(t *testing.T) {
 	branch := "agent/" + beadID
 
 	// Call mergeAndComplete directly (white-box).
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "")
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
 
 	// Verify beads.Close was called with the correct bead ID.
 	beadSrc.mu.Lock()
@@ -6135,7 +6264,7 @@ func TestMergeAndCompleteEscalatesMergeComplete(t *testing.T) {
 	worktree := "/tmp/worktree-" + beadID
 	branch := "agent/" + beadID
 
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "")
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
 
 	found := false
 	for _, msg := range esc.Messages() {
@@ -6172,7 +6301,7 @@ func TestMergeCompleteEscalationAutoAcked(t *testing.T) {
 	branch := "agent/" + beadID
 
 	// Perform merge - this creates a MERGE_COMPLETE escalation
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "")
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
 
 	// Verify escalation was created with status='pending'
 	var escID int64
@@ -6252,7 +6381,7 @@ func TestMergeAndCompleteUsesTargetBranch(t *testing.T) {
 	branch := "agent/" + beadID
 
 	t.Run("explicit target branch", func(t *testing.T) {
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "epic/my-epic")
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "epic/my-epic")
 
 		calls := gitRunner.RebaseCalls()
 		if len(calls) == 0 {
@@ -6269,7 +6398,7 @@ func TestMergeAndCompleteUsesTargetBranch(t *testing.T) {
 	})
 
 	t.Run("empty target defaults to main", func(t *testing.T) {
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "")
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
 
 		calls := gitRunner.RebaseCalls()
 		last := calls[len(calls)-1]
@@ -9091,7 +9220,7 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		d.mu.Unlock()
 
 		// Trigger merge and complete (white-box test).
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
 
 		// Wait for async auto-close goroutine to close the epic.
 		waitFor(t, func() bool {
@@ -9166,7 +9295,7 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
 
 		// Wait for the child bead to be closed (confirms goroutine ran).
 		waitFor(t, func() bool {
@@ -9223,7 +9352,7 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		d.mu.Unlock()
 
 		// mergeAndComplete should complete successfully even if AllChildrenClosed errors.
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "", "")
 
 		// Wait for the child bead to be closed (merge flow not blocked).
 		waitFor(t, func() bool {
@@ -9291,7 +9420,7 @@ func TestEpicCompletionAlert(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
 
 		// Wait for async auto-close goroutine to produce escalation.
 		waitFor(t, func() bool {
@@ -9360,7 +9489,7 @@ func TestEpicCompletionAlert(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
 
 		// Wait for the epic to be auto-closed (confirms goroutine completed).
 		waitFor(t, func() bool {
@@ -9414,7 +9543,7 @@ func TestEpicCompletionAlert(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
 
 		// Wait for the epic to be auto-closed.
 		waitFor(t, func() bool {
@@ -9495,7 +9624,7 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acp1", "agent/"+childID, "")
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acp1", "agent/"+childID, epicID, "")
 
 		// Wait for async auto-close goroutine.
 		waitFor(t, func() bool {
@@ -9575,7 +9704,7 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acf1", "agent/"+childID, "")
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acf1", "agent/"+childID, epicID, "")
 
 		// Wait for async goroutine to run.
 		waitFor(t, func() bool {
@@ -9654,7 +9783,7 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-nc1", "agent/"+childID, "")
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-nc1", "agent/"+childID, epicID, "")
 
 		// Epic should still be closed (count-based fallback).
 		waitFor(t, func() bool {

@@ -177,9 +177,11 @@ type trackedWorker struct {
 // bead+worktree instead of going through normal assignment.
 type pendingHandoff struct {
 	beadID       string
+	epicID       string // parent epic ID if the bead is a child of an epic
 	worktree     string
+	baseBranch   string // branch the worktree was created from (main or epic/<epicID>)
+	targetBranch string // branch the worker's changes should merge into (same as baseBranch)
 	model        string
-	targetBranch string
 }
 
 // --- Config ---
@@ -729,9 +731,9 @@ func extractBeadID(msg protocol.Message) string {
 			return msg.Handoff.BeadID
 		}
 	case protocol.MsgReadyForReview:
-		if msg.ReadyForReview != nil {
-			return msg.ReadyForReview.BeadID
-		}
+		_, _ = msg.ReadyForReview,
+			msg.ReadyForReview.BeadID
+
 	case protocol.MsgReconnect:
 		if msg.Reconnect != nil {
 			return msg.Reconnect.BeadID
@@ -816,11 +818,13 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	// Get worktree from tracked worker
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
-	var worktree, branch string
+	var worktree, branch, epicID, targetBranch string
 	var isEpicDecomp bool
 	if ok {
 		worktree = w.worktree
 		branch = protocol.BranchPrefix + beadID
+		epicID = w.epicID             // Capture epicID before clearing
+		targetBranch = w.targetBranch // Capture targetBranch before clearing
 		isEpicDecomp = w.isEpicDecomp
 		w.state = protocol.WorkerIdle
 		w.beadID = ""
@@ -848,7 +852,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	}
 
 	// Merge in background
-	d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, w.targetBranch) })
+	d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch) })
 }
 
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
@@ -1070,7 +1074,7 @@ func (d *Dispatcher) guardMerge(beadID string) func() {
 	}
 }
 
-func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, targetBranch string) {
+func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, epicID, targetBranch string) {
 	defer d.guardMerge(beadID)()
 
 	result, err := d.merger.Merge(ctx, merge.Opts{
@@ -1089,7 +1093,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 				Worktree:      worktree,
 				ConflictFiles: conflictErr.Files,
 			})
-			d.safeGo(func() { d.handleMergeConflictResult(ctx, beadID, workerID, worktree, targetBranch, resultCh) })
+			d.safeGo(func() { d.handleMergeConflictResult(ctx, beadID, workerID, worktree, epicID, targetBranch, resultCh) })
 			_ = d.logEvent(ctx, "merge_conflict", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"files":%q}`, conflictErr.Files))
 			return
@@ -1111,7 +1115,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeComplete, beadID, "merged to main", result.CommitSHA), beadID, workerID)
 	// Auto-close parent epic if all children are completed.
-	d.autoCloseEpicIfComplete(ctx, workerID)
+	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 
 	// Trigger memory consolidation after every N bead completions.
@@ -1157,16 +1161,9 @@ func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID,
 	}
 }
 
-// autoCloseEpicIfComplete checks if the worker's bead has a parent epic and
+// autoCloseEpicIfComplete checks if the bead has a parent epic and
 // auto-closes the epic if all children are completed. Runs in a goroutine.
-func (d *Dispatcher) autoCloseEpicIfComplete(ctx context.Context, workerID string) {
-	d.mu.Lock()
-	var epicID string
-	if w, ok := d.workers[workerID]; ok {
-		epicID = w.epicID
-	}
-	d.mu.Unlock()
-
+func (d *Dispatcher) autoCloseEpicIfComplete(ctx context.Context, workerID, epicID string) {
 	if epicID == "" {
 		return
 	}
@@ -1283,7 +1280,7 @@ func parseAcceptanceCmd(ac string) string {
 }
 
 // handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
-func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, workerID, worktree, targetBranch string, resultCh <-chan ops.Result) {
+func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, workerID, worktree, epicID, targetBranch string, resultCh <-chan ops.Result) {
 	select {
 	case <-ctx.Done():
 		return
@@ -1292,7 +1289,7 @@ func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, work
 		case ops.VerdictResolved:
 			_ = d.logEvent(ctx, "merge_conflict_resolved", "ops", beadID, workerID, result.Feedback)
 			// Resolution succeeded — retry the merge.
-			d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, targetBranch)
+			d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, epicID, targetBranch)
 		default:
 			// Resolution failed or unknown verdict — escalate.
 			_ = d.logEvent(ctx, "merge_conflict_failed", "ops", beadID, workerID, result.Feedback)
@@ -1329,13 +1326,16 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 
 	d.persistBeadCount(ctx, beadID, "handoff_count", handoffCount)
 
-	// Send SHUTDOWN to the old worker and capture worktree+model for respawn.
+	// Send SHUTDOWN to the old worker and capture worktree+model+epic context for respawn.
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
-	var worktree, model string
+	var worktree, model, epicID, baseBranch, targetBranch string
 	if ok {
 		worktree = w.worktree
 		model = w.model
+		epicID = w.epicID             // Capture epicID before clearing
+		baseBranch = w.baseBranch     // Capture baseBranch before clearing
+		targetBranch = w.targetBranch // Capture targetBranch before clearing
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
 		w.beadID = ""
@@ -1354,7 +1354,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		return
 	}
 
-	d.respawnWorker(ctx, beadID, worktree, model)
+	d.respawnWorker(ctx, beadID, worktree, model, epicID, baseBranch, targetBranch)
 }
 
 // handleHandoffExhaustion spawns a diagnosis agent and creates a continuation bead
@@ -1390,12 +1390,15 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 }
 
 // respawnWorker stores a pending handoff and spawns a fresh worker process.
-func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model string) {
+func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model, epicID, baseBranch, targetBranch string) {
 	d.mu.Lock()
 	d.pendingHandoffs[beadID] = &pendingHandoff{
-		beadID:   beadID,
-		worktree: worktree,
-		model:    model,
+		beadID:       beadID,
+		epicID:       epicID,
+		worktree:     worktree,
+		baseBranch:   baseBranch,
+		targetBranch: targetBranch,
+		model:        model,
 	}
 	d.mu.Unlock()
 
@@ -2077,12 +2080,13 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 		}
 
 		// Send SHUTDOWN, capture worktree, and clear worker state under lock.
-		var worktree, targetBranch string
+		var worktree, epicID, targetBranch string
 		d.mu.Lock()
 		if w, ok := d.workers[a.workerID]; ok && w.beadID == a.beadID {
 			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 			worktree = w.worktree
-			targetBranch = w.targetBranch
+			epicID = w.epicID             // Capture epicID before clearing
+			targetBranch = w.targetBranch // Capture targetBranch before clearing
 			w.state = protocol.WorkerIdle
 			w.beadID = ""
 			w.epicID = ""
@@ -2097,7 +2101,7 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 			beadID := a.beadID
 			workerID := a.workerID
 			branch := protocol.BranchPrefix + beadID
-			d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, targetBranch) })
+			d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch) })
 		} else {
 			// No worktree — just complete the DB record and clear tracking.
 			_ = d.completeAssignment(ctx, a.beadID)
