@@ -1086,7 +1086,7 @@ func TestEpicDecompPromptOmitsBranchWhenBeadIDEmpty(t *testing.T) {
 
 // TestPromptContainsContextThresholds verifies that the worker prompt includes
 // Layer 1 context handoff instructions: "atomic step" guidance, per-model soft and
-// hard threshold percentages (opus 65/85, sonnet 50/70, haiku 40/60), and a
+// hard threshold percentages (all models 40/50), and a
 // "create-handoff" instruction.
 func TestPromptContainsContextThresholds(t *testing.T) {
 	t.Parallel()
@@ -1113,18 +1113,14 @@ func TestPromptContainsContextThresholds(t *testing.T) {
 		t.Error("expected prompt to contain 'create-handoff' instruction")
 	}
 
-	// Must contain soft threshold percentages for all models
-	for _, pct := range []string{"65%", "50%", "40%"} {
-		if !strings.Contains(prompt, pct) {
-			t.Errorf("expected prompt to contain soft threshold %q", pct)
-		}
+	// Must contain soft threshold percentage (40% for all models)
+	if !strings.Contains(prompt, "40%") {
+		t.Error("expected prompt to contain soft threshold '40%'")
 	}
 
-	// Must contain hard threshold percentages for all models (soft + 10)
-	for _, pct := range []string{"75%", "60%", "50%"} {
-		if !strings.Contains(prompt, pct) {
-			t.Errorf("expected prompt to contain hard threshold %q", pct)
-		}
+	// Must contain hard threshold percentage (50% for all models)
+	if !strings.Contains(prompt, "50%") {
+		t.Error("expected prompt to contain hard threshold '50%'")
 	}
 }
 

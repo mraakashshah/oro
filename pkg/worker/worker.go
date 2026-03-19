@@ -41,7 +41,7 @@ const DefaultContextPollInterval = 5 * time.Second
 const DefaultHeartbeatInterval = 10 * time.Second
 
 // DefaultThreshold is the fallback context percentage when thresholds.json is missing or model unknown.
-const DefaultThreshold = 50
+const DefaultThreshold = 40
 
 // thresholds holds per-model context percentage thresholds loaded from <worktree>/.oro/thresholds.json.
 type thresholds struct {

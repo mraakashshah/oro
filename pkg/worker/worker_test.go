@@ -2632,13 +2632,13 @@ func TestHandleContextThreshold(t *testing.T) {
 	w := worker.NewWithConn("w-threshold", workerConn, spawner)
 	w.SetContextPollInterval(50 * time.Millisecond)
 
-	// Create worktree with thresholds.json (opus=65, hard stop = 75)
+	// Create worktree with thresholds.json (opus=40, hard stop = 50)
 	tmpDir := t.TempDir()
 	oroDir := filepath.Join(tmpDir, ".oro")
 	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "thresholds.json"), []byte(`{"opus": 65}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "thresholds.json"), []byte(`{"opus": 40}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2660,8 +2660,8 @@ func TestHandleContextThreshold(t *testing.T) {
 	// Drain STATUS message
 	_ = readMessage(t, dispatcherConn)
 
-	// Write pct between soft (65) and hard (85) — should NOT trigger handoff
-	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("70"), 0o600); err != nil {
+	// Write pct between soft (40) and hard (50) — should NOT trigger handoff
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("45"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2677,8 +2677,8 @@ func TestHandleContextThreshold(t *testing.T) {
 		t.Fatal(".oro/compacted flag should not be created — two-stage logic removed")
 	}
 
-	// Write pct above hard stop (85) — should trigger single-stage handoff+kill
-	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("90"), 0o600); err != nil {
+	// Write pct above hard stop (50) — should trigger single-stage handoff+kill
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("55"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3927,21 +3927,21 @@ func TestClaudeSpawnerSetsStdinToDevNull(t *testing.T) {
 // TestHardStopThresholds verifies that each model family triggers a hard stop
 // at exactly threshold+10, derived from thresholds.json:
 //
-//	opus:   65 + 10 = 75
-//	sonnet: 50 + 10 = 60
+//	opus:   40 + 10 = 50
+//	sonnet: 40 + 10 = 50
 //	haiku:  40 + 10 = 50
 func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven integration test with parallel subtests
 	t.Parallel()
 
-	thresholdsData := `{"opus": 65, "sonnet": 50, "haiku": 40}`
+	thresholdsData := `{"opus": 40, "sonnet": 40, "haiku": 40}`
 
 	cases := []struct {
 		name     string
 		model    string
 		hardStop int
 	}{
-		{name: "opus", model: "opus", hardStop: 75},     // 65 + 10
-		{name: "sonnet", model: "sonnet", hardStop: 60}, // 50 + 10
+		{name: "opus", model: "opus", hardStop: 50},     // 40 + 10
+		{name: "sonnet", model: "sonnet", hardStop: 50}, // 40 + 10
 		{name: "haiku", model: "haiku", hardStop: 50},   // 40 + 10
 	}
 
