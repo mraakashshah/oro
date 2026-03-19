@@ -458,6 +458,56 @@ func runMockPIDDispatcher(ctx context.Context, t *testing.T, sockPath, statusJSO
 	}
 }
 
+func TestSignalHandlerKillsDolt(t *testing.T) {
+	// Test that signal handler cleans up dolt when receiving SIGINT.
+	beadsDir := t.TempDir()
+	doltPIDPath := filepath.Join(beadsDir, "dolt-server.pid")
+	doltPortPath := filepath.Join(beadsDir, "dolt-server.port")
+
+	// Write a dolt PID file with a non-existent PID (already dead).
+	// Signal handler should detect this and clean up the PID/port files.
+	deadPID := 4000000
+	if err := os.WriteFile(doltPIDPath, []byte(strconv.Itoa(deadPID)), 0o600); err != nil {
+		t.Fatalf("setup: write dolt PID file: %v", err)
+	}
+	if err := os.WriteFile(doltPortPath, []byte("13308"), 0o600); err != nil {
+		t.Fatalf("setup: write dolt port file: %v", err)
+	}
+
+	daemonPIDFile := filepath.Join(t.TempDir(), "oro.pid")
+	if err := WritePIDFile(daemonPIDFile, os.Getpid()); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// SetupSignalHandler with beads directory should clean up dolt on signal.
+	shutdownCtx, cleanupFn := SetupSignalHandlerWithDolt(ctx, daemonPIDFile, nil, beadsDir)
+	defer cleanupFn()
+
+	// Send SIGINT (always honored).
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("sending SIGINT: %v", err)
+	}
+
+	// Wait for shutdown.
+	select {
+	case <-shutdownCtx.Done():
+		// OK — context was cancelled by signal handler.
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for signal handler to cancel context")
+	}
+
+	// Verify dolt PID/port files were cleaned up.
+	if _, err := os.Stat(doltPIDPath); !os.IsNotExist(err) {
+		t.Error("dolt-server.pid should be removed by signal handler")
+	}
+	if _, err := os.Stat(doltPortPath); !os.IsNotExist(err) {
+		t.Error("dolt-server.port should be removed by signal handler")
+	}
+}
+
 func TestSignalHandlerNoDolt(t *testing.T) {
 	t.Run("cleanup does not touch dolt files", func(t *testing.T) {
 		beadsDir := t.TempDir()

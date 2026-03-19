@@ -220,6 +220,54 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 	return ctx, cleanup
 }
 
+// SetupSignalHandlerWithDolt is like SetupSignalHandler but also kills the dolt server
+// for the given beads directory when a signal is received.
+func SetupSignalHandlerWithDolt(parent context.Context, pidPath string, authorized *atomic.Bool, beadsDir string) (shutdownCtx context.Context, cleanup func()) {
+	ctx, cancel := context.WithCancel(parent)
+
+	signal.Ignore(syscall.SIGPIPE)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		for {
+			select {
+			case sig := <-sigCh:
+				// SIGINT: always honor (human Ctrl+C).
+				if sig == syscall.SIGINT {
+					fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
+					_ = stopDoltServer(beadsDir)
+					cancel()
+					signal.Stop(sigCh)
+					return
+				}
+				// SIGTERM: check authorization.
+				if authorized != nil && !authorized.Load() {
+					fmt.Fprintf(os.Stderr, "shutdown: ignoring %v — not authorized (use 'oro stop'); PID %d\n", sig, os.Getpid())
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
+				dumpProcessSnapshot()
+				_ = stopDoltServer(beadsDir)
+				cancel()
+				signal.Stop(sigCh)
+				return
+			case <-ctx.Done():
+				signal.Stop(sigCh)
+				return
+			}
+		}
+	}()
+
+	cleanup = func() {
+		cancel()
+		_ = RemovePIDFile(pidPath)
+	}
+
+	return ctx, cleanup
+}
+
 // dumpProcessSnapshot logs all oro-related processes at signal receipt time.
 // This helps identify which process sent the fatal signal.
 func dumpProcessSnapshot() {
