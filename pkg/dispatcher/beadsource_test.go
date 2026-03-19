@@ -1371,39 +1371,163 @@ func TestCLIBeadSource_Show_PopulatesEpic(t *testing.T) {
 	})
 }
 
+// TestCLIBeadSource_Ready_ExtractsMetadataModel verifies that Ready() extracts
+// metadata.model into bead.Model when no top-level model is set.
 func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
-	// Simulate bd ready --json output where beads include metadata with a model field.
-	// The Bead struct should populate Model from metadata.model if present.
-	raw := `[
-		{"id":"oro-1","title":"Opus task","priority":1,"metadata":{"model":"opus"}},
-		{"id":"oro-2","title":"Sonnet task","priority":2,"metadata":{"model":"sonnet"}},
-		{"id":"oro-3","title":"No metadata task","priority":3}
-	]`
+	t.Run("metadata_model_opus_sets_bead_model", func(t *testing.T) {
+		raw := `[{"id":"oro-1","title":"Opus task","priority":1,"metadata":{"model":"opus"}}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].Model != "opus" {
+			t.Errorf("Model: got %q, want %q", got[0].Model, "opus")
+		}
+	})
+
+	t.Run("mixed_type_metadata_deserializes_successfully", func(t *testing.T) {
+		// model=opus (string) and count=42 (number) in same metadata map.
+		raw := `[{"id":"oro-2","title":"Mixed metadata","priority":1,"metadata":{"model":"opus","count":42}}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].Model != "opus" {
+			t.Errorf("Model: got %q, want %q", got[0].Model, "opus")
+		}
+	})
+
+	t.Run("invalid_model_gpt4_stays_empty", func(t *testing.T) {
+		raw := `[{"id":"oro-3","title":"GPT task","priority":1,"metadata":{"model":"gpt4"}}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].Model != "" {
+			t.Errorf("Model: got %q, want empty (invalid model not in allowlist)", got[0].Model)
+		}
+	})
+
+	t.Run("nil_metadata_is_no_op", func(t *testing.T) {
+		raw := `[{"id":"oro-4","title":"No metadata","priority":1}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].Model != "" {
+			t.Errorf("Model: got %q, want empty (nil metadata is no-op)", got[0].Model)
+		}
+	})
+
+	t.Run("explicit_top_level_model_not_overwritten", func(t *testing.T) {
+		// top-level model="sonnet" + metadata.model="opus" → sonnet wins.
+		raw := `[{"id":"oro-5","title":"Explicit model","priority":1,"model":"sonnet","metadata":{"model":"opus"}}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].Model != "sonnet" {
+			t.Errorf("Model: got %q, want %q (explicit top-level model not overwritten)", got[0].Model, "sonnet")
+		}
+	})
+
+	t.Run("non_string_model_value_is_no_op", func(t *testing.T) {
+		raw := `[{"id":"oro-6","title":"Non-string model","priority":1,"metadata":{"model":42}}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].Model != "" {
+			t.Errorf("Model: got %q, want empty (non-string model value is no-op)", got[0].Model)
+		}
+	})
+}
+
+// TestCLIBeadSource_InProgress_ExtractsMetadataModel verifies InProgress() also
+// promotes metadata.model into bead.Model.
+func TestCLIBeadSource_InProgress_ExtractsMetadataModel(t *testing.T) {
+	raw := `[{"id":"oro-7","title":"In-progress opus","priority":1,"metadata":{"model":"opus"}}]`
 	runner := &mockCommandRunner{output: []byte(raw)}
 	src := NewCLIBeadSource(runner)
 
-	got, err := src.Ready(context.Background())
+	got, err := src.InProgress(context.Background())
 	if err != nil {
-		t.Fatalf("Ready: %v", err)
+		t.Fatalf("InProgress: %v", err)
 	}
-	if len(got) != 3 {
-		t.Fatalf("expected 3 beads, got %d", len(got))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 bead, got %d", len(got))
 	}
-
-	// First bead with metadata.model = "opus"
 	if got[0].Model != "opus" {
-		t.Errorf("bead[0].Model: got %q, want %q", got[0].Model, "opus")
+		t.Errorf("Model: got %q, want %q", got[0].Model, "opus")
 	}
+}
 
-	// Second bead with metadata.model = "sonnet"
-	if got[1].Model != "sonnet" {
-		t.Errorf("bead[1].Model: got %q, want %q", got[1].Model, "sonnet")
-	}
+// TestCLIBeadSource_Show_ExtractsMetadataModel verifies Show() promotes
+// metadata.model into detail.Model.
+func TestCLIBeadSource_Show_ExtractsMetadataModel(t *testing.T) {
+	t.Run("extracts_metadata_model_into_detail", func(t *testing.T) {
+		raw := `[{"id":"oro-8","title":"Opus detail","description":"desc","acceptance_criteria":"ac","metadata":{"model":"opus"}}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
 
-	// Third bead without metadata
-	if got[2].Model != "" {
-		t.Errorf("bead[2].Model: got %q, want empty (no metadata)", got[2].Model)
-	}
+		got, err := src.Show(context.Background(), "oro-8")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if got.Model != "opus" {
+			t.Errorf("Model: got %q, want %q", got.Model, "opus")
+		}
+	})
+
+	t.Run("explicit_top_level_model_not_overwritten_in_detail", func(t *testing.T) {
+		raw := `[{"id":"oro-9","title":"Sonnet detail","description":"desc","acceptance_criteria":"ac","model":"sonnet","metadata":{"model":"opus"}}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Show(context.Background(), "oro-9")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if got.Model != "sonnet" {
+			t.Errorf("Model: got %q, want %q (explicit model not overwritten)", got.Model, "sonnet")
+		}
+	})
 }
 
 // sliceContains checks if a string slice contains a given string.

@@ -36,16 +36,7 @@ func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
 	if err := json.Unmarshal(out, &beads); err != nil {
 		return nil, fmt.Errorf("parse bd ready output: %w", err)
 	}
-
-	// Extract model from metadata if present and Model field is empty.
-	for i := range beads {
-		if beads[i].Model == "" {
-			if m, ok := beads[i].Metadata["model"].(string); ok && m != "" {
-				beads[i].Model = m
-			}
-		}
-	}
-
+	extractMetadataModel(beads)
 	return beads, nil
 }
 
@@ -64,6 +55,7 @@ func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error)
 	if len(beads) == 0 {
 		return nil, nil
 	}
+	extractMetadataModel(beads)
 	return beads, nil
 }
 
@@ -95,7 +87,52 @@ func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDeta
 	if detail.AcceptanceCriteria == "" && detail.Description != "" {
 		detail.AcceptanceCriteria = extractACFromDescription(detail.Description)
 	}
+	extractMetadataModelDetail(detail)
 	return detail, nil
+}
+
+// allowedModels is the set of model values accepted from metadata.
+var allowedModels = map[string]bool{
+	protocol.ModelOpus:   true,
+	protocol.ModelSonnet: true,
+	protocol.ModelHaiku:  true,
+}
+
+// extractMetadataModel promotes metadata["model"] into Bead.Model for each bead
+// that has no explicit top-level Model set. Only allowlisted values are accepted;
+// nil metadata and non-string values are silently ignored.
+func extractMetadataModel(beads []protocol.Bead) {
+	for i := range beads {
+		if beads[i].Model != "" || beads[i].Metadata == nil {
+			continue
+		}
+		val, ok := beads[i].Metadata["model"]
+		if !ok {
+			continue
+		}
+		model, ok := val.(string)
+		if !ok || !allowedModels[model] {
+			continue
+		}
+		beads[i].Model = model
+	}
+}
+
+// extractMetadataModelDetail promotes metadata["model"] into BeadDetail.Model
+// when no explicit top-level Model is set. Allowlist and type rules match extractMetadataModel.
+func extractMetadataModelDetail(detail *protocol.BeadDetail) {
+	if detail == nil || detail.Model != "" || detail.Metadata == nil {
+		return
+	}
+	val, ok := detail.Metadata["model"]
+	if !ok {
+		return
+	}
+	model, ok := val.(string)
+	if !ok || !allowedModels[model] {
+		return
+	}
+	detail.Model = model
 }
 
 // extractACFromDescription extracts the acceptance criteria section from a
