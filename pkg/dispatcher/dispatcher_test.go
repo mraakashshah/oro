@@ -13490,3 +13490,27 @@ func TestBuildSearchQuery_WithLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractBeadID_ReconnectReturnsBeadID(t *testing.T) {
+	msg := protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: "w1",
+			BeadID:   "bead-abc",
+		},
+	}
+	got := extractBeadID(msg)
+	if got != "bead-abc" {
+		t.Errorf("extractBeadID(MsgReconnect) = %q, want %q", got, "bead-abc")
+	}
+}
+
+func TestExtractBeadID_ReconnectNilPayloadReturnsEmpty(t *testing.T) {
+	msg := protocol.Message{
+		Type: protocol.MsgReconnect,
+	}
+	got := extractBeadID(msg)
+	if got != "" {
+		t.Errorf("extractBeadID(MsgReconnect nil payload) = %q, want empty", got)
+	}
+}
