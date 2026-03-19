@@ -212,6 +212,7 @@ type mockWorktreeManager struct {
 	createFn        func(ctx context.Context, beadID, baseBranch string) (string, string, error)
 	removeFn        func(ctx context.Context, path string) error
 	deleteBranchFn  func(branch string) error
+	branchExistsFn  func(ctx context.Context, branch string) (bool, error)
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (string, string, error) {
@@ -258,8 +259,14 @@ func (m *mockWorktreeManager) Prune(ctx context.Context) error {
 	return nil
 }
 
-func (m *mockWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
-	return false, nil
+func (m *mockWorktreeManager) BranchExists(ctx context.Context, branch string) (bool, error) {
+	m.mu.Lock()
+	fn := m.branchExistsFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, branch)
+	}
+	return true, nil // default: branch exists; set branchExistsFn to simulate missing branch
 }
 
 func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string) (string, error) {
@@ -12644,4 +12651,127 @@ func TestShutdownCallsAbortAll(t *testing.T) {
 	}
 
 	close(spy.blockCh) // unblock the merge goroutine so it can exit
+}
+
+func TestAssignBeadResolvesBaseBranch(t *testing.T) { //nolint:funlen // integration test with subtests
+	t.Run("standalone bead uses main as base and target", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-standalone", Title: "Standalone", Priority: 1}})
+
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected ASSIGN")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN, got %s", msg.Type)
+		}
+		if msg.Assign.TargetBranch != "main" {
+			t.Errorf("TargetBranch = %q, want %q", msg.Assign.TargetBranch, "main")
+		}
+
+		waitForWorkerState(t, d, "w1", protocol.WorkerBusy, time.Second)
+
+		d.mu.Lock()
+		w := d.workers["w1"]
+		baseBranch := w.baseBranch
+		targetBranch := w.targetBranch
+		d.mu.Unlock()
+
+		if baseBranch != "main" {
+			t.Errorf("w.baseBranch = %q, want %q", baseBranch, "main")
+		}
+		if targetBranch != "main" {
+			t.Errorf("w.targetBranch = %q, want %q", targetBranch, "main")
+		}
+	})
+
+	t.Run("epic child uses epic branch as base and target", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+		// Epic branch exists.
+		wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+			return branch == "epic/epic-xyz", nil
+		}
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-child", Title: "Child bead", Priority: 1, Epic: "epic-xyz"}})
+
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected ASSIGN")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN, got %s", msg.Type)
+		}
+		if msg.Assign.TargetBranch != "epic/epic-xyz" {
+			t.Errorf("TargetBranch = %q, want %q", msg.Assign.TargetBranch, "epic/epic-xyz")
+		}
+
+		waitForWorkerState(t, d, "w1", protocol.WorkerBusy, time.Second)
+
+		d.mu.Lock()
+		w := d.workers["w1"]
+		baseBranch := w.baseBranch
+		targetBranch := w.targetBranch
+		d.mu.Unlock()
+
+		if baseBranch != "epic/epic-xyz" {
+			t.Errorf("w.baseBranch = %q, want %q", baseBranch, "epic/epic-xyz")
+		}
+		if targetBranch != "epic/epic-xyz" {
+			t.Errorf("w.targetBranch = %q, want %q", targetBranch, "epic/epic-xyz")
+		}
+	})
+
+	t.Run("epic child escalates when epic branch does not exist", func(t *testing.T) {
+		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+
+		// Epic branch does NOT exist.
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return false, nil
+		}
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-child-missing", Title: "Child bead missing branch", Priority: 1, Epic: "epic-missing"}})
+
+		// Bead must NOT be assigned.
+		msg, ok := readMsg(t, conn, time.Second)
+		if ok && msg.Type == protocol.MsgAssign {
+			t.Fatal("bead should not be assigned when epic branch does not exist")
+		}
+
+		// An escalation must be sent.
+		waitFor(t, func() bool {
+			return len(esc.Messages()) > 0
+		}, 2*time.Second)
+	})
 }

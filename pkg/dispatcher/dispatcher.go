@@ -158,6 +158,8 @@ type trackedWorker struct {
 	epicID           string // parent epic ID if the assigned bead is a child of an epic
 	isEpicDecomp     bool   // true when worker is assigned an epic for decomposition (no merge on done)
 	worktree         string
+	baseBranch       string // branch the worktree was created from (main or epic/<epicID>)
+	targetBranch     string // branch the worker's changes should merge into (same as baseBranch)
 	model            string // resolved model for the current bead assignment
 	lastSeen         time.Time
 	lastProgress     time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
@@ -2206,7 +2208,7 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 	return title, acceptance, true
 }
 
-func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) error { //nolint:funlen // orchestration logic, splitting would obscure flow
+func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
 	}
@@ -2255,6 +2257,29 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 
 	var worktree, branch string
 	var err error
+	// Resolve the base/target branch for this bead.
+	// Epic children branch from and merge back to the epic branch; standalone beads use main.
+	baseBranch := "main"
+	if bead.Epic != "" {
+		baseBranch = protocol.EpicBranchPrefix + bead.Epic
+		// Escalate if the epic branch does not exist yet.
+		exists, beErr := d.worktrees.BranchExists(ctx, baseBranch)
+		if beErr != nil || !exists {
+			reason := fmt.Sprintf("epic branch %q not found for bead %s", baseBranch, bead.ID)
+			if beErr != nil {
+				reason = fmt.Sprintf("checking epic branch %q: %v", baseBranch, beErr)
+			}
+			_ = d.logEvent(ctx, "epic_branch_missing", "dispatcher", bead.ID, w.id, reason)
+			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, bead.ID, "epic branch missing", reason), bead.ID, w.id)
+			_ = d.beads.Update(ctx, bead.ID, "ready")
+			d.mu.Lock()
+			delete(d.assigningBeads, bead.ID)
+			d.mu.Unlock()
+			return nil
+		}
+	}
+	targetBranch := baseBranch
+
 	if existingWorktree != "" {
 		// Reuse existing worktree.
 		worktree = existingWorktree
@@ -2262,11 +2287,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "worktree_reused", "dispatcher", bead.ID, w.id,
 			fmt.Sprintf(`{"worktree":%q}`, worktree))
 	} else {
-		// Create new worktree, branching from the epic branch when set.
-		baseBranch := "main"
-		if bead.Epic != "" {
-			baseBranch = protocol.BranchPrefix + bead.Epic
-		}
+		// Create new worktree, branching from the resolved base branch.
 		worktree, branch, err = d.worktrees.Create(ctx, bead.ID, baseBranch)
 		if err != nil {
 			_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())
@@ -2311,6 +2332,8 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.epicID = bead.Epic // store parent epic ID for auto-close on merge
 	w.isEpicDecomp = isEpicDecomp
 	w.worktree = worktree
+	w.baseBranch = baseBranch
+	w.targetBranch = targetBranch
 	w.model = resolvedModel
 	w.lastProgress = d.nowFunc()
 	err = d.sendToWorker(w, protocol.Message{
@@ -2324,6 +2347,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			Title:               title,
 			AcceptanceCriteria:  acceptance,
 			IsEpicDecomposition: isEpicDecomp,
+			TargetBranch:        targetBranch,
 		},
 	})
 	if err != nil {
@@ -2332,6 +2356,8 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		w.epicID = ""
 		w.isEpicDecomp = false
 		w.worktree = ""
+		w.baseBranch = ""
+		w.targetBranch = ""
 		w.model = ""
 		delete(d.worktreeByBead, bead.ID) // clear stale entry so next assignment creates a fresh worktree (oro-fhn3)
 	}
