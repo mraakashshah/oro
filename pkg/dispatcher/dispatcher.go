@@ -731,9 +731,9 @@ func extractBeadID(msg protocol.Message) string {
 			return msg.Handoff.BeadID
 		}
 	case protocol.MsgReadyForReview:
-		_, _ = msg.ReadyForReview,
-			msg.ReadyForReview.BeadID
-
+		if msg.ReadyForReview != nil {
+			return msg.ReadyForReview.BeadID
+		}
 	case protocol.MsgReconnect:
 		if msg.Reconnect != nil {
 			return msg.Reconnect.BeadID

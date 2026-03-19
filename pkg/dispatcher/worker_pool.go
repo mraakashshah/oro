@@ -78,11 +78,9 @@ func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 
 func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	d.mu.Lock()
-	// Consume the pending managed ID if present.
+	// Consume the pending managed ID if present (delete is no-op if absent).
 	managed := d.pendingManagedIDs[id]
-	if managed {
-		delete(d.pendingManagedIDs, id)
-	}
+	delete(d.pendingManagedIDs, id)
 	d.upsertWorker(id, conn, managed)
 
 	// Check for pending ralph handoffs — assign immediately if one exists.
@@ -100,6 +98,9 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		w.beadID = h.beadID
 		w.worktree = h.worktree
 		w.model = h.model
+		w.epicID = h.epicID
+		w.baseBranch = h.baseBranch
+		w.targetBranch = h.targetBranch
 		w.lastProgress = d.nowFunc()
 
 		// Retrieve relevant memories (best-effort, outside lock).
