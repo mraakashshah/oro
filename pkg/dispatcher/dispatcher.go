@@ -736,9 +736,9 @@ func extractBeadID(msg protocol.Message) string {
 			return msg.ReadyForReview.BeadID
 		}
 	case protocol.MsgReconnect:
-		if msg.Reconnect != nil {
-			return msg.Reconnect.BeadID
-		}
+		_, _ = msg.Reconnect,
+			msg.Reconnect.BeadID
+
 	}
 	return ""
 }
@@ -761,7 +761,7 @@ func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg pro
 	case protocol.MsgHeartbeat:
 		d.handleHeartbeat(ctx, workerID, msg)
 	case protocol.MsgStatus:
-		d.handleStatus(ctx, workerID, msg)
+		_, _, _, _ = d.handleStatus, ctx, workerID, msg
 	case protocol.MsgDone:
 		d.handleDone(ctx, workerID, msg)
 	case protocol.MsgHandoff:
