@@ -1518,3 +1518,105 @@ func TestAssemblePrompt_GitHistoryEmpty(t *testing.T) {
 		t.Error("expected prompt to omit '## Git History' section when GitLog is empty")
 	}
 }
+
+// TestAssemblePrompt_WorkerProgramPresent verifies that the Worker Program section
+// is rendered conditionally: present when PromptParams.WorkerProgram is non-empty,
+// omitted when empty, and positioned correctly between Coding Rules and TDD sections.
+func TestAssemblePrompt_WorkerProgramPresent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("section_omitted_when_empty", func(t *testing.T) {
+		t.Parallel()
+
+		params := worker.PromptParams{
+			BeadID:             "bead-no-program",
+			Title:              "No worker program",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "Some context",
+			WorkerProgram:      "", // Empty
+			WorktreePath:       "/tmp/wt-no-program",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		if strings.Contains(prompt, "## Worker Program") {
+			t.Error("expected ## Worker Program section to be omitted when WorkerProgram is empty")
+		}
+	})
+
+	t.Run("section_present_when_non_empty", func(t *testing.T) {
+		t.Parallel()
+
+		workerProgram := `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("Hello from worker program")
+}`
+
+		params := worker.PromptParams{
+			BeadID:             "bead-with-program",
+			Title:              "With worker program",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "Some context",
+			WorkerProgram:      workerProgram,
+			WorktreePath:       "/tmp/wt-with-program",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		if !strings.Contains(prompt, "## Worker Program") {
+			t.Error("expected ## Worker Program section to be present when WorkerProgram is non-empty")
+		}
+
+		if !strings.Contains(prompt, workerProgram) {
+			t.Error("expected prompt to contain the WorkerProgram content")
+		}
+	})
+
+	t.Run("section_ordering", func(t *testing.T) {
+		t.Parallel()
+
+		workerProgram := `func example() { return nil }`
+
+		params := worker.PromptParams{
+			BeadID:             "bead-order-test",
+			Title:              "Order test",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			MemoryContext:      "Some context",
+			WorkerProgram:      workerProgram,
+			WorktreePath:       "/tmp/wt-order",
+			Model:              "opus",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		codingRulesIdx := strings.Index(prompt, "## Coding Rules")
+		workerProgramIdx := strings.Index(prompt, "## Worker Program")
+		tddIdx := strings.Index(prompt, "## TDD")
+
+		if codingRulesIdx == -1 {
+			t.Fatal("## Coding Rules section not found in prompt")
+		}
+		if workerProgramIdx == -1 {
+			t.Fatal("## Worker Program section not found in prompt")
+		}
+		if tddIdx == -1 {
+			t.Fatal("## TDD section not found in prompt")
+		}
+
+		if workerProgramIdx <= codingRulesIdx {
+			t.Errorf("expected ## Worker Program (at %d) to appear after ## Coding Rules (at %d)", workerProgramIdx, codingRulesIdx)
+		}
+
+		if workerProgramIdx >= tddIdx {
+			t.Errorf("expected ## Worker Program (at %d) to appear before ## TDD (at %d)", workerProgramIdx, tddIdx)
+		}
+	})
+}
