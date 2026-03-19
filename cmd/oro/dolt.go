@@ -23,6 +23,13 @@ const (
 	// SharedDoltPort is the fixed TCP port for the machine-wide shared Dolt server
 	// stored in ~/.oro/. All projects that opt into shared-server mode connect here.
 	SharedDoltPort = 13307
+
+	// doltUpstreamDefaultPort is the default MySQL-compatible port that dolt
+	// sql-server uses when no --port flag is given (upstream default). We treat
+	// this as a sentinel: metadata.json files written before oro assigned a
+	// derived port will have dolt_server_port=3307, and ensureDoltMetadata
+	// should overwrite it with the project-specific derived port.
+	doltUpstreamDefaultPort = 3307
 )
 
 // doltMeta holds the fields from .beads/metadata.json relevant to dolt lifecycle.
@@ -90,10 +97,10 @@ func isDoltServerRunning(port int) bool {
 // Returns exec.ErrNotFound if dolt is not in PATH.
 // Returns an error if the port is already occupied by a non-dolt process.
 func startDoltServer(beadsDir string, port int) (int, error) {
-	// If something is already listening on the port, adopt it (skip spawn).
+	// If something is already listening on the port, check whether we own it.
 	// Check before LookPath so adoption works even when dolt isn't in PATH.
 	if isDoltServerRunning(port) {
-		return 0, nil
+		return 0, checkPortConflict(beadsDir, port)
 	}
 
 	doltPath, err := exec.LookPath("dolt")
@@ -127,6 +134,9 @@ func startDoltServer(beadsDir string, port int) (int, error) {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return 0, fmt.Errorf("write dolt port file: %w", err)
 	}
+
+	// Reap the child process in the background to avoid zombies.
+	go func() { _ = cmd.Wait() }()
 
 	return pid, nil
 }
@@ -291,8 +301,8 @@ func ensureDoltMetadata(beadsDir string, port int) error {
 	if _, ok := existing["backend"]; !ok {
 		existing["backend"] = "dolt"
 	}
-	// Respect existing non-default port (don't overwrite if already set and != 3307).
-	if existingPort, ok := existing["dolt_server_port"]; !ok || existingPort == float64(3307) {
+	// Respect existing non-default port (don't overwrite if already set and != upstream default).
+	if existingPort, ok := existing["dolt_server_port"]; !ok || existingPort == float64(doltUpstreamDefaultPort) {
 		existing["dolt_server_port"] = port
 	}
 	if _, ok := existing["dolt_database"]; !ok {
@@ -408,6 +418,9 @@ func startSharedDoltServer(oroHome string) (int, error) { //nolint:unparam // PI
 		return 0, fmt.Errorf("write dolt port file: %w", err)
 	}
 
+	// Reap the child process in the background to avoid zombies.
+	go func() { _ = cmd.Wait() }()
+
 	return pid, nil
 }
 
@@ -456,6 +469,22 @@ func waitForPort(port int, timeout time.Duration) bool {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+// checkPortConflict checks whether we own the server on the given port by
+// reading the PID file at <beadsDir>/dolt-server.pid. Returns nil if the PID
+// file is present and the recorded process is alive (adoption). Returns an
+// error if no PID file exists or the recorded PID is stale.
+func checkPortConflict(beadsDir string, port int) error {
+	pidPath := filepath.Join(beadsDir, "dolt-server.pid")
+	data, err := os.ReadFile(pidPath) //nolint:gosec // beadsDir is caller-controlled
+	if err == nil {
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr == nil && IsProcessAlive(pid) {
+			return nil // adopt our own server
+		}
+	}
+	return fmt.Errorf("port %d already in use (not a managed dolt server)", port)
 }
 
 // checkSharedPortConflict checks whether we own the server on SharedDoltPort.

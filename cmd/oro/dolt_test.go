@@ -206,7 +206,7 @@ func TestStartDoltServer(t *testing.T) {
 }
 
 func TestStartDoltServerAdoptsRunning(t *testing.T) {
-	t.Run("port already in use returns success not error", func(t *testing.T) {
+	t.Run("adopts when PID file present and process alive", func(t *testing.T) {
 		// Start a TCP listener on a free port to simulate a running dolt server.
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -217,12 +217,59 @@ func TestStartDoltServerAdoptsRunning(t *testing.T) {
 		port := ln.Addr().(*net.TCPAddr).Port
 		tmpDir := t.TempDir()
 
+		// Write a PID file pointing at our own process (alive).
+		pidPath := filepath.Join(tmpDir, "dolt-server.pid")
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write PID file: %v", err)
+		}
+
 		pid, err := startDoltServer(tmpDir, port)
 		if err != nil {
-			t.Fatalf("startDoltServer should adopt running server, got error: %v", err)
+			t.Fatalf("startDoltServer should adopt own server, got error: %v", err)
 		}
 		if pid != 0 {
 			t.Errorf("adopted server should return pid=0, got %d", pid)
+		}
+	})
+
+	t.Run("returns error when port occupied by foreign process", func(t *testing.T) {
+		// Start a TCP listener on a free port to simulate a foreign process.
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		port := ln.Addr().(*net.TCPAddr).Port
+		tmpDir := t.TempDir()
+		// No PID file written — port occupied by foreign process.
+
+		_, err = startDoltServer(tmpDir, port)
+		if err == nil {
+			t.Fatal("startDoltServer should return error when port occupied by foreign process (no PID file)")
+		}
+	})
+
+	t.Run("returns error when port occupied and PID file stale", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		port := ln.Addr().(*net.TCPAddr).Port
+		tmpDir := t.TempDir()
+
+		// Write a PID file with a dead PID (PID 1 is init, but use a very
+		// large PID that almost certainly doesn't exist).
+		pidPath := filepath.Join(tmpDir, "dolt-server.pid")
+		if err := os.WriteFile(pidPath, []byte("9999999"), 0o600); err != nil {
+			t.Fatalf("write PID file: %v", err)
+		}
+
+		_, err = startDoltServer(tmpDir, port)
+		if err == nil {
+			t.Fatal("startDoltServer should return error when PID file is stale and port occupied by foreign process")
 		}
 	})
 }
