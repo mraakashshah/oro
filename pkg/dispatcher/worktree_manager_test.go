@@ -343,6 +343,48 @@ func containsAll(haystack []string, needles ...string) bool {
 	return true
 }
 
+// TestCreateWithBaseBranch verifies that Create passes baseBranch to
+// `git worktree add` and that an empty baseBranch defaults to "main".
+func TestCreateWithBaseBranch(t *testing.T) {
+	t.Run("custom_base_branch_passed_to_git", func(t *testing.T) {
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/repo/root", runner)
+
+		_, _, err := mgr.Create(context.Background(), "oro-abc", "agent/epic-bar")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(runner.calls) < 1 {
+			t.Fatal("expected at least 1 git call")
+		}
+		args := runner.calls[0].Args
+		// baseBranch must be the last argument to `git worktree add <path> -b <branch> <baseBranch>`.
+		if args[len(args)-1] != "agent/epic-bar" {
+			t.Fatalf("git worktree add last arg: got %q, want %q", args[len(args)-1], "agent/epic-bar")
+		}
+	})
+
+	t.Run("empty_base_branch_defaults_to_main", func(t *testing.T) {
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/repo/root", runner)
+
+		_, _, err := mgr.Create(context.Background(), "oro-abc", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(runner.calls) < 1 {
+			t.Fatal("expected at least 1 git call")
+		}
+		args := runner.calls[0].Args
+		// When baseBranch is empty, "main" must be passed to git.
+		if args[len(args)-1] != "main" {
+			t.Fatalf("git worktree add last arg: got %q, want %q (empty baseBranch should default to main)", args[len(args)-1], "main")
+		}
+	})
+}
+
 // TestGitWorktreeManager_Create_PathContainsBeadID kills mutant .go.7:
 // "path = filepath.Join(...)" assignment removed.
 // Verifies the git worktree add command receives the constructed path.

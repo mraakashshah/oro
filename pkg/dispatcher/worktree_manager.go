@@ -38,6 +38,10 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 		return "", "", fmt.Errorf("invalid bead ID: %w", err)
 	}
 
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
 	path = filepath.Join(g.repoRoot, protocol.WorktreesDir, beadID)
 	branch = protocol.BranchPrefix + beadID
 
