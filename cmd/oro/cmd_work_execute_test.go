@@ -702,3 +702,147 @@ func TestExecuteWork_SavesVocabOnExit(t *testing.T) {
 		_ = executeWork(context.Background(), cfg, deps)
 	})
 }
+
+// modelCapturingSpawner captures the model argument passed to Spawn.
+type modelCapturingSpawner struct {
+	proc          worker.Process
+	capturedModel string
+	stdout        string
+}
+
+func (m *modelCapturingSpawner) Spawn(_ context.Context, model, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	m.capturedModel = model
+	return m.proc, io.NopCloser(strings.NewReader(m.stdout)), nil, nil
+}
+
+func TestExecuteWork_HonorsBeadMetadataModel(t *testing.T) {
+	// Test that executeWork honors bead metadata model in standalone path.
+	// Priority: explicit --model flag > bead.Model > default
+
+	t.Run("uses bead Model when no explicit --model flag", func(t *testing.T) {
+		bead := testBead()
+		bead.Model = "opus" // Bead specifies opus
+
+		sp := &modelCapturingSpawner{proc: &mockProcess{}, stdout: ""}
+		bs := &mockBeadSource{showDetail: bead}
+		wt := &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"}
+		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
+
+		callCount := 0
+		deps := &workDeps{
+			beadSrc:  bs,
+			wtMgr:    wt,
+			spawner:  sp,
+			merger:   mg,
+			repoRoot: "/tmp",
+			hasNewWork: func(_, _, _ string) bool {
+				// First call (before claude) returns false to trigger spawn
+				// Second call (after claude) returns true to skip second spawn
+				callCount++
+				return callCount > 1
+			},
+			runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "", // User didn't pass --model, so it's empty
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+
+		err := executeWork(context.Background(), cfg, deps)
+		if err != nil {
+			t.Fatalf("executeWork failed: %v", err)
+		}
+
+		// Should spawn with opus (from bead Model), NOT sonnet (the default)
+		if sp.capturedModel != "opus" {
+			t.Errorf("expected spawner to be called with opus, got %q", sp.capturedModel)
+		}
+	})
+
+	t.Run("explicit --model flag takes priority over bead Model", func(t *testing.T) {
+		bead := testBead()
+		bead.Model = "opus" // Bead specifies opus
+
+		sp := &modelCapturingSpawner{proc: &mockProcess{}, stdout: ""}
+		bs := &mockBeadSource{showDetail: bead}
+		wt := &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"}
+		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
+
+		callCount := 0
+		deps := &workDeps{
+			beadSrc:  bs,
+			wtMgr:    wt,
+			spawner:  sp,
+			merger:   mg,
+			repoRoot: "/tmp",
+			hasNewWork: func(_, _, _ string) bool {
+				// First call (before claude) returns false to trigger spawn
+				// Second call (after claude) returns true to skip second spawn
+				callCount++
+				return callCount > 1
+			},
+			runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "haiku", // User explicitly passed --model=haiku
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+
+		err := executeWork(context.Background(), cfg, deps)
+		if err != nil {
+			t.Fatalf("executeWork failed: %v", err)
+		}
+
+		// Should spawn with haiku (explicit flag), NOT opus (bead model)
+		if sp.capturedModel != "haiku" {
+			t.Errorf("expected spawner to be called with haiku, got %q", sp.capturedModel)
+		}
+	})
+
+	t.Run("defaults to sonnet when bead Model is empty and no --model flag", func(t *testing.T) {
+		bead := testBead()
+		bead.Model = "" // No model specified in bead
+
+		sp := &modelCapturingSpawner{proc: &mockProcess{}, stdout: ""}
+		bs := &mockBeadSource{showDetail: bead}
+		wt := &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"}
+		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
+
+		callCount := 0
+		deps := &workDeps{
+			beadSrc:  bs,
+			wtMgr:    wt,
+			spawner:  sp,
+			merger:   mg,
+			repoRoot: "/tmp",
+			hasNewWork: func(_, _, _ string) bool {
+				callCount++
+				return callCount > 1
+			},
+			runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "", // User didn't pass --model
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+
+		err := executeWork(context.Background(), cfg, deps)
+		if err != nil {
+			t.Fatalf("executeWork failed: %v", err)
+		}
+
+		// Should spawn with sonnet (default)
+		if sp.capturedModel != "sonnet" {
+			t.Errorf("expected spawner to be called with sonnet, got %q", sp.capturedModel)
+		}
+	})
+}

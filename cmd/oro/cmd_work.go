@@ -75,7 +75,7 @@ automatically. Exit code 0 means the bead landed on main.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&cfg.model, "model", protocol.DefaultModel, "starting Claude model")
+	cmd.Flags().StringVar(&cfg.model, "model", "", "starting Claude model (opus/sonnet/haiku); empty uses bead metadata")
 	cmd.Flags().DurationVar(&cfg.timeout, "timeout", 15*time.Minute, "per-claude-spawn timeout")
 	cmd.Flags().BoolVar(&cfg.skipReview, "skip-review", false, "skip ops review gate")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "show execution plan without running")
@@ -239,7 +239,17 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	// Step 4-7: Execute claude + QG retry loop.
+	// Resolve model: explicit flag > bead metadata > default.
+	// Empty cfg.model means no --model flag was provided, so we check bead metadata.
 	model := cfg.model
+	if model == "" {
+		if cfg.bead.Model != "" {
+			model = cfg.bead.Model
+		} else {
+			model = protocol.DefaultModel
+		}
+	}
+
 	var feedback string
 	var attempt int
 
