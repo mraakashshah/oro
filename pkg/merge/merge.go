@@ -101,7 +101,10 @@ func NewCoordinator(git GitRunner) *Coordinator {
 func (c *Coordinator) getOrCreateRebaseLock(target string) *sync.Mutex {
 	mu := &sync.Mutex{}
 	actual, _ := c.rebaseLocks.LoadOrStore(target, mu)
-	return actual.(*sync.Mutex) //nolint:forcetypeassert // only *sync.Mutex stored here
+	if v, ok := actual.(*sync.Mutex); ok {
+		return v
+	}
+	return mu // unreachable: only *sync.Mutex stored in rebaseLocks
 }
 
 // Merge performs a rebase-merge using two-level locking:
@@ -275,14 +278,20 @@ func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts Opts, rebase
 // onto targetBranch. Returns nil if no merge is active for that target (no-op).
 // Safe to call concurrently with Merge — reads activeWorktrees without locking.
 // Uses a fresh context (the caller's context is typically cancelled at shutdown).
+//
+//oro:testonly
 func (c *Coordinator) Abort(targetBranch string) error {
-	wt, ok := c.activeWorktrees.Load(targetBranch)
+	wtVal, ok := c.activeWorktrees.Load(targetBranch)
 	if !ok {
 		return nil
 	}
+	wt, ok := wtVal.(string)
+	if !ok {
+		return nil // unreachable: only string stored in activeWorktrees
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _, _ = c.git.Run(ctx, wt.(string), "rebase", "--abort") //nolint:forcetypeassert // only string stored here
+	_, _, _ = c.git.Run(ctx, wt, "rebase", "--abort")
 	return nil
 }
 
@@ -293,7 +302,9 @@ func (c *Coordinator) AbortAll() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c.activeWorktrees.Range(func(_, value any) bool {
-		_, _, _ = c.git.Run(ctx, value.(string), "rebase", "--abort") //nolint:forcetypeassert // only string stored here
+		if wt, ok := value.(string); ok {
+			_, _, _ = c.git.Run(ctx, wt, "rebase", "--abort")
+		}
 		return true
 	})
 	return nil
