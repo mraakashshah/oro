@@ -2316,7 +2316,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 
 	var memCtx string
 	if d.memories != nil {
-		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, bead.Title, 0)
+		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, buildSearchQuery(bead.Title, bead.Labels), 0)
 	}
 	var codeCtx string
 	if d.codeIndex != nil {
@@ -3762,6 +3762,18 @@ func formatSearchResults(results []SearchResult) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// buildSearchQuery combines a bead title and labels into a single search string.
+// Labels are appended after the title, separated by spaces.
+// Empty labels are ignored. If title is empty, only labels are joined.
+func buildSearchQuery(title string, labels []string) string {
+	parts := make([]string, 0, 1+len(labels))
+	if title != "" {
+		parts = append(parts, title)
+	}
+	parts = append(parts, labels...)
+	return strings.Join(parts, " ")
 }
 
 // ConnectedWorkers, TargetWorkers, WorkerInfo, WorkerModel → worker_pool.go

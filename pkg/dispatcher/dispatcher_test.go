@@ -13151,3 +13151,51 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildSearchQuery_WithLabels(t *testing.T) {
+	tests := []struct {
+		name   string
+		title  string
+		labels []string
+		want   string
+	}{
+		{
+			name:   "title with labels",
+			title:  "Fix auth",
+			labels: []string{"go", "auth"},
+			want:   "Fix auth go auth",
+		},
+		{
+			name:   "title with nil labels",
+			title:  "Fix auth",
+			labels: nil,
+			want:   "Fix auth",
+		},
+		{
+			name:   "title with empty labels",
+			title:  "Fix auth",
+			labels: []string{},
+			want:   "Fix auth",
+		},
+		{
+			name:   "empty title with labels",
+			title:  "",
+			labels: []string{"go", "auth"},
+			want:   "go auth",
+		},
+		{
+			name:   "empty title with nil labels",
+			title:  "",
+			labels: nil,
+			want:   "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildSearchQuery(tt.title, tt.labels)
+			if got != tt.want {
+				t.Errorf("buildSearchQuery(%q, %v) = %q, want %q", tt.title, tt.labels, got, tt.want)
+			}
+		})
+	}
+}
