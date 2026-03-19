@@ -91,11 +91,13 @@ func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDeta
 	return detail, nil
 }
 
-// allowedModels is the set of model values accepted from metadata.
-var allowedModels = map[string]bool{
-	protocol.ModelOpus:   true,
-	protocol.ModelSonnet: true,
-	protocol.ModelHaiku:  true,
+// isAllowedModel reports whether model is in the Claude model allowlist.
+func isAllowedModel(model string) bool {
+	switch model {
+	case protocol.ModelOpus, protocol.ModelSonnet, protocol.ModelHaiku:
+		return true
+	}
+	return false
 }
 
 // extractMetadataModel promotes metadata["model"] into Bead.Model for each bead
@@ -111,7 +113,7 @@ func extractMetadataModel(beads []protocol.Bead) {
 			continue
 		}
 		model, ok := val.(string)
-		if !ok || !allowedModels[model] {
+		if !ok || !isAllowedModel(model) {
 			continue
 		}
 		beads[i].Model = model
@@ -129,7 +131,7 @@ func extractMetadataModelDetail(detail *protocol.BeadDetail) {
 		return
 	}
 	model, ok := val.(string)
-	if !ok || !allowedModels[model] {
+	if !ok || !isAllowedModel(model) {
 		return
 	}
 	detail.Model = model
