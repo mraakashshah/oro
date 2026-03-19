@@ -3345,6 +3345,14 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 		}
 	}
 
+	// Look up worktree path, falling back to "." if not found.
+	d.mu.Lock()
+	workdir := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if workdir == "" {
+		workdir = "."
+	}
+
 	var resultCh <-chan ops.Result
 	if protocol.EscalationType(escType) == protocol.EscMissingAC {
 		// Dedup guard: skip if a WriteAC agent is already running for this bead.
@@ -3355,7 +3363,7 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 			BeadID:          beadID,
 			BeadTitle:       beadTitle,
 			BeadDescription: beadContext,
-			Workdir:         ".",
+			Workdir:         workdir,
 		})
 	} else {
 		resultCh = d.ops.Escalate(ctx, ops.EscalationOpts{
@@ -3364,7 +3372,7 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 			BeadTitle:      beadTitle,
 			BeadContext:    beadContext,
 			RecentHistory:  msg,
-			Workdir:        ".",
+			Workdir:        workdir,
 		})
 	}
 

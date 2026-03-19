@@ -1866,6 +1866,108 @@ func TestOneShotResolutionAcksEscalationInDB(t *testing.T) {
 	}
 }
 
+func TestSpawnEscalationOneShot_UsesWorktreeDir(t *testing.T) {
+	t.Run("uses worktree path when worktreeByBead is set", func(t *testing.T) {
+		d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+
+		// Set worktreeByBead mapping
+		d.mu.Lock()
+		d.worktreeByBead["bead-worktree"] = "/some/worktree/path"
+		d.mu.Unlock()
+
+		// Provide bead detail so the one-shot gets context
+		beadSrc.mu.Lock()
+		beadSrc.shown["bead-worktree"] = &protocol.BeadDetail{
+			ID:          "bead-worktree",
+			Title:       "Test worktree bead",
+			Description: "Testing worktree directory usage",
+		}
+		beadSrc.mu.Unlock()
+
+		// Set spawn verdict
+		spawnMock.mu.Lock()
+		spawnMock.verdict = "ACK: done"
+		spawnMock.mu.Unlock()
+
+		ctx := context.Background()
+
+		// Trigger escalation with a STUCK_WORKER message
+		msg := protocol.FormatEscalation(protocol.EscStuckWorker, "bead-worktree", "worker stalled", "no progress")
+		d.escalate(ctx, msg, "bead-worktree", "w1")
+
+		// Wait for spawn to be captured
+		waitFor(t, func() bool {
+			spawnMock.mu.Lock()
+			count := len(spawnMock.spawns)
+			spawnMock.mu.Unlock()
+			return count > 0
+		}, 2*time.Second)
+
+		// Verify the spawned operation received the worktree path
+		spawnMock.mu.Lock()
+		spawns := spawnMock.spawns
+		spawnMock.mu.Unlock()
+
+		if len(spawns) == 0 {
+			t.Fatal("expected at least one spawn call, got 0")
+		}
+
+		// The most recent spawn call should use the worktree path
+		lastSpawn := spawns[len(spawns)-1]
+		if lastSpawn.workdir != "/some/worktree/path" {
+			t.Errorf("expected workdir %q, got %q", "/some/worktree/path", lastSpawn.workdir)
+		}
+	})
+
+	t.Run("falls back to '.' when worktreeByBead is empty", func(t *testing.T) {
+		d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+
+		// Do NOT set worktreeByBead for this bead
+
+		// Provide bead detail so the one-shot gets context
+		beadSrc.mu.Lock()
+		beadSrc.shown["bead-no-worktree"] = &protocol.BeadDetail{
+			ID:          "bead-no-worktree",
+			Title:       "Test bead without worktree",
+			Description: "Testing fallback to '.'",
+		}
+		beadSrc.mu.Unlock()
+
+		// Set spawn verdict
+		spawnMock.mu.Lock()
+		spawnMock.verdict = "ACK: done"
+		spawnMock.mu.Unlock()
+
+		ctx := context.Background()
+
+		// Trigger escalation
+		msg := protocol.FormatEscalation(protocol.EscStuckWorker, "bead-no-worktree", "worker stalled", "no progress")
+		d.escalate(ctx, msg, "bead-no-worktree", "w1")
+
+		// Wait for spawn to be captured
+		waitFor(t, func() bool {
+			spawnMock.mu.Lock()
+			count := len(spawnMock.spawns)
+			spawnMock.mu.Unlock()
+			return count > 0
+		}, 2*time.Second)
+
+		// Verify the spawned operation received "."
+		spawnMock.mu.Lock()
+		spawns := spawnMock.spawns
+		spawnMock.mu.Unlock()
+
+		if len(spawns) == 0 {
+			t.Fatal("expected at least one spawn call, got 0")
+		}
+
+		lastSpawn := spawns[len(spawns)-1]
+		if lastSpawn.workdir != "." {
+			t.Errorf("expected workdir %q, got %q", ".", lastSpawn.workdir)
+		}
+	})
+}
+
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
