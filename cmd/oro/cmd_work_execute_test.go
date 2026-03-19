@@ -89,6 +89,7 @@ func (m *mockWorktreeManager) DeleteBranch(_ context.Context, _ string) error { 
 func (m *mockWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
+
 func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string) (string, error) {
 	return "", nil
 }

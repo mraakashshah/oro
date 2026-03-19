@@ -549,6 +549,7 @@ func (m *envCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) 
 func (m *envCapturingWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
+
 func (m *envCapturingWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string) (string, error) {
 	return "", nil
 }
