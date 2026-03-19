@@ -55,7 +55,6 @@ func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 		prev := false
 		if epoch, ok := parseWorkerEpoch(id); ok && epoch.Before(d.startTime) {
 			_ = prev
-
 		}
 		d.workers[id] = &trackedWorker{
 			id:          id,
