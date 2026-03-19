@@ -13,4 +13,7 @@ const (
 
 	// BranchPrefix is the git branch prefix for agent worktrees.
 	BranchPrefix = "agent/"
+
+	// EpicBranchPrefix is the git branch prefix for epic worktrees.
+	EpicBranchPrefix = "epic/"
 )

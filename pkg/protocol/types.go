@@ -31,6 +31,7 @@ type Bead struct {
 	CloseReason        string       `json:"close_reason,omitempty"`        // reason for closing
 	Owner              string       `json:"owner,omitempty"`               // owner/assignee identifier
 	Notes              string       `json:"notes,omitempty"`               // freeform notes
+	Tags               []string     `json:"tags,omitempty"`                // tags for categorization
 }
 
 // BeadDetail holds extended information about a single bead.
