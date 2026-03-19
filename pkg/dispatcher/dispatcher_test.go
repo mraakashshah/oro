@@ -258,6 +258,14 @@ func (m *mockWorktreeManager) Prune(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string) (string, error) {
+	return "", nil
+}
+
 type mockEscalator struct {
 	mu       sync.Mutex
 	messages []string

@@ -964,3 +964,160 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 		}
 	})
 }
+
+func TestBranchExists(t *testing.T) {
+	t.Run("existing_branch_returns_true", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("  agent/abc123\n")}
+		mgr := NewGitWorktreeManager("/repo", runner)
+
+		exists, err := mgr.BranchExists(context.Background(), "agent/abc123")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !exists {
+			t.Fatal("expected BranchExists to return true for existing branch")
+		}
+	})
+
+	t.Run("missing_branch_returns_false", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("")}
+		mgr := NewGitWorktreeManager("/repo", runner)
+
+		exists, err := mgr.BranchExists(context.Background(), "agent/missing")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if exists {
+			t.Fatal("expected BranchExists to return false for missing branch")
+		}
+	})
+
+	t.Run("git_error_propagated", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("not a git repo")}
+		mgr := NewGitWorktreeManager("/repo", runner)
+
+		_, err := mgr.BranchExists(context.Background(), "main")
+		if err == nil {
+			t.Fatal("expected error from BranchExists on git failure")
+		}
+	})
+
+	t.Run("calls_git_branch_list_with_branch_name", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("  agent/abc123\n")}
+		mgr := NewGitWorktreeManager("/repo/root", runner)
+
+		_, err := mgr.BranchExists(context.Background(), "agent/abc123")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 git call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "git" {
+			t.Fatalf("expected 'git', got %q", call.Name)
+		}
+		if !containsAll(call.Args, "branch", "--list", "agent/abc123") {
+			t.Fatalf("expected args to contain branch --list agent/abc123, got %v", call.Args)
+		}
+	})
+}
+
+func TestMergeFFOnly(t *testing.T) {
+	t.Run("success_returns_trimmed_sha", func(t *testing.T) {
+		wantSHA := "abc123def456abc123def456abc123def456abc123"
+		callCount := 0
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				callCount++
+				if callCount == 2 {
+					return []byte(wantSHA + "\n"), nil
+				}
+				return nil, nil
+			},
+		}
+		mgr := NewGitWorktreeManager("/repo", runner)
+
+		sha, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/repo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if sha != wantSHA {
+			t.Fatalf("sha: got %q, want %q", sha, wantSHA)
+		}
+	})
+
+	t.Run("calls_merge_ff_only_then_rev_parse_head", func(t *testing.T) {
+		callCount := 0
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				callCount++
+				if callCount == 2 {
+					return []byte("deadbeef\n"), nil
+				}
+				return nil, nil
+			},
+		}
+		mgr := NewGitWorktreeManager("/repo", runner)
+
+		_, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/repo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(runner.calls) != 2 {
+			t.Fatalf("expected 2 git calls, got %d: %v", len(runner.calls), runner.calls)
+		}
+
+		mergeCall := runner.calls[0]
+		if mergeCall.Name != "git" {
+			t.Fatalf("call[0]: expected 'git', got %q", mergeCall.Name)
+		}
+		if !containsAll(mergeCall.Args, "merge", "--ff-only", "agent/abc") {
+			t.Fatalf("call[0]: expected merge --ff-only agent/abc, got %v", mergeCall.Args)
+		}
+
+		revParseCall := runner.calls[1]
+		if !containsAll(revParseCall.Args, "rev-parse", "HEAD") {
+			t.Fatalf("call[1]: expected rev-parse HEAD, got %v", revParseCall.Args)
+		}
+	})
+
+	t.Run("not_ff_returns_error", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("fatal: Not possible to fast-forward, aborting.")}
+		mgr := NewGitWorktreeManager("/repo", runner)
+
+		_, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/repo")
+		if err == nil {
+			t.Fatal("expected error when ff-only merge fails")
+		}
+	})
+
+	t.Run("target_dir_passed_to_git_c", func(t *testing.T) {
+		callCount := 0
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+				callCount++
+				if callCount == 2 {
+					return []byte("deadbeef\n"), nil
+				}
+				return nil, nil
+			},
+		}
+		mgr := NewGitWorktreeManager("/repo", runner)
+
+		_, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/primary/repo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Verify target dir is passed as -C argument.
+		if len(runner.calls) < 1 {
+			t.Fatal("expected at least 1 git call")
+		}
+		if !containsAll(runner.calls[0].Args, "-C", "/primary/repo") {
+			t.Fatalf("expected -C /primary/repo in args, got %v", runner.calls[0].Args)
+		}
+	})
+}

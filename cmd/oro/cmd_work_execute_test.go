@@ -86,6 +86,12 @@ func (m *mockWorktreeManager) Remove(_ context.Context, path string) error {
 }
 func (m *mockWorktreeManager) Prune(_ context.Context) error                  { return nil }
 func (m *mockWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+func (m *mockWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string) (string, error) {
+	return "", nil
+}
 
 // mockProcess implements worker.Process with configurable exit.
 type mockProcess struct {

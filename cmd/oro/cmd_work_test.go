@@ -546,6 +546,12 @@ func (m *envCapturingWorktreeManager) Create(_ context.Context, _, _ string) (st
 func (m *envCapturingWorktreeManager) Remove(_ context.Context, _ string) error       { return nil }
 func (m *envCapturingWorktreeManager) Prune(_ context.Context) error                  { return nil }
 func (m *envCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+func (m *envCapturingWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (m *envCapturingWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string) (string, error) {
+	return "", nil
+}
 
 // TestSpawnAndWaitWithMemoryAndCodeContext verifies that spawnAndWait wires
 // MemoryContext and CodeSearchContext into AssemblePrompt, and passes memStore

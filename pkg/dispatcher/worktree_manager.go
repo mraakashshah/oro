@@ -163,6 +163,34 @@ func (g *GitWorktreeManager) DeleteBranch(ctx context.Context, branch string) er
 	return nil
 }
 
+// BranchExists reports whether the named branch exists in the local repository.
+// Returns (false, nil) when the branch is simply absent — not found is not an error.
+// Returns (false, err) only when git itself fails (e.g., not a git repo).
+func (g *GitWorktreeManager) BranchExists(ctx context.Context, branch string) (bool, error) {
+	out, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "--list", branch)
+	if err != nil {
+		return false, fmt.Errorf("branch exists check %s: %w", branch, err)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+// MergeFFOnly runs `git merge --ff-only <branch>` in the directory specified by
+// target, then returns the resulting HEAD commit SHA. target is the filesystem
+// path of the repository (or worktree) to run the merge in.
+// If the merge cannot be fast-forwarded, the git error (including stderr) is
+// returned wrapped.
+func (g *GitWorktreeManager) MergeFFOnly(ctx context.Context, branch string, target string) (commitSHA string, err error) {
+	_, err = g.runner.Run(ctx, "git", "-C", target, "merge", "--ff-only", branch)
+	if err != nil {
+		return "", fmt.Errorf("ff-only merge of %s: %w", branch, err)
+	}
+	out, err := g.runner.Run(ctx, "git", "-C", target, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("rev-parse HEAD after merge: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // Prune cleans up orphaned worktree state left by a previous crash.
 // It runs `git worktree prune` to clean git's internal tracking, then
 // removes all directories under .worktrees/. Errors are logged but

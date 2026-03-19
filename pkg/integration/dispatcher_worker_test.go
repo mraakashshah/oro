@@ -111,6 +111,14 @@ func (m *mockWorktreeManager) DeleteBranch(_ context.Context, _ string) error {
 	return nil
 }
 
+func (m *mockWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string) (string, error) {
+	return "", nil
+}
+
 type mockEscalator struct{}
 
 func (m *mockEscalator) Escalate(_ context.Context, _ string) error {

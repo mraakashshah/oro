@@ -80,6 +80,8 @@ type WorktreeManager interface {
 	Remove(ctx context.Context, path string) error
 	Prune(ctx context.Context) error
 	DeleteBranch(ctx context.Context, branch string) error
+	BranchExists(ctx context.Context, branch string) (bool, error)
+	MergeFFOnly(ctx context.Context, branch string, target string) (commitSHA string, err error)
 }
 
 // Escalator sends messages to the Manager. Production impl uses tmux send-keys.
