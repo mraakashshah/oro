@@ -1458,3 +1458,63 @@ func TestAssemblePromptIncludesTargetBranch(t *testing.T) {
 		t.Error("expected prompt to default to 'main' when TargetBranch is empty")
 	}
 }
+
+// TestAssemblePrompt_GitHistoryPresent verifies that when PromptParams.GitLog is set,
+// the prompt contains a ## Git History section with the git log content.
+func TestAssemblePrompt_GitHistoryPresent(t *testing.T) {
+	t.Parallel()
+
+	gitLog := `commit abc123def456 (HEAD -> main, origin/main)
+Author: Test User <test@example.com>
+Date:   Wed Mar 19 2026 10:00:00 +0000
+
+    feat(core): add new feature`
+
+	params := worker.PromptParams{
+		BeadID:             "bead-git-history",
+		Title:              "Git history test",
+		Description:        "Test git history section",
+		AcceptanceCriteria: "Git history section present",
+		WorktreePath:       "/tmp/wt-git-history",
+		Model:              "opus",
+		GitLog:             gitLog,
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Should contain ## Git History header
+	if !strings.Contains(prompt, "## Git History") {
+		t.Error("expected prompt to contain '## Git History' section when GitLog is set")
+	}
+
+	// Should contain the git log content
+	if !strings.Contains(prompt, "abc123def456") {
+		t.Error("expected prompt to contain git log content")
+	}
+	if !strings.Contains(prompt, "feat(core): add new feature") {
+		t.Error("expected prompt to contain commit message")
+	}
+}
+
+// TestAssemblePrompt_GitHistoryEmpty verifies that when PromptParams.GitLog is empty,
+// the ## Git History section is omitted entirely from the prompt.
+func TestAssemblePrompt_GitHistoryEmpty(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-no-git-history",
+		Title:              "No git history test",
+		Description:        "Test without git history",
+		AcceptanceCriteria: "Git history section omitted",
+		WorktreePath:       "/tmp/wt-no-git-history",
+		Model:              "opus",
+		GitLog:             "", // Empty GitLog
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Should NOT contain ## Git History section
+	if strings.Contains(prompt, "## Git History") {
+		t.Error("expected prompt to omit '## Git History' section when GitLog is empty")
+	}
+}

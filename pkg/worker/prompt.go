@@ -74,6 +74,11 @@ func AssemblePrompt(params PromptParams) string {
 		section(&b, "Relevant Code", params.CodeSearchContext)
 	}
 
+	// 3c. Git History (only if GitLog is non-empty)
+	if params.GitLog != "" {
+		section(&b, "Git History", params.GitLog)
+	}
+
 	appendStaticSections(&b, params)
 
 	return b.String()
