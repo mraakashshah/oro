@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -269,5 +270,157 @@ func TestBeadDetailUnmarshalOwner(t *testing.T) {
 	}
 	if got.Owner != "agent-3" {
 		t.Errorf("Owner = %s, want %s", got.Owner, "agent-3")
+	}
+}
+
+func TestBeadJSONRoundTrip_MetadataAndLabels(t *testing.T) {
+	tests := []struct {
+		name        string
+		bead        protocol.Bead
+		wantJSON    string
+		checkFields func(t *testing.T, got protocol.Bead)
+	}{
+		{
+			name: "Bead with metadata and labels round-trips",
+			bead: protocol.Bead{
+				ID:       "oro-1",
+				Title:    "Test",
+				Priority: 1,
+				Metadata: map[string]any{
+					"version": "1.0",
+					"count":   42,
+					"active":  true,
+				},
+				Labels: []string{"urgent", "client-facing"},
+			},
+			checkFields: func(t *testing.T, got protocol.Bead) {
+				if got.ID != "oro-1" {
+					t.Errorf("ID = %s, want oro-1", got.ID)
+				}
+				if got.Metadata == nil || len(got.Metadata) == 0 {
+					t.Errorf("Metadata is empty, want populated")
+				}
+				if v, ok := got.Metadata["count"]; !ok || v.(float64) != 42 {
+					t.Errorf("Metadata count = %v, want 42", v)
+				}
+				if len(got.Labels) != 2 || got.Labels[0] != "urgent" {
+					t.Errorf("Labels = %v, want [urgent client-facing]", got.Labels)
+				}
+			},
+		},
+		{
+			name: "Bead with nil metadata and labels omits fields (omitempty)",
+			bead: protocol.Bead{
+				ID:       "oro-2",
+				Title:    "Test",
+				Priority: 2,
+				Metadata: nil,
+				Labels:   nil,
+			},
+			checkFields: func(t *testing.T, got protocol.Bead) {
+				jsonBytes, _ := json.Marshal(got)
+				jsonStr := string(jsonBytes)
+				if strings.Contains(jsonStr, "\"metadata\"") {
+					t.Errorf("JSON should not contain 'metadata' field when nil: %s", jsonStr)
+				}
+				if strings.Contains(jsonStr, "\"labels\"") {
+					t.Errorf("JSON should not contain 'labels' field when nil: %s", jsonStr)
+				}
+			},
+		},
+		{
+			name: "Bead without metadata/labels for backwards compatibility",
+			bead: protocol.Bead{
+				ID:       "oro-3",
+				Title:    "Old Bead",
+				Priority: 3,
+			},
+			checkFields: func(t *testing.T, got protocol.Bead) {
+				if got.ID != "oro-3" {
+					t.Errorf("ID = %s, want oro-3", got.ID)
+				}
+				if got.Metadata != nil && len(got.Metadata) > 0 {
+					t.Errorf("Metadata should be empty or nil, got %v", got.Metadata)
+				}
+				if got.Labels != nil && len(got.Labels) > 0 {
+					t.Errorf("Labels should be empty or nil, got %v", got.Labels)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Encode to JSON
+			jsonBytes, err := json.Marshal(tt.bead)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+
+			// Decode back from JSON
+			var got protocol.Bead
+			if err := json.Unmarshal(jsonBytes, &got); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+
+			// Check round-trip
+			tt.checkFields(t, got)
+		})
+	}
+}
+
+func TestBeadDetailJSONRoundTrip_MetadataAndLabels(t *testing.T) {
+	tests := []struct {
+		name        string
+		detail      protocol.BeadDetail
+		checkFields func(t *testing.T, got protocol.BeadDetail)
+	}{
+		{
+			name: "BeadDetail with metadata and labels round-trips",
+			detail: protocol.BeadDetail{
+				ID:       "oro-d1",
+				Title:    "Detail Test",
+				Metadata: map[string]any{"env": "prod"},
+				Labels:   []string{"feature"},
+			},
+			checkFields: func(t *testing.T, got protocol.BeadDetail) {
+				if got.Metadata == nil || got.Metadata["env"] != "prod" {
+					t.Errorf("Metadata env = %v, want prod", got.Metadata["env"])
+				}
+				if len(got.Labels) != 1 || got.Labels[0] != "feature" {
+					t.Errorf("Labels = %v, want [feature]", got.Labels)
+				}
+			},
+		},
+		{
+			name: "BeadDetail with nil metadata/labels omits fields",
+			detail: protocol.BeadDetail{
+				ID:    "oro-d2",
+				Title: "Test",
+			},
+			checkFields: func(t *testing.T, got protocol.BeadDetail) {
+				jsonBytes, _ := json.Marshal(got)
+				jsonStr := string(jsonBytes)
+				if strings.Contains(jsonStr, "\"metadata\"") {
+					t.Errorf("JSON should not contain 'metadata': %s", jsonStr)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonBytes, err := json.Marshal(tt.detail)
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+
+			var got protocol.BeadDetail
+			if err := json.Unmarshal(jsonBytes, &got); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+
+			tt.checkFields(t, got)
+		})
 	}
 }
