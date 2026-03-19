@@ -14,43 +14,47 @@ type Dependency struct {
 
 // Bead represents a ready work item from the bead source.
 type Bead struct {
-	ID                 string       `json:"id"`
-	Title              string       `json:"title"`
-	Status             string       `json:"status,omitempty"` // open, in_progress, blocked, closed
-	Priority           int          `json:"priority"`
-	Epic               string       `json:"parent,omitempty"`              // parent epic ID for focus filtering
-	Type               string       `json:"issue_type,omitempty"`          // task, bug, feature, epic
-	Model              string       `json:"model,omitempty"`               // claude model override; empty = auto-route by estimate
-	EstimatedMinutes   int          `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
-	AcceptanceCriteria string       `json:"acceptance_criteria,omitempty"` // acceptance criteria text
-	Dependencies       []Dependency `json:"dependencies,omitempty"`        // dependency relationships
-	UpdatedAt          string       `json:"updated_at,omitempty"`          // RFC3339 timestamp of last update
-	ClosedAt           string       `json:"closed_at,omitempty"`           // RFC3339 timestamp of when closed
-	CreatedAt          string       `json:"created_at,omitempty"`          // RFC3339 timestamp of creation
-	Description        string       `json:"description,omitempty"`         // detailed description
-	CloseReason        string       `json:"close_reason,omitempty"`        // reason for closing
-	Owner              string       `json:"owner,omitempty"`               // owner/assignee identifier
-	Notes              string       `json:"notes,omitempty"`               // freeform notes
-	Tags               []string     `json:"tags,omitempty"`                // tags for categorization
+	ID                 string         `json:"id"`
+	Title              string         `json:"title"`
+	Status             string         `json:"status,omitempty"` // open, in_progress, blocked, closed
+	Priority           int            `json:"priority"`
+	Epic               string         `json:"parent,omitempty"`              // parent epic ID for focus filtering
+	Type               string         `json:"issue_type,omitempty"`          // task, bug, feature, epic
+	Model              string         `json:"model,omitempty"`               // claude model override; empty = auto-route by estimate
+	EstimatedMinutes   int            `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
+	AcceptanceCriteria string         `json:"acceptance_criteria,omitempty"` // acceptance criteria text
+	Dependencies       []Dependency   `json:"dependencies,omitempty"`        // dependency relationships
+	UpdatedAt          string         `json:"updated_at,omitempty"`          // RFC3339 timestamp of last update
+	ClosedAt           string         `json:"closed_at,omitempty"`           // RFC3339 timestamp of when closed
+	CreatedAt          string         `json:"created_at,omitempty"`          // RFC3339 timestamp of creation
+	Description        string         `json:"description,omitempty"`         // detailed description
+	CloseReason        string         `json:"close_reason,omitempty"`        // reason for closing
+	Owner              string         `json:"owner,omitempty"`               // owner/assignee identifier
+	Notes              string         `json:"notes,omitempty"`               // freeform notes
+	Tags               []string       `json:"tags,omitempty"`                // tags for categorization
+	Metadata           map[string]any `json:"metadata,omitempty"`            // arbitrary metadata; mixed-type values
+	Labels             []string       `json:"labels,omitempty"`              // structured labels
 }
 
 // BeadDetail holds extended information about a single bead.
 type BeadDetail struct {
-	ID                 string       `json:"id"`
-	Title              string       `json:"title"`
-	Description        string       `json:"description,omitempty"`
-	AcceptanceCriteria string       `json:"acceptance_criteria"`
-	Status             string       `json:"status,omitempty"`
-	Epic               string       `json:"parent,omitempty"` // parent epic ID; empty for standalone beads
-	Model              string       `json:"model,omitempty"`
-	WorkerID           string       `json:"worker_id,omitempty"`
-	ContextPercent     int          `json:"context_percent,omitempty"`
-	LastHeartbeat      string       `json:"last_heartbeat,omitempty"`
-	GitDiff            string       `json:"git_diff,omitempty"`
-	Memory             string       `json:"memory,omitempty"`
-	Dependencies       []Dependency `json:"dependencies,omitempty"`
-	Owner              string       `json:"owner,omitempty"` // owner/assignee identifier
-	Notes              string       `json:"notes,omitempty"` // freeform notes
+	ID                 string         `json:"id"`
+	Title              string         `json:"title"`
+	Description        string         `json:"description,omitempty"`
+	AcceptanceCriteria string         `json:"acceptance_criteria"`
+	Status             string         `json:"status,omitempty"`
+	Epic               string         `json:"parent,omitempty"` // parent epic ID; empty for standalone beads
+	Model              string         `json:"model,omitempty"`
+	WorkerID           string         `json:"worker_id,omitempty"`
+	ContextPercent     int            `json:"context_percent,omitempty"`
+	LastHeartbeat      string         `json:"last_heartbeat,omitempty"`
+	GitDiff            string         `json:"git_diff,omitempty"`
+	Memory             string         `json:"memory,omitempty"`
+	Dependencies       []Dependency   `json:"dependencies,omitempty"`
+	Owner              string         `json:"owner,omitempty"` // owner/assignee identifier
+	Notes              string         `json:"notes,omitempty"` // freeform notes
+	Metadata           map[string]any `json:"metadata,omitempty"`
+	Labels             []string       `json:"labels,omitempty"`
 }
 
 // Model constants for routing.
