@@ -555,7 +555,7 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	wt := w.worktree
 	w.mu.Unlock()
 
-	passed, output, err := RunQualityGate(ctx, wt, false)
+	passed, output, err := RunQualityGate(ctx, wt, true)
 	if err != nil {
 		// Script missing or cannot start — report as failed with error detail.
 		_ = w.SendDone(ctx, false, err.Error())

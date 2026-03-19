@@ -555,6 +555,42 @@ func TestRunQualityGate_RestoreFails_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestWorkerQGSkipsMutation(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp worktree with a script that checks ORO_SKIP_MUTATION env var.
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+
+	// Script that checks if ORO_SKIP_MUTATION=1 and passes only if set.
+	scriptContent := `#!/bin/sh
+if [ "$ORO_SKIP_MUTATION" != "1" ]; then
+  echo "FAIL: ORO_SKIP_MUTATION not set"
+  exit 1
+fi
+echo "PASS: ORO_SKIP_MUTATION=1"
+exit 0
+`
+	if err := os.WriteFile(script, []byte(scriptContent), 0o600); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	// Call RunQualityGate with skipMutation=true
+	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, true)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Errorf("expected quality gate to pass when skipMutation=true (output: %s)", output)
+	}
+	if !strings.Contains(output, "ORO_SKIP_MUTATION=1") {
+		t.Errorf("expected output to contain ORO_SKIP_MUTATION=1, got: %s", output)
+	}
+}
+
 func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {
 	t.Parallel()
 
