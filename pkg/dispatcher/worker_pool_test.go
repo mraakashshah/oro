@@ -923,6 +923,97 @@ func TestCheckHeartbeats_ReviewTimeout_ZeroLastProgressSkipped(t *testing.T) {
 	}
 }
 
+// TestCheckHeartbeats_KillsManagedWorkerProcess verifies that checkHeartbeats calls
+// procMgr.Kill for managed workers (heartbeat and progress timeout) but NOT for
+// unmanaged workers. prevSession managed workers are still killed (the OS process
+// is local even when bead tracking is stale).
+func TestCheckHeartbeats_KillsManagedWorkerProcess(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	timeout := d.cfg.HeartbeatTimeout
+	d.cfg.ProgressTimeout = 100 * time.Millisecond
+
+	managedDeadConn := newMockConn()
+	managedDeadID := "managed-dead"
+
+	unmanagedDeadConn := newMockConn()
+	unmanagedDeadID := "unmanaged-dead"
+
+	prevSessionConn := newMockConn()
+	prevSessionID := "managed-prevsession"
+
+	managedStuckConn := newMockConn()
+	managedStuckID := "managed-stuck"
+
+	d.mu.Lock()
+	d.workers[managedDeadID] = &trackedWorker{
+		id:       managedDeadID,
+		conn:     managedDeadConn,
+		state:    protocol.WorkerBusy,
+		beadID:   "bead-dead",
+		lastSeen: now.Add(-(timeout + time.Second)),
+		managed:  true,
+		encoder:  json.NewEncoder(managedDeadConn),
+	}
+	d.workers[unmanagedDeadID] = &trackedWorker{
+		id:       unmanagedDeadID,
+		conn:     unmanagedDeadConn,
+		state:    protocol.WorkerBusy,
+		beadID:   "bead-unmanaged",
+		lastSeen: now.Add(-(timeout + time.Second)),
+		managed:  false,
+		encoder:  json.NewEncoder(unmanagedDeadConn),
+	}
+	d.workers[prevSessionID] = &trackedWorker{
+		id:          prevSessionID,
+		conn:        prevSessionConn,
+		state:       protocol.WorkerBusy,
+		lastSeen:    now.Add(-(timeout + time.Second)),
+		managed:     true,
+		prevSession: true,
+		encoder:     json.NewEncoder(prevSessionConn),
+	}
+	d.workers[managedStuckID] = &trackedWorker{
+		id:           managedStuckID,
+		conn:         managedStuckConn,
+		state:        protocol.WorkerBusy,
+		beadID:       "bead-stuck",
+		lastSeen:     now.Add(-10 * time.Millisecond),
+		lastProgress: now.Add(-(d.cfg.ProgressTimeout + time.Second)),
+		managed:      true,
+		encoder:      json.NewEncoder(managedStuckConn),
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	killed := pm.KilledIDs()
+	killedSet := make(map[string]bool, len(killed))
+	for _, id := range killed {
+		killedSet[id] = true
+	}
+
+	if !killedSet[managedDeadID] {
+		t.Errorf("expected procMgr.Kill(%q), killed=%v", managedDeadID, killed)
+	}
+	if !killedSet[prevSessionID] {
+		t.Errorf("expected procMgr.Kill(%q) for prevSession managed worker, killed=%v", prevSessionID, killed)
+	}
+	if !killedSet[managedStuckID] {
+		t.Errorf("expected procMgr.Kill(%q) for stuck managed worker, killed=%v", managedStuckID, killed)
+	}
+	if killedSet[unmanagedDeadID] {
+		t.Errorf("procMgr.Kill should NOT be called for unmanaged worker %q", unmanagedDeadID)
+	}
+}
+
 // --- sendToWorker tests ---
 
 // TestSendToWorker_SuccessfulSendReturnsNil verifies that a successful write returns nil error.

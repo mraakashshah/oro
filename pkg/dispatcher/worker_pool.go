@@ -54,7 +54,8 @@ func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 	if _, exists := d.workers[id]; !exists {
 		prev := false
 		if epoch, ok := parseWorkerEpoch(id); ok && epoch.Before(d.startTime) {
-			prev = true
+			_ = prev
+
 		}
 		d.workers[id] = &trackedWorker{
 			id:          id,
@@ -208,6 +209,7 @@ type workerExitInfo struct {
 	workerID    string
 	beadID      string
 	prevSession bool // worker is from a previous dispatcher session
+	managed     bool // worker was spawned by the dispatcher (procMgr)
 }
 
 // escalateTimedOutWorkers dispatches escalation messages and clears bead
@@ -273,6 +275,20 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	}
 }
 
+// managedWorkerIDs returns the worker IDs of all managed workers across the
+// provided slices. Used to collect IDs for procMgr.Kill after timeout removal.
+func managedWorkerIDs(slices ...[]workerExitInfo) []string {
+	var ids []string
+	for _, s := range slices {
+		for _, w := range s {
+			if w.managed {
+				ids = append(ids, w.workerID)
+			}
+		}
+	}
+	return ids
+}
+
 // checkHeartbeats finds workers that have timed out (liveness) or stalled
 // (no progress within ProgressTimeout) and handles them appropriately.
 // Dead workers (heartbeat timeout) are removed and escalated as WORKER_CRASH.
@@ -308,7 +324,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	deadWorkers := make([]workerExitInfo, 0, len(dead))
 	for _, id := range dead {
 		w := d.workers[id]
-		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, prevSession: w.prevSession})
+		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, prevSession: w.prevSession, managed: w.managed})
 		if w.managed {
 			newManagedExits++
 		}
@@ -320,7 +336,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	stuckWorkers := make([]workerExitInfo, 0, len(stuck))
 	for _, id := range stuck {
 		w := d.workers[id]
-		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID})
+		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, managed: w.managed})
 		if w.managed {
 			newManagedExits++
 		}
@@ -334,6 +350,9 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 
 	// Escalate outside the lock and clear tracking maps for abandoned beads.
 	d.escalateTimedOutWorkers(ctx, deadWorkers, stuckWorkers)
+
+	// Kill OS processes for timed-out managed workers (best-effort, outside lock).
+	d.killManagedWorkers(managedWorkerIDs(deadWorkers, stuckWorkers))
 }
 
 // --- UDS send helper ---
