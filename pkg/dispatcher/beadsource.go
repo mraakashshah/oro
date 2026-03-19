@@ -129,6 +129,7 @@ func extractACFromDescription(desc string) string {
 			// Blank line (or start) before ##: drop trailing whitespace entirely.
 			body = content
 		}
+
 	} else {
 		// No following header: trim trailing whitespace for a clean result.
 		body = strings.TrimRight(body, " \t\r\n")
@@ -226,6 +227,26 @@ func (s *CLIBeadSource) HasChildren(ctx context.Context, epicID string) (bool, e
 	}
 
 	return len(children) > 0, nil
+}
+
+// FindByParentAndTag runs `bd list --parent=<parentID> --tag=<tag> --json` and
+// returns all matching beads. Returns an empty slice (not an error) when no
+// beads match; returns a wrapped error on bd CLI failure or JSON parse failure.
+func (s *CLIBeadSource) FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error) {
+	out, err := s.runner.Run(ctx, "bd", "list", "--parent="+parentID, "--tag="+tag, "--json")
+	if err != nil {
+		return nil, fmt.Errorf("bd list --parent=%s --tag=%s: %w", parentID, tag, err)
+	}
+
+	var beads []protocol.Bead
+	if err := json.Unmarshal(out, &beads); err != nil {
+		return nil, fmt.Errorf("parse bd list output: %w", err)
+	}
+
+	if len(beads) == 0 {
+		return []protocol.Bead{}, nil
+	}
+	return beads, nil
 }
 
 // AllChildrenClosed checks whether all children of the given epic are closed.

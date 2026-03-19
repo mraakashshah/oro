@@ -1222,6 +1222,85 @@ func TestCLIBeadSource_InProgress(t *testing.T) {
 	})
 }
 
+func TestFindByParentAndTag(t *testing.T) {
+	t.Run("returns beads matching parent and tag", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "child-1", Title: "Tagged child", Priority: 2},
+		}
+		data, _ := json.Marshal(beads)
+		runner := &mockCommandRunner{output: data}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.FindByParentAndTag(context.Background(), "epic-123", "epic-branch")
+		if err != nil {
+			t.Fatalf("FindByParentAndTag: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].ID != "child-1" {
+			t.Errorf("bead[0].ID: got %q, want %q", got[0].ID, "child-1")
+		}
+
+		// Verify correct command: bd list --parent=epic-123 --tag=epic-branch --json
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "list") {
+			t.Errorf("expected 'list' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--parent=epic-123") {
+			t.Errorf("expected '--parent=epic-123' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--tag=epic-branch") {
+			t.Errorf("expected '--tag=epic-branch' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--json") {
+			t.Errorf("expected '--json' in args, got %v", call.Args)
+		}
+	})
+
+	t.Run("returns empty slice when no match", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("[]")}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.FindByParentAndTag(context.Background(), "epic-456", "no-such-tag")
+		if err != nil {
+			t.Fatalf("FindByParentAndTag: unexpected error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("expected empty slice, got %d beads", len(got))
+		}
+	})
+
+	t.Run("returns wrapped error on bd cli failure", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("bd list failed")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.FindByParentAndTag(context.Background(), "epic-789", "some-tag")
+		if err == nil {
+			t.Fatal("expected error on bd cli failure")
+		}
+		if !strings.Contains(err.Error(), "epic-789") {
+			t.Errorf("expected error to contain parent ID, got: %v", err)
+		}
+	})
+
+	t.Run("returns error on invalid JSON", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("not json")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.FindByParentAndTag(context.Background(), "epic-999", "tag")
+		if err == nil {
+			t.Fatal("expected error on invalid JSON")
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {

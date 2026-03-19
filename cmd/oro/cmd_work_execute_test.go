@@ -55,6 +55,10 @@ func (m *mockBeadSource) AllChildrenClosed(_ context.Context, _ string) (bool, e
 func (m *mockBeadSource) HasChildren(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
+
+func (m *mockBeadSource) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
+	return []protocol.Bead{}, nil
+}
 func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) { return nil, nil }
 func (m *mockBeadSource) Sync(_ context.Context) error                          { return nil }
 

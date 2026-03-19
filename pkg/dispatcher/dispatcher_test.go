@@ -185,6 +185,10 @@ func (m *mockBeadSource) HasChildren(_ context.Context, epicID string) (bool, er
 	return false, nil
 }
 
+func (m *mockBeadSource) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
+	return []protocol.Bead{}, nil
+}
+
 func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
