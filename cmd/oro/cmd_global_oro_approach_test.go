@@ -94,7 +94,7 @@ func TestRunGlobalOroApproach_CopiesPortableHooks(t *testing.T) {
 		"context_pruner.py":         "# pruner\n",
 		"stop-checklist.sh":         "#!/bin/bash\necho '{}'\n",
 		"enforce_skills.py":         "# marker\n",
-		"memory_capture.py":         "# oro-specific - should not copy\n",
+		"bd_create_notifier.py":     "# oro-specific - should not copy\n",
 	})
 
 	cfg := globalOroApproachConfig{
@@ -127,8 +127,8 @@ func TestRunGlobalOroApproach_CopiesPortableHooks(t *testing.T) {
 	}
 
 	// Oro-specific hooks should NOT be present
-	if _, err := os.Stat(filepath.Join(dstHooks, "memory_capture.py")); err == nil {
-		t.Error("memory_capture.py is oro-specific and should not have been copied")
+	if _, err := os.Stat(filepath.Join(dstHooks, "bd_create_notifier.py")); err == nil {
+		t.Error("bd_create_notifier.py is oro-specific and should not have been copied")
 	}
 }
 
