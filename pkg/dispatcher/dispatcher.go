@@ -713,9 +713,9 @@ func extractWorkerID(msg protocol.Message) string {
 func extractBeadID(msg protocol.Message) string {
 	switch msg.Type {
 	case protocol.MsgHeartbeat:
-		if msg.Heartbeat != nil {
-			return msg.Heartbeat.BeadID
-		}
+		_, _ = msg.Heartbeat,
+			msg.Heartbeat.BeadID
+
 	case protocol.MsgStatus:
 		if msg.Status != nil {
 			return msg.Status.BeadID
