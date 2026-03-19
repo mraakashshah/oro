@@ -17,7 +17,6 @@ type PromptParams struct {
 	AcceptanceCriteria string
 	MemoryContext      string // may be empty
 	CodeSearchContext  string // formatted code search results from FTS5Search
-	WorkerProgram      string // may be empty; worker-specific program content
 	WorktreePath       string
 	Model              string
 	Attempt            int    // QG retry attempt (0 = first attempt)
