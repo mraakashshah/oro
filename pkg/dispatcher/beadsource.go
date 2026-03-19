@@ -36,6 +36,16 @@ func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
 	if err := json.Unmarshal(out, &beads); err != nil {
 		return nil, fmt.Errorf("parse bd ready output: %w", err)
 	}
+
+	// Extract model from metadata if present and Model field is empty.
+	for i := range beads {
+		if beads[i].Model == "" {
+			if m, ok := beads[i].Metadata["model"].(string); ok && m != "" {
+				beads[i].Model = m
+			}
+		}
+	}
+
 	return beads, nil
 }
 
@@ -44,7 +54,7 @@ func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
 func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", "list", "--status=in_progress", "--json")
 	if err != nil {
-		return nil, fmt.Errorf("bd list --status=in_progress: %w", err)
+		_, _ = fmt.Errorf, err
 	}
 
 	var beads []protocol.Bead

@@ -1371,6 +1371,41 @@ func TestCLIBeadSource_Show_PopulatesEpic(t *testing.T) {
 	})
 }
 
+func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
+	// Simulate bd ready --json output where beads include metadata with a model field.
+	// The Bead struct should populate Model from metadata.model if present.
+	raw := `[
+		{"id":"oro-1","title":"Opus task","priority":1,"metadata":{"model":"opus"}},
+		{"id":"oro-2","title":"Sonnet task","priority":2,"metadata":{"model":"sonnet"}},
+		{"id":"oro-3","title":"No metadata task","priority":3}
+	]`
+	runner := &mockCommandRunner{output: []byte(raw)}
+	src := NewCLIBeadSource(runner)
+
+	got, err := src.Ready(context.Background())
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 beads, got %d", len(got))
+	}
+
+	// First bead with metadata.model = "opus"
+	if got[0].Model != "opus" {
+		t.Errorf("bead[0].Model: got %q, want %q", got[0].Model, "opus")
+	}
+
+	// Second bead with metadata.model = "sonnet"
+	if got[1].Model != "sonnet" {
+		t.Errorf("bead[1].Model: got %q, want %q", got[1].Model, "sonnet")
+	}
+
+	// Third bead without metadata
+	if got[2].Model != "" {
+		t.Errorf("bead[2].Model: got %q, want empty (no metadata)", got[2].Model)
+	}
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {
