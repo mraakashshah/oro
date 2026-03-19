@@ -90,6 +90,7 @@ type mockBeadSource struct {
 	inProgressBeads      []protocol.Bead  // returned by InProgress(); nil means no beads
 	inProgressErr        error            // if set, InProgress() returns this error
 	updateErrs           map[string]error // beadID -> error returned by Update()
+	showErr              error            // if set, Show() returns this error for all IDs
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -106,6 +107,9 @@ func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.showErr != nil {
+		return nil, m.showErr
+	}
 	if d, ok := m.shown[id]; ok {
 		return d, nil
 	}
@@ -12996,5 +13000,154 @@ func TestAssignBeadResolvesBaseBranch(t *testing.T) { //nolint:funlen // integra
 		waitFor(t, func() bool {
 			return len(esc.Messages()) > 0
 		}, 2*time.Second)
+	})
+}
+
+func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
+	t.Run("happy path populates all fields", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+		tmpDir := t.TempDir()
+		d.cfg.RepoRoot = tmpDir
+
+		wpContent := "# Worker Program\nDo good work."
+		if err := os.WriteFile(tmpDir+"/worker-program.md", []byte(wpContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		gitLogOutput := "abc1234 feat: something\ndef5678 fix: other"
+		d.shutdownRunner = &mockCommandRunner{output: []byte(gitLogOutput)}
+
+		beadSrc.shown["test-bead"] = &protocol.BeadDetail{
+			Title:              "Test Bead",
+			Description:        "A test bead description",
+			AcceptanceCriteria: "Test: X | Assert: Y",
+		}
+
+		w := &trackedWorker{
+			id:           "worker-1",
+			beadID:       "test-bead",
+			worktree:     "/tmp/worktree-test-bead",
+			model:        "sonnet",
+			targetBranch: "main",
+			isEpicDecomp: false,
+		}
+
+		got := d.buildAssignPayload(context.Background(), w, 1, "some feedback", "memory ctx")
+
+		if got.BeadID != "test-bead" {
+			t.Errorf("BeadID = %q, want %q", got.BeadID, "test-bead")
+		}
+		if got.Worktree != "/tmp/worktree-test-bead" {
+			t.Errorf("Worktree = %q", got.Worktree)
+		}
+		if got.Title != "Test Bead" {
+			t.Errorf("Title = %q, want %q", got.Title, "Test Bead")
+		}
+		if got.Description != "A test bead description" {
+			t.Errorf("Description = %q", got.Description)
+		}
+		if got.AcceptanceCriteria != "Test: X | Assert: Y" {
+			t.Errorf("AcceptanceCriteria = %q", got.AcceptanceCriteria)
+		}
+		if got.ProjectRoot != tmpDir {
+			t.Errorf("ProjectRoot = %q, want %q", got.ProjectRoot, tmpDir)
+		}
+		if got.TargetBranch != "main" {
+			t.Errorf("TargetBranch = %q", got.TargetBranch)
+		}
+		if !strings.Contains(got.GitLog, "feat: something") {
+			t.Errorf("GitLog = %q, want to contain git log output", got.GitLog)
+		}
+		if got.WorkerProgram != wpContent {
+			t.Errorf("WorkerProgram = %q, want %q", got.WorkerProgram, wpContent)
+		}
+		if got.Attempt != 1 {
+			t.Errorf("Attempt = %d", got.Attempt)
+		}
+		if got.Feedback != "some feedback" {
+			t.Errorf("Feedback = %q", got.Feedback)
+		}
+		if got.MemoryContext != "memory ctx" {
+			t.Errorf("MemoryContext = %q", got.MemoryContext)
+		}
+	})
+
+	t.Run("epic decomp skips GitLog and WorkerProgram", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+		tmpDir := t.TempDir()
+		d.cfg.RepoRoot = tmpDir
+
+		if err := os.WriteFile(tmpDir+"/worker-program.md", []byte("program content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		gitCalled := false
+		d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+			gitCalled = true
+			return []byte("git log output"), nil
+		}}
+
+		beadSrc.shown["epic-bead"] = &protocol.BeadDetail{
+			Title:              "Epic Bead",
+			AcceptanceCriteria: "AC",
+		}
+
+		w := &trackedWorker{
+			id:           "worker-1",
+			beadID:       "epic-bead",
+			isEpicDecomp: true,
+		}
+
+		got := d.buildAssignPayload(context.Background(), w, 0, "", "")
+
+		if got.GitLog != "" {
+			t.Errorf("GitLog should be empty for epic decomp, got %q", got.GitLog)
+		}
+		if got.WorkerProgram != "" {
+			t.Errorf("WorkerProgram should be empty for epic decomp, got %q", got.WorkerProgram)
+		}
+		if gitCalled {
+			t.Error("git log should not be called for epic decomp")
+		}
+		if got.Title != "Epic Bead" {
+			t.Errorf("Title = %q, want %q", got.Title, "Epic Bead")
+		}
+		if !got.IsEpicDecomposition {
+			t.Error("IsEpicDecomposition should be true")
+		}
+	})
+
+	t.Run("beads Show error falls back to empty metadata", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+		tmpDir := t.TempDir()
+		d.cfg.RepoRoot = tmpDir
+
+		d.shutdownRunner = &mockCommandRunner{output: []byte("abc1234 some commit")}
+
+		beadSrc.showErr = errors.New("bead not found")
+
+		w := &trackedWorker{
+			id:           "worker-1",
+			beadID:       "missing-bead",
+			isEpicDecomp: false,
+		}
+
+		got := d.buildAssignPayload(context.Background(), w, 0, "", "")
+
+		if got.Title != "" {
+			t.Errorf("Title should be empty on Show error, got %q", got.Title)
+		}
+		if got.Description != "" {
+			t.Errorf("Description should be empty on Show error, got %q", got.Description)
+		}
+		if got.AcceptanceCriteria != "" {
+			t.Errorf("AcceptanceCriteria should be empty on Show error, got %q", got.AcceptanceCriteria)
+		}
+		if got.GitLog == "" {
+			t.Error("GitLog should still be populated when Show fails")
+		}
 	})
 }
