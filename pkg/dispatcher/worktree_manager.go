@@ -105,7 +105,13 @@ func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string
 // Remove runs `git worktree remove <path> --force`.
 // Before removing, it automatically commits any uncommitted changes in the
 // worktree to prevent losing work when workers are killed or time out.
+// If the worktree path does not exist, Remove returns nil (idempotent).
 func (g *GitWorktreeManager) Remove(ctx context.Context, path string) error {
+	// Check if the worktree path exists. If not, return nil (idempotent).
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+
 	// Auto-commit any uncommitted changes before removal to prevent data loss.
 	if err := g.autoCommitUncommittedChanges(ctx, path); err != nil {
 		// Log the error but don't fail the removal — stale worktree cleanup

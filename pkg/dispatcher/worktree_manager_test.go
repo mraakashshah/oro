@@ -68,10 +68,20 @@ func TestGitWorktreeManager_Create_Error(t *testing.T) {
 }
 
 func TestGitWorktreeManager_Remove_Success(t *testing.T) {
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	tmpDir := t.TempDir()
+	worktreesDir := filepath.Join(tmpDir, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
+		t.Fatalf("mkdir .worktrees: %v", err)
+	}
+	worktreePath := filepath.Join(worktreesDir, "abc123")
+	if err := os.MkdirAll(worktreePath, 0o750); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
 
-	err := mgr.Remove(context.Background(), "/repo/root/.worktrees/abc123")
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(tmpDir, runner)
+
+	err := mgr.Remove(context.Background(), worktreePath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +99,7 @@ func TestGitWorktreeManager_Remove_Success(t *testing.T) {
 
 	// Call 2: git worktree remove
 	removeCall := runner.calls[1]
-	wantArgs := []string{"-C", "/repo/root", "worktree", "remove", "/repo/root/.worktrees/abc123", "--force"}
+	wantArgs := []string{"-C", tmpDir, "worktree", "remove", worktreePath, "--force"}
 	if len(removeCall.Args) != len(wantArgs) {
 		t.Fatalf("args: got %v, want %v", removeCall.Args, wantArgs)
 	}
@@ -101,12 +111,22 @@ func TestGitWorktreeManager_Remove_Success(t *testing.T) {
 }
 
 func TestGitWorktreeManager_Remove_Error(t *testing.T) {
+	tmpDir := t.TempDir()
+	worktreesDir := filepath.Join(tmpDir, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
+		t.Fatalf("mkdir .worktrees: %v", err)
+	}
+	worktreePath := filepath.Join(worktreesDir, "abc123")
+	if err := os.MkdirAll(worktreePath, 0o750); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+
 	runner := &mockCommandRunner{
 		err: fmt.Errorf("git worktree remove failed: not a worktree"),
 	}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager(tmpDir, runner)
 
-	err := mgr.Remove(context.Background(), "/repo/root/.worktrees/abc123")
+	err := mgr.Remove(context.Background(), worktreePath)
 	if err == nil {
 		t.Fatal("expected error from Remove")
 	}
@@ -456,10 +476,19 @@ func TestGitWorktreeManager_Create_BranchContainsBeadID(t *testing.T) {
 // "return fmt.Errorf(...)" in Remove replaced by no-op.
 // Verifies the error from Remove mentions the path that failed.
 func TestGitWorktreeManager_Remove_ErrorWrapsPath(t *testing.T) {
-	runner := &mockCommandRunner{err: fmt.Errorf("not a worktree")}
-	mgr := NewGitWorktreeManager("/my/repo", runner)
+	tmpDir := t.TempDir()
+	worktreesDir := filepath.Join(tmpDir, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
+		t.Fatalf("mkdir .worktrees: %v", err)
+	}
+	worktreePath := filepath.Join(worktreesDir, "failing-bead")
+	if err := os.MkdirAll(worktreePath, 0o750); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
 
-	worktreePath := "/my/repo/.worktrees/failing-bead"
+	runner := &mockCommandRunner{err: fmt.Errorf("not a worktree")}
+	mgr := NewGitWorktreeManager(tmpDir, runner)
+
 	err := mgr.Remove(context.Background(), worktreePath)
 	if err == nil {
 		t.Fatal("expected error from Remove with failing runner")
@@ -1022,6 +1051,31 @@ func TestBranchExists(t *testing.T) {
 			t.Fatalf("expected args to contain branch --list agent/abc123, got %v", call.Args)
 		}
 	})
+}
+
+// TestRemove_AlreadyRemoved verifies that Remove returns nil when the worktree
+// path does not exist on disk. This makes Remove idempotent — calling it
+// multiple times is safe and does not error.
+func TestRemove_AlreadyRemoved(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Mock that fails on git worktree remove (simulating real git behavior when path doesn't exist).
+	runner := &mockCommandRunner{
+		err: fmt.Errorf("fatal: not a git repository"),
+	}
+	mgr := NewGitWorktreeManager(tmpDir, runner)
+
+	// Call Remove with a path that doesn't exist.
+	nonexistentPath := filepath.Join(tmpDir, ".worktrees", "nonexistent")
+	// Verify the path doesn't exist before calling Remove.
+	if _, err := os.Stat(nonexistentPath); !os.IsNotExist(err) {
+		t.Fatalf("test setup: path should not exist, but stat returned: %v", err)
+	}
+
+	// Should return nil — not an error, even though git command would fail.
+	err := mgr.Remove(context.Background(), nonexistentPath)
+	if err != nil {
+		t.Fatalf("Remove should return nil for nonexistent path, got: %v", err)
+	}
 }
 
 func TestMergeFFOnly(t *testing.T) {
