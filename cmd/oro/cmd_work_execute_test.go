@@ -715,6 +715,81 @@ func (m *modelCapturingSpawner) Spawn(_ context.Context, model, _, _ string) (wo
 	return m.proc, io.NopCloser(strings.NewReader(m.stdout)), nil, nil
 }
 
+func TestExecuteWork_DryRunShowsResolvedModel(t *testing.T) {
+	// Regression: dry-run must show the resolved model (bead metadata or default),
+	// not the raw (empty) cfg.model flag value.
+
+	t.Run("dry-run shows bead metadata model", func(t *testing.T) {
+		bead := testBead()
+		bead.Model = "opus"
+
+		bs := &mockBeadSource{showDetail: bead}
+		deps := &workDeps{
+			beadSrc:  bs,
+			wtMgr:    &mockWorktreeManager{},
+			spawner:  &mockSpawner{proc: &mockProcess{}},
+			merger:   &mockMerger{},
+			repoRoot: "/tmp",
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			model:   "", // no --model flag
+			timeout: 5 * time.Second,
+			dryRun:  true,
+		}
+
+		var buf strings.Builder
+		origLogOut := logOut
+		logOut = &buf
+		defer func() { logOut = origLogOut }()
+
+		err := executeWork(context.Background(), cfg, deps)
+		if err != nil {
+			t.Fatalf("dry-run should not error: %v", err)
+		}
+
+		output := buf.String()
+		if !strings.Contains(output, "model=opus") {
+			t.Errorf("dry-run output should show resolved model=opus, got: %s", output)
+		}
+	})
+
+	t.Run("dry-run shows default model when bead has none", func(t *testing.T) {
+		bead := testBead()
+		bead.Model = ""
+
+		bs := &mockBeadSource{showDetail: bead}
+		deps := &workDeps{
+			beadSrc:  bs,
+			wtMgr:    &mockWorktreeManager{},
+			spawner:  &mockSpawner{proc: &mockProcess{}},
+			merger:   &mockMerger{},
+			repoRoot: "/tmp",
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			model:   "", // no --model flag
+			timeout: 5 * time.Second,
+			dryRun:  true,
+		}
+
+		var buf strings.Builder
+		origLogOut := logOut
+		logOut = &buf
+		defer func() { logOut = origLogOut }()
+
+		err := executeWork(context.Background(), cfg, deps)
+		if err != nil {
+			t.Fatalf("dry-run should not error: %v", err)
+		}
+
+		output := buf.String()
+		if !strings.Contains(output, "model=sonnet") {
+			t.Errorf("dry-run output should show resolved model=sonnet (default), got: %s", output)
+		}
+	})
+}
+
 func TestExecuteWork_HonorsBeadMetadataModel(t *testing.T) {
 	// Test that executeWork honors bead metadata model in standalone path.
 	// Priority: explicit --model flag > bead.Model > default

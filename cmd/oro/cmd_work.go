@@ -194,9 +194,21 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 	logStep("Loaded %s: %s", cfg.bead.ID, cfg.bead.Title)
 
+	// Resolve model: explicit flag > bead metadata > default.
+	// Empty cfg.model means no --model flag was provided, so we check bead metadata.
+	// Must happen before dry-run so the resolved model is displayed.
+	model := cfg.model
+	if model == "" {
+		if cfg.bead.Model != "" {
+			model = cfg.bead.Model
+		} else {
+			model = protocol.DefaultModel
+		}
+	}
+
 	if cfg.dryRun {
 		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t",
-			cfg.beadID, cfg.model, cfg.timeout, cfg.skipReview)
+			cfg.beadID, model, cfg.timeout, cfg.skipReview)
 		return nil
 	}
 
@@ -236,18 +248,6 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	worktree, branch, err := setupWorktree(ctx, cfg, deps)
 	if err != nil {
 		return fmt.Errorf("worktree setup: %w", err)
-	}
-
-	// Step 4-7: Execute claude + QG retry loop.
-	// Resolve model: explicit flag > bead metadata > default.
-	// Empty cfg.model means no --model flag was provided, so we check bead metadata.
-	model := cfg.model
-	if model == "" {
-		if cfg.bead.Model != "" {
-			model = cfg.bead.Model
-		} else {
-			model = protocol.DefaultModel
-		}
 	}
 
 	var feedback string
