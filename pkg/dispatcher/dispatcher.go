@@ -848,7 +848,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	}
 
 	// Merge in background
-	d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch) })
+	d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, w.targetBranch) })
 }
 
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
@@ -1070,13 +1070,14 @@ func (d *Dispatcher) guardMerge(beadID string) func() {
 	}
 }
 
-func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch string) {
+func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, targetBranch string) {
 	defer d.guardMerge(beadID)()
 
 	result, err := d.merger.Merge(ctx, merge.Opts{
-		Branch:   branch,
-		Worktree: worktree,
-		BeadID:   beadID,
+		Branch:       branch,
+		Worktree:     worktree,
+		BeadID:       beadID,
+		TargetBranch: targetBranch,
 	})
 	if err != nil {
 		var conflictErr *merge.ConflictError
@@ -1088,7 +1089,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 				Worktree:      worktree,
 				ConflictFiles: conflictErr.Files,
 			})
-			d.safeGo(func() { d.handleMergeConflictResult(ctx, beadID, workerID, worktree, resultCh) })
+			d.safeGo(func() { d.handleMergeConflictResult(ctx, beadID, workerID, worktree, targetBranch, resultCh) })
 			_ = d.logEvent(ctx, "merge_conflict", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"files":%q}`, conflictErr.Files))
 			return
@@ -1285,7 +1286,7 @@ func parseAcceptanceCmd(ac string) string {
 }
 
 // handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
-func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, workerID, worktree string, resultCh <-chan ops.Result) {
+func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, workerID, worktree, targetBranch string, resultCh <-chan ops.Result) {
 	select {
 	case <-ctx.Done():
 		return
@@ -1294,7 +1295,7 @@ func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, work
 		case ops.VerdictResolved:
 			_ = d.logEvent(ctx, "merge_conflict_resolved", "ops", beadID, workerID, result.Feedback)
 			// Resolution succeeded — retry the merge.
-			d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID)
+			d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, targetBranch)
 		default:
 			// Resolution failed or unknown verdict — escalate.
 			_ = d.logEvent(ctx, "merge_conflict_failed", "ops", beadID, workerID, result.Feedback)
@@ -1494,10 +1495,11 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
-	var worktree string
+	var worktree, targetBranch string
 	if ok {
 		w.state = protocol.WorkerReviewing
 		worktree = w.worktree
+		targetBranch = w.targetBranch
 	}
 	d.mu.Unlock()
 
@@ -1514,7 +1516,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 		BeadTitle:          title,
 		Worktree:           worktree,
 		AcceptanceCriteria: acceptance,
-		BaseBranch:         "main",
+		BaseBranch:         targetBranch,
 		ProjectRoot:        worktree, // worktree is a full checkout with CLAUDE.md
 	})
 
@@ -2078,11 +2080,12 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 		}
 
 		// Send SHUTDOWN, capture worktree, and clear worker state under lock.
-		var worktree string
+		var worktree, targetBranch string
 		d.mu.Lock()
 		if w, ok := d.workers[a.workerID]; ok && w.beadID == a.beadID {
 			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 			worktree = w.worktree
+			targetBranch = w.targetBranch
 			w.state = protocol.WorkerIdle
 			w.beadID = ""
 			w.epicID = ""
@@ -2097,7 +2100,7 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 			beadID := a.beadID
 			workerID := a.workerID
 			branch := protocol.BranchPrefix + beadID
-			d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch) })
+			d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, targetBranch) })
 		} else {
 			// No worktree — just complete the DB record and clear tracking.
 			_ = d.completeAssignment(ctx, a.beadID)
