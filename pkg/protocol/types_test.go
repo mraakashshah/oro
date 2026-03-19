@@ -294,10 +294,11 @@ func TestBeadJSONRoundTrip_MetadataAndLabels(t *testing.T) {
 				Labels: []string{"urgent", "client-facing"},
 			},
 			checkFields: func(t *testing.T, got protocol.Bead) {
+				t.Helper()
 				if got.ID != "oro-1" {
 					t.Errorf("ID = %s, want oro-1", got.ID)
 				}
-				if got.Metadata == nil || len(got.Metadata) == 0 {
+				if len(got.Metadata) == 0 {
 					t.Errorf("Metadata is empty, want populated")
 				}
 				if v, ok := got.Metadata["count"]; !ok || v.(float64) != 42 {
@@ -318,6 +319,7 @@ func TestBeadJSONRoundTrip_MetadataAndLabels(t *testing.T) {
 				Labels:   nil,
 			},
 			checkFields: func(t *testing.T, got protocol.Bead) {
+				t.Helper()
 				jsonBytes, _ := json.Marshal(got)
 				jsonStr := string(jsonBytes)
 				if strings.Contains(jsonStr, "\"metadata\"") {
@@ -336,13 +338,14 @@ func TestBeadJSONRoundTrip_MetadataAndLabels(t *testing.T) {
 				Priority: 3,
 			},
 			checkFields: func(t *testing.T, got protocol.Bead) {
+				t.Helper()
 				if got.ID != "oro-3" {
 					t.Errorf("ID = %s, want oro-3", got.ID)
 				}
-				if got.Metadata != nil && len(got.Metadata) > 0 {
+				if len(got.Metadata) > 0 {
 					t.Errorf("Metadata should be empty or nil, got %v", got.Metadata)
 				}
-				if got.Labels != nil && len(got.Labels) > 0 {
+				if len(got.Labels) > 0 {
 					t.Errorf("Labels should be empty or nil, got %v", got.Labels)
 				}
 			},
@@ -384,7 +387,8 @@ func TestBeadDetailJSONRoundTrip_MetadataAndLabels(t *testing.T) {
 				Labels:   []string{"feature"},
 			},
 			checkFields: func(t *testing.T, got protocol.BeadDetail) {
-				if got.Metadata == nil || got.Metadata["env"] != "prod" {
+				t.Helper()
+				if got.Metadata["env"] != "prod" {
 					t.Errorf("Metadata env = %v, want prod", got.Metadata["env"])
 				}
 				if len(got.Labels) != 1 || got.Labels[0] != "feature" {
@@ -399,6 +403,7 @@ func TestBeadDetailJSONRoundTrip_MetadataAndLabels(t *testing.T) {
 				Title: "Test",
 			},
 			checkFields: func(t *testing.T, got protocol.BeadDetail) {
+				t.Helper()
 				jsonBytes, _ := json.Marshal(got)
 				jsonStr := string(jsonBytes)
 				if strings.Contains(jsonStr, "\"metadata\"") {
