@@ -180,7 +180,7 @@ The dashboard reads from the same `state.db` and `bd` CLI — so all observation
 
 ## 6. Bead Behavior
 
-### Watch bead state transitions
+### Query bead state
 ```bash
 # Current in-progress beads
 bd list --status=in_progress

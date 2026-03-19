@@ -1883,7 +1883,7 @@ func TestInitDetectsSharedServer(t *testing.T) {
 
 // TestBuildHookConfig_NoStaleHookRefs verifies that every .py/.sh hook filename
 // referenced in buildHookConfig exists in the assets/hooks/ directory.
-// This catches stale references to deleted hooks (e.g. memory_capture.py).
+// This catches stale references to deleted hooks.
 func TestBuildHookConfig_NoStaleHookRefs(t *testing.T) {
 	const dummyDir = "__hooksdir__"
 	cfg := buildHookConfig(dummyDir)
