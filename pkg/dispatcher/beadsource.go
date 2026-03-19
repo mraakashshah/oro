@@ -54,7 +54,7 @@ func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
 func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", "list", "--status=in_progress", "--json")
 	if err != nil {
-		_, _ = fmt.Errorf, err
+		return nil, fmt.Errorf("bd list --status=in_progress: %w", err)
 	}
 
 	var beads []protocol.Bead
