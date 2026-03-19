@@ -22,6 +22,7 @@ var expectedSectionHeaders = []string{
 	"## Git",
 	"## Beads Tools",
 	"## Constraints",
+	"## Autonomy",
 	"## Failure",
 	"## Exit",
 }
@@ -1364,6 +1365,57 @@ func TestCreateHandoffWritesSentinel(t *testing.T) {
 			t.Fatal("could not find .claude/skills/create-handoff/SKILL.md by walking up from working directory")
 		}
 		dir = parent
+	}
+}
+
+// TestAssemblePrompt_AutonomySectionPresent verifies that the worker prompt
+// includes an ## Autonomy section between Constraints and Context Handoff,
+// containing "full authority" and "3 strategies" phrases.
+func TestAssemblePrompt_AutonomySectionPresent(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-autonomy",
+		Title:              "Autonomy section test",
+		Description:        "Verify autonomy section in prompt",
+		AcceptanceCriteria: "Prompt contains autonomy section",
+		WorktreePath:       "/tmp/wt-autonomy",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// Must contain ## Autonomy header
+	if !strings.Contains(prompt, "## Autonomy") {
+		t.Fatal("expected prompt to contain '## Autonomy' section header")
+	}
+
+	// Extract Autonomy section for focused assertions
+	autonomySection := extractSection(t, prompt, "## Autonomy")
+
+	// Must contain "full authority" phrase
+	if !strings.Contains(autonomySection, "full authority") {
+		t.Errorf("expected Autonomy section to contain 'full authority'. Got:\n%s", autonomySection)
+	}
+
+	// Must contain "3 strategies" phrase
+	if !strings.Contains(autonomySection, "3 strategies") {
+		t.Errorf("expected Autonomy section to contain '3 strategies'. Got:\n%s", autonomySection)
+	}
+
+	// Autonomy must appear between Constraints and Context Handoff
+	constraintsIdx := strings.Index(prompt, "## Constraints")
+	autonomyIdx := strings.Index(prompt, "## Autonomy")
+	handoffIdx := strings.Index(prompt, "## Context Handoff")
+
+	if constraintsIdx == -1 || autonomyIdx == -1 || handoffIdx == -1 {
+		t.Fatal("expected all three sections to be present")
+	}
+	if autonomyIdx <= constraintsIdx {
+		t.Errorf("expected ## Autonomy (at %d) to appear after ## Constraints (at %d)", autonomyIdx, constraintsIdx)
+	}
+	if autonomyIdx >= handoffIdx {
+		t.Errorf("expected ## Autonomy (at %d) to appear before ## Context Handoff (at %d)", autonomyIdx, handoffIdx)
 	}
 }
 

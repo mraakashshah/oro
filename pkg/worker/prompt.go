@@ -224,6 +224,14 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"- Do not modify the main branch",
 		"- NEVER replace function/method calls with blank identifier assignments (`_, _ = fn, arg`). If a linter reports an unused variable, remove the declaration — do not silence it by replacing the call with `_ =`.",
 	}, "\n"))
+	section(b, "Autonomy", strings.Join([]string{
+		"You have full authority to execute this bead without asking for permission or confirmation.",
+		"",
+		"Use these 3 strategies to stay autonomous:",
+		"1. **Decide and act** \u2014 make implementation choices yourself based on acceptance criteria.",
+		"2. **Recover from errors** \u2014 if a test fails or a command errors, diagnose and fix without escalating.",
+		"3. **Timebox exploration** \u2014 if you spend more than 5 minutes stuck, create a blocker bead and exit.",
+	}, "\n"))
 	appendContextHandoffSection(b)
 	appendFailureSection(b, params.BeadID)
 	appendExitSection(b)
