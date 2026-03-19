@@ -1301,6 +1301,44 @@ func TestFindByParentAndTag(t *testing.T) {
 	})
 }
 
+func TestCLIBeadSource_Ready_PopulatesEpic(t *testing.T) {
+	// Simulate bd ready --json output where the parent field carries the epic ID.
+	// The Bead.Epic field must deserialize from JSON "parent", not "epic".
+	t.Run("bead_with_parent_populates_epic", func(t *testing.T) {
+		raw := `[{"id":"oro-abc","title":"Child task","priority":1,"parent":"oro-p1pj"}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].Epic != "oro-p1pj" {
+			t.Errorf("Epic: got %q, want %q", got[0].Epic, "oro-p1pj")
+		}
+	})
+
+	t.Run("bead_without_parent_epic_stays_empty", func(t *testing.T) {
+		raw := `[{"id":"oro-xyz","title":"Standalone task","priority":2}]`
+		runner := &mockCommandRunner{output: []byte(raw)}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 bead, got %d", len(got))
+		}
+		if got[0].Epic != "" {
+			t.Errorf("Epic: got %q, want empty (standalone bead)", got[0].Epic)
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {

@@ -18,7 +18,7 @@ type Bead struct {
 	Title              string       `json:"title"`
 	Status             string       `json:"status,omitempty"` // open, in_progress, blocked, closed
 	Priority           int          `json:"priority"`
-	Epic               string       `json:"epic,omitempty"`                // parent epic ID for focus filtering
+	Epic               string       `json:"parent,omitempty"`              // parent epic ID for focus filtering
 	Type               string       `json:"issue_type,omitempty"`          // task, bug, feature, epic
 	Model              string       `json:"model,omitempty"`               // claude model override; empty = auto-route by estimate
 	EstimatedMinutes   int          `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
