@@ -1114,6 +1114,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeComplete, beadID, "merged to main", result.CommitSHA), beadID, workerID)
+
 	// Auto-close parent epic if all children are completed.
 	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
