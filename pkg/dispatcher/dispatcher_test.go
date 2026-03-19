@@ -6514,6 +6514,72 @@ func TestMergeAndCompleteUsesTargetBranch(t *testing.T) {
 	})
 }
 
+// TestMergeAndComplete_CleansUpOnNonConflictError verifies that when merger.Merge
+// returns a non-ConflictError (e.g. ff-only merge failure), the worktree is
+// still removed, the agent branch is deleted, and worktreeByBead is cleared.
+func TestMergeAndComplete_CleansUpOnNonConflictError(t *testing.T) {
+	d, _, wtMgr, _, gitRunner, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const beadID = "bead-nonconflict-cleanup"
+	const workerID = "w-nc"
+	const worktree = "/tmp/worktree-nonconflict"
+	branch := protocol.BranchPrefix + beadID
+
+	// Fail the ff-only merge step — produces a non-ConflictError.
+	gitRunner.mu.Lock()
+	gitRunner.failOn = "--ff-only"
+	gitRunner.mu.Unlock()
+
+	// Seed worktreeByBead so we can verify it is cleared after cleanup.
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+
+	// Verify worktrees.Remove was called.
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	deleted := append([]string(nil), wtMgr.deletedBranches...)
+	wtMgr.mu.Unlock()
+
+	foundRemoved := false
+	for _, r := range removed {
+		if r == worktree {
+			foundRemoved = true
+			break
+		}
+	}
+	if !foundRemoved {
+		t.Errorf("worktrees.Remove(%q) not called on non-conflict error; removed=%v", worktree, removed)
+	}
+
+	foundDeleted := false
+	for _, b := range deleted {
+		if b == branch {
+			foundDeleted = true
+			break
+		}
+	}
+	if !foundDeleted {
+		t.Errorf("worktrees.DeleteBranch(%q) not called on non-conflict error; deletedBranches=%v", branch, deleted)
+	}
+
+	// Verify worktreeByBead is cleared.
+	d.mu.Lock()
+	trackedPath := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if trackedPath != "" {
+		t.Errorf("worktreeByBead[%q] = %q, want empty (should be cleared on non-conflict cleanup)", beadID, trackedPath)
+	}
+}
+
 // TestOpsReviewUsesTargetBranch verifies that handleReadyForReview passes
 // w.targetBranch as BaseBranch to the ops reviewer instead of hardcoded "main".
 func TestOpsReviewUsesTargetBranch(t *testing.T) {
