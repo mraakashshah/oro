@@ -165,7 +165,7 @@ func StopDaemon(pidPath string) error {
 
 // SetupSignalHandler installs a SIGTERM/SIGINT handler that cancels the
 // returned context when a signal is received. It also returns a cleanup
-// function that removes the PID file.
+// function that removes the PID file and stops dolt (if beadsDir is set).
 // Callers should defer the cleanup function.
 //
 // The authorized flag gates SIGTERM handling:
@@ -176,7 +176,10 @@ func StopDaemon(pidPath string) error {
 // SIGINT is always honored regardless of authorization (human Ctrl+C).
 // SIGPIPE is explicitly ignored so the daemon survives broken stdout/stderr
 // pipes after the parent process exits.
-func SetupSignalHandler(parent context.Context, pidPath string, authorized *atomic.Bool) (shutdownCtx context.Context, cleanup func()) {
+//
+// When beadsDir is non-empty, stopDoltServer is called on every shutdown path:
+// signal receipt, context cancellation, and explicit cleanup.
+func SetupSignalHandler(parent context.Context, pidPath string, authorized *atomic.Bool, beadsDir string) (shutdownCtx context.Context, cleanup func()) {
 	ctx, cancel := context.WithCancel(parent)
 
 	signal.Ignore(syscall.SIGPIPE)
@@ -184,52 +187,12 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	go func() {
-		for {
-			select {
-			case sig := <-sigCh:
-				// SIGINT: always honor (human Ctrl+C).
-				if sig == syscall.SIGINT {
-					fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
-					cancel()
-					signal.Stop(sigCh)
-					return
-				}
-				// SIGTERM: check authorization.
-				if authorized != nil && !authorized.Load() {
-					fmt.Fprintf(os.Stderr, "shutdown: ignoring %v — not authorized (use 'oro stop'); PID %d\n", sig, os.Getpid())
-					continue
-				}
-				fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
-				dumpProcessSnapshot()
-				cancel()
-				signal.Stop(sigCh)
-				return
-			case <-ctx.Done():
-				signal.Stop(sigCh)
-				return
-			}
+	stopDolt := func() {
+		if beadsDir != "" {
+			_ = stopDoltServer(beadsDir)
 		}
-	}()
-
-	cleanup = func() {
-		cancel()
-		_ = RemovePIDFile(pidPath)
 	}
 
-	return ctx, cleanup
-}
-
-// SetupSignalHandlerWithDolt is like SetupSignalHandler but also kills the dolt server
-// for the given beads directory when a signal is received.
-func SetupSignalHandlerWithDolt(parent context.Context, pidPath string, authorized *atomic.Bool, beadsDir string) (shutdownCtx context.Context, cleanup func()) {
-	ctx, cancel := context.WithCancel(parent)
-
-	signal.Ignore(syscall.SIGPIPE)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-
 	go func() {
 		for {
 			select {
@@ -237,7 +200,7 @@ func SetupSignalHandlerWithDolt(parent context.Context, pidPath string, authoriz
 				// SIGINT: always honor (human Ctrl+C).
 				if sig == syscall.SIGINT {
 					fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
-					_ = stopDoltServer(beadsDir)
+					stopDolt()
 					cancel()
 					signal.Stop(sigCh)
 					return
@@ -249,11 +212,12 @@ func SetupSignalHandlerWithDolt(parent context.Context, pidPath string, authoriz
 				}
 				fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
 				dumpProcessSnapshot()
-				_ = stopDoltServer(beadsDir)
+				stopDolt()
 				cancel()
 				signal.Stop(sigCh)
 				return
 			case <-ctx.Done():
+				stopDolt()
 				signal.Stop(sigCh)
 				return
 			}
@@ -261,6 +225,7 @@ func SetupSignalHandlerWithDolt(parent context.Context, pidPath string, authoriz
 	}()
 
 	cleanup = func() {
+		stopDolt()
 		cancel()
 		_ = RemovePIDFile(pidPath)
 	}
