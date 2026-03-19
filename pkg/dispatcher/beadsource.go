@@ -129,7 +129,6 @@ func extractACFromDescription(desc string) string {
 			// Blank line (or start) before ##: drop trailing whitespace entirely.
 			body = content
 		}
-
 	} else {
 		// No following header: trim trailing whitespace for a clean result.
 		body = strings.TrimRight(body, " \t\r\n")
