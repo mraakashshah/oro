@@ -13324,6 +13324,11 @@ func TestAssignBeadResolvesBaseBranch(t *testing.T) { //nolint:funlen // integra
 	t.Run("epic child uses epic branch as base and target", func(t *testing.T) {
 		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 
+		// Register the parent as an epic so resolveEpicBranch walks up correctly.
+		beadSrc.mu.Lock()
+		beadSrc.shown["epic-xyz"] = &protocol.BeadDetail{ID: "epic-xyz", Title: "Epic XYZ", Type: "epic"}
+		beadSrc.mu.Unlock()
+
 		// Epic branch exists.
 		wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
 			return branch == "epic/epic-xyz", nil
@@ -13370,6 +13375,11 @@ func TestAssignBeadResolvesBaseBranch(t *testing.T) { //nolint:funlen // integra
 
 	t.Run("epic child escalates when epic branch does not exist", func(t *testing.T) {
 		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+
+		// Register the parent as an epic so resolveEpicBranch produces an epic branch.
+		beadSrc.mu.Lock()
+		beadSrc.shown["epic-missing"] = &protocol.BeadDetail{ID: "epic-missing", Title: "Epic Missing", Type: "epic"}
+		beadSrc.mu.Unlock()
 
 		// Epic branch does NOT exist.
 		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {

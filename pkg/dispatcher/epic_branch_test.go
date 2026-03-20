@@ -1,0 +1,165 @@
+package dispatcher //nolint:testpackage // white-box tests for resolveEpicBranch
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"oro/pkg/protocol"
+)
+
+func TestResolveEpicBranch_EmptyParent(t *testing.T) {
+	bs := &mockBeadSource{}
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "main" {
+		t.Errorf("branch = %q; want %q", branch, "main")
+	}
+	if epicID != "" {
+		t.Errorf("epicID = %q; want empty", epicID)
+	}
+}
+
+func TestResolveEpicBranch_DirectEpicParent(t *testing.T) {
+	bs := &mockBeadSource{
+		shown: map[string]*protocol.BeadDetail{
+			"epic-1": {ID: "epic-1", Title: "Epic 1", Type: "epic"},
+		},
+	}
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "epic-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "epic/epic-1" {
+		t.Errorf("branch = %q; want %q", branch, "epic/epic-1")
+	}
+	if epicID != "epic-1" {
+		t.Errorf("epicID = %q; want %q", epicID, "epic-1")
+	}
+}
+
+func TestResolveEpicBranch_NonEpicParent_ReturnsMain(t *testing.T) {
+	bs := &mockBeadSource{
+		shown: map[string]*protocol.BeadDetail{
+			"task-1": {ID: "task-1", Title: "Task 1", Type: "task"},
+		},
+	}
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "main" {
+		t.Errorf("branch = %q; want %q", branch, "main")
+	}
+	if epicID != "" {
+		t.Errorf("epicID = %q; want empty", epicID)
+	}
+}
+
+func TestResolveEpicBranch_NonEpicParentWithEpicGrandparent(t *testing.T) {
+	bs := &mockBeadSource{
+		shown: map[string]*protocol.BeadDetail{
+			"task-1": {ID: "task-1", Title: "Task 1", Type: "task", Epic: "epic-2"},
+			"epic-2": {ID: "epic-2", Title: "Epic 2", Type: "epic"},
+		},
+	}
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "epic/epic-2" {
+		t.Errorf("branch = %q; want %q", branch, "epic/epic-2")
+	}
+	if epicID != "epic-2" {
+		t.Errorf("epicID = %q; want %q", epicID, "epic-2")
+	}
+}
+
+func TestResolveEpicBranch_ShowError_ReturnsMainWithError(t *testing.T) {
+	bs := &mockBeadSource{
+		showErr: errors.New("bd show failed"),
+	}
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "some-bead")
+	if err == nil {
+		t.Fatal("expected error, got none")
+	}
+	if branch != "main" {
+		t.Errorf("branch on error = %q; want %q", branch, "main")
+	}
+	if epicID != "" {
+		t.Errorf("epicID on error = %q; want empty", epicID)
+	}
+}
+
+// TestAssignBead_NonEpicParent_UsesMain verifies that a bead whose parent is a
+// non-epic bead (task) is assigned with baseBranch="main", not "epic/<parentID>".
+// This is the integration test for the acceptance criterion:
+// "continuation of a non-epic bead does not produce an epic branch reference".
+func TestAssignBead_NonEpicParent_UsesMain(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Register the parent bead as a task (not an epic).
+	beadSrc.mu.Lock()
+	beadSrc.shown["task-parent"] = &protocol.BeadDetail{
+		ID:    "task-parent",
+		Title: "Some task bead",
+		Type:  "task",
+	}
+	beadSrc.mu.Unlock()
+
+	// Track which baseBranch the worktree was created from.
+	var capturedBase string
+	wtMgr.mu.Lock()
+	wtMgr.createFn = func(_ context.Context, beadID, baseBranch string) (string, string, error) {
+		if beadID == "child-bead" {
+			capturedBase = baseBranch
+		}
+		return "/tmp/worktree-" + beadID, "agent/" + beadID, nil
+	}
+	wtMgr.mu.Unlock()
+
+	// Connect a worker.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Enqueue a bead whose Epic (parent) is "task-parent" — a non-epic bead.
+	beadSrc.SetBeads([]protocol.Bead{
+		{
+			ID:                 "child-bead",
+			Title:              "Child of task",
+			Priority:           1,
+			Epic:               "task-parent", // bead.Epic = parent field, may be non-epic
+			AcceptanceCriteria: "Test: passes",
+		},
+	})
+
+	// Wait for the ASSIGN message.
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN message")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	// The worktree must have been created from "main", not "epic/task-parent".
+	if capturedBase != "main" {
+		t.Errorf("worktree baseBranch = %q; want %q (non-epic parent should not produce epic branch)", capturedBase, "main")
+	}
+
+	// The ASSIGN payload's TargetBranch must also be "main".
+	if msg.Assign != nil && msg.Assign.TargetBranch != "main" {
+		t.Errorf("ASSIGN.TargetBranch = %q; want %q", msg.Assign.TargetBranch, "main")
+	}
+}

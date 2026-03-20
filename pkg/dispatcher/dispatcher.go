@@ -2291,10 +2291,19 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	var worktree, branch string
 	var err error
 	// Resolve the base/target branch for this bead.
-	// Epic children branch from and merge back to the epic branch; standalone beads use main.
-	baseBranch := "main"
-	if bead.Epic != "" {
-		baseBranch = protocol.EpicBranchPrefix + bead.Epic
+	// resolveEpicBranch walks the parent chain to find the actual epic ancestor —
+	// bead.Epic maps to the JSON "parent" field and may point to a non-epic bead.
+	baseBranch, resolvedEpicID, resolveErr := resolveEpicBranch(ctx, d.beads, bead.Epic)
+	if resolveErr != nil {
+		_ = d.logEvent(ctx, "epic_branch_resolve_error", "dispatcher", bead.ID, w.id, resolveErr.Error())
+		d.recordAssignmentFailure(bead.ID)
+		_ = d.beads.Update(ctx, bead.ID, "ready")
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		return nil
+	}
+	if baseBranch != "main" {
 		// Escalate if the epic branch does not exist yet.
 		exists, beErr := d.worktrees.BranchExists(ctx, baseBranch)
 		if beErr != nil || !exists {
@@ -2368,7 +2377,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	d.mu.Lock()
 	w.state = protocol.WorkerBusy
 	w.beadID = bead.ID
-	w.epicID = bead.Epic // store parent epic ID for auto-close on merge
+	w.epicID = resolvedEpicID // actual epic ancestor ID for auto-close on merge
 	w.isEpicDecomp = isEpicDecomp
 	w.worktree = worktree
 	w.baseBranch = baseBranch
