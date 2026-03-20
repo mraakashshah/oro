@@ -1,0 +1,94 @@
+---
+date: 2026-03-20
+status: complete
+---
+
+goal: >
+  Monitored oro swarm for ~3 hours. Found and fixed 3 P0/P1 bugs in the
+  dispatcher/merge pipeline. Manually merged 5 stuck branches. Workers
+  self-merged 14+ beads. ~17 beads total closed this session.
+
+now: >
+  1. `bd dolt start` then `bd list` to check bead state — dolt server
+     died when oro stopped.
+  2. Clean up stale worktrees: `for wt in .worktrees/oro-*/; do git worktree remove --force "$wt" 2>/dev/null; done`
+  3. `make build && ./oro start --workers 5 --detach` to resume swarm.
+  4. Median bead time is ~8 min. 5 workers sustains ~35-40 beads/hour.
+
+test: |
+  go test ./pkg/dispatcher/... ./pkg/merge/... -count=1 -timeout 180s
+
+done_this_session:
+  - task: "Fix: ff-only merge retry when main moves (oro-mz9v P0)"
+    files: [pkg/merge/merge.go, pkg/merge/merge_test.go, pkg/merge/ff_merge_test.go, pkg/merge/worktree_test.go]
+    commit: 27e1cce
+    notes: >
+      Swapped worktree removal and ff-only merge order in worktreeRemoveAndFFMerge.
+      Now attempts ff-only first while worktree is alive, re-rebases and retries
+      if it fails. Prevents assignment spam loop where merge_failed reset bead
+      to open and spawned new worker every 7s.
+
+  - task: "Fix: zombie worker on bead_closed_externally (oro-e2jk P1)"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    commit: 9bbbea9
+    notes: >
+      When sendToWorker fails during bead_closed_externally, remove worker
+      from d.workers instead of leaving idle. Prevents ~30s of assign churn.
+
+  - task: "Fix: zombie worker in tryAssign send failure path (oro-e2jk P1)"
+    files: [pkg/dispatcher/dispatcher.go, pkg/dispatcher/dispatcher_test.go]
+    commit: 6847559
+    notes: >
+      Same fix as above but for the tryAssign code path. When sendToWorker
+      fails during bead assignment, remove worker instead of resetting to idle.
+
+  - task: "Manually merged 5 stuck branches"
+    notes: >
+      oro-4g6f (already on main, stale ref), oro-4mu1.1 (conflict resolved),
+      oro-4mu1.3 (clean rebase), oro-4mu1.2 (duplicate of 332020c),
+      oro-4mu1.4 (worker beat me to it — 10123a4).
+
+  - task: "Monitored swarm for ~3 hours"
+    notes: >
+      Detected and fixed bugs live. Confirmed all fixes working in production.
+      Zero zombie churn after deploying both fixes. Workers self-merged 14+
+      beads including oro-ddqb, oro-fvrn, oro-nkrx, oro-gw6j, oro-qytv,
+      oro-4exq, oro-suim, oro-k0ne, oro-76fl, oro-ml6w, oro-psuy, oro-lqna,
+      oro-9dih, oro-rdy7.
+
+decisions:
+  - stayed_at_5_workers: >
+      32GB RAM, ~3.4GB/worker. 5 is the sweet spot. Dispatcher auto-scaled
+      to 7 via SpawnWorkerForBead but we restarted at 5.
+  - remove_worker_on_send_fail: >
+      Changed from buffering 10 messages before removal to immediate removal.
+      UDS write failure = connection permanently dead, no recovery possible.
+
+findings:
+  - merge_race_window: >
+      Race between rebase (under rebaseLock) and ff-only (under ffLock).
+      Another merge can complete between the two locks, advancing main.
+  - zombie_pattern_two_paths: >
+      Dead-socket workers could enter from bead_closed_externally (after merge)
+      and from tryAssign (after worker process dies). Both needed fixing.
+  - bead_throughput: >
+      Median assign-to-merge: 8.4 min. Range: 1.6-9.9 min. Fast ones are
+      retries with prior work. ~35-40 beads/hour at 5 workers.
+
+worked:
+  - TDD for all fixes — caught regressions immediately
+  - Live monitoring with `oro logs --tail | grep` patterns
+  - Manual merge for stuck branches (faster than waiting for workers to retry)
+
+failed:
+  - git checkout --theirs for large test file conflicts (nuked newer mocks, broke build)
+
+next:
+  - Monitor for any remaining merge_failed patterns after all fixes deployed
+  - Consider reducing maxPendingMessages from 10 to 2 for faster zombie detection
+  - The golangci-lint "parallel running" QG failure happens when multiple workers run QG simultaneously — may need per-worktree lock file
+
+beads:
+  completed: [oro-mz9v, oro-e2jk, oro-4g6f, oro-4mu1.1, oro-4mu1.2, oro-4mu1.3, oro-4mu1.4]
+  in_progress: []
+  remaining: "~30 open beads"
