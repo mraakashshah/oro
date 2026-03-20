@@ -204,6 +204,7 @@ type Config struct {
 	PaneRestartCooldown   time.Duration // Min time between manager pane restarts (default 2m).
 	PaneInactivityTimeout time.Duration // Manager inactivity duration before restart (default 10m).
 	ReviewTimeout         time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
+	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 }
 
 func (c *Config) withDefaults() Config {
@@ -243,6 +244,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.ReviewTimeout == 0 {
 		out.ReviewTimeout = 15 * time.Minute
+	}
+	if out.Estimator == nil {
+		out.Estimator = NewBeadEstimator()
 	}
 	return out
 }
