@@ -582,6 +582,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 		MaxWorkers:       5,
 		HeartbeatTimeout: 500 * time.Millisecond,
 		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  200 * time.Millisecond,
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)

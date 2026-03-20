@@ -166,11 +166,16 @@ func TestEstimateBeadMinutes(t *testing.T) {
 	t.Run("respects 5s internal timeout — slow server returns 0", func(t *testing.T) {
 		// The estimator must impose a 5s timeout internally.
 		// Use a server that delays longer than 5s; verify Estimate returns 0.
+		// handlerExit is closed in t.Cleanup (before srv.Close) so the handler
+		// exits promptly and httptest.Server.Close() does not block for 5s.
+		handlerExit := make(chan struct{})
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-r.Context().Done():
 				return
-			case <-time.After(10 * time.Second):
+			case <-handlerExit:
+				return
+			case <-time.After(30 * time.Second):
 			}
 			resp := anthropicResponse{
 				Content: []struct {
@@ -182,7 +187,10 @@ func TestEstimateBeadMinutes(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(resp)
 		}))
-		defer srv.Close()
+		t.Cleanup(func() {
+			close(handlerExit)
+			srv.Close()
+		})
 
 		// Use a client with no timeout — the estimator's internal 5s timeout must kick in.
 		e := &llmEstimator{
