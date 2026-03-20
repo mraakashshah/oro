@@ -1089,7 +1089,6 @@ func TestMerge_FFOnlyFails_RebasesAndRetries(t *testing.T) {
 		Worktree: "/tmp/wt-retry",
 		BeadID:   "oro-retry",
 	})
-
 	if err != nil {
 		t.Fatalf("expected successful merge after retry, got: %v", err)
 	}
