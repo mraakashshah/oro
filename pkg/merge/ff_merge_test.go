@@ -19,12 +19,12 @@ func (m *mockWorktreeRemover) Remove(path string) error {
 	return m.err
 }
 
-// TestMergeToMain_FFMerge verifies the new worktree-remove + ff-merge flow:
+// TestMergeToMain_FFMerge verifies the ff-merge + worktree-remove flow:
 //  1. git rev-list --count (already-merged check)
 //  2. git rebase main <branch> (in worktree)
 //  3. git rev-parse --git-common-dir (derive primary repo)
-//  4. WorktreeRemover.Remove(worktree)
-//  5. git merge --ff-only <branch> (in primary repo)
+//  4. git merge --ff-only <branch> (in primary repo)
+//  5. WorktreeRemover.Remove(worktree)
 //  6. git rev-parse HEAD (in primary repo)
 //
 // The final commit SHA on main must match the branch tip SHA (ff-only guarantee).
@@ -103,7 +103,9 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. git rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// Remove fails — no further git calls
+				// 3. git merge --ff-only — success
+				{Stdout: "", Stderr: "", Err: nil},
+				// Remove fails after merge — no further git calls
 			},
 		}
 
@@ -128,7 +130,7 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 		}
 	})
 
-	t.Run("ff-only merge fails: returns error, branch still exists for retry", func(t *testing.T) {
+	t.Run("ff-only merge fails, retry rebase also fails: returns error", func(t *testing.T) {
 		remover := &mockWorktreeRemover{}
 		mock := &mockGitRunner{
 			results: []mockResult{
@@ -140,6 +142,10 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
 				// 3. git merge --ff-only — fails (main moved)
 				{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
+				// 4. git rebase (retry) — also fails with conflict
+				{Stdout: "", Stderr: "CONFLICT (content): Merge conflict in foo.go", Err: fmt.Errorf("exit status 1")},
+				// 5. git rebase --abort (cleanup after failed retry rebase)
+				{Stdout: "", Stderr: "", Err: nil},
 			},
 		}
 
@@ -152,19 +158,11 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 		})
 
 		if err == nil {
-			t.Fatal("expected error on ff-only failure, got nil")
+			t.Fatal("expected error when ff-only and retry rebase both fail, got nil")
 		}
-		if !strings.Contains(err.Error(), "ff-only") {
-			t.Errorf("expected 'ff-only' in error, got: %v", err)
-		}
-		// Should NOT be a ConflictError
-		var conflictErr *ConflictError
-		if errors.As(err, &conflictErr) {
-			t.Error("ff-only failure should not produce ConflictError")
-		}
-		// Remove should have been called (worktree was removed before merge attempt)
-		if len(remover.calls) != 1 {
-			t.Errorf("expected Remove to be called once, got %d calls", len(remover.calls))
+		// Remove should NOT have been called (worktree kept for retry/inspection)
+		if len(remover.calls) != 0 {
+			t.Errorf("expected Remove not to be called, got %d calls", len(remover.calls))
 		}
 	})
 
@@ -179,9 +177,9 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. git rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// 3. git worktree remove (via GitRunner fallback)
+				// 3. git merge --ff-only bead/fallback
 				{Stdout: "", Stderr: "", Err: nil},
-				// 4. git merge --ff-only bead/fallback
+				// 4. git worktree remove (via GitRunner fallback)
 				{Stdout: "", Stderr: "", Err: nil},
 				// 5. git rev-parse HEAD
 				{Stdout: "fallbackSHA\n", Stderr: "", Err: nil},
@@ -205,8 +203,9 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 		if len(calls) != 6 {
 			t.Fatalf("expected 6 git calls, got %d: %+v", len(calls), calls)
 		}
-		// call[3] should be the worktree remove --force via git
-		assertArgs(t, calls[3], "/repo", "worktree", "remove", "--force", "/tmp/wt-fallback")
-		assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/fallback")
+		// call[3] should be ff-only merge
+		assertArgs(t, calls[3], "/repo", "merge", "--ff-only", "bead/fallback")
+		// call[4] should be the worktree remove --force via git
+		assertArgs(t, calls[4], "/repo", "worktree", "remove", "--force", "/tmp/wt-fallback")
 	})
 }

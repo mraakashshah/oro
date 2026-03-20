@@ -65,9 +65,9 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir → primaryRepo derived by stripping /.git
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git worktree remove (fallback via GitRunner, no WorktreeRemover set)
+			// 3. git merge --ff-only bead/abc (in primary repo)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 4. git merge --ff-only bead/abc (in primary repo)
+			// 4. git worktree remove (fallback via GitRunner, no WorktreeRemover set)
 			{Stdout: "", Stderr: "", Err: nil},
 			// 5. git rev-parse HEAD (in primary repo)
 			{Stdout: "abc123def456\n", Stderr: "", Err: nil},
@@ -101,10 +101,10 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 	assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 	// Call 2: rev-parse --git-common-dir
 	assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
-	// Call 3: git worktree remove --force (fallback via GitRunner in primary repo)
-	assertArgs(t, calls[3], "/repo", "worktree", "remove", "--force", "/tmp/wt-abc")
-	// Call 4: ff-only merge
-	assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/abc")
+	// Call 3: ff-only merge (before worktree removal)
+	assertArgs(t, calls[3], "/repo", "merge", "--ff-only", "bead/abc")
+	// Call 4: git worktree remove --force (after successful merge)
+	assertArgs(t, calls[4], "/repo", "worktree", "remove", "--force", "/tmp/wt-abc")
 	// Call 5: rev-parse HEAD
 	assertArgs(t, calls[5], "/repo", "rev-parse", "HEAD")
 }
@@ -396,10 +396,8 @@ func TestMerge_RebaseConflict_LeavesRebaseInProgress(t *testing.T) {
 	}
 }
 
-func TestMerge_FFOnlyMergeFails(t *testing.T) {
-	// Test ff-only merge failure (e.g., main moved between rebase and merge).
-	// The worktree is removed before the ff-only attempt, so the branch still
-	// exists on the remote — caller can retry with a fresh rebase.
+func TestMerge_FFOnlyMergeFails_RetryAlsoFails(t *testing.T) {
+	// When ff-only fails AND the retry rebase also fails, return error.
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// 0. git rev-list --count — not merged yet
@@ -408,9 +406,9 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — success
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git worktree remove — success (worktreeRemover nil → fallback)
-			{Stdout: "", Stderr: "", Err: nil},
-			// 4. git merge --ff-only — fails (main moved)
+			// 3. git merge --ff-only — fails (main moved)
+			{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
+			// 4. git rebase (retry) — also fails
 			{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
 		},
 	}
@@ -423,15 +421,7 @@ func TestMerge_FFOnlyMergeFails(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error on ff-only failure, got nil")
-	}
-	if !strings.Contains(err.Error(), "ff-only") {
-		t.Errorf("expected 'ff-only' in error, got: %v", err)
-	}
-	// Should NOT be a ConflictError — this is a different kind of failure
-	var conflictErr3 *ConflictError
-	if errors.As(err, &conflictErr3) {
-		t.Error("ff-only failure should not produce ConflictError")
+		t.Fatal("expected error when both ff-only and retry rebase fail, got nil")
 	}
 }
 
@@ -471,7 +461,7 @@ func TestMerge_CheckoutMainFails(t *testing.T) {
 
 func TestMerge_RevParseFails(t *testing.T) {
 	// Test that worktree remove failure is surfaced with a clear error.
-	// The worktree remove step occurs after a successful rebase but before ff-merge.
+	// The worktree remove step occurs after a successful ff-merge.
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// 0. git rev-list --count — not merged yet
@@ -480,7 +470,9 @@ func TestMerge_RevParseFails(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir — success
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git worktree remove — fails (worktreeRemover nil → fallback via git)
+			// 3. git merge --ff-only — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 4. git worktree remove — fails
 			{Stdout: "", Stderr: "fatal: worktree has modifications", Err: fmt.Errorf("exit status 128")},
 		},
 	}
@@ -517,9 +509,9 @@ func TestMerge_WorktreeRemoveUsesForceFlag(t *testing.T) {
 			{Stdout: "", Stderr: "", Err: nil},
 			// 2. git rev-parse --git-common-dir
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-			// 3. git worktree remove --force <path> — success
+			// 3. git merge --ff-only bead/force
 			{Stdout: "", Stderr: "", Err: nil},
-			// 4. git merge --ff-only bead/force
+			// 4. git worktree remove --force <path> — success
 			{Stdout: "", Stderr: "", Err: nil},
 			// 5. git rev-parse HEAD
 			{Stdout: "deadbeef\n", Stderr: "", Err: nil},
@@ -537,8 +529,8 @@ func TestMerge_WorktreeRemoveUsesForceFlag(t *testing.T) {
 	}
 
 	calls := mock.getCalls()
-	// Call 3 must be git worktree remove --force <path>
-	assertArgs(t, calls[3], "/repo", "worktree", "remove", "--force", "/tmp/wt-force")
+	// Call 4 must be git worktree remove --force <path>
+	assertArgs(t, calls[4], "/repo", "worktree", "remove", "--force", "/tmp/wt-force")
 }
 
 func TestMerge_ContextCancelledDuringRebase(t *testing.T) {
@@ -1066,6 +1058,68 @@ func TestAbortMu_PanicSafety(t *testing.T) {
 	}
 }
 
+func TestMerge_FFOnlyFails_RebasesAndRetries(t *testing.T) {
+	// When ff-only merge fails (main moved between rebase and ffLock acquisition),
+	// the coordinator should re-rebase the branch and retry ff-only — not give up.
+	// This prevents the dispatcher assignment spam loop (oro-mz9v).
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// 0. git rev-list --count — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
+			// 1. git rebase — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 2. git rev-parse --git-common-dir
+			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+			// 3. git merge --ff-only — FAILS (main moved)
+			{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
+			// 4. git rebase main bead/retry (re-rebase in worktree)
+			{Stdout: "", Stderr: "", Err: nil},
+			// 5. git merge --ff-only — succeeds on retry
+			{Stdout: "", Stderr: "", Err: nil},
+			// 6. git worktree remove --force
+			{Stdout: "", Stderr: "", Err: nil},
+			// 7. git rev-parse HEAD
+			{Stdout: "retried789\n", Stderr: "", Err: nil},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	result, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/retry",
+		Worktree: "/tmp/wt-retry",
+		BeadID:   "oro-retry",
+	})
+
+	if err != nil {
+		t.Fatalf("expected successful merge after retry, got: %v", err)
+	}
+	if result.CommitSHA != "retried789" {
+		t.Errorf("expected commit SHA retried789, got %q", result.CommitSHA)
+	}
+
+	calls := mock.getCalls()
+	if len(calls) != 8 {
+		t.Fatalf("expected 8 git calls (initial + retry), got %d: %+v", len(calls), calls)
+	}
+
+	// Call 0: isBranchMerged check
+	assertArgs(t, calls[0], "/tmp/wt-retry", "rev-list", "--count", "main..bead/retry")
+	// Call 1: initial rebase
+	assertArgs(t, calls[1], "/tmp/wt-retry", "rebase", "main", "bead/retry")
+	// Call 2: rev-parse --git-common-dir
+	assertArgs(t, calls[2], "/tmp/wt-retry", "rev-parse", "--git-common-dir")
+	// Call 3: first ff-only attempt (fails)
+	assertArgs(t, calls[3], "/repo", "merge", "--ff-only", "bead/retry")
+	// Call 4: re-rebase in worktree (still alive — not removed yet)
+	assertArgs(t, calls[4], "/tmp/wt-retry", "rebase", "main", "bead/retry")
+	// Call 5: retry ff-only (succeeds)
+	assertArgs(t, calls[5], "/repo", "merge", "--ff-only", "bead/retry")
+	// Call 6: worktree remove (after successful merge)
+	assertArgs(t, calls[6], "/repo", "worktree", "remove", "--force", "/tmp/wt-retry")
+	// Call 7: rev-parse HEAD
+	assertArgs(t, calls[7], "/repo", "rev-parse", "HEAD")
+}
+
 func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
 	mock := &mockGitRunner{}
 	coord := NewCoordinator(mock)
@@ -1089,9 +1143,9 @@ func TestTargetBranch(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// 3. worktree remove (fallback via GitRunner)
+				// 3. merge --ff-only bead/abc
 				{Stdout: "", Stderr: "", Err: nil},
-				// 4. merge --ff-only bead/abc
+				// 4. worktree remove (fallback via GitRunner)
 				{Stdout: "", Stderr: "", Err: nil},
 				// 5. rev-parse HEAD
 				{Stdout: "abc123def456\n", Stderr: "", Err: nil},
@@ -1121,7 +1175,7 @@ func TestTargetBranch(t *testing.T) {
 		// rebase uses TargetBranch (not "main")
 		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "epic/feat", "bead/abc")
 		// ff-merge uses branch (not hardcoded "main" ref)
-		assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/abc")
+		assertArgs(t, calls[3], "/repo", "merge", "--ff-only", "bead/abc")
 	})
 
 	t.Run("empty TargetBranch defaults to main", func(t *testing.T) {

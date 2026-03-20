@@ -19,9 +19,9 @@ func TestMergeToMain(t *testing.T) {
 				// 2. git rev-parse --git-common-dir — returns common git dir
 				//    primaryRepo derived by stripping /.git suffix
 				{Stdout: "/path/to/repo/.git\n", Stderr: "", Err: nil},
-				// 3. git worktree remove (fallback via GitRunner, no WorktreeRemover set)
+				// 3. git merge --ff-only bead/abc (in primary repo)
 				{Stdout: "", Stderr: "", Err: nil},
-				// 4. git merge --ff-only bead/abc (in primary repo)
+				// 4. git worktree remove (fallback via GitRunner, no WorktreeRemover set)
 				{Stdout: "", Stderr: "", Err: nil},
 				// 5. git rev-parse HEAD (in primary repo) — returns final SHA
 				{Stdout: "finalsha123\n", Stderr: "", Err: nil},
@@ -56,10 +56,10 @@ func TestMergeToMain(t *testing.T) {
 		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 		// Verify rev-parse --git-common-dir
 		assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
-		// Verify worktree remove --force (fallback via git, in primary repo)
-		assertArgs(t, calls[3], "/path/to/repo", "worktree", "remove", "--force", "/tmp/wt-abc")
 		// Verify ff-only merge happened in primary repo (NOT cherry-pick)
-		assertArgs(t, calls[4], "/path/to/repo", "merge", "--ff-only", "bead/abc")
+		assertArgs(t, calls[3], "/path/to/repo", "merge", "--ff-only", "bead/abc")
+		// Verify worktree remove --force (fallback via git, in primary repo)
+		assertArgs(t, calls[4], "/path/to/repo", "worktree", "remove", "--force", "/tmp/wt-abc")
 		// Verify final rev-parse in primary repo
 		assertArgs(t, calls[5], "/path/to/repo", "rev-parse", "HEAD")
 	})
@@ -75,9 +75,9 @@ func TestMergeToMain(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. git rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// 3. git worktree remove (fallback)
+				// 3. git merge --ff-only bead/xyz
 				{Stdout: "", Stderr: "", Err: nil},
-				// 4. git merge --ff-only bead/xyz
+				// 4. git worktree remove (fallback)
 				{Stdout: "", Stderr: "", Err: nil},
 				// 5. git rev-parse HEAD — same SHA as branch tip (ff guarantee)
 				{Stdout: "abc123\n", Stderr: "", Err: nil},

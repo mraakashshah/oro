@@ -165,17 +165,17 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	return c.worktreeRemoveAndFFMerge(ctx, opts)
 }
 
-// worktreeRemoveAndFFMerge removes the agent worktree and fast-forward merges
-// the rebased branch onto main in the primary repository.
+// worktreeRemoveAndFFMerge fast-forward merges the rebased branch onto main,
+// then removes the agent worktree.
 //
 // This preserves commit hashes — no cherry-pick rewrite occurs.
-// Edge cases:
-//   - worktree dirty after rebase → Remove fails → return error with guidance
-//   - ff-only fails (main moved) → return error; branch still exists, caller can retry
+//
+// If ff-only fails (main moved between rebase and ffLock acquisition), the
+// worktree is still alive, so we re-rebase the branch and retry. Since we hold
+// ffLock, main cannot move during the retry. This prevents the dispatcher
+// assignment spam loop (oro-mz9v).
 func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (*Result, error) {
 	// Derive the primary repository path from the worktree's git common dir.
-	// --git-common-dir returns the shared .git dir (e.g., "/repo/.git").
-	// We derive the primary repo by stripping the "/.git" suffix.
 	commonDir, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get git common dir: %w", err)
@@ -184,7 +184,6 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 
 	primaryRepo := strings.TrimSuffix(strings.TrimRight(commonDir, "/"), "/.git")
 	if primaryRepo == commonDir {
-		// Fallback: commonDir didn't end with /.git — ask the worktree instead.
 		primaryRepo, _, err = c.git.Run(ctx, opts.Worktree, "rev-parse", "--show-toplevel")
 		if err != nil {
 			return nil, fmt.Errorf("failed to get primary repo path: %w", err)
@@ -192,17 +191,25 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 		primaryRepo = strings.TrimSpace(primaryRepo)
 	}
 
-	// Remove the agent worktree. After this point the worktree directory is gone.
-	if removeErr := c.removeWorktree(ctx, primaryRepo, opts.Worktree); removeErr != nil {
-		return nil, fmt.Errorf("worktree remove failed (branch %s still intact): %w", opts.Branch, removeErr)
-	}
-
-	// Fast-forward merge the rebased branch onto main in the primary repo.
-	// This is the key difference from cherry-pick: the same commits land on main
-	// with identical SHAs.
+	// Try ff-only merge BEFORE removing the worktree so we can retry on failure.
+	target := effectiveTarget(opts)
 	_, _, err = c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch)
 	if err != nil {
-		return nil, fmt.Errorf("ff-only merge of %s failed (main may have moved; retry rebase): %w", opts.Branch, err)
+		// Main moved between rebase (under rebaseLock) and here (under ffLock).
+		// Re-rebase in the still-alive worktree and retry.
+		_, stderr, rebaseErr := c.git.Run(ctx, opts.Worktree, "rebase", target, opts.Branch)
+		if rebaseErr != nil {
+			return nil, c.handleRebaseFailure(ctx, opts, stderr)
+		}
+		_, _, err = c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch)
+		if err != nil {
+			return nil, fmt.Errorf("ff-only merge of %s failed after rebase retry: %w", opts.Branch, err)
+		}
+	}
+
+	// Merge succeeded — remove the worktree.
+	if removeErr := c.removeWorktree(ctx, primaryRepo, opts.Worktree); removeErr != nil {
+		return nil, fmt.Errorf("worktree remove failed (branch %s merged but worktree lingers): %w", opts.Branch, removeErr)
 	}
 
 	// Get the final commit SHA on main.
