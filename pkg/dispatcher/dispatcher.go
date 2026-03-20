@@ -1197,10 +1197,10 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 				fmt.Sprintf(`{"files":%q}`, conflictErr.Files))
 			return
 		}
-		// Non-conflict merge failure — escalate and clean up worktree.
+		// Non-conflict merge failure — clean up worktree+branch+tracking first, then escalate (oro-4mu1.4).
+		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID, "merge failed", err.Error()), beadID, workerID)
 		_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, err.Error())
-		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 		return
 	}
 
