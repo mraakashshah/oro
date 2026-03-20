@@ -1081,3 +1081,63 @@ func TestCleanupSharedDoltPID(t *testing.T) {
 		}
 	})
 }
+
+// TestCleanupEpicBranches verifies that cleanupAgentBranches deletes epic/* branches.
+func TestCleanupEpicBranches(t *testing.T) {
+	fake := newFakeCmd()
+	// tmux has-session fails
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	// pgrep finds no workers
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	// git branch --list returns epic branches
+	fake.output[key("git", "branch", "--list", "epic/*")] = "  epic/branch-1\n  epic/branch-2\n"
+	// no agent branches
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	// bd list returns empty
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+
+	tmpDir := t.TempDir()
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:   fake,
+		w:        &buf,
+		tmuxName: TmuxSessionName(""),
+		pidPath:  filepath.Join(tmpDir, "oro.pid"),
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		signalFn: func(int) error { return nil },
+		aliveFn:  func(int) bool { return false },
+	}
+
+	err := runCleanup(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify git branch -D was called for each epic branch
+	var deletedBranches []string
+	for _, call := range fake.calls {
+		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" && call[2] == "-D" {
+			deletedBranches = append(deletedBranches, call[3])
+		}
+	}
+
+	if len(deletedBranches) != 2 {
+		t.Fatalf("expected 2 branch deletions, got %d: %v", len(deletedBranches), deletedBranches)
+	}
+
+	found := map[string]bool{}
+	for _, b := range deletedBranches {
+		found[b] = true
+	}
+	if !found["epic/branch-1"] {
+		t.Error("expected epic/branch-1 to be deleted")
+	}
+	if !found["epic/branch-2"] {
+		t.Error("expected epic/branch-2 to be deleted")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "epic/branch-1") || !strings.Contains(out, "epic/branch-2") {
+		t.Errorf("expected output to mention deleted epic branches, got: %s", out)
+	}
+}
