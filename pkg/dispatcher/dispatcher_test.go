@@ -12734,6 +12734,72 @@ func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
 	}
 }
 
+// TestBeadClosedExternally_DeadSocketRemovesWorker verifies that when a bead
+// is closed externally and the shutdown send fails (dead socket), the worker
+// is removed from d.workers immediately rather than left idle for tryAssign
+// to churn through. This prevents the post-merge zombie worker pattern
+// where a dead worker cycles through 4-5 bead assignments before cleanup.
+func TestBeadClosedExternally_DeadSocketRemovesWorker(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	beadID := "bead-dead-socket"
+	workerID := "w-dead"
+	worktree := "/tmp/worktree-" + beadID
+
+	_, err = d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+
+	// Create a worker with a CLOSED connection (simulates post-merge socket death).
+	conn := newMockConn()
+	conn.mu.Lock()
+	conn.closed = true
+	conn.mu.Unlock()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn,
+		beadID:   beadID,
+		state:    protocol.WorkerBusy,
+		worktree: worktree,
+		managed:  true,
+	}
+	d.mu.Unlock()
+
+	// Bead source returns "closed" for this bead.
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		Title:              beadID,
+		Status:             "closed",
+		AcceptanceCriteria: "done",
+	}
+	beadSrc.mu.Unlock()
+
+	d.checkClosedBeadAssignments(ctx)
+
+	// Give async goroutines a moment.
+	time.Sleep(100 * time.Millisecond)
+
+	// Worker should be REMOVED from d.workers (not left idle).
+	d.mu.Lock()
+	_, stillExists := d.workers[workerID]
+	d.mu.Unlock()
+
+	if stillExists {
+		t.Fatal("expected dead-socket worker to be removed from d.workers, but it still exists")
+	}
+}
+
 // TestCheckHeartbeats_ResetsBeadToOpen verifies that when a worker's heartbeat
 // times out while it has an assigned bead, escalateTimedOutWorkers resets the
 // bead status back to "open" so it can be reassigned. This is the heartbeat

@@ -2091,14 +2091,20 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 		var worktree, epicID, targetBranch string
 		d.mu.Lock()
 		if w, ok := d.workers[a.workerID]; ok && w.beadID == a.beadID {
-			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 			worktree = w.worktree
 			epicID = w.epicID             // Capture epicID before clearing
 			targetBranch = w.targetBranch // Capture targetBranch before clearing
-			w.state = protocol.WorkerIdle
-			w.beadID = ""
-			w.epicID = ""
-			w.worktree = ""
+			if err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown}); err != nil {
+				// Socket is dead — remove worker entirely to prevent
+				// tryAssign from cycling beads through a zombie (oro-e2jk).
+				_ = w.conn.Close()
+				delete(d.workers, a.workerID)
+			} else {
+				w.state = protocol.WorkerIdle
+				w.beadID = ""
+				w.epicID = ""
+				w.worktree = ""
+			}
 		}
 		d.mu.Unlock()
 
