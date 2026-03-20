@@ -117,7 +117,7 @@ func (c *Coordinator) getOrCreateRebaseLock(target string) *sync.Mutex {
 //  1. Acquire per-target rebase lock.
 //  2. Register worktree in activeWorktrees for abort support.
 //  3. git rebase <target> <branch> (in worktree)
-//  4. If conflict: git rebase --abort, return *ConflictError.
+//  4. If conflict: leave rebase in-progress, return *ConflictError (ops agent resolves via --continue).
 //  5. Deregister from activeWorktrees (rebase done; abort no longer applicable).
 //  6. Acquire global ffLock.
 //  7. Remove agent worktree + git merge --ff-only <branch> (in primary repo).
@@ -261,12 +261,11 @@ func (c *Coordinator) isBranchMerged(ctx context.Context, opts Opts) (merged boo
 	return true, strings.TrimSpace(sha), nil
 }
 
-// handleRebaseFailure aborts the in-progress rebase and returns a ConflictError
-// with the parsed conflicting file paths.
-func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts Opts, rebaseStderr string) error {
-	// Best-effort abort — even if this fails, we still return the conflict error.
-	_, _, _ = c.git.Run(ctx, opts.Worktree, "rebase", "--abort")
-
+// handleRebaseFailure returns a ConflictError with the parsed conflicting file
+// paths. The rebase is intentionally left in-progress so the ops merge agent
+// can resolve the conflicts in the worktree and run git rebase --continue.
+// Aborting here would destroy the conflict state before the agent can act.
+func (c *Coordinator) handleRebaseFailure(_ context.Context, opts Opts, rebaseStderr string) error {
 	files := parseConflictFiles(rebaseStderr)
 	return &ConflictError{
 		Files:  files,

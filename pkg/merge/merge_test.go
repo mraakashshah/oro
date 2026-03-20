@@ -120,10 +120,8 @@ CONFLICT (content): Merge conflict in pkg/util/helper.go
 		results: []mockResult{
 			// 0. git rev-list --count main..bead/xyz — not merged yet
 			{Stdout: "1\n", Stderr: "", Err: nil},
-			// 1. git rebase main bead/xyz — conflict
+			// 1. git rebase main bead/xyz — conflict (rebase left in-progress)
 			{Stdout: "", Stderr: rebaseStderr, Err: fmt.Errorf("exit status 1")},
-			// 2. git rebase --abort — success
-			{Stdout: "", Stderr: "", Err: nil},
 		},
 	}
 
@@ -158,14 +156,13 @@ CONFLICT (content): Merge conflict in pkg/util/helper.go
 		}
 	}
 
-	// Verify rebase --abort was called
+	// Verify rebase --abort was NOT called (only 2 calls: rev-list + rebase)
 	calls := mock.getCalls()
-	if len(calls) != 3 {
-		t.Fatalf("expected 3 git calls, got %d: %+v", len(calls), calls)
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 git calls, got %d: %+v", len(calls), calls)
 	}
 	assertArgs(t, calls[0], "/tmp/wt-xyz", "rev-list", "--count", "main..bead/xyz")
 	assertArgs(t, calls[1], "/tmp/wt-xyz", "rebase", "main", "bead/xyz")
-	assertArgs(t, calls[2], "/tmp/wt-xyz", "rebase", "--abort")
 }
 
 func TestMerge_LockPreventsConcurrentMerges(t *testing.T) { //nolint:funlen // concurrency test requires sequential setup
@@ -363,33 +360,39 @@ CONFLICT (content): Merge conflict in main.go`,
 	}
 }
 
-func TestMerge_RebaseAbortFails(t *testing.T) {
-	// Edge case: rebase fails AND abort fails
+func TestMerge_RebaseConflict_LeavesRebaseInProgress(t *testing.T) {
+	// Verify that on conflict, git rebase --abort is NOT called.
+	// The rebase must stay in-progress so the ops agent can resolve via --continue.
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// 0. git rev-list --count — not merged yet
 			{Stdout: "1\n", Stderr: "", Err: nil},
-			// 1. git rebase — conflict
+			// 1. git rebase — conflict (left in-progress; no --abort)
 			{Stdout: "", Stderr: "CONFLICT (content): Merge conflict in x.go", Err: fmt.Errorf("exit status 1")},
-			// 2. git rebase --abort — also fails
-			{Stdout: "", Stderr: "fatal: no rebase in progress", Err: fmt.Errorf("exit status 128")},
 		},
 	}
 
 	coord := NewCoordinator(mock)
 	_, err := coord.Merge(context.Background(), Opts{
-		Branch:   "bead/bad",
-		Worktree: "/tmp/wt-bad",
-		BeadID:   "oro-bad",
+		Branch:   "bead/inprog",
+		Worktree: "/tmp/wt-inprog",
+		BeadID:   "oro-inprog",
 	})
 
-	// Should still return a ConflictError (abort failure is secondary)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var conflictErr2 *ConflictError
-	if !errors.As(err, &conflictErr2) {
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) {
 		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
+	}
+
+	calls := mock.getCalls()
+	for _, c := range calls {
+		if len(c.Args) >= 2 && c.Args[0] == "rebase" && c.Args[1] == "--abort" {
+			t.Error("git rebase --abort was called; must NOT abort so ops agent can resolve via --continue")
+		}
+	}
+	// Only 2 calls: rev-list check + failed rebase
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 git calls, got %d: %+v", len(calls), calls)
 	}
 }
 
@@ -814,10 +817,8 @@ func TestMerge_RebaseNoConflictPattern(t *testing.T) {
 		results: []mockResult{
 			// git rev-list --count main..bead/noconf — not merged yet
 			{Stdout: "1\n", Stderr: "", Err: nil},
-			// git rebase fails with non-conflict error
+			// git rebase fails with non-conflict error (left in-progress; no --abort)
 			{Stdout: "", Stderr: "fatal: not a git repository", Err: fmt.Errorf("exit status 128")},
-			// git rebase --abort
-			{Stdout: "", Stderr: "", Err: nil},
 		},
 	}
 

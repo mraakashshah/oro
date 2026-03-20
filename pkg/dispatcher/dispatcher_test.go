@@ -7175,6 +7175,89 @@ func TestMergeConflict_ResolutionFailed_Escalates(t *testing.T) {
 	}, 3*time.Second)
 }
 
+// TestMergeConflict_OpsAgent_WorktreeNotDeletedBeforeSpawn verifies that the
+// worktree is NOT removed before the ops agent is spawned. If the worktree
+// is cleaned up first, the ops agent cannot chdir into it to resolve conflicts.
+func TestMergeConflict_OpsAgent_WorktreeNotDeletedBeforeSpawn(t *testing.T) {
+	d, beadSrc, wtMgr, _, gitRunner, spawnMock := newTestDispatcher(t)
+
+	// Conflict only on the first rebase so the retry succeeds.
+	gitRunner.mu.Lock()
+	gitRunner.conflictOnce = true
+	gitRunner.mu.Unlock()
+
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "Resolved conflicts.\n\nRESOLVED\n\nRebase completed."
+	spawnMock.mu.Unlock()
+
+	// Track whether Remove was called before the ops agent was spawned.
+	var removedBeforeSpawn bool
+	var removedBeforeSpawnMu sync.Mutex
+	const beadID = "bead-wt-check"
+	expectedWorktree := "/tmp/worktree-" + beadID
+
+	wtMgr.mu.Lock()
+	wtMgr.removeFn = func(_ context.Context, path string) error {
+		if path == expectedWorktree && spawnMock.SpawnCount() == 0 {
+			removedBeforeSpawnMu.Lock()
+			removedBeforeSpawn = true
+			removedBeforeSpawnMu.Unlock()
+		}
+		return nil
+	}
+	wtMgr.mu.Unlock()
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Worktree ordering check", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{BeadID: beadID, WorkerID: "w1", QualityGatePassed: true},
+	})
+
+	// Wait for conflict resolution — ops agent must have run.
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "merge_conflict_resolved") > 0
+	}, 3*time.Second)
+
+	removedBeforeSpawnMu.Lock()
+	rbs := removedBeforeSpawn
+	removedBeforeSpawnMu.Unlock()
+	if rbs {
+		t.Error("worktree was removed before ops agent was spawned — ops agent cannot resolve conflicts")
+	}
+
+	// Verify the ops agent was given the worktree path as its workdir.
+	spawnMock.mu.Lock()
+	spawns := make([]spawnCall, len(spawnMock.spawns))
+	copy(spawns, spawnMock.spawns)
+	spawnMock.mu.Unlock()
+
+	if len(spawns) == 0 {
+		t.Fatal("expected at least one ops spawn, got none")
+	}
+	// The first spawn (index 0) is the merge-conflict ops agent.
+	if spawns[0].workdir != expectedWorktree {
+		t.Errorf("ops agent workdir: expected %q, got %q", expectedWorktree, spawns[0].workdir)
+	}
+}
+
 // TestHandleHandoff_NoAssignAfterShutdown verifies that tryAssign cannot grab a
 // worker that is in the process of shutting down due to a handoff. The worker
 // must transition through protocol.WorkerShuttingDown (invisible to tryAssign) rather
