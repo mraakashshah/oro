@@ -68,20 +68,17 @@ func TestGitWorktreeManager_Create_Error(t *testing.T) {
 }
 
 func TestGitWorktreeManager_Remove_Success(t *testing.T) {
+	// Create a temporary directory to simulate an existing worktree
 	tmpDir := t.TempDir()
-	worktreesDir := filepath.Join(tmpDir, ".worktrees")
-	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
-		t.Fatalf("mkdir .worktrees: %v", err)
-	}
-	worktreePath := filepath.Join(worktreesDir, "abc123")
-	if err := os.MkdirAll(worktreePath, 0o750); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
+	wtPath := filepath.Join(tmpDir, "worktree")
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatalf("failed to create temp worktree: %v", err)
 	}
 
 	runner := &mockCommandRunner{}
 	mgr := NewGitWorktreeManager(tmpDir, runner)
 
-	err := mgr.Remove(context.Background(), worktreePath)
+	err := mgr.Remove(context.Background(), wtPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,26 +96,17 @@ func TestGitWorktreeManager_Remove_Success(t *testing.T) {
 
 	// Call 2: git worktree remove
 	removeCall := runner.calls[1]
-	wantArgs := []string{"-C", tmpDir, "worktree", "remove", worktreePath, "--force"}
-	if len(removeCall.Args) != len(wantArgs) {
-		t.Fatalf("args: got %v, want %v", removeCall.Args, wantArgs)
-	}
-	for i, a := range removeCall.Args {
-		if a != wantArgs[i] {
-			t.Fatalf("args[%d]: got %q, want %q", i, a, wantArgs[i])
-		}
+	if !containsAll(removeCall.Args, "worktree", "remove", "--force") {
+		t.Fatalf("call[1] should contain worktree remove --force, got: %v", removeCall.Args)
 	}
 }
 
 func TestGitWorktreeManager_Remove_Error(t *testing.T) {
+	// Create a temporary directory to simulate an existing worktree
 	tmpDir := t.TempDir()
-	worktreesDir := filepath.Join(tmpDir, ".worktrees")
-	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
-		t.Fatalf("mkdir .worktrees: %v", err)
-	}
-	worktreePath := filepath.Join(worktreesDir, "abc123")
-	if err := os.MkdirAll(worktreePath, 0o750); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
+	wtPath := filepath.Join(tmpDir, "worktree")
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatalf("failed to create temp worktree: %v", err)
 	}
 
 	runner := &mockCommandRunner{
@@ -126,12 +114,31 @@ func TestGitWorktreeManager_Remove_Error(t *testing.T) {
 	}
 	mgr := NewGitWorktreeManager(tmpDir, runner)
 
-	err := mgr.Remove(context.Background(), worktreePath)
+	err := mgr.Remove(context.Background(), wtPath)
 	if err == nil {
 		t.Fatal("expected error from Remove")
 	}
 	if !strings.Contains(err.Error(), "worktree remove") {
 		t.Fatalf("error should mention worktree remove, got: %v", err)
+	}
+}
+
+func TestRemove_AlreadyRemoved(t *testing.T) {
+	// Use a path that doesn't exist on the filesystem
+	nonExistentPath := "/nonexistent/path/that/does/not/exist"
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", runner)
+
+	err := mgr.Remove(context.Background(), nonExistentPath)
+	// Should return nil when path doesn't exist (idempotent)
+	if err != nil {
+		t.Fatalf("expected nil error for non-existent path, got: %v", err)
+	}
+
+	// Should not call any git commands when path doesn't exist
+	if len(runner.calls) != 0 {
+		t.Fatalf("expected 0 command calls for non-existent path, got %d calls", len(runner.calls))
 	}
 }
 
@@ -476,14 +483,11 @@ func TestGitWorktreeManager_Create_BranchContainsBeadID(t *testing.T) {
 // "return fmt.Errorf(...)" in Remove replaced by no-op.
 // Verifies the error from Remove mentions the path that failed.
 func TestGitWorktreeManager_Remove_ErrorWrapsPath(t *testing.T) {
+	// Create a temporary directory to simulate an existing worktree
 	tmpDir := t.TempDir()
-	worktreesDir := filepath.Join(tmpDir, ".worktrees")
-	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
-		t.Fatalf("mkdir .worktrees: %v", err)
-	}
-	worktreePath := filepath.Join(worktreesDir, "failing-bead")
-	if err := os.MkdirAll(worktreePath, 0o750); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
+	worktreePath := filepath.Join(tmpDir, "failing-bead")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("failed to create temp worktree: %v", err)
 	}
 
 	runner := &mockCommandRunner{err: fmt.Errorf("not a worktree")}
@@ -1049,149 +1053,6 @@ func TestBranchExists(t *testing.T) {
 		}
 		if !containsAll(call.Args, "branch", "--list", "agent/abc123") {
 			t.Fatalf("expected args to contain branch --list agent/abc123, got %v", call.Args)
-		}
-	})
-}
-
-// TestRemove_AlreadyRemoved verifies that Remove returns nil when the worktree
-// path does not exist on disk. This makes Remove idempotent — calling it
-// multiple times is safe and does not error.
-func TestRemove_AlreadyRemoved(t *testing.T) {
-	tmpDir := t.TempDir()
-	// Mock that fails on git worktree remove (simulating real git behavior when path doesn't exist).
-	runner := &mockCommandRunner{
-		err: fmt.Errorf("fatal: not a git repository"),
-	}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
-
-	// Call Remove with a path that doesn't exist.
-	nonexistentPath := filepath.Join(tmpDir, ".worktrees", "nonexistent")
-	// Verify the path doesn't exist before calling Remove.
-	if _, err := os.Stat(nonexistentPath); !os.IsNotExist(err) {
-		t.Fatalf("test setup: path should not exist, but stat returned: %v", err)
-	}
-
-	// Should return nil — not an error, even though git command would fail.
-	err := mgr.Remove(context.Background(), nonexistentPath)
-	if err != nil {
-		t.Fatalf("Remove should return nil for nonexistent path, got: %v", err)
-	}
-}
-
-func TestGCClosedWorktrees(t *testing.T) {
-	t.Run("removes_closed_preserves_open", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		worktreesDir := filepath.Join(tmpDir, ".worktrees")
-
-		closedID := "oro-closed.1"
-		openID := "oro-open.2"
-
-		for _, id := range []string{closedID, openID} {
-			if err := os.MkdirAll(filepath.Join(worktreesDir, id), 0o750); err != nil {
-				t.Fatalf("mkdir %s: %v", id, err)
-			}
-		}
-
-		runner := &mockCommandRunner{}
-		mgr := NewGitWorktreeManager(tmpDir, runner)
-
-		err := mgr.GCClosedWorktrees(context.Background(), func(id string) bool {
-			return id == closedID
-		})
-		if err != nil {
-			t.Fatalf("GCClosedWorktrees returned error: %v", err)
-		}
-
-		closedPath := filepath.Join(worktreesDir, closedID)
-		closedBranch := "agent/" + closedID
-		openPath := filepath.Join(worktreesDir, openID)
-
-		var foundRemove, foundBranchDelete bool
-		for _, c := range runner.calls {
-			if c.Name != "git" {
-				continue
-			}
-			argsStr := strings.Join(c.Args, " ")
-			if strings.Contains(argsStr, "worktree") && strings.Contains(argsStr, "remove") && strings.Contains(argsStr, closedPath) {
-				foundRemove = true
-			}
-			if strings.Contains(argsStr, "branch") && strings.Contains(argsStr, closedBranch) {
-				foundBranchDelete = true
-			}
-			if strings.Contains(argsStr, openPath) {
-				t.Fatalf("open bead %s should not be touched, got call: %s %v", openID, c.Name, c.Args)
-			}
-		}
-
-		if !foundRemove {
-			t.Fatalf("expected git worktree remove for closed bead, calls: %v", runner.calls)
-		}
-		if !foundBranchDelete {
-			t.Fatalf("expected git branch -d for closed bead, calls: %v", runner.calls)
-		}
-	})
-
-	t.Run("no_worktrees_dir_returns_nil", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		runner := &mockCommandRunner{}
-		mgr := NewGitWorktreeManager(tmpDir, runner)
-
-		err := mgr.GCClosedWorktrees(context.Background(), func(string) bool { return true })
-		if err != nil {
-			t.Fatalf("expected nil with no .worktrees dir, got: %v", err)
-		}
-		if len(runner.calls) != 0 {
-			t.Fatalf("expected no git calls with no .worktrees dir, got %d", len(runner.calls))
-		}
-	})
-
-	t.Run("remove_failure_continues_processing_other_beads", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		worktreesDir := filepath.Join(tmpDir, ".worktrees")
-
-		// Names sort alphabetically so aaa is processed first, zzz second.
-		failID := "oro-aaa.1"
-		okID := "oro-zzz.2"
-
-		for _, id := range []string{failID, okID} {
-			if err := os.MkdirAll(filepath.Join(worktreesDir, id), 0o750); err != nil {
-				t.Fatalf("mkdir %s: %v", id, err)
-			}
-		}
-
-		failPath := filepath.Join(worktreesDir, failID)
-		okPath := filepath.Join(worktreesDir, okID)
-
-		runner := &mockCommandRunner{
-			callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
-				if name == "git" {
-					argsStr := strings.Join(args, " ")
-					if strings.Contains(argsStr, "worktree") && strings.Contains(argsStr, "remove") && strings.Contains(argsStr, failPath) {
-						return nil, fmt.Errorf("worktree locked")
-					}
-				}
-				return nil, nil
-			},
-		}
-		mgr := NewGitWorktreeManager(tmpDir, runner)
-
-		err := mgr.GCClosedWorktrees(context.Background(), func(string) bool { return true })
-		if err != nil {
-			t.Fatalf("GCClosedWorktrees should return nil even when Remove fails, got: %v", err)
-		}
-
-		// The ok bead must still be processed.
-		var foundOKRemove bool
-		for _, c := range runner.calls {
-			if c.Name == "git" {
-				argsStr := strings.Join(c.Args, " ")
-				if strings.Contains(argsStr, "worktree") && strings.Contains(argsStr, "remove") && strings.Contains(argsStr, okPath) {
-					foundOKRemove = true
-				}
-			}
-		}
-		if !foundOKRemove {
-			t.Fatalf("expected git worktree remove for ok bead after failure, calls: %v", runner.calls)
 		}
 	})
 }

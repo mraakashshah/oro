@@ -107,9 +107,13 @@ func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string
 // worktree to prevent losing work when workers are killed or time out.
 // If the worktree path does not exist, Remove returns nil (idempotent).
 func (g *GitWorktreeManager) Remove(ctx context.Context, path string) error {
-	// Check if the worktree path exists. If not, return nil (idempotent).
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil
+	// Check if path exists. If it doesn't, the worktree is already gone (idempotent).
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil // Path doesn't exist — already removed, not an error
+		}
+		// If Stat fails for a different reason, continue with git remove
+		// (let git report the actual error).
 	}
 
 	// Auto-commit any uncommitted changes before removal to prevent data loss.
