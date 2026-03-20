@@ -70,6 +70,8 @@ type mockWorktreeManager struct {
 	capturedBaseBranch string
 	removed            []string
 	removeErr          error
+	deletedBranches    []string
+	deleteBranchErr    error
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, _, baseBranch string) (string, string, error) {
@@ -84,8 +86,12 @@ func (m *mockWorktreeManager) Remove(_ context.Context, path string) error {
 	m.removed = append(m.removed, path)
 	return m.removeErr
 }
-func (m *mockWorktreeManager) Prune(_ context.Context) error                  { return nil }
-func (m *mockWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+func (m *mockWorktreeManager) Prune(_ context.Context) error { return nil }
+func (m *mockWorktreeManager) DeleteBranch(_ context.Context, branch string) error {
+	m.deletedBranches = append(m.deletedBranches, branch)
+	return m.deleteBranchErr
+}
+
 func (m *mockWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -924,4 +930,35 @@ func TestExecuteWork_HonorsBeadMetadataModel(t *testing.T) {
 			t.Errorf("expected spawner to be called with sonnet, got %q", sp.capturedModel)
 		}
 	})
+}
+
+func TestExecuteWork_DeletesBranchAfterMerge(t *testing.T) {
+	// On successful merge, DeleteBranch should be called with agent/<beadID>.
+
+	bs := &mockBeadSource{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "agent/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+
+	deps := testDeps(bs, wt, sp, mg, true, true)
+
+	cfg := &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	err := executeWork(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	// DeleteBranch should have been called with agent/oro-test
+	expectedBranch := "agent/oro-test"
+	if len(wt.deletedBranches) == 0 {
+		t.Error("expected DeleteBranch to be called after merge")
+	} else if wt.deletedBranches[0] != expectedBranch {
+		t.Errorf("expected DeleteBranch(%q), got DeleteBranch(%q)", expectedBranch, wt.deletedBranches[0])
+	}
 }
