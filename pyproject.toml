@@ -1,14 +1,14 @@
 [project]
 name = "oro"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "cosmic-ray>=8.4.3",
     "pyyaml>=6.0",
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py313"
 line-length = 120
 exclude = ["references", "archive"]
 
@@ -17,7 +17,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "RUF"]
 ignore = ["SIM115"]
 
 [tool.pyright]
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 venvPath = "."
 venv = ".venv"
 extraPaths = ["assets/hooks"]
