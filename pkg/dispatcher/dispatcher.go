@@ -1167,8 +1167,8 @@ func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID,
 		_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
 	}
 
-	// Clear worktree tracking entry unconditionally (oro-4mu1.2).
-	// Even if Remove fails, we must clear tracking to prevent stale entries.
+	// Unconditionally clear worktree tracking entry (oro-4mu1.2).
+	// Delete even if Remove fails — the worktree path is stale regardless.
 	d.mu.Lock()
 	delete(d.worktreeByBead, beadID)
 	d.mu.Unlock()

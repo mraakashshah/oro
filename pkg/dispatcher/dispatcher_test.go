@@ -12406,38 +12406,33 @@ func TestRemoveWorktreeAndClearTracking_DeletesBranch(t *testing.T) {
 }
 
 // TestRemoveWorktreeAndClearTracking_ClearsTrackingOnRemoveError verifies that
-// worktreeByBead[beadID] is deleted even when d.worktrees.Remove returns an error.
+// worktreeByBead is deleted even when d.worktrees.Remove returns an error.
 func TestRemoveWorktreeAndClearTracking_ClearsTrackingOnRemoveError(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
-	beadID := "oro-test"
-	workerID := "w1"
-	worktreePath := "/tmp/worktree-" + beadID
 
-	// Set up worktreeByBead tracking entry
+	beadID := "oro-test"
+	worktreePath := "/tmp/worktree-oro-test"
+
+	// Set up the tracking entry before calling removeWorktreeAndClearTracking.
 	d.mu.Lock()
 	d.worktreeByBead[beadID] = worktreePath
 	d.mu.Unlock()
 
-	// Verify entry exists before calling removeWorktreeAndClearTracking
-	d.mu.Lock()
-	if _, exists := d.worktreeByBead[beadID]; !exists {
-		t.Fatalf("expected worktreeByBead[%s] to exist before call", beadID)
-	}
-	d.mu.Unlock()
-
-	// Make Remove return an error
+	// Inject an error into Remove so it fails.
 	wtMgr.removeFn = func(_ context.Context, _ string) error {
-		return fmt.Errorf("worktree stuck")
+		return fmt.Errorf("simulated remove error")
 	}
 
-	// Call removeWorktreeAndClearTracking (error from Remove should not prevent tracking clear)
-	d.removeWorktreeAndClearTracking(context.Background(), beadID, workerID, worktreePath)
+	// Call the function under test.
+	d.removeWorktreeAndClearTracking(context.Background(), beadID, "w1", worktreePath)
 
-	// Assert: worktreeByBead[beadID] should be deleted despite Remove error
+	// Verify that worktreeByBead[beadID] was deleted even though Remove failed.
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
 	if _, exists := d.worktreeByBead[beadID]; exists {
-		t.Errorf("expected worktreeByBead[%s] to be deleted even when Remove fails", beadID)
+		t.Fatalf("expected worktreeByBead[%q] to be deleted, but it still exists with value %q",
+			beadID, d.worktreeByBead[beadID])
 	}
 }
 
