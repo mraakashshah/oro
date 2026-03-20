@@ -213,10 +213,12 @@ type mockWorktreeManager struct {
 	created         map[string]string // beadID -> worktree path
 	removed         []string
 	deletedBranches []string
+	mergedBranches  []string // branches passed to MergeFFOnly
 	createFn        func(ctx context.Context, beadID, baseBranch string) (string, string, error)
 	removeFn        func(ctx context.Context, path string) error
 	deleteBranchFn  func(branch string) error
 	branchExistsFn  func(ctx context.Context, branch string) (bool, error)
+	mergeFFOnlyFn   func(branch, target string) (string, error)
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (string, string, error) {
@@ -273,7 +275,16 @@ func (m *mockWorktreeManager) BranchExists(ctx context.Context, branch string) (
 	return true, nil // default: branch exists; set branchExistsFn to simulate missing branch
 }
 
-func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string) (string, error) {
+func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, branch, target string) (string, error) {
+	m.mu.Lock()
+	fn := m.mergeFFOnlyFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(branch, target)
+	}
+	m.mu.Lock()
+	m.mergedBranches = append(m.mergedBranches, branch)
+	m.mu.Unlock()
 	return "", nil
 }
 
@@ -10289,6 +10300,205 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 		count := eventCount(t, d.db, "epic_no_acceptance_cmd")
 		if count == 0 {
 			t.Error("expected epic_no_acceptance_cmd warning event to be logged")
+		}
+	})
+}
+
+// TestTryCloseEpic_FFMergeToMain verifies that tryCloseEpic FF-merges the
+// epic branch to main and deletes it when all children are closed.
+func TestTryCloseEpic_FFMergeToMain(t *testing.T) {
+	t.Run("happy path: FF merges epic branch to main and deletes it", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-ff-happy"
+		workerID := "worker-ff1"
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID:    epicID,
+			Title: "My Epic",
+			// No Cmd: → falls through to completeEpicClose via count-based path.
+			AcceptanceCriteria: "",
+		}
+		beadSource.mu.Unlock()
+
+		// Epic branch exists; track MergeFFOnly calls.
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+			return branch == protocol.EpicBranchPrefix+epicID, nil
+		}
+		wtMgr.mergeFFOnlyFn = func(branch, _ string) (string, error) {
+			wtMgr.mu.Lock()
+			wtMgr.mergedBranches = append(wtMgr.mergedBranches, branch)
+			wtMgr.mu.Unlock()
+			return "abc123", nil
+		}
+		wtMgr.mu.Unlock()
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		// Epic must be closed.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if !epicClosed {
+			t.Error("expected epic to be closed after successful FF merge")
+		}
+
+		// MergeFFOnly must have been called with the epic branch.
+		wtMgr.mu.Lock()
+		merged := make([]string, len(wtMgr.mergedBranches))
+		copy(merged, wtMgr.mergedBranches)
+		wtMgr.mu.Unlock()
+		epicBranch := protocol.EpicBranchPrefix + epicID
+		found := false
+		for _, b := range merged {
+			if b == epicBranch {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected MergeFFOnly called with %q, got %v", epicBranch, merged)
+		}
+
+		// Epic branch must have been deleted.
+		wtMgr.mu.Lock()
+		deleted := false
+		for _, b := range wtMgr.deletedBranches {
+			if b == epicBranch {
+				deleted = true
+				break
+			}
+		}
+		wtMgr.mu.Unlock()
+		if !deleted {
+			t.Errorf("expected DeleteBranch called with %q, got %v", epicBranch, wtMgr.deletedBranches)
+		}
+	})
+
+	t.Run("epic branch does not exist: skip merge, close epic", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-ff-nobranch"
+		workerID := "worker-ff2"
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID: epicID, Title: "My Epic", AcceptanceCriteria: "",
+		}
+		beadSource.mu.Unlock()
+
+		// Branch does not exist.
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return false, nil
+		}
+		wtMgr.mu.Unlock()
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		// Epic must still be closed.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if !epicClosed {
+			t.Error("expected epic to be closed when branch does not exist")
+		}
+
+		// MergeFFOnly must NOT have been called.
+		wtMgr.mu.Lock()
+		mergedCount := len(wtMgr.mergedBranches)
+		wtMgr.mu.Unlock()
+		if mergedCount > 0 {
+			t.Errorf("expected no MergeFFOnly call when branch absent, got %v", wtMgr.mergedBranches)
+		}
+	})
+
+	t.Run("FF merge fails: rebase bead created, epic not closed", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-ff-fail"
+		workerID := "worker-ff3"
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID: epicID, Title: "My Epic", AcceptanceCriteria: "",
+		}
+		beadSource.mu.Unlock()
+
+		// Branch exists but FF merge fails.
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return true, nil
+		}
+		wtMgr.mergeFFOnlyFn = func(branch, _ string) (string, error) {
+			return "", errors.New("not fast-forward: main has diverged")
+		}
+		wtMgr.mu.Unlock()
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		// Epic must NOT be closed.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if epicClosed {
+			t.Error("expected epic NOT to be closed after FF merge failure")
+		}
+
+		// A rebase bead must have been created as a child of the epic.
+		beadSource.mu.Lock()
+		createdCount := len(beadSource.created)
+		var rebaseBead createCall
+		for _, c := range beadSource.created {
+			if c.parent == epicID {
+				rebaseBead = c
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if createdCount == 0 {
+			t.Fatal("expected a rebase bead to be created on FF merge failure")
+		}
+		if rebaseBead.parent != epicID {
+			t.Errorf("expected rebase bead parent=%q, got %q", epicID, rebaseBead.parent)
 		}
 	})
 }

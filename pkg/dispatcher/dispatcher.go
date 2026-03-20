@@ -361,6 +361,10 @@ type Dispatcher struct {
 	targetWorkers               int
 	completionsSinceConsolidate int // counts completed beads since last context consolidation
 
+	// repoRoot is the effective repository root (cfg.RepoRoot with cwd fallback).
+	// Used as the target directory for git operations on the primary repo (e.g. epic FF merge).
+	repoRoot string
+
 	// shutdownRunner is the CommandRunner used by shutdownResetActiveBeads to run
 	// `bd update` from the repo root. Initialised by New() to
 	// &ExecCommandRunner{Dir: cfg.RepoRoot}; overridable in tests.
@@ -471,6 +475,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		escalator:      esc,
 		memories:       memStore,
 		codeIndex:      codeIdx,
+		repoRoot:       rootDir,
 		shutdownRunner: &ExecCommandRunner{Dir: rootDir},
 		acceptance:     &ShellAcceptanceRunner{},
 		estimator:      estimator,
@@ -1343,9 +1348,59 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 	})
 }
 
-// completeEpicClose closes the epic, cancels stale ops agents, logs the event,
-// and escalates to the manager if the epic is currently focused.
+// ffMergeEpicBranch fast-forward merges the epic branch into main and deletes
+// it. Returns nil if the branch does not exist (no-op) or if the merge
+// succeeds. Returns an error if the merge fails; in that case a rebase child
+// bead is created so the epic will be retried when the rebase completes.
+func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID string) error {
+	epicBranch := protocol.EpicBranchPrefix + epicID
+
+	exists, err := d.worktrees.BranchExists(ctx, epicBranch)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_branch_check_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, err.Error()))
+		// Treat check failure as branch absent: skip merge, allow close.
+		return nil
+	}
+	if !exists {
+		_ = d.logEvent(ctx, "epic_branch_absent", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q}`, epicBranch))
+		return nil
+	}
+
+	_, mergeErr := d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot)
+	if mergeErr != nil {
+		wrapped := fmt.Errorf("ff merge %s to main: %w", epicBranch, mergeErr)
+		_ = d.logEvent(ctx, "epic_ff_merge_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
+		// Create a rebase child bead so the epic is retried after the rebase.
+		_, _ = d.beads.Create(ctx,
+			fmt.Sprintf("Rebase %s onto main", epicBranch),
+			"task", 1,
+			fmt.Sprintf("FF merge of %s failed: %s. Rebase the epic branch onto main and re-trigger close.", epicBranch, wrapped.Error()),
+			epicID, "")
+		return wrapped
+	}
+
+	_ = d.logEvent(ctx, "epic_ff_merged", "dispatcher", epicID, workerID,
+		fmt.Sprintf(`{"branch":%q}`, epicBranch))
+
+	if delErr := d.worktrees.DeleteBranch(ctx, epicBranch); delErr != nil {
+		_ = d.logEvent(ctx, "epic_branch_delete_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, delErr.Error()))
+	}
+	return nil
+}
+
+// completeEpicClose FF-merges the epic branch to main, then closes the epic,
+// cancels stale ops agents, logs the event, and escalates to the manager if
+// the epic is currently focused. If the FF merge fails a rebase child bead is
+// created and the close is skipped.
 func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, reason string) {
+	if err := d.ffMergeEpicBranch(ctx, epicID, workerID); err != nil {
+		return
+	}
+
 	_ = d.beads.Close(ctx, epicID, reason)
 
 	// Cancel any in-flight ops agents for this epic to prevent stale escalations.
