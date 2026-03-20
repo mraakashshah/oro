@@ -64,6 +64,7 @@ linters:
     gosec:
       excludes:
         - G115 # upstream panic on float constants in ui package
+        - G701 # false positive on parameterized SQL queries with ? placeholders
 
     gocyclo:
       min-complexity: 15
