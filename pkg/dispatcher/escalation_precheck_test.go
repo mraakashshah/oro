@@ -54,6 +54,22 @@ func TestShouldRetryEscalation(t *testing.T) {
 			want: true, // should retry - AC still missing
 		},
 		{
+			name:    "MISSING_AC closed bead - do not retry",
+			escType: "MISSING_AC",
+			beadID:  "oro-closed1",
+			setupBead: func(m *mockBeadSource) {
+				if m.shown == nil {
+					m.shown = make(map[string]*protocol.BeadDetail)
+				}
+				m.shown["oro-closed1"] = &protocol.BeadDetail{
+					ID:                 "oro-closed1",
+					AcceptanceCriteria: "", // no AC, but bead is closed
+					Status:             "closed",
+				}
+			},
+			want: false, // should NOT retry - bead is closed
+		},
+		{
 			name:    "STUCK_WORKER resolved - worker no longer exists",
 			escType: "STUCK_WORKER",
 			beadID:  "oro-test3",

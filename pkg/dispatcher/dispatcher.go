@@ -3282,10 +3282,13 @@ func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID 
 	// Check per-type conditions
 	switch protocol.EscalationType(escType) {
 	case protocol.EscMissingAC:
-		// Resolved if AC is now populated
+		// Resolved if AC is now populated or bead is closed
 		detail, err := d.beads.Show(ctx, beadID)
 		if err != nil {
 			return true // Retry on error
+		}
+		if detail.Status == "closed" {
+			return false // Don't retry for closed beads
 		}
 		return detail.AcceptanceCriteria == "" // Retry if still missing
 
