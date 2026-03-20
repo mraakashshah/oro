@@ -2061,66 +2061,70 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 	d.mu.Unlock()
 
 	for _, a := range active {
-		// Skip beads with in-flight merges to prevent duplicate mergeAndComplete (oro-x4x8).
-		d.mu.Lock()
-		merging := d.mergingBeads[a.beadID]
-		d.mu.Unlock()
-		if merging {
-			continue
-		}
+		d.handleClosedAssignment(ctx, a.workerID, a.beadID)
+	}
+}
 
-		detail, err := d.beads.Show(ctx, a.beadID)
-		if err != nil {
-			// Transient lookup error — don't kill the worker, retry next cycle.
-			continue
-		}
-		switch {
-		case detail == nil:
-			// Bead not found in source — treat as externally removed.
-			_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", a.beadID, a.workerID,
-				"bead not found in source; sending shutdown")
-		case detail.Status == "closed":
-			_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", a.beadID, a.workerID,
-				"bead closed while worker assigned; sending shutdown")
-		default:
-			// Bead exists and is not explicitly closed — keep worker assigned.
-			continue
-		}
+// handleClosedAssignment checks whether a single bead has been closed
+// externally and, if so, shuts down the assigned worker and triggers cleanup.
+func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadID string) {
+	// Skip beads with in-flight merges to prevent duplicate mergeAndComplete (oro-x4x8).
+	d.mu.Lock()
+	merging := d.mergingBeads[beadID]
+	d.mu.Unlock()
+	if merging {
+		return
+	}
 
-		// Send SHUTDOWN, capture worktree, and clear worker state under lock.
-		var worktree, epicID, targetBranch string
-		d.mu.Lock()
-		if w, ok := d.workers[a.workerID]; ok && w.beadID == a.beadID {
-			worktree = w.worktree
-			epicID = w.epicID             // Capture epicID before clearing
-			targetBranch = w.targetBranch // Capture targetBranch before clearing
-			if err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown}); err != nil {
-				// Socket is dead — remove worker entirely to prevent
-				// tryAssign from cycling beads through a zombie (oro-e2jk).
-				_ = w.conn.Close()
-				delete(d.workers, a.workerID)
-			} else {
-				w.state = protocol.WorkerIdle
-				w.beadID = ""
-				w.epicID = ""
-				w.worktree = ""
-			}
-		}
-		d.mu.Unlock()
+	detail, err := d.beads.Show(ctx, beadID)
+	if err != nil {
+		// Transient lookup error — don't kill the worker, retry next cycle.
+		return
+	}
+	switch {
+	case detail == nil:
+		// Bead not found in source — treat as externally removed.
+		_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", beadID, workerID,
+			"bead not found in source; sending shutdown")
+	case detail.Status == "closed":
+		_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", beadID, workerID,
+			"bead closed while worker assigned; sending shutdown")
+	default:
+		// Bead exists and is not explicitly closed — keep worker assigned.
+		return
+	}
 
-		// If the worker had a worktree, attempt to merge any commits on the
-		// agent branch before cleaning up. mergeAndComplete handles assignment
-		// completion, tracking cleanup, and worktree removal internally.
-		if worktree != "" {
-			beadID := a.beadID
-			workerID := a.workerID
-			branch := protocol.BranchPrefix + beadID
-			d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch) })
+	// Send SHUTDOWN, capture worktree, and clear worker state under lock.
+	var worktree, epicID, targetBranch string
+	d.mu.Lock()
+	if w, ok := d.workers[workerID]; ok && w.beadID == beadID {
+		worktree = w.worktree
+		epicID = w.epicID             // Capture epicID before clearing
+		targetBranch = w.targetBranch // Capture targetBranch before clearing
+		if err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown}); err != nil {
+			// Socket is dead — remove worker entirely to prevent
+			// tryAssign from cycling beads through a zombie (oro-e2jk).
+			_ = w.conn.Close()
+			delete(d.workers, workerID)
 		} else {
-			// No worktree — just complete the DB record and clear tracking.
-			_ = d.completeAssignment(ctx, a.beadID)
-			d.clearBeadTracking(a.beadID)
+			w.state = protocol.WorkerIdle
+			w.beadID = ""
+			w.epicID = ""
+			w.worktree = ""
 		}
+	}
+	d.mu.Unlock()
+
+	// If the worker had a worktree, attempt to merge any commits on the
+	// agent branch before cleaning up. mergeAndComplete handles assignment
+	// completion, tracking cleanup, and worktree removal internally.
+	if worktree != "" {
+		branch := protocol.BranchPrefix + beadID
+		d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch) })
+	} else {
+		// No worktree — just complete the DB record and clear tracking.
+		_ = d.completeAssignment(ctx, beadID)
+		d.clearBeadTracking(beadID)
 	}
 }
 

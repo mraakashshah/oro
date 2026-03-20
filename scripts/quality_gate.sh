@@ -270,7 +270,7 @@ lane_go() {
 		# Exclude newly-ported TUI packages (pkg/mg/ subpackages) from
 		# coverage — they have 0% coverage until full integration wiring.
 		local filtered="${COVERAGE_FILE}.filtered"
-		grep -v 'oro/pkg/mg/' "$COVERAGE_FILE" > "$filtered"
+		grep -v 'oro/pkg/mg/' "$COVERAGE_FILE" >"$filtered"
 		local cov
 		cov=$(go tool cover -func="$filtered" | grep total | awk '{print $3}' | sed 's/%//')
 		echo "Coverage: ${cov}%"
