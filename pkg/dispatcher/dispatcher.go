@@ -2373,14 +2373,11 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		},
 	})
 	if err != nil {
-		w.state = protocol.WorkerIdle
-		w.beadID = ""
-		w.epicID = ""
-		w.isEpicDecomp = false
-		w.worktree = ""
-		w.baseBranch = ""
-		w.targetBranch = ""
-		w.model = ""
+		// Socket is dead — remove worker entirely to prevent tryAssign from
+		// cycling beads through a zombie (oro-e2jk). Same fix as
+		// bead_closed_externally path.
+		_ = w.conn.Close()
+		delete(d.workers, w.id)
 		delete(d.worktreeByBead, bead.ID) // clear stale entry so next assignment creates a fresh worktree (oro-fhn3)
 	}
 	// Clear assignment-in-progress flag now that worker state is updated (oro-ptp2).

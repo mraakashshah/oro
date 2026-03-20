@@ -6969,28 +6969,10 @@ func TestAssignBead_RevertsBusyOnSendFailure(t *testing.T) {
 	// Call assignBead — worktree creation succeeds, but sendToWorker should fail
 	_ = d.assignBead(ctx, w, bead)
 
-	// Assert worker reverted to Idle with cleared fields
-	st, beadID, ok = d.WorkerInfo("w-fail-assign")
-	if !ok {
-		t.Fatal("expected worker to still exist after failed assign")
-	}
-	if st != protocol.WorkerIdle {
-		t.Fatalf("expected worker to revert to Idle after sendToWorker failure, got %s", st)
-	}
-	if beadID != "" {
-		t.Fatalf("expected beadID to be cleared after sendToWorker failure, got %q", beadID)
-	}
-
-	// Also verify worktree field is cleared
-	d.mu.Lock()
-	wt := w.worktree
-	model := w.model
-	d.mu.Unlock()
-	if wt != "" {
-		t.Fatalf("expected worktree to be cleared after sendToWorker failure, got %q", wt)
-	}
-	if model != "" {
-		t.Fatalf("expected model to be cleared after sendToWorker failure, got %q", model)
+	// Worker should be REMOVED from d.workers (oro-e2jk: dead socket → remove).
+	_, _, ok = d.WorkerInfo("w-fail-assign")
+	if ok {
+		t.Fatal("expected worker to be removed from d.workers after sendToWorker failure")
 	}
 
 	// Verify the worktree was also cleaned up (existing behavior)
@@ -12797,6 +12779,65 @@ func TestBeadClosedExternally_DeadSocketRemovesWorker(t *testing.T) {
 
 	if stillExists {
 		t.Fatal("expected dead-socket worker to be removed from d.workers, but it still exists")
+	}
+}
+
+// TestTryAssign_DeadSocketRemovesWorker verifies that when tryAssign sends an
+// ASSIGN message to a worker with a dead socket, the worker is removed from
+// d.workers immediately rather than left idle. This is the tryAssign-path
+// counterpart to TestBeadClosedExternally_DeadSocketRemovesWorker (oro-e2jk).
+func TestTryAssign_DeadSocketRemovesWorker(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	// Set dispatcher to running so tryAssign proceeds.
+	d.mu.Lock()
+	d.state = StateRunning
+	d.mu.Unlock()
+
+	// Provide a ready bead.
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-dead-assign", Priority: 1},
+	})
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-dead-assign"] = &protocol.BeadDetail{
+		Title:              "test bead",
+		Status:             "open",
+		AcceptanceCriteria: "test passes",
+	}
+	beadSrc.mu.Unlock()
+
+	// Register a worker with a CLOSED connection.
+	workerID := "w-dead-assign"
+	conn := newMockConn()
+	conn.mu.Lock()
+	conn.closed = true
+	conn.mu.Unlock()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		conn:    conn,
+		state:   protocol.WorkerIdle,
+		managed: true,
+	}
+	d.mu.Unlock()
+
+	// Run tryAssign — should attempt to send ASSIGN, fail, and remove the worker.
+	d.tryAssign(ctx)
+
+	// Worker should be REMOVED from d.workers.
+	d.mu.Lock()
+	_, stillExists := d.workers[workerID]
+	d.mu.Unlock()
+
+	if stillExists {
+		t.Fatal("expected dead-socket worker to be removed from d.workers after failed assign send")
 	}
 }
 
