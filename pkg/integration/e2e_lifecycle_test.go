@@ -127,6 +127,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatcher.New: %v", err)
 	}
+	d.SetQGRunner(passQGRunner{})
 
 	// --- Phase 1: Start dispatcher ---
 	ctx, cancel := context.WithCancel(context.Background())

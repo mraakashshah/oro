@@ -148,6 +148,53 @@ func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output str
 	return output, true, nil
 }
 
+// QGRunner executes the quality gate script in a worktree and reports
+// whether it passed. skipMutation true means mutation testing is skipped.
+type QGRunner interface {
+	Run(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error)
+}
+
+// ShellQGRunner runs quality_gate.sh inside the worktree via bash. It looks
+// for scripts/quality_gate.sh first, then quality_gate.sh at the repo root.
+// It returns (true, output, nil) on exit 0, (false, output, nil) on non-zero
+// exit, and (false, "", err) if the script cannot be found or launched.
+type ShellQGRunner struct{}
+
+// Run implements QGRunner using the same logic as worker.RunQualityGate but
+// self-contained in the dispatcher package to avoid an import cycle.
+func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error) {
+	candidates := []string{
+		filepath.Join(worktree, "scripts", "quality_gate.sh"),
+		filepath.Join(worktree, "quality_gate.sh"),
+	}
+	scriptPath := ""
+	for _, p := range candidates {
+		if _, statErr := os.Stat(p); statErr == nil {
+			scriptPath = p
+			break
+		}
+	}
+	if scriptPath == "" {
+		return false, "", fmt.Errorf("quality gate script not found in scripts/quality_gate.sh or quality_gate.sh")
+	}
+
+	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
+	cmd.Dir = worktree
+	if skipMutation {
+		cmd.Env = append(os.Environ(), "ORO_SKIP_MUTATION=1")
+	}
+	out, runErr := cmd.CombinedOutput()
+	output = string(out)
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return false, output, nil
+		}
+		return false, output, fmt.Errorf("run quality gate: %w", runErr)
+	}
+	return true, output, nil
+}
+
 // --- Worker tracking ---
 
 // WorkerState is now in pkg/protocol/types.go
@@ -296,6 +343,7 @@ type Dispatcher struct {
 	codeIndex     CodeIndex // interface for FTS5 code search (nil means no search)
 	procMgr       ProcessManager
 	acceptance    AcceptanceRunner // runs epic acceptance test commands
+	qgRunner      QGRunner         // runs quality gate before merge (defaults to &ShellQGRunner{})
 	paneRestarter PaneRestarter    // restarts named tmux panes (nil means no restart)
 	estimator     BeadEstimator    // estimates bead completion time (nil means no estimation)
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
@@ -424,6 +472,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		shutdownRunner: &ExecCommandRunner{Dir: rootDir},
 		acceptance:     &ShellAcceptanceRunner{},
 		estimator:      estimator,
+		qgRunner:       &ShellQGRunner{},
 		state:          StateInert,
 		targetWorkers:  resolved.MaxWorkers,
 		WorkerPool: WorkerPool{
@@ -491,6 +540,14 @@ func (d *Dispatcher) setState(s State) {
 // The signal handler checks this flag to decide whether to honor SIGTERM.
 func (d *Dispatcher) ShutdownAuthorized() *atomic.Bool {
 	return &d.shutdownAuthorized
+}
+
+// SetQGRunner replaces the quality gate runner. Intended for use in tests
+// where the real quality_gate.sh script is not available.
+//
+//oro:testonly
+func (d *Dispatcher) SetQGRunner(r QGRunner) {
+	d.qgRunner = r
 }
 
 // Run starts the Dispatcher event loop. It:
@@ -1090,8 +1147,34 @@ func (d *Dispatcher) guardMerge(beadID string) func() {
 	}
 }
 
+// checkPreMergeQG runs the mutation quality gate before merging. It returns
+// true when the gate passes and the merge should proceed. On failure or error
+// it handles cleanup and returns false so the caller can return early.
+func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string) bool {
+	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, false)
+	if qgErr != nil {
+		_ = d.logEvent(ctx, "pre_merge_qg_error", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, qgErr.Error()))
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "pre-merge QG error", qgErr.Error()), beadID, workerID)
+		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+		return false
+	}
+	if !qgPassed {
+		_ = d.logEvent(ctx, "pre_merge_qg_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"output":%q}`, qgOutput))
+		_ = d.beads.Update(ctx, beadID, "open")
+		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+		return false
+	}
+	return true
+}
+
 func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, epicID, targetBranch string) {
 	defer d.guardMerge(beadID)()
+
+	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree) {
+		return
+	}
 
 	result, err := d.merger.Merge(ctx, merge.Opts{
 		Branch:       branch,
@@ -1137,6 +1220,12 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 
 	// Trigger memory consolidation after every N bead completions.
+	d.maybeConsolidateMemory(ctx)
+}
+
+// maybeConsolidateMemory increments the completion counter and triggers an
+// async memory consolidation when the threshold is reached.
+func (d *Dispatcher) maybeConsolidateMemory(ctx context.Context) {
 	d.mu.Lock()
 	d.completionsSinceConsolidate++
 	shouldConsolidate := d.cfg.ConsolidateAfterN > 0 && d.completionsSinceConsolidate >= d.cfg.ConsolidateAfterN

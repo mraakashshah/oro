@@ -138,6 +138,14 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 	return "", "", nil
 }
 
+// passQGRunner always reports the quality gate as passing. Used in integration
+// tests where quality_gate.sh is not available on disk.
+type passQGRunner struct{}
+
+func (passQGRunner) Run(_ context.Context, _ string, _ bool) (bool, string, error) {
+	return true, "", nil
+}
+
 type mockOpsSpawner struct{}
 
 func (m *mockOpsSpawner) Spawn(_ context.Context, _, _, _ string) (ops.Process, error) {
@@ -325,6 +333,7 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatcher.New failed: %v", err)
 	}
+	d.SetQGRunner(passQGRunner{})
 
 	// Override beads dir to avoid watching real .beads/
 	// Since beadsDir is unexported, we rely on the fallback poll interval (50ms)
@@ -480,6 +489,7 @@ func TestDispatcherWorker_GracefulShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatcher.New failed: %v", err)
 	}
+	d.SetQGRunner(passQGRunner{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -582,6 +592,7 @@ func TestDispatcherWorker_Heartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatcher.New failed: %v", err)
 	}
+	d.SetQGRunner(passQGRunner{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)

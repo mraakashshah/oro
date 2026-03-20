@@ -588,6 +588,10 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
+	// Default to a passing QG runner so existing mergeAndComplete tests are
+	// not broken by the new pre-merge gate. Tests that exercise QG behaviour
+	// inject their own mockQGRunner after calling newTestDispatcher.
+	d.qgRunner = &mockQGRunner{passed: true}
 	return d, beadSrc, wtMgr, esc, gitRunner, spawnMock
 }
 
@@ -6582,6 +6586,235 @@ func TestMergeAndComplete_CleansUpOnNonConflictError(t *testing.T) {
 	if trackedPath != "" {
 		t.Errorf("worktreeByBead[%q] = %q, want empty (should be cleared on non-conflict cleanup)", beadID, trackedPath)
 	}
+}
+
+// mockQGRunner is a test double for QGRunner.
+type mockQGRunner struct {
+	mu     sync.Mutex
+	passed bool
+	output string
+	err    error
+	calls  []string // worktree paths passed to Run
+}
+
+func (m *mockQGRunner) Run(_ context.Context, worktree string, _ bool) (bool, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, worktree)
+	return m.passed, m.output, m.err
+}
+
+// TestMergeAndComplete_RunsMutationQG verifies that mergeAndComplete calls the
+// QGRunner before attempting to merge, and handles pass/fail/error correctly.
+func TestMergeAndComplete_RunsMutationQG(t *testing.T) {
+	t.Run("QG pass - merge proceeds normally", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const beadID = "bead-qg-pass"
+		const workerID = "w-qg-pass"
+		const worktree = "/tmp/worktree-qg-pass"
+		branch := protocol.BranchPrefix + beadID
+
+		qgRunner := &mockQGRunner{passed: true, output: "all green"}
+		d.qgRunner = qgRunner
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+
+		// QG was called with the correct worktree.
+		qgRunner.mu.Lock()
+		calls := append([]string(nil), qgRunner.calls...)
+		qgRunner.mu.Unlock()
+		if len(calls) != 1 {
+			t.Fatalf("expected QGRunner.Run called once, got %d", len(calls))
+		}
+		if calls[0] != worktree {
+			t.Errorf("QGRunner.Run worktree = %q, want %q", calls[0], worktree)
+		}
+
+		// Merge proceeded: bead closed.
+		beadSrc.mu.Lock()
+		closed := append([]string(nil), beadSrc.closed...)
+		beadSrc.mu.Unlock()
+		found := false
+		for _, id := range closed {
+			if id == beadID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected beads.Close(%q) after QG pass + merge, got closed=%v", beadID, closed)
+		}
+
+		// Worktree removed.
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		foundRemoved := false
+		for _, r := range removed {
+			if r == worktree {
+				foundRemoved = true
+				break
+			}
+		}
+		if !foundRemoved {
+			t.Errorf("expected worktrees.Remove(%q), got removed=%v", worktree, removed)
+		}
+	})
+
+	t.Run("QG fail - merge aborted, bead reset to open, worktree cleaned up", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const beadID = "bead-qg-fail"
+		const workerID = "w-qg-fail"
+		const worktree = "/tmp/worktree-qg-fail"
+		branch := protocol.BranchPrefix + beadID
+
+		qgRunner := &mockQGRunner{passed: false, output: "mutation testing failed"}
+		d.qgRunner = qgRunner
+
+		// Seed worktreeByBead so we can verify it is cleared after cleanup.
+		d.mu.Lock()
+		d.worktreeByBead[beadID] = worktree
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+
+		// QG was called with the correct worktree.
+		qgRunner.mu.Lock()
+		calls := append([]string(nil), qgRunner.calls...)
+		qgRunner.mu.Unlock()
+		if len(calls) != 1 {
+			t.Fatalf("expected QGRunner.Run called once, got %d", len(calls))
+		}
+		if calls[0] != worktree {
+			t.Errorf("QGRunner.Run worktree = %q, want %q", calls[0], worktree)
+		}
+
+		// Merge did NOT proceed: bead not closed.
+		beadSrc.mu.Lock()
+		closed := append([]string(nil), beadSrc.closed...)
+		beadSrc.mu.Unlock()
+		for _, id := range closed {
+			if id == beadID {
+				t.Errorf("expected merge to be aborted on QG fail, but beads.Close(%q) was called", beadID)
+			}
+		}
+
+		// Bead reset to open.
+		beadSrc.mu.Lock()
+		status, hasStatus := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if !hasStatus {
+			t.Errorf("expected beads.Update(%q, \"open\") on QG fail, but Update was not called", beadID)
+		} else if status != "open" {
+			t.Errorf("beads.Update(%q) status = %q, want \"open\"", beadID, status)
+		}
+
+		// Worktree cleaned up.
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		foundRemoved := false
+		for _, r := range removed {
+			if r == worktree {
+				foundRemoved = true
+				break
+			}
+		}
+		if !foundRemoved {
+			t.Errorf("expected worktrees.Remove(%q) on QG fail, got removed=%v", worktree, removed)
+		}
+
+		// worktreeByBead cleared.
+		d.mu.Lock()
+		trackedPath := d.worktreeByBead[beadID]
+		d.mu.Unlock()
+		if trackedPath != "" {
+			t.Errorf("worktreeByBead[%q] = %q, want empty after QG fail cleanup", beadID, trackedPath)
+		}
+	})
+
+	t.Run("QG error (script missing) - escalate EscStuck, abort merge, cleanup worktree", func(t *testing.T) {
+		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const beadID = "bead-qg-err"
+		const workerID = "w-qg-err"
+		const worktree = "/tmp/worktree-qg-err"
+		branch := protocol.BranchPrefix + beadID
+
+		qgRunner := &mockQGRunner{passed: false, err: fmt.Errorf("quality gate script not found")}
+		d.qgRunner = qgRunner
+
+		d.mu.Lock()
+		d.worktreeByBead[beadID] = worktree
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+
+		// QG was called.
+		qgRunner.mu.Lock()
+		calls := qgRunner.calls
+		qgRunner.mu.Unlock()
+		if len(calls) != 1 {
+			t.Fatalf("expected QGRunner.Run called once, got %d", len(calls))
+		}
+
+		// Merge did NOT proceed.
+		beadSrc.mu.Lock()
+		closed := append([]string(nil), beadSrc.closed...)
+		beadSrc.mu.Unlock()
+		for _, id := range closed {
+			if id == beadID {
+				t.Errorf("expected merge to be aborted on QG error, but beads.Close(%q) was called", beadID)
+			}
+		}
+
+		// EscStuck escalation sent.
+		esc.mu.Lock()
+		msgs := append([]string(nil), esc.messages...)
+		esc.mu.Unlock()
+		foundEsc := false
+		for _, msg := range msgs {
+			if strings.Contains(msg, string(protocol.EscStuck)) {
+				foundEsc = true
+				break
+			}
+		}
+		if !foundEsc {
+			t.Errorf("expected EscStuck escalation on QG error, got msgs=%v", msgs)
+		}
+
+		// Worktree cleaned up.
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		foundRemoved := false
+		for _, r := range removed {
+			if r == worktree {
+				foundRemoved = true
+				break
+			}
+		}
+		if !foundRemoved {
+			t.Errorf("expected worktrees.Remove(%q) on QG error, got removed=%v", worktree, removed)
+		}
+	})
 }
 
 // TestOpsReviewUsesTargetBranch verifies that handleReadyForReview passes
