@@ -862,6 +862,87 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 	})
 }
 
+func TestBuildAssignPrompt_MapsNewFields(t *testing.T) {
+	t.Parallel()
+
+	t.Run("maps_gitlog_to_prompt", func(t *testing.T) {
+		t.Parallel()
+
+		gitLog := "commit abc123: Add feature\ncommit def456: Fix bug"
+		prompt, _ := worker.BuildAssignPrompt(&protocol.AssignPayload{
+			BeadID:             "oro-test-1",
+			Worktree:           "/tmp/wt-test",
+			Title:              "Test task",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			Model:              "opus",
+			GitLog:             gitLog,
+		})
+
+		// Verify prompt contains Git History section with the git log
+		if !strings.Contains(prompt, "## Git History") {
+			t.Error("expected prompt to contain '## Git History' section")
+		}
+		if !strings.Contains(prompt, gitLog) {
+			t.Error("expected prompt to contain git log content")
+		}
+	})
+
+	t.Run("maps_worker_program_to_prompt", func(t *testing.T) {
+		t.Parallel()
+
+		workerProgram := "Using skill: test-driven-development"
+		prompt, _ := worker.BuildAssignPrompt(&protocol.AssignPayload{
+			BeadID:             "oro-test-2",
+			Worktree:           "/tmp/wt-test",
+			Title:              "Test task",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			Model:              "opus",
+			WorkerProgram:      workerProgram,
+		})
+
+		// Verify prompt contains Worker Program section with the worker program
+		if !strings.Contains(prompt, "## Worker Program") {
+			t.Error("expected prompt to contain '## Worker Program' section")
+		}
+		if !strings.Contains(prompt, workerProgram) {
+			t.Error("expected prompt to contain worker program content")
+		}
+	})
+
+	t.Run("maps_both_fields_together", func(t *testing.T) {
+		t.Parallel()
+
+		gitLog := "commit xyz789: Another change"
+		workerProgram := "Invoking systematic-debugging"
+		prompt, _ := worker.BuildAssignPrompt(&protocol.AssignPayload{
+			BeadID:             "oro-test-3",
+			Worktree:           "/tmp/wt-test",
+			Title:              "Test task",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			Model:              "opus",
+			GitLog:             gitLog,
+			WorkerProgram:      workerProgram,
+		})
+
+		// Verify both sections are present with content
+		if !strings.Contains(prompt, "## Git History") {
+			t.Error("expected prompt to contain '## Git History' section")
+		}
+		if !strings.Contains(prompt, gitLog) {
+			t.Error("expected prompt to contain git log content")
+		}
+		if !strings.Contains(prompt, "## Worker Program") {
+			t.Error("expected prompt to contain '## Worker Program' section")
+		}
+		if !strings.Contains(prompt, workerProgram) {
+			t.Error("expected prompt to contain worker program content")
+		}
+	})
+}
+
 // extractSection returns the content from the start of header to the start of
 // the next ## header. Fatal if header not found.
 func extractSection(t *testing.T, prompt, header string) string {

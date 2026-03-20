@@ -454,6 +454,8 @@ func BuildAssignPrompt(a *protocol.AssignPayload) (prompt, model string) {
 			Feedback:           a.Feedback,
 			ProjectRoot:        a.ProjectRoot,
 			TargetBranch:       a.TargetBranch,
+			GitLog:             a.GitLog,
+			WorkerProgram:      a.WorkerProgram,
 		})
 	default:
 		prompt = BuildPrompt(a.BeadID, a.Worktree, a.MemoryContext)
