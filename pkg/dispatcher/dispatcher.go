@@ -11,12 +11,14 @@ package dispatcher
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -295,6 +297,7 @@ type Dispatcher struct {
 	procMgr       ProcessManager
 	acceptance    AcceptanceRunner // runs epic acceptance test commands
 	paneRestarter PaneRestarter    // restarts named tmux panes (nil means no restart)
+	estimator     BeadEstimator    // estimates bead completion time (nil means no estimation)
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
 	WorkerPool
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
@@ -401,6 +404,13 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	}
 	memStore := memory.NewStore(db)
 	memStore.SetEmbedder(memory.NewEmbedder())
+
+	// Initialize estimator if ANTHROPIC_API_KEY is set
+	var estimator BeadEstimator
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		estimator = NewLLMEstimator(key)
+	}
+
 	return &Dispatcher{
 		cfg:            resolved,
 		db:             db,
@@ -413,6 +423,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		codeIndex:      codeIdx,
 		shutdownRunner: &ExecCommandRunner{Dir: rootDir},
 		acceptance:     &ShellAcceptanceRunner{},
+		estimator:      estimator,
 		state:          StateInert,
 		targetWorkers:  resolved.MaxWorkers,
 		WorkerPool: WorkerPool{
@@ -2344,6 +2355,12 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			codeCtx = formatSearchResults(results)
 		}
 	}
+
+	// Call estimator if bead needs estimation (no explicit model and no estimate yet)
+	if bead.Model == "" && bead.EstimatedMinutes == 0 && d.estimator != nil {
+		bead.EstimatedMinutes = d.estimator.Estimate(ctx, bead.Title, acceptance)
+	}
+
 	resolvedModel := bead.ResolveModel()
 	if isEpicDecomp {
 		resolvedModel = protocol.ModelOpus
@@ -3799,6 +3816,119 @@ func buildSearchQuery(title string, labels []string) string {
 	}
 	parts = append(parts, labels...)
 	return strings.Join(parts, " ")
+}
+
+// LLMEstimator uses Claude API to estimate bead completion time.
+type LLMEstimator struct {
+	apiKey string
+}
+
+// NewLLMEstimator creates a new LLMEstimator with the given API key.
+func NewLLMEstimator(apiKey string) *LLMEstimator {
+	return &LLMEstimator{apiKey: apiKey}
+}
+
+// messageRequest is the request body for the Anthropic API.
+type messageRequest struct {
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+	Messages  []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"messages"`
+}
+
+// messageResponse is the response body from the Anthropic API.
+type messageResponse struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// Estimate calls Claude to estimate the time (in minutes) required for a bead.
+// Returns 0 if estimation fails or if the model decides the task is quick/trivial.
+func (e *LLMEstimator) Estimate(ctx context.Context, title, acceptance string) int {
+	if e.apiKey == "" {
+		return 0
+	}
+
+	prompt := fmt.Sprintf(`Estimate the time required to complete this software engineering task in minutes.
+
+Task Title: %s
+
+Acceptance Criteria:
+%s
+
+Return ONLY a single integer (the number of minutes). If you cannot estimate, return 0.
+Be conservative - when in doubt, estimate higher rather than lower.`, title, acceptance)
+
+	resp, err := e.callAPI(ctx, prompt)
+	if err != nil || resp == nil {
+		return 0
+	}
+
+	return e.parseResponse(resp)
+}
+
+// callAPI makes a request to the Anthropic API (using https://api.anthropic.com which is a trusted endpoint).
+func (e *LLMEstimator) callAPI(ctx context.Context, prompt string) (*messageResponse, error) { //nolint:gosec // SSRF: endpoint is hardcoded, not user-controlled
+	reqBody := messageRequest{
+		Model:     "claude-opus-4-1",
+		MaxTokens: 10,
+	}
+	reqBody.Messages = append(reqBody.Messages, struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}{Role: "user", Content: prompt})
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages",
+		bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", e.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec // URL is hardcoded to Anthropic API endpoint
+	if err != nil {
+		return nil, fmt.Errorf("making request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	var respData messageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	return &respData, nil
+}
+
+// parseResponse extracts the estimated minutes from the API response.
+func (e *LLMEstimator) parseResponse(resp *messageResponse) int {
+	if resp == nil || len(resp.Content) == 0 || resp.Content[0].Text == "" {
+		return 0
+	}
+
+	text := strings.TrimSpace(resp.Content[0].Text)
+	minutes, err := strconv.Atoi(text)
+	if err != nil || minutes < 0 {
+		return 0
+	}
+
+	return minutes
 }
 
 // ConnectedWorkers, TargetWorkers, WorkerInfo, WorkerModel → worker_pool.go

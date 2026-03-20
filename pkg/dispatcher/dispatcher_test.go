@@ -13621,3 +13621,180 @@ func TestExtractBeadID_ReconnectNilPayloadReturnsEmpty(t *testing.T) {
 		t.Errorf("extractBeadID(MsgReconnect nil payload) = %q, want empty", got)
 	}
 }
+
+// TestAssignBead_UsesLLMEstimate verifies that the LLM estimator is called when
+// appropriate and the result is used for model routing.
+func TestAssignBead_UsesLLMEstimate(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	// Mock estimator that tracks calls and returns canned results
+	mockEstimator := &mockBeadEstimator{
+		estimates: make(map[string]int),
+	}
+	d.estimator = mockEstimator
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	d.setState(StateRunning)
+
+	beadSrc.SetBeads([]protocol.Bead{
+		{
+			ID:       "bead-estimate-short",
+			Title:    "Short task",
+			Type:     "task",
+			Priority: 1,
+			// Model and EstimatedMinutes are both empty/0 — should call estimator
+		},
+		{
+			ID:       "bead-estimate-long",
+			Title:    "Long task",
+			Type:     "task",
+			Priority: 1,
+			// Model and EstimatedMinutes are both empty/0 — should call estimator
+		},
+		{
+			ID:               "bead-has-estimate",
+			Title:            "Has estimate",
+			Type:             "task",
+			Priority:         1,
+			EstimatedMinutes: 3, // Has estimate, should NOT call estimator
+		},
+		{
+			ID:       "bead-has-model",
+			Title:    "Has model",
+			Type:     "task",
+			Priority: 1,
+			Model:    protocol.ModelOpus, // Has explicit model, should NOT call estimator
+		},
+		{
+			ID:       "bead-estimate-zero",
+			Title:    "Estimates to zero",
+			Type:     "task",
+			Priority: 1,
+			// Model and EstimatedMinutes are both empty/0 — estimator will return 0
+		},
+	})
+
+	// Set up estimator return values
+	mockEstimator.estimates["Short task"] = 3        // <=5 should route to Haiku
+	mockEstimator.estimates["Long task"] = 8         // >5 should route to Sonnet
+	mockEstimator.estimates["Estimates to zero"] = 0 // 0 should route to default (Sonnet)
+
+	// Connect 5 workers to collect all 5 assignments
+	conns := make([]net.Conn, 5)
+	for i := 0; i < 5; i++ {
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		conns[i] = conn
+		defer conn.Close()
+
+		workerID := fmt.Sprintf("w-estimate-%d", i)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: workerID},
+		})
+	}
+
+	waitForWorkers(t, d, 5, 2*time.Second)
+
+	// Collect all assignments in a map
+	assignedBeads := make(map[string]*protocol.AssignPayload)
+	for i := 0; i < 5; i++ {
+		msg, ok := readMsg(t, conns[i], 3*time.Second)
+		if !ok {
+			t.Fatalf("worker %d: expected ASSIGN message", i)
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("worker %d: expected ASSIGN, got %s", i, msg.Type)
+		}
+		assignedBeads[msg.Assign.BeadID] = msg.Assign
+	}
+
+	// Verify all beads were assigned
+	expectedBeads := []string{
+		"bead-estimate-short",
+		"bead-estimate-long",
+		"bead-has-estimate",
+		"bead-has-model",
+		"bead-estimate-zero",
+	}
+	for _, beadID := range expectedBeads {
+		if _, found := assignedBeads[beadID]; !found {
+			t.Errorf("bead %s was not assigned", beadID)
+		}
+	}
+
+	// Test 1: bead-estimate-short should be estimated to 3 minutes → Haiku
+	if assign := assignedBeads["bead-estimate-short"]; assign != nil {
+		if assign.Model != protocol.ModelHaiku {
+			t.Errorf("bead-estimate-short: estimated 3 min should route to Haiku, got %s", assign.Model)
+		}
+		if !mockEstimator.wasCalled("Short task") {
+			t.Errorf("bead-estimate-short: estimator should have been called")
+		}
+	}
+
+	// Test 2: bead-estimate-long should be estimated to 8 minutes → Sonnet
+	if assign := assignedBeads["bead-estimate-long"]; assign != nil {
+		if assign.Model != protocol.ModelSonnet {
+			t.Errorf("bead-estimate-long: estimated 8 min should route to Sonnet, got %s", assign.Model)
+		}
+		if !mockEstimator.wasCalled("Long task") {
+			t.Errorf("bead-estimate-long: estimator should have been called")
+		}
+	}
+
+	// Test 3: bead-has-estimate has pre-set estimate, should NOT call estimator
+	if assign := assignedBeads["bead-has-estimate"]; assign != nil {
+		if assign.Model != protocol.ModelHaiku {
+			t.Errorf("bead-has-estimate: 3 minute estimate should route to Haiku, got %s", assign.Model)
+		}
+		if mockEstimator.wasCalled("Has estimate") {
+			t.Errorf("bead-has-estimate: estimator should NOT have been called (already has estimate)")
+		}
+	}
+
+	// Test 4: bead-has-model has explicit model, should NOT call estimator
+	if assign := assignedBeads["bead-has-model"]; assign != nil {
+		if assign.Model != protocol.ModelOpus {
+			t.Errorf("bead-has-model: explicit Model=Opus should be used, got %s", assign.Model)
+		}
+		if mockEstimator.wasCalled("Has model") {
+			t.Errorf("bead-has-model: estimator should NOT have been called (has explicit model)")
+		}
+	}
+
+	// Test 5: bead-estimate-zero should be estimated to 0 → default Sonnet
+	if assign := assignedBeads["bead-estimate-zero"]; assign != nil {
+		if assign.Model != protocol.ModelSonnet {
+			t.Errorf("bead-estimate-zero: estimate of 0 should route to default Sonnet, got %s", assign.Model)
+		}
+		if !mockEstimator.wasCalled("Estimates to zero") {
+			t.Errorf("bead-estimate-zero: estimator should have been called")
+		}
+	}
+}
+
+// mockBeadEstimator implements BeadEstimator for testing
+type mockBeadEstimator struct {
+	estimates map[string]int
+	calls     map[string]int
+	mu        sync.Mutex
+}
+
+func (m *mockBeadEstimator) Estimate(ctx context.Context, title, acceptance string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.calls == nil {
+		m.calls = make(map[string]int)
+	}
+	// Extract bead ID from title (test titles match beadIDs for simplicity)
+	// In a real scenario, we'd use a better tracking mechanism
+	m.calls[title]++
+	return m.estimates[title]
+}
+
+func (m *mockBeadEstimator) wasCalled(title string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls[title] > 0
+}
