@@ -297,6 +297,16 @@ func (s *CLIBeadSource) FindByParentAndTag(ctx context.Context, parentID, tag st
 	return beads, nil
 }
 
+// Export runs `bd export` and returns the raw JSONL output containing all issues
+// (both open and closed). Returns an error if the command fails.
+func (s *CLIBeadSource) Export(ctx context.Context) ([]byte, error) {
+	out, err := s.runner.Run(ctx, "bd", "export")
+	if err != nil {
+		return nil, fmt.Errorf("bd export: %w", err)
+	}
+	return out, nil
+}
+
 // AllChildrenClosed checks whether all children of the given epic are closed.
 // Fetches all children and checks status locally to avoid bd query filter quirks.
 // Returns true only if every child has status "closed".

@@ -74,6 +74,7 @@ type BeadSource interface {
 	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
 	HasChildren(ctx context.Context, epicID string) (bool, error)
 	FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error)
+	Export(ctx context.Context) ([]byte, error)
 }
 
 // WorktreeManager creates and removes git worktrees.
@@ -255,6 +256,7 @@ type Config struct {
 	PaneRestartCooldown   time.Duration // Min time between manager pane restarts (default 2m).
 	PaneInactivityTimeout time.Duration // Manager inactivity duration before restart (default 10m).
 	ReviewTimeout         time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
+	BackupInterval        time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
 	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 }
 
@@ -295,6 +297,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.ReviewTimeout == 0 {
 		out.ReviewTimeout = 15 * time.Minute
+	}
+	if out.BackupInterval == 0 {
+		out.BackupInterval = 5 * time.Minute
 	}
 	if out.Estimator == nil {
 		out.Estimator = NewBeadEstimator()

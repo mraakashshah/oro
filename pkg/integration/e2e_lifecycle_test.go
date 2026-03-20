@@ -70,6 +70,8 @@ func (m *trackingBeadSource) InProgress(_ context.Context) ([]protocol.Bead, err
 	return nil, nil
 }
 
+func (m *trackingBeadSource) Export(_ context.Context) ([]byte, error) { return nil, nil }
+
 func (m *trackingBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

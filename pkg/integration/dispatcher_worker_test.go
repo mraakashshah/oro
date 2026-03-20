@@ -76,6 +76,8 @@ func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) 
 	return nil, nil
 }
 
+func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) { return nil, nil }
+
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

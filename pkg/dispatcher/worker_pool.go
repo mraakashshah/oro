@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"time"
@@ -274,6 +277,9 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	gcTicker := time.NewTicker(1 * time.Hour)
 	defer gcTicker.Stop()
 
+	backupTicker := time.NewTicker(d.cfg.BackupInterval)
+	defer backupTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -286,7 +292,32 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 			d.pruneStaleTracking(ctx)
 		case <-gcTicker.C:
 			d.gcWorktrees(ctx)
+		case <-backupTicker.C:
+			d.backupFullState(ctx)
 		}
+	}
+}
+
+// backupFullState runs bd export and writes all issues (open + closed) to
+// .beads/backup/full-state.jsonl. Failures are logged as warnings and skipped
+// (non-fatal). An empty export is silently skipped.
+func (d *Dispatcher) backupFullState(ctx context.Context) {
+	data, err := d.beads.Export(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "full_state_backup_export_failed", "error", err.Error())
+		return
+	}
+	if len(data) == 0 {
+		return
+	}
+	backupDir := filepath.Join(d.beadsDir, "backup")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil { //nolint:gosec // backupDir derives from trusted beadsDir
+		slog.WarnContext(ctx, "full_state_backup_mkdir_failed", "error", err.Error())
+		return
+	}
+	backupPath := filepath.Join(backupDir, "full-state.jsonl")
+	if err := os.WriteFile(backupPath, data, 0o644); err != nil { //nolint:gosec // backupPath derives from trusted beadsDir
+		slog.WarnContext(ctx, "full_state_backup_write_failed", "error", err.Error())
 	}
 }
 

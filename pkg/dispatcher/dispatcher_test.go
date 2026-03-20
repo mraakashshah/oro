@@ -91,6 +91,8 @@ type mockBeadSource struct {
 	inProgressErr        error            // if set, InProgress() returns this error
 	updateErrs           map[string]error // beadID -> error returned by Update()
 	showErr              error            // if set, Show() returns this error for all IDs
+	exportData           []byte           // returned by Export(); nil means no data
+	exportErr            error            // if set, Export() returns this error
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -200,6 +202,15 @@ func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) 
 		return nil, m.inProgressErr
 	}
 	return m.inProgressBeads, nil
+}
+
+func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.exportErr != nil {
+		return nil, m.exportErr
+	}
+	return m.exportData, nil
 }
 
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
