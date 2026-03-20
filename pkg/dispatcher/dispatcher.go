@@ -232,6 +232,8 @@ type pendingHandoff struct {
 	baseBranch   string // branch the worktree was created from (main or epic/<epicID>)
 	targetBranch string // branch the worker's changes should merge into (same as baseBranch)
 	model        string
+	title        string   // bead title for memory search on respawn
+	labels       []string // bead labels for memory search on respawn
 }
 
 // --- Config ---
@@ -1462,7 +1464,15 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		return
 	}
 
-	d.respawnWorker(ctx, beadID, worktree, model, epicID, baseBranch, targetBranch)
+	// Fetch bead details to get title and labels for memory search on respawn.
+	var title string
+	var labels []string
+	if detail, err := d.beads.Show(ctx, beadID); err == nil {
+		title = detail.Title
+		labels = detail.Labels
+	}
+
+	d.respawnWorker(ctx, beadID, worktree, model, epicID, baseBranch, targetBranch, title, labels)
 }
 
 // handleHandoffExhaustion spawns a diagnosis agent and creates a continuation bead
@@ -1498,7 +1508,7 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 }
 
 // respawnWorker stores a pending handoff and spawns a fresh worker process.
-func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model, epicID, baseBranch, targetBranch string) {
+func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model, epicID, baseBranch, targetBranch, title string, labels []string) {
 	d.mu.Lock()
 	d.pendingHandoffs[beadID] = &pendingHandoff{
 		beadID:       beadID,
@@ -1507,6 +1517,8 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model,
 		baseBranch:   baseBranch,
 		targetBranch: targetBranch,
 		model:        model,
+		title:        title,
+		labels:       labels,
 	}
 	d.mu.Unlock()
 

@@ -13789,6 +13789,136 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 	})
 }
 
+// TestHandoffRespawn_UsesTitle verifies that:
+// 1. pendingHandoff.title is populated from bead title at handoff time
+// 2. registerWorker's memory search uses h.title+labels (not h.beadID)
+// 3. Labels are included in the search query via buildSearchQuery
+func TestHandoffRespawn_UsesTitle(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Seed a memory that matches the bead title
+	_, err := d.db.Exec(
+		`INSERT INTO memories (content, type, tags, source, bead_id, confidence)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"always check this when fixing tests", "lesson", `["testing"]`,
+		"self_report", "old-bead", 0.9,
+	)
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	// Connect first worker
+	conn1, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Assign a bead with specific title and labels
+	const beadTitle = "always check this when fixing tests"
+	beadSrc.SetBeads([]protocol.Bead{
+		{
+			ID:       "bead-handoff",
+			Title:    beadTitle,
+			Labels:   []string{"testing"},
+			Priority: 1,
+		},
+	})
+
+	// Configure the mock's Show() to return the full BeadDetail with labels
+	beadSrc.mu.Lock()
+	if beadSrc.shown == nil {
+		beadSrc.shown = make(map[string]*protocol.BeadDetail)
+	}
+	beadSrc.shown["bead-handoff"] = &protocol.BeadDetail{
+		Title:              beadTitle,
+		Labels:             []string{"testing"},
+		AcceptanceCriteria: "Test: auto | Assert: PASS",
+	}
+	beadSrc.mu.Unlock()
+
+	// Read ASSIGN message
+	msg, ok := readMsg(t, conn1, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send HANDOFF from first worker
+	sendMsg(t, conn1, protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{BeadID: "bead-handoff", WorkerID: "w1"},
+	})
+
+	// Worker 1 should receive SHUTDOWN
+	msg, ok = readMsg(t, conn1, 2*time.Second)
+	if !ok {
+		t.Fatal("expected SHUTDOWN after handoff")
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
+	}
+
+	// Verify pendingHandoff was created with title and labels
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		ph, ok := d.pendingHandoffs["bead-handoff"]
+		return ok && ph != nil && ph.title != "" && len(ph.labels) > 0
+	}, 2*time.Second)
+
+	d.mu.Lock()
+	ph := d.pendingHandoffs["bead-handoff"]
+	if ph == nil {
+		t.Fatal("pending handoff not found")
+	}
+	if ph.title != "always check this when fixing tests" {
+		t.Errorf("expected title 'always check this when fixing tests', got %q", ph.title)
+	}
+	if len(ph.labels) != 1 || ph.labels[0] != "testing" {
+		t.Errorf("expected labels ['testing'], got %v", ph.labels)
+	}
+	d.mu.Unlock()
+
+	// Connect second worker — this will trigger registerWorker which should
+	// use the pending handoff with title+labels for memory search
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w2", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 2, 2*time.Second)
+
+	// Second worker should receive ASSIGN for the pending handoff,
+	// and it should include MemoryContext populated from the title+labels search
+	msg, ok = readMsg(t, conn2, 3*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN for second worker")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "bead-handoff" {
+		t.Fatalf("expected BeadID 'bead-handoff', got %q", msg.Assign.BeadID)
+	}
+	// The key assertion: MemoryContext should contain the seeded memory because
+	// registerWorker used title+labels to search (not just beadID)
+	if msg.Assign.MemoryContext == "" {
+		t.Fatal("expected non-empty MemoryContext when searching by title+labels for respawned bead")
+	}
+	if !containsStr(msg.Assign.MemoryContext, "always check this") {
+		t.Errorf("expected MemoryContext to contain 'always check this', got: %s", msg.Assign.MemoryContext)
+	}
+}
+
 func TestBuildSearchQuery_WithLabels(t *testing.T) {
 	tests := []struct {
 		name   string

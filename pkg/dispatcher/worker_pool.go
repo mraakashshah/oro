@@ -76,6 +76,20 @@ func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 	}
 }
 
+// buildHandoffMemoryContext retrieves memory context for a handoff using the bead title and labels.
+// Falls back to beadID if title is empty.
+func (d *Dispatcher) buildHandoffMemoryContext(h *pendingHandoff) string {
+	if d.memories == nil {
+		return ""
+	}
+	searchQuery := buildSearchQuery(h.title, h.labels)
+	if searchQuery == "" {
+		searchQuery = h.beadID
+	}
+	memCtx, _ := memory.ForPrompt(context.Background(), d.memories, nil, searchQuery, 0)
+	return memCtx
+}
+
 func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	d.mu.Lock()
 	// Consume the pending managed ID if present (delete is no-op if absent).
@@ -110,10 +124,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 			d.testUnlockHook()
 		}
 
-		var memCtx string
-		if d.memories != nil {
-			memCtx, _ = memory.ForPrompt(context.Background(), d.memories, nil, h.beadID, 0)
-		}
+		memCtx := d.buildHandoffMemoryContext(h)
 
 		d.mu.Lock()
 		// Phase 2: Verify reservation still valid, then transition to Busy.
