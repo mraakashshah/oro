@@ -1022,29 +1022,36 @@ func (d *Dispatcher) withReservation(workerID string, ioFn func() string, assign
 // completes the two-phase reservation for a QG retry. The worker must already
 // be in protocol.WorkerReserved state before this is called.
 func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadID, qgOutput string, attempt int) {
+	// Capture a snapshot for buildAssignPayload (I/O runs outside lock).
+	// Always set model=Opus on the snapshot — QG retry always escalates.
+	d.mu.Lock()
+	var snap trackedWorker
+	if w, ok := d.workers[workerID]; ok {
+		snap = *w
+	}
+	snap.model = protocol.ModelOpus
+	d.mu.Unlock()
+
+	var payload *protocol.AssignPayload
 	success := d.withReservation(workerID,
-		// I/O function: fetch memories outside lock
+		// I/O function: fetch memories and build full payload outside lock.
 		func() string {
-			return d.fetchBeadMemories(ctx, beadID)
+			memCtx := d.fetchBeadMemories(ctx, beadID)
+			payload = d.buildAssignPayload(ctx, &snap, attempt, qgOutput, memCtx)
+			return memCtx
 		},
-		// Assign function: update state and send message under lock
+		// Assign function: update state and send message under lock.
 		func(w *trackedWorker, memCtx string) bool {
 			// Escalate to opus if not already opus.
 			if w.model != protocol.ModelOpus {
 				w.model = protocol.ModelOpus
 				d.attemptCounts[beadID] = 0 // Reset so opus gets fresh retries
 			}
+			payload.Model = w.model // sync with live escalated value
 
 			if err := d.sendToWorker(w, protocol.Message{
-				Type: protocol.MsgAssign,
-				Assign: &protocol.AssignPayload{
-					BeadID:        beadID,
-					Worktree:      w.worktree,
-					Model:         w.model,
-					Attempt:       attempt,
-					Feedback:      qgOutput,
-					MemoryContext: memCtx,
-				},
+				Type:   protocol.MsgAssign,
+				Assign: payload,
 			}); err != nil {
 				// Worker is unreachable — release the bead back to the ready pool.
 				w.state = protocol.WorkerIdle
@@ -1794,27 +1801,36 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	}
 	d.mu.Unlock()
 
+	// Capture snapshot for buildAssignPayload (I/O runs outside lock).
+	// Set model=Opus on the snapshot only — w.model is NOT escalated on the live
+	// worker for review rejection (preserving prior behaviour).
+	d.mu.Lock()
+	var snap trackedWorker
+	if w, wOK := d.workers[workerID]; wOK {
+		snap = *w
+	}
+	snap.model = protocol.ModelOpus
+	d.mu.Unlock()
+
+	var payload *protocol.AssignPayload
 	d.withReservation(workerID,
-		// I/O function: store rejection feedback and build memory context outside lock.
+		// I/O function: store rejection feedback and build full payload outside lock.
 		// Persisting the feedback before ForPrompt ensures the current rejection reason
 		// is retrievable in subsequent retry cycles via the memory store.
 		func() string {
-			return d.buildRejectionMemoryContext(ctx, beadID, feedback)
+			memCtx := d.buildRejectionMemoryContext(ctx, beadID, feedback)
+			payload = d.buildAssignPayload(ctx, &snap, count, feedback, memCtx)
+			return memCtx
 		},
-		// Assign function: update state and send message under lock
-		func(w *trackedWorker, memCtx string) bool {
+		// Assign function: update state and send message under lock.
+		func(w *trackedWorker, _ string) bool {
 			w.state = protocol.WorkerBusy
 			w.lastProgress = d.nowFunc()
+			// payload.Model is already "opus" from the snapshot; w.model is not
+			// escalated here (preserving prior behaviour).
 			_ = d.sendToWorker(w, protocol.Message{
-				Type: protocol.MsgAssign,
-				Assign: &protocol.AssignPayload{
-					BeadID:        beadID,
-					Worktree:      w.worktree,
-					Model:         "opus", // escalate to Opus after review rejection
-					Feedback:      feedback,
-					MemoryContext: memCtx,
-					Attempt:       count,
-				},
+				Type:   protocol.MsgAssign,
+				Assign: payload,
 			})
 			return true
 		},

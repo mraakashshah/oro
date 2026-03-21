@@ -14388,3 +14388,124 @@ func (m *mockBeadEstimator) wasCalled(title string) bool {
 	defer m.mu.Unlock()
 	return m.calls[title] > 0
 }
+
+// TestAllAssignPayloadSitesUseBuildAssignPayload verifies that the QG retry and
+// review rejection paths both call buildAssignPayload, ensuring the re-ASSIGN
+// messages include bead metadata (Title, AcceptanceCriteria) fetched from
+// beads.Show — fields that the former inline AssignPayload{} literals omitted.
+func TestAllAssignPayloadSitesUseBuildAssignPayload(t *testing.T) {
+	const (
+		beadTitle = "Consolidate assignPayload sites"
+		beadAC    = "Test: pkg/dispatcher | Assert: PASS"
+	)
+
+	t.Run("QG retry includes bead metadata from beads.Show", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-qg-meta", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		// Seed rich bead detail so buildAssignPayload can retrieve it via beads.Show.
+		beadSrc.mu.Lock()
+		beadSrc.shown["bead-qg-meta"] = &protocol.BeadDetail{
+			Title:              beadTitle,
+			AcceptanceCriteria: beadAC,
+		}
+		beadSrc.mu.Unlock()
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-meta", Title: beadTitle, Type: "task", Priority: 1, Model: protocol.ModelOpus}})
+		_, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected initial ASSIGN")
+		}
+		beadSrc.SetBeads(nil)
+
+		// Trigger QG retry.
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgDone,
+			Done: &protocol.DonePayload{
+				WorkerID:          "w-qg-meta",
+				BeadID:            "bead-qg-meta",
+				QualityGatePassed: false,
+				QGOutput:          "tests failed",
+			},
+		})
+
+		// Re-ASSIGN must include bead metadata from beads.Show.
+		msg, ok := readMsg(t, conn, 3*time.Second)
+		if !ok {
+			t.Fatal("expected re-ASSIGN after QG failure")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN, got %s", msg.Type)
+		}
+		if msg.Assign.Title != beadTitle {
+			t.Errorf("QG retry Title = %q, want %q", msg.Assign.Title, beadTitle)
+		}
+		if msg.Assign.AcceptanceCriteria != beadAC {
+			t.Errorf("QG retry AcceptanceCriteria = %q, want %q", msg.Assign.AcceptanceCriteria, beadAC)
+		}
+	})
+
+	t.Run("review rejection includes bead metadata from beads.Show", func(t *testing.T) {
+		d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+		spawnMock.mu.Lock()
+		spawnMock.verdict = "REJECTED: missing tests"
+		spawnMock.mu.Unlock()
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-rev-meta", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		// Seed rich bead detail.
+		beadSrc.mu.Lock()
+		beadSrc.shown["bead-rev-meta"] = &protocol.BeadDetail{
+			Title:              beadTitle,
+			AcceptanceCriteria: beadAC,
+		}
+		beadSrc.mu.Unlock()
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-rev-meta", Title: beadTitle, Priority: 1}})
+		_, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected initial ASSIGN")
+		}
+		beadSrc.SetBeads(nil)
+
+		// Trigger review rejection.
+		sendMsg(t, conn, protocol.Message{
+			Type:           protocol.MsgReadyForReview,
+			ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rev-meta", WorkerID: "w-rev-meta"},
+		})
+
+		// Re-ASSIGN must include bead metadata from beads.Show.
+		msg, ok := readMsg(t, conn, 3*time.Second)
+		if !ok {
+			t.Fatal("expected re-ASSIGN after review rejection")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN, got %s", msg.Type)
+		}
+		if msg.Assign.Title != beadTitle {
+			t.Errorf("review rejection Title = %q, want %q", msg.Assign.Title, beadTitle)
+		}
+		if msg.Assign.AcceptanceCriteria != beadAC {
+			t.Errorf("review rejection AcceptanceCriteria = %q, want %q", msg.Assign.AcceptanceCriteria, beadAC)
+		}
+	})
+}
