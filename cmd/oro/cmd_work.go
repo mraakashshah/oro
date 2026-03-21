@@ -237,7 +237,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	// Propagate project name to subprocesses. readProjectName reads from
 	// ORO_PROJECT env var first, then .oro/config.yaml in CWD. Setting it
 	// ensures worker subprocesses inherit it even when it came from config.yaml.
-	if project := readProjectName(); project != "" {
+	if project := readProjectNameCWD(); project != "" {
 		_ = os.Setenv("ORO_PROJECT", project)
 	}
 

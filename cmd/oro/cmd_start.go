@@ -59,7 +59,7 @@ func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers int) (int, error
 	// Redirect daemon stdout/stderr to a log file. Inheriting the parent's
 	// stdout/stderr causes SIGPIPE when the parent exits (broken pipe),
 	// silently killing the daemon.
-	logPath := daemonLogPath(readProjectName())
+	logPath := daemonLogPath(readProjectNameCWD())
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) //nolint:gosec // log path is deterministic
 	if err != nil {
 		return 0, fmt.Errorf("open daemon log %s: %w", logPath, err)
@@ -259,7 +259,7 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 		return "", err
 	}
 	if reExtracted {
-		regenerateProjectSettings(w, paths.OroHome, readProjectName())
+		regenerateProjectSettings(w, paths.OroHome, readProjectNameCWD())
 	}
 
 	// Warn if oro-search-hook binary is absent — do NOT build it here since
@@ -583,7 +583,7 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 
 	// Migrate global DBs to per-project directory on first use.
 	// No-op when: no project set, project DB exists, or global DB missing.
-	if project := readProjectName(); project != "" {
+	if project := readProjectNameCWD(); project != "" {
 		if err := migrateGlobalDBs(project); err != nil {
 			return nil, nil, fmt.Errorf("migrate global DBs: %w", err)
 		}
@@ -620,7 +620,7 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := dispatcher.NewCLIBeadSource(runner)
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", runner)
-	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectName()), TmuxPaneTarget(readProjectName(), "manager"), runner)
+	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
 
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
 	opsSpawner := ops.NewSpawner(&ops.ClaudeOpsSpawner{})

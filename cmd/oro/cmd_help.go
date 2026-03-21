@@ -40,6 +40,7 @@ Search:
 Workflow:
   work       Execute a bead through the full lifecycle
   shell      Launch interactive claude with oro settings
+  bd         Run bd with project-aware --db flag (stealth mode support)
 
 Global:
   global-oro-approach  Copy oro skills and hooks to ~/.claude/ for all sessions

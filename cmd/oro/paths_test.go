@@ -381,22 +381,104 @@ func TestResolveProjectDBPaths_FallbackToGlobal(t *testing.T) {
 
 func TestReadProjectName_EnvFirst(t *testing.T) {
 	t.Setenv("ORO_PROJECT", "myproject")
-	if got := readProjectName(); got != "myproject" {
-		t.Errorf("readProjectName() = %q, want %q", got, "myproject")
+	if got := readProjectNameCWD(); got != "myproject" {
+		t.Errorf("readProjectNameCWD() = %q, want %q", got, "myproject")
 	}
 }
 
 func TestReadProjectName_EmptyFallback(t *testing.T) {
 	t.Setenv("ORO_PROJECT", "")
 	noConfigDir := t.TempDir()
-	origDir, _ := os.Getwd()
-	if err := os.Chdir(noConfigDir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	t.Setenv("ORO_HOME", t.TempDir())
 
-	if got := readProjectName(); got != "" {
-		t.Errorf("readProjectName() = %q, want empty string", got)
+	name, mode, err := readProjectName(noConfigDir)
+	if err != nil {
+		t.Fatalf("readProjectName() error: %v", err)
+	}
+	if name != "" {
+		t.Errorf("readProjectName() name = %q, want empty string", name)
+	}
+	if mode != "standard" {
+		t.Errorf("readProjectName() mode = %q, want %q", mode, "standard")
+	}
+}
+
+func TestReadProjectName_StealthFallback(t *testing.T) {
+	repoRoot := t.TempDir()
+	tmpOroHome := t.TempDir()
+	t.Setenv("ORO_HOME", tmpOroHome)
+	t.Setenv("ORO_PROJECT", "")
+
+	// Compute hash of repoRoot (resolving symlinks)
+	resolved, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	hash := computePathHash(resolved)
+
+	// Create stealth config at ~/.oro/projects/s-<hash>/config.yaml
+	stealthDir := filepath.Join(tmpOroHome, "projects", "s-"+hash)
+	if err := os.MkdirAll(stealthDir, 0o750); err != nil {
+		t.Fatalf("mkdir stealth dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stealthDir, "config.yaml"), []byte("mode: stealth\n"), 0o600); err != nil {
+		t.Fatalf("write stealth config: %v", err)
+	}
+
+	name, mode, err := readProjectName(repoRoot)
+	if err != nil {
+		t.Fatalf("readProjectName() error: %v", err)
+	}
+	if name != "s-"+hash {
+		t.Errorf("name = %q, want %q", name, "s-"+hash)
+	}
+	if mode != "stealth" {
+		t.Errorf("mode = %q, want %q", mode, "stealth")
+	}
+}
+
+func TestReadProjectName_StealthFallback_StandardWins(t *testing.T) {
+	repoRoot := t.TempDir()
+	tmpOroHome := t.TempDir()
+	t.Setenv("ORO_HOME", tmpOroHome)
+	t.Setenv("ORO_PROJECT", "")
+
+	// Create standard config at <repoRoot>/.oro/config.yaml
+	oroDir := filepath.Join(repoRoot, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil {
+		t.Fatalf("mkdir .oro: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte("project: myproject\n"), 0o600); err != nil {
+		t.Fatalf("write standard config: %v", err)
+	}
+
+	name, mode, err := readProjectName(repoRoot)
+	if err != nil {
+		t.Fatalf("readProjectName() error: %v", err)
+	}
+	if name != "myproject" {
+		t.Errorf("name = %q, want %q", name, "myproject")
+	}
+	if mode != "standard" {
+		t.Errorf("mode = %q, want %q", mode, "standard")
+	}
+}
+
+func TestReadProjectName_StealthFallback_NeitherExists(t *testing.T) {
+	repoRoot := t.TempDir()
+	tmpOroHome := t.TempDir()
+	t.Setenv("ORO_HOME", tmpOroHome)
+	t.Setenv("ORO_PROJECT", "")
+
+	name, mode, err := readProjectName(repoRoot)
+	if err != nil {
+		t.Fatalf("readProjectName() error: %v", err)
+	}
+	if name != "" {
+		t.Errorf("name = %q, want empty", name)
+	}
+	if mode != "standard" {
+		t.Errorf("mode = %q, want %q", mode, "standard")
 	}
 }
 

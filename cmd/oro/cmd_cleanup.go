@@ -56,7 +56,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 			cfg := &cleanupConfig{
 				runner:       &ExecRunner{},
 				w:            cmd.OutOrStdout(),
-				tmuxName:     TmuxSessionName(readProjectName()),
+				tmuxName:     TmuxSessionName(readProjectNameCWD()),
 				pidPath:      daemonPaths.PIDPath,
 				sockPath:     daemonPaths.SocketPath,
 				beadsDir:     projPaths.BeadsDir,
