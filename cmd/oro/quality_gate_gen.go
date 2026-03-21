@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/template"
 
 	"gopkg.in/yaml.v3"
@@ -326,6 +327,16 @@ func writeQualityGateScript(w io.Writer, paths ProjectPaths) error {
 		oroDocsDir = "docs/"
 	}
 
+	// Convert absolute paths to CWD-relative for find exclusions.
+	// find . outputs relative paths (e.g. ./.worktrees/foo), so absolute
+	// -not -path arguments would never match. Stealth paths outside the repo
+	// are unaffected since find . never traverses them.
+	if paths.RepoRoot != "" {
+		worktreesDir = cwdRelative(paths.RepoRoot, worktreesDir)
+		beadsDir = cwdRelative(paths.RepoRoot, beadsDir)
+		oroDocsDir = cwdRelative(paths.RepoRoot, oroDocsDir)
+	}
+
 	var hasGo, hasPython bool
 	if cfg != nil {
 		_, hasGo = cfg.Languages["go"]
@@ -350,6 +361,21 @@ func writeQualityGateScript(w io.Writer, paths ProjectPaths) error {
 	}
 
 	return nil
+}
+
+// cwdRelative converts an absolute dir to a "./" prefixed path relative to root.
+// If dir is already relative, outside the repo tree (starts with ".."), or Rel
+// fails, it is returned unchanged. This preserves stealth-mode absolute paths
+// (outside the repo) while fixing standard-mode paths for find exclusions.
+func cwdRelative(root, dir string) string {
+	if !filepath.IsAbs(dir) {
+		return dir
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return dir
+	}
+	return "./" + rel
 }
 
 // writeQualityGateScriptFile generates quality_gate.sh at paths.QualityGate.

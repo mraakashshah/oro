@@ -330,6 +330,41 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 
 	checkBashSyntax(t, script)
 	checkBashSyntax(t, defScript)
+
+	// Standard mode: absolute WorktreesDir should become ./relative in find exclusions.
+	t.Run("standard mode uses relative find exclusions", func(t *testing.T) {
+		stdPaths := ProjectPaths{
+			Mode:         "standard",
+			RepoRoot:     "/home/testuser/myproject",
+			WorktreesDir: "/home/testuser/myproject/.worktrees",
+			BeadsDir:     "/home/testuser/myproject/.beads",
+			OroDocsDir:   "/home/testuser/myproject/docs",
+		}
+
+		var stdBuf bytes.Buffer
+		if err := writeQualityGateScript(&stdBuf, stdPaths); err != nil {
+			t.Fatalf("writeQualityGateScript (standard): %v", err)
+		}
+		stdScript := stdBuf.String()
+
+		// find exclusions must use ./-relative paths, not absolute.
+		if strings.Contains(stdScript, "-not -path '/home/testuser/myproject/.worktrees") {
+			t.Error("standard mode: find exclusion must not use absolute WorktreesDir path")
+		}
+		if !strings.Contains(stdScript, "-not -path './.worktrees/*'") {
+			t.Error("standard mode: find exclusion should use ./.worktrees/*")
+		}
+
+		// Biome loop should use relative paths.
+		if !strings.Contains(stdScript, "./.beads") {
+			t.Error("standard mode: biome loop should use relative ./.beads path")
+		}
+		if !strings.Contains(stdScript, "./docs") {
+			t.Error("standard mode: biome loop should use relative ./docs path")
+		}
+
+		checkBashSyntax(t, stdScript)
+	})
 }
 
 // checkBashSyntax writes the script to a temp file and runs bash -n to verify
