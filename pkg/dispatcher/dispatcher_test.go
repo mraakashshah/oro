@@ -9234,7 +9234,7 @@ func TestFilterAssignableSkipsActiveBeads(t *testing.T) {
 		{ID: "bead-free", Title: "Free bead", Priority: 2, Type: "task"},
 	}
 
-	result := d.filterAssignable(beads)
+	result := d.filterAssignable(context.Background(), beads)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 assignable bead, got %d", len(result))
@@ -9391,7 +9391,7 @@ func TestFilterAssignableSkipsExhaustedBeads(t *testing.T) {
 		{ID: "bead-ok", Title: "Available", Priority: 2, Type: "task"},
 	}
 
-	result := d.filterAssignable(beads)
+	result := d.filterAssignable(context.Background(), beads)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 assignable bead, got %d", len(result))
@@ -9412,7 +9412,7 @@ func TestFilterAssignableSkipsInProgressBeads(t *testing.T) {
 		{ID: "bead-blocked", Title: "Blocked", Status: "blocked", Priority: 2, Type: "task"},
 	}
 
-	result := d.filterAssignable(beads)
+	result := d.filterAssignable(context.Background(), beads)
 
 	// Should only include the "open" bead; in_progress and blocked should be filtered
 	if len(result) != 1 {
@@ -9435,7 +9435,7 @@ func TestFilterAssignableHonorsInProgressStatus(t *testing.T) {
 		{ID: "oro-other", Title: "Other work", Status: "open", Priority: 1, Type: "task"},
 	}
 
-	result := d.filterAssignable(beads)
+	result := d.filterAssignable(context.Background(), beads)
 
 	// oro-4lo7 must NOT be in the candidate pool.
 	if len(result) != 1 {
@@ -9469,13 +9469,76 @@ func TestFilterAssignableSkipsMergingBeads(t *testing.T) {
 		{ID: "bead-ready", Title: "Available", Priority: 2, Type: "task"},
 	}
 
-	result := d.filterAssignable(beads)
+	result := d.filterAssignable(context.Background(), beads)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 assignable bead, got %d", len(result))
 	}
 	if result[0].ID != "bead-ready" {
 		t.Fatalf("expected bead-ready, got %s", result[0].ID)
+	}
+}
+
+// TestFilterAssignable_SkipsAlreadyMergedBead verifies that filterAssignable
+// excludes beads whose agent/<beadID> branch is already merged to main.
+// The bead is auto-closed and a "bead_branch_already_merged" event is emitted.
+func TestFilterAssignable_SkipsAlreadyMergedBead(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	// Init schema so logEvent works.
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const mergedID = "oro-merged"
+	const openID = "oro-open"
+
+	// shutdownRunner: exit 0 for the merged bead, non-zero for all others.
+	d.shutdownRunner = &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			for _, a := range args {
+				if a == "agent/"+mergedID {
+					return nil, nil // exit 0 → merged
+				}
+			}
+			return nil, errors.New("exit status 1")
+		},
+	}
+
+	beads := []protocol.Bead{
+		{ID: mergedID, Title: "Already merged", Priority: 1, Type: "task"},
+		{ID: openID, Title: "Open bead", Priority: 2, Type: "task"},
+	}
+
+	result := d.filterAssignable(ctx, beads)
+
+	// mergedID must be excluded.
+	if len(result) != 1 {
+		t.Fatalf("expected 1 assignable bead, got %d: %v", len(result), result)
+	}
+	if result[0].ID != openID {
+		t.Errorf("expected %q in result, got %q", openID, result[0].ID)
+	}
+
+	// mergedID must be auto-closed.
+	beadSrc.mu.Lock()
+	closed := append([]string(nil), beadSrc.closed...)
+	beadSrc.mu.Unlock()
+	found := false
+	for _, id := range closed {
+		if id == mergedID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected %q to be auto-closed via beads.Close(); closed=%v", mergedID, closed)
+	}
+
+	// "bead_branch_already_merged" event must be logged.
+	if n := eventCount(t, d.db, "bead_branch_already_merged"); n == 0 {
+		t.Error("expected bead_branch_already_merged event to be logged")
 	}
 }
 

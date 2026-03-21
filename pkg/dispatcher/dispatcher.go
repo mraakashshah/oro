@@ -2205,7 +2205,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	d.cachedQueueDepth = len(allBeads)
 	d.mu.Unlock()
 
-	beads := d.filterAssignable(allBeads)
+	beads := d.filterAssignable(ctx, allBeads)
 
 	pbSnapshot := d.sortBeadsByPriority(beads)
 
@@ -2333,12 +2333,12 @@ func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadI
 
 // filterAssignable returns beads eligible for assignment: excludes closed beads,
 // beads with status in_progress or blocked, beads with recent worktree creation
-// failures (within cooldown window), and beads currently in-flight (assigningBeads).
+// failures (within cooldown window), beads currently in-flight (assigningBeads),
+// and beads whose agent branch is already merged to main.
 // Epics are allowed through; assignBead performs the HasChildren check.
-func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead {
+func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	// Collect bead IDs already assigned to busy/reserved workers.
 	activeBeads := make(map[string]bool)
@@ -2348,13 +2348,37 @@ func (d *Dispatcher) filterAssignable(allBeads []protocol.Bead) []protocol.Bead 
 		}
 	}
 
-	out := make([]protocol.Bead, 0, len(allBeads))
+	// First pass: cheap in-memory filters (no I/O). Lock is held.
+	candidates := make([]protocol.Bead, 0, len(allBeads))
 	for _, b := range allBeads {
 		if d.isBeadAssignable(b, now, activeBeads) {
-			out = append(out, b)
+			candidates = append(candidates, b)
 		}
 	}
+	d.mu.Unlock()
+
+	// Second pass: check whether the agent branch is already merged to main.
+	// This requires a git subprocess, so it runs outside the lock.
+	out := make([]protocol.Bead, 0, len(candidates))
+	for _, b := range candidates {
+		if d.isBranchMerged(ctx, b.ID) {
+			_ = d.beads.Close(ctx, b.ID, "branch already merged to main")
+			_ = d.logEvent(ctx, "bead_branch_already_merged", "dispatcher", b.ID, "", "")
+			continue
+		}
+		out = append(out, b)
+	}
 	return out
+}
+
+// isBranchMerged reports whether agent/<beadID> is an ancestor of main,
+// meaning the branch has already been merged. Uses git merge-base --is-ancestor.
+// Returns false when the branch does not exist, the git command fails, or the
+// bead has never been assigned (no branch exists yet).
+func (d *Dispatcher) isBranchMerged(ctx context.Context, beadID string) bool {
+	branch := protocol.BranchPrefix + beadID // "agent/<beadID>"
+	_, err := d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, "main")
+	return err == nil
 }
 
 // isBeadAssignable reports whether a bead passes all assignment filters.
