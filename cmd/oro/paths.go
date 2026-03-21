@@ -233,6 +233,80 @@ func resolvePathWithEnv(envKey, base, suffix string) string {
 	return filepath.Join(base, suffix)
 }
 
+// computePathHash returns a 16-hex-char identifier derived from SHA-256 of path.
+// Used to generate stealth project directory names (s-<hash>).
+func computePathHash(path string) string {
+	h := sha256.Sum256([]byte(path))
+	return fmt.Sprintf("%x", h[:8])
+}
+
+// detectProjectMode resolves the project name and mode ("standard" or "stealth")
+// from repoRoot. Returns an error when no project has been initialized.
+//
+// Resolution order:
+//  1. ORO_PROJECT env var → standard mode
+//  2. <repoRoot>/.oro/config.yaml with project: field → standard mode
+//  3. Stealth hash lookup in ~/.oro/projects/s-<hash>/config.yaml → stealth mode
+//  4. None found → error with actionable message
+func detectProjectMode(repoRoot string) (name, mode string, err error) {
+	// ORO_PROJECT env var always wins.
+	if v := os.Getenv("ORO_PROJECT"); v != "" {
+		return v, "standard", nil
+	}
+
+	// Standard: check <repoRoot>/.oro/config.yaml.
+	data, readErr := os.ReadFile(filepath.Join(repoRoot, ".oro", "config.yaml")) //nolint:gosec // repoRoot is trusted caller input
+	if readErr == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "project:") {
+				return strings.TrimSpace(strings.TrimPrefix(line, "project:")), "standard", nil
+			}
+		}
+		return "", "standard", nil
+	}
+	if !os.IsNotExist(readErr) {
+		return "", "standard", fmt.Errorf("read .oro/config.yaml: %w", readErr)
+	}
+
+	// Stealth fallback: compute hash from symlink-resolved absolute repoRoot.
+	absRoot, absErr := filepath.Abs(repoRoot)
+	if absErr != nil {
+		return "", "standard", fmt.Errorf("resolve repo root: %w", absErr)
+	}
+	resolvedRoot, symlinkErr := filepath.EvalSymlinks(absRoot)
+	if symlinkErr != nil {
+		resolvedRoot = absRoot // path may not exist yet; use abs path as-is
+	}
+	hash := computePathHash(resolvedRoot)
+	stealthDir := "s-" + hash
+
+	oroHome, oroErr := resolveOroHome()
+	if oroErr != nil {
+		return "", "standard", oroErr
+	}
+
+	stealthConfig := filepath.Join(oroHome, "projects", stealthDir, "config.yaml")
+	stealthData, stealthErr := os.ReadFile(stealthConfig) //nolint:gosec // path constructed from trusted inputs
+	if os.IsNotExist(stealthErr) {
+		return "", "standard", fmt.Errorf("no oro project found in %s — run 'oro init' or 'oro init --stealth' first", repoRoot)
+	}
+	if stealthErr != nil {
+		return "", "standard", fmt.Errorf("read stealth config: %w", stealthErr)
+	}
+
+	// Verify "mode: stealth" to avoid false positives from name-based projects.
+	for _, line := range strings.Split(string(stealthData), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "mode:") {
+			if strings.TrimSpace(strings.TrimPrefix(line, "mode:")) == "stealth" {
+				return stealthDir, "stealth", nil
+			}
+		}
+	}
+	return "", "standard", fmt.Errorf("no oro project found in %s — run 'oro init' or 'oro init --stealth' first", repoRoot)
+}
+
 // migrateGlobalDBs copies global ~/.oro/state.db and ~/.oro/code_index.db to
 // per-project directories (~/.oro/projects/<projectName>/) on first use.
 // This provides backward compatibility when transitioning from global to per-project DBs.
