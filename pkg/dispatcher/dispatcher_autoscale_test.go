@@ -361,7 +361,7 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 		}
 	})
 
-	t.Run("MaxWorkers=0 is no-op", func(t *testing.T) {
+	t.Run("MaxWorkers=0 drains managed workers", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		d.cfg.MaxWorkers = 0
 
@@ -383,23 +383,26 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 			managed: false,
 			encoder: json.NewEncoder(conn2),
 		}
-		d.targetWorkers = 5 // even with a non-zero target, MaxWorkers=0 means no-op
+		d.targetWorkers = 0
 		d.mu.Unlock()
 
 		result := d.reconcileScale()
 
-		// No worker should receive any message.
+		// Managed worker should receive shutdown; unmanaged should not.
 		conn1.mu.Lock()
 		w1Writes := len(conn1.written)
 		conn1.mu.Unlock()
 		conn2.mu.Lock()
 		w2Writes := len(conn2.written)
 		conn2.mu.Unlock()
-		if w1Writes > 0 || w2Writes > 0 {
-			t.Errorf("MaxWorkers=0: expected no messages sent, got w1=%d w2=%d", w1Writes, w2Writes)
+		if w1Writes == 0 {
+			t.Error("MaxWorkers=0: managed worker should receive shutdown message")
 		}
-		if result != "" {
-			t.Errorf("MaxWorkers=0: expected empty result string, got %q", result)
+		if w2Writes > 0 {
+			t.Errorf("MaxWorkers=0: unmanaged worker should not receive messages, got %d", w2Writes)
+		}
+		if result == "" {
+			t.Error("MaxWorkers=0: expected non-empty result string from scaleDown")
 		}
 	})
 }

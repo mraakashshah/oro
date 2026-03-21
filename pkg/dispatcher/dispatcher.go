@@ -3229,7 +3229,6 @@ func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount i
 // reconcileScale compares target vs connected managed workers and spawns or
 // shuts down managed workers to reach the target. Unmanaged (externally
 // connected) workers are invisible to scaling in all modes.
-// When MaxWorkers=0, returns immediately as a no-op (manual mode).
 //
 // Uses atomic flag to prevent concurrent execution. If already running, returns
 // immediately to avoid duplicate spawns. See oro-ovpc.1.
@@ -3243,10 +3242,6 @@ func (d *Dispatcher) reconcileScale() string {
 	defer d.reconcilingScale.Store(false)
 
 	d.mu.Lock()
-	if d.cfg.MaxWorkers == 0 {
-		d.mu.Unlock()
-		return ""
-	}
 	target := d.targetWorkers
 	// Count both connected managed workers AND pending spawns (oro-ovpc).
 	// Without counting pending, concurrent reconcileScale calls both see

@@ -14789,4 +14789,60 @@ func TestDirective_MaxWorkers(t *testing.T) {
 			t.Fatalf("expected 'non-negative' in detail, got %q", ack.Detail)
 		}
 	})
+
+	t.Run("zero drains all managed workers", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		conn1 := newMockConn()
+		conn2 := newMockConn()
+
+		d.mu.Lock()
+		d.targetWorkers = 2
+		d.workers["w1"] = &trackedWorker{
+			id:      "w1",
+			conn:    conn1,
+			state:   protocol.WorkerIdle,
+			managed: true,
+			encoder: json.NewEncoder(conn1),
+		}
+		d.workers["w2"] = &trackedWorker{
+			id:      "w2",
+			conn:    conn2,
+			state:   protocol.WorkerIdle,
+			managed: true,
+			encoder: json.NewEncoder(conn2),
+		}
+		d.mu.Unlock()
+		startDispatcher(t, d)
+
+		ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "max-workers", "0")
+
+		if !ack.OK {
+			t.Fatalf("expected OK=true, got false: %s", ack.Detail)
+		}
+		if !strings.Contains(ack.Detail, "max_workers=0") {
+			t.Fatalf("expected detail to contain 'max_workers=0', got %q", ack.Detail)
+		}
+		d.mu.Lock()
+		gotMax := d.cfg.MaxWorkers
+		gotTarget := d.targetWorkers
+		d.mu.Unlock()
+		if gotMax != 0 {
+			t.Fatalf("expected cfg.MaxWorkers=0, got %d", gotMax)
+		}
+		if gotTarget != 0 {
+			t.Fatalf("expected targetWorkers=0 after max-workers 0, got %d", gotTarget)
+		}
+
+		// Both managed workers should receive shutdown messages.
+		conn1.mu.Lock()
+		w1Writes := len(conn1.written)
+		conn1.mu.Unlock()
+		conn2.mu.Lock()
+		w2Writes := len(conn2.written)
+		conn2.mu.Unlock()
+		if w1Writes == 0 || w2Writes == 0 {
+			t.Fatalf("expected both workers to receive shutdown, got w1=%d w2=%d writes", w1Writes, w2Writes)
+		}
+	})
 }
