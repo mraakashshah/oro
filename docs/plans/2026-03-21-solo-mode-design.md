@@ -110,13 +110,14 @@ type ProjectPaths struct {
     OroDocsDir    string // docs/ or oro-docs/
     QualityGate   string // ./quality_gate.sh or ~/.oro/.../quality_gate.sh
     OroProjectDir string // ~/.oro/projects/<name>/ or ~/.oro/projects/s-<hash>/
-    ClaudeMD      string // ./CLAUDE.md or ~/.claude/projects/<path>/CLAUDE.md
+    ClaudeMD       string // ./CLAUDE.md or ~/.claude/projects/<path>/CLAUDE.md
     ReviewPatterns string // assets/review-patterns.md or ~/.oro/.../review-patterns.md
-    ConfigYAML    string // .oro/config.yaml or ~/.oro/projects/s-<hash>/config.yaml
+    ConfigYAML     string // .oro/config.yaml or ~/.oro/projects/s-<hash>/config.yaml
+    WorkerProgram  string // ./worker-program.md or ~/.oro/.../worker-program.md
 }
 ```
 
-### Files that need `ProjectPaths` threading (23 identified):
+### Files that need `ProjectPaths` threading (31 identified):
 
 | File | Hardcoded Path | Fix |
 |------|---------------|-----|
@@ -143,12 +144,26 @@ type ProjectPaths struct {
 | `pkg/dispatcher/beadsource.go` | no `--db` flag | `bdExtraArgs` on CLIBeadSource |
 | `langprofile/detect.go:38` | `".oro/config.yaml"` | `paths.ConfigYAML` |
 | `langprofile/config.go:102` | `".oro/config.yaml"` | `paths.ConfigYAML` |
+| `cmd/oro/cmd_doctor.go:123` | `".beads"` | `paths.BeadsDir` |
+| `cmd/oro/cmd_mg.go:115,130` | `".beads"` | `paths.BeadsDir` |
+| `cmd/oro/cmd_init.go:440` | `".beads"` | stealth init uses own path |
+| `cmd/oro/store.go:42` | `".oro/config.yaml"` | `paths.ConfigYAML` |
+| `pkg/mg/data/source.go` | bare `bd list --json` | `bdExtraArgs` or env var |
+| `pkg/mg/data/metadata.go:61,94` | `".beads"` | `paths.BeadsDir` |
+| `pkg/dispatcher/assign_payload.go:72` | `worker-program.md` from repo root | `paths.WorkerProgram` |
+| `cmd/oro/quality_gate_gen.go:542,550` | `".beads/"`, `"docs/"` in script body | template with `paths.BeadsDir`, `paths.OroDocsDir` |
 
 **`GitWorktreeManager` change:** Add `worktreesDir string` field to struct (set at construction). Replace all `filepath.Join(g.repoRoot, protocol.WorktreesDir, ...)` with `filepath.Join(g.worktreesDir, ...)`. Interface unchanged.
 
 **`CLIBeadSource` change:** Add `bdExtraArgs []string` field. Prepend to all `bd` command invocations. Set from `ProjectPaths` at construction.
 
 **`appendReviewPatterns` change:** In stealth mode, write to `paths.ReviewPatterns` (in `~/.oro/`) instead of `assets/review-patterns.md` in the repo. Zero-footprint maintained.
+
+**`readProjectName()` change (bootstrap function):** This is the root of all path resolution. Must become stealth-aware: try `.oro/config.yaml` first (standard mode). If not found, compute hash from CWD and check `~/.oro/projects/s-<hash>/config.yaml` (stealth mode). All downstream callers (`readProjectConfig`, `preflightAndCheckRunning`, `cmd_shell`, `store.go`) inherit the correct mode. Without this, `oro start` on a stealth project would auto-run `oro init` (standard), creating `.oro/` and defeating stealth.
+
+**`oro mg` change:** The Mardi Gras TUI shells out to `bd` independently via `pkg/mg/data/source.go`. In stealth mode, these calls need `--db`. Fix: `oro mg` resolves `ProjectPaths` at startup (same as `oro start`) and passes `bdExtraArgs` to the mg data layer. Or: set `BEADS_DB` env var for the mg subprocess.
+
+**`quality_gate_gen.go` change:** The generated shell script body hardcodes `docs/`, `.beads/`, `.worktrees/` in find exclusions and biome paths. Fix: `writeQualityGateScript` accepts `ProjectPaths` and templates the correct directory names into the generated script.
 
 **`langprofile` change:** Accept `configPath string` parameter instead of deriving from project root. Caller passes `paths.ConfigYAML`.
 
