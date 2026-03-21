@@ -200,70 +200,21 @@ func checkDirWritable(dir string) error {
 }
 
 // readProjectName returns the project name and mode for the given repo root.
+// It delegates to detectProjectMode and suppresses errors (graceful degradation).
 //
-// Resolution order:
+// Resolution order (via detectProjectMode):
 //  1. ORO_PROJECT env var → name from env, mode "standard".
 //  2. <repoRoot>/.oro/config.yaml with project: field → standard mode.
 //  3. ~/.oro/projects/s-<hash>/config.yaml (stealth) → stealth mode.
 //  4. No config found → ("", "standard", nil) for fresh project.
 //
 // Symlinks in repoRoot are resolved before hashing.
-func readProjectName(repoRoot string) (name, mode string, err error) {
-	// ORO_PROJECT env var always wins.
-	if v := os.Getenv("ORO_PROJECT"); v != "" {
-		return v, "standard", nil
+func readProjectName(repoRoot string) (name, mode string, err error) { //nolint:unparam // err kept for caller consistency with detectProjectMode
+	name, mode, err = detectProjectMode(repoRoot)
+	if err != nil {
+		return "", "standard", nil //nolint:nilerr // intentional: graceful degradation for callers that don't need actionable errors
 	}
-
-	// Standard: check <repoRoot>/.oro/config.yaml.
-	data, readErr := os.ReadFile(filepath.Join(repoRoot, ".oro", "config.yaml")) //nolint:gosec // repoRoot is trusted caller input
-	if readErr == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "project:") {
-				return strings.TrimSpace(strings.TrimPrefix(line, "project:")), "standard", nil
-			}
-		}
-		return "", "standard", nil
-	}
-	if !os.IsNotExist(readErr) {
-		return "", "standard", fmt.Errorf("read .oro/config.yaml: %w", readErr)
-	}
-
-	// Stealth fallback: compute hash from symlink-resolved absolute repoRoot.
-	absRoot, absErr := filepath.Abs(repoRoot)
-	if absErr != nil {
-		return "", "standard", nil //nolint:nilerr // graceful degradation: treat broken Abs as no-config
-	}
-	resolvedRoot, symlinkErr := filepath.EvalSymlinks(absRoot)
-	if symlinkErr != nil {
-		resolvedRoot = absRoot
-	}
-	hash := computePathHash(resolvedRoot)
-
-	oroHome, oroErr := resolveOroHome()
-	if oroErr != nil {
-		return "", "standard", nil //nolint:nilerr // graceful degradation: no stealth lookup without home
-	}
-
-	stealthConfig := filepath.Join(oroHome, "projects", "s-"+hash, "config.yaml")
-	stealthData, stealthErr := os.ReadFile(stealthConfig) //nolint:gosec // path constructed from trusted inputs
-	if os.IsNotExist(stealthErr) {
-		return "", "standard", nil
-	}
-	if stealthErr != nil {
-		return "", "standard", nil //nolint:nilerr // graceful degradation: unreadable stealth config → no project
-	}
-
-	// Verify "mode: stealth" to avoid false positives from name-based projects.
-	for _, line := range strings.Split(string(stealthData), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "mode:") {
-			if strings.TrimSpace(strings.TrimPrefix(line, "mode:")) == "stealth" {
-				return "s-" + hash, "stealth", nil
-			}
-		}
-	}
-	return "", "standard", nil
+	return name, mode, nil
 }
 
 // readProjectNameCWD is a thin wrapper around readProjectName using CWD as

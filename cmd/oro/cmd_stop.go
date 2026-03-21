@@ -111,27 +111,18 @@ and kills the tmux session.
 
 Use --all to stop daemons in all projects simultaneously.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			daemonPaths, err := ResolveDaemonPaths()
-			if err != nil {
-				return fmt.Errorf("resolve daemon paths: %w", err)
-			}
-
-			if all {
-				return runStopAll(cmd.Context(), daemonPaths.OroHome, force, cmd.OutOrStdout())
-			}
-
-			repoRoot, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("get working dir: %w", err)
-			}
-			projPaths, err := ResolvePaths(repoRoot)
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
 
+			if all {
+				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout())
+			}
+
 			cfg := &stopConfig{
-				pidPath:  daemonPaths.PIDPath,
-				sockPath: daemonPaths.SocketPath,
+				pidPath:  paths.PIDPath,
+				sockPath: paths.SocketPath,
 				tmuxName: TmuxSessionName(readProjectNameCWD()),
 				runner:   &ExecRunner{},
 				w:        cmd.OutOrStdout(),
@@ -141,8 +132,8 @@ Use --all to stop daemons in all projects simultaneously.`,
 				killFn:   defaultKill,
 				isTTY:    isStdinTTY,
 				force:    force,
-				oroHome:  daemonPaths.OroHome,
-				beadsDir: projPaths.BeadsDir,
+				oroHome:  paths.OroHome,
+				beadsDir: ".beads",
 			}
 
 			return runStopSequence(cmd.Context(), cfg)

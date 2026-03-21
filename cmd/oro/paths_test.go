@@ -482,6 +482,48 @@ func TestReadProjectName_StealthFallback_NeitherExists(t *testing.T) {
 	}
 }
 
+func TestReadProjectName_StealthFallback_Symlink(t *testing.T) {
+	// Create a real repo root directory.
+	realRoot := t.TempDir()
+	tmpOroHome := t.TempDir()
+	t.Setenv("ORO_HOME", tmpOroHome)
+	t.Setenv("ORO_PROJECT", "")
+
+	// Create a symlink pointing to realRoot.
+	symlinkRoot := filepath.Join(t.TempDir(), "linked-repo")
+	if err := os.Symlink(realRoot, symlinkRoot); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	// Hash should be based on resolved (real) path, not the symlink.
+	resolved, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	hash := computePathHash(resolved)
+
+	// Create stealth config using the resolved hash.
+	stealthDir := filepath.Join(tmpOroHome, "projects", "s-"+hash)
+	if err := os.MkdirAll(stealthDir, 0o750); err != nil {
+		t.Fatalf("mkdir stealth dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stealthDir, "config.yaml"), []byte("mode: stealth\n"), 0o600); err != nil {
+		t.Fatalf("write stealth config: %v", err)
+	}
+
+	// Pass the symlink path — readProjectName should resolve it and find the stealth config.
+	name, mode, err := readProjectName(symlinkRoot)
+	if err != nil {
+		t.Fatalf("readProjectName(symlink) error: %v", err)
+	}
+	if name != "s-"+hash {
+		t.Errorf("name = %q, want %q", name, "s-"+hash)
+	}
+	if mode != "stealth" {
+		t.Errorf("mode = %q, want %q", mode, "stealth")
+	}
+}
+
 func TestResolvePaths_OroHomeOverride(t *testing.T) {
 	tmpDir := t.TempDir()
 
