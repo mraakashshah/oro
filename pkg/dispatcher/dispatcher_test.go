@@ -14672,3 +14672,121 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 		}
 	})
 }
+
+func TestDirective_MaxWorkers(t *testing.T) {
+	t.Run("sets MaxWorkers and clamps targetWorkers", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		// Default MaxWorkers=5; set targetWorkers=4 so it must be clamped to 3.
+		d.mu.Lock()
+		d.targetWorkers = 4
+		d.mu.Unlock()
+		startDispatcher(t, d)
+
+		ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "max-workers", "3")
+
+		if !ack.OK {
+			t.Fatalf("expected OK=true, got false: %s", ack.Detail)
+		}
+		if !strings.Contains(ack.Detail, "max_workers=3") {
+			t.Fatalf("expected detail to contain 'max_workers=3', got %q", ack.Detail)
+		}
+		d.mu.Lock()
+		gotMax := d.cfg.MaxWorkers
+		gotTarget := d.targetWorkers
+		d.mu.Unlock()
+		if gotMax != 3 {
+			t.Fatalf("expected cfg.MaxWorkers=3, got %d", gotMax)
+		}
+		if gotTarget != 3 {
+			t.Fatalf("expected targetWorkers clamped to 3, got %d", gotTarget)
+		}
+	})
+
+	t.Run("does not raise targetWorkers when below new max", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.mu.Lock()
+		d.targetWorkers = 1
+		d.mu.Unlock()
+		startDispatcher(t, d)
+
+		ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "max-workers", "5")
+
+		if !ack.OK {
+			t.Fatalf("expected OK=true: %s", ack.Detail)
+		}
+		if !strings.Contains(ack.Detail, "max_workers=5") {
+			t.Fatalf("expected detail 'max_workers=5', got %q", ack.Detail)
+		}
+		d.mu.Lock()
+		gotTarget := d.targetWorkers
+		d.mu.Unlock()
+		if gotTarget != 1 {
+			t.Fatalf("expected targetWorkers unchanged at 1, got %d", gotTarget)
+		}
+	})
+
+	t.Run("maybeAutoScale respects new cap", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "max-workers", "3")
+		if !ack.OK {
+			t.Fatalf("expected OK=true: %s", ack.Detail)
+		}
+		// targetWorkers already at max; autoscale with deep queue should not exceed 3.
+		d.mu.Lock()
+		d.targetWorkers = 3
+		d.mu.Unlock()
+
+		d.maybeAutoScale(context.Background(), 10, 0)
+
+		d.mu.Lock()
+		gotTarget := d.targetWorkers
+		d.mu.Unlock()
+		if gotTarget > 3 {
+			t.Fatalf("expected targetWorkers <= 3 after maybeAutoScale, got %d", gotTarget)
+		}
+	})
+
+	t.Run("empty args returns error", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "max-workers", "")
+
+		if ack.OK {
+			t.Fatal("expected OK=false for empty args")
+		}
+		if !strings.Contains(ack.Detail, "worker count required") {
+			t.Fatalf("expected 'worker count required' in detail, got %q", ack.Detail)
+		}
+	})
+
+	t.Run("non-integer args returns error", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "max-workers", "abc")
+
+		if ack.OK {
+			t.Fatal("expected OK=false for non-integer args")
+		}
+		if !strings.Contains(strings.ToLower(ack.Detail), "invalid") {
+			t.Fatalf("expected 'invalid' in detail, got %q", ack.Detail)
+		}
+	})
+
+	t.Run("negative args returns error", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+
+		ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "max-workers", "-1")
+
+		if ack.OK {
+			t.Fatal("expected OK=false for negative args")
+		}
+		if !strings.Contains(ack.Detail, "non-negative") {
+			t.Fatalf("expected 'non-negative' in detail, got %q", ack.Detail)
+		}
+	})
+}

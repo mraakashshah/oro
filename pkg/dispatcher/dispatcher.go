@@ -2734,14 +2734,14 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applyHealth()
 	case protocol.DirectiveWorkerLogs:
 		return d.applyWorkerLogs(args)
+	case protocol.DirectiveMaxWorkers:
+		return d.applyMaxWorkersDirective(args)
 	case protocol.DirectiveStart:
-		d.setState(StateRunning)
-		return "started", nil
+		return d.applyStart()
 	case protocol.DirectiveStop:
 		return "", fmt.Errorf("stop directive disabled; use 'oro stop' for graceful shutdown")
 	case protocol.DirectivePause:
-		d.setState(StatePaused)
-		return "paused", nil
+		return d.applyPause()
 	case protocol.DirectiveResume:
 		return d.applyResume()
 	case protocol.DirectiveStatus:
@@ -2757,6 +2757,18 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	default:
 		return fmt.Sprintf("applied %s", dir), nil
 	}
+}
+
+// applyStart transitions the dispatcher to running state.
+func (d *Dispatcher) applyStart() (string, error) {
+	d.setState(StateRunning)
+	return "started", nil
+}
+
+// applyPause transitions the dispatcher to paused state.
+func (d *Dispatcher) applyPause() (string, error) {
+	d.setState(StatePaused)
+	return "paused", nil
 }
 
 // applyResume transitions the dispatcher from paused to running.
@@ -2957,6 +2969,32 @@ func (d *Dispatcher) applyScaleDirective(args string) (string, error) {
 		detail = fmt.Sprintf("target=%d, current=%d, no change", target, connected)
 	}
 	return detail, nil
+}
+
+// applyMaxWorkersDirective sets the maximum worker pool size at runtime.
+// It updates cfg.MaxWorkers, clamps targetWorkers to the new ceiling if needed,
+// and calls reconcileScale to enforce the updated limit immediately.
+func (d *Dispatcher) applyMaxWorkersDirective(args string) (string, error) {
+	if args == "" {
+		return "", fmt.Errorf("worker count required")
+	}
+	n, err := strconv.Atoi(args)
+	if err != nil {
+		return "", fmt.Errorf("invalid worker count %q: %w", args, err)
+	}
+	if n < 0 {
+		return "", fmt.Errorf("worker count must be non-negative, got %d", n)
+	}
+
+	d.mu.Lock()
+	d.cfg.MaxWorkers = n
+	if d.targetWorkers > n {
+		d.targetWorkers = n
+	}
+	d.mu.Unlock()
+
+	d.reconcileScale()
+	return fmt.Sprintf("max_workers=%d", n), nil
 }
 
 // applyKillWorker terminates a specific worker, cleans up its worktree,
