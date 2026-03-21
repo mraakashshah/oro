@@ -55,24 +55,24 @@
 Preconditions: must be in a git repo (`.git/` exists). Fails with error if not.
 
 1. Compute `<hash>` = SHA-256(abs(CWD)) truncated to 16 hex chars (supports monorepos — each subdir gets its own project)
-1b. Resolve git root via `git rev-parse --show-toplevel` (for `.git/info/exclude` and worktree ops)
-3. Create `~/.oro/projects/s-<hash>/` with `config.yaml`:
+1. Resolve git root via `git rev-parse --show-toplevel` (for `.git/info/exclude` and worktree ops)
+1. Create `~/.oro/projects/s-<hash>/` with `config.yaml`:
    ```yaml
    mode: stealth
    project_root: /abs/path/to/repo
    ```
-4. Initialize beads at `~/.oro/projects/s-<hash>/beads/` via `bd init --db <path>`
-5. Generate `quality_gate.sh` at `~/.oro/projects/s-<hash>/quality_gate.sh` (with correct worktree exclusion path)
-6. Write `~/.claude/projects/<claude-path>/CLAUDE.md` with oro instructions
-7. Merge oro hooks into `.claude/settings.local.json` (additive — read existing JSON, add missing hook entries, preserve all existing entries)
-8. Copy oro skills to `.claude/skills/` (additive — skip if skill dir already exists)
-9. Create `oro-docs/` directory
-10. Add to `.git/info/exclude`: `oro-docs/`, `.claude/settings.local.json`
-11. Install git hooks with wrapper pattern (preserve existing hooks)
-12. Do NOT create `.oro/` in repo root
-13. Do NOT modify `.gitignore`
-14. Do NOT create `CLAUDE.md` in repo root
-15. Set directory permissions to 0o700 for `~/.oro/projects/s-<hash>/`
+1. Initialize beads at `~/.oro/projects/s-<hash>/beads/` via `bd init --db <path>`
+1. Generate `quality_gate.sh` at `~/.oro/projects/s-<hash>/quality_gate.sh` (with correct worktree exclusion path)
+1. Write `~/.claude/projects/<claude-path>/CLAUDE.md` with oro instructions
+1. Merge oro hooks into `.claude/settings.local.json` (additive — read existing JSON, add missing hook entries, preserve all existing entries)
+1. Copy oro skills to `.claude/skills/` (additive — skip if skill dir already exists)
+1. Create `oro-docs/` directory
+1. Add to `.git/info/exclude`: `oro-docs/`, `.claude/settings.local.json`
+1. Install git hooks with wrapper pattern (preserve existing hooks)
+1. Do NOT create `.oro/` in repo root
+1. Do NOT modify `.gitignore`
+1. Do NOT create `CLAUDE.md` in repo root
+1. Set directory permissions to 0o700 for `~/.oro/projects/s-<hash>/`
 
 **Error handling:**
 - `~/.oro/` can't be created → fail with actionable error
@@ -117,7 +117,7 @@ type ProjectPaths struct {
 }
 ```
 
-### Files that need `ProjectPaths` threading (31 identified):
+### Files that need `ProjectPaths` threading (31 identified)
 
 | File | Hardcoded Path | Fix |
 |------|---------------|-----|
@@ -212,7 +212,7 @@ On install: check `git config core.hooksPath` — if set, install to that direct
 
 ## Testing Strategy
 
-### Unit tests (per component):
+### Unit tests (per component)
 - `ProjectPaths` resolution from config (standard + stealth)
 - `CLIBeadSource` with `bdExtraArgs` (verify `--db` prepended)
 - `GitWorktreeManager` with custom `worktreesDir`
@@ -221,7 +221,7 @@ On install: check `git config core.hooksPath` — if set, install to that direct
 - `settings.local.json` additive merge
 - Hash computation (symlinks, relative paths, trailing slashes)
 
-### Integration tests:
+### Integration tests
 - `oro init --stealth` → verify no repo files created
 - `oro init --stealth` → `oro start` → bead assignment → worktree at `~/.oro/` → QG → merge → cleanup
 - `oro init --stealth` on repo with existing hooks → hooks preserved
@@ -230,7 +230,7 @@ On install: check `git config core.hooksPath` — if set, install to that direct
 - Mode discovery: `oro start` in stealth project without `.oro/` anchor
 - Repo move: `oro start` after repo path changes
 
-### What NOT to test:
+### What NOT to test
 - Standard mode behavior (existing tests cover this)
 - `bd` internals (`--db` flag is bd's responsibility)
 
