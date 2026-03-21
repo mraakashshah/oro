@@ -1567,6 +1567,125 @@ func TestCLIBeadSource_Show_ExtractsMetadataModel(t *testing.T) {
 	})
 }
 
+// TestCLIBeadSource_ExtraArgs verifies that BdExtraArgs are prepended to every
+// bd invocation (Ready, Show, Update, Close, Create), and that empty BdExtraArgs
+// leaves behavior unchanged.
+func TestCLIBeadSource_ExtraArgs(t *testing.T) {
+	extraArgs := []string{"--db", "/path/to/beads"}
+
+	// assertPrepended checks that extraArgs appear at the start of call.Args.
+	assertPrepended := func(t *testing.T, call mockCall, extraArgs []string) {
+		t.Helper()
+		if len(call.Args) < len(extraArgs) {
+			t.Fatalf("args too short to contain extraArgs: got %v", call.Args)
+		}
+		for i, ea := range extraArgs {
+			if call.Args[i] != ea {
+				t.Errorf("extraArgs[%d]: got %q, want %q (full args: %v)", i, call.Args[i], ea, call.Args)
+			}
+		}
+	}
+
+	t.Run("ready_prepends_extra_args", func(t *testing.T) {
+		data, _ := json.Marshal([]protocol.Bead{{ID: "x.1", Title: "T"}})
+		runner := &mockCommandRunner{output: data}
+		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+
+		_, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		assertPrepended(t, runner.calls[0], extraArgs)
+		if !sliceContains(runner.calls[0].Args, "ready") {
+			t.Errorf("expected 'ready' subcommand in args: %v", runner.calls[0].Args)
+		}
+	})
+
+	t.Run("show_prepends_extra_args", func(t *testing.T) {
+		detail := protocol.BeadDetail{ID: "x.1", Title: "T", AcceptanceCriteria: "ac"}
+		data, _ := json.Marshal([]protocol.BeadDetail{detail})
+		runner := &mockCommandRunner{output: data}
+		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+
+		_, err := src.Show(context.Background(), "x.1")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		assertPrepended(t, runner.calls[0], extraArgs)
+		if !sliceContains(runner.calls[0].Args, "show") {
+			t.Errorf("expected 'show' subcommand in args: %v", runner.calls[0].Args)
+		}
+	})
+
+	t.Run("update_prepends_extra_args", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("")}
+		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+
+		if err := src.Update(context.Background(), "x.1", "in_progress"); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		assertPrepended(t, runner.calls[0], extraArgs)
+		if !sliceContains(runner.calls[0].Args, "update") {
+			t.Errorf("expected 'update' subcommand in args: %v", runner.calls[0].Args)
+		}
+	})
+
+	t.Run("close_prepends_extra_args", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("")}
+		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+
+		if err := src.Close(context.Background(), "x.1", "done"); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		assertPrepended(t, runner.calls[0], extraArgs)
+		if !sliceContains(runner.calls[0].Args, "close") {
+			t.Errorf("expected 'close' subcommand in args: %v", runner.calls[0].Args)
+		}
+	})
+
+	t.Run("create_prepends_extra_args", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte(`{"id":"x.1"}`)}
+		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+
+		_, err := src.Create(context.Background(), "T", "task", 1, "D", "", "")
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		assertPrepended(t, runner.calls[0], extraArgs)
+		if !sliceContains(runner.calls[0].Args, "create") {
+			t.Errorf("expected 'create' subcommand in args: %v", runner.calls[0].Args)
+		}
+	})
+
+	t.Run("empty_extra_args_no_change", func(t *testing.T) {
+		data, _ := json.Marshal([]protocol.Bead{{ID: "x.1", Title: "T"}})
+		runner := &mockCommandRunner{output: data}
+		src := &CLIBeadSource{runner: runner, BdExtraArgs: nil}
+
+		_, err := src.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		call := runner.calls[0]
+		if len(call.Args) == 0 || call.Args[0] != "ready" {
+			t.Errorf("empty BdExtraArgs: expected 'ready' as first arg, got %v", call.Args)
+		}
+	})
+
+	t.Run("error_passthrough_not_masked", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("exit status 1: db path not found")}
+		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+
+		_, err := src.Ready(context.Background())
+		if err == nil {
+			t.Fatal("expected error to pass through, got nil")
+		}
+		if !strings.Contains(err.Error(), "db path not found") {
+			t.Errorf("error not passed through: got %v", err)
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {

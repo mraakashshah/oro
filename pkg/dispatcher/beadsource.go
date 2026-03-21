@@ -17,7 +17,8 @@ type CommandRunner interface {
 
 // CLIBeadSource implements BeadSource by shelling out to the bd CLI tool.
 type CLIBeadSource struct {
-	runner CommandRunner
+	runner      CommandRunner
+	BdExtraArgs []string // optional args prepended to every bd invocation (e.g. ["--db", "/path"])
 }
 
 // NewCLIBeadSource creates a CLIBeadSource backed by the given CommandRunner.
@@ -25,9 +26,21 @@ func NewCLIBeadSource(runner CommandRunner) *CLIBeadSource {
 	return &CLIBeadSource{runner: runner}
 }
 
+// bdArgs returns the full argument list for a bd invocation, prepending
+// BdExtraArgs (if any) before the provided subcommand args.
+func (s *CLIBeadSource) bdArgs(args ...string) []string {
+	if len(s.BdExtraArgs) == 0 {
+		return args
+	}
+	combined := make([]string, 0, len(s.BdExtraArgs)+len(args))
+	combined = append(combined, s.BdExtraArgs...)
+	combined = append(combined, args...)
+	return combined
+}
+
 // Ready runs `bd ready --json` and parses the output into a slice of Bead.
 func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
-	out, err := s.runner.Run(ctx, "bd", "ready", "--json")
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("ready", "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd ready: %w", err)
 	}
@@ -43,7 +56,7 @@ func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
 // InProgress runs `bd list --status=in_progress --json` and parses the output into a slice of Bead.
 // Returns nil slice (not empty slice) when bd reports no in-progress beads.
 func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error) {
-	out, err := s.runner.Run(ctx, "bd", "list", "--status=in_progress", "--json")
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--status=in_progress", "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd list --status=in_progress: %w", err)
 	}
@@ -61,7 +74,7 @@ func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error)
 
 // Show runs `bd show <id> --json` and parses the output into a BeadDetail.
 func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
-	out, err := s.runner.Run(ctx, "bd", "show", id, "--json")
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("show", id, "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd show %s: %w", id, err)
 	}
@@ -202,7 +215,7 @@ func findHeaderAtLineStart(text, header string) int {
 
 // Close runs `bd close <id> --reason="<reason>"`.
 func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
-	_, err := s.runner.Run(ctx, "bd", "close", id, "--reason="+reason)
+	_, err := s.runner.Run(ctx, "bd", s.bdArgs("close", id, "--reason="+reason)...)
 	if err != nil {
 		return fmt.Errorf("bd close %s: %w", id, err)
 	}
@@ -211,7 +224,7 @@ func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
 
 // Update runs `bd update <id> --status=<status>`.
 func (s *CLIBeadSource) Update(ctx context.Context, id, status string) error {
-	_, err := s.runner.Run(ctx, "bd", "update", id, "--status="+status)
+	_, err := s.runner.Run(ctx, "bd", s.bdArgs("update", id, "--status="+status)...)
 	if err != nil {
 		return fmt.Errorf("bd update %s: %w", id, err)
 	}
@@ -242,7 +255,7 @@ func (s *CLIBeadSource) Create(ctx context.Context, title, beadType string, prio
 	}
 	args = append(args, "--json")
 
-	out, err := s.runner.Run(ctx, "bd", args...)
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs(args...)...)
 	if err != nil {
 		return "", fmt.Errorf("bd create: %w", err)
 	}
@@ -264,7 +277,7 @@ func (s *CLIBeadSource) Sync(ctx context.Context) error {
 // HasChildren checks whether the given epic has any children (open or closed).
 // Returns true if at least one child exists, false otherwise.
 func (s *CLIBeadSource) HasChildren(ctx context.Context, epicID string) (bool, error) {
-	out, err := s.runner.Run(ctx, "bd", "list", "--parent="+epicID, "--json")
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--parent="+epicID, "--json")...)
 	if err != nil {
 		return false, fmt.Errorf("bd list --parent=%s: %w", epicID, err)
 	}
@@ -281,7 +294,7 @@ func (s *CLIBeadSource) HasChildren(ctx context.Context, epicID string) (bool, e
 // returns all matching beads. Returns an empty slice (not an error) when no
 // beads match; returns a wrapped error on bd CLI failure or JSON parse failure.
 func (s *CLIBeadSource) FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error) {
-	out, err := s.runner.Run(ctx, "bd", "list", "--parent="+parentID, "--tag="+tag, "--json")
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--parent="+parentID, "--tag="+tag, "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd list --parent=%s --tag=%s: %w", parentID, tag, err)
 	}
@@ -300,7 +313,7 @@ func (s *CLIBeadSource) FindByParentAndTag(ctx context.Context, parentID, tag st
 // Export runs `bd export` and returns the raw JSONL output containing all issues
 // (both open and closed). Returns an error if the command fails.
 func (s *CLIBeadSource) Export(ctx context.Context) ([]byte, error) {
-	out, err := s.runner.Run(ctx, "bd", "export")
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("export")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd export: %w", err)
 	}
@@ -311,7 +324,7 @@ func (s *CLIBeadSource) Export(ctx context.Context) ([]byte, error) {
 // Fetches all children and checks status locally to avoid bd query filter quirks.
 // Returns true only if every child has status "closed".
 func (s *CLIBeadSource) AllChildrenClosed(ctx context.Context, epicID string) (bool, error) {
-	out, err := s.runner.Run(ctx, "bd", "list", "--parent="+epicID, "--json")
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--parent="+epicID, "--json")...)
 	if err != nil {
 		return false, fmt.Errorf("bd list --parent=%s: %w", epicID, err)
 	}
