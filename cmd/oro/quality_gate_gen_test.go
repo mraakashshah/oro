@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -270,6 +272,64 @@ func TestGenerateQualityGateScript(t *testing.T) {
 
 		checkBashSyntax(t, script)
 	})
+}
+
+// TestQualityGateScript_StealthPaths verifies that writeQualityGateScript uses
+// ProjectPaths fields for path substitution instead of hardcoded defaults.
+func TestQualityGateScript_StealthPaths(t *testing.T) {
+	stealthBase := "/home/testuser/.oro/projects/s-abcdef0123456789"
+	paths := ProjectPaths{
+		Mode:         "stealth",
+		RepoRoot:     "/home/testuser/myproject",
+		WorktreesDir: filepath.Join(stealthBase, "worktrees"),
+		BeadsDir:     filepath.Join(stealthBase, "beads"),
+		OroDocsDir:   filepath.Join(stealthBase, "docs"),
+	}
+
+	var buf bytes.Buffer
+	if err := writeQualityGateScript(&buf, paths); err != nil {
+		t.Fatalf("writeQualityGateScript: %v", err)
+	}
+	script := buf.String()
+
+	// Script must reference the provided stealth paths.
+	for _, want := range []string{paths.WorktreesDir, paths.BeadsDir, paths.OroDocsDir} {
+		if !strings.Contains(script, want) {
+			t.Errorf("expected %q in script", want)
+		}
+	}
+
+	// Biome loop must use the stealth docs path.
+	if !strings.Contains(script, "for p in "+paths.OroDocsDir) {
+		t.Errorf("biome loop should start with OroDocsDir %q", paths.OroDocsDir)
+	}
+
+	// Script must NOT use hardcoded defaults when stealth paths are set.
+	if strings.Contains(script, "./.worktrees") {
+		t.Error("script should not contain hardcoded ./.worktrees when stealth WorktreesDir is set")
+	}
+	if strings.Contains(script, " .beads/") {
+		t.Error("script should not contain hardcoded .beads/ when stealth BeadsDir is set")
+	}
+
+	// Empty paths must produce the standard defaults.
+	var defBuf bytes.Buffer
+	if err := writeQualityGateScript(&defBuf, ProjectPaths{}); err != nil {
+		t.Fatalf("writeQualityGateScript with empty paths: %v", err)
+	}
+	defScript := defBuf.String()
+	if !strings.Contains(defScript, "./.worktrees") {
+		t.Error("empty WorktreesDir should default to ./.worktrees")
+	}
+	if !strings.Contains(defScript, ".beads") {
+		t.Error("empty BeadsDir should default to .beads")
+	}
+	if !strings.Contains(defScript, "for p in docs/") {
+		t.Error("empty OroDocsDir should default to docs/ in biome loop")
+	}
+
+	checkBashSyntax(t, script)
+	checkBashSyntax(t, defScript)
 }
 
 // checkBashSyntax writes the script to a temp file and runs bash -n to verify

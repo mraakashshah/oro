@@ -544,7 +544,7 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	}
 
 	// 7. Generate quality_gate.sh in project root (skip if exists, unless force).
-	if err := writeQualityGateScript(projectRoot, cfg, force); err != nil {
+	if err := writeQualityGateScriptFile(standardProjectPaths(projectRoot), force); err != nil {
 		// Fail-open: warn but continue. Quality gate is helpful but not critical.
 		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
 	}

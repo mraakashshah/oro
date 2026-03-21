@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"text/template"
+
+	"gopkg.in/yaml.v3"
 
 	"oro/pkg/langprofile"
 )
@@ -238,8 +242,11 @@ func generateGolangciLint(cfg *langprofile.Config) (string, error) { //nolint:un
 
 // qualityGateData holds the template variables for quality gate generation.
 type qualityGateData struct {
-	HasGo     bool
-	HasPython bool
+	HasGo        bool
+	HasPython    bool
+	WorktreesDir string // find exclusion path; defaults to "./.worktrees"
+	BeadsDir     string // biome scan path; defaults to ".beads/"
+	OroDocsDir   string // biome scan path; defaults to "docs/"
 }
 
 // generateQualityGateScript produces a quality_gate.sh script tailored to the
@@ -256,8 +263,11 @@ func generateQualityGateScript(cfg *langprofile.Config) (string, error) {
 	_, hasPython := cfg.Languages["python"]
 
 	data := qualityGateData{
-		HasGo:     hasGo,
-		HasPython: hasPython,
+		HasGo:        hasGo,
+		HasPython:    hasPython,
+		WorktreesDir: "./.worktrees",
+		BeadsDir:     ".beads/",
+		OroDocsDir:   "docs/",
 	}
 
 	tmpl, err := template.New("quality_gate").Parse(qualityGateTmpl)
@@ -273,36 +283,103 @@ func generateQualityGateScript(cfg *langprofile.Config) (string, error) {
 	return buf.String(), nil
 }
 
-// writeQualityGateScript generates quality_gate.sh in projectRoot from the
-// detected language config. Skips if the file already exists (unless force is
-// true). Uses atomic write (tmp + rename) for safety.
-func writeQualityGateScript(projectRoot string, cfg *langprofile.Config, force bool) error {
-	scriptsDir := filepath.Join(projectRoot, "scripts")
-	if err := os.MkdirAll(scriptsDir, 0o750); err != nil {
-		return fmt.Errorf("creating scripts/ dir: %w", err)
+// readQGConfig reads a langprofile.Config from configPath.
+// Returns nil (no error) if configPath is empty or the file does not exist.
+func readQGConfig(configPath string) (*langprofile.Config, error) {
+	if configPath == "" {
+		return nil, nil
 	}
-	dest := filepath.Join(scriptsDir, "quality_gate.sh")
-
-	// Skip if file exists and not forcing.
-	if !force && fileExists(dest) {
-		return nil
+	data, err := os.ReadFile(configPath) //nolint:gosec // configPath is trusted caller input
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
+	if err != nil {
+		return nil, fmt.Errorf("read config %q: %w", configPath, err)
+	}
+	var cfg langprofile.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config %q: %w", configPath, err)
+	}
+	return &cfg, nil
+}
 
-	content, err := generateQualityGateScript(cfg)
+// writeQualityGateScript renders quality_gate.sh to w using paths for dynamic
+// path substitution in find exclusions and biome scan paths.
+// Language detection reads paths.ConfigYAML; falls back to shell-only when absent.
+// Empty path fields fall back to standard defaults (./.worktrees, .beads/, docs/).
+func writeQualityGateScript(w io.Writer, paths ProjectPaths) error {
+	cfg, err := readQGConfig(paths.ConfigYAML)
 	if err != nil {
 		return err
 	}
 
-	// Atomic write: write to temp file, then rename.
-	tmp := dest + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o755); err != nil { //nolint:gosec // quality gate script must be executable
-		return fmt.Errorf("write temp quality gate: %w", err)
+	worktreesDir := paths.WorktreesDir
+	if worktreesDir == "" {
+		worktreesDir = "./.worktrees"
 	}
-	if err := os.Rename(tmp, dest); err != nil {
-		os.Remove(tmp) //nolint:errcheck,gosec // best-effort cleanup
-		return fmt.Errorf("rename quality gate: %w", err)
+	beadsDir := paths.BeadsDir
+	if beadsDir == "" {
+		beadsDir = ".beads/"
+	}
+	oroDocsDir := paths.OroDocsDir
+	if oroDocsDir == "" {
+		oroDocsDir = "docs/"
 	}
 
+	var hasGo, hasPython bool
+	if cfg != nil {
+		_, hasGo = cfg.Languages["go"]
+		_, hasPython = cfg.Languages["python"]
+	}
+
+	data := qualityGateData{
+		HasGo:        hasGo,
+		HasPython:    hasPython,
+		WorktreesDir: worktreesDir,
+		BeadsDir:     beadsDir,
+		OroDocsDir:   oroDocsDir,
+	}
+
+	tmpl, err := template.New("quality_gate").Parse(qualityGateTmpl)
+	if err != nil {
+		return fmt.Errorf("parse quality gate template: %w", err)
+	}
+
+	if err := tmpl.Execute(w, data); err != nil {
+		return fmt.Errorf("render quality gate template: %w", err)
+	}
+
+	return nil
+}
+
+// writeQualityGateScriptFile generates quality_gate.sh at paths.QualityGate.
+// Skips if the file already exists (unless force is true). Uses atomic write
+// (tmp + rename) for safety.
+func writeQualityGateScriptFile(paths ProjectPaths, force bool) error {
+	if !force && fileExists(paths.QualityGate) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.QualityGate), 0o750); err != nil {
+		return fmt.Errorf("creating scripts/ dir: %w", err)
+	}
+	tmp := paths.QualityGate + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755) //nolint:gosec // quality gate script must be executable
+	if err != nil {
+		return fmt.Errorf("open temp quality gate: %w", err)
+	}
+	if writeErr := writeQualityGateScript(f, paths); writeErr != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp) //nolint:gosec // tmp is our own temp file
+		return writeErr
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp) //nolint:gosec // tmp is our own temp file
+		return fmt.Errorf("close quality gate: %w", err)
+	}
+	if err := os.Rename(tmp, paths.QualityGate); err != nil {
+		_ = os.Remove(tmp) //nolint:errcheck,gosec // best-effort cleanup
+		return fmt.Errorf("rename quality gate: %w", err)
+	}
 	return nil
 }
 
@@ -530,7 +607,7 @@ lane_other() {
 
     if $has_shell; then
         header "SHELL: LINT"
-        if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +"; then
+        if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path '{{.WorktreesDir}}/*' -exec shellcheck --severity=info {} +"; then
             pass=$((pass + 1))
         else
             fail=$((fail + 1))
@@ -539,7 +616,7 @@ lane_other() {
 
     header "DOCS & CONFIG"
     local BIOME_PATHS=""
-    for p in docs/ .github/ .beads/; do
+    for p in {{.OroDocsDir}} .github/ {{.BeadsDir}}; do
         [ -d "$p" ] && BIOME_PATHS="$BIOME_PATHS $p"
     done
     if compgen -G "*.json" > /dev/null 2>&1; then
@@ -548,7 +625,7 @@ lane_other() {
 
     local docs_checks=(
         "markdownlint" "$NODE_BIN/markdownlint-cli2 --config .markdownlint.yml 'docs/**/*.md' '*.md' '!references/**' '!archive/**'"
-        "yamllint" "find . \( -name '*.yml' -o -name '*.yaml' \) -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
+        "yamllint" "find . \( -name '*.yml' -o -name '*.yaml' \) -not -path './references/*' -not -path './archive/*' -not -path '{{.WorktreesDir}}/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
     )
     if [ -n "$BIOME_PATHS" ]; then
         # shellcheck disable=SC2086
