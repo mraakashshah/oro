@@ -2125,8 +2125,13 @@ func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 	}
 }
 
-// sortBeadsByPriority sorts beads: spawn-for beads first, then focused epic,
-// then by priority (P0 first). Returns a snapshot of priorityBeads for cleanup.
+// sortBeadsByPriority sorts beads into four groups (all ties broken by priority):
+//  1. spawn-for beads (explicit priorityBeads map)
+//  2. focused epic children
+//  3. non-epic standalone beads (Epic == "")
+//  4. unfocused epic children, oldest epic first (lower ID = older)
+//
+// Returns a snapshot of priorityBeads for cleanup.
 func (d *Dispatcher) sortBeadsByPriority(beads []protocol.Bead) map[string]bool {
 	d.mu.Lock()
 	epic := d.focusedEpic
@@ -2136,20 +2141,30 @@ func (d *Dispatcher) sortBeadsByPriority(beads []protocol.Bead) map[string]bool 
 	}
 	d.mu.Unlock()
 
+	group := func(b protocol.Bead) int {
+		if pbSnapshot[b.ID] {
+			return 0 // spawn-for
+		}
+		if epic != "" && b.Epic == epic {
+			return 1 // focused epic child
+		}
+		if b.Epic == "" {
+			return 2 // non-epic standalone
+		}
+		return 3 // unfocused epic child
+	}
+
 	sort.SliceStable(beads, func(i, j int) bool {
-		iPriority := pbSnapshot[beads[i].ID]
-		jPriority := pbSnapshot[beads[j].ID]
-		if iPriority != jPriority {
-			return iPriority
+		bi, bj := beads[i], beads[j]
+		gi, gj := group(bi), group(bj)
+		if gi != gj {
+			return gi < gj
 		}
-		if epic != "" {
-			iMatch := beads[i].Epic == epic
-			jMatch := beads[j].Epic == epic
-			if iMatch != jMatch {
-				return iMatch
-			}
+		// Within group 4: finish oldest epics first (lower ID = older).
+		if gi == 3 && bi.Epic != bj.Epic {
+			return bi.Epic < bj.Epic
 		}
-		return beads[i].Priority < beads[j].Priority
+		return bi.Priority < bj.Priority
 	})
 	return pbSnapshot
 }

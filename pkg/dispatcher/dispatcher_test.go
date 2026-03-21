@@ -5166,7 +5166,8 @@ func TestDispatcher_NoFocus_PriorityOnly(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// No focus set — pure priority ordering
+	// No focus set — oldest epic (lower ID string) assigned first; epic-a < epic-b.
+	// Within the same epic, priority breaks ties, but across epics epic-age wins.
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p2", Title: "Medium", Priority: 2, Epic: "epic-a"},
 		{ID: "bead-p0", Title: "Critical", Priority: 0, Epic: "epic-b"},
@@ -5176,8 +5177,10 @@ func TestDispatcher_NoFocus_PriorityOnly(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if msg.Assign.BeadID != "bead-p0" {
-		t.Fatalf("expected priority bead bead-p0, got %s", msg.Assign.BeadID)
+	// epic-a sorts before epic-b (older epic), so bead-p2 (epic-a) is assigned first
+	// even though bead-p0 has higher priority — finishing oldest epics takes precedence.
+	if msg.Assign.BeadID != "bead-p2" {
+		t.Fatalf("expected oldest-epic bead bead-p2, got %s", msg.Assign.BeadID)
 	}
 }
 
@@ -14506,6 +14509,103 @@ func TestAllAssignPayloadSitesUseBuildAssignPayload(t *testing.T) {
 		}
 		if msg.Assign.AcceptanceCriteria != beadAC {
 			t.Errorf("review rejection AcceptanceCriteria = %q, want %q", msg.Assign.AcceptanceCriteria, beadAC)
+		}
+	})
+}
+
+// TestSortBeadsByPriority_EpicFinishing verifies the full sort order:
+// (1) spawn-for beads, (2) focused epic children, (3) non-epic beads,
+// (4) oldest unfocused epic children (lowest epic ID = oldest), then next oldest.
+// Within each group, sort by priority P0→P1→P2.
+func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
+	t.Run("full ordering", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		d.mu.Lock()
+		d.focusedEpic = "epic-focus"
+		d.priorityBeads["b-spawn-p0"] = true
+		d.priorityBeads["b-spawn-p1"] = true
+		d.mu.Unlock()
+
+		beads := []protocol.Bead{
+			{ID: "b-new-epic-p1", Priority: 1, Epic: "epic-zzz"},
+			{ID: "b-focus-p2", Priority: 2, Epic: "epic-focus"},
+			{ID: "b-noepic-p0", Priority: 0, Epic: ""},
+			{ID: "b-old-epic-p0", Priority: 0, Epic: "epic-aaa"},
+			{ID: "b-spawn-p1", Priority: 1, Epic: "epic-z"},
+			{ID: "b-noepic-p1", Priority: 1, Epic: ""},
+			{ID: "b-old-epic-p2", Priority: 2, Epic: "epic-aaa"},
+			{ID: "b-spawn-p0", Priority: 0, Epic: ""},
+			{ID: "b-focus-p1", Priority: 1, Epic: "epic-focus"},
+		}
+
+		d.sortBeadsByPriority(beads)
+
+		want := []string{
+			"b-spawn-p0",    // group 1: spawn-for, P0
+			"b-spawn-p1",    // group 1: spawn-for, P1
+			"b-focus-p1",    // group 2: focused epic, P1
+			"b-focus-p2",    // group 2: focused epic, P2
+			"b-noepic-p0",   // group 3: non-epic, P0
+			"b-noepic-p1",   // group 3: non-epic, P1
+			"b-old-epic-p0", // group 4: oldest unfocused epic "epic-aaa", P0
+			"b-old-epic-p2", // group 4: oldest unfocused epic "epic-aaa", P2
+			"b-new-epic-p1", // group 4: newer unfocused epic "epic-zzz", P1
+		}
+
+		got := make([]string, len(beads))
+		for i, b := range beads {
+			got[i] = b.ID
+		}
+
+		for i, id := range want {
+			if i >= len(got) || got[i] != id {
+				t.Errorf("position %d: got %q, want %q\nfull got:  %v\nfull want: %v", i, func() string {
+					if i < len(got) {
+						return got[i]
+					}
+					return "<missing>"
+				}(), id, got, want)
+				return
+			}
+		}
+	})
+
+	t.Run("no epics priority only", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		beads := []protocol.Bead{
+			{ID: "p2", Priority: 2, Epic: ""},
+			{ID: "p0", Priority: 0, Epic: ""},
+			{ID: "p1", Priority: 1, Epic: ""},
+		}
+
+		d.sortBeadsByPriority(beads)
+
+		want := []string{"p0", "p1", "p2"}
+		for i, id := range want {
+			if beads[i].ID != id {
+				t.Errorf("position %d: got %q, want %q", i, beads[i].ID, id)
+			}
+		}
+	})
+
+	t.Run("all same epic sorts by priority", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		beads := []protocol.Bead{
+			{ID: "p2", Priority: 2, Epic: "epic-one"},
+			{ID: "p0", Priority: 0, Epic: "epic-one"},
+			{ID: "p1", Priority: 1, Epic: "epic-one"},
+		}
+
+		d.sortBeadsByPriority(beads)
+
+		want := []string{"p0", "p1", "p2"}
+		for i, id := range want {
+			if beads[i].ID != id {
+				t.Errorf("position %d: got %q, want %q", i, beads[i].ID, id)
+			}
 		}
 	})
 }
