@@ -2334,11 +2334,21 @@ func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadI
 // filterAssignable returns beads eligible for assignment: excludes closed beads,
 // beads with status in_progress or blocked, beads with recent worktree creation
 // failures (within cooldown window), beads currently in-flight (assigningBeads),
-// and beads whose agent branch is already merged to main.
+// beads with unresolved blocking dependencies, and beads whose agent branch is
+// already merged to main.
 // Epics are allowed through; assignBead performs the HasChildren check.
 func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 	d.mu.Lock()
+
+	// Build the set of open bead IDs for dependency resolution.
+	// A bead is "open" (can block others) if it is not closed.
+	openBeadIDs := make(map[string]bool, len(allBeads))
+	for _, b := range allBeads {
+		if b.Status != "closed" {
+			openBeadIDs[b.ID] = true
+		}
+	}
 
 	// Collect bead IDs already assigned to busy/reserved workers.
 	activeBeads := make(map[string]bool)
@@ -2351,7 +2361,7 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 	// First pass: cheap in-memory filters (no I/O). Lock is held.
 	candidates := make([]protocol.Bead, 0, len(allBeads))
 	for _, b := range allBeads {
-		if d.isBeadAssignable(b, now, activeBeads) {
+		if d.isBeadAssignable(b, now, activeBeads) && !hasUnresolvedBlockingDep(b, openBeadIDs) {
 			candidates = append(candidates, b)
 		}
 	}
@@ -2417,6 +2427,23 @@ func (d *Dispatcher) isBeadAssignable(b protocol.Bead, now time.Time, activeBead
 		return false
 	}
 	return true
+}
+
+// hasUnresolvedBlockingDep reports whether bead b has at least one unresolved
+// blocking dependency. A dependency is blocking when its Type is "blocks" or
+// "conditional-blocks" AND its DependsOnID is present in openBeadIDs (i.e. not
+// yet closed). Parent-child deps and dangling deps (DependsOnID absent from
+// openBeadIDs) are never considered blocking.
+func hasUnresolvedBlockingDep(b protocol.Bead, openBeadIDs map[string]bool) bool {
+	for _, dep := range b.Dependencies {
+		if dep.Type != "blocks" && dep.Type != "conditional-blocks" {
+			continue
+		}
+		if openBeadIDs[dep.DependsOnID] {
+			return true
+		}
+	}
+	return false
 }
 
 // recordAssignmentFailure marks a bead as having failed assignment (worktree
