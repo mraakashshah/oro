@@ -3,12 +3,15 @@ package dispatcher //nolint:testpackage // white-box tests need access to Dispat
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"oro/pkg/protocol"
 
 	_ "modernc.org/sqlite"
 )
+
+var errTestShow = errors.New("bead not found")
 
 // TestShouldRetryEscalation verifies that shouldRetryEscalation returns false
 // when the underlying condition is resolved, preventing escalation spam.
@@ -202,6 +205,86 @@ func TestShouldRetryEscalation(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("shouldRetryEscalation(%q, %q) = %v, want %v",
 					tt.escType, tt.beadID, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestEscalationPrecheck_OversizedBead verifies OVERSIZED_BEAD precheck:
+// resolved if bead type==epic or CountDistinctModules<=2, unresolved otherwise.
+func TestEscalationPrecheck_OversizedBead(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		beadID    string
+		setupBead func(*mockBeadSource)
+		want      bool // true = retry (unresolved), false = resolved
+	}{
+		{
+			name:   "resolved - bead promoted to epic",
+			beadID: "oro-epic1",
+			setupBead: func(m *mockBeadSource) {
+				m.shown["oro-epic1"] = &protocol.BeadDetail{
+					ID:                 "oro-epic1",
+					Type:               "epic",
+					AcceptanceCriteria: "Read: pkg/ops/foo.go\nRead: pkg/dispatcher/bar.go\nRead: pkg/protocol/baz.go",
+				}
+			},
+			want: false, // epic → resolved
+		},
+		{
+			name:   "resolved - module count dropped to 2",
+			beadID: "oro-small1",
+			setupBead: func(m *mockBeadSource) {
+				m.shown["oro-small1"] = &protocol.BeadDetail{
+					ID:                 "oro-small1",
+					Type:               "task",
+					AcceptanceCriteria: "Read: pkg/ops/foo.go\nRead: pkg/ops/bar.go",
+				}
+			},
+			want: false, // <=2 modules → resolved
+		},
+		{
+			name:   "unresolved - still oversized with 3 modules",
+			beadID: "oro-big1",
+			setupBead: func(m *mockBeadSource) {
+				m.shown["oro-big1"] = &protocol.BeadDetail{
+					ID:                 "oro-big1",
+					Type:               "task",
+					AcceptanceCriteria: "Read: pkg/ops/foo.go\nRead: pkg/dispatcher/bar.go\nRead: pkg/protocol/baz.go",
+				}
+			},
+			want: true, // 3 modules → unresolved
+		},
+		{
+			name:   "retry on Show error",
+			beadID: "oro-missing",
+			setupBead: func(m *mockBeadSource) {
+				m.showErr = errTestShow
+			},
+			want: true, // error → retry
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			beadSrc := &mockBeadSource{
+				shown: make(map[string]*protocol.BeadDetail),
+			}
+			if tt.setupBead != nil {
+				tt.setupBead(beadSrc)
+			}
+
+			d := &Dispatcher{
+				beads:      beadSrc,
+				WorkerPool: WorkerPool{workers: make(map[string]*trackedWorker)},
+			}
+
+			got := d.shouldRetryEscalation(ctx, "OVERSIZED_BEAD", tt.beadID)
+			if got != tt.want {
+				t.Errorf("shouldRetryEscalation(OVERSIZED_BEAD, %q) = %v, want %v",
+					tt.beadID, got, tt.want)
 			}
 		})
 	}

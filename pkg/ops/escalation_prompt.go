@@ -63,44 +63,68 @@ func writePlaybook(b *strings.Builder, escalationType string) {
 
 	switch escalationType {
 	case "STUCK_WORKER":
-		b.WriteString("A worker has stalled with no progress beyond the progress timeout.\n\n")
-		b.WriteString("Steps:\n")
-		b.WriteString("1. Check the worker's current bead and worktree state\n")
-		b.WriteString("2. Look at recent event log for the bead: bd show <bead-id>\n")
-		b.WriteString("3. If the worker is genuinely stuck, restart it: oro directive restart-worker <worker-id>\n")
-		b.WriteString("4. If the bead itself is problematic, add notes: bd update <bead-id> --notes \"<diagnosis>\"\n")
-		b.WriteString("5. If the bead needs decomposition, escalate to persistent manager\n\n")
-
+		writeStuckWorkerPlaybook(b)
 	case "MERGE_CONFLICT":
-		b.WriteString("A merge conflict could not be automatically resolved by the ops merge agent.\n\n")
-		b.WriteString("Steps:\n")
-		b.WriteString("1. Inspect the conflicting files in the worktree\n")
-		b.WriteString("2. Understand both sides of the conflict from bead context\n")
-		b.WriteString("3. Resolve the conflict manually if straightforward\n")
-		b.WriteString("4. If the conflict is semantic (not just textual), note it for the human manager\n")
-		b.WriteString("5. After resolution, run tests to verify: go test ./...\n\n")
-
+		writeMergeConflictPlaybook(b)
 	case "PRIORITY_CONTENTION":
-		b.WriteString("A P0 (critical priority) bead is queued but all workers are busy with lower-priority work.\n\n")
-		b.WriteString("Steps:\n")
-		b.WriteString("1. List current worker assignments: bd list --status=in_progress\n")
-		b.WriteString("2. Identify the lowest-priority bead currently being worked\n")
-		b.WriteString("3. Consider preempting: oro directive restart-worker <worker-id> to free a slot\n")
-		b.WriteString("4. The freed worker will pick up the P0 bead on next assignment cycle\n")
-		b.WriteString("5. If all work is equally critical, note the contention for the human manager\n\n")
-
+		writePriorityContentionPlaybook(b)
 	case "MISSING_AC":
-		b.WriteString("A bead was about to be assigned but has no acceptance criteria.\n\n")
-		b.WriteString("Steps:\n")
-		b.WriteString("1. Read the bead details: bd show <bead-id>\n")
-		b.WriteString("2. Infer acceptance criteria from the title and description\n")
-		b.WriteString("3. Add acceptance criteria: bd update <bead-id> --acceptance \"<criteria>\"\n")
-		b.WriteString("4. The dispatcher will retry assignment on the next cycle\n\n")
-
+		writeMissingACPlaybook(b)
+	case "OVERSIZED_BEAD":
+		writeOversizedBeadPlaybook(b)
 	default:
 		fmt.Fprintf(b, "Unknown escalation type: %s\n", escalationType)
 		b.WriteString("Investigate the situation and take appropriate corrective action.\n\n")
 	}
+}
+
+func writeStuckWorkerPlaybook(b *strings.Builder) {
+	b.WriteString("A worker has stalled with no progress beyond the progress timeout.\n\n")
+	b.WriteString("Steps:\n")
+	b.WriteString("1. Check the worker's current bead and worktree state\n")
+	b.WriteString("2. Look at recent event log for the bead: bd show <bead-id>\n")
+	b.WriteString("3. If the worker is genuinely stuck, restart it: oro directive restart-worker <worker-id>\n")
+	b.WriteString("4. If the bead itself is problematic, add notes: bd update <bead-id> --notes \"<diagnosis>\"\n")
+	b.WriteString("5. If the bead needs decomposition, escalate to persistent manager\n\n")
+}
+
+func writeMergeConflictPlaybook(b *strings.Builder) {
+	b.WriteString("A merge conflict could not be automatically resolved by the ops merge agent.\n\n")
+	b.WriteString("Steps:\n")
+	b.WriteString("1. Inspect the conflicting files in the worktree\n")
+	b.WriteString("2. Understand both sides of the conflict from bead context\n")
+	b.WriteString("3. Resolve the conflict manually if straightforward\n")
+	b.WriteString("4. If the conflict is semantic (not just textual), note it for the human manager\n")
+	b.WriteString("5. After resolution, run tests to verify: go test ./...\n\n")
+}
+
+func writePriorityContentionPlaybook(b *strings.Builder) {
+	b.WriteString("A P0 (critical priority) bead is queued but all workers are busy with lower-priority work.\n\n")
+	b.WriteString("Steps:\n")
+	b.WriteString("1. List current worker assignments: bd list --status=in_progress\n")
+	b.WriteString("2. Identify the lowest-priority bead currently being worked\n")
+	b.WriteString("3. Consider preempting: oro directive restart-worker <worker-id> to free a slot\n")
+	b.WriteString("4. The freed worker will pick up the P0 bead on next assignment cycle\n")
+	b.WriteString("5. If all work is equally critical, note the contention for the human manager\n\n")
+}
+
+func writeMissingACPlaybook(b *strings.Builder) {
+	b.WriteString("A bead was about to be assigned but has no acceptance criteria.\n\n")
+	b.WriteString("Steps:\n")
+	b.WriteString("1. Read the bead details: bd show <bead-id>\n")
+	b.WriteString("2. Infer acceptance criteria from the title and description\n")
+	b.WriteString("3. Add acceptance criteria: bd update <bead-id> --acceptance \"<criteria>\"\n")
+	b.WriteString("4. The dispatcher will retry assignment on the next cycle\n\n")
+}
+
+func writeOversizedBeadPlaybook(b *strings.Builder) {
+	b.WriteString("A bead spans too many module boundaries and should be decomposed.\n\n")
+	b.WriteString("Steps:\n")
+	b.WriteString("1. Inspect the bead: bd show <bead-id>\n")
+	b.WriteString("2. Promote the bead to an epic: bd update <bead-id> --type epic\n")
+	b.WriteString("3. Create child beads — one per module boundary touched\n")
+	b.WriteString("4. Wire dependencies: bd dep add <epic-id> <child-id> for each child\n")
+	b.WriteString("5. The dispatcher will assign children individually on the next cycle\n\n")
 }
 
 func writeAvailableCLI(b *strings.Builder) {

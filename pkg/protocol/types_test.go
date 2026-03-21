@@ -144,6 +144,59 @@ func TestCountReadFiles(t *testing.T) {
 	}
 }
 
+func TestCountDistinctModules(t *testing.T) {
+	tests := []struct {
+		name       string
+		acceptance string
+		expected   int
+	}{
+		{
+			name:       "empty string",
+			acceptance: "",
+			expected:   0,
+		},
+		{
+			name:       "single module path",
+			acceptance: "Read: pkg/ops/foo.go",
+			expected:   1,
+		},
+		{
+			name:       "two paths same module",
+			acceptance: "Read: pkg/ops/foo.go\nRead: pkg/ops/bar.go",
+			expected:   1,
+		},
+		{
+			name:       "three distinct modules",
+			acceptance: "Read: pkg/ops/foo.go\nRead: pkg/dispatcher/bar.go\nRead: pkg/protocol/baz.go",
+			expected:   3,
+		},
+		{
+			name:       "paths in Cmd line",
+			acceptance: "Cmd: go test ./pkg/ops/... -run TestFoo\nCmd: go test ./pkg/dispatcher/... -run TestBar",
+			expected:   2,
+		},
+		{
+			name:       "mixed Read and Cmd lines",
+			acceptance: "Read: pkg/ops/foo.go\nCmd: go test ./pkg/dispatcher/...\nAssert: pass",
+			expected:   2,
+		},
+		{
+			name:       "no recognizable paths",
+			acceptance: "Assert: tests pass\nCheck: lint clean",
+			expected:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := protocol.CountDistinctModules(tt.acceptance)
+			if got != tt.expected {
+				t.Errorf("CountDistinctModules() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBeadUnmarshalNewFields(t *testing.T) {
 	tests := []struct {
 		name            string

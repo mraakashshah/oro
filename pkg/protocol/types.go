@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -111,6 +112,7 @@ const (
 	EscMissingAC          EscalationType = "MISSING_AC"
 	EscEpicComplete       EscalationType = "EPIC_COMPLETE"
 	EscMergeComplete      EscalationType = "MERGE_COMPLETE"
+	EscOversizedBead      EscalationType = "OVERSIZED_BEAD"
 )
 
 // FormatEscalation produces a structured escalation message in the form:
@@ -123,6 +125,20 @@ func FormatEscalation(typ EscalationType, beadID, summary, details string) strin
 		return fmt.Sprintf("[ORO-DISPATCH] %s: %s — %s. %s.", typ, beadID, summary, details)
 	}
 	return fmt.Sprintf("[ORO-DISPATCH] %s: %s — %s.", typ, beadID, summary)
+}
+
+// CountDistinctModules counts distinct Go package directories referenced in the
+// acceptance criteria text. It extracts paths matching pkg/<module>/... or
+// ./pkg/<module>/... patterns and returns the number of unique top-level modules.
+//
+//oro:testonly
+func CountDistinctModules(acceptance string) int {
+	re := regexp.MustCompile(`(?:\./)?(pkg/[^/\s.]+)`)
+	seen := make(map[string]struct{})
+	for _, match := range re.FindAllStringSubmatch(acceptance, -1) {
+		seen[match[1]] = struct{}{}
+	}
+	return len(seen)
 }
 
 // CountReadFiles counts lines starting with "Read:" in the acceptance criteria string.

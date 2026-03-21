@@ -3555,60 +3555,23 @@ func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID 
 		return protocol.EscalationType(escType) != protocol.EscWorkerCrash
 	}
 
-	// Check per-type conditions
+	// Check per-type conditions — helpers live in escalation_precheck.go
 	switch protocol.EscalationType(escType) {
 	case protocol.EscMissingAC:
-		// Resolved if AC is now populated or bead is closed
-		detail, err := d.beads.Show(ctx, beadID)
-		if err != nil {
-			return true // Retry on error
-		}
-		if detail.Status == "closed" {
-			return false // Don't retry for closed beads
-		}
-		return detail.AcceptanceCriteria == "" // Retry if still missing
-
+		return d.retryMissingAC(ctx, beadID)
 	case protocol.EscStuckWorker:
-		// Resolved if worker no longer exists
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		for _, w := range d.workers {
-			if w.beadID == beadID {
-				return true // Worker still exists, retry
-			}
-		}
-		return false // Worker gone, don't retry
-
+		return d.retryStuckWorker(beadID)
 	case protocol.EscWorkerCrash, protocol.EscStuck:
-		// Resolved if bead no longer in_progress (re-queued or closed)
-		detail, err := d.beads.Show(ctx, beadID)
-		if err != nil {
-			return true // Retry on error
-		}
-		return detail.WorkerID != "" // Retry if still assigned
-
+		return d.retryBeadStillAssigned(ctx, beadID)
 	case protocol.EscMergeConflict:
-		// Resolved if bead is closed (merged successfully)
-		detail, err := d.beads.Show(ctx, beadID)
-		if err != nil {
-			return true // Retry on error
-		}
-		return detail.WorkerID != "" // Retry if not closed (still has worker)
-
+		return d.retryMergeConflict(ctx, beadID)
 	case protocol.EscPriorityContention:
-		// Resolved if bead was picked up (has worker)
-		detail, err := d.beads.Show(ctx, beadID)
-		if err != nil {
-			return true // Retry on error
-		}
-		return detail.WorkerID == "" // Retry if still unassigned
-
+		return d.retryPriorityContention(ctx, beadID)
+	case protocol.EscOversizedBead:
+		return d.retryOversizedBead(ctx, beadID)
 	case protocol.EscMergeComplete:
-		// Merge complete is a one-time notification - never retry
 		return false
-
 	default:
-		// Unknown type - always retry (don't block future types)
 		return true
 	}
 }

@@ -229,6 +229,30 @@ func TestWriteEscalationOutput_ESCALATEFormat(t *testing.T) {
 	}
 }
 
+// --- OVERSIZED_BEAD playbook tests ---
+
+func TestOversizedBeadPlaybook(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "OVERSIZED_BEAD",
+		BeadID:         "oro-big",
+		BeadTitle:      "Giant feature spanning 5 modules",
+		BeadContext:    "Bead touches pkg/ops, pkg/dispatcher, pkg/protocol, pkg/worker, cmd/oro",
+	})
+
+	// Must instruct ops to inspect the bead
+	if !strings.Contains(prompt, "bd show") {
+		t.Fatalf("OVERSIZED_BEAD playbook missing 'bd show', got:\n%s", prompt)
+	}
+	// Must instruct ops to promote to epic
+	if !strings.Contains(prompt, "epic") {
+		t.Fatalf("OVERSIZED_BEAD playbook missing 'epic' promotion instruction, got:\n%s", prompt)
+	}
+	// Must instruct ops to create child beads per module boundary
+	if !strings.Contains(prompt, "module") {
+		t.Fatalf("OVERSIZED_BEAD playbook missing 'module' boundary instruction, got:\n%s", prompt)
+	}
+}
+
 // --- parseEscalationOutput tests ---
 
 func TestParseEscalationOutput_ACK_ReturnsVerdictResolved(t *testing.T) {
