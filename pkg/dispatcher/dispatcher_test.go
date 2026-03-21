@@ -14846,3 +14846,112 @@ func TestDirective_MaxWorkers(t *testing.T) {
 		}
 	})
 }
+
+// TestAssignSkipsBlockedBeads verifies that filterAssignable excludes beads
+// whose Dependencies contain unresolved blocking deps (type "blocks" or
+// "conditional-blocks") pointing to open beads in the same batch, while
+// allowing through beads whose deps are closed, non-existent (dangling), or
+// of a non-blocking type ("parent-child").
+func TestAssignSkipsBlockedBeads(t *testing.T) {
+	tests := []struct {
+		name    string
+		beads   []protocol.Bead
+		wantIDs []string
+	}{
+		{
+			name: "blocks-open",
+			beads: []protocol.Bead{
+				{ID: "bead-a", Title: "Blocker", Status: "open", Priority: 1, Type: "task"},
+				{
+					ID: "bead-b", Title: "Blocked by A", Priority: 2, Type: "task",
+					Dependencies: []protocol.Dependency{
+						{IssueID: "bead-b", DependsOnID: "bead-a", Type: "blocks"},
+					},
+				},
+			},
+			wantIDs: []string{"bead-a"},
+		},
+		{
+			name: "closed-allows",
+			beads: []protocol.Bead{
+				{ID: "bead-c", Title: "Closed blocker", Status: "closed", Priority: 1, Type: "task"},
+				{
+					ID: "bead-d", Title: "Dep on closed", Priority: 2, Type: "task",
+					Dependencies: []protocol.Dependency{
+						{IssueID: "bead-d", DependsOnID: "bead-c", Type: "blocks"},
+					},
+				},
+			},
+			wantIDs: []string{"bead-d"},
+		},
+		{
+			name: "parent-child-nonblocking",
+			beads: []protocol.Bead{
+				{ID: "bead-e", Title: "Epic", Status: "open", Priority: 1, Type: "epic"},
+				{
+					ID: "bead-f", Title: "Child task", Priority: 2, Type: "task",
+					Dependencies: []protocol.Dependency{
+						{IssueID: "bead-f", DependsOnID: "bead-e", Type: "parent-child"},
+					},
+				},
+			},
+			wantIDs: []string{"bead-e", "bead-f"},
+		},
+		{
+			name: "conditional-blocks",
+			beads: []protocol.Bead{
+				{ID: "bead-g", Title: "Open dep", Status: "open", Priority: 1, Type: "task"},
+				{
+					ID: "bead-h", Title: "Conditionally blocked", Priority: 2, Type: "task",
+					Dependencies: []protocol.Dependency{
+						{IssueID: "bead-h", DependsOnID: "bead-g", Type: "conditional-blocks"},
+					},
+				},
+			},
+			wantIDs: []string{"bead-g"},
+		},
+		{
+			name: "dangling-ok",
+			beads: []protocol.Bead{
+				{
+					ID: "bead-i", Title: "Dangling dep", Priority: 1, Type: "task",
+					Dependencies: []protocol.Dependency{
+						{IssueID: "bead-i", DependsOnID: "bead-x-unknown", Type: "blocks"},
+					},
+				},
+			},
+			wantIDs: []string{"bead-i"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			// Inject a mock shutdownRunner so isBranchMerged always returns false
+			// (branch doesn't exist → not merged → bead stays as candidate).
+			d.shutdownRunner = &mockCommandRunner{err: errors.New("exit status 1")}
+
+			result := d.filterAssignable(context.Background(), tc.beads)
+
+			gotIDs := make([]string, len(result))
+			for i, b := range result {
+				gotIDs[i] = b.ID
+			}
+
+			if len(result) != len(tc.wantIDs) {
+				t.Fatalf("got %d beads %v, want %d %v",
+					len(result), gotIDs, len(tc.wantIDs), tc.wantIDs)
+			}
+
+			wantSet := make(map[string]bool, len(tc.wantIDs))
+			for _, id := range tc.wantIDs {
+				wantSet[id] = true
+			}
+			for _, id := range gotIDs {
+				if !wantSet[id] {
+					t.Errorf("unexpected bead %q in result %v", id, gotIDs)
+				}
+			}
+		})
+	}
+}
