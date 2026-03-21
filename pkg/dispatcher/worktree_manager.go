@@ -16,15 +16,22 @@ import (
 // GitWorktreeManager is the production WorktreeManager that shells out
 // to git to create and remove worktrees.
 type GitWorktreeManager struct {
-	repoRoot string
-	runner   CommandRunner
+	repoRoot     string
+	worktreesDir string
+	runner       CommandRunner
 }
 
 // NewGitWorktreeManager returns a WorktreeManager backed by real git commands.
-func NewGitWorktreeManager(repoRoot string, runner CommandRunner) *GitWorktreeManager {
+// worktreesDir is the directory where worktrees are created; if empty it
+// defaults to filepath.Join(repoRoot, ".worktrees").
+func NewGitWorktreeManager(repoRoot, worktreesDir string, runner CommandRunner) *GitWorktreeManager {
+	if worktreesDir == "" {
+		worktreesDir = filepath.Join(repoRoot, ".worktrees")
+	}
 	return &GitWorktreeManager{
-		repoRoot: repoRoot,
-		runner:   runner,
+		repoRoot:     repoRoot,
+		worktreesDir: worktreesDir,
+		runner:       runner,
 	}
 }
 
@@ -42,7 +49,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 		baseBranch = "main"
 	}
 
-	path = filepath.Join(g.repoRoot, protocol.WorktreesDir, beadID)
+	path = filepath.Join(g.worktreesDir, beadID)
 	branch = protocol.BranchPrefix + beadID
 
 	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
@@ -207,8 +214,7 @@ func (g *GitWorktreeManager) MergeFFOnly(ctx context.Context, branch, target str
 // ReadDir failure returns nil (same as Prune). Remove failures are logged and
 // do not prevent other entries from being processed.
 func (g *GitWorktreeManager) GCClosedWorktrees(ctx context.Context, isBeadClosed func(string) bool) error {
-	worktreesDir := filepath.Join(g.repoRoot, protocol.WorktreesDir)
-	entries, err := os.ReadDir(worktreesDir)
+	entries, err := os.ReadDir(g.worktreesDir)
 	if err != nil {
 		return nil //nolint:nilerr // missing dir is expected, not an error
 	}
@@ -222,7 +228,7 @@ func (g *GitWorktreeManager) GCClosedWorktrees(ctx context.Context, isBeadClosed
 			continue
 		}
 
-		path := filepath.Join(worktreesDir, beadID)
+		path := filepath.Join(g.worktreesDir, beadID)
 		branch := protocol.BranchPrefix + beadID
 
 		if err := g.Remove(ctx, path); err != nil {
@@ -247,9 +253,8 @@ func (g *GitWorktreeManager) Prune(ctx context.Context) error {
 	// Errors are non-fatal — the directory cleanup below handles the rest.
 	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune")
 
-	// Step 2: Remove all directories under .worktrees/.
-	worktreesDir := filepath.Join(g.repoRoot, protocol.WorktreesDir)
-	entries, err := os.ReadDir(worktreesDir)
+	// Step 2: Remove all directories under worktreesDir.
+	entries, err := os.ReadDir(g.worktreesDir)
 	if err != nil {
 		// Directory doesn't exist or is unreadable — nothing to clean.
 		return nil //nolint:nilerr // missing dir is expected, not an error
@@ -259,7 +264,7 @@ func (g *GitWorktreeManager) Prune(ctx context.Context) error {
 		if !entry.IsDir() {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(worktreesDir, entry.Name()))
+		_ = os.RemoveAll(filepath.Join(g.worktreesDir, entry.Name()))
 	}
 
 	return nil

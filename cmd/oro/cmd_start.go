@@ -611,7 +611,7 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 
 	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := dispatcher.NewCLIBeadSource(runner)
-	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, runner)
+	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", runner)
 	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectName()), TmuxPaneTarget(readProjectName(), "manager"), runner)
 
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})

@@ -140,7 +140,7 @@ func newProductionDeps() (*workDeps, error) {
 
 	return &workDeps{
 		beadSrc:     dispatcher.NewCLIBeadSource(runner),
-		wtMgr:       dispatcher.NewGitWorktreeManager(repoRoot, runner),
+		wtMgr:       dispatcher.NewGitWorktreeManager(repoRoot, "", runner),
 		spawner:     &worker.ClaudeSpawner{},
 		opsMgr:      ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
 		merger:      merge.NewCoordinator(&merge.ExecGitRunner{}),

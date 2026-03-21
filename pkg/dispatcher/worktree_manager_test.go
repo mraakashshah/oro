@@ -16,7 +16,7 @@ import (
 
 func TestGitWorktreeManager_Create_Success(t *testing.T) {
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	path, branch, err := mgr.Create(context.Background(), "abc123", "main")
 	if err != nil {
@@ -56,7 +56,7 @@ func TestGitWorktreeManager_Create_Error(t *testing.T) {
 	runner := &mockCommandRunner{
 		err: fmt.Errorf("git worktree add failed: branch already exists"),
 	}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	_, _, err := mgr.Create(context.Background(), "abc123", "main")
 	if err == nil {
@@ -76,7 +76,7 @@ func TestGitWorktreeManager_Remove_Success(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	err := mgr.Remove(context.Background(), wtPath)
 	if err != nil {
@@ -112,7 +112,7 @@ func TestGitWorktreeManager_Remove_Error(t *testing.T) {
 	runner := &mockCommandRunner{
 		err: fmt.Errorf("git worktree remove failed: not a worktree"),
 	}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	err := mgr.Remove(context.Background(), wtPath)
 	if err == nil {
@@ -128,7 +128,7 @@ func TestRemove_AlreadyRemoved(t *testing.T) {
 	nonExistentPath := "/nonexistent/path/that/does/not/exist"
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	err := mgr.Remove(context.Background(), nonExistentPath)
 	// Should return nil when path doesn't exist (idempotent)
@@ -144,7 +144,7 @@ func TestRemove_AlreadyRemoved(t *testing.T) {
 
 func TestGitWorktreeManager_Create_DifferentBeadIDs(t *testing.T) {
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/my/repo", runner)
+	mgr := NewGitWorktreeManager("/my/repo", "", runner)
 
 	tests := []struct {
 		beadID     string
@@ -174,7 +174,7 @@ func TestGitWorktreeManager_Create_DifferentBeadIDs(t *testing.T) {
 
 func TestGitWorktreeManager_ImplementsInterface(t *testing.T) {
 	runner := &mockCommandRunner{}
-	var _ WorktreeManager = NewGitWorktreeManager("/repo", runner)
+	var _ WorktreeManager = NewGitWorktreeManager("/repo", "", runner)
 }
 
 func TestGitWorktreeManager_Prune_CleansOrphanDirs(t *testing.T) {
@@ -198,7 +198,7 @@ func TestGitWorktreeManager_Prune_CleansOrphanDirs(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	err := mgr.Prune(context.Background())
 	if err != nil {
@@ -242,7 +242,7 @@ func TestGitWorktreeManager_Prune_NoWorktreesDir(t *testing.T) {
 	// Intentionally do NOT create .worktrees/ — Prune should be graceful.
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	err := mgr.Prune(context.Background())
 	if err != nil {
@@ -268,7 +268,7 @@ func TestGitWorktreeManager_Prune_GitPruneErrorLogged(t *testing.T) {
 
 	// git worktree prune fails, but Prune should still remove dirs and not return error.
 	runner := &mockCommandRunner{err: fmt.Errorf("git prune failed")}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	err := mgr.Prune(context.Background())
 	if err != nil {
@@ -298,7 +298,7 @@ func TestWorktreeManager_PrunesStaleBeforeCreate(t *testing.T) {
 			return nil, nil
 		},
 	}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	path, branch, err := mgr.Create(context.Background(), "oro-stale", "main")
 	if err != nil {
@@ -375,7 +375,7 @@ func containsAll(haystack []string, needles ...string) bool {
 func TestCreateWithBaseBranch(t *testing.T) {
 	t.Run("custom_base_branch_passed_to_git", func(t *testing.T) {
 		runner := &mockCommandRunner{}
-		mgr := NewGitWorktreeManager("/repo/root", runner)
+		mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 		_, _, err := mgr.Create(context.Background(), "oro-abc", "agent/epic-bar")
 		if err != nil {
@@ -394,7 +394,7 @@ func TestCreateWithBaseBranch(t *testing.T) {
 
 	t.Run("empty_base_branch_defaults_to_main", func(t *testing.T) {
 		runner := &mockCommandRunner{}
-		mgr := NewGitWorktreeManager("/repo/root", runner)
+		mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 		_, _, err := mgr.Create(context.Background(), "oro-abc", "")
 		if err != nil {
@@ -417,7 +417,7 @@ func TestCreateWithBaseBranch(t *testing.T) {
 // Verifies the git worktree add command receives the constructed path.
 func TestGitWorktreeManager_Create_PathContainsBeadID(t *testing.T) {
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/my/repo", runner)
+	mgr := NewGitWorktreeManager("/my/repo", "", runner)
 
 	path, _, err := mgr.Create(context.Background(), "oro-xyz.5", "main")
 	if err != nil {
@@ -451,7 +451,7 @@ func TestGitWorktreeManager_Create_PathContainsBeadID(t *testing.T) {
 // Verifies the git worktree add command receives the constructed branch name.
 func TestGitWorktreeManager_Create_BranchContainsBeadID(t *testing.T) {
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/my/repo", runner)
+	mgr := NewGitWorktreeManager("/my/repo", "", runner)
 
 	_, branch, err := mgr.Create(context.Background(), "oro-xyz.5", "main")
 	if err != nil {
@@ -491,7 +491,7 @@ func TestGitWorktreeManager_Remove_ErrorWrapsPath(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{err: fmt.Errorf("not a worktree")}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	err := mgr.Remove(context.Background(), worktreePath)
 	if err == nil {
@@ -527,7 +527,7 @@ func TestGitWorktreeManager_Prune_SkipsNonDirEntries(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	if err := mgr.Prune(context.Background()); err != nil {
 		t.Fatalf("Prune returned error: %v", err)
@@ -552,7 +552,7 @@ func TestGitWorktreeManager_Prune_NoWorktreesDirReturnsNilNoOtherCalls(t *testin
 	// Intentionally no .worktrees/ directory.
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	err := mgr.Prune(context.Background())
 	if err != nil {
@@ -582,7 +582,7 @@ func TestGitWorktreeManager_Prune_RemovesOrphanDirsViaRemoveAll(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager(tmpDir, runner)
+	mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 	if err := mgr.Prune(context.Background()); err != nil {
 		t.Fatalf("Prune error: %v", err)
@@ -610,7 +610,7 @@ func TestGitWorktreeManager_PruneStale_CommandSequence(t *testing.T) {
 			return nil, nil
 		},
 	}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	_, _, err := mgr.Create(context.Background(), "seq-bead", "main")
 	if err != nil {
@@ -666,7 +666,7 @@ func TestGitWorktreeManager_Create_PruneStaleCalledOnAlreadyExists(t *testing.T)
 			return nil, nil
 		},
 	}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	path, branch, err := mgr.Create(context.Background(), "prune-bead", "main")
 	if err != nil {
@@ -721,7 +721,7 @@ func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
 			return nil, nil
 		},
 	}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	path, branch, err := mgr.Create(context.Background(), "oro-locked", "main")
 	if err != nil {
@@ -777,7 +777,7 @@ func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
 
 func TestGitWorktreeManager_DeleteBranch_Success(t *testing.T) {
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	err := mgr.DeleteBranch(context.Background(), "agent/oro-test")
 	if err != nil {
@@ -806,7 +806,7 @@ func TestGitWorktreeManager_DeleteBranch_Error(t *testing.T) {
 	runner := &mockCommandRunner{
 		err: fmt.Errorf("error: branch 'agent/oro-missing' not found"),
 	}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	err := mgr.DeleteBranch(context.Background(), "agent/oro-missing")
 	if err == nil {
@@ -824,7 +824,7 @@ func TestGitWorktreeManager_Create_InvalidBeadID(t *testing.T) {
 	t.Parallel()
 
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	tests := []struct {
 		name   string
@@ -861,7 +861,7 @@ func TestGitWorktreeManager_Create_InvalidBeadID(t *testing.T) {
 
 func TestGitWorktreeManager_Create_RunsStageAssets(t *testing.T) {
 	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	_, _, err := mgr.Create(context.Background(), "abc123", "main")
 	if err != nil {
@@ -895,7 +895,7 @@ func TestGitWorktreeManager_Create_StageAssetsFailureNonFatal(t *testing.T) {
 			return nil, nil
 		},
 	}
-	mgr := NewGitWorktreeManager("/repo/root", runner)
+	mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 	path, branch, err := mgr.Create(context.Background(), "abc123", "main")
 	if err != nil {
@@ -923,7 +923,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 				return nil, nil
 			},
 		}
-		mgr := NewGitWorktreeManager("/repo/root", runner)
+		mgr := NewGitWorktreeManager("/repo/root", "", runner)
 		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err")
 		if err == nil {
 			t.Fatal("expected pruneStale to return error when worktree remove fails")
@@ -945,7 +945,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 				return nil, nil
 			},
 		}
-		mgr := NewGitWorktreeManager("/repo/root", runner)
+		mgr := NewGitWorktreeManager("/repo/root", "", runner)
 		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err")
 		if err == nil {
 			t.Fatal("expected pruneStale to return error when branch -D fails")
@@ -980,7 +980,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 				return nil, nil
 			},
 		}
-		mgr := NewGitWorktreeManager("/repo/root", runner)
+		mgr := NewGitWorktreeManager("/repo/root", "", runner)
 		_, _, err := mgr.Create(context.Background(), "retry-bead", "main")
 		if err != nil {
 			t.Fatalf("Create should succeed after prune failure (retry works): %v", err)
@@ -1001,7 +1001,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 func TestBranchExists(t *testing.T) {
 	t.Run("existing_branch_returns_true", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("  agent/abc123\n")}
-		mgr := NewGitWorktreeManager("/repo", runner)
+		mgr := NewGitWorktreeManager("/repo", "", runner)
 
 		exists, err := mgr.BranchExists(context.Background(), "agent/abc123")
 		if err != nil {
@@ -1014,7 +1014,7 @@ func TestBranchExists(t *testing.T) {
 
 	t.Run("missing_branch_returns_false", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("")}
-		mgr := NewGitWorktreeManager("/repo", runner)
+		mgr := NewGitWorktreeManager("/repo", "", runner)
 
 		exists, err := mgr.BranchExists(context.Background(), "agent/missing")
 		if err != nil {
@@ -1027,7 +1027,7 @@ func TestBranchExists(t *testing.T) {
 
 	t.Run("git_error_propagated", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("not a git repo")}
-		mgr := NewGitWorktreeManager("/repo", runner)
+		mgr := NewGitWorktreeManager("/repo", "", runner)
 
 		_, err := mgr.BranchExists(context.Background(), "main")
 		if err == nil {
@@ -1037,7 +1037,7 @@ func TestBranchExists(t *testing.T) {
 
 	t.Run("calls_git_branch_list_with_branch_name", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("  agent/abc123\n")}
-		mgr := NewGitWorktreeManager("/repo/root", runner)
+		mgr := NewGitWorktreeManager("/repo/root", "", runner)
 
 		_, err := mgr.BranchExists(context.Background(), "agent/abc123")
 		if err != nil {
@@ -1070,7 +1070,7 @@ func TestMergeFFOnly(t *testing.T) {
 				return nil, nil
 			},
 		}
-		mgr := NewGitWorktreeManager("/repo", runner)
+		mgr := NewGitWorktreeManager("/repo", "", runner)
 
 		sha, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/repo")
 		if err != nil {
@@ -1092,7 +1092,7 @@ func TestMergeFFOnly(t *testing.T) {
 				return nil, nil
 			},
 		}
-		mgr := NewGitWorktreeManager("/repo", runner)
+		mgr := NewGitWorktreeManager("/repo", "", runner)
 
 		_, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/repo")
 		if err != nil {
@@ -1119,7 +1119,7 @@ func TestMergeFFOnly(t *testing.T) {
 
 	t.Run("not_ff_returns_error", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("fatal: not possible to fast-forward, aborting")}
-		mgr := NewGitWorktreeManager("/repo", runner)
+		mgr := NewGitWorktreeManager("/repo", "", runner)
 
 		_, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/repo")
 		if err == nil {
@@ -1138,7 +1138,7 @@ func TestMergeFFOnly(t *testing.T) {
 				return nil, nil
 			},
 		}
-		mgr := NewGitWorktreeManager("/repo", runner)
+		mgr := NewGitWorktreeManager("/repo", "", runner)
 
 		_, err := mgr.MergeFFOnly(context.Background(), "agent/abc", "/primary/repo")
 		if err != nil {
@@ -1151,6 +1151,84 @@ func TestMergeFFOnly(t *testing.T) {
 		}
 		if !containsAll(runner.calls[0].Args, "-C", "/primary/repo") {
 			t.Fatalf("expected -C /primary/repo in args, got %v", runner.calls[0].Args)
+		}
+	})
+}
+
+func TestWorktreeManager_CustomDir(t *testing.T) {
+	t.Run("create_uses_custom_worktrees_dir", func(t *testing.T) {
+		runner := &mockCommandRunner{}
+		customDir := "/custom/worktrees"
+		mgr := NewGitWorktreeManager("/repo/root", customDir, runner)
+
+		path, _, err := mgr.Create(context.Background(), "abc123", "main")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		wantPath := "/custom/worktrees/abc123"
+		if path != wantPath {
+			t.Fatalf("Create path: got %q, want %q", path, wantPath)
+		}
+		if len(runner.calls) < 1 {
+			t.Fatal("expected at least 1 git call")
+		}
+		if !containsAll(runner.calls[0].Args, wantPath) {
+			t.Fatalf("git args should contain custom path %q, got: %v", wantPath, runner.calls[0].Args)
+		}
+	})
+
+	t.Run("prune_uses_custom_worktrees_dir", func(t *testing.T) {
+		tmpCustom := t.TempDir()
+		orphanDir := filepath.Join(tmpCustom, "old-bead")
+		if err := os.MkdirAll(orphanDir, 0o750); err != nil {
+			t.Fatalf("mkdir orphan: %v", err)
+		}
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/repo/root", tmpCustom, runner)
+
+		if err := mgr.Prune(context.Background()); err != nil {
+			t.Fatalf("Prune returned error: %v", err)
+		}
+		if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
+			t.Fatal("Prune should have removed orphan dir in custom worktrees dir")
+		}
+	})
+
+	t.Run("gc_closed_worktrees_uses_custom_dir", func(t *testing.T) {
+		tmpCustom := t.TempDir()
+		closedDir := filepath.Join(tmpCustom, "oro-closed1")
+		if err := os.MkdirAll(closedDir, 0o750); err != nil {
+			t.Fatalf("mkdir closed bead: %v", err)
+		}
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/repo/root", tmpCustom, runner)
+
+		err := mgr.GCClosedWorktrees(context.Background(), func(id string) bool { return id == "oro-closed1" })
+		if err != nil {
+			t.Fatalf("GCClosedWorktrees returned error: %v", err)
+		}
+		branchDeleteCalled := false
+		for _, call := range runner.calls {
+			if call.Name == "git" && containsAll(call.Args, "branch", "-d", "agent/oro-closed1") {
+				branchDeleteCalled = true
+			}
+		}
+		if !branchDeleteCalled {
+			t.Fatal("expected branch delete to be called for closed bead in custom dir")
+		}
+	})
+
+	t.Run("empty_worktrees_dir_defaults_to_repo_root_dotworktrees", func(t *testing.T) {
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/my/repo", "", runner)
+
+		path, _, err := mgr.Create(context.Background(), "abc123", "main")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		wantPath := "/my/repo/.worktrees/abc123"
+		if path != wantPath {
+			t.Fatalf("default path: got %q, want %q", path, wantPath)
 		}
 	})
 }
@@ -1170,7 +1248,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 		}
 
 		runner := &mockCommandRunner{}
-		mgr := NewGitWorktreeManager(tmpDir, runner)
+		mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 		closedBeads := map[string]bool{"oro-closed1": true}
 		err := mgr.GCClosedWorktrees(context.Background(), func(id string) bool { return closedBeads[id] })
@@ -1212,7 +1290,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 		tmpDir := t.TempDir()
 		// Do NOT create .worktrees/
 		runner := &mockCommandRunner{}
-		mgr := NewGitWorktreeManager(tmpDir, runner)
+		mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 		err := mgr.GCClosedWorktrees(context.Background(), func(_ string) bool { return true })
 		if err != nil {
@@ -1241,7 +1319,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 				return nil, nil
 			},
 		}
-		mgr := NewGitWorktreeManager(tmpDir, runner)
+		mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 		err := mgr.GCClosedWorktrees(context.Background(), func(_ string) bool { return true })
 		if err != nil {
@@ -1272,7 +1350,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 
 		isClosedCalled := false
 		runner := &mockCommandRunner{}
-		mgr := NewGitWorktreeManager(tmpDir, runner)
+		mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 		err := mgr.GCClosedWorktrees(context.Background(), func(_ string) bool {
 			isClosedCalled = true
@@ -1297,7 +1375,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 		}
 
 		runner := &mockCommandRunner{}
-		mgr := NewGitWorktreeManager(tmpDir, runner)
+		mgr := NewGitWorktreeManager(tmpDir, "", runner)
 
 		err := mgr.GCClosedWorktrees(context.Background(), func(_ string) bool { return false })
 		if err != nil {
