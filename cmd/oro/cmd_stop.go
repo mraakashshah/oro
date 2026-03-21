@@ -28,7 +28,7 @@ type stopConfig struct {
 	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
 	force    bool            // --force flag: skip interactive confirmation
 	oroHome  string          // base directory for daemon discovery
-	beadsDir string          // directory containing .beads (unused by runStopSequence; dolt persists across sessions)
+	beadsDir string          // directory containing .beads; used to flush dolt working set on stop
 }
 
 // projectDaemon describes a running daemon discovered in a project directory.
@@ -273,9 +273,10 @@ func confirmStop(cfg *stopConfig) error {
 //  1. Send SIGINT to the dispatcher (always honored, triggers graceful drain)
 //  2. Wait for the dispatcher process to exit
 //  3. If process won't exit: SIGKILL as emergency fallback
-//  4. Clean up pane-died hooks
-//  5. Kill the tmux session
-//  6. Remove PID file
+//  4. Flush dolt working set (bd dolt commit; non-fatal)
+//  5. Clean up pane-died hooks
+//  6. Kill the tmux session
+//  7. Remove PID file
 func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 	status, pid, err := DaemonStatus(cfg.pidPath, cfg.sockPath)
 	if err != nil {
@@ -317,16 +318,25 @@ func runStopSequence(ctx context.Context, cfg *stopConfig) error {
 		}
 	}
 
-	// 4. Clean up pane-died hooks before killing the tmux session.
+	// 4. Flush dolt working set (non-fatal: log warning and continue on failure).
+	if cfg.beadsDir != "" {
+		if _, err := cfg.runner.Run("bd", "dolt", "commit"); err != nil {
+			fmt.Fprintf(cfg.w, "warning: dolt flush: %v\n", err)
+		} else {
+			fmt.Fprintln(cfg.w, "dolt: working set committed")
+		}
+	}
+
+	// 5. Clean up pane-died hooks before killing the tmux session.
 	tmux := &TmuxSession{Name: cfg.tmuxName, Runner: cfg.runner}
 	_ = tmux.CleanupPaneDiedHooks() // Best effort; non-fatal if hooks weren't registered
 
-	// 5. Kill the tmux session.
+	// 6. Kill the tmux session.
 	if err := tmux.Kill(); err != nil {
 		fmt.Fprintf(cfg.w, "warning: tmux kill: %v\n", err)
 	}
 
-	// 6. Remove PID file (belt and suspenders — signal handler may have already done it).
+	// 7. Remove PID file (belt and suspenders — signal handler may have already done it).
 	_ = RemovePIDFile(cfg.pidPath)
 
 	// Note: dolt server is intentionally NOT stopped here. Dolt persists
