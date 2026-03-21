@@ -11,3 +11,5 @@ case-insensitive-header-search: matching markdown headers → lowercase both sid
 `path-mode-duality-test`: function handles both relative defaults and absolute stealth paths → test both modes plus the conversion boundary (in-repo absolute → CWD-relative).
 `fallback-on-empty-field`: when replacing a hardcoded path with a configurable field, check `if field == ""` and fall back to the legacy default — ensures zero-value Config still works
 `lenient-vs-strict-resolution`: two functions resolve the same identity with different "not found" semantics → extract shared core, wrap with policy.
+`zero-value-fallback`: new struct field with configurable path → check `if field == "" { use default }` at point of use, keeping zero-value safe for existing callers.
+`find-exclusion-abs-passthrough`: absolute path outside repo tree used in `find . -not -path` exclusion → exclusion is unreachable. Consider omitting it from the generated script rather than including a dead clause.
