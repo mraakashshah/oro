@@ -2380,14 +2380,7 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 	}
 	depFiltered := make([]protocol.Bead, 0, len(candidates))
 	for _, b := range candidates {
-		blocked := false
-		for _, dep := range b.Dependencies {
-			if (dep.Type == "blocks" || dep.Type == "conditional-blocks") && openBeadIDs[dep.DependsOnID] {
-				blocked = true
-				break
-			}
-		}
-		if !blocked {
+		if !hasUnresolvedBlockingDep(b, openBeadIDs) {
 			depFiltered = append(depFiltered, b)
 		}
 	}
@@ -2405,6 +2398,17 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 		out = append(out, b)
 	}
 	return out
+}
+
+// hasUnresolvedBlockingDep reports whether a bead has any dependency of type
+// "blocks" or "conditional-blocks" pointing to a bead ID that is still open.
+func hasUnresolvedBlockingDep(b protocol.Bead, openBeadIDs map[string]bool) bool {
+	for _, dep := range b.Dependencies {
+		if (dep.Type == "blocks" || dep.Type == "conditional-blocks") && openBeadIDs[dep.DependsOnID] {
+			return true
+		}
+	}
+	return false
 }
 
 // isBranchMerged reports whether agent/<beadID> is an ancestor of main,
