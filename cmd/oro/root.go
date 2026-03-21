@@ -44,6 +44,7 @@ func newRootCmd() *cobra.Command {
 		newMgCmd(),
 		newDoltCmd(),
 		newGlobalOroApproachCmd(),
+		newDoctorCmd(),
 	)
 
 	return cmd

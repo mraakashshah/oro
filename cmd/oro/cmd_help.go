@@ -44,6 +44,9 @@ Workflow:
 Global:
   global-oro-approach  Copy oro skills and hooks to ~/.claude/ for all sessions
 
+Maintenance:
+  doctor     Diagnose and repair oro installation issues (e.g. corrupt Dolt)
+
 Internal:
   worker     Run an oro worker process (used by the dispatcher)
 
