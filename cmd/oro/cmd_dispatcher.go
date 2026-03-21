@@ -36,7 +36,7 @@ func newDispatcherStopCmd() *cobra.Command {
 Does NOT kill the tmux session or clean up pane-died hooks.
 Requires an interactive terminal (TTY) or --force with ORO_HUMAN_CONFIRMED=1.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
@@ -162,7 +162,7 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 //
 // No tmux session is created. The spawner is injected for testability.
 func runDispatcherStart(w io.Writer, workers int, spawner DaemonSpawner, socketTimeout time.Duration) error {
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
 	}

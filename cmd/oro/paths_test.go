@@ -1,12 +1,82 @@
 package main
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"oro/pkg/protocol"
 )
+
+func TestResolvePaths_Standard(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	// No .oro/config.yaml → defaults to standard mode
+	paths, err := ResolvePaths(repoRoot)
+	if err != nil {
+		t.Fatalf("ResolveProjectPaths() error: %v", err)
+	}
+
+	if paths.Mode != "standard" {
+		t.Errorf("Mode = %q, want %q", paths.Mode, "standard")
+	}
+	if paths.BeadsDir != filepath.Join(repoRoot, ".beads") {
+		t.Errorf("BeadsDir = %q, want %q", paths.BeadsDir, filepath.Join(repoRoot, ".beads"))
+	}
+	if paths.WorktreesDir != filepath.Join(repoRoot, ".worktrees") {
+		t.Errorf("WorktreesDir = %q, want %q", paths.WorktreesDir, filepath.Join(repoRoot, ".worktrees"))
+	}
+	if paths.OroDocsDir != filepath.Join(repoRoot, "docs") {
+		t.Errorf("OroDocsDir = %q, want %q", paths.OroDocsDir, filepath.Join(repoRoot, "docs"))
+	}
+}
+
+func TestResolvePaths_Stealth(t *testing.T) {
+	repoRoot := t.TempDir()
+	tmpOroHome := t.TempDir()
+	t.Setenv("ORO_HOME", tmpOroHome)
+
+	// Compute expected hash: SHA-256 of resolved repoRoot, truncated to 16 hex chars.
+	resolved, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	sum := sha256.Sum256([]byte(resolved))
+	hash := fmt.Sprintf("%x", sum[:8])
+
+	// Create stealth config at ~/.oro/projects/s-<hash>/config.yaml
+	stealthDir := filepath.Join(tmpOroHome, "projects", "s-"+hash)
+	if err := os.MkdirAll(stealthDir, 0o750); err != nil {
+		t.Fatalf("mkdir stealth dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stealthDir, "config.yaml"), []byte("mode: stealth\n"), 0o600); err != nil {
+		t.Fatalf("write stealth config: %v", err)
+	}
+
+	paths, err := ResolvePaths(repoRoot)
+	if err != nil {
+		t.Fatalf("ResolveDaemonPaths() error: %v", err)
+	}
+
+	if paths.Mode != "stealth" {
+		t.Errorf("Mode = %q, want %q", paths.Mode, "stealth")
+	}
+	// All data dirs must live under stealthDir.
+	if paths.BeadsDir != filepath.Join(stealthDir, "beads") {
+		t.Errorf("BeadsDir = %q, want %q", paths.BeadsDir, filepath.Join(stealthDir, "beads"))
+	}
+	if paths.WorktreesDir != filepath.Join(stealthDir, "worktrees") {
+		t.Errorf("WorktreesDir = %q, want %q", paths.WorktreesDir, filepath.Join(stealthDir, "worktrees"))
+	}
+	if paths.OroDocsDir != filepath.Join(stealthDir, "docs") {
+		t.Errorf("OroDocsDir = %q, want %q", paths.OroDocsDir, filepath.Join(stealthDir, "docs"))
+	}
+	if paths.OroProjectDir != stealthDir {
+		t.Errorf("OroProjectDir = %q, want %q", paths.OroProjectDir, stealthDir)
+	}
+}
 
 func TestResolvePaths_Defaults(t *testing.T) {
 	// Clear all env overrides.
@@ -21,9 +91,9 @@ func TestResolvePaths_Defaults(t *testing.T) {
 		t.Fatalf("get home dir: %v", err)
 	}
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
-		t.Fatalf("ResolvePaths() error: %v", err)
+		t.Fatalf("ResolveDaemonPaths() error: %v", err)
 	}
 
 	// All default paths should be under ~/.oro.
@@ -57,9 +127,9 @@ func TestResolvePaths_EnvOverrides(t *testing.T) {
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "custom.sock"))
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "custom-state.db"))
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
-		t.Fatalf("ResolvePaths() error: %v", err)
+		t.Fatalf("ResolveDaemonPaths() error: %v", err)
 	}
 
 	// Verify all env overrides are honored.
@@ -96,9 +166,9 @@ func TestResolvePaths_PartialEnvOverrides(t *testing.T) {
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
-		t.Fatalf("ResolvePaths() error: %v", err)
+		t.Fatalf("ResolveDaemonPaths() error: %v", err)
 	}
 
 	expectedBase := filepath.Join(home, protocol.OroDir)
@@ -130,9 +200,9 @@ func TestResolvePaths_ProjectScopesAllPaths(t *testing.T) {
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
-		t.Fatalf("ResolvePaths() error: %v", err)
+		t.Fatalf("ResolveDaemonPaths() error: %v", err)
 	}
 
 	projDir := filepath.Join(tmpDir, "projects", "foo")
@@ -165,9 +235,9 @@ func TestResolvePaths_EnvOverridesProjectScope(t *testing.T) {
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "override.sock"))
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "override.db"))
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
-		t.Fatalf("ResolvePaths() error: %v", err)
+		t.Fatalf("ResolveDaemonPaths() error: %v", err)
 	}
 
 	// Explicit env vars override project scoping
@@ -338,9 +408,9 @@ func TestResolvePaths_OroHomeOverride(t *testing.T) {
 	t.Setenv("ORO_SOCKET_PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
-		t.Fatalf("ResolvePaths() error: %v", err)
+		t.Fatalf("ResolveDaemonPaths() error: %v", err)
 	}
 
 	// All paths should use ORO_HOME as base.

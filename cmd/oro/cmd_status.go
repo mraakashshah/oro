@@ -51,7 +51,7 @@ func newStatusCmd() *cobra.Command {
 		Short: "Show current swarm state",
 		Long:  "Displays dispatcher status, worker count and active beads,\nmanager state, and bead summary.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
@@ -82,7 +82,7 @@ func newStatusCmd() *cobra.Command {
 // directive, and prints the parsed response. On any failure it prints a
 // graceful fallback message instead of returning an error.
 func queryDispatcherStatus(ctx context.Context, w io.Writer) {
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		fmt.Fprintln(w, "  dispatcher detail unavailable")
 		return

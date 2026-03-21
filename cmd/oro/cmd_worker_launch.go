@@ -90,7 +90,7 @@ func runWorkerLaunch(spawner WorkerSpawner, count int, workerID, beadID string) 
 		return fmt.Errorf("--count must be at least 1, got %d", count)
 	}
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
 	}

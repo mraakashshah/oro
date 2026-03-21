@@ -39,7 +39,7 @@ deletes agent/* branches; and resets orphaned in_progress beads to open.
 
 Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}

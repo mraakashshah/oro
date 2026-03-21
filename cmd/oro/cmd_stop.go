@@ -111,7 +111,7 @@ and kills the tmux session.
 
 Use --all to stop daemons in all projects simultaneously.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}

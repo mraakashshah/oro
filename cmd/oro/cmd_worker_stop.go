@@ -51,7 +51,7 @@ applyKillWorker handler.`,
 // workerID is the ID to kill (used when all=false).
 // all=true queries status first and kills every connected worker.
 func runWorkerStop(w io.Writer, workerID string, all bool) error {
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
 	}

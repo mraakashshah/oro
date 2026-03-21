@@ -58,7 +58,7 @@ func runDirective(ctx context.Context, w io.Writer, args []string) error {
 		opArgs = strings.Join(args[1:], " ")
 	}
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
 	}

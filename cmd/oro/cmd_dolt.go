@@ -75,7 +75,7 @@ install the launchd agent so the server auto-starts, and start the server.
 
 Aborts if the dispatcher is running. Use --force to override.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
@@ -329,7 +329,7 @@ Skips copy-back for a project whose .beads/dolt/<dbName> already exists
 (emits a warning instead). Aborts if the dispatcher is running unless
 --force is specified.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
@@ -430,7 +430,7 @@ func newDoltStatusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show shared Dolt server status",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
@@ -518,7 +518,7 @@ func newDoltStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Start the shared Dolt server (idempotent)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
@@ -574,7 +574,7 @@ func newDoltStopCmd() *cobra.Command {
 Refuses to stop when the dispatcher is running unless --force is specified,
 because running workers depend on the server for beads persistence.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}

@@ -453,7 +453,7 @@ func TestCLIAndDispatcherUseSameDB(t *testing.T) {
 	t.Chdir(tmpDir)
 
 	// Resolve paths the same way the dispatcher does.
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		t.Fatalf("resolve paths: %v", err)
 	}

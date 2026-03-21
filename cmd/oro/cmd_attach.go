@@ -62,7 +62,7 @@ func newAttachCmd() *cobra.Command {
 		Short: "Connect to a running swarm session",
 		Long:  "Attaches your terminal to the running oro tmux session.\nRequires the swarm to be running (use 'oro start' first).",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := ResolvePaths()
+			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}

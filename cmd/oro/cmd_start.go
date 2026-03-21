@@ -151,7 +151,7 @@ func runFullStart(w io.Writer, workers int, model, project string, spawner Daemo
 	isTTY := isatty.IsTerminal(os.Stdout.Fd())
 	log := newStartupLog(w, isTTY)
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
 	}
@@ -244,7 +244,7 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 		}
 	}
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return "", fmt.Errorf("resolve paths: %w", err)
 	}
@@ -481,7 +481,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 		return fmt.Errorf("write pid file: %w", err)
 	}
 
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
 	}
@@ -566,7 +566,7 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 // Zero-value timeouts use dispatcher defaults (ProgressTimeout=10m, ReviewTimeout=15m).
 func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duration) (*dispatcher.Dispatcher, *sql.DB, error) {
 	// All paths (socket, PID, DB) are now project-scoped via ResolvePaths.
-	paths, err := ResolvePaths()
+	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return nil, nil, err
 	}
