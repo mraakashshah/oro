@@ -437,8 +437,12 @@ func ensureGitRepo(projectRoot string) {
 // initBeadsDB runs "bd init" in projectRoot if the beads database doesn't exist yet.
 // Fail-open: logs a warning on error but never blocks init.
 func initBeadsDB(projectRoot string) {
-	beadsPath := filepath.Join(projectRoot, ".beads")
-	if _, err := os.Stat(beadsPath); err == nil {
+	projPaths, err := ResolvePaths(projectRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: resolve paths for initBeadsDB: %v\n", err)
+		return
+	}
+	if _, err := os.Stat(projPaths.BeadsDir); err == nil {
 		return // already initialized
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -468,6 +472,15 @@ func resolveProjectName(projectRoot, projectName string) (string, error) {
 // Returns the detected language config (threaded from createProjectAnchor) so
 // callers avoid a redundant disk read.
 func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) { //nolint:funlen // sequential bootstrap steps
+	// Resolve project paths once for use throughout bootstrap.
+	// At call time no config exists yet, so ResolvePaths returns standard mode;
+	// after createProjectAnchor writes .oro/config.yaml it would still return
+	// standard mode — the result is the same either way.
+	projPaths, err := ResolvePaths(projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve paths: %w", err)
+	}
+
 	// 1. Create local anchor: .oro/config.yaml with project name.
 	// Thread the detected config back to the caller.
 	cfg, err := createProjectAnchor(projectRoot, projectName)
@@ -479,7 +492,9 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	if err := ensureGitignore(projectRoot, ".oro/"); err != nil {
 		return nil, fmt.Errorf("update gitignore: %w", err)
 	}
-	if err := ensureGitignore(projectRoot, ".beads"); err != nil {
+	// Use the base name of BeadsDir so the gitignore entry matches the link/dir
+	// name in the project root (the beads dir name in standard mode).
+	if err := ensureGitignore(projectRoot, filepath.Base(projPaths.BeadsDir)); err != nil {
 		return nil, fmt.Errorf("update gitignore for .beads: %w", err)
 	}
 
@@ -511,7 +526,7 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 
 	// 4b. Initialize beads database and dolt server (fail-open).
 	initBeadsDB(projectRoot)
-	initDoltForProject(filepath.Join(projectRoot, ".beads"), oroHome)
+	initDoltForProject(projPaths.BeadsDir, oroHome)
 
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
@@ -652,7 +667,11 @@ func setupBeadsSymlink(projectRoot, beadsTarget string) error {
 		return fmt.Errorf("create beads dir: %w", err)
 	}
 
-	linkPath := filepath.Join(projectRoot, ".beads")
+	projPaths, err := ResolvePaths(projectRoot)
+	if err != nil {
+		return fmt.Errorf("resolve paths: %w", err)
+	}
+	linkPath := projPaths.BeadsDir
 
 	// Nothing exists yet — create the symlink.
 	fi, err := os.Lstat(linkPath)

@@ -571,13 +571,14 @@ func TestCleanupWorktreeDir(t *testing.T) {
 
 		var buf bytes.Buffer
 		cfg := &cleanupConfig{
-			runner:   fake,
-			w:        &buf,
-			tmuxName: TmuxSessionName(""),
-			pidPath:  filepath.Join(tmpDir, "oro.pid"),
-			sockPath: filepath.Join(tmpDir, "oro.sock"),
-			signalFn: func(int) error { return nil },
-			aliveFn:  func(int) bool { return false },
+			runner:       fake,
+			w:            &buf,
+			tmuxName:     TmuxSessionName(""),
+			pidPath:      filepath.Join(tmpDir, "oro.pid"),
+			sockPath:     filepath.Join(tmpDir, "oro.sock"),
+			worktreesDir: worktreeDir,
+			signalFn:     func(int) error { return nil },
+			aliveFn:      func(int) bool { return false },
 		}
 
 		err = runCleanup(context.Background(), cfg)

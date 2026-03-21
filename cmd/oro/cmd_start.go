@@ -407,7 +407,11 @@ func startDoltIfNeeded(doltStartFn func() (int, error)) (cleanup func(), err err
 // functions for the dolt server if the backend is "dolt". Returns (nil, nil) for
 // non-dolt projects or when the metadata file is missing or unreadable.
 func makeDoltLifecycle(workDir, oroHome string) (func() (int, error), func() error) { //nolint:gocritic // named results hurt readability here
-	beadsDir := filepath.Join(workDir, ".beads")
+	projPaths, err := ResolvePaths(workDir)
+	if err != nil {
+		return nil, nil
+	}
+	beadsDir := projPaths.BeadsDir
 	meta, err := readDoltMeta(beadsDir)
 	if err != nil || meta == nil {
 		return nil, nil
@@ -514,14 +518,18 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers int, progressTime
 	return nil
 }
 
-// absoluteBeadsDir returns the absolute path to the .beads directory
-// relative to the current working directory.
+// absoluteBeadsDir returns the absolute path to the beads directory
+// for the current project (respects stealth mode).
 func absoluteBeadsDir() (string, error) {
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("get working dir: %w", err)
 	}
-	return filepath.Join(repoRoot, ".beads"), nil
+	paths, err := ResolvePaths(repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve paths: %w", err)
+	}
+	return paths.BeadsDir, nil
 }
 
 // bootstrapOroDir creates the oro state directory with 0700 permissions.

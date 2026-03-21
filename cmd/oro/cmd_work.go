@@ -375,7 +375,11 @@ func epicTargetBranch(epic string) string {
 //   - exists → resume from it
 //   - doesn't exist → create new, branching from baseBranch (epic or main)
 func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps) (wtPath, branch string, err error) {
-	wtPath = filepath.Join(deps.repoRoot, ".worktrees", cfg.beadID)
+	projPaths, err := ResolvePaths(deps.repoRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve paths: %w", err)
+	}
+	wtPath = filepath.Join(projPaths.WorktreesDir, cfg.beadID)
 	branch = protocol.BranchPrefix + cfg.beadID
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {

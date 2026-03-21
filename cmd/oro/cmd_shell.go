@@ -106,12 +106,17 @@ func runShell(dir string, extraArgs []string, resume bool, deps shellDeps) error
 // readRequiredProjectConfig reads the project name from .oro/config.yaml in dir.
 // Unlike readProjectConfig, it errors when the file is missing or the project field is absent/empty.
 func readRequiredProjectConfig(dir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, ".oro", "config.yaml")) //nolint:gosec // path from trusted dir
+	projPaths, err := ResolvePaths(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve paths for %s: %w", dir, err)
+	}
+	configPath := projPaths.ConfigYAML
+	data, err := os.ReadFile(configPath) //nolint:gosec // path from ResolvePaths (trusted)
 	if os.IsNotExist(err) {
-		return "", fmt.Errorf("no .oro/config.yaml found — run oro init first")
+		return "", fmt.Errorf("no %s found — run oro init first", configPath)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read .oro/config.yaml: %w", err)
+		return "", fmt.Errorf("read %s: %w", configPath, err)
 	}
 	// Simple line-based parsing — avoids YAML dependency for one field.
 	for _, line := range strings.Split(string(data), "\n") {
@@ -119,12 +124,12 @@ func readRequiredProjectConfig(dir string) (string, error) {
 		if strings.HasPrefix(line, "project:") {
 			name := strings.TrimSpace(strings.TrimPrefix(line, "project:"))
 			if name == "" {
-				return "", fmt.Errorf(".oro/config.yaml: empty project field — run oro init first")
+				return "", fmt.Errorf("%s: empty project field — run oro init first", configPath)
 			}
 			return name, nil
 		}
 	}
-	return "", fmt.Errorf(".oro/config.yaml: missing project field — run oro init first")
+	return "", fmt.Errorf("%s: missing project field — run oro init first", configPath)
 }
 
 // upsertEnvVar replaces the first occurrence of key in env or appends key=value.

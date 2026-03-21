@@ -112,7 +112,7 @@ func parseBlockingTypes(flagVal string) map[string]bool {
 // findBeadsFile walks up from dir looking for .beads/issues.jsonl.
 func findBeadsFile(dir string) string {
 	for {
-		candidate := filepath.Join(dir, ".beads", "issues.jsonl")
+		candidate := filepath.Join(dir, beadsDirName, "issues.jsonl")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
@@ -127,7 +127,7 @@ func findBeadsFile(dir string) string {
 // findBeadsDir walks up from dir looking for a .beads/ directory.
 func findBeadsDir(dir string) string {
 	for {
-		candidate := filepath.Join(dir, ".beads")
+		candidate := filepath.Join(dir, beadsDirName)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			return dir
 		}

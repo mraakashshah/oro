@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -559,4 +561,41 @@ func TestMigrateGlobalDBsToProject(t *testing.T) {
 			t.Error("global state.db was corrupted")
 		}
 	})
+}
+
+// TestAllCmdPathsUseProjectPaths verifies that no cmd/oro source file (outside
+// paths.go and test files) contains hardcoded path string literals that should
+// instead come from the ProjectPaths struct.
+//
+// Acceptance: grep -rn '"\.beads"\|"\.worktrees"\|"\.oro/config' cmd/oro/*.go
+// returns 0 hits outside of ResolvePaths itself and tests.
+func TestAllCmdPathsUseProjectPaths(t *testing.T) {
+	re := regexp.MustCompile(`"\.beads"|"\.worktrees"|"\.oro/config`)
+
+	// paths.go is excluded because ResolvePaths defines those literals legitimately.
+	excluded := map[string]bool{
+		"paths.go": true,
+	}
+
+	goFiles, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob *.go: %v", err)
+	}
+
+	for _, f := range goFiles {
+		base := filepath.Base(f)
+		if excluded[base] || strings.HasSuffix(base, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			if re.MatchString(line) {
+				t.Errorf("%s:%d: hardcoded path literal — use ProjectPaths instead:\n\t%s",
+					f, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
 }

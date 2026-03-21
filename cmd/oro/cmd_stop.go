@@ -111,18 +111,27 @@ and kills the tmux session.
 
 Use --all to stop daemons in all projects simultaneously.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := ResolveDaemonPaths()
+			daemonPaths, err := ResolveDaemonPaths()
+			if err != nil {
+				return fmt.Errorf("resolve daemon paths: %w", err)
+			}
+
+			if all {
+				return runStopAll(cmd.Context(), daemonPaths.OroHome, force, cmd.OutOrStdout())
+			}
+
+			repoRoot, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get working dir: %w", err)
+			}
+			projPaths, err := ResolvePaths(repoRoot)
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
 
-			if all {
-				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout())
-			}
-
 			cfg := &stopConfig{
-				pidPath:  paths.PIDPath,
-				sockPath: paths.SocketPath,
+				pidPath:  daemonPaths.PIDPath,
+				sockPath: daemonPaths.SocketPath,
 				tmuxName: TmuxSessionName(readProjectName()),
 				runner:   &ExecRunner{},
 				w:        cmd.OutOrStdout(),
@@ -132,8 +141,8 @@ Use --all to stop daemons in all projects simultaneously.`,
 				killFn:   defaultKill,
 				isTTY:    isStdinTTY,
 				force:    force,
-				oroHome:  paths.OroHome,
-				beadsDir: ".beads",
+				oroHome:  daemonPaths.OroHome,
+				beadsDir: projPaths.BeadsDir,
 			}
 
 			return runStopSequence(cmd.Context(), cfg)
@@ -183,11 +192,17 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) er
 		// Graceful degradation: if project.root is missing, skip dolt cleanup.
 		var beadsDir string
 		projectRootFile := filepath.Join(filepath.Dir(d.PIDPath), "project.root")
-		rootBytes, err := os.ReadFile(projectRootFile) //nolint:gosec // path derived from trusted oroHome
-		if err != nil {
+		rootBytes, readErr := os.ReadFile(projectRootFile) //nolint:gosec // path derived from trusted oroHome
+		if readErr != nil {
 			fmt.Fprintf(w, "warning: cannot read project.root for %s, skipping dolt cleanup\n", d.Project)
 		} else {
-			beadsDir = filepath.Join(strings.TrimSpace(string(rootBytes)), ".beads")
+			rootPath := strings.TrimSpace(string(rootBytes))
+			projPaths, pathErr := ResolvePaths(rootPath)
+			if pathErr != nil {
+				beadsDir = "" // skip dolt cleanup if paths can't be resolved
+			} else {
+				beadsDir = projPaths.BeadsDir
+			}
 		}
 
 		cfg := &stopConfig{

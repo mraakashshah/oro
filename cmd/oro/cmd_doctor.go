@@ -119,8 +119,16 @@ and performs a safe recovery:
      'bd init --from-jsonl' to restore beads from the snapshot.
   3. If full-state.jsonl is absent, warn and run 'bd init' for an empty reinit.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			repoRoot, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get working dir: %w", err)
+			}
+			projPaths, err := ResolvePaths(repoRoot)
+			if err != nil {
+				return fmt.Errorf("resolve paths: %w", err)
+			}
 			cfg := &doctorRecoverConfig{
-				beadsDir: ".beads",
+				beadsDir: projPaths.BeadsDir,
 				w:        cmd.OutOrStdout(),
 				now:      time.Now,
 				runCmd:   defaultRunCmd,
