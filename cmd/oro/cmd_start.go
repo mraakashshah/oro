@@ -632,6 +632,7 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 		RepoRoot:        repoRoot,
 		ProgressTimeout: progressTimeout,
 		ReviewTimeout:   reviewTimeout,
+		WorkerProgram:   resolveWorkerProgramPath(repoRoot),
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)
@@ -639,6 +640,16 @@ func buildDispatcher(maxWorkers int, progressTimeout, reviewTimeout time.Duratio
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}
 	return d, db, nil
+}
+
+// resolveWorkerProgramPath returns the worker-program.md path for repoRoot.
+// Falls back to <repoRoot>/worker-program.md if path resolution fails.
+func resolveWorkerProgramPath(repoRoot string) string {
+	paths, err := ResolvePaths(repoRoot)
+	if err != nil {
+		return filepath.Join(repoRoot, "worker-program.md")
+	}
+	return paths.WorkerProgram
 }
 
 // wireDependencies attaches production components to the dispatcher.

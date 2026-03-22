@@ -258,6 +258,7 @@ type Config struct {
 	ReviewTimeout         time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
 	BackupInterval        time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
 	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
+	WorkerProgram         string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 }
 
 func (c *Config) withDefaults() Config {

@@ -69,7 +69,10 @@ func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, a
 	// On timeout or error GitLog stays empty.
 
 	// worker-program.md — optional file that provides project-specific guidance.
-	wpPath := filepath.Join(d.cfg.RepoRoot, "worker-program.md")
+	wpPath := d.cfg.WorkerProgram
+	if wpPath == "" {
+		wpPath = filepath.Join(d.cfg.RepoRoot, "worker-program.md")
+	}
 	wpData, wpErr := os.ReadFile(wpPath) //nolint:gosec // path derived from trusted config
 	if wpErr == nil {
 		if len(wpData) > maxWorkerProgramSize {
