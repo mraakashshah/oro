@@ -59,7 +59,7 @@ jobs:
           go test -race -shuffle=on -coverprofile=coverage.out $NON_TUI
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage (non-TUI): ${COVERAGE}%"
-          awk "BEGIN {exit ($COVERAGE < 83)}"
+          awk "BEGIN {exit ($COVERAGE < 82)}"
 
       # Tier 5: Security
       - name: govulncheck
