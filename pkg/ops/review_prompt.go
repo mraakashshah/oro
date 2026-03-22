@@ -61,13 +61,13 @@ func writeProjectContext(b *strings.Builder, opts ReviewOpts) {
 		return
 	}
 
-	if standards := readProjectStandards(root); standards != "" {
+	if standards := readProjectStandards(root, opts.ClaudeMD); standards != "" {
 		b.WriteString("## Project Standards\n")
 		b.WriteString(standards)
 		b.WriteString("\n\n")
 	}
 
-	if patterns := readAntiPatterns(root); patterns != "" {
+	if patterns := readAntiPatterns(root, opts.ReviewPatterns); patterns != "" {
 		b.WriteString("## Known Anti-Patterns\n")
 		b.WriteString(patterns)
 		b.WriteString("\n\n")
@@ -121,11 +121,16 @@ func writeVerdictAndOutput(b *strings.Builder) {
 }
 
 // readProjectStandards reads CLAUDE.md and .claude/rules/*.md from the project root.
-func readProjectStandards(root string) string {
+// claudeMDPath, when non-empty, is used directly instead of root/CLAUDE.md.
+func readProjectStandards(root, claudeMDPath string) string {
 	var parts []string
 
-	// Read CLAUDE.md
-	claudeMD := readFileIfExists(filepath.Join(root, "CLAUDE.md"))
+	// Read CLAUDE.md — use explicit path when provided, fall back to root/CLAUDE.md.
+	claudeMDFile := claudeMDPath
+	if claudeMDFile == "" {
+		claudeMDFile = filepath.Join(root, "CLAUDE.md")
+	}
+	claudeMD := readFileIfExists(claudeMDFile)
 	if claudeMD != "" {
 		parts = append(parts, claudeMD)
 	}
@@ -149,7 +154,11 @@ func readProjectStandards(root string) string {
 }
 
 // readAntiPatterns reads assets/review-patterns.md if it exists.
-func readAntiPatterns(root string) string {
+// reviewPatternsPath, when non-empty, is used directly instead of root/assets/review-patterns.md.
+func readAntiPatterns(root, reviewPatternsPath string) string {
+	if reviewPatternsPath != "" {
+		return readFileIfExists(reviewPatternsPath)
+	}
 	return readFileIfExists(filepath.Join(root, "assets", "review-patterns.md"))
 }
 

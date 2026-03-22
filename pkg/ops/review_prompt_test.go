@@ -460,7 +460,7 @@ func TestReadProjectStandards_SkipsDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := readProjectStandards(tmpDir)
+	result := readProjectStandards(tmpDir, "")
 
 	if !strings.Contains(result, "valid rule content") {
 		t.Error("readProjectStandards must include valid .md rule files")
@@ -519,10 +519,54 @@ func TestReadAntiPatterns_MissingFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	// No assets/review-patterns.md created
 
-	result := readAntiPatterns(tmpDir)
+	result := readAntiPatterns(tmpDir, "")
 
 	if result != "" {
 		t.Errorf("readAntiPatterns with missing file must return empty string, got %q", result)
+	}
+}
+
+// TestReviewPromptUsesProjectPaths verifies that ReviewOpts.ClaudeMD and
+// ReviewOpts.ReviewPatterns are used when set, instead of the hardcoded
+// root-relative paths. This is the acceptance test for bead oro-6fma.7.2.
+func TestReviewPromptUsesProjectPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Place CLAUDE.md at a non-standard path (not root/CLAUDE.md).
+	customClaudeDir := filepath.Join(tmpDir, "custom")
+	//nolint:gosec // test directory
+	if err := os.MkdirAll(customClaudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	customClaudeMD := filepath.Join(customClaudeDir, "CLAUDE.md")
+	//nolint:gosec // test file
+	if err := os.WriteFile(customClaudeMD, []byte("project-paths-standard-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Place review-patterns.md at a non-standard path.
+	customReviewPatterns := filepath.Join(tmpDir, "custom-review-patterns.md")
+	//nolint:gosec // test file
+	if err := os.WriteFile(customReviewPatterns, []byte("project-paths-antipattern"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := ReviewOpts{
+		BeadID:         "oro-paths-test",
+		Worktree:       tmpDir,
+		BaseBranch:     "main",
+		ProjectRoot:    tmpDir, // no CLAUDE.md here — only the custom path has it
+		ClaudeMD:       customClaudeMD,
+		ReviewPatterns: customReviewPatterns,
+	}
+
+	prompt := buildReviewPrompt(opts)
+
+	if !strings.Contains(prompt, "project-paths-standard-content") {
+		t.Error("prompt must read CLAUDE.md from opts.ClaudeMD, not hardcoded root/CLAUDE.md")
+	}
+	if !strings.Contains(prompt, "project-paths-antipattern") {
+		t.Error("prompt must read review-patterns from opts.ReviewPatterns, not hardcoded root/assets/review-patterns.md")
 	}
 }
 
@@ -542,7 +586,7 @@ func TestReadProjectStandards_MissingClaudeMd(t *testing.T) {
 	}
 	// No CLAUDE.md
 
-	result := readProjectStandards(tmpDir)
+	result := readProjectStandards(tmpDir, "")
 
 	if !strings.Contains(result, "only rule here") {
 		t.Error("readProjectStandards must return rules content even without CLAUDE.md")

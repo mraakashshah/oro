@@ -114,6 +114,8 @@ type ReviewOpts struct {
 	AcceptanceCriteria string
 	BaseBranch         string // defaults to "main" if empty
 	ProjectRoot        string // for reading CLAUDE.md, .claude/rules/, assets/review-patterns.md
+	ClaudeMD           string // explicit path to CLAUDE.md; falls back to ProjectRoot/CLAUDE.md when empty
+	ReviewPatterns     string // explicit path to review-patterns.md; falls back to ProjectRoot/assets/review-patterns.md when empty
 }
 
 // MergeOpts configures a merge conflict agent.
@@ -139,6 +141,7 @@ type WriteACOpts struct {
 	BeadTitle       string
 	BeadDescription string
 	Workdir         string
+	OroDocsDir      string // explicit path to docs dir; falls back to "docs/plans/" when empty
 }
 
 // DecomposeOpts configures a bead decomposition agent.

@@ -53,7 +53,11 @@ func writeACPlaybook(b *strings.Builder, opts WriteACOpts) {
 	b.WriteString("3. Use Grep and Glob to explore the codebase for symbols, file paths, and packages referenced in the bead title and description. " +
 		"This tells you what already exists and what needs to be created.\n\n")
 
-	b.WriteString("4. Check `docs/plans/` for any related specs or design documents that constrain the implementation.\n\n")
+	docsPlans := "docs/plans"
+	if opts.OroDocsDir != "" {
+		docsPlans = opts.OroDocsDir + "/plans"
+	}
+	fmt.Fprintf(b, "4. Check `%s/` for any related specs or design documents that constrain the implementation.\n\n", docsPlans)
 
 	b.WriteString("5. Look at existing passing tests in the relevant packages to understand AC format conventions used in this project. " +
 		"Match their style and specificity.\n\n")
