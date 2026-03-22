@@ -173,7 +173,9 @@ func TestDoltSetup(t *testing.T) {
 			},
 			installPlistFn: func(data []byte, hd string) error {
 				plistInstalled = true
-				return installLaunchAgent(data, hd)
+				dir := filepath.Join(hd, "Library", "LaunchAgents")
+				_ = os.MkdirAll(dir, 0o750)
+				return os.WriteFile(filepath.Join(dir, "dev.getoro.dolt.plist"), data, 0o600)
 			},
 		}
 
@@ -338,8 +340,8 @@ func TestDoltSetup(t *testing.T) {
 			generatePlistFn: func(_, _ string, _ int) ([]byte, error) {
 				return []byte("<?xml version=\"1.0\"?><plist/>"), nil
 			},
-			installPlistFn: func(data []byte, hd string) error {
-				return installLaunchAgent(data, hd)
+			installPlistFn: func(_ []byte, _ string) error {
+				return nil
 			},
 		}
 
