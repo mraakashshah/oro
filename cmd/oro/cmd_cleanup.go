@@ -16,16 +16,17 @@ import (
 
 // cleanupConfig holds injectable dependencies for the cleanup command.
 type cleanupConfig struct {
-	runner   CmdRunner
-	w        io.Writer
-	tmuxName string
-	pidPath  string
-	sockPath string
-	beadsDir string          // path to .beads directory; empty disables per-project dolt cleanup
-	oroHome  string          // path to ~/.oro; empty disables shared dolt PID cleanup
-	signalFn func(int) error // sends SIGINT; injectable for testing
-	aliveFn  func(int) bool  // checks process liveness; injectable for testing
-	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
+	runner       CmdRunner
+	w            io.Writer
+	tmuxName     string
+	pidPath      string
+	sockPath     string
+	beadsDir     string          // path to .beads directory; empty disables per-project dolt cleanup
+	worktreesDir string          // path to .worktrees directory; empty disables worktree dir removal
+	oroHome      string          // path to ~/.oro; empty disables shared dolt PID cleanup
+	signalFn     func(int) error // sends SIGINT; injectable for testing
+	aliveFn      func(int) bool  // checks process liveness; injectable for testing
+	isTTY        func() bool     // returns true if stdin is a TTY; injectable for testing
 }
 
 // newCleanupCmd creates the "oro cleanup" subcommand.
@@ -44,17 +45,27 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				return fmt.Errorf("resolve paths: %w", err)
 			}
 
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("getwd: %w", err)
+			}
+			projPaths, err := ResolvePaths(cwd)
+			if err != nil {
+				return fmt.Errorf("resolve project paths: %w", err)
+			}
+
 			cfg := &cleanupConfig{
-				runner:   &ExecRunner{},
-				w:        cmd.OutOrStdout(),
-				tmuxName: TmuxSessionName(readProjectNameCWD()),
-				pidPath:  paths.PIDPath,
-				sockPath: paths.SocketPath,
-				beadsDir: filepath.Join(".", ".beads"),
-				oroHome:  paths.OroHome,
-				signalFn: defaultSignalINT,
-				aliveFn:  IsProcessAlive,
-				isTTY:    isStdinTTY,
+				runner:       &ExecRunner{},
+				w:            cmd.OutOrStdout(),
+				tmuxName:     TmuxSessionName(readProjectNameCWD()),
+				pidPath:      paths.PIDPath,
+				sockPath:     paths.SocketPath,
+				beadsDir:     projPaths.BeadsDir,
+				worktreesDir: projPaths.WorktreesDir,
+				oroHome:      paths.OroHome,
+				signalFn:     defaultSignalINT,
+				aliveFn:      IsProcessAlive,
+				isTTY:        isStdinTTY,
 			}
 
 			return runCleanup(cmd.Context(), cfg)
@@ -248,15 +259,17 @@ func cleanupWorktrees(cfg *cleanupConfig) {
 	}
 }
 
-// cleanupWorktreeDir force-removes the .worktrees/ directory. Returns true if directory was removed.
+// cleanupWorktreeDir force-removes the worktrees directory. Returns true if directory was removed.
 func cleanupWorktreeDir(cfg *cleanupConfig) bool {
-	dir := filepath.Join(".", ".worktrees")
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+	if cfg.worktreesDir == "" {
 		return false
 	}
-	fmt.Fprintf(cfg.w, "removing .worktrees/ directory\n")
-	if err := os.RemoveAll(dir); err != nil {
-		fmt.Fprintf(cfg.w, "warning: remove .worktrees/: %v\n", err)
+	if _, err := os.Stat(cfg.worktreesDir); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	fmt.Fprintf(cfg.w, "removing %s directory\n", cfg.worktreesDir)
+	if err := os.RemoveAll(cfg.worktreesDir); err != nil {
+		fmt.Fprintf(cfg.w, "warning: remove %s: %v\n", cfg.worktreesDir, err)
 	}
 	return true
 }

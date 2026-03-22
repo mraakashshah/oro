@@ -571,13 +571,14 @@ func TestCleanupWorktreeDir(t *testing.T) {
 
 		var buf bytes.Buffer
 		cfg := &cleanupConfig{
-			runner:   fake,
-			w:        &buf,
-			tmuxName: TmuxSessionName(""),
-			pidPath:  filepath.Join(tmpDir, "oro.pid"),
-			sockPath: filepath.Join(tmpDir, "oro.sock"),
-			signalFn: func(int) error { return nil },
-			aliveFn:  func(int) bool { return false },
+			runner:       fake,
+			w:            &buf,
+			tmuxName:     TmuxSessionName(""),
+			pidPath:      filepath.Join(tmpDir, "oro.pid"),
+			sockPath:     filepath.Join(tmpDir, "oro.sock"),
+			worktreesDir: worktreeDir,
+			signalFn:     func(int) error { return nil },
+			aliveFn:      func(int) bool { return false },
 		}
 
 		err = runCleanup(context.Background(), cfg)
@@ -592,8 +593,8 @@ func TestCleanupWorktreeDir(t *testing.T) {
 
 		// Check output
 		out := buf.String()
-		if !strings.Contains(out, "removing .worktrees/ directory") {
-			t.Errorf("expected output to contain %q, got: %s", "removing .worktrees/ directory", out)
+		if !strings.Contains(out, "removing "+worktreeDir+" directory") {
+			t.Errorf("expected output to contain removing worktreeDir, got: %s", out)
 		}
 	})
 

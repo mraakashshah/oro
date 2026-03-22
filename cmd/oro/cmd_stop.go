@@ -120,6 +120,15 @@ Use --all to stop daemons in all projects simultaneously.`,
 				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout())
 			}
 
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("getwd: %w", err)
+			}
+			projPaths, err := ResolvePaths(cwd)
+			if err != nil {
+				return fmt.Errorf("resolve project paths: %w", err)
+			}
+
 			cfg := &stopConfig{
 				pidPath:  paths.PIDPath,
 				sockPath: paths.SocketPath,
@@ -133,7 +142,7 @@ Use --all to stop daemons in all projects simultaneously.`,
 				isTTY:    isStdinTTY,
 				force:    force,
 				oroHome:  paths.OroHome,
-				beadsDir: ".beads",
+				beadsDir: projPaths.BeadsDir,
 			}
 
 			return runStopSequence(cmd.Context(), cfg)
