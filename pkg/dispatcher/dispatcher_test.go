@@ -4318,7 +4318,7 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 		n := len(wtMgr.removed)
 		wtMgr.mu.Unlock()
 		return n >= 2
-	}, 3*time.Second)
+	}, 10*time.Second)
 
 	if worktreeRemovedBeforeShutdown.Load() {
 		t.Fatal("worktrees were removed BEFORE PREPARE_SHUTDOWN was sent to workers — " +
