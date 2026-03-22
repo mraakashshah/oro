@@ -106,7 +106,7 @@ type ProjectPaths struct {
 func ResolvePaths(repoRoot string) (ProjectPaths, error) {
 	// 1. Try standard mode: .oro/config.yaml in repo root.
 	stdConfig := filepath.Join(repoRoot, ".oro", "config.yaml")
-	if _, err := os.Stat(stdConfig); err == nil {
+	if _, err := os.Stat(stdConfig); err == nil { //nolint:gosec // stdConfig built from trusted repoRoot via filepath.Join
 		return standardProjectPaths(repoRoot), nil
 	}
 

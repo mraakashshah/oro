@@ -135,7 +135,7 @@ func discoverBreadsDirs(oroHome string) []string {
 		rootPath := strings.TrimSpace(string(rootBytes))
 
 		// Verify project root directory exists before adding to list.
-		if _, statErr := os.Stat(rootPath); statErr != nil {
+		if _, statErr := os.Stat(rootPath); statErr != nil { //nolint:gosec // rootPath from trusted project.root file
 			continue // skip if project root doesn't exist
 		}
 
