@@ -60,8 +60,8 @@ func (d *Dispatcher) retryPriorityContention(ctx context.Context, beadID string)
 }
 
 // retryOversizedBead returns true if the bead is still oversized.
-// Resolved if the bead has been promoted to an epic (children handle the work)
-// or if the module count has dropped to <=2.
+// Resolved if the bead has been promoted to an epic, already has children
+// (decomposed via bd dep add), is closed, or the module count dropped to <=2.
 func (d *Dispatcher) retryOversizedBead(ctx context.Context, beadID string) bool {
 	detail, err := d.beads.Show(ctx, beadID)
 	if err != nil {
@@ -71,6 +71,9 @@ func (d *Dispatcher) retryOversizedBead(ctx context.Context, beadID string) bool
 		return false
 	}
 	if detail.Type == "epic" {
+		return false
+	}
+	if hasChildren, hcErr := d.beads.HasChildren(ctx, beadID); hcErr == nil && hasChildren {
 		return false
 	}
 	return protocol.CountDistinctModules(detail.AcceptanceCriteria) > 2

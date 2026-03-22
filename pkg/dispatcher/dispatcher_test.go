@@ -1134,6 +1134,87 @@ func TestCheckBeadReady_RejectsOversizedBead(t *testing.T) {
 	}
 }
 
+// TestCheckBeadReady_SkipsOversizedCheckForEpicType verifies that epics with
+// oversized AC are NOT blocked by the OVERSIZED_BEAD check and get assigned.
+func TestCheckBeadReady_SkipsOversizedCheckForEpicType(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Epic bead touching 3 modules — would be oversized if not an epic.
+	oversizedAC := "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38"
+	beadSrc.mu.Lock()
+	beadSrc.shown = map[string]*protocol.BeadDetail{
+		"bead-epic1": {ID: "bead-epic1", Title: "Epic bead", AcceptanceCriteria: oversizedAC, Type: "epic"},
+	}
+	beadSrc.mu.Unlock()
+	// Type="epic" on the Bead tells checkBeadReady to skip the oversized check.
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-epic1", Title: "Epic bead", Priority: 1, Type: "epic"}})
+
+	// Epic must receive an ASSIGN message (not be blocked).
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok || msg.Type != protocol.MsgAssign {
+		t.Fatalf("epic bead should be assigned; got ok=%v type=%v", ok, msg.Type)
+	}
+
+	// OVERSIZED_BEAD escalation must NOT have fired.
+	for _, m := range esc.Messages() {
+		if strings.Contains(m, string(protocol.EscOversizedBead)) {
+			t.Errorf("OVERSIZED_BEAD escalation must not fire for epic bead; got: %s", m)
+		}
+	}
+}
+
+// TestCheckBeadReady_SkipsOversizedCheckWhenHasChildren verifies that a bead
+// with existing children (already decomposed) is NOT blocked by the
+// OVERSIZED_BEAD check and can be processed normally.
+func TestCheckBeadReady_SkipsOversizedCheckWhenHasChildren(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Non-epic bead touching 3 modules — oversized, but already has children.
+	oversizedAC := "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38"
+	beadSrc.mu.Lock()
+	beadSrc.shown = map[string]*protocol.BeadDetail{
+		"bead-decomp1": {ID: "bead-decomp1", Title: "Decomposed bead", AcceptanceCriteria: oversizedAC, Type: "task"},
+	}
+	beadSrc.hasChildrenMap = map[string]bool{"bead-decomp1": true}
+	beadSrc.mu.Unlock()
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-decomp1", Title: "Decomposed bead", Priority: 1, Type: "task"}})
+
+	// Bead must receive an ASSIGN message (not be blocked).
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok || msg.Type != protocol.MsgAssign {
+		t.Fatalf("decomposed bead should be assigned; got ok=%v type=%v", ok, msg.Type)
+	}
+
+	// OVERSIZED_BEAD escalation must NOT have fired.
+	for _, m := range esc.Messages() {
+		if strings.Contains(m, string(protocol.EscOversizedBead)) {
+			t.Errorf("OVERSIZED_BEAD escalation must not fire for already-decomposed bead; got: %s", m)
+		}
+	}
+}
+
 func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)

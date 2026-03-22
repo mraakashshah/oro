@@ -271,6 +271,19 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 			want: false, // closed → resolved regardless of module count
 		},
 		{
+			name:   "resolved - bead has children (already decomposed)",
+			beadID: "oro-decomp1",
+			setupBead: func(m *mockBeadSource) {
+				m.shown["oro-decomp1"] = &protocol.BeadDetail{
+					ID:                 "oro-decomp1",
+					Type:               "task",
+					AcceptanceCriteria: "Read: pkg/ops/foo.go\nRead: pkg/dispatcher/bar.go\nRead: pkg/protocol/baz.go",
+				}
+				m.hasChildrenMap = map[string]bool{"oro-decomp1": true}
+			},
+			want: false, // has children → resolved (already decomposed)
+		},
+		{
 			name:   "retry on Show error",
 			beadID: "oro-missing",
 			setupBead: func(m *mockBeadSource) {

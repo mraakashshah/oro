@@ -2483,10 +2483,16 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		return title, "", false            // skip assignment this cycle
 	}
 	if modules := protocol.CountDistinctModules(acceptance); modules > 2 {
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscOversizedBead, bead.ID,
-			fmt.Sprintf("touches %d modules — needs decomposition", modules), ""), bead.ID, workerID)
-		d.recordAssignmentFailure(bead.ID)
-		return title, "", false
+		// Epics are expected to span multiple modules; skip the oversized check.
+		// Also skip if the bead already has children — it was decomposed externally.
+		isEpic := bead.Type == "epic"
+		hasChildren, _ := d.beads.HasChildren(ctx, bead.ID)
+		if !isEpic && !hasChildren {
+			d.escalate(ctx, protocol.FormatEscalation(protocol.EscOversizedBead, bead.ID,
+				fmt.Sprintf("touches %d modules — needs decomposition", modules), ""), bead.ID, workerID)
+			d.recordAssignmentFailure(bead.ID)
+			return title, "", false
+		}
 	}
 	return title, acceptance, true
 }
