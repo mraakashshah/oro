@@ -61,6 +61,7 @@ type doltSetupConfig struct {
 	startFn         func(string) (int, error) // starts shared server, writes PID/port
 	generatePlistFn func(string, string, int) ([]byte, error)
 	installPlistFn  func([]byte, string) error
+	killOrphansFn   func([]doltProject, io.Writer) // optional; default: killOrphanDoltServers
 	force           bool
 }
 
@@ -151,6 +152,7 @@ func discoverBreadsDirs(oroHome string) []string {
 type doltProject struct {
 	beadsDir string
 	dbName   string
+	port     int // per-project dolt server port; 0 means derive from beadsDir
 }
 
 // findDoltProjects scans beadsDirs for directories with dolt backend metadata.
@@ -168,7 +170,7 @@ func findDoltProjects(beadsDirs []string) ([]doltProject, error) {
 		if dbName == "" {
 			dbName = "beads"
 		}
-		projects = append(projects, doltProject{beadsDir: beadsDir, dbName: dbName})
+		projects = append(projects, doltProject{beadsDir: beadsDir, dbName: dbName, port: meta.DoltServerPort})
 	}
 	return projects, nil
 }
@@ -246,6 +248,12 @@ func runDoltSetup(cfg *doltSetupConfig, w io.Writer) error {
 		return err
 	}
 
+	if cfg.killOrphansFn != nil {
+		cfg.killOrphansFn(projects, w)
+	} else {
+		killOrphanDoltServers(projects, w)
+	}
+
 	if err := installDoltPlist(cfg, w); err != nil {
 		return err
 	}
@@ -258,6 +266,66 @@ func runDoltSetup(cfg *doltSetupConfig, w io.Writer) error {
 
 	fmt.Fprintln(w, "dolt setup complete")
 	return nil
+}
+
+// killOrphanDoltServers kills any per-project dolt sql-server processes that are
+// still running before the shared server takes over. It is called in runDoltSetup
+// after migration and before starting the shared server.
+//
+// Edges:
+//   - port == SharedDoltPort → skip (never kill the shared server)
+//   - PID file present + process alive → kill via killAndWait
+//   - PID file absent + port listening → discover via lsof; warn and skip if lsof unavailable
+//   - port not listening → no-op
+func killOrphanDoltServers(projects []doltProject, w io.Writer) {
+	killOrphanServersImpl(projects, w, IsProcessAlive, isDoltServerRunning, discoverPIDByPort, killAndWait)
+}
+
+// killOrphanServersImpl is the injectable implementation used by killOrphanDoltServers
+// and directly by tests.
+func killOrphanServersImpl(
+	projects []doltProject,
+	w io.Writer,
+	aliveFn func(int) bool,
+	isRunningFn func(int) bool,
+	discoverFn func(int) (int, error),
+	killFn func(int, string) error,
+) {
+	for _, p := range projects {
+		port := p.port
+		if port == 0 {
+			port = DerivePort(p.beadsDir)
+		}
+		if port == SharedDoltPort {
+			continue // never kill the shared server
+		}
+
+		// Strategy 1: PID file.
+		pidPath := filepath.Join(p.beadsDir, "dolt-server.pid")
+		if data, err := os.ReadFile(pidPath); err == nil { //nolint:gosec // beadsDir is caller-controlled
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if parseErr == nil && aliveFn(pid) {
+				_ = killFn(pid, p.beadsDir)
+				fmt.Fprintf(w, "  killed orphan dolt server (PID %d) for %s\n", pid, p.beadsDir)
+				continue
+			}
+		}
+
+		// Strategy 2: lsof fallback.
+		if !isRunningFn(port) {
+			continue // nothing listening on the per-project port
+		}
+		pid, err := discoverFn(port)
+		if errors.Is(err, exec.ErrNotFound) {
+			fmt.Fprintf(w, "warning: lsof not available; cannot kill orphan dolt server on port %d\n", port)
+			continue
+		}
+		if err != nil {
+			continue // no process found
+		}
+		_ = killFn(pid, p.beadsDir)
+		fmt.Fprintf(w, "  killed orphan dolt server (PID %d) for %s\n", pid, p.beadsDir)
+	}
 }
 
 // atomicCopyDir copies the directory at srcDir into destParent/<dbName> atomically

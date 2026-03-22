@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -658,6 +659,121 @@ func TestDoltStop_AlreadyStopped(t *testing.T) {
 	if !strings.Contains(out, "not running") {
 		t.Errorf("should say not running, got: %s", out)
 	}
+}
+
+// ---------- killOrphanDoltServers ----------
+
+func TestDoltSetup_KillsOrphanPerProjectServers(t *testing.T) {
+	t.Run("orphan per-project server killed before shared server starts", func(t *testing.T) {
+		beadsDir := filepath.Join(t.TempDir(), ".beads")
+		if err := os.MkdirAll(filepath.Join(beadsDir, "dolt", "beads"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		writeMetadata(t, beadsDir, map[string]any{
+			"backend": "dolt", "dolt_server_port": 13350, "dolt_database": "beads",
+		})
+
+		var seq int
+		var killOrder, startOrder int
+
+		cfg := &doltSetupConfig{
+			oroHome:         t.TempDir(),
+			homeDir:         t.TempDir(),
+			beadsDirs:       []string{beadsDir},
+			aliveFn:         func(int) bool { return false },
+			dispatcherPIDFn: func() int { return 0 },
+			killOrphansFn: func(_ []doltProject, _ io.Writer) {
+				seq++
+				killOrder = seq
+			},
+			startFn: func(string) (int, error) {
+				seq++
+				startOrder = seq
+				return 42, nil
+			},
+			generatePlistFn: func(_, _ string, _ int) ([]byte, error) {
+				return []byte("<plist/>"), nil
+			},
+			installPlistFn: func([]byte, string) error { return nil },
+		}
+
+		var buf bytes.Buffer
+		if err := runDoltSetup(cfg, &buf); err != nil {
+			t.Fatalf("runDoltSetup error: %v", err)
+		}
+		if killOrder == 0 {
+			t.Error("killOrphansFn was not called")
+		}
+		if startOrder == 0 {
+			t.Error("startFn was not called")
+		}
+		if killOrder >= startOrder {
+			t.Errorf("killOrphansFn (order=%d) must be called before startFn (order=%d)", killOrder, startOrder)
+		}
+	})
+
+	t.Run("process on SharedDoltPort is not killed", func(t *testing.T) {
+		killed := false
+		projects := []doltProject{{beadsDir: "/fake/dir", port: SharedDoltPort, dbName: "beads"}}
+		killOrphanServersImpl(projects, &bytes.Buffer{},
+			func(int) bool { return true },
+			func(int) bool { return true },
+			func(int) (int, error) { return 99, nil },
+			func(int, string) error { killed = true; return nil },
+		)
+		if killed {
+			t.Error("process on SharedDoltPort should not be killed")
+		}
+	})
+
+	t.Run("no-op when no server running on per-project port", func(t *testing.T) {
+		killed := false
+		beadsDir := t.TempDir()
+		projects := []doltProject{{beadsDir: beadsDir, port: 13350, dbName: "beads"}}
+		killOrphanServersImpl(projects, &bytes.Buffer{},
+			func(int) bool { return false },
+			func(int) bool { return false },
+			func(int) (int, error) { return 0, nil },
+			func(int, string) error { killed = true; return nil },
+		)
+		if killed {
+			t.Error("should be no-op when no server is running")
+		}
+	})
+
+	t.Run("warning when lsof not available", func(t *testing.T) {
+		beadsDir := t.TempDir()
+		projects := []doltProject{{beadsDir: beadsDir, port: 13350, dbName: "beads"}}
+		var buf bytes.Buffer
+		killOrphanServersImpl(projects, &buf,
+			func(int) bool { return false },
+			func(int) bool { return true }, // port IS up
+			func(int) (int, error) { return 0, exec.ErrNotFound },
+			func(int, string) error { return nil },
+		)
+		if !strings.Contains(buf.String(), "warning") || !strings.Contains(buf.String(), "lsof") {
+			t.Errorf("should warn about lsof unavailability, got: %s", buf.String())
+		}
+	})
+
+	t.Run("kills via PID file when process alive", func(t *testing.T) {
+		beadsDir := t.TempDir()
+		const fakePID = 12345
+		if err := os.WriteFile(filepath.Join(beadsDir, "dolt-server.pid"), []byte(strconv.Itoa(fakePID)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		killed := false
+		projects := []doltProject{{beadsDir: beadsDir, port: 13350, dbName: "beads"}}
+		killOrphanServersImpl(projects, &bytes.Buffer{},
+			func(pid int) bool { return pid == fakePID },
+			func(int) bool { return false },
+			func(int) (int, error) { return 0, nil },
+			func(int, string) error { killed = true; return nil },
+		)
+		if !killed {
+			t.Error("should have killed process from PID file")
+		}
+	})
 }
 
 // ---------- oro dolt teardown ----------
