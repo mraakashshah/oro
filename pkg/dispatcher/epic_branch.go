@@ -7,6 +7,13 @@ import (
 	"oro/pkg/protocol"
 )
 
+// ResolveEpicBranch is the exported form of resolveEpicBranch, for use by
+// packages outside the dispatcher (e.g. cmd/oro work command) that need the
+// same parent-chain-walking logic.
+func ResolveEpicBranch(ctx context.Context, beads BeadSource, parentID string) (branch, epicID string, err error) {
+	return resolveEpicBranch(ctx, beads, parentID)
+}
+
 // resolveEpicBranch walks the parent chain starting from parentID to find the
 // nearest epic-type ancestor. Returns ("epic/<id>", id, nil) if an epic is
 // found, ("main", "", nil) if no epic ancestor exists, or ("main", "", err)

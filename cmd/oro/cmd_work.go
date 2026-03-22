@@ -242,10 +242,13 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	// Step 3: Create or resume worktree.
-	// targetBranch is where this bead's branch will eventually merge into.
-	// For epic child beads it's the epic's agent branch; for standalone beads it's "main".
-	targetBranch := epicTargetBranch(cfg.bead.Epic)
-	worktree, branch, err := setupWorktree(ctx, cfg, deps)
+	// Resolve targetBranch by walking the parent chain: returns "epic/<id>" only when
+	// an epic-type ancestor exists. Non-epic parents (tasks, features) resolve to "main".
+	targetBranch, _, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic)
+	if resolveErr != nil {
+		return fmt.Errorf("resolve epic branch: %w", resolveErr)
+	}
+	worktree, branch, err := setupWorktree(ctx, cfg, deps, targetBranch)
 	if err != nil {
 		return fmt.Errorf("worktree setup: %w", err)
 	}
@@ -362,19 +365,13 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	return nil
 }
 
-// epicTargetBranch returns the target branch for a bead based on its Epic field.
-// If Epic is set, the target is the epic's agent branch; otherwise it's "main".
-func epicTargetBranch(epic string) string {
-	if epic == "" {
-		return "main"
-	}
-	return protocol.BranchPrefix + epic
-}
-
 // setupWorktree auto-detects worktree state:
 //   - exists → resume from it
-//   - doesn't exist → create new, branching from baseBranch (epic or main)
-func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps) (wtPath, branch string, err error) {
+//   - doesn't exist → create new, branching from baseBranch
+//
+// baseBranch is the resolved target branch for this bead (e.g. "main" or
+// "epic/<id>"), computed by the caller via dispatcher.ResolveEpicBranch.
+func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps, baseBranch string) (wtPath, branch string, err error) {
 	projPaths, err := ResolvePaths(deps.repoRoot)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve paths: %w", err)
@@ -387,7 +384,6 @@ func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps) (wtPath
 		return wtPath, branch, nil
 	}
 
-	baseBranch := epicTargetBranch(cfg.bead.Epic)
 	wtPath, branch, err = deps.wtMgr.Create(ctx, cfg.beadID, baseBranch)
 	if err != nil {
 		return "", "", fmt.Errorf("create worktree: %w", err)

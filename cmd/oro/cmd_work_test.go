@@ -138,7 +138,7 @@ func TestSetupWorktree_ExistingWorktreeAutoResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gotPath, _, err := setupWorktree(context.Background(), cfg, deps)
+	gotPath, _, err := setupWorktree(context.Background(), cfg, deps, "main")
 	if err != nil {
 		t.Fatalf("expected auto-resume, got error: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestSetupWorktree_NoWorktreeCreatesNew(t *testing.T) {
 		},
 	}
 
-	gotPath, gotBranch, err := setupWorktree(context.Background(), cfg, deps)
+	gotPath, gotBranch, err := setupWorktree(context.Background(), cfg, deps, "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -739,22 +739,28 @@ func (m *captureMerger) Merge(_ context.Context, opts merge.Opts) (*merge.Result
 	return m.result, nil
 }
 
-// TestWorkCommandEpicBranch verifies that when a bead has an Epic set,
-// the epic branch is used as baseBranch/targetBranch throughout the pipeline:
-//   - setupWorktree passes baseBranch from BeadDetail.Epic to Create
+// TestWorkCommandEpicBranch verifies that when a bead has an Epic set pointing
+// to an epic-type parent, the epic branch is used as baseBranch/targetBranch
+// throughout the pipeline:
+//   - setupWorktree receives and passes baseBranch to Create
 //   - hasCommitsAhead uses targetBranch not hardcoded main
 //   - reviewLoop passes targetBranch as BaseBranch to ops review
 //   - mergeToMain passes TargetBranch in merge.Opts
 func TestWorkCommandEpicBranch(t *testing.T) {
+	epicParent := &protocol.BeadDetail{
+		ID:    "oro-epic",
+		Title: "The epic",
+		Type:  "epic",
+	}
 	epicBead := &protocol.BeadDetail{
 		ID:                 "oro-child",
 		Title:              "Child bead",
 		AcceptanceCriteria: "Tests pass",
 		Epic:               "oro-epic",
 	}
-	epicTargetBranch := protocol.BranchPrefix + "oro-epic" // "agent/oro-epic"
+	epicTargetBranch := protocol.EpicBranchPrefix + "oro-epic" // "epic/oro-epic"
 
-	t.Run("setupWorktree passes baseBranch from Epic to Create", func(t *testing.T) {
+	t.Run("setupWorktree passes baseBranch to Create", func(t *testing.T) {
 		cfg := &workConfig{beadID: "oro-child", bead: epicBead}
 		repoRoot := t.TempDir()
 		wt := &mockWorktreeManager{
@@ -763,7 +769,7 @@ func TestWorkCommandEpicBranch(t *testing.T) {
 		}
 		deps := &workDeps{repoRoot: repoRoot, wtMgr: wt}
 
-		_, _, err := setupWorktree(context.Background(), cfg, deps)
+		_, _, err := setupWorktree(context.Background(), cfg, deps, epicTargetBranch)
 		if err != nil {
 			t.Fatalf("setupWorktree: %v", err)
 		}
@@ -774,7 +780,13 @@ func TestWorkCommandEpicBranch(t *testing.T) {
 
 	t.Run("hasNewWork uses targetBranch from Epic not main", func(t *testing.T) {
 		var capturedTarget string
-		bs := &mockBeadSource{showDetail: epicBead}
+		bs := &mockBeadSource{
+			showDetail: epicBead,
+			shownByID: map[string]*protocol.BeadDetail{
+				"oro-child": epicBead,
+				"oro-epic":  epicParent,
+			},
+		}
 		wt := &mockWorktreeManager{createPath: "/tmp/wt", createBranch: protocol.BranchPrefix + "oro-child"}
 		sp := &mockSpawner{proc: &mockProcess{}}
 		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
@@ -880,4 +892,60 @@ func TestWorkCommandEpicBranch(t *testing.T) {
 			t.Errorf("standalone baseBranch = %q, want %q", wt.capturedBaseBranch, "main")
 		}
 	})
+}
+
+// TestExecuteWork_NonEpicParent_UsesMain verifies that when a bead's parent
+// (bead.Epic) is a non-epic bead (e.g. type "task"), the worktree is created
+// from "main" and not from "agent/<parentID>".
+//
+// Acceptance criteria: sub-beads of non-epic parents branch from main.
+func TestExecuteWork_NonEpicParent_UsesMain(t *testing.T) {
+	taskParent := &protocol.BeadDetail{
+		ID:    "task-parent",
+		Title: "A task bead (not an epic)",
+		Type:  "task",
+	}
+	childBead := &protocol.BeadDetail{
+		ID:                 "child-bead",
+		Title:              "Child of task",
+		AcceptanceCriteria: "Tests pass",
+		Epic:               "task-parent", // parent is a task, not an epic
+	}
+
+	bs := &mockBeadSource{
+		showDetail: childBead,
+		shownByID: map[string]*protocol.BeadDetail{
+			"child-bead":  childBead,
+			"task-parent": taskParent,
+		},
+	}
+	wt := &mockWorktreeManager{
+		createPath:   "/tmp/wt-child",
+		createBranch: protocol.BranchPrefix + "child-bead",
+	}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "deadbeef"}}
+
+	deps := &workDeps{
+		beadSrc:    bs,
+		wtMgr:      wt,
+		spawner:    sp,
+		merger:     mg,
+		repoRoot:   "/tmp",
+		hasNewWork: func(_, _, _ string) bool { return true },
+		runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+	}
+	cfg := &workConfig{
+		beadID:     "child-bead",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	_ = executeWork(context.Background(), cfg, deps)
+
+	// Non-epic parent must not produce an "agent/<parentID>" base branch.
+	if wt.capturedBaseBranch != "main" {
+		t.Errorf("baseBranch = %q; want %q (non-epic parent must not produce agent/ branch)", wt.capturedBaseBranch, "main")
+	}
 }

@@ -23,15 +23,22 @@ import (
 type mockBeadSource struct {
 	showDetail *protocol.BeadDetail
 	showErr    error
-	updates    []string // status values passed to Update
+	shownByID  map[string]*protocol.BeadDetail // per-ID overrides; checked before showDetail
+	updates    []string                        // status values passed to Update
 	updateErr  error
 	closeID    string
 	closeErr   error
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) { return nil, nil }
-func (m *mockBeadSource) Show(_ context.Context, _ string) (*protocol.BeadDetail, error) {
-	return m.showDetail, m.showErr
+func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
+	if m.showErr != nil {
+		return nil, m.showErr
+	}
+	if detail, ok := m.shownByID[id]; ok {
+		return detail, nil
+	}
+	return m.showDetail, nil
 }
 
 func (m *mockBeadSource) Close(_ context.Context, id, _ string) error {
