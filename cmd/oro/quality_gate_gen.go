@@ -385,6 +385,17 @@ func writeQualityGateScriptFile(paths ProjectPaths, force bool) error {
 	if !force && fileExists(paths.QualityGate) {
 		return nil
 	}
+
+	// Skip generation when no languages are detected — the script would have
+	// no language-specific lanes and is not useful.
+	cfg, err := readQGConfig(paths.ConfigYAML)
+	if err != nil {
+		return err
+	}
+	if cfg == nil || len(cfg.Languages) == 0 {
+		return nil
+	}
+
 	if err := os.MkdirAll(filepath.Dir(paths.QualityGate), 0o750); err != nil {
 		return fmt.Errorf("creating scripts/ dir: %w", err)
 	}
