@@ -105,3 +105,18 @@ func TestBuildACPrompt(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildACPromptUsesOroDocsDir(t *testing.T) {
+	opts := WriteACOpts{
+		BeadID:     "oro-docs-test",
+		BeadTitle:  "Test bead",
+		OroDocsDir: "/custom/oro/docs",
+	}
+	got := buildACPrompt(opts)
+	if !strings.Contains(got, "/custom/oro/docs/plans") {
+		t.Error("prompt must use OroDocsDir when set")
+	}
+	if strings.Contains(got, "`docs/plans/`") {
+		t.Error("prompt must not use hardcoded docs/plans when OroDocsDir is set")
+	}
+}
