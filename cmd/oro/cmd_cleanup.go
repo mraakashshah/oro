@@ -361,11 +361,11 @@ func cleanupDolt(cfg *cleanupConfig) bool {
 	return false // dolt is healthy, leave it alone
 }
 
-// cleanupOrphanDolt scans for orphan dolt processes when no PID file exists.
-// Returns true if orphans were found and signaled. Returns false if pgrep is
-// unavailable, no orphans found, or any error occurred.
+// cleanupOrphanDolt scans for orphan dolt processes using pgrep and signals them.
+// Returns true if orphans were found and signaled. Exits gracefully if pgrep is
+// not available. Excludes the shared dolt server PID from cleanup.
 func cleanupOrphanDolt(cfg *cleanupConfig) bool {
-	out, err := cfg.runner.Run("pgrep", "-f", "dolt")
+	out, err := cfg.runner.Run("pgrep", "-f", `dolt sql-server.*\.beads/dolt`)
 	if err != nil {
 		// pgrep not in PATH or no matches
 		return false
@@ -376,8 +376,20 @@ func cleanupOrphanDolt(cfg *cleanupConfig) bool {
 		return false
 	}
 
-	fmt.Fprintf(cfg.w, "killing %d orphan dolt process(es)\n", len(pids))
+	// Exclude the shared dolt server PID to avoid killing a healthy shared server.
+	sharedPID := readSharedDoltPID(cfg.oroHome)
+	var orphans []int
 	for _, pid := range pids {
+		if pid != sharedPID {
+			orphans = append(orphans, pid)
+		}
+	}
+	if len(orphans) == 0 {
+		return false
+	}
+
+	fmt.Fprintf(cfg.w, "killing %d orphan dolt process(es)\n", len(orphans))
+	for _, pid := range orphans {
 		if err := cfg.signalFn(pid); err != nil {
 			fmt.Fprintf(cfg.w, "warning: signal orphan dolt PID %d: %v\n", pid, err)
 		}
@@ -385,6 +397,26 @@ func cleanupOrphanDolt(cfg *cleanupConfig) bool {
 
 	removeDoltServerFiles(cfg.beadsDir)
 	return true
+}
+
+// readSharedDoltPID reads the PID from ~/.oro/dolt-server.pid if it exists.
+// Returns 0 if the file doesn't exist or can't be parsed.
+func readSharedDoltPID(oroHome string) int {
+	if oroHome == "" {
+		return 0
+	}
+
+	pidPath := filepath.Join(oroHome, "dolt-server.pid")
+	data, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
+	if err != nil {
+		return 0
+	}
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return pid
 }
 
 // cleanupSharedDoltPID removes a stale ~/.oro/dolt-server.pid when the referenced
