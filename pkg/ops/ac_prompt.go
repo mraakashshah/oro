@@ -2,6 +2,7 @@ package ops
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -55,7 +56,7 @@ func writeACPlaybook(b *strings.Builder, opts WriteACOpts) {
 
 	docsPlans := "docs/plans"
 	if opts.OroDocsDir != "" {
-		docsPlans = opts.OroDocsDir + "/plans"
+		docsPlans = filepath.Join(opts.OroDocsDir, "plans")
 	}
 	fmt.Fprintf(b, "4. Check `%s/` for any related specs or design documents that constrain the implementation.\n\n", docsPlans)
 

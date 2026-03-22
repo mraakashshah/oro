@@ -258,6 +258,19 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 			want: true, // 3 modules → unresolved
 		},
 		{
+			name:   "resolved - closed bead stops retry",
+			beadID: "oro-closed1",
+			setupBead: func(m *mockBeadSource) {
+				m.shown["oro-closed1"] = &protocol.BeadDetail{
+					ID:                 "oro-closed1",
+					Type:               "task",
+					Status:             "closed",
+					AcceptanceCriteria: "Read: pkg/ops/foo.go\nRead: pkg/dispatcher/bar.go\nRead: pkg/protocol/baz.go",
+				}
+			},
+			want: false, // closed → resolved regardless of module count
+		},
+		{
 			name:   "retry on Show error",
 			beadID: "oro-missing",
 			setupBead: func(m *mockBeadSource) {

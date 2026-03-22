@@ -67,6 +67,9 @@ func (d *Dispatcher) retryOversizedBead(ctx context.Context, beadID string) bool
 	if err != nil {
 		return true
 	}
+	if detail.Status == "closed" {
+		return false
+	}
 	if detail.Type == "epic" {
 		return false
 	}
