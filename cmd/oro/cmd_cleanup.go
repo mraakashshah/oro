@@ -352,7 +352,7 @@ func cleanupDolt(cfg *cleanupConfig) bool {
 		return true
 	}
 
-	if !IsProcessAlive(pid) {
+	if !cfg.aliveFn(pid) {
 		removeDoltServerFiles(cfg.beadsDir)
 		fmt.Fprintf(cfg.w, "removed stale dolt PID file (process %d dead)\n", pid)
 		return true
