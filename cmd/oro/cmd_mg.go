@@ -157,10 +157,7 @@ func resolveSource(cwd, pathFlag string) data.Source {
 	}
 
 	if projectDir := findBeadsDir(cwd); projectDir != "" && bdOnPath() {
-		return data.Source{
-			Mode:       data.SourceCLI,
-			ProjectDir: projectDir,
-		}
+		return data.NewSource(projectDir, nil)
 	}
 
 	if jsonlPath := findBeadsFile(cwd); jsonlPath != "" {

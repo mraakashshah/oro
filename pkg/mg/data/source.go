@@ -19,10 +19,22 @@ const (
 
 // Source describes how mg loads its issue data.
 type Source struct {
-	Mode       SourceMode
-	Path       string // JSONL file path (SourceJSONL) or empty (SourceCLI)
-	ProjectDir string // Project root directory
-	Explicit   bool   // True if --path was used
+	Mode        SourceMode
+	Path        string   // JSONL file path (SourceJSONL) or empty (SourceCLI)
+	ProjectDir  string   // Project root directory
+	Explicit    bool     // True if --path was used
+	BdExtraArgs []string // Extra args prepended to bd commands (e.g. ["--db=/path/to.db"])
+}
+
+// NewSource creates a CLI-mode Source for projectDir.
+// bdExtraArgs are prepended to every bd invocation (e.g. ["--db=/path/to.db"]).
+// nil bdExtraArgs means no extra args (backward compatible).
+func NewSource(projectDir string, bdExtraArgs []string) Source {
+	return Source{
+		Mode:        SourceCLI,
+		ProjectDir:  projectDir,
+		BdExtraArgs: bdExtraArgs,
+	}
 }
 
 // Label returns a display string for the footer.

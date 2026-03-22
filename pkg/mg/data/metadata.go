@@ -53,13 +53,20 @@ type beadsMetadata struct {
 
 // LoadMetadataSchema loads validation.metadata from .beads/config.yaml,
 // resolving redirect if present. Returns nil if not configured.
-func LoadMetadataSchema(projectDir string) *MetadataSchema {
-	if projectDir == "" {
+// An optional beadsDir argument overrides the default projectDir/.beads path.
+func LoadMetadataSchema(projectDir string, beadsDir ...string) *MetadataSchema {
+	bd := ""
+	if len(beadsDir) > 0 && beadsDir[0] != "" {
+		bd = beadsDir[0]
+	} else if projectDir != "" {
+		bd = filepath.Join(projectDir, ".beads")
+	}
+	if bd == "" {
 		return nil
 	}
 
-	beadsDir := ResolveBeadsDir(filepath.Join(projectDir, ".beads"))
-	configPath := filepath.Join(beadsDir, "config.yaml")
+	beadsDirResolved := ResolveBeadsDir(bd)
+	configPath := filepath.Join(beadsDirResolved, "config.yaml")
 
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
@@ -86,13 +93,20 @@ func LoadMetadataSchema(projectDir string) *MetadataSchema {
 // LoadIssuePrefix returns the configured issue prefix when it can be resolved
 // from the local Beads metadata. It prefers config.yaml and falls back to the
 // conventional dolt database name in metadata.json (beads_<prefix>).
-func LoadIssuePrefix(projectDir string) string {
-	if projectDir == "" {
+// An optional beadsDir argument overrides the default projectDir/.beads path.
+func LoadIssuePrefix(projectDir string, beadsDir ...string) string {
+	bd := ""
+	if len(beadsDir) > 0 && beadsDir[0] != "" {
+		bd = beadsDir[0]
+	} else if projectDir != "" {
+		bd = filepath.Join(projectDir, ".beads")
+	}
+	if bd == "" {
 		return ""
 	}
 
-	beadsDir := ResolveBeadsDir(filepath.Join(projectDir, ".beads"))
-	configPath := filepath.Join(beadsDir, "config.yaml")
+	resolvedBeadsDir := ResolveBeadsDir(bd)
+	configPath := filepath.Join(resolvedBeadsDir, "config.yaml")
 	raw, err := os.ReadFile(configPath)
 	if err == nil {
 		var cfg beadsConfig
@@ -103,7 +117,7 @@ func LoadIssuePrefix(projectDir string) string {
 		}
 	}
 
-	metadataPath := filepath.Join(beadsDir, "metadata.json")
+	metadataPath := filepath.Join(resolvedBeadsDir, "metadata.json")
 	raw, err = os.ReadFile(metadataPath)
 	if err != nil {
 		return ""

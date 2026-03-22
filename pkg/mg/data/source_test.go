@@ -175,6 +175,51 @@ EOF
 	}
 }
 
+func TestSourceUsesProjectPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set up a custom beads dir (not the default .beads/)
+	customBeadsDir := filepath.Join(tmpDir, "custom-beads")
+	if err := os.MkdirAll(customBeadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customBeadsDir, "config.yaml"),
+		[]byte("issue-prefix: pp\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// NewSource stores bdExtraArgs
+	extraArgs := []string{"--db=/tmp/test.db"}
+	src := NewSource(tmpDir, extraArgs)
+	if len(src.BdExtraArgs) != len(extraArgs) || src.BdExtraArgs[0] != extraArgs[0] {
+		t.Errorf("BdExtraArgs = %v, want %v", src.BdExtraArgs, extraArgs)
+	}
+	if src.ProjectDir != tmpDir {
+		t.Errorf("ProjectDir = %q, want %q", src.ProjectDir, tmpDir)
+	}
+	if src.Mode != SourceCLI {
+		t.Errorf("Mode = %v, want SourceCLI", src.Mode)
+	}
+
+	// nil bdExtraArgs → no extra args (backward compat)
+	srcNoArgs := NewSource(tmpDir, nil)
+	if srcNoArgs.BdExtraArgs != nil {
+		t.Errorf("nil bdExtraArgs should remain nil, got %v", srcNoArgs.BdExtraArgs)
+	}
+
+	// LoadIssuePrefix uses configurable beads dir (not hardcoded .beads)
+	prefix := LoadIssuePrefix(tmpDir, customBeadsDir)
+	if prefix != "pp" {
+		t.Errorf("LoadIssuePrefix(tmpDir, customBeadsDir) = %q, want %q", prefix, "pp")
+	}
+
+	// LoadMetadataSchema uses configurable beads dir
+	schema := LoadMetadataSchema(tmpDir, customBeadsDir)
+	if schema != nil {
+		t.Errorf("LoadMetadataSchema(tmpDir, customBeadsDir) = %v, want nil (no metadata section)", schema)
+	}
+}
+
 func mustMarshalIssues(t *testing.T, issues []Issue) []byte {
 	t.Helper()
 	out, err := json.Marshal(issues)
