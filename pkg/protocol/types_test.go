@@ -171,14 +171,29 @@ func TestCountDistinctModules(t *testing.T) {
 			expected:   3,
 		},
 		{
-			name:       "paths in Cmd line",
-			acceptance: "Cmd: go test ./pkg/ops/... -run TestFoo\nCmd: go test ./pkg/dispatcher/... -run TestBar",
-			expected:   2,
+			name:       "comma-separated paths in single Read: line same module",
+			acceptance: "Read: pkg/dispatcher/dispatcher.go:510, pkg/dispatcher/quality_gate_gen.go:ProjectPaths",
+			expected:   1,
 		},
 		{
-			name:       "mixed Read and Cmd lines",
+			name:       "comma-separated paths including non-pkg module",
+			acceptance: "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38",
+			expected:   3,
+		},
+		{
+			name:       "malformed path no slash counts as own module",
+			acceptance: "Read: foo.go",
+			expected:   1,
+		},
+		{
+			name:       "paths in Cmd line only — no Read lines",
+			acceptance: "Cmd: go test ./pkg/ops/... -run TestFoo\nCmd: go test ./pkg/dispatcher/... -run TestBar",
+			expected:   0,
+		},
+		{
+			name:       "mixed Read and Cmd lines — only Read contributes",
 			acceptance: "Read: pkg/ops/foo.go\nCmd: go test ./pkg/dispatcher/...\nAssert: pass",
-			expected:   2,
+			expected:   1,
 		},
 		{
 			name:       "no recognizable paths",

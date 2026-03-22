@@ -2,7 +2,7 @@ package protocol
 
 import (
 	"fmt"
-	"regexp"
+	"path/filepath"
 	"strings"
 )
 
@@ -127,16 +127,28 @@ func FormatEscalation(typ EscalationType, beadID, summary, details string) strin
 	return fmt.Sprintf("[ORO-DISPATCH] %s: %s — %s.", typ, beadID, summary)
 }
 
-// CountDistinctModules counts distinct Go package directories referenced in the
-// acceptance criteria text. It extracts paths matching pkg/<module>/... or
-// ./pkg/<module>/... patterns and returns the number of unique top-level modules.
+// CountDistinctModules counts distinct Go package directories referenced in
+// "Read:" lines of the acceptance criteria text. Each Read: line may contain
+// comma-separated file paths (e.g. "pkg/foo/bar.go:42, pkg/baz/qux.go:10").
+// The package directory is computed via filepath.Dir; duplicate directories are
+// collapsed. Returns 0 when no Read: lines are present.
 //
 //oro:testonly
 func CountDistinctModules(acceptance string) int {
-	re := regexp.MustCompile(`(?:\./)?(pkg/[^/\s.]+)`)
 	seen := make(map[string]struct{})
-	for _, match := range re.FindAllStringSubmatch(acceptance, -1) {
-		seen[match[1]] = struct{}{}
+	for _, line := range strings.Split(acceptance, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Read:") {
+			continue
+		}
+		content := strings.TrimPrefix(line, "Read:")
+		for _, part := range strings.Split(content, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			seen[filepath.Dir(part)] = struct{}{}
+		}
 	}
 	return len(seen)
 }

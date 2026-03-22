@@ -1086,6 +1086,54 @@ func TestDispatcher_AssignBead_SkipsBeadWithoutAcceptance(t *testing.T) {
 	}, 2*time.Second)
 }
 
+func TestCheckBeadReady_RejectsOversizedBead(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Bead with AC that touches 3 distinct modules — exceeds the 2-module limit.
+	oversizedAC := "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38"
+	beadSrc.mu.Lock()
+	beadSrc.shown = map[string]*protocol.BeadDetail{
+		"bead-oversize": {Title: "Oversized bead", AcceptanceCriteria: oversizedAC},
+	}
+	beadSrc.mu.Unlock()
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-oversize", Title: "Oversized bead", Priority: 1}})
+
+	// Bead must NOT be assigned — OVERSIZED_BEAD escalation fires instead.
+	msg, ok := readMsg(t, conn, 1*time.Second)
+	if ok && msg.Type == protocol.MsgAssign {
+		t.Fatal("oversized bead should not be assigned; OVERSIZED_BEAD escalation should fire instead")
+	}
+
+	// OVERSIZED_BEAD escalation must be emitted.
+	waitFor(t, func() bool {
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, string(protocol.EscOversizedBead)) {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
+
+	// Bead must enter worktreeFailure cooldown (same mechanism as MISSING_AC).
+	d.mu.Lock()
+	_, inCooldown := d.worktreeFailures["bead-oversize"]
+	d.mu.Unlock()
+	if !inCooldown {
+		t.Error("oversized bead should be in worktreeFailures cooldown after rejection")
+	}
+}
+
 func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)

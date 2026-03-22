@@ -2481,6 +2481,12 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		d.recordAssignmentFailure(bead.ID) // 60-second cooldown prevents re-triggering
 		return title, "", false            // skip assignment this cycle
 	}
+	if modules := protocol.CountDistinctModules(acceptance); modules > 2 {
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscOversizedBead, bead.ID,
+			fmt.Sprintf("touches %d modules — needs decomposition", modules), ""), bead.ID, workerID)
+		d.recordAssignmentFailure(bead.ID)
+		return title, "", false
+	}
 	return title, acceptance, true
 }
 
