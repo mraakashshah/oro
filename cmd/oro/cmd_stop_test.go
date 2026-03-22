@@ -728,3 +728,88 @@ func TestStopAll_DoltPersists(t *testing.T) {
 		t.Errorf("expected 'found 2 running daemon(s)' in output, got %q", output)
 	}
 }
+
+// TestIsStdinTTY exercises the isStdinTTY function.
+// In test environments stdin is not a TTY, so it returns false.
+// This covers the non-error code paths in the function.
+func TestIsStdinTTY(t *testing.T) {
+	result := isStdinTTY()
+	// In CI / test runner stdin is never a TTY — just verify it returns without panic.
+	if result {
+		// If somehow a TTY, that's fine too.
+		t.Logf("isStdinTTY returned true (running in interactive terminal)")
+	}
+}
+
+// TestDefaultKill_Success exercises the happy path of defaultKill by sending
+// SIGKILL to a short-lived child process.
+func TestDefaultKill_Success(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	go func() { _ = cmd.Wait() }()
+
+	if err := defaultKill(cmd.Process.Pid); err != nil {
+		t.Errorf("defaultKill: %v", err)
+	}
+}
+
+// TestDefaultKill_DeadPID exercises the error path: sending SIGKILL to a
+// process that does not exist should return an error.
+func TestDefaultKill_DeadPID(t *testing.T) {
+	// PID 4000000 is well beyond the Linux/macOS max (typically 4194304 or less
+	// and certainly not running); os.FindProcess succeeds on Unix regardless, but
+	// proc.Signal returns ESRCH.
+	const deadPID = 4000000
+	err := defaultKill(deadPID)
+	if err == nil {
+		t.Skipf("process %d unexpectedly exists; skipping error-path test", deadPID)
+	}
+	if !strings.Contains(err.Error(), "SIGKILL") {
+		t.Errorf("expected SIGKILL in error message, got: %v", err)
+	}
+}
+
+// TestDefaultSignalINT_DeadPID exercises the error path: sending SIGINT to a
+// process that does not exist should return an error.
+func TestDefaultSignalINT_DeadPID(t *testing.T) {
+	const deadPID = 4000001
+	err := defaultSignalINT(deadPID)
+	if err == nil {
+		t.Skipf("process %d unexpectedly exists; skipping error-path test", deadPID)
+	}
+	if !strings.Contains(err.Error(), "SIGINT") {
+		t.Errorf("expected SIGINT in error message, got: %v", err)
+	}
+}
+
+// TestWaitForExit_ContextCancellation verifies that waitForExit returns a
+// context error when the context is cancelled while the process is still alive.
+func TestWaitForExit_ContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	err := waitForExit(ctx, os.Getpid(), func(int) bool { return true })
+	if err == nil {
+		t.Fatal("expected error on context cancellation, got nil")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("expected 'context canceled' in error, got: %v", err)
+	}
+}
+
+// TestRunStopAll_NoDaemons exercises the early-return path when no daemons are found.
+func TestRunStopAll_NoDaemons(t *testing.T) {
+	oroHome := t.TempDir()
+	var buf bytes.Buffer
+	if err := runStopAll(context.Background(), oroHome, false, &buf); err != nil {
+		t.Fatalf("runStopAll: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no running daemons found") {
+		t.Errorf("expected 'no running daemons found', got %q", buf.String())
+	}
+}
