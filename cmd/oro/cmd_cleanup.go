@@ -331,8 +331,8 @@ func parseBranchNames(output string) []string {
 
 // cleanupDolt removes stale dolt PID/port files when the referenced process
 // is dead. Does NOT kill healthy running dolt servers — dolt persists across
-// sessions. Does NOT scan for orphans via pgrep.
-// Returns true if stale files were cleaned. Idempotent.
+// sessions. When no PID file exists, scans for orphan dolt processes via pgrep.
+// Returns true if stale files were cleaned or orphans were signaled. Idempotent.
 func cleanupDolt(cfg *cleanupConfig) bool {
 	if cfg.beadsDir == "" {
 		return false
