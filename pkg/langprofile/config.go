@@ -98,9 +98,14 @@ func ReadConfig(projectRoot string) (*Config, error) {
 	if projectRoot == "" {
 		return nil, ErrNoProjectRoot
 	}
+	return LoadConfig(filepath.Join(projectRoot, ".oro", "config.yaml"))
+}
 
-	configPath := filepath.Join(projectRoot, ".oro", "config.yaml")
-	data, err := os.ReadFile(configPath) //nolint:gosec // path constructed from trusted projectRoot
+// LoadConfig loads and parses the oro config from an explicit file path.
+// Returns nil,nil if the file does not exist (graceful absence).
+// Returns nil,err if the file exists but the YAML is malformed.
+func LoadConfig(configPath string) (*Config, error) {
+	data, err := os.ReadFile(configPath) //nolint:gosec // configPath accepted from caller
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

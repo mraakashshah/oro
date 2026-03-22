@@ -16,8 +16,18 @@ import (
 //
 //oro:testonly
 func DetectExistingTools(projectRoot string, profile LangProfile) LangProfile {
-	// 1. Check for .oro/config.yaml override first (highest priority)
-	if adapted, ok := loadOroConfig(projectRoot, profile); ok {
+	return DetectExistingToolsAt(projectRoot, "", profile)
+}
+
+// DetectExistingToolsAt is like DetectExistingTools but accepts an explicit
+// configPath for the .oro/config.yaml override. Use this for stealth mode
+// where the config lives outside the project tree.
+// An empty configPath falls back to the default .oro/config.yaml path.
+//
+//oro:testonly
+func DetectExistingToolsAt(projectRoot, configPath string, profile LangProfile) LangProfile {
+	// 1. Check for config override first (highest priority)
+	if adapted, ok := loadOroConfig(projectRoot, configPath, profile); ok {
 		return adapted
 	}
 
@@ -32,11 +42,14 @@ func DetectExistingTools(projectRoot string, profile LangProfile) LangProfile {
 	}
 }
 
-// loadOroConfig loads .oro/config.yaml if it exists and adapts the profile.
+// loadOroConfig loads the oro config override and adapts the profile.
+// When configPath is empty, falls back to .oro/config.yaml under projectRoot.
 // Returns the adapted profile and true if config was loaded, otherwise original profile and false.
-func loadOroConfig(projectRoot string, profile LangProfile) (LangProfile, bool) {
-	configPath := filepath.Join(projectRoot, ".oro", "config.yaml")
-	//nolint:gosec // configPath is constructed from projectRoot parameter
+func loadOroConfig(projectRoot, configPath string, profile LangProfile) (LangProfile, bool) {
+	if configPath == "" {
+		configPath = filepath.Join(projectRoot, ".oro", "config.yaml")
+	}
+	//nolint:gosec // configPath is constructed from trusted parameters
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return profile, false

@@ -8,6 +8,63 @@ import (
 	"oro/pkg/langprofile"
 )
 
+func TestDetectUsesConfigPath(t *testing.T) {
+	t.Run("uses explicit configPath instead of default .oro/config.yaml", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Write config at a non-default location (not .oro/config.yaml)
+		customPath := filepath.Join(tmpDir, "stealth", "config.yaml")
+		if err := os.MkdirAll(filepath.Dir(customPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		configYAML := `language: python
+formatters:
+  - name: yapf
+    cmd: yapf -i -r .
+`
+		//nolint:gosec // Test file permissions are acceptable
+		if err := os.WriteFile(customPath, []byte(configYAML), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		base := langprofile.LangProfile{
+			Language: "python",
+			Detect:   func(string) bool { return true },
+			Formatters: []langprofile.Tool{
+				{Name: "ruff", Cmd: "ruff format ."},
+			},
+			TestCmd: "pytest",
+		}
+
+		adapted := langprofile.DetectExistingToolsAt(tmpDir, customPath, base)
+
+		if len(adapted.Formatters) == 0 {
+			t.Fatal("expected at least one formatter")
+		}
+		if adapted.Formatters[0].Name != "yapf" {
+			t.Errorf("expected yapf from custom config path, got %s", adapted.Formatters[0].Name)
+		}
+	})
+
+	t.Run("empty configPath falls back to default .oro/config.yaml", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// No .oro/config.yaml present → should return original profile unchanged
+		base := langprofile.LangProfile{
+			Language: "python",
+			Detect:   func(string) bool { return true },
+			Formatters: []langprofile.Tool{
+				{Name: "ruff", Cmd: "ruff format ."},
+			},
+			TestCmd: "pytest",
+		}
+
+		adapted := langprofile.DetectExistingToolsAt(tmpDir, "", base)
+
+		if adapted.Formatters[0].Name != "ruff" {
+			t.Errorf("expected ruff (no config at default path), got %s", adapted.Formatters[0].Name)
+		}
+	})
+}
+
 func TestDetectExistingTools(t *testing.T) {
 	t.Run("detects eslint in package.json devDeps and uses it over biome", func(t *testing.T) {
 		// Setup: create temp project with package.json containing eslint
