@@ -1,0 +1,24 @@
+package main
+
+// oroPreCommitCheck is the shell snippet injected into the pre-commit wrapper.
+// It rejects any staged files under oro-docs/ to prevent accidental leakage in
+// stealth mode.
+const oroPreCommitCheck = `# oro check: reject staged oro-docs/ files
+if git diff --cached --name-only | grep -q '^oro-docs/'; then
+    echo "oro: staged files under oro-docs/ are not allowed in stealth mode" >&2
+    exit 1
+fi`
+
+// oroPrePushCheck is the shell snippet injected into the pre-push wrapper.
+// It blocks pushes of agent/* branches to prevent stealth-mode work-branches
+// from appearing in the shared remote.
+const oroPrePushCheck = `# oro check: block agent/* branches
+while IFS= read -r line; do
+    local_ref=$(echo "$line" | awk '{print $1}')
+    case "$local_ref" in
+        refs/heads/agent/*)
+            echo "oro: pushing agent/* branches is not allowed in stealth mode" >&2
+            exit 1
+            ;;
+    esac
+done`
