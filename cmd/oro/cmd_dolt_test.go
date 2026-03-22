@@ -13,6 +13,15 @@ import (
 	"testing"
 )
 
+// helpers for injecting a no-op runLaunchctl in tests that exercise code paths
+// that call uninstallLaunchAgent or installLaunchAgent indirectly.
+func withNoopLaunchctl(t *testing.T) {
+	t.Helper()
+	orig := runLaunchctl
+	runLaunchctl = func(_ ...string) error { return nil }
+	t.Cleanup(func() { runLaunchctl = orig })
+}
+
 // ---------- discoverBreadsDirs ----------
 
 func TestDiscoverBreadsDirsFromProjectRoot(t *testing.T) {
@@ -990,4 +999,696 @@ func TestDoltTeardown(t *testing.T) {
 			t.Errorf("should say 'not running', got: %s", buf.String())
 		}
 	})
+}
+
+// ---------- atomicCopyDir ----------
+
+func TestAtomicCopyDir_SrcNotExists(t *testing.T) {
+	destParent := t.TempDir()
+	srcDir := filepath.Join(t.TempDir(), "nonexistent")
+
+	if err := atomicCopyDir(srcDir, destParent, "mydb"); err != nil {
+		t.Fatalf("expected nil when src doesn't exist, got: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destParent, "mydb")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("destination should not be created when source doesn't exist")
+	}
+}
+
+// ---------- copyDirRecursive ----------
+
+func TestCopyDirRecursive_UnreadableFile(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "dst")
+
+	secretFile := filepath.Join(src, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("data"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chmod(secretFile, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(secretFile, 0o600) })
+
+	if err := copyDirRecursive(src, dst); err == nil {
+		t.Error("expected error when copying unreadable file")
+	}
+}
+
+func TestCopyDirRecursive_UnwritableDest(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	dstParent := t.TempDir()
+	if err := os.Chmod(dstParent, 0o555); err != nil {
+		t.Fatalf("chmod dstParent: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dstParent, 0o755) })
+
+	dst := filepath.Join(dstParent, "dst")
+	if err := copyDirRecursive(src, dst); err == nil {
+		t.Error("expected error when destination parent is read-only")
+	}
+}
+
+// ---------- installDoltPlist error paths ----------
+
+func TestInstallDoltPlist_GenerateFails(t *testing.T) {
+	cfg := &doltSetupConfig{
+		homeDir: t.TempDir(),
+		generatePlistFn: func(_, _ string, _ int) ([]byte, error) {
+			return nil, errors.New("generate failed")
+		},
+	}
+	var buf bytes.Buffer
+	if err := installDoltPlist(cfg, &buf); err != nil {
+		t.Fatalf("expected nil when generate fails (warn+skip), got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "warning") {
+		t.Errorf("should print warning, got: %s", buf.String())
+	}
+}
+
+func TestInstallDoltPlist_InstallFails(t *testing.T) {
+	cfg := &doltSetupConfig{
+		homeDir: t.TempDir(),
+		generatePlistFn: func(_, _ string, _ int) ([]byte, error) {
+			return []byte("<plist/>"), nil
+		},
+		installPlistFn: func([]byte, string) error {
+			return errors.New("install failed")
+		},
+	}
+	var buf bytes.Buffer
+	if err := installDoltPlist(cfg, &buf); err == nil {
+		t.Fatal("expected error when installPlistFn fails")
+	}
+}
+
+// ---------- runDoltSetup error paths ----------
+
+func TestRunDoltSetup_FindProjectsError(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Malformed JSON triggers readDoltMeta error → findDoltProjects error.
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte("{invalid"), 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	cfg := &doltSetupConfig{
+		oroHome:         t.TempDir(),
+		homeDir:         t.TempDir(),
+		beadsDirs:       []string{beadsDir},
+		dispatcherPIDFn: func() int { return 0 },
+	}
+	var buf bytes.Buffer
+	if err := runDoltSetup(cfg, &buf); err == nil {
+		t.Fatal("expected error when metadata is malformed")
+	}
+}
+
+func TestRunDoltSetup_MkdirAllError(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "dolt", "beads"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeMetadata(t, beadsDir, map[string]any{
+		"backend": "dolt", "dolt_server_port": 13350, "dolt_database": "beads",
+	})
+
+	oroHome := t.TempDir()
+	// Place a regular file where oroHome/dolt/ should be created.
+	if err := os.WriteFile(filepath.Join(oroHome, "dolt"), []byte("not-a-dir"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	cfg := &doltSetupConfig{
+		oroHome:         oroHome,
+		homeDir:         t.TempDir(),
+		beadsDirs:       []string{beadsDir},
+		dispatcherPIDFn: func() int { return 0 },
+	}
+	var buf bytes.Buffer
+	if err := runDoltSetup(cfg, &buf); err == nil {
+		t.Fatal("expected error when dolt dir cannot be created")
+	}
+}
+
+func TestRunDoltSetup_MigrateError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	srcDir := filepath.Join(beadsDir, "dolt", "beads")
+	if err := os.MkdirAll(srcDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeMetadata(t, beadsDir, map[string]any{
+		"backend": "dolt", "dolt_server_port": 13350, "dolt_database": "beads",
+	})
+	// Make the source dolt dir unreadable so copyDirRecursive fails.
+	if err := os.Chmod(srcDir, 0o000); err != nil {
+		t.Fatalf("chmod srcDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(srcDir, 0o750) })
+
+	cfg := &doltSetupConfig{
+		oroHome:         t.TempDir(),
+		homeDir:         t.TempDir(),
+		beadsDirs:       []string{beadsDir},
+		aliveFn:         func(int) bool { return false },
+		dispatcherPIDFn: func() int { return 0 },
+		killOrphansFn:   func([]doltProject, io.Writer) {},
+	}
+	var buf bytes.Buffer
+	if err := runDoltSetup(cfg, &buf); err == nil {
+		t.Fatal("expected error when source directory is unreadable")
+	}
+}
+
+func TestRunDoltSetup_InstallPlistError(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "dolt", "beads"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeMetadata(t, beadsDir, map[string]any{
+		"backend": "dolt", "dolt_server_port": 13350, "dolt_database": "beads",
+	})
+
+	cfg := &doltSetupConfig{
+		oroHome:         t.TempDir(),
+		homeDir:         t.TempDir(),
+		beadsDirs:       []string{beadsDir},
+		aliveFn:         func(int) bool { return false },
+		dispatcherPIDFn: func() int { return 0 },
+		killOrphansFn:   func([]doltProject, io.Writer) {},
+		generatePlistFn: func(_, _ string, _ int) ([]byte, error) { return []byte("<plist/>"), nil },
+		installPlistFn:  func([]byte, string) error { return errors.New("install failed") },
+	}
+	var buf bytes.Buffer
+	if err := runDoltSetup(cfg, &buf); err == nil {
+		t.Fatal("expected error when plist install fails")
+	}
+}
+
+func TestRunDoltSetup_StartFnError(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "dolt", "beads"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeMetadata(t, beadsDir, map[string]any{
+		"backend": "dolt", "dolt_server_port": 13350, "dolt_database": "beads",
+	})
+
+	cfg := &doltSetupConfig{
+		oroHome:         t.TempDir(),
+		homeDir:         t.TempDir(),
+		beadsDirs:       []string{beadsDir},
+		aliveFn:         func(int) bool { return false },
+		dispatcherPIDFn: func() int { return 0 },
+		killOrphansFn:   func([]doltProject, io.Writer) {},
+		generatePlistFn: func(_, _ string, _ int) ([]byte, error) { return []byte("<plist/>"), nil },
+		installPlistFn:  func([]byte, string) error { return nil },
+		startFn:         func(string) (int, error) { return 0, errors.New("start failed") },
+	}
+	var buf bytes.Buffer
+	err := runDoltSetup(cfg, &buf)
+	if err == nil {
+		t.Fatal("expected error when startFn fails")
+	}
+	if !strings.Contains(err.Error(), "start") {
+		t.Errorf("error should mention start, got: %v", err)
+	}
+}
+
+// ---------- findDoltProjects ----------
+
+func TestFindDoltProjects_MetaError(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Malformed JSON so readDoltMeta returns an error.
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte("{invalid"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, err := findDoltProjects([]string{beadsDir})
+	if err == nil {
+		t.Fatal("expected error from malformed metadata in findDoltProjects")
+	}
+}
+
+// ---------- restorePerProjectDBs error paths ----------
+
+func TestRestorePerProjectDBs_MetaError(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte("{bad json"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg := &doltCmdConfig{
+		oroHome:   t.TempDir(),
+		beadsDirs: []string{beadsDir},
+	}
+	var buf bytes.Buffer
+	if err := restorePerProjectDBs(cfg, &buf); err == nil {
+		t.Fatal("expected error from malformed metadata in restorePerProjectDBs")
+	}
+}
+
+func TestRestorePerProjectDBs_AtomicCopyError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+
+	oroHome := t.TempDir()
+	const dbName = "beads"
+
+	// Create shared DB dir that will be made unreadable.
+	sharedDBDir := filepath.Join(oroHome, "dolt", dbName)
+	if err := os.MkdirAll(sharedDBDir, 0o750); err != nil {
+		t.Fatalf("mkdir shared dolt: %v", err)
+	}
+	if err := os.Chmod(sharedDBDir, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sharedDBDir, 0o750) })
+
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeMetadata(t, beadsDir, map[string]any{
+		"backend": "dolt", "dolt_server_port": SharedDoltPort, "dolt_database": dbName,
+	})
+
+	cfg := &doltCmdConfig{
+		oroHome:   oroHome,
+		beadsDirs: []string{beadsDir},
+	}
+	var buf bytes.Buffer
+	if err := restorePerProjectDBs(cfg, &buf); err == nil {
+		t.Fatal("expected error when shared DB directory is unreadable")
+	}
+}
+
+// ---------- readSharedServerState edge cases ----------
+
+func TestReadSharedServerState_InvalidPID(t *testing.T) {
+	oroHome := t.TempDir()
+	pidPath := filepath.Join(oroHome, "dolt-server.pid")
+	portPath := filepath.Join(oroHome, "dolt-server.port")
+
+	if err := os.WriteFile(pidPath, []byte("not-a-number"), 0o600); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+
+	cfg := &doltCmdConfig{
+		aliveFn:  func(int) bool { return true },
+		isPortUp: func(int) bool { return true },
+	}
+	pid, port, running := readSharedServerState(cfg, pidPath, portPath)
+	if pid != 0 || port != 0 || running {
+		t.Errorf("invalid PID should return (0,0,false), got (%d,%d,%v)", pid, port, running)
+	}
+}
+
+func TestReadSharedServerState_NoPortFile(t *testing.T) {
+	oroHome := t.TempDir()
+	pidPath := filepath.Join(oroHome, "dolt-server.pid")
+	portPath := filepath.Join(oroHome, "dolt-server.port") // intentionally absent
+
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+
+	cfg := &doltCmdConfig{
+		aliveFn:  func(int) bool { return true },
+		isPortUp: func(int) bool { return true },
+	}
+	pid, port, running := readSharedServerState(cfg, pidPath, portPath)
+	if pid != os.Getpid() {
+		t.Errorf("pid = %d, want %d", pid, os.Getpid())
+	}
+	if port != SharedDoltPort {
+		t.Errorf("port = %d, want SharedDoltPort (%d) when port file missing", port, SharedDoltPort)
+	}
+	if !running {
+		t.Error("running should be true when process is alive")
+	}
+}
+
+func TestReadSharedServerState_InvalidPort(t *testing.T) {
+	oroHome := t.TempDir()
+	pidPath := filepath.Join(oroHome, "dolt-server.pid")
+	portPath := filepath.Join(oroHome, "dolt-server.port")
+
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	if err := os.WriteFile(portPath, []byte("not-a-port"), 0o600); err != nil {
+		t.Fatalf("write port: %v", err)
+	}
+
+	cfg := &doltCmdConfig{
+		aliveFn:  func(int) bool { return true },
+		isPortUp: func(int) bool { return true },
+	}
+	_, port, _ := readSharedServerState(cfg, pidPath, portPath)
+	if port != SharedDoltPort {
+		t.Errorf("invalid port file should fall back to SharedDoltPort (%d), got %d", SharedDoltPort, port)
+	}
+}
+
+// ---------- runDoltStart edge cases ----------
+
+func TestRunDoltStart_PidZeroAdopted(t *testing.T) {
+	cfg := &doltCmdConfig{
+		oroHome:  t.TempDir(),
+		aliveFn:  func(int) bool { return false },
+		isPortUp: func(int) bool { return false },
+		startFn:  func(string) (int, error) { return 0, nil }, // pid=0 → adopted existing server
+	}
+	var buf bytes.Buffer
+	if err := runDoltStart(cfg, &buf); err != nil {
+		t.Fatalf("expected no error when adopted: %v", err)
+	}
+	if !strings.Contains(buf.String(), "already running") {
+		t.Errorf("should report 'already running' for adopted server (pid=0), got: %s", buf.String())
+	}
+}
+
+func TestRunDoltStart_GenericStartError(t *testing.T) {
+	cfg := &doltCmdConfig{
+		oroHome:  t.TempDir(),
+		aliveFn:  func(int) bool { return false },
+		isPortUp: func(int) bool { return false },
+		startFn:  func(string) (int, error) { return 0, errors.New("generic start error") },
+	}
+	var buf bytes.Buffer
+	err := runDoltStart(cfg, &buf)
+	if err == nil {
+		t.Fatal("expected error from generic start failure")
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		t.Error("should not return ErrNotFound for generic error")
+	}
+}
+
+// ---------- runDoltStop error path ----------
+
+func TestRunDoltStop_StopFnError(t *testing.T) {
+	oroHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(oroHome, "dolt-server.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oroHome, "dolt-server.port"), []byte("13307"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &doltCmdConfig{
+		oroHome:         oroHome,
+		aliveFn:         func(int) bool { return true },
+		isPortUp:        func(int) bool { return true },
+		force:           false,
+		dispatcherPIDFn: func() int { return 0 },
+		stopFn:          func(string) error { return errors.New("stop failed") },
+	}
+	var buf bytes.Buffer
+	if err := runDoltStop(cfg, &buf); err == nil {
+		t.Fatal("expected error when stopFn fails")
+	}
+}
+
+// ---------- killOrphanServersImpl additional coverage ----------
+
+func TestKillOrphanServersImpl_PortDerived(t *testing.T) {
+	// port==0 → DerivePort is called; port not listening → no kill.
+	beadsDir := t.TempDir()
+	killed := false
+	projects := []doltProject{{beadsDir: beadsDir, port: 0, dbName: "beads"}}
+	killOrphanServersImpl(projects, &bytes.Buffer{},
+		func(int) bool { return false }, // alive
+		func(int) bool { return false }, // port not up
+		func(int) (int, error) { return 0, nil },
+		func(int, string) error { killed = true; return nil },
+	)
+	if killed {
+		t.Error("should not kill anything when derived port is not listening")
+	}
+}
+
+func TestKillOrphanServersImpl_InvalidPIDFile(t *testing.T) {
+	// PID file has non-numeric content → parse fails → falls through to lsof.
+	beadsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(beadsDir, "dolt-server.pid"), []byte("not-a-pid"), 0o600); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	killed := false
+	projects := []doltProject{{beadsDir: beadsDir, port: 13350, dbName: "beads"}}
+	killOrphanServersImpl(projects, &bytes.Buffer{},
+		func(int) bool { return true },  // alive
+		func(int) bool { return false }, // port not up → lsof not triggered
+		func(int) (int, error) { return 0, nil },
+		func(int, string) error { killed = true; return nil },
+	)
+	if killed {
+		t.Error("should not kill when port not up after PID parse failure")
+	}
+}
+
+func TestKillOrphanServersImpl_KillsViaLsof(t *testing.T) {
+	// No PID file, port up, lsof finds PID → kill it.
+	beadsDir := t.TempDir()
+	killed := false
+	var killedPID int
+	projects := []doltProject{{beadsDir: beadsDir, port: 13350, dbName: "beads"}}
+	killOrphanServersImpl(projects, &bytes.Buffer{},
+		func(int) bool { return false },
+		func(int) bool { return true },            // port IS up
+		func(int) (int, error) { return 42, nil }, // lsof finds PID 42
+		func(pid int, _ string) error { killed = true; killedPID = pid; return nil },
+	)
+	if !killed {
+		t.Error("should have killed process discovered via lsof")
+	}
+	if killedPID != 42 {
+		t.Errorf("killed PID = %d, want 42", killedPID)
+	}
+}
+
+func TestKillOrphanServersImpl_DiscoverNonErrNotFound(t *testing.T) {
+	// discover returns a non-ErrNotFound error → skip (no kill).
+	beadsDir := t.TempDir()
+	killed := false
+	projects := []doltProject{{beadsDir: beadsDir, port: 13350, dbName: "beads"}}
+	killOrphanServersImpl(projects, &bytes.Buffer{},
+		func(int) bool { return false },
+		func(int) bool { return true },                                             // port IS up
+		func(int) (int, error) { return 0, errors.New("some other discover err") }, // not ErrNotFound
+		func(int, string) error { killed = true; return nil },
+	)
+	if killed {
+		t.Error("should not kill when discover returns non-ErrNotFound error")
+	}
+}
+
+// ---------- runDoltTeardown error paths ----------
+
+func TestRunDoltTeardown_StopError(t *testing.T) {
+	oroHome := t.TempDir()
+	homeDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(oroHome, "dolt-server.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oroHome, "dolt-server.port"), []byte("13307"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &doltCmdConfig{
+		oroHome:         oroHome,
+		aliveFn:         func(int) bool { return true },
+		isPortUp:        func(int) bool { return true },
+		force:           false,
+		dispatcherPIDFn: func() int { return 0 },
+		stopFn:          func(string) error { return errors.New("stop failed") },
+		beadsDirs:       []string{},
+	}
+	var buf bytes.Buffer
+	if err := runDoltTeardown(cfg, homeDir, &buf); err == nil {
+		t.Fatal("expected error when stop fails")
+	}
+}
+
+func TestRunDoltTeardown_RestoreError(t *testing.T) {
+	oroHome := t.TempDir()
+	homeDir := t.TempDir()
+
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Malformed JSON to trigger restorePerProjectDBs error.
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte("{bad"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg := &doltCmdConfig{
+		oroHome:         oroHome,
+		aliveFn:         func(int) bool { return false },
+		isPortUp:        func(int) bool { return false },
+		force:           false,
+		dispatcherPIDFn: func() int { return 0 },
+		stopFn:          func(string) error { return nil },
+		beadsDirs:       []string{beadsDir},
+	}
+	withNoopLaunchctl(t)
+	var buf bytes.Buffer
+	if err := runDoltTeardown(cfg, homeDir, &buf); err == nil {
+		t.Fatal("expected error when restore fails")
+	}
+}
+
+// ---------- newDoltStatusCmd RunE ----------
+
+func TestNewDoltStatusCmd_RunEExecutes(t *testing.T) {
+	// Execute the RunE of newDoltStatusCmd with real system calls.
+	// runDoltStatus never returns an error — it always reports a status.
+	withNoopLaunchctl(t)
+	cmd := newDoltStatusCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("newDoltStatusCmd RunE returned unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "running") && !strings.Contains(out, "stopped") {
+		t.Errorf("unexpected status output: %s", out)
+	}
+}
+
+// ---------- copyDirRecursive write error ----------
+
+func TestCopyDirRecursive_WriteFileFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping permission test when running as root")
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	dst := t.TempDir()
+	if err := os.Chmod(dst, 0o555); err != nil {
+		t.Fatalf("chmod dst: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dst, 0o755) })
+	if err := copyDirRecursive(src, dst); err == nil {
+		t.Error("expected error writing to read-only dst")
+	}
+}
+
+// ---------- findDoltProjects empty dbName ----------
+
+func TestFindDoltProjects_EmptyDbName(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeMetadata(t, beadsDir, map[string]any{
+		"backend": "dolt", "dolt_server_port": 13350, "dolt_database": "",
+	})
+	projects, err := findDoltProjects([]string{beadsDir})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(projects) != 1 || projects[0].dbName != "beads" {
+		t.Errorf("expected dbName='beads' for empty dolt_database, got %v", projects)
+	}
+}
+
+// ---------- newDoltStopCmd RunE ----------
+
+func TestNewDoltStopCmd_RunEExecutes(t *testing.T) {
+	// Execute the RunE of newDoltStopCmd when dolt is not running.
+	// runDoltStop reads state files and probes the port — all safe when dolt is absent.
+	cmd := newDoltStopCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("newDoltStopCmd RunE returned unexpected error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "not running") {
+		t.Logf("stop output: %s", out)
+	}
+}
+
+// ---------- newDoltSetupCmd RunE ----------
+
+func TestNewDoltSetupCmd_RunEExecutes(t *testing.T) {
+	// Execute the RunE with an empty ORO_HOME so no dolt projects are discovered.
+	// runDoltSetup returns early with "no dolt projects found; nothing to do".
+	t.Setenv("ORO_HOME", t.TempDir())
+	withNoopLaunchctl(t)
+	cmd := newDoltSetupCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("newDoltSetupCmd RunE returned unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no dolt projects") {
+		t.Logf("setup output: %s", buf.String())
+	}
+}
+
+// ---------- newDoltTeardownCmd RunE ----------
+
+func TestNewDoltTeardownCmd_RunEExecutes(t *testing.T) {
+	// Execute the RunE with empty ORO_HOME and a fake HOME so no real state is touched.
+	// With no beads dirs, teardown is a no-op: stop (not running) + uninstall (no plist) + restore (no projects).
+	t.Setenv("ORO_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir()) // redirect home so uninstallLaunchAgent targets a temp dir
+	withNoopLaunchctl(t)
+	cmd := newDoltTeardownCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("newDoltTeardownCmd RunE returned unexpected error: %v", err)
+	}
+}
+
+// ---------- newDoltStartCmd RunE ----------
+
+func TestNewDoltStartCmd_RunEExecutes(t *testing.T) {
+	// Execute the RunE with empty PATH so startSharedDoltServer fails with ErrNotFound.
+	// runDoltStart wraps the error as "dolt not found in PATH".
+	t.Setenv("ORO_HOME", t.TempDir())
+	t.Setenv("PATH", "")
+	cmd := newDoltStartCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	err := cmd.RunE(cmd, nil)
+	// Expect either success (server already running) or "dolt not found in PATH" error.
+	if err != nil && !strings.Contains(err.Error(), "dolt not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
