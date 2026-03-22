@@ -110,8 +110,9 @@ Aborts if the dispatcher is running. Use --force to override.`,
 	return cmd
 }
 
-// discoverBreadsDirs scans ~/.oro/projects/ for registered project beads paths.
-// For each project directory it looks for a beads_path file.
+// discoverBreadsDirs scans ~/.oro/projects/ for registered projects and derives beads paths.
+// For each project directory it reads project.root, resolves paths, and derives the .beads dir.
+// Gracefully skips projects with missing or invalid project.root, or where the root doesn't exist.
 // Falls back to an empty list when no projects are registered.
 func discoverBreadsDirs(oroHome string) []string {
 	projectsDir := filepath.Join(oroHome, "projects")
@@ -124,13 +125,24 @@ func discoverBreadsDirs(oroHome string) []string {
 		if !e.IsDir() {
 			continue
 		}
-		beadsLink := filepath.Join(projectsDir, e.Name(), "beads_path")
-		data, readErr := os.ReadFile(beadsLink) //nolint:gosec // path from trusted oroHome
-		if readErr == nil {
-			if beadsDir := strings.TrimSpace(string(data)); beadsDir != "" {
-				dirs = append(dirs, beadsDir)
-			}
+		projectDir := filepath.Join(projectsDir, e.Name())
+		projectRootFile := filepath.Join(projectDir, "project.root")
+		rootBytes, readErr := os.ReadFile(projectRootFile) //nolint:gosec // path from trusted oroHome
+		if readErr != nil {
+			continue // skip if project.root missing
 		}
+		rootPath := strings.TrimSpace(string(rootBytes))
+
+		// Verify project root directory exists before adding to list.
+		if _, statErr := os.Stat(rootPath); statErr != nil {
+			continue // skip if project root doesn't exist
+		}
+
+		projPaths, pathErr := ResolvePaths(rootPath)
+		if pathErr != nil {
+			continue // skip if paths can't be resolved
+		}
+		dirs = append(dirs, projPaths.BeadsDir)
 	}
 	return dirs
 }

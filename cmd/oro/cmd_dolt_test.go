@@ -12,6 +12,122 @@ import (
 	"testing"
 )
 
+// ---------- discoverBreadsDirs ----------
+
+func TestDiscoverBreadsDirsFromProjectRoot(t *testing.T) {
+	t.Run("happy path: reads project.root and derives beads dir", func(t *testing.T) {
+		// Create a mock project root with .beads directory.
+		projectRoot := t.TempDir()
+		beadsDir := filepath.Join(projectRoot, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir beads dir: %v", err)
+		}
+
+		// Create oroHome with projects directory and a registered project.
+		oroHome := t.TempDir()
+		projectsDir := filepath.Join(oroHome, "projects")
+		projectDir := filepath.Join(projectsDir, "my-project")
+		if err := os.MkdirAll(projectDir, 0o750); err != nil {
+			t.Fatalf("mkdir project dir: %v", err)
+		}
+
+		// Write project.root file pointing to the project root.
+		projectRootFile := filepath.Join(projectDir, "project.root")
+		if err := os.WriteFile(projectRootFile, []byte(projectRoot), 0o644); err != nil {
+			t.Fatalf("write project.root: %v", err)
+		}
+
+		// Call discoverBreadsDirs and expect it to return the beads dir.
+		dirs := discoverBreadsDirs(oroHome)
+		if len(dirs) != 1 {
+			t.Fatalf("expected 1 beads dir, got %d", len(dirs))
+		}
+		if dirs[0] != beadsDir {
+			t.Errorf("beads dir = %s, want %s", dirs[0], beadsDir)
+		}
+	})
+
+	t.Run("edge: project.root missing → skip project", func(t *testing.T) {
+		oroHome := t.TempDir()
+		projectsDir := filepath.Join(oroHome, "projects")
+		projectDir := filepath.Join(projectsDir, "my-project")
+		if err := os.MkdirAll(projectDir, 0o750); err != nil {
+			t.Fatalf("mkdir project dir: %v", err)
+		}
+
+		// No project.root file.
+		dirs := discoverBreadsDirs(oroHome)
+		if len(dirs) != 0 {
+			t.Errorf("expected no beads dirs (project.root missing), got %d", len(dirs))
+		}
+	})
+
+	t.Run("edge: project.root points to non-existent dir → skip", func(t *testing.T) {
+		oroHome := t.TempDir()
+		projectsDir := filepath.Join(oroHome, "projects")
+		projectDir := filepath.Join(projectsDir, "my-project")
+		if err := os.MkdirAll(projectDir, 0o750); err != nil {
+			t.Fatalf("mkdir project dir: %v", err)
+		}
+
+		// Write project.root pointing to a non-existent directory.
+		projectRootFile := filepath.Join(projectDir, "project.root")
+		nonExistent := filepath.Join(t.TempDir(), "no-such-dir", "project-root")
+		if err := os.WriteFile(projectRootFile, []byte(nonExistent), 0o644); err != nil {
+			t.Fatalf("write project.root: %v", err)
+		}
+
+		dirs := discoverBreadsDirs(oroHome)
+		if len(dirs) != 0 {
+			t.Errorf("expected no beads dirs (project root does not exist), got %d", len(dirs))
+		}
+	})
+
+	t.Run("edge: empty projects dir → return nil", func(t *testing.T) {
+		oroHome := t.TempDir()
+		// Don't create any projects.
+		dirs := discoverBreadsDirs(oroHome)
+		if dirs != nil {
+			t.Errorf("expected nil (no projects), got %v", dirs)
+		}
+	})
+
+	t.Run("multiple projects with valid beads dirs", func(t *testing.T) {
+		oroHome := t.TempDir()
+		projectsDir := filepath.Join(oroHome, "projects")
+
+		var expectedDirs []string
+		for _, projName := range []string{"proj-a", "proj-b"} {
+			projectRoot := t.TempDir()
+			beadsDir := filepath.Join(projectRoot, ".beads")
+			if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+				t.Fatalf("mkdir beads dir: %v", err)
+			}
+			expectedDirs = append(expectedDirs, beadsDir)
+
+			projectDir := filepath.Join(projectsDir, projName)
+			if err := os.MkdirAll(projectDir, 0o750); err != nil {
+				t.Fatalf("mkdir project dir: %v", err)
+			}
+
+			projectRootFile := filepath.Join(projectDir, "project.root")
+			if err := os.WriteFile(projectRootFile, []byte(projectRoot), 0o644); err != nil {
+				t.Fatalf("write project.root: %v", err)
+			}
+		}
+
+		dirs := discoverBreadsDirs(oroHome)
+		if len(dirs) != len(expectedDirs) {
+			t.Fatalf("expected %d beads dirs, got %d", len(expectedDirs), len(dirs))
+		}
+		for i, dir := range dirs {
+			if dir != expectedDirs[i] {
+				t.Errorf("beads dir %d = %s, want %s", i, dir, expectedDirs[i])
+			}
+		}
+	})
+}
+
 // ---------- oro dolt setup ----------
 
 func TestDoltSetup(t *testing.T) {
