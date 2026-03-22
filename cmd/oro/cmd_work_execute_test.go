@@ -13,6 +13,7 @@ import (
 
 	"oro/pkg/memory"
 	"oro/pkg/merge"
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
@@ -969,4 +970,22 @@ func TestExecuteWork_DeletesBranchAfterMerge(t *testing.T) {
 	} else if wt.deletedBranches[0] != expectedBranch {
 		t.Errorf("expected DeleteBranch(%q), got DeleteBranch(%q)", expectedBranch, wt.deletedBranches[0])
 	}
+}
+
+// sequentialOpsReviewer returns pre-configured Review results in order.
+// After all configured results are consumed, it returns VerdictFailed.
+type sequentialOpsReviewer struct {
+	results []ops.Result
+	idx     int
+}
+
+func (r *sequentialOpsReviewer) Review(_ context.Context, _ ops.ReviewOpts) <-chan ops.Result {
+	ch := make(chan ops.Result, 1)
+	if r.idx < len(r.results) {
+		ch <- r.results[r.idx]
+		r.idx++
+	} else {
+		ch <- ops.Result{Verdict: ops.VerdictFailed, Feedback: "no more results"}
+	}
+	return ch
 }

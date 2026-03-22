@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -947,5 +949,271 @@ func TestExecuteWork_NonEpicParent_UsesMain(t *testing.T) {
 	// Non-epic parent must not produce an "agent/<parentID>" base branch.
 	if wt.capturedBaseBranch != "main" {
 		t.Errorf("baseBranch = %q; want %q (non-epic parent must not produce agent/ branch)", wt.capturedBaseBranch, "main")
+	}
+}
+
+// TestExitError_Error verifies that exitError.Error() returns its message.
+func TestExitError_Error(t *testing.T) {
+	e := &exitError{code: 1, msg: "something went wrong"}
+	if got := e.Error(); got != "something went wrong" {
+		t.Errorf("exitError.Error() = %q, want %q", got, "something went wrong")
+	}
+}
+
+// TestReviewLoop_RejectedThenApproved verifies the rejection-then-approval path:
+// one rejection triggers a re-spawn + re-QG, then the next review approves.
+func TestReviewLoop_RejectedThenApproved(t *testing.T) {
+	opsMgr := &sequentialOpsReviewer{results: []ops.Result{
+		{Verdict: ops.VerdictRejected, Feedback: "needs more tests"},
+		{Verdict: ops.VerdictApproved},
+	}}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	deps := &workDeps{
+		opsMgr:  opsMgr,
+		spawner: sp,
+		runQG:   func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+	}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead:    testBead(),
+	}
+	model := "sonnet"
+	attempt := 0
+	feedback := ""
+
+	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	if err != nil {
+		t.Fatalf("expected nil, got: %v", err)
+	}
+	if model != protocol.ModelOpus {
+		t.Errorf("model after rejection = %q, want %q", model, protocol.ModelOpus)
+	}
+	if !sp.called {
+		t.Error("expected spawner to be called for re-execution after rejection")
+	}
+}
+
+// TestReviewLoop_RejectedMaxTimes returns an exitError after maxReviewRejects.
+func TestReviewLoop_RejectedMaxTimes(t *testing.T) {
+	opsMgr := &sequentialOpsReviewer{results: []ops.Result{
+		{Verdict: ops.VerdictRejected, Feedback: "first reject"},
+		{Verdict: ops.VerdictRejected, Feedback: "second reject"},
+	}}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	deps := &workDeps{
+		opsMgr:  opsMgr,
+		spawner: sp,
+		runQG:   func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+	}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead:    testBead(),
+	}
+	model := "sonnet"
+	attempt := 0
+	feedback := ""
+
+	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	if err == nil {
+		t.Fatal("expected error on max rejections")
+	}
+	var ee *exitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *exitError, got %T: %v", err, err)
+	}
+	if ee.code != exitCodeRetries {
+		t.Errorf("exit code = %d, want %d", ee.code, exitCodeRetries)
+	}
+	if !strings.Contains(ee.msg, "second reject") {
+		t.Errorf("expected last feedback in msg, got: %q", ee.msg)
+	}
+}
+
+// TestReviewLoop_QGFailAfterRejection returns an exitError when QG fails after re-spawn.
+func TestReviewLoop_QGFailAfterRejection(t *testing.T) {
+	opsMgr := &sequentialOpsReviewer{results: []ops.Result{
+		{Verdict: ops.VerdictRejected, Feedback: "fix required"},
+	}}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	deps := &workDeps{
+		opsMgr:  opsMgr,
+		spawner: sp,
+		runQG:   func(_ context.Context, _ string, _ bool) (bool, string, error) { return false, "tests failed", nil },
+	}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead:    testBead(),
+	}
+	model := "sonnet"
+	attempt := 0
+	feedback := ""
+
+	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	if err == nil {
+		t.Fatal("expected error when QG fails after review rejection")
+	}
+	var ee *exitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *exitError, got %T: %v", err, err)
+	}
+	if ee.code != exitCodeRetries {
+		t.Errorf("exit code = %d, want %d", ee.code, exitCodeRetries)
+	}
+}
+
+// TestReviewLoop_QGErrorAfterRejection returns a wrapped error when runQG itself errors.
+func TestReviewLoop_QGErrorAfterRejection(t *testing.T) {
+	opsMgr := &sequentialOpsReviewer{results: []ops.Result{
+		{Verdict: ops.VerdictRejected, Feedback: "fix required"},
+	}}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	deps := &workDeps{
+		opsMgr:  opsMgr,
+		spawner: sp,
+		runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) {
+			return false, "", errors.New("qg crashed")
+		},
+	}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead:    testBead(),
+	}
+	model := "sonnet"
+	attempt := 0
+	feedback := ""
+
+	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	if err == nil {
+		t.Fatal("expected error when runQG returns error")
+	}
+	if !strings.Contains(err.Error(), "quality gate error") {
+		t.Errorf("expected 'quality gate error' in error, got: %v", err)
+	}
+}
+
+// TestReviewLoop_SpawnErrorAfterRejection returns a wrapped error when re-spawn fails.
+func TestReviewLoop_SpawnErrorAfterRejection(t *testing.T) {
+	opsMgr := &sequentialOpsReviewer{results: []ops.Result{
+		{Verdict: ops.VerdictRejected, Feedback: "fix required"},
+	}}
+	sp := &mockSpawner{proc: &mockProcess{}, err: errors.New("spawn failed")}
+	deps := &workDeps{
+		opsMgr:  opsMgr,
+		spawner: sp,
+	}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead:    testBead(),
+	}
+	model := "sonnet"
+	attempt := 0
+	feedback := ""
+
+	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	if err == nil {
+		t.Fatal("expected error when spawn fails after rejection")
+	}
+	if !strings.Contains(err.Error(), "claude re-spawn after review") {
+		t.Errorf("expected 're-spawn' in error, got: %v", err)
+	}
+}
+
+// TestReviewLoop_VerdictFailed_ReturnsNil verifies that a failed verdict (timeout etc.)
+// causes reviewLoop to log and return nil (continue without review).
+func TestReviewLoop_VerdictFailed_ReturnsNil(t *testing.T) {
+	opsMgr := &sequentialOpsReviewer{results: []ops.Result{
+		{Verdict: ops.VerdictFailed, Feedback: "timed out"},
+	}}
+	deps := &workDeps{opsMgr: opsMgr}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead:    testBead(),
+	}
+	model := "sonnet"
+	attempt := 0
+	feedback := ""
+
+	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	if err != nil {
+		t.Fatalf("expected nil when review verdict is Failed (timeout), got: %v", err)
+	}
+}
+
+// TestDefaultRunShellCmd_Success verifies that a succeeding command returns (true, nil).
+func TestDefaultRunShellCmd_Success(t *testing.T) {
+	dir := t.TempDir()
+	passed, err := defaultRunShellCmd(context.Background(), dir, "true")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !passed {
+		t.Error("expected passed=true for 'true' command")
+	}
+}
+
+// TestDefaultRunShellCmd_ExitFailure verifies that a failing command returns (false, nil).
+func TestDefaultRunShellCmd_ExitFailure(t *testing.T) {
+	dir := t.TempDir()
+	passed, err := defaultRunShellCmd(context.Background(), dir, "false")
+	if err != nil {
+		t.Fatalf("unexpected error (ExitError should not propagate): %v", err)
+	}
+	if passed {
+		t.Error("expected passed=false for 'false' command")
+	}
+}
+
+// TestHasCommitsAhead_NonGitDir returns false when the directory is not a git repo.
+func TestHasCommitsAhead_NonGitDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	if hasCommitsAhead(tmpDir, "feature", "main") {
+		t.Error("expected false for non-git directory")
+	}
+}
+
+// TestHasCommitsAhead_WithRealGitRepo verifies both the "ahead" and "not ahead" paths
+// against a real (temporary) git repository.
+func TestHasCommitsAhead_WithRealGitRepo(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tmpDir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_COMMITTER_NAME=test",
+			"GIT_AUTHOR_EMAIL=t@t.com", "GIT_COMMITTER_EMAIL=t@t.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init", "-b", "main")
+	run("config", "commit.gpgsign", "false")
+	_ = os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("init"), 0o600)
+	run("add", ".")
+	run("commit", "-m", "init")
+
+	// Same branch: main..main = 0 → false.
+	if hasCommitsAhead(tmpDir, "main", "main") {
+		t.Error("expected false when branch == targetBranch")
+	}
+
+	// Create feature branch with one commit ahead of main.
+	run("checkout", "-b", "feature")
+	_ = os.WriteFile(filepath.Join(tmpDir, "f.txt"), []byte("change"), 0o600)
+	run("add", ".")
+	run("commit", "-m", "feature change")
+
+	if !hasCommitsAhead(tmpDir, "feature", "main") {
+		t.Error("expected true when feature has 1 commit ahead of main")
 	}
 }
