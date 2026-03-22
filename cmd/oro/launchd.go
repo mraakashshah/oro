@@ -17,6 +17,24 @@ const (
 	launchAgentLabel = "dev.getoro.dolt"
 )
 
+// errLaunchctlNotFound is returned by runLaunchctl when launchctl is not in PATH.
+var errLaunchctlNotFound = errors.New("launchctl not in PATH")
+
+//nolint:gochecknoglobals // replaceable in tests for hermetic launchctl verification
+var runLaunchctl = defaultRunLaunchctl
+
+func defaultRunLaunchctl(args ...string) error {
+	path, err := exec.LookPath("launchctl")
+	if err != nil {
+		return errLaunchctlNotFound
+	}
+	//nolint:gosec // args are trusted internal constants and computed values
+	if err := exec.CommandContext(context.Background(), path, args...).Run(); err != nil { //nolint:noctx // one-shot; no caller context available
+		return fmt.Errorf("launchctl: %w", err)
+	}
+	return nil
+}
+
 //nolint:gochecknoglobals // package-level template init: parsed once at startup, read-only after
 var plistTemplate = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -87,8 +105,10 @@ func launchAgentPlistPath(homeDir string) string {
 	return filepath.Join(launchAgentsDir(homeDir), launchAgentLabel+".plist")
 }
 
-// installLaunchAgent writes plistBytes to ~/Library/LaunchAgents/<label>.plist.
-// Returns a permission error if the directory is not writable.
+// installLaunchAgent writes plistBytes to ~/Library/LaunchAgents/<label>.plist
+// and bootstraps the launchd agent via launchctl.
+// If launchctl is not in PATH, the plist is still written and the function
+// returns nil (with a warning to stderr).
 func installLaunchAgent(plistBytes []byte, homeDir string) error {
 	dir := launchAgentsDir(homeDir)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -98,12 +118,32 @@ func installLaunchAgent(plistBytes []byte, homeDir string) error {
 	if err := os.WriteFile(plistPath, plistBytes, 0o600); err != nil { //nolint:gosec // path constructed from trusted homeDir
 		return fmt.Errorf("write launch agent plist: %w", err)
 	}
+
+	uid := os.Getuid()
+	serviceTarget := fmt.Sprintf("gui/%d/%s", uid, launchAgentLabel)
+	domain := fmt.Sprintf("gui/%d", uid)
+
+	// Bootout first — ignore error (agent may not be loaded yet).
+	if err := runLaunchctl("bootout", serviceTarget); errors.Is(err, errLaunchctlNotFound) {
+		fmt.Fprintf(os.Stderr, "warn: launchctl not in PATH; plist written but agent not bootstrapped\n")
+		return nil
+	}
+
+	if err := runLaunchctl("bootstrap", domain, plistPath); err != nil {
+		return fmt.Errorf("launchctl bootstrap: %w", err)
+	}
 	return nil
 }
 
-// uninstallLaunchAgent removes ~/Library/LaunchAgents/<label>.plist.
+// uninstallLaunchAgent boots out the launchd agent and removes
+// ~/Library/LaunchAgents/<label>.plist.
 // Returns nil if the file does not exist (idempotent).
 func uninstallLaunchAgent(homeDir string) error {
+	uid := os.Getuid()
+	serviceTarget := fmt.Sprintf("gui/%d/%s", uid, launchAgentLabel)
+	// Ignore bootout error — agent may not be loaded.
+	_ = runLaunchctl("bootout", serviceTarget)
+
 	plistPath := launchAgentPlistPath(homeDir)
 	err := os.Remove(plistPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

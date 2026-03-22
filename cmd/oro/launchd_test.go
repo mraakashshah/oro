@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +79,10 @@ func TestInstallLaunchAgent(t *testing.T) {
 			t.Fatalf("mkdir: %v", err)
 		}
 
+		orig := runLaunchctl
+		t.Cleanup(func() { runLaunchctl = orig })
+		runLaunchctl = func(_ ...string) error { return nil }
+
 		plistBytes := []byte("<plist>test</plist>")
 		if err := installLaunchAgent(plistBytes, homeDir); err != nil {
 			t.Fatalf("installLaunchAgent error: %v", err)
@@ -153,6 +158,123 @@ func TestUninstallLaunchAgent(t *testing.T) {
 		homeDir := t.TempDir()
 		if err := uninstallLaunchAgent(homeDir); err != nil {
 			t.Errorf("uninstallLaunchAgent on missing plist = %v, want nil", err)
+		}
+	})
+}
+
+func TestInstallLaunchAgent_CallsBootstrap(t *testing.T) {
+	t.Run("calls bootout then bootstrap after plist write", func(t *testing.T) {
+		homeDir := t.TempDir()
+		var calls [][]string
+		orig := runLaunchctl
+		t.Cleanup(func() { runLaunchctl = orig })
+		runLaunchctl = func(args ...string) error {
+			calls = append(calls, append([]string{}, args...))
+			return nil
+		}
+
+		if err := installLaunchAgent([]byte("<plist>test</plist>"), homeDir); err != nil {
+			t.Fatalf("installLaunchAgent: %v", err)
+		}
+
+		if _, err := os.Stat(launchAgentPlistPath(homeDir)); err != nil {
+			t.Errorf("plist not written: %v", err)
+		}
+
+		if len(calls) < 2 {
+			t.Fatalf("expected ≥2 launchctl calls, got %d: %v", len(calls), calls)
+		}
+		if calls[0][0] != "bootout" {
+			t.Errorf("first call want bootout, got %q", calls[0][0])
+		}
+		if calls[1][0] != "bootstrap" {
+			t.Errorf("second call want bootstrap, got %q", calls[1][0])
+		}
+	})
+
+	t.Run("bootout error on install is ignored", func(t *testing.T) {
+		homeDir := t.TempDir()
+		orig := runLaunchctl
+		t.Cleanup(func() { runLaunchctl = orig })
+		runLaunchctl = func(args ...string) error {
+			if args[0] == "bootout" {
+				return errors.New("service not loaded")
+			}
+			return nil
+		}
+
+		if err := installLaunchAgent([]byte("<plist/>"), homeDir); err != nil {
+			t.Errorf("installLaunchAgent should succeed when bootout fails: %v", err)
+		}
+	})
+
+	t.Run("bootstrap failure returns error", func(t *testing.T) {
+		homeDir := t.TempDir()
+		orig := runLaunchctl
+		t.Cleanup(func() { runLaunchctl = orig })
+		runLaunchctl = func(args ...string) error {
+			if args[0] == "bootstrap" {
+				return errors.New("bootstrap failed")
+			}
+			return nil
+		}
+
+		if err := installLaunchAgent([]byte("<plist/>"), homeDir); err == nil {
+			t.Error("installLaunchAgent should return error when bootstrap fails")
+		}
+	})
+
+	t.Run("launchctl not in PATH: plist written, returns nil", func(t *testing.T) {
+		homeDir := t.TempDir()
+		orig := runLaunchctl
+		t.Cleanup(func() { runLaunchctl = orig })
+		runLaunchctl = func(_ ...string) error {
+			return errLaunchctlNotFound
+		}
+
+		if err := installLaunchAgent([]byte("<plist/>"), homeDir); err != nil {
+			t.Errorf("installLaunchAgent should succeed when launchctl not in PATH: %v", err)
+		}
+		if _, err := os.Stat(launchAgentPlistPath(homeDir)); err != nil {
+			t.Errorf("plist should still be written when launchctl not in PATH: %v", err)
+		}
+	})
+
+	t.Run("uninstall calls bootout before removing plist", func(t *testing.T) {
+		homeDir := t.TempDir()
+		launchAgentsPath := filepath.Join(homeDir, "Library", "LaunchAgents")
+		if err := os.MkdirAll(launchAgentsPath, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		plistPath := launchAgentPlistPath(homeDir)
+		if err := os.WriteFile(plistPath, []byte("<plist/>"), 0o600); err != nil {
+			t.Fatalf("write plist: %v", err)
+		}
+
+		var calls [][]string
+		orig := runLaunchctl
+		t.Cleanup(func() { runLaunchctl = orig })
+		runLaunchctl = func(args ...string) error {
+			calls = append(calls, append([]string{}, args...))
+			return nil
+		}
+
+		if err := uninstallLaunchAgent(homeDir); err != nil {
+			t.Fatalf("uninstallLaunchAgent: %v", err)
+		}
+
+		if _, err := os.Stat(plistPath); !os.IsNotExist(err) {
+			t.Error("plist should be removed after uninstall")
+		}
+
+		bootoutFound := false
+		for _, c := range calls {
+			if c[0] == "bootout" {
+				bootoutFound = true
+			}
+		}
+		if !bootoutFound {
+			t.Errorf("bootout was not called during uninstall, got: %v", calls)
 		}
 	})
 }
