@@ -791,7 +791,7 @@ func TestGitWorktreeManager_DeleteBranch_Success(t *testing.T) {
 	if call.Name != "git" {
 		t.Fatalf("name: got %q, want %q", call.Name, "git")
 	}
-	wantArgs := []string{"-C", "/repo/root", "branch", "-d", "agent/oro-test"}
+	wantArgs := []string{"-C", "/repo/root", "branch", "-D", "agent/oro-test"}
 	if len(call.Args) != len(wantArgs) {
 		t.Fatalf("args: got %v, want %v", call.Args, wantArgs)
 	}

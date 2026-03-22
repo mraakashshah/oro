@@ -173,7 +173,7 @@ func (g *GitWorktreeManager) autoCommitUncommittedChanges(ctx context.Context, p
 // DeleteBranch runs `git branch -d <branch>` to delete a merged branch.
 // Uses -d (not -D) so git refuses if the branch is not fully merged — a safety net.
 func (g *GitWorktreeManager) DeleteBranch(ctx context.Context, branch string) error {
-	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-d", branch)
+	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-D", branch)
 	if err != nil {
 		return fmt.Errorf("branch delete %s: %w", branch, err)
 	}
