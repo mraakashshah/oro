@@ -1209,7 +1209,7 @@ func TestWorktreeManager_CustomDir(t *testing.T) {
 		}
 		branchDeleteCalled := false
 		for _, call := range runner.calls {
-			if call.Name == "git" && containsAll(call.Args, "branch", "-d", "agent/oro-closed1") {
+			if call.Name == "git" && containsAll(call.Args, "branch", "-D", "agent/oro-closed1") {
 				branchDeleteCalled = true
 			}
 		}
@@ -1268,13 +1268,13 @@ func TestGCClosedWorktrees(t *testing.T) {
 			if containsAll(call.Args, "worktree", "remove") && slices.Contains(call.Args, closedPath) {
 				worktreeRemoveCalled = true
 			}
-			if containsAll(call.Args, "branch", "-d", "agent/oro-closed1") {
+			if containsAll(call.Args, "branch", "-D", "agent/oro-closed1") {
 				branchDeleteCalled = true
 			}
 			if slices.Contains(call.Args, openPath) {
 				t.Fatalf("should not process open bead path, got call: %v", call.Args)
 			}
-			if containsAll(call.Args, "branch", "-d", "agent/oro-open1") {
+			if containsAll(call.Args, "branch", "-D", "agent/oro-open1") {
 				t.Fatalf("should not delete open bead branch, got call: %v", call.Args)
 			}
 		}
@@ -1329,7 +1329,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 		// oro-ok1 should still be processed even after oro-fail1 failed.
 		branchDeleteOK1 := false
 		for _, call := range runner.calls {
-			if call.Name == "git" && containsAll(call.Args, "branch", "-d", "agent/oro-ok1") {
+			if call.Name == "git" && containsAll(call.Args, "branch", "-D", "agent/oro-ok1") {
 				branchDeleteOK1 = true
 			}
 		}
@@ -1383,7 +1383,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 		}
 
 		for _, call := range runner.calls {
-			if call.Name == "git" && (containsAll(call.Args, "worktree", "remove") || containsAll(call.Args, "branch", "-d")) {
+			if call.Name == "git" && (containsAll(call.Args, "worktree", "remove") || containsAll(call.Args, "branch", "-D")) {
 				t.Fatalf("should not call remove/delete-branch for open bead, got: %v", call.Args)
 			}
 		}
