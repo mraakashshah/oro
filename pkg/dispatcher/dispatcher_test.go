@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11335,7 +11336,7 @@ func TestAppendReviewPatterns_LogsErrorWhenUnwritable(t *testing.T) {
 		_ = os.Chmod(patternsFile, 0o644)
 	})
 
-	d.beadsDir = beadsDir + "/.beads"
+	d.repoRoot = beadsDir
 
 	patterns := []string{"anti-pattern: avoid X", "anti-pattern: prefer Y"}
 	err := d.appendReviewPatterns(ctx, "test-bead", "test-worker", patterns)
@@ -15083,4 +15084,66 @@ func TestAssignSkipsBlockedBeads(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDispatcherUsesProjectPaths(t *testing.T) {
+	t.Run("BeadsDir from Config wired into dispatcher", func(t *testing.T) {
+		customBeadsDir := t.TempDir()
+
+		db := newTestDB(t)
+		gitRunner := &mockGitRunner{}
+		merger := merge.NewCoordinator(gitRunner)
+		opsSpawner := ops.NewSpawner(&mockBatchSpawner{verdict: "APPROVED: looks good"})
+		beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
+		wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+		esc := &mockEscalator{}
+
+		sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+		t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+		cfg := Config{
+			SocketPath:       sockPath,
+			DBPath:           ":memory:",
+			MaxWorkers:       1,
+			HeartbeatTimeout: 500 * time.Millisecond,
+			PollInterval:     50 * time.Millisecond,
+			ShutdownTimeout:  200 * time.Millisecond,
+			BeadsDir:         customBeadsDir,
+		}
+
+		d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+
+		if d.beadsDir != customBeadsDir {
+			t.Errorf("beadsDir = %q, want %q (Config.BeadsDir not wired)", d.beadsDir, customBeadsDir)
+		}
+	})
+
+	t.Run("appendReviewPatterns uses repoRoot not filepath.Dir(beadsDir)", func(t *testing.T) {
+		repoRoot := t.TempDir()
+		separateBeadsDir := t.TempDir() // intentionally different directory from repoRoot
+
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.repoRoot = repoRoot
+		d.beadsDir = separateBeadsDir
+
+		err := d.appendReviewPatterns(context.Background(), "bead-1", "worker-1", []string{"pattern1"})
+		if err != nil {
+			t.Fatalf("appendReviewPatterns() error: %v", err)
+		}
+
+		// Must write to repoRoot/assets/review-patterns.md
+		expectedFile := filepath.Join(repoRoot, "assets", "review-patterns.md")
+		if _, statErr := os.Stat(expectedFile); statErr != nil {
+			t.Errorf("review-patterns.md not at repoRoot/assets/: %v", statErr)
+		}
+
+		// Must NOT write to filepath.Dir(beadsDir)/assets/review-patterns.md
+		wrongFile := filepath.Join(filepath.Dir(separateBeadsDir), "assets", "review-patterns.md")
+		if _, statErr := os.Stat(wrongFile); statErr == nil {
+			t.Errorf("review-patterns.md incorrectly created at filepath.Dir(beadsDir)/assets/ instead of repoRoot/assets/")
+		}
+	})
 }

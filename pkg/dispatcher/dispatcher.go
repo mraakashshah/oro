@@ -244,6 +244,7 @@ type Config struct {
 	SocketPath            string        // UDS socket path.
 	DBPath                string        // SQLite database path.
 	RepoRoot              string        // Absolute path to the repository root. Used so bd commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
+	BeadsDir              string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
 	MaxWorkers            int           // Worker pool size (default 10).
 	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
 	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
@@ -458,19 +459,20 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	}
 	// Determine the effective repo root for bd commands.
 	// Falls back to the process working directory when RepoRoot is not set.
-	rootDir := resolved.RepoRoot
+	rootDir, beadsDir := resolved.RepoRoot, resolved.BeadsDir
 	if rootDir == "" {
 		rootDir, _ = os.Getwd()
 	}
+	if beadsDir == "" {
+		beadsDir = protocol.BeadsDir
+	}
 	memStore := memory.NewStore(db)
 	memStore.SetEmbedder(memory.NewEmbedder())
-
 	// Initialize estimator if ANTHROPIC_API_KEY is set
 	var estimator BeadEstimator
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		estimator = NewLLMEstimator(key)
 	}
-
 	return &Dispatcher{
 		cfg:            resolved,
 		db:             db,
@@ -508,7 +510,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		pendingManagedIDs: make(map[string]bool),
 		workerReadyCh:     make(chan struct{}, 1),
 		shutdownCh:        make(chan struct{}),
-		beadsDir:          protocol.BeadsDir,
+		beadsDir:          beadsDir,
 		panesDir:          filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
 		signaledPanes:     make(map[string]bool),
 		paneStates:        make(map[string]*paneState),
@@ -1841,8 +1843,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 // appendReviewPatterns appends captured anti-patterns to assets/review-patterns.md
 // in the main repository root. Returns error if directory is unwritable or file cannot be opened.
 func (d *Dispatcher) appendReviewPatterns(ctx context.Context, beadID, workerID string, patterns []string) error {
-	// Derive project root from beadsDir (which is the repo root's .beads/)
-	root := filepath.Dir(d.beadsDir)
+	root := d.repoRoot
 	patternsFile := filepath.Join(root, "assets", "review-patterns.md")
 
 	// Ensure assets/ directory exists
