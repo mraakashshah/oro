@@ -1,0 +1,190 @@
+---
+date: 2026-03-23
+status: partial
+---
+
+goal: >
+  Monitored oro swarm for ~20 hours. Cleared entire backlog (stealth mode epic,
+  dolt lifecycle epic, coverage push to 86%, dispatcher bugs). Created gstack
+  analysis report. Started gstack pattern adaptation spec — design doc written
+  but needs premortem + adversarial review before decomposition.
+
+now: >
+  1. Run premortem on docs/plans/2026-03-23-gstack-pattern-adaptation-design.md
+     — repeat until comfortable. Key concerns from initial pass: prompt bloat
+     (ops review +18%, architect +27%), contradictory instructions, whether
+     cognitive patterns are fluff, Fix-First changing APPROVED/REJECTED contract.
+  2. Run adversarial-spec-review in fresh context on the design doc.
+  3. Fix gaps from both reviews, re-run until clean.
+  4. THEN decompose with beadcraft. Do NOT create beads before reviews pass.
+  5. Fix CI: TestDispatcher_ReviewRejection_WorkerIdleAfterMaxRejections failing.
+  6. Push any unpushed worker commits.
+
+test: |
+  go test ./pkg/dispatcher/... -count=1 -timeout 180s
+  gh run list --limit 1  # should be green
+
+done_this_session:
+  - task: "Monitored swarm for ~20 hours via cron"
+    notes: >
+      Started with 10min cron, upgraded to two-phase (failures + stall detection).
+      Detected and fixed: assignment spam (cmwv, 6fma.5), dolt corruption,
+      stale AC line numbers, stuck in_progress beads, circular deps, premature
+      epic auto-close, bd ready blocking bug after dolt recovery.
+
+  - task: "Cleared stealth mode epic (oro-6fma) — all beads merged"
+    files: [cmd/oro/paths.go, cmd/oro/hooks.go, cmd/oro/init_stealth.go, pkg/dispatcher/dispatcher.go, pkg/dispatcher/worktree_manager.go, pkg/ops/review_prompt.go, pkg/ops/ac_prompt.go, langprofile/detect.go, pkg/mg/data/source.go]
+
+  - task: "Filed and landed 3 dispatcher bugs"
+    files: [pkg/dispatcher/dispatcher.go, pkg/protocol/types.go, pkg/ops/escalation_prompt.go]
+    notes: >
+      oro-1tpu: skip already-merged branches. oro-vrhp: skip OVERSIZED_BEAD for
+      epics. oro-371a: pre-assignment size check with OVERSIZED_BEAD escalation.
+
+  - task: "Added max-workers runtime directive (oro-mnmg)"
+    files: [pkg/dispatcher/dispatcher.go]
+
+  - task: "Fixed branch cleanup: git branch -d → -D"
+    files: [pkg/dispatcher/worktree_manager.go]
+    notes: Cleaned 87 stale agent/epic branches
+
+  - task: "Pushed coverage from 82.8% to 86% (CI threshold raised)"
+    files: [cmd/oro/cmd_dolt_test.go, cmd/oro/cmd_stop_test.go, cmd/oro/cmd_work_test.go, cmd/oro/cmd_mg_test.go, cmd/oro/cmd_start_test.go, .github/workflows/ci.yml]
+
+  - task: "Added restart-on-panic to critical dispatcher loops (oro-9wz5)"
+    files: [pkg/dispatcher/dispatcher.go]
+
+  - task: "Added oro status command (oro-xry8)"
+    files: [cmd/oro/cmd_status.go]
+
+  - task: "Wrote gstack analysis report (961 lines)"
+    files: [docs/research/2026-03-23-gstack-skill-analysis.md]
+
+  - task: "Wrote gstack pattern adaptation design doc"
+    files: [docs/plans/2026-03-23-gstack-pattern-adaptation-design.md]
+    notes: >
+      BLOCKED: needs premortem + adversarial review. I prematurely created 7 beads
+      and had to close them. The design maps 11 gstack patterns across 4 LLM contexts
+      (architect, manager, worker, ops). Key grouping: changes grouped by FILE not
+      by PATTERN to avoid merge conflicts.
+
+  - task: "Updated beadcraft skill"
+    files: [~/.claude/skills/beadcraft/skill.md]
+    notes: >
+      Added: cross-boundary breadth heuristic, line-numbers-are-stale red flag,
+      cross-boundary-sprawl smell.
+
+  - task: "Updated worker prompt with line-number resilience"
+    files: [pkg/worker/prompt.go]
+
+  - task: "Pulled gstack into archive/yap/reference/gstack/"
+    files: [archive/yap/reference/gstack/]
+
+blockers:
+  - "CI red: TestDispatcher_ReviewRejection_WorkerIdleAfterMaxRejections failing"
+  - "gstack adaptation design doc needs premortem + adversarial review"
+
+decisions:
+  - group_by_file_not_pattern: >
+      Beads must be grouped by target file to avoid merge conflicts. oro-6fma.7.1
+      wasted 6+ hours because sibling beads modified the same file concurrently.
+  - no_ceo_cognitive_patterns: >
+      CEO patterns (inversion reflex, focus as subtraction) are for product decisions.
+      Oro is a code factory — only engineering patterns apply.
+  - askuserquestion_architect_manager_only: >
+      Workers and ops never talk to users. AskUserQuestion format only for
+      architect (tmux pane 0) and manager (tmux pane 1).
+  - anti_sycophancy_not_for_workers: >
+      Workers produce code, not opinions. Anti-sycophancy only matters when an LLM
+      produces text a human reads and acts on (architect, manager, ops review).
+  - monitor_cron_two_phase: >
+      Phase 1 checks failures. Phase 2 detects stalls (no merge in 20min with busy
+      workers) and investigates autonomously. This caught the 6-hour stall on
+      oro-6fma.7.1 that the original cron missed.
+
+findings:
+  - stale_line_numbers_killed_productivity: >
+      AC with hardcoded line numbers (dispatcher.go:510) went stale when sibling
+      beads shifted lines. Workers cycled for 6+ hours. Fix: beadcraft skill now
+      says "use symbol names, never line numbers" and worker prompt says "line
+      numbers are approximate — grep for the symbol."
+  - bd_ready_bug_after_dolt_recovery: >
+      After dolt corruption + recovery, bd ready treated closed blocking deps and
+      parent-child deps as still blocking. Manual dep removal required. Root cause
+      likely in bd's dependency resolution after backup restore.
+  - dispatcher_silent_death: >
+      assignLoop goroutine panics are recovered by safeGo but the loop never
+      restarts. Dispatcher stays alive but stops assigning. Fixed with
+      restart-on-panic wrapper (oro-9wz5).
+  - oversized_beads_block_pipelines: >
+      oro-6fma.7 (8 sites across 6 packages) blocked 4 downstream beads for 5+
+      hours. Fixed with: OVERSIZED_BEAD pre-assignment check, beadcraft
+      cross-boundary heuristic, and ops decomposition playbook.
+
+worked:
+  - "Two-phase monitoring cron (failures + stall detection)"
+  - "Grouping beads by target file prevents merge conflicts"
+  - "Symbol names instead of line numbers in AC"
+  - "OVERSIZED_BEAD escalation → ops decomposition"
+  - "restart-on-panic for critical loops"
+
+failed:
+  - "Single-phase cron reported 'clean stable' while beads burned for hours"
+  - "Premature bead creation before premortem/adversarial review"
+  - "git branch -d fails on rebased branches (now -D)"
+  - "oro directive scale doesn't cap auto-scaling (needs max-workers)"
+
+next:
+  - "Premortem docs/plans/2026-03-23-gstack-pattern-adaptation-design.md (fresh context)"
+  - "Adversarial review the design doc (fresh context subagent)"
+  - "Fix CI: TestDispatcher_ReviewRejection_WorkerIdleAfterMaxRejections"
+  - "Decompose with beadcraft AFTER reviews pass"
+  - "Remaining beads: oro-kbas (status bug), oro-cazr (dolt lifecycle), oro-26en (status cleanup)"
+
+files:
+  created:
+    - docs/plans/2026-03-23-gstack-pattern-adaptation-design.md
+    - docs/research/2026-03-23-gstack-skill-analysis.md
+    - archive/yap/reference/gstack/
+  modified:
+    - pkg/dispatcher/dispatcher.go
+    - pkg/dispatcher/worktree_manager.go
+    - pkg/worker/prompt.go
+    - pkg/ops/review_prompt.go
+    - pkg/ops/escalation_prompt.go
+    - pkg/protocol/types.go
+    - cmd/oro/cmd_dolt.go
+    - cmd/oro/paths.go
+    - cmd/oro/cmd_status.go
+    - .github/workflows/ci.yml
+    - ~/.claude/skills/beadcraft/skill.md
+    - assets/review-patterns.md
+
+beads:
+  completed:
+    - oro-cmwv
+    - oro-1tpu
+    - oro-sixp
+    - oro-6fma (epic + all children)
+    - oro-mnmg
+    - oro-371a
+    - oro-i7ql
+    - oro-vrhp
+    - oro-qa9j
+    - oro-ljun
+    - oro-juv3
+    - oro-cjag
+    - oro-ug3e (epic + all children)
+    - oro-yqq5
+    - oro-3q33
+    - oro-9al5
+    - oro-rouc
+    - oro-2cwi
+    - oro-zwyj
+    - oro-9wz5
+    - oro-xry8
+  in_progress:
+    - oro-kbas
+  remaining:
+    - oro-cazr
+    - oro-26en
