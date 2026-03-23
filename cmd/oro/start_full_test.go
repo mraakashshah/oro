@@ -117,14 +117,17 @@ func TestFullStart(t *testing.T) {
 		}
 
 		// 2. Verify tmux session was created.
-		newSessionCall := findCall(fakeTmux.calls, "new-session")
+		// Use getCalls() for thread-safe access — beacon goroutine may still be
+		// writing to calls via Runner.Run concurrently.
+		tmuxCalls := fakeTmux.getCalls()
+		newSessionCall := findCall(tmuxCalls, "new-session")
 		if newSessionCall == nil {
 			t.Fatal("expected tmux new-session to be called")
 		}
 
 		// 3. Verify both windows launch interactive claude with role env vars.
 		var architectCalls, managerCalls [][]string
-		for _, call := range fakeTmux.calls {
+		for _, call := range tmuxCalls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
 				if strings.Contains(joined, "oro:architect") {
@@ -161,7 +164,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		// Verify new-window has exec env with manager role.
-		newWindowCall := findCall(fakeTmux.calls, "new-window")
+		newWindowCall := findCall(tmuxCalls, "new-window")
 		if newWindowCall == nil {
 			t.Fatal("expected tmux new-window to be called")
 		}

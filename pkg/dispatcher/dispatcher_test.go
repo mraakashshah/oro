@@ -11743,9 +11743,9 @@ func TestAssignBeadSkipsClosedBead(t *testing.T) {
 		t.Errorf("expected bead not to be updated, but status was set to %q", status)
 	}
 
-	// Assert: bead_closed_before_assign event was logged
-	if eventCount(t, d.db, "bead_closed_before_assign") == 0 {
-		t.Error("expected bead_closed_before_assign event to be logged, but it was not found")
+	// Assert: bead_not_ready_before_assign event was logged
+	if eventCount(t, d.db, "bead_not_ready_before_assign") == 0 {
+		t.Error("expected bead_not_ready_before_assign event to be logged, but it was not found")
 	}
 }
 

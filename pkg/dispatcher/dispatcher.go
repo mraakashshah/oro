@@ -2606,9 +2606,9 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		return "", "", false
 	}
 	title, acceptance, status := d.lookupBeadDetail(ctx, bead.ID, workerID)
-	if status == "closed" {
-		_ = d.logEvent(ctx, "bead_closed_before_assign", "dispatcher", bead.ID, workerID,
-			"bead was closed externally before assignment could complete")
+	if status == "closed" || status == "in_progress" {
+		_ = d.logEvent(ctx, "bead_not_ready_before_assign", "dispatcher", bead.ID, workerID,
+			fmt.Sprintf("bead status %q — skipping assignment", status))
 		return title, acceptance, false
 	}
 	if acceptance == "" {
@@ -2656,6 +2656,18 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "assignment_race_detected", "dispatcher", bead.ID, w.id,
 			"bead already being assigned by another worker")
 		return nil
+	}
+	// Belt-and-suspenders: check if a worker already completed assignment for
+	// this bead. assigningBeads is ephemeral (cleared on completion), so a slow
+	// goroutine could arrive after the flag is gone. This check catches that
+	// case by inspecting the persistent worker state under the same lock.
+	for _, w2 := range d.workers {
+		if w2.beadID == bead.ID && w2.state == protocol.WorkerBusy {
+			d.mu.Unlock()
+			_ = d.logEvent(ctx, "assignment_race_detected", "dispatcher", bead.ID, w.id,
+				fmt.Sprintf("bead already assigned to worker %s", w2.id))
+			return nil
+		}
 	}
 	d.assigningBeads[bead.ID] = true
 	delete(d.escalatedBeads, bead.ID)
