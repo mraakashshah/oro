@@ -267,6 +267,10 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 
 // heartbeatLoop checks for workers that have exceeded the heartbeat timeout
 // and periodically prunes stale tracking map entries and GCs closed worktrees (hourly).
+// heartbeatLoop checks for workers that have exceeded the heartbeat timeout
+// and periodically prunes stale tracking map entries and GCs closed worktrees (hourly).
+// Each iteration is wrapped in a defer/recover so a panic inside the body
+// logs a goroutine_panic event and restarts the loop after exponential backoff.
 func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.HeartbeatTimeout / 3)
 	defer ticker.Stop()
@@ -280,20 +284,36 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	backupTicker := time.NewTicker(d.cfg.BackupInterval)
 	defer backupTicker.Stop()
 
+	var restartCount int
+	var lastPanicTime time.Time
+
 	for {
-		select {
-		case <-ctx.Done():
+		exit := func() (shouldExit bool) {
+			defer func() {
+				if r := recover(); r != nil {
+					if d.handleLoopPanic(ctx, r, &restartCount, &lastPanicTime) {
+						shouldExit = true
+					}
+				}
+			}()
+			select {
+			case <-ctx.Done():
+				return true
+			case <-d.shutdownCh:
+				return true
+			case <-ticker.C:
+				d.callCheckHeartbeats(ctx)
+			case <-pruneTicker.C:
+				d.pruneStaleTracking(ctx)
+			case <-gcTicker.C:
+				d.gcWorktrees(ctx)
+			case <-backupTicker.C:
+				d.backupFullState(ctx)
+			}
+			return false
+		}()
+		if exit {
 			return
-		case <-d.shutdownCh:
-			return
-		case <-ticker.C:
-			d.checkHeartbeats(ctx)
-		case <-pruneTicker.C:
-			d.pruneStaleTracking(ctx)
-		case <-gcTicker.C:
-			d.gcWorktrees(ctx)
-		case <-backupTicker.C:
-			d.backupFullState(ctx)
 		}
 	}
 }

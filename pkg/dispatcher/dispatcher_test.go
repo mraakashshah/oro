@@ -616,6 +616,8 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 	// not broken by the new pre-merge gate. Tests that exercise QG behaviour
 	// inject their own mockQGRunner after calling newTestDispatcher.
 	d.qgRunner = &mockQGRunner{passed: true}
+	// Use a short escalation retry interval so loop-panic tests don't wait 2 minutes.
+	d.escalationRetryInterval = 50 * time.Millisecond
 	return d, beadSrc, wtMgr, esc, gitRunner, spawnMock
 }
 
@@ -15145,5 +15147,195 @@ func TestDispatcherUsesProjectPaths(t *testing.T) {
 		if _, statErr := os.Stat(wrongFile); statErr == nil {
 			t.Errorf("review-patterns.md incorrectly created at filepath.Dir(beadsDir)/assets/ instead of repoRoot/assets/")
 		}
+	})
+}
+
+// TestAssignLoopRestartsAfterPanic verifies that the critical dispatcher loops
+// recover from panics in their body, log a goroutine_panic event with the
+// restart count, and resume operation after exponential backoff.
+func TestAssignLoopRestartsAfterPanic(t *testing.T) {
+	t.Run("assign_loop_restarts_and_logs", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.loopPanicBackoffFn = func(_ int) time.Duration { return 5 * time.Millisecond }
+
+		var callCount atomic.Int32
+		d.tryAssignFn = func(_ context.Context) {
+			if callCount.Add(1) <= 2 {
+				panic("test assign panic")
+			}
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.assignLoopPoll(ctx)
+
+		// Keep feeding triggers so the loop has work to do after each restart.
+		go func() {
+			for {
+				select {
+				case d.workerReadyCh <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+
+		// (1) goroutine_panic is logged within 5s.
+		waitFor(t, func() bool { return eventCount(t, d.db, "goroutine_panic") >= 1 }, 5*time.Second)
+		// (2) tryAssign is called again after restart.
+		waitFor(t, func() bool { return callCount.Load() >= 3 }, 5*time.Second)
+	})
+
+	t.Run("backoff_increases_on_consecutive_panics", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		var capturedN []int
+		var nMu sync.Mutex
+		d.loopPanicBackoffFn = func(n int) time.Duration {
+			nMu.Lock()
+			capturedN = append(capturedN, n)
+			nMu.Unlock()
+			return 1 * time.Millisecond
+		}
+
+		var callCount atomic.Int32
+		d.tryAssignFn = func(_ context.Context) {
+			if callCount.Add(1) <= 4 {
+				panic("test backoff panic")
+			}
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.assignLoopPoll(ctx)
+
+		go func() {
+			for {
+				select {
+				case d.workerReadyCh <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}()
+
+		waitFor(t, func() bool { return eventCount(t, d.db, "goroutine_panic") >= 4 }, 5*time.Second)
+
+		nMu.Lock()
+		counts := make([]int, len(capturedN))
+		copy(counts, capturedN)
+		nMu.Unlock()
+
+		if len(counts) < 4 {
+			t.Fatalf("expected at least 4 backoff calls, got %d", len(counts))
+		}
+		// (3) Restart counts passed to backoffFn must be 1, 2, 3, 4 (increasing).
+		for i := 0; i < 4; i++ {
+			if counts[i] != i+1 {
+				t.Errorf("panic #%d: backoffFn got n=%d, want %d", i+1, counts[i], i+1)
+			}
+		}
+	})
+
+	t.Run("backoff_resets_after_5_minutes_no_panics", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		var capturedN []int
+		var nMu sync.Mutex
+		d.loopPanicBackoffFn = func(n int) time.Duration {
+			nMu.Lock()
+			capturedN = append(capturedN, n)
+			nMu.Unlock()
+			return 1 * time.Millisecond
+		}
+
+		// Panic 2 times, advance time by 6 minutes, then panic again.
+		// The 3rd panic should reset restartCount → backoffFn gets n=1 again.
+		var callCount atomic.Int32
+		panicTime := d.nowFunc()
+		d.nowFunc = func() time.Time { return panicTime }
+		d.tryAssignFn = func(_ context.Context) {
+			n := callCount.Add(1)
+			switch {
+			case n <= 2:
+				panic("early panic")
+			case n == 3:
+				// Advance clock by 6 minutes so backoff resets.
+				panicTime = panicTime.Add(6 * time.Minute)
+				panic("post-reset panic")
+			}
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.assignLoopPoll(ctx)
+
+		go func() {
+			for {
+				select {
+				case d.workerReadyCh <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}()
+
+		waitFor(t, func() bool { return eventCount(t, d.db, "goroutine_panic") >= 3 }, 5*time.Second)
+
+		nMu.Lock()
+		counts := make([]int, len(capturedN))
+		copy(counts, capturedN)
+		nMu.Unlock()
+
+		if len(counts) < 3 {
+			t.Fatalf("expected at least 3 backoff calls, got %d", len(counts))
+		}
+		// After reset, the 3rd panic should get n=1 again.
+		if counts[2] != 1 {
+			t.Errorf("after 6-minute gap, backoffFn got n=%d, want 1 (reset)", counts[2])
+		}
+	})
+
+	t.Run("heartbeat_loop_restarts_after_panic", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.loopPanicBackoffFn = func(_ int) time.Duration { return 5 * time.Millisecond }
+
+		var callCount atomic.Int32
+		d.checkHeartbeatsFn = func(_ context.Context) {
+			if callCount.Add(1) <= 1 {
+				panic("test heartbeat panic")
+			}
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.heartbeatLoop(ctx)
+
+		// heartbeatLoop ticks at HeartbeatTimeout/3 ≈ 167ms in tests.
+		waitFor(t, func() bool { return eventCount(t, d.db, "goroutine_panic") >= 1 }, 5*time.Second)
+		waitFor(t, func() bool { return callCount.Load() >= 2 }, 5*time.Second)
+	})
+
+	t.Run("escalation_retry_loop_restarts_after_panic", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.loopPanicBackoffFn = func(_ int) time.Duration { return 5 * time.Millisecond }
+
+		var callCount atomic.Int32
+		d.retryEscalationsFn = func(_ context.Context) {
+			if callCount.Add(1) <= 1 {
+				panic("test escalation panic")
+			}
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.escalationRetryLoop(ctx)
+
+		// escalationRetryLoop uses EscalationRetryInterval (50ms in tests).
+		waitFor(t, func() bool { return eventCount(t, d.db, "goroutine_panic") >= 1 }, 5*time.Second)
+		waitFor(t, func() bool { return callCount.Load() >= 2 }, 5*time.Second)
 	})
 }

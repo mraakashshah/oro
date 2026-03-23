@@ -408,6 +408,27 @@ type Dispatcher struct {
 	// iteration completes. Tests use this to synchronize without time.Sleep.
 	testPanePollDone func()
 
+	// escalationRetryInterval controls how often escalationRetryLoop fires.
+	// Defaults to 2 minutes; tests may set this to a shorter value.
+	escalationRetryInterval time.Duration
+
+	// loopPanicBackoffFn, if non-nil, overrides the exponential backoff duration
+	// used by the panic-restart wrappers in assignLoop/heartbeatLoop/escalationRetryLoop.
+	// Intended for tests that need deterministic, fast backoff values.
+	loopPanicBackoffFn func(restartCount int) time.Duration
+
+	// tryAssignFn, if non-nil, is called instead of d.tryAssign inside
+	// assignLoop and assignLoopPoll. Allows tests to inject panics or track calls.
+	tryAssignFn func(ctx context.Context)
+
+	// checkHeartbeatsFn, if non-nil, is called instead of d.checkHeartbeats inside
+	// heartbeatLoop. Allows tests to inject panics or track calls.
+	checkHeartbeatsFn func(ctx context.Context)
+
+	// retryEscalationsFn, if non-nil, is called instead of d.retryPendingEscalations
+	// inside escalationRetryLoop. Allows tests to inject panics or track calls.
+	retryEscalationsFn func(ctx context.Context)
+
 	// priorityBeads holds bead IDs that should be assigned before normal queue ordering.
 	// Used by spawn-for directive to guarantee a specific bead gets the next idle worker.
 	priorityBeads map[string]bool
@@ -468,7 +489,6 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	}
 	memStore := memory.NewStore(db)
 	memStore.SetEmbedder(memory.NewEmbedder())
-	// Initialize estimator if ANTHROPIC_API_KEY is set
 	var estimator BeadEstimator
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		estimator = NewLLMEstimator(key)
@@ -517,6 +537,76 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		nowFunc:           time.Now,
 		acceptSem:         make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
+}
+
+// loopPanicBackoff returns the exponential backoff duration for the n-th
+// consecutive panic in a critical loop. The sequence is 1s, 2s, 4s, …
+// capped at 30s. After 5 minutes without a panic the restart counter is
+// reset, so the first panic after a quiet period always returns 1s.
+// loopPanicBackoffFn may be set by tests to override this behaviour.
+func (d *Dispatcher) loopPanicBackoff(n int) time.Duration {
+	if d.loopPanicBackoffFn != nil {
+		return d.loopPanicBackoffFn(n)
+	}
+	backoff := time.Duration(1<<uint(n-1)) * time.Second
+	if backoff > 30*time.Second {
+		return 30 * time.Second
+	}
+	return backoff
+}
+
+// handleLoopPanic is called inside a deferred recover in a critical loop
+// iteration. It logs a goroutine_panic event, sleeps for the computed backoff,
+// and returns true if the outer loop should exit (ctx cancelled / shutdown).
+func (d *Dispatcher) handleLoopPanic(ctx context.Context, r interface{}, restartCount *int, lastPanicTime *time.Time) (exit bool) {
+	now := d.nowFunc()
+	if !lastPanicTime.IsZero() && now.Sub(*lastPanicTime) > 5*time.Minute {
+		*restartCount = 0
+	}
+	*restartCount++
+	*lastPanicTime = now
+	backoff := d.loopPanicBackoff(*restartCount)
+	_ = d.logEvent(ctx, "goroutine_panic", "dispatcher", "", "",
+		fmt.Sprintf(`{"panic":%q,"stack":%q,"restart_count":%d}`,
+			fmt.Sprint(r), string(debug.Stack()), *restartCount))
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return true
+	case <-d.shutdownCh:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// callTryAssign calls tryAssignFn if set (test injection), otherwise tryAssign.
+func (d *Dispatcher) callTryAssign(ctx context.Context) {
+	if d.tryAssignFn != nil {
+		d.tryAssignFn(ctx)
+		return
+	}
+	d.tryAssign(ctx)
+}
+
+// callCheckHeartbeats calls checkHeartbeatsFn if set (test injection), otherwise checkHeartbeats.
+func (d *Dispatcher) callCheckHeartbeats(ctx context.Context) {
+	if d.checkHeartbeatsFn != nil {
+		d.checkHeartbeatsFn(ctx)
+		return
+	}
+	d.checkHeartbeats(ctx)
+}
+
+// callRetryPendingEscalations calls retryEscalationsFn if set (test injection),
+// otherwise retryPendingEscalations.
+func (d *Dispatcher) callRetryPendingEscalations(ctx context.Context) {
+	if d.retryEscalationsFn != nil {
+		d.retryEscalationsFn(ctx)
+		return
+	}
+	d.retryPendingEscalations(ctx)
 }
 
 // safeGo runs fn in a tracked goroutine with panic recovery. If fn panics,
@@ -2084,45 +2174,88 @@ func (d *Dispatcher) assignLoop(ctx context.Context) {
 	fallbackTicker := time.NewTicker(d.cfg.FallbackPollInterval)
 	defer fallbackTicker.Stop()
 
+	var restartCount int
+	var lastPanicTime time.Time
+
 	for {
-		select {
-		case <-ctx.Done():
+		if d.assignLoopIter(ctx, watcher, fallbackTicker, &restartCount, &lastPanicTime) {
 			return
-		case <-d.shutdownCh:
-			return
-		case <-watcher.Events:
-			// File changed in .beads/ directory
-			d.tryAssign(ctx)
-		case err := <-watcher.Errors:
-			if err != nil {
-				_ = d.logEvent(ctx, "watcher_error", "dispatcher", "", "", err.Error())
-			}
-		case <-d.workerReadyCh:
-			// A new idle worker connected — assign immediately without waiting for poll.
-			d.tryAssign(ctx)
-		case <-fallbackTicker.C:
-			// Safety net poll
-			d.tryAssign(ctx)
 		}
 	}
 }
 
+// assignLoopIter runs one select iteration of assignLoop with panic recovery.
+// Returns true when the loop should exit cleanly (ctx cancelled or shutdown).
+func (d *Dispatcher) assignLoopIter(
+	ctx context.Context,
+	watcher *fsnotify.Watcher,
+	fallbackTicker *time.Ticker,
+	restartCount *int,
+	lastPanicTime *time.Time,
+) (exit bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			if d.handleLoopPanic(ctx, r, restartCount, lastPanicTime) {
+				exit = true
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return true
+	case <-d.shutdownCh:
+		return true
+	case <-watcher.Events:
+		// File changed in .beads/ directory
+		d.callTryAssign(ctx)
+	case err := <-watcher.Errors:
+		if err != nil {
+			_ = d.logEvent(ctx, "watcher_error", "dispatcher", "", "", err.Error())
+		}
+	case <-d.workerReadyCh:
+		// A new idle worker connected — assign immediately without waiting for poll.
+		d.callTryAssign(ctx)
+	case <-fallbackTicker.C:
+		// Safety net poll
+		d.callTryAssign(ctx)
+	}
+	return false
+}
+
 // assignLoopPoll is a fallback polling loop when fsnotify is unavailable.
+// Each iteration is wrapped in a defer/recover so a panic inside tryAssign
+// logs a goroutine_panic event and restarts the loop after exponential backoff.
 func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.PollInterval)
 	defer ticker.Stop()
 
+	var restartCount int
+	var lastPanicTime time.Time
+
 	for {
-		select {
-		case <-ctx.Done():
+		exit := func() (shouldExit bool) {
+			defer func() {
+				if r := recover(); r != nil {
+					if d.handleLoopPanic(ctx, r, &restartCount, &lastPanicTime) {
+						shouldExit = true
+					}
+				}
+			}()
+			select {
+			case <-ctx.Done():
+				return true
+			case <-d.shutdownCh:
+				return true
+			case <-d.workerReadyCh:
+				// A new idle worker connected — assign immediately without waiting for poll.
+				d.callTryAssign(ctx)
+			case <-ticker.C:
+				d.callTryAssign(ctx)
+			}
+			return false
+		}()
+		if exit {
 			return
-		case <-d.shutdownCh:
-			return
-		case <-d.workerReadyCh:
-			// A new idle worker connected — assign immediately without waiting for poll.
-			d.tryAssign(ctx)
-		case <-ticker.C:
-			d.tryAssign(ctx)
 		}
 	}
 }
@@ -3479,16 +3612,39 @@ func (d *Dispatcher) applyAckEscalation(args string) (string, error) {
 }
 
 // escalationRetryLoop periodically re-delivers unacked escalations via tmux.
-// Runs every 2 minutes, retries up to 5 times with exponential backoff.
+// Runs every EscalationRetryInterval (default 2 minutes), retries up to 5 times.
+// Each iteration is wrapped in a defer/recover so a panic inside the body
+// logs a goroutine_panic event and restarts the loop after exponential backoff.
 func (d *Dispatcher) escalationRetryLoop(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Minute)
+	interval := d.escalationRetryInterval
+	if interval == 0 {
+		interval = 2 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	var restartCount int
+	var lastPanicTime time.Time
+
 	for {
-		select {
-		case <-ctx.Done():
+		exit := func() (shouldExit bool) {
+			defer func() {
+				if r := recover(); r != nil {
+					if d.handleLoopPanic(ctx, r, &restartCount, &lastPanicTime) {
+						shouldExit = true
+					}
+				}
+			}()
+			select {
+			case <-ctx.Done():
+				return true
+			case <-ticker.C:
+				d.callRetryPendingEscalations(ctx)
+			}
+			return false
+		}()
+		if exit {
 			return
-		case <-ticker.C:
-			d.retryPendingEscalations(ctx)
 		}
 	}
 }
