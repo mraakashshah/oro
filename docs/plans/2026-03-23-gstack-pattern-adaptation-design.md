@@ -1,7 +1,7 @@
 # gstack Pattern Adaptation Design
 
 **Date:** 2026-03-23
-**Status:** Draft — pending premortem + adversarial review
+**Status:** Reviewed — premortem + adversarial review passed. Ready for beadcraft decomposition.
 
 ## Goal
 
@@ -92,14 +92,15 @@ Inject proven prompt engineering patterns from gstack into oro's 4 LLM contexts 
 - **Ops Escalation** — PARTIAL. STUCK_WORKER playbook could reference 3-strike.
 - **Architect/Manager** — NO. They don't debug.
 
-### 8. Fix-First Heuristic
+### 8. Review Calibration (replaces Fix-First)
 
-**What:** Classify review findings as AUTO-FIX (mechanical: formatting, unused imports, missing error check) vs ASK (judgment: architectural choice, API design). Auto-fix trivial issues, batch ambiguous ones.
+**What:** Single calibration line: "Only REJECT for issues requiring judgment or design changes. Mechanical issues (formatting, unused imports) are not grounds for rejection — a quality gate handles those."
 
 **Where:**
-- **Ops Review** — YES. Primary target. Currently reviews are binary APPROVED/REJECTED. Add Fix-First classification to writePhases.
-- **Worker** — NO. Workers implement, they don't review.
-- **Architect/Manager** — NO. They don't review code.
+- **Ops Review** — YES. Add to writeVerdictAndOutput section. No new vocabulary, no parser changes. The existing APPROVED/REJECTED contract is untouched.
+- **Others** — NO.
+
+**Why not Fix-First:** Fix-First implies a third verdict (AUTO-FIX) that doesn't exist in the pipeline. Mapping it to APPROVED means fixes never get applied; mapping it to REJECTED causes the same churn it's meant to prevent. A calibration line achieves the same goal (reduce unnecessary rejections) without pipeline changes.
 
 ### 9. Scope Drift Detection
 
@@ -131,39 +132,40 @@ Inject proven prompt engineering patterns from gstack into oro's 4 LLM contexts 
 
 ### Group A: Worker Prompt Changes (`pkg/worker/prompt.go`)
 
-Single bead. All changes to the same file:
-- Anti-rationalization table (pattern 3)
-- DO/NEVER constraint lists (pattern 5)
-- 3-strike rule one-liner (pattern 7)
-- Iron Law one-liner (pattern 11)
+Single bead. All changes to `appendStaticSections`:
+- Anti-rationalization table → Constraints section (after line 236)
+- DO/NEVER constraint lists → merge into Constraints + Autonomy sections
+- 3-strike rule one-liner → Constraints section. **Important:** disambiguate from existing "3 failed test attempts" in Failure section (line 271). Use "3 failed debugging hypotheses → STOP, re-read the error from scratch" to distinguish from QG retry counter.
+- Iron Law one-liner → Constraints section
 
-### Group B: Ops Review Changes (`pkg/ops/review_prompt.go`)
+### Group B: Ops Changes (`pkg/ops/review_prompt.go`, `pkg/ops/ac_prompt.go`)
 
-Single bead. All changes to the same file:
-- Anti-sycophancy rules (pattern 1)
-- Verification of claims (pattern 2)
-- Fix-First heuristic (pattern 8)
-- Scope drift detection (pattern 9)
-- Engineering cognitive patterns subset (pattern 6)
+Single bead. Changes across two ops files:
+- Anti-sycophancy rules → `writePhases`, after Phase 2 Critique (pattern 1)
+- Verification of claims → `writePhases`, after Phase 2 Critique (pattern 2)
+- Verification of claims → `writeACPlaybook` in ac_prompt.go: "AC must reference real files" (pattern 2)
+- Review calibration line → `writeVerdictAndOutput`, before verdict rules (pattern 8)
+- Scope drift detection → `writePhases`, as Phase 1.5 between Understand and Critique (pattern 9)
+- Engineering cognitive patterns subset → `writePhases`, after Critique (pattern 6). Use actionable decision criteria, not abstract names (e.g., "prefer existing patterns over novel solutions" not just "boring by default")
 
 ### Group C: Architect Prompt Changes (`cmd/oro/architect.go`)
 
-Single bead. All changes to the same file:
-- AskUserQuestion format (pattern 4)
-- Anti-sycophancy rules (pattern 1)
-- Engineering cognitive patterns subset (pattern 6)
-- Pushback patterns (pattern 10)
+Single bead. All changes to `architectBeacon` constant:
+- AskUserQuestion format → new section after Research (pattern 4)
+- Anti-sycophancy rules → Anti-patterns section (pattern 1). **Must co-deploy with pattern 2** (verification of claims) to prevent false decisiveness.
+- Engineering cognitive patterns (max 5) → new section after Core Skills (pattern 6). Use actionable decision criteria.
+- Pushback patterns → Core Skills section, with qualifier: "When requirements are vague, push back. When precise with AC, proceed." (pattern 10)
 
 ### Group D: Manager Prompt Changes (`cmd/oro/manager.go`)
 
-Single bead. All changes to the same file:
-- AskUserQuestion format (pattern 4)
-- Anti-sycophancy rules (pattern 1)
+Single bead. All changes to `managerBeacon` constant:
+- AskUserQuestion format → new section after Human Interaction (pattern 4)
+- Anti-sycophancy rules → Anti-patterns section (pattern 1)
 
 ### Group E: Skill Enhancements (markdown files)
 
-Single bead. All skill changes:
-- systematic-debugging: 3-strike rule, scope lock, pattern table (pattern 7)
+Single bead. All skill changes (outside repo — no CI coverage, accepted risk):
+- systematic-debugging: scope lock, bug pattern table (pattern 7). Note: 3-strike and anti-rationalization table already partially present — enhance, don't duplicate.
 - brainstorming: pushback patterns, anti-sycophancy (pattern 10)
 
 ## Token Budget
