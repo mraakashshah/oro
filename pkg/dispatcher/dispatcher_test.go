@@ -12399,6 +12399,40 @@ func TestApplyScaleDirective_DetailContainsTargetAndCurrent(t *testing.T) {
 	}
 }
 
+// TestApplyScaleDirective_ClampsToMaxWorkers verifies that a scale directive
+// with a target exceeding MaxWorkers is clamped to the ceiling.
+func TestApplyScaleDirective_ClampsToMaxWorkers(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.MaxWorkers = 5
+	startDispatcher(t, d)
+
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "scale", "20")
+	if !ack.OK {
+		t.Fatalf("expected scale=20 to succeed (clamped), got error: %s", ack.Detail)
+	}
+
+	d.mu.Lock()
+	got := d.targetWorkers
+	d.mu.Unlock()
+	if got != 5 {
+		t.Fatalf("expected targetWorkers clamped to MaxWorkers=5, got %d", got)
+	}
+}
+
+// TestDefaultWorkerCounts_ClampsInitialToCeiling verifies that when
+// initial > ceiling, defaultWorkerCounts clamps initial down to ceiling.
+func TestDefaultWorkerCounts_ClampsInitialToCeiling(t *testing.T) {
+	initial, ceiling := defaultWorkerCounts(7, 5)
+	if initial != 5 {
+		t.Errorf("expected initial clamped to ceiling=5, got %d", initial)
+	}
+	if ceiling != 5 {
+		t.Errorf("expected ceiling=5, got %d", ceiling)
+	}
+}
+
 // TestWithDefaults_AllFieldsSet verifies that withDefaults populates all
 // timeout and interval fields with their correct default values.
 // This kills arithmetic mutations (5/time.Second instead of 5*time.Second, etc.)

@@ -275,6 +275,9 @@ func defaultWorkerCounts(initial, ceiling int) (initialOut, ceilingOut int) {
 	if initial == 0 {
 		initial = ceiling
 	}
+	if initial > ceiling {
+		initial = ceiling
+	}
 	return initial, ceiling
 }
 
