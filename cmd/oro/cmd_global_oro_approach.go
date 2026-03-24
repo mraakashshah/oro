@@ -82,7 +82,8 @@ func runGlobalOroApproach(cfg globalOroApproachConfig, w io.Writer) error {
 	return updateGlobalSettings(cfg, w)
 }
 
-// copySkills copies all skill directories except the blocked ones.
+// copySkills symlinks all skill directories (except blocked ones) from oroSkillsDir into claudeSkillsDir.
+// Any existing entry at the destination (symlink or directory) is removed first so re-runs are idempotent.
 func copySkills(cfg globalOroApproachConfig, w io.Writer) error {
 	entries, err := os.ReadDir(cfg.oroSkillsDir)
 	if err != nil {
@@ -97,7 +98,7 @@ func copySkills(cfg globalOroApproachConfig, w io.Writer) error {
 		return fmt.Errorf("create skills dest: %w", err)
 	}
 
-	copied := 0
+	linked := 0
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -107,12 +108,20 @@ func copySkills(cfg globalOroApproachConfig, w io.Writer) error {
 		}
 		src := filepath.Join(cfg.oroSkillsDir, e.Name())
 		dst := filepath.Join(cfg.claudeSkillsDir, e.Name())
-		if err := copyDirRecursive(src, dst); err != nil {
-			return fmt.Errorf("copy skill %s: %w", e.Name(), err)
+
+		// Remove any existing entry (old copy or stale symlink) before creating a fresh symlink.
+		if _, lstatErr := os.Lstat(dst); lstatErr == nil {
+			if err := os.RemoveAll(dst); err != nil {
+				return fmt.Errorf("remove existing skill %s: %w", e.Name(), err)
+			}
 		}
-		copied++
+
+		if err := os.Symlink(src, dst); err != nil {
+			return fmt.Errorf("symlink skill %s: %w", e.Name(), err)
+		}
+		linked++
 	}
-	fmt.Fprintf(w, "skills: copied %d to %s\n", copied, cfg.claudeSkillsDir)
+	fmt.Fprintf(w, "skills: linked %d to %s\n", linked, cfg.claudeSkillsDir)
 	return nil
 }
 

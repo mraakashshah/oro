@@ -392,6 +392,91 @@ func TestRunGlobalOroApproach_RemovesStaleHooksFromDest(t *testing.T) {
 	}
 }
 
+func TestSkillsAreSymlinks(t *testing.T) {
+	tmp := t.TempDir()
+	srcSkills := filepath.Join(tmp, "src", "skills")
+	dstSkills := filepath.Join(tmp, "dst", "skills")
+
+	makeSkillsDir(t, srcSkills, []string{"using-skills", "brainstorming"})
+
+	cfg := globalOroApproachConfig{
+		oroSkillsDir:    srcSkills,
+		claudeSkillsDir: dstSkills,
+		oroHooksDir:     filepath.Join(tmp, "src", "hooks"),
+		claudeHooksDir:  filepath.Join(tmp, "dst", "hooks"),
+		settingsPath:    filepath.Join(tmp, "settings.json"),
+	}
+	if err := os.MkdirAll(cfg.oroHooksDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.settingsPath, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runGlobalOroApproach(cfg, os.Stdout); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, skill := range []string{"using-skills", "brainstorming"} {
+		dst := filepath.Join(dstSkills, skill)
+		info, err := os.Lstat(dst)
+		if err != nil {
+			t.Fatalf("lstat %s: %v", dst, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("skill %s should be a symlink, got mode %v", skill, info.Mode())
+		}
+		target, err := os.Readlink(dst)
+		if err != nil {
+			t.Fatalf("readlink %s: %v", dst, err)
+		}
+		want := filepath.Join(srcSkills, skill)
+		if target != want {
+			t.Errorf("skill %s symlink target = %q, want %q", skill, target, want)
+		}
+	}
+}
+
+func TestSkillsSymlink_ReplacesExistingDirOnRerun(t *testing.T) {
+	tmp := t.TempDir()
+	srcSkills := filepath.Join(tmp, "src", "skills")
+	dstSkills := filepath.Join(tmp, "dst", "skills")
+
+	makeSkillsDir(t, srcSkills, []string{"using-skills"})
+
+	// Pre-create dst as a plain directory (simulating an old copy-based run)
+	if err := os.MkdirAll(filepath.Join(dstSkills, "using-skills"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := globalOroApproachConfig{
+		oroSkillsDir:    srcSkills,
+		claudeSkillsDir: dstSkills,
+		oroHooksDir:     filepath.Join(tmp, "src", "hooks"),
+		claudeHooksDir:  filepath.Join(tmp, "dst", "hooks"),
+		settingsPath:    filepath.Join(tmp, "settings.json"),
+	}
+	if err := os.MkdirAll(cfg.oroHooksDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.settingsPath, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runGlobalOroApproach(cfg, os.Stdout); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dst := filepath.Join(dstSkills, "using-skills")
+	info, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatalf("lstat after rerun: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("using-skills should be a symlink after rerun, got mode %v", info.Mode())
+	}
+}
+
 // jsonContains is a simple substring check on JSON text.
 func jsonContains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && (func() bool {
