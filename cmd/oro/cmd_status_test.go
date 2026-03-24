@@ -615,6 +615,52 @@ func TestStatusDisplay_HealthyWithRecentHeartbeat(t *testing.T) {
 	}
 }
 
+// TestStatusCommand verifies that the header active count matches the number of
+// table rows (busy + reviewing). Reviewing workers must appear in both.
+func TestStatusCommand(t *testing.T) {
+	// Dispatcher may return active_count=1 (only counting 'busy'), but we have
+	// 1 busy + 1 reviewing + 1 idle. The header must show 2 active, 1 idle.
+	resp := statusResponse{
+		State:       "running",
+		WorkerCount: 3,
+		QueueDepth:  0,
+		Workers: []workerStatus{
+			{ID: "worker-1", State: "busy", BeadID: "oro-abc", LastProgressSecs: 10},
+			{ID: "worker-2", State: "reviewing", BeadID: "oro-def", LastProgressSecs: 5},
+			{ID: "worker-3", State: "idle", BeadID: "", LastProgressSecs: 0},
+		},
+		// Simulate dispatcher providing only busy count (the stale value).
+		ActiveCount:         1,
+		IdleCount:           2,
+		TargetCount:         3,
+		ProgressTimeoutSecs: 600,
+	}
+
+	var buf bytes.Buffer
+	formatStatusResponse(&buf, &resp)
+	got := buf.String()
+
+	// Header must count busy + reviewing = 2 active.
+	if !strings.Contains(got, "2 active") {
+		t.Errorf("header should show '2 active' (busy+reviewing), got:\n%s", got)
+	}
+	if !strings.Contains(got, "1 idle") {
+		t.Errorf("header should show '1 idle', got:\n%s", got)
+	}
+
+	// Table must include both busy and reviewing workers.
+	if !strings.Contains(got, "worker-1") {
+		t.Errorf("table should contain busy worker-1, got:\n%s", got)
+	}
+	if !strings.Contains(got, "worker-2") {
+		t.Errorf("table should contain reviewing worker-2, got:\n%s", got)
+	}
+	// Idle worker must not appear in in-progress table.
+	if strings.Contains(got, "worker-3") {
+		t.Errorf("idle worker-3 should not appear in in-progress table, got:\n%s", got)
+	}
+}
+
 // runMockStatusDispatcher starts a UDS listener that accepts multiple connections,
 // reads a DIRECTIVE message with op=status, and sends an ACK with the given
 // status JSON as the detail. Handles multiple connections (probeSocket + queryDispatcherStatus).

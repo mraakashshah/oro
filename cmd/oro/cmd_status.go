@@ -192,13 +192,30 @@ func formatDuration(secs float64) string {
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
+// filterActiveWorkers returns workers in busy or reviewing state.
+func filterActiveWorkers(workers []workerStatus) []workerStatus {
+	var active []workerStatus
+	for _, ws := range workers {
+		if ws.State == "busy" || ws.State == "reviewing" {
+			active = append(active, ws)
+		}
+	}
+	return active
+}
+
 // formatStatusResponse writes a human-readable status summary with alerts.
 func formatStatusResponse(w io.Writer, resp *statusResponse) {
 	formatAlerts(w, resp)
 
 	fmt.Fprintf(w, "  state:       %s\n", resp.State)
 
-	fmt.Fprintf(w, "  workers:     %d active, %d idle (target: %d)\n", resp.ActiveCount, resp.IdleCount, resp.TargetCount)
+	activeCount := resp.ActiveCount
+	idleCount := resp.IdleCount
+	if len(resp.Workers) > 0 {
+		activeCount = len(filterActiveWorkers(resp.Workers))
+		idleCount = len(resp.Workers) - activeCount
+	}
+	fmt.Fprintf(w, "  workers:     %d active, %d idle (target: %d)\n", activeCount, idleCount, resp.TargetCount)
 
 	fmt.Fprintf(w, "  queue:       %d ready\n", resp.QueueDepth)
 
