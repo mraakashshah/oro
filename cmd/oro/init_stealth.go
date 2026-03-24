@@ -57,6 +57,30 @@ func bootstrapStealthProject(projectRoot, oroHome string) error {
 		fmt.Fprintf(os.Stderr, "warning: stealth quality gate generation failed: %v\n", err)
 	}
 
+	// 6. Install git hooks (pre-commit + pre-push) when .git dir is present.
+	if err := installStealthGitHooks(projectRoot); err != nil {
+		// Fail-open: hooks are useful but not critical for bootstrap.
+		fmt.Fprintf(os.Stderr, "warning: stealth git hook installation failed: %v\n", err)
+	}
+
+	return nil
+}
+
+// installStealthGitHooks installs pre-commit and pre-push oro wrappers into
+// projectRoot/.git/hooks (respecting core.hooksPath). It is a no-op when
+// .git does not exist.
+func installStealthGitHooks(projectRoot string) error {
+	gitDir := filepath.Join(projectRoot, ".git")
+	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+		return nil // no git repo — skip silently
+	}
+
+	if err := installHookWrapper(gitDir, "pre-commit", oroPreCommitCheck); err != nil {
+		return fmt.Errorf("install pre-commit hook: %w", err)
+	}
+	if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
+		return fmt.Errorf("install pre-push hook: %w", err)
+	}
 	return nil
 }
 

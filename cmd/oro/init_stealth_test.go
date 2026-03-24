@@ -5,8 +5,115 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// TestBootstrapStealthProjectHooks verifies that bootstrapStealthProject installs git hooks.
+// Acceptance criteria (oro-e2tg.2):
+//   - pre-commit hook exists in .git/hooks/ after stealth init
+//   - pre-push hook exists in .git/hooks/ after stealth init
+//   - existing executable user hooks are backed up to .user suffix
+//   - no hooks installed (no error) when .git dir is absent
+func TestBootstrapStealthProjectHooks(t *testing.T) {
+	t.Run("installs_pre_commit_hook_when_git_dir_present", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Setenv("ORO_HOME", oroHome)
+
+		gitDir := filepath.Join(projectDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := bootstrapStealthProject(projectDir, oroHome); err != nil {
+			t.Fatalf("bootstrapStealthProject: %v", err)
+		}
+
+		hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+		data, err := os.ReadFile(hookPath)
+		if err != nil {
+			t.Fatalf("pre-commit hook missing: %v", err)
+		}
+		if !strings.Contains(string(data), "managed by oro") {
+			t.Error("pre-commit hook should contain 'managed by oro' marker")
+		}
+		if !strings.Contains(string(data), "oro-docs/") {
+			t.Error("pre-commit hook should embed oro-docs/ rejection check")
+		}
+	})
+
+	t.Run("installs_pre_push_hook_when_git_dir_present", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Setenv("ORO_HOME", oroHome)
+
+		gitDir := filepath.Join(projectDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := bootstrapStealthProject(projectDir, oroHome); err != nil {
+			t.Fatalf("bootstrapStealthProject: %v", err)
+		}
+
+		hookPath := filepath.Join(gitDir, "hooks", "pre-push")
+		data, err := os.ReadFile(hookPath)
+		if err != nil {
+			t.Fatalf("pre-push hook missing: %v", err)
+		}
+		if !strings.Contains(string(data), "managed by oro") {
+			t.Error("pre-push hook should contain 'managed by oro' marker")
+		}
+		if !strings.Contains(string(data), "agent/") {
+			t.Error("pre-push hook should embed agent/* rejection check")
+		}
+	})
+
+	t.Run("backs_up_existing_user_hooks_to_dot_user", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Setenv("ORO_HOME", oroHome)
+
+		gitDir := filepath.Join(projectDir, ".git")
+		hooksDir := filepath.Join(gitDir, "hooks")
+		if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		userHook := "#!/bin/sh\necho user-pre-commit"
+		if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte(userHook), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := bootstrapStealthProject(projectDir, oroHome); err != nil {
+			t.Fatalf("bootstrapStealthProject: %v", err)
+		}
+
+		backupPath := filepath.Join(hooksDir, "pre-commit.user")
+		data, err := os.ReadFile(backupPath)
+		if err != nil {
+			t.Fatalf("pre-commit.user backup missing: %v", err)
+		}
+		if !strings.Contains(string(data), "echo user-pre-commit") {
+			t.Error(".user backup should contain original hook content")
+		}
+	})
+
+	t.Run("no_error_when_git_dir_absent", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Setenv("ORO_HOME", oroHome)
+		// No .git dir — bootstrap should succeed without installing hooks.
+		if err := bootstrapStealthProject(projectDir, oroHome); err != nil {
+			t.Fatalf("bootstrapStealthProject should not fail without .git: %v", err)
+		}
+		// Project dir must remain clean (no .git created by oro).
+		if _, err := os.Stat(filepath.Join(projectDir, ".git")); err == nil {
+			t.Error("bootstrapStealthProject must not create .git when it did not exist")
+		}
+	})
+}
 
 // TestBootstrapStealthProject verifies the bootstrapStealthProject core function.
 // Acceptance criteria (oro-e2tg.1):
