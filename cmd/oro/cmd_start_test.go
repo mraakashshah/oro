@@ -156,7 +156,7 @@ func TestStartPrintsQuitHint(t *testing.T) {
 
 		var stdout bytes.Buffer
 		// detach=false means attach, so hint should be printed
-		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
 		// Expect error because AttachInteractive tries to attach to real tmux
 		if err == nil {
 			t.Fatal("expected error from AttachInteractive in test environment")
@@ -197,7 +197,7 @@ func TestStartPrintsQuitHint(t *testing.T) {
 
 		var stdout bytes.Buffer
 		// detach=true means no attach, so hint should NOT be printed
-		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true, nil)
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true, nil)
 		if err != nil {
 			t.Fatalf("runFullStart with detach should succeed, got: %v", err)
 		}
@@ -274,7 +274,7 @@ func TestRunFullStartKillsDaemonOnSessionCreateError(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runFullStart(&stdout, 2, "sonnet", "", spawnerFn, fakeTmux, killFn, 200*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
+	err := runFullStart(&stdout, 2, 2, "sonnet", "", spawnerFn, fakeTmux, killFn, 200*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
 	if err == nil {
 		t.Fatal("expected runFullStart to return error when tmux session create fails")
 	}
@@ -315,7 +315,7 @@ type killTestSpawner struct {
 	onSpawn    func(pidPath string) (int, error)
 }
 
-func (s *killTestSpawner) SpawnDaemon(pidPath string, workers int) (int, error) {
+func (s *killTestSpawner) SpawnDaemon(pidPath string, workers, _ int) (int, error) {
 	pid, err := s.onSpawn(pidPath)
 	if err != nil {
 		return 0, err
@@ -447,7 +447,7 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 			ProgressTimeout: 20 * time.Minute,
 			ReviewTimeout:   30 * time.Minute,
 		}
-		args := spawner.buildArgs(3)
+		args := spawner.buildArgs(3, 3)
 		argStr := strings.Join(args, " ")
 		if !strings.Contains(argStr, "--progress-timeout=20m0s") {
 			t.Errorf("expected --progress-timeout=20m0s in args, got: %s", argStr)
@@ -459,13 +459,37 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 
 	t.Run("ExecDaemonSpawner omits zero-value timeouts", func(t *testing.T) {
 		spawner := &ExecDaemonSpawner{}
-		args := spawner.buildArgs(2)
+		args := spawner.buildArgs(2, 2)
 		argStr := strings.Join(args, " ")
 		if strings.Contains(argStr, "progress-timeout") {
 			t.Errorf("zero progress-timeout should not appear in args, got: %s", argStr)
 		}
 		if strings.Contains(argStr, "review-timeout") {
 			t.Errorf("zero review-timeout should not appear in args, got: %s", argStr)
+		}
+	})
+
+	t.Run("ExecDaemonSpawner forwards max-workers when different from workers", func(t *testing.T) {
+		spawner := &ExecDaemonSpawner{}
+		args := spawner.buildArgs(3, 5)
+		argStr := strings.Join(args, " ")
+		if !strings.Contains(argStr, "--workers 3") {
+			t.Errorf("expected --workers 3 in args, got: %s", argStr)
+		}
+		if !strings.Contains(argStr, "--max-workers 5") {
+			t.Errorf("expected --max-workers 5 in args, got: %s", argStr)
+		}
+	})
+
+	t.Run("ExecDaemonSpawner forwards max-workers when equal to workers", func(t *testing.T) {
+		spawner := &ExecDaemonSpawner{}
+		args := spawner.buildArgs(3, 3)
+		argStr := strings.Join(args, " ")
+		if !strings.Contains(argStr, "--workers 3") {
+			t.Errorf("expected --workers 3 in args, got: %s", argStr)
+		}
+		if !strings.Contains(argStr, "--max-workers 3") {
+			t.Errorf("expected --max-workers 3 in args, got: %s", argStr)
 		}
 	})
 }
@@ -558,7 +582,7 @@ func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
 	}
 
 	// buildDispatcher should call migrateGlobalDBs, copying global state.db.
-	d, db, err := buildDispatcher(1, 0, 0)
+	d, db, err := buildDispatcher(1, 1, 0, 0)
 	if err != nil {
 		t.Fatalf("buildDispatcher: %v", err)
 	}
@@ -587,9 +611,9 @@ type callOrderSpawner struct {
 	inner     *fakeSpawner
 }
 
-func (s *callOrderSpawner) SpawnDaemon(pidPath string, workers int) (int, error) {
+func (s *callOrderSpawner) SpawnDaemon(pidPath string, workers, maxWorkers int) (int, error) {
 	*s.callOrder = append(*s.callOrder, "daemon")
-	return s.inner.SpawnDaemon(pidPath, workers)
+	return s.inner.SpawnDaemon(pidPath, workers, maxWorkers)
 }
 
 // TestDoltStartedBeforeDaemon verifies that runFullStart calls doltStartFn before
@@ -622,7 +646,7 @@ func TestDoltStartedBeforeDaemon(t *testing.T) {
 		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux,
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux,
 			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true,
 			doltStartFn)
 		if err != nil {
@@ -664,7 +688,7 @@ func TestDoltStartedBeforeDaemon(t *testing.T) {
 		spawner := &fakeSpawner{returnErr: fmt.Errorf("spawn failed")}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", "", spawner, newFakeCmd(),
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, newFakeCmd(),
 			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false,
 			doltStartFn)
 		if err == nil {
@@ -690,7 +714,7 @@ func TestDoltStartedBeforeDaemon(t *testing.T) {
 		spawner := &fakeSpawner{returnPID: 12345}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", "", spawner, newFakeCmd(),
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, newFakeCmd(),
 			func(int) error { daemonKilled = true; return nil },
 			1*time.Millisecond, noopSleep, 50*time.Millisecond, false,
 			func() (int, error) { return 42, nil })
@@ -720,7 +744,7 @@ func TestDoltStartedBeforeDaemon(t *testing.T) {
 		spawner := &fakeSpawner{returnPID: 12345, socketPath: sockPath}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, "sonnet", "", spawner, fakeTmux,
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux,
 			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true,
 			nil)
 		if err != nil {

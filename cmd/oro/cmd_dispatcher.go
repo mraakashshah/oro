@@ -170,7 +170,7 @@ func runDispatcherStart(w io.Writer, workers int, spawner DaemonSpawner, socketT
 	sockPath := paths.SocketPath
 
 	// Spawn the daemon subprocess.
-	pid, err := spawner.SpawnDaemon(pidPath, workers)
+	pid, err := spawner.SpawnDaemon(pidPath, workers, workers)
 	if err != nil {
 		return fmt.Errorf("spawn daemon: %w", err)
 	}

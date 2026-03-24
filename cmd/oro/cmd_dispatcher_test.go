@@ -28,7 +28,7 @@ type dispatcherFakeSpawner struct {
 	socketPath string // if set, create a UDS listener after "spawn"
 }
 
-func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers int) (int, error) {
+func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers, _ int) (int, error) {
 	f.called = true
 	f.pidPath = pidPath
 	f.workers = workers

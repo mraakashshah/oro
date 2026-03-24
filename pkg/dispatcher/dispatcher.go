@@ -248,7 +248,8 @@ type Config struct {
 	DBPath                string        // SQLite database path.
 	RepoRoot              string        // Absolute path to the repository root. Used so bd commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
 	BeadsDir              string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
-	MaxWorkers            int           // Worker pool size (default 10).
+	MaxWorkers            int           // Worker pool ceiling for auto-scale (default 10).
+	InitialWorkers        int           // Initial targetWorkers on startup (default: MaxWorkers).
 	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
 	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
 	PollInterval          time.Duration // bd ready poll interval (default 10s).
@@ -265,11 +266,21 @@ type Config struct {
 	WorkerProgram         string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 }
 
+// defaultWorkerCounts returns the resolved (initialWorkers, maxWorkers) pair,
+// applying defaults: maxWorkers defaults to 10; initialWorkers defaults to maxWorkers.
+func defaultWorkerCounts(initial, ceiling int) (initialOut, ceilingOut int) {
+	if ceiling == 0 {
+		ceiling = 10
+	}
+	if initial == 0 {
+		initial = ceiling
+	}
+	return initial, ceiling
+}
+
 func (c *Config) withDefaults() Config {
 	out := *c
-	if out.MaxWorkers == 0 {
-		out.MaxWorkers = 10
-	}
+	out.InitialWorkers, out.MaxWorkers = defaultWorkerCounts(out.InitialWorkers, out.MaxWorkers)
 	if out.HeartbeatTimeout == 0 {
 		out.HeartbeatTimeout = 45 * time.Second
 	}
@@ -512,7 +523,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		estimator:      estimator,
 		qgRunner:       &ShellQGRunner{},
 		state:          StateInert,
-		targetWorkers:  resolved.MaxWorkers,
+		targetWorkers:  resolved.InitialWorkers,
 		WorkerPool: WorkerPool{
 			workers: make(map[string]*trackedWorker),
 		},

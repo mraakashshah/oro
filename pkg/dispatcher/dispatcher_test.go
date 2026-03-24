@@ -2276,6 +2276,62 @@ func TestNew_TargetWorkersDefaultsToMaxWorkers(t *testing.T) {
 	}
 }
 
+func TestConfigInitialWorkersFallback(t *testing.T) {
+	t.Run("InitialWorkers defaults to MaxWorkers when zero", func(t *testing.T) {
+		cfg := Config{MaxWorkers: 5}
+		resolved := cfg.withDefaults()
+		if resolved.InitialWorkers != 5 {
+			t.Errorf("InitialWorkers: got %d, want 5 (fallback to MaxWorkers)", resolved.InitialWorkers)
+		}
+	})
+
+	t.Run("InitialWorkers preserved when explicitly set", func(t *testing.T) {
+		cfg := Config{MaxWorkers: 5, InitialWorkers: 3}
+		resolved := cfg.withDefaults()
+		if resolved.InitialWorkers != 3 {
+			t.Errorf("InitialWorkers: got %d, want 3 (should preserve explicit value)", resolved.InitialWorkers)
+		}
+	})
+}
+
+func TestNew_TargetWorkersUsesInitialWorkers(t *testing.T) {
+	t.Helper()
+	db := newTestDB(t)
+
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+	spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+	opsSpawner := ops.NewSpawner(spawnMock)
+	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	sockPath := fmt.Sprintf("/tmp/oro-test-iw-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	cfg := Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		MaxWorkers:       5,
+		InitialWorkers:   3,
+		HeartbeatTimeout: 500 * time.Millisecond,
+		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  200 * time.Millisecond,
+	}
+
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	if got := d.TargetWorkers(); got != 3 {
+		t.Fatalf("expected targetWorkers=InitialWorkers=3, got %d", got)
+	}
+	if d.cfg.MaxWorkers != 5 {
+		t.Fatalf("expected MaxWorkers=5, got %d", d.cfg.MaxWorkers)
+	}
+}
+
 func TestApplyDirective_StopAlwaysRejected(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)
