@@ -19,6 +19,7 @@ Output: JSON with permissionDecision=deny if dangerous, nothing otherwise (passt
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -82,9 +83,16 @@ def check_git_command(command: str) -> dict | None:
     """Detect and block dangerous git worktree subcommands.
 
     Blocks 'git worktree remove', 'git worktree add', and other mutating
-    subcommands. Allows bare 'git worktree' and 'git worktree list' (read-only).
+    subcommands when ORO_ROLE is set (worker, architect, manager). The main
+    session (no ORO_ROLE) needs worktree commands for cleanup and maintenance.
+
+    Allows bare 'git worktree' and 'git worktree list' (read-only) regardless.
     """
     if not command:
+        return None
+    # Only block worktree mutations for swarm roles (worker, architect, manager).
+    # The main session (ORO_ROLE unset) needs worktree commands for cleanup.
+    if not os.environ.get("ORO_ROLE"):
         return None
     match = _WORKTREE_RE.search(command)
     if match is None:

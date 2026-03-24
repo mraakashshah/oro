@@ -148,15 +148,39 @@ class TestBuildDecision:
 
 
 class TestCheckGitCommand:
-    def test_blocks_worktree_remove(self):
-        result = check_git_command("git worktree remove .worktrees/agent-123")
-        assert result is not None
-        assert result["permissionDecision"] == "deny"
+    def test_blocks_worktree_remove_when_role_set(self):
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            result = check_git_command("git worktree remove .worktrees/agent-123")
+            assert result is not None
+            assert result["permissionDecision"] == "deny"
 
-    def test_blocks_worktree_add(self):
-        result = check_git_command("git worktree add .worktrees/new-branch new-branch")
-        assert result is not None
-        assert result["permissionDecision"] == "deny"
+    def test_blocks_worktree_add_when_role_set(self):
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            result = check_git_command("git worktree add .worktrees/new-branch new-branch")
+            assert result is not None
+            assert result["permissionDecision"] == "deny"
+
+    def test_blocks_worktree_remove_when_architect(self):
+        with patch.dict("os.environ", {"ORO_ROLE": "architect"}):
+            result = check_git_command("git worktree remove .worktrees/agent-123")
+            assert result is not None
+            assert result["permissionDecision"] == "deny"
+
+    def test_blocks_worktree_remove_when_manager(self):
+        with patch.dict("os.environ", {"ORO_ROLE": "manager"}):
+            result = check_git_command("git worktree remove .worktrees/agent-123")
+            assert result is not None
+            assert result["permissionDecision"] == "deny"
+
+    def test_allows_worktree_remove_when_no_role(self):
+        with patch.dict("os.environ", {}, clear=True):
+            result = check_git_command("git worktree remove .worktrees/agent-123")
+            assert result is None
+
+    def test_allows_worktree_add_when_no_role(self):
+        with patch.dict("os.environ", {}, clear=True):
+            result = check_git_command("git worktree add .worktrees/new-branch new-branch")
+            assert result is None
 
     def test_allows_git_status(self):
         assert check_git_command("git status") is None
@@ -192,16 +216,30 @@ class TestBlockWorktreeRemove:
         return {"tool_name": "Bash", "tool_input": {"command": command}}
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
-    def test_blocks_git_worktree_remove(self):
-        result = build_decision(self._hook_input("git worktree remove .worktrees/agent-123"))
-        assert result is not None
-        assert result["permissionDecision"] == "deny"
+    def test_blocks_git_worktree_remove_when_role_set(self):
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            result = build_decision(self._hook_input("git worktree remove .worktrees/agent-123"))
+            assert result is not None
+            assert result["permissionDecision"] == "deny"
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
-    def test_blocks_git_worktree_add(self):
-        result = build_decision(self._hook_input("git worktree add .worktrees/new-branch new-branch"))
-        assert result is not None
-        assert result["permissionDecision"] == "deny"
+    def test_blocks_git_worktree_add_when_role_set(self):
+        with patch.dict("os.environ", {"ORO_ROLE": "architect"}):
+            result = build_decision(self._hook_input("git worktree add .worktrees/new-branch new-branch"))
+            assert result is not None
+            assert result["permissionDecision"] == "deny"
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_allows_worktree_remove_when_no_role(self):
+        with patch.dict("os.environ", {}, clear=True):
+            result = build_decision(self._hook_input("git worktree remove .worktrees/agent-123"))
+            assert result is None
+
+    @patch("no_cd_guard._PROJECT_ROOT", "/project")
+    def test_allows_worktree_add_when_no_role(self):
+        with patch.dict("os.environ", {}, clear=True):
+            result = build_decision(self._hook_input("git worktree add .worktrees/new-branch new-branch"))
+            assert result is None
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
     def test_allows_git_status(self):
