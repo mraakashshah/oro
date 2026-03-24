@@ -50,6 +50,22 @@ oro setup --force         # overwrite existing config files
 oro setup --dry-run       # print what would happen without executing
 ```
 
+### Stealth mode (zero-footprint)
+
+For projects where you don't want any oro files in the repo:
+
+```bash
+oro init --stealth
+oro start
+```
+
+Stealth mode stores all config, beads, and quality gate scripts under
+`~/.oro/projects/s-<hash>/` (where `<hash>` is derived from the repo path).
+No `.oro/` directory is created in the project root.
+
+Git pre-commit and pre-push hooks are installed automatically to prevent
+accidental commits of oro artifacts.
+
 ---
 
 ## For Contributors

@@ -306,10 +306,14 @@ Use 'oro setup' to install missing tools (interactive, installs via brew/go/npm)
 The project name is taken from the first argument, or defaults to the
 directory name of --project-root.
 
-Use --check to verify tools without bootstrapping (exits non-zero if any missing).
-Use --quiet to suppress all output (useful for CI scripts).
-Use --stealth to bootstrap in zero-footprint mode (no .oro/ in project; config in ~/.oro/).
-Use --project-root to specify a different project directory (default: current directory).`,
+Flags:
+  --check         Verify tools without bootstrapping (exits non-zero if any missing).
+  --quiet         Suppress all output (useful for CI scripts).
+  --stealth       Zero-footprint mode: no .oro/ directory in the project root.
+                  All config is stored under ~/.oro/projects/s-<hash>/ where <hash>
+                  is derived from the repo path. Git hooks are installed to prevent
+                  accidental commits of oro artifacts in stealth mode.
+  --project-root  Specify a different project directory (default: current directory).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()

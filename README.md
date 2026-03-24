@@ -310,9 +310,9 @@ oro stop
 | `oro stop` | Graceful shutdown | `oro stop` |
 | `oro cleanup` | Clean stale state after a crash | `oro cleanup` |
 
-**`oro init`** flags: `--check` (verify only), `--force` (overwrite config), `--project-root <dir>`, `--quiet`
+**`oro init`** flags: `--check` (verify only), `--force` (overwrite config), `--project-root <dir>`, `--quiet`, `--stealth` (zero-footprint mode — no `.oro/` in project, config stored under `~/.oro/projects/s-<hash>/`)
 
-**`oro start`** flags: `--workers, -w` (default: 2), `--model` (default: sonnet), `--detach, -D`, `--daemon-only, -d`
+**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (ceiling for scale directives), `--model` (default: sonnet), `--detach, -D`, `--daemon-only, -d`
 
 **`oro stop`** flags: `--force` (skip confirmation, requires `ORO_HUMAN_CONFIRMED=1`)
 

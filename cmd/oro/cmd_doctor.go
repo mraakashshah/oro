@@ -99,6 +99,10 @@ func newDoctorCmd() *cobra.Command {
 		Short: "Diagnose and repair oro installation issues",
 		Long: `Diagnose and repair common oro installation issues.
 
+Path resolution is mode-aware: in standard mode paths are under <project>/.oro/,
+while in stealth mode (oro init --stealth) paths are under ~/.oro/projects/s-<hash>/.
+Subcommands automatically detect the active mode via the project config.
+
 Subcommands:
   recover-dolt  Detect and recover a corrupt Dolt database`,
 	}

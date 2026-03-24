@@ -55,6 +55,11 @@ Phase 3: Install missing tools (reuses oro init logic)
 Phase 4: Bootstrap project (config, assets, hooks)
 Phase 5: Doctor check (verify everything is in place)
 
+For zero-footprint mode (no .oro/ directory in the project), use
+'oro init --stealth' instead. Stealth mode stores all config under
+~/.oro/projects/s-<hash>/ and installs git hooks to prevent accidental
+commits of oro artifacts.
+
 Use --dry-run to see what would happen without executing.
 Use --skip-tools to skip tool installation (Phase 3).
 Use --force to overwrite existing config files.
