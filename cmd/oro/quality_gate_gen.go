@@ -386,13 +386,13 @@ func writeQualityGateScriptFile(paths ProjectPaths, force bool) error {
 		return nil
 	}
 
-	// Skip generation when no languages are detected — the script would have
-	// no language-specific lanes and is not useful.
+	// Skip generation only when config.yaml is absent (cfg == nil).
+	// A config with zero languages still gets a shell-only script.
 	cfg, err := readQGConfig(paths.ConfigYAML)
 	if err != nil {
 		return err
 	}
-	if cfg == nil || len(cfg.Languages) == 0 {
+	if cfg == nil {
 		return nil
 	}
 

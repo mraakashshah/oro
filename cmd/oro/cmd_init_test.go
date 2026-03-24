@@ -1063,19 +1063,30 @@ func TestBootstrapGeneratesQualityGate(t *testing.T) {
 		}
 	})
 
-	t.Run("no languages detected skips quality gate generation", func(t *testing.T) {
+	t.Run("no languages detected still generates shell-only quality gate", func(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		// Empty dir — no language markers.
+		// Empty dir — no language markers; config.yaml will have languages: {}.
 		_, err := bootstrapProject(projectDir, "emptyproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
 
 		qgPath := filepath.Join(projectDir, "scripts", "quality_gate.sh")
-		if _, err := os.Stat(qgPath); err == nil {
-			t.Error("quality_gate.sh should NOT be created when no languages detected")
+		data, err := os.ReadFile(qgPath)
+		if err != nil {
+			t.Fatalf("quality_gate.sh should be created even when no languages detected: %v", err)
+		}
+		script := string(data)
+		if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
+			t.Error("generated script should start with shebang")
+		}
+		if strings.Contains(script, "lane_go") {
+			t.Error("shell-only script should not contain lane_go")
+		}
+		if strings.Contains(script, "lane_python") {
+			t.Error("shell-only script should not contain lane_python")
 		}
 	})
 }

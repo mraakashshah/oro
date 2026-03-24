@@ -367,6 +367,67 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 	})
 }
 
+// TestWriteQualityGateScriptFile_ZeroLanguages verifies that writeQualityGateScriptFile
+// generates a quality_gate.sh even when config.yaml has languages: {} (zero languages).
+func TestWriteQualityGateScriptFile_ZeroLanguages(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a config.yaml with an empty languages map.
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("languages: {}\n"), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	qgPath := filepath.Join(dir, "scripts", "quality_gate.sh")
+	paths := ProjectPaths{
+		ConfigYAML:  configPath,
+		QualityGate: qgPath,
+	}
+
+	if err := writeQualityGateScriptFile(paths, false); err != nil {
+		t.Fatalf("writeQualityGateScriptFile: %v", err)
+	}
+
+	data, err := os.ReadFile(qgPath)
+	if err != nil {
+		t.Fatalf("quality_gate.sh was not created: %v", err)
+	}
+
+	script := string(data)
+	if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
+		t.Errorf("expected shebang, got: %q", script[:min(len(script), 40)])
+	}
+
+	// Shell-only: no language lanes.
+	if strings.Contains(script, "lane_go") {
+		t.Error("shell-only script should not contain lane_go")
+	}
+	if strings.Contains(script, "lane_python") {
+		t.Error("shell-only script should not contain lane_python")
+	}
+
+	checkBashSyntax(t, script)
+}
+
+// TestWriteQualityGateScriptFile_AbsentConfig verifies that writeQualityGateScriptFile
+// silently skips (no error, no file) when config.yaml does not exist.
+func TestWriteQualityGateScriptFile_AbsentConfig(t *testing.T) {
+	dir := t.TempDir()
+	qgPath := filepath.Join(dir, "scripts", "quality_gate.sh")
+	paths := ProjectPaths{
+		ConfigYAML:  filepath.Join(dir, "does-not-exist.yaml"),
+		QualityGate: qgPath,
+	}
+
+	if err := writeQualityGateScriptFile(paths, false); err != nil {
+		t.Fatalf("expected no error for absent config, got: %v", err)
+	}
+
+	if _, err := os.Stat(qgPath); !os.IsNotExist(err) {
+		t.Error("quality_gate.sh should not be created when config.yaml is absent")
+	}
+}
+
 // checkBashSyntax writes the script to a temp file and runs bash -n to verify
 // the script is syntactically valid shell.
 func checkBashSyntax(t *testing.T, script string) {
