@@ -25,6 +25,7 @@ var portableHooks = []string{ //nolint:gochecknoglobals // static config
 	"context_pruner.py",
 	"stop-checklist.sh",
 	"enforce_skills.py",
+	"session_start_global.py",
 }
 
 // globalOroApproachConfig holds injectable paths for testability.
@@ -189,6 +190,10 @@ func globalHooks(hooksDir string) map[string][]hookGroup {
 	sh := func(s string) string { return hooksDir + "/" + s }
 
 	return map[string][]hookGroup{
+		"SessionStart": {{
+			Matcher: "",
+			Hooks:   []hookEntry{{Type: "command", Command: py("session_start_global.py")}},
+		}},
 		"PreCompact": {{
 			Matcher: "",
 			Hooks:   []hookEntry{{Type: "command", Command: py("pre_compact.py")}},

@@ -253,7 +253,7 @@ func TestRunGlobalOroApproach_UpdatesSettingsJSON(t *testing.T) {
 	if err := json.Unmarshal(out["hooks"], &hooks); err != nil {
 		t.Fatalf("hooks not a map: %v", err)
 	}
-	for _, event := range []string{"PreCompact", "PreToolUse", "PostToolUse", "Stop"} {
+	for _, event := range []string{"SessionStart", "PreCompact", "PreToolUse", "PostToolUse", "Stop"} {
 		if _, ok := hooks[event]; !ok {
 			t.Errorf("hooks missing event %q", event)
 		}
@@ -487,6 +487,78 @@ func jsonContains(s, substr string) bool {
 		}
 		return false
 	})()
+}
+
+func TestGlobalHooks_HasSessionStart(t *testing.T) {
+	hooks := globalHooks("~/.claude/hooks")
+	if _, ok := hooks["SessionStart"]; !ok {
+		t.Error("globalHooks() must include a SessionStart event")
+	}
+	// Verify it references session_start_global.py
+	sessionStart := hooks["SessionStart"]
+	found := false
+	for _, grp := range sessionStart {
+		for _, entry := range grp.Hooks {
+			if jsonContains(entry.Command, "session_start_global.py") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("SessionStart hook must reference session_start_global.py")
+	}
+}
+
+func TestPortableHooks_IncludesSessionStartGlobal(t *testing.T) {
+	found := false
+	for _, name := range portableHooks {
+		if name == "session_start_global.py" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("portableHooks must include session_start_global.py")
+	}
+}
+
+func TestRunGlobalOroApproach_CopiesSessionStartGlobalHook(t *testing.T) {
+	tmp := t.TempDir()
+	srcHooks := filepath.Join(tmp, "src", "hooks")
+	dstHooks := filepath.Join(tmp, "dst", "hooks")
+
+	allHooks := map[string]string{
+		"auto-format.sh":            "#!/bin/bash\n",
+		"prompt_injection_guard.py": "# guard\n",
+		"pre_compact.py":            "# compact\n",
+		"context_pruner.py":         "# pruner\n",
+		"stop-checklist.sh":         "#!/bin/bash\n",
+		"enforce_skills.py":         "# marker\n",
+		"session_start_global.py":   "# global session start\n",
+	}
+	makeHooksDir(t, srcHooks, allHooks)
+
+	cfg := globalOroApproachConfig{
+		oroSkillsDir:    filepath.Join(tmp, "src", "skills"),
+		claudeSkillsDir: filepath.Join(tmp, "dst", "skills"),
+		oroHooksDir:     srcHooks,
+		claudeHooksDir:  dstHooks,
+		settingsPath:    filepath.Join(tmp, "settings.json"),
+	}
+	if err := os.MkdirAll(cfg.oroSkillsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.settingsPath, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runGlobalOroApproach(cfg, os.Stdout); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dstHooks, "session_start_global.py")); err != nil {
+		t.Errorf("session_start_global.py should be copied to dst hooks: %v", err)
+	}
 }
 
 func TestRunGlobalOroApproach_SettingsJSON_MissingFile(t *testing.T) {
