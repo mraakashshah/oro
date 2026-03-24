@@ -3145,6 +3145,9 @@ func (d *Dispatcher) applyScaleDirective(args string) (string, error) {
 	}
 
 	d.mu.Lock()
+	if maxW := d.cfg.MaxWorkers; maxW > 0 && target > maxW {
+		target = maxW
+	}
 	d.targetWorkers = target
 	d.unexpectedManagedExits = 0
 	connected := len(d.workers)

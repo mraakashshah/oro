@@ -602,6 +602,30 @@ func TestApplyRestartWorker_PreservesManagedFlag(t *testing.T) {
 	}
 }
 
+// TestApplyScaleDirective_ClampsToMaxWorkers verifies that applyScaleDirective
+// clamps targetWorkers to MaxWorkers when the requested target exceeds the limit.
+func TestApplyScaleDirective_ClampsToMaxWorkers(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.MaxWorkers = 3
+
+	_, err := d.applyScaleDirective("10")
+	if err != nil {
+		t.Fatalf("applyScaleDirective failed: %v", err)
+	}
+
+	d.mu.Lock()
+	target := d.targetWorkers
+	d.mu.Unlock()
+
+	if target != 3 {
+		t.Errorf("expected targetWorkers to be clamped to MaxWorkers=3, got %d", target)
+	}
+}
+
 // TestReconcileScale_CapByManagedExits verifies the corrected 2*target cap:
 // (a) unmanaged workers do not contribute to the cap and must not block managed
 // worker spawning (the oro-kdne root cause), (b) unexpected managed exits tracked
