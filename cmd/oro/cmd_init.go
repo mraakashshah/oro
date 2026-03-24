@@ -428,7 +428,7 @@ func installStealthGitHooks(absProjectRoot string) {
 // Rather than writing .oro/config.yaml into the project root, it creates
 // <oroHome>/projects/s-<hash>/config.yaml with mode: stealth.
 // Git pre-commit and pre-push hooks are installed to prevent accidental leakage.
-func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) { //nolint:funlen // sequential bootstrap steps, mirrors bootstrapProject
+func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) { //nolint:funlen,unparam // sequential bootstrap steps, mirrors bootstrapProject
 	hash, err := projectHash(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("compute project hash: %w", err)

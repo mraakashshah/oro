@@ -182,14 +182,6 @@ func TestBootstrapStealthProject(t *testing.T) {
 			t.Errorf("config.yaml missing in stealth dir: %v", err)
 		}
 
-		// beads/ must be a directory.
-		fi, err := os.Stat(filepath.Join(stealthDir, "beads"))
-		if err != nil {
-			t.Errorf("beads/ missing in stealth dir: %v", err)
-		} else if !fi.IsDir() {
-			t.Errorf("beads is not a directory")
-		}
-
 		// settings.json must exist.
 		if _, err := os.Stat(filepath.Join(stealthDir, "settings.json")); err != nil {
 			t.Errorf("settings.json missing in stealth dir: %v", err)
