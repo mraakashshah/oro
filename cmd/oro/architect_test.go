@@ -107,6 +107,86 @@ func TestArchitectNudge(t *testing.T) {
 	})
 }
 
+func TestArchitectBeacon_GstackPatterns(t *testing.T) {
+	beacon := ArchitectBeacon()
+
+	t.Run("AskUserQuestion section exists after Research", func(t *testing.T) {
+		if !strings.Contains(beacon, "## AskUserQuestion") {
+			t.Error("expected ArchitectBeacon() to contain '## AskUserQuestion' section")
+		}
+		// Must appear after Research section
+		researchIdx := strings.Index(beacon, "## Research")
+		askIdx := strings.Index(beacon, "## AskUserQuestion")
+		if researchIdx == -1 || askIdx == -1 || askIdx <= researchIdx {
+			t.Error("expected '## AskUserQuestion' section to appear after '## Research' section")
+		}
+		// 4-part structure: Reground, Simplify, Recommend (with completeness score), Options (with effort estimates)
+		for _, term := range []string{"Reground", "Simplify", "Recommend", "completeness", "Options", "effort"} {
+			if !strings.Contains(beacon, term) {
+				t.Errorf("expected AskUserQuestion section to contain %q", term)
+			}
+		}
+	})
+
+	t.Run("anti-sycophancy in Anti-patterns section", func(t *testing.T) {
+		antiPatternsIdx := strings.Index(beacon, "## Anti-patterns")
+		if antiPatternsIdx == -1 {
+			t.Fatal("Anti-patterns section not found")
+		}
+		antiPatternsSection := beacon[antiPatternsIdx:]
+		lower := strings.ToLower(antiPatternsSection)
+		if !strings.Contains(lower, "sycophancy") && !strings.Contains(lower, "hedging") {
+			t.Error("expected Anti-patterns section to contain anti-sycophancy guidance (mention 'sycophancy' or 'hedging')")
+		}
+		// Must include banned phrases or replacements
+		if !strings.Contains(antiPatternsSection, "verification") && !strings.Contains(antiPatternsSection, "verify") {
+			t.Error("expected anti-sycophancy guidance to mention verification (to prevent false decisiveness)")
+		}
+	})
+
+	t.Run("Engineering Cognitive Patterns section exists after Core Skills", func(t *testing.T) {
+		coreSkillsIdx := strings.Index(beacon, "## Core Skills")
+		cogIdx := strings.Index(beacon, "## Engineering Cognitive Patterns")
+		if cogIdx == -1 {
+			t.Fatal("expected ArchitectBeacon() to contain '## Engineering Cognitive Patterns' section")
+		}
+		if coreSkillsIdx == -1 || cogIdx <= coreSkillsIdx {
+			t.Error("expected '## Engineering Cognitive Patterns' to appear after '## Core Skills'")
+		}
+		// Actionable criteria (not abstract names)
+		for _, term := range []string{"proven", "blast radius"} {
+			if !strings.Contains(beacon, term) {
+				t.Errorf("expected Engineering Cognitive Patterns to contain actionable criterion %q", term)
+			}
+		}
+	})
+
+	t.Run("pushback patterns in Core Skills with BAD/GOOD examples", func(t *testing.T) {
+		coreSkillsIdx := strings.Index(beacon, "## Core Skills")
+		if coreSkillsIdx == -1 {
+			t.Fatal("Core Skills section not found")
+		}
+		// Find the end of Core Skills section (next ## heading)
+		nextSection := strings.Index(beacon[coreSkillsIdx+len("## Core Skills"):], "\n## ")
+		var coreSkillsSection string
+		if nextSection == -1 {
+			coreSkillsSection = beacon[coreSkillsIdx:]
+		} else {
+			coreSkillsSection = beacon[coreSkillsIdx : coreSkillsIdx+len("## Core Skills")+nextSection]
+		}
+		if !strings.Contains(coreSkillsSection, "BAD") || !strings.Contains(coreSkillsSection, "GOOD") {
+			t.Error("expected Core Skills section to contain BAD/GOOD example pairs for pushback patterns")
+		}
+		if !strings.Contains(coreSkillsSection, "vague") {
+			t.Error("expected Core Skills pushback patterns to mention vague requirements")
+		}
+		// Qualifier about when to push back vs proceed
+		if !strings.Contains(coreSkillsSection, "precise") && !strings.Contains(coreSkillsSection, "AC") {
+			t.Error("expected Core Skills to contain qualifier about when to push back (vague) vs proceed (precise/AC)")
+		}
+	})
+}
+
 func TestArchitectBeacon_ArchitectConstraints(t *testing.T) {
 	beacon := ArchitectBeacon()
 
