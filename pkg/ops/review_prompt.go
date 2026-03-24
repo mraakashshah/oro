@@ -91,6 +91,11 @@ func writePhases(b *strings.Builder, base string) {
 	b.WriteString("6. Summarize the INTENT in one sentence.\n")
 	b.WriteString("   If you cannot articulate the intent → Critical finding.\n\n")
 
+	// Phase 1.5: Scope Drift
+	b.WriteString("## Phase 1.5: Scope Drift\n")
+	b.WriteString("Compare AC against diff. If the diff does work not described in AC,\n")
+	b.WriteString("or AC describes work not in the diff → Critical finding.\n\n")
+
 	// Phase 2: Critique
 	b.WriteString("## Phase 2: Critique\n")
 	b.WriteString("Classify each finding: Critical / Important / Minor.\n\n")
@@ -105,9 +110,30 @@ func writePhases(b *strings.Builder, base string) {
 	b.WriteString("- **Test-as-spec**: Can you understand the feature by ONLY reading\n")
 	b.WriteString("  the test? If not, the test is underspecified — Important finding.\n")
 	b.WriteString("- **Anti-patterns**: Does any pattern from the list above apply?\n\n")
+
+	// Anti-sycophancy
+	b.WriteString("**Anti-sycophancy:** Banned phrases: 'likely handled', 'probably tested',\n")
+	b.WriteString("'could work'. Required replacement: take a position, cite evidence.\n\n")
+
+	// Verification of claims
+	b.WriteString("**Verification of claims:** If you claim this is handled elsewhere,\n")
+	b.WriteString("cite the file and line. If you claim tests cover this, name the test.\n")
+	b.WriteString("Never say likely or probably.\n\n")
+
+	// Engineering cognitive patterns
+	b.WriteString("**Engineering patterns:**\n")
+	b.WriteString("- Prefer existing patterns over novel solutions.\n")
+	b.WriteString("- Consider blast radius before approving large changes.\n")
+	b.WriteString("- Essential vs accidental complexity: reject accidental complexity creep.\n")
+	b.WriteString("- Systems over heroes: solutions that work without the author present.\n\n")
 }
 
 func writeVerdictAndOutput(b *strings.Builder) {
+	b.WriteString("## Review Calibration\n")
+	b.WriteString("Only REJECT for issues requiring judgment or design changes.\n")
+	b.WriteString("Mechanical issues (formatting, unused imports) are not grounds for\n")
+	b.WriteString("rejection — a quality gate handles those.\n\n")
+
 	b.WriteString("## Verdict\n")
 	b.WriteString("- Any Critical → REJECTED\n")
 	b.WriteString("- Any Important → REJECTED\n")

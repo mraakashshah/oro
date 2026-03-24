@@ -62,6 +62,9 @@ func writeACPlaybook(b *strings.Builder, opts WriteACOpts) {
 
 	b.WriteString("5. Look at existing passing tests in the relevant packages to understand AC format conventions used in this project. " +
 		"Match their style and specificity.\n\n")
+
+	b.WriteString("**Verification:** AC must reference real files that exist in the codebase. " +
+		"Before saving, confirm each file path and test function name with Grep or Read.\n\n")
 }
 
 func writeACOutputFormat(b *strings.Builder, opts WriteACOpts) {

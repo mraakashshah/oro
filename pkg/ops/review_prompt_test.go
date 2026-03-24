@@ -513,6 +513,44 @@ func TestExtractPatterns_EmptyPatternValue(t *testing.T) {
 	}
 }
 
+// TestBuildReviewPrompt_GstackPatterns verifies that gstack patterns are present
+// in the review prompt: scope drift detection (Phase 1.5), anti-sycophancy rules,
+// verification of claims, review calibration, and engineering cognitive patterns.
+func TestBuildReviewPrompt_GstackPatterns(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := ReviewOpts{
+		BeadID:      "oro-gstack",
+		Worktree:    tmpDir,
+		BaseBranch:  "main",
+		ProjectRoot: tmpDir,
+	}
+
+	prompt := buildReviewPrompt(opts)
+
+	checks := []struct {
+		substr string
+		label  string
+	}{
+		// Scope drift (Phase 1.5)
+		{"Phase 1.5", "scope drift phase"},
+		{"Compare AC against diff", "scope drift instruction"},
+		// Anti-sycophancy
+		{"likely handled", "anti-sycophancy banned phrase"},
+		// Verification of claims
+		{"cite the file and line", "verification of claims"},
+		// Review calibration
+		{"quality gate handles those", "review calibration"},
+		// Engineering cognitive patterns
+		{"blast radius", "cognitive pattern: blast radius"},
+		{"Prefer existing patterns", "cognitive pattern: prefer existing patterns"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(prompt, c.substr) {
+			t.Errorf("prompt missing %s: want substring %q", c.label, c.substr)
+		}
+	}
+}
+
 // TestReadAntiPatterns_MissingFile verifies that readAntiPatterns returns an
 // empty string when assets/review-patterns.md does not exist.
 func TestReadAntiPatterns_MissingFile(t *testing.T) {
