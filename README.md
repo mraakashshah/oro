@@ -385,6 +385,12 @@ Parent beads that group related work. The dispatcher can `focus` on an epic to p
 
 An automated pipeline (`quality_gate.sh`) that every bead must pass before merging: `go test ./... -race` + `golangci-lint` + `gofumpt` + `goimports`. Workers run the gate after implementation. Failed gates mean the bead is not done.
 
+The quality gate is generated during `oro init` / `oro setup` based on detected project languages. For projects with no recognized languages, a shell-only quality gate is still generated (shellcheck + markdownlint) so that beads always have a gate to pass.
+
+### Dead Pane Detection
+
+When the dispatcher sends commands to worker tmux panes via `SendKeysVerified`, it first checks whether the target pane is still alive. If the pane has exited or been killed, the command fails fast with an actionable error message instead of hanging or silently dropping input. This prevents the dispatcher from getting stuck waiting on a dead worker.
+
 ### Worktrees
 
 Each worker operates in an isolated git worktree (`bead/<id>` branch). This prevents conflicts between concurrent workers. On completion, the dispatcher rebases onto main and fast-forward merges — maintaining linear history.

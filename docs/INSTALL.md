@@ -131,3 +131,13 @@ Install it and re-run `oro setup`.
 **Re-running setup is safe**
 `oro setup` is idempotent. Run it again to install missing tools or repair config.
 Existing user-created files are never overwritten (use `--force` to override).
+
+**No quality gate generated for my project**
+`oro init` now generates a quality gate even when no languages are detected.
+The fallback gate runs shellcheck and markdownlint so workers always have a gate
+to pass. Re-run `oro init` (or `oro init --stealth`) to regenerate.
+
+**Worker stuck / not responding**
+Dead tmux panes are detected automatically. When the dispatcher sends a command to
+a worker pane that has exited, it fails fast with an error instead of hanging.
+Check `oro logs` for "dead pane" errors, then run `oro cleanup` to clear stale state.
