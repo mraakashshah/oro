@@ -1697,3 +1697,86 @@ func main() {
 		}
 	})
 }
+
+// TestAssemblePrompt_GstackPatterns verifies that the Constraints section
+// contains the gstack anti-rationalization table, DO/NEVER lists, 3-strike
+// one-liner, and Iron Law one-liner.
+func TestAssemblePrompt_GstackPatterns(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-gstack",
+		Title:              "Gstack patterns test",
+		Description:        "Verify gstack patterns in Constraints section",
+		AcceptanceCriteria: "Tests pass",
+		WorktreePath:       "/tmp/wt-gstack",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+	constraintsSection := extractSection(t, prompt, "## Constraints")
+
+	// Anti-rationalization table entries
+	antiRationalizationChecks := []struct {
+		name   string
+		substr string
+	}{
+		{"excuse: Issue is simple", "Issue is simple"},
+		{"rebuttal: Simple issues have root causes too", "Simple issues have root causes too"},
+		{"excuse: Emergency no time", "Emergency no time"},
+		{"rebuttal: Systematic is FASTER than thrashing", "Systematic is FASTER than thrashing"},
+		{"excuse: Just try this first", "Just try this first"},
+		{"rebuttal: First fix sets the pattern", "First fix sets the pattern"},
+	}
+	for _, c := range antiRationalizationChecks {
+		if !strings.Contains(constraintsSection, c.substr) {
+			t.Errorf("anti-rationalization table: %s: expected Constraints section to contain %q", c.name, c.substr)
+		}
+	}
+
+	// DO list: stop for these
+	doChecks := []struct {
+		name   string
+		substr string
+	}{
+		{"DO stop for test failures", "test failures"},
+		{"DO stop for 3 failed debugging hypotheses", "3 failed debugging hypotheses"},
+		{"DO stop for security concerns", "security concerns"},
+	}
+	for _, c := range doChecks {
+		if !strings.Contains(constraintsSection, c.substr) {
+			t.Errorf("DO list: %s: expected Constraints section to contain %q", c.name, c.substr)
+		}
+	}
+
+	// NEVER list: do not stop for these
+	neverChecks := []struct {
+		name   string
+		substr string
+	}{
+		{"NEVER stop for style preferences", "style preferences"},
+		{"NEVER stop for naming choices", "naming choices"},
+		{"NEVER stop for trivial confirmations", "trivial confirmations"},
+	}
+	for _, c := range neverChecks {
+		if !strings.Contains(constraintsSection, c.substr) {
+			t.Errorf("NEVER list: %s: expected Constraints section to contain %q", c.name, c.substr)
+		}
+	}
+
+	// 3-strike one-liner (debugging hypotheses — distinct from QG retry "3 failed test attempts" in Failure section)
+	if !strings.Contains(constraintsSection, "3 failed debugging hypotheses") {
+		t.Error("expected Constraints section to contain 3-strike one-liner about debugging hypotheses")
+	}
+	if !strings.Contains(constraintsSection, "re-read the error from scratch") {
+		t.Error("expected Constraints section to contain 3-strike instruction to re-read error from scratch")
+	}
+
+	// Iron Law one-liner
+	if !strings.Contains(constraintsSection, "No fixes without root cause") {
+		t.Error("expected Constraints section to contain Iron Law: 'No fixes without root cause'")
+	}
+	if !strings.Contains(constraintsSection, "diagnose before changing code") {
+		t.Error("expected Constraints section to contain Iron Law: 'diagnose before changing code'")
+	}
+}
