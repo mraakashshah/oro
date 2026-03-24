@@ -183,21 +183,26 @@ class TestCheckGitCommand:
             assert result is None
 
     def test_allows_git_status(self):
-        assert check_git_command("git status") is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            assert check_git_command("git status") is None
 
     def test_allows_git_log(self):
-        assert check_git_command("git log --oneline") is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            assert check_git_command("git log --oneline") is None
 
     def test_allows_bare_git_worktree(self):
-        assert check_git_command("git worktree") is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            assert check_git_command("git worktree") is None
 
     def test_allows_git_worktree_list(self):
-        assert check_git_command("git worktree list") is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            assert check_git_command("git worktree list") is None
 
     def test_allows_commit_message_containing_worktree_text(self):
         # Commit messages that mention "git worktree remove" must not be blocked.
         cmd = 'git commit -m "fix: block git worktree remove in workers"'
-        assert check_git_command(cmd) is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            assert check_git_command(cmd) is None
 
     def test_allows_heredoc_commit_with_worktree_text(self):
         # Multi-line heredoc commit messages must not be blocked.
@@ -208,7 +213,8 @@ class TestCheckGitCommand:
             "git worktree remove, causing quality gate failure.\n"
             'EOF\n)"'
         )
-        assert check_git_command(cmd) is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            assert check_git_command(cmd) is None
 
 
 class TestBlockWorktreeRemove:
@@ -243,23 +249,27 @@ class TestBlockWorktreeRemove:
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
     def test_allows_git_status(self):
-        result = build_decision(self._hook_input("git status"))
-        assert result is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            result = build_decision(self._hook_input("git status"))
+            assert result is None
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
     def test_allows_git_log(self):
-        result = build_decision(self._hook_input("git log --oneline"))
-        assert result is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            result = build_decision(self._hook_input("git log --oneline"))
+            assert result is None
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
     def test_allows_bare_git_worktree(self):
-        result = build_decision(self._hook_input("git worktree"))
-        assert result is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            result = build_decision(self._hook_input("git worktree"))
+            assert result is None
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
     def test_allows_git_worktree_list(self):
-        result = build_decision(self._hook_input("git worktree list"))
-        assert result is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            result = build_decision(self._hook_input("git worktree list"))
+            assert result is None
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
     def test_allows_commit_message_with_worktree_text(self):
@@ -270,5 +280,6 @@ class TestBlockWorktreeRemove:
             "git worktree remove, causing quality gate failure.\n"
             'EOF\n)"'
         )
-        result = build_decision(self._hook_input(cmd))
-        assert result is None
+        with patch.dict("os.environ", {"ORO_ROLE": "worker"}):
+            result = build_decision(self._hook_input(cmd))
+            assert result is None
