@@ -180,6 +180,12 @@ func (g *GitWorktreeManager) DeleteBranch(ctx context.Context, branch string) er
 	return nil
 }
 
+// Exists reports whether the worktree at path is still present on disk.
+func (g *GitWorktreeManager) Exists(_ context.Context, path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // BranchExists reports whether the named branch exists in the local repository.
 // Returns (false, nil) when the branch is simply absent — not found is not an error.
 // Returns (false, err) only when git itself fails (e.g., not a git repo).

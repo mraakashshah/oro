@@ -560,6 +560,10 @@ func (m *envCapturingWorktreeManager) GCClosedWorktrees(_ context.Context, _ fun
 	return nil
 }
 
+func (m *envCapturingWorktreeManager) Exists(_ context.Context, _ string) bool {
+	return true // default: paths are valid
+}
+
 // TestSpawnAndWaitWithMemoryAndCodeContext verifies that spawnAndWait wires
 // MemoryContext and CodeSearchContext into AssemblePrompt, and passes memStore
 // to DrainOutput.

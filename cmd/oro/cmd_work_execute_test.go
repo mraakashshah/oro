@@ -113,6 +113,10 @@ func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string
 	return nil
 }
 
+func (m *mockWorktreeManager) Exists(_ context.Context, _ string) bool {
+	return true // default: paths are valid
+}
+
 // mockProcess implements worker.Process with configurable exit.
 type mockProcess struct {
 	waitErr error

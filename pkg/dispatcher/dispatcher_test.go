@@ -231,6 +231,7 @@ type mockWorktreeManager struct {
 	deleteBranchFn  func(branch string) error
 	branchExistsFn  func(ctx context.Context, branch string) (bool, error)
 	mergeFFOnlyFn   func(branch, target string) (string, error)
+	existsFn        func(ctx context.Context, path string) bool
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (string, string, error) {
@@ -302,6 +303,16 @@ func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, branch, target stri
 
 func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
 	return nil
+}
+
+func (m *mockWorktreeManager) Exists(ctx context.Context, path string) bool {
+	m.mu.Lock()
+	fn := m.existsFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, path)
+	}
+	return true // default: path is valid (preserves existing test behaviour)
 }
 
 type mockEscalator struct {

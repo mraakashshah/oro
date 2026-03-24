@@ -86,6 +86,9 @@ type WorktreeManager interface {
 	BranchExists(ctx context.Context, branch string) (bool, error)
 	MergeFFOnly(ctx context.Context, branch string, target string) (commitSHA string, err error)
 	GCClosedWorktrees(ctx context.Context, isBeadClosed func(string) bool) error
+	// Exists reports whether the worktree at path is still present on disk.
+	// Returns false if the path does not exist or cannot be accessed.
+	Exists(ctx context.Context, path string) bool
 }
 
 // Escalator sends messages to the Manager. Production impl uses tmux send-keys.
@@ -2723,6 +2726,18 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		}
 	}
 	targetBranch := baseBranch
+
+	if existingWorktree != "" && !d.worktrees.Exists(ctx, existingWorktree) {
+		// Stale entry — the worktree was removed externally after the previous
+		// worker timed out. Clear it so we fall through to create a fresh one.
+		stalePath := existingWorktree
+		existingWorktree = ""
+		d.mu.Lock()
+		delete(d.worktreeByBead, bead.ID)
+		d.mu.Unlock()
+		_ = d.logEvent(ctx, "stale_worktree_cleared", "dispatcher", bead.ID, w.id,
+			fmt.Sprintf(`{"stale_path":%q}`, stalePath))
+	}
 
 	if existingWorktree != "" {
 		// Reuse existing worktree.

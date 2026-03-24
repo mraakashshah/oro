@@ -125,6 +125,10 @@ func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string
 	return nil
 }
 
+func (m *mockWorktreeManager) Exists(_ context.Context, _ string) bool {
+	return true // default: paths are valid
+}
+
 type mockEscalator struct{}
 
 func (m *mockEscalator) Escalate(_ context.Context, _ string) error {

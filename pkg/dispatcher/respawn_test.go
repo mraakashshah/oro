@@ -8,6 +8,72 @@ import (
 	"oro/pkg/protocol"
 )
 
+// TestAssignBead_StaleWorktreeByBead_CreatesNewWorktree verifies that when
+// worktreeByBead has a stale entry pointing to a path that no longer exists,
+// assignBead discards the stale entry and creates a new worktree instead of
+// reusing the non-existent path.
+func TestAssignBead_StaleWorktreeByBead_CreatesNewWorktree(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.cfg.HeartbeatTimeout = 100 * time.Millisecond
+
+	beadID := "oro-stale-wt-test"
+
+	// Track Create calls to verify a new worktree is created.
+	var createCalls []string
+	newWorktreePath := "/tmp/worktree-new-" + beadID
+	wt.createFn = func(ctx context.Context, bID, _ string) (string, string, error) {
+		createCalls = append(createCalls, bID)
+		return newWorktreePath, "agent/" + bID, nil
+	}
+
+	// Simulate a worktree path that no longer exists on disk.
+	wt.existsFn = func(_ context.Context, path string) bool {
+		return false // all paths are "missing" — forces new worktree creation
+	}
+
+	// Pre-seed a stale worktreeByBead entry left by a previous crashed worker.
+	stalePath := "/stale/nonexistent/path-" + beadID
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = stalePath
+	d.mu.Unlock()
+
+	beads.SetBeads([]protocol.Bead{{ID: beadID, Priority: 2}})
+
+	startDispatcher(t, d)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Connect worker and send heartbeat.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Worker receives ASSIGN message.
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok || msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %v (ok=%v)", msg, ok)
+	}
+	if msg.Assign.BeadID != beadID {
+		t.Fatalf("assigned bead: got %q, want %q", msg.Assign.BeadID, beadID)
+	}
+
+	// CRITICAL: stale entry must be discarded — Create must be called once.
+	if len(createCalls) != 1 {
+		t.Fatalf("Create calls: got %d %v, want 1 (stale path should be replaced)", len(createCalls), createCalls)
+	}
+
+	// Assigned worktree must be the newly created path, not the stale one.
+	if msg.Assign.Worktree == stalePath {
+		t.Fatalf("worktree is stale path %q — dispatcher did not create a new worktree", stalePath)
+	}
+	if msg.Assign.Worktree != newWorktreePath {
+		t.Fatalf("worktree: got %q, want %q", msg.Assign.Worktree, newWorktreePath)
+	}
+}
+
 // TestWorkerRespawn_PreservesUncommittedChanges verifies that when a worker
 // is killed or times out and then a new worker picks up the same bead,
 // uncommitted changes in the worktree are preserved by reusing the existing
