@@ -1924,3 +1924,79 @@ func TestBuildHookConfig_NoStaleHookRefs(t *testing.T) {
 		}
 	}
 }
+
+// --- Stealth mode init (oro-e2tg) ---
+
+// TestOroInitStealth_EndToEnd verifies that `oro init --stealth` bootstraps a
+// zero-footprint project: no .oro/ in the project root, stealth config in
+// <oroHome>/projects/s-<hash>/, git hooks installed, settings.json created.
+func TestOroInitStealth_EndToEnd(t *testing.T) {
+	overrideToolDefs(t)
+
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	// Create .git dir so git hooks can be installed.
+	gitDir := filepath.Join(projectDir, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+		t.Fatalf("create .git/hooks: %v", err)
+	}
+
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"init", "--stealth", "--project-root", projectDir})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("oro init --stealth failed: %v\noutput: %s", err, buf.String())
+	}
+
+	// 1. Standard .oro/config.yaml must NOT exist.
+	if _, err := os.Stat(filepath.Join(projectDir, ".oro", "config.yaml")); err == nil {
+		t.Error("stealth mode must not create .oro/config.yaml in project root")
+	}
+
+	// 2. Stealth config.yaml must exist with mode: stealth.
+	hash, err := projectHash(projectDir)
+	if err != nil {
+		t.Fatalf("projectHash: %v", err)
+	}
+	stealthDir := filepath.Join(oroHome, "projects", "s-"+hash)
+
+	configData, err := os.ReadFile(filepath.Join(stealthDir, "config.yaml")) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("stealth config.yaml not created: %v", err)
+	}
+	if !strings.Contains(string(configData), "mode: stealth") {
+		t.Errorf("stealth config.yaml must contain 'mode: stealth', got:\n%s", string(configData))
+	}
+
+	// 3. Git pre-commit hook installed.
+	preCommitData, err := os.ReadFile(filepath.Join(gitDir, "hooks", "pre-commit")) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("pre-commit hook not installed: %v", err)
+	}
+	if !strings.Contains(string(preCommitData), "managed by oro") {
+		t.Error("pre-commit hook must be an oro wrapper")
+	}
+
+	// 4. Git pre-push hook installed.
+	prePushData, err := os.ReadFile(filepath.Join(gitDir, "hooks", "pre-push")) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("pre-push hook not installed: %v", err)
+	}
+	if !strings.Contains(string(prePushData), "managed by oro") {
+		t.Error("pre-push hook must be an oro wrapper")
+	}
+
+	// 5. settings.json created and is valid JSON.
+	settingsData, err := os.ReadFile(filepath.Join(stealthDir, "settings.json")) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("stealth settings.json not created: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(settingsData, &parsed); err != nil {
+		t.Fatalf("stealth settings.json is not valid JSON: %v\n%s", err, string(settingsData))
+	}
+}

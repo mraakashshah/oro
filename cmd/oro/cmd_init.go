@@ -290,6 +290,7 @@ func newInitCmd() *cobra.Command {
 	var (
 		checkOnly   bool
 		quiet       bool
+		stealth     bool
 		projectRoot string
 	)
 
@@ -307,6 +308,7 @@ directory name of --project-root.
 
 Use --check to verify tools without bootstrapping (exits non-zero if any missing).
 Use --quiet to suppress all output (useful for CI scripts).
+Use --stealth to bootstrap in zero-footprint mode (no .oro/ in project; config in ~/.oro/).
 Use --project-root to specify a different project directory (default: current directory).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -315,19 +317,20 @@ Use --project-root to specify a different project directory (default: current di
 			if len(args) > 0 {
 				projectName = args[0]
 			}
-			return runInit(w, checkOnly, quiet, projectRoot, projectName)
+			return runInit(w, checkOnly, quiet, stealth, projectRoot, projectName)
 		},
 	}
 
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "verify tools without installing (exit 1 if any missing)")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress output, just exit code")
+	cmd.Flags().BoolVar(&stealth, "stealth", false, "zero-footprint mode: store config in ~/.oro/ instead of .oro/")
 	cmd.Flags().StringVar(&projectRoot, "project-root", ".", "project root directory for config generation")
 
 	return cmd
 }
 
 // runInit is the core logic for the init command, separated for testability.
-func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string) error {
+func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectName string) error {
 	// Resolve real repo root for worktree support (e.g. when running from inside .worktrees/).
 	if resolved, err := langprofile.ResolveProjectRoot(projectRoot); err == nil {
 		projectRoot = resolved
@@ -355,11 +358,6 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string
 		fmt.Fprintf(w, "\n%d tools missing. Run 'oro setup' to install them.\nContinuing with project bootstrap...\n\n", missing)
 	}
 
-	name, err := resolveProjectName(projectRoot, projectName)
-	if err != nil {
-		return err
-	}
-
 	oroHome, err := resolveOroHome()
 	if err != nil {
 		return err
@@ -368,6 +366,15 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string
 	subAssets, err := fs.Sub(EmbeddedAssets, "_assets")
 	if err != nil {
 		return fmt.Errorf("access embedded assets: %w", err)
+	}
+
+	if stealth {
+		return runInitStealth(w, projectRoot, oroHome, subAssets)
+	}
+
+	name, err := resolveProjectName(projectRoot, projectName)
+	if err != nil {
+		return err
 	}
 
 	if _, err := bootstrapProject(projectRoot, name, oroHome, subAssets, false); err != nil {
@@ -381,6 +388,129 @@ func runInit(w io.Writer, checkOnly, quiet bool, projectRoot, projectName string
 	fmt.Fprintf(w, "\nRun 'oro start' to launch agents.\n")
 
 	return nil
+}
+
+// runInitStealth handles the stealth branch of runInit: bootstraps a stealth
+// project and prints the success message.
+func runInitStealth(w io.Writer, projectRoot, oroHome string, assets fs.FS) error {
+	if _, err := bootstrapStealthProject(projectRoot, oroHome, assets, false); err != nil {
+		return fmt.Errorf("bootstrap stealth project: %w", err)
+	}
+	hash, err := projectHash(projectRoot)
+	if err != nil {
+		return err
+	}
+	stealthDirName := "s-" + hash
+	fmt.Fprintf(w, "\n✓ Initialized stealth project %q\n", stealthDirName)
+	fmt.Fprintf(w, "  Stealth dir: %s/projects/%s/\n", oroHome, stealthDirName)
+	fmt.Fprintf(w, "  Settings:    %s/projects/%s/settings.json\n", oroHome, stealthDirName)
+	fmt.Fprintf(w, "\nRun 'oro start' to launch agents.\n")
+	return nil
+}
+
+// installStealthGitHooks installs oro pre-commit and pre-push wrappers in the
+// project's .git/hooks directory. Errors are logged as warnings; the function
+// is fail-open because missing hooks are recoverable.
+func installStealthGitHooks(absProjectRoot string) {
+	gitDir := filepath.Join(absProjectRoot, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		return
+	}
+	if err := installHookWrapper(gitDir, "pre-commit", oroPreCommitCheck); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: install pre-commit hook: %v\n", err)
+	}
+	if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: install pre-push hook: %v\n", err)
+	}
+}
+
+// bootstrapStealthProject creates a zero-footprint oro project.
+// Rather than writing .oro/config.yaml into the project root, it creates
+// <oroHome>/projects/s-<hash>/config.yaml with mode: stealth.
+// Git pre-commit and pre-push hooks are installed to prevent accidental leakage.
+func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) { //nolint:funlen // sequential bootstrap steps, mirrors bootstrapProject
+	hash, err := projectHash(projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("compute project hash: %w", err)
+	}
+	stealthDirName := "s-" + hash
+	stealthDir := filepath.Join(oroHome, "projects", stealthDirName)
+
+	// 1. Create stealth directory structure.
+	handoffsDir := filepath.Join(stealthDir, "handoffs")
+	if err := os.MkdirAll(handoffsDir, 0o755); err != nil { //nolint:gosec // needs to be readable
+		return nil, fmt.Errorf("create stealth dir: %w", err)
+	}
+
+	// 2. Detect languages.
+	profiles := langprofile.AllProfiles()
+	cfg, detectErr := langprofile.GenerateConfig(projectRoot, profiles)
+	if detectErr != nil {
+		cfg = &langprofile.Config{Languages: map[string]langprofile.LanguageConfig{}}
+	}
+
+	// 3. Write config.yaml with mode: stealth.
+	var cfgBuf strings.Builder
+	fmt.Fprintf(&cfgBuf, "mode: stealth\n")
+	fmt.Fprintf(&cfgBuf, "project: %s\n", stealthDirName)
+	if langYAML := langprofile.BuildYAML(cfg); langYAML != "" {
+		cfgBuf.WriteString(langYAML)
+	}
+	if err := os.WriteFile(filepath.Join(stealthDir, "config.yaml"), []byte(cfgBuf.String()), 0o600); err != nil { //nolint:gosec // config file
+		return nil, fmt.Errorf("write stealth config.yaml: %w", err)
+	}
+
+	// 4. Write project.root.
+	absProjectRoot, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve absolute project root: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(stealthDir, "project.root"), []byte(absProjectRoot), 0o644); err != nil { //nolint:gosec // readable file
+		return nil, fmt.Errorf("write project.root: %w", err)
+	}
+
+	// 5. Ensure git repo (fail-open).
+	ensureGitRepo(projectRoot)
+
+	// 6. Create beads directory directly (no symlink — zero footprint in project).
+	beadsDir := filepath.Join(stealthDir, "beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil { //nolint:gosec // needs to be readable
+		return nil, fmt.Errorf("create stealth beads dir: %w", err)
+	}
+
+	// 7. Initialize dolt for stealth beads dir (fail-open).
+	initDoltForProject(beadsDir, oroHome)
+
+	// 8. Install git hooks to prevent accidental leakage in stealth mode.
+	installStealthGitHooks(absProjectRoot)
+
+	// 9. Generate settings.json.
+	settingsData, err := generateSettings("$HOME/.oro")
+	if err != nil {
+		return nil, fmt.Errorf("generate settings: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(stealthDir, "settings.json"), settingsData, 0o644); err != nil { //nolint:gosec // readable file
+		return nil, fmt.Errorf("write stealth settings: %w", err)
+	}
+
+	// 10. Extract embedded assets to oroHome (additive: don't overwrite user edits).
+	if err := extractAssets(oroHome, assets, false); err != nil {
+		return nil, fmt.Errorf("extract assets: %w", err)
+	}
+
+	// 11. Generate quality_gate.sh to the stealth path (not in project root).
+	stealthPaths := stealthProjectPaths(projectRoot, stealthDir)
+	if err := writeQualityGateScriptFile(stealthPaths, force); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
+	}
+
+	// 12. Build oro-search-hook binary (fail-open).
+	_ = ensureSearchHook(
+		filepath.Join(oroHome, "hooks", "oro-search-hook"),
+		filepath.Join(absProjectRoot, "cmd", "oro-search-hook"),
+	)
+
+	return cfg, nil
 }
 
 // installMissingTools installs any missing tools and re-verifies.

@@ -239,7 +239,7 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 	// Auto-run oro init if .oro/config.yaml is missing (project not initialized).
 	if _, statErr := os.Stat(filepath.Join(".oro", "config.yaml")); os.IsNotExist(statErr) {
 		fmt.Fprintf(w, "project not initialized — running oro init...\n")
-		if initErr := runInit(w, false, false, ".", ""); initErr != nil {
+		if initErr := runInit(w, false, false, false, ".", ""); initErr != nil {
 			return "", fmt.Errorf("auto-init failed: %w — run 'oro init' manually", initErr)
 		}
 	}
