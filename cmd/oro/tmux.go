@@ -541,17 +541,35 @@ func verifyHint(text string) string {
 	return text[:verifyHintMaxLen]
 }
 
+// isPaneDead reports whether the pane has exited (pane_dead == "1").
+// Returns false when display-message itself errors (fail-open).
+func (s *TmuxSession) isPaneDead(paneTarget string) bool {
+	out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", paneTarget, "#{pane_dead}")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(out) == "1"
+}
+
 // SendKeysVerified sends text to a pane and verifies it appeared via
 // capture-pane. If the text doesn't appear, it clears the input (C-u)
 // and retries. Returns error if text never appears within timeout.
 // Only checks for a short prefix of the text since long nudges may be
 // wrapped or truncated by Claude Code's Ink TUI.
+// Fails fast with an error containing "dead" and last pane output if the pane
+// has exited, rather than waiting the full timeout.
 func (s *TmuxSession) SendKeysVerified(paneTarget, text string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	hint := verifyHint(text)
 	firstAttempt := true
 
 	for {
+		// Fail fast if the pane has exited — retrying is pointless.
+		if s.isPaneDead(paneTarget) {
+			lastOut, _ := s.Runner.Run("tmux", "capture-pane", "-p", "-t", paneTarget)
+			return fmt.Errorf("pane %s is dead: %s", paneTarget, strings.TrimSpace(lastOut))
+		}
+
 		if !firstAttempt {
 			// Clear any partial input before retrying.
 			_, _ = s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "C-u")

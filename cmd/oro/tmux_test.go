@@ -1205,6 +1205,79 @@ func TestSendKeysVerified(t *testing.T) {
 			t.Errorf("expected 'nudge text' in error, got: %v", err)
 		}
 	})
+
+	t.Run("dead pane returns immediately with error containing dead and last output", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_dead}")] = "1"
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:architect")] = "last pane output here"
+
+		start := time.Now()
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		err := sess.SendKeysVerified("oro:architect", "expected text", 60*time.Second)
+		elapsed := time.Since(start)
+
+		if err == nil {
+			t.Fatal("expected error for dead pane, got nil")
+		}
+		if !strings.Contains(err.Error(), "dead") {
+			t.Errorf("expected 'dead' in error, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "last pane output here") {
+			t.Errorf("expected last pane output in error, got: %v", err)
+		}
+		if elapsed > 2*time.Second {
+			t.Errorf("expected fast return for dead pane, took %v", elapsed)
+		}
+	})
+
+	t.Run("alive pane retries normally when capture-pane does not show text yet", func(t *testing.T) {
+		fake := newFakeCmd()
+		// pane_dead returns "0" (alive) — isPaneDead must not block normal retry
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_dead}")] = "0"
+		// capture-pane: first attempt shows nothing, second shows text
+		fake.seqOut[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = []string{
+			"nothing yet",
+			"nudge text visible",
+		}
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		err := sess.SendKeysVerified("oro:manager", "nudge text", 5*time.Second)
+		if err != nil {
+			t.Fatalf("expected success after retry, got: %v", err)
+		}
+	})
+}
+
+func TestIsPaneDead(t *testing.T) {
+	t.Run("returns true when pane_dead is 1", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_dead}")] = "1"
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		if !sess.isPaneDead("oro:architect") {
+			t.Error("expected isPaneDead to return true when pane_dead=1")
+		}
+	})
+
+	t.Run("returns false when pane_dead is 0", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_dead}")] = "0"
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		if sess.isPaneDead("oro:architect") {
+			t.Error("expected isPaneDead to return false when pane_dead=0")
+		}
+	})
+
+	t.Run("returns false (fail-open) when display-message errors", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_dead}")] = fmt.Errorf("tmux error")
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		if sess.isPaneDead("oro:architect") {
+			t.Error("expected isPaneDead to return false (fail-open) when display-message errors")
+		}
+	})
 }
 
 func TestAttach(t *testing.T) {
