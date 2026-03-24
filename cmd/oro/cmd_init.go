@@ -393,7 +393,7 @@ func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectNa
 // runInitStealth handles the stealth branch of runInit: bootstraps a stealth
 // project and prints the success message.
 func runInitStealth(w io.Writer, projectRoot, oroHome string, assets fs.FS) error {
-	if _, err := bootstrapStealthProject(projectRoot, oroHome, assets, false); err != nil {
+	if err := bootstrapStealthProject(projectRoot, oroHome, assets); err != nil {
 		return fmt.Errorf("bootstrap stealth project: %w", err)
 	}
 	hash, err := projectHash(projectRoot)
@@ -428,10 +428,10 @@ func installStealthGitHooks(absProjectRoot string) {
 // Rather than writing .oro/config.yaml into the project root, it creates
 // <oroHome>/projects/s-<hash>/config.yaml with mode: stealth.
 // Git pre-commit and pre-push hooks are installed to prevent accidental leakage.
-func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) { //nolint:funlen,unparam // sequential bootstrap steps, mirrors bootstrapProject
+func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { //nolint:funlen // sequential bootstrap steps, mirrors bootstrapProject
 	hash, err := projectHash(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("compute project hash: %w", err)
+		return fmt.Errorf("compute project hash: %w", err)
 	}
 	stealthDirName := "s-" + hash
 	stealthDir := filepath.Join(oroHome, "projects", stealthDirName)
@@ -439,7 +439,7 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bo
 	// 1. Create stealth directory structure.
 	handoffsDir := filepath.Join(stealthDir, "handoffs")
 	if err := os.MkdirAll(handoffsDir, 0o755); err != nil { //nolint:gosec // needs to be readable
-		return nil, fmt.Errorf("create stealth dir: %w", err)
+		return fmt.Errorf("create stealth dir: %w", err)
 	}
 
 	// 2. Detect languages.
@@ -457,16 +457,16 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bo
 		cfgBuf.WriteString(langYAML)
 	}
 	if err := os.WriteFile(filepath.Join(stealthDir, "config.yaml"), []byte(cfgBuf.String()), 0o600); err != nil { //nolint:gosec // config file
-		return nil, fmt.Errorf("write stealth config.yaml: %w", err)
+		return fmt.Errorf("write stealth config.yaml: %w", err)
 	}
 
 	// 4. Write project.root.
 	absProjectRoot, err := filepath.Abs(projectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("resolve absolute project root: %w", err)
+		return fmt.Errorf("resolve absolute project root: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(stealthDir, "project.root"), []byte(absProjectRoot), 0o644); err != nil { //nolint:gosec // readable file
-		return nil, fmt.Errorf("write project.root: %w", err)
+		return fmt.Errorf("write project.root: %w", err)
 	}
 
 	// 5. Ensure git repo (fail-open).
@@ -475,7 +475,7 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bo
 	// 6. Create beads directory directly (no symlink — zero footprint in project).
 	beadsDir := filepath.Join(stealthDir, "beads")
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil { //nolint:gosec // needs to be readable
-		return nil, fmt.Errorf("create stealth beads dir: %w", err)
+		return fmt.Errorf("create stealth beads dir: %w", err)
 	}
 
 	// 7. Initialize dolt for stealth beads dir (fail-open).
@@ -487,20 +487,20 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bo
 	// 9. Generate settings.json.
 	settingsData, err := generateSettings("$HOME/.oro")
 	if err != nil {
-		return nil, fmt.Errorf("generate settings: %w", err)
+		return fmt.Errorf("generate settings: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(stealthDir, "settings.json"), settingsData, 0o644); err != nil { //nolint:gosec // readable file
-		return nil, fmt.Errorf("write stealth settings: %w", err)
+		return fmt.Errorf("write stealth settings: %w", err)
 	}
 
 	// 10. Extract embedded assets to oroHome (additive: don't overwrite user edits).
 	if err := extractAssets(oroHome, assets, false); err != nil {
-		return nil, fmt.Errorf("extract assets: %w", err)
+		return fmt.Errorf("extract assets: %w", err)
 	}
 
 	// 11. Generate quality_gate.sh to the stealth path (not in project root).
 	stealthPaths := stealthProjectPaths(projectRoot, stealthDir)
-	if err := writeQualityGateScriptFile(stealthPaths, force); err != nil {
+	if err := writeQualityGateScriptFile(stealthPaths, false); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
 	}
 
@@ -510,7 +510,7 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bo
 		filepath.Join(absProjectRoot, "cmd", "oro-search-hook"),
 	)
 
-	return cfg, nil
+	return nil
 }
 
 // installMissingTools installs any missing tools and re-verifies.

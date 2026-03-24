@@ -26,7 +26,7 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if _, err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -53,7 +53,7 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if _, err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -86,7 +86,7 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if _, err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -105,7 +105,7 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 		// No .git dir — bootstrap should succeed without installing hooks.
-		if _, err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
 			t.Fatalf("bootstrapStealthProject should not fail without .git: %v", err)
 		}
 		// NOTE: ensureGitRepo creates .git — this is arguably a bug for stealth
@@ -125,7 +125,7 @@ func TestBootstrapStealthProject(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 
-		if _, err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -143,7 +143,7 @@ func TestBootstrapStealthProject(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 
-		if _, err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -164,7 +164,7 @@ func TestBootstrapStealthProject(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 
-		if _, err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 

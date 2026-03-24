@@ -2462,7 +2462,7 @@ func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadI
 			_ = w.conn.Close()
 			delete(d.workers, workerID)
 		} else {
-			w.state = protocol.WorkerIdle
+			w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
 			w.beadID = ""
 			w.epicID = ""
 			w.worktree = ""

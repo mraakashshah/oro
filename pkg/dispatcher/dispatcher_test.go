@@ -7767,6 +7767,77 @@ func TestHandleHandoff_NoAssignAfterShutdown(t *testing.T) {
 	}
 }
 
+// TestHandleClosedBead_NoAssignAfterShutdown verifies that tryAssign cannot grab a
+// worker that is in the process of shutting down because its bead was closed
+// externally. The worker must transition through protocol.WorkerShuttingDown
+// (invisible to tryAssign) rather than going straight to protocol.WorkerIdle.
+func TestHandleClosedBead_NoAssignAfterShutdown(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	// Connect a worker and register it.
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-closed", ContextPct: 10},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Start the dispatcher so tryAssign is active.
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	// Manually put the worker into busy state with a bead assignment,
+	// simulating what assignBead does.
+	d.mu.Lock()
+	w := d.workers["w-closed"]
+	w.state = protocol.WorkerBusy
+	w.beadID = "bead-closed"
+	w.worktree = "/tmp/worktree-closed"
+	w.model = "test-model"
+	d.mu.Unlock()
+
+	// Make the bead source report the bead as closed externally.
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-closed"] = &protocol.BeadDetail{
+		Title:  "Closed bead",
+		Status: "closed",
+	}
+	beadSrc.mu.Unlock()
+
+	// Trigger the closed-assignment handler. This sends SHUTDOWN and should NOT
+	// make the worker visible to tryAssign as idle.
+	d.handleClosedAssignment(context.Background(), "w-closed", "bead-closed")
+
+	// After handleClosedAssignment, the worker state must NOT be protocol.WorkerIdle.
+	// It should be protocol.WorkerShuttingDown so that tryAssign skips it.
+	st, _, ok := d.WorkerInfo("w-closed")
+	if !ok {
+		t.Fatal("expected worker to still be tracked")
+	}
+	if st == protocol.WorkerIdle {
+		t.Fatalf("worker state after bead_closed_externally should not be protocol.WorkerIdle (got %s); "+
+			"tryAssign could race and grab this worker", st)
+	}
+	if st != protocol.WorkerShuttingDown {
+		t.Fatalf("expected protocol.WorkerShuttingDown, got %s", st)
+	}
+
+	// Verify tryAssign does NOT pick up this worker even though there are
+	// ready beads.
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-new", Title: "New task", Priority: 1}})
+	d.tryAssign(context.Background())
+
+	// Worker should still be ShuttingDown — not reassigned to bead-new.
+	st2, beadID, _ := d.WorkerInfo("w-closed")
+	if st2 == protocol.WorkerBusy && beadID == "bead-new" {
+		t.Fatal("tryAssign grabbed a shutting-down worker — race condition!")
+	}
+	if st2 != protocol.WorkerShuttingDown {
+		t.Fatalf("expected worker to remain protocol.WorkerShuttingDown, got %s", st2)
+	}
+}
+
 // TestDispatcherBuffering verifies that the dispatcher buffers messages sent to
 // disconnected workers and replays them on reconnect. If >10 messages are pending,
 // the worker is treated as dead and removed.
@@ -13407,7 +13478,9 @@ func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
 		return false
 	}, 2*time.Second)
 
-	// Verify the worker was transitioned to idle and cleared.
+	// Verify the worker was transitioned to ShuttingDown (not Idle) and bead cleared.
+	// WorkerShuttingDown is the transient state used after SHUTDOWN is sent so that
+	// tryAssign cannot race and grab the worker before it disconnects.
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
 	var wState protocol.WorkerState
@@ -13421,8 +13494,8 @@ func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
 	if !ok {
 		t.Fatal("expected worker to still exist in tracking")
 	}
-	if wState != protocol.WorkerIdle {
-		t.Errorf("expected worker state Idle, got %v", wState)
+	if wState != protocol.WorkerShuttingDown {
+		t.Errorf("expected worker state ShuttingDown, got %v", wState)
 	}
 	if wBead != "" {
 		t.Errorf("expected worker beadID cleared, got %q", wBead)
