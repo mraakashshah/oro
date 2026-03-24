@@ -273,3 +273,75 @@ func TestManagerNudge(t *testing.T) {
 		}
 	})
 }
+
+func TestManagerBeacon_GstackPatterns(t *testing.T) {
+	beacon := ManagerBeacon()
+
+	t.Run("contains_AskUserQuestion_format_section_after_Human_Interaction", func(t *testing.T) {
+		humanIdx := strings.Index(beacon, "## Human Interaction")
+		if humanIdx == -1 {
+			t.Fatal("could not find ## Human Interaction section")
+		}
+
+		// Check that there's mention of AskUserQuestion format
+		if !strings.Contains(beacon, "AskUserQuestion") {
+			t.Error("beacon should contain 'AskUserQuestion' section or guidance")
+		}
+	})
+
+	t.Run("AskUserQuestion_section_describes_4-part_structure", func(t *testing.T) {
+		requiredParts := []string{"Reground", "Simplify", "Recommend", "Options"}
+		for _, part := range requiredParts {
+			if !strings.Contains(beacon, part) {
+				t.Errorf("expected beacon to contain AskUserQuestion structure part: %q", part)
+			}
+		}
+	})
+
+	t.Run("AskUserQuestion_section_includes_effort_estimates", func(t *testing.T) {
+		if !strings.Contains(beacon, "effort") {
+			t.Error("expected AskUserQuestion section to mention effort estimates")
+		}
+	})
+
+	t.Run("anti-patterns_section_includes_anti-sycophancy_rules", func(t *testing.T) {
+		antiIdx := strings.Index(beacon, "## Anti-patterns")
+		if antiIdx == -1 {
+			t.Fatal("could not find ## Anti-patterns section")
+		}
+
+		if !strings.Contains(beacon, "sycophancy") || !strings.Contains(beacon, "hedg") {
+			// Check if anti-sycophancy content is present in some form
+			antiPatterns := beacon[antiIdx:]
+			if !strings.Contains(antiPatterns, "position") && !strings.Contains(antiPatterns, "evidence") {
+				t.Error("expected anti-patterns section to include anti-sycophancy rules about taking positions")
+			}
+		}
+	})
+
+	t.Run("anti-patterns_bans_specific_hedging_phrases", func(t *testing.T) {
+		bannedPhrases := []string{"likely handled", "probably fine", "could work"}
+		banningMentioned := false
+		for _, phrase := range bannedPhrases {
+			if strings.Contains(beacon, phrase) {
+				banningMentioned = true
+				break
+			}
+		}
+		if !banningMentioned {
+			t.Error("expected anti-patterns to mention specific banned hedging phrases like 'likely handled', 'probably fine', or 'could work'")
+		}
+	})
+
+	t.Run("anti-patterns_requires_taking_a_position", func(t *testing.T) {
+		if !strings.Contains(beacon, "position") {
+			t.Error("expected anti-patterns to require taking a position instead of hedging")
+		}
+	})
+
+	t.Run("anti-patterns_requires_citing_evidence", func(t *testing.T) {
+		if !strings.Contains(beacon, "evidence") {
+			t.Error("expected anti-patterns to require citing evidence for claims")
+		}
+	})
+}
