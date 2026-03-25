@@ -42,6 +42,7 @@ type workConfig struct {
 	timeout    time.Duration
 	skipReview bool
 	dryRun     bool
+	baseBranch string
 	bead       *protocol.BeadDetail
 }
 
@@ -79,6 +80,7 @@ automatically. Exit code 0 means the bead landed on main.`,
 	cmd.Flags().DurationVar(&cfg.timeout, "timeout", 15*time.Minute, "per-claude-spawn timeout")
 	cmd.Flags().BoolVar(&cfg.skipReview, "skip-review", false, "skip ops review gate")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "show execution plan without running")
+	cmd.Flags().StringVar(&cfg.baseBranch, "base-branch", "", "base branch for worktree (default: config default_branch, or current HEAD)")
 
 	return cmd
 }
@@ -95,17 +97,18 @@ type opsReviewer interface {
 
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
-	beadSrc     dispatcher.BeadSource
-	wtMgr       dispatcher.WorktreeManager
-	spawner     worker.StreamingSpawner
-	opsMgr      opsReviewer
-	merger      merger
-	repoRoot    string
-	memStore    *memory.Store
-	codeIndex   *codesearch.CodeIndex
-	hasNewWork  func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
-	runQG       func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
-	runShellCmd func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
+	beadSrc       dispatcher.BeadSource
+	wtMgr         dispatcher.WorktreeManager
+	spawner       worker.StreamingSpawner
+	opsMgr        opsReviewer
+	merger        merger
+	repoRoot      string
+	memStore      *memory.Store
+	codeIndex     *codesearch.CodeIndex
+	defaultBranch string
+	hasNewWork    func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
+	runQG         func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
+	runShellCmd   func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
 }
 
 // exitError carries an exit code through the normal error return path,
@@ -140,19 +143,46 @@ func newProductionDeps() (*workDeps, error) {
 
 	projectPaths, _ := ResolvePaths(repoRoot)
 
+	// Load DefaultBranch from config.yaml, defaulting to "main" if not specified.
+	defaultBranch := readDefaultBranch(".")
+	if defaultBranch == "" {
+		defaultBranch = "main"
+	}
+
 	return &workDeps{
-		beadSrc:     dispatcher.NewCLIBeadSource(runner),
-		wtMgr:       dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
-		spawner:     &worker.ClaudeSpawner{},
-		opsMgr:      ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
-		merger:      merge.NewCoordinator(&merge.ExecGitRunner{}),
-		repoRoot:    repoRoot,
-		memStore:    memStore,
-		codeIndex:   codeIdx,
-		hasNewWork:  hasCommitsAhead,
-		runQG:       worker.RunQualityGate,
-		runShellCmd: defaultRunShellCmd,
+		beadSrc:       dispatcher.NewCLIBeadSource(runner),
+		wtMgr:         dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
+		spawner:       &worker.ClaudeSpawner{},
+		opsMgr:        ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
+		merger:        merge.NewCoordinator(&merge.ExecGitRunner{}),
+		repoRoot:      repoRoot,
+		memStore:      memStore,
+		codeIndex:     codeIdx,
+		defaultBranch: defaultBranch,
+		hasNewWork:    hasCommitsAhead,
+		runQG:         worker.RunQualityGate,
+		runShellCmd:   defaultRunShellCmd,
 	}, nil
+}
+
+// readDefaultBranch reads the default_branch field from .oro/config.yaml in the given directory.
+// Returns empty string (no error) if the file doesn't exist.
+func readDefaultBranch(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, ".oro", "config.yaml")) //nolint:gosec // path from trusted dir
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		return ""
+	}
+	// Simple line-based parsing — avoid YAML dependency for one field.
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "default_branch:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "default_branch:"))
+		}
+	}
+	return ""
 }
 
 // runWork orchestrates the full bead lifecycle.
@@ -244,9 +274,14 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	// Step 3: Create or resume worktree.
+	// Resolve defaultBranch: --base-branch flag > config default_branch > "main"
+	defaultBranch := deps.defaultBranch
+	if cfg.baseBranch != "" {
+		defaultBranch = cfg.baseBranch
+	}
 	// Resolve targetBranch by walking the parent chain: returns "epic/<id>" only when
-	// an epic-type ancestor exists. Non-epic parents (tasks, features) resolve to "main".
-	targetBranch, _, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic, "main")
+	// an epic-type ancestor exists. Non-epic parents (tasks, features) resolve to defaultBranch.
+	targetBranch, _, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic, defaultBranch)
 	if resolveErr != nil {
 		return fmt.Errorf("resolve epic branch: %w", resolveErr)
 	}

@@ -1225,3 +1225,114 @@ func TestHasCommitsAhead_WithRealGitRepo(t *testing.T) {
 		t.Error("expected true when feature has 1 commit ahead of main")
 	}
 }
+
+// TestWorkDeps_DefaultBranch verifies that newWorkDeps resolves DefaultBranch from
+// config or --base-branch flag, and that setupWorktree passes it to wtMgr.Create.
+func TestWorkDeps_DefaultBranch(t *testing.T) {
+	t.Run("newWorkDeps uses DefaultBranch from config", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"),
+			[]byte("project: testproject\ndefault_branch: develop\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(tmpDir)
+
+		var capturedDefaultBranch string
+		spyWt := &branchCapturingWorktreeManager{
+			captureDefaultBranch: func(branch string) { capturedDefaultBranch = branch },
+			createPath:           filepath.Join(tmpDir, ".worktrees", "oro-test"),
+			createBranch:         "bead/oro-test",
+		}
+
+		bs := &mockBeadSource{showDetail: testBead()}
+		// Load DefaultBranch from config, like newProductionDeps does.
+		defaultBranch := readDefaultBranch(".")
+		if defaultBranch == "" {
+			defaultBranch = "main"
+		}
+		deps := &workDeps{
+			beadSrc:       bs,
+			wtMgr:         spyWt,
+			spawner:       &mockSpawner{proc: &mockProcess{}},
+			merger:        &mockMerger{result: &merge.Result{CommitSHA: "abc"}},
+			repoRoot:      tmpDir,
+			defaultBranch: defaultBranch,
+			hasNewWork:    func(_, _, _ string) bool { return false },
+			runQG:         func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		cfg := &workConfig{
+			beadID:     "oro-test",
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}
+
+		_ = executeWork(context.Background(), cfg, deps)
+
+		if capturedDefaultBranch != "develop" {
+			t.Errorf("defaultBranch passed to wtMgr.Create = %q, want %q", capturedDefaultBranch, "develop")
+		}
+	})
+
+	t.Run("setupWorktree passes resolved defaultBranch to wtMgr.Create", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		wtPath := filepath.Join(tmpDir, ".worktrees", "oro-test")
+		branchName := "bead/oro-test"
+
+		var capturedDefaultBranch string
+		spyWt := &branchCapturingWorktreeManager{
+			captureDefaultBranch: func(branch string) { capturedDefaultBranch = branch },
+			createPath:           wtPath,
+			createBranch:         branchName,
+		}
+
+		cfg := &workConfig{beadID: "oro-test"}
+		deps := &workDeps{wtMgr: spyWt, repoRoot: tmpDir}
+
+		_, _, err := setupWorktree(context.Background(), cfg, deps, "epic/oro-parent")
+		if err != nil {
+			t.Fatalf("setupWorktree: %v", err)
+		}
+
+		if capturedDefaultBranch != "epic/oro-parent" {
+			t.Errorf("defaultBranch = %q, want %q", capturedDefaultBranch, "epic/oro-parent")
+		}
+	})
+}
+
+// branchCapturingWorktreeManager implements dispatcher.WorktreeManager and
+// captures the branch parameter passed to Create().
+type branchCapturingWorktreeManager struct {
+	captureDefaultBranch func(string)
+	createPath           string
+	createBranch         string
+}
+
+func (m *branchCapturingWorktreeManager) Create(_ context.Context, _, branch string) (string, string, error) {
+	if m.captureDefaultBranch != nil {
+		m.captureDefaultBranch(branch)
+	}
+	return m.createPath, m.createBranch, nil
+}
+func (m *branchCapturingWorktreeManager) Remove(_ context.Context, _ string) error       { return nil }
+func (m *branchCapturingWorktreeManager) Prune(_ context.Context) error                  { return nil }
+func (m *branchCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+func (m *branchCapturingWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
+func (m *branchCapturingWorktreeManager) MergeFFOnly(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *branchCapturingWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
+	return nil
+}
+
+func (m *branchCapturingWorktreeManager) Exists(_ context.Context, _ string) bool {
+	return false // default: worktree doesn't exist, so Create() will be called
+}
