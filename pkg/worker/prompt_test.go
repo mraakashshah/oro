@@ -1782,40 +1782,75 @@ func TestAssemblePrompt_GstackPatterns(t *testing.T) {
 }
 
 // TestPrompt_TargetBranchConstraint verifies that the Constraints section says
-// "Do not modify the <target> branch" using TargetBranch, not hardcoded "main".
+// "Do not modify the <target> branch" using the actual TargetBranch value, and
+// defaults to "main" when TargetBranch is empty.
 func TestPrompt_TargetBranchConstraint(t *testing.T) {
 	t.Parallel()
 
-	// Test 1: explicit TargetBranch — constraint should say "develop" not "main"
-	params := worker.PromptParams{
-		BeadID:             "bead-constraint",
-		Title:              "Feature",
-		Description:        "Desc",
-		AcceptanceCriteria: "AC",
-		WorktreePath:       "/tmp/wt-constraint",
-		Model:              "opus",
-		TargetBranch:       "develop",
-	}
-	prompt := worker.AssemblePrompt(params)
-	if strings.Contains(prompt, "Do not modify the main branch") {
-		t.Error("expected constraint to say 'develop' not 'main branch' when TargetBranch is 'develop'")
-	}
-	if !strings.Contains(prompt, "Do not modify the develop branch") {
-		t.Error("expected Constraints section to say 'Do not modify the develop branch'")
-	}
+	t.Run("custom_target_branch_interpolated", func(t *testing.T) {
+		t.Parallel()
 
-	// Test 2: empty TargetBranch — constraint should default to "main"
-	paramsEmpty := worker.PromptParams{
-		BeadID:             "bead-constraint-default",
-		Title:              "Feature",
-		Description:        "Desc",
-		AcceptanceCriteria: "AC",
-		WorktreePath:       "/tmp/wt-constraint-default",
-		Model:              "opus",
-		TargetBranch:       "",
-	}
-	promptEmpty := worker.AssemblePrompt(paramsEmpty)
-	if !strings.Contains(promptEmpty, "Do not modify the main branch") {
-		t.Error("expected Constraints section to default to 'Do not modify the main branch' when TargetBranch is empty")
-	}
+		params := worker.PromptParams{
+			BeadID:             "oro-tb-1",
+			Title:              "Target branch test",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			WorktreePath:       "/tmp/wt-tb",
+			Model:              "opus",
+			TargetBranch:       "epic/oro-3ya3",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		constraintsStart := strings.Index(prompt, "## Constraints")
+		if constraintsStart == -1 {
+			t.Fatal("expected prompt to contain ## Constraints section")
+		}
+		constraintsEnd := strings.Index(prompt[constraintsStart+1:], "## ")
+		var constraintsSection string
+		if constraintsEnd == -1 {
+			constraintsSection = prompt[constraintsStart:]
+		} else {
+			constraintsSection = prompt[constraintsStart : constraintsStart+1+constraintsEnd]
+		}
+
+		if !strings.Contains(constraintsSection, "Do not modify the epic/oro-3ya3 branch") {
+			t.Errorf("expected Constraints to say 'Do not modify the epic/oro-3ya3 branch', got:\n%s", constraintsSection)
+		}
+		if strings.Contains(constraintsSection, "Do not modify the main branch") {
+			t.Errorf("expected Constraints NOT to say 'Do not modify the main branch' when TargetBranch is 'epic/oro-3ya3', got:\n%s", constraintsSection)
+		}
+	})
+
+	t.Run("empty_target_branch_defaults_to_main", func(t *testing.T) {
+		t.Parallel()
+
+		params := worker.PromptParams{
+			BeadID:             "oro-tb-2",
+			Title:              "Default branch test",
+			Description:        "Test description",
+			AcceptanceCriteria: "Tests pass",
+			WorktreePath:       "/tmp/wt-tb-default",
+			Model:              "opus",
+			TargetBranch:       "",
+		}
+
+		prompt := worker.AssemblePrompt(params)
+
+		constraintsStart := strings.Index(prompt, "## Constraints")
+		if constraintsStart == -1 {
+			t.Fatal("expected prompt to contain ## Constraints section")
+		}
+		constraintsEnd := strings.Index(prompt[constraintsStart+1:], "## ")
+		var constraintsSection string
+		if constraintsEnd == -1 {
+			constraintsSection = prompt[constraintsStart:]
+		} else {
+			constraintsSection = prompt[constraintsStart : constraintsStart+1+constraintsEnd]
+		}
+
+		if !strings.Contains(constraintsSection, "Do not modify the main branch") {
+			t.Errorf("expected Constraints to say 'Do not modify the main branch' when TargetBranch is empty, got:\n%s", constraintsSection)
+		}
+	})
 }
