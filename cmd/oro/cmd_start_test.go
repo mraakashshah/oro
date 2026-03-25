@@ -494,6 +494,56 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 	})
 }
 
+// TestStartBaseBranchFlag verifies that the --base-branch flag exists on the
+// start command and that its value flows into Config.DefaultBranch via buildDispatcher.
+func TestStartBaseBranchFlag(t *testing.T) {
+	t.Run("flag exists and parses value", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{"--base-branch=develop"}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		bb, err := cmd.Flags().GetString("base-branch")
+		if err != nil {
+			t.Fatalf("GetString base-branch: %v", err)
+		}
+		if bb != "develop" {
+			t.Errorf("base-branch: got %q, want %q", bb, "develop")
+		}
+	})
+
+	t.Run("default is empty string", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		bb, _ := cmd.Flags().GetString("base-branch")
+		if bb != "" {
+			t.Errorf("base-branch default: got %q, want empty string", bb)
+		}
+	})
+
+	t.Run("value flows into buildDispatcher Config.DefaultBranch", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroHome, 0o750); err != nil { //nolint:gosec // test dir
+			t.Fatal(err)
+		}
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		d, db, err := buildDispatcher(1, 1, 0, 0, "feature-base")
+		if err != nil {
+			t.Fatalf("buildDispatcher: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		if got := d.GetConfig().DefaultBranch; got != "feature-base" {
+			t.Errorf("DefaultBranch: got %q, want %q", got, "feature-base")
+		}
+	})
+}
+
 func TestRegenerateProjectSettings_WritesFile(t *testing.T) {
 	t.Run("WritesFile", func(t *testing.T) {
 		tmpHome := t.TempDir()
