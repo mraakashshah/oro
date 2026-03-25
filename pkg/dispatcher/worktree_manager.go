@@ -16,22 +16,26 @@ import (
 // GitWorktreeManager is the production WorktreeManager that shells out
 // to git to create and remove worktrees.
 type GitWorktreeManager struct {
-	repoRoot     string
-	worktreesDir string
-	runner       CommandRunner
+	repoRoot        string
+	worktreesDir    string
+	qualityGatePath string
+	runner          CommandRunner
 }
 
 // NewGitWorktreeManager returns a WorktreeManager backed by real git commands.
 // worktreesDir is the directory where worktrees are created; if empty it
 // defaults to filepath.Join(repoRoot, ".worktrees").
-func NewGitWorktreeManager(repoRoot, worktreesDir string, runner CommandRunner) *GitWorktreeManager {
+// qualityGatePath is an optional path to a quality_gate.sh script that will be
+// symlinked into new worktrees; pass empty string to disable.
+func NewGitWorktreeManager(repoRoot, worktreesDir, qualityGatePath string, runner CommandRunner) *GitWorktreeManager {
 	if worktreesDir == "" {
 		worktreesDir = filepath.Join(repoRoot, ".worktrees")
 	}
 	return &GitWorktreeManager{
-		repoRoot:     repoRoot,
-		worktreesDir: worktreesDir,
-		runner:       runner,
+		repoRoot:        repoRoot,
+		worktreesDir:    worktreesDir,
+		qualityGatePath: qualityGatePath,
+		runner:          runner,
 	}
 }
 
@@ -86,6 +90,41 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 // need assets (e.g., some beads still compile without them).
 func (g *GitWorktreeManager) stageAssets(ctx context.Context, path string) {
 	_, _ = g.runner.Run(ctx, "make", "-C", path, "stage-assets")
+	g.linkQualityGate(ctx, path)
+}
+
+// linkQualityGate creates a symlink at <worktreePath>/quality_gate.sh pointing
+// to g.qualityGatePath, unless the worktree already has its own quality gate
+// (scripts/quality_gate.sh or quality_gate.sh). It is a no-op when
+// qualityGatePath is empty. If qualityGatePath does not exist on disk, a
+// warning is logged and no symlink is created.
+func (g *GitWorktreeManager) linkQualityGate(ctx context.Context, worktreePath string) {
+	if g.qualityGatePath == "" {
+		return
+	}
+
+	// Verify the target exists before creating a broken symlink.
+	if _, err := os.Stat(g.qualityGatePath); err != nil {
+		slog.WarnContext(ctx, "link_quality_gate_target_missing",
+			"path", g.qualityGatePath, "error", err.Error())
+		return
+	}
+
+	// Skip if the worktree already has scripts/quality_gate.sh.
+	if _, err := os.Stat(filepath.Join(worktreePath, "scripts", "quality_gate.sh")); err == nil {
+		return
+	}
+
+	// Skip if the worktree already has quality_gate.sh at root.
+	linkPath := filepath.Join(worktreePath, "quality_gate.sh")
+	if _, err := os.Lstat(linkPath); err == nil {
+		return
+	}
+
+	if err := os.Symlink(g.qualityGatePath, linkPath); err != nil {
+		slog.WarnContext(ctx, "link_quality_gate_symlink_failed",
+			"link", linkPath, "target", g.qualityGatePath, "error", err.Error())
+	}
 }
 
 // pruneStale cleans up a stale worktree and branch left by a previous crash.
