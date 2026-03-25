@@ -685,6 +685,14 @@ func (d *Dispatcher) SetQGRunner(r QGRunner) {
 	d.qgRunner = r
 }
 
+// GetConfig returns the dispatcher's resolved Config. Intended for tests
+// that need to verify flag values were wired through to the dispatcher.
+//
+//oro:testonly
+func (d *Dispatcher) GetConfig() Config {
+	return d.cfg
+}
+
 // Run starts the Dispatcher event loop. It:
 //  1. Initializes the SQLite schema
 //  2. Starts the UDS listener
