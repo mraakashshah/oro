@@ -246,7 +246,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	// Step 3: Create or resume worktree.
 	// Resolve targetBranch by walking the parent chain: returns "epic/<id>" only when
 	// an epic-type ancestor exists. Non-epic parents (tasks, features) resolve to "main".
-	targetBranch, _, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic)
+	targetBranch, _, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic, "main")
 	if resolveErr != nil {
 		return fmt.Errorf("resolve epic branch: %w", resolveErr)
 	}

@@ -11,7 +11,7 @@ import (
 
 func TestResolveEpicBranch_EmptyParent(t *testing.T) {
 	bs := &mockBeadSource{}
-	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "")
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestResolveEpicBranch_DirectEpicParent(t *testing.T) {
 			"epic-1": {ID: "epic-1", Title: "Epic 1", Type: "epic"},
 		},
 	}
-	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "epic-1")
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "epic-1", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestResolveEpicBranch_NonEpicParent_ReturnsMain(t *testing.T) {
 			"task-1": {ID: "task-1", Title: "Task 1", Type: "task"},
 		},
 	}
-	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1")
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestResolveEpicBranch_NonEpicParentWithEpicGrandparent(t *testing.T) {
 			"epic-2": {ID: "epic-2", Title: "Epic 2", Type: "epic"},
 		},
 	}
-	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1")
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestResolveEpicBranch_ShowError_ReturnsMainWithError(t *testing.T) {
 	bs := &mockBeadSource{
 		showErr: errors.New("bd show failed"),
 	}
-	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "some-bead")
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "some-bead", "main")
 	if err == nil {
 		t.Fatal("expected error, got none")
 	}
@@ -92,6 +92,77 @@ func TestResolveEpicBranch_ShowError_ReturnsMainWithError(t *testing.T) {
 	if epicID != "" {
 		t.Errorf("epicID on error = %q; want empty", epicID)
 	}
+}
+
+// TestResolveEpicBranch_DefaultBranch verifies that resolveEpicBranch returns
+// defaultBranch (not hardcoded "main") in all 4 non-epic return paths.
+func TestResolveEpicBranch_DefaultBranch(t *testing.T) {
+	const customDefault = "release/v2"
+
+	t.Run("empty parent returns defaultBranch", func(t *testing.T) {
+		bs := &mockBeadSource{}
+		branch, epicID, err := resolveEpicBranch(context.Background(), bs, "", customDefault)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if branch != customDefault {
+			t.Errorf("branch = %q; want %q", branch, customDefault)
+		}
+		if epicID != "" {
+			t.Errorf("epicID = %q; want empty", epicID)
+		}
+	})
+
+	t.Run("non-epic chain exhausted returns defaultBranch", func(t *testing.T) {
+		bs := &mockBeadSource{
+			shown: map[string]*protocol.BeadDetail{
+				"task-1": {ID: "task-1", Title: "Task 1", Type: "task"},
+			},
+		}
+		branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1", customDefault)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if branch != customDefault {
+			t.Errorf("branch = %q; want %q", branch, customDefault)
+		}
+		if epicID != "" {
+			t.Errorf("epicID = %q; want empty", epicID)
+		}
+	})
+
+	t.Run("show error returns defaultBranch", func(t *testing.T) {
+		bs := &mockBeadSource{
+			showErr: errors.New("bd show failed"),
+		}
+		branch, _, err := resolveEpicBranch(context.Background(), bs, "some-bead", customDefault)
+		if err == nil {
+			t.Fatal("expected error, got none")
+		}
+		if branch != customDefault {
+			t.Errorf("branch on error = %q; want %q", branch, customDefault)
+		}
+	})
+
+	t.Run("cycle detected returns defaultBranch", func(t *testing.T) {
+		bs := &mockBeadSource{
+			shown: map[string]*protocol.BeadDetail{
+				// a → b → a (cycle)
+				"a": {ID: "a", Title: "A", Type: "task", Epic: "b"},
+				"b": {ID: "b", Title: "B", Type: "task", Epic: "a"},
+			},
+		}
+		branch, epicID, err := resolveEpicBranch(context.Background(), bs, "a", customDefault)
+		if err == nil {
+			t.Fatal("expected cycle error, got none")
+		}
+		if branch != customDefault {
+			t.Errorf("branch on cycle = %q; want %q", branch, customDefault)
+		}
+		if epicID != "" {
+			t.Errorf("epicID on cycle = %q; want empty", epicID)
+		}
+	})
 }
 
 // TestAssignBead_NonEpicParent_UsesMain verifies that a bead whose parent is a

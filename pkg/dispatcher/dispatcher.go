@@ -2717,7 +2717,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	// Resolve the base/target branch for this bead.
 	// resolveEpicBranch walks the parent chain to find the actual epic ancestor —
 	// bead.Epic maps to the JSON "parent" field and may point to a non-epic bead.
-	baseBranch, resolvedEpicID, resolveErr := resolveEpicBranch(ctx, d.beads, bead.Epic)
+	baseBranch, resolvedEpicID, resolveErr := resolveEpicBranch(ctx, d.beads, bead.Epic, d.cfg.DefaultBranch)
 	if resolveErr != nil {
 		_ = d.logEvent(ctx, "epic_branch_resolve_error", "dispatcher", bead.ID, w.id, resolveErr.Error())
 		d.recordAssignmentFailure(bead.ID)
