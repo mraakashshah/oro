@@ -59,6 +59,9 @@ type BeadDetail struct {
 	Labels             []string       `json:"labels,omitempty"`
 }
 
+// MetaBranch is the metadata key used to store branch information.
+const MetaBranch = "branch"
+
 // Model constants for routing.
 const (
 	ModelOpus   = "opus"

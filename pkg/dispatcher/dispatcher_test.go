@@ -15491,3 +15491,21 @@ func TestAssignLoopRestartsAfterPanic(t *testing.T) {
 		waitFor(t, func() bool { return callCount.Load() >= 2 }, 5*time.Second)
 	})
 }
+
+func TestConfigWithDefaults_DefaultBranch(t *testing.T) {
+	t.Run("sets DefaultBranch to main when empty", func(t *testing.T) {
+		cfg := Config{SocketPath: "/tmp/test.sock", DBPath: ":memory:"}
+		resolved := cfg.withDefaults()
+		if resolved.DefaultBranch != "main" {
+			t.Fatalf("DefaultBranch: got %q, want %q", resolved.DefaultBranch, "main")
+		}
+	})
+
+	t.Run("preserves DefaultBranch when set", func(t *testing.T) {
+		cfg := Config{SocketPath: "/tmp/test.sock", DBPath: ":memory:", DefaultBranch: "develop"}
+		resolved := cfg.withDefaults()
+		if resolved.DefaultBranch != "develop" {
+			t.Fatalf("DefaultBranch: got %q, want %q (should preserve explicit value)", resolved.DefaultBranch, "develop")
+		}
+	})
+}

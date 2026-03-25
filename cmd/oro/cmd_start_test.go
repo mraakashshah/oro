@@ -582,7 +582,7 @@ func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
 	}
 
 	// buildDispatcher should call migrateGlobalDBs, copying global state.db.
-	d, db, err := buildDispatcher(1, 1, 0, 0)
+	d, db, err := buildDispatcher(1, 1, 0, 0, "")
 	if err != nil {
 		t.Fatalf("buildDispatcher: %v", err)
 	}
