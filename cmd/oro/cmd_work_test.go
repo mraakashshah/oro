@@ -1336,3 +1336,7 @@ func (m *branchCapturingWorktreeManager) GCClosedWorktrees(_ context.Context, _ 
 func (m *branchCapturingWorktreeManager) Exists(_ context.Context, _ string) bool {
 	return false // default: worktree doesn't exist, so Create() will be called
 }
+
+func (m *branchCapturingWorktreeManager) UpdateBranchRef(_ context.Context, _, _ string) error {
+	return nil
+}
