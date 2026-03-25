@@ -51,6 +51,11 @@ const (
 	StateStopping State = "stopping" // Finishing current work, no new assignments.
 )
 
+// MetaBranch is the metadata key on an epic bead that names the target branch
+// for the epic's FF merge when all children complete. Falls back to
+// Config.DefaultBranch (typically "main") when absent.
+const MetaBranch = "branch"
+
 // statusThrottleWindow is the dedup window for status directives. Repeated
 // status requests within this window return a cached response to avoid
 // redundant rebuilds when the manager sends bursts of 2-5 status calls.
@@ -85,6 +90,10 @@ type WorktreeManager interface {
 	DeleteBranch(ctx context.Context, branch string) error
 	BranchExists(ctx context.Context, branch string) (bool, error)
 	MergeFFOnly(ctx context.Context, branch string, target string) (commitSHA string, err error)
+	// UpdateBranchRef advances targetBranch to point at the tip of sourceBranch
+	// without requiring sourceBranch to be checked out. Used when the target is
+	// not the HEAD branch (i.e., not the branch checked out in the main worktree).
+	UpdateBranchRef(ctx context.Context, targetBranch, sourceBranch string) error
 	GCClosedWorktrees(ctx context.Context, isBeadClosed func(string) bool) error
 	// Exists reports whether the worktree at path is still present on disk.
 	// Returns false if the path does not exist or cannot be accessed.
@@ -264,7 +273,7 @@ type Config struct {
 	BackupInterval        time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
 	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram         string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
-	DefaultBranch         string        // Base branch for worktree creation (default "main"). Set via --base-branch flag.
+	DefaultBranch         string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
 }
 
 // defaultWorkerCounts returns the resolved (initialWorkers, maxWorkers) pair,
@@ -1435,8 +1444,20 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		_ = d.logEvent(ctx, "epic_ac_fetch_failed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"error":%q}`, showErr.Error()))
 		// Fall back to count-based close so a transient Show error doesn't block.
-		d.completeEpicClose(ctx, epicID, workerID, "All children completed (AC fetch failed)")
+		// Use DefaultBranch since we have no detail metadata to inspect.
+		d.completeEpicClose(ctx, epicID, workerID, "All children completed (AC fetch failed)", d.cfg.DefaultBranch)
 		return
+	}
+
+	// Determine the target branch for the epic FF merge. Prefer the value stored
+	// in Metadata[MetaBranch]; fall back to DefaultBranch (typically "main").
+	targetBranch := d.cfg.DefaultBranch
+	if detail.Metadata != nil {
+		if v, ok := detail.Metadata[MetaBranch]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				targetBranch = s
+			}
+		}
 	}
 
 	cmd := parseAcceptanceCmd(detail.AcceptanceCriteria)
@@ -1444,7 +1465,7 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		// No executable acceptance test: warn and fall back to count-based close.
 		_ = d.logEvent(ctx, "epic_no_acceptance_cmd", "dispatcher", epicID, workerID,
 			`{"warning":"epic has no Cmd: acceptance test; falling back to count-based close"}`)
-		d.completeEpicClose(ctx, epicID, workerID, "All children completed (no acceptance test)")
+		d.completeEpicClose(ctx, epicID, workerID, "All children completed (no acceptance test)", targetBranch)
 		return
 	}
 
@@ -1459,7 +1480,7 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 	if passed {
 		_ = d.logEvent(ctx, "epic_acceptance_passed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"cmd":%q}`, cmd))
-		d.completeEpicClose(ctx, epicID, workerID, "Acceptance test passed")
+		d.completeEpicClose(ctx, epicID, workerID, "Acceptance test passed", targetBranch)
 		return
 	}
 
@@ -1475,11 +1496,15 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 	})
 }
 
-// ffMergeEpicBranch fast-forward merges the epic branch into main and deletes
-// it. Returns nil if the branch does not exist (no-op) or if the merge
-// succeeds. Returns an error if the merge fails; in that case a rebase child
-// bead is created so the epic will be retried when the rebase completes.
-func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID string) error {
+// ffMergeEpicBranch merges the epic branch into targetBranch and deletes it.
+// When targetBranch equals cfg.DefaultBranch (the HEAD branch), it uses
+// MergeFFOnly (git merge --ff-only) so the working tree is updated. For any
+// other target it uses UpdateBranchRef (git update-ref), which advances the
+// ref without requiring it to be checked out. Returns nil if the branch does
+// not exist (no-op) or if the merge succeeds. Returns an error if the merge
+// fails; in that case a rebase child bead is created so the epic will be
+// retried when the rebase completes.
+func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, targetBranch string) error {
 	epicBranch := protocol.EpicBranchPrefix + epicID
 
 	exists, err := d.worktrees.BranchExists(ctx, epicBranch)
@@ -1495,16 +1520,23 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID str
 		return nil
 	}
 
-	_, mergeErr := d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot)
+	var mergeErr error
+	if targetBranch == d.cfg.DefaultBranch {
+		// Target is the HEAD branch: use ff-only merge so the working tree advances.
+		_, mergeErr = d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot)
+	} else {
+		// Target is not checked out: directly advance the ref.
+		mergeErr = d.worktrees.UpdateBranchRef(ctx, targetBranch, epicBranch)
+	}
 	if mergeErr != nil {
-		wrapped := fmt.Errorf("ff merge %s to main: %w", epicBranch, mergeErr)
+		wrapped := fmt.Errorf("ff merge %s to %s: %w", epicBranch, targetBranch, mergeErr)
 		_ = d.logEvent(ctx, "epic_ff_merge_failed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
 		// Create a rebase child bead so the epic is retried after the rebase.
 		_, _ = d.beads.Create(ctx,
-			fmt.Sprintf("Rebase %s onto main", epicBranch),
+			fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch),
 			"task", 1,
-			fmt.Sprintf("FF merge of %s failed: %s. Rebase the epic branch onto main and re-trigger close.", epicBranch, wrapped.Error()),
+			fmt.Sprintf("FF merge of %s failed: %s. Rebase the epic branch onto %s and re-trigger close.", epicBranch, wrapped.Error(), targetBranch),
 			epicID, "")
 		return wrapped
 	}
@@ -1519,12 +1551,12 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID str
 	return nil
 }
 
-// completeEpicClose FF-merges the epic branch to main, then closes the epic,
-// cancels stale ops agents, logs the event, and escalates to the manager if
-// the epic is currently focused. If the FF merge fails a rebase child bead is
-// created and the close is skipped.
-func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, reason string) {
-	if err := d.ffMergeEpicBranch(ctx, epicID, workerID); err != nil {
+// completeEpicClose FF-merges the epic branch to targetBranch, then closes the
+// epic, cancels stale ops agents, logs the event, and escalates to the manager
+// if the epic is currently focused. If the FF merge fails a rebase child bead
+// is created and the close is skipped.
+func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, reason, targetBranch string) {
+	if err := d.ffMergeEpicBranch(ctx, epicID, workerID, targetBranch); err != nil {
 		return
 	}
 

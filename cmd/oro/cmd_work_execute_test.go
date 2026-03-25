@@ -109,6 +109,10 @@ func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, _ string, _ string)
 	return "", nil
 }
 
+func (m *mockWorktreeManager) UpdateBranchRef(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
 	return nil
 }

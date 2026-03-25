@@ -220,18 +220,25 @@ func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.beads = beads
 }
 
+// updateBranchRefCall records one call to UpdateBranchRef.
+type updateBranchRefCall struct {
+	target, source string
+}
+
 type mockWorktreeManager struct {
-	mu              sync.Mutex
-	created         map[string]string // beadID -> worktree path
-	removed         []string
-	deletedBranches []string
-	mergedBranches  []string // branches passed to MergeFFOnly
-	createFn        func(ctx context.Context, beadID, baseBranch string) (string, string, error)
-	removeFn        func(ctx context.Context, path string) error
-	deleteBranchFn  func(branch string) error
-	branchExistsFn  func(ctx context.Context, branch string) (bool, error)
-	mergeFFOnlyFn   func(branch, target string) (string, error)
-	existsFn        func(ctx context.Context, path string) bool
+	mu                sync.Mutex
+	created           map[string]string // beadID -> worktree path
+	removed           []string
+	deletedBranches   []string
+	mergedBranches    []string // branches passed to MergeFFOnly
+	updatedBranchRefs []updateBranchRefCall
+	createFn          func(ctx context.Context, beadID, baseBranch string) (string, string, error)
+	removeFn          func(ctx context.Context, path string) error
+	deleteBranchFn    func(branch string) error
+	branchExistsFn    func(ctx context.Context, branch string) (bool, error)
+	mergeFFOnlyFn     func(branch, target string) (string, error)
+	updateBranchRefFn func(target, source string) error
+	existsFn          func(ctx context.Context, path string) bool
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (string, string, error) {
@@ -299,6 +306,19 @@ func (m *mockWorktreeManager) MergeFFOnly(_ context.Context, branch, target stri
 	m.mergedBranches = append(m.mergedBranches, branch)
 	m.mu.Unlock()
 	return "", nil
+}
+
+func (m *mockWorktreeManager) UpdateBranchRef(_ context.Context, targetBranch, sourceBranch string) error {
+	m.mu.Lock()
+	fn := m.updateBranchRefFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(targetBranch, sourceBranch)
+	}
+	m.mu.Lock()
+	m.updatedBranchRefs = append(m.updatedBranchRefs, updateBranchRefCall{targetBranch, sourceBranch})
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
@@ -10846,6 +10866,250 @@ func TestTryCloseEpic_FFMergeToMain(t *testing.T) {
 		}
 		if rebaseBead.parent != epicID {
 			t.Errorf("expected rebase bead parent=%q, got %q", epicID, rebaseBead.parent)
+		}
+	})
+}
+
+// TestEpicClose_TargetBranch verifies that tryCloseEpic reads Metadata[MetaBranch]
+// from the epic detail, passes it through completeEpicClose → ffMergeEpicBranch,
+// and that ffMergeEpicBranch routes to UpdateBranchRef for non-HEAD targets and
+// MergeFFOnly for HEAD (the default branch, typically "main").
+func TestEpicClose_TargetBranch(t *testing.T) {
+	t.Run("non-HEAD target: UpdateBranchRef called with MetaBranch target", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-tb1"
+		workerID := "worker-tb1"
+		targetBranch := "epic/parent-abc"
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID:       epicID,
+			Title:    "My Epic",
+			Metadata: map[string]any{MetaBranch: targetBranch},
+		}
+		beadSource.mu.Unlock()
+
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+			return branch == protocol.EpicBranchPrefix+epicID, nil
+		}
+		wtMgr.mu.Unlock()
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		// Epic must be closed after successful UpdateBranchRef.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if !epicClosed {
+			t.Error("expected epic to be closed after successful UpdateBranchRef")
+		}
+
+		// UpdateBranchRef must have been called with the correct target and source.
+		wtMgr.mu.Lock()
+		refs := make([]updateBranchRefCall, len(wtMgr.updatedBranchRefs))
+		copy(refs, wtMgr.updatedBranchRefs)
+		merged := make([]string, len(wtMgr.mergedBranches))
+		copy(merged, wtMgr.mergedBranches)
+		wtMgr.mu.Unlock()
+
+		if len(refs) == 0 {
+			t.Fatal("expected UpdateBranchRef to be called for non-HEAD target")
+		}
+		epicBranch := protocol.EpicBranchPrefix + epicID
+		if refs[0].target != targetBranch {
+			t.Errorf("UpdateBranchRef target = %q, want %q", refs[0].target, targetBranch)
+		}
+		if refs[0].source != epicBranch {
+			t.Errorf("UpdateBranchRef source = %q, want %q", refs[0].source, epicBranch)
+		}
+		if len(merged) > 0 {
+			t.Errorf("expected MergeFFOnly NOT called for non-HEAD target, got %v", merged)
+		}
+	})
+
+	t.Run("HEAD target (main): MergeFFOnly called, UpdateBranchRef not called", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-tb2"
+		workerID := "worker-tb2"
+
+		// No MetaBranch → falls back to DefaultBranch (withDefaults sets it to "main").
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID:    epicID,
+			Title: "My Epic",
+		}
+		beadSource.mu.Unlock()
+
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+			return branch == protocol.EpicBranchPrefix+epicID, nil
+		}
+		wtMgr.mu.Unlock()
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		wtMgr.mu.Lock()
+		merged := make([]string, len(wtMgr.mergedBranches))
+		copy(merged, wtMgr.mergedBranches)
+		refs := make([]updateBranchRefCall, len(wtMgr.updatedBranchRefs))
+		copy(refs, wtMgr.updatedBranchRefs)
+		wtMgr.mu.Unlock()
+
+		epicBranch := protocol.EpicBranchPrefix + epicID
+		if len(merged) == 0 {
+			t.Fatal("expected MergeFFOnly to be called for HEAD (main) target")
+		}
+		found := false
+		for _, b := range merged {
+			if b == epicBranch {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("MergeFFOnly not called with %q, got %v", epicBranch, merged)
+		}
+		if len(refs) > 0 {
+			t.Errorf("expected UpdateBranchRef NOT called for HEAD target, got %v", refs)
+		}
+	})
+
+	t.Run("merge failure: rebase bead title interpolates targetBranch not main", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-tb3"
+		workerID := "worker-tb3"
+		targetBranch := "epic/custom-target"
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID:       epicID,
+			Title:    "My Epic",
+			Metadata: map[string]any{MetaBranch: targetBranch},
+		}
+		beadSource.mu.Unlock()
+
+		// Branch exists but UpdateBranchRef fails.
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return true, nil
+		}
+		wtMgr.updateBranchRefFn = func(_, _ string) error {
+			return errors.New("ref update rejected")
+		}
+		wtMgr.mu.Unlock()
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		// Epic must NOT be closed.
+		beadSource.mu.Lock()
+		epicClosed := false
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				epicClosed = true
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+		if epicClosed {
+			t.Error("expected epic NOT to be closed after UpdateBranchRef failure")
+		}
+
+		// Rebase bead must have targetBranch in title, not "main".
+		beadSource.mu.Lock()
+		var rebaseBead createCall
+		for _, c := range beadSource.created {
+			if c.parent == epicID {
+				rebaseBead = c
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+
+		if rebaseBead.parent != epicID {
+			t.Fatal("expected a rebase bead to be created on UpdateBranchRef failure")
+		}
+		if !strings.Contains(rebaseBead.title, targetBranch) {
+			t.Errorf("rebase bead title %q should contain targetBranch %q", rebaseBead.title, targetBranch)
+		}
+		if strings.Contains(rebaseBead.title, "main") {
+			t.Errorf("rebase bead title %q should NOT contain hardcoded 'main'", rebaseBead.title)
+		}
+	})
+
+	t.Run("missing MetaBranch falls back to DefaultBranch in rebase title", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-tb4"
+		workerID := "worker-tb4"
+		customDefault := "release-v2"
+		d.cfg.DefaultBranch = customDefault
+
+		// No MetaBranch → falls back to d.cfg.DefaultBranch.
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID:    epicID,
+			Title: "My Epic",
+		}
+		beadSource.mu.Unlock()
+
+		// Branch exists but MergeFFOnly fails (since "release-v2" == DefaultBranch → MergeFFOnly path).
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return true, nil
+		}
+		wtMgr.mergeFFOnlyFn = func(_, _ string) (string, error) {
+			return "", errors.New("diverged")
+		}
+		wtMgr.mu.Unlock()
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		// Rebase bead title must contain the customDefault, not "main".
+		beadSource.mu.Lock()
+		var rebaseBead createCall
+		for _, c := range beadSource.created {
+			if c.parent == epicID {
+				rebaseBead = c
+				break
+			}
+		}
+		beadSource.mu.Unlock()
+
+		if rebaseBead.parent != epicID {
+			t.Fatal("expected a rebase bead to be created on MergeFFOnly failure")
+		}
+		if !strings.Contains(rebaseBead.title, customDefault) {
+			t.Errorf("rebase bead title %q should contain DefaultBranch %q", rebaseBead.title, customDefault)
 		}
 	})
 }

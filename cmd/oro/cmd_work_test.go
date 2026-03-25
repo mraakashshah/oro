@@ -556,6 +556,10 @@ func (m *envCapturingWorktreeManager) MergeFFOnly(_ context.Context, _ string, _
 	return "", nil
 }
 
+func (m *envCapturingWorktreeManager) UpdateBranchRef(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *envCapturingWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
 	return nil
 }
