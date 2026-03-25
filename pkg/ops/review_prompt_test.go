@@ -7,6 +7,37 @@ import (
 	"testing"
 )
 
+// TestReviewPromptBaseBranchDefault verifies that buildReviewPrompt uses
+// BaseBranch when set, and falls back to "main" when BaseBranch is empty.
+func TestReviewPromptBaseBranchDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// When BaseBranch is set, the prompt must reference it.
+	promptWithBranch := buildReviewPrompt(ReviewOpts{
+		BeadID:      "oro-test",
+		Worktree:    tmpDir,
+		ProjectRoot: tmpDir,
+		BaseBranch:  "develop",
+	})
+	if !strings.Contains(promptWithBranch, "git diff develop") {
+		t.Error("prompt must reference BaseBranch 'develop' when set")
+	}
+	if strings.Contains(promptWithBranch, "git diff main") {
+		t.Error("prompt must not fall back to 'main' when BaseBranch is 'develop'")
+	}
+
+	// When BaseBranch is empty, the prompt must default to "main".
+	promptDefault := buildReviewPrompt(ReviewOpts{
+		BeadID:      "oro-test",
+		Worktree:    tmpDir,
+		ProjectRoot: tmpDir,
+		// BaseBranch intentionally empty — must default to "main"
+	})
+	if !strings.Contains(promptDefault, "git diff main") {
+		t.Error("prompt must default to 'main' when BaseBranch is empty")
+	}
+}
+
 func TestBuildReviewPrompt_IncludesAcceptanceCriteria(t *testing.T) {
 	tmpDir := t.TempDir()
 	opts := ReviewOpts{
