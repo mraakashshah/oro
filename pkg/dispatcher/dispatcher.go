@@ -1320,6 +1320,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 				Branch:        branch,
 				Worktree:      worktree,
 				ConflictFiles: conflictErr.Files,
+				TargetBranch:  targetBranch,
 			})
 			d.safeGo(func() { d.handleMergeConflictResult(ctx, beadID, workerID, worktree, epicID, targetBranch, resultCh) })
 			_ = d.logEvent(ctx, "merge_conflict", "dispatcher", beadID, workerID,

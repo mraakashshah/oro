@@ -754,3 +754,51 @@ func TestMergePromptContainsBranch(t *testing.T) {
 		t.Errorf("merge prompt missing branch name 'agent/oro-xyz'")
 	}
 }
+
+func TestMergePromptContainsTargetBranch(t *testing.T) {
+	proc := newReadyMockProcess("", nil)
+	mock := &mockBatchSpawner{process: proc}
+	s := NewSpawner(mock)
+
+	// Test with explicit TargetBranch
+	ch := s.ResolveMergeConflict(context.Background(), MergeOpts{
+		BeadID:        "oro-test",
+		Branch:        "agent/oro-xyz",
+		Worktree:      "/tmp/wt",
+		ConflictFiles: []string{"file.go"},
+		TargetBranch:  "develop",
+	})
+
+	_ = waitResult(t, ch)
+
+	calls := mock.getCalls()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one spawn call")
+	}
+	prompt := calls[0].prompt
+	if !containsSubstring(prompt, "git rebase develop") {
+		t.Errorf("merge prompt missing 'git rebase develop', got: %s", prompt)
+	}
+
+	// Test with empty TargetBranch (should default to 'main')
+	mock = &mockBatchSpawner{process: proc}
+	s = NewSpawner(mock)
+	ch = s.ResolveMergeConflict(context.Background(), MergeOpts{
+		BeadID:        "oro-test2",
+		Branch:        "agent/oro-abc",
+		Worktree:      "/tmp/wt",
+		ConflictFiles: []string{"file.go"},
+		TargetBranch:  "", // empty, should default to 'main'
+	})
+
+	_ = waitResult(t, ch)
+
+	calls = mock.getCalls()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one spawn call")
+	}
+	prompt = calls[0].prompt
+	if !containsSubstring(prompt, "git rebase main") {
+		t.Errorf("merge prompt missing default 'git rebase main', got: %s", prompt)
+	}
+}

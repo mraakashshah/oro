@@ -126,6 +126,7 @@ type MergeOpts struct {
 	ConflictFiles    []string
 	OurBeadContext   string
 	TheirBeadContext string
+	TargetBranch     string // defaults to "main" if empty
 }
 
 // DiagOpts configures a diagnosis agent.
@@ -477,6 +478,11 @@ func buildMergePrompt(opts MergeOpts) string {
 		branch = "your branch"
 	}
 
+	targetBranch := opts.TargetBranch
+	if targetBranch == "" {
+		targetBranch = "main"
+	}
+
 	b.WriteString("You are resolving a rebase conflict on branch ")
 	b.WriteString(branch)
 	b.WriteString(".\n\n")
@@ -487,7 +493,9 @@ func buildMergePrompt(opts MergeOpts) string {
 	b.WriteString("2. Edit files to resolve conflicts\n")
 	b.WriteString("3. Stage resolved files: git add <files>\n")
 	b.WriteString("4. Continue rebase: git rebase --continue\n")
-	b.WriteString("5. If rebase completes, run: git rebase main\n\n")
+	b.WriteString("5. If rebase completes, run: git rebase ")
+	b.WriteString(targetBranch)
+	b.WriteString("\n\n")
 
 	if opts.OurBeadContext != "" {
 		b.WriteString("Our side: ")
