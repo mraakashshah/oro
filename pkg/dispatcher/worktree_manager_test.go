@@ -1471,3 +1471,20 @@ func TestGitWorktreeManager_LinkQualityGate(t *testing.T) {
 		}
 	})
 }
+
+func TestNewGitWorktreeManager_StoresQualityGatePath(t *testing.T) {
+	runner := &mockCommandRunner{}
+	wantQG := "/path/to/quality_gate.sh"
+	mgr := NewGitWorktreeManager("/repo/root", "", wantQG, runner)
+	if mgr.qualityGatePath != wantQG {
+		t.Errorf("qualityGatePath: got %q, want %q", mgr.qualityGatePath, wantQG)
+	}
+}
+
+func TestNewGitWorktreeManager_EmptyQualityGatePath(t *testing.T) {
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+	if mgr.qualityGatePath != "" {
+		t.Errorf("expected empty qualityGatePath, got %q", mgr.qualityGatePath)
+	}
+}

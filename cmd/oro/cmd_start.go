@@ -602,7 +602,6 @@ func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTime
 		return nil, nil, fmt.Errorf("open state db: %w", err)
 	}
 
-	// Get repo root for worktree manager.
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		_ = db.Close()
@@ -625,11 +624,11 @@ func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTime
 		}()
 	}
 
+	projectPaths, _ := ResolvePaths(repoRoot)
 	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := dispatcher.NewCLIBeadSource(runner)
-	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", "", runner)
+	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner)
 	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
-
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
 	opsSpawner := ops.NewSpawner(&ops.ClaudeOpsSpawner{})
 
