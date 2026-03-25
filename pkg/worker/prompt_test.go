@@ -1780,3 +1780,42 @@ func TestAssemblePrompt_GstackPatterns(t *testing.T) {
 		t.Error("expected Constraints section to contain Iron Law: 'diagnose before changing code'")
 	}
 }
+
+// TestPrompt_TargetBranchConstraint verifies that the Constraints section says
+// "Do not modify the <target> branch" using TargetBranch, not hardcoded "main".
+func TestPrompt_TargetBranchConstraint(t *testing.T) {
+	t.Parallel()
+
+	// Test 1: explicit TargetBranch — constraint should say "develop" not "main"
+	params := worker.PromptParams{
+		BeadID:             "bead-constraint",
+		Title:              "Feature",
+		Description:        "Desc",
+		AcceptanceCriteria: "AC",
+		WorktreePath:       "/tmp/wt-constraint",
+		Model:              "opus",
+		TargetBranch:       "develop",
+	}
+	prompt := worker.AssemblePrompt(params)
+	if strings.Contains(prompt, "Do not modify the main branch") {
+		t.Error("expected constraint to say 'develop' not 'main branch' when TargetBranch is 'develop'")
+	}
+	if !strings.Contains(prompt, "Do not modify the develop branch") {
+		t.Error("expected Constraints section to say 'Do not modify the develop branch'")
+	}
+
+	// Test 2: empty TargetBranch — constraint should default to "main"
+	paramsEmpty := worker.PromptParams{
+		BeadID:             "bead-constraint-default",
+		Title:              "Feature",
+		Description:        "Desc",
+		AcceptanceCriteria: "AC",
+		WorktreePath:       "/tmp/wt-constraint-default",
+		Model:              "opus",
+		TargetBranch:       "",
+	}
+	promptEmpty := worker.AssemblePrompt(paramsEmpty)
+	if !strings.Contains(promptEmpty, "Do not modify the main branch") {
+		t.Error("expected Constraints section to default to 'Do not modify the main branch' when TargetBranch is empty")
+	}
+}

@@ -231,7 +231,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Constraints", strings.Join([]string{
 		"- Do no git push",
 		"- Do not modify files outside your worktree",
-		"- Do not modify the main branch",
+		fmt.Sprintf("- Do not modify the %s branch", targetBranch),
 		"- NEVER replace function/method calls with blank identifier assignments (`_, _ = fn, arg`). If a linter reports an unused variable, remove the declaration — do not silence it by replacing the call with `_ =`.",
 		"",
 		"**Iron Law:** No fixes without root cause. If a test fails, diagnose before changing code.",
