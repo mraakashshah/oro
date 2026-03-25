@@ -1356,7 +1356,11 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
-	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeComplete, beadID, "merged to main", result.CommitSHA), beadID, workerID)
+	mergedTo := targetBranch
+	if mergedTo == "" {
+		mergedTo = d.cfg.DefaultBranch
+	}
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeComplete, beadID, "merged to "+mergedTo, result.CommitSHA), beadID, workerID)
 
 	// Auto-close parent epic if all children are completed.
 	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
@@ -2576,7 +2580,7 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 // bead has never been assigned (no branch exists yet).
 func (d *Dispatcher) isBranchMerged(ctx context.Context, beadID string) bool {
 	branch := protocol.BranchPrefix + beadID // "agent/<beadID>"
-	_, err := d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, "main")
+	_, err := d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, d.cfg.DefaultBranch)
 	return err == nil
 }
 
@@ -2749,7 +2753,18 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	// Resolve the base/target branch for this bead.
 	// resolveEpicBranch walks the parent chain to find the actual epic ancestor —
 	// bead.Epic maps to the JSON "parent" field and may point to a non-epic bead.
-	baseBranch, resolvedEpicID, resolveErr := resolveEpicBranch(ctx, d.beads, bead.Epic, d.cfg.DefaultBranch)
+	// If the bead carries Metadata[MetaBranch], use that as the fallback default
+	// branch instead of d.cfg.DefaultBranch (e.g. a standalone bead targeting a
+	// custom integration branch).
+	defaultBranch := d.cfg.DefaultBranch
+	if bead.Metadata != nil {
+		if v, ok := bead.Metadata[MetaBranch]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				defaultBranch = s
+			}
+		}
+	}
+	baseBranch, resolvedEpicID, resolveErr := resolveEpicBranch(ctx, d.beads, bead.Epic, defaultBranch)
 	if resolveErr != nil {
 		_ = d.logEvent(ctx, "epic_branch_resolve_error", "dispatcher", bead.ID, w.id, resolveErr.Error())
 		d.recordAssignmentFailure(bead.ID)
@@ -2759,7 +2774,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		d.mu.Unlock()
 		return nil
 	}
-	if baseBranch != "main" {
+	if baseBranch != d.cfg.DefaultBranch {
 		// Escalate if the epic branch does not exist yet.
 		exists, beErr := d.worktrees.BranchExists(ctx, baseBranch)
 		if beErr != nil || !exists {

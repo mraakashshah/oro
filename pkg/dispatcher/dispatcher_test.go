@@ -15773,3 +15773,230 @@ func TestConfigWithDefaults_DefaultBranch(t *testing.T) {
 		}
 	})
 }
+
+// TestAssignBead_MetadataBranch verifies that assignBead reads Metadata[MetaBranch]
+// to determine the base branch, falls back to DefaultBranch when absent, and passes
+// the resolved branch to both resolveEpicBranch (as defaultBranch) and worktree.Create.
+func TestAssignBead_MetadataBranch(t *testing.T) {
+	t.Run("MetaBranch present: uses metadata branch as base", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		d.cfg.DefaultBranch = "main"
+
+		// Record which baseBranch was passed to Create.
+		var gotBase string
+		wtMgr.createFn = func(_ context.Context, beadID, baseBranch string) (string, string, error) {
+			gotBase = baseBranch
+			return "/tmp/wt-" + beadID, "agent/" + beadID, nil
+		}
+		// isBranchMerged must return false so the bead isn't closed before assignment.
+		d.shutdownRunner = &mockCommandRunner{err: errors.New("exit status 1")}
+
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{
+			ID:       "bead-meta-branch",
+			Title:    "Bead with MetaBranch",
+			Priority: 1,
+			Metadata: map[string]any{MetaBranch: "develop"},
+		}})
+
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected ASSIGN")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN, got %s", msg.Type)
+		}
+		if msg.Assign.TargetBranch != "develop" {
+			t.Errorf("TargetBranch = %q, want %q", msg.Assign.TargetBranch, "develop")
+		}
+		waitForWorkerState(t, d, "w1", protocol.WorkerBusy, time.Second)
+
+		wtMgr.mu.Lock()
+		base := gotBase
+		wtMgr.mu.Unlock()
+		if base != "develop" {
+			t.Errorf("worktree.Create baseBranch = %q, want %q", base, "develop")
+		}
+	})
+
+	t.Run("MetaBranch absent: falls back to DefaultBranch", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		d.cfg.DefaultBranch = "trunk"
+
+		var gotBase string
+		wtMgr.createFn = func(_ context.Context, beadID, baseBranch string) (string, string, error) {
+			gotBase = baseBranch
+			return "/tmp/wt-" + beadID, "agent/" + beadID, nil
+		}
+		d.shutdownRunner = &mockCommandRunner{err: errors.New("exit status 1")}
+
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{
+			ID:       "bead-no-meta",
+			Title:    "Bead without MetaBranch",
+			Priority: 1,
+		}})
+
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected ASSIGN")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN, got %s", msg.Type)
+		}
+		if msg.Assign.TargetBranch != "trunk" {
+			t.Errorf("TargetBranch = %q, want %q", msg.Assign.TargetBranch, "trunk")
+		}
+		waitForWorkerState(t, d, "w1", protocol.WorkerBusy, time.Second)
+
+		wtMgr.mu.Lock()
+		base := gotBase
+		wtMgr.mu.Unlock()
+		if base != "trunk" {
+			t.Errorf("worktree.Create baseBranch = %q, want %q", base, "trunk")
+		}
+	})
+}
+
+// TestIsBranchMerged_DefaultBranch verifies that isBranchMerged checks against
+// d.cfg.DefaultBranch, not the hardcoded string "main".
+func TestIsBranchMerged_DefaultBranch(t *testing.T) {
+	t.Run("uses DefaultBranch in git merge-base check", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.cfg.DefaultBranch = "develop"
+
+		var gotArgs []string
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				gotArgs = args
+				return nil, nil // exit 0 → merged
+			},
+		}
+
+		result := d.isBranchMerged(context.Background(), "bead-abc")
+		if !result {
+			t.Error("isBranchMerged should return true when runner exits 0")
+		}
+
+		// The last arg must be "develop", not "main".
+		if len(gotArgs) == 0 {
+			t.Fatal("no args passed to runner")
+		}
+		last := gotArgs[len(gotArgs)-1]
+		if last != "develop" {
+			t.Errorf("isBranchMerged checked against %q, want %q", last, "develop")
+		}
+	})
+
+	t.Run("uses DefaultBranch 'main' (default)", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		// DefaultBranch is "main" by default (withDefaults).
+
+		var gotArgs []string
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				gotArgs = args
+				return nil, nil
+			},
+		}
+
+		_ = d.isBranchMerged(context.Background(), "bead-xyz")
+
+		if len(gotArgs) == 0 {
+			t.Fatal("no args passed to runner")
+		}
+		last := gotArgs[len(gotArgs)-1]
+		if last != "main" {
+			t.Errorf("isBranchMerged checked against %q, want %q", last, "main")
+		}
+	})
+}
+
+// TestMergeComplete_InterpolatesBranch verifies that the MERGE_COMPLETE escalation
+// message says "merged to <targetBranch>" rather than the hardcoded "merged to main".
+func TestMergeComplete_InterpolatesBranch(t *testing.T) {
+	t.Run("uses targetBranch in MERGE_COMPLETE summary", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		beadID := "bead-interp"
+		workerID := "w-interp"
+		worktree := "/tmp/worktree-" + beadID
+		branch := "agent/" + beadID
+		targetBranch := "epic/my-epic"
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", targetBranch)
+
+		wantSummary := "merged to " + targetBranch
+		found := false
+		for _, msg := range esc.Messages() {
+			if strings.Contains(msg, string(protocol.EscMergeComplete)) {
+				found = true
+				if !strings.Contains(msg, wantSummary) {
+					t.Errorf("MERGE_COMPLETE escalation = %q, want it to contain %q", msg, wantSummary)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected MERGE_COMPLETE escalation, got: %v", esc.Messages())
+		}
+	})
+
+	t.Run("uses DefaultBranch when targetBranch is empty string", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		beadID := "bead-empty-target"
+		workerID := "w-empty"
+		worktree := "/tmp/worktree-" + beadID
+		branch := "agent/" + beadID
+
+		// targetBranch = "" → should say "merged to main" (DefaultBranch)
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+
+		found := false
+		for _, msg := range esc.Messages() {
+			if strings.Contains(msg, string(protocol.EscMergeComplete)) {
+				found = true
+				if !strings.Contains(msg, "merged to main") {
+					t.Errorf("MERGE_COMPLETE escalation = %q, want it to contain %q", msg, "merged to main")
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected MERGE_COMPLETE escalation, got: %v", esc.Messages())
+		}
+	})
+}
