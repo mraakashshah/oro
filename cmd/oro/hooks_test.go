@@ -227,9 +227,12 @@ func TestInstallHookWrapper(t *testing.T) {
 		}
 	})
 
-	t.Run("pre_push_check_blocks_agent_branches", func(t *testing.T) {
+	t.Run("pre_push_check_blocks_agent_and_epic_branches", func(t *testing.T) {
 		if !strings.Contains(oroPrePushCheck, "agent/") {
 			t.Error("oroPrePushCheck should reference agent/")
+		}
+		if !strings.Contains(oroPrePushCheck, "epic/") {
+			t.Error("oroPrePushCheck should reference epic/")
 		}
 		if !strings.Contains(oroPrePushCheck, "exit 1") {
 			t.Error("oroPrePushCheck should exit 1 on violation")

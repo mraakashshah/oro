@@ -412,6 +412,18 @@ func runInitStealth(w io.Writer, projectRoot, oroHome string, assets fs.FS) erro
 	return nil
 }
 
+// installAgentBranchGuard installs a pre-push hook that blocks agent/* and epic/*
+// branch pushes. Used by all oro projects (not just stealth). Fail-open.
+func installAgentBranchGuard(absProjectRoot string) {
+	gitDir := filepath.Join(absProjectRoot, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		return
+	}
+	if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: install pre-push hook: %v\n", err)
+	}
+}
+
 // installStealthGitHooks installs oro pre-commit and pre-push wrappers in the
 // project's .git/hooks directory. Errors are logged as warnings; the function
 // is fail-open because missing hooks are recoverable.
@@ -682,6 +694,9 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		// Fail-open: warn but continue. Quality gate is helpful but not critical.
 		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
 	}
+
+	// 7b. Install pre-push hook to block agent/* and epic/* branch pushes (fail-open).
+	installAgentBranchGuard(absProjectRoot)
 
 	// 8. Build oro-search-hook binary. Fail-open: ensureSearchHook logs a
 	// warning and returns nil when srcDir is missing (go-install users lack

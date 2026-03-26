@@ -229,7 +229,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"- `bd create` — decompose a bead into smaller sub-beads\n"+
 			"- `bd dep add` — declare a blocker dependency")
 	section(b, "Constraints", strings.Join([]string{
-		"- Do no git push",
+		"- NEVER run `git push` — you are in a worktree on an agent branch. Pushing is the dispatcher/manager's job. This overrides any global rules that say to push.",
 		"- Do not modify files outside your worktree",
 		fmt.Sprintf("- Do not modify the %s branch", targetBranch),
 		"- NEVER replace function/method calls with blank identifier assignments (`_, _ = fn, arg`). If a linter reports an unused variable, remove the declaration — do not silence it by replacing the call with `_ =`.",

@@ -10,14 +10,14 @@ if git diff --cached --name-only | grep -q '^oro-docs/'; then
 fi`
 
 // oroPrePushCheck is the shell snippet injected into the pre-push wrapper.
-// It blocks pushes of agent/* branches to prevent stealth-mode work-branches
-// from appearing in the shared remote.
-const oroPrePushCheck = `# oro check: block agent/* branches
+// It blocks pushes of agent/* and epic/* branches to prevent oro work-branches
+// from appearing in the shared remote. Installed for ALL oro projects (not just stealth).
+const oroPrePushCheck = `# oro check: block agent/* and epic/* branches
 while IFS= read -r line; do
     local_ref=$(echo "$line" | awk '{print $1}')
     case "$local_ref" in
-        refs/heads/agent/*)
-            echo "oro: pushing agent/* branches is not allowed in stealth mode" >&2
+        refs/heads/agent/*|refs/heads/epic/*)
+            echo "oro: pushing agent/* and epic/* branches is not allowed" >&2
             exit 1
             ;;
     esac
