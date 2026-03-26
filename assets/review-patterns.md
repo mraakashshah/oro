@@ -13,3 +13,7 @@ case-insensitive-header-search: matching markdown headers → lowercase both sid
 `lenient-vs-strict-resolution`: two functions resolve the same identity with different "not found" semantics → extract shared core, wrap with policy.
 `zero-value-fallback`: new struct field with configurable path → check `if field == "" { use default }` at point of use, keeping zero-value safe for existing callers.
 `find-exclusion-abs-passthrough`: absolute path outside repo tree used in `find . -not -path` exclusion → exclusion is unreachable. Consider omitting it from the generated script rather than including a dead clause.
+`extracted-default-helper`: pure function with multiple interrelated defaults risks cyclomatic bloat in `withDefaults()` → extract a named helper (e.g., `defaultWorkerCounts`) that resolves defaults + cross-field clamping in isolation.
+`double-hash-computation`: function computes identity hash, caller also computes same hash for display → return computed value from inner function to avoid redundant I/O.
+`best-effort-symlink`: new worktree asset needs linking → add to `stageAssets` with `slog.Warn` on failure, no error return, Lstat guard for idempotency.
+`stale-hardcoded-after-wiring`: replacing a hardcoded value in behavior but leaving it in nearby comments/log strings → search the same function and callers for other instances of the old hardcoded value.
