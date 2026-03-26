@@ -43,7 +43,7 @@ Workflow:
   bd         Run bd with project-aware --db flag (stealth mode support)
 
 Global:
-  global-oro-approach  Copy oro skills and hooks to ~/.claude/ for all sessions
+  global-skills        Sync oro skills and hooks to ~/.claude/ for all sessions
 
 Maintenance:
   doctor     Diagnose and repair oro installation issues (e.g. corrupt Dolt)

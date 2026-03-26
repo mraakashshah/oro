@@ -40,21 +40,23 @@ type globalOroApproachConfig struct {
 
 func newGlobalOroApproachCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "global-oro-approach",
-		Short: "Copy oro skills and hooks to ~/.claude/ for use in all Claude sessions",
-		Long: `Copies the oro disciplined-workflow skills and portable hooks from
-~/.oro/ into ~/.claude/ so every Claude session (not just oro projects)
-benefits from the same TDD, debugging, and verification workflows.
+		Use:     "global-skills",
+		Aliases: []string{"global-oro-approach"},
+		Short:   "Sync oro skills and hooks to ~/.claude/ for use in all Claude sessions",
+		Long: `Symlinks oro skills and copies portable hooks from ~/.oro/ into ~/.claude/
+so every Claude session (not just oro projects) benefits from the same
+TDD, debugging, and verification workflows.
 
-What gets copied:
-  Skills: all skills except restart-oro and watching-oro → ~/.claude/skills/
+What gets synced:
+  Skills: all skills except restart-oro and watching-oro → ~/.claude/skills/ (symlinks)
   Hooks:  auto-format, prompt-injection-guard, pre-compact, context-pruner,
-          stop-checklist, enforce-skills → ~/.claude/hooks/
+          stop-checklist, enforce-skills → ~/.claude/hooks/ (copies)
 
 The hooks section of ~/.claude/settings.json is replaced with wiring for
 the copied hooks. All other settings are preserved.
 
-Re-run after upgrading oro to pick up updated skills and hooks.`,
+Re-run after adding or removing skills in ~/.oro/.claude/skills/.
+Editing existing skills doesn't require re-running (symlinks are live).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			homeDir, err := os.UserHomeDir()
 			if err != nil {
