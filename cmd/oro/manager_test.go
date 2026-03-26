@@ -225,6 +225,45 @@ func TestManagerBeaconMergeCompleteProtocol(t *testing.T) {
 			t.Error("Shutdown section must include 'git push' before reporting final status")
 		}
 	})
+
+	t.Run("merge_complete playbook uses git push origin <branch> not bare git push", func(t *testing.T) {
+		mergeIdx := strings.Index(beacon, "### MERGE_COMPLETE")
+		if mergeIdx == -1 {
+			t.Fatal("could not find ### MERGE_COMPLETE section")
+		}
+		rest := beacon[mergeIdx+len("### MERGE_COMPLETE"):]
+		nextSection := strings.Index(rest, "\n### ")
+		var section string
+		if nextSection == -1 {
+			section = rest
+		} else {
+			section = rest[:nextSection]
+		}
+		if !strings.Contains(section, "git push origin") {
+			t.Error("MERGE_COMPLETE playbook must instruct 'git push origin <branch>' not bare 'git push'")
+		}
+	})
+
+	t.Run("merge_complete dispatcher message format includes branch placeholder not hardcoded main", func(t *testing.T) {
+		dispatchIdx := strings.Index(beacon, "## Dispatcher Messages")
+		if dispatchIdx == -1 {
+			t.Fatal("could not find ## Dispatcher Messages section")
+		}
+		rest := beacon[dispatchIdx+len("## Dispatcher Messages"):]
+		nextSection := strings.Index(rest, "\n## ")
+		var section string
+		if nextSection == -1 {
+			section = rest
+		} else {
+			section = rest[:nextSection]
+		}
+		if strings.Contains(section, "merged to main") {
+			t.Error("MERGE_COMPLETE dispatcher message must use dynamic <branch> not hardcoded 'main'")
+		}
+		if !strings.Contains(section, "<branch>") {
+			t.Error("MERGE_COMPLETE dispatcher message format must include <branch> placeholder")
+		}
+	})
 }
 
 func TestManagerNudge(t *testing.T) {

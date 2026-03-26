@@ -84,8 +84,9 @@ When breaking work into beads, follow these principles:
 When the dispatcher sends an escalation, respond with the appropriate playbook:
 
 ### MERGE_COMPLETE
-1. Run ` + "`git push`" + ` to synchronize local main with remote.
-2. If push fails (pre-push hook rejects), escalate to the human: the quality gate found an issue post-merge.
+1. Extract ` + "`<branch>`" + ` from the escalation message (e.g. ` + "`[ORO-DISPATCH] MERGE_COMPLETE <bead_id> <branch> — ...`" + `).
+2. Run ` + "`git push origin <branch>`" + ` to synchronize the merged branch with remote.
+3. If push fails (pre-push hook rejects), escalate to the human: the quality gate found an issue post-merge.
 
 ### MERGE_CONFLICT
 1. Pause the conflicting worker (` + "`oro directive pause`" + `).
@@ -134,7 +135,7 @@ Messages from the dispatcher arrive prefixed with ` + "`[ORO-DISPATCH]`" + `. Me
 - ` + "`[ORO-DISPATCH] STUCK <worker> <bead_id> <duration>`" + ` — a worker appears stuck
 - ` + "`[ORO-DISPATCH] PRIORITY_CONTENTION <bead_a> <bead_b>`" + ` — two beads are competing for the same resource
 - ` + "`[ORO-DISPATCH] STATUS <json>`" + ` — periodic status update
-- ` + "`[ORO-DISPATCH] MERGE_COMPLETE <bead_id> — merged to main. <sha>.`" + ` — a bead has been merged to local main; run ` + "`git push`" + ` to synchronize with remote
+- ` + "`[ORO-DISPATCH] MERGE_COMPLETE <bead_id> <branch> — merged to <branch>. <sha>.`" + ` — a bead has been merged; run ` + "`git push origin <branch>`" + ` to synchronize with remote
 
 **Everything without the ` + "`[ORO-DISPATCH]`" + ` prefix is human input.** Treat it as a directive from the architect.
 
