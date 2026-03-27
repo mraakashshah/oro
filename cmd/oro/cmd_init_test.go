@@ -535,52 +535,6 @@ func TestOroInit(t *testing.T) {
 		}
 	})
 
-	t.Run("adds .oro/ to .gitignore if not present", func(t *testing.T) {
-		projectDir := t.TempDir()
-		oroHome := t.TempDir()
-
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
-		if err != nil {
-			t.Fatalf("bootstrapProject failed: %v", err)
-		}
-
-		gitignorePath := filepath.Join(projectDir, ".gitignore")
-		data, err := os.ReadFile(gitignorePath) //nolint:gosec // test-created file
-		if err != nil {
-			t.Fatalf(".gitignore not created: %v", err)
-		}
-
-		if !strings.Contains(string(data), ".oro/") {
-			t.Errorf(".gitignore should contain .oro/, got:\n%s", string(data))
-		}
-	})
-
-	t.Run("skips .gitignore if .oro/ already present", func(t *testing.T) {
-		projectDir := t.TempDir()
-		oroHome := t.TempDir()
-
-		// Pre-create .gitignore with .oro/ already in it
-		existing := "node_modules/\n.oro/\n.env\n"
-		if err := os.WriteFile(filepath.Join(projectDir, ".gitignore"), []byte(existing), 0o644); err != nil { //nolint:gosec // test file
-			t.Fatalf("write .gitignore: %v", err)
-		}
-
-		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
-		if err != nil {
-			t.Fatalf("bootstrapProject failed: %v", err)
-		}
-
-		data, err := os.ReadFile(filepath.Join(projectDir, ".gitignore")) //nolint:gosec // test-created file
-		if err != nil {
-			t.Fatalf("read .gitignore: %v", err)
-		}
-
-		// Should not duplicate .oro/
-		if strings.Count(string(data), ".oro/") != 1 {
-			t.Errorf(".gitignore should contain .oro/ exactly once, got:\n%s", string(data))
-		}
-	})
-
 	t.Run("creates settings.json with absolute hook paths", func(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
@@ -865,22 +819,148 @@ func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
 		}
 	})
 
-	t.Run("bootstrapProject adds .beads to gitignore", func(t *testing.T) {
+}
+
+func TestEnsureGlobalGitignore(t *testing.T) {
+	t.Run("creates file and adds entries when file does not exist", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ".gitignore_global")
+
+		if err := ensureGlobalGitignoreAt(path); err != nil {
+			t.Fatalf("ensureGlobalGitignoreAt failed: %v", err)
+		}
+
+		data, err := os.ReadFile(path) //nolint:gosec // test file
+		if err != nil {
+			t.Fatalf("file not created: %v", err)
+		}
+
+		content := string(data)
+		for _, entry := range []string{".beads/", ".beads", ".oro/", ".dolt/"} {
+			if !strings.Contains(content, entry) {
+				t.Errorf("global gitignore should contain %q, got:\n%s", entry, content)
+			}
+		}
+	})
+
+	t.Run("adds missing entries to existing file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ".gitignore_global")
+
+		existing := "node_modules/\n.DS_Store\n"
+		if err := os.WriteFile(path, []byte(existing), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+
+		if err := ensureGlobalGitignoreAt(path); err != nil {
+			t.Fatalf("ensureGlobalGitignoreAt failed: %v", err)
+		}
+
+		data, err := os.ReadFile(path) //nolint:gosec // test file
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		content := string(data)
+		// Original content preserved
+		if !strings.Contains(content, "node_modules/") {
+			t.Error("original content should be preserved")
+		}
+		// New entries added
+		for _, entry := range []string{".beads/", ".beads", ".oro/", ".dolt/"} {
+			if !strings.Contains(content, entry) {
+				t.Errorf("global gitignore should contain %q, got:\n%s", entry, content)
+			}
+		}
+	})
+
+	t.Run("does not duplicate entries already present", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ".gitignore_global")
+
+		existing := ".beads/\n.oro/\n"
+		if err := os.WriteFile(path, []byte(existing), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+
+		if err := ensureGlobalGitignoreAt(path); err != nil {
+			t.Fatalf("ensureGlobalGitignoreAt failed: %v", err)
+		}
+
+		data, err := os.ReadFile(path) //nolint:gosec // test file
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		content := string(data)
+		if strings.Count(content, ".beads/") != 1 {
+			t.Errorf(".beads/ should appear exactly once, got:\n%s", content)
+		}
+		if strings.Count(content, ".oro/") != 1 {
+			t.Errorf(".oro/ should appear exactly once, got:\n%s", content)
+		}
+		// .beads (without slash) and .dolt/ should be added
+		if !strings.Contains(content, "\n.beads\n") && !strings.HasPrefix(content, ".beads\n") {
+			// Just check it exists somewhere as a line
+			found := false
+			for _, line := range strings.Split(content, "\n") {
+				if strings.TrimSpace(line) == ".beads" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf(".beads (no slash) should be added, got:\n%s", content)
+			}
+		}
+	})
+
+	t.Run("is idempotent", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, ".gitignore_global")
+
+		// Run twice
+		if err := ensureGlobalGitignoreAt(path); err != nil {
+			t.Fatal(err)
+		}
+		first, _ := os.ReadFile(path) //nolint:gosec // test file
+
+		if err := ensureGlobalGitignoreAt(path); err != nil {
+			t.Fatal(err)
+		}
+		second, _ := os.ReadFile(path) //nolint:gosec // test file
+
+		if string(first) != string(second) {
+			t.Errorf("second run should not change file.\nfirst:\n%s\nsecond:\n%s", first, second)
+		}
+	})
+}
+
+func TestBootstrapDoesNotModifyRepoGitignore(t *testing.T) {
+	assets := testAssets()
+
+	t.Run("bootstrapProject does not add .oro/ or .beads to repo gitignore", func(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
+
+		existing := "node_modules/\n.env\n"
+		if err := os.WriteFile(filepath.Join(projectDir, ".gitignore"), []byte(existing), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
 
 		_, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
 
-		data, err := os.ReadFile(filepath.Join(projectDir, ".gitignore")) //nolint:gosec // test-created file
+		data, err := os.ReadFile(filepath.Join(projectDir, ".gitignore")) //nolint:gosec // test file
 		if err != nil {
 			t.Fatalf("read .gitignore: %v", err)
 		}
 
-		if !strings.Contains(string(data), ".beads") {
-			t.Errorf(".gitignore should contain .beads, got:\n%s", string(data))
+		content := string(data)
+		if content != existing {
+			t.Errorf("repo .gitignore should not be modified.\nwant:\n%s\ngot:\n%s", existing, content)
 		}
 	})
 }

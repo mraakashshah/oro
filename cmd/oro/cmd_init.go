@@ -613,7 +613,7 @@ func resolveProjectName(projectRoot, projectName string) (string, error) {
 }
 
 // bootstrapProject orchestrates project initialization for externalized config.
-// It creates the local anchor (.oro/config.yaml), manages .gitignore, generates
+// It creates the local anchor (.oro/config.yaml), sets up global gitignore, generates
 // per-project settings.json, creates handoffs dir, and extracts embedded assets.
 // Returns the detected language config (threaded from createProjectAnchor) so
 // callers avoid a redundant disk read.
@@ -634,14 +634,10 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		return nil, fmt.Errorf("create project anchor: %w", err)
 	}
 
-	// 2. Add .oro/ and .beads to .gitignore if not present.
-	if err := ensureGitignore(projectRoot, ".oro/"); err != nil {
-		return nil, fmt.Errorf("update gitignore: %w", err)
-	}
-	// Use the base name of BeadsDir so the gitignore entry matches the link/dir
-	// name in the project root (the beads dir name in standard mode).
-	if err := ensureGitignore(projectRoot, filepath.Base(projPaths.BeadsDir)); err != nil {
-		return nil, fmt.Errorf("update gitignore for .beads: %w", err)
+	// 2. Add .oro/, .beads, .dolt/ to global gitignore (not per-repo).
+	if err := ensureGlobalGitignore(); err != nil {
+		// Fail-open: warn but don't block init.
+		fmt.Fprintf(os.Stderr, "warning: could not update global gitignore: %v\n", err)
 	}
 
 	// 3. Create per-project directory structure under oroHome.
@@ -770,24 +766,77 @@ func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, 
 	return cfg, nil
 }
 
-// ensureGitignore adds entry to .gitignore if not already present.
-// Creates .gitignore if it doesn't exist.
-func ensureGitignore(projectRoot, entry string) error {
-	gitignorePath := filepath.Join(projectRoot, ".gitignore")
+// globalGitignoreEntries are the patterns oro needs ignored globally
+// so that .beads/, .oro/, and .dolt/ never pollute target repos.
+var globalGitignoreEntries = []string{".beads/", ".beads", ".oro/", ".dolt/"}
 
-	existing, err := os.ReadFile(gitignorePath) //nolint:gosec // path constructed from trusted projectRoot
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read .gitignore: %w", err)
+// ensureGlobalGitignore adds oro-related entries to the user's global
+// gitignore file so target repos are never polluted. It resolves the
+// path from git config core.excludesFile, falling back to ~/.gitignore_global.
+func ensureGlobalGitignore() error {
+	path, err := resolveGlobalGitignorePath()
+	if err != nil {
+		return err
 	}
+	return ensureGlobalGitignoreAt(path)
+}
 
-	// Check if entry already present (line-by-line match).
-	for _, line := range strings.Split(string(existing), "\n") {
-		if strings.TrimSpace(line) == entry {
-			return nil // already present
+// resolveGlobalGitignorePath returns the path to the user's global gitignore,
+// creating one and configuring git if none is set.
+func resolveGlobalGitignorePath() (string, error) {
+	out, err := exec.Command("git", "config", "--global", "core.excludesFile").Output()
+	if err == nil {
+		if p := strings.TrimSpace(string(out)); p != "" {
+			// Expand ~ if present.
+			if strings.HasPrefix(p, "~/") {
+				home, herr := os.UserHomeDir()
+				if herr != nil {
+					return "", fmt.Errorf("expand home dir: %w", herr)
+				}
+				p = filepath.Join(home, p[2:])
+			}
+			return p, nil
 		}
 	}
 
-	// Append entry. Ensure existing content ends with newline.
+	// No global excludes file configured — set one up.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	p := filepath.Join(home, ".gitignore_global")
+	if err := exec.Command("git", "config", "--global", "core.excludesFile", p).Run(); err != nil {
+		return "", fmt.Errorf("set core.excludesFile: %w", err)
+	}
+	return p, nil
+}
+
+// ensureGlobalGitignoreAt adds oro entries to the given gitignore path.
+// Testable core — ensureGlobalGitignore wraps this with path resolution.
+func ensureGlobalGitignoreAt(path string) error {
+	existing, err := os.ReadFile(path) //nolint:gosec // user-controlled path
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read global gitignore: %w", err)
+	}
+
+	// Build set of existing entries for quick lookup.
+	existingLines := make(map[string]bool)
+	for _, line := range strings.Split(string(existing), "\n") {
+		existingLines[strings.TrimSpace(line)] = true
+	}
+
+	// Collect entries that need to be added.
+	var missing []string
+	for _, entry := range globalGitignoreEntries {
+		if !existingLines[entry] {
+			missing = append(missing, entry)
+		}
+	}
+	if len(missing) == 0 {
+		return nil // all entries present
+	}
+
+	// Append missing entries with a section header.
 	var buf strings.Builder
 	if len(existing) > 0 {
 		buf.Write(existing)
@@ -795,11 +844,14 @@ func ensureGitignore(projectRoot, entry string) error {
 			buf.WriteByte('\n')
 		}
 	}
-	buf.WriteString(entry)
-	buf.WriteByte('\n')
+	buf.WriteString("\n# Oro / Beads (managed by oro init)\n")
+	for _, entry := range missing {
+		buf.WriteString(entry)
+		buf.WriteByte('\n')
+	}
 
-	if err := os.WriteFile(gitignorePath, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // gitignore needs to be readable
-		return fmt.Errorf("write .gitignore: %w", err)
+	if err := os.WriteFile(path, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // gitignore needs to be readable
+		return fmt.Errorf("write global gitignore: %w", err)
 	}
 	return nil
 }

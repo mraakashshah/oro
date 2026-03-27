@@ -697,8 +697,11 @@ func TestAllCmdPathsUseProjectPaths(t *testing.T) {
 	re := regexp.MustCompile(`"\.beads"|"\.worktrees"|"\.oro/config`)
 
 	// paths.go is excluded because ResolvePaths defines those literals legitimately.
+	// cmd_init.go is excluded because globalGitignoreEntries holds gitignore
+	// patterns (not project paths) — they must be literal strings.
 	excluded := map[string]bool{
-		"paths.go": true,
+		"paths.go":    true,
+		"cmd_init.go": true,
 	}
 
 	goFiles, err := filepath.Glob("*.go")
