@@ -1,0 +1,27 @@
+cmd/oro/paths_test.go
+  bc2621d8e27c098d 700-701,703-704
+cmd/oro/cmd_init_test.go
+  bc2621d8e27c098d 824-942,946-950,956,961-963
+cmd/oro/cmd_init.go
+  bc2621d8e27c098d 616,637-640,769-800,802-817,819,822-823,825-832,835-837,839,847-850,853-854
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.20",
+  "base_commit_sha": "6595e0d69d8b8e9a6544869585483010eb08fa67",
+  "prompts": {
+    "bc2621d8e27c098d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1bcf05b4-0a76-4a0e-bb0d-b56ddf4becb6",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah <mraakashshah@users.noreply.github.com>",
+      "messages": [],
+      "total_additions": 224,
+      "total_deletions": 89,
+      "accepted_lines": 224,
+      "overriden_lines": 0
+    }
+  }
+}
