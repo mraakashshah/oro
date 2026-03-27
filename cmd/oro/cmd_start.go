@@ -236,10 +236,10 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 		return "", fmt.Errorf("preflight checks failed: %w", err)
 	}
 
-	// Auto-run oro init if .oro/config.yaml is missing (project not initialized).
-	if _, statErr := os.Stat(filepath.Join(".oro", "config.yaml")); os.IsNotExist(statErr) {
-		fmt.Fprintf(w, "project not initialized — running oro init...\n")
-		if initErr := runInit(w, false, false, false, ".", ""); initErr != nil {
+	// Auto-run oro init if no project config exists (neither standard nor stealth).
+	if _, _, detectErr := readProjectName("."); detectErr != nil || !projectInitialized(".") {
+		fmt.Fprintf(w, "project not initialized — running oro init (stealth)...\n")
+		if initErr := runInit(w, false, false, true, ".", ""); initErr != nil {
 			return "", fmt.Errorf("auto-init failed: %w — run 'oro init' manually", initErr)
 		}
 	}

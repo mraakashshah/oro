@@ -135,6 +135,26 @@ func ResolvePaths(repoRoot string) (ProjectPaths, error) {
 	return standardProjectPaths(repoRoot), nil
 }
 
+// projectInitialized returns true if the project has been initialized in
+// either standard mode (.oro/config.yaml) or stealth mode (s-<hash>/config.yaml).
+func projectInitialized(repoRoot string) bool {
+	// Standard mode.
+	if _, err := os.Stat(filepath.Join(repoRoot, ".oro", "config.yaml")); err == nil {
+		return true
+	}
+	// Stealth mode.
+	if hash, err := projectHash(repoRoot); err == nil {
+		oroHome, err := resolveOroHome()
+		if err == nil {
+			stealthConfig := filepath.Join(oroHome, "projects", "s-"+hash, "config.yaml")
+			if _, err := os.Stat(stealthConfig); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // standardProjectPaths returns ProjectPaths for standard (in-repo) mode.
 func standardProjectPaths(repoRoot string) ProjectPaths {
 	return ProjectPaths{

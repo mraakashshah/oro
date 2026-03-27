@@ -2026,10 +2026,10 @@ func TestOroInitStealth_EndToEnd(t *testing.T) {
 	root := newRootCmd()
 	var buf bytes.Buffer
 	root.SetOut(&buf)
-	root.SetArgs([]string{"init", "--stealth", "--project-root", projectDir})
+	root.SetArgs([]string{"init", "--project-root", projectDir})
 
 	if err := root.Execute(); err != nil {
-		t.Fatalf("oro init --stealth failed: %v\noutput: %s", err, buf.String())
+		t.Fatalf("oro init (stealth default) failed: %v\noutput: %s", err, buf.String())
 	}
 
 	// 1. Standard .oro/config.yaml must NOT exist.
@@ -2078,5 +2078,70 @@ func TestOroInitStealth_EndToEnd(t *testing.T) {
 	var parsed map[string]any
 	if err := json.Unmarshal(settingsData, &parsed); err != nil {
 		t.Fatalf("stealth settings.json is not valid JSON: %v\n%s", err, string(settingsData))
+	}
+}
+
+func TestOroInit_DefaultsStealth(t *testing.T) {
+	overrideToolDefs(t)
+
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	// Create .git dir so hooks can be installed.
+	if err := os.MkdirAll(filepath.Join(projectDir, ".git", "hooks"), 0o750); err != nil {
+		t.Fatalf("create .git/hooks: %v", err)
+	}
+
+	// Run oro init WITHOUT --stealth flag — should default to stealth.
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"init", "--project-root", projectDir})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("oro init (default stealth) failed: %v\noutput: %s", err, buf.String())
+	}
+
+	// Standard .oro/config.yaml must NOT exist — stealth is the default.
+	if _, err := os.Stat(filepath.Join(projectDir, ".oro", "config.yaml")); err == nil {
+		t.Error("default init must not create .oro/config.yaml — stealth should be the default")
+	}
+
+	// Stealth config must exist.
+	hash, err := projectHash(projectDir)
+	if err != nil {
+		t.Fatalf("projectHash: %v", err)
+	}
+	stealthConfig := filepath.Join(oroHome, "projects", "s-"+hash, "config.yaml")
+	data, err := os.ReadFile(stealthConfig) //nolint:gosec // test file
+	if err != nil {
+		t.Fatalf("stealth config not created: %v", err)
+	}
+	if !strings.Contains(string(data), "mode: stealth") {
+		t.Errorf("config must contain 'mode: stealth', got:\n%s", string(data))
+	}
+}
+
+func TestOroInit_LocalFlagUsesStandardMode(t *testing.T) {
+	overrideToolDefs(t)
+
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	// Run oro init --local — should use standard (in-repo) mode.
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"init", "--local", "--project-root", projectDir})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("oro init --local failed: %v\noutput: %s", err, buf.String())
+	}
+
+	// Standard .oro/config.yaml MUST exist with --local.
+	if _, err := os.Stat(filepath.Join(projectDir, ".oro", "config.yaml")); os.IsNotExist(err) {
+		t.Error("--local must create .oro/config.yaml in project root")
 	}
 }

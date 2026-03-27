@@ -1,5 +1,3 @@
-.oro/
-
 .env
 
 # IDE
@@ -13,9 +11,6 @@
 # OS
 .DS_Store
 Thumbs.db
-
-# Beads (local-only, not tracked in git)
-.beads/
 
 # bv (beads viewer) local config and caches
 .bv/
@@ -43,8 +38,4 @@ cmd/oro/_assets/
 uv.lock
 docs/handoffs/
 archive/yap/reference/
-.beads
-
-# Dolt database files (added by bd init)
-.dolt/
 *.db

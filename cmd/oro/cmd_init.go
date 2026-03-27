@@ -290,16 +290,18 @@ func newInitCmd() *cobra.Command {
 	var (
 		checkOnly   bool
 		quiet       bool
-		stealth     bool
+		local       bool
 		projectRoot string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "init [project-name]",
 		Short: "Detect project, generate config, and extract assets",
-		Long: `Bootstraps a project for oro: creates .oro/config.yaml with project identity,
-generates per-project settings.json with hook paths, and extracts embedded
-assets to ~/.oro/. Reports any missing tools but does NOT install them.
+		Long: `Bootstraps a project for oro. By default uses stealth mode: zero footprint
+in the project directory, all config stored under ~/.oro/projects/s-<hash>/.
+
+Use --local to create .oro/config.yaml and .beads/ symlink in the project
+root (visible to collaborators, committable).
 
 Use 'oro setup' to install missing tools (interactive, installs via brew/go/npm).
 
@@ -309,10 +311,8 @@ directory name of --project-root.
 Flags:
   --check         Verify tools without bootstrapping (exits non-zero if any missing).
   --quiet         Suppress all output (useful for CI scripts).
-  --stealth       Zero-footprint mode: no .oro/ directory in the project root.
-                  All config is stored under ~/.oro/projects/s-<hash>/ where <hash>
-                  is derived from the repo path. Git hooks are installed to prevent
-                  accidental commits of oro artifacts in stealth mode.
+  --local         In-repo mode: create .oro/ directory in the project root.
+                  By default oro uses stealth mode (zero footprint).
   --project-root  Specify a different project directory (default: current directory).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -321,13 +321,14 @@ Flags:
 			if len(args) > 0 {
 				projectName = args[0]
 			}
+			stealth := !local
 			return runInit(w, checkOnly, quiet, stealth, projectRoot, projectName)
 		},
 	}
 
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "verify tools without installing (exit 1 if any missing)")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress output, just exit code")
-	cmd.Flags().BoolVar(&stealth, "stealth", false, "zero-footprint mode: store config in ~/.oro/ instead of .oro/")
+	cmd.Flags().BoolVar(&local, "local", false, "in-repo mode: create .oro/ in project root (default: stealth)")
 	cmd.Flags().StringVar(&projectRoot, "project-root", ".", "project root directory for config generation")
 
 	return cmd
