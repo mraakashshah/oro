@@ -1,7 +1,7 @@
 # Memory Dreaming & Staleness Awareness Design
 
 **Date:** 2026-03-31
-**Status:** R1 FAIL (3 gaps fixed), ready for R2.
+**Status:** R1 FAIL → R2 PASS. Ready for beadcraft decomposition.
 
 ## Goal
 
