@@ -30,8 +30,6 @@ var dreamMergeRe = regexp.MustCompile(`^\[MERGE\]\s+(\d+)\s+(\d+)\s+type=(\w+)(?
 // ParseDreamActions scans output line-by-line and extracts dream actions.
 // Malformed lines are silently skipped.
 // An empty output string returns zero actions.
-//
-//oro:testonly
 func ParseDreamActions(output string) []DreamAction {
 	var actions []DreamAction
 	scanner := bufio.NewScanner(strings.NewReader(output))
@@ -92,8 +90,6 @@ func parseDreamLine(line string) (DreamAction, bool) {
 // ExecuteActions applies a slice of DreamActions against the store.
 // Store errors are logged via logFn and execution continues to remaining actions.
 // The function always returns nil — errors are surfaced through logFn only.
-//
-//oro:testonly
 func ExecuteActions(ctx context.Context, actions []DreamAction, store *Store, logFn func(string)) error {
 	for _, a := range actions {
 		switch a.Kind {

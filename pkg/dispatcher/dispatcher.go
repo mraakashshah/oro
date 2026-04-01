@@ -265,6 +265,7 @@ type Config struct {
 	FallbackPollInterval  time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
 	ShutdownTimeout       time.Duration // Graceful shutdown timeout (default 10s).
 	ConsolidateAfterN     int           // Trigger context consolidation after N completed beads (default 5).
+	DreamInterval         int           // Spawn a dream memory-consolidation agent after N completed beads (default 10; 0 disables).
 	PaneContextThreshold  int           // Context percentage threshold for pane handoff (default 60).
 	PaneMonitorInterval   time.Duration // Pane context_pct poll interval (default 5s).
 	PaneRestartCooldown   time.Duration // Min time between manager pane restarts (default 2m).
@@ -274,6 +275,16 @@ type Config struct {
 	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram         string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	DefaultBranch         string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
+}
+
+// intDefault returns v if non-zero, otherwise dflt.
+// Used in withDefaults to apply int field defaults without adding cyclomatic
+// complexity (each if-block counts toward gocyclo limit).
+func intDefault(v, dflt int) int {
+	if v == 0 {
+		return dflt
+	}
+	return v
 }
 
 // defaultWorkerCounts returns the resolved (initialWorkers, maxWorkers) pair,
@@ -309,12 +320,9 @@ func (c *Config) withDefaults() Config {
 	if out.ShutdownTimeout == 0 {
 		out.ShutdownTimeout = 10 * time.Second
 	}
-	if out.ConsolidateAfterN == 0 {
-		out.ConsolidateAfterN = 5
-	}
-	if out.PaneContextThreshold == 0 {
-		out.PaneContextThreshold = 40
-	}
+	out.ConsolidateAfterN = intDefault(out.ConsolidateAfterN, 5)
+	out.PaneContextThreshold = intDefault(out.PaneContextThreshold, 40)
+	out.DreamInterval = intDefault(out.DreamInterval, 10)
 	if out.PaneMonitorInterval == 0 {
 		out.PaneMonitorInterval = 5 * time.Second
 	}
@@ -397,6 +405,11 @@ type Dispatcher struct {
 	focusedEpic                 string
 	targetWorkers               int
 	completionsSinceConsolidate int // counts completed beads since last context consolidation
+	beadsSinceDream             int // counts completed beads since last dream trigger
+
+	// dreamExecuteFn, if non-nil, is called by handleDreamResult instead of
+	// memory.ExecuteActions. Tests inject this to capture calls without a real Store.
+	dreamExecuteFn func(ctx context.Context, actions []memory.DreamAction, store *memory.Store, logFn func(string)) error
 
 	// repoRoot is the effective repository root (cfg.RepoRoot with cwd fallback).
 	// Used as the target directory for git operations on the primary repo (e.g. epic FF merge).
@@ -1376,6 +1389,8 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 
 	// Trigger memory consolidation after every N bead completions.
 	d.maybeConsolidateMemory(ctx)
+	// Trigger dream memory processing after every DreamInterval completions.
+	d.maybeTriggerDream(ctx)
 }
 
 // maybeConsolidateMemory increments the completion counter and triggers an
@@ -1400,6 +1415,64 @@ func (d *Dispatcher) maybeConsolidateMemory(ctx context.Context) {
 			_ = d.logEvent(ctx, "memory_consolidation", "dispatcher", "", "",
 				fmt.Sprintf(`{"merged":%d,"pruned":%d}`, merged, pruned))
 		})
+	}
+}
+
+// maybeTriggerDream increments beadsSinceDream and, when it reaches
+// DreamInterval, resets the counter and spawns an async dream agent.
+// DreamInterval=0 disables dreaming entirely.
+func (d *Dispatcher) maybeTriggerDream(ctx context.Context) {
+	d.mu.Lock()
+	if d.cfg.DreamInterval <= 0 {
+		d.mu.Unlock()
+		return
+	}
+	d.beadsSinceDream++
+	fire := d.beadsSinceDream >= d.cfg.DreamInterval
+	if fire {
+		d.beadsSinceDream = 0
+	}
+	d.mu.Unlock()
+
+	if fire {
+		d.triggerDream(ctx)
+	}
+}
+
+// triggerDream spawns a dream memory-consolidation agent and handles the result
+// asynchronously. Errors from the agent are logged but do not propagate.
+func (d *Dispatcher) triggerDream(ctx context.Context) {
+	resultCh := d.ops.Dream(ctx, ops.DreamOpts{})
+	d.safeGo(func() { d.handleDreamResult(ctx, resultCh) })
+}
+
+// handleDreamResult waits for the dream agent result, parses any dream actions
+// from the feedback, and applies them via dreamExecuteFn (defaults to
+// memory.ExecuteActions). Ops errors are logged; the function never panics.
+func (d *Dispatcher) handleDreamResult(ctx context.Context, resultCh <-chan ops.Result) {
+	select {
+	case <-ctx.Done():
+		return
+	case result := <-resultCh:
+		if result.Err != nil {
+			_ = d.logEvent(ctx, "dream_failed", "dispatcher", "", "",
+				fmt.Sprintf(`{"error":%q}`, result.Err.Error()))
+			return
+		}
+		actions := memory.ParseDreamActions(result.Feedback)
+		execFn := d.dreamExecuteFn
+		if execFn == nil {
+			execFn = memory.ExecuteActions
+		}
+		logFn := func(msg string) {
+			_ = d.logEvent(ctx, "dream_execute_error", "dispatcher", "", "", msg)
+		}
+		if err := execFn(ctx, actions, d.memories, logFn); err != nil {
+			_ = d.logEvent(ctx, "dream_execute_failed", "dispatcher", "", "",
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+		_ = d.logEvent(ctx, "dream_complete", "dispatcher", "", "",
+			fmt.Sprintf(`{"actions":%d}`, len(actions)))
 	}
 }
 
@@ -1594,6 +1667,9 @@ func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, re
 			"all children completed",
 			`Run: oro directive focus "" to clear`), epicID, workerID)
 	}
+
+	// Spawn a dream agent to consolidate memories after epic completion.
+	d.triggerDream(ctx)
 }
 
 // parseAcceptanceCmd extracts the Cmd: value from an acceptance criteria string.

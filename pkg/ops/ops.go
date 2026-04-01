@@ -244,8 +244,6 @@ func (s *Spawner) Decompose(ctx context.Context, opts DecomposeOpts) <-chan Resu
 // Dream spawns a lightweight memory-consolidation agent. The agent reviews the
 // provided memories and emits any distilled insights as feedback. The result
 // channel delivers the agent's output when it exits (callers may ignore it).
-//
-//oro:testonly — wired into production by dispatcher (OpsDream memory consolidation path)
 func (s *Spawner) Dream(ctx context.Context, opts DreamOpts) <-chan Result {
 	prompt := buildDreamPrompt(opts)
 	return s.run(ctx, OpsDream, "", "", prompt)
