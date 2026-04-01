@@ -399,6 +399,9 @@ func TestIsSharedServer(t *testing.T) {
 
 func TestStartSharedDoltServer(t *testing.T) {
 	t.Run("returns ErrNotFound when dolt not in PATH", func(t *testing.T) {
+		if isDoltServerRunning(SharedDoltPort) {
+			t.Skip("shared dolt server already running on port 13307 — cannot test LookPath fallback")
+		}
 		t.Setenv("PATH", t.TempDir())
 		tmpDir := t.TempDir()
 		_, err := startSharedDoltServer(tmpDir)

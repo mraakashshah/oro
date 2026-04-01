@@ -1678,6 +1678,9 @@ func TestNewDoltTeardownCmd_RunEExecutes(t *testing.T) {
 // ---------- newDoltStartCmd RunE ----------
 
 func TestNewDoltStartCmd_RunEExecutes(t *testing.T) {
+	if isDoltServerRunning(SharedDoltPort) {
+		t.Skip("shared dolt server already running on port 13307 — cannot test dolt-not-found path")
+	}
 	// Execute the RunE with empty PATH so startSharedDoltServer fails with ErrNotFound.
 	// runDoltStart wraps the error as "dolt not found in PATH".
 	t.Setenv("ORO_HOME", t.TempDir())
