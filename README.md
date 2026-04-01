@@ -232,7 +232,9 @@ Three layers of persistent memory:
 | **Handoffs** | YAML files in worktree | Immediate task context for continuation | Auto-read by next worker |
 | **Project memory** | SQLite FTS5 | Cross-session learnings, patterns, decisions | `oro remember` / `oro recall` |
 
-Workers emit `[MEMORY]` markers during execution. The dispatcher also extracts learnings from logs post-session. Before assigning a bead, the dispatcher queries the top relevant memories and injects them into the worker's prompt.
+Workers emit `[MEMORY]` markers during execution. The dispatcher also runs LLM-based extraction (haiku) on session output to catch patterns workers didn't explicitly tag. Before assigning a bead, the dispatcher queries the top relevant memories and injects them into the worker's prompt — annotated with age so workers verify stale claims (>7 days) against current code.
+
+**Dreaming:** Every 10 completed beads (or when an epic closes), the dispatcher spawns a dreaming ops agent that reads the entire memories table, synthesizes cross-session patterns, resolves contradictions, merges duplicates, and prunes obsolete entries. The swarm gets smarter over time without human curation.
 
 ## Quick Start
 
@@ -310,7 +312,7 @@ oro stop
 | `oro stop` | Graceful shutdown | `oro stop` |
 | `oro cleanup` | Clean stale state after a crash | `oro cleanup` |
 
-**`oro init`** flags: `--check` (verify only), `--force` (overwrite config), `--project-root <dir>`, `--quiet`, `--stealth` (zero-footprint mode — no `.oro/` in project, config stored under `~/.oro/projects/s-<hash>/`)
+**`oro init`** flags: `--check` (verify only), `--force` (overwrite config), `--project-root <dir>`, `--quiet`, `--local` (in-repo mode: create `.oro/` in project root). Default is stealth mode — zero footprint, config stored under `~/.oro/projects/s-<hash>/`.
 
 **`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (ceiling for scale directives), `--model` (default: sonnet), `--detach, -D`, `--daemon-only, -d`
 
@@ -322,7 +324,7 @@ oro stop
 |---------|-------------|---------|
 | `oro status` | Show current swarm state | `oro status` |
 | `oro logs` | Query and tail dispatcher event logs | `oro logs --tail 50 -f` |
-| `oro dash` | Launch interactive TUI dashboard | `oro dash` |
+| `oro mg` | Launch Mardi Gras TUI dashboard (parade view) | `oro mg` |
 
 **`oro logs`** flags: `--tail <n>` (default: 20), `-f, --follow` (poll for new events)
 
@@ -365,6 +367,14 @@ oro stop
 
 **`oro index search`** flags: `--top <n>` (default: 10)
 
+### Single-Worker Mode
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `oro work` | Execute a single bead interactively (no dispatcher) | `oro work oro-abc1 --model opus` |
+
+**`oro work`** flags: `--model` (default: sonnet), `--timeout` (default: 15m), `--skip-review`, `--base-branch`
+
 ### Internal
 
 | Command | Description | Example |
@@ -379,7 +389,7 @@ Work items tracked by the `bd` CLI. Each bead has a title, description, acceptan
 
 ### Epics
 
-Parent beads that group related work. The dispatcher can `focus` on an epic to prioritize its children. Epics are never directly assigned to workers — they close when all children complete.
+Parent beads that group related work. The dispatcher can `focus` on an epic to prioritize its children. When an epic is first assigned, a worker decomposes it into child beads. Child beads merge to an isolated `epic/<epicID>` branch (not main). When all children complete, the epic branch passes a quality gate check, then fast-forward merges to main.
 
 ### Quality Gate
 
@@ -401,7 +411,7 @@ When a worker exhausts its context window, it writes a YAML handoff file capturi
 
 ### Ops Agents
 
-Short-lived `claude -p` processes spawned by the dispatcher for operational tasks: code review (post-completion), merge conflict resolution, and stuck-worker diagnosis. Ops agents use Opus for high-fidelity judgment.
+Short-lived `claude -p` processes spawned by the dispatcher for judgment-heavy tasks: code review (post-completion), merge conflict resolution, stuck-worker diagnosis, acceptance criteria writing, and memory dreaming (cross-session synthesis). Review and diagnosis ops use Opus; dreaming uses Haiku.
 
 ## Development
 
@@ -410,7 +420,7 @@ Short-lived `claude -p` processes spawned by the dispatcher for operational task
 ```bash
 make setup          # Install dev tooling (npm deps, golangci-lint, git hooks)
 make build          # Build oro binary
-make build-dash     # Build TUI dashboard
+make build-mg       # Build Mardi Gras TUI dashboard
 make install        # Install to $GOPATH/bin
 make test           # Run tests with race detector
 make lint           # Run golangci-lint
@@ -424,7 +434,7 @@ make gate           # Full quality gate
 oro/
 ├── cmd/
 │   ├── oro/              # Main binary — CLI commands + dispatcher
-│   ├── oro-dash/         # TUI dashboard (bubbletea)
+│   ├── oro-dash/         # TUI dashboard (legacy skeleton)
 │   └── oro-search-hook/  # Code search integration
 ├── pkg/
 │   ├── dispatcher/       # Core orchestrator — state machine, worker pool, bead tracking
@@ -433,7 +443,10 @@ oro/
 │   ├── ops/              # Ops agent spawner — review, merge resolution, diagnosis
 │   ├── merge/            # Merge coordinator — serialized rebase + ff-only
 │   ├── protocol/         # Shared types, UDS messages, SQLite schema, constants
+│   ├── mg/               # Mardi Gras TUI dashboard (bubbletea, parade view)
 │   ├── codesearch/       # Semantic code search
+│   ├── eventlog/         # Queryable event log
+│   ├── langprofile/      # Language detection for quality gate generation
 │   └── integration/      # End-to-end test harness
 ├── docs/
 │   ├── plans/            # Architecture specs and design docs
