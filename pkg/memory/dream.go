@@ -89,21 +89,6 @@ func parseDreamLine(line string) (DreamAction, bool) {
 	return DreamAction{}, false
 }
 
-// MergeMemories inserts a new memory from params then deletes all source IDs.
-// If insert fails the error is returned immediately. Deletion errors are logged
-// and skipped so partial completion is still possible.
-func (s *Store) MergeMemories(ctx context.Context, sourceIDs []int64, params InsertParams, logFn func(string)) error {
-	if _, err := s.Insert(ctx, params); err != nil {
-		return fmt.Errorf("merge insert: %w", err)
-	}
-	for _, id := range sourceIDs {
-		if err := s.Delete(ctx, id); err != nil {
-			logFn(fmt.Sprintf("merge: delete source %d: %v", id, err))
-		}
-	}
-	return nil
-}
-
 // ExecuteActions applies a slice of DreamActions against the store.
 // Store errors are logged via logFn and execution continues to remaining actions.
 // The function always returns nil — errors are surfaced through logFn only.
@@ -121,8 +106,15 @@ func ExecuteActions(ctx context.Context, actions []DreamAction, store *Store, lo
 				logFn(fmt.Sprintf("dream execute: create: %v", err))
 			}
 		case "MERGE":
-			if err := store.MergeMemories(ctx, a.IDs, a.Params, logFn); err != nil {
-				logFn(fmt.Sprintf("dream execute: merge %v: %v", a.IDs, err))
+			// Insert the merged memory, then delete each source.
+			if _, err := store.Insert(ctx, a.Params); err != nil {
+				logFn(fmt.Sprintf("dream execute: merge insert: %v", err))
+				continue
+			}
+			for _, id := range a.IDs {
+				if err := store.Delete(ctx, id); err != nil {
+					logFn(fmt.Sprintf("dream execute: merge delete %d: %v", id, err))
+				}
 			}
 		default:
 			logFn(fmt.Sprintf("dream execute: unknown action kind %q", a.Kind))
