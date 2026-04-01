@@ -1854,3 +1854,71 @@ func TestPrompt_TargetBranchConstraint(t *testing.T) {
 		}
 	})
 }
+
+// TestPromptStalenessWarning verifies that AssemblePrompt appends a staleness
+// verification warning to the Memory section when MemoryContext contains a
+// stale marker (⚠), and that no warning is added otherwise.
+func TestPromptStalenessWarning(t *testing.T) {
+	t.Parallel()
+
+	const stalenessWarning = "verify by reading the actual source"
+
+	t.Run("stale_marker_present", func(t *testing.T) {
+		t.Parallel()
+		// Memory context with at least one ⚠ stale marker (as produced by ForPrompt).
+		memCtx := "| 42 | gotcha | some stale memory | 10d ⚠ | ~15 |"
+		params := worker.PromptParams{
+			BeadID:             "bead-stale",
+			Title:              "Stale memory test",
+			Description:        "Test that stale marker triggers warning",
+			AcceptanceCriteria: "Warning present",
+			MemoryContext:      memCtx,
+			WorktreePath:       "/tmp/wt-stale",
+			Model:              "opus",
+		}
+		prompt := worker.AssemblePrompt(params)
+		if !strings.Contains(prompt, stalenessWarning) {
+			t.Errorf("expected prompt to contain staleness warning %q when MemoryContext has ⚠ marker, got memory section:\n%s",
+				stalenessWarning, extractSection(t, prompt, "## Memory"))
+		}
+	})
+
+	t.Run("no_stale_marker", func(t *testing.T) {
+		t.Parallel()
+		// Memory context with no stale marker.
+		memCtx := "| 10 | lesson | always run go vet | 2d | ~12 |"
+		params := worker.PromptParams{
+			BeadID:             "bead-fresh",
+			Title:              "Fresh memory test",
+			Description:        "Test that no stale marker → no warning",
+			AcceptanceCriteria: "Warning absent",
+			MemoryContext:      memCtx,
+			WorktreePath:       "/tmp/wt-fresh",
+			Model:              "opus",
+		}
+		prompt := worker.AssemblePrompt(params)
+		if strings.Contains(prompt, stalenessWarning) {
+			t.Errorf("prompt must NOT contain staleness warning when MemoryContext has no ⚠ marker")
+		}
+	})
+
+	t.Run("empty_memory_context", func(t *testing.T) {
+		t.Parallel()
+		params := worker.PromptParams{
+			BeadID:             "bead-empty-mem",
+			Title:              "Empty memory test",
+			Description:        "Empty MemoryContext → No prior context unchanged",
+			AcceptanceCriteria: "No prior context present, no warning",
+			MemoryContext:      "",
+			WorktreePath:       "/tmp/wt-empty-mem",
+			Model:              "opus",
+		}
+		prompt := worker.AssemblePrompt(params)
+		if !strings.Contains(prompt, "No prior context") {
+			t.Error("expected 'No prior context' when MemoryContext is empty")
+		}
+		if strings.Contains(prompt, stalenessWarning) {
+			t.Errorf("prompt must NOT contain staleness warning when MemoryContext is empty")
+		}
+	})
+}
