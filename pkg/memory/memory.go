@@ -779,6 +779,85 @@ func (s *Store) UpdateConfidence(ctx context.Context, id int64, confidence float
 	return nil
 }
 
+// DumpAll returns all memories for the current project. If the table is empty,
+// returns nil. Respects the project scope set via SetProject().
+//
+//oro:testonly
+func (s *Store) DumpAll(ctx context.Context) ([]protocol.Memory, error) {
+	var whereClause string
+	var args []any
+	if s.project != "" {
+		whereClause = "WHERE project = ?"
+		args = append(args, s.project)
+	}
+
+	q := fmt.Sprintf( //nolint:gosec // G201 false positive: whereClause is safe (built from constants or project scope)
+		`
+		SELECT id, content, type, tags, source,
+		       COALESCE(bead_id, '') AS bead_id,
+		       COALESCE(worker_id, '') AS worker_id,
+		       confidence, created_at, embedding,
+		       COALESCE(files_read, '[]') AS files_read,
+		       COALESCE(files_modified, '[]') AS files_modified,
+		       COALESCE(pinned, 0) AS pinned
+		FROM memories %s
+		ORDER BY created_at DESC, id DESC
+	`, whereClause)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("memory dump all: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []protocol.Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory dump all rows: %w", err)
+	}
+	return results, nil
+}
+
+// MergeMemories keeps the memory with keepID and deletes memories with the given deleteIDs.
+// Returns an error if keepID doesn't exist.
+//
+//oro:testonly
+func (s *Store) MergeMemories(ctx context.Context, keepID int64, deleteIDs []int64) error {
+	// Verify keepID exists
+	var exists int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM memories WHERE id = ?`,
+		keepID,
+	).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("memory merge: keep memory ID %d not found", keepID)
+		}
+		return fmt.Errorf("memory merge check keep: %w", err)
+	}
+
+	// Delete the specified memories
+	if len(deleteIDs) > 0 {
+		placeholders := make([]string, len(deleteIDs))
+		args := make([]any, len(deleteIDs))
+		for i, id := range deleteIDs {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		q := fmt.Sprintf(`DELETE FROM memories WHERE id IN (%s)`, strings.Join(placeholders, ",")) //nolint:gosec // G201 false positive: placeholders are hardcoded "?" and args are parameterized
+		if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("memory merge delete: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // markerRe matches [MEMORY] marker lines.
 // Format: [MEMORY] type=<type>[ tags=<tag1,tag2>]: <content>
 var markerRe = regexp.MustCompile(`^\[MEMORY\]\s+type=(\w+)(?:\s+tags=([^\s:]+))?:\s+(.+)$`)
@@ -878,63 +957,66 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 		return "", nil
 	}
 
-	// Build compact table format.
-	lines := []string{
-		"## Relevant Memories",
-		"| ID | Type | Title | Tokens | Age |",
-		"|----|------|-------|--------|-----|",
-	}
-
-	count := 0
-	for _, m := range results {
-		if count >= maxInjectedMemories {
-			break
-		}
-		lines = append(lines, memoryTableRow(m))
-		count++
-	}
-
-	if count == 0 {
+	rows := memoryTableRows(results)
+	if len(rows) == 0 {
 		return "", nil
 	}
 
+	lines := make([]string, 0, 3+len(rows)+2)
+	lines = append(lines,
+		"## Relevant Memories",
+		"| ID | Type | Title | Age | Tokens |",
+		"|----|------|-------|-----|--------|",
+	)
+	lines = append(lines, rows...)
 	lines = append(lines, "", "Use `oro recall --id=N` to fetch full memory content.")
 
 	return strings.Join(lines, "\n"), nil
 }
 
-// memoryTableRow formats a single ScoredMemory as a compact table row with
-// ID, Type, truncated title, token estimate, and age (with staleness marker).
-func memoryTableRow(m ScoredMemory) string {
-	title := m.Content
-	if len(title) > 50 {
-		title = title[:47] + "..."
+// memoryTableRows builds the data rows for the ForPrompt compact table.
+func memoryTableRows(results []ScoredMemory) []string {
+	rows := make([]string, 0, maxInjectedMemories)
+	for _, m := range results {
+		if len(rows) >= maxInjectedMemories {
+			break
+		}
+		title := m.Content
+		if len(title) > 50 {
+			title = title[:47] + "..."
+		}
+		age := formatAge(m.CreatedAt)
+		if isStaleMemory(m.CreatedAt) && !m.Pinned {
+			age += " ⚠"
+		}
+		rows = append(rows, fmt.Sprintf("| %d | %s | %s | %s | ~%d |",
+			m.ID, m.Type, title, age, estimateTokens(m.Content)))
 	}
-	tokens := estimateTokens(m.Content)
-	age := memoryAgeDays(m.CreatedAt)
-	ageCell := fmt.Sprintf("%dd", age)
-	if age > 7 {
-		ageCell += " ⚠"
-	}
-	return fmt.Sprintf("| %d | %s | %s | ~%d | %s |", m.ID, m.Type, title, tokens, ageCell)
+	return rows
 }
 
-// memoryAgeDays returns the age of a memory in whole days from its CreatedAt
-// timestamp. Accepts SQLite datetime format ("2006-01-02 15:04:05") and RFC3339.
-// Returns 0 on parse failure.
-func memoryAgeDays(createdAt string) int {
-	formats := []string{"2006-01-02 15:04:05", time.RFC3339}
-	for _, f := range formats {
-		t, err := time.Parse(f, createdAt)
-		if err == nil {
-			days := int(time.Since(t).Hours() / 24)
-			if days < 0 {
-				return 0
-			}
-			return days
+// parseCreatedAt parses a SQLite datetime string in "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD" format.
+func parseCreatedAt(createdAt string) (time.Time, error) {
+	t, err := time.Parse("2006-01-02 15:04:05", createdAt)
+	if err != nil {
+		t, err = time.Parse("2006-01-02", createdAt)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse created_at %q: %w", createdAt, err)
 		}
 	}
-	return 0
+	return t, nil
+}
+
+// isStaleMemory returns true if the memory was created more than 7 days ago.
+func isStaleMemory(createdAt string) bool {
+	if createdAt == "" {
+		return false
+	}
+	t, err := parseCreatedAt(createdAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) > 7*24*time.Hour
 }
 
 // estimateTokens returns an approximate token count for text (~4 chars/token).
@@ -947,14 +1029,27 @@ func estimateTokens(text string) int {
 }
 
 // formatAge returns a human-readable age string from a datetime string.
+// created_at is in "YYYY-MM-DD HH:MM:SS" format from SQLite datetime('now').
+// Returns "<1m" for sub-minute, "Xm" for minutes, "Xh" for hours, "Xd" for days.
 func formatAge(createdAt string) string {
-	// Use SQL to calculate — but since we have the string, do a simple parse.
-	// created_at is in "YYYY-MM-DD HH:MM:SS" format from SQLite datetime('now').
-	// For simplicity, return the raw date. A production version would calculate days.
-	if len(createdAt) >= 10 {
-		return createdAt[:10]
+	if createdAt == "" {
+		return ""
 	}
-	return createdAt
+	t, err := parseCreatedAt(createdAt)
+	if err != nil {
+		return createdAt
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // Consolidate deduplicates and prunes the memory store.

@@ -875,25 +875,42 @@ func TestEstimateTokens_EdgeCases(t *testing.T) {
 }
 
 func TestFormatAge_EdgeCases(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"full datetime", "2025-01-15 10:30:00", "2025-01-15"},
-		{"date only", "2025-01-15", "2025-01-15"},
-		{"short string", "2025", "2025"},
-		{"empty", "", ""},
-		{"exactly 10 chars", "2025-01-15", "2025-01-15"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := formatAge(tt.input)
-			if got != tt.want {
-				t.Errorf("formatAge(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
+	// formatAge now returns human-readable durations, not raw date strings.
+	// Parseable timestamps → "Xd"/"Xh"/"Xm" format.
+	// Unparseable strings → passed through unchanged.
+	// Empty string → empty string.
+
+	t.Run("full datetime returns days", func(t *testing.T) {
+		got := formatAge("2025-01-15 10:30:00")
+		if !strings.Contains(got, "d") {
+			t.Errorf("formatAge(full datetime) = %q, want days format like '440d'", got)
+		}
+	})
+	t.Run("date only returns days", func(t *testing.T) {
+		got := formatAge("2025-01-15")
+		if !strings.Contains(got, "d") {
+			t.Errorf("formatAge(date only) = %q, want days format like '440d'", got)
+		}
+	})
+	t.Run("short unparseable returns raw", func(t *testing.T) {
+		got := formatAge("2025")
+		if got != "2025" {
+			t.Errorf("formatAge(unparseable) = %q, want raw passthrough %q", got, "2025")
+		}
+	})
+	t.Run("empty returns empty", func(t *testing.T) {
+		got := formatAge("")
+		if got != "" {
+			t.Errorf("formatAge('') = %q, want empty string", got)
+		}
+	})
+	t.Run("recent datetime returns hours or minutes", func(t *testing.T) {
+		twoHoursAgo := time.Now().UTC().Add(-2 * time.Hour).Format("2006-01-02 15:04:05")
+		got := formatAge(twoHoursAgo)
+		if !strings.Contains(got, "h") {
+			t.Errorf("formatAge(2h ago) = %q, want hours format like '2h'", got)
+		}
+	})
 }
 
 func TestSearch_EmptyQuery(t *testing.T) {
@@ -2645,65 +2662,299 @@ func TestGetRejectionsAfterMigration(t *testing.T) {
 	}
 }
 
-func TestForPromptStaleness(t *testing.T) {
+func TestDumpAll(t *testing.T) {
 	db := setupTestDB(t)
 	store := NewStore(db)
 	ctx := context.Background()
 
-	// Insert a recent memory (2 days old) — should NOT get warning marker
-	_, err := db.ExecContext(ctx,
-		`INSERT INTO memories (content, type, tags, source, confidence, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"stale_kw_test recent golang pattern for testing", "pattern", `[]`, "self_report", 0.9,
-		time.Now().AddDate(0, 0, -2).Format("2006-01-02 15:04:05"),
-	)
+	// Test 1: Empty table should return nil slice
+	results, err := store.DumpAll(ctx)
 	if err != nil {
-		t.Fatalf("insert recent: %v", err)
+		t.Fatalf("DumpAll on empty table: %v", err)
+	}
+	if len(results) > 0 {
+		t.Errorf("expected nil slice on empty table, got %d results", len(results))
 	}
 
-	// Insert a stale memory (10 days old) — should get warning marker
-	_, err = db.ExecContext(ctx,
-		`INSERT INTO memories (content, type, tags, source, confidence, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"stale_kw_test old golang gotcha from long ago", "gotcha", `[]`, "self_report", 0.9,
-		time.Now().AddDate(0, 0, -10).Format("2006-01-02 15:04:05"),
-	)
+	// Test 2: Insert memories with different projects
+	store.SetProject("project-a")
+	id1, err := store.Insert(ctx, InsertParams{
+		Content: "memory for project A", Type: "lesson", Confidence: 0.9,
+	})
 	if err != nil {
-		t.Fatalf("insert stale: %v", err)
+		t.Fatalf("insert project A memory: %v", err)
 	}
 
-	result, err := ForPrompt(ctx, store, nil, "stale_kw_test golang", 500)
+	id2, err := store.Insert(ctx, InsertParams{
+		Content: "another for project A", Type: "gotcha", Confidence: 0.85,
+	})
 	if err != nil {
-		t.Fatalf("ForPrompt: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result")
+		t.Fatalf("insert second project A memory: %v", err)
 	}
 
-	// Age column must appear in the table header
-	if !strings.Contains(result, "Age") {
-		t.Errorf("expected Age column in ForPrompt output:\n%s", result)
+	store.SetProject("project-b")
+	id3, err := store.Insert(ctx, InsertParams{
+		Content: "memory for project B", Type: "decision", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert project B memory: %v", err)
 	}
 
-	// Stale memory (>7 days) must have a warning marker
-	if !strings.Contains(result, "⚠") {
-		t.Errorf("expected warning marker (⚠) for stale memory in ForPrompt output:\n%s", result)
+	// Test 3: DumpAll with project-a scope should return only project-a memories
+	store.SetProject("project-a")
+	results, err = store.DumpAll(ctx)
+	if err != nil {
+		t.Fatalf("DumpAll with project-a: %v", err)
 	}
-
-	// Recent memory (≤7 days) row must NOT contain the warning marker
-	lines := strings.Split(result, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "recent") && strings.Contains(line, "⚠") {
-			t.Errorf("recent memory should not have warning marker, got line: %s", line)
+	if len(results) != 2 {
+		t.Errorf("expected 2 memories for project-a, got %d", len(results))
+	}
+	for _, m := range results {
+		if m.Content != "memory for project A" && m.Content != "another for project A" {
+			t.Errorf("unexpected content for project-a: %q", m.Content)
 		}
 	}
+	if results[0].ID != id1 && results[0].ID != id2 {
+		t.Errorf("unexpected ID in results")
+	}
 
-	// Zero memories → empty string
-	empty, err := ForPrompt(ctx, store, nil, "xyz_no_match_at_all_abc123", 500)
+	// Test 4: DumpAll with project-b scope should return only project-b memories
+	store.SetProject("project-b")
+	results, err = store.DumpAll(ctx)
 	if err != nil {
-		t.Fatalf("ForPrompt empty: %v", err)
+		t.Fatalf("DumpAll with project-b: %v", err)
 	}
-	if empty != "" {
-		t.Errorf("expected empty string for no results, got: %q", empty)
+	if len(results) != 1 {
+		t.Errorf("expected 1 memory for project-b, got %d", len(results))
 	}
+	if results[0].ID != id3 {
+		t.Errorf("expected ID %d, got %d", id3, results[0].ID)
+	}
+
+	// Test 5: DumpAll with empty project scope should return all memories
+	store.SetProject("")
+	results, err = store.DumpAll(ctx)
+	if err != nil {
+		t.Fatalf("DumpAll with empty project: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 memories with empty project scope, got %d", len(results))
+	}
+}
+
+func TestMergeMemories(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Test 1: Insert multiple memories
+	store.SetProject("test-project")
+	id1, err := store.Insert(ctx, InsertParams{
+		Content: "memory 1 with long content for testing", Type: "lesson", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert memory 1: %v", err)
+	}
+
+	id2, err := store.Insert(ctx, InsertParams{
+		Content: "memory 2 with lower confidence value", Type: "gotcha", Confidence: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("insert memory 2: %v", err)
+	}
+
+	id3, err := store.Insert(ctx, InsertParams{
+		Content: "memory 3 to keep for testing merge", Type: "decision", Confidence: 0.95,
+	})
+	if err != nil {
+		t.Fatalf("insert memory 3: %v", err)
+	}
+
+	// Test 2: Verify all 3 memories exist
+	all, err := store.List(ctx, ListOpts{Limit: 100})
+	if err != nil {
+		t.Fatalf("list before merge: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("expected 3 memories before merge, got %d", len(all))
+	}
+
+	// Test 3: Merge memories - keep id3, delete id1 and id2
+	err = store.MergeMemories(ctx, id3, []int64{id1, id2})
+	if err != nil {
+		t.Fatalf("MergeMemories: %v", err)
+	}
+
+	// Test 4: Verify id1 and id2 are deleted
+	all, err = store.List(ctx, ListOpts{Limit: 100})
+	if err != nil {
+		t.Fatalf("list after merge: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 memory after merge, got %d", len(all))
+	}
+	if all[0].ID != id3 {
+		t.Errorf("expected kept memory ID %d, got %d", id3, all[0].ID)
+	}
+
+	// Test 5: MergeMemories with non-existent keepID should error
+	err = store.MergeMemories(ctx, 99999, []int64{})
+	if err == nil {
+		t.Error("expected error for non-existent keepID, got nil")
+	}
+
+	// Test 6: MergeMemories with empty deleteIDs should work (just keep the memory)
+	_, err = store.Insert(ctx, InsertParams{
+		Content: "memory 4 with longer content for validation", Type: "lesson", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert memory 4: %v", err)
+	}
+
+	err = store.MergeMemories(ctx, id3, []int64{})
+	if err != nil {
+		t.Fatalf("MergeMemories with empty deleteIDs: %v", err)
+	}
+
+	// Verify both memories still exist
+	all, err = store.List(ctx, ListOpts{Limit: 100})
+	if err != nil {
+		t.Fatalf("list after merge with empty deleteIDs: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 memories after merge with empty deleteIDs, got %d", len(all))
+	}
+}
+
+// TestForPromptStaleness verifies Age column, stale markers, formatAge, and edge cases.
+func TestForPromptStaleness(t *testing.T) {
+	ctx := context.Background()
+
+	// formatAge parses timestamps as UTC (matching SQLite's datetime('now') output),
+	// so test inputs must be formatted in UTC as well.
+
+	// --- formatAge returns human-readable durations ---
+	t.Run("formatAge_sub_minute", func(t *testing.T) {
+		justNow := time.Now().UTC().Add(-10 * time.Second).Format("2006-01-02 15:04:05")
+		got := formatAge(justNow)
+		if got != "<1m" {
+			t.Errorf("expected '<1m' for sub-minute age, got %q", got)
+		}
+	})
+
+	t.Run("formatAge_minutes", func(t *testing.T) {
+		recent := time.Now().UTC().Add(-45 * time.Minute).Format("2006-01-02 15:04:05")
+		got := formatAge(recent)
+		if !strings.Contains(got, "m") || strings.Contains(got, "d") || got == "<1m" {
+			t.Errorf("expected minutes format like '45m', got %q", got)
+		}
+	})
+
+	t.Run("formatAge_hours", func(t *testing.T) {
+		threeHoursAgo := time.Now().UTC().Add(-3 * time.Hour).Format("2006-01-02 15:04:05")
+		got := formatAge(threeHoursAgo)
+		if !strings.Contains(got, "h") {
+			t.Errorf("expected hours format like '3h', got %q", got)
+		}
+	})
+
+	t.Run("formatAge_days", func(t *testing.T) {
+		fiveDaysAgo := time.Now().UTC().Add(-5 * 24 * time.Hour).Format("2006-01-02 15:04:05")
+		got := formatAge(fiveDaysAgo)
+		if !strings.Contains(got, "d") {
+			t.Errorf("expected days format like '5d', got %q", got)
+		}
+	})
+
+	// --- zero memories returns empty string ---
+	t.Run("zero_memories", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+		result, err := ForPrompt(ctx, store, nil, "no match whatsoever xyz789qrs", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "" {
+			t.Errorf("expected empty string for zero memories, got %q", result)
+		}
+	})
+
+	// --- Age column and stale marker for >7d memories ---
+	t.Run("age_column_and_stale_marker", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		// Insert stale memory (>7 days old) via direct SQL to control created_at.
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, tags, source, confidence, created_at)
+			 VALUES (?, ?, ?, ?, ?, datetime('now', '-8 days'))`,
+			"ruff pyright python linting stale memory", "gotcha", `[]`, "self_report", 0.9,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := ForPrompt(ctx, store, nil, "ruff pyright python linting", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result, "Age") {
+			t.Errorf("expected Age column in table header, got:\n%s", result)
+		}
+		if !strings.Contains(result, "⚠") {
+			t.Errorf("expected stale warning marker for >7d memory, got:\n%s", result)
+		}
+	})
+
+	// --- all fresh → no stale markers ---
+	t.Run("all_fresh_no_markers", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, tags, source, confidence, created_at)
+			 VALUES (?, ?, ?, ?, ?, datetime('now', '-2 days'))`,
+			"ruff pyright python linting fresh only", "gotcha", `[]`, "self_report", 0.9,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := ForPrompt(ctx, store, nil, "ruff pyright python linting fresh", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result, "Age") {
+			t.Errorf("expected Age column in table header, got:\n%s", result)
+		}
+		if strings.Contains(result, "⚠") {
+			t.Errorf("expected no stale warning for fresh memory, got:\n%s", result)
+		}
+	})
+
+	// --- pinned memory shows age but no warning even if stale ---
+	t.Run("pinned_no_warning", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, tags, source, confidence, pinned, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-10 days'))`,
+			"ruff pyright python linting pinned stale old", "pattern", `[]`, "self_report", 0.9, 1,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := ForPrompt(ctx, store, nil, "ruff pyright python linting pinned", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result, "Age") {
+			t.Errorf("expected Age column for pinned memory, got:\n%s", result)
+		}
+		if strings.Contains(result, "⚠") {
+			t.Errorf("expected no stale warning for pinned memory, got:\n%s", result)
+		}
+	})
 }

@@ -439,6 +439,20 @@ func (m *mockBatchSpawner) SpawnCount() int {
 	return len(m.spawns)
 }
 
+// SpawnCountExcludingModel returns the number of spawns that did NOT use the given model.
+// Used in tests to filter out background dream (haiku) spawns from diagnostic spawn assertions.
+func (m *mockBatchSpawner) SpawnCountExcludingModel(model string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, s := range m.spawns {
+		if s.model != model {
+			n++
+		}
+	}
+	return n
+}
+
 // mockAcceptanceRunner is a test double for AcceptanceRunner.
 type mockAcceptanceRunner struct {
 	mu     sync.Mutex
@@ -10514,8 +10528,10 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 		}
 
 		// No diagnostic agent should have been spawned.
-		if spawnMock.SpawnCount() > 0 {
-			t.Errorf("expected no diagnostic agent spawn on pass, got %d spawn(s)", spawnMock.SpawnCount())
+		// Filter out haiku (dream) spawns — completeEpicClose always triggers a dream.
+		if spawnMock.SpawnCountExcludingModel("haiku") > 0 {
+			t.Errorf("expected no diagnostic agent spawn on pass, got %d non-haiku spawn(s)",
+				spawnMock.SpawnCountExcludingModel("haiku"))
 		}
 	})
 
