@@ -150,42 +150,77 @@ func TestDreamTriggersAfterNBeads(t *testing.T) {
 	})
 }
 
-// TestDreamTriggerCompleteEpicClose verifies that completeEpicClose always
-// spawns a dream agent, independent of the beadsSinceDream counter.
+// TestDreamTriggerCompleteEpicClose verifies that completeEpicClose spawns a
+// dream agent when DreamInterval>0, and respects DreamInterval=0 (disabled).
 func TestDreamTriggerCompleteEpicClose(t *testing.T) {
-	d, beadSource, _ := newDreamTestDispatcher(t, 100) // high — should not interfere
-	ctx := context.Background()
-	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+	t.Run("triggers dream when DreamInterval>0", func(t *testing.T) {
+		d, beadSource, _ := newDreamTestDispatcher(t, 100) // high — should not interfere
+		ctx := context.Background()
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
 
-	var mu sync.Mutex
-	var dreamCalls int
-	d.dreamExecuteFn = func(_ context.Context, _ []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+		var mu sync.Mutex
+		var dreamCalls int
+		d.dreamExecuteFn = func(_ context.Context, _ []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+			mu.Lock()
+			dreamCalls++
+			mu.Unlock()
+			return nil
+		}
+
+		beadSource.mu.Lock()
+		beadSource.shown["epic-dream-1"] = &protocol.BeadDetail{ID: "epic-dream-1"}
+		beadSource.mu.Unlock()
+
+		d.completeEpicClose(ctx, "epic-dream-1", "worker-1", "All children completed", "main")
+
+		waitFor(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return dreamCalls > 0
+		}, 2*time.Second)
+
 		mu.Lock()
-		dreamCalls++
+		calls := dreamCalls
 		mu.Unlock()
-		return nil
-	}
+		if calls == 0 {
+			t.Error("expected dream to be triggered by completeEpicClose, got 0 calls")
+		}
+	})
 
-	beadSource.mu.Lock()
-	beadSource.shown["epic-dream-1"] = &protocol.BeadDetail{ID: "epic-dream-1"}
-	beadSource.mu.Unlock()
+	t.Run("DreamInterval=0 skips dream on epic close", func(t *testing.T) {
+		d, beadSource, _ := newDreamTestDispatcher(t, 0)
+		ctx := context.Background()
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
 
-	d.completeEpicClose(ctx, "epic-dream-1", "worker-1", "All children completed", "main")
+		var mu sync.Mutex
+		var dreamCalls int
+		d.dreamExecuteFn = func(_ context.Context, _ []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+			mu.Lock()
+			dreamCalls++
+			mu.Unlock()
+			return nil
+		}
 
-	waitFor(t, func() bool {
+		beadSource.mu.Lock()
+		beadSource.shown["epic-dream-2"] = &protocol.BeadDetail{ID: "epic-dream-2"}
+		beadSource.mu.Unlock()
+
+		d.completeEpicClose(ctx, "epic-dream-2", "worker-2", "All children completed", "main")
+
+		// Give any async goroutines a moment to run.
+		time.Sleep(50 * time.Millisecond)
+
 		mu.Lock()
-		defer mu.Unlock()
-		return dreamCalls > 0
-	}, 2*time.Second)
-
-	mu.Lock()
-	calls := dreamCalls
-	mu.Unlock()
-	if calls == 0 {
-		t.Error("expected dream to be triggered by completeEpicClose, got 0 calls")
-	}
+		calls := dreamCalls
+		mu.Unlock()
+		if calls != 0 {
+			t.Errorf("dreamCalls = %d, want 0 when DreamInterval=0", calls)
+		}
+	})
 }
 
 // TestHandleDreamResult verifies that handleDreamResult parses the dream agent's

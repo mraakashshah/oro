@@ -1441,8 +1441,12 @@ func (d *Dispatcher) maybeTriggerDream(ctx context.Context) {
 }
 
 // triggerDream spawns a dream memory-consolidation agent and handles the result
-// asynchronously. Errors from the agent are logged but do not propagate.
+// asynchronously. DreamInterval<=0 disables dreaming entirely (no-op).
+// Errors from the agent are logged but do not propagate.
 func (d *Dispatcher) triggerDream(ctx context.Context) {
+	if d.cfg.DreamInterval <= 0 {
+		return
+	}
 	resultCh := d.ops.Dream(ctx, ops.DreamOpts{})
 	d.safeGo(func() { d.handleDreamResult(ctx, resultCh) })
 }
