@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -221,6 +222,51 @@ func TestDreamTriggerCompleteEpicClose(t *testing.T) {
 			t.Errorf("dreamCalls = %d, want 0 when DreamInterval=0", calls)
 		}
 	})
+}
+
+// TestDreamPassesMemories verifies that triggerDream serializes memories from
+// the store into DreamOpts.Memories so the dream agent sees actual content.
+func TestDreamPassesMemories(t *testing.T) {
+	d, _, spawnMock := newDreamTestDispatcher(t, 1)
+	ctx := context.Background()
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	// Seed the memory store with a test memory.
+	_, err := d.memories.Insert(ctx, memory.InsertParams{
+		Content:    "always run tests before committing code changes",
+		Type:       "lesson",
+		Tags:       []string{"testing"},
+		Source:     "self_report",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Insert memory: %v", err)
+	}
+
+	// DreamInterval=1 means first mergeAndComplete triggers a dream.
+	d.mergeAndComplete(ctx, "bead-mem", "worker-x", "/tmp/wt-mem", "agent/bead-mem", "", "")
+
+	// Wait for the dream spawn to happen.
+	waitFor(t, func() bool {
+		return spawnMock.SpawnCount() > 0
+	}, 2*time.Second)
+
+	// Verify the spawned prompt contains our memory content.
+	spawnMock.mu.Lock()
+	defer spawnMock.mu.Unlock()
+
+	found := false
+	for _, call := range spawnMock.spawns {
+		if strings.Contains(call.prompt, "always run tests before committing") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("dream agent prompt did not contain memory content; DreamOpts.Memories was empty")
+	}
 }
 
 // TestHandleDreamResult verifies that handleDreamResult parses the dream agent's

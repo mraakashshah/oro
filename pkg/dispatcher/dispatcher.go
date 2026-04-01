@@ -1447,8 +1447,31 @@ func (d *Dispatcher) triggerDream(ctx context.Context) {
 	if d.cfg.DreamInterval <= 0 {
 		return
 	}
-	resultCh := d.ops.Dream(ctx, ops.DreamOpts{})
+	memories := d.dumpMemoriesForDream(ctx)
+	resultCh := d.ops.Dream(ctx, ops.DreamOpts{Memories: memories})
 	d.safeGo(func() { d.handleDreamResult(ctx, resultCh) })
+}
+
+// dumpMemoriesForDream serializes all memories as a text block for the dream agent.
+// Returns empty string on error or when no memory store is configured.
+func (d *Dispatcher) dumpMemoriesForDream(ctx context.Context) string {
+	if d.memories == nil {
+		return ""
+	}
+	mems, err := d.memories.DumpAll(ctx)
+	if err != nil {
+		_ = d.logEvent(ctx, "dream_dump_failed", "dispatcher", "", "",
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return ""
+	}
+	if len(mems) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, m := range mems {
+		b.WriteString(fmt.Sprintf("- [%d] (%s) %s\n", m.ID, m.Type, m.Content))
+	}
+	return b.String()
 }
 
 // handleDreamResult waits for the dream agent result, parses any dream actions
