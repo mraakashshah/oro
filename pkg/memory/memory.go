@@ -778,6 +778,85 @@ func (s *Store) UpdateConfidence(ctx context.Context, id int64, confidence float
 	return nil
 }
 
+// DumpAll returns all memories for the current project. If the table is empty,
+// returns nil. Respects the project scope set via SetProject().
+//
+//oro:testonly
+func (s *Store) DumpAll(ctx context.Context) ([]protocol.Memory, error) {
+	var whereClause string
+	var args []any
+	if s.project != "" {
+		whereClause = "WHERE project = ?"
+		args = append(args, s.project)
+	}
+
+	q := fmt.Sprintf( //nolint:gosec // G201 false positive: whereClause is safe (built from constants or project scope)
+		`
+		SELECT id, content, type, tags, source,
+		       COALESCE(bead_id, '') AS bead_id,
+		       COALESCE(worker_id, '') AS worker_id,
+		       confidence, created_at, embedding,
+		       COALESCE(files_read, '[]') AS files_read,
+		       COALESCE(files_modified, '[]') AS files_modified,
+		       COALESCE(pinned, 0) AS pinned
+		FROM memories %s
+		ORDER BY created_at DESC, id DESC
+	`, whereClause)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("memory dump all: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []protocol.Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory dump all rows: %w", err)
+	}
+	return results, nil
+}
+
+// MergeMemories keeps the memory with keepID and deletes memories with the given deleteIDs.
+// Returns an error if keepID doesn't exist.
+//
+//oro:testonly
+func (s *Store) MergeMemories(ctx context.Context, keepID int64, deleteIDs []int64) error {
+	// Verify keepID exists
+	var exists int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM memories WHERE id = ?`,
+		keepID,
+	).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("memory merge: keep memory ID %d not found", keepID)
+		}
+		return fmt.Errorf("memory merge check keep: %w", err)
+	}
+
+	// Delete the specified memories
+	if len(deleteIDs) > 0 {
+		placeholders := make([]string, len(deleteIDs))
+		args := make([]any, len(deleteIDs))
+		for i, id := range deleteIDs {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		q := fmt.Sprintf(`DELETE FROM memories WHERE id IN (%s)`, strings.Join(placeholders, ",")) //nolint:gosec // G201 false positive: placeholders are hardcoded "?" and args are parameterized
+		if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("memory merge delete: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // markerRe matches [MEMORY] marker lines.
 // Format: [MEMORY] type=<type>[ tags=<tag1,tag2>]: <content>
 var markerRe = regexp.MustCompile(`^\[MEMORY\]\s+type=(\w+)(?:\s+tags=([^\s:]+))?:\s+(.+)$`)

@@ -2644,3 +2644,167 @@ func TestGetRejectionsAfterMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestDumpAll(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Test 1: Empty table should return nil slice
+	results, err := store.DumpAll(ctx)
+	if err != nil {
+		t.Fatalf("DumpAll on empty table: %v", err)
+	}
+	if len(results) > 0 {
+		t.Errorf("expected nil slice on empty table, got %d results", len(results))
+	}
+
+	// Test 2: Insert memories with different projects
+	store.SetProject("project-a")
+	id1, err := store.Insert(ctx, InsertParams{
+		Content: "memory for project A", Type: "lesson", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert project A memory: %v", err)
+	}
+
+	id2, err := store.Insert(ctx, InsertParams{
+		Content: "another for project A", Type: "gotcha", Confidence: 0.85,
+	})
+	if err != nil {
+		t.Fatalf("insert second project A memory: %v", err)
+	}
+
+	store.SetProject("project-b")
+	id3, err := store.Insert(ctx, InsertParams{
+		Content: "memory for project B", Type: "decision", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert project B memory: %v", err)
+	}
+
+	// Test 3: DumpAll with project-a scope should return only project-a memories
+	store.SetProject("project-a")
+	results, err = store.DumpAll(ctx)
+	if err != nil {
+		t.Fatalf("DumpAll with project-a: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 memories for project-a, got %d", len(results))
+	}
+	for _, m := range results {
+		if m.Content != "memory for project A" && m.Content != "another for project A" {
+			t.Errorf("unexpected content for project-a: %q", m.Content)
+		}
+	}
+	if results[0].ID != id1 && results[0].ID != id2 {
+		t.Errorf("unexpected ID in results")
+	}
+
+	// Test 4: DumpAll with project-b scope should return only project-b memories
+	store.SetProject("project-b")
+	results, err = store.DumpAll(ctx)
+	if err != nil {
+		t.Fatalf("DumpAll with project-b: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 memory for project-b, got %d", len(results))
+	}
+	if results[0].ID != id3 {
+		t.Errorf("expected ID %d, got %d", id3, results[0].ID)
+	}
+
+	// Test 5: DumpAll with empty project scope should return all memories
+	store.SetProject("")
+	results, err = store.DumpAll(ctx)
+	if err != nil {
+		t.Fatalf("DumpAll with empty project: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 memories with empty project scope, got %d", len(results))
+	}
+}
+
+func TestMergeMemories(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Test 1: Insert multiple memories
+	store.SetProject("test-project")
+	id1, err := store.Insert(ctx, InsertParams{
+		Content: "memory 1 with long content for testing", Type: "lesson", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert memory 1: %v", err)
+	}
+
+	id2, err := store.Insert(ctx, InsertParams{
+		Content: "memory 2 with lower confidence value", Type: "gotcha", Confidence: 0.7,
+	})
+	if err != nil {
+		t.Fatalf("insert memory 2: %v", err)
+	}
+
+	id3, err := store.Insert(ctx, InsertParams{
+		Content: "memory 3 to keep for testing merge", Type: "decision", Confidence: 0.95,
+	})
+	if err != nil {
+		t.Fatalf("insert memory 3: %v", err)
+	}
+
+	// Test 2: Verify all 3 memories exist
+	all, err := store.List(ctx, ListOpts{Limit: 100})
+	if err != nil {
+		t.Fatalf("list before merge: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("expected 3 memories before merge, got %d", len(all))
+	}
+
+	// Test 3: Merge memories - keep id3, delete id1 and id2
+	err = store.MergeMemories(ctx, id3, []int64{id1, id2})
+	if err != nil {
+		t.Fatalf("MergeMemories: %v", err)
+	}
+
+	// Test 4: Verify id1 and id2 are deleted
+	all, err = store.List(ctx, ListOpts{Limit: 100})
+	if err != nil {
+		t.Fatalf("list after merge: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 memory after merge, got %d", len(all))
+	}
+	if all[0].ID != id3 {
+		t.Errorf("expected kept memory ID %d, got %d", id3, all[0].ID)
+	}
+
+	// Test 5: MergeMemories with non-existent keepID should error
+	err = store.MergeMemories(ctx, 99999, []int64{})
+	if err == nil {
+		t.Error("expected error for non-existent keepID, got nil")
+	}
+
+	// Test 6: MergeMemories with empty deleteIDs should work (just keep the memory)
+	_, err = store.Insert(ctx, InsertParams{
+		Content: "memory 4 with longer content for validation", Type: "lesson", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert memory 4: %v", err)
+	}
+
+	err = store.MergeMemories(ctx, id3, []int64{})
+	if err != nil {
+		t.Fatalf("MergeMemories with empty deleteIDs: %v", err)
+	}
+
+	// Verify both memories still exist
+	all, err = store.List(ctx, ListOpts{Limit: 100})
+	if err != nil {
+		t.Fatalf("list after merge with empty deleteIDs: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 memories after merge with empty deleteIDs, got %d", len(all))
+	}
+}
