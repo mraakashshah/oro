@@ -1,5 +1,29 @@
 # Decisions and Discoveries
 
+## 2026-04-01: Epic management has 6 failure modes — design doc written
+**Tags:** #dispatcher #epic #bugs #architecture
+**Context:** During a live swarm session, observed: workers idle with work available (type promotion confused dispatcher), `bead_closed_externally` spam, zombie bead reassignment, ff-merge infinite retry loops, false STUCK_WORKER escalations for missing epic branches. Deep-explored all epic code paths in dispatcher.go.
+**Discovery:** 4 root cause patterns: (1) state captured once at assignment, never revalidated (isEpicDecomp, bead Type), (2) error paths missing cleanup (assignment DB not cleared on worker delete), (3) no escalation on ff-merge failure (epic stays open forever), (4) mergingBeads guard race between check cycles. Design doc: `docs/plans/2026-04-01-epic-management-fixes-design.md`.
+**Implications:** 6 independent fixes needed, all in dispatcher.go. Fix before adding new epics to the swarm.
+
+## 2026-04-01: Memory dreaming — LLM-powered cross-session memory synthesis
+**Tags:** #memory #architecture #decisions #claude-code
+**Context:** Analyzed Claude Code's memory system (auto-extraction, dreaming/consolidation, staleness awareness). Oro had 336 memories in 4 weeks but no cross-session synthesis — if 5 workers independently discover the same gotcha, that's 5 competing memories. Manual `oro memories consolidate` is mechanical pruning only.
+**Decision:** Added two patterns: (1) Dreaming — ops agent reads entire memories table every 10 completed beads or on epic close, synthesizes cross-memory patterns, resolves contradictions, prunes obsolete. Full create/merge/delete power via structured [DELETE]/[MERGE]/[CREATE] actions. Model: haiku. (2) Staleness warnings — ForPrompt annotates memories >7 days with age marker, worker prompt warns to verify before trusting. Merged in epic oro-kpwx (commit aeaa362).
+**Implications:** Memory quality improves automatically over time. Workers get warned about stale knowledge. Dreaming runs as an ops agent (existing spawner pattern) — no new infrastructure.
+
+## 2026-04-01: Epic QG check before ff-merge to main
+**Tags:** #dispatcher #quality #epic #merge
+**Context:** Workers merged code to epic branches with per-bead QG, but the final epic→main ff-merge had NO quality gate. Lint issues (staticcheck) landed on main unchecked. Observed during swarm session when `fmt.Fprintf` vs `WriteString(Sprintf)` broke CI after epic merge.
+**Decision:** Added `checkEpicQG` — creates temp worktree from epic branch, runs full QG, removes worktree. Called in `tryCloseEpic` before `completeEpicClose`. QG failure creates a fix bead (same pattern as per-bead QG failure). Merged in commit b7bdc1e.
+**Implications:** No code reaches main without passing QG. Adds ~2min to epic close (acceptable tradeoff).
+
+## 2026-04-01: Stealth mode epics should open PRs, not ff-merge
+**Tags:** #stealth #epic #pr #decisions
+**Context:** Stealth mode leaves zero footprint on the repo. But `completeEpicClose` ff-merges to local main silently — contradicts stealth's promise. A PR gives the human a review gate before code hits main.
+**Decision:** In stealth mode: rebase epic branch onto main (no conflicts), push to origin, `gh pr create`, fire and forget. Epic marked complete, human merges when ready. Non-stealth: existing ff-merge unchanged. In progress (oro-552k).
+**Implications:** Stealth mode gains a human review gate. Requires `gh` CLI installed. Non-stealth behavior unchanged.
+
 ## 2026-03-17: Dolt server persists across oro sessions — stop tests updated
 **Tags:** #dolt #testing #ci #architecture
 **Context:** Commit 38ffe1f removed dolt-stop from `runStopSequence` so dolt persists across sessions (standalone `bd` commands keep working). But 4 stop tests in `cmd_stop_test.go` were not updated and still expected `stopDoltFn` to be called, breaking CI. Additional CI failures: `startDoltServer` checked `LookPath("dolt")` before `isDoltServerRunning(port)` so adoption failed in CI (no dolt installed); UDS test spawners only accepted one connection but `pollForSocket` consumed it first; child processes in stop-all tests weren't reaped causing zombie timeouts.
