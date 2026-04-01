@@ -1469,7 +1469,7 @@ func (d *Dispatcher) dumpMemoriesForDream(ctx context.Context) string {
 	}
 	var b strings.Builder
 	for _, m := range mems {
-		b.WriteString(fmt.Sprintf("- [%d] (%s) %s\n", m.ID, m.Type, m.Content))
+		fmt.Fprintf(&b, "- [%d] (%s) %s\n", m.ID, m.Type, m.Content)
 	}
 	return b.String()
 }
