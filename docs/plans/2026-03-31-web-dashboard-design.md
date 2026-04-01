@@ -1,7 +1,7 @@
 # Web Dashboard Design — Replacing oro mg
 
 **Date:** 2026-03-31
-**Status:** Brainstormed — ready for adversarial review.
+**Status:** R1 FAIL (4 gaps fixed), ready for R2.
 
 ## Goal
 
@@ -129,7 +129,7 @@ The parade metaphor from oro mg — beads are a procession flowing through the p
 
 **Click a bead** → expands detail inline (AC, description, dependencies, worker info). Uses htmx to fetch `/fragments/detail/{id}` and swap below the card.
 
-**Data source:** `BeadSource.Ready()` + `BeadSource.InProgress()` for live beads. Dispatcher's `snapshotWorkers()` for worker assignments. Bead dependency graph for blocker hints.
+**Data source:** `BeadSource.Ready()` for Queued Up, `BeadSource.InProgress()` for Rolling. Stalled and Finished require new BeadSource methods (see "BeadSource Extensions" below). Dispatcher's `snapshotWorkers()` for worker assignments. Bead dependency graph for blocker hints.
 
 ### 2. Worker Grid (right sidebar, top)
 
@@ -172,7 +172,7 @@ Compact numbers panel:
 
 ## SSE Event Stream
 
-The dispatcher emits events via `logEvent()` (123+ call sites). The SSE handler maintains a channel per connected browser client. When `logEvent()` fires, it also pushes to all SSE channels.
+The dispatcher emits events via `logEvent()` (133 call sites) and `logEventLocked()` (7 call sites). The SSE handler maintains a channel per connected browser client. When either function fires, it also pushes to all SSE channels.
 
 **Implementation:** Add an `SSEBroadcaster` to the Dispatcher struct:
 ```go
@@ -180,9 +180,15 @@ type SSEBroadcaster struct {
     mu       sync.RWMutex
     clients  map[chan string]bool
 }
+
+func (b *SSEBroadcaster) Send(eventType, beadID, workerID string) // non-blocking, drops on full channel
+func (b *SSEBroadcaster) Subscribe() chan string                    // returns new client channel
+func (b *SSEBroadcaster) Unsubscribe(ch chan string)               // removes client on disconnect
 ```
 
-`logEvent()` calls `d.sseBroadcaster.Send(eventType, beadID, workerID)` after the SQL INSERT (paralleling the MetricsObserver pattern from the memory spec). Each SSE client receives a formatted event. The browser uses htmx SSE extension to trigger fragment re-fetches.
+Both `logEvent()` (line ~3617) and `logEventLocked()` (line ~3627) call `d.sseBroadcaster.Send()` after the SQL INSERT. SSEBroadcaster.Send() is non-blocking — if a client channel is full, the event is dropped for that client (prevents slow browsers from blocking the dispatcher). On write failure (broken pipe), the client is removed.
+
+SSEBroadcaster is initialized in `New()` even when WebEnabled=false — uses the same struct with zero clients, so Send() is a no-op (iterates empty map). No nil checks needed in the logEvent hot path.
 
 **SSE message format:**
 ```
@@ -203,14 +209,49 @@ Browser-side htmx triggers:
 
 ## Implementation
 
+### BeadSource Extensions
+
+The existing `BeadSource` interface has `Ready()` and `InProgress()` but no way to get blocked or closed beads. Add:
+
+```go
+// In pkg/dispatcher/dispatcher.go BeadSource interface:
+Blocked(ctx context.Context) ([]protocol.Bead, error)   // beads with unresolved blocking deps
+Closed(ctx context.Context, limit int) ([]protocol.Bead, error)  // recently closed beads
+```
+
+`CLIBeadSource` implements these by shelling out to `bd list --status=blocked --json` and `bd list --status=closed --json --limit N`.
+
+### Public Interface for pkg/web
+
+`pkg/web/` cannot access unexported Dispatcher fields. Define a public interface:
+
+```go
+// In pkg/web/server.go:
+type DashboardData interface {
+    Health() (dispatcher.SwarmHealth, error)
+    ReadyBeads(ctx context.Context) ([]protocol.Bead, error)
+    InProgressBeads(ctx context.Context) ([]protocol.Bead, error)
+    BlockedBeads(ctx context.Context) ([]protocol.Bead, error)
+    ClosedBeads(ctx context.Context, limit int) ([]protocol.Bead, error)
+    ShowBead(ctx context.Context, id string) (*protocol.BeadDetail, error)
+    RecentEvents(ctx context.Context, limit int) ([]Event, error)
+    SubscribeSSE() chan string
+    UnsubscribeSSE(ch chan string)
+}
+```
+
+The Dispatcher implements this interface. `pkg/web` handlers accept `DashboardData`, never touch Dispatcher internals directly.
+
 ### Dispatcher Changes
 
 **`pkg/dispatcher/dispatcher.go`:**
-- Add `SSEBroadcaster` field to Dispatcher struct
+- Add `SSEBroadcaster` field to Dispatcher struct, initialize in `New()` (even when web disabled — empty-clients no-op)
 - Add `WebAddr string`, `WebEnabled bool` to Config
-- In `Run()`: start HTTP server goroutine (same pattern as proposed metrics server — `safeGo`, shutdown in `shutdownWithTimeout()`)
-- In `logEvent()`: call `d.sseBroadcaster.Send()` after SQL INSERT
+- In `Run()`: if WebEnabled, start HTTP server goroutine via `safeGo`. Store `*http.Server` on Dispatcher struct. If bind fails, log `web_server_bind_failed` event and continue (non-fatal — dispatcher works without dashboard).
+- In `logEvent()` AND `logEventLocked()`: call `d.sseBroadcaster.Send()` after SQL INSERT
 - In `withDefaults()`: WebAddr defaults to `:4444`
+- In `shutdownWithTimeout()`: call `d.httpServer.Shutdown(ctx)` before `d.wg.Wait()` if httpServer is non-nil
+- Implement `DashboardData` interface methods (thin wrappers over existing BeadSource/health/events)
 
 ### New Package: `pkg/web/`
 
@@ -245,8 +286,8 @@ Browser-side htmx triggers:
 - Pass to Config
 
 ### Files Modified
-- `pkg/dispatcher/dispatcher.go` — SSEBroadcaster field, WebAddr/WebEnabled Config, Run() HTTP server, logEvent() SSE broadcast, withDefaults(), shutdownWithTimeout()
-- `cmd/oro/cmd_start.go` — --web and --web-addr flags, pass to buildDispatcher()
+- `pkg/dispatcher/dispatcher.go` — SSEBroadcaster field + init in New(), WebAddr/WebEnabled Config, Run() HTTP server via safeGo, *http.Server stored for shutdown, logEvent() AND logEventLocked() SSE broadcast, withDefaults() WebAddr default, shutdownWithTimeout() HTTP shutdown, DashboardData interface implementation, BeadSource interface extended with Blocked()/Closed()
+- `cmd/oro/cmd_start.go` — --web and --web-addr flags, pass WebAddr/WebEnabled to buildDispatcher() (line ~636-646)
 
 ### Files Created
 - `pkg/web/server.go` — HTTP handlers
