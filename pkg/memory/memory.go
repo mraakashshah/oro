@@ -995,17 +995,26 @@ func memoryTableRows(results []ScoredMemory) []string {
 	return rows
 }
 
+// parseCreatedAt parses a SQLite datetime string in "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD" format.
+func parseCreatedAt(createdAt string) (time.Time, error) {
+	t, err := time.Parse("2006-01-02 15:04:05", createdAt)
+	if err != nil {
+		t, err = time.Parse("2006-01-02", createdAt)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("parse created_at %q: %w", createdAt, err)
+		}
+	}
+	return t, nil
+}
+
 // isStaleMemory returns true if the memory was created more than 7 days ago.
 func isStaleMemory(createdAt string) bool {
 	if createdAt == "" {
 		return false
 	}
-	t, err := time.Parse("2006-01-02 15:04:05", createdAt)
+	t, err := parseCreatedAt(createdAt)
 	if err != nil {
-		t, err = time.Parse("2006-01-02", createdAt)
-		if err != nil {
-			return false
-		}
+		return false
 	}
 	return time.Since(t) > 7*24*time.Hour
 }
@@ -1021,20 +1030,19 @@ func estimateTokens(text string) int {
 
 // formatAge returns a human-readable age string from a datetime string.
 // created_at is in "YYYY-MM-DD HH:MM:SS" format from SQLite datetime('now').
-// Returns "Xm" for minutes, "Xh" for hours, "Xd" for days.
+// Returns "<1m" for sub-minute, "Xm" for minutes, "Xh" for hours, "Xd" for days.
 func formatAge(createdAt string) string {
 	if createdAt == "" {
 		return ""
 	}
-	t, err := time.Parse("2006-01-02 15:04:05", createdAt)
+	t, err := parseCreatedAt(createdAt)
 	if err != nil {
-		t, err = time.Parse("2006-01-02", createdAt)
-		if err != nil {
-			return createdAt
-		}
+		return createdAt
 	}
 	d := time.Since(t)
 	switch {
+	case d < time.Minute:
+		return "<1m"
 	case d < time.Hour:
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	case d < 24*time.Hour:

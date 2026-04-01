@@ -2832,10 +2832,18 @@ func TestForPromptStaleness(t *testing.T) {
 	// so test inputs must be formatted in UTC as well.
 
 	// --- formatAge returns human-readable durations ---
+	t.Run("formatAge_sub_minute", func(t *testing.T) {
+		justNow := time.Now().UTC().Add(-10 * time.Second).Format("2006-01-02 15:04:05")
+		got := formatAge(justNow)
+		if got != "<1m" {
+			t.Errorf("expected '<1m' for sub-minute age, got %q", got)
+		}
+	})
+
 	t.Run("formatAge_minutes", func(t *testing.T) {
 		recent := time.Now().UTC().Add(-45 * time.Minute).Format("2006-01-02 15:04:05")
 		got := formatAge(recent)
-		if !strings.Contains(got, "m") || strings.Contains(got, "d") {
+		if !strings.Contains(got, "m") || strings.Contains(got, "d") || got == "<1m" {
 			t.Errorf("expected minutes format like '45m', got %q", got)
 		}
 	})
