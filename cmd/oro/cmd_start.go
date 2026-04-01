@@ -590,9 +590,7 @@ func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTime
 	}
 	sockPath := paths.SocketPath
 	dbPath := paths.StateDBPath
-
-	// Migrate global DBs to per-project directory on first use.
-	// No-op when: no project set, project DB exists, or global DB missing.
+	// Migrate global DBs to per-project directory on first use (no-op if already migrated).
 	if project := readProjectNameCWD(); project != "" {
 		if err := migrateGlobalDBs(project); err != nil {
 			return nil, nil, fmt.Errorf("migrate global DBs: %w", err)
@@ -610,9 +608,8 @@ func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTime
 		return nil, nil, fmt.Errorf("get working dir: %w", err)
 	}
 
-	// Open code index eagerly (fast — just opens SQLite DB) so the
-	// dispatcher can serve queries on any previously-built index data.
-	// Build runs in the background to refresh the index without blocking startup.
+	// Open code index eagerly (fast — just opens SQLite DB) so the dispatcher
+	// can serve queries on previously-built data. Background build refreshes it.
 	var codeIdx dispatcher.CodeIndex
 	idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath)
 	if idxErr != nil {
@@ -643,6 +640,7 @@ func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTime
 		ReviewTimeout:   reviewTimeout,
 		WorkerProgram:   resolveWorkerProgramPath(repoRoot),
 		DefaultBranch:   baseBranch,
+		DreamInterval:   10,
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)

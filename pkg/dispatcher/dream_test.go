@@ -2,26 +2,70 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"oro/pkg/memory"
+	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
+
+// newDreamTestDispatcher creates a Dispatcher with a specific DreamInterval
+// set through the constructor path (Config → withDefaults → New) so that the
+// real defaulting logic is exercised.
+func newDreamTestDispatcher(t *testing.T, dreamInterval int) (*Dispatcher, *mockBeadSource, *mockBatchSpawner) {
+	t.Helper()
+	db := newTestDB(t)
+
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+
+	spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+	opsSpawner := ops.NewSpawner(spawnMock)
+
+	beadSrc := &mockBeadSource{
+		beads: []protocol.Bead{},
+		shown: make(map[string]*protocol.BeadDetail),
+	}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	cfg := Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		MaxWorkers:       5,
+		HeartbeatTimeout: 500 * time.Millisecond,
+		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  200 * time.Millisecond,
+		DreamInterval:    dreamInterval,
+	}
+
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	d.qgRunner = &mockQGRunner{passed: true}
+	d.escalationRetryInterval = 50 * time.Millisecond
+	return d, beadSrc, spawnMock
+}
 
 // TestDreamTriggersAfterNBeads verifies that beadsSinceDream increments with
 // each mergeAndComplete and that a dream is spawned when DreamInterval is reached.
 // It also verifies that DreamInterval=0 disables dreaming entirely.
 func TestDreamTriggersAfterNBeads(t *testing.T) {
 	t.Run("counter increments and resets at interval", func(t *testing.T) {
-		d, _, _, _, _, _ := newTestDispatcher(t)
+		d, _, _ := newDreamTestDispatcher(t, 3)
 		ctx := context.Background()
 		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
 			t.Fatalf("init schema: %v", err)
 		}
-		d.cfg.DreamInterval = 3
 
 		var mu sync.Mutex
 		var dreamCalls int
@@ -67,12 +111,18 @@ func TestDreamTriggersAfterNBeads(t *testing.T) {
 	})
 
 	t.Run("DreamInterval=0 never dreams", func(t *testing.T) {
-		d, _, _, _, _, _ := newTestDispatcher(t)
+		// DreamInterval=0 flows through Config → withDefaults → New,
+		// verifying that withDefaults preserves the 0 (disabled) value.
+		d, _, _ := newDreamTestDispatcher(t, 0)
 		ctx := context.Background()
 		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
 			t.Fatalf("init schema: %v", err)
 		}
-		d.cfg.DreamInterval = 0
+
+		// Verify withDefaults preserved DreamInterval=0.
+		if d.cfg.DreamInterval != 0 {
+			t.Fatalf("withDefaults changed DreamInterval=0 to %d", d.cfg.DreamInterval)
+		}
 
 		var mu sync.Mutex
 		var dreamCalls int
@@ -103,12 +153,11 @@ func TestDreamTriggersAfterNBeads(t *testing.T) {
 // TestDreamTriggerCompleteEpicClose verifies that completeEpicClose always
 // spawns a dream agent, independent of the beadsSinceDream counter.
 func TestDreamTriggerCompleteEpicClose(t *testing.T) {
-	d, beadSource, _, _, _, _ := newTestDispatcher(t)
+	d, beadSource, _ := newDreamTestDispatcher(t, 100) // high — should not interfere
 	ctx := context.Background()
 	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
-	d.cfg.DreamInterval = 100 // high — should not interfere
 
 	var mu sync.Mutex
 	var dreamCalls int
@@ -143,7 +192,7 @@ func TestDreamTriggerCompleteEpicClose(t *testing.T) {
 // output and calls the execute function with the extracted actions.
 func TestHandleDreamResult(t *testing.T) {
 	t.Run("calls executeActions with parsed actions", func(t *testing.T) {
-		d, _, _, _, _, _ := newTestDispatcher(t)
+		d, _, _ := newDreamTestDispatcher(t, 10)
 		ctx := context.Background()
 
 		var mu sync.Mutex
@@ -176,7 +225,7 @@ func TestHandleDreamResult(t *testing.T) {
 	})
 
 	t.Run("ops error logs and does not crash", func(t *testing.T) {
-		d, _, _, _, _, _ := newTestDispatcher(t)
+		d, _, _ := newDreamTestDispatcher(t, 10)
 		ctx := context.Background()
 
 		var mu sync.Mutex

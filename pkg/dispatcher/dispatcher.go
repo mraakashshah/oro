@@ -322,7 +322,8 @@ func (c *Config) withDefaults() Config {
 	}
 	out.ConsolidateAfterN = intDefault(out.ConsolidateAfterN, 5)
 	out.PaneContextThreshold = intDefault(out.PaneContextThreshold, 40)
-	out.DreamInterval = intDefault(out.DreamInterval, 10)
+	// DreamInterval is intentionally NOT defaulted here: 0 means "disabled"
+	// and must survive withDefaults. Production sets it explicitly in cmd_start.go.
 	if out.PaneMonitorInterval == 0 {
 		out.PaneMonitorInterval = 5 * time.Second
 	}
