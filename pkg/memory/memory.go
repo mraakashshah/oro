@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -880,8 +881,8 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 	// Build compact table format.
 	lines := []string{
 		"## Relevant Memories",
-		"| ID | Type | Title | Tokens |",
-		"|----|------|-------|--------|",
+		"| ID | Type | Title | Tokens | Age |",
+		"|----|------|-------|--------|-----|",
 	}
 
 	count := 0
@@ -889,18 +890,7 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 		if count >= maxInjectedMemories {
 			break
 		}
-
-		// Truncate content to create a title (max 50 chars)
-		title := m.Content
-		if len(title) > 50 {
-			title = title[:47] + "..."
-		}
-
-		// Estimate token count for full content
-		tokens := estimateTokens(m.Content)
-
-		line := fmt.Sprintf("| %d | %s | %s | ~%d |", m.ID, m.Type, title, tokens)
-		lines = append(lines, line)
+		lines = append(lines, memoryTableRow(m))
 		count++
 	}
 
@@ -911,6 +901,40 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 	lines = append(lines, "", "Use `oro recall --id=N` to fetch full memory content.")
 
 	return strings.Join(lines, "\n"), nil
+}
+
+// memoryTableRow formats a single ScoredMemory as a compact table row with
+// ID, Type, truncated title, token estimate, and age (with staleness marker).
+func memoryTableRow(m ScoredMemory) string {
+	title := m.Content
+	if len(title) > 50 {
+		title = title[:47] + "..."
+	}
+	tokens := estimateTokens(m.Content)
+	age := memoryAgeDays(m.CreatedAt)
+	ageCell := fmt.Sprintf("%dd", age)
+	if age > 7 {
+		ageCell += " ⚠"
+	}
+	return fmt.Sprintf("| %d | %s | %s | ~%d | %s |", m.ID, m.Type, title, tokens, ageCell)
+}
+
+// memoryAgeDays returns the age of a memory in whole days from its CreatedAt
+// timestamp. Accepts SQLite datetime format ("2006-01-02 15:04:05") and RFC3339.
+// Returns 0 on parse failure.
+func memoryAgeDays(createdAt string) int {
+	formats := []string{"2006-01-02 15:04:05", time.RFC3339}
+	for _, f := range formats {
+		t, err := time.Parse(f, createdAt)
+		if err == nil {
+			days := int(time.Since(t).Hours() / 24)
+			if days < 0 {
+				return 0
+			}
+			return days
+		}
+	}
+	return 0
 }
 
 // estimateTokens returns an approximate token count for text (~4 chars/token).

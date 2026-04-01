@@ -2644,3 +2644,66 @@ func TestGetRejectionsAfterMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestForPromptStaleness(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a recent memory (2 days old) — should NOT get warning marker
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"stale_kw_test recent golang pattern for testing", "pattern", `[]`, "self_report", 0.9,
+		time.Now().AddDate(0, 0, -2).Format("2006-01-02 15:04:05"),
+	)
+	if err != nil {
+		t.Fatalf("insert recent: %v", err)
+	}
+
+	// Insert a stale memory (10 days old) — should get warning marker
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"stale_kw_test old golang gotcha from long ago", "gotcha", `[]`, "self_report", 0.9,
+		time.Now().AddDate(0, 0, -10).Format("2006-01-02 15:04:05"),
+	)
+	if err != nil {
+		t.Fatalf("insert stale: %v", err)
+	}
+
+	result, err := ForPrompt(ctx, store, nil, "stale_kw_test golang", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+
+	// Age column must appear in the table header
+	if !strings.Contains(result, "Age") {
+		t.Errorf("expected Age column in ForPrompt output:\n%s", result)
+	}
+
+	// Stale memory (>7 days) must have a warning marker
+	if !strings.Contains(result, "⚠") {
+		t.Errorf("expected warning marker (⚠) for stale memory in ForPrompt output:\n%s", result)
+	}
+
+	// Recent memory (≤7 days) row must NOT contain the warning marker
+	lines := strings.Split(result, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "recent") && strings.Contains(line, "⚠") {
+			t.Errorf("recent memory should not have warning marker, got line: %s", line)
+		}
+	}
+
+	// Zero memories → empty string
+	empty, err := ForPrompt(ctx, store, nil, "xyz_no_match_at_all_abc123", 500)
+	if err != nil {
+		t.Fatalf("ForPrompt empty: %v", err)
+	}
+	if empty != "" {
+		t.Errorf("expected empty string for no results, got: %q", empty)
+	}
+}
