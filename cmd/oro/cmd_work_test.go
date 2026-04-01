@@ -568,6 +568,14 @@ func (m *envCapturingWorktreeManager) Exists(_ context.Context, _ string) bool {
 	return true // default: paths are valid
 }
 
+func (m *envCapturingWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *envCapturingWorktreeManager) PushBranch(_ context.Context, _ string) error {
+	return nil
+}
+
 // TestSpawnAndWaitWithMemoryAndCodeContext verifies that spawnAndWait wires
 // MemoryContext and CodeSearchContext into AssemblePrompt, and passes memStore
 // to DrainOutput.
@@ -1340,5 +1348,13 @@ func (m *branchCapturingWorktreeManager) Exists(_ context.Context, _ string) boo
 }
 
 func (m *branchCapturingWorktreeManager) UpdateBranchRef(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *branchCapturingWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *branchCapturingWorktreeManager) PushBranch(_ context.Context, _ string) error {
 	return nil
 }

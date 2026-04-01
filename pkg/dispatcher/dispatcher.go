@@ -98,6 +98,10 @@ type WorktreeManager interface {
 	// Exists reports whether the worktree at path is still present on disk.
 	// Returns false if the path does not exist or cannot be accessed.
 	Exists(ctx context.Context, path string) bool
+	// RebaseOnto rebases branch onto onto using git rebase --onto.
+	RebaseOnto(ctx context.Context, branch, onto string) error
+	// PushBranch pushes branch to origin.
+	PushBranch(ctx context.Context, branch string) error
 }
 
 // Escalator sends messages to the Manager. Production impl uses tmux send-keys.

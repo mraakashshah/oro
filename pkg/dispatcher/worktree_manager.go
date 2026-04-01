@@ -326,3 +326,25 @@ func (g *GitWorktreeManager) Prune(ctx context.Context) error {
 
 	return nil
 }
+
+// RebaseOnto rebases branch onto onto using `git rebase --onto onto branch`.
+func (g *GitWorktreeManager) RebaseOnto(ctx context.Context, branch, onto string) error {
+	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot,
+		"rebase", "--onto", onto, branch,
+	)
+	if err != nil {
+		return fmt.Errorf("rebase %s onto %s: %w", branch, onto, err)
+	}
+	return nil
+}
+
+// PushBranch pushes branch to origin using `git push origin branch`.
+func (g *GitWorktreeManager) PushBranch(ctx context.Context, branch string) error {
+	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot,
+		"push", "origin", branch,
+	)
+	if err != nil {
+		return fmt.Errorf("push branch %s: %w", branch, err)
+	}
+	return nil
+}

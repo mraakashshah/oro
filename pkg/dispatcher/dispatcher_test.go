@@ -335,6 +335,14 @@ func (m *mockWorktreeManager) Exists(ctx context.Context, path string) bool {
 	return true // default: path is valid (preserves existing test behaviour)
 }
 
+func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
+	return nil // default: rebase succeeds
+}
+
+func (m *mockWorktreeManager) PushBranch(_ context.Context, _ string) error {
+	return nil // default: push succeeds
+}
+
 type mockEscalator struct {
 	mu       sync.Mutex
 	messages []string

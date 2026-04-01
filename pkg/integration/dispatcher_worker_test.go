@@ -133,6 +133,14 @@ func (m *mockWorktreeManager) Exists(_ context.Context, _ string) bool {
 	return true // default: paths are valid
 }
 
+func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *mockWorktreeManager) PushBranch(_ context.Context, _ string) error {
+	return nil
+}
+
 type mockEscalator struct{}
 
 func (m *mockEscalator) Escalate(_ context.Context, _ string) error {

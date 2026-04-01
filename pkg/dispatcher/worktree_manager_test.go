@@ -1488,3 +1488,90 @@ func TestNewGitWorktreeManager_EmptyQualityGatePath(t *testing.T) {
 		t.Errorf("expected empty qualityGatePath, got %q", mgr.qualityGatePath)
 	}
 }
+
+func TestRebaseOnto_Success(t *testing.T) {
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.RebaseOnto(context.Background(), "agent/feature", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the git rebase command was called with correct arguments
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.Name != "git" {
+		t.Fatalf("expected command name 'git', got %q", call.Name)
+	}
+	wantArgs := []string{"-C", "/repo/root", "rebase", "--onto", "main", "agent/feature"}
+	if len(call.Args) != len(wantArgs) {
+		t.Fatalf("args length: got %d, want %d", len(call.Args), len(wantArgs))
+	}
+	for i, arg := range call.Args {
+		if arg != wantArgs[i] {
+			t.Fatalf("args[%d]: got %q, want %q", i, arg, wantArgs[i])
+		}
+	}
+}
+
+func TestRebaseOnto_Conflict(t *testing.T) {
+	runner := &mockCommandRunner{
+		err: fmt.Errorf("git rebase failed: CONFLICT (content): Merge conflict in file.go"),
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.RebaseOnto(context.Background(), "agent/feature", "main")
+	if err == nil {
+		t.Fatal("expected error from RebaseOnto")
+	}
+	if !strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("expected error to contain 'conflict', got: %v", err)
+	}
+}
+
+func TestPushBranch_Success(t *testing.T) {
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.PushBranch(context.Background(), "agent/feature")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the git push command was called with correct arguments
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	}
+	call := runner.calls[0]
+	if call.Name != "git" {
+		t.Fatalf("expected command name 'git', got %q", call.Name)
+	}
+	wantArgs := []string{"-C", "/repo/root", "push", "origin", "agent/feature"}
+	if len(call.Args) != len(wantArgs) {
+		t.Fatalf("args length: got %d, want %d", len(call.Args), len(wantArgs))
+	}
+	for i, arg := range call.Args {
+		if arg != wantArgs[i] {
+			t.Fatalf("args[%d]: got %q, want %q", i, arg, wantArgs[i])
+		}
+	}
+}
+
+func TestPushBranch_NoRemote(t *testing.T) {
+	runner := &mockCommandRunner{
+		err: fmt.Errorf("fatal: 'origin' does not appear to be a 'git' repository"),
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.PushBranch(context.Background(), "agent/feature")
+	if err == nil {
+		t.Fatal("expected error from PushBranch when remote doesn't exist")
+	}
+	// Verify the error is wrapped but still contains useful information
+	if !strings.Contains(err.Error(), "push") {
+		t.Fatalf("expected error to contain 'push', got: %v", err)
+	}
+}
