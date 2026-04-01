@@ -1333,6 +1333,41 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 	return true
 }
 
+// checkEpicQG creates a temporary worktree from epicBranch, runs the quality
+// gate against it (with mutation testing enabled), and cleans up the worktree
+// on completion. It returns true when the gate passes and tryCloseEpic should
+// proceed to completeEpicClose. On failure or error it handles
+// logging/escalation and returns false.
+func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBranch string) bool {
+	wtID := epicID + "-qg"
+	worktree, _, err := d.worktrees.Create(ctx, wtID, epicBranch)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_qg_worktree_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, err.Error()))
+		return false
+	}
+	defer func() { _ = d.worktrees.Remove(context.Background(), worktree) }()
+
+	passed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, false)
+	if qgErr != nil {
+		_ = d.logEvent(ctx, "epic_qg_error", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"error":%q}`, qgErr.Error()))
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, epicID, "epic QG error", qgErr.Error()), epicID, workerID)
+		return false
+	}
+	if !passed {
+		_ = d.logEvent(ctx, "epic_qg_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"output":%q}`, qgOutput))
+		_, _ = d.beads.Create(ctx,
+			fmt.Sprintf("Fix QG failures on %s", epicBranch),
+			"task", 0,
+			fmt.Sprintf("Epic %s QG failed on branch %s.\n\nQG output:\n%s", epicID, epicBranch, qgOutput),
+			epicID, "")
+		return false
+	}
+	return true
+}
+
 func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, epicID, targetBranch string) {
 	defer d.guardMerge(beadID)()
 
@@ -1562,15 +1597,11 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		return
 	}
 
-	// Determine the target branch for the epic FF merge. Prefer the value stored
-	// in Metadata[MetaBranch]; fall back to DefaultBranch (typically "main").
+	// Prefer Metadata[MetaBranch]; fall back to DefaultBranch (typically "main").
+	// Nil map reads are safe in Go and return the zero value.
 	targetBranch := d.cfg.DefaultBranch
-	if detail.Metadata != nil {
-		if v, ok := detail.Metadata[MetaBranch]; ok {
-			if s, ok := v.(string); ok && s != "" {
-				targetBranch = s
-			}
-		}
+	if s, _ := detail.Metadata[MetaBranch].(string); s != "" {
+		targetBranch = s
 	}
 
 	cmd := parseAcceptanceCmd(detail.AcceptanceCriteria)
@@ -1593,6 +1624,10 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 	if passed {
 		_ = d.logEvent(ctx, "epic_acceptance_passed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"cmd":%q}`, cmd))
+		epicBranch := protocol.EpicBranchPrefix + epicID
+		if !d.checkEpicQG(ctx, epicID, workerID, epicBranch) {
+			return
+		}
 		d.completeEpicClose(ctx, epicID, workerID, "Acceptance test passed", targetBranch)
 		return
 	}
