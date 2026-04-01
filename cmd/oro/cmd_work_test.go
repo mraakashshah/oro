@@ -875,11 +875,12 @@ func TestWorkCommandEpicBranch(t *testing.T) {
 		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
 
 		deps := &workDeps{
-			beadSrc:  bs,
-			wtMgr:    wt,
-			spawner:  sp,
-			merger:   mg,
-			repoRoot: "/tmp",
+			beadSrc:       bs,
+			wtMgr:         wt,
+			spawner:       sp,
+			merger:        mg,
+			repoRoot:      "/tmp",
+			defaultBranch: "main",
 			hasNewWork: func(_, _, target string) bool {
 				capturedTarget = target
 				return true
@@ -937,13 +938,14 @@ func TestExecuteWork_NonEpicParent_UsesMain(t *testing.T) {
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "deadbeef"}}
 
 	deps := &workDeps{
-		beadSrc:    bs,
-		wtMgr:      wt,
-		spawner:    sp,
-		merger:     mg,
-		repoRoot:   "/tmp",
-		hasNewWork: func(_, _, _ string) bool { return true },
-		runQG:      func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		beadSrc:       bs,
+		wtMgr:         wt,
+		spawner:       sp,
+		merger:        mg,
+		repoRoot:      "/tmp",
+		defaultBranch: "main",
+		hasNewWork:    func(_, _, _ string) bool { return true },
+		runQG:         func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
 	}
 	cfg := &workConfig{
 		beadID:     "child-bead",

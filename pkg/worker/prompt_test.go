@@ -295,8 +295,8 @@ func TestAssemblePrompt_ConstraintsContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "no git push") {
-		t.Error("expected Constraints section to contain 'no git push'")
+	if !strings.Contains(prompt, "NEVER run `git push`") {
+		t.Error("expected Constraints section to contain 'NEVER run `git push`'")
 	}
 }
 

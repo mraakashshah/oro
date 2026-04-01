@@ -394,13 +394,13 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 		root := newRootCmd()
 		var buf bytes.Buffer
 		root.SetOut(&buf)
-		root.SetArgs([]string{"init", "testproj", "--project-root", tmpDir})
+		root.SetArgs([]string{"init", "testproj", "--project-root", tmpDir, "--local"})
 
 		if err := root.Execute(); err != nil {
 			t.Fatalf("init command failed: %v", err)
 		}
 
-		// Verify .oro/config.yaml was created
+		// Verify .oro/config.yaml was created (--local = in-repo mode)
 		configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
 		data, err := os.ReadFile(configPath) //nolint:gosec // test-created file
 		if err != nil {
@@ -426,7 +426,7 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 		root := newRootCmd()
 		var buf bytes.Buffer
 		root.SetOut(&buf)
-		root.SetArgs([]string{"init", "emptyproj", "--project-root", tmpDir})
+		root.SetArgs([]string{"init", "emptyproj", "--project-root", tmpDir, "--local"})
 
 		if err := root.Execute(); err != nil {
 			t.Fatalf("init command failed: %v", err)
@@ -452,7 +452,7 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 		root := newRootCmd()
 		var buf bytes.Buffer
 		root.SetOut(&buf)
-		root.SetArgs([]string{"init", "myproj", "--project-root", tmpDir})
+		root.SetArgs([]string{"init", "myproj", "--project-root", tmpDir, "--local"})
 
 		if err := root.Execute(); err != nil {
 			t.Fatalf("first init failed: %v", err)
@@ -462,7 +462,7 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 		root2 := newRootCmd()
 		var buf2 bytes.Buffer
 		root2.SetOut(&buf2)
-		root2.SetArgs([]string{"init", "myproj", "--project-root", tmpDir})
+		root2.SetArgs([]string{"init", "myproj", "--project-root", tmpDir, "--local"})
 
 		if err := root2.Execute(); err != nil {
 			t.Fatalf("second init should succeed (idempotent), got: %v", err)
@@ -476,7 +476,7 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 		root := newRootCmd()
 		var buf bytes.Buffer
 		root.SetOut(&buf)
-		root.SetArgs([]string{"init", "--project-root", tmpDir})
+		root.SetArgs([]string{"init", "--project-root", tmpDir, "--local"})
 
 		if err := root.Execute(); err != nil {
 			t.Fatalf("init command failed: %v", err)
@@ -818,7 +818,6 @@ func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
 			t.Errorf("symlink target = %q, want %q", linkTarget, expectedTarget)
 		}
 	})
-
 }
 
 func TestEnsureGlobalGitignore(t *testing.T) {
