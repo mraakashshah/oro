@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -956,40 +957,57 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 		return "", nil
 	}
 
-	// Build compact table format.
-	lines := []string{
-		"## Relevant Memories",
-		"| ID | Type | Title | Tokens |",
-		"|----|------|-------|--------|",
+	rows := memoryTableRows(results)
+	if len(rows) == 0 {
+		return "", nil
 	}
 
-	count := 0
+	lines := make([]string, 0, 3+len(rows)+2)
+	lines = append(lines,
+		"## Relevant Memories",
+		"| ID | Type | Title | Age | Tokens |",
+		"|----|------|-------|-----|--------|",
+	)
+	lines = append(lines, rows...)
+	lines = append(lines, "", "Use `oro recall --id=N` to fetch full memory content.")
+
+	return strings.Join(lines, "\n"), nil
+}
+
+// memoryTableRows builds the data rows for the ForPrompt compact table.
+func memoryTableRows(results []ScoredMemory) []string {
+	rows := make([]string, 0, maxInjectedMemories)
 	for _, m := range results {
-		if count >= maxInjectedMemories {
+		if len(rows) >= maxInjectedMemories {
 			break
 		}
-
-		// Truncate content to create a title (max 50 chars)
 		title := m.Content
 		if len(title) > 50 {
 			title = title[:47] + "..."
 		}
-
-		// Estimate token count for full content
-		tokens := estimateTokens(m.Content)
-
-		line := fmt.Sprintf("| %d | %s | %s | ~%d |", m.ID, m.Type, title, tokens)
-		lines = append(lines, line)
-		count++
+		age := formatAge(m.CreatedAt)
+		if isStaleMemory(m.CreatedAt) && !m.Pinned {
+			age += " ⚠"
+		}
+		rows = append(rows, fmt.Sprintf("| %d | %s | %s | %s | ~%d |",
+			m.ID, m.Type, title, age, estimateTokens(m.Content)))
 	}
+	return rows
+}
 
-	if count == 0 {
-		return "", nil
+// isStaleMemory returns true if the memory was created more than 7 days ago.
+func isStaleMemory(createdAt string) bool {
+	if createdAt == "" {
+		return false
 	}
-
-	lines = append(lines, "", "Use `oro recall --id=N` to fetch full memory content.")
-
-	return strings.Join(lines, "\n"), nil
+	t, err := time.Parse("2006-01-02 15:04:05", createdAt)
+	if err != nil {
+		t, err = time.Parse("2006-01-02", createdAt)
+		if err != nil {
+			return false
+		}
+	}
+	return time.Since(t) > 7*24*time.Hour
 }
 
 // estimateTokens returns an approximate token count for text (~4 chars/token).
@@ -1002,14 +1020,28 @@ func estimateTokens(text string) int {
 }
 
 // formatAge returns a human-readable age string from a datetime string.
+// created_at is in "YYYY-MM-DD HH:MM:SS" format from SQLite datetime('now').
+// Returns "Xm" for minutes, "Xh" for hours, "Xd" for days.
 func formatAge(createdAt string) string {
-	// Use SQL to calculate — but since we have the string, do a simple parse.
-	// created_at is in "YYYY-MM-DD HH:MM:SS" format from SQLite datetime('now').
-	// For simplicity, return the raw date. A production version would calculate days.
-	if len(createdAt) >= 10 {
-		return createdAt[:10]
+	if createdAt == "" {
+		return ""
 	}
-	return createdAt
+	t, err := time.Parse("2006-01-02 15:04:05", createdAt)
+	if err != nil {
+		t, err = time.Parse("2006-01-02", createdAt)
+		if err != nil {
+			return createdAt
+		}
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 // Consolidate deduplicates and prunes the memory store.

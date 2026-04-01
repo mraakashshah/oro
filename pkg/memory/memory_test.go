@@ -875,25 +875,42 @@ func TestEstimateTokens_EdgeCases(t *testing.T) {
 }
 
 func TestFormatAge_EdgeCases(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"full datetime", "2025-01-15 10:30:00", "2025-01-15"},
-		{"date only", "2025-01-15", "2025-01-15"},
-		{"short string", "2025", "2025"},
-		{"empty", "", ""},
-		{"exactly 10 chars", "2025-01-15", "2025-01-15"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := formatAge(tt.input)
-			if got != tt.want {
-				t.Errorf("formatAge(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
+	// formatAge now returns human-readable durations, not raw date strings.
+	// Parseable timestamps → "Xd"/"Xh"/"Xm" format.
+	// Unparseable strings → passed through unchanged.
+	// Empty string → empty string.
+
+	t.Run("full datetime returns days", func(t *testing.T) {
+		got := formatAge("2025-01-15 10:30:00")
+		if !strings.Contains(got, "d") {
+			t.Errorf("formatAge(full datetime) = %q, want days format like '440d'", got)
+		}
+	})
+	t.Run("date only returns days", func(t *testing.T) {
+		got := formatAge("2025-01-15")
+		if !strings.Contains(got, "d") {
+			t.Errorf("formatAge(date only) = %q, want days format like '440d'", got)
+		}
+	})
+	t.Run("short unparseable returns raw", func(t *testing.T) {
+		got := formatAge("2025")
+		if got != "2025" {
+			t.Errorf("formatAge(unparseable) = %q, want raw passthrough %q", got, "2025")
+		}
+	})
+	t.Run("empty returns empty", func(t *testing.T) {
+		got := formatAge("")
+		if got != "" {
+			t.Errorf("formatAge('') = %q, want empty string", got)
+		}
+	})
+	t.Run("recent datetime returns hours or minutes", func(t *testing.T) {
+		twoHoursAgo := time.Now().UTC().Add(-2 * time.Hour).Format("2006-01-02 15:04:05")
+		got := formatAge(twoHoursAgo)
+		if !strings.Contains(got, "h") {
+			t.Errorf("formatAge(2h ago) = %q, want hours format like '2h'", got)
+		}
+	})
 }
 
 func TestSearch_EmptyQuery(t *testing.T) {
@@ -2807,4 +2824,127 @@ func TestMergeMemories(t *testing.T) {
 	if len(all) != 2 {
 		t.Errorf("expected 2 memories after merge with empty deleteIDs, got %d", len(all))
 	}
+// TestForPromptStaleness verifies Age column, stale markers, formatAge, and edge cases.
+func TestForPromptStaleness(t *testing.T) {
+	ctx := context.Background()
+
+	// formatAge parses timestamps as UTC (matching SQLite's datetime('now') output),
+	// so test inputs must be formatted in UTC as well.
+
+	// --- formatAge returns human-readable durations ---
+	t.Run("formatAge_minutes", func(t *testing.T) {
+		recent := time.Now().UTC().Add(-45 * time.Minute).Format("2006-01-02 15:04:05")
+		got := formatAge(recent)
+		if !strings.Contains(got, "m") || strings.Contains(got, "d") {
+			t.Errorf("expected minutes format like '45m', got %q", got)
+		}
+	})
+
+	t.Run("formatAge_hours", func(t *testing.T) {
+		threeHoursAgo := time.Now().UTC().Add(-3 * time.Hour).Format("2006-01-02 15:04:05")
+		got := formatAge(threeHoursAgo)
+		if !strings.Contains(got, "h") {
+			t.Errorf("expected hours format like '3h', got %q", got)
+		}
+	})
+
+	t.Run("formatAge_days", func(t *testing.T) {
+		fiveDaysAgo := time.Now().UTC().Add(-5 * 24 * time.Hour).Format("2006-01-02 15:04:05")
+		got := formatAge(fiveDaysAgo)
+		if !strings.Contains(got, "d") {
+			t.Errorf("expected days format like '5d', got %q", got)
+		}
+	})
+
+	// --- zero memories returns empty string ---
+	t.Run("zero_memories", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+		result, err := ForPrompt(ctx, store, nil, "no match whatsoever xyz789qrs", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result != "" {
+			t.Errorf("expected empty string for zero memories, got %q", result)
+		}
+	})
+
+	// --- Age column and stale marker for >7d memories ---
+	t.Run("age_column_and_stale_marker", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		// Insert stale memory (>7 days old) via direct SQL to control created_at.
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, tags, source, confidence, created_at)
+			 VALUES (?, ?, ?, ?, ?, datetime('now', '-8 days'))`,
+			"ruff pyright python linting stale memory", "gotcha", `[]`, "self_report", 0.9,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := ForPrompt(ctx, store, nil, "ruff pyright python linting", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result, "Age") {
+			t.Errorf("expected Age column in table header, got:\n%s", result)
+		}
+		if !strings.Contains(result, "⚠") {
+			t.Errorf("expected stale warning marker for >7d memory, got:\n%s", result)
+		}
+	})
+
+	// --- all fresh → no stale markers ---
+	t.Run("all_fresh_no_markers", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, tags, source, confidence, created_at)
+			 VALUES (?, ?, ?, ?, ?, datetime('now', '-2 days'))`,
+			"ruff pyright python linting fresh only", "gotcha", `[]`, "self_report", 0.9,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := ForPrompt(ctx, store, nil, "ruff pyright python linting fresh", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result, "Age") {
+			t.Errorf("expected Age column in table header, got:\n%s", result)
+		}
+		if strings.Contains(result, "⚠") {
+			t.Errorf("expected no stale warning for fresh memory, got:\n%s", result)
+		}
+	})
+
+	// --- pinned memory shows age but no warning even if stale ---
+	t.Run("pinned_no_warning", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, tags, source, confidence, pinned, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-10 days'))`,
+			"ruff pyright python linting pinned stale old", "pattern", `[]`, "self_report", 0.9, 1,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := ForPrompt(ctx, store, nil, "ruff pyright python linting pinned", 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result, "Age") {
+			t.Errorf("expected Age column for pinned memory, got:\n%s", result)
+		}
+		if strings.Contains(result, "⚠") {
+			t.Errorf("expected no stale warning for pinned memory, got:\n%s", result)
+		}
+	})
 }
