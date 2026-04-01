@@ -2824,6 +2824,8 @@ func TestMergeMemories(t *testing.T) {
 	if len(all) != 2 {
 		t.Errorf("expected 2 memories after merge with empty deleteIDs, got %d", len(all))
 	}
+}
+
 // TestForPromptStaleness verifies Age column, stale markers, formatAge, and edge cases.
 func TestForPromptStaleness(t *testing.T) {
 	ctx := context.Background()

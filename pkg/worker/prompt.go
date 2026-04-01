@@ -33,10 +33,14 @@ func section(b *strings.Builder, header, body string) {
 }
 
 // memoryBody returns the memory section content, falling back to a
-// placeholder when no prior context is available.
+// placeholder when no prior context is available. When the context contains
+// stale memory markers (⚠), a verification reminder is appended.
 func memoryBody(ctx string) string {
 	if ctx == "" {
 		return "No prior context for this bead."
+	}
+	if strings.Contains(ctx, "⚠") {
+		return ctx + "\n\n> **Stale memories detected** — verify by reading the actual source before acting on any ⚠-marked entry."
 	}
 	return ctx
 }
