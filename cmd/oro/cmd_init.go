@@ -767,9 +767,11 @@ func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, 
 	return cfg, nil
 }
 
-// globalGitignoreEntries are the patterns oro needs ignored globally
+// oroGitignoreEntries returns the patterns oro needs ignored globally
 // so that .beads/, .oro/, and .dolt/ never pollute target repos.
-var globalGitignoreEntries = []string{".beads/", ".beads", ".oro/", ".dolt/"}
+func oroGitignoreEntries() []string {
+	return []string{".beads/", ".beads", ".oro/", ".dolt/"}
+}
 
 // ensureGlobalGitignore adds oro-related entries to the user's global
 // gitignore file so target repos are never polluted. It resolves the
@@ -785,19 +787,8 @@ func ensureGlobalGitignore() error {
 // resolveGlobalGitignorePath returns the path to the user's global gitignore,
 // creating one and configuring git if none is set.
 func resolveGlobalGitignorePath() (string, error) {
-	out, err := exec.Command("git", "config", "--global", "core.excludesFile").Output()
-	if err == nil {
-		if p := strings.TrimSpace(string(out)); p != "" {
-			// Expand ~ if present.
-			if strings.HasPrefix(p, "~/") {
-				home, herr := os.UserHomeDir()
-				if herr != nil {
-					return "", fmt.Errorf("expand home dir: %w", herr)
-				}
-				p = filepath.Join(home, p[2:])
-			}
-			return p, nil
-		}
+	if p, err := readGitExcludesFile(); err == nil && p != "" {
+		return p, nil
 	}
 
 	// No global excludes file configured — set one up.
@@ -806,8 +797,29 @@ func resolveGlobalGitignorePath() (string, error) {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
 	p := filepath.Join(home, ".gitignore_global")
-	if err := exec.Command("git", "config", "--global", "core.excludesFile", p).Run(); err != nil {
+	//nolint:gosec // p is from os.UserHomeDir, not user input
+	if err := exec.CommandContext(context.Background(), "git", "config", "--global", "core.excludesFile", p).Run(); err != nil {
 		return "", fmt.Errorf("set core.excludesFile: %w", err)
+	}
+	return p, nil
+}
+
+// readGitExcludesFile reads core.excludesFile from git config and expands ~.
+func readGitExcludesFile() (string, error) {
+	out, err := exec.CommandContext(context.Background(), "git", "config", "--global", "core.excludesFile").Output()
+	if err != nil {
+		return "", fmt.Errorf("read core.excludesFile: %w", err)
+	}
+	p := strings.TrimSpace(string(out))
+	if p == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expand home dir: %w", err)
+		}
+		p = filepath.Join(home, p[2:])
 	}
 	return p, nil
 }
@@ -828,7 +840,7 @@ func ensureGlobalGitignoreAt(path string) error {
 
 	// Collect entries that need to be added.
 	var missing []string
-	for _, entry := range globalGitignoreEntries {
+	for _, entry := range oroGitignoreEntries() {
 		if !existingLines[entry] {
 			missing = append(missing, entry)
 		}
