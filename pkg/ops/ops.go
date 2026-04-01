@@ -42,6 +42,7 @@ const (
 	OpsEpicFix    Type = "epic_fix" // spawned when epic acceptance test fails
 	OpsWriteAC    Type = "write_ac"
 	OpsDecompose  Type = "decompose" // spawned when a bead exhausts all worker retry attempts
+	OpsDream      Type = "dream"     // spawned for background memory consolidation
 )
 
 // Model returns the preferred Claude model for this ops type.
@@ -57,6 +58,8 @@ func (t Type) Model() string {
 		return "sonnet" // one-shot triage is fast, not judgment-heavy
 	case OpsDecompose:
 		return "opus" // bead decomposition requires careful judgment
+	case OpsDream:
+		return "haiku" // lightweight background memory consolidation
 	default:
 		return "sonnet"
 	}
@@ -66,10 +69,14 @@ func (t Type) Model() string {
 // OpsWriteAC, which needs 10 minutes for careful acceptance-criteria generation.
 // When 0, the Spawner falls back to its default timeout.
 func (t Type) Timeout() time.Duration {
-	if t == OpsWriteAC {
+	switch t {
+	case OpsWriteAC:
 		return 10 * time.Minute
+	case OpsDream:
+		return 60 * time.Second
+	default:
+		return 0
 	}
-	return 0
 }
 
 // Verdict is the outcome of an ops agent run.
@@ -151,6 +158,11 @@ type DecomposeOpts struct {
 	QGOutput string // quality gate output that triggered decomposition
 }
 
+// DreamOpts configures a memory-consolidation dream agent.
+type DreamOpts struct {
+	Memories string // serialized memories to process; may be empty
+}
+
 // EpicFixOpts configures an epic acceptance-failure diagnostic agent.
 type EpicFixOpts struct {
 	EpicID string // the parent epic whose acceptance test failed
@@ -227,6 +239,16 @@ func (s *Spawner) WriteAC(ctx context.Context, opts WriteACOpts) <-chan Result {
 func (s *Spawner) Decompose(ctx context.Context, opts DecomposeOpts) <-chan Result {
 	prompt := buildDecomposePrompt(opts)
 	return s.run(ctx, OpsDecompose, opts.BeadID, "", prompt)
+}
+
+// Dream spawns a lightweight memory-consolidation agent. The agent reviews the
+// provided memories and emits any distilled insights as feedback. The result
+// channel delivers the agent's output when it exits (callers may ignore it).
+//
+//oro:testonly — wired into production by dispatcher (OpsDream memory consolidation path)
+func (s *Spawner) Dream(ctx context.Context, opts DreamOpts) <-chan Result {
+	prompt := buildDreamPrompt(opts)
+	return s.run(ctx, OpsDream, "", "", prompt)
 }
 
 // Cancel kills a running ops agent by task ID.
@@ -415,8 +437,8 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 		r.Verdict, r.Feedback = parseReviewOutput(stdout)
 	case OpsMerge:
 		r.Verdict, r.Feedback = parseMergeOutput(stdout)
-	case OpsDiagnosis, OpsEpicFix:
-		// Diagnosis / epic-fix have no verdict parsing — the whole output is the feedback.
+	case OpsDiagnosis, OpsEpicFix, OpsDream:
+		// Diagnosis / epic-fix / dream have no verdict parsing — the whole output is the feedback.
 		r.Feedback = stdout
 	case OpsEscalation:
 		r.Verdict, r.Feedback = parseEscalationOutput(stdout)
