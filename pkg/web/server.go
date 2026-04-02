@@ -19,6 +19,15 @@ type WorkerInfo struct {
 	ContextPct int
 }
 
+// ThroughputData holds metrics for the throughput panel.
+type ThroughputData struct {
+	BeadsPerHour  int
+	ActiveWorkers int
+	TotalWorkers  int
+	Uptime        string
+	CostPerHour   string
+}
+
 // DashboardData is the read-only query interface for the web handler.
 // pkg/dispatcher.Dispatcher satisfies this interface.
 type DashboardData interface {
@@ -29,6 +38,7 @@ type DashboardData interface {
 	ShowBead(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	RecentEvents(ctx context.Context, limit int) ([]protocol.Event, error)
 	Workers(ctx context.Context) ([]WorkerInfo, error)
+	Throughput(ctx context.Context) (*ThroughputData, error)
 	SubscribeSSE() chan string
 	UnsubscribeSSE(ch chan string)
 	// HealthError returns nil when the system is healthy, or a descriptive
@@ -53,12 +63,13 @@ type ParadeData struct {
 
 // handler is the concrete http.Handler returned by NewHandler.
 type handler struct {
-	data        DashboardData
-	indexTmpl   *template.Template
-	paradeTmpl  *template.Template
-	workersTmpl *template.Template
-	detailTmpl  *template.Template
-	eventsTmpl  *template.Template
+	data           DashboardData
+	indexTmpl      *template.Template
+	paradeTmpl     *template.Template
+	workersTmpl    *template.Template
+	detailTmpl     *template.Template
+	eventsTmpl     *template.Template
+	throughputTmpl *template.Template
 }
 
 // NewHandler returns an http.Handler that serves the web dashboard.
@@ -73,12 +84,13 @@ func NewHandler(data DashboardData, templates fs.FS) http.Handler {
 	}
 
 	h := &handler{
-		data:        data,
-		indexTmpl:   mustParse("index.html", "parade.html"),
-		paradeTmpl:  mustParse("parade.html"),
-		workersTmpl: mustParse("workers.html"),
-		detailTmpl:  mustParse("detail.html"),
-		eventsTmpl:  mustParse("events.html"),
+		data:           data,
+		indexTmpl:      mustParse("index.html", "parade.html"),
+		paradeTmpl:     mustParse("parade.html"),
+		workersTmpl:    mustParse("workers.html"),
+		detailTmpl:     mustParse("detail.html"),
+		eventsTmpl:     mustParse("events.html"),
+		throughputTmpl: mustParse("throughput.html"),
 	}
 
 	mux := http.NewServeMux()
@@ -87,6 +99,7 @@ func NewHandler(data DashboardData, templates fs.FS) http.Handler {
 	mux.HandleFunc("GET /fragments/workers", h.workersHandler)
 	mux.HandleFunc("GET /fragments/detail/{id}", h.detailHandler)
 	mux.HandleFunc("GET /fragments/events", h.eventsHandler)
+	mux.HandleFunc("GET /fragments/throughput", h.throughputHandler)
 	mux.HandleFunc("GET /events", h.sseHandler)
 	return mux
 }
@@ -164,6 +177,18 @@ func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.eventsTmpl.ExecuteTemplate(w, "events.html", events); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (h *handler) throughputHandler(w http.ResponseWriter, r *http.Request) {
+	data, err := h.data.Throughput(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.throughputTmpl.ExecuteTemplate(w, "throughput.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

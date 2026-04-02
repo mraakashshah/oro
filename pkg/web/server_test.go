@@ -23,6 +23,7 @@ type mockDashboard struct {
 	workers    []web.WorkerInfo
 	healthErr  error
 	events     []protocol.Event
+	throughput *web.ThroughputData
 }
 
 func (m *mockDashboard) ReadyBeads(_ context.Context) ([]protocol.Bead, error) {
@@ -68,6 +69,10 @@ func (m *mockDashboard) SubscribeSSE() chan string {
 }
 
 func (m *mockDashboard) UnsubscribeSSE(_ chan string) {}
+
+func (m *mockDashboard) Throughput(_ context.Context) (*web.ThroughputData, error) {
+	return m.throughput, nil
+}
 
 // testTemplates returns a minimal fs.FS with all required templates.
 func testTemplates() fstest.MapFS {
@@ -115,6 +120,9 @@ Dependencies:
 		},
 		"events.html": &fstest.MapFile{
 			Data: []byte(`<div class="events-feed">{{range .}}<div class="event-row"><span class="time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span><span class="symbol">{{if eq .Type "merged"}}✓{{else if eq .Type "quality_gate_rejected"}}✗{{else if eq .Type "merge_conflict"}}⚠{{else if eq .Type "qg_stuck_detected"}}⚠{{else if eq .Type "handoff"}}↻{{else if eq .Type "escalation"}}▲{{else}}{{.Type}}{{end}}</span>{{if .BeadID}}<span class="bead-id">{{.BeadID}}</span>{{end}}</div>{{end}}</div>`),
+		},
+		"throughput.html": &fstest.MapFile{
+			Data: []byte(`<div class="throughput"><div class="stat">{{.BeadsPerHour}} beads/hr</div><div class="stat">{{.CostPerHour}}/hr</div><div class="stat">{{.ActiveWorkers}}/{{.TotalWorkers}} workers</div><div class="stat">uptime {{.Uptime}}</div></div>`),
 		},
 	}
 }
@@ -314,6 +322,37 @@ func TestIndexHealthError(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "database unreachable") {
 		t.Errorf("GET / with health error should contain error message; got: %q", body)
+	}
+}
+
+func TestFragmentThroughput(t *testing.T) {
+	data := &mockDashboard{
+		throughput: &web.ThroughputData{
+			BeadsPerHour:  3,
+			ActiveWorkers: 2,
+			TotalWorkers:  4,
+			Uptime:        "2h 14m",
+			CostPerHour:   "—",
+		},
+	}
+	h := web.NewHandler(data, testTemplates())
+
+	req := httptest.NewRequest(http.MethodGet, "/fragments/throughput", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /fragments/throughput status = %d, want 200", rec.Code)
+	}
+	ct := rec.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"3 beads/hr", "2/4 workers", "2h 14m", "—"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q; body: %q", want, body)
+		}
 	}
 }
 
