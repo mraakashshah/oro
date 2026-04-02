@@ -1,0 +1,27 @@
+pkg/dispatcher/dispatcher.go
+  f8aef3698be4db29 572-583,2626,2629,2631,2654,2673
+pkg/dispatcher/dispatcher_test.go
+  f8aef3698be4db29 16509-16680
+pkg/dispatcher/bead_tracker.go
+  f8aef3698be4db29 21-32,52,141,199-201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "2570586d5848cab772b928ef23439dd658e84c4f",
+  "prompts": {
+    "f8aef3698be4db29": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b177ac75-4138-4853-9635-0ac47591e23b",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 206,
+      "total_deletions": 24,
+      "accepted_lines": 206,
+      "overriden_lines": 0
+    }
+  }
+}
