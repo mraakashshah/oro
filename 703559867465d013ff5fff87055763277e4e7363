@@ -1,0 +1,35 @@
+cmd/oro/cmd_work_execute_test.go
+  d5cce8429542eccd 71-76
+pkg/dispatcher/beadsource_test.go
+  d5cce8429542eccd 1689-1853
+pkg/dispatcher/dispatcher_test.go
+  d5cce8429542eccd 93-96,212-229
+pkg/dispatcher/dispatcher.go
+  d5cce8429542eccd 74-75
+pkg/integration/dispatcher_worker_test.go
+  d5cce8429542eccd 79-86
+pkg/dispatcher/beadsource.go
+  d5cce8429542eccd 75-109
+pkg/integration/e2e_lifecycle_test.go
+  d5cce8429542eccd 73-80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "703559867465d013ff5fff87055763277e4e7363",
+  "prompts": {
+    "d5cce8429542eccd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "91fc70d9-92a0-4f1d-a299-310b2e7dda06",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 249,
+      "total_deletions": 2,
+      "accepted_lines": 249,
+      "overriden_lines": 0
+    }
+  }
+}
