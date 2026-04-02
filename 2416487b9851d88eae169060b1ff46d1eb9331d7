@@ -1,0 +1,35 @@
+pkg/dispatcher/dispatcher_test.go
+  b2bbeffa595654e5 273,281,386-395
+pkg/integration/dispatcher_worker_test.go
+  b2bbeffa595654e5 152-155
+pkg/dispatcher/dispatcher.go
+  b2bbeffa595654e5 108-109
+pkg/dispatcher/worktree_manager.go
+  b2bbeffa595654e5 351-361
+cmd/oro/cmd_work_execute_test.go
+  b2bbeffa595654e5 136-139
+pkg/dispatcher/epic_branch_lazy_test.go
+  b2bbeffa595654e5 1-46
+cmd/oro/cmd_work_test.go
+  b2bbeffa595654e5 579-582,1365-1368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "2416487b9851d88eae169060b1ff46d1eb9331d7",
+  "prompts": {
+    "b2bbeffa595654e5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ad02358-21aa-4bb9-b466-4d0242a17cb8",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 94,
+      "total_deletions": 7,
+      "accepted_lines": 87,
+      "overriden_lines": 0
+    }
+  }
+}
