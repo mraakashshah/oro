@@ -73,10 +73,23 @@ type handler struct {
 }
 
 // NewHandler returns an http.Handler that serves the web dashboard.
-// templates must contain: index.html, parade.html, workers.html, detail.html.
-func NewHandler(data DashboardData, templates fs.FS) http.Handler {
+// content must contain: index.html, parade.html, workers.html, detail.html,
+// events.html, throughput.html at the root level (or inside a templates/
+// subdirectory). If content has a static/ subdirectory, its files are served
+// at /static/.
+func NewHandler(data DashboardData, content fs.FS) http.Handler {
+	// If content has a templates/ subdirectory, use it for template parsing.
+	// This supports embed.FS (templates at templates/index.html) and test
+	// fixtures (templates at index.html).
+	tmplFS := content
+	if _, err := fs.Stat(content, "templates"); err == nil {
+		if sub, subErr := fs.Sub(content, "templates"); subErr == nil {
+			tmplFS = sub
+		}
+	}
+
 	mustParse := func(files ...string) *template.Template {
-		t, err := template.New("").Funcs(TemplateFuncMap()).ParseFS(templates, files...)
+		t, err := template.New("").Funcs(TemplateFuncMap()).ParseFS(tmplFS, files...)
 		if err != nil {
 			panic(fmt.Sprintf("web.NewHandler: parse templates %v: %v", files, err))
 		}
@@ -101,6 +114,14 @@ func NewHandler(data DashboardData, templates fs.FS) http.Handler {
 	mux.HandleFunc("GET /fragments/events", h.eventsHandler)
 	mux.HandleFunc("GET /fragments/throughput", h.throughputHandler)
 	mux.HandleFunc("GET /events", h.sseHandler)
+
+	// Mount static file serving if content has a static/ subdirectory.
+	if _, err := fs.Stat(content, "static"); err == nil {
+		if staticSub, subErr := fs.Sub(content, "static"); subErr == nil {
+			mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticSub)))
+		}
+	}
+
 	return mux
 }
 

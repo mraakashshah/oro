@@ -752,6 +752,8 @@ func (d *Dispatcher) healthzHandler(w http.ResponseWriter, _ *http.Request) {
 func (d *Dispatcher) startHTTPServer() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", d.healthzHandler)
+	dashHandler := web.NewHandler(d, web.Content)
+	mux.Handle("/", dashHandler)
 	srv := &http.Server{
 		Addr:              d.cfg.WebAddr,
 		Handler:           mux,

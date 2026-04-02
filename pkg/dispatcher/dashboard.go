@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"oro/pkg/protocol"
 	"oro/pkg/web"
@@ -166,4 +167,36 @@ func (d *Dispatcher) Workers(_ context.Context) ([]web.WorkerInfo, error) {
 		}
 	}
 	return result, nil
+}
+
+// Throughput implements web.DashboardData. It returns basic swarm metrics.
+func (d *Dispatcher) Throughput(_ context.Context) (*web.ThroughputData, error) {
+	d.mu.Lock()
+	workers, _, _, _ := d.snapshotWorkers(d.nowFunc())
+	uptime := d.nowFunc().Sub(d.startTime).Round(time.Second)
+	d.mu.Unlock()
+
+	active := 0
+	for _, w := range workers {
+		if w.State == "busy" {
+			active++
+		}
+	}
+
+	hours := uptime.Hours()
+	var uptimeStr string
+	switch {
+	case hours >= 1:
+		uptimeStr = fmt.Sprintf("%.0fh %.0fm", hours, uptime.Minutes()-hours*60)
+	default:
+		uptimeStr = fmt.Sprintf("%.0fm", uptime.Minutes())
+	}
+
+	return &web.ThroughputData{
+		BeadsPerHour:  0,
+		ActiveWorkers: active,
+		TotalWorkers:  len(workers),
+		Uptime:        uptimeStr,
+		CostPerHour:   "—",
+	}, nil
 }

@@ -2,11 +2,21 @@ package dispatcher //nolint:testpackage // white-box test needs internal access
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
+
+// truncate returns s truncated to at most n characters.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
 
 // freeAddr returns a random free TCP address on localhost.
 func freeAddr(t *testing.T) string {
@@ -173,4 +183,47 @@ func TestHTTPServerStartsInRun(t *testing.T) {
 		// Dispatcher is still operational — can receive and respond to directives.
 		sendDirective(t, d.cfg.SocketPath, "status")
 	})
+}
+
+// TestHTTPServerServesDashboard verifies that startHTTPServer mounts web.NewHandler
+// so that GET / returns HTML with <!DOCTYPE.
+func TestHTTPServerServesDashboard(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	addr := freeAddr(t)
+	d.cfg.WebEnabled = true
+	d.cfg.WebAddr = addr
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	// Wait for server to be reachable.
+	waitFor(t, func() bool {
+		resp, err := http.Get("http://" + addr + "/healthz") //nolint:noctx
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return true
+	}, 2*time.Second)
+
+	// Transition to running so the dispatcher is fully operational.
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.state == StateRunning
+	}, 2*time.Second)
+
+	resp, err := http.Get("http://" + addr + "/") //nolint:noctx
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET / status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "<!DOCTYPE") {
+		t.Errorf("GET / body missing <!DOCTYPE; got first 200 chars: %q", truncate(string(body), 200))
+	}
 }
