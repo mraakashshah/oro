@@ -16085,7 +16085,6 @@ func TestMergeComplete_InterpolatesBranch(t *testing.T) {
 			t.Fatalf("expected MERGE_COMPLETE escalation, got: %v", esc.Messages())
 		}
 	})
-
 }
 
 func TestCheckEpicAssignable_RetriesOnError(t *testing.T) {
