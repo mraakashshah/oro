@@ -1,0 +1,25 @@
+pkg/dispatcher/dispatcher_test.go
+  bd64b32e4ebb7556 3650-3771
+pkg/dispatcher/dispatcher.go
+  bd64b32e4ebb7556 1085-1095
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "f3cfb1e2ba6e1987116b0ed274fea25c6fb2199c",
+  "prompts": {
+    "bd64b32e4ebb7556": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe90d6be-460b-4c18-a501-745efc7a2069",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 133,
+      "total_deletions": 0,
+      "accepted_lines": 133,
+      "overriden_lines": 0
+    }
+  }
+}
