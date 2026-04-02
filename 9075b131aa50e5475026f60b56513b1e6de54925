@@ -1,0 +1,25 @@
+pkg/web/sse_test.go
+  d4fc274c03d69530 10-20,68,70,72,77,80,83-87,89,91-92,94
+pkg/web/sse.go
+  d4fc274c03d69530 25-26,38-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "9075b131aa50e5475026f60b56513b1e6de54925",
+  "prompts": {
+    "d4fc274c03d69530": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "db38efe3-99c4-4056-bcc5-ac84fe5a340e",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 30,
+      "total_deletions": 24,
+      "accepted_lines": 30,
+      "overriden_lines": 0
+    }
+  }
+}
