@@ -91,10 +91,11 @@ func testTemplates() fstest.MapFS {
 {{end}}`),
 		},
 		"workers.html": &fstest.MapFile{
-			Data: []byte(`{{range .}}<div class="worker-row" data-id="{{.ID}}">
-<span class="state">{{.State}}</span>
+			Data: []byte(`{{range .}}<div class="worker-row" data-id="{{.ID}}" class="state state-{{.State}}">
+<span class="state-indicator">{{if eq .State "busy"}}●{{else if eq .State "idle"}}○{{else}}⚠{{end}}</span>
+<div class="context-bar" style="width:{{.ContextPct}}%"></div>
 <span class="context-pct">{{.ContextPct}}%</span>
-<span class="bead-id">{{.BeadID}}</span>
+{{if ne .BeadID ""}}<span class="bead-id">{{.BeadID}}</span>{{else}}<span class="bead-id">idle</span>{{end}}
 </div>{{end}}`),
 		},
 		"detail.html": &fstest.MapFile{
