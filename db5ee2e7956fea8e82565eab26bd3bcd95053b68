@@ -1,0 +1,25 @@
+pkg/dispatcher/dashboard.go
+  7145fc0075d6a5a8 105
+pkg/dispatcher/dashboard_test.go
+  7145fc0075d6a5a8 285-325
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "db5ee2e7956fea8e82565eab26bd3bcd95053b68",
+  "prompts": {
+    "7145fc0075d6a5a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f542a0f5-89f0-4b01-9ac4-52b92f5b618b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 42,
+      "total_deletions": 1,
+      "accepted_lines": 42,
+      "overriden_lines": 0
+    }
+  }
+}
