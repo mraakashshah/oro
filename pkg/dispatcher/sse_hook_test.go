@@ -28,6 +28,9 @@ func (m *mockSSEBroadcaster) Send(eventType, beadID, workerID string) {
 	})
 }
 
+func (m *mockSSEBroadcaster) Subscribe() chan string    { return make(chan string, 1) }
+func (m *mockSSEBroadcaster) Unsubscribe(_ chan string) {}
+
 func TestLogEventCallsSSE(t *testing.T) {
 	// Setup: create dispatcher with mock SSEBroadcaster
 	db := newTestDB(t)
