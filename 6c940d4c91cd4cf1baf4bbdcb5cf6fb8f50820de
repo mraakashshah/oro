@@ -1,0 +1,25 @@
+pkg/web/css_test.go
+  6e74c72b1cee7e48 1-99
+pkg/web/static/style.css
+  6e74c72b1cee7e48 1-435
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "6c940d4c91cd4cf1baf4bbdcb5cf6fb8f50820de",
+  "prompts": {
+    "6e74c72b1cee7e48": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f44e7b6a-11b3-4a41-818a-e11922ade3d8",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 534,
+      "total_deletions": 0,
+      "accepted_lines": 534,
+      "overriden_lines": 0
+    }
+  }
+}
