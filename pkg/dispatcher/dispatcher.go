@@ -287,7 +287,7 @@ type Config struct {
 	WorkerProgram         string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	DefaultBranch         string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
 	WebEnabled            bool          // Enable HTTP server for dashboard/health endpoints (default false).
-	WebAddr               string        // HTTP server listen address (default :4444 in withDefaults).
+	WebAddr               string        // HTTP server listen address (default 127.0.0.1:4444 in withDefaults).
 }
 
 // intDefault returns v if non-zero, otherwise dflt.

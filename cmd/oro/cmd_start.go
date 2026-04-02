@@ -396,7 +396,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&reviewTimeout, "review-timeout", 0, "max time a reviewing worker can stall (default 15m)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "base branch for worktree creation (default: main)")
 	cmd.Flags().BoolVar(&webEnabled, "web", false, "enable HTTP server for dashboard/health endpoints")
-	cmd.Flags().StringVar(&webAddr, "web-addr", "", "HTTP server listen address (default :4444)")
+	cmd.Flags().StringVar(&webAddr, "web-addr", "", "HTTP server listen address (default 127.0.0.1:4444)")
 
 	return cmd
 }
