@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"oro/pkg/protocol"
+	"oro/pkg/web"
 )
 
 // DashboardData is the read-only query surface exposed to the web dashboard.
@@ -133,4 +134,23 @@ func (d *Dispatcher) SubscribeSSE() chan string {
 // UnsubscribeSSE implements DashboardData.
 func (d *Dispatcher) UnsubscribeSSE(ch chan string) {
 	d.sseBroadcaster.Unsubscribe(ch)
+}
+
+// Workers implements web.DashboardData. It snapshots the current worker
+// states and returns them as a slice of web.WorkerInfo values.
+func (d *Dispatcher) Workers(_ context.Context) ([]web.WorkerInfo, error) {
+	d.mu.Lock()
+	workers, _, _, _ := d.snapshotWorkers(d.nowFunc())
+	d.mu.Unlock()
+
+	result := make([]web.WorkerInfo, len(workers))
+	for i, w := range workers {
+		result[i] = web.WorkerInfo{
+			ID:         w.ID,
+			State:      w.State,
+			BeadID:     w.BeadID,
+			ContextPct: w.ContextPct,
+		}
+	}
+	return result, nil
 }
