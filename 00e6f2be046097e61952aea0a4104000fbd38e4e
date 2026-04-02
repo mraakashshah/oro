@@ -1,0 +1,25 @@
+pkg/dispatcher/dispatcher.go
+  dc74cea15324661d 290
+cmd/oro/cmd_start.go
+  dc74cea15324661d 399
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "00e6f2be046097e61952aea0a4104000fbd38e4e",
+  "prompts": {
+    "dc74cea15324661d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bb1b766e-e5bb-4f9c-83e4-c402e1648f14",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
