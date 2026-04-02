@@ -22,6 +22,7 @@ type mockDashboard struct {
 	detail     map[string]*protocol.BeadDetail
 	workers    []web.WorkerInfo
 	healthErr  error
+	events     []protocol.Event
 }
 
 func (m *mockDashboard) ReadyBeads(_ context.Context) ([]protocol.Bead, error) {
@@ -55,6 +56,10 @@ func (m *mockDashboard) HealthError() error {
 
 func (m *mockDashboard) Workers(_ context.Context) ([]web.WorkerInfo, error) {
 	return m.workers, nil
+}
+
+func (m *mockDashboard) RecentEvents(_ context.Context, _ int) ([]protocol.Event, error) {
+	return m.events, nil
 }
 
 func (m *mockDashboard) SubscribeSSE() chan string {
@@ -98,6 +103,9 @@ func testTemplates() fstest.MapFS {
 <p class="status">{{.Status}}</p>
 <p class="description">{{.Description}}</p>
 </div>`),
+		},
+		"events.html": &fstest.MapFile{
+			Data: []byte(`<div class="events-feed">{{range .}}<div class="event-row"><span class="time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span><span class="symbol">{{if eq .Type "merged"}}✓{{else if eq .Type "quality_gate_rejected"}}✗{{else if eq .Type "merge_conflict"}}⚠{{else if eq .Type "qg_stuck_detected"}}⚠{{else if eq .Type "handoff"}}↻{{else if eq .Type "escalation"}}▲{{else}}{{.Type}}{{end}}</span>{{if .BeadID}}<span class="bead-id">{{.BeadID}}</span>{{end}}</div>{{end}}</div>`),
 		},
 	}
 }
@@ -289,4 +297,52 @@ func TestIndexHealthError(t *testing.T) {
 	if !strings.Contains(body, "database unreachable") {
 		t.Errorf("GET / with health error should contain error message; got: %q", body)
 	}
+}
+
+func TestFragmentEvents(t *testing.T) {
+	t.Run("returns 200 with event data", func(t *testing.T) {
+		data := &mockDashboard{
+			events: []protocol.Event{
+				{Type: "merged", BeadID: "oro-a1", CreatedAt: "2025-01-15T14:30:00Z"},
+				{Type: "quality_gate_rejected", BeadID: "oro-b2", CreatedAt: "2025-01-15T09:05:00Z"},
+				{Type: "escalation", BeadID: "", CreatedAt: "2025-01-15T22:00:00Z"},
+			},
+		}
+		h := web.NewHandler(data, testTemplates())
+
+		req := httptest.NewRequest(http.MethodGet, "/fragments/events", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /fragments/events status = %d, want 200", rec.Code)
+		}
+		ct := rec.Header().Get("Content-Type")
+		if !strings.HasPrefix(ct, "text/html") {
+			t.Errorf("Content-Type = %q, want text/html", ct)
+		}
+		body := rec.Body.String()
+		for _, want := range []string{"14:30", "09:05", "22:00", "✓", "✗", "▲", "oro-a1", "oro-b2"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("body missing %q; body: %q", want, body)
+			}
+		}
+	})
+
+	t.Run("empty events renders container", func(t *testing.T) {
+		data := &mockDashboard{events: []protocol.Event{}}
+		h := web.NewHandler(data, testTemplates())
+
+		req := httptest.NewRequest(http.MethodGet, "/fragments/events", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /fragments/events status = %d, want 200", rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "events-feed") {
+			t.Errorf("body missing events container; got: %q", body)
+		}
+	})
 }

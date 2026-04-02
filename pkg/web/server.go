@@ -27,6 +27,7 @@ type DashboardData interface {
 	BlockedBeads(ctx context.Context) ([]protocol.Bead, error)
 	ClosedBeads(ctx context.Context, limit int) ([]protocol.Bead, error)
 	ShowBead(ctx context.Context, id string) (*protocol.BeadDetail, error)
+	RecentEvents(ctx context.Context, limit int) ([]protocol.Event, error)
 	Workers(ctx context.Context) ([]WorkerInfo, error)
 	SubscribeSSE() chan string
 	UnsubscribeSSE(ch chan string)
@@ -57,6 +58,7 @@ type handler struct {
 	paradeTmpl  *template.Template
 	workersTmpl *template.Template
 	detailTmpl  *template.Template
+	eventsTmpl  *template.Template
 }
 
 // NewHandler returns an http.Handler that serves the web dashboard.
@@ -76,6 +78,7 @@ func NewHandler(data DashboardData, templates fs.FS) http.Handler {
 		paradeTmpl:  mustParse("parade.html"),
 		workersTmpl: mustParse("workers.html"),
 		detailTmpl:  mustParse("detail.html"),
+		eventsTmpl:  mustParse("events.html"),
 	}
 
 	mux := http.NewServeMux()
@@ -83,7 +86,8 @@ func NewHandler(data DashboardData, templates fs.FS) http.Handler {
 	mux.HandleFunc("GET /fragments/parade", h.paradeHandler)
 	mux.HandleFunc("GET /fragments/workers", h.workersHandler)
 	mux.HandleFunc("GET /fragments/detail/{id}", h.detailHandler)
-	mux.HandleFunc("GET /events", h.eventsHandler)
+	mux.HandleFunc("GET /fragments/events", h.eventsHandler)
+	mux.HandleFunc("GET /events", h.sseHandler)
 	return mux
 }
 
@@ -153,6 +157,18 @@ func (h *handler) detailHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
+	events, err := h.data.RecentEvents(r.Context(), 50)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.eventsTmpl.ExecuteTemplate(w, "events.html", events); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
