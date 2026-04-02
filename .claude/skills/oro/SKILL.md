@@ -201,6 +201,21 @@ go test ./pkg/dispatcher/... -count=1 -timeout 180s
 go test ./pkg/worker/... -v -count=1
 ```
 
+## Dolt/Beads Recovery
+
+**NEVER run `bd init --force`.** It destroys all bead history. This has happened 3 times.
+
+When bd/dolt errors occur, follow this recovery ladder:
+
+1. `bd dolt status` — is the server running?
+2. `bd dolt start` — restart it
+3. `bd dolt test` — can we connect?
+4. `bd doctor --server` — deeper diagnosis
+5. `bd doctor --fix` — auto-repair
+6. `bd doctor --fix --source=jsonl` — rebuild from backup WITHOUT wiping
+
+If none of these work, **ask the user**. Never nuke the database autonomously.
+
 ## Key Gotchas
 
 See [gotchas.md](references/gotchas.md) for the full list.

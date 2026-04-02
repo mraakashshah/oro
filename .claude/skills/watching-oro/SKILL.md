@@ -139,6 +139,19 @@ make build
 
 **Note:** `./oro stop` requires an interactive terminal. In agent/non-TTY contexts, use `ORO_HUMAN_CONFIRMED=1 ./oro stop --force`.
 
+## Dolt/Beads Errors During Monitoring
+
+**NEVER run `bd init --force`.** It destroys all bead history. This has happened 3 times.
+
+When bd/dolt errors occur during observation:
+
+1. `bd dolt status` → `bd dolt start` → `bd dolt test`
+2. If still broken: `bd doctor --server` → `bd doctor --fix`
+3. If still broken: `bd doctor --fix --source=jsonl`
+4. If still broken: **ask the user**
+
+The dispatcher survives dolt outages — workers stay connected, only bead assignment pauses. Don't panic. Don't nuke.
+
 ## Context Management
 
 - At 40% context: switch to summary-only observation (report changes only)
