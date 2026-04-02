@@ -1,0 +1,35 @@
+pkg/web/embed_test.go
+  326a58ab58229f7e 1-89
+pkg/dispatcher/http_server_test.go
+  326a58ab58229f7e 5,8,13-20,187-229
+pkg/web/embed.go
+  326a58ab58229f7e 1-10
+pkg/web/server.go
+  326a58ab58229f7e 76-90,92,117-124
+pkg/dispatcher/dashboard.go
+  326a58ab58229f7e 7,171-202
+pkg/dispatcher/dispatcher.go
+  326a58ab58229f7e 755-756
+pkg/web/templates/workers.html
+  326a58ab58229f7e 1-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "d5d89a34bc8b07286bb3548ca2d58ff85b23d387",
+  "prompts": {
+    "326a58ab58229f7e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "88882fad-cd05-46bf-9820-8de79bfc7482",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 258,
+      "total_deletions": 44,
+      "accepted_lines": 217,
+      "overriden_lines": 0
+    }
+  }
+}
