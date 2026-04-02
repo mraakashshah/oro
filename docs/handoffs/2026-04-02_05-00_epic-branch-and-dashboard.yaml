@@ -1,0 +1,92 @@
+---
+date: 2026-04-02
+status: partial
+---
+
+goal: >
+  Continued swarm monitoring and specs. Dashboard beads recreated and in progress.
+  Epic management fixes auto-decomposed by swarm and executing. Discovered epic
+  branch lazy creation gap — spec'd and R1-reviewed, needs R2 + beadcraft.
+
+now: >
+  1. Run adversarial R2 on docs/plans/2026-04-02-epic-branch-lazy-creation-design.md
+     R1 found 3 gaps (MetaBranch collision, missing cleanup, BranchExists error path).
+     All fixed. Verify fixes, check for new gaps.
+  2. If R2 PASS: beadcraft decompose into 1-2 beads (interface extension + assignBead wiring).
+  3. Check swarm status — dashboard and epic fix beads may have landed.
+  4. If dashboard epic complete, verify with: curl localhost:4444/
+  5. Dashboard web epic: oro-gvgr. Epic fixes epic: oro-bkkv.
+
+test: |
+  go test ./pkg/dispatcher/... -count=1 -timeout 180s
+  go test ./pkg/web/... -count=1
+
+done_this_session:
+  - task: "Fixed CI (staticcheck lint in dream code)"
+    files: [pkg/dispatcher/dispatcher.go]
+
+  - task: "Spec'd + swarm landed epic QG check before ff-merge"
+    notes: "Merged: b7bdc1e"
+
+  - task: "Spec'd stealth PR opening — worker decomposed into 3 children"
+    notes: "oro-klir merged, oro-1gp8 and oro-p7go in progress"
+
+  - task: "Deep explored epic management — 6 failure modes"
+    files: [docs/plans/2026-04-01-epic-management-fixes-design.md]
+    notes: "Design doc updated by user with adversarial review fixes. Swarm auto-decomposed into 6 beads."
+
+  - task: "Recreated dashboard beads (7 tasks)"
+    notes: "Epic oro-gvgr. 3/7 merged (templates, BeadSource, SSE hook)."
+
+  - task: "Updated README, decisions doc, skills (oro, watching-oro) with session learnings"
+    files: [README.md, docs/decisions&discoveries.md, .claude/skills/oro/SKILL.md, .claude/skills/watching-oro/SKILL.md]
+
+  - task: "Added dolt recovery ladder to skills + memory — NEVER bd init --force"
+    files: [.claude/skills/oro/SKILL.md, .claude/skills/watching-oro/SKILL.md, ~/.claude/projects/-Users-as21-codehouse-oro/memory/feedback_never_bd_init_force.md]
+
+  - task: "Updated global CLAUDE.md — always uv, pandas+matplotlib+seaborn for data"
+    files: [~/.claude/CLAUDE.md, ~/.claude/rules/standards.md]
+
+  - task: "Upgraded beads from 0.62.0 to 0.63.3"
+
+  - task: "Discovered epic branch lazy creation gap — spec'd design doc, R1 reviewed"
+    files: [docs/plans/2026-04-02-epic-branch-lazy-creation-design.md]
+    notes: "R1 FAIL: MetaBranch collision, missing cleanup, BranchExists error path. All fixed."
+
+blockers:
+  - "ff-only merge failures keep blocking beads that pass review — recurring pattern throughout session"
+
+decisions:
+  - lazy_epic_branch: >
+      Create epic/<epicID> branch lazily on first child assignment in assignBead.
+      Guard: resolvedEpicID != "" (prevents MetaBranch collision).
+      Race: idempotent via git error + re-check. Cleanup on failure.
+  - never_bd_init_force: >
+      Added to 3 places (memory, oro skill, watching-oro skill).
+      Recovery ladder: bd dolt status → start → test → doctor --fix.
+
+findings:
+  - epic_branch_never_created: >
+      epic/<epicID> branch is never explicitly created anywhere in the codebase.
+      Worker decomposition creates it implicitly. Manual beads bypass isolation.
+  - focus_is_sort_not_filter: >
+      oro directive focus sets sort priority, not a filter. Other beads still
+      get assigned when focused epic children are all busy/blocked.
+
+beads:
+  completed: [oro-03hc, oro-2d5h, oro-42p8, oro-9kow, oro-3u98, oro-xkhm]
+  in_progress: [oro-vod3 (FM2), oro-n2u9 (FM4), oro-t8ko (SSEBroadcaster, merge failed)]
+  remaining:
+    - "oro-mpud (FM1: type re-check in handleDone)"
+    - "oro-ca7a (DashboardData interface)"
+    - "oro-2vtr (HTTP server in Run)"
+    - "oro-e71c (fragment handlers)"
+    - "Epic branch lazy creation (needs R2 + beadcraft)"
+
+epic_branch_design: >
+  docs/plans/2026-04-02-epic-branch-lazy-creation-design.md
+  R1 FAIL, 3 gaps fixed. Key code change: in assignBead, split
+  beErr!=nil (preserve handleEpicBranchMissing) from !exists+resolvedEpicID
+  (lazy CreateBranch). Add CreateBranch to WorktreeManager interface.
+  Mock updates needed in 4 test files. Existing handleEpicBranchMissing
+  test assertions will change (children now get assigned instead of blocked).
