@@ -2965,6 +2965,56 @@ func (d *Dispatcher) handleEpicBranchMissing(ctx context.Context, bead protocol.
 	d.mu.Unlock()
 }
 
+// ensureEpicBranchReady checks whether baseBranch exists and, if not, creates it
+// lazily. Returns true if assignment should proceed, false if it should abort.
+// When BranchExists itself fails, the existing handleEpicBranchMissing path is
+// preserved. When the branch is simply absent and resolvedEpicID is non-empty,
+// lazyCreateEpicBranch is attempted.
+func (d *Dispatcher) ensureEpicBranchReady(ctx context.Context, bead protocol.Bead, w *trackedWorker, baseBranch, resolvedEpicID string) bool {
+	exists, beErr := d.worktrees.BranchExists(ctx, baseBranch)
+	if beErr != nil {
+		// BranchExists itself failed (git broken) — preserve existing retry/escalate behavior.
+		d.handleEpicBranchMissing(ctx, bead, w, baseBranch, resolvedEpicID, beErr)
+		return false
+	}
+	// resolvedEpicID != "" guards against MetaBranch custom targets (e.g. "develop")
+	// that resolve with an empty epic ID — those skip lazy creation.
+	if !exists && resolvedEpicID != "" {
+		return d.lazyCreateEpicBranch(ctx, bead.ID, baseBranch)
+	}
+	return true
+}
+
+// lazyCreateEpicBranch creates baseBranch from d.cfg.DefaultBranch when it is
+// absent. Returns true if the caller should continue with assignment, false if
+// the creation failed genuinely (bead reverted, failure recorded, escalation sent).
+func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranch string) bool {
+	if err := d.worktrees.CreateBranch(ctx, baseBranch, d.cfg.DefaultBranch); err != nil {
+		// Branch may already exist due to a concurrent child assignment (race) — re-check.
+		exists2, _ := d.worktrees.BranchExists(ctx, baseBranch)
+		if !exists2 {
+			// Genuine failure (permissions, disk) — revert bead and escalate.
+			_ = d.logEvent(ctx, "epic_branch_create_failed", "dispatcher", beadID, "",
+				fmt.Sprintf(`{"branch":%q,"error":%q}`, baseBranch, err.Error()))
+			_ = d.beads.Update(ctx, beadID, "open")
+			d.mu.Lock()
+			delete(d.assigningBeads, beadID)
+			d.mu.Unlock()
+			d.recordAssignmentFailure(beadID)
+			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, beadID,
+				"epic branch creation failed", err.Error()), beadID, "")
+			return false
+		}
+		// Race resolved — another goroutine created the branch first.
+		_ = d.logEvent(ctx, "epic_branch_race_resolved", "dispatcher", beadID, "",
+			fmt.Sprintf(`{"branch":%q}`, baseBranch))
+		return true
+	}
+	_ = d.logEvent(ctx, "epic_branch_created", "dispatcher", beadID, "",
+		fmt.Sprintf(`{"branch":%q,"from":%q}`, baseBranch, d.cfg.DefaultBranch))
+	return true
+}
+
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
@@ -3051,11 +3101,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		return nil
 	}
 	if baseBranch != d.cfg.DefaultBranch {
-		// Escalate if the epic branch does not exist yet.
-		exists, beErr := d.worktrees.BranchExists(ctx, baseBranch)
-		if beErr != nil || !exists {
-			// Handle epic branch missing: check epic status to decide whether to escalate or retry.
-			d.handleEpicBranchMissing(ctx, bead, w, baseBranch, resolvedEpicID, beErr)
+		if !d.ensureEpicBranchReady(ctx, bead, w, baseBranch, resolvedEpicID) {
 			return nil
 		}
 	}

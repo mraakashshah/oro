@@ -277,7 +277,7 @@ type mockWorktreeManager struct {
 	mergeFFOnlyFn     func(branch, target string) (string, error)
 	updateBranchRefFn func(target, source string) error
 	existsFn          func(ctx context.Context, path string) bool
-	createBranchErr   error // if set, CreateBranch returns this error
+	createBranchFn    func(ctx context.Context, name, from string) error
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (string, string, error) {
@@ -382,10 +382,14 @@ func (m *mockWorktreeManager) PushBranch(_ context.Context, _ string) error {
 	return nil // default: push succeeds
 }
 
-func (m *mockWorktreeManager) CreateBranch(_ context.Context, _, _ string) error {
+func (m *mockWorktreeManager) CreateBranch(ctx context.Context, name, from string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.createBranchErr
+	fn := m.createBranchFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, name, from)
+	}
+	return nil // default: branch creation succeeds
 }
 
 type mockEscalator struct {
@@ -14707,15 +14711,15 @@ func TestAssignBeadResolvesBaseBranch(t *testing.T) { //nolint:funlen // integra
 		}
 	})
 
-	t.Run("epic child escalates when epic branch does not exist", func(t *testing.T) {
-		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+	t.Run("epic child lazily creates branch when epic branch does not exist", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 
 		// Register the parent as an epic so resolveEpicBranch produces an epic branch.
 		beadSrc.mu.Lock()
 		beadSrc.shown["epic-missing"] = &protocol.BeadDetail{ID: "epic-missing", Title: "Epic Missing", Type: "epic"}
 		beadSrc.mu.Unlock()
 
-		// Epic branch does NOT exist.
+		// Epic branch does NOT exist — lazy creation will create it.
 		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
 			return false, nil
 		}
@@ -14732,16 +14736,11 @@ func TestAssignBeadResolvesBaseBranch(t *testing.T) { //nolint:funlen // integra
 
 		beadSrc.SetBeads([]protocol.Bead{{ID: "bead-child-missing", Title: "Child bead missing branch", Priority: 1, Epic: "epic-missing"}})
 
-		// Bead must NOT be assigned.
-		msg, ok := readMsg(t, conn, time.Second)
-		if ok && msg.Type == protocol.MsgAssign {
-			t.Fatal("bead should not be assigned when epic branch does not exist")
+		// Branch lazily created → bead SHOULD be assigned.
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok || msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN after lazy branch creation, got ok=%v type=%v", ok, msg.Type)
 		}
-
-		// An escalation must be sent.
-		waitFor(t, func() bool {
-			return len(esc.Messages()) > 0
-		}, 2*time.Second)
 	})
 }
 
@@ -16360,30 +16359,28 @@ func TestChildAssignment_SkipsWhenEpicNotAssigned(t *testing.T) {
 			{ID: "child-of-open", Title: "Child of open epic", Priority: 1, Epic: "epic-open"},
 		})
 
-		// Bead should NOT be assigned (no ASSIGN message).
-		msg, ok := readMsg(t, conn, 500*time.Millisecond)
-		if ok && msg.Type == protocol.MsgAssign {
-			t.Fatal("bead should not be assigned when epic is in open status")
+		// Branch is lazily created → child SHOULD be assigned.
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok || msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN after lazy branch creation (open epic), got ok=%v type=%v", ok, msg.Type)
 		}
 
-		// Check that we see epic_branch_pending event (not an escalation).
-		logEvents := getLogEvents(t, d)
-		foundPending := false
-		for _, event := range logEvents {
-			if strings.Contains(event, "epic_branch_pending:") {
-				foundPending = true
+		// epic_branch_created should be logged (branch was lazily created).
+		foundCreated := false
+		for _, event := range getLogEvents(t, d) {
+			if strings.Contains(event, "epic_branch_created:") {
+				foundCreated = true
 				break
 			}
 		}
-		if !foundPending {
-			t.Errorf("expected epic_branch_pending log event, events: %v", logEvents)
+		if !foundCreated {
+			t.Errorf("expected epic_branch_created log event, events: %v", getLogEvents(t, d))
 		}
 
-		// No STUCK_WORKER escalation should be sent.
-		escalations := esc.Messages()
-		for _, esc := range escalations {
-			if strings.Contains(esc, string(protocol.EscStuckWorker)) {
-				t.Errorf("unexpected STUCK_WORKER escalation: %s", esc)
+		// No STUCK_WORKER escalation should be sent (lazy creation succeeded).
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, string(protocol.EscStuckWorker)) {
+				t.Errorf("unexpected STUCK_WORKER escalation: %s", m)
 			}
 		}
 	})
@@ -16422,21 +16419,30 @@ func TestChildAssignment_SkipsWhenEpicNotAssigned(t *testing.T) {
 			{ID: "child-of-wip", Title: "Child of WIP epic", Priority: 1, Epic: "epic-wip"},
 		})
 
-		// Bead should NOT be assigned.
-		msg, ok := readMsg(t, conn, 500*time.Millisecond)
-		if ok && msg.Type == protocol.MsgAssign {
-			t.Fatal("bead should not be assigned when epic branch is missing")
+		// Branch is lazily created → child SHOULD be assigned.
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok || msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN after lazy branch creation (in_progress epic), got ok=%v type=%v", ok, msg.Type)
 		}
 
-		// STUCK_WORKER escalation SHOULD be sent (existing behavior for in_progress epic).
-		waitFor(t, func() bool {
-			for _, esc := range esc.Messages() {
-				if strings.Contains(esc, string(protocol.EscStuckWorker)) {
-					return true
-				}
+		// epic_branch_created should be logged.
+		foundCreated := false
+		for _, event := range getLogEvents(t, d) {
+			if strings.Contains(event, "epic_branch_created:") {
+				foundCreated = true
+				break
 			}
-			return false
-		}, 2*time.Second)
+		}
+		if !foundCreated {
+			t.Errorf("expected epic_branch_created log event, events: %v", getLogEvents(t, d))
+		}
+
+		// No STUCK_WORKER escalation: lazy creation succeeded, no error path hit.
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, string(protocol.EscStuckWorker)) {
+				t.Errorf("unexpected STUCK_WORKER escalation after lazy creation: %s", m)
+			}
+		}
 	})
 
 	t.Run("epic in blocked status with missing branch does not escalate", func(t *testing.T) {
@@ -16473,22 +16479,33 @@ func TestChildAssignment_SkipsWhenEpicNotAssigned(t *testing.T) {
 			{ID: "child-of-blocked", Title: "Child of blocked epic", Priority: 1, Epic: "epic-blocked"},
 		})
 
-		// Bead should NOT be assigned.
-		msg, ok := readMsg(t, conn, 500*time.Millisecond)
-		if ok && msg.Type == protocol.MsgAssign {
-			t.Fatal("bead should not be assigned when epic is blocked")
+		// Branch is lazily created → child SHOULD be assigned.
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok || msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN after lazy branch creation (blocked epic), got ok=%v type=%v", ok, msg.Type)
 		}
 
-		// No STUCK_WORKER escalation should be sent (spec: "epic status is blocked → skip (don't escalate)").
-		escalations := esc.Messages()
-		for _, esc := range escalations {
-			if strings.Contains(esc, string(protocol.EscStuckWorker)) {
-				t.Errorf("unexpected STUCK_WORKER escalation for blocked epic: %s", esc)
+		// epic_branch_created should be logged.
+		foundCreated := false
+		for _, event := range getLogEvents(t, d) {
+			if strings.Contains(event, "epic_branch_created:") {
+				foundCreated = true
+				break
+			}
+		}
+		if !foundCreated {
+			t.Errorf("expected epic_branch_created log event, events: %v", getLogEvents(t, d))
+		}
+
+		// No STUCK_WORKER escalation (lazy creation succeeded).
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, string(protocol.EscStuckWorker)) {
+				t.Errorf("unexpected STUCK_WORKER escalation for blocked epic: %s", m)
 			}
 		}
 	})
 
-	t.Run("epic in closed status with missing branch escalates as STUCK_WORKER", func(t *testing.T) {
+	t.Run("epic in closed status with missing branch lazily creates branch", func(t *testing.T) {
 		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
 
 		// Register the epic with "closed" status but branch is missing — genuine problem
@@ -16522,21 +16539,30 @@ func TestChildAssignment_SkipsWhenEpicNotAssigned(t *testing.T) {
 			{ID: "child-of-closed", Title: "Child of closed epic", Priority: 1, Epic: "epic-closed"},
 		})
 
-		// Bead should NOT be assigned.
-		msg, ok := readMsg(t, conn, 500*time.Millisecond)
-		if ok && msg.Type == protocol.MsgAssign {
-			t.Fatal("bead should not be assigned when epic branch is missing")
+		// Branch is lazily created → child SHOULD be assigned.
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok || msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN after lazy branch creation (closed epic), got ok=%v type=%v", ok, msg.Type)
 		}
 
-		// STUCK_WORKER escalation SHOULD be sent (spec: "epic status is closed but branch missing → escalate").
-		waitFor(t, func() bool {
-			for _, esc := range esc.Messages() {
-				if strings.Contains(esc, string(protocol.EscStuckWorker)) {
-					return true
-				}
+		// epic_branch_created should be logged.
+		foundCreated := false
+		for _, event := range getLogEvents(t, d) {
+			if strings.Contains(event, "epic_branch_created:") {
+				foundCreated = true
+				break
 			}
-			return false
-		}, 2*time.Second)
+		}
+		if !foundCreated {
+			t.Errorf("expected epic_branch_created log event, events: %v", getLogEvents(t, d))
+		}
+
+		// No STUCK_WORKER escalation (lazy creation succeeded; handleEpicBranchMissing not called).
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, string(protocol.EscStuckWorker)) {
+				t.Errorf("unexpected STUCK_WORKER escalation after lazy creation: %s", m)
+			}
+		}
 	})
 }
 
