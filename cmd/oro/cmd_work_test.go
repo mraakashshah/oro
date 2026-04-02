@@ -576,6 +576,10 @@ func (m *envCapturingWorktreeManager) PushBranch(_ context.Context, _ string) er
 	return nil
 }
 
+func (m *envCapturingWorktreeManager) CreateBranch(_ context.Context, _, _ string) error {
+	return nil
+}
+
 // TestSpawnAndWaitWithMemoryAndCodeContext verifies that spawnAndWait wires
 // MemoryContext and CodeSearchContext into AssemblePrompt, and passes memStore
 // to DrainOutput.
@@ -1356,5 +1360,9 @@ func (m *branchCapturingWorktreeManager) RebaseOnto(_ context.Context, _, _ stri
 }
 
 func (m *branchCapturingWorktreeManager) PushBranch(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *branchCapturingWorktreeManager) CreateBranch(_ context.Context, _, _ string) error {
 	return nil
 }

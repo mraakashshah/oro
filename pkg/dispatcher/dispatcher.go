@@ -573,18 +573,19 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			workers: make(map[string]*trackedWorker),
 		},
 		BeadTracker: BeadTracker{
-			rejectionCounts:  make(map[string]int),
-			handoffCounts:    make(map[string]int),
-			attemptCounts:    make(map[string]int),
-			pendingHandoffs:  make(map[string]*pendingHandoff),
-			qgStuckTracker:   make(map[string]*qgHistory),
-			escalatedBeads:   make(map[string]bool),
-			worktreeFailures: make(map[string]time.Time),
-			exhaustedBeads:   make(map[string]bool),
-			assigningBeads:   make(map[string]bool),
-			mergingBeads:     make(map[string]bool),
-			worktreeByBead:   make(map[string]string),
-			epicMergeFailed:  make(map[string]bool),
+			rejectionCounts:        make(map[string]int),
+			handoffCounts:          make(map[string]int),
+			attemptCounts:          make(map[string]int),
+			pendingHandoffs:        make(map[string]*pendingHandoff),
+			qgStuckTracker:         make(map[string]*qgHistory),
+			escalatedBeads:         make(map[string]bool),
+			worktreeFailures:       make(map[string]time.Time),
+			exhaustedBeads:         make(map[string]bool),
+			assigningBeads:         make(map[string]bool),
+			mergingBeads:           make(map[string]bool),
+			worktreeByBead:         make(map[string]string),
+			epicMergeFailed:        make(map[string]bool),
+			processedExternalClose: make(map[string]bool),
 		},
 		priorityBeads:     make(map[string]bool),
 		pendingManagedIDs: make(map[string]bool),
@@ -2666,6 +2667,14 @@ func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
 // handleClosedAssignment checks whether a single bead has been closed
 // externally and, if so, shuts down the assigned worker and triggers cleanup.
 func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadID string) {
+	// Guard against re-entry: if we already processed this external close, skip (FM2).
+	d.mu.Lock()
+	alreadyProcessed := d.processedExternalClose[beadID]
+	d.mu.Unlock()
+	if alreadyProcessed {
+		return
+	}
+
 	// Skip beads with in-flight merges to prevent duplicate mergeAndComplete (oro-x4x8).
 	d.mu.Lock()
 	merging := d.mergingBeads[beadID]
@@ -2693,8 +2702,10 @@ func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadI
 	}
 
 	// Send SHUTDOWN, capture worktree, and clear worker state under lock.
+	// Mark as processed here so any concurrent or subsequent call returns early (FM2).
 	var worktree, epicID, targetBranch string
 	d.mu.Lock()
+	d.processedExternalClose[beadID] = true
 	if w, ok := d.workers[workerID]; ok && w.beadID == beadID {
 		worktree = w.worktree
 		epicID = w.epicID             // Capture epicID before clearing

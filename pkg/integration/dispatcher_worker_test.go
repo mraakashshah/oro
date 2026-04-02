@@ -149,6 +149,10 @@ func (m *mockWorktreeManager) PushBranch(_ context.Context, _ string) error {
 	return nil
 }
 
+func (m *mockWorktreeManager) CreateBranch(_ context.Context, _, _ string) error {
+	return nil
+}
+
 type mockEscalator struct{}
 
 func (m *mockEscalator) Escalate(_ context.Context, _ string) error {

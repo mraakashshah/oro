@@ -18,18 +18,19 @@ const worktreeFailureCooldown = 60 * time.Second
 // is promoted, keeping existing call-sites and tests unchanged.
 // Synchronisation is provided by the Dispatcher-level mu.
 type BeadTracker struct {
-	rejectionCounts  map[string]int             // bead ID -> review rejection count
-	handoffCounts    map[string]int             // bead ID -> ralph handoff count
-	attemptCounts    map[string]int             // bead ID -> QG retry attempt count
-	pendingHandoffs  map[string]*pendingHandoff // bead ID -> pending handoff info
-	qgStuckTracker   map[string]*qgHistory      // bead ID -> consecutive QG output hashes
-	escalatedBeads   map[string]bool            // bead ID -> true if PRIORITY_CONTENTION escalated
-	worktreeFailures map[string]time.Time       // bead ID -> last worktree creation failure time
-	exhaustedBeads   map[string]bool            // bead ID -> true if QG retries exhausted (blocks re-assignment)
-	assigningBeads   map[string]bool            // bead ID -> true if assignment in progress (oro-ptp2: prevents concurrent assignment)
-	mergingBeads     map[string]bool            // bead ID -> true if mergeAndComplete is in-flight (oro-x4x8: prevents duplicate merge on external close)
-	worktreeByBead   map[string]string          // bead ID -> worktree path (preserved on timeout/kill for respawn reuse, oro-1eo8)
-	epicMergeFailed  map[string]bool            // epic ID -> true if FF-merge failed (blocks auto-close until a rebase fix child merges)
+	rejectionCounts        map[string]int             // bead ID -> review rejection count
+	handoffCounts          map[string]int             // bead ID -> ralph handoff count
+	attemptCounts          map[string]int             // bead ID -> QG retry attempt count
+	pendingHandoffs        map[string]*pendingHandoff // bead ID -> pending handoff info
+	qgStuckTracker         map[string]*qgHistory      // bead ID -> consecutive QG output hashes
+	escalatedBeads         map[string]bool            // bead ID -> true if PRIORITY_CONTENTION escalated
+	worktreeFailures       map[string]time.Time       // bead ID -> last worktree creation failure time
+	exhaustedBeads         map[string]bool            // bead ID -> true if QG retries exhausted (blocks re-assignment)
+	assigningBeads         map[string]bool            // bead ID -> true if assignment in progress (oro-ptp2: prevents concurrent assignment)
+	mergingBeads           map[string]bool            // bead ID -> true if mergeAndComplete is in-flight (oro-x4x8: prevents duplicate merge on external close)
+	worktreeByBead         map[string]string          // bead ID -> worktree path (preserved on timeout/kill for respawn reuse, oro-1eo8)
+	epicMergeFailed        map[string]bool            // epic ID -> true if FF-merge failed (blocks auto-close until a rebase fix child merges)
+	processedExternalClose map[string]bool            // bead ID -> true once handleClosedAssignment has processed an external close (FM2: prevents re-entry)
 }
 
 // --- Bead tracking helpers ---
@@ -49,6 +50,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.exhaustedBeads, beadID)
 	delete(d.assigningBeads, beadID)
 	delete(d.mergingBeads, beadID)
+	delete(d.processedExternalClose, beadID)
 	d.mu.Unlock()
 }
 
@@ -138,6 +140,7 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 		delete(d.mergingBeads, beadID)
 		delete(d.worktreeByBead, beadID)
 		delete(d.epicMergeFailed, beadID)
+		delete(d.processedExternalClose, beadID)
 	}
 	return len(orphaned)
 }
@@ -196,6 +199,9 @@ func (d *Dispatcher) allTrackingKeys() []string {
 		seen[id] = true
 	}
 	for id := range d.epicMergeFailed {
+		seen[id] = true
+	}
+	for id := range d.processedExternalClose {
 		seen[id] = true
 	}
 	keys := make([]string, 0, len(seen))

@@ -16848,3 +16848,185 @@ func TestCheckEpicAssignable_DelegatesToCompleteEpicClose(t *testing.T) {
 		t.Error("expected epic to be closed via completeEpicClose")
 	}
 }
+
+// blockingQGRunner blocks in Run until ch is closed, then returns passed=true.
+// Used in tests to park the mergeAndComplete goroutine inside checkPreMergeQG so
+// that processedExternalClose entries remain observable before clearBeadTracking runs.
+type blockingQGRunner struct {
+	ch <-chan struct{}
+}
+
+func (b *blockingQGRunner) Run(ctx context.Context, _ string, _ bool) (bool, string, error) {
+	select {
+	case <-b.ch:
+		return true, "", nil
+	case <-ctx.Done():
+		return false, "", ctx.Err()
+	}
+}
+
+// TestExternalClose_NoReEntry verifies the processedExternalClose re-entry guard:
+//
+//	(1) First call to handleClosedAssignment processes a closed bead (sends SHUTDOWN)
+//	    and sets processedExternalClose[beadID] = true.
+//	(2) A subsequent call with the same beadID returns early because
+//	    processedExternalClose[beadID] is true — no duplicate SHUTDOWN is sent.
+//	(3) clearBeadTracking removes the processedExternalClose entry (triggered by
+//	    reassignment or worktree removal).
+//	(4) processedExternalClose entries appear in allTrackingKeys and are pruned by
+//	    deleteOrphanedTracking.
+func TestExternalClose_NoReEntry(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const beadID = "bead-no-reentry"
+	const workerID = "w-no-reentry"
+	const worktreePath = "/tmp/worktree-no-reentry"
+
+	// Insert assignment record so completeAssignment / mergeAndComplete can update it.
+	_, err = d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		beadID, workerID, worktreePath)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+
+	// Mark bead as closed externally.
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "closed"}
+	beadSrc.mu.Unlock()
+
+	// Install a blocking QG runner so the async mergeAndComplete goroutine parks
+	// inside checkPreMergeQG. This prevents clearBeadTracking from running before
+	// we can assert that processedExternalClose[beadID] is set (assertion 2).
+	qgBlockCh := make(chan struct{})
+	closed := false
+	defer func() {
+		if !closed {
+			close(qgBlockCh)
+		}
+	}()
+	d.qgRunner = &blockingQGRunner{ch: qgBlockCh}
+
+	// --- (1) First call processes the bead: sends SHUTDOWN. ---
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn,
+		beadID:   beadID,
+		state:    protocol.WorkerBusy,
+		worktree: worktreePath,
+		encoder:  json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.handleClosedAssignment(ctx, workerID, beadID)
+
+	conn.mu.Lock()
+	gotShutdown := false
+	for _, data := range conn.written {
+		if strings.Contains(string(data), string(protocol.MsgShutdown)) {
+			gotShutdown = true
+			break
+		}
+	}
+	conn.mu.Unlock()
+	if !gotShutdown {
+		t.Fatal("(1) expected SHUTDOWN to be sent on first call to handleClosedAssignment")
+	}
+
+	// --- (2) processedExternalClose[beadID] is true after the first call. ---
+	// The mergeAndComplete goroutine is parked in checkPreMergeQG (qgBlockCh not
+	// yet closed), so clearBeadTracking has not run — the flag is observable here.
+	d.mu.Lock()
+	processed := d.processedExternalClose[beadID]
+	d.mu.Unlock()
+	if !processed {
+		t.Fatal("(2) expected processedExternalClose[beadID] to be true after first call")
+	}
+
+	// --- (2) Second call returns early — no duplicate SHUTDOWN. ---
+	conn2 := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn2,
+		beadID:   beadID,
+		state:    protocol.WorkerBusy,
+		worktree: worktreePath,
+		encoder:  json.NewEncoder(conn2),
+	}
+	d.mu.Unlock()
+
+	d.handleClosedAssignment(ctx, workerID, beadID)
+
+	conn2.mu.Lock()
+	gotShutdown2 := false
+	for _, data := range conn2.written {
+		if strings.Contains(string(data), string(protocol.MsgShutdown)) {
+			gotShutdown2 = true
+			break
+		}
+	}
+	conn2.mu.Unlock()
+	if gotShutdown2 {
+		t.Error("(2) expected no SHUTDOWN on re-entry when processedExternalClose is set")
+	}
+
+	// Release the blocked goroutine and wait for mergeAndComplete to finish.
+	close(qgBlockCh)
+	closed = true
+	d.wg.Wait()
+
+	// --- (3) clearBeadTracking removes the processedExternalClose entry. ---
+	// Re-set the entry (mergeAndComplete does not call clearBeadTracking, so it may
+	// still be set; either way, force it for a deterministic test).
+	d.mu.Lock()
+	d.processedExternalClose[beadID] = true
+	d.mu.Unlock()
+
+	d.clearBeadTracking(beadID)
+
+	d.mu.Lock()
+	processedAfterClear := d.processedExternalClose[beadID]
+	d.mu.Unlock()
+	if processedAfterClear {
+		t.Error("(3) expected processedExternalClose[beadID] to be cleared by clearBeadTracking")
+	}
+
+	// --- (4a) allTrackingKeys includes processedExternalClose entries. ---
+	d.mu.Lock()
+	d.processedExternalClose[beadID] = true
+	keys := d.allTrackingKeys()
+	d.mu.Unlock()
+
+	found := false
+	for _, k := range keys {
+		if k == beadID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("(4) expected processedExternalClose entry to appear in allTrackingKeys")
+	}
+
+	// --- (4b) deleteOrphanedTracking removes processedExternalClose entries. ---
+	d.mu.Lock()
+	count := d.deleteOrphanedTracking(map[string]bool{})
+	processedAfterOrphan := d.processedExternalClose[beadID]
+	d.mu.Unlock()
+
+	if count == 0 {
+		t.Error("(4) expected deleteOrphanedTracking to find at least one orphaned entry")
+	}
+	if processedAfterOrphan {
+		t.Error("(4) expected processedExternalClose[beadID] to be removed by deleteOrphanedTracking")
+	}
+}
