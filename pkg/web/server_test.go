@@ -100,9 +100,17 @@ func testTemplates() fstest.MapFS {
 		},
 		"detail.html": &fstest.MapFile{
 			Data: []byte(`<div class="bead-detail" id="{{.ID}}">
-<h1>{{.Title}}</h1>
-<p class="status">{{.Status}}</p>
-<p class="description">{{.Description}}</p>
+<h2>{{.Title}}</h2>
+<div class="detail-meta">
+<span class="status">Status: {{.Status}}</span>
+</div>
+{{if .Description}}<div class="detail-description">{{.Description}}</div>{{end}}
+{{if .AcceptanceCriteria}}<pre class="detail-ac">{{.AcceptanceCriteria}}</pre>{{end}}
+{{if .Dependencies}}<div class="detail-deps">
+Dependencies:
+{{range .Dependencies}}<div class="dep-item">{{.DependsOnID}}</div>{{end}}
+</div>{{end}}
+{{if .WorkerID}}<div class="detail-worker">Worker: {{.WorkerID}} ({{.ContextPercent}}%)</div>{{end}}
 </div>`),
 		},
 		"events.html": &fstest.MapFile{
