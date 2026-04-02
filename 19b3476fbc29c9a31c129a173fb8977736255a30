@@ -1,0 +1,25 @@
+pkg/web/server_test.go
+  844e2c05c3f0fa85 89-91,93
+pkg/web/workers_template_test.go
+  844e2c05c3f0fa85 1-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "19b3476fbc29c9a31c129a173fb8977736255a30",
+  "prompts": {
+    "844e2c05c3f0fa85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "858edb79-5e5c-493b-85cb-be8d05433b23",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 132,
+      "total_deletions": 54,
+      "accepted_lines": 81,
+      "overriden_lines": 0
+    }
+  }
+}
