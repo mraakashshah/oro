@@ -1082,6 +1082,17 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	// Clear tracking state for completed bead.
 	d.clearBeadTracking(beadID)
 
+	// Re-check bead type: if a task bead was promoted to an epic mid-flight,
+	// skip merge to avoid landing decomposition work as a finished task.
+	// Show errors are best-effort — fall through to the normal merge path.
+	if !isEpicDecomp {
+		if detail, err := d.beads.Show(ctx, beadID); err == nil && detail != nil && detail.Type == "epic" {
+			_ = d.logEvent(ctx, "type_changed_to_epic", workerID, beadID, workerID, "")
+			d.safeGo(func() { d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree) })
+			return
+		}
+	}
+
 	if isEpicDecomp {
 		// Epic decomposition complete — skip merge/close; just clean up the worktree.
 		_ = d.logEvent(ctx, "epic_decomp_done", workerID, beadID, workerID, "")

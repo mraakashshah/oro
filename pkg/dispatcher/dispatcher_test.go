@@ -3647,6 +3647,128 @@ func TestHandleDonePreservesEpicID(t *testing.T) {
 	}
 }
 
+// TestHandleDone_TypeChangedToEpic verifies that handleDone re-checks the bead
+// type via BeadSource.Show before deciding to merge. If the type changed to
+// "epic" mid-flight (and the worker was NOT an epic-decomp worker), the merge
+// is skipped and the worktree is cleaned up instead.
+func TestHandleDone_TypeChangedToEpic(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("skips merge and cleans up when type changed to epic", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		beadID := "oro-task-became-epic"
+		workerID := "worker-type-change"
+		worktree := "/tmp/worktree-" + beadID
+
+		// Worker was assigned as a task (isEpicDecomp=false).
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			beadID:       beadID,
+			worktree:     worktree,
+			state:        protocol.WorkerBusy,
+			isEpicDecomp: false,
+			encoder:      json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		// Mid-flight: bead type has been changed to "epic".
+		beadSrc.mu.Lock()
+		beadSrc.shown[beadID] = &protocol.BeadDetail{
+			ID:                 beadID,
+			Title:              "task that became an epic",
+			Type:               "epic",
+			AcceptanceCriteria: "Test: auto | Assert: PASS",
+		}
+		beadSrc.mu.Unlock()
+
+		d.handleDone(ctx, workerID, protocol.Message{
+			Type: protocol.MsgDone,
+			Done: &protocol.DonePayload{
+				BeadID:            beadID,
+				WorkerID:          workerID,
+				QualityGatePassed: true,
+			},
+		})
+
+		// "type_changed_to_epic" must be logged.
+		waitFor(t, func() bool {
+			return eventCount(t, d.db, "type_changed_to_epic") > 0
+		}, 2*time.Second)
+
+		// mergeAndComplete must NOT have been called.
+		if eventCount(t, d.db, "merged") != 0 {
+			t.Error("expected no merge when bead type changed to epic mid-flight")
+		}
+
+		// removeWorktreeAndClearTracking must have removed the worktree.
+		waitFor(t, func() bool {
+			wtMgr.mu.Lock()
+			defer wtMgr.mu.Unlock()
+			for _, p := range wtMgr.removed {
+				if p == worktree {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
+	})
+
+	t.Run("falls through to normal merge when Show returns error", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		beadID := "oro-task-show-err"
+		workerID := "worker-show-err"
+		worktree := "/tmp/worktree-" + beadID
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			beadID:       beadID,
+			worktree:     worktree,
+			state:        protocol.WorkerBusy,
+			isEpicDecomp: false,
+			encoder:      json.NewEncoder(nil),
+		}
+		d.mu.Unlock()
+
+		// Show returns an error — best-effort: fall through to normal merge.
+		beadSrc.mu.Lock()
+		beadSrc.showErrFn = map[string]error{beadID: errors.New("bd show failed")}
+		beadSrc.mu.Unlock()
+
+		d.handleDone(ctx, workerID, protocol.Message{
+			Type: protocol.MsgDone,
+			Done: &protocol.DonePayload{
+				BeadID:            beadID,
+				WorkerID:          workerID,
+				QualityGatePassed: true,
+			},
+		})
+
+		// Normal merge path must proceed.
+		waitFor(t, func() bool {
+			return eventCount(t, d.db, "merged") > 0
+		}, 2*time.Second)
+
+		// No "type_changed_to_epic" event must be emitted.
+		if eventCount(t, d.db, "type_changed_to_epic") != 0 {
+			t.Error("expected no type_changed_to_epic event when Show fails")
+		}
+	})
+}
+
 func TestHandleHandoffPreservesEpicContext(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
