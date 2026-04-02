@@ -580,6 +580,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			assigningBeads:   make(map[string]bool),
 			mergingBeads:     make(map[string]bool),
 			worktreeByBead:   make(map[string]string),
+			epicMergeFailed:  make(map[string]bool),
 		},
 		priorityBeads:     make(map[string]bool),
 		pendingManagedIDs: make(map[string]bool),
@@ -1430,6 +1431,12 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	}
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeComplete, beadID, "merged to "+mergedTo, result.CommitSHA), beadID, workerID)
 
+	// Clear any prior merge failure so the auto-close attempt below is not blocked.
+	if epicID != "" {
+		d.mu.Lock()
+		delete(d.epicMergeFailed, epicID)
+		d.mu.Unlock()
+	}
 	// Auto-close parent epic if all children are completed.
 	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
@@ -1586,7 +1593,18 @@ func (d *Dispatcher) autoCloseEpicIfComplete(ctx context.Context, workerID, epic
 // closes the epic normally; a failing test spawns a diagnostic agent to create
 // fix beads instead of closing. Epics without a Cmd: fall back to count-based
 // close with a warning logged.
+// epicMergeIsFailed reports whether the epic's FF-merge previously failed.
+// Caller must not hold d.mu.
+func (d *Dispatcher) epicMergeIsFailed(epicID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.epicMergeFailed[epicID]
+}
+
 func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) {
+	if d.epicMergeIsFailed(epicID) {
+		return
+	}
 	allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
 	if err != nil {
 		_ = d.logEvent(ctx, "epic_auto_close_check_failed", "dispatcher", epicID, workerID,
@@ -1716,6 +1734,11 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 // is created and the close is skipped.
 func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, reason, targetBranch string) {
 	if err := d.ffMergeEpicBranch(ctx, epicID, workerID, targetBranch); err != nil {
+		d.mu.Lock()
+		d.epicMergeFailed[epicID] = true
+		d.mu.Unlock()
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, epicID,
+			"epic ff merge failed", err.Error()), epicID, workerID)
 		return
 	}
 
@@ -3139,11 +3162,11 @@ func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead
 		return false, true
 	}
 	if allClosed {
-		if closeErr := d.beads.Close(ctx, bead.ID, "All children completed"); closeErr != nil {
-			_ = d.logEvent(ctx, "epic_auto_close_failed", "dispatcher", bead.ID, workerID, closeErr.Error())
-		} else {
-			_ = d.logEvent(ctx, "epic_auto_closed_on_assign", "dispatcher", bead.ID, workerID, "")
+		targetBranch := d.cfg.DefaultBranch
+		if s, _ := bead.Metadata[MetaBranch].(string); s != "" {
+			targetBranch = s
 		}
+		d.completeEpicClose(ctx, bead.ID, workerID, "All children completed", targetBranch)
 	}
 	return false, true
 }

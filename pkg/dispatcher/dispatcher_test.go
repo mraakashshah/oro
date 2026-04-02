@@ -16506,3 +16506,216 @@ func TestChildAssignment_ShowError_NoEscalation(t *testing.T) {
 		}
 	})
 }
+
+// --- FM4: epic FF-merge failure escalation, epicMergeFailed guard, checkEpicAssignable delegation ---
+
+// TestEpicFFMergeFailure_EscalatesAndBlocks verifies two behaviours:
+//  1. When ffMergeEpicBranch fails, completeEpicClose escalates EscStuck and
+//     sets epicMergeFailed[epicID]=true.
+//  2. tryCloseEpic silently skips when epicMergeFailed[epicID] is true, even
+//     when all children are closed.
+func TestEpicFFMergeFailure_EscalatesAndBlocks(t *testing.T) {
+	t.Run("ff merge failure escalates STUCK and sets epicMergeFailed", func(t *testing.T) {
+		d, _, wtMgr, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-ff-fail"
+		workerID := "worker-ff1"
+
+		// Epic branch exists but FF merge always fails.
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return true, nil
+		}
+		wtMgr.mergeFFOnlyFn = func(_, _ string) (string, error) {
+			return "", fmt.Errorf("diverged history")
+		}
+
+		d.completeEpicClose(ctx, epicID, workerID, "All children completed", d.cfg.DefaultBranch)
+
+		// STUCK escalation must have been sent.
+		msgs := esc.Messages()
+		foundStuck := false
+		for _, msg := range msgs {
+			if strings.Contains(msg, string(protocol.EscStuck)) && strings.Contains(msg, epicID) {
+				foundStuck = true
+				break
+			}
+		}
+		if !foundStuck {
+			t.Errorf("expected STUCK escalation for %s, got: %v", epicID, msgs)
+		}
+
+		// epicMergeFailed must be set.
+		d.mu.Lock()
+		failed := d.epicMergeFailed[epicID]
+		d.mu.Unlock()
+		if !failed {
+			t.Error("expected epicMergeFailed[epicID]=true after ff merge failure")
+		}
+	})
+
+	t.Run("tryCloseEpic skips when epicMergeFailed is set", func(t *testing.T) {
+		d, beadSource, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-blocked"
+		workerID := "worker-blk1"
+
+		// Mark this epic as having a failed merge.
+		d.mu.Lock()
+		d.epicMergeFailed[epicID] = true
+		d.mu.Unlock()
+
+		// All children are closed — would normally trigger close.
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		// Epic must NOT be closed.
+		beadSource.mu.Lock()
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				beadSource.mu.Unlock()
+				t.Fatalf("epic %s should not be closed when epicMergeFailed is set", epicID)
+			}
+		}
+		beadSource.mu.Unlock()
+	})
+}
+
+// TestEpicMergeFailedClearedOnChildComplete verifies that mergeAndComplete
+// deletes epicMergeFailed[epicID] before calling autoCloseEpicIfComplete, so
+// that a rebase-fix child completing unblocks the epic's auto-close.
+func TestEpicMergeFailedClearedOnChildComplete(t *testing.T) {
+	d, beadSource, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	epicID := "epic-recover"
+	childID := "child-rec1"
+	workerID := "worker-rec1"
+	worktree := "/tmp/worktree-" + childID
+	branch := protocol.BranchPrefix + childID
+
+	// Pre-set epicMergeFailed — simulates a prior ff-merge failure.
+	d.mu.Lock()
+	d.epicMergeFailed[epicID] = true
+	d.mu.Unlock()
+
+	// All children closed (the rebase fix just completed).
+	beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+
+	// Track the worker so mergeAndComplete can clean up.
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		beadID:  childID,
+		epicID:  epicID,
+		state:   protocol.WorkerBusy,
+		encoder: json.NewEncoder(nil),
+	}
+	d.mu.Unlock()
+
+	d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
+
+	// Wait for the async auto-close goroutine to close the epic.
+	// This only happens if epicMergeFailed was cleared before autoCloseEpicIfComplete.
+	waitFor(t, func() bool {
+		beadSource.mu.Lock()
+		defer beadSource.mu.Unlock()
+		for _, id := range beadSource.closed {
+			if id == epicID {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
+
+	// epicMergeFailed must be cleared.
+	d.mu.Lock()
+	failed := d.epicMergeFailed[epicID]
+	d.mu.Unlock()
+	if failed {
+		t.Error("expected epicMergeFailed[epicID] to be cleared after child completes")
+	}
+}
+
+// TestCheckEpicAssignable_DelegatesToCompleteEpicClose verifies that when all
+// children are closed, checkEpicAssignable delegates to completeEpicClose
+// (which FF-merges the epic branch) instead of calling beads.Close() directly.
+func TestCheckEpicAssignable_DelegatesToCompleteEpicClose(t *testing.T) {
+	d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	epicID := "epic-delegate"
+	workerID := "worker-del1"
+
+	// Epic has children and all are closed.
+	beadSource.hasChildrenMap = map[string]bool{epicID: true}
+	beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+
+	// Epic branch exists — FF merge should be attempted.
+	wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+		return true, nil
+	}
+
+	epicBead := protocol.Bead{ID: epicID, Type: "epic", Title: "Epic Delegate"}
+	isDecomp, skip := d.checkEpicAssignable(ctx, epicBead, workerID)
+
+	// Must return (false, true) — skip epic assignment.
+	if isDecomp || !skip {
+		t.Errorf("expected (false, true), got (%v, %v)", isDecomp, skip)
+	}
+
+	// FF merge must have been attempted (proves completeEpicClose was called,
+	// not a bare beads.Close()).
+	wtMgr.mu.Lock()
+	merged := make([]string, len(wtMgr.mergedBranches))
+	copy(merged, wtMgr.mergedBranches)
+	wtMgr.mu.Unlock()
+
+	epicBranch := protocol.EpicBranchPrefix + epicID
+	foundMerge := false
+	for _, b := range merged {
+		if b == epicBranch {
+			foundMerge = true
+			break
+		}
+	}
+	if !foundMerge {
+		t.Errorf("expected epic branch %s to be FF-merged via completeEpicClose, got merged: %v", epicBranch, merged)
+	}
+
+	// Epic must be closed.
+	beadSource.mu.Lock()
+	epicClosed := false
+	for _, id := range beadSource.closed {
+		if id == epicID {
+			epicClosed = true
+			break
+		}
+	}
+	beadSource.mu.Unlock()
+	if !epicClosed {
+		t.Error("expected epic to be closed via completeEpicClose")
+	}
+}

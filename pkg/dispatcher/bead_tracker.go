@@ -29,6 +29,7 @@ type BeadTracker struct {
 	assigningBeads   map[string]bool            // bead ID -> true if assignment in progress (oro-ptp2: prevents concurrent assignment)
 	mergingBeads     map[string]bool            // bead ID -> true if mergeAndComplete is in-flight (oro-x4x8: prevents duplicate merge on external close)
 	worktreeByBead   map[string]string          // bead ID -> worktree path (preserved on timeout/kill for respawn reuse, oro-1eo8)
+	epicMergeFailed  map[string]bool            // epic ID -> true if FF-merge failed (blocks auto-close until a rebase fix child merges)
 }
 
 // --- Bead tracking helpers ---
@@ -136,6 +137,7 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 		delete(d.assigningBeads, beadID)
 		delete(d.mergingBeads, beadID)
 		delete(d.worktreeByBead, beadID)
+		delete(d.epicMergeFailed, beadID)
 	}
 	return len(orphaned)
 }
@@ -191,6 +193,9 @@ func (d *Dispatcher) allTrackingKeys() []string {
 		seen[id] = true
 	}
 	for id := range d.worktreeByBead {
+		seen[id] = true
+	}
+	for id := range d.epicMergeFailed {
 		seen[id] = true
 	}
 	keys := make([]string, 0, len(seen))
