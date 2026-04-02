@@ -16094,36 +16094,50 @@ func TestCheckEpicAssignable_RetriesOnError(t *testing.T) {
 	epicBead := protocol.Bead{ID: epicID, Type: "epic", Title: "Epic"}
 	workerID := "w-test"
 
-	// Test 1: HasChildren returns error → should return (false, false) to allow retry
+	// Test 1: HasChildren returns error → skip=true (bead skipped this cycle, retried next)
 	beadSrc.hasChildrenErr = fmt.Errorf("transient db error")
 	isDecomp, skip := d.checkEpicAssignable(ctx, epicBead, workerID)
-	if isDecomp || skip {
-		t.Errorf("HasChildren error: got (%v, %v), want (false, false)", isDecomp, skip)
+	if isDecomp || !skip {
+		t.Errorf("HasChildren error: got (%v, %v), want (false, true)", isDecomp, skip)
 	}
 
-	// Clear error, set hasChildren = false → next call returns (true, false) for decomposition
+	// Retry: clear error, hasChildren=false → (true, false) for decomposition
 	beadSrc.hasChildrenErr = nil
-	beadSrc.hasChildrenMap = map[string]bool{epicID: false} // no children
+	beadSrc.hasChildrenMap = map[string]bool{epicID: false}
 	isDecomp, skip = d.checkEpicAssignable(ctx, epicBead, workerID)
 	if !isDecomp || skip {
-		t.Errorf("After HasChildren recovers with hasChildren=false: got (%v, %v), want (true, false)", isDecomp, skip)
+		t.Errorf("After HasChildren recovers with no children: got (%v, %v), want (true, false)", isDecomp, skip)
 	}
 
-	// Test 2: AllChildrenClosed returns error → should return (false, false) to allow retry
+	// Test 2: AllChildrenClosed returns error → skip=true (retried next cycle)
 	beadSrc.allChildrenClosedErr = fmt.Errorf("transient db error")
-	beadSrc.hasChildrenMap = map[string]bool{epicID: true} // epic has children
-	beadSrc.hasChildrenErr = nil                           // clear any previous error
+	beadSrc.hasChildrenMap = map[string]bool{epicID: true}
+	beadSrc.hasChildrenErr = nil
 	isDecomp, skip = d.checkEpicAssignable(ctx, epicBead, workerID)
-	if isDecomp || skip {
-		t.Errorf("AllChildrenClosed error: got (%v, %v), want (false, false)", isDecomp, skip)
+	if isDecomp || !skip {
+		t.Errorf("AllChildrenClosed error: got (%v, %v), want (false, true)", isDecomp, skip)
 	}
 
-	// Clear AllChildrenClosed error, set allClosed = true → should skip (epic auto-closed)
+	// Retry: clear error, allClosed=true → skip (epic auto-closed)
 	beadSrc.allChildrenClosedErr = nil
 	beadSrc.allChildrenClosedMap = map[string]bool{epicID: true}
 	isDecomp, skip = d.checkEpicAssignable(ctx, epicBead, workerID)
 	if isDecomp || !skip {
 		t.Errorf("After AllChildrenClosed recovers with allClosed=true: got (%v, %v), want (false, true)", isDecomp, skip)
+	}
+
+	// Test 3: No error, children exist + not all closed → skip (children still open)
+	beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
+	isDecomp, skip = d.checkEpicAssignable(ctx, epicBead, workerID)
+	if isDecomp || !skip {
+		t.Errorf("Children exist, not all closed: got (%v, %v), want (false, true)", isDecomp, skip)
+	}
+
+	// Test 4: Non-epic bead → (false, false), proceed normally
+	nonEpicBead := protocol.Bead{ID: "task-1", Type: "task", Title: "Task"}
+	isDecomp, skip = d.checkEpicAssignable(ctx, nonEpicBead, workerID)
+	if isDecomp || skip {
+		t.Errorf("Non-epic bead: got (%v, %v), want (false, false)", isDecomp, skip)
 	}
 }
 

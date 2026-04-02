@@ -3124,7 +3124,7 @@ func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead
 	hasChildren, err := d.beads.HasChildren(ctx, bead.ID)
 	if err != nil {
 		_ = d.logEvent(ctx, "epic_has_children_error", "dispatcher", bead.ID, workerID, err.Error())
-		return false, false
+		return false, true
 	}
 	if !hasChildren {
 		return true, false // no children → assign for decomposition
@@ -3133,7 +3133,7 @@ func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead
 	allClosed, err := d.beads.AllChildrenClosed(ctx, bead.ID)
 	if err != nil {
 		_ = d.logEvent(ctx, "epic_all_children_closed_error", "dispatcher", bead.ID, workerID, err.Error())
-		return false, false
+		return false, true
 	}
 	if allClosed {
 		if closeErr := d.beads.Close(ctx, bead.ID, "All children completed"); closeErr != nil {
