@@ -1,0 +1,27 @@
+pkg/web/parade_template_test.go
+  eaa1aa644a351fbf 1-168
+pkg/web/templates/parade.html
+  eaa1aa644a351fbf 1-76
+pkg/web/server.go
+  eaa1aa644a351fbf 43,46-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "bade74af6adee910d04e4f1c391fe91929e3688a",
+  "prompts": {
+    "eaa1aa644a351fbf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a72a3a3-fa00-4b8f-9826-07afca540248",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 254,
+      "total_deletions": 10,
+      "accepted_lines": 247,
+      "overriden_lines": 0
+    }
+  }
+}
