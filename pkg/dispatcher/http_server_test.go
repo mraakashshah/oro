@@ -69,8 +69,8 @@ func TestHTTPServerStartsInRun(t *testing.T) {
 			t.Fatalf("GET /healthz: %v", err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			t.Errorf("expected non-200 when state=inert, got %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("GET /healthz when state=inert = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 		}
 
 		// Transition to running.

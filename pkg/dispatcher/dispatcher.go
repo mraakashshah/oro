@@ -359,7 +359,7 @@ func (c *Config) withDefaults() Config {
 		out.DefaultBranch = "main"
 	}
 	if out.WebAddr == "" {
-		out.WebAddr = ":4444"
+		out.WebAddr = "127.0.0.1:4444"
 	}
 	return out
 }
@@ -756,6 +756,8 @@ func (d *Dispatcher) startHTTPServer() {
 		Addr:              d.cfg.WebAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, //nolint:gomnd // standard defensive timeout (G112)
+		WriteTimeout:      30 * time.Second, //nolint:gomnd // prevent slow-write resource exhaustion
+		IdleTimeout:       60 * time.Second, //nolint:gomnd // reclaim idle keep-alive connections
 	}
 	d.mu.Lock()
 	d.httpServer = srv
