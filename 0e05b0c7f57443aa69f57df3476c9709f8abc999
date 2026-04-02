@@ -1,0 +1,35 @@
+pkg/dispatcher/epic_branch_lazy_test.go
+  5ef21d004a017c62 1-352
+pkg/dispatcher/dispatcher_test.go
+  5ef21d004a017c62 280,385-394,14714-14715,14722,14739-14742,16362-16365,16368-16372,16376-16377,16380-16383,16422-16425,16428-16433,16435-16445,16482-16485,16488-16493,16496-16497,16500-16503,16508,16542-16545,16548-16553,16555-16557,16560-16563,16565
+cmd/oro/cmd_work_execute_test.go
+  5ef21d004a017c62 136-139
+pkg/dispatcher/worktree_manager.go
+  5ef21d004a017c62 341-349
+pkg/integration/dispatcher_worker_test.go
+  5ef21d004a017c62 152-155
+pkg/dispatcher/dispatcher.go
+  5ef21d004a017c62 108-110,2956-3005,3092
+cmd/oro/cmd_work_test.go
+  5ef21d004a017c62 579-582,1365-1368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "0e05b0c7f57443aa69f57df3476c9709f8abc999",
+  "prompts": {
+    "5ef21d004a017c62": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90748bcd-a4b4-43c4-98b4-86b9f145b2e8",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 562,
+      "total_deletions": 103,
+      "accepted_lines": 527,
+      "overriden_lines": 0
+    }
+  }
+}
