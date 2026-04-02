@@ -105,6 +105,10 @@ type WorktreeManager interface {
 	RebaseOnto(ctx context.Context, branch, onto string) error
 	// PushBranch pushes branch to origin.
 	PushBranch(ctx context.Context, branch string) error
+	// CreateBranch creates a new branch named `name` starting from `from`.
+	// If the branch already exists git returns a non-zero exit code; the
+	// caller is responsible for deciding whether that is an error.
+	CreateBranch(ctx context.Context, name string, from string) error
 }
 
 // Escalator sends messages to the Manager. Production impl uses tmux send-keys.

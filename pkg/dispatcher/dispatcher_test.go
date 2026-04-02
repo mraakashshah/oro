@@ -277,6 +277,7 @@ type mockWorktreeManager struct {
 	mergeFFOnlyFn     func(branch, target string) (string, error)
 	updateBranchRefFn func(target, source string) error
 	existsFn          func(ctx context.Context, path string) bool
+	createBranchErr   error // if set, CreateBranch returns this error
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (string, string, error) {
@@ -379,6 +380,12 @@ func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
 
 func (m *mockWorktreeManager) PushBranch(_ context.Context, _ string) error {
 	return nil // default: push succeeds
+}
+
+func (m *mockWorktreeManager) CreateBranch(_ context.Context, _, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.createBranchErr
 }
 
 type mockEscalator struct {

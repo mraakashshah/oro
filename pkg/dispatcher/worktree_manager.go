@@ -348,3 +348,15 @@ func (g *GitWorktreeManager) PushBranch(ctx context.Context, branch string) erro
 	}
 	return nil
 }
+
+// CreateBranch creates a new branch named `name` starting from `from` using
+// `git branch <name> <from>`. If the branch already exists git returns a
+// non-zero exit code; the caller is responsible for deciding whether that is
+// an error.
+func (g *GitWorktreeManager) CreateBranch(ctx context.Context, name, from string) error {
+	out, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", name, from)
+	if err != nil {
+		return fmt.Errorf("create branch %s from %s: %w (stdout: %s)", name, from, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
