@@ -1,0 +1,27 @@
+pkg/web/templates/events.html
+  19845939cb2d50d9 1-9
+pkg/web/server_test.go
+  19845939cb2d50d9 25,61-64,107-109,301-348
+pkg/web/server.go
+  19845939cb2d50d9 30,61,81,89-90,160-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "b2ee8eb75807894bf44d68a83e54015a2167c1fd",
+  "prompts": {
+    "19845939cb2d50d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b6fd1b4-ff0d-4642-b1cb-287b7a96e2ea",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 82,
+      "total_deletions": 1,
+      "accepted_lines": 82,
+      "overriden_lines": 0
+    }
+  }
+}
