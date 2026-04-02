@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "f6e4a011a269af2f6a2839b7e5e2404d52d02985",
+  "prompts": {
+    "f9bea446ca2b104e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f788d6a1-2273-435b-a348-2bd064b0a9a4",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 2,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
