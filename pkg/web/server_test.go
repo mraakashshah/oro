@@ -267,6 +267,15 @@ func (s *systemErrorDashboard) ShowBead(_ context.Context, _ string) (*protocol.
 	return nil, errors.New("database connection failed")
 }
 
+// eventsErrorDashboard wraps mockDashboard but returns a system error from RecentEvents.
+type eventsErrorDashboard struct {
+	*mockDashboard
+}
+
+func (e *eventsErrorDashboard) RecentEvents(_ context.Context, _ int) ([]protocol.Event, error) {
+	return nil, errors.New("event store unavailable")
+}
+
 func TestIndexPathGuard(t *testing.T) {
 	data := &mockDashboard{}
 	h := web.NewHandler(data, testTemplates())
@@ -343,6 +352,19 @@ func TestFragmentEvents(t *testing.T) {
 		body := rec.Body.String()
 		if !strings.Contains(body, "events-feed") {
 			t.Errorf("body missing events container; got: %q", body)
+		}
+	})
+
+	t.Run("RecentEvents error returns 500", func(t *testing.T) {
+		data := &mockDashboard{}
+		h := web.NewHandler(&eventsErrorDashboard{mockDashboard: data}, testTemplates())
+
+		req := httptest.NewRequest(http.MethodGet, "/fragments/events", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("GET /fragments/events status = %d, want 500", rec.Code)
 		}
 	})
 }
