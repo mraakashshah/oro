@@ -76,6 +76,14 @@ func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) 
 	return nil, nil
 }
 
+func (m *mockBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error) {
+	return nil, nil
+}
+
+func (m *mockBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
+	return nil, nil
+}
+
 func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) { return nil, nil }
 
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {

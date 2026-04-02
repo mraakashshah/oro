@@ -72,6 +72,44 @@ func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error)
 	return beads, nil
 }
 
+// Blocked runs `bd list --status=blocked --json` and parses the output into a slice of Bead.
+// Returns nil slice (not empty slice) when bd reports no blocked beads.
+func (s *CLIBeadSource) Blocked(ctx context.Context) ([]protocol.Bead, error) {
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--status=blocked", "--json")...)
+	if err != nil {
+		return nil, fmt.Errorf("bd list --status=blocked: %w", err)
+	}
+
+	var beads []protocol.Bead
+	if err := json.Unmarshal(out, &beads); err != nil {
+		return nil, fmt.Errorf("parse bd list output: %w", err)
+	}
+	if len(beads) == 0 {
+		return nil, nil
+	}
+	extractMetadataModel(beads)
+	return beads, nil
+}
+
+// Closed runs `bd list --status=closed --json --limit=<limit>` and parses the output into a slice of Bead.
+// Returns nil slice (not empty slice) when bd reports no closed beads.
+func (s *CLIBeadSource) Closed(ctx context.Context, limit int) ([]protocol.Bead, error) {
+	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--status=closed", fmt.Sprintf("--limit=%d", limit), "--json")...)
+	if err != nil {
+		return nil, fmt.Errorf("bd list --status=closed: %w", err)
+	}
+
+	var beads []protocol.Bead
+	if err := json.Unmarshal(out, &beads); err != nil {
+		return nil, fmt.Errorf("parse bd list output: %w", err)
+	}
+	if len(beads) == 0 {
+		return nil, nil
+	}
+	extractMetadataModel(beads)
+	return beads, nil
+}
+
 // Show runs `bd show <id> --json` and parses the output into a BeadDetail.
 func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("show", id, "--json")...)

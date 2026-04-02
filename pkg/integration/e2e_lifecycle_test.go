@@ -70,6 +70,14 @@ func (m *trackingBeadSource) InProgress(_ context.Context) ([]protocol.Bead, err
 	return nil, nil
 }
 
+func (m *trackingBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error) {
+	return nil, nil
+}
+
+func (m *trackingBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
+	return nil, nil
+}
+
 func (m *trackingBeadSource) Export(_ context.Context) ([]byte, error) { return nil, nil }
 
 func (m *trackingBeadSource) SetBeads(beads []protocol.Bead) {

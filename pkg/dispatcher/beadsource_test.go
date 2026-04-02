@@ -1686,6 +1686,171 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 	})
 }
 
+func TestCLIBeadSourceBlocked(t *testing.T) {
+	t.Run("shells_out_to_bd_list_status_blocked_json", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "oro-1", Title: "Blocked work", Priority: 1},
+			{ID: "oro-2", Title: "Another blocked task", Priority: 2},
+		}
+		data, err := json.Marshal(beads)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		runner := &mockCommandRunner{output: data}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Blocked(context.Background())
+		if err != nil {
+			t.Fatalf("Blocked: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("expected 2 beads, got %d", len(got))
+		}
+		if got[0].ID != "oro-1" {
+			t.Errorf("bead[0].ID: got %q, want %q", got[0].ID, "oro-1")
+		}
+		if got[1].Title != "Another blocked task" {
+			t.Errorf("bead[1].Title: got %q, want %q", got[1].Title, "Another blocked task")
+		}
+
+		// Verify the correct command was called.
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "list") {
+			t.Errorf("expected 'list' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--status=blocked") {
+			t.Errorf("expected '--status=blocked' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--json") {
+			t.Errorf("expected '--json' in args, got %v", call.Args)
+		}
+	})
+
+	t.Run("empty_json_array_returns_nil_slice", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("[]")}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Blocked(context.Background())
+		if err != nil {
+			t.Fatalf("Blocked: %v", err)
+		}
+		if got != nil {
+			t.Errorf("Blocked: got %v, want nil slice for empty JSON array", got)
+		}
+	})
+
+	t.Run("command_error_wrapped_and_returned", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("bd not found")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Blocked(context.Background())
+		if err == nil {
+			t.Fatal("expected error from Blocked when command fails")
+		}
+	})
+
+	t.Run("invalid_json_returns_error", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("not json")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Blocked(context.Background())
+		if err == nil {
+			t.Fatal("expected error from Blocked when output is invalid JSON")
+		}
+	})
+}
+
+func TestCLIBeadSourceClosed(t *testing.T) {
+	t.Run("shells_out_to_bd_list_status_closed_json_with_limit", func(t *testing.T) {
+		beads := []protocol.Bead{
+			{ID: "oro-1", Title: "Closed task", Priority: 1},
+			{ID: "oro-2", Title: "Another closed work", Priority: 2},
+		}
+		data, err := json.Marshal(beads)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		runner := &mockCommandRunner{output: data}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Closed(context.Background(), 10)
+		if err != nil {
+			t.Fatalf("Closed: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("expected 2 beads, got %d", len(got))
+		}
+		if got[0].ID != "oro-1" {
+			t.Errorf("bead[0].ID: got %q, want %q", got[0].ID, "oro-1")
+		}
+		if got[1].Title != "Another closed work" {
+			t.Errorf("bead[1].Title: got %q, want %q", got[1].Title, "Another closed work")
+		}
+
+		// Verify the correct command was called.
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "list") {
+			t.Errorf("expected 'list' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--status=closed") {
+			t.Errorf("expected '--status=closed' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--limit=10") {
+			t.Errorf("expected '--limit=10' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--json") {
+			t.Errorf("expected '--json' in args, got %v", call.Args)
+		}
+	})
+
+	t.Run("empty_json_array_returns_nil_slice", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("[]")}
+		src := NewCLIBeadSource(runner)
+
+		got, err := src.Closed(context.Background(), 5)
+		if err != nil {
+			t.Fatalf("Closed: %v", err)
+		}
+		if got != nil {
+			t.Errorf("Closed: got %v, want nil slice for empty JSON array", got)
+		}
+	})
+
+	t.Run("command_error_wrapped_and_returned", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("bd not found")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Closed(context.Background(), 5)
+		if err == nil {
+			t.Fatal("expected error from Closed when command fails")
+		}
+	})
+
+	t.Run("invalid_json_returns_error", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("not json")}
+		src := NewCLIBeadSource(runner)
+
+		_, err := src.Closed(context.Background(), 5)
+		if err == nil {
+			t.Fatal("expected error from Closed when output is invalid JSON")
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {

@@ -71,6 +71,8 @@ const statusThrottleWindow = 5 * time.Second
 type BeadSource interface {
 	Ready(ctx context.Context) ([]protocol.Bead, error)
 	InProgress(ctx context.Context) ([]protocol.Bead, error)
+	Blocked(ctx context.Context) ([]protocol.Bead, error)
+	Closed(ctx context.Context, limit int) ([]protocol.Bead, error)
 	Show(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	Close(ctx context.Context, id string, reason string) error
 	Create(ctx context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error)

@@ -90,6 +90,10 @@ type mockBeadSource struct {
 	hasChildrenErr       error            // if set, HasChildren() returns this error
 	inProgressBeads      []protocol.Bead  // returned by InProgress(); nil means no beads
 	inProgressErr        error            // if set, InProgress() returns this error
+	blockedBeads         []protocol.Bead  // returned by Blocked(); nil means no beads
+	blockedErr           error            // if set, Blocked() returns this error
+	closedBeads          []protocol.Bead  // returned by Closed(); nil means no beads
+	closedErr            error            // if set, Closed() returns this error
 	updateErrs           map[string]error // beadID -> error returned by Update()
 	showErr              error            // if set, Show() returns this error for all IDs
 	exportData           []byte           // returned by Export(); nil means no data
@@ -203,6 +207,24 @@ func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) 
 		return nil, m.inProgressErr
 	}
 	return m.inProgressBeads, nil
+}
+
+func (m *mockBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.blockedErr != nil {
+		return nil, m.blockedErr
+	}
+	return m.blockedBeads, nil
+}
+
+func (m *mockBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closedErr != nil {
+		return nil, m.closedErr
+	}
+	return m.closedBeads, nil
 }
 
 func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) {
