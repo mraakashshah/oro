@@ -1,0 +1,27 @@
+pkg/web/sse.go
+  030d751c9fb1398d 1-87
+pkg/web/handler.go
+  030d751c9fb1398d 1-45
+pkg/web/sse_test.go
+  030d751c9fb1398d 1-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "55af2e76b443c44eaf92d00898d0ec6084e6a9ff",
+  "prompts": {
+    "030d751c9fb1398d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c38377a-5432-4550-9845-5569ae92a382",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 345,
+      "total_deletions": 64,
+      "accepted_lines": 281,
+      "overriden_lines": 0
+    }
+  }
+}
