@@ -1,0 +1,27 @@
+pkg/web/server.go
+  7c049e9dba5c9df8 66
+pkg/web/helpers_test.go
+  7c049e9dba5c9df8 1-149
+pkg/web/helpers.go
+  7c049e9dba5c9df8 1-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "69a206ca8bbcc926d4353716eae01fa6b343a552",
+  "prompts": {
+    "7c049e9dba5c9df8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "95d37f39-6541-4d4b-a557-c7a3b89dc7c8",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 232,
+      "total_deletions": 5,
+      "accepted_lines": 228,
+      "overriden_lines": 0
+    }
+  }
+}
