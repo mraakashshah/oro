@@ -338,15 +338,6 @@ func (g *GitWorktreeManager) RebaseOnto(ctx context.Context, branch, onto string
 	return nil
 }
 
-// CreateBranch creates a new local branch named name branched from from
-// using `git branch name from`.
-func (g *GitWorktreeManager) CreateBranch(ctx context.Context, name, from string) error {
-	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", name, from); err != nil {
-		return fmt.Errorf("git branch %s %s: %w", name, from, err)
-	}
-	return nil
-}
-
 // PushBranch pushes branch to origin using `git push origin branch`.
 func (g *GitWorktreeManager) PushBranch(ctx context.Context, branch string) error {
 	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot,
