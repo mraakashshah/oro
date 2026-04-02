@@ -1593,6 +1593,16 @@ func (d *Dispatcher) autoCloseEpicIfComplete(ctx context.Context, workerID, epic
 // closes the epic normally; a failing test spawns a diagnostic agent to create
 // fix beads instead of closing. Epics without a Cmd: fall back to count-based
 // close with a warning logged.
+
+// resolveEpicTargetBranch returns the epic's target branch from metadata,
+// falling back to defaultBranch.
+func resolveEpicTargetBranch(metadata map[string]any, defaultBranch string) string {
+	if s, _ := metadata[MetaBranch].(string); s != "" {
+		return s
+	}
+	return defaultBranch
+}
+
 // epicMergeIsFailed reports whether the epic's FF-merge previously failed.
 // Caller must not hold d.mu.
 func (d *Dispatcher) epicMergeIsFailed(epicID string) bool {
@@ -1603,6 +1613,7 @@ func (d *Dispatcher) epicMergeIsFailed(epicID string) bool {
 
 func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) {
 	if d.epicMergeIsFailed(epicID) {
+		_ = d.logEvent(ctx, "epic_close_skipped_merge_failed", "dispatcher", epicID, workerID, "")
 		return
 	}
 	allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
@@ -1626,12 +1637,7 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		return
 	}
 
-	// Prefer Metadata[MetaBranch]; fall back to DefaultBranch (typically "main").
-	// Nil map reads are safe in Go and return the zero value.
-	targetBranch := d.cfg.DefaultBranch
-	if s, _ := detail.Metadata[MetaBranch].(string); s != "" {
-		targetBranch = s
-	}
+	targetBranch := resolveEpicTargetBranch(detail.Metadata, d.cfg.DefaultBranch)
 
 	cmd := parseAcceptanceCmd(detail.AcceptanceCriteria)
 	if cmd == "" {
@@ -3162,10 +3168,7 @@ func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead
 		return false, true
 	}
 	if allClosed {
-		targetBranch := d.cfg.DefaultBranch
-		if s, _ := bead.Metadata[MetaBranch].(string); s != "" {
-			targetBranch = s
-		}
+		targetBranch := resolveEpicTargetBranch(bead.Metadata, d.cfg.DefaultBranch)
 		d.completeEpicClose(ctx, bead.ID, workerID, "All children completed", targetBranch)
 	}
 	return false, true
