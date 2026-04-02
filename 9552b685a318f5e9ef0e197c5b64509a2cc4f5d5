@@ -1,0 +1,25 @@
+pkg/web/templates/index.html
+  6af261ad15f4ba94 1-36
+pkg/web/index_template_test.go
+  6af261ad15f4ba94 1-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "9552b685a318f5e9ef0e197c5b64509a2cc4f5d5",
+  "prompts": {
+    "6af261ad15f4ba94": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f37608b-d0e9-4d47-b851-64ea81821a8c",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 131,
+      "total_deletions": 5,
+      "accepted_lines": 126,
+      "overriden_lines": 0
+    }
+  }
+}
