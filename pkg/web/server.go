@@ -40,11 +40,11 @@ type DashboardData interface {
 // indexData is the top-level template data for the full-page render.
 type indexData struct {
 	HealthErr string
-	Parade    paradeData
+	Parade    ParadeData
 }
 
-// paradeData holds the four bead buckets rendered by the parade fragment.
-type paradeData struct {
+// ParadeData holds the four bead buckets rendered by the parade fragment.
+type ParadeData struct {
 	Ready      []protocol.Bead
 	InProgress []protocol.Bead
 	Blocked    []protocol.Bead
@@ -198,24 +198,24 @@ func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadParadeData fetches all four bead buckets sequentially.
-func (h *handler) loadParadeData(ctx context.Context) (paradeData, error) {
+func (h *handler) loadParadeData(ctx context.Context) (ParadeData, error) {
 	ready, err := h.data.ReadyBeads(ctx)
 	if err != nil {
-		return paradeData{}, fmt.Errorf("ready beads: %w", err)
+		return ParadeData{}, fmt.Errorf("ready beads: %w", err)
 	}
 	inProgress, err := h.data.InProgressBeads(ctx)
 	if err != nil {
-		return paradeData{}, fmt.Errorf("in-progress beads: %w", err)
+		return ParadeData{}, fmt.Errorf("in-progress beads: %w", err)
 	}
 	blocked, err := h.data.BlockedBeads(ctx)
 	if err != nil {
-		return paradeData{}, fmt.Errorf("blocked beads: %w", err)
+		return ParadeData{}, fmt.Errorf("blocked beads: %w", err)
 	}
 	closed, err := h.data.ClosedBeads(ctx, 20)
 	if err != nil {
-		return paradeData{}, fmt.Errorf("closed beads: %w", err)
+		return ParadeData{}, fmt.Errorf("closed beads: %w", err)
 	}
-	return paradeData{
+	return ParadeData{
 		Ready:      ready,
 		InProgress: inProgress,
 		Blocked:    blocked,

@@ -1,0 +1,76 @@
+{{define "parade-content"}}
+<div class="parade">
+  <div class="parade__section">
+    <div class="parade__section-header">
+      <span class="parade__symbol">♪</span>
+      <h2>Queued Up</h2>
+    </div>
+    {{range .Ready}}
+    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="next .bead-detail-slot" hx-swap="innerHTML">
+      <span class="bead-card__id">{{.ID}}</span>
+      <span class="bead-card__title">{{.Title}}</span>
+      <div class="bead-card__badges">
+        <span class="badge badge--priority">P{{.Priority}}</span>
+        {{if .Owner}}<span class="badge badge--worker">{{.Owner}}</span>{{end}}
+      </div>
+    </div>
+    <div class="bead-detail-slot"></div>
+    {{end}}
+  </div>
+
+  <div class="parade__section">
+    <div class="parade__section-header">
+      <span class="parade__symbol">●</span>
+      <h2>Rolling</h2>
+    </div>
+    {{range .InProgress}}
+    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="next .bead-detail-slot" hx-swap="innerHTML">
+      <span class="bead-card__id">{{.ID}}</span>
+      <span class="bead-card__title">{{.Title}}</span>
+      <div class="bead-card__badges">
+        <span class="badge badge--priority">P{{.Priority}}</span>
+        {{if .Owner}}<span class="badge badge--worker">{{.Owner}}</span>{{end}}
+      </div>
+    </div>
+    <div class="bead-detail-slot"></div>
+    {{end}}
+  </div>
+
+  <div class="parade__section">
+    <div class="parade__section-header">
+      <span class="parade__symbol">⊘</span>
+      <h2>Stalled</h2>
+    </div>
+    {{range .Blocked}}
+    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="next .bead-detail-slot" hx-swap="innerHTML">
+      <span class="bead-card__id">{{.ID}}</span>
+      <span class="bead-card__title">{{.Title}}</span>
+      <div class="bead-card__badges">
+        <span class="badge badge--priority">P{{.Priority}}</span>
+        {{if .Owner}}<span class="badge badge--worker">{{.Owner}}</span>{{end}}
+        {{range .Dependencies}}<span class="badge badge--blocker">→ {{.DependsOnID}}</span>{{end}}
+      </div>
+    </div>
+    <div class="bead-detail-slot"></div>
+    {{end}}
+  </div>
+
+  <div class="parade__section">
+    <div class="parade__section-header">
+      <span class="parade__symbol">✓</span>
+      <h2>Finished</h2>
+    </div>
+    {{range .Closed}}
+    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="next .bead-detail-slot" hx-swap="innerHTML">
+      <span class="bead-card__id">{{.ID}}</span>
+      <span class="bead-card__title">{{.Title}}</span>
+      <div class="bead-card__badges">
+        <span class="badge badge--priority">P{{.Priority}}</span>
+        {{if .Owner}}<span class="badge badge--worker">{{.Owner}}</span>{{end}}
+      </div>
+    </div>
+    <div class="bead-detail-slot"></div>
+    {{end}}
+  </div>
+</div>
+{{end}}
