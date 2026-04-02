@@ -1,0 +1,29 @@
+pkg/dispatcher/dispatcher.go
+  dcdc3c9a03a2f934 108-111
+pkg/dispatcher/epic_branch_lazy_test.go
+  dcdc3c9a03a2f934 1-75
+pkg/dispatcher/dispatcher_test.go
+  dcdc3c9a03a2f934 280,385-390
+pkg/dispatcher/worktree_manager.go
+  dcdc3c9a03a2f934 351-362
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "9b50545487b0746b45de235728016bc72af2498d",
+  "prompts": {
+    "dcdc3c9a03a2f934": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f2064834-ad6c-43b4-8fb2-f81c58a38775",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 119,
+      "total_deletions": 21,
+      "accepted_lines": 98,
+      "overriden_lines": 0
+    }
+  }
+}
