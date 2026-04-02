@@ -1,0 +1,25 @@
+pkg/web/templates/detail.html
+  65db00417107a13b 1-13
+pkg/web/detail_template_test.go
+  65db00417107a13b 4-6,13-14,16-18,21-27,30-46,48-69,71-82,84-87,89-105,107-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "8d53e2a1a9c4c67e2719ab03bd269f285545e6a0",
+  "prompts": {
+    "65db00417107a13b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a1a31353-e035-4680-a07c-8b8e7625675d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 111,
+      "total_deletions": 110,
+      "accepted_lines": 111,
+      "overriden_lines": 0
+    }
+  }
+}
