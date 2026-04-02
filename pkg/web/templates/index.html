@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oro Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body hx-ext="sse" sse-connect="/events">
+  {{if .HealthErr}}
+  <div id="health-error" class="health-banner">{{.HealthErr}}</div>
+  {{end}}
+  <div class="layout">
+    <div id="parade"
+         hx-get="/fragments/parade"
+         hx-trigger="sse:parade-update"
+         hx-swap="innerHTML">
+      {{template "parade-content" .Parade}}
+    </div>
+    <div id="sidebar">
+      <div id="workers"
+           hx-get="/fragments/workers"
+           hx-trigger="sse:worker-update"
+           hx-swap="innerHTML">
+      </div>
+      <div id="events"
+           hx-get="/fragments/events"
+           hx-swap="innerHTML">
+      </div>
+      <div id="throughput">
+      </div>
+    </div>
+  </div>
+</body>
+</html>
