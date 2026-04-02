@@ -126,6 +126,19 @@ func (d *Dispatcher) RecentEvents(ctx context.Context, n int) ([]protocol.Event,
 	return events, nil
 }
 
+// HealthError implements web.DashboardData. It returns nil when the swarm is
+// healthy, or a descriptive error when degraded.
+func (d *Dispatcher) HealthError() error {
+	h, err := d.Health()
+	if err != nil {
+		return err
+	}
+	if h.Daemon.State != "running" {
+		return fmt.Errorf("daemon state: %s", h.Daemon.State)
+	}
+	return nil
+}
+
 // SubscribeSSE implements DashboardData.
 func (d *Dispatcher) SubscribeSSE() chan string {
 	return d.sseBroadcaster.Subscribe()

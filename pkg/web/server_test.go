@@ -2,7 +2,7 @@ package web_test
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +21,7 @@ type mockDashboard struct {
 	closed     []protocol.Bead
 	detail     map[string]*protocol.BeadDetail
 	workers    []web.WorkerInfo
+	healthErr  error
 }
 
 func (m *mockDashboard) ReadyBeads(_ context.Context) ([]protocol.Bead, error) {
@@ -45,7 +46,11 @@ func (m *mockDashboard) ShowBead(_ context.Context, id string) (*protocol.BeadDe
 			return d, nil
 		}
 	}
-	return nil, fmt.Errorf("bead not found: %s", id)
+	return nil, &protocol.BeadNotFoundError{BeadID: id}
+}
+
+func (m *mockDashboard) HealthError() error {
+	return m.healthErr
 }
 
 func (m *mockDashboard) Workers(_ context.Context) ([]web.WorkerInfo, error) {
@@ -66,7 +71,8 @@ func testTemplates() fstest.MapFS {
 			Data: []byte(`<!DOCTYPE html>
 <html>
 <body>
-<div id="parade">{{template "parade-content" .}}</div>
+{{if .HealthErr}}<div id="health-error">{{.HealthErr}}</div>{{end}}
+<div id="parade">{{template "parade-content" .Parade}}</div>
 <div id="sidebar">sidebar</div>
 </body>
 </html>`),
@@ -224,5 +230,63 @@ func TestSSEEndpoint(t *testing.T) {
 	ct := rec.Header().Get("Content-Type")
 	if !strings.HasPrefix(ct, "text/event-stream") {
 		t.Errorf("GET /events Content-Type = %q, want text/event-stream", ct)
+	}
+}
+
+func TestFragmentDetailSystemError(t *testing.T) {
+	// ShowBead returns a system error (not BeadNotFoundError) → expect 500.
+	data := &mockDashboard{
+		detail: map[string]*protocol.BeadDetail{}, // empty, but we override ShowBead below
+	}
+	// Use a wrapper that returns a system error for a specific ID.
+	h := web.NewHandler(&systemErrorDashboard{mockDashboard: data}, testTemplates())
+
+	req := httptest.NewRequest(http.MethodGet, "/fragments/detail/oro-sys-err", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /fragments/detail/oro-sys-err status = %d, want 500", rec.Code)
+	}
+}
+
+// systemErrorDashboard wraps mockDashboard but returns a system error from ShowBead.
+type systemErrorDashboard struct {
+	*mockDashboard
+}
+
+func (s *systemErrorDashboard) ShowBead(_ context.Context, _ string) (*protocol.BeadDetail, error) {
+	return nil, errors.New("database connection failed")
+}
+
+func TestIndexPathGuard(t *testing.T) {
+	data := &mockDashboard{}
+	h := web.NewHandler(data, testTemplates())
+
+	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /nonexistent status = %d, want 404", rec.Code)
+	}
+}
+
+func TestIndexHealthError(t *testing.T) {
+	data := &mockDashboard{
+		healthErr: errors.New("database unreachable"),
+	}
+	h := web.NewHandler(data, testTemplates())
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "database unreachable") {
+		t.Errorf("GET / with health error should contain error message; got: %q", body)
 	}
 }

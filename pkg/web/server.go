@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -29,6 +30,16 @@ type DashboardData interface {
 	Workers(ctx context.Context) ([]WorkerInfo, error)
 	SubscribeSSE() chan string
 	UnsubscribeSSE(ch chan string)
+	// HealthError returns nil when the system is healthy, or a descriptive
+	// error when the swarm is degraded. The index handler renders this in
+	// the page so operators see problems immediately.
+	HealthError() error
+}
+
+// indexData is the top-level template data for the full-page render.
+type indexData struct {
+	HealthErr string
+	Parade    paradeData
 }
 
 // paradeData holds the four bead buckets rendered by the parade fragment.
@@ -81,13 +92,20 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, err := h.loadParadeData(r.Context())
+	parade, err := h.loadParadeData(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	var healthMsg string
+	if herr := h.data.HealthError(); herr != nil {
+		healthMsg = herr.Error()
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.indexTmpl.ExecuteTemplate(w, "index.html", data); err != nil {
+	if err := h.indexTmpl.ExecuteTemplate(w, "index.html", indexData{
+		HealthErr: healthMsg,
+		Parade:    parade,
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -120,7 +138,12 @@ func (h *handler) detailHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	detail, err := h.data.ShowBead(r.Context(), id)
 	if err != nil {
-		http.NotFound(w, r)
+		var notFound *protocol.BeadNotFoundError
+		if errors.As(err, &notFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -146,7 +169,10 @@ func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case msg := <-ch:
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
 			fmt.Fprint(w, msg)
 			if hasFlusher {
 				flusher.Flush()
@@ -155,7 +181,7 @@ func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// loadParadeData fetches all four bead buckets concurrently.
+// loadParadeData fetches all four bead buckets sequentially.
 func (h *handler) loadParadeData(ctx context.Context) (paradeData, error) {
 	ready, err := h.data.ReadyBeads(ctx)
 	if err != nil {
