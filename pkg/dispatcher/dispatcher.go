@@ -286,6 +286,8 @@ type Config struct {
 	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram         string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	DefaultBranch         string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
+	WebEnabled            bool          // Enable HTTP server for dashboard/health endpoints (default false).
+	WebAddr               string        // HTTP server listen address (default :4444 in withDefaults).
 }
 
 // intDefault returns v if non-zero, otherwise dflt.
@@ -355,6 +357,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.DefaultBranch == "" {
 		out.DefaultBranch = "main"
+	}
+	if out.WebAddr == "" {
+		out.WebAddr = ":4444"
 	}
 	return out
 }
@@ -507,6 +512,10 @@ type Dispatcher struct {
 	// Buffered with capacity 1: multiple concurrent registrations coalesce into
 	// a single tryAssign call.
 	workerReadyCh chan struct{}
+
+	// httpServer is the HTTP server started when WebEnabled=true. Set in Run() before
+	// the safeGo goroutine starts. Nil when WebEnabled=false or before Run() sets it.
+	httpServer *http.Server
 
 	// shutdownCh is closed when a shutdown directive is received, causing Run() to exit.
 	shutdownCh chan struct{}
@@ -724,6 +733,40 @@ func (d *Dispatcher) GetConfig() Config {
 	return d.cfg
 }
 
+// healthzHandler serves GET /healthz. Returns 200 when the dispatcher is in
+// StateRunning, 503 otherwise. Used by load-balancers and readiness probes.
+func (d *Dispatcher) healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	d.mu.Lock()
+	state := d.state
+	d.mu.Unlock()
+	if state == StateRunning {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+}
+
+// startHTTPServer registers HTTP handlers, stores the *http.Server on d, and
+// launches it via safeGo. Bind failures are logged as web_server_bind_failed
+// events and are non-fatal — the dispatcher continues without a web interface.
+func (d *Dispatcher) startHTTPServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", d.healthzHandler)
+	srv := &http.Server{
+		Addr:              d.cfg.WebAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second, //nolint:gomnd // standard defensive timeout (G112)
+	}
+	d.mu.Lock()
+	d.httpServer = srv
+	d.mu.Unlock()
+	d.safeGo(func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_ = d.logEvent(context.Background(), "web_server_bind_failed", "dispatcher", "", "", err.Error())
+		}
+	})
+}
+
 // Run starts the Dispatcher event loop. It:
 //  1. Initializes the SQLite schema
 //  2. Starts the UDS listener
@@ -793,6 +836,11 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	// Escalation retry loop — re-deliver unacked escalations every 2 minutes.
 	d.safeGo(func() { d.escalationRetryLoop(ctx) })
 
+	// HTTP server — started only when WebEnabled=true.
+	if d.cfg.WebEnabled {
+		d.startHTTPServer()
+	}
+
 	select {
 	case <-ctx.Done():
 	case <-d.shutdownCh:
@@ -834,6 +882,15 @@ func (d *Dispatcher) shutdownWithTimeout() {
 			delete(d.workers, id)
 		}
 		d.mu.Unlock()
+	}
+
+	// Shut down HTTP server (if running) so its safeGo goroutine can exit
+	// before wg.Wait() below.
+	d.mu.Lock()
+	srv := d.httpServer
+	d.mu.Unlock()
+	if srv != nil {
+		_ = srv.Shutdown(shutdownCtx) //nolint:contextcheck // shutdownCtx is the right scope here
 	}
 
 	// Wait for all goroutines to finish with a 5s timeout

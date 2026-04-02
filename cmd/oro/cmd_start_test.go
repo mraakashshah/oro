@@ -532,7 +532,7 @@ func TestStartBaseBranchFlag(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		d, db, err := buildDispatcher(1, 1, 0, 0, "feature-base")
+		d, db, err := buildDispatcher(1, 1, 0, 0, "feature-base", false, "")
 		if err != nil {
 			t.Fatalf("buildDispatcher: %v", err)
 		}
@@ -540,6 +540,64 @@ func TestStartBaseBranchFlag(t *testing.T) {
 
 		if got := d.GetConfig().DefaultBranch; got != "feature-base" {
 			t.Errorf("DefaultBranch: got %q, want %q", got, "feature-base")
+		}
+	})
+}
+
+// TestStartWebFlags verifies that --web and --web-addr flags exist on the start
+// command and that their values flow into Config.WebEnabled / Config.WebAddr
+// via buildDispatcher.
+func TestStartWebFlags(t *testing.T) {
+	t.Run("--web flag exists and defaults to false", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		web, err := cmd.Flags().GetBool("web")
+		if err != nil {
+			t.Fatalf("GetBool web: %v", err)
+		}
+		if web {
+			t.Error("--web default: expected false")
+		}
+	})
+
+	t.Run("--web-addr flag exists and defaults to empty string", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		addr, err := cmd.Flags().GetString("web-addr")
+		if err != nil {
+			t.Fatalf("GetString web-addr: %v", err)
+		}
+		if addr != "" {
+			t.Errorf("--web-addr default: expected empty string, got %q", addr)
+		}
+	})
+
+	t.Run("values flow into buildDispatcher Config", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroHome, 0o750); err != nil { //nolint:gosec // test dir
+			t.Fatal(err)
+		}
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		d, db, err := buildDispatcher(1, 1, 0, 0, "", true, ":9955")
+		if err != nil {
+			t.Fatalf("buildDispatcher: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		cfg := d.GetConfig()
+		if !cfg.WebEnabled {
+			t.Error("WebEnabled: got false, want true")
+		}
+		if cfg.WebAddr != ":9955" {
+			t.Errorf("WebAddr: got %q, want %q", cfg.WebAddr, ":9955")
 		}
 	})
 }
@@ -632,7 +690,7 @@ func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
 	}
 
 	// buildDispatcher should call migrateGlobalDBs, copying global state.db.
-	d, db, err := buildDispatcher(1, 1, 0, 0, "")
+	d, db, err := buildDispatcher(1, 1, 0, 0, "", false, "")
 	if err != nil {
 		t.Fatalf("buildDispatcher: %v", err)
 	}

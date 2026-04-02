@@ -354,6 +354,8 @@ func newStartCmd() *cobra.Command {
 		progressTimeout time.Duration
 		reviewTimeout   time.Duration
 		baseBranch      string
+		webEnabled      bool
+		webAddr         string
 	)
 
 	cmd := &cobra.Command{
@@ -379,7 +381,7 @@ func newStartCmd() *cobra.Command {
 					isDetached(detach), nil, 0)
 			}
 			if daemonOnly {
-				return runDaemonOnly(cmd, pidPath, workers, maxWorkers, progressTimeout, reviewTimeout, baseBranch)
+				return runDaemonOnly(cmd, pidPath, workers, maxWorkers, progressTimeout, reviewTimeout, baseBranch, webEnabled, webAddr)
 			}
 			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, reviewTimeout)
 		},
@@ -393,6 +395,8 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&progressTimeout, "progress-timeout", 0, "max time without worker progress before STUCK_WORKER (default 10m)")
 	cmd.Flags().DurationVar(&reviewTimeout, "review-timeout", 0, "max time a reviewing worker can stall (default 15m)")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "base branch for worktree creation (default: main)")
+	cmd.Flags().BoolVar(&webEnabled, "web", false, "enable HTTP server for dashboard/health endpoints")
+	cmd.Flags().StringVar(&webAddr, "web-addr", "", "HTTP server listen address (default :4444)")
 
 	return cmd
 }
@@ -488,7 +492,7 @@ func cleanStaleWorkerLogs(oroHome string, maxAge time.Duration) { //nolint:unpar
 }
 
 // runDaemonOnly runs the dispatcher in the foreground (used for testing/CI).
-func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, reviewTimeout time.Duration, baseBranch string) error {
+func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, reviewTimeout time.Duration, baseBranch string, webEnabled bool, webAddr string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
 	if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
@@ -503,7 +507,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, 
 	// Build dispatcher first so we can wire its shutdown authorization flag
 	// into the signal handler. This makes the daemon immune to raw SIGTERM
 	// until the "shutdown" directive authorizes it.
-	d, db, err := buildDispatcher(workers, maxWorkers, progressTimeout, reviewTimeout, baseBranch)
+	d, db, err := buildDispatcher(workers, maxWorkers, progressTimeout, reviewTimeout, baseBranch, webEnabled, webAddr)
 	if err != nil {
 		return fmt.Errorf("build dispatcher: %w", err)
 	}
@@ -582,7 +586,7 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 // The caller owns the returned *sql.DB and must close it.
 // Zero-value timeouts use dispatcher defaults (ProgressTimeout=10m, ReviewTimeout=15m).
 // initialWorkers sets the initial targetWorkers; maxWorkers sets the auto-scale ceiling.
-func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTimeout time.Duration, baseBranch string) (*dispatcher.Dispatcher, *sql.DB, error) {
+func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTimeout time.Duration, baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
 	// All paths (socket, PID, DB) are now project-scoped via ResolvePaths.
 	paths, err := ResolveDaemonPaths()
 	if err != nil {
@@ -641,6 +645,8 @@ func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTime
 		WorkerProgram:   resolveWorkerProgramPath(repoRoot),
 		DefaultBranch:   baseBranch,
 		DreamInterval:   10,
+		WebEnabled:      webEnabled,
+		WebAddr:         webAddr,
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)
