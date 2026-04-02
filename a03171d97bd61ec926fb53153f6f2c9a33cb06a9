@@ -1,0 +1,25 @@
+pkg/dispatcher/dispatcher.go
+  3276a869e625fba6 362,759-760
+pkg/dispatcher/http_server_test.go
+  3276a869e625fba6 72-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "a03171d97bd61ec926fb53153f6f2c9a33cb06a9",
+  "prompts": {
+    "3276a869e625fba6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbb9117f-df70-41f0-b61c-c0d1f71b431a",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 3,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
