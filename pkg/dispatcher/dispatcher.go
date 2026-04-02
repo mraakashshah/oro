@@ -34,6 +34,7 @@ import (
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/web"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -386,20 +387,21 @@ func (c Config) validate() error {
 // directly (e.g. d.workers, d.attemptCounts). Both embedded structs share
 // the Dispatcher-level mu for synchronisation.
 type Dispatcher struct {
-	cfg           Config
-	db            *sql.DB
-	merger        *merge.Coordinator
-	ops           *ops.Spawner
-	beads         BeadSource
-	worktrees     WorktreeManager
-	escalator     Escalator
-	memories      *memory.Store
-	codeIndex     CodeIndex // interface for FTS5 code search (nil means no search)
-	procMgr       ProcessManager
-	acceptance    AcceptanceRunner // runs epic acceptance test commands
-	qgRunner      QGRunner         // runs quality gate before merge (defaults to &ShellQGRunner{})
-	paneRestarter PaneRestarter    // restarts named tmux panes (nil means no restart)
-	estimator     BeadEstimator    // estimates bead completion time (nil means no estimation)
+	cfg            Config
+	db             *sql.DB
+	merger         *merge.Coordinator
+	ops            *ops.Spawner
+	beads          BeadSource
+	worktrees      WorktreeManager
+	escalator      Escalator
+	memories       *memory.Store
+	codeIndex      CodeIndex // interface for FTS5 code search (nil means no search)
+	procMgr        ProcessManager
+	acceptance     AcceptanceRunner   // runs epic acceptance test commands
+	qgRunner       QGRunner           // runs quality gate before merge (defaults to &ShellQGRunner{})
+	paneRestarter  PaneRestarter      // restarts named tmux panes (nil means no restart)
+	estimator      BeadEstimator      // estimates bead completion time (nil means no estimation)
+	sseBroadcaster web.SSEBroadcaster // broadcasts server-sent events (never nil, initialized in New)
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
 	WorkerPool
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
@@ -523,6 +525,8 @@ type Dispatcher struct {
 // New creates a Dispatcher. It does NOT start listening or polling — call Run().
 // Returns nil and an error if the Config is invalid after applying defaults.
 // codeIdx may be nil to disable code search context injection.
+//
+//nolint:funlen // factory initialization
 func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spawner, beads BeadSource, wt WorktreeManager, esc Escalator, codeIdx CodeIndex) (*Dispatcher, error) {
 	resolved := cfg.withDefaults()
 	if err := resolved.validate(); err != nil {
@@ -558,6 +562,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		acceptance:     &ShellAcceptanceRunner{},
 		estimator:      estimator,
 		qgRunner:       &ShellQGRunner{},
+		sseBroadcaster: web.NewSSEBroadcaster(),
 		state:          StateInert,
 		targetWorkers:  resolved.InitialWorkers,
 		WorkerPool: WorkerPool{
@@ -3766,6 +3771,9 @@ func (d *Dispatcher) logEvent(ctx context.Context, evType, source, beadID, worke
 	if err != nil {
 		return fmt.Errorf("log event: %w", err)
 	}
+	if d.sseBroadcaster != nil {
+		d.sseBroadcaster.Send(evType, beadID, workerID)
+	}
 	return nil
 }
 
@@ -3777,6 +3785,9 @@ func (d *Dispatcher) logEventLocked(ctx context.Context, evType, source, beadID,
 		evType, source, beadID, workerID, payload)
 	if err != nil {
 		return fmt.Errorf("log event: %w", err)
+	}
+	if d.sseBroadcaster != nil {
+		d.sseBroadcaster.Send(evType, beadID, workerID)
 	}
 	return nil
 }
