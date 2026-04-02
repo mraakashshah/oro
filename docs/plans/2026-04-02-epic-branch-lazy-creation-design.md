@@ -1,7 +1,7 @@
 # Epic Branch Lazy Creation Design
 
 **Date:** 2026-04-02
-**Status:** Draft — needs adversarial review.
+**Status:** R1 FAIL (3 gaps fixed), ready for R2.
 
 ## Goal
 
@@ -25,28 +25,51 @@ This works accidentally when workers decompose epics (the worktree implicitly cr
 In `assignBead`, between the `BranchExists` check (line ~3000) and the `worktrees.Create` call (line ~3029), add lazy branch creation:
 
 ```go
-// After resolveEpicBranch returns baseBranch = "epic/<epicID>"
-// and BranchExists returns false:
+// Current code: if beErr != nil || !exists { handleEpicBranchMissing(...) }
+// Replace with:
 
-if !exists && baseBranch != d.cfg.DefaultBranch {
+if beErr != nil {
+    // BranchExists itself failed (git broken) — preserve existing retry/escalate behavior
+    d.handleEpicBranchMissing(ctx, bead, resolvedEpicID, baseBranch, beErr)
+    return
+}
+
+if !exists && resolvedEpicID != "" {
+    // Epic branch missing — create it lazily
+    // Guard: resolvedEpicID != "" ensures this is an actual epic branch,
+    // not a MetaBranch fallback (e.g. bead targeting "develop" with no epic ancestor)
     if err := d.worktrees.CreateBranch(ctx, baseBranch, d.cfg.DefaultBranch); err != nil {
-        // Branch may already exist (race with another child) — check
+        // Branch may already exist (race with another child) — re-check
         if exists2, _ := d.worktrees.BranchExists(ctx, baseBranch); exists2 {
-            // Race resolved — branch was created by concurrent assignment
+            // Race resolved — another goroutine created it
+            d.logEvent(ctx, "epic_branch_race_resolved", "dispatcher", beadID, "",
+                fmt.Sprintf(`{"branch":%q}`, baseBranch))
         } else {
-            // Genuine failure
+            // Genuine failure — clean up and escalate
             d.logEvent(ctx, "epic_branch_create_failed", "dispatcher", beadID, "",
                 fmt.Sprintf(`{"branch":%q,"error":%q}`, baseBranch, err.Error()))
-            d.escalate(ctx, ..., beadID, "")
+            _ = d.beads.Update(ctx, bead.ID, "open") // revert status
+            d.mu.Lock()
+            delete(d.assigningBeads, bead.ID)
+            d.mu.Unlock()
+            d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
+                "epic branch creation failed", err.Error()), beadID, "")
             return
         }
+    } else {
+        d.logEvent(ctx, "epic_branch_created", "dispatcher", beadID, "",
+            fmt.Sprintf(`{"branch":%q,"from":%q}`, baseBranch, d.cfg.DefaultBranch))
     }
-    d.logEvent(ctx, "epic_branch_created", "dispatcher", beadID, "",
-        fmt.Sprintf(`{"branch":%q,"from":%q}`, baseBranch, d.cfg.DefaultBranch))
 }
 
 // Proceed with worktrees.Create(ctx, beadID, baseBranch) as before
 ```
+
+**Key differences from draft (from adversarial review R1):**
+1. **MetaBranch guard:** `resolvedEpicID != ""` prevents spurious branch creation for beads targeting non-epic branches like `develop`.
+2. **BranchExists error preserved:** `beErr != nil` still routes to `handleEpicBranchMissing` (existing retry/escalate logic). Only the `!exists && beErr == nil` case triggers lazy creation.
+3. **Failure cleanup:** On CreateBranch failure, reverts bead status to `"open"`, clears `assigningBeads[bead.ID]`, then escalates. Prevents permanent orphaning.
+4. **Log event placement:** `epic_branch_created` only logged on successful creation, `epic_branch_race_resolved` logged separately for the race case.
 
 ### WorktreeManager Interface Extension
 
@@ -89,7 +112,7 @@ This is idempotent. The error from `git branch` when branch already exists is ex
 
 ### Files Modified
 
-- `pkg/dispatcher/dispatcher.go` — `assignBead` (~line 3000-3029): add lazy creation between BranchExists check and worktrees.Create. Remove escalation from handleEpicBranchMissing for the "branch missing but can be created" case.
+- `pkg/dispatcher/dispatcher.go` — `assignBead` (~line 3000-3029): replace `if beErr != nil || !exists` block with split logic: beErr → handleEpicBranchMissing (preserved), !exists + resolvedEpicID → lazy CreateBranch with cleanup on failure. `handleEpicBranchMissing` still handles git-error cases.
 - `pkg/dispatcher/worktree_manager.go` — add `CreateBranch(ctx, name, from string) error` to `GitWorktreeManager`
 - `pkg/dispatcher/dispatcher.go` — `WorktreeManager` interface (~line 86): add `CreateBranch`
 
@@ -99,10 +122,14 @@ This is idempotent. The error from `git branch` when branch already exists is ex
 
 ### Test Files Needing Mock Update
 
-All files with `mockWorktreeManager` need `CreateBranch` method added:
+All files with `mockWorktreeManager` need `CreateBranch` method added (grep-verified):
 - `pkg/dispatcher/dispatcher_test.go`
-- `pkg/dispatcher/merge_test.go`
-- Any other test files with mock (grep for `mockWorktreeManager`)
+- `pkg/dispatcher/epic_qg_test.go`
+- `pkg/dispatcher/dream_test.go`
+- `pkg/dispatcher/message_size_test.go`
+
+**Existing test assertions that change behavior:**
+Tests for `handleEpicBranchMissing` that assert children are NOT assigned when epic branch is missing for open/blocked epics — these will now pass because the branch IS lazily created. Update assertions to expect: branch created → child assigned.
 
 ### What We're NOT Doing
 
