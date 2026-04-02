@@ -1,0 +1,27 @@
+pkg/web/sse.go
+  81ba69abcac26062 1-48
+pkg/dispatcher/sse_hook_test.go
+  81ba69abcac26062 1-127
+pkg/dispatcher/dispatcher.go
+  81ba69abcac26062 37,388-402,526-527,563,3772-3774,3787-3789
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "a8699de748021a5c366d7753bd7586cea27f73fb",
+  "prompts": {
+    "81ba69abcac26062": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78134755-a4b9-4bd1-a712-a5fdf90f02e9",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 260,
+      "total_deletions": 74,
+      "accepted_lines": 201,
+      "overriden_lines": 0
+    }
+  }
+}
