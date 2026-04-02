@@ -4204,6 +4204,61 @@ func TestAssignBeadCleansUpOnFailure(t *testing.T) {
 	}
 }
 
+func TestAssignmentCleanedOnWorkerDelete(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	// Create a broken connection: net.Pipe() then close the read end
+	server, client := net.Pipe()
+	_ = client.Close() // close reader — writes to server will fail
+
+	// Register the worker with the broken connection
+	d.registerWorker("w-broken", server)
+	t.Cleanup(func() { _ = server.Close() })
+
+	ctx := context.Background()
+	bead := protocol.Bead{ID: "bead-assign-cleanup", Title: "Assignment cleanup test", Priority: 1}
+
+	// Grab the tracked worker so we can call assignBead directly
+	d.mu.Lock()
+	w := d.workers["w-broken"]
+	d.mu.Unlock()
+
+	// Call assignBead — worktree creation succeeds, but sendToWorker should fail
+	_ = d.assignBead(ctx, w, bead)
+
+	// Verify the assignment was created and then cleaned up
+	// (1) Assignment should exist and be completed (not active)
+	var status string
+	err := d.db.QueryRow(
+		`SELECT status FROM assignments WHERE bead_id=? ORDER BY id DESC LIMIT 1`,
+		bead.ID,
+	).Scan(&status)
+	if err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("expected assignment status 'completed', got %q", status)
+	}
+
+	// (2) Verify no active assignment remains for this bead
+	var activeCount int
+	err = d.db.QueryRow(
+		`SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`,
+		bead.ID,
+	).Scan(&activeCount)
+	if err != nil {
+		t.Fatalf("count active assignments: %v", err)
+	}
+	if activeCount != 0 {
+		t.Fatalf("expected 0 active assignments, got %d", activeCount)
+	}
+
+	// (3) Verify worktree_cleanup event was logged
+	if eventCount(t, d.db, "worktree_cleanup") == 0 {
+		t.Fatal("expected 'worktree_cleanup' event after sendToWorker failure")
+	}
+}
+
 // --- Slow process for shutdown tests ---
 
 type slowProcess struct {

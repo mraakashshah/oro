@@ -3106,6 +3106,9 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	delete(d.assigningBeads, bead.ID)
 	d.mu.Unlock()
 	if err != nil {
+		if completeErr := d.completeAssignment(ctx, bead.ID); completeErr != nil {
+			_ = d.logEvent(ctx, "assignment_cleanup_failed", "dispatcher", bead.ID, w.id, completeErr.Error())
+		}
 		_ = d.worktrees.Remove(ctx, worktree)
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
