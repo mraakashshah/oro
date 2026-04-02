@@ -1,0 +1,35 @@
+cmd/oro/cmd_work_execute_test.go
+  2be422563deec38d 136-139
+pkg/dispatcher/dashboard.go
+  2be422563deec38d 1-136
+pkg/web/sse.go
+  2be422563deec38d 6,14-18,48-66
+pkg/dispatcher/dashboard_test.go
+  2be422563deec38d 1-267
+pkg/dispatcher/sse_hook_test.go
+  2be422563deec38d 31-33
+pkg/integration/dispatcher_worker_test.go
+  2be422563deec38d 152-155
+cmd/oro/cmd_work_test.go
+  2be422563deec38d 579-582,1365-1368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "2152e2729387236eb5abb04f660490e75d0030d4",
+  "prompts": {
+    "2be422563deec38d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0a2fb948-c32c-4691-bb1d-fae1b194bea7",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 459,
+      "total_deletions": 12,
+      "accepted_lines": 447,
+      "overriden_lines": 0
+    }
+  }
+}
