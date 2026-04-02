@@ -1,0 +1,25 @@
+pkg/web/detail_template_test.go
+  e73d995725252f72 1-124
+pkg/web/server_test.go
+  e73d995725252f72 97-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "efc7978a1414588a4eef3d8c4b653511f38e372e",
+  "prompts": {
+    "e73d995725252f72": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cd6c10df-78e8-4fc5-88fb-ed9d9eed74d4",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 185,
+      "total_deletions": 53,
+      "accepted_lines": 135,
+      "overriden_lines": 0
+    }
+  }
+}
