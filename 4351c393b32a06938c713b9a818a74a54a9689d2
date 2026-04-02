@@ -1,0 +1,23 @@
+docs/plans/2026-04-02-epic-branch-lazy-creation-design.md
+  f9bea446ca2b104e 4,28-29,31-40,42,44-46,48,51-56,59-61,68-72,115,125,127-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "4351c393b32a06938c713b9a818a74a54a9689d2",
+  "prompts": {
+    "f9bea446ca2b104e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f788d6a1-2273-435b-a348-2bd064b0a9a4",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 41,
+      "total_deletions": 14,
+      "accepted_lines": 41,
+      "overriden_lines": 0
+    }
+  }
+}
