@@ -1,0 +1,33 @@
+cmd/oro/cmd_start_test.go
+  bb0b3f18f2e226cb 535,547-604,693
+pkg/dispatcher/dispatcher.go
+  bb0b3f18f2e226cb 289-290,361-363,516-519,736-769,839-843,887-895
+cmd/oro/cmd_start.go
+  bb0b3f18f2e226cb 357-358,384,398-399,495,510,589,648-649
+pkg/dispatcher/http_server_test.go
+  bb0b3f18f2e226cb 1-176
+cmd/oro/db_test.go
+  bb0b3f18f2e226cb 198
+cmd/oro/cmd_start_index_test.go
+  bb0b3f18f2e226cb 40,169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "3002e292cc7cee35145b7e9a25bf046898057f57",
+  "prompts": {
+    "bb0b3f18f2e226cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3036fdee-4423-4903-a0b2-f44261a59b38",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 322,
+      "total_deletions": 25,
+      "accepted_lines": 306,
+      "overriden_lines": 0
+    }
+  }
+}
