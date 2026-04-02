@@ -16085,6 +16085,47 @@ func TestMergeComplete_InterpolatesBranch(t *testing.T) {
 			t.Fatalf("expected MERGE_COMPLETE escalation, got: %v", esc.Messages())
 		}
 	})
+
+}
+
+func TestCheckEpicAssignable_RetriesOnError(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	epicID := "epic-retry-test"
+	epicBead := protocol.Bead{ID: epicID, Type: "epic", Title: "Epic"}
+	workerID := "w-test"
+
+	// Test 1: HasChildren returns error → should return (false, false) to allow retry
+	beadSrc.hasChildrenErr = fmt.Errorf("transient db error")
+	isDecomp, skip := d.checkEpicAssignable(ctx, epicBead, workerID)
+	if isDecomp || skip {
+		t.Errorf("HasChildren error: got (%v, %v), want (false, false)", isDecomp, skip)
+	}
+
+	// Clear error, set hasChildren = false → next call returns (true, false) for decomposition
+	beadSrc.hasChildrenErr = nil
+	beadSrc.hasChildrenMap = map[string]bool{epicID: false} // no children
+	isDecomp, skip = d.checkEpicAssignable(ctx, epicBead, workerID)
+	if !isDecomp || skip {
+		t.Errorf("After HasChildren recovers with hasChildren=false: got (%v, %v), want (true, false)", isDecomp, skip)
+	}
+
+	// Test 2: AllChildrenClosed returns error → should return (false, false) to allow retry
+	beadSrc.allChildrenClosedErr = fmt.Errorf("transient db error")
+	beadSrc.hasChildrenMap = map[string]bool{epicID: true} // epic has children
+	beadSrc.hasChildrenErr = nil                           // clear any previous error
+	isDecomp, skip = d.checkEpicAssignable(ctx, epicBead, workerID)
+	if isDecomp || skip {
+		t.Errorf("AllChildrenClosed error: got (%v, %v), want (false, false)", isDecomp, skip)
+	}
+
+	// Clear AllChildrenClosed error, set allClosed = true → should skip (epic auto-closed)
+	beadSrc.allChildrenClosedErr = nil
+	beadSrc.allChildrenClosedMap = map[string]bool{epicID: true}
+	isDecomp, skip = d.checkEpicAssignable(ctx, epicBead, workerID)
+	if isDecomp || !skip {
+		t.Errorf("After AllChildrenClosed recovers with allClosed=true: got (%v, %v), want (false, true)", isDecomp, skip)
+	}
 }
 
 func TestChildAssignment_SkipsWhenEpicNotAssigned(t *testing.T) {
