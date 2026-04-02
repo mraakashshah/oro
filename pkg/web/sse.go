@@ -1,7 +1,10 @@
 // Package web provides HTTP and Server-Sent Events (SSE) functionality.
 package web
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 // SSEBroadcaster broadcasts Server-Sent Events to connected clients.
 // It is safe for concurrent use.
@@ -25,24 +28,26 @@ func NewSSEBroadcaster() SSEBroadcaster {
 // Send broadcasts an event to all connected clients.
 // It is safe for concurrent use.
 func (b *sseImpl) Send(eventType, beadID, workerID string) {
-	b.mu.RLock()
-	clients := b.clients
-	b.mu.RUnlock()
-
-	// Format the event as SSE data
 	event := formatSSEEvent(eventType, beadID, workerID)
-
-	// Send to all clients
-	for _, ch := range clients {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for _, ch := range b.clients {
 		select {
 		case ch <- event:
 		default:
-			// Client channel full, skip (non-blocking)
 		}
 	}
 }
 
+// sseEvent is the JSON payload for a server-sent event.
+type sseEvent struct {
+	Type     string `json:"type"`
+	BeadID   string `json:"bead_id"`
+	WorkerID string `json:"worker_id"`
+}
+
 // formatSSEEvent formats an event as Server-Sent Event data.
 func formatSSEEvent(eventType, beadID, workerID string) string {
-	return "data: {\"type\":\"" + eventType + "\",\"bead_id\":\"" + beadID + "\",\"worker_id\":\"" + workerID + "\"}\n\n"
+	b, _ := json.Marshal(sseEvent{Type: eventType, BeadID: beadID, WorkerID: workerID})
+	return "data: " + string(b) + "\n\n"
 }
