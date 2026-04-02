@@ -356,6 +356,28 @@ func TestFragmentThroughput(t *testing.T) {
 	}
 }
 
+// throughputErrorDashboard wraps mockDashboard but returns a system error from Throughput.
+type throughputErrorDashboard struct {
+	*mockDashboard
+}
+
+func (d *throughputErrorDashboard) Throughput(_ context.Context) (*web.ThroughputData, error) {
+	return nil, errors.New("metrics unavailable")
+}
+
+func TestFragmentThroughputError(t *testing.T) {
+	data := &mockDashboard{}
+	h := web.NewHandler(&throughputErrorDashboard{mockDashboard: data}, testTemplates())
+
+	req := httptest.NewRequest(http.MethodGet, "/fragments/throughput", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /fragments/throughput status = %d, want 500", rec.Code)
+	}
+}
+
 func TestFragmentEvents(t *testing.T) {
 	t.Run("returns 200 with event data", func(t *testing.T) {
 		data := &mockDashboard{
