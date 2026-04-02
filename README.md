@@ -466,5 +466,4 @@ Oro builds on foundational work and ideas from the AI coding agent community:
 - **[Teresa Torres - Context Rot](https://www.producttalk.org/context-rot/)** — Why institutional knowledge decays and how to prevent it
 - **[Continuous Claude v3](https://github.com/parcadei/Continuous-Claude-v3)** — Context management pattern for persistent agent workflows using ledgers and handoffs
 - **[Steve Yegge - Beads](https://github.com/steveyegge/beads)** — Git-backed issue tracker designed as external memory for coding agents
-- **[Steve Yegge - Gastown](https://github.com/steveyegge/gastown)** — Multi-agent orchestration system with hierarchical roles and parallel execution
 - **[Obra - Superpowers](https://github.com/obra/superpowers)** — Agent skill framework for building disciplined AI coding workflows
