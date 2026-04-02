@@ -1,0 +1,25 @@
+pkg/web/sse.go
+  217d42fcc24e19e4 1-89
+pkg/web/sse_test.go
+  217d42fcc24e19e4 1-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "0fd2f005cd929846587f6093c425b87138dcca56",
+  "prompts": {
+    "217d42fcc24e19e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9aabed16-d349-4d31-ac8d-69a8f590b900",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 292,
+      "total_deletions": 32,
+      "accepted_lines": 260,
+      "overriden_lines": 0
+    }
+  }
+}
