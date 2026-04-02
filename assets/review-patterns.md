@@ -17,3 +17,5 @@ case-insensitive-header-search: matching markdown headers → lowercase both sid
 `double-hash-computation`: function computes identity hash, caller also computes same hash for display → return computed value from inner function to avoid redundant I/O.
 `best-effort-symlink`: new worktree asset needs linking → add to `stageAssets` with `slog.Warn` on failure, no error return, Lstat guard for idempotency.
 `stale-hardcoded-after-wiring`: replacing a hardcoded value in behavior but leaving it in nearby comments/log strings → search the same function and callers for other instances of the old hardcoded value.
+`error-path-db-cleanup`: DB record created before fallible operation → add cleanup call in error path, log but don't block subsequent cleanup steps.
+`double-nowFunc-under-lock`: calling `d.nowFunc()` multiple times under a single lock hold → capture once in `now := d.nowFunc()` and reuse.
