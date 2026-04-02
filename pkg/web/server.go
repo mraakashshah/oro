@@ -63,7 +63,7 @@ type handler struct {
 // templates must contain: index.html, parade.html, workers.html, detail.html.
 func NewHandler(data DashboardData, templates fs.FS) http.Handler {
 	mustParse := func(files ...string) *template.Template {
-		t, err := template.ParseFS(templates, files...)
+		t, err := template.New("").Funcs(TemplateFuncMap()).ParseFS(templates, files...)
 		if err != nil {
 			panic(fmt.Sprintf("web.NewHandler: parse templates %v: %v", files, err))
 		}
