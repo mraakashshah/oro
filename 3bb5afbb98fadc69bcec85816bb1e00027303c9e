@@ -1,0 +1,29 @@
+pkg/dispatcher/dashboard_test.go
+  0ce33926109538b0 1-329
+pkg/web/sse.go
+  0ce33926109538b0 6,14-19,49-67
+pkg/dispatcher/sse_hook_test.go
+  0ce33926109538b0 31-33
+pkg/dispatcher/dashboard.go
+  0ce33926109538b0 1-137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "3bb5afbb98fadc69bcec85816bb1e00027303c9e",
+  "prompts": {
+    "0ce33926109538b0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2e1dfa66-5084-417c-af72-7e2950061317",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 504,
+      "total_deletions": 9,
+      "accepted_lines": 495,
+      "overriden_lines": 0
+    }
+  }
+}
