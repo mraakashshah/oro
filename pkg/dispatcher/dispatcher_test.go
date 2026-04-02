@@ -96,6 +96,8 @@ type mockBeadSource struct {
 	closedErr            error            // if set, Closed() returns this error
 	updateErrs           map[string]error // beadID -> error returned by Update()
 	showErr              error            // if set, Show() returns this error for all IDs
+	showErrFn            map[string]error // per-ID Show errors (takes precedence over showErr)
+	shownNil             map[string]bool  // per-ID nil detail (returns nil, nil)
 	exportData           []byte           // returned by Export(); nil means no data
 	exportErr            error            // if set, Export() returns this error
 }
@@ -114,9 +116,23 @@ func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Check per-ID Show error first (takes precedence).
+	if m.showErrFn != nil {
+		if err, ok := m.showErrFn[id]; ok {
+			return nil, err
+		}
+	}
+	// Check global Show error.
 	if m.showErr != nil {
 		return nil, m.showErr
 	}
+	// Check if this ID should return nil detail (edge case test).
+	if m.shownNil != nil {
+		if m.shownNil[id] {
+			return nil, nil
+		}
+	}
+	// Check if detail is provided.
 	if d, ok := m.shown[id]; ok {
 		return d, nil
 	}
@@ -868,6 +884,30 @@ func eventCount(t *testing.T, db *sql.DB, evType string) int {
 		t.Fatalf("count events: %v", err)
 	}
 	return count
+}
+
+// getLogEvents retrieves all event types and payloads from the dispatcher's event log.
+// Returns formatted strings like "epic_branch_pending: ..."
+func getLogEvents(t *testing.T, d *Dispatcher) []string {
+	t.Helper()
+	rows, err := d.db.Query(`SELECT type, payload FROM events ORDER BY created_at`)
+	if err != nil {
+		t.Fatalf("query events: %v", err)
+	}
+	defer rows.Close()
+
+	var events []string
+	for rows.Next() {
+		var evType, payload string
+		if err := rows.Scan(&evType, &payload); err != nil {
+			t.Fatalf("scan event: %v", err)
+		}
+		events = append(events, fmt.Sprintf("%s: %s", evType, payload))
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatalf("rows error: %v", err)
+	}
+	return events
 }
 
 // --- Tests ---
@@ -16043,6 +16083,317 @@ func TestMergeComplete_InterpolatesBranch(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("expected MERGE_COMPLETE escalation, got: %v", esc.Messages())
+		}
+	})
+}
+
+func TestChildAssignment_SkipsWhenEpicNotAssigned(t *testing.T) {
+	t.Run("epic in open status with missing branch does not escalate", func(t *testing.T) {
+		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+
+		// Register the epic with "open" status (not yet assigned)
+		beadSrc.mu.Lock()
+		beadSrc.shown["epic-open"] = &protocol.BeadDetail{
+			ID:     "epic-open",
+			Title:  "Epic Open",
+			Type:   "epic",
+			Status: "open", // Key: epic is in open status
+		}
+		beadSrc.mu.Unlock()
+
+		// Epic branch does NOT exist.
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return false, nil
+		}
+
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		// Set a child bead of the open epic.
+		beadSrc.SetBeads([]protocol.Bead{
+			{ID: "child-of-open", Title: "Child of open epic", Priority: 1, Epic: "epic-open"},
+		})
+
+		// Bead should NOT be assigned (no ASSIGN message).
+		msg, ok := readMsg(t, conn, 500*time.Millisecond)
+		if ok && msg.Type == protocol.MsgAssign {
+			t.Fatal("bead should not be assigned when epic is in open status")
+		}
+
+		// Check that we see epic_branch_pending event (not an escalation).
+		logEvents := getLogEvents(t, d)
+		foundPending := false
+		for _, event := range logEvents {
+			if strings.Contains(event, "epic_branch_pending:") {
+				foundPending = true
+				break
+			}
+		}
+		if !foundPending {
+			t.Errorf("expected epic_branch_pending log event, events: %v", logEvents)
+		}
+
+		// No STUCK_WORKER escalation should be sent.
+		escalations := esc.Messages()
+		for _, esc := range escalations {
+			if strings.Contains(esc, string(protocol.EscStuckWorker)) {
+				t.Errorf("unexpected STUCK_WORKER escalation: %s", esc)
+			}
+		}
+	})
+
+	t.Run("epic in in_progress status with missing branch escalates as STUCK_WORKER", func(t *testing.T) {
+		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+
+		// Register the epic with "in_progress" status (already assigned, being worked on)
+		beadSrc.mu.Lock()
+		beadSrc.shown["epic-wip"] = &protocol.BeadDetail{
+			ID:     "epic-wip",
+			Title:  "Epic WIP",
+			Type:   "epic",
+			Status: "in_progress", // Key: epic is in progress
+		}
+		beadSrc.mu.Unlock()
+
+		// Epic branch does NOT exist.
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return false, nil
+		}
+
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w2", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		// Set a child bead of the in_progress epic.
+		beadSrc.SetBeads([]protocol.Bead{
+			{ID: "child-of-wip", Title: "Child of WIP epic", Priority: 1, Epic: "epic-wip"},
+		})
+
+		// Bead should NOT be assigned.
+		msg, ok := readMsg(t, conn, 500*time.Millisecond)
+		if ok && msg.Type == protocol.MsgAssign {
+			t.Fatal("bead should not be assigned when epic branch is missing")
+		}
+
+		// STUCK_WORKER escalation SHOULD be sent (existing behavior for in_progress epic).
+		waitFor(t, func() bool {
+			for _, esc := range esc.Messages() {
+				if strings.Contains(esc, string(protocol.EscStuckWorker)) {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
+	})
+
+	t.Run("epic in blocked status with missing branch does not escalate", func(t *testing.T) {
+		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+
+		// Register the epic with "blocked" status
+		beadSrc.mu.Lock()
+		beadSrc.shown["epic-blocked"] = &protocol.BeadDetail{
+			ID:     "epic-blocked",
+			Title:  "Epic Blocked",
+			Type:   "epic",
+			Status: "blocked", // Key: epic is blocked
+		}
+		beadSrc.mu.Unlock()
+
+		// Epic branch does NOT exist.
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return false, nil
+		}
+
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w3", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		// Set a child bead of the blocked epic.
+		beadSrc.SetBeads([]protocol.Bead{
+			{ID: "child-of-blocked", Title: "Child of blocked epic", Priority: 1, Epic: "epic-blocked"},
+		})
+
+		// Bead should NOT be assigned.
+		msg, ok := readMsg(t, conn, 500*time.Millisecond)
+		if ok && msg.Type == protocol.MsgAssign {
+			t.Fatal("bead should not be assigned when epic is blocked")
+		}
+
+		// No STUCK_WORKER escalation should be sent (spec: "epic status is blocked → skip (don't escalate)").
+		escalations := esc.Messages()
+		for _, esc := range escalations {
+			if strings.Contains(esc, string(protocol.EscStuckWorker)) {
+				t.Errorf("unexpected STUCK_WORKER escalation for blocked epic: %s", esc)
+			}
+		}
+	})
+
+	t.Run("epic in closed status with missing branch escalates as STUCK_WORKER", func(t *testing.T) {
+		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+
+		// Register the epic with "closed" status but branch is missing — genuine problem
+		beadSrc.mu.Lock()
+		beadSrc.shown["epic-closed"] = &protocol.BeadDetail{
+			ID:     "epic-closed",
+			Title:  "Epic Closed",
+			Type:   "epic",
+			Status: "closed", // Key: epic is closed but branch missing
+		}
+		beadSrc.mu.Unlock()
+
+		// Epic branch does NOT exist.
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return false, nil
+		}
+
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w4", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		// Set a child bead of the closed epic.
+		beadSrc.SetBeads([]protocol.Bead{
+			{ID: "child-of-closed", Title: "Child of closed epic", Priority: 1, Epic: "epic-closed"},
+		})
+
+		// Bead should NOT be assigned.
+		msg, ok := readMsg(t, conn, 500*time.Millisecond)
+		if ok && msg.Type == protocol.MsgAssign {
+			t.Fatal("bead should not be assigned when epic branch is missing")
+		}
+
+		// STUCK_WORKER escalation SHOULD be sent (spec: "epic status is closed but branch missing → escalate").
+		waitFor(t, func() bool {
+			for _, esc := range esc.Messages() {
+				if strings.Contains(esc, string(protocol.EscStuckWorker)) {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Second)
+	})
+}
+
+func TestChildAssignment_ShowError_NoEscalation(t *testing.T) {
+	t.Run("beads.Show returns nil detail with no error is treated as error", func(t *testing.T) {
+		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+
+		// Set up the mock to return nil detail with no error (edge case).
+		beadSrc.mu.Lock()
+		if beadSrc.shownNil == nil {
+			beadSrc.shownNil = make(map[string]bool)
+		}
+		beadSrc.shownNil["epic-nil"] = true
+		beadSrc.mu.Unlock()
+
+		// Epic branch does NOT exist.
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return false, nil
+		}
+
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w6", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		// Set a child bead of the epic with nil detail.
+		beadSrc.SetBeads([]protocol.Bead{
+			{ID: "child-nil", Title: "Child with nil detail", Priority: 1, Epic: "epic-nil"},
+		})
+
+		// Bead should NOT be assigned.
+		msg, ok := readMsg(t, conn, 500*time.Millisecond)
+		if ok && msg.Type == protocol.MsgAssign {
+			t.Fatal("bead should not be assigned when epic Show returns nil detail")
+		}
+
+		// No STUCK_WORKER escalation should be sent.
+		escalations := esc.Messages()
+		for _, esc := range escalations {
+			if strings.Contains(esc, string(protocol.EscStuckWorker)) {
+				t.Errorf("unexpected STUCK_WORKER escalation when Show returns nil: %s", esc)
+			}
+		}
+	})
+
+	t.Run("beads.Show returns transient error does not escalate", func(t *testing.T) {
+		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+
+		// Set up the mock to return an error for a specific epic (transient error).
+		beadSrc.mu.Lock()
+		if beadSrc.showErrFn == nil {
+			beadSrc.showErrFn = make(map[string]error)
+		}
+		beadSrc.showErrFn["epic-error"] = fmt.Errorf("transient database error")
+		beadSrc.mu.Unlock()
+
+		// Epic branch does NOT exist.
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			return false, nil
+		}
+
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w7", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		// Set a child bead of the epic that returns error.
+		beadSrc.SetBeads([]protocol.Bead{
+			{ID: "child-error", Title: "Child with Show error", Priority: 1, Epic: "epic-error"},
+		})
+
+		// Bead should NOT be assigned.
+		msg, ok := readMsg(t, conn, 500*time.Millisecond)
+		if ok && msg.Type == protocol.MsgAssign {
+			t.Fatal("bead should not be assigned when epic Show returns error")
+		}
+
+		// No STUCK_WORKER escalation should be sent.
+		escalations := esc.Messages()
+		for _, esc := range escalations {
+			if strings.Contains(esc, string(protocol.EscStuckWorker)) {
+				t.Errorf("unexpected STUCK_WORKER escalation when Show returns error: %s", esc)
+			}
 		}
 	})
 }

@@ -2847,6 +2847,69 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 	return title, acceptance, true
 }
 
+// handleEpicBranchMissing checks if an epic branch is missing and decides whether to
+// escalate or retry based on epic status. Handles all cases and returns early from assignBead.
+func (d *Dispatcher) handleEpicBranchMissing(ctx context.Context, bead protocol.Bead, w *trackedWorker,
+	baseBranch string, resolvedEpicID string, branchCheckErr error,
+) {
+	// Before escalating, check the epic's status to decide if this is
+	// a genuine problem or a transient state.
+	epicDetail, showErr := d.beads.Show(ctx, resolvedEpicID)
+
+	// If Show returns an error, this is transient (e.g., DB issue).
+	// Log and return without escalating — will retry next cycle.
+	if showErr != nil {
+		_ = d.logEvent(ctx, "epic_show_error", "dispatcher", bead.ID, w.id,
+			fmt.Sprintf("error fetching epic %s: %v", resolvedEpicID, showErr))
+		_ = d.beads.Update(ctx, bead.ID, "ready")
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		return
+	}
+
+	// If Show returns nil detail with no error, treat as error (retry).
+	if epicDetail == nil {
+		_ = d.logEvent(ctx, "epic_show_error", "dispatcher", bead.ID, w.id,
+			fmt.Sprintf("epic %s returned nil detail", resolvedEpicID))
+		_ = d.beads.Update(ctx, bead.ID, "ready")
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		return
+	}
+
+	// Check epic status to decide whether to escalate or retry.
+	// open: epic not yet assigned → don't escalate, retry next cycle
+	// blocked: epic is blocked → don't escalate, skip for now
+	// in_progress: epic being worked on, branch missing → escalate (genuine problem)
+	// closed: epic finished, branch missing → escalate (genuine problem)
+	switch epicDetail.Status {
+	case "open", "blocked":
+		// Epic not yet assigned or is blocked; branch will be created when epic is worked.
+		// Return without escalating — will retry.
+		_ = d.logEvent(ctx, "epic_branch_pending", "dispatcher", bead.ID, w.id,
+			fmt.Sprintf("epic %s in %s status, branch not yet created", resolvedEpicID, epicDetail.Status))
+		_ = d.beads.Update(ctx, bead.ID, "ready")
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		return
+	}
+
+	// For in_progress and closed statuses, escalate — branch should exist.
+	reason := fmt.Sprintf("epic branch %q not found for bead %s", baseBranch, bead.ID)
+	if branchCheckErr != nil {
+		reason = fmt.Sprintf("checking epic branch %q: %v", baseBranch, branchCheckErr)
+	}
+	_ = d.logEvent(ctx, "epic_branch_missing", "dispatcher", bead.ID, w.id, reason)
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, bead.ID, "epic branch missing", reason), bead.ID, w.id)
+	_ = d.beads.Update(ctx, bead.ID, "ready")
+	d.mu.Lock()
+	delete(d.assigningBeads, bead.ID)
+	d.mu.Unlock()
+}
+
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
@@ -2936,16 +2999,8 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		// Escalate if the epic branch does not exist yet.
 		exists, beErr := d.worktrees.BranchExists(ctx, baseBranch)
 		if beErr != nil || !exists {
-			reason := fmt.Sprintf("epic branch %q not found for bead %s", baseBranch, bead.ID)
-			if beErr != nil {
-				reason = fmt.Sprintf("checking epic branch %q: %v", baseBranch, beErr)
-			}
-			_ = d.logEvent(ctx, "epic_branch_missing", "dispatcher", bead.ID, w.id, reason)
-			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, bead.ID, "epic branch missing", reason), bead.ID, w.id)
-			_ = d.beads.Update(ctx, bead.ID, "ready")
-			d.mu.Lock()
-			delete(d.assigningBeads, bead.ID)
-			d.mu.Unlock()
+			// Handle epic branch missing: check epic status to decide whether to escalate or retry.
+			d.handleEpicBranchMissing(ctx, bead, w, baseBranch, resolvedEpicID, beErr)
 			return nil
 		}
 	}
