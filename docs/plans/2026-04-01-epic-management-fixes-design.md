@@ -82,7 +82,7 @@ if err := d.ffMergeEpicBranch(ctx, epicID, workerID, targetBranch); err != nil {
 }
 ```
 
-2. **CRITICAL:** Clear `epicMergeFailed[epicID]` in `mergeAndComplete` BEFORE calling `autoCloseEpicIfComplete`, not inside it. Otherwise, the rebase fix bead's completion is blocked by the very flag it should clear (deadlock).
+1. **CRITICAL:** Clear `epicMergeFailed[epicID]` in `mergeAndComplete` BEFORE calling `autoCloseEpicIfComplete`, not inside it. Otherwise, the rebase fix bead's completion is blocked by the very flag it should clear (deadlock).
 ```go
 // In mergeAndComplete, before autoCloseEpicIfComplete:
 d.mu.Lock()
@@ -91,7 +91,7 @@ d.mu.Unlock()
 d.autoCloseEpicIfComplete(ctx, epicID)
 ```
 
-3. In `checkEpicAssignable`, replace the direct `beads.Close()` call with delegation to `completeEpicClose` (or at minimum `ffMergeEpicBranch` + close). The current direct-close path loses commits.
+1. In `checkEpicAssignable`, replace the direct `beads.Close()` call with delegation to `completeEpicClose` (or at minimum `ffMergeEpicBranch` + close). The current direct-close path loses commits.
 
 **Map lifecycle:** `epicMergeFailed` must be added to `BeadTracker` struct, included in `deleteOrphanedTracking` and `allTrackingKeys`, and initialized in `New()`.
 
