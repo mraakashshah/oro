@@ -513,61 +513,33 @@ Dreaming (every 10 beads, Haiku consolidation)
 
 ## Part 4: What Oro Could Adopt
 
-### 1. Structural Spec Validation (HIGH VALUE)
+On closer examination, most of Ossature's distinctive features solve constraints that Oro doesn't have. Ossature's workers are sandboxed (can only read injected files), sequential (one task at a time), and stateless (no memory across builds). Oro's workers have full Claude Code, read any file via `Read:` fields, and benefit from cross-session memory. The features that look attractive in isolation lose their value when mapped onto Oro's architecture.
 
-**What:** A lightweight parser for design docs that validates structure without an LLM — like Ossature validates SMD fields, enums, and dependency graph before any LLM call.
-
-**Why:** Oro's adversarial review is excellent but expensive (Opus subagent). A cheap, structural pre-pass could catch "design doc missing acceptance test section" or "referenced bead doesn't exist" before spending tokens on the 6-check review. Ossature proves you can catch a whole class of defects with a parser alone.
-
-**How to adopt:** Define a lightweight schema for `docs/plans/*.md` — required sections (Goal, Components, Acceptance Test, Constraints), metadata fields. Write a Go parser that validates before `adversarial-spec-review` runs. Fail fast on structural issues.
-
-**Risk:** Over-formalizing could slow the brainstorming workflow. Keep the schema minimal — validate what matters (acceptance test exists, components listed), ignore style.
-
-### 2. Cross-Spec Interface Propagation (HIGH VALUE)
-
-**What:** When bead A completes and merges, automatically extract its public interface and inject it into the prompt for dependent bead B.
-
-**Why:** Ossature's `inject_files` and `cross_spec_interfaces` ensure downstream tasks see the exact interfaces produced by upstream tasks. Oro's beadcraft puts `Read:` fields on beads (pointing workers to the right files), and code search finds related code, but there's no *guaranteed* interface contract passing. Workers can produce interfaces that compile but don't match what the dependent bead expects. This is exactly the kind of gap the adversarial review's Check 5 (Red Team) hunts for — but it happens at spec time, not at execution time when the interface already exists.
-
-**How to adopt:** After merge, run a lightweight ops agent (OpsInterface, Haiku) or static analysis (`go doc` output) to extract the public API. Store as a bead annotation or in the assignment. Inject into Section 2 of the worker prompt for dependent beads.
-
-### 3. Hash-Based Incremental Execution (MEDIUM VALUE)
+### 1. Hash-Based Retry Detection (MEDIUM VALUE)
 
 **What:** Track input hashes per bead to detect when a retry would produce the same result.
 
-**Why:** Ossature's `input_hash` = SHA256(prompt + context_files) is elegant. If inputs haven't changed, the task is skipped. Oro doesn't have this — every bead execution is fresh, even retries where nothing changed.
+**Why:** Ossature's `input_hash` = SHA256(prompt + context_files) is elegant. If inputs haven't changed, the task is skipped. Oro doesn't have this — every bead execution is fresh, even retries where nothing changed. Computing a hash of the assembled prompt + injected context at assignment time and storing it in the `assignments` table would catch "nothing changed, why are we retrying?" — avoiding burning a worker context window on identical inputs.
 
-**How to adopt:** Compute hash of assembled prompt + injected context at assignment time. Store in `assignments` table. On retry with same hash, flag it to the manager rather than burning another worker context window.
+**Caveat:** Oro's execution is interactive (workers explore, read, decide), making it less deterministic than Ossature's tool-call model. Useful mainly as a signal, not a hard skip.
 
-**Risk:** Oro's execution is interactive (workers explore, read, decide), making it less deterministic than Ossature's tool-call model. Useful mainly for detecting "nothing changed, why are we retrying?"
+### 2. Auto-Fix Loop for Specs (LOW-MEDIUM VALUE)
 
-### 4. Prompt/Response Capture (MEDIUM VALUE)
+**What:** When the adversarial review finds gaps, automatically fix mechanical issues instead of presenting all findings for manual resolution.
 
-**What:** Save the assembled worker prompt and (optionally) a summary of worker output for each bead attempt.
+**Why:** Ossature's audit → auto-fix → re-audit loop (up to 3 cycles) is efficient. Oro's adversarial review returns FAIL with findings, then the human/architect fixes and re-runs. Automating the fix step for mechanical gaps (missing bead for integration point, missing `Read:` field) would speed up the Ralph Loop.
 
-**Why:** Ossature saves `prompt.md` and `response.md` per task, making debugging trivial. Oro's event log captures status transitions but not what the worker was actually told or produced. When diagnosing why a worker went wrong, you currently have to reconstruct the prompt from dispatcher state.
+**Risk:** Auto-fixing specs is riskier than auto-fixing code — specs encode intent. Keep human-in-the-loop for structural/design changes; auto-fix only for clearly mechanical gaps.
 
-**How to adopt:** In `worker.go`, write the assembled prompt to `.oro/prompts/<beadID>/attempt-<N>.md` before spawning Claude. Optionally capture Claude's final output summary. Reference from event log.
+### Ideas Considered and Rejected
 
-### 5. Auto-Fix Loop for Specs (LOW-MEDIUM VALUE)
+**Structural spec validation** — Ossature needs a parser because its specs are machine-consumed (the planner LLM reads parsed models). Oro's specs are human-consumed during brainstorming and then decomposed into beads. Beadcraft's Rule of Five IS the structural validation, applied at the right level (beads, not docs). Adding a doc parser solves a problem Oro doesn't have.
 
-**What:** When the adversarial review finds gaps, automatically fix them instead of presenting findings for manual resolution.
+**Interface propagation** — Ossature's `inject_files` exists because its workers are sandboxed — they literally cannot read upstream code unless it's injected. Oro workers have full Claude Code and can read anything. The `Read:` field points them to the right files. Code search indexes merged code. And three independent gates (QG compilation, ops review, bead acceptance test) catch interface mismatches. Belt-and-suspenders on top of belt-and-suspenders.
 
-**Why:** Ossature's audit → auto-fix → re-audit loop (up to 3 cycles) is efficient. Oro's adversarial review returns FAIL with findings, then the human/architect fixes and re-runs. Automating the fix step would speed up the spec pipeline.
+**Prompt/response capture** — Sounds useful for debugging, but Oro workers run interactively for 15+ minutes. The initial prompt matters, but so do the 50 tool calls after it. Saving the prompt without the session is like saving the first page of a novel. Claude Code session logs already exist for the real diagnostic.
 
-**How to adopt:** On FAIL verdict, parse the structured YAML findings. For each wiring gap or missing bead, auto-create the fix bead via beadcraft. For spec text issues, auto-edit the design doc. Re-run adversarial review. Ralph Loop already exists conceptually — just automate the fix step.
-
-**Risk:** Auto-fixing specs is riskier than auto-fixing code (specs encode intent, not just behavior). Keep human-in-the-loop for structural changes; auto-fix only for mechanical gaps (missing bead for integration point, missing `Read:` field).
-
-### 6. Per-Spec Briefing (LOW VALUE)
-
-**What:** Auto-generate a ~200-word project brief and per-spec briefs, included in every worker prompt for context.
-
-**Why:** Ossature generates `project-brief.md` and per-spec briefs that give every task LLM context about the overall project. Oro's workers get code search results and memories, but no structured project summary. A brief could reduce "worker doesn't understand the project" failures.
-
-**How to adopt:** Generate a project brief from README + recent design docs during `oro init` or periodically. Inject into Section 1 of the worker prompt.
-
-**Risk:** Oro's memory system already provides contextual project knowledge. A static brief might conflict with dynamic memories. Low incremental value.
+**Per-spec briefing** — Oro's memory system already provides contextual project knowledge. A static brief would conflict with dynamic memories.
 
 ---
 
@@ -648,14 +620,13 @@ Oro optimizes for **correctness over time across many runs**.
 
 ### What To Borrow
 
-The highest-value ideas from Ossature for Oro:
+Honestly, very little. Most of Ossature's distinctive features solve constraints that Oro doesn't have (sandboxed workers, sequential execution, stateless builds). The one transferable idea:
 
-1. **Structural validation** — Add a cheap parser pass before the expensive adversarial review
-2. **Interface propagation** — Extract and inject public interfaces between dependent beads
-3. **Prompt capture** — Save what workers were told for debugging
-4. **Hash-based retry detection** — Don't burn a worker context on an identical retry
+1. **Hash-based retry detection** — Don't burn a worker context window on identical inputs
 
-The things NOT to borrow are the things that make Ossature simpler but less powerful: sequential execution, sandboxed tools, no git, no memory, no TDD mandate, no adversarial review depth.
+The rest — structural spec validation, interface propagation, prompt capture — were considered and rejected because Oro's existing mechanisms (Rule of Five, `Read:` fields + full file access, session logs) already cover them.
+
+The deeper lesson isn't a feature to copy — it's confirmation that Oro's spec pipeline (brainstorming → premortem → adversarial review → beadcraft) is solving the right problems more aggressively than Ossature's approach. Ossature asks "is the spec well-formed?" Oro asks "if every bead passes, does the feature still work?" The harder question is the right one.
 
 ---
 
