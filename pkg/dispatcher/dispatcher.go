@@ -2197,11 +2197,17 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		}
 		d.mu.Unlock()
 
+		// Clear tracking BEFORE logging the escalation event so that any
+		// observer waiting on the event (e.g. tests) sees clean tracking
+		// maps once the event is visible.  The previous ordering left a
+		// race window: the event was logged, then escalate() ran (which
+		// can block on tmux), and only then was tracking cleared.
+		d.clearBeadTracking(beadID)
+
 		_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
 			fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, feedback))
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 			fmt.Sprintf("review rejected %d times", count), feedback), beadID, workerID)
-		d.clearBeadTracking(beadID)
 
 		// Kill the worker subprocess so a fresh process can take over.
 		if d.procMgr != nil {
