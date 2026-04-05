@@ -1,0 +1,23 @@
+cmd/oro/db_test.go
+  983ecd30009c0414 60-70,72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "bd972dd7c8080538634f3d06c81093288e107b51",
+  "prompts": {
+    "983ecd30009c0414": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "abd8bb5f-8eb7-4935-8777-098bb59fae8f",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 12,
+      "total_deletions": 1,
+      "accepted_lines": 12,
+      "overriden_lines": 0
+    }
+  }
+}
