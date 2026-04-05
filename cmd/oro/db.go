@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"oro/pkg/protocol"
 
@@ -14,6 +16,10 @@ import (
 // defaults: WAL journal mode and a 5-second busy timeout. It also calls
 // db.PingContext to verify the connection is usable before returning.
 func openDB(path string) (*sql.DB, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, fmt.Errorf("create dir for %s: %w", path, err)
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite %s: %w", path, err)
