@@ -57,8 +57,19 @@ func TestOpenDB_BusyTimeoutSet(t *testing.T) {
 	}
 }
 
+func TestOpenDB_CreatesParentDirs(t *testing.T) {
+	// Regression: CI failed because ~/.oro/projects/<name>/ didn't exist.
+	// openDB must create intermediate directories automatically.
+	dbPath := filepath.Join(t.TempDir(), "nested", "subdir", "test.db")
+	db, err := openDB(dbPath)
+	if err != nil {
+		t.Fatalf("openDB should create parent dirs: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+}
+
 func TestOpenDB_InvalidPath(t *testing.T) {
-	// Opening a DB in a non-existent directory should fail on Ping.
+	// Opening a DB under an uncreatable root should fail.
 	_, err := openDB("/nonexistent/dir/test.db")
 	if err == nil {
 		t.Fatal("expected error for invalid path")
