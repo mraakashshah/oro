@@ -3621,9 +3621,10 @@ func TestReconnect_TimerCleanup(t *testing.T) {
 	after := runtime.NumGoroutine()
 
 	// With the leak, a long-lived timer goroutine would still be present.
-	// Allow +2 jitter for runtime/parallel-test goroutines that may start
-	// between the before/after snapshots; reject any larger growth.
-	const goroutineJitter = 2
+	// Allow +5 jitter for runtime/parallel-test goroutines that may start
+	// between the before/after snapshots (CI with -shuffle sees +3 routinely);
+	// reject any larger growth that indicates a real leak.
+	const goroutineJitter = 5
 	if after > before+goroutineJitter {
 		t.Errorf("goroutine leak: before cancel=%d, after=%d (delta=+%d, allowed jitter=+%d)",
 			before, after, after-before, goroutineJitter)
