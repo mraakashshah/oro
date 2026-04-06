@@ -102,12 +102,15 @@ resolve_version() {
 	fi
 
 	log_info "Fetching latest release version..."
-	local tag
-	tag=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" |
-		grep '"tag_name"' |
-		sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
+	# Use redirect URL instead of API to avoid 60/hr unauthenticated rate limit.
+	local redirect_url
+	redirect_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+		"https://github.com/${GITHUB_REPO}/releases/latest")
 
-	if [[ -z "${tag}" ]]; then
+	local tag
+	tag="${redirect_url##*/}"  # extract tag from redirect URL (e.g. "v0.1.0")
+
+	if [[ -z "${tag}" || "${tag}" == "latest" ]]; then
 		log_error "Could not determine latest release version."
 		log_error "Check https://github.com/${GITHUB_REPO}/releases"
 		exit 1
@@ -182,17 +185,17 @@ main() {
 	# 3. Select install directories
 	local bin_dir
 	bin_dir=$(select_bin_dir)
-	local dash_dir="${ORO_HOME}/bin"
 	local hooks_dir="${ORO_HOME}/hooks"
 
 	log_info "oro binary:         ${bin_dir}/oro"
-	log_info "oro-dash binary:    ${dash_dir}/oro-dash"
 	log_info "oro-search-hook:    ${hooks_dir}/oro-search-hook"
 	echo ""
 
-	# 4. Build download URL
+	# 4. Build download URLs
 	local archive_name="oro_${version}_${platform}.tar.gz"
-	local download_url="https://github.com/${GITHUB_REPO}/releases/download/v${version}/${archive_name}"
+	local base_url="https://github.com/${GITHUB_REPO}/releases/download/v${version}"
+	local download_url="${base_url}/${archive_name}"
+	local checksums_url="${base_url}/checksums.txt"
 	log_info "Downloading ${download_url}"
 
 	# 5. Create temp directory
@@ -205,49 +208,51 @@ main() {
 		trap 'rm -rf "${tmpdir}"' EXIT
 	fi
 
-	# 6. Download and extract
+	# 6. Download archive and checksums
 	if [[ "${DRY_RUN}" == "true" ]]; then
 		log_info "[dry-run] curl -fsSL ${download_url} -o ${tmpdir}/${archive_name}"
+		log_info "[dry-run] curl -fsSL ${checksums_url} -o ${tmpdir}/checksums.txt"
+		log_info "[dry-run] shasum -a 256 -c checksums.txt (verify ${archive_name})"
 		log_info "[dry-run] tar -xzf ${tmpdir}/${archive_name} -C ${tmpdir}"
 	else
 		curl -fsSL "${download_url}" -o "${tmpdir}/${archive_name}"
+		curl -fsSL "${checksums_url}" -o "${tmpdir}/checksums.txt"
+
+		# 7. Verify checksum
+		log_info "Verifying checksum..."
+		(cd "${tmpdir}" && grep "${archive_name}" checksums.txt | shasum -a 256 -c --quiet)
+		log_success "Checksum verified."
+
+		# 8. Extract
 		tar -xzf "${tmpdir}/${archive_name}" -C "${tmpdir}"
 	fi
 
-	# 7. Create target directories
+	# 9. Create target directories
 	run mkdir -p "${bin_dir}"
-	run mkdir -p "${dash_dir}"
 	run mkdir -p "${hooks_dir}"
 
-	# 8. Install binaries
+	# 10. Install binaries
 	log_info "Installing oro to ${bin_dir}/"
 	run install -m 0755 "${tmpdir}/oro" "${bin_dir}/oro"
-
-	log_info "Installing oro-dash to ${dash_dir}/"
-	run install -m 0755 "${tmpdir}/oro-dash" "${dash_dir}/oro-dash"
 
 	log_info "Installing oro-search-hook to ${hooks_dir}/"
 	run install -m 0755 "${tmpdir}/oro-search-hook" "${hooks_dir}/oro-search-hook"
 
-	# 9. Codesign (macOS ad-hoc re-signing, skip gracefully if unavailable)
+	# 11. Codesign (macOS ad-hoc re-signing, skip gracefully if unavailable)
 	log_info "Re-signing binaries (ad-hoc codesign)..."
 	if [[ "${DRY_RUN}" == "true" ]]; then
 		log_info "[dry-run] codesign --force --sign - ${bin_dir}/oro"
-		log_info "[dry-run] codesign --force --sign - ${dash_dir}/oro-dash"
 		log_info "[dry-run] codesign --force --sign - ${hooks_dir}/oro-search-hook"
 	else
 		try_codesign "${bin_dir}/oro"
-		try_codesign "${dash_dir}/oro-dash"
 		try_codesign "${hooks_dir}/oro-search-hook"
 	fi
 
-	# 10. PATH checks
+	# 12. PATH check
 	echo ""
 	check_path "${bin_dir}" "oro"
-	check_path "${dash_dir}" "oro-dash"
-	check_path "${hooks_dir}" "oro-search-hook"
 
-	# 11. Done
+	# 13. Done
 	log_success "oro ${version} installed successfully!"
 	echo ""
 	echo "  Try it out:"
