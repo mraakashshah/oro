@@ -1,0 +1,36 @@
+cmd/oro/cmd_uninstall_test.go
+  56c8d9295bf39cac 184-255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "dfb95cfdfb22ae8ad422ea56f275a899a65fb8b8",
+  "prompts": {
+    "56c8d9295bf39cac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fea494e2-3c0d-42b7-bdf6-a90078dbd3cb",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 72,
+      "total_deletions": 0,
+      "accepted_lines": 72,
+      "overriden_lines": 0
+    },
+    "ff32d04b1e7b6a01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f4e958d-cc5a-4ccc-94d2-2b3954db08bd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
