@@ -1,0 +1,38 @@
+Makefile
+  ff32d04b1e7b6a01 1,103-109
+README.md
+  ff32d04b1e7b6a01 257-276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "f6da6dae596f827feb4ad22a8982fed51c1a51f8",
+  "prompts": {
+    "22386a9f11724b83": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2596e380-f3ea-4371-b1a2-09fd642432b8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 96,
+      "overriden_lines": 0
+    },
+    "ff32d04b1e7b6a01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f4e958d-cc5a-4ccc-94d2-2b3954db08bd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 28,
+      "total_deletions": 2,
+      "accepted_lines": 28,
+      "overriden_lines": 0
+    }
+  }
+}
