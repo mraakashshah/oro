@@ -1,4 +1,4 @@
-.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync mutate-go mutate-go-diff mutate-py mutate-py-full
+.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -99,6 +99,13 @@ gate: stage-assets
 
 clean: clean-assets
 	rm -f oro coverage.out
+
+# release tags and pushes a version. GitHub Actions runs GoReleaser.
+# Usage: make release V=0.1.0
+release:
+	@if [ -z "$(V)" ]; then echo "Usage: make release V=0.1.0"; exit 1; fi
+	git tag -a "v$(V)" -m "Release v$(V)"
+	git push origin "v$(V)"
 
 # mutate-go runs mutation testing on Go packages in pkg/.
 # Uses go-mutesting. Fails if mutation score drops below 0.40.

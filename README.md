@@ -254,7 +254,26 @@ brew install beads
 ### Install
 
 ```bash
-git clone https://github.com/yourusername/oro.git
+curl -fsSL https://raw.githubusercontent.com/mraakashshah/oro/main/scripts/install.sh | bash
+```
+
+Then in your project:
+
+```bash
+cd your-project
+oro setup
+```
+
+### Uninstall
+
+```bash
+oro uninstall
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/mraakashshah/oro.git
 cd oro
 make setup      # npm deps, golangci-lint, git hooks
 make build
