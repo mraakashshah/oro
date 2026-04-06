@@ -148,20 +148,20 @@ func cleanProjectArtifacts(w io.Writer, oroHome string) {
 		fmt.Fprintf(w, "  cleaning %s (%s)...\n", e.Name(), root)
 
 		// Remove .beads symlink.
-		beadsLink := filepath.Join(root, beadsDirName) //nolint:gosec // root is from trusted project.root
-		if fi, err := os.Lstat(beadsLink); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			_ = os.Remove(beadsLink) //nolint:gosec // root is from trusted project.root
+		beadsLink := filepath.Join(root, beadsDirName)
+		if fi, err := os.Lstat(beadsLink); err == nil && fi.Mode()&os.ModeSymlink != 0 { //nolint:gosec // root validated as absolute path from trusted project.root
+			_ = os.Remove(beadsLink)
 		}
 
 		// Remove .oro/ anchor dir.
-		_ = os.RemoveAll(filepath.Join(root, ".oro")) //nolint:gosec // root is from trusted project.root
+		_ = os.RemoveAll(filepath.Join(root, ".oro")) //nolint:gosec // root validated as absolute path from trusted project.root
 
 		// Remove .worktrees/ dir.
-		_ = os.RemoveAll(filepath.Join(root, worktreesDirName)) //nolint:gosec // root is from trusted project.root
+		_ = os.RemoveAll(filepath.Join(root, worktreesDirName)) //nolint:gosec // root validated as absolute path from trusted project.root
 
 		// Remove git hooks.
 		gitDir := filepath.Join(root, ".git")
-		if fi, err := os.Stat(gitDir); err == nil && fi.IsDir() {
+		if fi, err := os.Stat(gitDir); err == nil && fi.IsDir() { //nolint:gosec // root validated as absolute path from trusted project.root
 			_ = uninstallHookWrapper(gitDir, "pre-push")
 			_ = uninstallHookWrapper(gitDir, "pre-commit")
 		}
