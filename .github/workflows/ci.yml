@@ -136,7 +136,7 @@ jobs:
             | xargs yamllint -d relaxed --no-warnings
 
       - name: biome (json)
-        run: npx biome check --files-ignore-unknown=true docs/ .github/ .beads/ *.json
+        run: npx biome check --files-ignore-unknown=true docs/ .github/ *.json
 
   python:
     name: Python
