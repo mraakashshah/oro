@@ -1,0 +1,36 @@
+project: oro
+languages:
+  go:
+    formatters:
+      - gofumpt
+    linters:
+      - golangci-lint
+    test_cmd: go test ./...
+    security: govulncheck
+    coding_rules:
+      - Use gofumpt for consistent formatting
+      - Run golangci-lint with project config
+      - Pure core (business logic), impure edges (I/O)
+      - Prefer early returns over nested conditionals
+  python:
+    formatters:
+      - ruff
+    linters:
+      - ruff
+    test_cmd: pytest
+    type_check: pyright
+    coding_rules:
+      - Follow PEP 8 style guide
+      - Use f-strings for string formatting
+      - Prefer pytest fixtures over test classes
+      - Pure core (business logic), impure edges (I/O)
+  javascript:
+    formatters:
+      - biome
+    linters:
+      - biome
+    test_cmd: vitest
+    coding_rules:
+      - Use biome for consistent formatting and linting
+      - Prefer functional patterns and immutability
+      - Pure core (business logic), impure edges (I/O)
