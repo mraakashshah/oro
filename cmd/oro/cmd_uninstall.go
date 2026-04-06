@@ -150,7 +150,7 @@ func cleanProjectArtifacts(w io.Writer, oroHome string) {
 		// Remove .beads symlink.
 		beadsLink := filepath.Join(root, beadsDirName)
 		if fi, err := os.Lstat(beadsLink); err == nil && fi.Mode()&os.ModeSymlink != 0 { //nolint:gosec // root validated as absolute path from trusted project.root
-			_ = os.Remove(beadsLink)
+			_ = os.Remove(beadsLink) //nolint:gosec // root validated as absolute path from trusted project.root
 		}
 
 		// Remove .oro/ anchor dir.
