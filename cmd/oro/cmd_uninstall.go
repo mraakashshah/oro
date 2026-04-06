@@ -141,23 +141,23 @@ func cleanProjectArtifacts(w io.Writer, oroHome string) {
 			continue
 		}
 		root := strings.TrimSpace(string(rootBytes))
-		if root == "" {
+		if root == "" || !filepath.IsAbs(root) {
 			continue
 		}
 
 		fmt.Fprintf(w, "  cleaning %s (%s)...\n", e.Name(), root)
 
 		// Remove .beads symlink.
-		beadsLink := filepath.Join(root, beadsDirName)
+		beadsLink := filepath.Join(root, beadsDirName) //nolint:gosec // root is from trusted project.root
 		if fi, err := os.Lstat(beadsLink); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			_ = os.Remove(beadsLink)
+			_ = os.Remove(beadsLink) //nolint:gosec // root is from trusted project.root
 		}
 
 		// Remove .oro/ anchor dir.
-		_ = os.RemoveAll(filepath.Join(root, ".oro"))
+		_ = os.RemoveAll(filepath.Join(root, ".oro")) //nolint:gosec // root is from trusted project.root
 
 		// Remove .worktrees/ dir.
-		_ = os.RemoveAll(filepath.Join(root, worktreesDirName))
+		_ = os.RemoveAll(filepath.Join(root, worktreesDirName)) //nolint:gosec // root is from trusted project.root
 
 		// Remove git hooks.
 		gitDir := filepath.Join(root, ".git")

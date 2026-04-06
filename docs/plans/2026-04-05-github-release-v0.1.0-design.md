@@ -113,9 +113,9 @@ New subcommand registered via `cmd.AddCommand(newUninstallCmd())` in `cmd/oro/ro
 
 ```makefile
 release:
-	@if [ -z "$(V)" ]; then echo "Usage: make release V=0.1.0"; exit 1; fi
-	git tag -a "v$(V)" -m "Release v$(V)"
-	git push origin "v$(V)"
+    @if [ -z "$(V)" ]; then echo "Usage: make release V=0.1.0"; exit 1; fi
+    git tag -a "v$(V)" -m "Release v$(V)"
+    git push origin "v$(V)"
 ```
 
 ### 4. README Install Section
