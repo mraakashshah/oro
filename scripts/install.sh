@@ -110,7 +110,7 @@ resolve_version() {
 	local tag
 	tag="${redirect_url##*/}"  # extract tag from redirect URL (e.g. "v0.1.0")
 
-	if [[ -z "${tag}" || "${tag}" == "latest" ]]; then
+	if [[ -z "${tag}" || "${tag}" == "latest" || "${tag}" == "releases" || ! "${tag}" =~ ^v[0-9] ]]; then
 		log_error "Could not determine latest release version."
 		log_error "Check https://github.com/${GITHUB_REPO}/releases"
 		exit 1

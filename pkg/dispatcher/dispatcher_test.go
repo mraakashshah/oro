@@ -705,7 +705,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 		SocketPath:       sockPath,
 		DBPath:           ":memory:",
 		MaxWorkers:       5,
-		HeartbeatTimeout: 5 * time.Second, // generous for CI; heartbeat-specific tests override to 100ms
+		HeartbeatTimeout: 500 * time.Millisecond,
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  200 * time.Millisecond,
 	}
@@ -6233,6 +6233,10 @@ func TestDispatcher_ReviewRejection_WorkerIdleAfterMaxRejections(t *testing.T) {
 
 func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	// Widen heartbeat timeout: the test sends one heartbeat then goes through
+	// multiple synchronization steps + DB writes before the handoff completes.
+	// Under CI with race detector, 500ms is too tight.
+	d.cfg.HeartbeatTimeout = 10 * time.Second
 	pm := &mockProcessManager{}
 	d.procMgr = pm
 	startDispatcher(t, d)
