@@ -1,0 +1,38 @@
+docs/plans/2026-04-05-github-release-v0.1.0-design.md
+  ff32d04b1e7b6a01 1-184
+scripts/install.sh
+  ff32d04b1e7b6a01 105-109,111,113,194,196-198,211,214-215,219-226,230,234,241,251,255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "eb4651b6a60c53170d9fc6f43c83f70fde86a581",
+  "prompts": {
+    "22386a9f11724b83": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2596e380-f3ea-4371-b1a2-09fd642432b8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 138,
+      "total_deletions": 41,
+      "accepted_lines": 91,
+      "overriden_lines": 5
+    },
+    "ff32d04b1e7b6a01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f4e958d-cc5a-4ccc-94d2-2b3954db08bd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 285,
+      "total_deletions": 96,
+      "accepted_lines": 211,
+      "overriden_lines": 0
+    }
+  }
+}
