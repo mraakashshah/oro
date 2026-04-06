@@ -1,0 +1,25 @@
+pkg/dispatcher/dispatcher_test.go
+  ff32d04b1e7b6a01 708,6236-6239
+scripts/install.sh
+  ff32d04b1e7b6a01 113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "41e09ffda6e1ff13cadecfa7285f4aceef3f2363",
+  "prompts": {
+    "ff32d04b1e7b6a01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f4e958d-cc5a-4ccc-94d2-2b3954db08bd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 6,
+      "total_deletions": 2,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    }
+  }
+}
