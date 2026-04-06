@@ -578,10 +578,10 @@ func TestStartWebFlags(t *testing.T) {
 
 	t.Run("values flow into buildDispatcher Config", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		oroHome := filepath.Join(tmpDir, ".oro")
-		if err := os.MkdirAll(oroHome, 0o750); err != nil { //nolint:gosec // test dir
-			t.Fatal(err)
-		}
+		// Use separate dir for ORO_HOME to avoid TempDir cleanup race with
+		// the background code-index goroutine (same pattern as
+		// TestBuildDispatcher_IndexBuildDoesNotBlockStartup).
+		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 		t.Setenv("ORO_PROJECT", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))

@@ -705,7 +705,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 		SocketPath:       sockPath,
 		DBPath:           ":memory:",
 		MaxWorkers:       5,
-		HeartbeatTimeout: 500 * time.Millisecond,
+		HeartbeatTimeout: 5 * time.Second, // generous for CI; heartbeat-specific tests override to 100ms
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  200 * time.Millisecond,
 	}

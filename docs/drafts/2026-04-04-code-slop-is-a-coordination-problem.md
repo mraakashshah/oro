@@ -32,10 +32,10 @@ Most slop originates here — not because the model can't code, but because it w
 
 The fix isn't more detailed prompts. It's a process that forces specificity before code exists.
 
-Before any Oro worker writes a line of code, the spec runs through a gauntlet. 
+Before any Oro worker writes a line of code, the spec runs through a gauntlet.
 
-1. Brainstorm 2-3 approaches with explicit trade-offs. 
-2. Premortem every decision — what kills this in three months? 
+1. Brainstorm 2-3 approaches with explicit trade-offs.
+2. Premortem every decision — what kills this in three months?
 3. Write a design doc. Then hand the doc to a separate agent, one that never saw the design conversation, whose only job is adversarial: *Construct a scenario where every task passes individually but the feature still doesn't work.*
 4. That reviewer traces actual call chains in the source code. It builds a matrix mapping every acceptance criterion to a specific task and test. It red-teams the decomposition. If it finds a gap — an unwired component, a missing integration test, a format mismatch between producer and consumer — the spec goes back for revision.
 
@@ -52,10 +52,10 @@ An agent coding alone gets none of this. It writes code into silence.
 
 The model can produce correct code. But without feedback loops, it has no way to distinguish correct from almost-correct. It can't know that the function it wrote matches the interface but handles errors differently than every other function in the codebase. It can't know that the test passes but doesn't actually test the thing that matters.
 
-Oro wraps every unit of work in three independent gates. 
+Oro wraps every unit of work in three independent gates.
 
 1. A 19-check quality gate — tests with race detection, linters, formatters, vulnerability scanners. Mechanical, deterministic, with no judgment required.
-2. a code review by a separate Claude instance that reads the diff against the acceptance criteria and the original spec, returning APPROVED or REJECTED with specific feedback. 
+2. a code review by a separate Claude instance that reads the diff against the acceptance criteria and the original spec, returning APPROVED or REJECTED with specific feedback.
 3. Human PR review
 
 The worker cannot merge to prod without passing all three. Not "should pass" — *cannot*. Guards you can't skip are more valuable than best practices you should follow.
