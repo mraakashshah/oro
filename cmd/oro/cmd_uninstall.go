@@ -148,7 +148,7 @@ func cleanProjectArtifacts(w io.Writer, oroHome string) {
 		fmt.Fprintf(w, "  cleaning %s (%s)...\n", e.Name(), root)
 
 		// Remove .beads symlink.
-		beadsLink := filepath.Join(root, ".beads")
+		beadsLink := filepath.Join(root, beadsDirName)
 		if fi, err := os.Lstat(beadsLink); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			_ = os.Remove(beadsLink)
 		}
@@ -157,7 +157,7 @@ func cleanProjectArtifacts(w io.Writer, oroHome string) {
 		_ = os.RemoveAll(filepath.Join(root, ".oro"))
 
 		// Remove .worktrees/ dir.
-		_ = os.RemoveAll(filepath.Join(root, ".worktrees"))
+		_ = os.RemoveAll(filepath.Join(root, worktreesDirName))
 
 		// Remove git hooks.
 		gitDir := filepath.Join(root, ".git")

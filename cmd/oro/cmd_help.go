@@ -47,6 +47,7 @@ Global:
 
 Maintenance:
   doctor     Diagnose and repair oro installation issues (e.g. corrupt Dolt)
+  uninstall  Remove oro and all its artifacts from this machine
 
 Internal:
   worker     Run an oro worker process (used by the dispatcher)
