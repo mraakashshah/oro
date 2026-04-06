@@ -181,6 +181,78 @@ func TestUninstall_MissingOroHomeIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestUninstall_ConfirmationPromptWorks(t *testing.T) {
+	oroHome := t.TempDir()
+	mkFile(t, oroHome, ".asset-version", "0.1.0\n")
+
+	var buf bytes.Buffer
+	opts := uninstallOptions{
+		oroHome: oroHome,
+		force:   false,
+		stdin:   strings.NewReader("y\n"),
+		w:       &buf,
+	}
+
+	if err := runUninstall(opts); err != nil {
+		t.Fatalf("runUninstall: %v", err)
+	}
+
+	// oroHome should be removed when user confirms with "y".
+	if _, err := os.Stat(oroHome); !os.IsNotExist(err) {
+		t.Error("expected oroHome to be removed after confirmation, but it still exists")
+	}
+}
+
+func TestUninstall_ForceSkipsPrompt(t *testing.T) {
+	oroHome := t.TempDir()
+	mkFile(t, oroHome, ".asset-version", "0.1.0\n")
+
+	var buf bytes.Buffer
+	// stdin is empty — if a prompt were shown, ReadString would fail/hang.
+	opts := uninstallOptions{
+		oroHome: oroHome,
+		force:   true,
+		stdin:   strings.NewReader(""),
+		w:       &buf,
+	}
+
+	if err := runUninstall(opts); err != nil {
+		t.Fatalf("runUninstall: %v", err)
+	}
+
+	// oroHome should be removed without any prompt.
+	if _, err := os.Stat(oroHome); !os.IsNotExist(err) {
+		t.Error("expected oroHome to be removed with --force, but it still exists")
+	}
+
+	out := buf.String()
+	if strings.Contains(out, "[y/N]") {
+		t.Error("expected no confirmation prompt when --force is set")
+	}
+}
+
+func TestUninstall_ConfirmationAbortedPreservesOroHome(t *testing.T) {
+	oroHome := t.TempDir()
+	mkFile(t, oroHome, ".asset-version", "0.1.0\n")
+
+	var buf bytes.Buffer
+	opts := uninstallOptions{
+		oroHome: oroHome,
+		force:   false,
+		stdin:   strings.NewReader("n\n"),
+		w:       &buf,
+	}
+
+	if err := runUninstall(opts); err != nil {
+		t.Fatalf("runUninstall should not error on abort, got: %v", err)
+	}
+
+	// oroHome should be preserved when user denies.
+	if _, err := os.Stat(oroHome); os.IsNotExist(err) {
+		t.Error("expected oroHome to be preserved when user declines confirmation")
+	}
+}
+
 // mkFile creates a file with parent dirs in a temp dir.
 func mkFile(t *testing.T, base, rel, content string) {
 	t.Helper()
