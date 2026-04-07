@@ -20,9 +20,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info() { echo -e "${BLUE}==>${NC} $1"; }
-log_success() { echo -e "${GREEN}==>${NC} $1"; }
-log_warning() { echo -e "${YELLOW}==>${NC} $1"; }
+log_info() { echo -e "${BLUE}==>${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}==>${NC} $1" >&2; }
+log_warning() { echo -e "${YELLOW}==>${NC} $1" >&2; }
 log_error() { echo -e "${RED}Error:${NC} $1" >&2; }
 
 # ── Flags ────────────────────────────────────────────────────────────────────
@@ -205,7 +205,10 @@ main() {
 		log_info "[dry-run] mkdir -p ${tmpdir}"
 	else
 		tmpdir=$(mktemp -d)
-		trap 'rm -rf "${tmpdir}"' EXIT
+		# Use double quotes to expand tmpdir at trap-set time (not EXIT time)
+		# since `local tmpdir` goes out of scope when main() returns.
+		# shellcheck disable=SC2064
+		trap "rm -rf '${tmpdir}'" EXIT
 	fi
 
 	# 6. Download archive and checksums
