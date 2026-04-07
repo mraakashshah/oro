@@ -19,6 +19,8 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
 - [Quick Start](#quick-start)
   - [Prerequisites](#prerequisites)
   - [Install](#install)
+  - [Uninstall](#uninstall)
+  - [Build from Source](#build-from-source)
   - [Launch](#launch)
   - [Basic Operations](#basic-operations)
 - [CLI Reference](#cli-reference)
@@ -27,6 +29,8 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
   - [Memory](#memory)
   - [Control](#control)
   - [Search](#search)
+  - [Single-Worker Mode](#single-worker-mode)
+  - [Maintenance](#maintenance)
   - [Internal](#internal)
 - [Key Concepts](#key-concepts)
   - [Beads](#beads)
@@ -240,15 +244,17 @@ Workers emit `[MEMORY]` markers during execution. The dispatcher also runs LLM-b
 
 ### Prerequisites
 
-```bash
-# Go 1.26
-go version
+Runtime requirements (macOS only):
 
+```bash
 # Claude Code CLI
 claude --version
 
 # Beads issue tracker
 brew install beads
+
+# tmux (for swarm sessions)
+brew install tmux
 ```
 
 ### Install
@@ -257,6 +263,8 @@ brew install beads
 curl -fsSL https://raw.githubusercontent.com/mraakashshah/oro/main/scripts/install.sh | bash
 ```
 
+The installer downloads the latest `oro` binary (pre-built for macOS amd64/arm64), verifies its SHA-256 checksum, and places it in `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` isn't writable). The binary is self-contained — assets (hooks, skills, beacons) auto-extract to `~/.oro/` on first run.
+
 Then in your project:
 
 ```bash
@@ -264,15 +272,22 @@ cd your-project
 oro setup
 ```
 
+`oro setup` checks prerequisites, detects project languages, installs missing dev tools, bootstraps `.oro/` config, and runs a health check. By default it uses stealth mode — zero footprint in the project directory.
+
 ### Uninstall
 
 ```bash
 oro uninstall
 ```
 
+Removes the binary, `~/.oro/`, launchd agents, `.beads` symlinks in known projects, `.oro/` anchor dirs, oro-managed git hooks (restores `.user` backups), and oro entries from the global gitignore. Use `--force` to skip the confirmation prompt, or `--keep-data` to preserve `~/.oro/` (databases, bead history).
+
 ### Build from Source
 
+For development or contributing:
+
 ```bash
+# Prerequisites: Go 1.26, Node.js (for npm), Python (for uv)
 git clone https://github.com/mraakashshah/oro.git
 cd oro
 make setup      # npm deps, golangci-lint, git hooks
@@ -282,10 +297,9 @@ make install    # installs to $GOPATH/bin
 
 ### Launch
 
-```bash
-# Bootstrap config and verify dependencies
-oro init
+Once `oro setup` has completed in your project:
 
+```bash
 # Start the swarm (opens tmux session)
 oro start
 
@@ -326,16 +340,22 @@ oro stop
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `oro init` | Bootstrap dependencies and generate config | `oro init --check` |
+| `oro setup` | User-friendly project setup (prereq check, language detect, tools, bootstrap, health check) | `oro setup my-project` |
+| `oro init` | Lower-level bootstrap (config + assets), used by `oro setup` | `oro init --check` |
 | `oro start` | Launch the swarm (tmux + dispatcher + workers) | `oro start -w 4 --detach` |
 | `oro stop` | Graceful shutdown | `oro stop` |
 | `oro cleanup` | Clean stale state after a crash | `oro cleanup` |
+| `oro uninstall` | Remove oro and all its artifacts from this machine | `oro uninstall --force` |
+
+**`oro setup`** flags: `--project-root <dir>`, `--dev` (install dev-only tools), `--dry-run`, `--skip-tools`, `--force` (overwrite existing config)
 
 **`oro init`** flags: `--check` (verify only), `--force` (overwrite config), `--project-root <dir>`, `--quiet`, `--local` (in-repo mode: create `.oro/` in project root). Default is stealth mode — zero footprint, config stored under `~/.oro/projects/s-<hash>/`.
 
 **`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (ceiling for scale directives), `--model` (default: sonnet), `--detach, -D`, `--daemon-only, -d`
 
 **`oro stop`** flags: `--force` (skip confirmation, requires `ORO_HUMAN_CONFIRMED=1`)
+
+**`oro uninstall`** flags: `--force` (skip confirmation prompt), `--keep-data` (preserve `~/.oro/` — databases and bead history)
 
 ### Monitoring
 
@@ -394,6 +414,12 @@ oro stop
 
 **`oro work`** flags: `--model` (default: sonnet), `--timeout` (default: 15m), `--skip-review`, `--base-branch`
 
+### Maintenance
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `oro doctor` | Diagnose and repair oro installation issues (e.g. corrupt Dolt) | `oro doctor --fix` |
+
 ### Internal
 
 | Command | Description | Example |
@@ -412,7 +438,7 @@ Parent beads that group related work. The dispatcher can `focus` on an epic to p
 
 ### Quality Gate
 
-An automated pipeline (`quality_gate.sh`) that every bead must pass before merging: `go test ./... -race` + `golangci-lint` + `gofumpt` + `goimports`. Workers run the gate after implementation. Failed gates mean the bead is not done.
+An automated pipeline (`scripts/quality_gate.sh`) that every bead must pass before merging: `go test ./... -race` + `golangci-lint` + `gofumpt` + `goimports`. Workers run the gate after implementation. Failed gates mean the bead is not done.
 
 The quality gate is generated during `oro init` / `oro setup` based on detected project languages. For projects with no recognized languages, a shell-only quality gate is still generated (shellcheck + markdownlint) so that beads always have a gate to pass.
 
@@ -438,13 +464,13 @@ Short-lived `claude -p` processes spawned by the dispatcher for judgment-heavy t
 
 ```bash
 make setup          # Install dev tooling (npm deps, golangci-lint, git hooks)
-make build          # Build oro binary
-make build-mg       # Build Mardi Gras TUI dashboard
+make build          # Build oro + oro-search-hook
 make install        # Install to $GOPATH/bin
 make test           # Run tests with race detector
 make lint           # Run golangci-lint
 make fmt            # Format Go files (gofumpt + goimports)
 make gate           # Full quality gate
+make release V=x.y.z # Tag and push (triggers GitHub Actions release)
 ```
 
 ### Project Structure
@@ -453,7 +479,7 @@ make gate           # Full quality gate
 oro/
 ├── cmd/
 │   ├── oro/              # Main binary — CLI commands + dispatcher
-│   ├── oro-dash/         # TUI dashboard (legacy skeleton)
+│   ├── oro-dash/         # TUI dashboard helpers (library package)
 │   └── oro-search-hook/  # Code search integration
 ├── pkg/
 │   ├── dispatcher/       # Core orchestrator — state machine, worker pool, bead tracking
@@ -467,11 +493,14 @@ oro/
 │   ├── eventlog/         # Queryable event log
 │   ├── langprofile/      # Language detection for quality gate generation
 │   └── integration/      # End-to-end test harness
+├── scripts/
+│   ├── install.sh        # curl installer
+│   └── quality_gate.sh   # Automated quality gate runner
 ├── docs/
 │   ├── plans/            # Architecture specs and design docs
 │   └── solutions/        # Documented solved problems
+├── .goreleaser.yml       # Release build config
 ├── Makefile
-├── quality_gate.sh
 └── go.mod
 ```
 
