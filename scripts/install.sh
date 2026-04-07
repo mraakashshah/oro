@@ -261,7 +261,8 @@ main() {
 	echo ""
 }
 
-# Allow sourcing for tests: only run main when executed, not sourced
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Allow sourcing for tests: only run main when executed, not sourced.
+# Use ${BASH_SOURCE[0]:-} default to handle curl | bash where BASH_SOURCE is unset.
+if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
 	main "$@"
 fi
