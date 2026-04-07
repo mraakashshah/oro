@@ -1,0 +1,23 @@
+scripts/install.sh
+  ff32d04b1e7b6a01 23-25,208-211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "ddbe8ba0a48d35cddc598f91e2a68119800199fb",
+  "prompts": {
+    "ff32d04b1e7b6a01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f4e958d-cc5a-4ccc-94d2-2b3954db08bd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 7,
+      "total_deletions": 4,
+      "accepted_lines": 7,
+      "overriden_lines": 0
+    }
+  }
+}
