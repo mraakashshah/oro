@@ -6314,8 +6314,11 @@ func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w2", ContextPct: 0},
 	})
 
-	// New worker should receive ASSIGN with the SAME bead and worktree
-	msg2, ok := readMsg(t, conn2, 3*time.Second)
+	// New worker should receive ASSIGN with the SAME bead and worktree.
+	// Wider deadline: under CI with the race detector, the accept loop +
+	// registerWorker path (lock → consume handoff → memory.ForPrompt → lock →
+	// sendToWorker) can stretch past 3s. Local runs finish in ~10ms.
+	msg2, ok := readMsg(t, conn2, 10*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN for new worker after handoff")
 	}
