@@ -6302,9 +6302,17 @@ func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 		t.Fatalf("expected SHUTDOWN, got %s", msg.Type)
 	}
 
-	// Dispatcher should have spawned a new worker process.
+	// Wait for respawnWorker to actually populate pendingHandoffs for bead-ralph.
+	// NOTE: we cannot wait on pm.SpawnedIDs() > 0 — reconcileScale's scaleUp
+	// spawns targetWorkers (MaxWorkers=5) mock processes early, so SpawnedIDs
+	// is already non-empty before the handoff runs. Waiting on it races:
+	// the test can reach registerWorker(w2) before respawnWorker has set
+	// pendingHandoffs, producing an empty ASSIGN path. Check the actual map.
 	waitFor(t, func() bool {
-		return len(pm.SpawnedIDs()) > 0
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, ok := d.pendingHandoffs["bead-ralph"]
+		return ok
 	}, 2*time.Second)
 
 	// Simulate new worker connecting (the spawned process)
@@ -6315,10 +6323,7 @@ func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 	})
 
 	// New worker should receive ASSIGN with the SAME bead and worktree.
-	// Wider deadline: under CI with the race detector, the accept loop +
-	// registerWorker path (lock → consume handoff → memory.ForPrompt → lock →
-	// sendToWorker) can stretch past 3s. Local runs finish in ~10ms.
-	msg2, ok := readMsg(t, conn2, 10*time.Second)
+	msg2, ok := readMsg(t, conn2, 3*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN for new worker after handoff")
 	}
