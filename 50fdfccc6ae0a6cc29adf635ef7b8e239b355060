@@ -1,0 +1,23 @@
+pkg/dispatcher/dispatcher_test.go
+  6f6b102ead6e0d01 6126-6129,6131-6136,6139-6140,6152-6155,6190-6193,6195-6202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "50fdfccc6ae0a6cc29adf635ef7b8e239b355060",
+  "prompts": {
+    "6f6b102ead6e0d01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39100641-2bcc-4ba2-81df-c16d6ecebe84",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 30,
+      "total_deletions": 6,
+      "accepted_lines": 29,
+      "overriden_lines": 0
+    }
+  }
+}
