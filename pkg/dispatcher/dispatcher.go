@@ -1936,6 +1936,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	}
 	d.mu.Unlock()
 
+	fmt.Fprintf(os.Stderr, "[DBG] handleHandoff beadID=%s workerID=%s worktree=%q count=%d\n", beadID, workerID, worktree, handoffCount)
 	if worktree == "" {
 		return
 	}
@@ -2003,6 +2004,7 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model,
 		labels:       labels,
 	}
 	d.mu.Unlock()
+	fmt.Fprintf(os.Stderr, "[DBG] respawnWorker stored pendingHandoff for beadID=%s worktree=%q\n", beadID, worktree)
 
 	_ = d.logEvent(ctx, "handoff_pending", "dispatcher", beadID, "", worktree)
 

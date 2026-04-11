@@ -102,11 +102,13 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 
 	// Check for pending ralph handoffs — assign immediately if one exists.
 	var h *pendingHandoff
+	pendingCount := len(d.pendingHandoffs)
 	for beadID, ph := range d.pendingHandoffs {
 		h = ph
 		delete(d.pendingHandoffs, beadID)
 		break
 	}
+	fmt.Fprintf(os.Stderr, "[DBG] registerWorker id=%s pending=%d h=%v\n", id, pendingCount, h != nil)
 
 	if h != nil {
 		w := d.workers[id]
