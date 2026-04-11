@@ -1,0 +1,25 @@
+pkg/dispatcher/dispatcher.go
+  6f6b102ead6e0d01 1939,2007
+pkg/dispatcher/worker_pool.go
+  6f6b102ead6e0d01 105,111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "e4ced553f3f64a0c68c7fab49e41bedd5d4e2e3a",
+  "prompts": {
+    "6f6b102ead6e0d01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39100641-2bcc-4ba2-81df-c16d6ecebe84",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 0,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    }
+  }
+}
