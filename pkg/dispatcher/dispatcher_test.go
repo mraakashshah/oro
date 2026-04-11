@@ -6123,13 +6123,21 @@ func TestDispatcher_ReviewRejection_EscalatesAfterTwoRejections(t *testing.T) {
 		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
 	})
 
-	// Should NOT receive another ASSIGN — escalation instead
-	// Wait for escalation event
+	// Should NOT receive another ASSIGN — escalation instead.
+	// Wait for the escalation message to reach the mock escalator. The
+	// dispatcher logs the "review_escalated" event BEFORE calling escalate(),
+	// so polling the event would race against the mockEscalator append.
 	waitFor(t, func() bool {
-		return eventCount(t, d.db, "review_escalated") > 0
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, "bead-rej") && strings.Contains(m, "STUCK") {
+				return true
+			}
+		}
+		return false
 	}, 3*time.Second)
 
-	// Verify escalation message sent to manager
+	// Final assertion: confirm the message is there (waitFor would have
+	// t.Fatal'd already if not, but keep the explicit check for readability).
 	msgs := esc.Messages()
 	found := false
 	for _, m := range msgs {
@@ -6140,6 +6148,11 @@ func TestDispatcher_ReviewRejection_EscalatesAfterTwoRejections(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected escalation about bead-rej, got: %v", msgs)
+	}
+
+	// Sanity check: the review_escalated event must also be recorded.
+	if eventCount(t, d.db, "review_escalated") == 0 {
+		t.Fatal("expected review_escalated event to be logged")
 	}
 }
 
@@ -6174,9 +6187,19 @@ func TestDispatcher_ReviewRejection_WorkerIdleAfterMaxRejections(t *testing.T) {
 		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
 	})
 
-	// Wait for escalation event to confirm the escalation path was taken
+	// Wait for the worker to be killed, which happens at the end of
+	// handleReviewRejection's escalation branch (after logEvent and escalate).
+	// Polling on the review_escalated event would race against Kill because
+	// the event is logged before escalate() and Kill() run.
 	waitFor(t, func() bool {
-		return eventCount(t, d.db, "review_escalated") > 0
+		pm.mu.Lock()
+		defer pm.mu.Unlock()
+		for _, id := range pm.killed {
+			if id == "w1" {
+				return true
+			}
+		}
+		return false
 	}, 3*time.Second)
 
 	// AC1: Worker must transition to Idle within one assign cycle
