@@ -1,0 +1,36 @@
+.claude/skills/spec/SKILL.md
+  f230f56a044d9455 68,79-119,130,134,156-158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "e62448a2b723b252a034906076f50f165ee52510",
+  "prompts": {
+    "6f6b102ead6e0d01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39100641-2bcc-4ba2-81df-c16d6ecebe84",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 118,
+      "total_deletions": 0,
+      "accepted_lines": 114,
+      "overriden_lines": 4
+    },
+    "f230f56a044d9455": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d00cd0c3-8d21-4487-812d-612f3f3f8a4f",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 44,
+      "total_deletions": 4,
+      "accepted_lines": 47,
+      "overriden_lines": 0
+    }
+  }
+}
