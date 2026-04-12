@@ -1,0 +1,63 @@
+pkg/dispatcher/dispatcher.go
+  563f342276606bc4 1886,1888
+.beads/beads_oro/.dolt/config.json
+  563f342276606bc4 1
+pkg/dispatcher/dispatcher_test.go
+  563f342276606bc4 7945-8049
+.beads/beads_oro/.dolt/repo_state.json
+  563f342276606bc4 2-6
+.beads/metadata.json
+  563f342276606bc4 2-8
+.beads/beads_oro/.dolt/stats/.dolt/repo_state.json
+  563f342276606bc4 2-6
+cmd/oro/tmux.go
+  563f342276606bc4 487
+.beads/beads_oro/.dolt/stats/.dolt/config.json
+  563f342276606bc4 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "046995f1a9771c29fbe3c6b1f6b2a67df30929c7",
+  "prompts": {
+    "563f342276606bc4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e61bc7a3-9df0-457d-8981-e319a845ce30",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 130,
+      "total_deletions": 102,
+      "accepted_lines": 128,
+      "overriden_lines": 0
+    },
+    "73510d737946f642": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8d3b3d2e-b052-408f-9946-755729908f57",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 81,
+      "total_deletions": 75,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "c12a99773da31162": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e003629f-44a4-4740-8b70-a15d80c9d346",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 75,
+      "total_deletions": 3,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
