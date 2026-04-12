@@ -2776,6 +2776,92 @@ func TestApplyDirective_RestartWorker_EmptyArgs(t *testing.T) {
 	}
 }
 
+func TestRestartWorkerResetsBead(t *testing.T) {
+	d, mockBeads, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	ctx := context.Background()
+
+	// Init schema
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	// Set up a mock process manager to track spawns
+	pm := NewExecProcessManager(d.cfg.SocketPath)
+	d.SetProcessManager(pm)
+
+	// Register worker and assign a bead
+	workerID := "test-worker"
+	beadID := "oro-test-reset"
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+
+	d.registerWorker(workerID, conn1)
+
+	// Assign bead to worker
+	d.mu.Lock()
+	w := d.workers[workerID]
+	w.state = protocol.WorkerBusy
+	w.beadID = beadID
+	w.worktree = "/fake/worktree"
+	d.targetWorkers = 1
+	// Add tracking entries to verify they're cleared
+	d.attemptCounts[beadID] = 2
+	d.rejectionCounts[beadID] = 1
+	d.escalatedBeads[beadID] = true
+	d.mu.Unlock()
+
+	// Create assignment in DB
+	_, err = d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, workerID, "/fake/worktree")
+	if err != nil {
+		t.Fatalf("failed to create assignment: %v", err)
+	}
+
+	// Test: restart the worker
+	detail, err := d.applyDirective(protocol.DirectiveRestartWorker, workerID)
+	if err != nil {
+		t.Fatalf("applyDirective(restart-worker) failed: %v", err)
+	}
+	if !strings.Contains(detail, "restarted") {
+		t.Errorf("expected detail to mention 'restarted', got: %s", detail)
+	}
+
+	// Assert: bead status was reset to "open"
+	mockBeads.mu.Lock()
+	beadStatus, exists := mockBeads.updated[beadID]
+	mockBeads.mu.Unlock()
+	if !exists {
+		t.Errorf("bead %s status was not updated", beadID)
+	}
+	if beadStatus != "open" {
+		t.Errorf("bead status = %s, want 'open'", beadStatus)
+	}
+
+	// Assert: tracking maps were cleared
+	d.mu.Lock()
+	_, hasAttempt := d.attemptCounts[beadID]
+	_, hasRejection := d.rejectionCounts[beadID]
+	_, hasEscalated := d.escalatedBeads[beadID]
+	d.mu.Unlock()
+	if hasAttempt {
+		t.Errorf("attemptCounts[%s] should be cleared", beadID)
+	}
+	if hasRejection {
+		t.Errorf("rejectionCounts[%s] should be cleared", beadID)
+	}
+	if hasEscalated {
+		t.Errorf("escalatedBeads[%s] should be cleared", beadID)
+	}
+
+	// Cleanup: kill the spawned process
+	_ = pm.Kill(workerID)
+	pm.Wait()
+}
+
 func TestApplyDirective_Preempt(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
