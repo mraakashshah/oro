@@ -8111,6 +8111,99 @@ func TestMergeConflict_OpsAgent_WorktreeNotDeletedBeforeSpawn(t *testing.T) {
 	}
 }
 
+// TestMergeConflictFailureCleanup verifies that when the ops merge-conflict agent
+// returns a non-Resolved verdict, the dispatcher removes the worktree, clears
+// the worktreeByBead tracking entry, and resets the bead status to "open".
+func TestMergeConflictFailureCleanup(t *testing.T) {
+	d, beadSrc, wtMgr, _, gitRunner, spawnMock := newTestDispatcher(t)
+
+	// Configure git runner to return conflict on rebase
+	gitRunner.mu.Lock()
+	gitRunner.conflict = true
+	gitRunner.mu.Unlock()
+
+	// Configure ops agent to return FAILED
+	spawnMock.mu.Lock()
+	spawnMock.verdict = "Cannot resolve conflicts automatically.\n\nFAILED\n\nSemantic conflict."
+	spawnMock.mu.Unlock()
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	const beadID = "bead-mcf-cleanup"
+	beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Merge conflict cleanup", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	// Send DONE — triggers merge conflict, ops agent fails
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{BeadID: beadID, WorkerID: "w1", QualityGatePassed: true},
+	})
+
+	// Wait for failure event
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "merge_conflict_failed") > 0
+	}, 3*time.Second)
+
+	// Verify worktree was removed
+	expectedWorktree := "/tmp/worktree-" + beadID
+	waitFor(t, func() bool {
+		wtMgr.mu.Lock()
+		defer wtMgr.mu.Unlock()
+		for _, p := range wtMgr.removed {
+			if p == expectedWorktree {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second)
+
+	wtMgr.mu.Lock()
+	removed := make([]string, len(wtMgr.removed))
+	copy(removed, wtMgr.removed)
+	wtMgr.mu.Unlock()
+
+	found := false
+	for _, p := range removed {
+		if p == expectedWorktree {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected worktree %q to be removed, removed: %v", expectedWorktree, removed)
+	}
+
+	// Verify worktreeByBead tracking was cleared
+	d.mu.Lock()
+	_, trackingExists := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if trackingExists {
+		t.Error("expected worktreeByBead[beadID] to be cleared after merge conflict failure")
+	}
+
+	// Verify bead was reset to "open"
+	beadSrc.mu.Lock()
+	status := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if status != "open" {
+		t.Errorf("expected bead status = %q after conflict failure, got %q", "open", status)
+	}
+}
+
 // TestHandleHandoff_NoAssignAfterShutdown verifies that tryAssign cannot grab a
 // worker that is in the process of shutting down due to a handoff. The worker
 // must transition through protocol.WorkerShuttingDown (invisible to tryAssign) rather

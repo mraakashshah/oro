@@ -1883,8 +1883,10 @@ func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, work
 			// Resolution succeeded — retry the merge.
 			d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, epicID, targetBranch)
 		default:
-			// Resolution failed or unknown verdict — escalate.
+			// Resolution failed or unknown verdict — clean up and escalate.
 			_ = d.logEvent(ctx, "merge_conflict_failed", "ops", beadID, workerID, result.Feedback)
+			_ = d.beads.Update(ctx, beadID, "open")
+			d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 			d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID,
 				"merge conflict resolution failed", result.Feedback), beadID, workerID)
 		}
