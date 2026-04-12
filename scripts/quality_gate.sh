@@ -516,7 +516,7 @@ lane_other() {
 
 	local docs_checks=(
 		"markdownlint" "$NODE_BIN/markdownlint-cli2 --config .markdownlint.yml 'docs/**/*.md' '*.md' '!references/**' '!archive/**'"
-		"yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' | xargs yamllint -d relaxed --no-warnings"
+		"yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' -not -path './.beads/dolt/*' | xargs yamllint -d relaxed --no-warnings"
 	)
 	if [ -n "$BIOME_PATHS" ]; then
 		# shellcheck disable=SC2086
