@@ -1034,8 +1034,8 @@ func TestExecEnvCmdBackwardCompat(t *testing.T) {
 		if strings.Contains(cmd, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD") {
 			t.Errorf("expected no CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD when project is empty, got: %s", cmd)
 		}
-		if !strings.Contains(cmd, " claude --dangerously-skip-permissions") {
-			t.Errorf("expected command to contain 'claude --dangerously-skip-permissions' when project is empty, got: %s", cmd)
+		if !strings.HasSuffix(cmd, " claude") {
+			t.Errorf("expected command to end with ' claude' when project is empty, got: %s", cmd)
 		}
 	})
 
@@ -1057,34 +1057,8 @@ func TestExecEnvCmdBackwardCompat(t *testing.T) {
 			if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
 				t.Errorf("execEnvCmd(%q, \"\") should contain CLAUDE_CONFIG_DIR=, got: %s", role, cmd)
 			}
-			if !strings.Contains(cmd, " claude --dangerously-skip-permissions") {
-				t.Errorf("execEnvCmd(%q, \"\") should contain 'claude --dangerously-skip-permissions', got: %s", role, cmd)
-			}
-		}
-	})
-}
-
-func TestExecEnvCmdSkipsPermissions(t *testing.T) {
-	t.Run("no-project includes dangerously-skip-permissions", func(t *testing.T) {
-		cmd := execEnvCmd("architect", "")
-		if !strings.Contains(cmd, "--dangerously-skip-permissions") {
-			t.Errorf("headless tmux pane must skip trust dialog, got: %s", cmd)
-		}
-	})
-
-	t.Run("with-project includes dangerously-skip-permissions", func(t *testing.T) {
-		t.Setenv("ORO_HOME", "/tmp/test-oro-home")
-		cmd := execEnvCmd("architect", "myproject")
-		if !strings.Contains(cmd, "--dangerously-skip-permissions") {
-			t.Errorf("headless tmux pane must skip trust dialog, got: %s", cmd)
-		}
-	})
-
-	t.Run("all roles include dangerously-skip-permissions", func(t *testing.T) {
-		for _, role := range []string{"architect", "manager", "worker"} {
-			cmd := execEnvCmd(role, "")
-			if !strings.Contains(cmd, "--dangerously-skip-permissions") {
-				t.Errorf("execEnvCmd(%q) must include --dangerously-skip-permissions for headless tmux, got: %s", role, cmd)
+			if !strings.HasSuffix(cmd, " claude") {
+				t.Errorf("execEnvCmd(%q, \"\") should end with ' claude', got: %s", role, cmd)
 			}
 		}
 	})
