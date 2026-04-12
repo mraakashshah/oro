@@ -1,0 +1,27 @@
+pkg/dispatcher/dispatcher_test.go
+  3f64cf0e875aaee4 17273-17316
+.oro/context_pct
+  3f64cf0e875aaee4 1
+pkg/dispatcher/dispatcher.go
+  3f64cf0e875aaee4 571
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "519e8f0ff725f794cb0dce9785721e975922a940",
+  "prompts": {
+    "3f64cf0e875aaee4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ebdf6e8c-c55e-4cde-9e53-52a01c4799d9",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 56,
+      "total_deletions": 129,
+      "accepted_lines": 46,
+      "overriden_lines": 0
+    }
+  }
+}
