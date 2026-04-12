@@ -1,0 +1,38 @@
+pkg/eventlog/query.go
+  e3fce7a47c351eb1 62
+pkg/eventlog/query_test.go
+  e3fce7a47c351eb1 311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "0dce02ea36012272e47b01f16722d44c7163dbb5",
+  "prompts": {
+    "b5a9fa4c28fbb2a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6da3d035-1663-4d7d-8646-3cfbb1a2bca1",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "e3fce7a47c351eb1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e28a77ff-f427-4340-b44e-30e95f7e3901",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
