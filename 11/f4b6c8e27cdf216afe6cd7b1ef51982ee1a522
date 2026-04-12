@@ -1,0 +1,36 @@
+scripts/quality_gate.sh
+  d4877cd16fcfb48d 519
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "11f4b6c8e27cdf216afe6cd7b1ef51982ee1a522",
+  "prompts": {
+    "d4877cd16fcfb48d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "79f3c0cd-e308-4d0a-a506-1096fa607157",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "d882c2fa6bf139e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6fd2ff4-c757-49dd-8f6d-df787dcc80ff",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
