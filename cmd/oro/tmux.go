@@ -179,8 +179,11 @@ func execEnvCmd(role, project string) string {
 	configDir := roleConfigDir(configBase, role)
 	base := fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s CLAUDE_CONFIG_DIR=%s",
 		role, role, role, configDir)
+	// --dangerously-skip-permissions: headless tmux panes cannot answer the
+	// workspace trust dialog. The user already expressed trust by running
+	// "oro start" in this directory.
 	if project == "" {
-		return base + " claude"
+		return base + " claude --dangerously-skip-permissions"
 	}
 	oroHome := os.Getenv("ORO_HOME")
 	if oroHome == "" {
@@ -188,7 +191,7 @@ func execEnvCmd(role, project string) string {
 		oroHome = filepath.Join(home, ".oro")
 	}
 	settingsPath := filepath.Join(oroHome, "projects", project, "settings.json")
-	return fmt.Sprintf("%s ORO_PROJECT=%s CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 claude --add-dir %s --settings %s",
+	return fmt.Sprintf("%s ORO_PROJECT=%s CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 claude --dangerously-skip-permissions --add-dir %s --settings %s",
 		base, project, oroHome, settingsPath)
 }
 
