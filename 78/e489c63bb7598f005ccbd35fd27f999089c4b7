@@ -1,0 +1,25 @@
+pkg/dispatcher/dispatcher.go
+  67ccc84bcc898057 949-952,955-958,971-973,993-999,1002-1017
+pkg/dispatcher/dispatcher_test.go
+  67ccc84bcc898057 17273-17302,17305-17309,17311-17312,17314,17316-17318,17320-17330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "78e489c63bb7598f005ccbd35fd27f999089c4b7",
+  "prompts": {
+    "67ccc84bcc898057": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "303ec197-b43e-4505-981f-661c8a294972",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 131,
+      "total_deletions": 50,
+      "accepted_lines": 86,
+      "overriden_lines": 0
+    }
+  }
+}
