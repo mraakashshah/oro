@@ -938,6 +938,30 @@ func (d *Dispatcher) acceptLoop(ctx context.Context, ln net.Listener) {
 	}
 }
 
+// connCloseCleanup runs the deferred connection teardown for handleConn.
+// It guards against clobbering a reconnected worker: only cleans up if the
+// stored conn still matches the one this goroutine was serving.
+// workerID is captured by reference in the defer so it holds its final value.
+func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
+	if workerID == "" {
+		return
+	}
+	d.mu.Lock()
+	w, exists := d.workers[workerID]
+	if !exists || w.conn != conn {
+		d.mu.Unlock()
+		return
+	}
+	beadID := w.beadID
+	delete(d.workers, workerID)
+	d.mu.Unlock()
+
+	if beadID != "" {
+		d.clearBeadTracking(beadID)
+		_ = d.beads.Update(context.Background(), beadID, "open")
+	}
+}
+
 // handleConn reads line-delimited JSON messages from a worker connection.
 func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 	scanner := bufio.NewScanner(conn)
@@ -948,22 +972,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 
 	defer func() {
 		_ = conn.Close()
-		if workerID != "" {
-			d.mu.Lock()
-			// Capture beadID before deleting worker
-			var beadID string
-			if w, exists := d.workers[workerID]; exists {
-				beadID = w.beadID
-			}
-			delete(d.workers, workerID)
-			d.mu.Unlock()
-
-			// Clear tracking maps and reset bead to open so it can be reassigned.
-			if beadID != "" {
-				d.clearBeadTracking(beadID)
-				_ = d.beads.Update(context.Background(), beadID, "open")
-			}
-		}
+		d.connCloseCleanup(workerID, conn)
 	}()
 
 	for scanner.Scan() {

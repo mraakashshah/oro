@@ -12580,6 +12580,82 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	}
 }
 
+// TestReconnectDoesNotDeleteNewWorker verifies that when a worker reconnects with a
+// new connection, the old handleConn's deferred cleanup does NOT delete the new worker
+// entry. Only the connection that originally registered the worker should clean it up.
+func TestReconnectDoesNotDeleteNewWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	workerID := "worker-reconnect-test"
+
+	// First connection: client1 <-> server1
+	client1, server1 := net.Pipe()
+	defer client1.Close()
+
+	// Start handleConn for first connection.
+	go d.handleConn(ctx, server1)
+
+	// Register worker via first connection heartbeat.
+	sendMsg(t, client1, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   workerID,
+			ContextPct: 5,
+		},
+	})
+
+	// Wait for worker to be registered with first connection.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, ok := d.workers[workerID]
+		return ok
+	}, 2*time.Second)
+
+	// Second connection: client2 <-> server2 (simulating reconnect).
+	client2, server2 := net.Pipe()
+	defer client2.Close()
+
+	// Start handleConn for second connection.
+	go d.handleConn(ctx, server2)
+
+	// Register worker via second connection heartbeat — upsertWorker will update conn to server2.
+	sendMsg(t, client2, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   workerID,
+			ContextPct: 5,
+		},
+	})
+
+	// Wait for worker entry to reflect the new connection.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		w, ok := d.workers[workerID]
+		return ok && w.conn == server2
+	}, 2*time.Second)
+
+	// Close first client — triggers old handleConn goroutine's deferred cleanup.
+	_ = client1.Close()
+
+	// Wait long enough for the deferred cleanup goroutine to run.
+	time.Sleep(150 * time.Millisecond)
+
+	// Assert: new worker entry must still exist (old defer must not clobber it).
+	d.mu.Lock()
+	w, exists := d.workers[workerID]
+	d.mu.Unlock()
+
+	if !exists {
+		t.Fatal("old handleConn defer deleted the new worker entry on reconnect — should skip cleanup when conn differs")
+	}
+	if w.conn != server2 {
+		t.Fatalf("worker entry has wrong connection: expected server2, got something else")
+	}
+}
+
 // TestAssignBeadSkipsClosedBead verifies that assignBead does not create a worktree
 // or send MsgAssign when BeadSource.Show returns a bead with status=closed.
 // This prevents the oro-yoov race: bead closed externally after bd ready but before assignment.
