@@ -15,6 +15,10 @@ Thumbs.db
 # bv (beads viewer) local config and caches
 .bv/
 
+# Dolt internal files (biome/yamllint should not lint these)
+.beads/**/dolt/
+.beads/**/.dolt/
+
 
 # Reference repos (cloned locally, not tracked)
 docs/alternative-architecture-analysis/reference/
