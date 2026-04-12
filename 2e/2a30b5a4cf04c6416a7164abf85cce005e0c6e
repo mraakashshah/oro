@@ -1,0 +1,36 @@
+pkg/dispatcher/dispatcher_test.go
+  141d614c97ff8fd1 17321-17322
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "2e2a30b5a4cf04c6416a7164abf85cce005e0c6e",
+  "prompts": {
+    "141d614c97ff8fd1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc25c2be-6338-46b1-ae13-da528add0cae",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "749354ac2a6dd8ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf7ea2d4-d03d-41cc-8d60-a998b5c6baa6",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
