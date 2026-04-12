@@ -16,6 +16,7 @@ Thumbs.db
 .bv/
 
 # Dolt internal files (biome/yamllint should not lint these)
+.beads/dolt/
 .beads/**/dolt/
 .beads/**/.dolt/
 
