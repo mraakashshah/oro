@@ -1,0 +1,38 @@
+cmd/oro/tmux_test.go
+  cf0f1164bcfd8aa6 603-675
+cmd/oro/tmux.go
+  cf0f1164bcfd8aa6 413-417,422-424,431,438-441
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "5252027ee2175b7ada697b15489d30593dbd538d",
+  "prompts": {
+    "6f6b102ead6e0d01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39100641-2bcc-4ba2-81df-c16d6ecebe84",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 118,
+      "overriden_lines": 0
+    },
+    "cf0f1164bcfd8aa6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9a5f530c-0845-4de0-b6dd-f5a711a6be62",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 90,
+      "total_deletions": 3,
+      "accepted_lines": 87,
+      "overriden_lines": 0
+    }
+  }
+}
