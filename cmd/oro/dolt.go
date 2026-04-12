@@ -500,9 +500,28 @@ func checkSharedPortConflict(oroHome string) error {
 		}
 	}
 
+	// PID file is stale or missing but port is in use. If the listener is a
+	// dolt process (e.g. respawned by launchd with a new PID), adopt it by
+	// updating the PID file instead of erroring.
 	blockerPID, lsofErr := discoverPIDByPort(SharedDoltPort)
-	if lsofErr == nil {
-		return fmt.Errorf("port %d already in use by PID %d (not a managed dolt server)", SharedDoltPort, blockerPID)
+	if lsofErr != nil {
+		return fmt.Errorf("port %d already in use by an unidentified process", SharedDoltPort)
 	}
-	return fmt.Errorf("port %d already in use by an unidentified process", SharedDoltPort)
+	if isDoltProcess(blockerPID) {
+		_ = os.WriteFile(pidPath, []byte(strconv.Itoa(blockerPID)), 0o600) //nolint:gosec // oroHome is trusted
+		return nil                                                         // adopted launchd-respawned server
+	}
+	return fmt.Errorf("port %d already in use by PID %d (not a managed dolt server)", SharedDoltPort, blockerPID)
+}
+
+// isDoltProcess checks whether the given PID is a dolt process by inspecting
+// its command name via ps. Used to distinguish launchd-respawned dolt servers
+// (adoptable) from unrelated processes occupying the port.
+func isDoltProcess(pid int) bool {
+	out, err := exec.CommandContext(context.Background(), "ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output() //nolint:gosec // pid is int from lsof
+	if err != nil {
+		return false
+	}
+	comm := strings.TrimSpace(string(out))
+	return strings.HasSuffix(comm, "dolt") || strings.Contains(comm, "/dolt")
 }

@@ -167,6 +167,58 @@ func TestDiscoverBreadsDirsDeduplicates(t *testing.T) {
 	})
 }
 
+func TestIsDoltProcess(t *testing.T) {
+	t.Run("returns false for own PID (go test binary, not dolt)", func(t *testing.T) {
+		if isDoltProcess(os.Getpid()) {
+			t.Error("expected false for go test process")
+		}
+	})
+
+	t.Run("returns false for non-existent PID", func(t *testing.T) {
+		if isDoltProcess(99999999) {
+			t.Error("expected false for non-existent PID")
+		}
+	})
+}
+
+func TestCheckSharedPortConflictAdoptsStalePID(t *testing.T) {
+	t.Run("returns nil when PID file PID is alive", func(t *testing.T) {
+		oroHome := t.TempDir()
+		pidPath := filepath.Join(oroHome, "dolt-server.pid")
+
+		// Write our own PID — alive, so the first branch succeeds.
+		if err := os.WriteFile(pidPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write PID: %v", err)
+		}
+
+		err := checkSharedPortConflict(oroHome)
+		if err != nil {
+			t.Errorf("expected nil (our own PID is alive), got: %v", err)
+		}
+	})
+
+	t.Run("errors when PID file is stale and no process on port", func(t *testing.T) {
+		oroHome := t.TempDir()
+		pidPath := filepath.Join(oroHome, "dolt-server.pid")
+
+		// Write a stale PID.
+		if err := os.WriteFile(pidPath, []byte("99999999"), 0o600); err != nil {
+			t.Fatalf("write stale PID: %v", err)
+		}
+
+		// SharedDoltPort (13307) should not have anything listening in test env.
+		// discoverPIDByPort will fail → "unidentified process" error.
+		err := checkSharedPortConflict(oroHome)
+		if err == nil {
+			// If 13307 happens to be in use, skip.
+			t.Skip("port 13307 is in use in test environment")
+		}
+		if !strings.Contains(err.Error(), "unidentified") && !strings.Contains(err.Error(), "not a managed") {
+			t.Errorf("expected port-conflict error, got: %v", err)
+		}
+	})
+}
+
 // ---------- oro dolt setup ----------
 
 func TestDoltSetup(t *testing.T) {
