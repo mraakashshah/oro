@@ -1,0 +1,29 @@
+pkg/dispatcher/dispatcher.go
+  0a0be34c52217ac6 1467-1472,1477
+pkg/merge/merge_test.go
+  0a0be34c52217ac6 1136,1145-1147,1149,1176-1178,1416,1423,1425-1426,1433,1441-1442
+pkg/merge/ff_merge_test.go
+  0a0be34c52217ac6 22-180
+pkg/merge/merge.go
+  0a0be34c52217ac6 195-204,232-258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "ac8e8ef961c5e671d49ea518200ec53bb228784d",
+  "prompts": {
+    "0a0be34c52217ac6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f72dcb6b-c269-489b-a50c-fcd62c2bf48b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 232,
+      "total_deletions": 15,
+      "accepted_lines": 226,
+      "overriden_lines": 0
+    }
+  }
+}
