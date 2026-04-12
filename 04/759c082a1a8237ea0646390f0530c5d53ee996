@@ -1,0 +1,27 @@
+pkg/memory/memory.go
+  62fa5a1625cb450c 829,833-838,841,860,865-867,871-945,1213,1223-1232,1236-1238,1242-1244
+pkg/memory/dream.go
+  62fa5a1625cb450c 105-107
+pkg/memory/memory_test.go
+  62fa5a1625cb450c 1159,1166-1167,2961-3127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "04759c082a1a8237ea0646390f0530c5d53ee996",
+  "prompts": {
+    "62fa5a1625cb450c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc20b2ba-8a22-4b8d-9904-e3db1176eee4",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 285,
+      "total_deletions": 23,
+      "accepted_lines": 279,
+      "overriden_lines": 0
+    }
+  }
+}
