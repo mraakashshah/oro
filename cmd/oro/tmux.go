@@ -410,21 +410,35 @@ func (s *TmuxSession) PaneReady(paneTarget string) error {
 // promptIndicator is the Unicode character Claude Code uses for its input prompt.
 const promptIndicator = "❯"
 
+// trustDialogIndicator is a substring of the workspace trust dialog that Claude
+// Code shows on first launch in a directory. Headless tmux panes cannot answer
+// this interactively, so WaitForPrompt detects it and sends Enter to accept.
+const trustDialogIndicator = "Is this a project you"
+
 // WaitForPrompt polls the pane content until Claude Code's prompt indicator (❯)
 // appears, indicating the Ink TUI is rendered and ready for input. This must be
 // called after PaneReady (process started) and before sending nudges, because
 // Claude Code takes time to render the welcome screen and process SessionStart hooks.
+//
+// If the workspace trust dialog is detected, WaitForPrompt sends Enter once to
+// accept it (the user already expressed trust by running "oro start").
 func (s *TmuxSession) WaitForPrompt(paneTarget string) error {
 	timeout := s.ReadyTimeout
 	if timeout == 0 {
 		timeout = defaultReadyTimeout
 	}
 	deadline := time.Now().Add(timeout)
+	trustAccepted := false
 
 	for {
 		out, err := s.Runner.Run("tmux", "capture-pane", "-p", "-t", paneTarget)
 		if err == nil && strings.Contains(out, promptIndicator) {
 			return nil
+		}
+		// Auto-accept the workspace trust dialog (once).
+		if err == nil && !trustAccepted && strings.Contains(out, trustDialogIndicator) {
+			s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "Enter")
+			trustAccepted = true
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("claude prompt %q not found in pane %s within %v", promptIndicator, paneTarget, timeout)

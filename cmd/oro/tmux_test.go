@@ -600,6 +600,79 @@ func TestWaitForCommand(t *testing.T) {
 	})
 }
 
+func TestWaitForPromptAcceptsTrustDialog(t *testing.T) {
+	captureKey := key("tmux", "capture-pane", "-p", "-t", "oro:architect")
+
+	t.Run("detects trust dialog and sends Enter to accept", func(t *testing.T) {
+		fake := newFakeCmd()
+		// Poll 1: trust dialog visible. Poll 2: prompt appears after acceptance.
+		fake.seqOut[captureKey] = []string{
+			"Quick safety check: Is this a project you created or one you trust?\n  Yes, proceed",
+			"Welcome\n❯ \nstatus bar",
+		}
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
+		err := sess.WaitForPrompt("oro:architect")
+		if err != nil {
+			t.Fatalf("WaitForPrompt should accept trust dialog, got: %v", err)
+		}
+
+		// Verify Enter was sent to dismiss the dialog.
+		found := false
+		for _, call := range fake.getCalls() {
+			if len(call) >= 4 && call[0] == "tmux" && call[1] == "send-keys" && call[len(call)-1] == "Enter" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("expected send-keys Enter to dismiss trust dialog, but no Enter was sent")
+		}
+	})
+
+	t.Run("sends Enter only once even if dialog persists across polls", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.seqOut[captureKey] = []string{
+			"Quick safety check: Is this a project you created or one you trust?",
+			"Quick safety check: Is this a project you created or one you trust?",
+			"Welcome\n❯ \nstatus bar",
+		}
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
+		err := sess.WaitForPrompt("oro:architect")
+		if err != nil {
+			t.Fatalf("WaitForPrompt should succeed, got: %v", err)
+		}
+
+		enterCount := 0
+		for _, call := range fake.getCalls() {
+			if len(call) >= 4 && call[0] == "tmux" && call[1] == "send-keys" && call[len(call)-1] == "Enter" {
+				enterCount++
+			}
+		}
+		if enterCount != 1 {
+			t.Errorf("expected exactly 1 Enter send, got %d", enterCount)
+		}
+	})
+
+	t.Run("no Enter sent when prompt appears without trust dialog", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[captureKey] = "Welcome\n❯ \nstatus bar"
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 5 * time.Second}
+		err := sess.WaitForPrompt("oro:architect")
+		if err != nil {
+			t.Fatalf("WaitForPrompt should succeed, got: %v", err)
+		}
+
+		for _, call := range fake.getCalls() {
+			if len(call) >= 4 && call[0] == "tmux" && call[1] == "send-keys" && call[len(call)-1] == "Enter" {
+				t.Error("should not send Enter when no trust dialog appears")
+			}
+		}
+	})
+}
+
 func TestVerifyBeaconReceived(t *testing.T) {
 	t.Run("returns nil when indicator found immediately", func(t *testing.T) {
 		fake := newFakeCmd()
