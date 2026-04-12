@@ -3796,6 +3796,12 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 
 	// Return bead to queue by completing the assignment
 	if beadID != "" {
+		// Reset bead to open so it can be reassigned.
+		if err := d.beads.Update(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+		d.clearBeadTracking(beadID)
 		_ = d.completeAssignment(ctx, beadID)
 		_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
 			`{"reason":"restart-worker directive"}`)
