@@ -1,0 +1,25 @@
+cmd/oro/tmux.go
+  3843abd91e0eaa4b 487
+scripts/quality_gate.sh
+  3843abd91e0eaa4b 510
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "713fa7bc70f79c84326ca9823ed5963f2a008103",
+  "prompts": {
+    "3843abd91e0eaa4b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "572dcd4e-f6bd-47c9-aa63-79edb11d3abe",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 4,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
