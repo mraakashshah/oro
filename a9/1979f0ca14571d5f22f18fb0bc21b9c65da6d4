@@ -1,0 +1,23 @@
+scripts/quality_gate.sh
+  5bb9f4fcd1288a16 519
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "a91979f0ca14571d5f22f18fb0bc21b9c65da6d4",
+  "prompts": {
+    "5bb9f4fcd1288a16": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "52908920-1494-4971-8cdc-88a49e36dc0b",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 4,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
