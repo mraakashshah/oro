@@ -1,0 +1,55 @@
+cmd/oro/cmd_start.go
+  4cbc070bbf6ad7d9 786-791
+pkg/dispatcher/dispatcher.go
+  ec8ac870362d1c1c 3840-3841,3844,3848-3850
+cmd/oro/cmd_start_test.go
+  4cbc070bbf6ad7d9 1172-1225
+pkg/dispatcher/dispatcher_test.go
+  ec8ac870362d1c1c 2964-3007
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "edecb45c29d6a14eb7c69389b9ca2f5b8df25e21",
+  "prompts": {
+    "4cbc070bbf6ad7d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2be2a34f-f041-47a4-af47-42bcdc507d70",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 60,
+      "total_deletions": 0,
+      "accepted_lines": 60,
+      "overriden_lines": 0
+    },
+    "b8607bb46fd3f835": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "daab1180-a2b8-4e3d-9146-47d33748b564",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 47,
+      "overriden_lines": 0
+    },
+    "ec8ac870362d1c1c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0b6352af-a1a2-4d3a-936c-6a775226e438",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 50,
+      "overriden_lines": 0
+    }
+  }
+}
