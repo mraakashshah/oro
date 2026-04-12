@@ -1,0 +1,23 @@
+pkg/memory/memory.go
+  d462aa5433bd87e1 191-207,209-210,212-213,216,223,229,238-248,257-259,263,274,900-902,914-915
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "f003d8d766a980f538b9372e0870d7cdb54765a1",
+  "prompts": {
+    "d462aa5433bd87e1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "44ec7027-9106-4663-96eb-196670e2d144",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 68,
+      "total_deletions": 76,
+      "accepted_lines": 68,
+      "overriden_lines": 0
+    }
+  }
+}
