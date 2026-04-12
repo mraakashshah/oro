@@ -1,0 +1,29 @@
+.beads/.gitignore
+  90049ac5bfc26efe 3
+.beads/metadata.json
+  90049ac5bfc26efe 2-8
+cmd/oro/tmux.go
+  90049ac5bfc26efe 487
+scripts/install.sh
+  90049ac5bfc26efe 111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "54836af6199b77a4e8b398a72daec6a9ed5a2146",
+  "prompts": {
+    "90049ac5bfc26efe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84037f8c-c707-4c2d-abd4-439e940a19ea",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 988,
+      "total_deletions": 11,
+      "accepted_lines": 986,
+      "overriden_lines": 1
+    }
+  }
+}
