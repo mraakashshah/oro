@@ -1,0 +1,25 @@
+pkg/eventlog/query_test.go
+  b5a9fa4c28fbb2a6 6-8,299-345
+pkg/eventlog/query.go
+  b5a9fa4c28fbb2a6 9,61-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "e2efa0625dd52348bc5fbc7eac704b1e0f3ac875",
+  "prompts": {
+    "b5a9fa4c28fbb2a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6da3d035-1663-4d7d-8646-3cfbb1a2bca1",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 69,
+      "total_deletions": 15,
+      "accepted_lines": 55,
+      "overriden_lines": 0
+    }
+  }
+}
