@@ -1,0 +1,25 @@
+pkg/memory/memory_test.go
+  a9689ee49219e9ca 2961-3031
+pkg/memory/memory.go
+  a9689ee49219e9ca 1084,1088,1102-1103,1106-1107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "9ab6c848dbfd20c9863e128d65aa7d6226b3fd24",
+  "prompts": {
+    "a9689ee49219e9ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "65750146-6270-4983-8351-f7e2ff4963f2",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 88,
+      "total_deletions": 11,
+      "accepted_lines": 79,
+      "overriden_lines": 0
+    }
+  }
+}
