@@ -1,0 +1,40 @@
+pkg/dispatcher/dispatcher.go
+  67248aa39d69f779 1467-1473,1478
+scripts/quality_gate.sh
+  67248aa39d69f779 510
+cmd/oro/tmux.go
+  67248aa39d69f779 487
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "a57817c31b3815c41134d18efd524069b8f7ecd1",
+  "prompts": {
+    "67248aa39d69f779": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eadf35f0-9fef-4407-83cc-f85aa053b2d5",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 15,
+      "total_deletions": 8,
+      "accepted_lines": 10,
+      "overriden_lines": 0
+    },
+    "b08549bb241a631d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c14a53f5-3b50-4c16-88b2-98a63a47926e",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
