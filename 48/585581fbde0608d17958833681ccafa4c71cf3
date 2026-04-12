@@ -1,0 +1,27 @@
+biome.json
+  e4a11e26eb6049e7 4
+.beads/metadata.json
+  e4a11e26eb6049e7 2-8
+cmd/oro/tmux.go
+  e4a11e26eb6049e7 487
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "48585581fbde0608d17958833681ccafa4c71cf3",
+  "prompts": {
+    "e4a11e26eb6049e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51e41926-295d-4850-afcb-c25402129760",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 16,
+      "total_deletions": 14,
+      "accepted_lines": 10,
+      "overriden_lines": 0
+    }
+  }
+}
