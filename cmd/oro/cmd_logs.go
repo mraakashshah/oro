@@ -435,6 +435,20 @@ func readNewLogContent(w io.Writer, logPath string, lastSize, currentSize int64)
 
 // getWorkerLogPath returns the path to a worker's output.log file.
 func getWorkerLogPath(workerID string) (string, error) {
+	// Reject path traversal attempts
+	if workerID == "" {
+		return "", fmt.Errorf("worker ID cannot be empty")
+	}
+	if strings.Contains(workerID, "..") {
+		return "", fmt.Errorf("worker ID cannot contain '..'")
+	}
+	if strings.Contains(workerID, "/") {
+		return "", fmt.Errorf("worker ID cannot contain '/'")
+	}
+	if strings.HasPrefix(workerID, ".") {
+		return "", fmt.Errorf("worker ID cannot start with '.'")
+	}
+
 	oroHome := os.Getenv("ORO_HOME")
 	if oroHome == "" {
 		homeDir, err := os.UserHomeDir()

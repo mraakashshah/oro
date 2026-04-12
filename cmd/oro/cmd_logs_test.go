@@ -242,6 +242,46 @@ func TestFormatEvent(t *testing.T) {
 	}
 }
 
+func TestGetWorkerLogPathRejectsTraversal(t *testing.T) {
+	tests := []struct {
+		name     string
+		workerID string
+		wantErr  bool
+	}{
+		{"valid worker id", "worker-1", false},
+		{"valid with dots", "worker.1", false},
+		{"parent directory traversal", "..", true},
+		{"relative parent path", "../etc/passwd", true},
+		{"absolute path", "/etc/passwd", true},
+		{"embedded traversal", "worker/../etc", true},
+		{"dot traversal", ".", true},
+		{"multiple dots", "...", true},
+		{"leading dot", ".worker", true},
+		{"trailing dot", "worker.", false},
+		{"slash in path", "worker/etc", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, err := getWorkerLogPath(tt.workerID)
+
+			if tt.wantErr && err == nil {
+				t.Errorf("getWorkerLogPath(%q) expected error, got nil", tt.workerID)
+				return
+			}
+
+			if !tt.wantErr && err != nil {
+				t.Errorf("getWorkerLogPath(%q) unexpected error: %v", tt.workerID, err)
+				return
+			}
+
+			if !tt.wantErr && path == "" {
+				t.Errorf("getWorkerLogPath(%q) returned empty path", tt.workerID)
+			}
+		})
+	}
+}
+
 func TestLogsRawFlag(t *testing.T) {
 	t.Run("reads from output.log file", func(t *testing.T) {
 		// Create temporary worker directory with output.log
