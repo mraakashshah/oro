@@ -1,0 +1,27 @@
+pkg/merge/merge.go
+  b08549bb241a631d 195-205,231-257
+pkg/merge/ff_merge_test.go
+  b08549bb241a631d 212-327
+pkg/merge/merge_test.go
+  b08549bb241a631d 1136-1139,1148-1150,1152,1179-1182,1419-1421,1428,1434-1436
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "59dce0cdbdc422978df2fda4b1782f44e550e94b",
+  "prompts": {
+    "b08549bb241a631d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c14a53f5-3b50-4c16-88b2-98a63a47926e",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 370,
+      "total_deletions": 360,
+      "accepted_lines": 176,
+      "overriden_lines": 0
+    }
+  }
+}
