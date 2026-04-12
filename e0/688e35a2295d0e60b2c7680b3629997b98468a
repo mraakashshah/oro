@@ -1,0 +1,27 @@
+pkg/dispatcher/dispatcher.go
+  67ccc84bcc898057 949-952,955-958,971-973,993-999,1002-1017
+scripts/quality_gate.sh
+  67ccc84bcc898057 519
+pkg/dispatcher/dispatcher_test.go
+  67ccc84bcc898057 17273-17330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "e0688e35a2295d0e60b2c7680b3629997b98468a",
+  "prompts": {
+    "67ccc84bcc898057": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "303ec197-b43e-4505-981f-661c8a294972",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 131,
+      "total_deletions": 50,
+      "accepted_lines": 97,
+      "overriden_lines": 0
+    }
+  }
+}
