@@ -274,6 +274,7 @@ func TestDispatcherCmdStructure(t *testing.T) {
 	wFlag := startCmd.Flags().Lookup("workers")
 	if wFlag == nil {
 		t.Fatal("expected --workers flag on dispatcher start")
+		return
 	}
 	if wFlag.DefValue != "0" {
 		t.Errorf("expected --workers default=0, got %q", wFlag.DefValue)

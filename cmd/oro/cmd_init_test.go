@@ -261,6 +261,7 @@ func TestDefaultToolDefs_BdInstallURL(t *testing.T) {
 
 	if bdTool == nil {
 		t.Fatal("bd tool not found in defaultToolDefs")
+		return
 	}
 
 	// Verify it has the correct install command

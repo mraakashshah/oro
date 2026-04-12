@@ -31,6 +31,7 @@ func TestMgFlagParsing(t *testing.T) {
 		flag := cmd.Flag(f.name)
 		if flag == nil {
 			t.Fatalf("expected --%s flag to exist", f.name)
+			return
 		}
 		if flag.DefValue != f.defValue {
 			t.Fatalf("--%s default: expected %q, got %q", f.name, f.defValue, flag.DefValue)

@@ -237,6 +237,7 @@ func TestReadConfig(t *testing.T) {
 		}
 		if cfg == nil {
 			t.Fatal("expected non-nil config")
+			return
 		}
 		goCfg, ok := cfg.Languages["go"]
 		if !ok {

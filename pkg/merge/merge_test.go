@@ -571,6 +571,7 @@ func TestNewCoordinator_SetsGitRunner(t *testing.T) {
 	coord := NewCoordinator(mock)
 	if coord == nil {
 		t.Fatal("expected non-nil Coordinator")
+		return
 	}
 	if coord.git != mock {
 		t.Error("expected Coordinator.git to be the provided GitRunner")
