@@ -3837,14 +3837,17 @@ func (d *Dispatcher) applyPreempt(args string) (string, error) {
 		return "", fmt.Errorf("worker not found")
 	}
 
-	// Mark worker as preempting
+	// Mark worker as preempting; save previous state for rollback on send failure.
+	prevState := w.state
 	w.state = protocol.WorkerPreempting
 
-	// Send PREEMPT message to worker
+	// Send PREEMPT message through sendToWorker (handles disconnected workers).
 	msg := protocol.Message{
 		Type: protocol.MsgPreempt,
 	}
-	if err := w.encoder.Encode(msg); err != nil {
+	if err := d.sendToWorker(w, msg); err != nil {
+		// Reset state: preempt message was not delivered.
+		w.state = prevState
 		d.mu.Unlock()
 		return "", fmt.Errorf("send preempt message: %w", err)
 	}

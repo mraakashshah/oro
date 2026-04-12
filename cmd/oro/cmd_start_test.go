@@ -1169,3 +1169,57 @@ func TestMakeDoltLifecycleSharedServer(t *testing.T) {
 		}
 	})
 }
+
+// TestSendStartDirectiveTimeout verifies that sendStartDirective times out
+// after 10 seconds if the dispatcher doesn't send an ACK response.
+func TestSendStartDirectiveTimeout(t *testing.T) {
+	sockPath := fmt.Sprintf("/tmp/oro-timeout-test-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	// Start a listener that accepts the connection but never sends an ACK
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer ln.Close()
+
+	// Accept the connection but don't send an ACK to trigger the timeout
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Just accept and hold the connection without sending anything
+		time.Sleep(20 * time.Second) // Sleep longer than the 10s timeout
+	}()
+
+	// Give the listener a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Call sendStartDirective and expect it to timeout
+	start := time.Now()
+	err = sendStartDirective(sockPath)
+	elapsed := time.Since(start)
+
+	// Should return an error (timeout)
+	if err == nil {
+		t.Fatal("expected sendStartDirective to timeout, but got no error")
+	}
+
+	// Check that the error indicates a timeout/deadline exceeded
+	errStr := err.Error()
+	if !strings.Contains(errStr, "deadline exceeded") &&
+		!strings.Contains(errStr, "timeout") &&
+		!strings.Contains(errStr, "i/o timeout") {
+		t.Fatalf("expected timeout/deadline error, got: %v", err)
+	}
+
+	// Verify it took approximately 10 seconds (allow 9-11 second window)
+	if elapsed < 9*time.Second {
+		t.Errorf("timeout occurred too quickly: %v (expected ~10s)", elapsed)
+	}
+	if elapsed > 12*time.Second {
+		t.Logf("warning: timeout took longer than expected: %v", elapsed)
+	}
+}

@@ -19,3 +19,5 @@ case-insensitive-header-search: matching markdown headers → lowercase both sid
 `stale-hardcoded-after-wiring`: replacing a hardcoded value in behavior but leaving it in nearby comments/log strings → search the same function and callers for other instances of the old hardcoded value.
 `error-path-db-cleanup`: DB record created before fallible operation → add cleanup call in error path, log but don't block subsequent cleanup steps.
 `double-nowFunc-under-lock`: calling `d.nowFunc()` multiple times under a single lock hold → capture once in `now := d.nowFunc()` and reuse.
+`coalesce-scan-consistency`: new query scans nullable-with-default column differently from all existing queries in the same file → match the established COALESCE + int scan pattern for consistency.
+`vestigial-encoder-field`: all send paths now use sendToWorker → encoder field on trackedWorker is dead code, candidate for removal in a cleanup bead.

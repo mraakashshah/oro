@@ -783,6 +783,12 @@ func sendStartDirective(sockPath string) error {
 	if err := sendDirective(conn, "start", ""); err != nil {
 		return fmt.Errorf("send start directive: %w", err)
 	}
+
+	// Set a 10-second read deadline for receiving the ACK response
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+
 	if _, err := readACK(conn); err != nil {
 		return fmt.Errorf("read ack: %w", err)
 	}

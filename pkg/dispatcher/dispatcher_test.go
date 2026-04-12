@@ -2961,6 +2961,50 @@ func TestApplyDirective_Preempt_EmptyArgs(t *testing.T) {
 	}
 }
 
+func TestPreemptDisconnectedWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	workerID := "worker-disconnected-preempt"
+	beadID := "oro-preempt-disconnected"
+
+	// Create a broken connection: net.Pipe() then close the client end
+	server, client := net.Pipe()
+	_ = client.Close() // close reader — writes to server will fail
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     server,
+		state:    protocol.WorkerBusy,
+		beadID:   beadID,
+		worktree: "/fake/worktree",
+		encoder:  json.NewEncoder(server),
+	}
+	d.mu.Unlock()
+
+	// Test: preempt a disconnected worker — must return an error
+	_, err := d.applyPreempt(workerID)
+	if err == nil {
+		t.Fatal("expected error when preempting disconnected worker")
+	}
+
+	// Assert: error wraps WorkerUnreachableError
+	var unreachable *protocol.WorkerUnreachableError
+	if !errors.As(err, &unreachable) {
+		t.Errorf("expected WorkerUnreachableError, got %T: %v", err, err)
+	}
+
+	// Assert: worker state was reset — must NOT be left in WorkerPreempting
+	d.mu.Lock()
+	w, exists := d.workers[workerID]
+	d.mu.Unlock()
+	if exists && w.state == protocol.WorkerPreempting {
+		t.Errorf("worker state left as WorkerPreempting after failed send, want state reset")
+	}
+
+	_ = server.Close()
+}
+
 func TestRun_RejectsShutdownDirective(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
