@@ -89,15 +89,6 @@ func ensureSearchHook(binPath, srcDir string) error {
 	return nil
 }
 
-// warnIfSearchHookMissing writes a warning to w if the oro-search-hook binary
-// is not found at binPath. Called during oro start — does not attempt to build
-// (use oro init for that).
-func warnIfSearchHookMissing(w io.Writer, binPath string) {
-	if _, err := os.Stat(binPath); err != nil {
-		fmt.Fprintf(w, "warning: oro-search-hook not found — run oro init to build it\n")
-	}
-}
-
 // warnIfQualityGateUntracked writes a warning if quality_gate.sh exists in the
 // given directory but is untracked in git. The directory is typically the repo root.
 func warnIfQualityGateUntracked(w io.Writer, dir string) {

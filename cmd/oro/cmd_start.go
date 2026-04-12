@@ -262,14 +262,14 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 		regenerateProjectSettings(w, paths.OroHome, readProjectNameCWD())
 	}
 
-	// Warn if oro-search-hook binary is absent — do NOT build it here since
-	// oro start may run outside the repo (go-install users lack the source tree).
-	searchHookBin := filepath.Join(paths.OroHome, "hooks", "oro-search-hook")
-	warnIfSearchHookMissing(w, searchHookBin)
-
-	// Warn about quality_gate.sh issues
+	// Warn about quality_gate.sh issues and build oro-search-hook if stale.
 	repoRoot, err := os.Getwd()
 	if err == nil {
+		// Build oro-search-hook if missing or stale. ensureSearchHook is fail-open:
+		// if the source tree is absent (go-install users), it skips silently.
+		searchHookBin := filepath.Join(paths.OroHome, "hooks", "oro-search-hook")
+		_ = ensureSearchHook(searchHookBin, filepath.Join(repoRoot, "cmd", "oro-search-hook"))
+
 		warnIfQualityGateMissing(w, repoRoot)
 		warnIfQualityGateUntracked(w, repoRoot)
 		warnIfEpicCNotDeployed(w, repoRoot)

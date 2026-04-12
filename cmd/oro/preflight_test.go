@@ -189,32 +189,6 @@ func TestEnsureSearchHookSilentWhenBinaryExistsButNoSource(t *testing.T) {
 	}
 }
 
-// TestPreflightWarnsOnMissingSearchHook verifies that warnIfSearchHookMissing
-// writes a warning when the binary is absent and stays silent when it exists.
-func TestPreflightWarnsOnMissingSearchHook(t *testing.T) {
-	t.Run("warns when binary missing", func(t *testing.T) {
-		var buf bytes.Buffer
-		warnIfSearchHookMissing(&buf, "/nonexistent/path/oro-search-hook")
-		if !strings.Contains(buf.String(), "oro-search-hook not found") {
-			t.Errorf("expected warning about missing binary, got: %q", buf.String())
-		}
-	})
-
-	t.Run("no warning when binary exists", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		binPath := filepath.Join(tmpDir, "oro-search-hook")
-		if err := os.WriteFile(binPath, []byte("binary"), 0o600); err != nil { //nolint:gosec // test-only fake binary
-			t.Fatal(err)
-		}
-
-		var buf bytes.Buffer
-		warnIfSearchHookMissing(&buf, binPath)
-		if buf.Len() > 0 {
-			t.Errorf("expected no output, got: %q", buf.String())
-		}
-	})
-}
-
 // TestAssetVersionStampMismatch verifies checkAssetVersion behaviour:
 //   - stale stamp triggers re-extraction and updates stamp
 //   - matching stamp is a no-op
