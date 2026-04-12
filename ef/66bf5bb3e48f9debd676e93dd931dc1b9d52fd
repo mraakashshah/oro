@@ -1,0 +1,38 @@
+cmd/oro/tmux.go
+  7e389f628177095b 487
+biome.json
+  7e389f628177095b 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "ef66bf5bb3e48f9debd676e93dd931dc1b9d52fd",
+  "prompts": {
+    "79618f0639a73593": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e95b2f98-8182-4b6e-b070-4c7274345a86",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "7e389f628177095b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8bae0814-cc71-42de-b4e0-019dd96f8057",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 13,
+      "accepted_lines": 10,
+      "overriden_lines": 0
+    }
+  }
+}
