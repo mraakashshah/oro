@@ -1,0 +1,27 @@
+.oro/context_pct
+  478582e6b705cf33 1
+pkg/dispatcher/worker_logs_test.go
+  478582e6b705cf33 331-408
+pkg/dispatcher/worker_logs.go
+  478582e6b705cf33 82-83,85-91,99-103,106-108,115-126,128-129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "c531762bd079112fbe86ecc0015297444cf2096f",
+  "prompts": {
+    "478582e6b705cf33": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ea5a0206-2711-41da-92cf-9b8822788b77",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 114,
+      "total_deletions": 12,
+      "accepted_lines": 110,
+      "overriden_lines": 0
+    }
+  }
+}
