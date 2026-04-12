@@ -122,6 +122,7 @@ func discoverBreadsDirs(oroHome string) []string {
 		return nil
 	}
 	var dirs []string
+	seen := make(map[string]bool)
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -143,6 +144,10 @@ func discoverBreadsDirs(oroHome string) []string {
 		if pathErr != nil {
 			continue // skip if paths can't be resolved
 		}
+		if seen[projPaths.BeadsDir] {
+			continue // deduplicate: multiple project entries can point to the same root
+		}
+		seen[projPaths.BeadsDir] = true
 		dirs = append(dirs, projPaths.BeadsDir)
 	}
 	return dirs

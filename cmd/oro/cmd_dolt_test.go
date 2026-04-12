@@ -138,6 +138,35 @@ func TestDiscoverBreadsDirsFromProjectRoot(t *testing.T) {
 	})
 }
 
+func TestDiscoverBreadsDirsDeduplicates(t *testing.T) {
+	t.Run("multiple project entries pointing to same root yield one beads dir", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		beadsDir := filepath.Join(projectRoot, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir beads dir: %v", err)
+		}
+
+		oroHome := t.TempDir()
+		projectsDir := filepath.Join(oroHome, "projects")
+
+		// Register the same project root under two different project names.
+		for _, projName := range []string{"oro", "s-0cfd1c96cbc0c0e0"} {
+			projectDir := filepath.Join(projectsDir, projName)
+			if err := os.MkdirAll(projectDir, 0o750); err != nil {
+				t.Fatalf("mkdir project dir: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(projectDir, "project.root"), []byte(projectRoot), 0o644); err != nil {
+				t.Fatalf("write project.root: %v", err)
+			}
+		}
+
+		dirs := discoverBreadsDirs(oroHome)
+		if len(dirs) != 1 {
+			t.Errorf("expected 1 unique beads dir, got %d: %v", len(dirs), dirs)
+		}
+	})
+}
+
 // ---------- oro dolt setup ----------
 
 func TestDoltSetup(t *testing.T) {
