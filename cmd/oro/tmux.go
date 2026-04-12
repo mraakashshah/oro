@@ -484,7 +484,7 @@ func (s *TmuxSession) WaitForPrompt(paneTarget string) error {
 		}
 		// Auto-accept the workspace trust dialog (once).
 		if err == nil && !trustAccepted && strings.Contains(out, trustDialogIndicator) {
-			s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "Enter")
+			_, _ = s.Runner.Run("tmux", "send-keys", "-t", paneTarget, "Enter")
 			trustAccepted = true
 		}
 		if time.Now().After(deadline) {
