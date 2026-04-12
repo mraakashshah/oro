@@ -1,0 +1,23 @@
+.oro/context_pct
+  738569a9d1ae7d41 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "943b9672baa9ae3fa1a7ee645f422e0a46bf9aed",
+  "prompts": {
+    "738569a9d1ae7d41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbbabfbb-8194-4abb-a8ae-51415a21a2aa",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
