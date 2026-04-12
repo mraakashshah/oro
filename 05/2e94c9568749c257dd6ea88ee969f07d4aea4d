@@ -1,0 +1,49 @@
+pkg/dispatcher/dispatcher.go
+  3b2bbf368cca075f 3788
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "052e94c9568749c257dd6ea88ee969f07d4aea4d",
+  "prompts": {
+    "3b2bbf368cca075f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01503309-2fe7-4797-8e36-843483e72968",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 76,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "7e389f628177095b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8bae0814-cc71-42de-b4e0-019dd96f8057",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    },
+    "a4e27e655b460db3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01af483e-851c-47bf-9b70-457b43b2e8af",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
