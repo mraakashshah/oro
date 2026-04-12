@@ -188,6 +188,64 @@ var validMemoryTypes = map[string]struct{}{
 	"self_report": {},
 }
 
+// preparedFields holds the validated and computed values ready for INSERT.
+type preparedFields struct {
+	conf          float64
+	tags          string
+	filesRead     string
+	filesModified string
+	embeddingBlob []byte
+	pinnedInt     int
+	project       string
+}
+
+// prepareInsert validates InsertParams and computes derived fields (confidence
+// default, embedding, JSON tags, pinned int, project). Callers supply a prefix
+// for error messages (e.g. "memory insert" vs "memory merge insert").
+func (s *Store) prepareInsert(params InsertParams, errPrefix string) (preparedFields, error) {
+	if len(params.Content) < 10 {
+		return preparedFields{}, fmt.Errorf("%s: content too short (min 10 chars, got %d)", errPrefix, len(params.Content))
+	}
+	if len(params.Content) > 2048 {
+		return preparedFields{}, fmt.Errorf("%s: content too long (max 2048 chars, got %d)", errPrefix, len(params.Content))
+	}
+	if _, ok := validMemoryTypes[params.Type]; !ok {
+		return preparedFields{}, fmt.Errorf("%s: invalid type %q", errPrefix, params.Type)
+	}
+
+	conf := params.Confidence
+	if conf == 0 {
+		conf = 0.8
+	}
+
+	var embeddingBlob []byte
+	if s.embedder != nil {
+		if vec := s.embedder.Embed(params.Content); vec != nil {
+			embeddingBlob = MarshalEmbedding(vec)
+		}
+	}
+
+	pinnedInt := 0
+	if params.Pinned {
+		pinnedInt = 1
+	}
+
+	project := s.project
+	if project == "" {
+		project = "oro"
+	}
+
+	return preparedFields{
+		conf:          conf,
+		tags:          tagsToJSON(params.Tags),
+		filesRead:     tagsToJSON(params.FilesRead),
+		filesModified: tagsToJSON(params.FilesModified),
+		embeddingBlob: embeddingBlob,
+		pinnedInt:     pinnedInt,
+		project:       project,
+	}, nil
+}
+
 // Insert adds a new memory with write-time dedup. Before inserting, it checks
 // FTS5 for existing memories with high term overlap (Jaccard similarity).
 // If a near-duplicate exists:
@@ -196,23 +254,13 @@ var validMemoryTypes = map[string]struct{}{
 //
 // Returns the inserted (or existing duplicate) ID.
 func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
-	if len(m.Content) < 10 {
-		return 0, fmt.Errorf("memory insert: content too short (min 10 chars, got %d)", len(m.Content))
-	}
-	if len(m.Content) > 2048 {
-		return 0, fmt.Errorf("memory insert: content too long (max 2048 chars, got %d)", len(m.Content))
-	}
-	if _, ok := validMemoryTypes[m.Type]; !ok {
-		return 0, fmt.Errorf("memory insert: invalid type %q (must be one of: lesson, decision, gotcha, pattern, preference, summary, self_report)", m.Type)
-	}
-
-	conf := m.Confidence
-	if conf == 0 {
-		conf = 0.8
+	pf, err := s.prepareInsert(m, "memory insert")
+	if err != nil {
+		return 0, err
 	}
 
 	// Write-time dedup: check for near-duplicates via FTS5 + Jaccard.
-	dupID, err := s.checkDuplicate(ctx, m.Content, conf)
+	dupID, err := s.checkDuplicate(ctx, m.Content, pf.conf)
 	if err != nil {
 		// Dedup check failed -- proceed with insert rather than blocking writes.
 		_ = err
@@ -220,33 +268,10 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 		return dupID, nil
 	}
 
-	tags := tagsToJSON(m.Tags)
-	filesRead := tagsToJSON(m.FilesRead)
-	filesModified := tagsToJSON(m.FilesModified)
-
-	// Compute embedding if embedder is attached.
-	var embeddingBlob []byte
-	if s.embedder != nil {
-		if vec := s.embedder.Embed(m.Content); vec != nil {
-			embeddingBlob = MarshalEmbedding(vec)
-		}
-	}
-
-	pinnedInt := 0
-	if m.Pinned {
-		pinnedInt = 1
-	}
-
-	// Use current project scope, default to 'oro' if not set
-	project := s.project
-	if project == "" {
-		project = "oro"
-	}
-
 	res, err := s.db.ExecContext(ctx, //nolint:gosec // G701 false positive: parameterized query with ? placeholders, no string concatenation
 		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified, pinned, project)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.Type, tags, m.Source, m.BeadID, m.WorkerID, conf, embeddingBlob, filesRead, filesModified, pinnedInt, project,
+		m.Content, m.Type, pf.tags, m.Source, m.BeadID, m.WorkerID, pf.conf, pf.embeddingBlob, pf.filesRead, pf.filesModified, pf.pinnedInt, pf.project,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("memory insert: %w", err)
@@ -826,12 +851,19 @@ func (s *Store) DumpAll(ctx context.Context) ([]protocol.Memory, error) {
 
 // MergeMemories keeps the memory with keepID and deletes memories with the given deleteIDs.
 // Returns an error if keepID doesn't exist.
+// The existence check and deletion are wrapped in a single transaction for atomicity.
 //
 //oro:testonly
 func (s *Store) MergeMemories(ctx context.Context, keepID int64, deleteIDs []int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("memory merge begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	// Verify keepID exists
 	var exists int
-	if err := s.db.QueryRowContext(ctx,
+	if err := tx.QueryRowContext(ctx,
 		`SELECT 1 FROM memories WHERE id = ?`,
 		keepID,
 	).Scan(&exists); err != nil {
@@ -850,12 +882,57 @@ func (s *Store) MergeMemories(ctx context.Context, keepID int64, deleteIDs []int
 			args[i] = id
 		}
 		q := fmt.Sprintf(`DELETE FROM memories WHERE id IN (%s)`, strings.Join(placeholders, ",")) //nolint:gosec // G201 false positive: placeholders are hardcoded "?" and args are parameterized
-		if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("memory merge delete: %w", err)
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("memory merge commit: %w", err)
+	}
 	return nil
+}
+
+// executeMergeAtomic inserts params as a new memory and deletes deleteIDs in a single
+// transaction. If any delete fails the insert is rolled back. Unlike Insert, the
+// write-time dedup check is skipped — the dreamer explicitly supplies the merged content.
+func (s *Store) executeMergeAtomic(ctx context.Context, params InsertParams, deleteIDs []int64) (int64, error) {
+	pf, err := s.prepareInsert(params, "memory merge insert")
+	if err != nil {
+		return 0, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("memory merge begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, //nolint:gosec // G701 false positive: parameterized query with ? placeholders, no string concatenation
+		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified, pinned, project)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		params.Content, params.Type, pf.tags, params.Source, params.BeadID, params.WorkerID, pf.conf,
+		pf.embeddingBlob, pf.filesRead, pf.filesModified, pf.pinnedInt, pf.project,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("memory merge insert: %w", err)
+	}
+
+	newID, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("memory merge last insert id: %w", err)
+	}
+
+	for _, delID := range deleteIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, delID); err != nil {
+			return 0, fmt.Errorf("memory merge delete %d: %w", delID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("memory merge commit: %w", err)
+	}
+	return newID, nil
 }
 
 // markerRe matches [MEMORY] marker lines.
@@ -1125,6 +1202,7 @@ func pruneStale(ctx context.Context, store *Store, minScore float64, dryRun bool
 
 // mergeDuplicates finds pairs of similar memories and merges them.
 // mergePair keeps the higher-confidence memory and deletes the other.
+// The confidence update and deletion are wrapped in a transaction for atomicity.
 func mergePair(ctx context.Context, store *Store, a, b protocol.Memory) error {
 	keepID, removeID := a.ID, b.ID
 	keepConf, removeConf := a.Confidence, b.Confidence
@@ -1134,14 +1212,28 @@ func mergePair(ctx context.Context, store *Store, a, b protocol.Memory) error {
 		keepConf = removeConf
 	}
 
-	if err := store.UpdateConfidence(ctx, keepID, math.Max(keepConf, removeConf)); err != nil {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("merge pair begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, //nolint:gosec // G701 false positive: parameterized query with ? placeholders
+		`UPDATE memories SET confidence = ? WHERE id = ?`,
+		math.Max(keepConf, removeConf), keepID,
+	); err != nil {
 		return fmt.Errorf("merge update confidence: %w", err)
 	}
 
-	if err := store.Delete(ctx, removeID); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM memories WHERE id = ?`, removeID,
+	); err != nil {
 		return fmt.Errorf("merge delete duplicate: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("merge pair commit: %w", err)
+	}
 	return nil
 }
 

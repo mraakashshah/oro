@@ -102,15 +102,9 @@ func ExecuteActions(ctx context.Context, actions []DreamAction, store *Store, lo
 				logFn(fmt.Sprintf("dream execute: create: %v", err))
 			}
 		case "MERGE":
-			// Insert the merged memory, then delete each source.
-			if _, err := store.Insert(ctx, a.Params); err != nil {
-				logFn(fmt.Sprintf("dream execute: merge insert: %v", err))
-				continue
-			}
-			for _, id := range a.IDs {
-				if err := store.Delete(ctx, id); err != nil {
-					logFn(fmt.Sprintf("dream execute: merge delete %d: %v", id, err))
-				}
+			// Insert the merged memory and delete each source atomically.
+			if _, err := store.executeMergeAtomic(ctx, a.Params, a.IDs); err != nil {
+				logFn(fmt.Sprintf("dream execute: merge: %v", err))
 			}
 		default:
 			logFn(fmt.Sprintf("dream execute: unknown action kind %q", a.Kind))

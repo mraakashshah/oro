@@ -1156,15 +1156,15 @@ func TestMergePair_ErrorPaths(t *testing.T) {
 	a := protocol.Memory{ID: 1, Content: "a", Confidence: 0.5}
 	b := protocol.Memory{ID: 2, Content: "b", Confidence: 0.9}
 
-	// Close the DB so UpdateConfidence fails inside mergePair
+	// Close the DB so BeginTx fails inside mergePair
 	_ = db.Close()
 
 	err := mergePair(ctx, store, a, b)
 	if err == nil {
 		t.Error("expected error from mergePair with closed DB")
 	}
-	if !strings.Contains(err.Error(), "merge update confidence") {
-		t.Errorf("expected 'merge update confidence' error, got: %v", err)
+	if !strings.Contains(err.Error(), "merge pair begin tx") {
+		t.Errorf("expected 'merge pair begin tx' error, got: %v", err)
 	}
 }
 
@@ -2955,6 +2955,173 @@ func TestForPromptStaleness(t *testing.T) {
 		}
 		if strings.Contains(result, "⚠") {
 			t.Errorf("expected no stale warning for pinned memory, got:\n%s", result)
+		}
+	})
+}
+
+// TestMergeMemoriesAtomic verifies that MergeMemories, mergePair, and the dream
+// MERGE action all execute atomically — a partial failure must roll back all steps.
+func TestMergeMemoriesAtomic(t *testing.T) {
+	ctx := context.Background()
+
+	// --- MergeMemories: keepID not found → deleteIDs must be preserved ---
+	t.Run("MergeMemories_keepID_not_found_preserves_deleteIDs", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		id1, err := store.Insert(ctx, InsertParams{
+			Content: "merge atomic source one long enough content here", Type: "lesson",
+			Source: "self_report", Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("insert id1: %v", err)
+		}
+		id2, err := store.Insert(ctx, InsertParams{
+			Content: "merge atomic source two long enough content here", Type: "lesson",
+			Source: "self_report", Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("insert id2: %v", err)
+		}
+
+		err = store.MergeMemories(ctx, 99999, []int64{id1, id2})
+		if err == nil {
+			t.Fatal("expected error for nonexistent keepID, got nil")
+		}
+
+		all, dumpErr := store.DumpAll(ctx)
+		if dumpErr != nil {
+			t.Fatalf("dump: %v", dumpErr)
+		}
+		found := map[int64]bool{}
+		for _, m := range all {
+			found[m.ID] = true
+		}
+		if !found[id1] {
+			t.Error("id1 was deleted but keepID did not exist — atomicity violation")
+		}
+		if !found[id2] {
+			t.Error("id2 was deleted but keepID did not exist — atomicity violation")
+		}
+	})
+
+	// --- mergePair: delete failure must roll back the confidence update ---
+	t.Run("mergePair_rolls_back_confidence_on_delete_failure", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		// DB value for idA is 0.5; struct confidence is 0.9 so UpdateConfidence will change the row.
+		idA, err := store.Insert(ctx, InsertParams{
+			Content: "atomic pair alpha long enough content for insert test", Type: "lesson",
+			Source: "self_report", Confidence: 0.5,
+		})
+		if err != nil {
+			t.Fatalf("insert A: %v", err)
+		}
+		idB, err := store.Insert(ctx, InsertParams{
+			Content: "atomic pair beta long enough content for insert test", Type: "lesson",
+			Source: "self_report", Confidence: 0.3,
+		})
+		if err != nil {
+			t.Fatalf("insert B: %v", err)
+		}
+
+		// Trigger: prevent deletion of idB (removeID when a.Confidence > b.Confidence).
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
+			CREATE TRIGGER prevent_delete_pair
+			BEFORE DELETE ON memories
+			WHEN OLD.id = %d
+			BEGIN SELECT RAISE(FAIL, 'atomicity test: delete prevented'); END;
+		`, idB))
+		if err != nil {
+			t.Fatalf("create trigger: %v", err)
+		}
+
+		// keepID=idA (0.9 > 0.3 → no swap), UpdateConfidence(idA, 0.9) changes DB from 0.5→0.9.
+		// Then Delete(idB) triggers FAIL.
+		// With transaction: UpdateConfidence must be rolled back → idA.confidence stays 0.5.
+		memA := protocol.Memory{ID: idA, Confidence: 0.9}
+		memB := protocol.Memory{ID: idB, Confidence: 0.3}
+
+		err = mergePair(ctx, store, memA, memB)
+		if err == nil {
+			t.Fatal("expected error from trigger, got nil")
+		}
+
+		var gotConf float64
+		if scanErr := db.QueryRowContext(ctx, `SELECT confidence FROM memories WHERE id = ?`, idA).Scan(&gotConf); scanErr != nil {
+			t.Fatalf("scan confidence: %v", scanErr)
+		}
+		if gotConf != 0.5 {
+			t.Errorf("expected idA.confidence=0.5 (rolled back), got %v — mergePair not atomic", gotConf)
+		}
+	})
+
+	// --- dream MERGE: delete failure must roll back the insert ---
+	t.Run("dreamMERGE_rolls_back_insert_on_delete_failure", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewStore(db)
+
+		idA, err := store.Insert(ctx, InsertParams{
+			Content: "dream source alpha long enough content for atomicity", Type: "lesson",
+			Source: "self_report", Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("insert A: %v", err)
+		}
+		idB, err := store.Insert(ctx, InsertParams{
+			Content: "dream source beta long enough content for atomicity", Type: "lesson",
+			Source: "self_report", Confidence: 0.8,
+		})
+		if err != nil {
+			t.Fatalf("insert B: %v", err)
+		}
+
+		// Trigger: prevent deletion of idA (first delete attempt in MERGE).
+		_, err = db.ExecContext(ctx, fmt.Sprintf(`
+			CREATE TRIGGER prevent_delete_dream
+			BEFORE DELETE ON memories
+			WHEN OLD.id = %d
+			BEGIN SELECT RAISE(FAIL, 'atomicity test: delete prevented'); END;
+		`, idA))
+		if err != nil {
+			t.Fatalf("create trigger: %v", err)
+		}
+
+		const mergedContent = "merged dream memory content that is long enough for insert validation test"
+		action := DreamAction{
+			Kind:   "MERGE",
+			IDs:    []int64{idA, idB},
+			Params: InsertParams{Content: mergedContent, Type: "lesson", Source: "dreamer"},
+		}
+
+		var logMessages []string
+		_ = ExecuteActions(ctx, []DreamAction{action}, store, func(msg string) {
+			logMessages = append(logMessages, msg)
+		})
+
+		// With atomic transaction: Insert must be rolled back when Delete fails.
+		all, dumpErr := store.DumpAll(ctx)
+		if dumpErr != nil {
+			t.Fatalf("dump: %v", dumpErr)
+		}
+
+		for _, m := range all {
+			if m.Content == mergedContent {
+				t.Error("merged memory should not exist: Insert was not rolled back after Delete failure")
+				break
+			}
+		}
+
+		found := map[int64]bool{}
+		for _, m := range all {
+			found[m.ID] = true
+		}
+		if !found[idA] {
+			t.Error("idA should still exist (delete was prevented by trigger)")
+		}
+		if !found[idB] {
+			t.Error("idB should still exist (rolled back by transaction)")
 		}
 	})
 }
