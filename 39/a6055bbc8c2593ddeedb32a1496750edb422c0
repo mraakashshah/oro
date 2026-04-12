@@ -1,0 +1,25 @@
+cmd/oro/cmd_logs.go
+  d882c2fa6bf139e4 438-451
+cmd/oro/cmd_logs_test.go
+  d882c2fa6bf139e4 245-284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "39a6055bbc8c2593ddeedb32a1496750edb422c0",
+  "prompts": {
+    "d882c2fa6bf139e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c6fd2ff4-c757-49dd-8f6d-df787dcc80ff",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 72,
+      "total_deletions": 17,
+      "accepted_lines": 54,
+      "overriden_lines": 0
+    }
+  }
+}
