@@ -1,0 +1,27 @@
+.oro/context_pct
+  2e4688d6947c0889 1
+pkg/memory/memory_test.go
+  2e4688d6947c0889 3128-3180
+pkg/memory/memory.go
+  2e4688d6947c0889 1162,1168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "fd2ef758e83343de287f0bd920c835b27bb9764c",
+  "prompts": {
+    "2e4688d6947c0889": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a75564d8-0543-41fc-b675-5fa73c2ccd18",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 131,
+      "total_deletions": 75,
+      "accepted_lines": 56,
+      "overriden_lines": 0
+    }
+  }
+}
