@@ -1,0 +1,25 @@
+scripts/quality_gate.sh
+  59a1bf5bdf338e8d 519
+biome.json
+  59a1bf5bdf338e8d 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "246c93e03ca13a4c98c2d6c9bd86262d7cd1529d",
+  "prompts": {
+    "59a1bf5bdf338e8d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "23ef90c4-d0f8-4ec8-82a9-50d89613bafe",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 6,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
