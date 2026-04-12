@@ -3125,3 +3125,73 @@ func TestMergeMemoriesAtomic(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// pruneStale pinned-exclusion test (oro-gyw0)
+// ---------------------------------------------------------------------------
+
+func TestPruneStaleSkipsPinned(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	oldTime := time.Now().AddDate(-1, 0, 0).Format("2006-01-02 15:04:05")
+
+	// Insert a pinned memory with low confidence and old timestamp.
+	// Without the fix, pruneStale would delete this.
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, created_at, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"pinned memory must survive pruning", "lesson", `[]`, "self_report", 0.05,
+		oldTime, 1,
+	)
+	if err != nil {
+		t.Fatalf("insert pinned: %v", err)
+	}
+
+	// Insert an unpinned memory with the same low confidence and old timestamp.
+	// This one should be pruned.
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, created_at, pinned)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"unpinned stale memory to be pruned", "lesson", `[]`, "self_report", 0.05,
+		oldTime, 0,
+	)
+	if err != nil {
+		t.Fatalf("insert unpinned: %v", err)
+	}
+
+	_, pruned, err := Consolidate(ctx, store, ConsolidateOpts{
+		SimilarityThreshold: 100, // high threshold — no merges
+		MinDecayedScore:     0.05,
+	})
+	if err != nil {
+		t.Fatalf("consolidate: %v", err)
+	}
+
+	if pruned == 0 {
+		t.Error("expected unpinned stale memory to be pruned")
+	}
+
+	all, err := store.DumpAll(ctx)
+	if err != nil {
+		t.Fatalf("dump: %v", err)
+	}
+
+	var foundPinned, foundUnpinned bool
+	for _, m := range all {
+		switch m.Content {
+		case "pinned memory must survive pruning":
+			foundPinned = true
+		case "unpinned stale memory to be pruned":
+			foundUnpinned = true
+		}
+	}
+
+	if !foundPinned {
+		t.Error("pinned memory was deleted by pruneStale — it should be excluded")
+	}
+	if foundUnpinned {
+		t.Error("unpinned stale memory should have been pruned but still exists")
+	}
+}

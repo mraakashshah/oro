@@ -1159,11 +1159,13 @@ func Consolidate(ctx context.Context, store *Store, opts ConsolidateOpts) (merge
 
 // pruneStale removes memories whose decayed score is below minScore.
 // Decayed score = confidence * 0.5^(age_days/30).
+// Pinned memories are always excluded.
 func pruneStale(ctx context.Context, store *Store, minScore float64, dryRun bool) (int, error) {
 	q := `
 		SELECT id, confidence,
 		       (julianday('now') - julianday(created_at)) AS age_days
 		FROM memories
+		WHERE COALESCE(pinned, 0) = 0
 	`
 	rows, err := store.db.QueryContext(ctx, q)
 	if err != nil {
