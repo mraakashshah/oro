@@ -1,0 +1,38 @@
+cmd/oro/cmd_dolt.go
+  cf0f1164bcfd8aa6 125,147-150
+cmd/oro/cmd_dolt_test.go
+  cf0f1164bcfd8aa6 141-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "9409e3272eab0f6a49bcf0af477faa6ff2c322d2",
+  "prompts": {
+    "6f6b102ead6e0d01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39100641-2bcc-4ba2-81df-c16d6ecebe84",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 118,
+      "overriden_lines": 0
+    },
+    "cf0f1164bcfd8aa6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9a5f530c-0845-4de0-b6dd-f5a711a6be62",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 34,
+      "total_deletions": 0,
+      "accepted_lines": 34,
+      "overriden_lines": 0
+    }
+  }
+}
