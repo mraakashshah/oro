@@ -1,0 +1,38 @@
+cmd/oro/cmd_start_test.go
+  f1f12b8c18ee9b2c 1172-1220
+cmd/oro/cmd_start.go
+  f1f12b8c18ee9b2c 774-775,788-790
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "3aaab41c83b6ab97c418e5cba61df6eb5b40f8be",
+  "prompts": {
+    "4cbc070bbf6ad7d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2be2a34f-f041-47a4-af47-42bcdc507d70",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 8,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "f1f12b8c18ee9b2c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a3bcadf8-05ce-46a1-ae90-377a96a38eaa",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 57,
+      "total_deletions": 2,
+      "accepted_lines": 56,
+      "overriden_lines": 0
+    }
+  }
+}
