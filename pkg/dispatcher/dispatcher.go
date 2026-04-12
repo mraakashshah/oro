@@ -3785,18 +3785,8 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	procMgr := d.procMgr
 	d.mu.Unlock()
 
-	// Reset bead to open and clear tracking so it can be reassigned.
+	// Reset bead to open, clear tracking, and complete the assignment so it can be reassigned.
 	if beadID != "" {
-		if err := d.beads.Update(ctx, beadID, "open"); err != nil {
-			_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"error":%q}`, err.Error()))
-		}
-		d.clearBeadTracking(beadID)
-	}
-
-	// Return bead to queue by completing the assignment
-	if beadID != "" {
-		// Reset bead to open so it can be reassigned.
 		if err := d.beads.Update(ctx, beadID, "open"); err != nil {
 			_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
