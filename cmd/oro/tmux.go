@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -167,6 +168,47 @@ func setupRoleConfigDir(baseDir, roleDir string) error {
 	return nil
 }
 
+// preTrustProject sets hasTrustDialogAccepted=true for the given project path
+// in the role's .claude.json config. Claude Code stores workspace trust per-project
+// in this file; without it, each new role session shows the "Quick safety check"
+// dialog which blocks headless tmux panes. The user already expressed trust by
+// running "oro start" in this directory.
+func preTrustProject(roleDir, projectPath string) error {
+	configPath := filepath.Join(roleDir, ".claude.json")
+
+	// Read existing config or start fresh.
+	var config map[string]any
+	data, err := os.ReadFile(configPath) //nolint:gosec // roleDir is caller-controlled
+	if err == nil {
+		if jsonErr := json.Unmarshal(data, &config); jsonErr != nil {
+			config = make(map[string]any)
+		}
+	} else {
+		config = make(map[string]any)
+	}
+
+	// Ensure projects map exists.
+	projects, _ := config["projects"].(map[string]any)
+	if projects == nil {
+		projects = make(map[string]any)
+		config["projects"] = projects
+	}
+
+	// Set trust for the target project, preserving any existing fields.
+	proj, _ := projects[projectPath].(map[string]any)
+	if proj == nil {
+		proj = make(map[string]any)
+	}
+	proj["hasTrustDialogAccepted"] = true
+	projects[projectPath] = proj
+
+	out, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("marshal .claude.json: %w", err)
+	}
+	return os.WriteFile(configPath, out, 0o600) //nolint:gosec,wrapcheck // roleDir is trusted
+}
+
 // execEnvCmd builds an exec-env command that replaces the shell with Claude,
 // setting ORO_ROLE, BD_ACTOR, GIT_AUTHOR_NAME, and CLAUDE_CONFIG_DIR for the
 // given role. Uses exec to eliminate the shell phase entirely — Claude IS the
@@ -212,11 +254,19 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 
 	// Set up role-scoped Claude config directories so each role gets isolated
 	// input history (history.jsonl) while sharing all other config via symlinks.
+	// Then pre-trust the current project so the workspace trust dialog doesn't
+	// block headless panes (trust is stored per-project in .claude.json).
 	configBase := claudeConfigBase()
+	cwd, _ := os.Getwd()
 	for _, role := range []string{"architect", "manager"} {
 		roleDir := roleConfigDir(configBase, role)
 		if err := setupRoleConfigDir(configBase, roleDir); err != nil {
 			return fmt.Errorf("setup %s config dir: %w", role, err)
+		}
+		if cwd != "" {
+			if err := preTrustProject(roleDir, cwd); err != nil {
+				return fmt.Errorf("pre-trust project for %s: %w", role, err)
+			}
 		}
 	}
 

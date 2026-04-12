@@ -946,6 +946,77 @@ func TestExecEnvCmdWithProject(t *testing.T) {
 	})
 }
 
+func TestPreTrustProject(t *testing.T) {
+	t.Run("sets hasTrustDialogAccepted for cwd in role .claude.json", func(t *testing.T) {
+		roleDir := t.TempDir()
+		cwd := "/Users/test/myproject"
+
+		if err := preTrustProject(roleDir, cwd); err != nil {
+			t.Fatalf("preTrustProject failed: %v", err)
+		}
+
+		// Read back and verify.
+		data, err := os.ReadFile(filepath.Join(roleDir, ".claude.json"))
+		if err != nil {
+			t.Fatalf("read .claude.json: %v", err)
+		}
+		// Should contain the path with trust set.
+		content := string(data)
+		if !strings.Contains(content, cwd) {
+			t.Errorf("expected cwd %q in .claude.json, got: %s", cwd, content)
+		}
+		if !strings.Contains(content, `"hasTrustDialogAccepted":true`) && !strings.Contains(content, `"hasTrustDialogAccepted": true`) {
+			t.Errorf("expected hasTrustDialogAccepted:true in .claude.json, got: %s", content)
+		}
+	})
+
+	t.Run("preserves existing projects in .claude.json", func(t *testing.T) {
+		roleDir := t.TempDir()
+		// Pre-populate with an existing project.
+		existing := `{"projects":{"/old/project":{"hasTrustDialogAccepted":true,"allowedTools":["Read"]}}}`
+		if err := os.WriteFile(filepath.Join(roleDir, ".claude.json"), []byte(existing), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+
+		if err := preTrustProject(roleDir, "/new/project"); err != nil {
+			t.Fatalf("preTrustProject failed: %v", err)
+		}
+
+		data, _ := os.ReadFile(filepath.Join(roleDir, ".claude.json"))
+		content := string(data)
+		if !strings.Contains(content, "/old/project") {
+			t.Error("lost existing project entry")
+		}
+		if !strings.Contains(content, "/new/project") {
+			t.Error("missing new project entry")
+		}
+	})
+
+	t.Run("idempotent: safe to call twice", func(t *testing.T) {
+		roleDir := t.TempDir()
+		cwd := "/Users/test/proj"
+
+		_ = preTrustProject(roleDir, cwd)
+		err := preTrustProject(roleDir, cwd)
+		if err != nil {
+			t.Fatalf("second call should succeed: %v", err)
+		}
+	})
+
+	t.Run("creates .claude.json if missing", func(t *testing.T) {
+		roleDir := t.TempDir()
+		cwd := "/Users/test/proj"
+
+		if err := preTrustProject(roleDir, cwd); err != nil {
+			t.Fatalf("preTrustProject failed: %v", err)
+		}
+
+		if _, err := os.Stat(filepath.Join(roleDir, ".claude.json")); err != nil {
+			t.Errorf("expected .claude.json to be created: %v", err)
+		}
+	})
+}
+
 func TestExecEnvCmdBackwardCompat(t *testing.T) {
 	t.Run("empty project produces same output as before", func(t *testing.T) {
 		cmd := execEnvCmd("architect", "")
