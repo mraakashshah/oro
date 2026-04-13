@@ -1,0 +1,29 @@
+pkg/dispatcher/dispatcher_test.go
+  c0916c58b5570e9a 87,109
+pkg/dispatcher/dispatcher.go
+  c0916c58b5570e9a 421,426-430,2657-2661
+pkg/dispatcher/dolt_recovery_test.go
+  c0916c58b5570e9a 1-52
+.oro/context_pct
+  c0916c58b5570e9a 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "a19f2e5ec3f8be1ccab29d9dd1cf53beda236f71",
+  "prompts": {
+    "c0916c58b5570e9a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1080e64f-be9b-404f-9ce5-53fbd9edf3c9",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 80,
+      "total_deletions": 16,
+      "accepted_lines": 66,
+      "overriden_lines": 0
+    }
+  }
+}
