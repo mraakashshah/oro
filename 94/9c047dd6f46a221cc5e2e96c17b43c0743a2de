@@ -1,0 +1,27 @@
+pkg/web/server_test.go
+  5ae072e93782f794 381-397
+pkg/web/export_test.go
+  5ae072e93782f794 1-25
+pkg/web/server.go
+  5ae072e93782f794 4,129-144,159,162,171,180,195,204,213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "949c047dd6f46a221cc5e2e96c17b43c0743a2de",
+  "prompts": {
+    "5ae072e93782f794": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20cfd419-a4b4-4627-8761-b71446cefae6",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 68,
+      "total_deletions": 26,
+      "accepted_lines": 67,
+      "overriden_lines": 0
+    }
+  }
+}
