@@ -1,0 +1,25 @@
+pkg/memory/memory.go
+  d38fc164449e1a5a 1365-1374
+pkg/memory/memory_test.go
+  d38fc164449e1a5a 3198-3215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "1b8108292cdcabcfd81ca9a20ed83895d451d3bd",
+  "prompts": {
+    "d38fc164449e1a5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "98812c00-4151-4f7c-93dc-5d05894f4f73",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 31,
+      "total_deletions": 2,
+      "accepted_lines": 29,
+      "overriden_lines": 0
+    }
+  }
+}
