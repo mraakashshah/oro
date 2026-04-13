@@ -698,6 +698,15 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]protocol.Memory, err
 	return results, nil
 }
 
+// escapeLike escapes %, _, and backslash in s so it is safe to use as a
+// literal pattern in a SQL LIKE expression with backslash as the escape char.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "%", `\%`)
+	s = strings.ReplaceAll(s, "_", `\_`)
+	return s
+}
+
 // listSQL builds the list query SQL and args.
 func listSQL(opts ListOpts, limit int) (query string, args []any) {
 	var conditions []string

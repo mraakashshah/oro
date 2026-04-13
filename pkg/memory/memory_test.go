@@ -1267,6 +1267,24 @@ func TestListSQL_WithTagFilter(t *testing.T) {
 	}
 }
 
+func TestEscapeLike(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"100%", `100\%`},
+		{"foo_bar", `foo\_bar`},
+		{`a\b`, `a\\b`},
+		{"normal", "normal"},
+	}
+	for _, tc := range cases {
+		got := escapeLike(tc.input)
+		if got != tc.want {
+			t.Errorf("escapeLike(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestExtractMarkers_NoMarkers(t *testing.T) {
 	input := "just some output\nnothing interesting\n"
 	reader := strings.NewReader(input)
