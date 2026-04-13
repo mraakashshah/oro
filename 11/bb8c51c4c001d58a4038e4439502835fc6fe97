@@ -1,0 +1,27 @@
+.oro/context_pct
+  a6f62d7e3422264b 1
+pkg/web/server.go
+  a6f62d7e3422264b 4,143,146,155,164,179,188,197,254-274
+pkg/web/server_test.go
+  a6f62d7e3422264b 4,7,443-524
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "11bb8c51c4c001d58a4038e4439502835fc6fe97",
+  "prompts": {
+    "a6f62d7e3422264b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d362fb5-e6cf-48db-abd6-215f56942125",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 225,
+      "total_deletions": 137,
+      "accepted_lines": 114,
+      "overriden_lines": 0
+    }
+  }
+}
