@@ -523,6 +523,7 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { 
 
 	// 12. Build oro-search-hook binary (fail-open).
 	_ = ensureSearchHook(
+		os.Stderr,
 		filepath.Join(oroHome, "hooks", "oro-search-hook"),
 		filepath.Join(absProjectRoot, "cmd", "oro-search-hook"),
 	)
@@ -700,6 +701,7 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	// the source tree). oro init always runs from the repo root so the
 	// source is normally available.
 	_ = ensureSearchHook(
+		os.Stderr,
 		filepath.Join(oroHome, "hooks", "oro-search-hook"),
 		filepath.Join(absProjectRoot, "cmd", "oro-search-hook"),
 	)

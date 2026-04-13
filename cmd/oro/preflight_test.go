@@ -63,7 +63,7 @@ func TestEnsureSearchHook(t *testing.T) {
 		// Source dir is the real cmd/oro-search-hook (we're in the repo).
 		srcDir := filepath.Join(repoRoot(t), "cmd", "oro-search-hook")
 
-		err := ensureSearchHook(binPath, srcDir)
+		err := ensureSearchHook(io.Discard, binPath, srcDir)
 		if err != nil {
 			t.Fatalf("ensureSearchHook: %v", err)
 		}
@@ -92,7 +92,7 @@ func TestEnsureSearchHook(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err := ensureSearchHook(binPath, srcDir)
+		err := ensureSearchHook(io.Discard, binPath, srcDir)
 		if err != nil {
 			t.Fatalf("ensureSearchHook: %v", err)
 		}
@@ -113,7 +113,7 @@ func TestEnsureSearchHook(t *testing.T) {
 		srcDir := filepath.Join(repoRoot(t), "cmd", "oro-search-hook")
 
 		// Build it first.
-		if err := ensureSearchHook(binPath, srcDir); err != nil {
+		if err := ensureSearchHook(io.Discard, binPath, srcDir); err != nil {
 			t.Fatal(err)
 		}
 		info1, _ := os.Stat(binPath)
@@ -125,7 +125,7 @@ func TestEnsureSearchHook(t *testing.T) {
 		}
 
 		// Run again — should skip build.
-		if err := ensureSearchHook(binPath, srcDir); err != nil {
+		if err := ensureSearchHook(io.Discard, binPath, srcDir); err != nil {
 			t.Fatal(err)
 		}
 		info2, _ := os.Stat(binPath)
@@ -144,7 +144,7 @@ func TestEnsureSearchHookMissingSrcDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	binPath := filepath.Join(tmpDir, "oro-search-hook")
 
-	err := ensureSearchHook(binPath, "/nonexistent/source/dir")
+	err := ensureSearchHook(io.Discard, binPath, "/nonexistent/source/dir")
 	if err != nil {
 		t.Fatalf("expected nil for missing srcDir (fail-open), got error: %v", err)
 	}
@@ -163,29 +163,15 @@ func TestEnsureSearchHookSilentWhenBinaryExistsButNoSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Capture stderr to verify no warning is printed.
-	origStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = w
-
-	hookErr := ensureSearchHook(binPath, "/nonexistent/source/dir")
-
-	_ = w.Close()
-	os.Stderr = origStderr
-
-	var stderrBuf bytes.Buffer
-	if _, err := stderrBuf.ReadFrom(r); err != nil {
-		t.Fatal(err)
-	}
+	// Capture warnings via io.Writer parameter (no global os.Stderr mutation).
+	var buf bytes.Buffer
+	hookErr := ensureSearchHook(&buf, binPath, "/nonexistent/source/dir")
 
 	if hookErr != nil {
 		t.Fatalf("expected nil error, got: %v", hookErr)
 	}
-	if stderrBuf.Len() > 0 {
-		t.Errorf("expected no stderr output when binary exists, got: %q", stderrBuf.String())
+	if buf.Len() > 0 {
+		t.Errorf("expected no warning output when binary exists, got: %q", buf.String())
 	}
 }
 

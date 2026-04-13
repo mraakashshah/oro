@@ -42,7 +42,7 @@ func runPreflightChecks() error {
 // (older than any source file in srcDir). Fail-open on all errors: missing
 // srcDir logs a warning and returns nil (safe for go-install users who lack
 // the source tree), and build failures are logged but not fatal.
-func ensureSearchHook(binPath, srcDir string) error {
+func ensureSearchHook(w io.Writer, binPath, srcDir string) error {
 	// Verify source directory exists — fail-open for go-install users.
 	if _, err := os.Stat(srcDir); err != nil {
 		// If the binary already exists (e.g. installed by make install),
@@ -50,7 +50,7 @@ func ensureSearchHook(binPath, srcDir string) error {
 		if _, binErr := os.Stat(binPath); binErr == nil {
 			return nil
 		}
-		fmt.Fprintf(os.Stderr, "warning: oro-search-hook source dir not found (%s) — skipping build\n", srcDir)
+		fmt.Fprintf(w, "warning: oro-search-hook source dir not found (%s) — skipping build\n", srcDir)
 		return nil
 	}
 
@@ -82,7 +82,7 @@ func ensureSearchHook(binPath, srcDir string) error {
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// Fail-open: log warning but don't block startup.
-		fmt.Fprintf(os.Stderr, "warning: failed to build search hook: %v\n%s\n", err, out)
+		fmt.Fprintf(w, "warning: failed to build search hook: %v\n%s\n", err, out)
 		return nil
 	}
 

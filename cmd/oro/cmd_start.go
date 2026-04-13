@@ -268,7 +268,7 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 		// Build oro-search-hook if missing or stale. ensureSearchHook is fail-open:
 		// if the source tree is absent (go-install users), it skips silently.
 		searchHookBin := filepath.Join(paths.OroHome, "hooks", "oro-search-hook")
-		_ = ensureSearchHook(searchHookBin, filepath.Join(repoRoot, "cmd", "oro-search-hook"))
+		_ = ensureSearchHook(os.Stderr, searchHookBin, filepath.Join(repoRoot, "cmd", "oro-search-hook"))
 
 		warnIfQualityGateMissing(w, repoRoot)
 		warnIfQualityGateUntracked(w, repoRoot)
