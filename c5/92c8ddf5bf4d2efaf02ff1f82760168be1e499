@@ -1,0 +1,36 @@
+pkg/dispatcher/dolt_recovery_test.go
+  16064dc09be5ddcc 201-279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "c592c8ddf5bf4d2efaf02ff1f82760168be1e499",
+  "prompts": {
+    "16064dc09be5ddcc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e28057d4-356a-4b95-9164-d45a6a12331b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 81,
+      "total_deletions": 2,
+      "accepted_lines": 80,
+      "overriden_lines": 0
+    },
+    "b65a2ee9c0cfcac0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "adbedae2-4316-4cdc-b64c-3c430d6dfd5f",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
