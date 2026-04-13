@@ -3213,3 +3213,47 @@ func TestPruneStaleSkipsPinned(t *testing.T) {
 		t.Error("unpinned stale memory should have been pruned but still exists")
 	}
 }
+
+func TestTagFilterSpecialChars(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: "memory with special tag", Type: "lesson",
+		Tags: []string{"100%_done"}, Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert 100%%_done: %v", err)
+	}
+	_, err = store.Insert(ctx, InsertParams{
+		Content: "memory with partial tag", Type: "lesson",
+		Tags: []string{"100"}, Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert 100: %v", err)
+	}
+	_, err = store.Insert(ctx, InsertParams{
+		Content: "memory with other partial tag", Type: "lesson",
+		Tags: []string{"done"}, Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert done: %v", err)
+	}
+	// "100_done" would be a false positive if '_' is not escaped (SQL LIKE treats _ as any single char).
+	_, err = store.Insert(ctx, InsertParams{
+		Content: "false positive candidate — underscore only", Type: "lesson",
+		Tags: []string{"100_done"}, Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert 100_done: %v", err)
+	}
+
+	results, err := store.List(ctx, ListOpts{Tag: "100%_done"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected exactly 1 result for Tag=%q, got %d", "100%%_done", len(results))
+	}
+}

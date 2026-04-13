@@ -716,8 +716,8 @@ func listSQL(opts ListOpts, limit int) (query string, args []any) {
 		args = append(args, opts.Type)
 	}
 	if opts.Tag != "" {
-		conditions = append(conditions, `tags LIKE ?`)
-		args = append(args, fmt.Sprintf(`%%%q%%`, opts.Tag))
+		conditions = append(conditions, `tags LIKE ? ESCAPE '\'`)
+		args = append(args, fmt.Sprintf(`%%"%s"%%`, escapeLike(opts.Tag)))
 	}
 
 	whereClause := ""
