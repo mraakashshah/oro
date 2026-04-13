@@ -1,0 +1,64 @@
+pkg/memory/memory_test.go
+  5a21e32d2f2b4212 1270-1287
+pkg/memory/memory.go
+  5a21e32d2f2b4212 701-709
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "60edfe3722922f7e8de28c2b911d4cfb2cba2f9a",
+  "prompts": {
+    "5a21e32d2f2b4212": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8bd6cf11-ab29-4758-a220-a1e97dcf6862",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 27,
+      "total_deletions": 0,
+      "accepted_lines": 27,
+      "overriden_lines": 0
+    },
+    "738569a9d1ae7d41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbbabfbb-8194-4abb-a8ae-51415a21a2aa",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    },
+    "f4acffe267164a99": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8c55dce9-f5ef-4b7f-a51e-a25210c24f17",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    },
+    "f8ff86cd90bbf992": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8bd75c63-10d7-4973-8ea1-bca97194212d",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    }
+  }
+}
