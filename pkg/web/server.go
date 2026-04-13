@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -125,6 +126,21 @@ func NewHandler(data DashboardData, content fs.FS) http.Handler {
 	return mux
 }
 
+// renderTemplate buffers template execution before writing to w. This ensures
+// that errors returned by a template after partial output do not produce a
+// garbled 200 response — the ResponseWriter is untouched on error, so a clean
+// 500 can still be sent.
+func (h *handler) renderTemplate(w http.ResponseWriter, r *http.Request, tmpl *template.Template, name string, data any) {
+	_ = r // reserved for future per-request tracing
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	buf.WriteTo(w) //nolint:errcheck,gosec // write errors to ResponseWriter cannot be handled after headers are sent
+}
+
 func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -139,13 +155,10 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 	if herr := h.data.HealthError(); herr != nil {
 		healthMsg = herr.Error()
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.indexTmpl.ExecuteTemplate(w, "index.html", indexData{
+	h.renderTemplate(w, r, h.indexTmpl, "index.html", indexData{
 		HealthErr: healthMsg,
 		Parade:    parade,
-	}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	})
 }
 
 func (h *handler) paradeHandler(w http.ResponseWriter, r *http.Request) {
@@ -154,10 +167,7 @@ func (h *handler) paradeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.paradeTmpl.ExecuteTemplate(w, "parade-content", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	h.renderTemplate(w, r, h.paradeTmpl, "parade-content", data)
 }
 
 func (h *handler) workersHandler(w http.ResponseWriter, r *http.Request) {
@@ -166,10 +176,7 @@ func (h *handler) workersHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.workersTmpl.ExecuteTemplate(w, "workers.html", workers); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	h.renderTemplate(w, r, h.workersTmpl, "workers.html", workers)
 }
 
 func (h *handler) detailHandler(w http.ResponseWriter, r *http.Request) {
@@ -184,10 +191,7 @@ func (h *handler) detailHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.detailTmpl.ExecuteTemplate(w, "detail.html", detail); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	h.renderTemplate(w, r, h.detailTmpl, "detail.html", detail)
 }
 
 func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
@@ -196,10 +200,7 @@ func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.eventsTmpl.ExecuteTemplate(w, "events.html", events); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	h.renderTemplate(w, r, h.eventsTmpl, "events.html", events)
 }
 
 func (h *handler) throughputHandler(w http.ResponseWriter, r *http.Request) {
@@ -208,10 +209,7 @@ func (h *handler) throughputHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.throughputTmpl.ExecuteTemplate(w, "throughput.html", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	h.renderTemplate(w, r, h.throughputTmpl, "throughput.html", data)
 }
 
 func (h *handler) sseHandler(w http.ResponseWriter, r *http.Request) {

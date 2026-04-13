@@ -3,6 +3,7 @@ package web_test
 import (
 	"context"
 	"errors"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -375,6 +376,36 @@ func TestFragmentThroughputError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("GET /fragments/throughput status = %d, want 500", rec.Code)
+	}
+}
+
+func TestTemplateErrorReturnsClean500(t *testing.T) {
+	// Build a template that writes partial HTML then returns an error.
+	// Before the buffer fix: ExecuteTemplate streams to ResponseWriter, so
+	// the partial bytes land with implicit status 200; http.Error can no
+	// longer change the status code.  After the fix: execution goes to a
+	// bytes.Buffer and the ResponseWriter is never touched on error.
+	brokenTmpl := template.Must(
+		template.New("broken.html").Funcs(template.FuncMap{
+			"failHere": func() (string, error) {
+				return "", errors.New("injected mid-render error")
+			},
+		}).Parse(`<html><body>partial content {{failHere}}</body></html>`),
+	)
+
+	data := &mockDashboard{}
+	h := web.HandlerForTemplate(data, brokenTmpl, "broken.html")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<html>") {
+		t.Errorf("response body contains partial HTML after template error: %q", body)
 	}
 }
 
