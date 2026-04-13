@@ -1,0 +1,38 @@
+pkg/web/server_test.go
+  021f1944032e1e75 441-478
+pkg/web/server.go
+  021f1944032e1e75 4,129-142,157,160,169,178,193,202,211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "79ab6980f7bb42ebc582cc9b97789d9d95da8667",
+  "prompts": {
+    "021f1944032e1e75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "684fb27f-7041-4198-bac8-52738a4fd17e",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 63,
+      "total_deletions": 28,
+      "accepted_lines": 60,
+      "overriden_lines": 0
+    },
+    "60e03498c65a4745": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a1d644b-11ba-4da5-be29-abc558507cc8",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
