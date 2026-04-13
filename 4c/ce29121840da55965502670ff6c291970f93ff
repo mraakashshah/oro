@@ -1,0 +1,31 @@
+pkg/dispatcher/dolt_recovery_test.go
+  54173f63507fc172 1-105
+.oro/context_pct
+  54173f63507fc172 1
+pkg/dispatcher/.beads/backup/full-state.jsonl
+  54173f63507fc172 1
+pkg/dispatcher/dispatcher.go
+  54173f63507fc172 459-463
+pkg/dispatcher/worker_pool.go
+  54173f63507fc172 306,345-377
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "4cce29121840da55965502670ff6c291970f93ff",
+  "prompts": {
+    "54173f63507fc172": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "66cb4336-127e-4a16-8a6a-8cf1d276c6e1",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 219,
+      "total_deletions": 73,
+      "accepted_lines": 149,
+      "overriden_lines": 0
+    }
+  }
+}
