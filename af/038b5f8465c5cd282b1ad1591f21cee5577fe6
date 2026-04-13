@@ -1,0 +1,23 @@
+pkg/dispatcher/worker_pool.go
+  3b2bcffe0f45bf29 360-364,366
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "af038b5f8465c5cd282b1ad1591f21cee5577fe6",
+  "prompts": {
+    "3b2bcffe0f45bf29": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "629410be-6a95-40f6-9db2-085649847411",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 7,
+      "total_deletions": 2,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    }
+  }
+}
