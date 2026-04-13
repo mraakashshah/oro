@@ -1,0 +1,27 @@
+pkg/dispatcher/dispatcher.go
+  ea7ac7ab3225a9c3 536-557,597
+pkg/dispatcher/dolt_recovery_test.go
+  ea7ac7ab3225a9c3 1-225
+pkg/dispatcher/dolt_recovery.go
+  ea7ac7ab3225a9c3 1-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "ed200a1569c5ced3753a873c3cd11909726d8e27",
+  "prompts": {
+    "ea7ac7ab3225a9c3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "da25c684-1766-4fba-998f-37afe709db74",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 359,
+      "total_deletions": 5,
+      "accepted_lines": 354,
+      "overriden_lines": 0
+    }
+  }
+}
