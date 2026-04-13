@@ -1,1531 +1,217 @@
-pkg/mg/tmux/status_test.go
-  738569a9d1ae7d41 1-56
-.claude/settings.json
-  738569a9d1ae7d41 1-157
-pkg/merge/merge_test.go
-  738569a9d1ae7d41 574
-pkg/mg/ui/sparkline_test.go
-  738569a9d1ae7d41 1-78
-pkg/merge/exec_runner.go
-  738569a9d1ae7d41 1-23
-pkg/langprofile/config_test.go
-  738569a9d1ae7d41 240
-bughunt.md
-  903d4e80b5eacd92 1-246
-.claude/hooks/test_pane_handoff_reminder.py
-  738569a9d1ae7d41 1-187
-pkg/ops/review_prompt.go
-  738569a9d1ae7d41 1-215
-docs/plans/learnings/continuous-claude-v3-learnings.md
-  738569a9d1ae7d41 1-191
-.claude/skills/brainstorming/SKILL.md
-  738569a9d1ae7d41 1-122
-docs/handoffs/2026-03-20_08-20_monitoring-and-bug-fixes.yaml
-  738569a9d1ae7d41 1-94
-.claude/skills/watching-oro/scripts/oro-monitor.sh
-  738569a9d1ae7d41 1-113
-pkg/codesearch/router_test.go
-  738569a9d1ae7d41 1-108
-pkg/worker/streamjson_test.go
-  738569a9d1ae7d41 1-228
-tests/test_no_cd_guard.py
-  738569a9d1ae7d41 1-285
-assets/skills/agent-browser/agent-browser/templates/form-automation.sh
-  738569a9d1ae7d41 1-62
-assets/hooks/session_start_global.py
-  738569a9d1ae7d41 1-92
-pkg/dispatcher/epic_qg_test.go
-  738569a9d1ae7d41 1-331
-pkg/langprofile/profiles_test.go
-  738569a9d1ae7d41 1-394
-pkg/codesearch/astgrep_test.go
-  738569a9d1ae7d41 1-1299
-pkg/mg/data/exec_test.go
-  738569a9d1ae7d41 1-90
+cmd/oro/cmd_dolt_test.go
+  cf0f1164bcfd8aa6 141-221
+cmd/oro/paths_test.go
+  bc2621d8e27c098d 700-701,703-704
+cmd/oro/tmux_test.go
+  cf0f1164bcfd8aa6 603-675,949-1019,1037-1038,1060-1061
+scripts/install.sh
+  ff32d04b1e7b6a01 23-25,105-109,111,113,194,196-198,208-211,214,217-218,222-229,233,237,244,254,258,267-269
 cmd/oro/cmd_start_test.go
   bb0b3f18f2e226cb 535,547-580,585-604,693
   ff32d04b1e7b6a01 581-584
   4cbc070bbf6ad7d9 1172-1225
-assets/hooks/compact_trigger.py
-  738569a9d1ae7d41 1-103
-docs/dev-setup.md
-  738569a9d1ae7d41 28-71,86-98,101,106-126
-pkg/codesearch/chunker.go
-  738569a9d1ae7d41 1-188
-cmd/oro/init_stealth_test.go
-  738569a9d1ae7d41 1-195
-pkg/mg/views/detail_test.go
-  738569a9d1ae7d41 1-560
-pkg/mg/data/focus.go
-  738569a9d1ae7d41 1-72
-cmd/oro/preflight_test.go
-  738569a9d1ae7d41 1-483
-pkg/protocol/constants_test.go
-  738569a9d1ae7d41 1-21
-assets/skills/requesting-code-review/SKILL.md
-  738569a9d1ae7d41 1-76
-.beads/issues.jsonl
-  738569a9d1ae7d41 1-1163
-scripts/install_test.sh
-  738569a9d1ae7d41 1-104
-assets/skills/git-commits/SKILL.md
-  738569a9d1ae7d41 1-85
-.claude/skills/test-driven-development/SKILL.md
-  738569a9d1ae7d41 1-228
-assets/hooks/pre_compact.py
-  738569a9d1ae7d41 1-162
-pkg/dispatcher/worktree_manager_test.go
-  738569a9d1ae7d41 1-1577
-pkg/ops/dream_prompt.go
-  738569a9d1ae7d41 1-27
-pkg/mg/components/toast.go
-  738569a9d1ae7d41 1-69
-.claude/skills/session-logs/SKILL.md
-  738569a9d1ae7d41 1-91
-pkg/mg/views/parade.go
-  738569a9d1ae7d41 1-594
-.claude/skills/watching-oro/references/deep-observation.md
-  738569a9d1ae7d41 1-300
-assets/skills/brainstorming/SKILL.md
-  738569a9d1ae7d41 1-108
-pkg/protocol/types.go
-  738569a9d1ae7d41 1-170
-pkg/protocol/constants.go
-  738569a9d1ae7d41 1-19
-docs/plans/done/2026-02-13-detach-mode-design.md
-  738569a9d1ae7d41 1-79
-docs/plans/done/2026-02-19-skills-assets-sync.md
-  738569a9d1ae7d41 1-382
-docs/plans/learnings/loom-learnings.md
-  738569a9d1ae7d41 1-180
-pkg/protocol/errors_test.go
-  738569a9d1ae7d41 1-152
-pkg/dispatcher/socket_permissions_test.go
-  738569a9d1ae7d41 1-35
-.claude/skills/review-docs/SKILL.md
-  738569a9d1ae7d41 1-72
-pkg/web/embed.go
-  326a58ab58229f7e 1-10
-pkg/codesearch/lang_test.go
-  738569a9d1ae7d41 1-192
-assets/commands/restart-oro.md
-  738569a9d1ae7d41 1-113
-assets/hooks/test_enforce_skills.py
-  738569a9d1ae7d41 1-212
-docs/plans/2026-04-01-epic-management-fixes-design.md
-  f9bea446ca2b104e 85,94
-.claude/hooks/pre_compact.py
-  738569a9d1ae7d41 1-162
-.claude/skills/dispatching-parallel-agents/SKILL.md
-  738569a9d1ae7d41 1-205
-assets/skills/systematic-debugging/SKILL.md
-  738569a9d1ae7d41 1-144
-.claude/skills/github/SKILL.md
-  738569a9d1ae7d41 1-120
-assets/skills/observe-before-editing/SKILL.md
-  738569a9d1ae7d41 1-95
-docs/plans/2026-03-31-web-dashboard-design.md
-  738569a9d1ae7d41 1-333
-pkg/dispatcher/extractor_mutesting_blacklist.txt
-  738569a9d1ae7d41 1-7
-docs/plans/2026-04-05-github-release-v0.1.0-design.md
-  ff32d04b1e7b6a01 1-184
-.claude/hooks/worktree_guard.py
-  738569a9d1ae7d41 1-150
-pkg/mg/app/palette_test.go
-  738569a9d1ae7d41 1-152
-pkg/ops/dream_prompt_test.go
-  738569a9d1ae7d41 1-76
-assets/skills/tmux/scripts/find-sessions.sh
-  738569a9d1ae7d41 1-132
-assets/skills/resume-handoff/SKILL.md
-  738569a9d1ae7d41 1-66
-.golangci.yml
-  738569a9d1ae7d41 1-2,5,9,11-111,113-219
-docs/plans/done/2026-02-20-dash-phase1-data-correctness.md
-  738569a9d1ae7d41 1-1056
-.claude/commands/toggle-priming.md
-  738569a9d1ae7d41 1-15
-assets/skills/agent-browser/agent-browser/SKILL.md
-  738569a9d1ae7d41 1-279
-assets/skills/agent-browser/references/session-management.md
-  738569a9d1ae7d41 1-193
-assets/skills/agent-browser/agent-browser/references/proxy-support.md
-  738569a9d1ae7d41 1-188
-pkg/web/templates/workers.html
-  326a58ab58229f7e 1-6
-assets/skills/workflow-routing/SKILL.md
-  738569a9d1ae7d41 1-116
-pkg/mg/components/header.go
-  738569a9d1ae7d41 1-120
-cmd/oro/cmd_help_test.go
-  738569a9d1ae7d41 1-152
-pkg/mg/app/deferred_keys_test.go
-  738569a9d1ae7d41 1-221
-cmd/oro/cmd_worker_launch_test.go
-  738569a9d1ae7d41 1-294
-pkg/memory/embed_test.go
-  738569a9d1ae7d41 1-665
-pkg/worker/claude_args_test.go
-  738569a9d1ae7d41 1-94
-docs/plans/done/2026-02-12-worker-recovery-and-progress-timeout.md
-  738569a9d1ae7d41 1-119
-pkg/dispatcher/qg_stuck_test.go
-  738569a9d1ae7d41 1-456
-assets/skills/github/SKILL.md
-  738569a9d1ae7d41 1-120
-.claude/skills/agent-browser/agent-browser/references/snapshot-refs.md
-  738569a9d1ae7d41 1-194
-.claude/skills/agent-browser/agent-browser/templates/capture-workflow.sh
-  738569a9d1ae7d41 1-69
-cmd/oro-search-hook/integration_test.go
-  738569a9d1ae7d41 1-395
-pkg/protocol/fts.go
-  738569a9d1ae7d41 1-28
-pkg/mg/app/app_test.go
-  738569a9d1ae7d41 1-148
-assets/skills/receiving-code-review/SKILL.md
-  738569a9d1ae7d41 1-96
-cmd/oro/cmd_help.go
-  ff32d04b1e7b6a01 50
-cmd/oro/cmd_mg.go
-  738569a9d1ae7d41 1-172
-scripts/test_quality_gate.sh
-  738569a9d1ae7d41 1-632
-pkg/dispatcher/dashboard_test.go
-  2be422563deec38d 1-267
-cmd/oro/cmd_worker_stop_test.go
-  738569a9d1ae7d41 1-322
-cmd/oro/architect_test.go
-  738569a9d1ae7d41 1-215
-go.mod
-  6f6b102ead6e0d01 3
-.claude/skills/adversarial-spec-review/SKILL.md
-  738569a9d1ae7d41 1-259
-tests/test_session_start_extras.py
-  738569a9d1ae7d41 1-640
-docs/handoffs/2026-02-26_0735_e2e-context-management-test.yaml
-  738569a9d1ae7d41 1-115
-cmd/oro/paths_test.go
-  bc2621d8e27c098d 700-701,703-704
-pkg/codesearch/summarize_test.go
-  738569a9d1ae7d41 1-959
-.claude/skills/receiving-code-review/SKILL.md
-  738569a9d1ae7d41 1-96
-cmd/oro/cmd_mg_test.go
-  738569a9d1ae7d41 34
-.claude/skills/finishing-work/SKILL.md
-  738569a9d1ae7d41 1-117
-pkg/worker/testutil_test.go
-  738569a9d1ae7d41 1-25
-pkg/codesearch/classifier.go
-  738569a9d1ae7d41 1-246
-pkg/dispatcher/reservation_test.go
-  738569a9d1ae7d41 1-466
-assets/hooks/auto-format.sh
-  738569a9d1ae7d41 1-41
-cmd/oro/quality_gate_gen.go
-  738569a9d1ae7d41 1-730
-pkg/mg/data/focus_test.go
-  738569a9d1ae7d41 1-183
-cmd/oro/cmd_dispatcher.go
-  738569a9d1ae7d41 1-190
-pkg/dispatcher/epic_branch.go
-  738569a9d1ae7d41 1-52
-pkg/mg/app/keys_test.go
-  738569a9d1ae7d41 1-514
-pkg/ops/exec_spawner.go
-  738569a9d1ae7d41 1-63
-pkg/dispatcher/dispatcher_decompose_test.go
-  738569a9d1ae7d41 1-288
-.claude/hooks/compact_trigger.py
-  738569a9d1ae7d41 1-103
-docs/plans/done/2026-02-25-context-handoff-rearchitecture.md
-  738569a9d1ae7d41 1-305
-pkg/mg/data/contract_test.go
-  738569a9d1ae7d41 1-867
-pkg/protocol/message.go
-  738569a9d1ae7d41 1-244
-pkg/memory/memory_test.go
-  b8607bb46fd3f835 3128-3197
-pkg/worker/drain_test.go
-  738569a9d1ae7d41 1-264
-docs/plans/learnings/cross-reference-notes.md
-  738569a9d1ae7d41 1-315
-pkg/mg/views/render_test.go
-  738569a9d1ae7d41 1-557
-cmd/hello/main.go
-  738569a9d1ae7d41 1-8
-pkg/mg/work.go
-  738569a9d1ae7d41 1-118
-docs/plans/2026-02-16-worker-logs-design.md
-  738569a9d1ae7d41 1-133
-cmd/oro/launchd.go
-  738569a9d1ae7d41 1-166
-docs/plans/done/2026-02-23-manager-pane-auto-restart-design.md
-  738569a9d1ae7d41 1-159
-docs/plans/done/2026-02-15-codebase-hardening-spec.md
-  738569a9d1ae7d41 1-240
-pkg/mg/data/mutate.go
-  738569a9d1ae7d41 1-84
-pkg/mg/ui/theme_test.go
-  738569a9d1ae7d41 1-156
-pkg/ops/ops_test.go
-  738569a9d1ae7d41 1-804
-pkg/dispatcher/estimate_test.go
-  738569a9d1ae7d41 1-236
-cmd/oro/cmd_attach.go
-  738569a9d1ae7d41 1-81
-pkg/dispatcher/message_size_test.go
-  738569a9d1ae7d41 1-218
-pkg/dispatcher/dashboard.go
-  2be422563deec38d 1-6,8-9,11-129,143-151
-  e5b205241d51894a 10,152-170
-  0f4cb7bb62bb391a 130-142
-  326a58ab58229f7e 7,171-202
-docs/plans/2026-02-17-component-lifecycle.md
-  738569a9d1ae7d41 1-127
-docs/plans/2026-02-17-oro-work-false-completion.md
-  738569a9d1ae7d41 1-154
-.claude/skills/agent-browser/agent-browser/references/session-management.md
-  738569a9d1ae7d41 1-193
-cmd/oro/start_full_test.go
-  738569a9d1ae7d41 1-420
-cmd/oro/start_test.go
-  738569a9d1ae7d41 1-597
-.gitattributes
-  738569a9d1ae7d41 1
-tests/test_context_e2e.py
-  738569a9d1ae7d41 1-316
-assets/skills/tmux/scripts/wait-for-text.sh
-  738569a9d1ae7d41 1-106
-cmd/oro/store_test.go
-  738569a9d1ae7d41 1-94
-pkg/dispatcher/heartbeat_backup_test.go
-  738569a9d1ae7d41 1-99
-cmd/oro/daemon_log_test.go
-  738569a9d1ae7d41 1-26
-cmd/oro/cmd_uninstall_test.go
-  ff32d04b1e7b6a01 1-183,256-266
-  56c8d9295bf39cac 184-255
-docs/plans/2026-02-16-swarm-health-dashboard.md
-  738569a9d1ae7d41 1-156
-pkg/worker/worker_log_flush_test.go
-  738569a9d1ae7d41 1-171
-.claude/skills/agent-browser/references/commands.md
-  738569a9d1ae7d41 1-259
-.claude/skills/using-skills/SKILL.md
-  738569a9d1ae7d41 1-81
-cosmic-ray-full.toml
-  738569a9d1ae7d41 1-12
-assets/hooks/.oro/context_pct
-  738569a9d1ae7d41 1
-cmd/oro-dash/detail_test.go
-  738569a9d1ae7d41 1-89
-docs/plans/2026-03-24-configurable-base-branch-design.md
-  738569a9d1ae7d41 1-260
-.beads/README.md
-  738569a9d1ae7d41 1-81
-assets/beacons/manager.md
-  738569a9d1ae7d41 1-176
-assets/skills/using-skills/SKILL.md
-  738569a9d1ae7d41 1-80
-docs/handoffs/2026-04-02_05-00_epic-branch-and-dashboard.yaml
-  738569a9d1ae7d41 1-92
-docs/plans/2026-02-15-config-externalization-design.md
-  738569a9d1ae7d41 1-386
-pkg/codesearch/format_test.go
-  738569a9d1ae7d41 1-124
-cmd/oro/tmux_name.go
-  738569a9d1ae7d41 1-32
-.claude/skills/agent-browser/SKILL.md
-  738569a9d1ae7d41 1-279
-.claude/skills/restart-oro
-  738569a9d1ae7d41 1-119
-docs/plans/done/2026-02-08-oro-architecture-spec.md
-  738569a9d1ae7d41 1-618
-pkg/dispatcher/process_manager.go
-  738569a9d1ae7d41 1-219
-.claude/skills/agent-browser/templates/capture-workflow.sh
-  738569a9d1ae7d41 1-69
-.beads/.gitignore
-  738569a9d1ae7d41 1-72
-assets/skills/review-implementation/SKILL.md
-  738569a9d1ae7d41 1-57
-pkg/dispatcher/spawn_for_test.go
-  738569a9d1ae7d41 1-123
-pkg/web/css_test.go
-  6e74c72b1cee7e48 1-99
-.claude/skills/workflow-routing/SKILL.md
-  738569a9d1ae7d41 1-116
-assets/skills/verification-before-completion/SKILL.md
-  738569a9d1ae7d41 1-115
-assets/skills/agent-browser/references/commands.md
-  738569a9d1ae7d41 1-259
-pkg/codesearch/rerank_test.go
-  738569a9d1ae7d41 1-257
-pkg/web/index_template_test.go
-  6af261ad15f4ba94 1-90
-.claude/skills/oro/references/gotchas.md
-  738569a9d1ae7d41 1-42
-cmd/oro/cmd_status_test.go
-  738569a9d1ae7d41 1-726
-pkg/eventlog/query_test.go
-  738569a9d1ae7d41 1-295
-pkg/memory/dream_test.go
-  738569a9d1ae7d41 1-219
-pkg/merge/merge.go
-  738569a9d1ae7d41 1-337
-docs/plans/2026-03-31-memory-dreaming-design.md
-  738569a9d1ae7d41 1-152
-assets/skills/agent-browser/agent-browser/references/session-management.md
-  738569a9d1ae7d41 1-193
-assets/hooks/worktree_guard.py
-  738569a9d1ae7d41 1-150
-assets/skills/agent-browser/agent-browser/references/snapshot-refs.md
-  738569a9d1ae7d41 1-194
-pkg/mg/components/help.go
-  738569a9d1ae7d41 1-343
-.claude/hooks/context_pct_writer.py
-  738569a9d1ae7d41 1
-pkg/mg/data/issue.go
-  738569a9d1ae7d41 1-337
-.beads/formulas/spec-decompose.formula.toml
-  738569a9d1ae7d41 1-50
-.claude/skills/explore/SKILL.md
-  738569a9d1ae7d41 1-79
-.claude/skills/beads/SKILL.md
-  738569a9d1ae7d41 1-91
-cmd/oro/daemon_test.go
-  738569a9d1ae7d41 1-576
-.claude/skills/observe-before-editing/SKILL.md
-  738569a9d1ae7d41 1-95
-cmd/oro-search-hook/main.go
-  738569a9d1ae7d41 1-133
-pkg/mg/data/crossrig_test.go
-  738569a9d1ae7d41 1-117
-pkg/mg/app/update_test.go
-  738569a9d1ae7d41 1-333
-docs/plans/done/2026-02-16-worker-logs-design.md
-  738569a9d1ae7d41 1-133
-assets/skills/executing-beads/SKILL.md
-  738569a9d1ae7d41 1-166
-pkg/mg/data/filter.go
-  738569a9d1ae7d41 1-204
-.beads/memory/knowledge.jsonl
-  738569a9d1ae7d41 1-23
-.beads/beads_oro/.dolt/config.json
-  738569a9d1ae7d41 1
-.claude/hooks/test_prompt_injection_guard.py
-  738569a9d1ae7d41 1-222
-assets/skills/work-bead/SKILL.md
-  738569a9d1ae7d41 1-217
-pkg/mg/ui/sparkline.go
-  738569a9d1ae7d41 1-251
-pkg/mg/ui/theme.go
-  738569a9d1ae7d41 1-149
-pkg/ops/epic_fix_prompt.go
-  738569a9d1ae7d41 1-38
-pkg/ops/review_prompt_test.go
-  738569a9d1ae7d41 1-663
-.claude/skills/refactor/SKILL.md
-  738569a9d1ae7d41 1-99
-.claude/hooks/test_architect_router.py
-  738569a9d1ae7d41 1-254
-.claude/skills/agent-browser/references/snapshot-refs.md
-  738569a9d1ae7d41 1-194
-pkg/protocol/directive_test.go
-  738569a9d1ae7d41 1-79
-assets/hooks/rebase_worktree_guard.py
-  738569a9d1ae7d41 1-135
-pkg/web/parade_template_test.go
-  eaa1aa644a351fbf 1-168
-tests/test_hook_paths.py
-  738569a9d1ae7d41 1-137
-pkg/integration/dispatcher_worker_test.go
-  cac0b536af507538 152-155
-  d5cce8429542eccd 79-86
-pkg/worker/pending_qg_clear_test.go
-  738569a9d1ae7d41 1-95
-pkg/web/server.go
-  0f4cb7bb62bb391a 5,44-47,50-52,133,138-141,143-146,179-184,234-237,246
-  19845939cb2d50d9 39,114,116,194-204,217
-  e5b205241d51894a 1-4,6-21,31-38,40,42-43,54-55,58-65,73-75,91,93-99,107-113,125-132,134-137,142,147-178,185-193,218-233,238-245,248-249,251-253,255-257,259-261,263,265-270
-  326a58ab58229f7e 76-90,92,117-124
-  eaa1aa644a351fbf 53,56-57
-  7a7fb13fc0ef405d 22-30,41,66-72,100-106,115,205-216
-pkg/worker/prompt_merge_test.go
-  738569a9d1ae7d41 1-165
-pkg/codesearch/index_test.go
-  738569a9d1ae7d41 1-1260
-assets/skills/session-logs/SKILL.md
-  738569a9d1ae7d41 1-91
-assets/beacons/architect.md
-  738569a9d1ae7d41 1-89
-assets/skills/writing-plans/SKILL.md
-  738569a9d1ae7d41 1-80
-cmd/oro/cmd_bd_test.go
-  738569a9d1ae7d41 1-190
-cmd/oro/cmd_index.go
-  738569a9d1ae7d41 1-143
-docs/plans/done/2026-02-16-disable-dispatcher-pane-restart.md
-  738569a9d1ae7d41 1-53
-pkg/mg/app/debug.go
-  738569a9d1ae7d41 1-94
-pkg/ops/decompose_prompt.go
-  738569a9d1ae7d41 1-56
-assets/skills/agent-browser/agent-browser/templates/authenticated-session.sh
-  738569a9d1ae7d41 1-100
-pkg/web/helpers_test.go
-  7c049e9dba5c9df8 1-149
-docs/plans/2026-02-15-codebase-hardening-spec.md
-  738569a9d1ae7d41 1-240
-assets/skills/explore/SKILL.md
-  738569a9d1ae7d41 1-79
-cmd/oro/router.go
-  738569a9d1ae7d41 1-55
-docs/plans/2026-02-28-early-compact-trigger-impl.md
-  738569a9d1ae7d41 1-1036
-pkg/dispatcher/exec_runner.go
-  738569a9d1ae7d41 1-32
-cmd/oro/init_stealth.go
-  738569a9d1ae7d41 1-24
-pkg/mg/app/confetti.go
-  738569a9d1ae7d41 1-227
-.beads/metadata.json
-  1f6c474f3019ec1a 2-7
-cmd/oro/root.go
-  ff32d04b1e7b6a01 49
-docs/handoffs/2026-02-27_1400_ops-review-and-ci-fix.yaml
-  738569a9d1ae7d41 1-111
-cmd/oro/tmux_test.go
-  cf0f1164bcfd8aa6 603-675,949-1019,1037-1038,1060-1061
-assets/skills/review-docs/SKILL.md
-  738569a9d1ae7d41 1-72
-.claude/skills/agent-browser/agent-browser/references/commands.md
-  738569a9d1ae7d41 1-259
-docs/plans/2026-02-28-early-compact-trigger-design.md
-  738569a9d1ae7d41 1-207
-assets/hooks/session_start_extras.py
-  738569a9d1ae7d41 1-644
-docs/plans/done/2026-02-13-review-gate-design.md
-  738569a9d1ae7d41 1-130
-docs/plans/done/2026-02-17-oro-distribution-and-setup.md
-  738569a9d1ae7d41 1-759
-internal/appversion/buildinfo_test.go
-  738569a9d1ae7d41 1-16
-pkg/dispatcher/escalation_precheck.go
-  738569a9d1ae7d41 1-80
-pkg/langprofile/detect_test.go
-  738569a9d1ae7d41 1-256
-docs/plans/done/2026-02-15-dash-improvement-spec.md
-  738569a9d1ae7d41 1-136
-pkg/web/static/style.css
-  6e74c72b1cee7e48 1-435
-cmd/oro/hooks_test.go
-  738569a9d1ae7d41 1-265
-pkg/dispatcher/stale_socket_test.go
-  738569a9d1ae7d41 1-287
-pkg/dispatcher/pane_restarter_test.go
-  738569a9d1ae7d41 1-129
-cmd/oro/cmd_worker_launch.go
-  738569a9d1ae7d41 1-147
-.claude/skills/completion-check/SKILL.md
-  738569a9d1ae7d41 1-84
-.claude/skills/resume-handoff/SKILL.md
-  738569a9d1ae7d41 1-66
-cmd/oro/memory_test.go
-  738569a9d1ae7d41 1-790
-docs/plans/done/2026-02-07-code-search-spec.md
-  738569a9d1ae7d41 1-222
-cmd/oro/cmd_uninstall.go
-  ff32d04b1e7b6a01 1-291
-scripts/quality_gate.sh
-  d4877cd16fcfb48d 519
-assets/skills/refactor/SKILL.md
-  738569a9d1ae7d41 1-99
-cmd/oro/cmd_cleanup.go
-  738569a9d1ae7d41 1-479
-archive/.gitignore
-  738569a9d1ae7d41 1-3
-cmd/oro/preflight.go
-  738569a9d1ae7d41 1-251
-pkg/mg/app/app.go
-  738569a9d1ae7d41 1-1493
-git/hooks/pre-push
-  738569a9d1ae7d41 1-24
-.go-arch-lint.yml
-  738569a9d1ae7d41 1-31
-pkg/mg/app/audit_fix_test.go
-  738569a9d1ae7d41 1-45
-.beads/.dolt/sql-server.info
-  738569a9d1ae7d41 1
-package.json
-  738569a9d1ae7d41 1-8
-pkg/dispatcher/beadsource_test.go
-  d5cce8429542eccd 1689-1853
-cmd/hello/main_test.go
-  738569a9d1ae7d41 1-36
-.claude/hooks/pane_handoff_reminder.py
-  738569a9d1ae7d41 1-78
-assets/hooks/pane_handoff_reminder.py
-  738569a9d1ae7d41 1-78
-cmd/oro/cmd_shell.go
-  738569a9d1ae7d41 1-147
-pkg/mg/data/crossrig.go
-  738569a9d1ae7d41 1-55
-pkg/dispatcher/pane_monitor.go
-  738569a9d1ae7d41 1-209
-cmd/oro/dashboard.go
-  738569a9d1ae7d41 1-18
-assets/skills/dispatching-parallel-agents/SKILL.md
-  738569a9d1ae7d41 1-222
-pkg/mg/data/loader.go
-  738569a9d1ae7d41 1-76
-assets/skills/agent-browser/references/snapshot-refs.md
-  738569a9d1ae7d41 1-194
-.beads/formulas/quality-gate.formula.toml
-  738569a9d1ae7d41 1-16
-pkg/dispatcher/dispatcher_test.go
-  bd64b32e4ebb7556 3791-3912
-  6f6b102ead6e0d01 6256-6259,6261-6266,6269-6270,6282-6285,6320-6323,6325-6332,6435-6440,6442-6445,6455-6456
-  714b7eb17365430f 16614,16617
-  ff32d04b1e7b6a01 708,6389-6392
-  1f6c474f3019ec1a 8158-8250
-  cac0b536af507538 17211-17392
-  ec8ac870362d1c1c 2964-3007
-  d5cce8429542eccd 93-96,228-245
-  3117f930fbbfb36d 2779-2864
-  bf7471e795fdd76a 16998-17210
-  b80ccd07c10d98a9 12627-12702
-  5ef21d004a017c62 280,385,387-392,15048-15049,15056,15073-15076,16696-16699,16702-16706,16710-16711,16714-16717,16756-16759,16762-16767,16769-16779,16816-16819,16822-16827,16830-16831,16834-16837,16842,16876-16879,16882-16887,16889-16891,16894-16897,16899
-  dcdc3c9a03a2f934 386,393-394
-pkg/web/detail_template_test.go
-  e73d995725252f72 1-3,7-12,15,111-112
-  65db00417107a13b 19
-.claude/skills/documenting-solutions/SKILL.md
-  738569a9d1ae7d41 1-97
-assets/skills/test-driven-development/SKILL.md
-  738569a9d1ae7d41 1-228
-cmd/oro/cmd_cleanup_test.go
-  738569a9d1ae7d41 1-1316
-pkg/dispatcher/dep_filter_test.go
-  738569a9d1ae7d41 1-105
-pkg/mg/data/filter_test.go
-  738569a9d1ae7d41 1-145
-cmd/oro/cmd_memories.go
-  738569a9d1ae7d41 1-293
-pkg/codesearch/astgrep.go
-  738569a9d1ae7d41 1-612
-pkg/mg/ui/gradient.go
-  738569a9d1ae7d41 1-212
-cmd/oro/cmd_doctor.go
-  738569a9d1ae7d41 1-155
-.github/workflows/ci.yml
-  ff32d04b1e7b6a01 139
-pkg/mg/data/mutate_test.go
-  738569a9d1ae7d41 1-69
-pkg/protocol/fts_test.go
-  738569a9d1ae7d41 1-28
-.claude/hooks/rebase_worktree_guard.py
-  738569a9d1ae7d41 1-135
-cmd/oro/main_test.go
-  738569a9d1ae7d41 1-191
-pkg/dispatcher/bead_tracker.go
-  cac0b536af507538 21-33,53,143,204-206
-  bf7471e795fdd76a 142,201-203
-.claude/skills/tmux/scripts/find-sessions.sh
-  738569a9d1ae7d41 1-132
-.gitmodules
-  738569a9d1ae7d41 1-3
-docs/plans/done/2026-02-19-ralph-loop-design.md
-  738569a9d1ae7d41 1-99
-pkg/protocol/types_test.go
-  738569a9d1ae7d41 1-499
-pkg/mg/ui/symbols_test.go
-  738569a9d1ae7d41 1-29
-pkg/mg/ui/hop_test.go
-  738569a9d1ae7d41 1-44
-tests/test_context_pruner.py
-  738569a9d1ae7d41 1-205
-cmd/oro/startup_log_test.go
-  738569a9d1ae7d41 1-114
-cmd/oro-dash/detail.go
-  738569a9d1ae7d41 1-86
-docs/plans/done/2026-02-15-oro-setup-design.md
-  738569a9d1ae7d41 1-351
-pkg/protocol/schema_test.go
-  738569a9d1ae7d41 1-130
-docs/plans/2026-02-15-codesearch-gaps-spec.md
-  738569a9d1ae7d41 1-180
-tests/conftest.py
-  738569a9d1ae7d41 1-34
-scripts/test_git_hooks.sh
-  738569a9d1ae7d41 1-145
-.claude/skills/review-implementation/SKILL.md
-  738569a9d1ae7d41 1-57
-.claude/skills/tmux/SKILL.md
-  738569a9d1ae7d41 1-117
-assets/skills/agent-browser/SKILL.md
-  738569a9d1ae7d41 1-279
-pkg/dispatcher/health.go
-  738569a9d1ae7d41 1-79
-pkg/mg/components/footer_test.go
-  738569a9d1ae7d41 1-96
-pkg/dispatcher/concurrent_scale_test.go
-  738569a9d1ae7d41 1-86
-docs/handoffs/2026-03-18_09-26_epic-branch-isolation-spec.yaml
-  738569a9d1ae7d41 1-105
-.claude/hooks/validate_agent_completion.py
-  738569a9d1ae7d41 1-164
-docs/handoffs/2026-03-23_08-30_swarm-monitoring-and-gstack-adaptation.yaml
-  738569a9d1ae7d41 1-190
-cmd/oro/cmd_setup_test.go
-  738569a9d1ae7d41 1-299
-pkg/worker/message_size_test.go
-  738569a9d1ae7d41 1-153
-assets/skills/writing-skills/SKILL.md
-  738569a9d1ae7d41 1-213
-assets/hooks/architect_router.py
-  738569a9d1ae7d41 1-283
-pkg/protocol/message_test.go
-  738569a9d1ae7d41 1-650
-pkg/mg/data/source_test.go
-  738569a9d1ae7d41 1-230
-docs/plans/done/2026-02-07-memory-system-spec.md
-  738569a9d1ae7d41 1-250
-docs/plans/2026-03-17-epic-branch-isolation-design.md
-  738569a9d1ae7d41 1-317
-pkg/web/sse_test.go
-  738569a9d1ae7d41 1-91
-.claude/hooks/enforce_skills.py
-  738569a9d1ae7d41 1-74
-pkg/dispatcher/worker_pool.go
-  738569a9d1ae7d41 1-617
-docs/plans/2026-03-15-startup-reliability-design.md
-  738569a9d1ae7d41 1-247
-tests/test_session_start_compact.py
-  738569a9d1ae7d41 1-229
-pkg/ops/write_ac_prompt.go
-  738569a9d1ae7d41 1-7
-.beads/config.yaml
-  738569a9d1ae7d41 1-69
-cmd/oro/cmd_setup.go
-  738569a9d1ae7d41 1-329
-cmd/oro/db_test.go
-  bb0b3f18f2e226cb 209
-  983ecd30009c0414 60-70,72
-.claude/skills/context-checkpoint/SKILL.md
-  738569a9d1ae7d41 1-88
-pkg/dispatcher/worker_logs.go
-  738569a9d1ae7d41 1-107
-tests/test_validate_agent_completion.py
-  738569a9d1ae7d41 1-249
-pkg/dispatcher/dream_test.go
-  738569a9d1ae7d41 1-337
-pkg/web/templates/detail.html
-  65db00417107a13b 1-13
-tests/test_context_pct_writer.py
-  738569a9d1ae7d41 1-415
-cosmic-ray.toml
-  738569a9d1ae7d41 1-14
-docs/plans/2026-02-26-dash-quality-pass-design.md
-  738569a9d1ae7d41 1-461
-pkg/mg/app/oscguard_test.go
-  738569a9d1ae7d41 1-574
-assets/commands/toggle-priming.md
-  738569a9d1ae7d41 1-15
-pkg/dispatcher/tracking_leak_test.go
-  738569a9d1ae7d41 1-999
-.claude/hooks/beacons/manager.md
-  738569a9d1ae7d41 1-185
-docs/plans/2026-02-16-disable-dispatcher-pane-restart.md
-  738569a9d1ae7d41 1-53
-pkg/dispatcher/escalation_precheck_test.go
-  738569a9d1ae7d41 1-426
-.claude/skills/agent-browser/agent-browser/references/video-recording.md
-  738569a9d1ae7d41 1-173
-pkg/codesearch/claude_spawner.go
-  738569a9d1ae7d41 1-65
-pkg/web/templates/parade.html
-  eaa1aa644a351fbf 1-76
-docs/learnings/pi-study.md
-  738569a9d1ae7d41 1-162
-pkg/codesearch/format.go
-  738569a9d1ae7d41 1-31
-tests/test_architect_router_new.py
-  738569a9d1ae7d41 1-238
-pkg/integration/cli_binary_test.go
-  738569a9d1ae7d41 1-231
-.beads/.migration-hint-ts
-  738569a9d1ae7d41 1
-pkg/integration/e2e_lifecycle_test.go
-  d5cce8429542eccd 73-80
-cmd/oro/db.go
-  983ecd30009c0414 7-8,19-22
-docs/plans/2026-03-19-worker-prompt-enrichment-design.md
-  738569a9d1ae7d41 1-217
-assets/skills/adversarial-spec-review/SKILL.md
-  738569a9d1ae7d41 1-259
-CLAUDE.MD
-  738569a9d1ae7d41 1-7
-cmd/oro/dashboard_test.go
-  738569a9d1ae7d41 1-46
-pkg/mg/components/create_form.go
-  738569a9d1ae7d41 1-245
-pkg/mg/data/metadata_test.go
-  738569a9d1ae7d41 1-310
-pkg/mg/ui/gradient_test.go
-  738569a9d1ae7d41 1-60
-pkg/mg/views/parade_test.go
-  738569a9d1ae7d41 1-236
-pkg/worker/worker_claim_race_test.go
-  738569a9d1ae7d41 1-143
-tests/test_compact_trigger.py
-  738569a9d1ae7d41 1-223
-tests/test_worktree_guard.py
-  738569a9d1ae7d41 1-162
-.envrc
-  738569a9d1ae7d41 1-16
-assets/skills/agent-browser/agent-browser/references/authentication.md
-  738569a9d1ae7d41 1-202
-cmd/oro/cmd_worker_test.go
-  738569a9d1ae7d41 1-106
-pkg/worker/worker_test.go
-  22386a9f11724b83 3624-3627
-.claude/skills/tmux/scripts/wait-for-text.sh
-  738569a9d1ae7d41 1-106
-pkg/codesearch/lang.go
-  738569a9d1ae7d41 1-51
-ad_hoc/.gitignore
-  738569a9d1ae7d41 1-2
-pkg/worker/buffer.go
-  738569a9d1ae7d41 1-62
-pkg/ops/ac_prompt_test.go
-  738569a9d1ae7d41 1-122
-internal/appversion/buildinfo.go
-  738569a9d1ae7d41 1-10
-pkg/eventlog/query.go
-  738569a9d1ae7d41 1-197
-.beads/beads_oro/.dolt/repo_state.json
-  738569a9d1ae7d41 1-6
-cmd/oro/cmd_attach_test.go
-  738569a9d1ae7d41 1-189
-pkg/dispatcher/missing_ac_test.go
-  738569a9d1ae7d41 1-115
-assets/skills/agent-browser/agent-browser/templates/capture-workflow.sh
-  738569a9d1ae7d41 1-69
-docs/plans/2026-02-23-external-python-project-support-design.md
-  738569a9d1ae7d41 1-282
-pkg/worker/prompt_done_test.go
-  738569a9d1ae7d41 1-116
-.claude/skills/agent-browser/agent-browser/SKILL.md
-  738569a9d1ae7d41 1-279
-.claude/skills/agent-browser/agent-browser/templates/form-automation.sh
-  738569a9d1ae7d41 1-62
-tests/test_pre_compact.py
-  738569a9d1ae7d41 1-132
 pkg/web/templates/index.html
   6af261ad15f4ba94 1-36
-docs/handoffs/2026-04-01_08-15_claude-code-patterns-and-memory-dreaming.yaml
-  738569a9d1ae7d41 1-122
-pkg/mg/data/watcher.go
-  738569a9d1ae7d41 1-103
-docs/plans/done/2026-02-15-knowledge-ingest-spec.md
-  738569a9d1ae7d41 1-110
-cmd/oro/cmd_status.go
-  738569a9d1ae7d41 1-332
-.claude/skills/agent-browser/references/video-recording.md
-  738569a9d1ae7d41 1-173
-cmd/oro/cmd_stop_test.go
-  738569a9d1ae7d41 1-815
-cmd/oro/store.go
-  738569a9d1ae7d41 1-52
-.claude/hooks/notify_manager_on_bead_create.py
-  738569a9d1ae7d41 1-240
-pkg/dispatcher/beadsource.go
-  d5cce8429542eccd 75-109
-assets/skills/premortem/SKILL.md
-  738569a9d1ae7d41 1-111
-cmd/oro/router_test.go
-  738569a9d1ae7d41 1-158
-docs/plans/2026-02-15-oro-setup-design.md
-  738569a9d1ae7d41 1-351
-assets/skills/beadcraft/SKILL.md
-  738569a9d1ae7d41 1-307
-docs/plans/2026-02-27-memory-codesearch-activation.md
-  738569a9d1ae7d41 1-275
-cmd/oro/cmd_bd.go
-  738569a9d1ae7d41 1-81
-docs/plans/done/2026-02-11-codesearch-no-ollama-spec.md
-  738569a9d1ae7d41 1-186
-pkg/dispatcher/concurrent_assign_test.go
-  738569a9d1ae7d41 1-361
-cmd/oro/embed.go
-  738569a9d1ae7d41 1-10
-.claude/skills/requesting-code-review/SKILL.md
-  738569a9d1ae7d41 1-78
-pkg/dispatcher/escalator_test.go
-  738569a9d1ae7d41 1-1022
-docs/plans/2026-03-19-bead-model-wiring-design.md
-  738569a9d1ae7d41 1-120
-cmd/oro/cmd_init.go
-  bc2621d8e27c098d 293,300-301,303-304,314-315,324,331,617,638-641,771,775-789,792,794-799,802-806,827-830,832,835-836,838-842,844-845,848-850,852,860-863,866-867
-pkg/mg/components/palette_test.go
-  738569a9d1ae7d41 1-266
-docs/plans/done/2026-02-10-session-end-learning-synthesis.md
-  738569a9d1ae7d41 1-241
-tests/test_notify_manager_on_bead_create.py
-  738569a9d1ae7d41 1-352
-pruning.json
-  738569a9d1ae7d41 1-5
-pkg/codesearch/bypass.go
-  738569a9d1ae7d41 1-105
-tests/test_session_start_global.py
-  738569a9d1ae7d41 1-173
-Makefile
-  ff32d04b1e7b6a01 1,103-109
-assets/hooks/write_context_summary.py
-  738569a9d1ae7d41 1-61
-docs/plans/2026-02-26-oro-attach-design.md
-  738569a9d1ae7d41 1-107
-docs/plans/learnings/openclaw-learnings.md
-  738569a9d1ae7d41 1-207
-cmd/oro/paths.go
-  bc2621d8e27c098d 138-157
-pkg/dispatcher/dispatcher.go
-  dcdc3c9a03a2f934 108-111
-  d5cce8429542eccd 75-76
-  b80ccd07c10d98a9 941-964,975
-  bf7471e795fdd76a 1520-1525,1692-1699,1701,1703-1704,1829-1833,3322
-  326a58ab58229f7e 755-756
-  bd64b32e4ebb7556 1160-1170
-  22386a9f11724b83 2211-2217
-  3117f930fbbfb36d 3798-3803
-  dc74cea15324661d 290
-  3276a869e625fba6 362,761-762
-  cac0b536af507538 585-597,2748-2755,2783,2786
-  3b2bbf368cca075f 3797
-  1f6c474f3019ec1a 1895,1897-1898
-  5ef21d004a017c62 3046-3095,3182
-  bb0b3f18f2e226cb 289,361,363,516-519,736-754,757-760,763-773,843-847,891-899
-  ec8ac870362d1c1c 3840-3841,3844,3848-3850
-cmd/oro/cmd_dolt_test.go
-  cf0f1164bcfd8aa6 141-221
-cmd/oro/cmd_shell_test.go
-  738569a9d1ae7d41 1-264
-.claude/hooks/write_context_summary.py
-  738569a9d1ae7d41 1-61
-pkg/dispatcher/exec_runner_test.go
-  738569a9d1ae7d41 1-251
-pkg/eventlog/integration_test.go
-  738569a9d1ae7d41 1-164
-.claude/hooks/test_context_pct_writer.py
-  738569a9d1ae7d41 1-222
-assets/hooks/prompt_injection_guard.py
-  738569a9d1ae7d41 1-98
-context_budgets.json
-  738569a9d1ae7d41 1
-docs/plans/2026-02-15-knowledge-ingest-spec.md
-  738569a9d1ae7d41 1-110
-pkg/codesearch/claude_spawner_test.go
-  738569a9d1ae7d41 1-61
-pkg/mg/components/help_test.go
-  738569a9d1ae7d41 1-149
-pkg/ops/decompose_prompt_test.go
-  738569a9d1ae7d41 1-71
-pkg/mg/ui/styles.go
-  738569a9d1ae7d41 1-361
-pkg/ops/exec_spawner_test.go
-  738569a9d1ae7d41 1-60
-scripts/install.sh
-  ff32d04b1e7b6a01 23-25,105-109,111,113,194,196-198,208-211,214,217-218,222-229,233,237,244,254,258,267-269
-.claude/skills/spec/SKILL.md
-  f230f56a044d9455 68,79-119,130,134,156-158
-pkg/dispatcher/epic_branch_lazy_test.go
-  dcdc3c9a03a2f934 2-5,8,12-13,28,33,112-114,169-171,230,252,257,292-294,312,333,350-352
-  5ef21d004a017c62 1,6-7,9-11,14-27,29-32,34-111,115-168,172-229,231-251,253-256,258-291,295-311,313-332,334-349
-.claude/skills/writing-plans/SKILL.md
-  738569a9d1ae7d41 1-80
-.claude/skills/agent-browser/templates/form-automation.sh
-  738569a9d1ae7d41 1-62
-assets/hooks/context_pruner.py
-  738569a9d1ae7d41 1-148
-pkg/dispatcher/qg_retry_test.go
-  738569a9d1ae7d41 1-672
-pkg/memory/embed.go
-  738569a9d1ae7d41 1-215
-cmd/oro-search-hook/main_test.go
-  738569a9d1ae7d41 1-356
-pkg/mg/tmux/status.go
-  738569a9d1ae7d41 1-35
-cmd/oro/cmd_logs_test.go
-  d882c2fa6bf139e4 245-284
-pkg/worker/worker.go
-  738569a9d1ae7d41 1-1342
-pkg/worker/worker_log_test.go
-  738569a9d1ae7d41 1-197
-assets/skills/completion-check/SKILL.md
-  738569a9d1ae7d41 1-84
-pyrightconfig.json
-  738569a9d1ae7d41 1-11
-.claude/hooks/session_start_compact.py
-  738569a9d1ae7d41 1-156
-assets/hooks/context_pct_writer.py
-  738569a9d1ae7d41 1-169
-assets/skills/agent-browser/references/proxy-support.md
-  738569a9d1ae7d41 1-188
-.goreleaser.yml
-  738569a9d1ae7d41 1-86
-assets/skills/beads/SKILL.md
-  738569a9d1ae7d41 1-91
-pkg/dispatcher/escalator.go
-  738569a9d1ae7d41 1-134
-.oro/config.yaml
-  738569a9d1ae7d41 1-36
-cmd/oro/tmux_name_test.go
-  738569a9d1ae7d41 1-44
-docs/plans/2026-03-14-beads-upgrade-design.md
-  738569a9d1ae7d41 1-115
-biome.json
-  738569a9d1ae7d41 4
-docs/solutions/2026-02-08-bash-dies-after-worktree-remove.md
-  738569a9d1ae7d41 1-57
-docs/learnings/autoresearch-study.md
-  738569a9d1ae7d41 1-187
-assets/skills/agent-browser/templates/authenticated-session.sh
-  738569a9d1ae7d41 1-100
-cmd/oro/embed_test.go
-  738569a9d1ae7d41 1-63
-pkg/protocol/directive.go
-  738569a9d1ae7d41 1-46
-.claude/skills/work-bead/SKILL.md
-  738569a9d1ae7d41 1-219
-.claude/hooks/test_architect_router_new.py
-  738569a9d1ae7d41 1-242
-cmd/oro/cmd_recall.go
-  738569a9d1ae7d41 1-119
-docs/plans/2026-02-17-oro-distribution-and-setup.md
-  738569a9d1ae7d41 1-759
-docs/plans/2026-03-21-solo-mode-design.md
-  738569a9d1ae7d41 1-246
-assets/hooks/bd_create_notifier.py
-  738569a9d1ae7d41 1-75
-docs/plans/done/2026-02-07-oro-lifecycle.md
-  738569a9d1ae7d41 1-245
-pkg/dispatcher/testutil_test.go
-  738569a9d1ae7d41 1-20
-cmd/oro/cmd_work_execute_test.go
-  d5cce8429542eccd 71-76
-  cac0b536af507538 136-139
-pkg/worker/streamjson.go
-  738569a9d1ae7d41 1-150
-pkg/dispatcher/apply_escalation_test.go
-  738569a9d1ae7d41 1-182
-cmd/oro/cmd_work_test.go
-  cac0b536af507538 579-582,1365-1368
-pkg/web/sse.go
-  2be422563deec38d 6,14-18,48-66
-pkg/codesearch/index.go
-  738569a9d1ae7d41 1-350
 pkg/web/helpers.go
   7c049e9dba5c9df8 1-78
-assets/hooks/no_cd_guard.py
-  738569a9d1ae7d41 1-194
-pkg/dispatcher/pane_restarter.go
-  738569a9d1ae7d41 1-74
-cmd/oro/cmd_global_oro_approach_test.go
-  738569a9d1ae7d41 1-584
-docs/plans/done/2026-02-23-dash-phase4-status-dashboard-design.md
-  738569a9d1ae7d41 1-458
-cmd/oro/dolt.go
-  cf0f1164bcfd8aa6 503-505,507-508,510-526
-.gitignore
-  738569a9d1ae7d41 18-22
-pkg/web/templates/events.html
-  19845939cb2d50d9 1-9
-docs/decisions&discoveries.md
-  738569a9d1ae7d41 1-183
-tests/test_prompt_injection_guard.py
-  738569a9d1ae7d41 1-222
-cmd/oro/daemon.go
-  738569a9d1ae7d41 1-251
-pkg/codesearch/summarize.go
-  738569a9d1ae7d41 1-369
-cmd/oro/cmd_global_oro_approach.go
-  738569a9d1ae7d41 1-259
-cmd/oro/cmd_directive_test.go
-  738569a9d1ae7d41 1-246
-assets/skills/agent-browser/templates/form-automation.sh
-  738569a9d1ae7d41 1-62
-assets/skills/executing-plans/SKILL.md
-  738569a9d1ae7d41 1-84
-docs/handoffs/2026-03-17_18-30_mg-perf-and-shared-dolt-spec.yaml
-  738569a9d1ae7d41 1-153
-pkg/dispatcher/assign_payload_test.go
-  738569a9d1ae7d41 1-49
-docs/research/2026-04-04-ossature-vs-oro-comparison.md
-  22386a9f11724b83 516,518,522,524,526,528,530,532,534,536,538,540,542,623,625,627,629
-.claude/skills/agent-browser/references/session-management.md
-  738569a9d1ae7d41 1-193
-cmd/oro/goreleaser_test.go
-  738569a9d1ae7d41 1-210
-.claude/hooks/architect_router.py
-  738569a9d1ae7d41 1-283
-assets/skills/agent-browser/references/video-recording.md
-  738569a9d1ae7d41 1-173
-.claude/hooks/prompt_injection_guard.py
-  738569a9d1ae7d41 1-98
-.claude/hooks/bd_create_notifier.py
-  738569a9d1ae7d41 1-75
-assets/skills/documenting-solutions/SKILL.md
-  738569a9d1ae7d41 1-97
-cmd/oro/cmd_remember_test.go
-  738569a9d1ae7d41 1-315
-docs/plans/done/2026-02-16-swarm-health-dashboard.md
-  738569a9d1ae7d41 1-156
-pkg/mg/ui/hop.go
-  738569a9d1ae7d41 1-34
-pkg/dispatcher/worktree_manager.go
-  dcdc3c9a03a2f934 351-362
-pkg/dispatcher/http_server_test.go
-  bb0b3f18f2e226cb 1-4,6-7,9-12,21-81,84-186
-  326a58ab58229f7e 5,8,13-20,187-229
-  3276a869e625fba6 82-83
-assets/hooks/enforce_worktree.py
-  738569a9d1ae7d41 1-50
-pkg/dispatcher/handoff_continuation_test.go
-  738569a9d1ae7d41 1-177
-.claude/skills/executing-beads/SKILL.md
-  738569a9d1ae7d41 1-166
-cmd/oro/cmd_logs.go
-  d882c2fa6bf139e4 438-451
-pkg/web/templates/throughput.html
-  7a7fb13fc0ef405d 1-6
-assets/hooks/enforce_skills.py
-  738569a9d1ae7d41 1-74
-.claude/skills/verification-before-completion/SKILL.md
-  738569a9d1ae7d41 1-115
-docs/plans/done/2026-02-17-component-lifecycle.md
-  738569a9d1ae7d41 1-127
-pkg/eventlog/acceptance_test.go
-  738569a9d1ae7d41 1-368
-cmd/oro/main.go
-  738569a9d1ae7d41 1-15
-pkg/ops/ac_prompt.go
-  738569a9d1ae7d41 1-85
-pkg/protocol/errors.go
-  738569a9d1ae7d41 1-41
-tests/test_rebase_worktree_guard.py
-  738569a9d1ae7d41 1-124
-docs/plans/done/2026-02-14-tmux-hardening-spec.md
-  738569a9d1ae7d41 1-258
-docs/plans/done/2026-02-17-oro-work-false-completion.md
-  738569a9d1ae7d41 1-154
-.markdownlint.yml
-  738569a9d1ae7d41 1-15
-docs/plans/2026-03-19-bead-labels-forprompt-design.md
-  738569a9d1ae7d41 1-128
-.claude/hooks/test_session_start_extras.py
-  738569a9d1ae7d41 1-158
-cmd/oro/dolt_test.go
-  738569a9d1ae7d41 1-686
-assets/skills/create-handoff/SKILL.md
-  738569a9d1ae7d41 1-104
-.claude/skills/premortem/SKILL.md
-  738569a9d1ae7d41 1-111
-.claude/skills/agent-browser/templates/authenticated-session.sh
-  738569a9d1ae7d41 1-100
-assets/skills/agent-browser/templates/capture-workflow.sh
-  738569a9d1ae7d41 1-69
-docs/drafts/2026-04-04-code-slop-is-a-coordination-problem.md
-  ff32d04b1e7b6a01 35,37-38,55,58
-docs/plans/2026-02-24-memory-quality-design.md
-  738569a9d1ae7d41 1-118
-docs/plans/done/2026-02-16-oro-work-design.md
-  738569a9d1ae7d41 1-249
-assets/skills/spec/SKILL.md
-  738569a9d1ae7d41 1-115
-.claude/skills/create-handoff/SKILL.md
-  738569a9d1ae7d41 1-132
-pkg/codesearch/router.go
-  738569a9d1ae7d41 1-63
-cmd/oro/cmd_stop.go
-  738569a9d1ae7d41 1-386
-pkg/dispatcher/health_test.go
-  738569a9d1ae7d41 1-300
-cmd/oro/cmd_init_test.go
-  bc2621d8e27c098d 824-942,946-950,956,961-963,2029,2032,2083-2147
-  738569a9d1ae7d41 264
-pkg/dispatcher/qg_stuck.go
-  738569a9d1ae7d41 1-63
-pkg/langprofile/types.go
-  738569a9d1ae7d41 1-43
-.claude/hooks/test_hook_paths.py
-  738569a9d1ae7d41 1-137
-pkg/memory/extract_llm_test.go
-  738569a9d1ae7d41 1-258
-pkg/mg/data/hop_test.go
-  738569a9d1ae7d41 1-139
-pkg/mg/ui/symbols.go
-  738569a9d1ae7d41 1-116
-pkg/merge/ff_merge_test.go
-  738569a9d1ae7d41 1-211
-pkg/worker/prompt.go
-  738569a9d1ae7d41 1-322
-pkg/testdata/sample.jsonl
-  738569a9d1ae7d41 1-21
-pkg/langprofile/config.go
-  738569a9d1ae7d41 1-213
-pkg/mg/app/oscguard.go
-  738569a9d1ae7d41 1-324
-.beads/beads_oro/.dolt/stats/.dolt/config.json
-  738569a9d1ae7d41 1
-.beads/beads_oro/.dolt/stats/.dolt/noms/manifest
-  738569a9d1ae7d41 1
-.claude/skills/beadcraft/SKILL.md
-  738569a9d1ae7d41 1-307
-docs/handoffs/2026-03-04_02-39_stream-json-observability.yaml
-  738569a9d1ae7d41 1-126
-.claude/skills/agent-browser/references/proxy-support.md
-  738569a9d1ae7d41 1-188
-.claude/skills/agent-browser/agent-browser/references/proxy-support.md
-  738569a9d1ae7d41 1-188
-.claude/skills/systematic-debugging/SKILL.md
-  738569a9d1ae7d41 1-144
-docs/plans/done/2026-02-08-oro-cli-spec.md
-  738569a9d1ae7d41 1-177
-.claude/hooks/test_rebase_worktree_guard.py
-  738569a9d1ae7d41 1-124
-assets/hooks/stop-checklist.sh
-  738569a9d1ae7d41 1-7
-cmd/oro/cmd_index_test.go
-  738569a9d1ae7d41 1-105
-pkg/dispatcher/register_race_test.go
-  738569a9d1ae7d41 1-224
-pkg/dispatcher/respawn_test.go
-  738569a9d1ae7d41 1-165
-pkg/mg/testdata/sample.jsonl
-  738569a9d1ae7d41 1-21
-.beads/beads_oro/.dolt/noms/manifest
-  738569a9d1ae7d41 1
+pkg/dispatcher/beadsource_test.go
+  d5cce8429542eccd 1689-1853
+pkg/worker/worker_test.go
+  22386a9f11724b83 3624-3627
 cmd/oro/cmd_start.go
+  dc74cea15324661d 399
+  bb0b3f18f2e226cb 357-358,384,398,495,510,589,648-649
   4cbc070bbf6ad7d9 786-791
   bc2621d8e27c098d 239-242
   713e7cead14e8aaa 265,268-272
-  dc74cea15324661d 399
-  bb0b3f18f2e226cb 357-358,384,398,495,510,589,648-649
-pkg/memory/dream.go
-  738569a9d1ae7d41 1-114
-docs/plans/done/2026-02-15-config-externalization-design.md
-  738569a9d1ae7d41 1-386
-pkg/mg/components/toast_test.go
-  738569a9d1ae7d41 1-57
+biome.json
+  738569a9d1ae7d41 4
+docs/plans/2026-04-05-github-release-v0.1.0-design.md
+  ff32d04b1e7b6a01 1-184
+cmd/oro/cmd_uninstall.go
+  ff32d04b1e7b6a01 1-291
+cmd/oro/cmd_init.go
+  bc2621d8e27c098d 293,300-301,303-304,314-315,324,331,617,638-641,771,775-789,792,794-799,802-806,827-830,832,835-836,838-842,844-845,848-850,852,860-863,866-867
+pkg/langprofile/config_test.go
+  738569a9d1ae7d41 240
+go.mod
+  6f6b102ead6e0d01 3
+cmd/oro/db.go
+  983ecd30009c0414 7-8,19-22
+pkg/web/templates/events.html
+  19845939cb2d50d9 1-9
 pkg/web/server_test.go
+  e73d995725252f72 108-118
+  0f4cb7bb62bb391a 5,24,51-55,84-85,260-286,296-326
   e5b205241d51894a 1-4,6-23,27-50,56-61,66-72,77-83,86-98,102,104-107,119-120,127-172,174-259
   5945be0141de7b7b 359-380
-  0f4cb7bb62bb391a 5,24,51-55,84-85,260-286,296-326
-  7a7fb13fc0ef405d 26,73-76,124-126,328-358
-  e73d995725252f72 108-118
   19845939cb2d50d9 25,62-65,121-123,327,381-426,440
   07afab61a9a90862 287-295,427-439
-.claude/skills/executing-plans/SKILL.md
-  738569a9d1ae7d41 1-84
-assets/skills/agent-browser/agent-browser/references/video-recording.md
-  738569a9d1ae7d41 1-173
-cmd/oro/cmd_forget_test.go
-  738569a9d1ae7d41 1-200
-cmd/oro/launchd_test.go
-  738569a9d1ae7d41 1-289
-cmd/oro/startup_log.go
-  738569a9d1ae7d41 1-98
-docs/plans/2026-02-16-oro-work-design.md
-  738569a9d1ae7d41 1-249
-docs/plans/done/2026-02-08-tui-dashboard-spec.md
-  738569a9d1ae7d41 1-409
-docs/handoffs/2026-02-26_2115_monitoring-and-bug-discovery.yaml
-  738569a9d1ae7d41 1-101
-pkg/langprofile/profiles.go
-  738569a9d1ae7d41 1-211
-pkg/ops/escalation_test.go
-  738569a9d1ae7d41 1-119
-docs/plans/2026-03-17-shared-dolt-server-design.md
-  738569a9d1ae7d41 1-243
-assets/.test-marker
-  738569a9d1ae7d41 1
-cmd/oro/cmd_recall_test.go
-  738569a9d1ae7d41 1-300
-cmd/oro/cmd_work.go
-  738569a9d1ae7d41 1-734
-docs/plans/done/2026-02-07-memory-search-spec.md
-  738569a9d1ae7d41 1-327
-pkg/dispatcher/pane_monitor_test.go
-  738569a9d1ae7d41 1-907
-pkg/ops/ops.go
-  738569a9d1ae7d41 1-542
-docs/handoffs/2026-02-24_0000_swarm-hqr6-epic.yaml
-  738569a9d1ae7d41 1-138
-docs/plans/done/2026-02-23-post-merge-branch-cleanup.md
-  738569a9d1ae7d41 1-122
-.github/workflows/release.yml
-  738569a9d1ae7d41 1-38
-cmd/oro/architect.go
-  738569a9d1ae7d41 1-143
-docs/plans/done/2026-02-23-pane-force-reset-design.md
-  738569a9d1ae7d41 1-246
-pkg/dispatcher/persist_counts_test.go
-  738569a9d1ae7d41 1-392
-docs/handoffs/2026-03-19_22-15_worktree-cleanup-spec-and-monitoring.yaml
-  738569a9d1ae7d41 1-112
-.claude/hooks/stop-checklist.sh
-  738569a9d1ae7d41 1-7
-pkg/mg/data/loader_test.go
-  738569a9d1ae7d41 1-297
-assets/skills/agent-browser/references/authentication.md
-  738569a9d1ae7d41 1-202
-pkg/codesearch/rerank.go
-  738569a9d1ae7d41 1-132
-cmd/oro/cmd_remember.go
-  738569a9d1ae7d41 1-98
-.claude/skills/writing-skills/SKILL.md
-  738569a9d1ae7d41 1-213
-pkg/web/workers_template_test.go
-  738569a9d1ae7d41 1-77
-pkg/protocol/integration_test.go
-  738569a9d1ae7d41 1-264
-cmd/oro/cmd_dispatcher_test.go
-  738569a9d1ae7d41 277
-git/hooks/pre-commit
-  738569a9d1ae7d41 1-24
-.claude/hooks/context_pruner.py
-  738569a9d1ae7d41 1-148
-pkg/codesearch/classifier_test.go
-  738569a9d1ae7d41 1-438
-docs/plans/done/2026-02-15-codesearch-gaps-spec.md
-  738569a9d1ae7d41 1-180
-pkg/ops/escalation_prompt.go
-  738569a9d1ae7d41 1-160
-cmd/oro/cmd_memories_test.go
-  738569a9d1ae7d41 1-507
-pkg/dispatcher/process_manager_test.go
-  738569a9d1ae7d41 1-441
-.claude/skills/watching-oro/SKILL.md
-  738569a9d1ae7d41 1-167
-pkg/dispatcher/estimate.go
-  738569a9d1ae7d41 1-150
-.claude/skills/oro/SKILL.md
-  738569a9d1ae7d41 1-221
-pkg/codesearch/chunker_test.go
-  738569a9d1ae7d41 1-735
-.claude/skills/git-commits/SKILL.md
-  738569a9d1ae7d41 1-85
-pkg/dispatcher/heartbeat_context_test.go
-  738569a9d1ae7d41 1-189
-pkg/mg/data/issue_test.go
-  738569a9d1ae7d41 1-151
+  7a7fb13fc0ef405d 26,73-76,124-126,328-358
+pkg/dispatcher/beadsource.go
+  d5cce8429542eccd 75-109
+.claude/skills/spec/SKILL.md
+  f230f56a044d9455 68,79-119,130,134,156-158
+pkg/web/css_test.go
+  6e74c72b1cee7e48 1-99
+pkg/dispatcher/http_server_test.go
+  326a58ab58229f7e 5,8,13-20,187-229
+  3276a869e625fba6 82-83
+  bb0b3f18f2e226cb 1-4,6-7,9-12,21-81,84-186
+cmd/oro/cmd_help.go
+  ff32d04b1e7b6a01 50
+pkg/web/server.go
+  eaa1aa644a351fbf 53,56-57
+  7a7fb13fc0ef405d 22-30,41,66-72,100-106,115,205-216
+  19845939cb2d50d9 39,114,116,194-204,217
+  326a58ab58229f7e 76-90,92,117-124
+  0f4cb7bb62bb391a 5,44-47,50-52,133,138-141,143-146,179-184,234-237,246
+  e5b205241d51894a 1-4,6-21,31-38,40,42-43,54-55,58-65,73-75,91,93-99,107-113,125-132,134-137,142,147-178,185-193,218-233,238-245,248-249,251-253,255-257,259-261,263,265-270
+pkg/web/templates/detail.html
+  65db00417107a13b 1-13
+cmd/oro/cmd_logs_test.go
+  d882c2fa6bf139e4 245-284
+pkg/dispatcher/bead_tracker.go
+  cac0b536af507538 21-33,53,143,204-206
+  bf7471e795fdd76a 142,201-203
+pkg/dispatcher/worktree_manager.go
+  dcdc3c9a03a2f934 351-362
+cmd/oro/paths.go
+  bc2621d8e27c098d 138-157
+cmd/oro/cmd_uninstall_test.go
+  56c8d9295bf39cac 184-255
+  ff32d04b1e7b6a01 1-183,256-266
+docs/plans/2026-04-01-epic-management-fixes-design.md
+  f9bea446ca2b104e 85,94
+pkg/web/embed_test.go
+  326a58ab58229f7e 1-89
+cmd/oro/dolt.go
+  cf0f1164bcfd8aa6 503-505,507-508,510-526
+pkg/dispatcher/dispatcher_test.go
+  cac0b536af507538 17211-17392
+  3117f930fbbfb36d 2779-2864
+  ff32d04b1e7b6a01 708,6389-6392
+  bf7471e795fdd76a 16998-17210
+  b80ccd07c10d98a9 12627-12702
+  ec8ac870362d1c1c 2964-3007
+  5ef21d004a017c62 280,385,387-392,15048-15049,15056,15073-15076,16696-16699,16702-16706,16710-16711,16714-16717,16756-16759,16762-16767,16769-16779,16816-16819,16822-16827,16830-16831,16834-16837,16842,16876-16879,16882-16887,16889-16891,16894-16897,16899
+  dcdc3c9a03a2f934 386,393-394
+  bd64b32e4ebb7556 3791-3912
+  d5cce8429542eccd 93-96,228-245
+  6f6b102ead6e0d01 6256-6259,6261-6266,6269-6270,6282-6285,6320-6323,6325-6332,6435-6440,6442-6445,6455-6456
+  1f6c474f3019ec1a 8158-8250
+  714b7eb17365430f 16614,16617
+pkg/integration/dispatcher_worker_test.go
+  d5cce8429542eccd 79-86
+  cac0b536af507538 152-155
+pkg/dispatcher/sse_hook_test.go
+  2be422563deec38d 31-33
+cmd/oro/cmd_start_index_test.go
+  bb0b3f18f2e226cb 40,169
+cmd/oro/cmd_logs.go
+  d882c2fa6bf139e4 438-451
+.github/workflows/ci.yml
+  ff32d04b1e7b6a01 139
+pkg/web/helpers_test.go
+  7c049e9dba5c9df8 1-149
+pkg/web/index_template_test.go
+  6af261ad15f4ba94 1-90
+pkg/memory/memory.go
+  d462aa5433bd87e1 191-207,209-210,212-213,216,223,229,238-248,257-259,263,274,900-902,914-915
+  b8607bb46fd3f835 1162,1168
+.gitignore
+  738569a9d1ae7d41 18-22
+cmd/oro/cmd_work_execute_test.go
+  cac0b536af507538 136-139
+  d5cce8429542eccd 71-76
+pkg/web/sse.go
+  2be422563deec38d 6,14-18,48-66
+pkg/dispatcher/dashboard_test.go
+  2be422563deec38d 1-267
+pkg/dispatcher/epic_branch_lazy_test.go
+  dcdc3c9a03a2f934 2-5,8,12-13,28,33,112-114,169-171,230,252,257,292-294,312,333,350-352
+  5ef21d004a017c62 1,6-7,9-11,14-27,29-32,34-111,115-168,172-229,231-251,253-256,258-291,295-311,313-332,334-349
 cmd/oro/tmux.go
   738569a9d1ae7d41 487
   cf0f1164bcfd8aa6 5,171-211,225,233,254-255,257,263-266,460-464,469-471,478,485-486,488
-cmd/oro/manager_test.go
-  738569a9d1ae7d41 1-386
-docs/plans/2026-03-14-dolt-lifecycle-design.md
-  738569a9d1ae7d41 1-133
-.claude/hooks/no_cd_guard.py
-  738569a9d1ae7d41 1-194
-pkg/mg/components/footer.go
-  738569a9d1ae7d41 1-149
-pkg/mg/app/helpers_test.go
-  738569a9d1ae7d41 1-228
-assets/hooks/validate_agent_completion.py
-  738569a9d1ae7d41 1-164
-assets/skills/destructive-command-safety/SKILL.md
-  738569a9d1ae7d41 1-111
-cmd/oro/cmd_directive.go
-  738569a9d1ae7d41 1-155
-cmd/oro/cmd_forget.go
-  738569a9d1ae7d41 1-91
-docs/plans/2026-03-15-dolt-lifecycle-v2-design.md
-  738569a9d1ae7d41 1-270
-cmd/oro/cmd_worker.go
-  738569a9d1ae7d41 1-97
-docs/plans/2026-03-15-oro-mg-design.md
-  738569a9d1ae7d41 1-325
-.claude/skills/agent-browser/agent-browser/templates/authenticated-session.sh
-  738569a9d1ae7d41 1-100
-pkg/dispatcher/stale_socket.go
-  738569a9d1ae7d41 1-47
-pkg/dispatcher/worker_pool_test.go
-  738569a9d1ae7d41 1-2114
-pkg/mg/data/hop.go
-  738569a9d1ae7d41 1-61
-pkg/mg/views/detail.go
-  738569a9d1ae7d41 1-675
-pkg/protocol/tables.go
-  738569a9d1ae7d41 1-70
-docs/plans/done/2026-02-20-dash-phase2-visual-refresh.md
-  738569a9d1ae7d41 1-1595
-cmd/oro/cmd_doctor_test.go
-  738569a9d1ae7d41 1-218
-.claude/hooks/session_start_extras.py
-  738569a9d1ae7d41 1-644
-docs/plans/done/2026-02-10-hardening-spec.md
-  738569a9d1ae7d41 1-1442
-tests/test_architect_router.py
-  738569a9d1ae7d41 1-389
-assets/skills/using-git-worktrees/SKILL.md
-  738569a9d1ae7d41 1-128
+cmd/oro/root.go
+  ff32d04b1e7b6a01 49
+pkg/integration/e2e_lifecycle_test.go
+  d5cce8429542eccd 73-80
+scripts/quality_gate.sh
+  d4877cd16fcfb48d 519
+pkg/web/parade_template_test.go
+  eaa1aa644a351fbf 1-168
+pkg/memory/memory_test.go
+  b8607bb46fd3f835 3128-3197
+docs/drafts/2026-04-04-code-slop-is-a-coordination-problem.md
+  ff32d04b1e7b6a01 35,37-38,55,58
+pkg/web/static/style.css
+  6e74c72b1cee7e48 1-435
 docs/plans/2026-04-02-epic-branch-lazy-creation-design.md
   f9bea446ca2b104e 1-72,74-148
-.claude/skills/agent-browser/agent-browser/references/authentication.md
-  738569a9d1ae7d41 1-202
-pkg/memory/extract_llm.go
-  738569a9d1ae7d41 1-166
-pyproject.toml
-  738569a9d1ae7d41 1-33
-pkg/codesearch/bypass_test.go
-  738569a9d1ae7d41 1-242
-pkg/dispatcher/sse_hook_test.go
-  2be422563deec38d 31-33
-docs/plans/done/2026-02-23-dash-phase3-list-view-design.md
-  738569a9d1ae7d41 1-569
-docs/plans/done/2026-02-23-memory-system-activation.md
-  738569a9d1ae7d41 1-284
-pkg/protocol/schema.go
-  738569a9d1ae7d41 1-182
-assets/skills/finishing-work/SKILL.md
-  738569a9d1ae7d41 1-115
-docs/plans/done/2026-02-24-oro-work-observability-design.md
-  738569a9d1ae7d41 1-149
-pkg/memory/memory.go
-  b8607bb46fd3f835 1162,1168
-  d462aa5433bd87e1 191-207,209-210,212-213,216,223,229,238-248,257-259,263,274,900-902,914-915
-assets/thresholds.json
-  738569a9d1ae7d41 1
-readme_test.go
-  738569a9d1ae7d41 1-39
-pkg/ops/escalation_prompt_test.go
-  738569a9d1ae7d41 1-301
-pkg/dispatcher/dispatcher_autoscale_test.go
-  738569a9d1ae7d41 1-761
-cmd/oro/hooks.go
-  738569a9d1ae7d41 1-124
-docs/handoffs/2026-04-01_14-00_epic-fixes-and-dashboard.yaml
-  738569a9d1ae7d41 1-73
-pkg/mg/work_test.go
-  738569a9d1ae7d41 1-104
-.beads/beads_oro/.dolt/stats/.dolt/repo_state.json
-  738569a9d1ae7d41 1-6
-docs/plans/done/2026-02-22-install-and-distribution-design.md
-  738569a9d1ae7d41 1-416
-.claude/scripts/watch-loop.sh
-  738569a9d1ae7d41 1-97
-assets/hooks/session_start_compact.py
-  738569a9d1ae7d41 1-156
-pkg/worker/prompt_test.go
-  738569a9d1ae7d41 1-1924
-docs/research/2026-03-23-gstack-skill-analysis.md
-  738569a9d1ae7d41 1-970
-assets/CLAUDE.md
-  738569a9d1ae7d41 1-7
-pkg/mg/app/deferred_keys.go
-  738569a9d1ae7d41 1-227
+cmd/oro/cmd_mg_test.go
+  738569a9d1ae7d41 34
+cmd/oro/db_test.go
+  983ecd30009c0414 60-70,72
+  bb0b3f18f2e226cb 209
+cmd/oro/cmd_init_test.go
+  bc2621d8e27c098d 824-942,946-950,956,961-963,2029,2032,2083-2147
+  738569a9d1ae7d41 264
+pkg/web/templates/parade.html
+  eaa1aa644a351fbf 1-76
+pkg/web/templates/workers.html
+  326a58ab58229f7e 1-6
 cmd/oro/cmd_dolt.go
   cf0f1164bcfd8aa6 125,147-150
-assets/hooks/notify_manager_on_bead_create.py
-  738569a9d1ae7d41 1-240
-docs/plans/learnings/compound-engineering-learnings.md
-  738569a9d1ae7d41 1-134
-.claude/hooks/auto-format.sh
-  738569a9d1ae7d41 1-41
-.claude/skills/destructive-command-safety/SKILL.md
-  738569a9d1ae7d41 1-111
-pkg/mg/components/palette.go
-  738569a9d1ae7d41 1-279
-assets/skills/agent-browser/agent-browser/references/commands.md
-  738569a9d1ae7d41 1-259
-pkg/langprofile/types_test.go
-  738569a9d1ae7d41 1-98
-cmd/oro/quality_gate_gen_test.go
-  738569a9d1ae7d41 1-459
-docs/handoffs/2026-02-27_0730_bug-fix-marathon.yaml
-  738569a9d1ae7d41 1-132
-docs/plans/2026-03-31-enterprise-readiness-design.md
-  738569a9d1ae7d41 1-453
-pkg/mg/data/metadata.go
-  738569a9d1ae7d41 1-210
+pkg/web/embed.go
+  326a58ab58229f7e 1-10
+pkg/dispatcher/dispatcher.go
+  3276a869e625fba6 362,761-762
+  1f6c474f3019ec1a 1895,1897-1898
+  dcdc3c9a03a2f934 108-111
+  ec8ac870362d1c1c 3840-3841,3844,3848-3850
+  22386a9f11724b83 2211-2217
+  b80ccd07c10d98a9 941-964,975
+  5ef21d004a017c62 3046-3095,3182
+  cac0b536af507538 585-597,2748-2755,2783,2786
+  bd64b32e4ebb7556 1160-1170
+  3117f930fbbfb36d 3798-3803
+  bb0b3f18f2e226cb 289,361,363,516-519,736-754,757-760,763-773,843-847,891-899
+  3b2bbf368cca075f 3797
+  326a58ab58229f7e 755-756
+  d5cce8429542eccd 75-76
+  bf7471e795fdd76a 1520-1525,1692-1699,1701,1703-1704,1829-1833,3322
+  dc74cea15324661d 290
+assets/review-patterns.md
+  903d4e80b5eacd92 22-23
 README.md
   f9bea446ca2b104e 517
   ff32d04b1e7b6a01 22-23,32-33,247,249,255-257,263-266,268-283,285-291,300,302,343-344,348,350,358,417-422,441,467,473,482,496-498,502
-.beads/patches/oro-1rep.5.patch
-  738569a9d1ae7d41 1-331
-pkg/protocol/tables_test.go
-  738569a9d1ae7d41 1-323
-.claude/hooks/test_notify_manager_on_bead_create.py
-  738569a9d1ae7d41 1-352
-.claude/skills/using-git-worktrees/SKILL.md
-  738569a9d1ae7d41 1-128
-.claude/skills/agent-browser/references/authentication.md
-  738569a9d1ae7d41 1-202
-pkg/dispatcher/epic_branch_test.go
-  738569a9d1ae7d41 1-236
-pkg/dispatcher/worker_logs_test.go
-  738569a9d1ae7d41 1-330
-docs/plans/learnings/superpowers-learnings.md
-  738569a9d1ae7d41 1-211
-docs/plans/2026-03-23-gstack-pattern-adaptation-design.md
-  738569a9d1ae7d41 1-191
-tests/test_create_handoff.py
-  738569a9d1ae7d41 1-79
-pkg/dispatcher/assign_payload.go
-  738569a9d1ae7d41 1-88
-tests/test_pane_handoff_reminder.py
-  738569a9d1ae7d41 1-152
-pkg/worker/subprocess_exit_test.go
-  738569a9d1ae7d41 1-226
-assets/skills/tmux/SKILL.md
-  738569a9d1ae7d41 1-117
-docs/plans/2026-02-15-dash-improvement-spec.md
-  738569a9d1ae7d41 1-136
-cmd/oro/skills_coverage_test.go
-  738569a9d1ae7d41 1-87
-docs/INSTALL.md
-  738569a9d1ae7d41 1-143
-pkg/mg/components/float.go
-  738569a9d1ae7d41 1-23
-pkg/mg/data/source.go
-  738569a9d1ae7d41 1-308
-pkg/merge/worktree_test.go
-  738569a9d1ae7d41 1-101
-.claude/hooks/session_start_global.py
-  738569a9d1ae7d41 1-92
-cmd/oro/manager.go
-  738569a9d1ae7d41 1-198
-cmd/oro/cmd_start_index_test.go
-  bb0b3f18f2e226cb 40,169
-assets/skills/context-checkpoint/SKILL.md
-  738569a9d1ae7d41 1-87
-cmd/oro/stage_assets_test.go
-  738569a9d1ae7d41 1-94
-cmd/oro/cmd_worker_stop.go
-  738569a9d1ae7d41 1-149
-pkg/mg/data/exec.go
-  738569a9d1ae7d41 1-99
-docs/plans/learnings/claude-mem.md
-  738569a9d1ae7d41 1-335
-pkg/web/embed_test.go
-  326a58ab58229f7e 1-89
-.claude/commands/restart-oro.md
-  738569a9d1ae7d41 1-113
-docs/plans/2026-03-03-memory-intake-pipeline-design.md
-  738569a9d1ae7d41 1-220
-pkg/langprofile/detect.go
-  738569a9d1ae7d41 1-182
-assets/review-patterns.md
-  903d4e80b5eacd92 22-23
-.claude/hooks/enforce_worktree.py
-  738569a9d1ae7d41 1-50
-pkg/worker/drain.go
-  738569a9d1ae7d41 1-138
+bughunt.md
+  903d4e80b5eacd92 1-246
+.beads/metadata.json
+  1f6c474f3019ec1a 2-7
+Makefile
+  ff32d04b1e7b6a01 1,103-109
+pkg/web/detail_template_test.go
+  e73d995725252f72 1-3,7-12,15,111-112
+  65db00417107a13b 19
+pkg/merge/merge_test.go
+  738569a9d1ae7d41 574
+cmd/oro/cmd_dispatcher_test.go
+  738569a9d1ae7d41 277
+docs/research/2026-04-04-ossature-vs-oro-comparison.md
+  22386a9f11724b83 516,518,522,524,526,528,530,532,534,536,538,540,542,623,625,627,629
+cmd/oro/cmd_work_test.go
+  cac0b536af507538 579-582,1365-1368
+pkg/web/templates/throughput.html
+  7a7fb13fc0ef405d 1-6
+pkg/dispatcher/dashboard.go
+  326a58ab58229f7e 7,171-202
+  2be422563deec38d 1-6,8-9,11-129,143-151
+  0f4cb7bb62bb391a 130-142
+  e5b205241d51894a 10,152-170
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -1800,9 +486,9 @@ pkg/worker/drain.go
       },
       "human_author": "Aakash Shah",
       "messages": [],
-      "total_additions": 156272,
-      "total_deletions": 771,
-      "accepted_lines": 156284,
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 12,
       "overriden_lines": 0
     },
     "7a7fb13fc0ef405d": {
