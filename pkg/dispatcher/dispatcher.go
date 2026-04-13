@@ -418,6 +418,7 @@ type Dispatcher struct {
 
 	mu                          sync.Mutex
 	reconcilingScale            atomic.Bool // prevents concurrent reconcileScale() calls (oro-ovpc.1)
+	doltRecovering              atomic.Bool // pauses tryAssign while dolt crash-recovery is in progress (oro-cb6y)
 	state                       State
 	listener                    net.Listener
 	focusedEpic                 string
@@ -452,6 +453,11 @@ type Dispatcher struct {
 
 	// startTime records when Run() was called (for uptime).
 	startTime time.Time
+
+	// dolt crash-recovery state (oro-cb6y / oro-nq6t epic).
+	lastBackupBeadCount  int       // bead count at last JSONL backup snapshot
+	doltRecoveryAttempts int       // number of recovery attempts since last clean start
+	lastRecoveryTime     time.Time // wall time of the most recent recovery attempt
 
 	// cachedQueueDepth stores the last-known count from beads.Ready() in the assign loop.
 	cachedQueueDepth int
@@ -2650,6 +2656,12 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
+	// Pause assignment while dolt crash-recovery is in progress (oro-cb6y).
+	// Lock-free: doltRecovering is an atomic.Bool.
+	if d.doltRecovering.Load() {
+		return
+	}
+
 	// Detect beads closed externally while a worker is assigned and clean up.
 	d.checkClosedBeadAssignments(ctx)
 
@@ -4139,6 +4151,8 @@ func (d *Dispatcher) escalationRetryLoop(ctx context.Context) {
 			}()
 			select {
 			case <-ctx.Done():
+				return true
+			case <-d.shutdownCh:
 				return true
 			case <-ticker.C:
 				d.callRetryPendingEscalations(ctx)

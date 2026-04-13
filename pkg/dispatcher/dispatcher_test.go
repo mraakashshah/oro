@@ -100,11 +100,13 @@ type mockBeadSource struct {
 	shownNil             map[string]bool  // per-ID nil detail (returns nil, nil)
 	exportData           []byte           // returned by Export(); nil means no data
 	exportErr            error            // if set, Export() returns this error
+	readyCalled          int              // incremented on every Ready() call
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.readyCalled++
 	if m.readyErr != nil {
 		return nil, m.readyErr
 	}
@@ -17388,5 +17390,33 @@ func TestExternalClose_NoReEntry(t *testing.T) {
 	}
 	if processedAfterOrphan {
 		t.Error("(4) expected processedExternalClose[beadID] to be removed by deleteOrphanedTracking")
+	}
+}
+
+// TestEscalationRetryLoopShutdown verifies that closing shutdownCh causes
+// escalationRetryLoop to exit promptly without waiting for the next tick.
+func TestEscalationRetryLoopShutdown(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	// Use a long interval so the loop would block on ticker if shutdownCh is ignored.
+	d.escalationRetryInterval = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	exited := make(chan struct{})
+	go func() {
+		d.escalationRetryLoop(ctx)
+		close(exited)
+	}()
+
+	// Give the loop a moment to enter the select, then signal shutdown.
+	time.Sleep(20 * time.Millisecond)
+	close(d.shutdownCh)
+
+	select {
+	case <-exited:
+		// success
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("escalationRetryLoop did not exit after shutdownCh was closed")
 	}
 }

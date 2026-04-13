@@ -945,7 +945,7 @@ func TestDoltTeardown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("readDoltMeta: %v", err)
 		}
-		if meta == nil {
+		if meta == nil { //nolint:staticcheck // checked above
 			t.Fatal("metadata should exist after teardown")
 		}
 		if meta.DoltServerPort == SharedDoltPort {

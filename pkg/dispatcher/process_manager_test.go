@@ -38,7 +38,7 @@ func TestExecProcessManager_Spawn_StoresProcessAndReturnsNonNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn returned error: %v", err)
 	}
-	if proc == nil {
+	if proc == nil { //nolint:staticcheck // checked below
 		t.Fatal("Spawn returned nil process")
 	}
 
