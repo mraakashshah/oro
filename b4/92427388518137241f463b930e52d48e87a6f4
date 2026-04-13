@@ -1,0 +1,23 @@
+.oro/context_pct
+  083c3d9065f04b49 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "b492427388518137241f463b930e52d48e87a6f4",
+  "prompts": {
+    "083c3d9065f04b49": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0761dfaa-2ed0-4c8d-874d-a5d3b9571db9",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
