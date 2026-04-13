@@ -1,0 +1,72 @@
+pkg/dispatcher/dispatcher.go
+  083c3d9065f04b49 421,457-461,2659-2664
+  738569a9d1ae7d41 4155-4156
+pkg/dispatcher/dispatcher_test.go
+  083c3d9065f04b49 103,109
+  738569a9d1ae7d41 17395-17422
+cmd/oro/cmd_dolt_test.go
+  f8ff86cd90bbf992 948
+pkg/dispatcher/dolt_recovery_test.go
+  083c3d9065f04b49 1-49
+pkg/dispatcher/process_manager_test.go
+  f8ff86cd90bbf992 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "99ca5fbcd7e26f9b6d57989908080b2601ec7fe4",
+  "prompts": {
+    "083c3d9065f04b49": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0761dfaa-2ed0-4c8d-874d-a5d3b9571db9",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 63,
+      "total_deletions": 0,
+      "accepted_lines": 63,
+      "overriden_lines": 0
+    },
+    "738569a9d1ae7d41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbbabfbb-8194-4abb-a8ae-51415a21a2aa",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 34,
+      "total_deletions": 0,
+      "accepted_lines": 34,
+      "overriden_lines": 0
+    },
+    "f4acffe267164a99": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8c55dce9-f5ef-4b7f-a51e-a25210c24f17",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "f8ff86cd90bbf992": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8bd75c63-10d7-4973-8ea1-bca97194212d",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 12,
+      "total_deletions": 12,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    }
+  }
+}
