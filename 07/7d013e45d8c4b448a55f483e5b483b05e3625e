@@ -1,0 +1,29 @@
+cmd/oro/cmd_start.go
+  738569a9d1ae7d41 271
+cmd/oro/preflight.go
+  738569a9d1ae7d41 45,53,85
+cmd/oro/cmd_init.go
+  738569a9d1ae7d41 526,704
+cmd/oro/preflight_test.go
+  738569a9d1ae7d41 66,95,116,128,147,166-168,173-174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "077d013e45d8c4b448a55f483e5b483b05e3625e",
+  "prompts": {
+    "738569a9d1ae7d41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbbabfbb-8194-4abb-a8ae-51415a21a2aa",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 16,
+      "total_deletions": 28,
+      "accepted_lines": 16,
+      "overriden_lines": 0
+    }
+  }
+}
