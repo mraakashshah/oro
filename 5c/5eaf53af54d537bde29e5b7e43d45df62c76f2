@@ -1,0 +1,38 @@
+pkg/dispatcher/dolt_recovery_test.go
+  cfb19e6c8809679a 29,31,49,51,65,67,80,82,99,101
+pkg/dispatcher/worker_pool.go
+  cfb19e6c8809679a 350-351,353
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "5c5eaf53af54d537bde29e5b7e43d45df62c76f2",
+  "prompts": {
+    "3088c97891d66532": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c49693ff-14ab-4434-acdd-000e8e55cce5",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "cfb19e6c8809679a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a94c50e4-646e-4f0d-a8ab-5999ea5e526d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 15,
+      "total_deletions": 3,
+      "accepted_lines": 14,
+      "overriden_lines": 0
+    }
+  }
+}
