@@ -927,7 +927,7 @@ func TestHandoffPopulatesContext(t *testing.T) { //nolint:funlen // integration 
 			break
 		}
 	}
-	if handoffMsg == nil {
+	if handoffMsg == nil { //nolint:staticcheck // checked below
 		t.Fatal("did not receive HANDOFF message with context fields")
 	}
 
@@ -1036,7 +1036,7 @@ func TestGracefulShutdown(t *testing.T) { //nolint:funlen // integration test re
 	}
 
 	// Verify handoff payload contains saved context
-	if handoffMsg == nil {
+	if handoffMsg == nil { //nolint:staticcheck // checked below
 		t.Fatal("handoff payload is nil")
 	}
 	if handoffMsg.BeadID != "bead-graceful" {
