@@ -1,7 +1,7 @@
 # Semantic Memory Overhaul
 
 **Date:** 2026-04-16
-**Status:** v2 — revised after adversarial review (Stage 2 FAIL → fix → re-review)
+**Status:** v3 — second adversarial-review pass landed N1 (import cycle on Bead #0: `cmd/oro/db.go` is `package main`; fixed by extracting `openDB` → `pkg/dbutil`), N2 (mode-asymmetry visibility), N3 (explicit model-upgrade migration), N4 (cold-start prose/SLO reconciled), H2 (TOCTOU-safe steal)
 **Goal:** Replace oro's TF-IDF memory retrieval with BGE-small embeddings, sqlite-vec HNSW ANN, chunked embeddings, cross-encoder reranking, per-project partitions, and search telemetry. Cherry-picked from [memvid evaluation](../../archive/yap/reference/memvid/evaluation.md).
 
 ## Problem
@@ -82,9 +82,14 @@ Per the adversarial review, **dispatcher is not always running**. Bare `oro reca
 
 1. Try UDS → dispatcher embedder (fast path, ≤5ms).
 2. If dispatcher unavailable and `--no-semantic-memory` OR `ORO_SEMANTIC_MEMORY=0` is set → FTS5-only retrieval. Deterministic, no model load.
-3. If dispatcher unavailable and semantic memory is enabled → **documented cold-start path**: load ORT + BGE in-process. ~300ms + ~200MB RAM for the CLI lifetime. Rerank is *skipped* in solo-CLI mode (loading the ~280MB reranker for a one-shot invocation isn't worth it).
+3. If dispatcher unavailable and semantic memory is enabled → **documented cold-start path**: load ORT + BGE in-process. Cold p50 measured empirically ≤1.5s on a fast SSD laptop; see Success criteria. ~200MB RAM for the CLI lifetime. Rerank is *skipped* in solo-CLI mode (loading the ~280MB reranker for a one-shot invocation isn't worth it).
 
-Success criteria split (below) reflect this: dispatcher-mode has tight latency SLOs; solo-CLI-cold has relaxed ones.
+**N2 fix — mode-asymmetry visibility.** Same query gets *different* top-10 results in dispatcher-mode (FTS5+ANN+rerank) vs solo-CLI-cold (FTS5+ANN, no rerank) when the user has `memory.semantic.rerank=true`. This is documented user-facing behavior:
+- `oro recall` / `oro memories search` emit a one-time stderr warning per process when `rerank=true` and no dispatcher: `"rerank unavailable without a running dispatcher; using FTS5+ANN only"`.
+- `oro --help` for recall-family subcommands notes the asymmetry.
+- Bead #6's eval corpus evaluates *both* paths separately; success criterion for each path below.
+
+Success criteria split (below) reflect this: dispatcher-mode has tight latency SLOs + highest precision; solo-CLI-cold has relaxed ones + slightly lower precision.
 
 ### Package changes
 
@@ -102,11 +107,13 @@ Success criteria split (below) reflect this: dispatcher-mode has tight latency S
 - `pkg/memory/models.go` (new) — `ModelPath(name string)`, `PrefetchModels(ctx)`. SHA256 digests hardcoded per model version.
 - `pkg/protocol/types.go` — new message types:
   - `EmbedRequest{Text string}` / `EmbedResponse{Vec []float32; Err string}`
-  - **`RerankByIDsRequest{Query string; MemoryIDs []int64; Project string}`** / `RerankByIDsResponse{Scores []float64; Err string}` — IDs only. Dispatcher loads content from its own Store. Keeps max message size ≤ a few KB regardless of rerank pool.
+  - **`RerankByIDsRequest{Query string; MemoryIDs []int64}`** / `RerankByIDsResponse{Scores []float64; Err string}` — IDs only. Dispatcher's Store is constructed without project-filtering (verified: dispatcher.go:563-577 never calls `memStore.SetProject`), so IDs are resolved globally. Keeps max message size ≤ a few KB regardless of rerank pool.
 - `pkg/dispatcher/dispatcher.go` — dispatcher-owned `BGEEmbedder`; warmup goroutine at startup; new UDS handlers; the dispatcher's own Store is the lookup source for rerank contents.
 - `cmd/oro/cmd_models.go` (new) — `oro models prefetch` / `list` / `verify`.
-- `cmd/oro/db.go` — **SQLite driver swap `modernc.org/sqlite` → `mattn/go-sqlite3`** at the single `openDB` helper (line 18).
-- `pkg/eventlog/query.go:61`, `pkg/codesearch/index.go:87` — **production `sql.Open("sqlite", ...)` call sites** that must migrate. Consolidated through the existing `openDB` (Bead #0).
+- **`pkg/dbutil/openDB.go`** (new) — **extracted from `cmd/oro/db.go` (which is `package main`)** into a library package importable from `pkg/eventlog`, `pkg/codesearch`, tests, and `cmd/oro`. Exports `dbutil.OpenDB(path string) (*sql.DB, error)` preserving the WAL + 5s-busy-timeout + Ping contract from current `openDB`.
+- `cmd/oro/db.go` — keeps a thin `openDB(path) = dbutil.OpenDB(path)` wrapper for local callers; driver name centralized in `pkg/dbutil`.
+- `pkg/eventlog/query.go:61`, `pkg/codesearch/index.go:87` — **production `sql.Open("sqlite", ...)` call sites** migrate to `dbutil.OpenDB`.
+- SQLite driver swap `modernc.org/sqlite` → `mattn/go-sqlite3` is a one-line change in `pkg/dbutil` after Bead #0 centralizes. All test files with literal `sql.Open("sqlite", ...)` also migrate through `dbutil.OpenDB` in Bead #0 — no dual-driver waffle.
 - All `cmd_*memories*.go`, `cmd_recall.go`, `cmd_remember.go`, `cmd_forget.go` — add `--no-semantic-memory` flag wiring.
 - `pkg/memory/dream.go` — **no changes** (spec v1 incorrectly claimed consolidation was clustering-based; it is LLM-action-driven).
 
@@ -166,7 +173,8 @@ Content cap raised 2048 → 8192 chars in `prepareInsert` (memory.go:209). `chec
 
 Flow at Store open when `kv_store['backfill_semantic_memory_state'] = 'pending'`:
 
-1. **Advisory owner lock.** CAS `kv_store['backfill_owner_pid'] = os.Getpid() + start_ts` using `INSERT OR IGNORE` followed by `SELECT` — only the first process succeeds. Other processes see an existing non-stale owner and skip spawning their own goroutine. Stale owner (process dead or owner_ts > 10min old) is stolen.
+1. **Advisory owner lock.** CAS `kv_store['backfill_owner_pid'] = os.Getpid() + start_ts` using `INSERT OR IGNORE` followed by `SELECT` — only the first process succeeds. Other processes see an existing non-stale owner and skip spawning their own goroutine.
+   **Stale-owner steal (TOCTOU-safe):** On seeing an owner with `owner_ts > 10min old`, steal via `UPDATE kv_store SET value=?new_owner WHERE key='backfill_owner_pid' AND value=?old_stale_value_just_read`. Only one stealer's rows-affected == 1; the loser backs off. Plain `UPDATE` without the value guard would be racy.
 2. Spawn background goroutine.
 3. Query `SELECT id, content FROM memories WHERE embedding_dense IS NULL ORDER BY created_at DESC LIMIT 100`.
 4. Per row: compute BGE → chunk if >512 tokens → **`INSERT OR IGNORE INTO memory_chunks`** → **`UPDATE memories SET embedding_dense=? WHERE id=? AND embedding_dense IS NULL`** (idempotent WHERE-guard prevents dup work) → upsert sqlite-vec partition entry.
@@ -187,8 +195,8 @@ Concurrency model:
 2. ANN path — `Embedder.Embed(query)` → `VectorIndex.Search` on project partition → top-N by HNSW cosine. Chunks score their parent via max-sim.
 3. Fuse via RRF (existing `fuseRRF`).
 4. If rerank enabled, reranker present (dispatcher mode), and pool size warrants it:
-   - Worker/CLI sends `RerankByIDsRequest{Query, MemoryIDs: top50.IDs, Project}` over UDS.
-   - Dispatcher reads those IDs from its own Store, constructs the docs slice, runs ORT reranker, returns `[]float64` scores.
+   - Worker/CLI sends `RerankByIDsRequest{Query, MemoryIDs: top50.IDs}` over UDS.
+   - Dispatcher reads those IDs from its (project-unscoped) Store, constructs the docs slice, runs ORT reranker, returns `[]float64` scores.
    - Response size = 50 × 8 bytes ≈ 400B. Well under MaxMessageSize.
 5. Re-sort by rerank score. Apply final top-k.
 6. Log row to `memory_search_events`.
@@ -209,7 +217,7 @@ Solo-CLI cold-path: skip step 4 entirely (reranker doesn't load inline). Step 2 
 `cmd/oro/cmd_recall.go` and siblings:
 1. `net.Dial("unix", ~/.oro/run/dispatcher.sock)` with 100ms timeout.
 2. On success: EmbedRequest/RerankByIDsRequest over UDS.
-3. On ENOENT / ECONNREFUSED / timeout: `memory.NewBGEEmbedder(modelPath)` inline. Skip rerank. Accept ~300ms cold latency.
+3. On ENOENT / ECONNREFUSED / timeout: `memory.NewBGEEmbedder(modelPath)` inline. Skip rerank. Cold latency dominated by BGE-small mmap + ORT session init + tokenizer load; SLO is ≤1.5s p50 on a fast laptop SSD (see Success criteria). Subsequent calls within the same process are ≤150ms.
 
 ## Phased rollout — 7 beads
 
@@ -217,13 +225,13 @@ Epic: **oro-XXXX: semantic-memory-overhaul** (parent)
 
 | # | Bead | Summary | Depends on |
 |---|---|---|---|
-| **0** | `refactor(db): consolidate sql.Open("sqlite",...) through openDB helper` | All 23 call sites route through `cmd/oro/db.go:openDB`. Includes `pkg/eventlog/query.go`, `pkg/codesearch/index.go`, all test helpers. Driver name stays `sqlite` until bead #3. Zero behavior change. | — |
+| **0** | `refactor(db): extract openDB to pkg/dbutil; route all sql.Open("sqlite",...) through it` | `cmd/oro/db.go` is `package main`; library packages cannot import it. Extract `openDB` → new `pkg/dbutil` library package. All 23 call sites (incl. `pkg/eventlog/query.go:61`, `pkg/codesearch/index.go:87`, 12 test files) route through `dbutil.OpenDB`. Driver name stays `sqlite` until bead #3. Zero behavior change. | — |
 | **1** | `feat(memory): Embedder + Reranker + VectorIndex interfaces; TFIDFEmbedder extraction; VocabPersister side interface` | Extract interfaces. Move TF-IDF into `TFIDFEmbedder` impl. `Store.SetEmbedder` widens to interface. `SaveVocab`/`LoadVocab` type-assert `VocabPersister`, no-op on non-vocab embedders. Zero production behavior change. | #0 |
-| **2** | `feat(memory): BGEEmbedder via onnxruntime_go + oro models prefetch + dispatcher ownership + CLI fallback + --no-semantic-memory` | ORT lib bundling in installer/codesign, `daulet/tokenizers` cgo dep, dispatcher warmup goroutine, UDS `EmbedRequest` handler, CLI fallback path, config knobs. Triggers crash-safe backfill (CAS owner lock + idempotent UPDATE/INSERT OR IGNORE). Migration appended to schema constants. | #1 |
-| **3** | `feat(memory): sqlite-vec HNSW + SQLite driver swap to mattn/go-sqlite3` | Single driver name change at `openDB` (possible because of #0). sqlite-vec extension load at every connection. Per-project `vec_memories_{project}` virtual tables. Migrate `vectorSearch` to HNSW. | #2 |
+| **2** | `feat(memory): BGEEmbedder via onnxruntime_go + oro models prefetch + dispatcher ownership + CLI fallback + --no-semantic-memory` | ORT lib bundling in installer/codesign, `daulet/tokenizers` cgo dep, dispatcher warmup goroutine, UDS `EmbedRequest` handler, CLI fallback path, config knobs. Triggers crash-safe backfill (CAS owner lock + TOCTOU-safe stale-owner steal + idempotent UPDATE/INSERT OR IGNORE). Migration appended to schema constants. Includes `Store.checkEmbedderModelMatch()` at Store open — on `embedding_dense_model` sentinel mismatch, clears embedding_dense + chunks + vec tables and re-flips backfill state (N3). Stderr warning on `rerank=true && !dispatcher` (N2). | #1 |
+| **3** | `feat(memory): sqlite-vec HNSW + SQLite driver swap to mattn/go-sqlite3` | Single driver name change at `pkg/dbutil.OpenDB` (possible because of #0). sqlite-vec extension load at every connection. Per-project `vec_memories_{project}` virtual tables. Migrate `vectorSearch` to HNSW. Full `go test ./...` is the acceptance gate. | #2 |
 | **4** | `feat(memory): lift content cap to 8192 + chunking + memory_chunks + max-sim parent scoring + RerankByIDsRequest protocol` | Migration constants for `memory_chunks`. Chunking only for >512-token content. RerankByIDs protocol (dispatcher looks up docs from its own Store, keeps msg size ≤ few KB). FTS5 8192-char smoke test. | #2, #3 |
 | **5** | `feat(memory): bge-reranker-base cross-encoder in dispatcher` | Second ORT session for reranker. Config-gated. Skip in solo-CLI mode. | #2, #4 |
-| **6** | `feat(memory): memory_search_events telemetry + eval corpus + before/after precision script` | Telemetry table, logging hook in HybridSearch. `ad_hoc/memory_eval/` with 100 hand-labeled query→memory pairs. `compare.go` script measures precision@5/10. Retention cron trims events >30d. | #2, #3, #4 |
+| **6** | `feat(memory): memory_search_events telemetry + eval corpus + before/after precision script` | Telemetry table (writable from every process incl. solo-CLI), logging hook in HybridSearch. `ad_hoc/memory_eval/corpus.jsonl` with 100 hand-labeled query→memory pairs (~1 day manual curation, bead-owned). `compare.go` script measures precision@5/10 on **both** paths: dispatcher-warm (FTS5+ANN+rerank) and solo-CLI-cold (FTS5+ANN only). Retention cron trims events >30d. | #2, #3, #4 |
 
 Critical path: 0 → 1 → 2 → 3 → 4 → 6. #5 parallel after #4.
 
@@ -254,7 +262,7 @@ Per Q10 decision + M1 fix: **token-Jaccard fake**, not hash-fake.
 2. **sqlite-vec extension codesign** on macOS hardened runtime. Bundle `.dylib` under `~/.oro/lib/`, ad-hoc codesign in `install.sh` (already done for `oro` binary, line 250).
 3. **Driver swap scope (C1).** 23 `sql.Open("sqlite", ...)` call sites including production in `pkg/eventlog` and `pkg/codesearch`. Bead #0 consolidates first; bead #3 then does a one-line driver name swap in `openDB`. **Full `go test ./...` is the acceptance gate for bead #3.**
 4. **Backfill crash/concurrency (H2).** CAS owner lock in `kv_store` + idempotent `WHERE ... IS NULL` UPDATE + `INSERT OR IGNORE` on chunks. Stale owner stolen after 10 min. Explicit concurrent test (bead #2 AC).
-5. **BGE dim mismatch** on future model upgrade. `kv_store['embedding_dense_model']` sentinel; migration detects mismatch and re-embeds.
+5. **BGE dim/model upgrade (N3).** `kv_store['embedding_dense_model']` sentinel stores the model name that produced current vectors. At Store open, `Store.checkEmbedderModelMatch()` reads sentinel vs hardcoded current model. On mismatch: clear `embedding_dense`, delete all `memory_chunks` rows, delete all `vec_memories_*` virtual-table contents, flip `backfill_semantic_memory_state` back to `pending`, rewrite sentinel. Reuses the existing backfill code path — no new special case. Owned by Bead #2 AC (not a hand-wave).
 6. **Dispatcher OOM = all workers block.** 500ms timeout per EmbedRequest; worker falls back to FTS5-only on timeout (same code path as `--no-semantic-memory`).
 7. **MaxMessageSize (C2).** RerankByIDs sends IDs (400B at top-50), not content. No change to `MaxMessageSize = 1MB` needed.
 8. **Tokenizer cgo brittleness.** `daulet/tokenizers` wraps a Rust lib, ships a `.dylib`. Same bundle + ad-hoc-codesign treatment as ORT.
@@ -265,8 +273,9 @@ Per Q10 decision + M1 fix: **token-Jaccard fake**, not hash-fake.
 ## Success criteria
 
 **Retrieval quality** (bead #6 delivers the harness):
-- Against the 100-query hand-labeled corpus: top-10 precision improves by ≥30% over TF-IDF+linear-cosine baseline. (Lowered from the original ≥40% — conservative vs no prior benchmark data.)
-- Measured via `ad_hoc/memory_eval/compare.go` running the same queries before (TF-IDF, captured from existing prod) and after (BGE+HNSW+rerank).
+- Against the 100-query hand-labeled corpus: **dispatcher-warm path** (FTS5+ANN+rerank) top-10 precision improves ≥30% over TF-IDF+linear-cosine baseline. (Conservative vs no prior benchmark data.)
+- **Solo-CLI-cold path** (FTS5+ANN, no rerank) top-10 precision improves ≥20% over baseline. Lower bar acknowledged — rerank is ~half of the expected lift.
+- Measured via `ad_hoc/memory_eval/compare.go` running the same queries against all three configurations.
 
 **Latency (dispatcher mode, dispatcher warm):**
 - p50 HybridSearch-with-rerank < 100ms
@@ -298,10 +307,11 @@ Per Q10 decision + M1 fix: **token-Jaccard fake**, not hash-fake.
 
 | File | Bead | Why it's in scope |
 |---|---|---|
-| `cmd/oro/db.go` | #0, #3 | openDB helper — driver name swap |
-| `pkg/eventlog/query.go:61` | #0 | Production `sql.Open("sqlite", ...)` — route through openDB |
-| `pkg/codesearch/index.go:87` | #0 | Production `sql.Open("sqlite", ...)` — route through openDB |
-| All `*_test.go` with `sql.Open("sqlite", ...)` | #0 | Test helpers — route through openDB or accept dual-driver |
+| **`pkg/dbutil/openDB.go`** (new) | #0, #3 | Extracted from cmd/oro/db.go; the single point where driver name lives. |
+| `cmd/oro/db.go` | #0 | `openDB` becomes a thin `dbutil.OpenDB` wrapper for local callers. |
+| `pkg/eventlog/query.go:61` | #0 | Production `sql.Open("sqlite", ...)` — migrate to `dbutil.OpenDB` |
+| `pkg/codesearch/index.go:87` | #0 | Production `sql.Open("sqlite", ...)` — migrate to `dbutil.OpenDB` |
+| All `*_test.go` with `sql.Open("sqlite", ...)` (12 files, 23 sites total) | #0 | Migrate to `dbutil.OpenDB`. No dual-driver fallback. |
 | `pkg/memory/memory.go:25,36,62,101` | #1 | `*Embedder` → `Embedder` interface; vocab via type-assert |
 | `pkg/memory/embed_test.go` | #1 | All tests reference concrete `*Embedder` |
 | `pkg/dispatcher/dispatcher.go:563-564` | #1, #2 | `memStore.SetEmbedder(memory.NewEmbedder())` — widens; later dispatcher owns BGE |
