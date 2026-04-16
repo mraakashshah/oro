@@ -21,3 +21,7 @@ case-insensitive-header-search: matching markdown headers → lowercase both sid
 `double-nowFunc-under-lock`: calling `d.nowFunc()` multiple times under a single lock hold → capture once in `now := d.nowFunc()` and reuse.
 `coalesce-scan-consistency`: new query scans nullable-with-default column differently from all existing queries in the same file → match the established COALESCE + int scan pattern for consistency.
 `vestigial-encoder-field`: all send paths now use sendToWorker → encoder field on trackedWorker is dead code, candidate for removal in a cleanup bead.
+`ac-vs-reality-check`: bead AC claims function is unused → grep production callers before deleting
+`buffer-before-response`: HTTP handler executes template into `bytes.Buffer` first → prevents partial HTML on error, enables atomic content-type + body write
+`buffer-template-render`: template renders to `http.ResponseWriter` incrementally → buffer into `bytes.Buffer`, check error, then `buf.WriteTo(w)` for atomic all-or-nothing HTTP responses.
+`like-escape-clause-reminder`: pure escapeLike function escapes with backslash → caller must add `ESCAPE '\'` to the SQL LIKE expression for SQLite to honor the escaping.
