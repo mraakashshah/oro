@@ -1,0 +1,23 @@
+.gitignore
+  615fd1ed7786a0e7 40-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "d42f08d27a4bb00f9ed62cae21cb33594c92e217",
+  "prompts": {
+    "615fd1ed7786a0e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cae0f568-6968-45cc-b2ac-78207e31e271",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 12,
+      "total_deletions": 0,
+      "accepted_lines": 12,
+      "overriden_lines": 0
+    }
+  }
+}
