@@ -114,6 +114,6 @@ func TestEscalateSpawnError(t *testing.T) {
 func TestEscalateModelRouting(t *testing.T) {
 	got := OpsEscalation.Model()
 	if got != "sonnet" {
-		t.Fatalf("OpsEscalation.Model() = %q, want claude-sonnet-4-5", got)
+		t.Fatalf("OpsEscalation.Model() = %q, want claude-sonnet-4-6", got)
 	}
 }

@@ -3927,7 +3927,7 @@ func TestClaudeSpawnerSetsStdinToDevNull(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	proc, _, _, _ := spawner.Spawn(ctx, "claude-opus-4-5", "test prompt", "/tmp")
+	proc, _, _, _ := spawner.Spawn(ctx, "claude-opus-4-7", "test prompt", "/tmp")
 
 	// We expect Start() to fail (timeout or claude not found), but we just need the cmd to be built
 	// If we got a process back, inspect it

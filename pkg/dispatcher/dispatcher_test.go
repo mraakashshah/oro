@@ -1371,7 +1371,7 @@ func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 		t.Fatal("expected ASSIGN")
 	}
 	if msg.Assign.Model != "sonnet" {
-		t.Fatalf("expected model claude-sonnet-4-5, got %q", msg.Assign.Model)
+		t.Fatalf("expected model claude-sonnet-4-6, got %q", msg.Assign.Model)
 	}
 }
 
