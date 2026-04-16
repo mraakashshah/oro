@@ -1,7 +1,7 @@
 # Semantic Memory Overhaul
 
 **Date:** 2026-04-16
-**Status:** v3 — second adversarial-review pass landed N1 (import cycle on Bead #0: `cmd/oro/db.go` is `package main`; fixed by extracting `openDB` → `pkg/dbutil`), N2 (mode-asymmetry visibility), N3 (explicit model-upgrade migration), N4 (cold-start prose/SLO reconciled), H2 (TOCTOU-safe steal)
+**Status:** v3.2 — third adversarial pass (on the bead tree, not the doc) flagged four gaps: ANNResult type pinned in P1 (was undefined); config schema explicit (`.oro/config.yaml` + Go struct — not `oro.toml` as brainstorm presumed); warmup-without-model failure path documented; P2 Cmd fix (`make install &&` prefix) and corpus-curation checkpoint landed on the beads themselves
 **Goal:** Replace oro's TF-IDF memory retrieval with BGE-small embeddings, sqlite-vec HNSW ANN, chunked embeddings, cross-encoder reranking, per-project partitions, and search telemetry. Cherry-picked from [memvid evaluation](../../archive/yap/reference/memvid/evaluation.md).
 
 ## Problem
@@ -101,6 +101,7 @@ Success criteria split (below) reflect this: dispatcher-mode has tight latency S
   - `Reranker` interface: `Rerank(query string, docs []string) []float64`
   - `BGEReranker` in `pkg/memory/bge_reranker.go` — wraps `bge-reranker-base` ONNX
   - `VectorIndex` interface: `Upsert(id int64, vec []float32, project string) error; Search(queryVec []float32, project string, k int) ([]ANNResult, error); Delete(id int64) error`
+  - **`type ANNResult struct { MemoryID int64; Score float64 }`** — pinned in `pkg/memory/embed.go` alongside interfaces so P1 and P3 cannot land incompatible definitions.
   - `SQLiteVecIndex` impl in `pkg/memory/vec_index.go` — vec0 virtual table per partition
   - `InMemoryVecIndex` test impl
   - `Store.SetEmbedder(Embedder)` signature widens from `*Embedder` (concrete) to interface.
@@ -211,6 +212,36 @@ Solo-CLI cold-path: skip step 4 entirely (reranker doesn't load inline). Step 2 
 - Workers block on `dispatcher.embedderReady` channel before sending EmbedRequest.
 - Reranker lazy-loads on first `RerankByIDsRequest`.
 - On dispatcher shutdown: models freed with ORT session.
+- **Warmup-without-model failure path.** If `memory.semantic.enabled=true` but BGE model is not on disk (fresh install, user never ran `oro models prefetch`), `warmupEmbedder` logs a clear error to stderr (`"BGE model missing at <path>; run 'oro models prefetch' or set memory.semantic.enabled=false"`), closes `embedderReady` with an error sentinel, and dispatcher continues serving workers in FTS5-only mode. Workers receiving the sentinel degrade to FTS5-only for that session (same code path as `--no-semantic-memory`). No worker ever blocks forever on `embedderReady`.
+
+### Config schema
+
+Oro's config lives at `.oro/config.yaml` (YAML, loaded by `pkg/langprofile/config.go` — **not** a TOML file). This spec adds a new top-level section:
+
+```yaml
+# .oro/config.yaml — new section
+memory:
+  semantic:
+    enabled: true          # default true; set false to disable all ORT/BGE code paths
+    rerank: true           # default true; effective only when dispatcher available
+    ann_top_k: 50          # pool size entering rerank
+    final_top_k: 10        # results returned to caller
+    model_dir: ~/.oro/models  # override default model cache location
+```
+
+Corresponding Go struct (added to existing config types in `pkg/langprofile/config.go`):
+
+```go
+type SemanticMemoryConfig struct {
+    Enabled    bool   `yaml:"enabled"`
+    Rerank     bool   `yaml:"rerank"`
+    ANNTopK    int    `yaml:"ann_top_k"`
+    FinalTopK  int    `yaml:"final_top_k"`
+    ModelDir   string `yaml:"model_dir"`
+}
+```
+
+Defaults applied in `withDefaults()` (mirroring existing `dispatcher.Config.withDefaults` at dispatcher.go:198). `--no-semantic-memory` CLI flag + `ORO_SEMANTIC_MEMORY=0` env override `memory.semantic.enabled=false` at runtime. P2 owns config struct + loader + defaults; without it, setting `memory.semantic.rerank=false` in config.yaml would be silently ignored.
 
 ### CLI fallback (b′)
 
