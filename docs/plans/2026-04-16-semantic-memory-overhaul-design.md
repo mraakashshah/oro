@@ -267,7 +267,7 @@ Per Q10 decision + M1 fix: **token-Jaccard fake**, not hash-fake.
 7. **MaxMessageSize (C2).** RerankByIDs sends IDs (400B at top-50), not content. No change to `MaxMessageSize = 1MB` needed.
 8. **Tokenizer cgo brittleness.** `daulet/tokenizers` wraps a Rust lib, ships a `.dylib`. Same bundle + ad-hoc-codesign treatment as ORT.
 9. **Total install payload.** BGE-small ~133MB + reranker ~280MB + ORT ~12MB + tokenizers ~15MB + sqlite-vec ~2MB ≈ 440MB. Cold install ~60MB (binaries + libs). First semantic use triggers model pull. `oro models prefetch` for airgapped/CI.
-10. **Solo-CLI cold-start latency (C3).** Documented expected behavior. Users who hit this pattern and care about latency run the swarm (which keeps a dispatcher up), use `--no-semantic-memory`, or accept ~300ms first hit.
+10. **Solo-CLI cold-start latency (C3).** Documented expected behavior. Users who hit this pattern and care about latency run the swarm (which keeps a dispatcher up), use `--no-semantic-memory`, or accept the ≤1.5s p50 cold-start documented in Success criteria.
 11. **Success-criterion ground truth (M2).** Bead #6 builds the eval corpus as part of its own AC. 100 hand-labeled pairs committed to `ad_hoc/memory_eval/corpus.jsonl`. Before/after comparison runs against the same corpus.
 
 ## Success criteria
