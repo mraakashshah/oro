@@ -1,0 +1,23 @@
+assets/review-patterns.md
+  0c6d0d2ceb8f4ba4 24-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "3331756d220f3e3be41fb67ac03c66e69f3a2682",
+  "prompts": {
+    "615fd1ed7786a0e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cae0f568-6968-45cc-b2ac-78207e31e271",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
