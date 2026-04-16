@@ -32,7 +32,7 @@ func TestRememberCmdWithStoreNil(t *testing.T) {
 	// Verify that newRememberCmdWithStore(nil) lazily opens the default store.
 	// This is an integration test that ensures the deduplication works correctly.
 	cmd := newRememberCmdWithStore(nil)
-	if cmd == nil {
+	if cmd == nil { //nolint:staticcheck // check below verifies
 		t.Fatal("newRememberCmdWithStore(nil) returned nil command")
 	}
 	// We can't easily test execution without setting up ~/.oro/memories.db,
