@@ -2,6 +2,7 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -46,4 +47,48 @@ func TestTryAssignPausedDuringDoltRecovery(t *testing.T) {
 	if after != before {
 		t.Fatalf("tryAssign called beads.Ready() %d time(s) when doltRecovering=true; expected 0", after-before)
 	}
+}
+
+// TestCheckDoltHealth_DetectsDown verifies that checkDoltHealth returns false
+// when "bd dolt status" exits non-zero, true on success, and that it applies a
+// 5-second context timeout to the command.
+func TestCheckDoltHealth_DetectsDown(t *testing.T) {
+	t.Run("returns false on non-zero exit", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.shutdownRunner = &mockCommandRunner{err: errors.New("exit status 1")}
+		if d.checkDoltHealth(context.Background()) {
+			t.Fatal("checkDoltHealth returned true on non-zero exit, want false")
+		}
+	})
+
+	t.Run("returns true on zero exit", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.shutdownRunner = &mockCommandRunner{}
+		if !d.checkDoltHealth(context.Background()) {
+			t.Fatal("checkDoltHealth returned false on zero exit, want true")
+		}
+	})
+
+	t.Run("uses 5s context timeout", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		var gotDeadline time.Time
+		before := time.Now()
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+				dl, ok := ctx.Deadline()
+				if ok {
+					gotDeadline = dl
+				}
+				return nil, nil
+			},
+		}
+		d.checkDoltHealth(context.Background())
+		if gotDeadline.IsZero() {
+			t.Fatal("checkDoltHealth did not set a context deadline")
+		}
+		offset := gotDeadline.Sub(before)
+		if offset < 4*time.Second || offset > 6*time.Second {
+			t.Errorf("context deadline offset = %v, want ~5s", offset)
+		}
+	})
 }

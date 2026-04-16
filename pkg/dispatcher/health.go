@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 )
 
 // SwarmHealth represents the health status of all oro components.
@@ -39,6 +40,16 @@ func paneAlive(ctx context.Context, db *sql.DB, pane string, nowUnix int64) bool
 		return false
 	}
 	return nowUnix-lastSeen <= 60
+}
+
+// checkDoltHealth reports whether the dolt bead store is reachable.
+// It shells out to "bd dolt status" with a 5-second timeout.
+// Returns true if the command exits zero, false on any error or non-zero exit.
+func (d *Dispatcher) checkDoltHealth(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := d.shutdownRunner.Run(ctx, "bd", "dolt", "status")
+	return err == nil
 }
 
 // applyHealth returns a JSON representation of the swarm health status.
