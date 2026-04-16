@@ -1,0 +1,44 @@
+pkg/dispatcher/dolt_recovery.go
+  c597966d6d22aa6c 1-39
+pkg/dispatcher/dispatcher.go
+  5c86a0e5ace40386 461-462
+  c597966d6d22aa6c 459-460,466-469
+pkg/dispatcher/dolt_recovery_test.go
+  5c86a0e5ace40386 1-5,8-9,14-16,28,30,43-44,51,53,56-57,59,75-76,78,80,83-84,86,104,107,109,112-113,133,135,137,140-142,145-146,165,183,185,187,191,195-196
+  c597966d6d22aa6c 6-7,10-13,17-27,29,31-42,45-50,52,54-55,58,60-74,77,79,81-82,85,87-103,105-106,108,110-111,114-132,134,136,138-139,143-144,147-164,166-182,184,186,188-190,192-194
+pkg/dispatcher/worker_pool.go
+  c597966d6d22aa6c 306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "448ed5438f6938527ae38925b1bded0fb13857b3",
+  "prompts": {
+    "5c86a0e5ace40386": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5c38c100-b245-4cf3-9f3d-adb0b9c70329",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 354,
+      "total_deletions": 175,
+      "accepted_lines": 51,
+      "overriden_lines": 0
+    },
+    "c597966d6d22aa6c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6d9f7abd-9a38-4b9a-b3d5-8b5e0615d3b7",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 237,
+      "total_deletions": 171,
+      "accepted_lines": 196,
+      "overriden_lines": 0
+    }
+  }
+}
