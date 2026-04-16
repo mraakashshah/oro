@@ -1,0 +1,11 @@
+cmd/oro/cmd_remember_test.go
+  0c6d0d2ceb8f4ba4 35
+cmd/oro/cmd_recall_test.go
+  0c6d0d2ceb8f4ba4 18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "fc7677697f2927f7d207e70224e18112e2cf05b7",
+  "prompts": {}
+}
