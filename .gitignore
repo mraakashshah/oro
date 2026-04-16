@@ -37,6 +37,15 @@ __pycache__/
 .claude/hooks/oro-search-hook
 cmd/oro/_assets/
 
+# Runtime artifacts (not tracked — vary per machine/session)
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.beads/*.log
+.beads/*.log.gz
+.beads/dolt-config.log
+.gstack/
+pkg/dispatcher/workers/
+
 # Local config
 .claude/settings.local.json
 .perles/
