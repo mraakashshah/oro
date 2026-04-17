@@ -17,11 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
-
-	_ "modernc.org/sqlite"
 )
 
 // mockProcess implements worker.Process for testing.
@@ -2278,7 +2277,7 @@ func TestSendMessage_BuffersWhenDisconnected(t *testing.T) { //nolint:funlen // 
 // setupTestDB creates an in-memory SQLite database with the full schema for memory tests.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
