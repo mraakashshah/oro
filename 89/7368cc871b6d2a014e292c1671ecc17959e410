@@ -1,0 +1,25 @@
+pkg/protocol/types_test.go
+  4057e58b2ebfd780 215-247
+pkg/protocol/types.go
+  4057e58b2ebfd780 150,159-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "897368cc871b6d2a014e292c1671ecc17959e410",
+  "prompts": {
+    "4057e58b2ebfd780": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f90d51b-cd51-462d-8d37-41daa0f852c6",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 48,
+      "total_deletions": 3,
+      "accepted_lines": 46,
+      "overriden_lines": 0
+    }
+  }
+}
