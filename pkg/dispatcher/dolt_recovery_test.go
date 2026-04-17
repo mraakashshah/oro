@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -295,6 +296,107 @@ func TestCheckDoltHealth_DetectsDown(t *testing.T) {
 		offset := gotDeadline.Sub(before)
 		if offset < 4*time.Second || offset > 6*time.Second {
 			t.Errorf("context deadline offset = %v, want ~5s", offset)
+		}
+	})
+}
+
+// TestHeartbeatLoop_DoltRecoveryIntegration verifies that the heartbeat loop
+// periodically probes dolt health and triggers recoverDolt on failure. It
+// drives a short DoltHealthInterval via Config and observes the command
+// sequence bd dolt status → bd dolt start → bd import via a mock runner.
+func TestHeartbeatLoop_DoltRecoveryIntegration(t *testing.T) {
+	t.Run("tick triggers health probe and recovery on failure", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.cfg.DoltHealthInterval = 20 * time.Millisecond
+		d.recoverDoltBackoffFn = func(_ int) time.Duration { return 0 }
+		d.beadsDir = t.TempDir()
+
+		var (
+			mu          sync.Mutex
+			cmds        []mockCall
+			statusCount int
+		)
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				cmds = append(cmds, mockCall{Name: name, Args: args})
+				if name == "bd" && len(args) >= 2 && args[0] == "dolt" && args[1] == "status" {
+					statusCount++
+					if statusCount == 1 {
+						return nil, errors.New("dolt down")
+					}
+				}
+				return nil, nil
+			},
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.heartbeatLoop(ctx)
+
+		// Wait for the full recovery sequence: status (fails) → start → import.
+		waitFor(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			var sawStatus, sawStart, sawImport bool
+			for _, c := range cmds {
+				if c.Name != "bd" {
+					continue
+				}
+				switch {
+				case !sawStatus && len(c.Args) >= 2 && c.Args[0] == "dolt" && c.Args[1] == "status":
+					sawStatus = true
+				case sawStatus && !sawStart && len(c.Args) >= 2 && c.Args[0] == "dolt" && c.Args[1] == "start":
+					sawStart = true
+				case sawStart && !sawImport && len(c.Args) >= 1 && c.Args[0] == "import":
+					sawImport = true
+				}
+			}
+			return sawImport
+		}, 3*time.Second)
+
+		// After a successful recovery, doltRecovering must be cleared so
+		// tryAssign resumes on subsequent ticks.
+		waitFor(t, func() bool {
+			return !d.doltRecovering.Load()
+		}, 1*time.Second)
+	})
+
+	t.Run("skips health probe while recovery already in progress", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.cfg.DoltHealthInterval = 20 * time.Millisecond
+		d.beadsDir = t.TempDir()
+
+		var (
+			mu   sync.Mutex
+			cmds []mockCall
+		)
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				cmds = append(cmds, mockCall{Name: name, Args: args})
+				return nil, nil
+			},
+		}
+
+		// Simulate an in-flight recovery so the tick must short-circuit.
+		d.doltRecovering.Store(true)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.heartbeatLoop(ctx)
+
+		// Give the ticker several fires worth of time.
+		time.Sleep(100 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range cmds {
+			if c.Name == "bd" && len(c.Args) >= 2 && c.Args[0] == "dolt" && c.Args[1] == "status" {
+				t.Fatalf("checkDoltHealth ran while doltRecovering=true: cmds=%v", cmds)
+			}
 		}
 	})
 }

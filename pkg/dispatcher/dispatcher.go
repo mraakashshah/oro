@@ -282,6 +282,7 @@ type Config struct {
 	PaneInactivityTimeout time.Duration // Manager inactivity duration before restart (default 10m).
 	ReviewTimeout         time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
 	BackupInterval        time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
+	DoltHealthInterval    time.Duration // Interval between dolt reachability probes in heartbeatLoop (default 30s).
 	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram         string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	DefaultBranch         string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
@@ -350,6 +351,9 @@ func (c *Config) withDefaults() Config {
 	}
 	if out.BackupInterval == 0 {
 		out.BackupInterval = 5 * time.Minute
+	}
+	if out.DoltHealthInterval == 0 {
+		out.DoltHealthInterval = 30 * time.Second
 	}
 	if out.Estimator == nil {
 		out.Estimator = NewBeadEstimator()

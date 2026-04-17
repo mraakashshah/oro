@@ -284,6 +284,9 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	backupTicker := time.NewTicker(d.cfg.BackupInterval)
 	defer backupTicker.Stop()
 
+	doltHealthTicker := time.NewTicker(d.cfg.DoltHealthInterval)
+	defer doltHealthTicker.Stop()
+
 	var restartCount int
 	var lastPanicTime time.Time
 
@@ -310,6 +313,10 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 				d.gcWorktrees(ctx)
 			case <-backupTicker.C:
 				d.backupFullState(ctx)
+			case <-doltHealthTicker.C:
+				if !d.doltRecovering.Load() && !d.checkDoltHealth(ctx) {
+					d.recoverDolt(ctx)
+				}
 			}
 			return false
 		}()
