@@ -1,0 +1,29 @@
+pkg/dispatcher/health.go
+  1c6adf28e85f1d04 55-95
+pkg/dispatcher/dolt_recovery_test.go
+  1c6adf28e85f1d04 52-150
+pkg/dispatcher/worker_pool.go
+  1c6adf28e85f1d04 287-289,315-316
+.oro/context_pct
+  1c6adf28e85f1d04 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "97b10249bf160f8b0f838c3640e3727b3c8e99a7",
+  "prompts": {
+    "1c6adf28e85f1d04": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "571ff95c-bf1b-4d65-84f2-effb171ccde3",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 179,
+      "total_deletions": 33,
+      "accepted_lines": 146,
+      "overriden_lines": 0
+    }
+  }
+}
