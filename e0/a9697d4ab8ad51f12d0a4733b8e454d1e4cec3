@@ -1,0 +1,36 @@
+cmd/oro/db.go
+  e08c073b6fc10606 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "e0a9697d4ab8ad51f12d0a4733b8e454d1e4cec3",
+  "prompts": {
+    "426273d2564392e3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97fd94a5-118e-4329-8283-d9626a78d3b2",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "e08c073b6fc10606": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8708eae-08bf-455b-8101-efed6609013b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 4,
+      "total_deletions": 26,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    }
+  }
+}
