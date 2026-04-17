@@ -16,12 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // --- Mock implementations ---
@@ -662,7 +661,7 @@ func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	// Use a shared-cache in-memory DB so all connections see the same data.
 	dsn := fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano())
-	db, err := sql.Open("sqlite", dsn)
+	db, err := dbutil.OpenDB(dsn)
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
@@ -9344,7 +9343,7 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 		_ = os.Remove(tmpFile + "-shm")
 	})
 
-	db, err := sql.Open("sqlite", tmpFile)
+	db, err := dbutil.OpenDB(tmpFile)
 	if err != nil {
 		t.Fatalf("open shared db: %v", err)
 	}

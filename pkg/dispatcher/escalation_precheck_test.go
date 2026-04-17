@@ -6,9 +6,8 @@ import (
 	"errors"
 	"testing"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 var errTestShow = errors.New("bead not found")
@@ -322,7 +321,7 @@ func TestRetryPendingEscalations_AutoAck(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup in-memory database
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}

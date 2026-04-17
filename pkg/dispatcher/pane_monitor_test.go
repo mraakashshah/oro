@@ -2,7 +2,6 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,9 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // pollCounter installs a testPanePollDone hook that increments a counter and
@@ -58,7 +56,7 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 	}
 
 	// Create dispatcher with test database
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -191,7 +189,7 @@ func TestPaneMonitorLoop_SkipsMissingFiles(t *testing.T) {
 
 	// Don't create manager dir or any context_pct files
 
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -260,7 +258,7 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 		t.Fatalf("failed to write architect context_pct: %v", err)
 	}
 
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -320,7 +318,7 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 // newPaneTestDispatcher creates a minimal Dispatcher for unit tests of pane monitor functions.
 func newPaneTestDispatcher(t *testing.T, threshold int, panesDir string) *Dispatcher {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -581,7 +579,7 @@ func (m *mockPaneRestarter) firstCall() string {
 // newPaneRestartTestDispatcher creates a Dispatcher with restart-capable config for tests.
 func newPaneRestartTestDispatcher(t *testing.T, panesDir string, restarter PaneRestarter) *Dispatcher {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}

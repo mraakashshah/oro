@@ -9,11 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestOversizeMessage verifies that messages exceeding MaxMessageSize are
@@ -193,7 +192,7 @@ func TestReconnectPayloadValidationPass(t *testing.T) {
 
 func mustOpenDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
