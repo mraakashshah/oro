@@ -1,0 +1,23 @@
+pkg/integration/dispatcher_worker_test.go
+  0e9f6461a08033bd 19,255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "343d41e06edb818153a0a5db608e024c5b81296c",
+  "prompts": {
+    "0e9f6461a08033bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "747309d6-fd87-41ef-b5e7-d9d82c02c7de",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 14,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
