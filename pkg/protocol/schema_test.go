@@ -1,16 +1,14 @@
 package protocol_test
 
 import (
-	"database/sql"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
+	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
 )
 
 func TestSchemaExecsCleanly(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
@@ -23,7 +21,7 @@ func TestSchemaExecsCleanly(t *testing.T) {
 }
 
 func TestSchemaCreatesExpectedTables(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
@@ -48,7 +46,7 @@ func TestSchemaCreatesExpectedTables(t *testing.T) {
 }
 
 func TestSchemaDDL(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
@@ -90,7 +88,7 @@ func TestSchemaDDL(t *testing.T) {
 }
 
 func TestSchemaDDL_RejectionBeadIndex(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
@@ -112,7 +110,7 @@ func TestSchemaDDL_RejectionBeadIndex(t *testing.T) {
 }
 
 func TestSchemaIsIdempotent(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
