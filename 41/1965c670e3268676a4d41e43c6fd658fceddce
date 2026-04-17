@@ -1,0 +1,27 @@
+pkg/dispatcher/dispatcher.go
+  cede4ba5b9e745ae 459-466
+pkg/dispatcher/dolt_recovery_test.go
+  cede4ba5b9e745ae 1-169
+pkg/dispatcher/worker_pool.go
+  cede4ba5b9e745ae 344-383
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "411965c670e3268676a4d41e43c6fd658fceddce",
+  "prompts": {
+    "cede4ba5b9e745ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cbd54e66-c966-4f0e-831b-de6bf6713596",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 236,
+      "total_deletions": 18,
+      "accepted_lines": 217,
+      "overriden_lines": 0
+    }
+  }
+}
