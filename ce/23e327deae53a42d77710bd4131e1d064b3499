@@ -1,0 +1,42 @@
+pkg/dispatcher/dispatcher_test.go
+  4502ff482d80e89f 19,664,9346
+pkg/dispatcher/message_size_test.go
+  4502ff482d80e89f 12,195
+pkg/dispatcher/pane_monitor_test.go
+  4502ff482d80e89f 14,59,192,261,321,582
+pkg/dispatcher/escalation_precheck_test.go
+  4502ff482d80e89f 9,324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "ce23e327deae53a42d77710bd4131e1d064b3499",
+  "prompts": {
+    "4502ff482d80e89f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b07ff886-4ab9-4678-8932-d1c8e7ef89ca",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 138,
+      "total_deletions": 18,
+      "accepted_lines": 138,
+      "overriden_lines": 0
+    },
+    "cdf8f2b03113498e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "88bc772d-8285-4d5f-b182-102363752295",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
