@@ -408,7 +408,9 @@ func TestMerge_FFOnlyMergeFails_RetryAlsoFails(t *testing.T) {
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
 			// 3. git merge --ff-only — fails (main moved)
 			{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
-			// 4. git rebase (retry) — also fails
+			// 4. git rev-parse HEAD — returns primary repo's HEAD for retry base
+			{Stdout: "current-head-sha\n", Stderr: "", Err: nil},
+			// 5. git rebase (retry onto primary HEAD) — also fails (e.g. real conflict)
 			{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
 		},
 	}
@@ -1061,7 +1063,8 @@ func TestAbortMu_PanicSafety(t *testing.T) {
 
 func TestMerge_FFOnlyFails_RebasesAndRetries(t *testing.T) {
 	// When ff-only merge fails (main moved between rebase and ffLock acquisition),
-	// the coordinator should re-rebase the branch and retry ff-only — not give up.
+	// the coordinator should re-rebase the branch onto the primary repo's current HEAD
+	// (not the stale effectiveTarget) and retry ff-only — not give up.
 	// This prevents the dispatcher assignment spam loop (oro-mz9v).
 	mock := &mockGitRunner{
 		results: []mockResult{
@@ -1073,13 +1076,15 @@ func TestMerge_FFOnlyFails_RebasesAndRetries(t *testing.T) {
 			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
 			// 3. git merge --ff-only — FAILS (main moved)
 			{Stdout: "", Stderr: "fatal: Not possible to fast-forward, aborting.", Err: fmt.Errorf("exit status 128")},
-			// 4. git rebase main bead/retry (re-rebase in worktree)
+			// 4. git rev-parse HEAD — returns primary repo's current HEAD for retry base
+			{Stdout: "current-head-sha\n", Stderr: "", Err: nil},
+			// 5. git rebase current-head-sha bead/retry (re-rebase onto primary HEAD)
 			{Stdout: "", Stderr: "", Err: nil},
-			// 5. git merge --ff-only — succeeds on retry
+			// 6. git merge --ff-only — succeeds on retry
 			{Stdout: "", Stderr: "", Err: nil},
-			// 6. git worktree remove --force
+			// 7. git worktree remove --force
 			{Stdout: "", Stderr: "", Err: nil},
-			// 7. git rev-parse HEAD
+			// 8. git rev-parse HEAD
 			{Stdout: "retried789\n", Stderr: "", Err: nil},
 		},
 	}
@@ -1098,8 +1103,8 @@ func TestMerge_FFOnlyFails_RebasesAndRetries(t *testing.T) {
 	}
 
 	calls := mock.getCalls()
-	if len(calls) != 8 {
-		t.Fatalf("expected 8 git calls (initial + retry), got %d: %+v", len(calls), calls)
+	if len(calls) != 9 {
+		t.Fatalf("expected 9 git calls (initial + retry), got %d: %+v", len(calls), calls)
 	}
 
 	// Call 0: isBranchMerged check
@@ -1110,14 +1115,16 @@ func TestMerge_FFOnlyFails_RebasesAndRetries(t *testing.T) {
 	assertArgs(t, calls[2], "/tmp/wt-retry", "rev-parse", "--git-common-dir")
 	// Call 3: first ff-only attempt (fails)
 	assertArgs(t, calls[3], "/repo", "merge", "--ff-only", "bead/retry")
-	// Call 4: re-rebase in worktree (still alive — not removed yet)
-	assertArgs(t, calls[4], "/tmp/wt-retry", "rebase", "main", "bead/retry")
-	// Call 5: retry ff-only (succeeds)
-	assertArgs(t, calls[5], "/repo", "merge", "--ff-only", "bead/retry")
-	// Call 6: worktree remove (after successful merge)
-	assertArgs(t, calls[6], "/repo", "worktree", "remove", "--force", "/tmp/wt-retry")
-	// Call 7: rev-parse HEAD
-	assertArgs(t, calls[7], "/repo", "rev-parse", "HEAD")
+	// Call 4: rev-parse HEAD to get retry base (new: uses primary HEAD, not effectiveTarget)
+	assertArgs(t, calls[4], "/repo", "rev-parse", "HEAD")
+	// Call 5: re-rebase onto primary HEAD (not stale effectiveTarget)
+	assertArgs(t, calls[5], "/tmp/wt-retry", "rebase", "current-head-sha", "bead/retry")
+	// Call 6: retry ff-only (succeeds)
+	assertArgs(t, calls[6], "/repo", "merge", "--ff-only", "bead/retry")
+	// Call 7: worktree remove (after successful merge)
+	assertArgs(t, calls[7], "/repo", "worktree", "remove", "--force", "/tmp/wt-retry")
+	// Call 8: rev-parse HEAD
+	assertArgs(t, calls[8], "/repo", "rev-parse", "HEAD")
 }
 
 func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
