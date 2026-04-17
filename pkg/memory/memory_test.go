@@ -8,15 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // setupTestDB creates an in-memory SQLite database with the full schema.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -2325,7 +2324,7 @@ func TestSetProjectScopesSearchAndInsert(t *testing.T) {
 
 func TestMigrateProjectColumn_Idempotent(t *testing.T) {
 	// Create DB with OLD schema (without project column)
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
