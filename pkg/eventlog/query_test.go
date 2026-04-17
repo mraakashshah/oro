@@ -7,10 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/eventlog"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // setupTestDB creates a test database with some sample events
@@ -20,7 +19,7 @@ func setupTestDB(t *testing.T) (*sql.DB, string) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := dbutil.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
@@ -231,7 +230,7 @@ func TestQueryWorkerEvents_EmptyDBPath(t *testing.T) {
 	emptyDBPath := filepath.Join(tmpDir, "empty.db")
 
 	// Create empty database with schema but no data
-	db, err := sql.Open("sqlite", emptyDBPath)
+	db, err := dbutil.OpenDB(emptyDBPath)
 	if err != nil {
 		t.Fatalf("failed to create empty db: %v", err)
 	}

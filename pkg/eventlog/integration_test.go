@@ -2,15 +2,13 @@ package eventlog_test
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/eventlog"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestIntegration_WorkerHistoryQuery demonstrates the full workflow:
@@ -25,7 +23,7 @@ func TestIntegration_WorkerHistoryQuery(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "dispatcher.db")
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := dbutil.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}

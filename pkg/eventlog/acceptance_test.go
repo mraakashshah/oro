@@ -2,15 +2,13 @@ package eventlog_test
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/eventlog"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestAcceptanceCriteria_QuerySupport verifies AC:
@@ -22,7 +20,7 @@ func TestAcceptanceCriteria_QuerySupport(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "dispatcher.db")
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := dbutil.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -70,7 +68,7 @@ func TestAcceptanceCriteria_FilterSupport(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "dispatcher.db")
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := dbutil.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -173,7 +171,7 @@ func TestAcceptanceCriteria_StructuredData(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "dispatcher.db")
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := dbutil.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -237,7 +235,7 @@ func TestAcceptanceCriteria_ReadOnlyWAL(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "dispatcher.db")
 
 	// Create database and enable WAL
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := dbutil.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -291,7 +289,7 @@ func TestAcceptanceCriteria_GracefulHandling(t *testing.T) {
 		tmpDir := t.TempDir()
 		dbPath := filepath.Join(tmpDir, "empty.db")
 
-		db, err := sql.Open("sqlite", dbPath)
+		db, err := dbutil.OpenDB(dbPath)
 		if err != nil {
 			t.Fatalf("failed to create db: %v", err)
 		}
@@ -326,7 +324,7 @@ func TestAcceptanceCriteria_GracefulHandling(t *testing.T) {
 		tmpDir := t.TempDir()
 		dbPath := filepath.Join(tmpDir, "test.db")
 
-		db, err := sql.Open("sqlite", dbPath)
+		db, err := dbutil.OpenDB(dbPath)
 		if err != nil {
 			t.Fatalf("failed to create db: %v", err)
 		}
