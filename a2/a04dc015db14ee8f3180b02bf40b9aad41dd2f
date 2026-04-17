@@ -1,0 +1,40 @@
+pkg/dbutil/openDB_test.go
+  57abb82c8fa8f53a 1-77
+pkg/dbutil/openDB.go
+  57abb82c8fa8f53a 1-48
+pkg/eventlog/query.go
+  57abb82c8fa8f53a 14,59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "a2a04dc015db14ee8f3180b02bf40b9aad41dd2f",
+  "prompts": {
+    "57abb82c8fa8f53a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "65fc17dd-ab12-44f9-b86a-ea69ddafc7be",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 131,
+      "total_deletions": 15,
+      "accepted_lines": 128,
+      "overriden_lines": 0
+    },
+    "73b25ab8490db04a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7caca6b6-4943-41e0-a2f1-6715f4e99595",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 1,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
