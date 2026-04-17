@@ -1,0 +1,35 @@
+cmd/oro/cmd_remember_test.go
+  55119531d18ba162 9,17
+cmd/oro/cmd_worker_test.go
+  55119531d18ba162 9,79,95
+cmd/oro/cmd_start_index_test.go
+  55119531d18ba162 9-10,70,107
+cmd/oro/memory_test.go
+  55119531d18ba162 10,18
+cmd/oro/db_test.go
+  55119531d18ba162 7,246
+cmd/oro/cmd_memories_test.go
+  55119531d18ba162 11,21,467
+cmd/oro/cmd_logs_test.go
+  55119531d18ba162 12-13,20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "5f0998a7893f51e77211c5ea42a440a1c98026ba",
+  "prompts": {
+    "55119531d18ba162": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e9fa3399-ca6f-43a1-9fb8-293116f40466",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 145,
+      "total_deletions": 23,
+      "accepted_lines": 145,
+      "overriden_lines": 0
+    }
+  }
+}
