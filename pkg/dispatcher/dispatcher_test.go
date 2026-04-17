@@ -17491,3 +17491,81 @@ func TestDispatcherBranchesFromMainNotStaleAgent(t *testing.T) {
 		t.Errorf("op[1] = %q, want %q (create must use main as base branch)", snapshot[1], "create:oro-stale:main")
 	}
 }
+
+// TestPruneStaleAgentBranches_DeletesAllAtStartup verifies that the startup
+// prune path deletes every agent/* branch returned by `git branch --list agent/*`,
+// including the one marked as current with a "*" prefix. This covers AC part (a):
+// "oro start: delete any pre-existing agent/* branches at startup".
+func TestPruneStaleAgentBranches_DeletesAllAtStartup(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.repoRoot = t.TempDir()
+
+	var mu sync.Mutex
+	var deleted []string
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "git" {
+				return nil, fmt.Errorf("unexpected command: %s", name)
+			}
+			// Find the git subcommand (first arg after "-C <repoRoot>" prefix).
+			var sub string
+			for i, a := range args {
+				if a == "branch" && i+1 < len(args) {
+					sub = args[i+1]
+					break
+				}
+			}
+			switch sub {
+			case "--list":
+				// Simulate two stale agent branches; one is the currently checked-out branch.
+				return []byte("  agent/oro-foo\n* agent/oro-bar\n"), nil
+			case "-D":
+				// Last arg is the branch to delete.
+				mu.Lock()
+				deleted = append(deleted, args[len(args)-1])
+				mu.Unlock()
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unexpected git subcommand: %v", args)
+		},
+	}
+	d.shutdownRunner = runner
+
+	d.pruneStaleAgentBranches(context.Background())
+
+	mu.Lock()
+	snapshot := append([]string(nil), deleted...)
+	mu.Unlock()
+
+	want := map[string]bool{"agent/oro-foo": false, "agent/oro-bar": false}
+	for _, b := range snapshot {
+		if _, ok := want[b]; !ok {
+			t.Errorf("unexpected branch deleted: %q", b)
+			continue
+		}
+		want[b] = true
+	}
+	for b, ok := range want {
+		if !ok {
+			t.Errorf("expected branch %q to be deleted, got deleted=%v", b, snapshot)
+		}
+	}
+}
+
+// TestPruneStaleAgentBranches_NoRepoRoot verifies the early-return guard: when
+// d.repoRoot is empty, no git commands run. This prevents spurious failures in
+// tests that construct a Dispatcher without wiring a real repo root.
+func TestPruneStaleAgentBranches_NoRepoRoot(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.repoRoot = ""
+
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			t.Fatalf("unexpected git call: %s %v", name, args)
+			return nil, nil
+		},
+	}
+	d.shutdownRunner = runner
+
+	d.pruneStaleAgentBranches(context.Background())
+}

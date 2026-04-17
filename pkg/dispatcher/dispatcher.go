@@ -4414,10 +4414,6 @@ func (d *Dispatcher) persistBeadCount(ctx context.Context, beadID, column string
 	}
 }
 
-// resetOrphanedBeads resets any in_progress beads back to open on startup.
-// This handles crash recovery: if the dispatcher crashed while beads were
-// in_progress, they would remain stuck in that state without this reset.
-// Errors are non-fatal — logged via logEvent and startup continues.
 // pruneStaleAgentBranches deletes all agent/* branches at startup so that fresh
 // worktrees always branch from main HEAD. Non-fatal: errors are logged and startup continues.
 func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
@@ -4431,7 +4427,6 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		branch := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "*"))
-		branch = strings.TrimSpace(branch)
 		if branch == "" {
 			continue
 		}
@@ -4457,6 +4452,10 @@ func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerI
 		fmt.Sprintf(`{"branch":%q}`, branch))
 }
 
+// resetOrphanedBeads resets any in_progress beads back to open on startup.
+// This handles crash recovery: if the dispatcher crashed while beads were
+// in_progress, they would remain stuck in that state without this reset.
+// Errors are non-fatal — logged via logEvent and startup continues.
 func (d *Dispatcher) resetOrphanedBeads(ctx context.Context) {
 	beads, err := d.beads.InProgress(ctx)
 	if err != nil {
