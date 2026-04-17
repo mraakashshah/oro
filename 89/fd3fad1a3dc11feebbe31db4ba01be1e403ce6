@@ -1,0 +1,25 @@
+pkg/protocol/tables_test.go
+  17a5acd4c3018a3a 9,16
+pkg/protocol/schema_test.go
+  17a5acd4c3018a3a 6,11,24,49,91,113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "89fd3fad1a3dc11feebbe31db4ba01be1e403ce6",
+  "prompts": {
+    "17a5acd4c3018a3a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc03a585-f413-4368-a3a7-c9eca582285b",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 11,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    }
+  }
+}
