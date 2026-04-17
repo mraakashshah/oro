@@ -17420,3 +17420,74 @@ func TestEscalationRetryLoopShutdown(t *testing.T) {
 		t.Fatal("escalationRetryLoop did not exit after shutdownCh was closed")
 	}
 }
+
+// TestDispatcherBranchesFromMainNotStaleAgent verifies that when an agent/* branch
+// already exists from a prior session, the dispatcher deletes it before creating a
+// fresh worktree, ensuring the new branch is rooted at main HEAD and not the stale tip.
+func TestDispatcherBranchesFromMainNotStaleAgent(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+	var mu sync.Mutex
+	var ops []string // records "delete:<branch>" and "create:<beadID>:<baseBranch>" in call order
+
+	// Simulate a stale agent/oro-stale branch from a prior session.
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == "agent/oro-stale", nil
+	}
+	wtMgr.deleteBranchFn = func(branch string) error {
+		mu.Lock()
+		ops = append(ops, "delete:"+branch)
+		mu.Unlock()
+		return nil
+	}
+	wtMgr.createFn = func(_ context.Context, beadID, baseBranch string) (string, string, error) {
+		mu.Lock()
+		ops = append(ops, "create:"+beadID+":"+baseBranch)
+		mu.Unlock()
+		return "/tmp/wt-" + beadID, "agent/" + beadID, nil
+	}
+
+	// isBranchMerged must return false so the bead isn't skipped before assignment.
+	d.shutdownRunner = &mockCommandRunner{err: errors.New("exit status 1")}
+
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       "oro-stale",
+		Title:    "Stale bead from prior session",
+		Priority: 1,
+	}})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN message")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+
+	mu.Lock()
+	snapshot := make([]string, len(ops))
+	copy(snapshot, ops)
+	mu.Unlock()
+
+	// Verify: stale branch deleted before new worktree created.
+	if len(snapshot) < 2 {
+		t.Fatalf("expected at least 2 ops (delete then create), got %v", snapshot)
+	}
+	if snapshot[0] != "delete:agent/oro-stale" {
+		t.Errorf("op[0] = %q, want %q (stale branch must be deleted first)", snapshot[0], "delete:agent/oro-stale")
+	}
+	if snapshot[1] != "create:oro-stale:main" {
+		t.Errorf("op[1] = %q, want %q (create must use main as base branch)", snapshot[1], "create:oro-stale:main")
+	}
+}

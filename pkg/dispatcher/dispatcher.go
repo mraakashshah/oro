@@ -453,11 +453,6 @@ type Dispatcher struct {
 	// startTime records when Run() was called (for uptime).
 	startTime time.Time
 
-	// dolt crash-recovery state (oro-cb6y / oro-nq6t epic).
-	lastBackupBeadCount  int       // bead count at last JSONL backup snapshot
-	doltRecoveryAttempts int       // number of recovery attempts since last clean start
-	lastRecoveryTime     time.Time // wall time of the most recent recovery attempt
-
 	// cachedQueueDepth stores the last-known count from beads.Ready() in the assign loop.
 	cachedQueueDepth int
 
@@ -794,6 +789,10 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	if pruneErr := d.worktrees.Prune(ctx); pruneErr != nil {
 		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
 	}
+
+	// Delete any stale agent/* branches left over from a previous session so
+	// that fresh worktrees always branch from main HEAD.
+	d.pruneStaleAgentBranches(ctx)
 
 	// Restore in-memory tracking maps from active assignments persisted in SQLite.
 	if err := d.restoreState(ctx); err != nil {
@@ -3211,6 +3210,8 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "worktree_reused", "dispatcher", bead.ID, w.id,
 			fmt.Sprintf(`{"worktree":%q}`, worktree))
 	} else {
+		// Proactively delete any stale agent branch before creating a fresh worktree.
+		d.deleteStaleAgentBranch(ctx, bead.ID, w.id)
 		// Create new worktree, branching from the resolved base branch.
 		worktree, branch, err = d.worktrees.Create(ctx, bead.ID, baseBranch)
 		if err != nil {
@@ -4417,6 +4418,45 @@ func (d *Dispatcher) persistBeadCount(ctx context.Context, beadID, column string
 // This handles crash recovery: if the dispatcher crashed while beads were
 // in_progress, they would remain stuck in that state without this reset.
 // Errors are non-fatal — logged via logEvent and startup continues.
+// pruneStaleAgentBranches deletes all agent/* branches at startup so that fresh
+// worktrees always branch from main HEAD. Non-fatal: errors are logged and startup continues.
+func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
+	if d.repoRoot == "" {
+		return
+	}
+	out, err := d.shutdownRunner.Run(ctx, "git", "-C", d.repoRoot, "branch", "--list", "agent/*")
+	if err != nil {
+		_ = d.logEvent(ctx, "startup_prune_branches_list_failed", "dispatcher", "", "", err.Error())
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		branch := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "*"))
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			continue
+		}
+		if _, delErr := d.shutdownRunner.Run(ctx, "git", "-C", d.repoRoot, "branch", "-D", branch); delErr != nil {
+			_ = d.logEvent(ctx, "startup_prune_branch_delete_failed", "dispatcher", "", "", branch+": "+delErr.Error())
+		}
+	}
+}
+
+// deleteStaleAgentBranch deletes agent/<beadID> if it exists, logging the outcome.
+// Called before worktree.Create to ensure the new worktree always branches from main HEAD.
+func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerID string) {
+	branch := protocol.BranchPrefix + beadID
+	exists, _ := d.worktrees.BranchExists(ctx, branch)
+	if !exists {
+		return
+	}
+	if err := d.worktrees.DeleteBranch(ctx, branch); err != nil {
+		_ = d.logEvent(ctx, "stale_agent_branch_delete_error", "dispatcher", beadID, workerID, err.Error())
+		return
+	}
+	_ = d.logEvent(ctx, "stale_agent_branch_deleted", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"branch":%q}`, branch))
+}
+
 func (d *Dispatcher) resetOrphanedBeads(ctx context.Context) {
 	beads, err := d.beads.InProgress(ctx)
 	if err != nil {
