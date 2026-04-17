@@ -1,0 +1,28 @@
+pkg/dispatcher/dispatcher.go
+  a90320b3d6ff2581 418-427
+pkg/dispatcher/dolt_recovery.go
+  a90320b3d6ff2581 1-76
+pkg/dispatcher/dolt_recovery_test.go
+  32d45c53fb77ca51 50-51
+  a90320b3d6ff2581 52-158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "3b4e09111e2ed8be301f242a5e17ddc08e97f4ea",
+  "prompts": {
+    "a90320b3d6ff2581": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ea6410a0-7c5d-401b-81ed-56ebeb981334",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 196,
+      "total_deletions": 6,
+      "accepted_lines": 193,
+      "overriden_lines": 0
+    }
+  }
+}
