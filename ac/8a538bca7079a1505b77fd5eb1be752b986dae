@@ -1,0 +1,27 @@
+pkg/eventlog/integration_test.go
+  6275cf3c561042dd 9,26
+pkg/eventlog/query_test.go
+  6275cf3c561042dd 10,22,233
+pkg/eventlog/acceptance_test.go
+  6275cf3c561042dd 9,23,71,174,238,292,327
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "ac8a538bca7079a1505b77fd5eb1be752b986dae",
+  "prompts": {
+    "6275cf3c561042dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b0661241-2097-4d67-8af0-bf0cd633eda9",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 138,
+      "total_deletions": 18,
+      "accepted_lines": 138,
+      "overriden_lines": 0
+    }
+  }
+}
