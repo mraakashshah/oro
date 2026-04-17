@@ -150,6 +150,11 @@ func CountDistinctModules(acceptance string) int {
 			if part == "" || isAllDigits(part) {
 				continue
 			}
+			// Skip bare symbol names: entries with no slash and no dot (e.g., "Embed", "ExportVocab").
+			// Keep filenames like "main.go" (has dot) and paths like "pkg/foo/bar.go" (has slash).
+			if !strings.Contains(part, "/") && !strings.Contains(part, ".") {
+				continue
+			}
 			seen[filepath.Dir(part)] = struct{}{}
 		}
 	}

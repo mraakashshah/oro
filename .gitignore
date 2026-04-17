@@ -45,6 +45,7 @@ cmd/oro/_assets/
 .beads/dolt-config.log
 .gstack/
 pkg/dispatcher/workers/
+/.oro/context_pct
 
 # Local config
 .claude/settings.local.json

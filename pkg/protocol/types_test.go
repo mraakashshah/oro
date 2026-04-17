@@ -245,6 +245,44 @@ func TestCountDistinctModulesLineNumbers(t *testing.T) {
 	}
 }
 
+func TestCountDistinctModulesSymbols(t *testing.T) {
+	tests := []struct {
+		name       string
+		acceptance string
+		expected   int
+	}{
+		{
+			name:       "bare symbol names after colon are skipped",
+			acceptance: "Read: pkg/memory/embed.go:Embedder,Embed,ExportVocab",
+			expected:   1,
+		},
+		{
+			name:       "multiple bare symbols same module",
+			acceptance: "Read: pkg/dispatcher/foo.go:FuncA,FuncB,FuncC",
+			expected:   1,
+		},
+		{
+			name:       "mix of files and bare symbols",
+			acceptance: "Read: pkg/ops/bar.go,FuncName,pkg/ops/baz.go:Symbol",
+			expected:   1,
+		},
+		{
+			name:       "root file still counts",
+			acceptance: "Read: main.go",
+			expected:   1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := protocol.CountDistinctModules(tt.acceptance)
+			if got != tt.expected {
+				t.Errorf("CountDistinctModules(%q) = %d, want %d", tt.acceptance, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBeadUnmarshalNewFields(t *testing.T) {
 	tests := []struct {
 		name            string
