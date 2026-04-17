@@ -147,13 +147,24 @@ func CountDistinctModules(acceptance string) int {
 		content := strings.TrimPrefix(line, "Read:")
 		for _, part := range strings.Split(content, ",") {
 			part = strings.TrimSpace(part)
-			if part == "" {
+			if part == "" || isAllDigits(part) {
 				continue
 			}
 			seen[filepath.Dir(part)] = struct{}{}
 		}
 	}
 	return len(seen)
+}
+
+// isAllDigits reports whether s is non-empty and contains only ASCII digits.
+// Used to detect bare line-number tokens (e.g. "26", "51") in Read: fields.
+func isAllDigits(s string) bool {
+	for i := range len(s) {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // CountReadFiles counts lines starting with "Read:" in the acceptance criteria string.
