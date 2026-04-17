@@ -1,0 +1,36 @@
+pkg/worker/worker_test.go
+  88efb152c71d6656 20,2280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "ffbf8a6209bff25b0e373b4126e217036b5181e9",
+  "prompts": {
+    "6719c5ee09002638": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ea37ef8-f96f-47e8-89cd-25d880565601",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 1,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    },
+    "88efb152c71d6656": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "46469217-69e7-42e6-87b4-9fb81da0a420",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 3,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
