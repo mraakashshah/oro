@@ -1,0 +1,25 @@
+pkg/codesearch/index.go
+  3ece35243dc82ffe 12,81
+pkg/codesearch/index_test.go
+  3ece35243dc82ffe 1261-1299
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "4a2487389a2cfee6b36bba5c65b38fe53dd396ee",
+  "prompts": {
+    "3ece35243dc82ffe": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f04c3a71-f520-4bda-bb40-e72bd49b83df",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 189,
+      "total_deletions": 46,
+      "accepted_lines": 167,
+      "overriden_lines": 0
+    }
+  }
+}
