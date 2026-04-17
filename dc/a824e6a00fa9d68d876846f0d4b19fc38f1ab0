@@ -1,0 +1,27 @@
+pkg/dispatcher/merge_test.go
+  ab285e24940a11fa 1-186
+pkg/merge/merge.go
+  ab285e24940a11fa 197-206
+pkg/merge/merge_test.go
+  ab285e24940a11fa 411-413,1066-1067,1079-1081,1083,1085,1087,1106-1107,1118-1127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "dca824e6a00fa9d68d876846f0d4b19fc38f1ab0",
+  "prompts": {
+    "ab285e24940a11fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2421a25-050f-48dd-93e7-569bfd279288",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 229,
+      "total_deletions": 29,
+      "accepted_lines": 220,
+      "overriden_lines": 0
+    }
+  }
+}
