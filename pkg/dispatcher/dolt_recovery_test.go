@@ -148,6 +148,113 @@ func TestChangeDetectionBackup_TriggersOnDelta(t *testing.T) {
 	})
 }
 
+// TestRecoverDolt_FullSequence verifies the full recoverDolt sequence:
+// sets doltRecovering, shells out bd dolt start + bd import, unsets on success,
+// increments attempts and applies backoff on failure, escalates after 3 failures,
+// and logs dolt_recovery_started / dolt_recovery_succeeded / dolt_recovery_failed.
+func TestRecoverDolt_FullSequence(t *testing.T) {
+	t.Run("success: sets doltRecovering, runs commands, unsets on success", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+		d.recoverDoltBackoffFn = func(_ int) time.Duration { return 0 }
+		d.beadsDir = t.TempDir()
+
+		var cmds []mockCall
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				cmds = append(cmds, mockCall{Name: name, Args: args})
+				return nil, nil
+			},
+		}
+
+		d.recoverDolt(context.Background())
+
+		if d.doltRecovering.Load() {
+			t.Error("doltRecovering still true after success, want false")
+		}
+		if d.doltRecoveryAttempts != 0 {
+			t.Errorf("doltRecoveryAttempts = %d, want 0 after success", d.doltRecoveryAttempts)
+		}
+		if msgs := esc.Messages(); len(msgs) != 0 {
+			t.Errorf("unexpected escalation on success: %v", msgs)
+		}
+		if len(cmds) < 2 {
+			t.Fatalf("expected >= 2 commands, got %d: %v", len(cmds), cmds)
+		}
+		if cmds[0].Name != "bd" || len(cmds[0].Args) < 2 || cmds[0].Args[0] != "dolt" || cmds[0].Args[1] != "start" {
+			t.Errorf("first command = %s %v, want bd dolt start", cmds[0].Name, cmds[0].Args)
+		}
+		if cmds[1].Name != "bd" || len(cmds[1].Args) < 1 || cmds[1].Args[0] != "import" {
+			t.Errorf("second command = %s %v, want bd import ...", cmds[1].Name, cmds[1].Args)
+		}
+		if len(cmds[1].Args) < 2 || cmds[1].Args[1] == "" {
+			t.Errorf("bd import missing backup path arg, got %v", cmds[1].Args)
+		}
+		if eventCount(t, d.db, "dolt_recovery_started") < 1 {
+			t.Error("dolt_recovery_started event not logged")
+		}
+		if eventCount(t, d.db, "dolt_recovery_succeeded") < 1 {
+			t.Error("dolt_recovery_succeeded event not logged")
+		}
+	})
+
+	t.Run("failure: doltRecovering stays true, increments attempts, logs event", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+		d.recoverDoltBackoffFn = func(_ int) time.Duration { return 0 }
+		d.beadsDir = t.TempDir()
+		d.shutdownRunner = &mockCommandRunner{err: errors.New("port conflict")}
+
+		d.recoverDolt(context.Background())
+
+		if !d.doltRecovering.Load() {
+			t.Error("doltRecovering should be true after failed recovery")
+		}
+		if d.doltRecoveryAttempts != 1 {
+			t.Errorf("doltRecoveryAttempts = %d, want 1 after first failure", d.doltRecoveryAttempts)
+		}
+		if msgs := esc.Messages(); len(msgs) != 0 {
+			t.Errorf("unexpected escalation after first failure: %v", msgs)
+		}
+		if eventCount(t, d.db, "dolt_recovery_failed") < 1 {
+			t.Error("dolt_recovery_failed event not logged")
+		}
+	})
+
+	t.Run("backoff: recoverDoltBackoff returns 1s,2s,4s for attempts 1,2,3", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		cases := []struct {
+			n    int
+			want time.Duration
+		}{
+			{1, 1 * time.Second},
+			{2, 2 * time.Second},
+			{3, 4 * time.Second},
+		}
+		for _, c := range cases {
+			got := d.recoverDoltBackoff(c.n)
+			if got != c.want {
+				t.Errorf("recoverDoltBackoff(%d) = %v, want %v", c.n, got, c.want)
+			}
+		}
+	})
+
+	t.Run("escalates after 3 consecutive failures", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+		d.recoverDoltBackoffFn = func(_ int) time.Duration { return 0 }
+		d.beadsDir = t.TempDir()
+		d.shutdownRunner = &mockCommandRunner{err: errors.New("bd dolt start failed")}
+
+		d.recoverDolt(context.Background())
+		d.recoverDolt(context.Background())
+		d.recoverDolt(context.Background())
+
+		msgs := esc.Messages()
+		if len(msgs) == 0 {
+			t.Fatal("expected escalation after 3 consecutive failures, got none")
+		}
+	})
+}
+
 // TestCheckDoltHealth_DetectsDown verifies that checkDoltHealth returns false
 // when "bd dolt status" exits non-zero, true on success, and that it applies a
 // 5-second context timeout to the command.
