@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // SQLite driver
+	"oro/pkg/dbutil"
 )
 
 // Event represents a single event from the dispatcher log.
@@ -48,7 +48,7 @@ type Reader struct {
 	db *sql.DB
 }
 
-// NewReader opens the dispatcher's SQLite database in read-only mode with WAL.
+// NewReader opens the dispatcher's SQLite database.
 // Returns an error if the database doesn't exist or cannot be opened.
 func NewReader(dbPath string) (*Reader, error) {
 	// Verify database file exists before attempting to open
@@ -56,18 +56,9 @@ func NewReader(dbPath string) (*Reader, error) {
 		return nil, fmt.Errorf("database not found: %w", err)
 	}
 
-	// Open in read-only mode with WAL to avoid blocking the dispatcher
-	dsn := fmt.Sprintf("file:%s?mode=ro&_journal_mode=WAL", dbPath)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := dbutil.OpenDB(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
-	}
-
-	// Test the connection
-	ctx := context.Background()
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
 	return &Reader{db: db}, nil
