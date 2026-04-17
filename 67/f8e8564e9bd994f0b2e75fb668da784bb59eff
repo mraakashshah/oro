@@ -1,0 +1,29 @@
+pkg/dispatcher/dispatcher_test.go
+  7c839e347ca64bec 19,664,9346
+pkg/dispatcher/pane_monitor_test.go
+  7c839e347ca64bec 14,59,192,261,321,582
+pkg/dispatcher/message_size_test.go
+  7c839e347ca64bec 12,195
+pkg/dispatcher/escalation_precheck_test.go
+  7c839e347ca64bec 9,324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "67f8e8564e9bd994f0b2e75fb668da784bb59eff",
+  "prompts": {
+    "7c839e347ca64bec": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ca62acc1-2a3f-467f-95f2-2965d66d8f8e",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 18,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    }
+  }
+}
