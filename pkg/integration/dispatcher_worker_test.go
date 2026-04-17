@@ -16,13 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
-
-	_ "modernc.org/sqlite"
 )
 
 // --- Mock implementations (duplicated from dispatcher_test since they're unexported) ---
@@ -253,15 +252,9 @@ func (s *mockWorkerSpawner) SpawnCalls() []spawnCall {
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := fmt.Sprintf("file:integ_%d?mode=memory&cache=shared", time.Now().UnixNano())
-	db, err := sql.Open("sqlite", dsn)
+	db, err := dbutil.OpenDB(dsn)
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		t.Fatalf("set WAL mode: %v", err)
-	}
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		t.Fatalf("set busy timeout: %v", err)
 	}
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
 		t.Fatalf("init schema: %v", err)
