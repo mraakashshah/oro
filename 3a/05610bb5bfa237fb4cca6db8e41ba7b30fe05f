@@ -1,0 +1,23 @@
+pkg/worker/worker_test.go
+  c42ec8c5ccb6d7de 20,2280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "3a05610bb5bfa237fb4cca6db8e41ba7b30fe05f",
+  "prompts": {
+    "c42ec8c5ccb6d7de": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "18708af1-6fe8-48b0-b1ad-fc82a477069e",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 6,
+      "total_deletions": 6,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
