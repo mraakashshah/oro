@@ -303,6 +303,7 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 				return true
 			case <-ticker.C:
 				d.callCheckHeartbeats(ctx)
+				d.maybeChangeDetectionBackup(ctx)
 			case <-pruneTicker.C:
 				d.pruneStaleTracking(ctx)
 			case <-gcTicker.C:
@@ -338,6 +339,35 @@ func (d *Dispatcher) backupFullState(ctx context.Context) {
 	backupPath := filepath.Join(backupDir, "full-state.jsonl")
 	if err := os.WriteFile(backupPath, data, 0o644); err != nil { //nolint:gosec // backupPath derives from trusted beadsDir
 		slog.WarnContext(ctx, "full_state_backup_write_failed", "error", err.Error())
+	}
+}
+
+// maybeChangeDetectionBackup triggers a full backup when the bead count changes by >=5
+// since the last backup. This provides a faster detection mechanism for large queue
+// changes compared to the fixed-interval backup. The current bead count is computed as
+// cachedQueueDepth + (beads.InProgress count or 0 on error). If abs(delta) >= 5,
+// backupFullState is called and lastBackupBeadCount is updated.
+func (d *Dispatcher) maybeChangeDetectionBackup(ctx context.Context) {
+	d.mu.Lock()
+	cachedDepth := d.cachedQueueDepth
+	lastCount := d.lastBackupBeadCount
+	d.mu.Unlock()
+
+	// Get in-progress count; if it fails, use cachedDepth alone as a best-effort estimate.
+	inProgressBeads, err := d.beads.InProgress(ctx)
+	if err != nil {
+		inProgressBeads = []protocol.Bead{}
+	}
+
+	currentCount := cachedDepth + len(inProgressBeads)
+	delta := currentCount - lastCount
+
+	// Trigger backup if absolute delta >= 5
+	if delta >= 5 || delta <= -5 {
+		d.backupFullState(ctx)
+		d.mu.Lock()
+		d.lastBackupBeadCount = currentCount
+		d.mu.Unlock()
 	}
 }
 

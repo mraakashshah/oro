@@ -456,6 +456,10 @@ type Dispatcher struct {
 	// cachedQueueDepth stores the last-known count from beads.Ready() in the assign loop.
 	cachedQueueDepth int
 
+	// lastBackupBeadCount stores the bead count at the time of the last change-detection backup.
+	// Used by maybeChangeDetectionBackup to detect when the queue size changes by >=5.
+	lastBackupBeadCount int
+
 	// nowFunc allows tests to control time.
 	nowFunc func() time.Time
 
