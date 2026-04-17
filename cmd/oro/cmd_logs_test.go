@@ -9,13 +9,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/dbutil"
 )
 
 // setupTestDB creates an in-memory SQLite database with the events table schema.
 func setupTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}

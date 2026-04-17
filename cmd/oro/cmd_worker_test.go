@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"oro/pkg/dbutil"
 )
 
 func TestNewWorkerCmd_Flags(t *testing.T) {
@@ -77,7 +76,7 @@ func TestNewWorkerCmd_InvalidSocket(t *testing.T) {
 func TestOpenWorkerMemoryDB(t *testing.T) {
 	// Use a temp file for the DB so we can verify it opens correctly.
 	dsn := fmt.Sprintf("file:worker_mem_%d?mode=memory&cache=shared", time.Now().UnixNano())
-	db, err := sql.Open("sqlite", dsn)
+	db, err := dbutil.OpenDB(dsn)
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
@@ -93,7 +92,7 @@ func TestOpenWorkerMemoryDB(t *testing.T) {
 // an Embedder so worker-inserted memories get TF-IDF embeddings.
 func TestWorkerMemoryStoreHasEmbedder(t *testing.T) {
 	dsn := fmt.Sprintf("file:worker_emb_%d?mode=memory&cache=shared", time.Now().UnixNano())
-	db, err := sql.Open("sqlite", dsn)
+	db, err := dbutil.OpenDB(dsn)
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}

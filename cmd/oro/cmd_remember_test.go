@@ -2,21 +2,19 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // newTestMemoryStore creates an in-memory SQLite store suitable for remember cmd tests.
 func newTestMemoryStore(t *testing.T) *memory.Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

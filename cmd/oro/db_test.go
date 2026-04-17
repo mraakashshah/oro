@@ -1,11 +1,10 @@
 package main
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"oro/pkg/dbutil"
 )
 
 func TestOpenDB_PingSucceeds(t *testing.T) {
@@ -244,7 +243,7 @@ func TestDefaultMemoryStore_WALMode(t *testing.T) {
 	}
 	// The store wraps a *sql.DB; we can't access it directly, so open another
 	// connection and check WAL was set on the file.
-	db, err := sql.Open("sqlite", filepath.Join(tmpDir, "state.db"))
+	db, err := dbutil.OpenDB(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
 		t.Fatalf("open for verification: %v", err)
 	}

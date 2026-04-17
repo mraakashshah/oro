@@ -7,16 +7,15 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // setupTestMemoryDB creates an in-memory SQLite database with the full schema.
 func setupTestMemoryDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}

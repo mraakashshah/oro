@@ -8,10 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
-
-	_ "modernc.org/sqlite"
 )
 
 // newTestMemoryStoreAndDB creates an in-memory SQLite-backed memory.Store for testing.
@@ -19,7 +18,7 @@ import (
 // and the memory.Store. Uses t.Cleanup to close the database.
 func newTestMemoryStoreAndDB(t *testing.T) (*sql.DB, *memory.Store) {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -465,7 +464,7 @@ func TestCLIAndDispatcherUseSameDB(t *testing.T) {
 	}
 
 	// Simulate the dispatcher: open state.db and insert a memory.
-	dispDB, err := sql.Open("sqlite", paths.StateDBPath)
+	dispDB, err := dbutil.OpenDB(paths.StateDBPath)
 	if err != nil {
 		t.Fatalf("open dispatcher db: %v", err)
 	}

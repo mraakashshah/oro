@@ -2,11 +2,12 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"oro/pkg/dbutil"
 )
 
 // TestBuildDispatcher_BuildsIndex verifies that buildDispatcher launches a
@@ -66,7 +67,7 @@ func TestBuildDispatcher_BuildsIndex(t *testing.T) {
 	var chunkCount int
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		idxDB, err := sql.Open("sqlite", indexPath)
+		idxDB, err := dbutil.OpenDB(indexPath)
 		if err != nil {
 			time.Sleep(50 * time.Millisecond)
 			continue
@@ -103,7 +104,7 @@ func TestBuildCodeIndex_DirectCall(t *testing.T) {
 	}
 
 	// Verify DB exists and contains chunks.
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := dbutil.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
