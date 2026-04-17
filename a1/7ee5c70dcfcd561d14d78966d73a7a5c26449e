@@ -1,0 +1,25 @@
+pkg/protocol/schema_test.go
+  13ddbd6ced8c744c 6,11,24,49,91,113
+pkg/protocol/tables_test.go
+  13ddbd6ced8c744c 9,16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "a17ee5c70dcfcd561d14d78966d73a7a5c26449e",
+  "prompts": {
+    "13ddbd6ced8c744c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "299f118c-cf5c-4a2c-97e2-51995a789c61",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 10,
+      "total_deletions": 13,
+      "accepted_lines": 9,
+      "overriden_lines": 0
+    }
+  }
+}
