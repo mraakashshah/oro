@@ -28,6 +28,7 @@ log_error() { echo -e "${RED}Error:${NC} $1" >&2; }
 # ── Flags ────────────────────────────────────────────────────────────────────
 DRY_RUN=false
 REQUESTED_VERSION=""
+PREFIX_OVERRIDE=""
 
 parse_args() {
 	while [[ $# -gt 0 ]]; do
@@ -46,6 +47,18 @@ parse_args() {
 			;;
 		--version=*)
 			REQUESTED_VERSION="${1#--version=}"
+			shift
+			;;
+		--prefix)
+			if [[ $# -lt 2 ]]; then
+				log_error "--prefix requires a value (e.g. --prefix /usr/local)"
+				exit 1
+			fi
+			PREFIX_OVERRIDE="$2"
+			shift 2
+			;;
+		--prefix=*)
+			PREFIX_OVERRIDE="${1#--prefix=}"
 			shift
 			;;
 		-h | --help)
@@ -146,6 +159,27 @@ try_codesign() {
 	fi
 }
 
+# bundle_libs copies dylibs from src_dir to lib_dir and ad-hoc codesigns each.
+# Dylibs absent from the tarball are skipped with a warning (semantic memory
+# disabled mode still works without them).
+bundle_libs() {
+	local src_dir="$1"
+	local lib_dir="$2"
+	local libs=("libonnxruntime.dylib" "libtokenizers.dylib" "libsqlite-vec.dylib")
+
+	run mkdir -p "${lib_dir}"
+
+	for lib in "${libs[@]}"; do
+		if [[ -f "${src_dir}/${lib}" ]]; then
+			log_info "Installing ${lib} to ${lib_dir}/"
+			run install -m 0755 "${src_dir}/${lib}" "${lib_dir}/${lib}"
+			try_codesign "${lib_dir}/${lib}"
+		else
+			log_warning "${lib} not present in tarball — skipping (semantic memory features may be unavailable)"
+		fi
+	done
+}
+
 # ── PATH Check ───────────────────────────────────────────────────────────────
 check_path() {
 	local dir="$1"
@@ -168,6 +202,11 @@ check_path() {
 main() {
 	parse_args "$@"
 
+	# Apply --prefix override: redirect ORO_HOME so lib/, hooks/, etc. follow.
+	if [[ -n "${PREFIX_OVERRIDE}" ]]; then
+		ORO_HOME="${PREFIX_OVERRIDE}"
+	fi
+
 	echo ""
 	log_info "oro installer"
 	echo ""
@@ -184,11 +223,18 @@ main() {
 
 	# 3. Select install directories
 	local bin_dir
-	bin_dir=$(select_bin_dir)
+	if [[ -n "${PREFIX_OVERRIDE}" ]]; then
+		bin_dir="${PREFIX_OVERRIDE}/bin"
+	else
+		bin_dir=$(select_bin_dir)
+	fi
 	local hooks_dir="${ORO_HOME}/hooks"
+	local lib_dir="${ORO_HOME}/lib"
 
 	log_info "oro binary:         ${bin_dir}/oro"
+	log_info "oro-dash:           ${bin_dir}/oro-dash"
 	log_info "oro-search-hook:    ${hooks_dir}/oro-search-hook"
+	log_info "dylib dir:          ${lib_dir}/"
 	echo ""
 
 	# 4. Build download URLs
@@ -211,12 +257,16 @@ main() {
 		trap "rm -rf '${tmpdir}'" EXIT
 	fi
 
-	# 6. Download archive and checksums
+	# 6. Download archive and checksums (or use test-mode override)
 	if [[ "${DRY_RUN}" == "true" ]]; then
 		log_info "[dry-run] curl -fsSL ${download_url} -o ${tmpdir}/${archive_name}"
 		log_info "[dry-run] curl -fsSL ${checksums_url} -o ${tmpdir}/checksums.txt"
 		log_info "[dry-run] shasum -a 256 -c checksums.txt (verify ${archive_name})"
 		log_info "[dry-run] tar -xzf ${tmpdir}/${archive_name} -C ${tmpdir}"
+	elif [[ -n "${_ORO_TARBALL_OVERRIDE:-}" ]]; then
+		# Test/offline mode: use a local tarball, skipping download and checksum.
+		log_info "Using local tarball: ${_ORO_TARBALL_OVERRIDE}"
+		tar -xzf "${_ORO_TARBALL_OVERRIDE}" -C "${tmpdir}"
 	else
 		curl -fsSL "${download_url}" -o "${tmpdir}/${archive_name}"
 		curl -fsSL "${checksums_url}" -o "${tmpdir}/checksums.txt"
@@ -238,16 +288,39 @@ main() {
 	log_info "Installing oro to ${bin_dir}/"
 	run install -m 0755 "${tmpdir}/oro" "${bin_dir}/oro"
 
+	# Install oro-dash if present in the tarball (optional companion binary)
+	if [[ "${DRY_RUN}" == "true" ]]; then
+		log_info "[dry-run] install -m 0755 ${tmpdir}/oro-dash ${bin_dir}/oro-dash"
+	elif [[ -f "${tmpdir}/oro-dash" ]]; then
+		log_info "Installing oro-dash to ${bin_dir}/"
+		run install -m 0755 "${tmpdir}/oro-dash" "${bin_dir}/oro-dash"
+	fi
+
 	log_info "Installing oro-search-hook to ${hooks_dir}/"
 	run install -m 0755 "${tmpdir}/oro-search-hook" "${hooks_dir}/oro-search-hook"
 
-	# 11. Codesign (macOS ad-hoc re-signing, skip gracefully if unavailable)
+	# 10b. Bundle dylibs (ORT, tokenizer, sqlite-vec) to lib_dir
+	if [[ "${DRY_RUN}" == "true" ]]; then
+		local dry_libs=("libonnxruntime.dylib" "libtokenizers.dylib" "libsqlite-vec.dylib")
+		for lib in "${dry_libs[@]}"; do
+			log_info "[dry-run] install -m 0755 ${tmpdir}/${lib} ${lib_dir}/${lib}"
+			log_info "[dry-run] codesign --force --sign - ${lib_dir}/${lib}"
+		done
+	else
+		bundle_libs "${tmpdir}" "${lib_dir}"
+	fi
+
+	# 11. Codesign binaries (macOS ad-hoc re-signing, skip gracefully if unavailable)
 	log_info "Re-signing binaries (ad-hoc codesign)..."
 	if [[ "${DRY_RUN}" == "true" ]]; then
 		log_info "[dry-run] codesign --force --sign - ${bin_dir}/oro"
+		log_info "[dry-run] codesign --force --sign - ${bin_dir}/oro-dash"
 		log_info "[dry-run] codesign --force --sign - ${hooks_dir}/oro-search-hook"
 	else
 		try_codesign "${bin_dir}/oro"
+		if [[ -f "${bin_dir}/oro-dash" ]]; then
+			try_codesign "${bin_dir}/oro-dash"
+		fi
 		try_codesign "${hooks_dir}/oro-search-hook"
 	fi
 

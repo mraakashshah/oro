@@ -1,4 +1,4 @@
-.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full
+.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -156,6 +156,37 @@ mutate-py-full:
 	uv run cr-report "$$cr_db" && \
 	uv run cr-rate "$$cr_db" --fail-over 50; \
 	rc=$$?; rm -f "$$cr_db"; exit $$rc
+
+# verify-bundled-libs checks ~/.oro/lib/ for expected dylibs after `make install`.
+# Warning (not failure) if libs absent — dylibs are optional; oro works without them.
+verify-bundled-libs:
+	@echo "Checking $(ORO_HOME)/lib/ for bundled dylibs..."
+	@missing=0; \
+	for lib in libonnxruntime.dylib libtokenizers.dylib libsqlite-vec.dylib; do \
+		if [ -f "$(ORO_HOME)/lib/$$lib" ]; then \
+			echo "  ✓ $$lib"; \
+		else \
+			echo "  ⚠ $$lib not found (semantic memory features may be unavailable)"; \
+			missing=$$((missing + 1)); \
+		fi; \
+	done; \
+	if [ "$$missing" -gt 0 ]; then \
+		echo ""; \
+		echo "Warning: $$missing dylib(s) absent from $(ORO_HOME)/lib/"; \
+		echo "         Run 'make download-ort' once acquisition is available."; \
+	else \
+		echo "✓ All dylibs present in $(ORO_HOME)/lib/"; \
+	fi
+
+# download-ort: stub for ORT/tokenizer dylib acquisition.
+# TODO: implement artifact download + checksum once upstream URL and checksum
+# policy are decided. This target is a placeholder — see follow-up bead for
+# the actual acquisition logic.
+download-ort:
+	@echo "TODO: ORT/tokenizer dylib acquisition not yet implemented."
+	@echo "      Place libonnxruntime.dylib, libtokenizers.dylib, and"
+	@echo "      libsqlite-vec.dylib into a release tarball so that"
+	@echo "      'bash scripts/install.sh' can bundle them to ~/.oro/lib/."
 
 # setup installs all dev tooling required by the quality gate:
 #   - npm deps (biome, markdownlint-cli2) from package.json

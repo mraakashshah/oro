@@ -96,6 +96,66 @@ else
 	fail "unknown flag" "did not report error for --bogus"
 fi
 
+# ── Test 7: bundle_libs — dylibs copied to prefix/lib/ with mode 0755 ────────
+echo "Test 7: bundle_libs copies dylibs to prefix/lib/ with mode 0755 and codesigns each"
+
+BTEST_TMPDIR=$(mktemp -d)
+FAKE_STAGE="${BTEST_TMPDIR}/stage"
+FAKE_TGZ="${BTEST_TMPDIR}/fake.tar.gz"
+MOCK_BIN="${BTEST_TMPDIR}/mockbin"
+CODESIGN_LOG="${BTEST_TMPDIR}/codesign.log"
+PREFIX_DIR="${BTEST_TMPDIR}/prefix"
+
+mkdir -p "${FAKE_STAGE}" "${MOCK_BIN}" "${PREFIX_DIR}"
+
+# Create placeholder files (empty stubs — install just copies bytes)
+for f in oro oro-dash oro-search-hook libonnxruntime.dylib libtokenizers.dylib libsqlite-vec.dylib; do
+	printf '\x00' >"${FAKE_STAGE}/${f}"
+done
+
+tar -czf "${FAKE_TGZ}" -C "${FAKE_STAGE}" \
+	oro oro-dash oro-search-hook \
+	libonnxruntime.dylib libtokenizers.dylib libsqlite-vec.dylib
+
+# Mock codesign writes each invocation to CODESIGN_LOG
+printf '#!/usr/bin/env bash\necho "codesign $*" >> "%s"\n' "${CODESIGN_LOG}" >"${MOCK_BIN}/codesign"
+chmod +x "${MOCK_BIN}/codesign"
+
+# Run installer with tarball override and custom prefix
+if _ORO_TARBALL_OVERRIDE="${FAKE_TGZ}" PATH="${MOCK_BIN}:${PATH}" \
+	bash "${INSTALL_SCRIPT}" --prefix "${PREFIX_DIR}" --version v0.1.0 >/dev/null 2>&1; then
+	pass "install.sh succeeded with --prefix and tarball override"
+else
+	fail "install.sh run" "non-zero exit with --prefix and tarball override"
+fi
+
+# Assert dylibs landed in prefix/lib/ with mode 0755
+for lib in libonnxruntime.dylib libtokenizers.dylib libsqlite-vec.dylib; do
+	LIB_PATH="${PREFIX_DIR}/lib/${lib}"
+	if [[ -f "${LIB_PATH}" ]]; then
+		pass "${lib} present in prefix/lib/"
+	else
+		fail "${lib} missing" "${LIB_PATH} not found"
+	fi
+	perms=$(stat -f '%Lp' "${LIB_PATH}" 2>/dev/null || echo "unknown")
+	if [[ "${perms}" == "755" ]]; then
+		pass "${lib} has mode 0755"
+	else
+		fail "${lib} permissions" "expected 755 got ${perms}"
+	fi
+done
+
+# Assert codesign was invoked for each dylib
+for lib in libonnxruntime.dylib libtokenizers.dylib libsqlite-vec.dylib; do
+	if grep -q "${lib}" "${CODESIGN_LOG}" 2>/dev/null; then
+		pass "codesign invoked for ${lib}"
+	else
+		fail "codesign missing" "${lib} not found in codesign log"
+	fi
+done
+
+rm -rf "${BTEST_TMPDIR}"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Results: ${PASSED} passed, ${FAILED} failed ==="
