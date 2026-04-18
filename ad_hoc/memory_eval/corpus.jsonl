@@ -1,0 +1,101 @@
+# source: history
+{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"when a Go function is renamed from exported","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"gotcha: when a Go function is","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"gotcha: when a Go function is","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"gotcha: when a Go function is","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"gotcha: when a Go function is","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"gotcha: when a Go function is","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"gotcha: when a Go function is","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"gotcha: when a Go function is","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"gotcha: when a Go function is","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"if a variable computed early in a function","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"gotcha: if a variable computed early","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"gotcha: if a variable computed early","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"gotcha: if a variable computed early","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"gotcha: if a variable computed early","candidate_memory_id":13,"relevant":null,"source":"history"}
+{"query":"gotcha: if a variable computed early","candidate_memory_id":12,"relevant":null,"source":"history"}
+{"query":"gotcha: if a variable computed early","candidate_memory_id":11,"relevant":null,"source":"history"}
+{"query":"gotcha: if a variable computed early","candidate_memory_id":10,"relevant":null,"source":"history"}
+{"query":"gotcha: if a variable computed early","candidate_memory_id":1,"relevant":null,"source":"history"}
+{"query":"when removing a struct field in Go, grep all test files for direct field assignments (cfg.fieldName = ...) — they fail to compile silently until go test runs","candidate_memory_id":16,"relevant":null,"source":"history"}
+{"query":"when removing a struct field in Go, grep all test files for direct field assignments (cfg.fieldName = ...) — they fail to compile silently until go test runs","candidate_memory_id":15,"relevant":null,"source":"history"}
+{"query":"when removing a struct field in Go, grep all test files for direct field assignments (cfg.fieldName = ...) — they fail to compile silently until go test runs","candidate_memory_id":14,"relevant":null,"source":"history"}
+{"query":"when removing a struct field in Go, grep all test files for direct field assignments (cfg.fieldName = ...) — they fail to compile silently until go test runs","candidate_memory_id":13,"relevant":null,"source":"history"}
