@@ -1,0 +1,23 @@
+pkg/memory/backfill_concurrent_test.go
+  9e32669aa05f8611 1-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "0d29c45f528cf95df064605a9b3414ce4af04b88",
+  "prompts": {
+    "9e32669aa05f8611": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "07a87dcc-0cb6-497e-a599-b8bbea97e512",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 212,
+      "total_deletions": 0,
+      "accepted_lines": 212,
+      "overriden_lines": 0
+    }
+  }
+}
