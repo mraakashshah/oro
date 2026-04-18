@@ -75,3 +75,70 @@ func TestOpenDB_PingFailureClosesDB(t *testing.T) {
 	_ = db.Stats()
 	_ = db.Close()
 }
+
+func TestResolveSqliteVecLibPathEnv(t *testing.T) {
+	// Create a real file so the existence check passes.
+	dir := t.TempDir()
+	libPath := filepath.Join(dir, "sqlite-vec.dylib")
+	if err := os.WriteFile(libPath, []byte{}, 0o644); err != nil {
+		t.Fatalf("create temp lib: %v", err)
+	}
+
+	t.Setenv("ORO_SQLITE_VEC_LIB", libPath)
+
+	got, err := dbutil.ResolveSqliteVecLibPath()
+	if err != nil {
+		t.Fatalf("ResolveSqliteVecLibPath(): unexpected error: %v", err)
+	}
+	if got != libPath {
+		t.Errorf("ResolveSqliteVecLibPath() = %q, want %q", got, libPath)
+	}
+}
+
+func TestResolveSqliteVecLibPathDefault(t *testing.T) {
+	// Ensure the env var is not set so the function falls back to the default path.
+	t.Setenv("ORO_SQLITE_VEC_LIB", "")
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("os.UserHomeDir() unavailable: %v", err)
+	}
+	defaultPath := filepath.Join(home, ".oro", "lib", "sqlite-vec.dylib")
+
+	// Create the file so the existence check passes.
+	if err := os.MkdirAll(filepath.Dir(defaultPath), 0o750); err != nil {
+		t.Fatalf("create lib dir: %v", err)
+	}
+	existed := false
+	if _, statErr := os.Stat(defaultPath); statErr == nil {
+		existed = true
+	}
+	if !existed {
+		if err := os.WriteFile(defaultPath, []byte{}, 0o644); err != nil {
+			t.Fatalf("create default lib: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(defaultPath) })
+	}
+
+	got, err := dbutil.ResolveSqliteVecLibPath()
+	if err != nil {
+		t.Fatalf("ResolveSqliteVecLibPath(): unexpected error: %v", err)
+	}
+	if got != defaultPath {
+		t.Errorf("ResolveSqliteVecLibPath() = %q, want %q", got, defaultPath)
+	}
+}
+
+func TestResolveSqliteVecLibPathMissing(t *testing.T) {
+	// Point env at a path that does not exist on disk.
+	t.Setenv("ORO_SQLITE_VEC_LIB", "/nonexistent/path/sqlite-vec.dylib")
+
+	_, err := dbutil.ResolveSqliteVecLibPath()
+	if err == nil {
+		t.Fatal("ResolveSqliteVecLibPath(): expected error for missing path, got nil")
+	}
+	const want = "sqlite-vec extension not found at"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err.Error(), want)
+	}
+}
