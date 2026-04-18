@@ -9,6 +9,19 @@ import (
 	"unicode"
 )
 
+// ANNResult is a single result from an approximate nearest-neighbour search.
+type ANNResult struct {
+	MemoryID int64
+	Score    float64
+}
+
+// VectorIndex stores and retrieves dense float32 embeddings per project partition.
+type VectorIndex interface {
+	Upsert(id int64, vec []float32, project string) error
+	Search(queryVec []float32, project string, k int) ([]ANNResult, error)
+	Delete(id int64) error
+}
+
 // maxVocabSize caps the number of unique terms in the vocabulary to prevent
 // embedding vectors from growing without bound. Once the cap is reached, new
 // unseen terms are silently ignored (zero weight). This prevents OOM in
