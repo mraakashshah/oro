@@ -1,0 +1,31 @@
+.goreleaser.yml
+  f1639be9d1e409dc 45-51
+Makefile
+  f1639be9d1e409dc 1,10-14,199-201,203-207,213-215,219-220,225-243,248-258
+scripts/install.sh
+  f1639be9d1e409dc 178
+scripts/install_test.sh
+  f1639be9d1e409dc 99-103,135-137,153,192-195,197-202
+.github/workflows/release.yml
+  f1639be9d1e409dc 29-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "a7280525260ee931d1c295d24fabd95858cb3988",
+  "prompts": {
+    "f1639be9d1e409dc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d175cdc8-52e7-42d3-aeca-3ebd5f4143ff",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 79,
+      "total_deletions": 41,
+      "accepted_lines": 79,
+      "overriden_lines": 0
+    }
+  }
+}

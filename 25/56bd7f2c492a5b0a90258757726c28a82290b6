@@ -1,0 +1,27 @@
+scripts/install_test.sh
+  22f456973a8b7095 99-100,112,118,132-133,141-142,144,149,159-255
+Makefile
+  22f456973a8b7095 1,8-14,172,183,194-248
+scripts/install.sh
+  22f456973a8b7095 168,175,304,306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "2556bd7f2c492a5b0a90258757726c28a82290b6",
+  "prompts": {
+    "22f456973a8b7095": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec5d0ca3-43fe-44c6-8d76-dd4c997d5caa",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 177,
+      "total_deletions": 20,
+      "accepted_lines": 177,
+      "overriden_lines": 0
+    }
+  }
+}
