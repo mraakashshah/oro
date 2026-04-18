@@ -1,0 +1,25 @@
+pkg/protocol/rerank_test.go
+  0f06ac5a624bb7e5 1-97
+pkg/protocol/types.go
+  0f06ac5a624bb7e5 31-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "0ce1efa93d24b7976d20f0a6e474be913f00cfa5",
+  "prompts": {
+    "0f06ac5a624bb7e5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5d0fa1e6-3942-4409-a21a-dcd01a0a51a6",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 121,
+      "total_deletions": 12,
+      "accepted_lines": 109,
+      "overriden_lines": 0
+    }
+  }
+}
