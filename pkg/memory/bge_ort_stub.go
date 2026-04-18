@@ -1,4 +1,4 @@
-//go:build !integration
+//go:build !integration && cgo && darwin
 
 package memory
 

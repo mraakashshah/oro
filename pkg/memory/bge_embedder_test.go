@@ -1,3 +1,5 @@
+//go:build cgo && darwin
+
 package memory_test
 
 import (
@@ -5,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/daulet/tokenizers"
@@ -15,7 +18,10 @@ import (
 )
 
 // fakeORTSession records calls and returns a preset vector.
+// The mutex makes the fake safe for concurrent Run calls, matching the
+// thread-safety guarantee BGEEmbedder.Embed offers via its RLock.
 type fakeORTSession struct {
+	mu           sync.Mutex
 	capturedIDs  []int64
 	capturedMask []int64
 	output       []float32
@@ -25,17 +31,22 @@ type fakeORTSession struct {
 }
 
 func (f *fakeORTSession) Run(tokenIDs, attentionMask []int64) ([]float32, error) {
+	f.mu.Lock()
 	f.capturedIDs = tokenIDs
 	f.capturedMask = attentionMask
-	if f.err != nil {
-		return nil, f.err
-	}
+	err := f.err
 	out := make([]float32, len(f.output))
 	copy(out, f.output)
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
 func (f *fakeORTSession) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.closeCalls++
 	return f.closeErr
 }
@@ -133,6 +144,21 @@ func TestBGEEmbedderNewMissingModel(t *testing.T) {
 	assert.Contains(t, err.Error(), "oro models prefetch")
 }
 
+func TestBGEEmbedderNewMissingTokenizer(t *testing.T) {
+	dir := t.TempDir()
+	// Create model.onnx so only tokenizer.json is missing.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "model.onnx"), []byte("x"), 0o600))
+
+	_, err := memory.NewBGEEmbedder(dir)
+	require.Error(t, err)
+
+	var pathErr *os.PathError
+	assert.True(t, errors.As(err, &pathErr),
+		"error must wrap os.PathError when tokenizer.json missing")
+	assert.Contains(t, err.Error(), "oro models prefetch")
+	assert.Contains(t, err.Error(), "tokenizer")
+}
+
 func TestBGEEmbedderCloseIdempotent(t *testing.T) {
 	tok, err := tokenizers.FromFile(testdataTokenizerPath(t))
 	require.NoError(t, err)
@@ -142,19 +168,8 @@ func TestBGEEmbedderCloseIdempotent(t *testing.T) {
 
 	assert.NoError(t, emb.Close())
 	assert.NoError(t, emb.Close()) // double-close must not panic or error
-	assert.Equal(t, 1, sess.closeCalls, "session.Close must be called exactly once")
-}
-
-func TestBGEEmbedderCloseReleasesSession(t *testing.T) {
-	tok, err := tokenizers.FromFile(testdataTokenizerPath(t))
-	require.NoError(t, err)
-
-	sess := &fakeORTSession{output: make([]float32, memory.BGEDim)}
-	emb := memory.NewBGEEmbedderFromParts(sess, tok)
-
-	require.NoError(t, emb.Close())
 	assert.Equal(t, 1, sess.closeCalls,
-		"BGEEmbedder.Close must release the underlying ORT session")
+		"BGEEmbedder.Close must release the underlying ORT session exactly once")
 }
 
 func TestBGEEmbedderCloseJoinsErrors(t *testing.T) {
@@ -169,4 +184,49 @@ func TestBGEEmbedderCloseJoinsErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sessErr,
 		"Close must surface the session close error via errors.Join")
+}
+
+// TestBGEEmbedderEmbedAfterClose guards the Embed/Close race: an Embed call
+// concurrent with (or after) Close must never touch freed cgo handles.
+func TestBGEEmbedderEmbedAfterClose(t *testing.T) {
+	tok, err := tokenizers.FromFile(testdataTokenizerPath(t))
+	require.NoError(t, err)
+
+	sess := &fakeORTSession{output: make([]float32, memory.BGEDim)}
+	emb := memory.NewBGEEmbedderFromParts(sess, tok)
+
+	require.NoError(t, emb.Close())
+
+	// After Close, Embed must return a zero vector without invoking the session.
+	vec := emb.Embed("hello")
+	require.Len(t, vec, memory.BGEDim)
+	for _, v := range vec {
+		assert.Equal(t, float32(0), v)
+	}
+	assert.Nil(t, sess.capturedIDs,
+		"Embed on a closed embedder must not call session.Run")
+}
+
+// TestBGEEmbedderConcurrentEmbed exercises RLock fan-out under concurrent
+// reads. Serves as a smoke test for the RWMutex guarding the session handle.
+func TestBGEEmbedderConcurrentEmbed(t *testing.T) {
+	tok, err := tokenizers.FromFile(testdataTokenizerPath(t))
+	require.NoError(t, err)
+	defer tok.Close()
+
+	fixed := make([]float32, memory.BGEDim)
+	fixed[0] = 1.0
+	sess := &fakeORTSession{output: fixed}
+	emb := memory.NewBGEEmbedderFromParts(sess, tok)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			vec := emb.Embed("hello world")
+			assert.Len(t, vec, memory.BGEDim)
+		}()
+	}
+	wg.Wait()
 }

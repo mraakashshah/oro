@@ -1,3 +1,5 @@
+//go:build cgo && darwin
+
 // Package memory — test-only exports for white-box BGEEmbedder tests.
 package memory
 

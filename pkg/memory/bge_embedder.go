@@ -1,3 +1,5 @@
+//go:build cgo && darwin
+
 package memory
 
 import (
@@ -29,7 +31,7 @@ type BGEEmbedder struct {
 	session   ortSession
 	tokenizer *tokenizers.Tokenizer
 	closed    bool
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	dim       int
 	name      string
 }
@@ -85,8 +87,17 @@ func newBGEEmbedderFromParts(sess ortSession, tok *tokenizers.Tokenizer) *BGEEmb
 // Embed returns a 384-dimensional L2-normalized embedding for text.
 // Empty input returns a zero vector of length 384 without calling the ORT session.
 // Inputs longer than 512 tokens are truncated.
+// Safe to call concurrently with other Embed calls; concurrent with Close
+// it serializes — Close waits for in-flight Embeds and subsequent Embeds on
+// a closed embedder return a zero vector (never dereferencing freed cgo handles).
 func (b *BGEEmbedder) Embed(text string) []float32 {
 	if text == "" {
+		return make([]float32, bgeDim)
+	}
+
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.closed {
 		return make([]float32, bgeDim)
 	}
 
@@ -125,6 +136,7 @@ func (b *BGEEmbedder) Dim() int { return b.dim }
 func (b *BGEEmbedder) Name() string { return b.name }
 
 // Close releases the tokenizer and ORT session. Idempotent.
+// Blocks until any in-flight Embed calls complete (write lock drains readers).
 func (b *BGEEmbedder) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
