@@ -3430,3 +3430,149 @@ func TestHybridSearchFallsBackWhenIndexNil(t *testing.T) {
 	}
 	t.Errorf("memory id=%d not found in HybridSearch linear-scan fallback; got %d result(s)", id, len(results))
 }
+
+// setupTestDBWithChunks extends setupTestDB by also creating the memory_chunks table.
+func setupTestDBWithChunks(t *testing.T) *sql.DB {
+	t.Helper()
+	db := setupTestDB(t)
+	if _, err := db.Exec(protocol.MigrateSemanticMemoryChunks); err != nil {
+		t.Fatalf("migrate memory_chunks: %v", err)
+	}
+	return db
+}
+
+// longContent returns a string of n unique "tokenN" words joined by spaces
+// so that tokenize produces exactly n tokens (each "tokenN" is alphanumeric).
+func longContent(n int) string {
+	words := make([]string, n)
+	for i := range words {
+		words[i] = fmt.Sprintf("token%d", i)
+	}
+	return strings.Join(words, " ")
+}
+
+func TestInsertNoChunksForShortContent(t *testing.T) {
+	db := setupTestDBWithChunks(t)
+	store := NewStore(db)
+	store.SetEmbedder(NewEmbedder())
+	ctx := context.Background()
+
+	// 20 tokens — well below chunkMaxSingle (512). Use a unique marker so
+	// write-time dedup cannot collapse this with other test rows.
+	content := "short content fewer than five hundred twelve tokens unique_nochunk_abc123 " +
+		"alpha beta gamma delta epsilon zeta eta theta iota kappa lambda"
+
+	id, err := store.Insert(ctx, InsertParams{
+		Content: content, Type: "gotcha",
+		Source: "self_report", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_chunks WHERE memory_id = ?`, id,
+	).Scan(&count); err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 chunk rows for short content (≤512 tokens), got %d", count)
+	}
+}
+
+func TestInsertWritesChunksForLongContent(t *testing.T) {
+	db := setupTestDBWithChunks(t)
+	store := NewStore(db)
+	store.SetEmbedder(NewEmbedder())
+	ctx := context.Background()
+
+	// 513 unique tokens — one past chunkMaxSingle (512), triggers sliding-window chunking.
+	content := longContent(513)
+
+	expectedChunks := chunkContent(content)
+	if len(expectedChunks) <= 1 {
+		t.Fatalf("test setup: expected multi-chunk content, got %d chunk(s)", len(expectedChunks))
+	}
+
+	id, err := store.Insert(ctx, InsertParams{
+		Content: content, Type: "lesson",
+		Source: "self_report", Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT chunk_idx, text, embedding FROM memory_chunks WHERE memory_id = ? ORDER BY chunk_idx`,
+		id,
+	)
+	if err != nil {
+		t.Fatalf("query chunks: %v", err)
+	}
+	defer rows.Close()
+
+	type chunkRow struct {
+		idx       int
+		text      string
+		embedding []byte
+	}
+	var got []chunkRow
+	for rows.Next() {
+		var r chunkRow
+		if err := rows.Scan(&r.idx, &r.text, &r.embedding); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows err: %v", err)
+	}
+
+	if len(got) != len(expectedChunks) {
+		t.Fatalf("expected %d chunk rows, got %d", len(expectedChunks), len(got))
+	}
+	for i, c := range expectedChunks {
+		if got[i].idx != c.Index {
+			t.Errorf("chunk[%d]: expected idx=%d, got %d", i, c.Index, got[i].idx)
+		}
+		if got[i].text != c.Text {
+			t.Errorf("chunk[%d]: text mismatch", i)
+		}
+		if len(got[i].embedding) == 0 {
+			t.Errorf("chunk[%d]: expected non-nil embedding blob", i)
+		}
+	}
+}
+
+func TestInsertChunksAtomicOnFailure(t *testing.T) {
+	db := setupTestDBWithChunks(t)
+	store := NewStore(db)
+	store.SetEmbedder(NewEmbedder())
+	ctx := context.Background()
+
+	// Long content to trigger the multi-chunk tx path.
+	content := longContent(513)
+	// Replace tokens with "atomic" prefix to avoid Jaccard overlap with TestInsertWritesChunksForLongContent.
+	content = strings.ReplaceAll(content, "token", "atomic")
+
+	// Inject a fault so the first chunk insert returns an error → whole tx rolls back.
+	store.testChunkInsertFault = func() bool { return true }
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: content, Type: "pattern",
+		Source: "self_report", Confidence: 0.8,
+	})
+	if err == nil {
+		t.Fatal("expected Insert to fail when chunk insert fault is injected")
+	}
+
+	// No orphan memory row should remain (parent must have been rolled back).
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&count); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 orphan memory rows after chunk-insert failure, got %d", count)
+	}
+}

@@ -32,6 +32,10 @@ type Store struct {
 	// completeBackfill between the final Exec and Commit so tests can verify
 	// the single-tx atomicity guarantee (both side effects roll back together).
 	testCompleteBackfillFault func() bool
+	// testChunkInsertFault, if non-nil and returns true, aborts the chunk
+	// batch insert inside Insert so tests can verify the parent memory row is
+	// rolled back atomically (no orphan row left behind).
+	testChunkInsertFault func() bool
 }
 
 // NewStore creates a new Store backed by the given SQLite database.
@@ -396,6 +400,10 @@ func (s *Store) prepareInsert(params InsertParams, errPrefix string) (preparedFi
 //   - If the existing memory has lower confidence, update it to max of both
 //   - Return the existing ID (no new row created)
 //
+// For content exceeding 512 tokens with a non-nil embedder, the parent row
+// and all chunk rows are written in a single transaction so a partial failure
+// cannot leave an orphan memory row.
+//
 // Returns the inserted (or existing duplicate) ID.
 func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 	pf, err := s.prepareInsert(m, "memory insert")
@@ -412,6 +420,16 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 		return dupID, nil
 	}
 
+	chunks := chunkContent(m.Content)
+	if len(chunks) <= 1 || s.embedder == nil {
+		return s.insertDirect(ctx, m, pf)
+	}
+	return s.insertWithChunks(ctx, m, pf, chunks)
+}
+
+// insertDirect inserts only the parent memory row (no transaction, no chunks).
+// Used for the single-chunk path (≤512 tokens) or when no embedder is set.
+func (s *Store) insertDirect(ctx context.Context, m InsertParams, pf preparedFields) (int64, error) {
 	res, err := s.db.ExecContext(ctx, //nolint:gosec // G701 false positive: parameterized query with ? placeholders, no string concatenation
 		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified, pinned, project)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -420,10 +438,54 @@ func (s *Store) Insert(ctx context.Context, m InsertParams) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("memory insert: %w", err)
 	}
-
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("memory last insert id: %w", err)
+	}
+	return id, nil
+}
+
+// insertWithChunks inserts the parent memory row and all chunk rows atomically
+// in a single transaction. A chunk-insert failure (including test-injected
+// faults) rolls back the parent row so no orphan can remain.
+func (s *Store) insertWithChunks(ctx context.Context, m InsertParams, pf preparedFields, chunks []Chunk) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("memory insert begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, //nolint:gosec // G701 false positive: parameterized query with ? placeholders, no string concatenation
+		`INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, embedding, files_read, files_modified, pinned, project)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.Type, pf.tags, m.Source, m.BeadID, m.WorkerID, pf.conf, pf.embeddingBlob, pf.filesRead, pf.filesModified, pf.pinnedInt, pf.project,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("memory insert: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("memory last insert id: %w", err)
+	}
+
+	for _, c := range chunks {
+		vec := s.embedder.Embed(c.Text)
+		if vec == nil {
+			continue
+		}
+		if s.testChunkInsertFault != nil && s.testChunkInsertFault() {
+			return 0, fmt.Errorf("memory chunk insert: injected fault")
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO memory_chunks (memory_id, chunk_idx, text, embedding) VALUES (?, ?, ?, ?)`,
+			id, c.Index, c.Text, MarshalEmbedding(vec),
+		); err != nil {
+			return 0, fmt.Errorf("memory chunk insert: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("memory insert commit: %w", err)
 	}
 	return id, nil
 }
