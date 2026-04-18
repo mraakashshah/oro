@@ -1,0 +1,25 @@
+pkg/protocol/types_test.go
+  f35350f4f62b9394 286-328
+pkg/protocol/types.go
+  f35350f4f62b9394 6,10-12,152-153,155-156
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "4fe9c4e7c383d8f62bc5977986835a988589cad8",
+  "prompts": {
+    "f35350f4f62b9394": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "946cfa4b-58f1-4080-b8eb-7edf22f86c12",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 51,
+      "total_deletions": 0,
+      "accepted_lines": 51,
+      "overriden_lines": 0
+    }
+  }
+}
