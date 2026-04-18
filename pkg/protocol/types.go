@@ -17,6 +17,17 @@ type Dependency struct {
 	Type        string `json:"type"` // "blocks", "parent-child", etc.
 }
 
+// EmbedRequest is sent by a dispatcher to request text embedding.
+type EmbedRequest struct {
+	Text string `json:"text"`
+}
+
+// EmbedResponse is sent by a worker with the computed embedding vector or error.
+type EmbedResponse struct {
+	Vec []float32 `json:"vec,omitempty"`
+	Err string    `json:"err,omitempty"`
+}
+
 // Bead represents a ready work item from the bead source.
 type Bead struct {
 	ID                 string         `json:"id"`

@@ -611,3 +611,119 @@ func TestBeadDetailJSONRoundTrip_MetadataAndLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbedMessageTypeConstants(t *testing.T) {
+	t.Parallel()
+
+	if string(protocol.MsgEmbedRequest) != "EMBED_REQUEST" {
+		t.Errorf("MsgEmbedRequest = %q, want %q", protocol.MsgEmbedRequest, "EMBED_REQUEST")
+	}
+	if string(protocol.MsgEmbedResponse) != "EMBED_RESPONSE" {
+		t.Errorf("MsgEmbedResponse = %q, want %q", protocol.MsgEmbedResponse, "EMBED_RESPONSE")
+	}
+}
+
+func TestEmbedRequestResponseRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		msg  protocol.Message
+	}{
+		{
+			name: "EmbedRequest with text",
+			msg: protocol.Message{
+				Type: protocol.MsgEmbedRequest,
+				Embed: &protocol.EmbedRequest{
+					Text: "hello world",
+				},
+			},
+		},
+		{
+			name: "EmbedRequest empty text",
+			msg: protocol.Message{
+				Type: protocol.MsgEmbedRequest,
+				Embed: &protocol.EmbedRequest{
+					Text: "",
+				},
+			},
+		},
+		{
+			name: "EmbedResponse with vec",
+			msg: protocol.Message{
+				Type: protocol.MsgEmbedResponse,
+				EmbedResp: &protocol.EmbedResponse{
+					Vec: make([]float32, 384),
+				},
+			},
+		},
+		{
+			name: "EmbedResponse with error",
+			msg: protocol.Message{
+				Type: protocol.MsgEmbedResponse,
+				EmbedResp: &protocol.EmbedResponse{
+					Vec: nil,
+					Err: "embedding failed",
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := json.Marshal(tc.msg)
+			if err != nil {
+				t.Fatalf("marshal %s: %v", tc.name, err)
+			}
+
+			var got protocol.Message
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("unmarshal %s: %v", tc.name, err)
+			}
+
+			wantJSON, _ := json.Marshal(tc.msg)
+			gotJSON, _ := json.Marshal(got)
+
+			if string(wantJSON) != string(gotJSON) {
+				t.Errorf("round-trip mismatch for %s:\n  want: %s\n  got:  %s", tc.name, wantJSON, gotJSON)
+			}
+		})
+	}
+}
+
+func TestEmbedResponseMarshalUnderMaxSize(t *testing.T) {
+	t.Parallel()
+
+	resp := protocol.EmbedResponse{
+		Vec: make([]float32, 384),
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal EmbedResponse: %v", err)
+	}
+
+	size := len(data)
+	if size >= protocol.MaxMessageSize {
+		t.Errorf("EmbedResponse with 384-element vec marshals to %d bytes, want < %d", size, protocol.MaxMessageSize)
+	}
+
+	msg := protocol.Message{
+		Type: protocol.MsgEmbedResponse,
+		EmbedResp: &protocol.EmbedResponse{
+			Vec: make([]float32, 384),
+		},
+	}
+
+	msgData, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal Message with EmbedResponse: %v", err)
+	}
+
+	msgSize := len(msgData)
+	if msgSize >= protocol.MaxMessageSize {
+		t.Errorf("Message with EmbedResponse marshals to %d bytes, want < %d", msgSize, protocol.MaxMessageSize)
+	}
+}

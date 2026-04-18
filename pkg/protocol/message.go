@@ -41,6 +41,12 @@ const (
 	MsgDirective MessageType = "DIRECTIVE"
 )
 
+// Semantic memory message types.
+const (
+	MsgEmbedRequest  MessageType = "EMBED_REQUEST"
+	MsgEmbedResponse MessageType = "EMBED_RESPONSE"
+)
+
 // Message is the envelope for all UDS messages. The Type field selects which
 // payload pointer is populated; unused payloads are nil and omitted from JSON.
 type Message struct {
@@ -57,6 +63,8 @@ type Message struct {
 	Directive        *DirectivePayload        `json:"directive,omitempty"`
 	ACK              *ACKPayload              `json:"ack,omitempty"`
 	ReviewResult     *ReviewResultPayload     `json:"review_result,omitempty"`
+	Embed            *EmbedRequest            `json:"embed,omitempty"`
+	EmbedResp        *EmbedResponse           `json:"embed_response,omitempty"`
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.
