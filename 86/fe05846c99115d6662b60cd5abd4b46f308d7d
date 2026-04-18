@@ -1,0 +1,33 @@
+ad_hoc/memory_eval/corpus_test.go
+  a90cdd21925c18bd 1-50
+ad_hoc/memory_eval/corpus.jsonl
+  a90cdd21925c18bd 1-101
+ad_hoc/memory_eval/extract.go
+  a90cdd21925c18bd 1-180
+ad_hoc/.gitignore
+  a90cdd21925c18bd 3-4
+ad_hoc/memory_eval/cmd/main.go
+  a90cdd21925c18bd 1-28
+ad_hoc/memory_eval/corpus.go
+  a90cdd21925c18bd 1-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "86fe05846c99115d6662b60cd5abd4b46f308d7d",
+  "prompts": {
+    "a90cdd21925c18bd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "67381406-3c1e-413a-bb93-a094ea40f5e9",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 409,
+      "total_deletions": 1,
+      "accepted_lines": 408,
+      "overriden_lines": 0
+    }
+  }
+}
