@@ -1,0 +1,25 @@
+pkg/dispatcher/warmup_test.go
+  f8507192daeb884a 1-64
+pkg/dispatcher/dispatcher.go
+  f8507192daeb884a 64-71,410-431,639-664
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "70147b83ff201872b2372726d50f1453d190ddbf",
+  "prompts": {
+    "f8507192daeb884a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15f72292-8f17-4a8b-a6ed-b24b9700d983",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 123,
+      "total_deletions": 18,
+      "accepted_lines": 120,
+      "overriden_lines": 0
+    }
+  }
+}
