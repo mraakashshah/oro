@@ -22,10 +22,36 @@ import (
 	"oro/pkg/protocol"
 )
 
+// SemanticConfig holds reranking parameters passed to the memory Store.
+// Rerank nil defaults to true; ANNTopK/FinalTopK 0 default to 50/10.
+type SemanticConfig struct {
+	Rerank    *bool
+	ANNTopK   int
+	FinalTopK int
+}
+
+func (c *SemanticConfig) rerankEnabledOrDefault() bool {
+	return c.Rerank == nil || *c.Rerank
+}
+
+func (c *SemanticConfig) rerankParams() (topK, finalK int) {
+	topK = c.ANNTopK
+	if topK == 0 {
+		topK = 50
+	}
+	finalK = c.FinalTopK
+	if finalK == 0 {
+		finalK = 10
+	}
+	return topK, finalK
+}
+
 // Store manages the memories table in SQLite.
 type Store struct {
 	db              *sql.DB
 	embedder        Embedder
+	reranker        Reranker
+	semCfg          SemanticConfig
 	vecIndex        VectorIndex // optional HNSW index; nil uses linear-scan fallback
 	project         string      // current project scope for queries and inserts
 	backfillLimiter interface{ Wait(context.Context) error }
@@ -55,6 +81,19 @@ func (s *Store) SetEmbedder(e Embedder) {
 //oro:testonly
 func (s *Store) HasEmbedder() bool {
 	return s.embedder != nil
+}
+
+// SetReranker attaches a Reranker to the store. When set and reranking is
+// enabled in SemanticConfig, HybridSearch re-scores fused results after RRF.
+func (s *Store) SetReranker(r Reranker) {
+	s.reranker = r
+}
+
+// SetSemanticConfig updates the reranking configuration for HybridSearch.
+//
+//oro:testonly
+func (s *Store) SetSemanticConfig(cfg SemanticConfig) {
+	s.semCfg = cfg
 }
 
 // SetVectorIndex attaches a VectorIndex for HNSW-backed vector search.
@@ -661,23 +700,13 @@ func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts)
 	var (
 		results       []ScoredMemory
 		annCandidates int
+		usedRerank    bool
 	)
 
 	if s.embedder == nil {
-		// No embedder: fall back to FTS5-only with original filtering.
 		results = applyFilters(ftsResults, opts)
 	} else {
-		// Phase 2: Vector similarity search.
-		queryVec := s.embedder.Embed(query)
-		vectorResults, vecErr := s.vectorSearch(ctx, queryVec, maxHybridCandidates(opts.Limit), opts.Type)
-		if vecErr != nil {
-			// Vector search failure is non-fatal; degrade gracefully to FTS-only.
-			results = applyFilters(ftsResults, opts) //nolint:nilerr // intentional graceful degradation
-		} else {
-			annCandidates = len(vectorResults)
-			// Phase 3: Fuse with RRF.
-			results = applyFilters(fuseRRF(ftsResults, vectorResults), opts)
-		}
+		results, annCandidates, usedRerank = s.hybridVectorPath(ctx, query, ftsResults, opts)
 	}
 
 	ids := make([]int64, len(results))
@@ -698,13 +727,33 @@ func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts)
 		TopKScores:    scores,
 		LatencyMs:     int(time.Since(start).Milliseconds()),
 		UsedBGE:       s.embedder != nil,
-		UsedRerank:    false,
+		UsedRerank:    usedRerank,
 		ANNCandidates: annCandidates,
 	}); logErr != nil {
 		log.Printf("memory: telemetry write failed: %v", logErr)
 	}
 
 	return results, nil
+}
+
+// hybridVectorPath runs phases 2-4 of HybridSearch when an embedder is set:
+// vector search → RRF fusion → optional rerank. Returns filtered results,
+// ANN candidate count, and whether reranking was applied.
+func (s *Store) hybridVectorPath(ctx context.Context, query string, ftsResults []ScoredMemory, opts SearchOpts) (results []ScoredMemory, annCandidates int, usedRerank bool) {
+	queryVec := s.embedder.Embed(query)
+	vectorResults, vecErr := s.vectorSearch(ctx, queryVec, maxHybridCandidates(opts.Limit), opts.Type)
+	if vecErr != nil {
+		return applyFilters(ftsResults, opts), 0, false //nolint:nilerr // intentional graceful degradation
+	}
+	fused := fuseRRF(ftsResults, vectorResults)
+	if s.reranker != nil && s.semCfg.rerankEnabledOrDefault() {
+		topK, finalK := s.semCfg.rerankParams()
+		if len(fused) > finalK {
+			fused = s.rerankFused(ctx, query, fused, topK, finalK)
+			usedRerank = true
+		}
+	}
+	return applyFilters(fused, opts), len(vectorResults), usedRerank
 }
 
 // maxHybridCandidates returns the candidate pool size for each search phase.
@@ -1101,6 +1150,62 @@ func fuseRRF(ftsResults, vectorResults []ScoredMemory) []ScoredMemory {
 
 	sortByScoreDesc(results)
 	return results
+}
+
+// rerankFused re-scores the top topK items in fused using s.reranker, returns
+// the top finalK sorted by rerank score. Falls back to RRF order on timeout or
+// wrong-length scores. Returns fused unchanged if pool ≤ finalK or reranker nil.
+func (s *Store) rerankFused(ctx context.Context, query string, fused []ScoredMemory, topK, finalK int) []ScoredMemory {
+	if s.reranker == nil || len(fused) <= finalK {
+		return fused
+	}
+
+	pool := fused
+	if len(fused) > topK {
+		pool = fused[:topK]
+	}
+
+	docs := make([]string, len(pool))
+	for i, sm := range pool {
+		docs[i] = sm.Content
+	}
+
+	rCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	type rerankResult struct{ scores []float64 }
+	ch := make(chan rerankResult, 1)
+	go func() {
+		ch <- rerankResult{s.reranker.Rerank(query, docs)}
+	}()
+
+	fallback := func() []ScoredMemory {
+		if finalK >= len(fused) {
+			return fused
+		}
+		return fused[:finalK]
+	}
+
+	select {
+	case <-rCtx.Done():
+		log.Printf("memory: rerank timeout: %v", rCtx.Err())
+		return fallback()
+	case res := <-ch:
+		if len(res.scores) != len(pool) {
+			log.Printf("memory: rerank returned %d scores for %d docs; using RRF order", len(res.scores), len(pool))
+			return fallback()
+		}
+		reranked := make([]ScoredMemory, len(pool))
+		copy(reranked, pool)
+		for i := range reranked {
+			reranked[i].Score = res.scores[i]
+		}
+		sortByScoreDesc(reranked)
+		if finalK >= len(reranked) {
+			return reranked
+		}
+		return reranked[:finalK]
+	}
 }
 
 // applyFilters applies MinScore, Tags, and Limit filters to results.

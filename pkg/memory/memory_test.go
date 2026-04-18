@@ -3729,3 +3729,229 @@ func idsOf(results []ScoredMemory) []int64 {
 	}
 	return ids
 }
+
+// ---------------------------------------------------------------------------
+// Reranker hook tests (oro-23l2)
+// ---------------------------------------------------------------------------
+
+// testReranker is a controllable Reranker for testing.
+type testReranker struct {
+	callCount   int
+	calledQuery string
+	calledDocs  []string
+	scores      []float64 // nil → descending len-based scores
+	delay       time.Duration
+}
+
+func (r *testReranker) Rerank(query string, docs []string) []float64 {
+	r.callCount++
+	r.calledQuery = query
+	r.calledDocs = append([]string(nil), docs...)
+	if r.delay > 0 {
+		time.Sleep(r.delay)
+	}
+	if r.scores != nil {
+		return r.scores
+	}
+	out := make([]float64, len(docs))
+	for i := range out {
+		out[i] = float64(len(docs) - i)
+	}
+	return out
+}
+
+// boolPtr returns a pointer to b for *bool config fields.
+func boolPtr(b bool) *bool { return &b }
+
+// TestHybridSearchRerankApplied: when rerank=true, reranker set, fused pool >
+// FinalTopK → Rerank is called and results are capped at FinalTopK.
+func TestHybridSearchRerankApplied(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	store := NewStore(db)
+	store.SetEmbedder(NewEmbedder())
+
+	rr := &testReranker{}
+	store.SetReranker(rr)
+	store.SetSemanticConfig(SemanticConfig{
+		Rerank:    boolPtr(true),
+		ANNTopK:   20,
+		FinalTopK: 5,
+	})
+
+	// Use low-overlap content so dedup (Jaccard threshold 0.7) doesn't collapse entries.
+	uniqueWords := []string{
+		"alpha bravo charlie delta",
+		"echo foxtrot golf hotel",
+		"india juliet kilo lima",
+		"mike november oscar papa",
+		"quebec romeo sierra tango",
+		"uniform victor whiskey xray",
+		"yankeezulu aaaa bbbb cccc",
+		"dddd eeee ffff gggg hhhh",
+		"iiii jjjj kkkk llll mmmm",
+		"nnnn oooo pppp qqqq rrrr",
+		"ssss tttt uuuu vvvv wwww",
+		"xxxx yyyy zzzz aaab bbbc",
+	}
+	for i, extra := range uniqueWords {
+		if _, err := store.Insert(ctx, InsertParams{
+			Content:    fmt.Sprintf("unique_rrank_abc golang %s item%d", extra, i),
+			Type:       "lesson",
+			Source:     "self_report",
+			Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	results, err := store.HybridSearch(ctx, "unique_rrank_abc golang", SearchOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if rr.callCount == 0 {
+		t.Error("expected Reranker.Rerank to be called")
+	}
+	if rr.calledQuery != "unique_rrank_abc golang" {
+		t.Errorf("query mismatch: got %q", rr.calledQuery)
+	}
+	if len(results) > 5 {
+		t.Errorf("expected ≤5 results (FinalTopK=5), got %d", len(results))
+	}
+}
+
+// TestHybridSearchRerankSkippedSmallPool: when fused pool ≤ FinalTopK, rerank
+// is skipped and RRF ordering is preserved.
+func TestHybridSearchRerankSkippedSmallPool(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	store := NewStore(db)
+	store.SetEmbedder(NewEmbedder())
+
+	rr := &testReranker{}
+	store.SetReranker(rr)
+	store.SetSemanticConfig(SemanticConfig{
+		Rerank:    boolPtr(true),
+		ANNTopK:   20,
+		FinalTopK: 10, // larger than the 3 items we insert
+	})
+
+	for i := range 3 {
+		if _, err := store.Insert(ctx, InsertParams{
+			Content:    fmt.Sprintf("small pool skip rerank memory golang item %d unique_rrskip_xyz", i),
+			Type:       "lesson",
+			Source:     "self_report",
+			Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	_, err := store.HybridSearch(ctx, "small pool skip rerank golang unique_rrskip_xyz", SearchOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if rr.callCount > 0 {
+		t.Errorf("expected Reranker.Rerank NOT called (pool ≤ FinalTopK), but called %d time(s)", rr.callCount)
+	}
+}
+
+// TestHybridSearchRerankTimeoutFallback: when Rerank takes >2s, the 2s timeout
+// fires and HybridSearch returns RRF-ordered results without blocking.
+func TestHybridSearchRerankTimeoutFallback(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	store := NewStore(db)
+	store.SetEmbedder(NewEmbedder())
+
+	rr := &testReranker{delay: 5 * time.Second}
+	store.SetReranker(rr)
+	store.SetSemanticConfig(SemanticConfig{
+		Rerank:    boolPtr(true),
+		ANNTopK:   20,
+		FinalTopK: 3,
+	})
+
+	timeoutWords := []string{
+		"alpha bravo charlie delta echo",
+		"foxtrot golf hotel india juliet",
+		"kilo lima mike november oscar",
+		"papa quebec romeo sierra tango",
+		"uniform victor whiskey xray yankee",
+		"zulu aaaa bbbb cccc dddd eeee",
+	}
+	for i, extra := range timeoutWords {
+		if _, err := store.Insert(ctx, InsertParams{
+			Content:    fmt.Sprintf("unique_rrtimeout_zz golang %s item%d", extra, i),
+			Type:       "lesson",
+			Source:     "self_report",
+			Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	start := time.Now()
+	results, err := store.HybridSearch(ctx, "unique_rrtimeout_zz golang", SearchOpts{Limit: 10})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("expected timeout within 2s (+1s slack), elapsed %v", elapsed)
+	}
+	if len(results) == 0 {
+		t.Error("expected RRF-ordered fallback results after rerank timeout")
+	}
+}
+
+// TestHybridSearchRerankDisabled: when rerank=false, Reranker.Rerank is never
+// called and fused RRF output is returned unchanged.
+func TestHybridSearchRerankDisabled(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	store := NewStore(db)
+	store.SetEmbedder(NewEmbedder())
+
+	rr := &testReranker{}
+	store.SetReranker(rr)
+	store.SetSemanticConfig(SemanticConfig{
+		Rerank:    boolPtr(false),
+		ANNTopK:   20,
+		FinalTopK: 5,
+	})
+
+	disabledWords := []string{
+		"alpha bravo charlie delta",
+		"echo foxtrot golf hotel",
+		"india juliet kilo lima",
+		"mike november oscar papa",
+		"quebec romeo sierra tango",
+		"uniform victor whiskey xray",
+		"yankeezulu aaaa bbbb cccc",
+		"dddd eeee ffff gggg hhhh",
+		"iiii jjjj kkkk llll mmmm",
+		"nnnn oooo pppp qqqq rrrr",
+		"ssss tttt uuuu vvvv wwww",
+		"xxxx yyyy zzzz aaab bbbc",
+	}
+	for i, extra := range disabledWords {
+		if _, err := store.Insert(ctx, InsertParams{
+			Content:    fmt.Sprintf("unique_rrdisabled_ww golang %s item%d", extra, i),
+			Type:       "lesson",
+			Source:     "self_report",
+			Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	_, err := store.HybridSearch(ctx, "unique_rrdisabled_ww golang", SearchOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if rr.callCount > 0 {
+		t.Errorf("expected Reranker.Rerank NOT called when disabled, but called %d time(s)", rr.callCount)
+	}
+}
