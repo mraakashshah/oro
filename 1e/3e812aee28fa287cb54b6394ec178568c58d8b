@@ -1,0 +1,25 @@
+pkg/protocol/schema.go
+  a555f17bd71eb887 199-216
+pkg/protocol/schema_test.go
+  a555f17bd71eb887 307-399
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "1e3e812aee28fa287cb54b6394ec178568c58d8b",
+  "prompts": {
+    "a555f17bd71eb887": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae837a4f-6bbe-4280-9be5-82e42a731ee3",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 112,
+      "total_deletions": 1,
+      "accepted_lines": 111,
+      "overriden_lines": 0
+    }
+  }
+}
