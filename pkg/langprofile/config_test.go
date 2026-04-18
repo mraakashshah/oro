@@ -300,6 +300,114 @@ func TestReadConfig(t *testing.T) {
 	})
 }
 
+func TestSemanticMemoryConfigDefaultsAndOverride(t *testing.T) {
+	t.Run("absent memory.semantic in config yields all defaults", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // Test file permissions are acceptable
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte("languages: {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := langprofile.ReadConfig(tmpDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected non-nil config")
+		}
+
+		got := cfg.WithDefaults()
+		sem := got.Memory.Semantic
+
+		if !sem.EnabledOrDefault() {
+			t.Error("expected Enabled default = true")
+		}
+		if !sem.RerankOrDefault() {
+			t.Error("expected Rerank default = true")
+		}
+		if sem.ANNTopK != 50 {
+			t.Errorf("expected ANNTopK default = 50, got %d", sem.ANNTopK)
+		}
+		if sem.FinalTopK != 10 {
+			t.Errorf("expected FinalTopK default = 10, got %d", sem.FinalTopK)
+		}
+		homeDir, _ := os.UserHomeDir()
+		expectedModelDir := filepath.Join(homeDir, ".oro", "models")
+		if sem.ModelDir != expectedModelDir {
+			t.Errorf("expected ModelDir %q, got %q", expectedModelDir, sem.ModelDir)
+		}
+	})
+
+	t.Run("explicit enabled:false survives round-trip", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		yaml := "memory:\n  semantic:\n    enabled: false\n    rerank: false\n    ann_top_k: 20\n"
+		//nolint:gosec // Test file permissions are acceptable
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := langprofile.ReadConfig(tmpDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected non-nil config")
+		}
+
+		got := cfg.WithDefaults()
+		sem := got.Memory.Semantic
+
+		if sem.EnabledOrDefault() {
+			t.Error("expected Enabled=false to survive round-trip, got true")
+		}
+		if sem.RerankOrDefault() {
+			t.Error("expected Rerank=false to survive round-trip, got true")
+		}
+		if sem.ANNTopK != 20 {
+			t.Errorf("expected ANNTopK=20 to survive round-trip, got %d", sem.ANNTopK)
+		}
+		// FinalTopK not set — should default
+		if sem.FinalTopK != 10 {
+			t.Errorf("expected FinalTopK default = 10 (unset), got %d", sem.FinalTopK)
+		}
+	})
+
+	t.Run("package-level Defaults returns valid defaults for nil config", func(t *testing.T) {
+		got := langprofile.Defaults()
+		sem := got.Memory.Semantic
+
+		if !sem.EnabledOrDefault() {
+			t.Error("expected Enabled default = true from Defaults()")
+		}
+		if !sem.RerankOrDefault() {
+			t.Error("expected Rerank default = true from Defaults()")
+		}
+		if sem.ANNTopK != 50 {
+			t.Errorf("expected ANNTopK = 50 from Defaults(), got %d", sem.ANNTopK)
+		}
+		if sem.FinalTopK != 10 {
+			t.Errorf("expected FinalTopK = 10 from Defaults(), got %d", sem.FinalTopK)
+		}
+	})
+
+	t.Run("Config.Memory.Semantic path is accessible", func(t *testing.T) {
+		cfg := &langprofile.Config{}
+		got := cfg.WithDefaults()
+		// Just verify the path compiles and is accessible
+		_ = got.Memory.Semantic.ANNTopK
+		_ = got.Memory.Semantic.FinalTopK
+		_ = got.Memory.Semantic.ModelDir
+	})
+}
+
 func TestResolveProjectRoot(t *testing.T) {
 	t.Run("from worktree path returns main repo root", func(t *testing.T) {
 		// Create a temporary git repo with a worktree so the test is self-contained.

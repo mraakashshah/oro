@@ -18,6 +18,7 @@ var ErrNoProjectRoot = errors.New("projectRoot must not be empty")
 // Config represents the .oro/config.yaml structure.
 type Config struct {
 	Languages map[string]LanguageConfig `yaml:"languages"`
+	Memory    MemoryConfig              `yaml:"memory"`
 }
 
 // LanguageConfig holds the configuration for a single language.
@@ -28,6 +29,84 @@ type LanguageConfig struct {
 	TypeCheck   string   `yaml:"type_check,omitempty"`
 	Security    string   `yaml:"security,omitempty"`
 	CodingRules []string `yaml:"coding_rules,omitempty"`
+}
+
+// MemoryConfig holds memory-related configuration nested under Config.
+type MemoryConfig struct {
+	Semantic SemanticMemoryConfig `yaml:"semantic"`
+}
+
+// SemanticMemoryConfig holds configuration for the semantic memory subsystem.
+// Enabled and Rerank use *bool so that explicit false survives a round-trip
+// through YAML (distinguishes "unset" from "explicitly false").
+type SemanticMemoryConfig struct {
+	Enabled   *bool  `yaml:"enabled,omitempty"`
+	Rerank    *bool  `yaml:"rerank,omitempty"`
+	ANNTopK   int    `yaml:"ann_top_k,omitempty"`
+	FinalTopK int    `yaml:"final_top_k,omitempty"`
+	ModelDir  string `yaml:"model_dir,omitempty"`
+}
+
+// EnabledOrDefault returns the Enabled value, defaulting to true when unset.
+//
+//oro:testonly
+func (c *SemanticMemoryConfig) EnabledOrDefault() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// RerankOrDefault returns the Rerank value, defaulting to true when unset.
+//
+//oro:testonly
+func (c *SemanticMemoryConfig) RerankOrDefault() bool {
+	if c.Rerank == nil {
+		return true
+	}
+	return *c.Rerank
+}
+
+// Defaults returns a Config with all fields set to their default values.
+// Used when no config file is present.
+func Defaults() *Config {
+	return (&Config{}).WithDefaults()
+}
+
+// WithDefaults returns a copy of c with unset fields filled with default values.
+// Explicit values (including false for *bool fields) are preserved.
+func (c *Config) WithDefaults() *Config {
+	out := *c
+
+	homeDir, _ := os.UserHomeDir()
+	defaultModelDir := filepath.Join(homeDir, ".oro", "models")
+
+	sem := out.Memory.Semantic
+	if sem.ANNTopK == 0 {
+		sem.ANNTopK = 50
+	}
+	if sem.FinalTopK == 0 {
+		sem.FinalTopK = 10
+	}
+	if sem.ModelDir == "" {
+		sem.ModelDir = defaultModelDir
+	} else {
+		sem.ModelDir = expandTilde(sem.ModelDir, homeDir)
+	}
+	out.Memory.Semantic = sem
+
+	return &out
+}
+
+// expandTilde replaces a leading "~" with the provided homeDir.
+func expandTilde(path, homeDir string) string {
+	if path == "~" {
+		return homeDir
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(homeDir, path[2:])
+	}
+	return path
 }
 
 // GenerateConfig scans the project root, detects languages using the provided profiles,
