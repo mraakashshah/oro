@@ -1,4 +1,5 @@
 # source: history
+# APPROVED
 {"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":16,"relevant":null,"source":"history"}
 {"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":15,"relevant":null,"source":"history"}
 {"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":14,"relevant":null,"source":"history"}
