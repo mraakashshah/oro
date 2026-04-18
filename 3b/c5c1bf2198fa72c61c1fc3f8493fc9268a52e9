@@ -1,0 +1,25 @@
+pkg/memory/memory.go
+  9122f867d119f0fb 14,60-79,162-165
+pkg/memory/model_match_test.go
+  9122f867d119f0fb 6,32-33,98-106,147-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "3bc5c1bf2198fa72c61c1fc3f8493fc9268a52e9",
+  "prompts": {
+    "9122f867d119f0fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3b939497-5f97-484b-a7b7-b2a1a392dd1f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 63,
+      "total_deletions": 17,
+      "accepted_lines": 49,
+      "overriden_lines": 0
+    }
+  }
+}
