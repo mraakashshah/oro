@@ -40,19 +40,6 @@ type Reranker interface {
 	Rerank(query string, docs []string) []float64
 }
 
-// VectorIndex stores and searches dense embedding vectors.
-type VectorIndex interface {
-	Upsert(id int64, vec []float32, project string) error
-	Search(queryVec []float32, project string, k int) ([]ANNResult, error)
-	Delete(id int64) error
-}
-
-// ANNResult is a single hit returned by VectorIndex.Search.
-type ANNResult struct {
-	MemoryID int64
-	Score    float64
-}
-
 // TFIDFEmbedder computes TF-IDF-style term-frequency vectors for text.
 // It maintains a vocabulary (term -> dimension index) that grows as new terms
 // are encountered. All embeddings share the same vector space defined by the
