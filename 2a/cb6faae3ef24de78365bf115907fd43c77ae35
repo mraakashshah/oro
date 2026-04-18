@@ -1,0 +1,25 @@
+pkg/memory/chunk_test.go
+  66f46d9dc7c054d3 1-174
+pkg/memory/chunk.go
+  66f46d9dc7c054d3 1-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "2acb6faae3ef24de78365bf115907fd43c77ae35",
+  "prompts": {
+    "66f46d9dc7c054d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ecb89b58-97f6-41d9-b96a-7b404cd7c423",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 220,
+      "total_deletions": 0,
+      "accepted_lines": 220,
+      "overriden_lines": 0
+    }
+  }
+}
