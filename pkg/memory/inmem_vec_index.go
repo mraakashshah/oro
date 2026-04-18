@@ -47,18 +47,17 @@ func (v *InMemoryVecIndex) Search(queryVec []float32, project string, k int) ([]
 	}
 	v.mu.RLock()
 	partition := v.partitions[project]
-	v.mu.RUnlock()
-
-	if len(partition) == 0 {
-		return nil, nil
-	}
-
 	results := make([]ANNResult, 0, len(partition))
 	for id, vec := range partition {
 		results = append(results, ANNResult{
 			MemoryID: id,
 			Score:    CosineSimilarity(queryVec, vec),
 		})
+	}
+	v.mu.RUnlock()
+
+	if len(results) == 0 {
+		return nil, nil
 	}
 
 	sort.Slice(results, func(i, j int) bool {

@@ -1,6 +1,7 @@
 package memory_test
 
 import (
+	"sync"
 	"testing"
 
 	"oro/pkg/memory"
@@ -135,6 +136,40 @@ func TestInMemoryVecIndex_DeleteFromAllProjects(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestInMemoryVecIndex_ConcurrentSearchUpsert exercises the race between
+// Search iterating a partition and Upsert writing to the same inner map.
+// Must be run with -race to be meaningful.
+func TestInMemoryVecIndex_ConcurrentSearchUpsert(t *testing.T) {
+	idx := memory.NewInMemoryVecIndex()
+	vec := []float32{1.0, 0.0, 0.0}
+	if err := idx.Upsert(1, vec, "proj"); err != nil {
+		t.Fatalf("seed Upsert: %v", err)
+	}
+
+	const iters = 200
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			if err := idx.Upsert(int64(i+2), vec, "proj"); err != nil {
+				t.Errorf("Upsert: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			if _, err := idx.Search(vec, "proj", 10); err != nil {
+				t.Errorf("Search: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
 }
 
 // compile-time check: *InMemoryVecIndex must satisfy VectorIndex.
