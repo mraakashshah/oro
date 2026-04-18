@@ -180,3 +180,19 @@ WHERE content LIKE 'Reviewer rejected this bead: %';
 DELETE FROM memories WHERE content LIKE 'Reviewer rejected this bead: %';
 COMMIT;
 `
+
+// MigrateSemanticMemoryDense adds embedding_dense and content_tokens columns
+// to existing memories tables to support semantic memory embeddings.
+// Uses a try/ignore pattern since SQLite doesn't support IF NOT EXISTS for ALTER TABLE.
+const MigrateSemanticMemoryDense = `
+ALTER TABLE memories ADD COLUMN embedding_dense BLOB;
+ALTER TABLE memories ADD COLUMN content_tokens INTEGER DEFAULT 0;
+`
+
+// MigrateSemanticMemoryBackfillState initializes the backfill tracking state
+// and sets the embedding model sentinel in the kv_store table.
+// Uses INSERT OR IGNORE for idempotency.
+const MigrateSemanticMemoryBackfillState = `
+INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES ('backfill_semantic_memory_state', 'pending', datetime('now'));
+INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES ('embedding_dense_model', 'bge-small-en-v1.5', datetime('now'));
+`
