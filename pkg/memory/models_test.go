@@ -166,6 +166,29 @@ func TestPrefetchModelsHTTPError(t *testing.T) {
 }
 
 func TestRerankerModelEntry(t *testing.T) {
+	// Assert the bge-reranker-base entry is registered in KnownModels with
+	// the expected filename. This is the registry membership check the test
+	// name promises — bypassing it would leave the entry untested.
+	var registered *memory.ModelSpec
+	for i := range memory.KnownModels {
+		if memory.KnownModels[i].Name == "bge-reranker-base" {
+			registered = &memory.KnownModels[i]
+			break
+		}
+	}
+	if registered == nil {
+		t.Fatal("bge-reranker-base not present in memory.KnownModels registry")
+	}
+	if registered.Filename != "model.onnx" {
+		t.Errorf("KnownModels[bge-reranker-base].Filename = %q, want %q", registered.Filename, "model.onnx")
+	}
+	if registered.URL == "" {
+		t.Error("KnownModels[bge-reranker-base].URL must not be empty")
+	}
+	if registered.SHA256 == "" {
+		t.Error("KnownModels[bge-reranker-base].SHA256 must not be empty")
+	}
+
 	fixture := []byte("fake reranker model bytes for testing")
 	sum := sha256.Sum256(fixture)
 	digest := hex.EncodeToString(sum[:])
@@ -177,14 +200,14 @@ func TestRerankerModelEntry(t *testing.T) {
 
 	dir := t.TempDir()
 	spec := memory.ModelSpec{
-		Name:     "bge-reranker-base",
+		Name:     registered.Name,
 		URL:      srv.URL + "/model.onnx",
 		SHA256:   digest,
-		Filename: "model.onnx",
+		Filename: registered.Filename,
 	}
 
 	// Test ModelPath returns correct path
-	modelPath := memory.ModelPath(dir, "bge-reranker-base")
+	modelPath := memory.ModelPath(dir, registered.Name)
 	expectedPath := filepath.Join(dir, "bge-reranker-base", "model.onnx")
 	if modelPath != expectedPath {
 		t.Errorf("ModelPath = %q, want %q", modelPath, expectedPath)
