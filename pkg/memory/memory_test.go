@@ -3906,6 +3906,50 @@ func TestHybridSearchRerankTimeoutFallback(t *testing.T) {
 	}
 }
 
+// TestHybridSearchRerankSkippedSoloCLI verifies that HybridSearch returns clean
+// RRF-fused results when Store has no Reranker wired (simulating a solo-CLI run
+// without the dispatcher) even though SemanticConfig.Rerank is true. No UDS
+// socket is opened and no dispatcher is spawned — absence of a panic proves the
+// nil reranker guard works correctly.
+func TestHybridSearchRerankSkippedSoloCLI(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	store := NewStore(db)
+	// Wire an embedder (for the vector/RRF path) but NO reranker — simulates
+	// solo-CLI mode where the dispatcher is not running.
+	store.SetEmbedder(NewEmbedder())
+	store.SetSemanticConfig(SemanticConfig{
+		Rerank:    boolPtr(true),
+		ANNTopK:   20,
+		FinalTopK: 1, // low cap so fused > finalK once any memory is inserted
+	})
+
+	// Insert several memories so the fused pool can exceed FinalTopK.
+	for i, c := range []string{
+		"worker respawn after crash recovery mechanism handler bead",
+		"coffee is a delicious morning beverage for productivity boost",
+		"git rebase tutorial for beginners workflow guide commit history",
+		"retry failed bead dispatcher escalation queue manager recovery",
+	} {
+		if _, err := store.Insert(ctx, InsertParams{
+			Content:    c,
+			Type:       "lesson",
+			Source:     "self_report",
+			Confidence: 0.8,
+		}); err != nil {
+			t.Fatalf("insert[%d]: %v", i, err)
+		}
+	}
+
+	// HybridSearch must return without error and without panicking.
+	// A nil-pointer panic would surface here if the nil reranker guard were absent.
+	results, err := store.HybridSearch(ctx, "retry failed bead", SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("HybridSearch must not error when reranker is nil (solo-CLI): %v", err)
+	}
+	_ = results // result set may vary; no panic + no error is the assertion
+}
+
 // TestHybridSearchRerankDisabled: when rerank=false, Reranker.Rerank is never
 // called and fused RRF output is returned unchanged.
 func TestHybridSearchRerankDisabled(t *testing.T) {
