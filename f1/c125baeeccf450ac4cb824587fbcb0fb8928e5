@@ -1,0 +1,27 @@
+pkg/memory/export_test.go
+  ebb1fcfe6d06dbaf 20-29
+pkg/memory/bge_reranker.go
+  ebb1fcfe6d06dbaf 1-143
+pkg/memory/bge_reranker_test.go
+  ebb1fcfe6d06dbaf 1-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "f1c125baeeccf450ac4cb824587fbcb0fb8928e5",
+  "prompts": {
+    "ebb1fcfe6d06dbaf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3653c530-e013-4314-a78e-5a5bfbe8fc21",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 247,
+      "total_deletions": 0,
+      "accepted_lines": 247,
+      "overriden_lines": 0
+    }
+  }
+}
