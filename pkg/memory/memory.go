@@ -22,7 +22,7 @@ import (
 // Store manages the memories table in SQLite.
 type Store struct {
 	db       *sql.DB
-	embedder *TFIDFEmbedder
+	embedder Embedder
 	project  string // current project scope for queries and inserts
 }
 
@@ -33,7 +33,7 @@ func NewStore(db *sql.DB) *Store {
 
 // SetEmbedder attaches an Embedder to the store. When set, Insert() computes
 // and stores TF-IDF embeddings, and HybridSearch() uses them for RRF scoring.
-func (s *Store) SetEmbedder(e *TFIDFEmbedder) {
+func (s *Store) SetEmbedder(e Embedder) {
 	s.embedder = e
 }
 
@@ -62,7 +62,11 @@ func (s *Store) SaveVocab(ctx context.Context) error {
 	if s.embedder == nil {
 		return fmt.Errorf("save vocab: no embedder set")
 	}
-	vocab := s.embedder.ExportVocab()
+	vp, ok := s.embedder.(VocabPersister)
+	if !ok {
+		return nil
+	}
+	vocab := vp.ExportVocab()
 	data, err := json.Marshal(vocab)
 	if err != nil {
 		return fmt.Errorf("save vocab marshal: %w", err)
@@ -84,6 +88,10 @@ func (s *Store) LoadVocab(ctx context.Context) error {
 	if s.embedder == nil {
 		return fmt.Errorf("load vocab: no embedder set")
 	}
+	vp, ok := s.embedder.(VocabPersister)
+	if !ok {
+		return nil
+	}
 	var value string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT value FROM kv_store WHERE key = ?`, vocabKVKey,
@@ -98,7 +106,7 @@ func (s *Store) LoadVocab(ctx context.Context) error {
 	if err := json.Unmarshal([]byte(value), &vocab); err != nil {
 		return fmt.Errorf("load vocab unmarshal: %w", err)
 	}
-	s.embedder.ImportVocab(vocab)
+	vp.ImportVocab(vocab)
 	return nil
 }
 

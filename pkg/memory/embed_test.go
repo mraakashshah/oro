@@ -656,6 +656,8 @@ func TestEmbedder_VocabPersistence(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // stubEmbedder satisfies the Embedder interface for compile-time shape probes.
+// It deliberately does NOT implement VocabPersister, so it also serves as the
+// fixture for TestStore_SaveLoadVocab_NonVocabPersisterNoOp.
 type stubEmbedder struct{}
 
 func (*stubEmbedder) Embed(_ string) []float32 { return nil }
@@ -679,6 +681,7 @@ var (
 	_ Embedder       = (*stubEmbedder)(nil)
 	_ Reranker       = (*stubReranker)(nil)
 	_ VectorIndex    = (*stubVecIndex)(nil)
+	_ Embedder       = (*TFIDFEmbedder)(nil)
 	_ VocabPersister = (*TFIDFEmbedder)(nil)
 )
 
@@ -722,6 +725,46 @@ func TestTFIDFEmbedderImplementsEmbedder(t *testing.T) {
 // *TFIDFEmbedder satisfies the VocabPersister interface.
 func TestTFIDFEmbedderImplementsVocabPersister(t *testing.T) {
 	var _ VocabPersister = (*TFIDFEmbedder)(nil)
+}
+
+// TestStore_SetEmbedder_AcceptsInterface verifies that SetEmbedder accepts any
+// value satisfying the Embedder interface, not just *TFIDFEmbedder.
+func TestStore_SetEmbedder_AcceptsInterface(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+
+	store.SetEmbedder(&stubEmbedder{})
+
+	if !store.HasEmbedder() {
+		t.Error("HasEmbedder() = false after SetEmbedder with stubEmbedder")
+	}
+}
+
+// TestStore_SaveLoadVocab_NonVocabPersisterNoOp verifies that SaveVocab and
+// LoadVocab return nil (no-op) when the embedder does not implement VocabPersister.
+func TestStore_SaveLoadVocab_NonVocabPersisterNoOp(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	store.SetEmbedder(&stubEmbedder{})
+	ctx := context.Background()
+
+	if err := store.SaveVocab(ctx); err != nil {
+		t.Errorf("SaveVocab with non-VocabPersister: want nil, got %v", err)
+	}
+
+	if err := store.LoadVocab(ctx); err != nil {
+		t.Errorf("LoadVocab with non-VocabPersister: want nil, got %v", err)
+	}
+
+	// No row should have been written to kv_store.
+	var count int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM kv_store WHERE key = ?`, vocabKVKey).Scan(&count)
+	if err != nil {
+		t.Fatalf("kv_store query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("kv_store rows for vocab key = %d, want 0", count)
+	}
 }
 
 // assertUnitVector checks that a float32 vector has L2 norm ~1.0.
