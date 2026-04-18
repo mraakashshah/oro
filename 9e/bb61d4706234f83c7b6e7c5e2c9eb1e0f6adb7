@@ -1,0 +1,38 @@
+pkg/memory/vec_index_test.go
+  7956448e1e8c3a47 4,141-174
+pkg/memory/inmem_vec_index.go
+  7956448e1e8c3a47 57-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "9ebb61d4706234f83c7b6e7c5e2c9eb1e0f6adb7",
+  "prompts": {
+    "5437e86773551898": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa694764-ad71-441d-9968-677687428d2e",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "7956448e1e8c3a47": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ebbd59f-ce66-4208-92c9-dcd0f7c8b248",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 42,
+      "total_deletions": 8,
+      "accepted_lines": 40,
+      "overriden_lines": 0
+    }
+  }
+}
