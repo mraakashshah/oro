@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -3575,4 +3576,156 @@ func TestInsertChunksAtomicOnFailure(t *testing.T) {
 	if count != 0 {
 		t.Errorf("expected 0 orphan memory rows after chunk-insert failure, got %d", count)
 	}
+}
+
+// fixedEmbedder returns the same pre-set vector for every Embed call.
+// Used in max-sim tests so chunk/row embedding cosines are fully controlled.
+type fixedEmbedder struct{ vec []float32 }
+
+func (e *fixedEmbedder) Embed(_ string) []float32 { return e.vec }
+func (e *fixedEmbedder) Dim() int                 { return len(e.vec) }
+func (e *fixedEmbedder) Name() string             { return "fixed-test-embedder" }
+
+// unitVecWithCosine returns a 3-dimensional unit vector whose cosine similarity
+// with [1, 0, 0] equals c (requires -1 ≤ c ≤ 1).
+func unitVecWithCosine(c float32) []float32 {
+	sinSq := float64(1 - c*c)
+	if sinSq < 0 {
+		sinSq = 0
+	}
+	return []float32{c, float32(math.Sqrt(sinSq)), 0.0}
+}
+
+// TestHybridSearchMaxSimParentScoring verifies that vectorSearch scores a
+// chunked memory using MAX(cosine) over its chunks, not the mean or last chunk.
+// Memory A has 3 chunks (cos 0.3/0.4/0.9); memory B has no chunks but a row
+// embedding (cos 0.6). After vectorSearch: A.Score≈0.9 and A ranks above B.
+func TestHybridSearchMaxSimParentScoring(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDBWithChunks(t)
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	store := NewStore(db)
+	store.SetEmbedder(&fixedEmbedder{vec: queryVec})
+
+	// Memory A: parent row (no row embedding) + 3 chunk rows.
+	resA, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence)
+		 VALUES (?, ?, ?, ?, ?)`,
+		"xzq9_unique_maxsim_memA_alpha_bravo_charlie", "lesson", "[]", "self_report", 0.8,
+	)
+	if err != nil {
+		t.Fatalf("insert memory A: %v", err)
+	}
+	idA, _ := resA.LastInsertId()
+
+	for i, c := range []float32{0.3, 0.4, 0.9} {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO memory_chunks (memory_id, chunk_idx, text, embedding) VALUES (?, ?, ?, ?)`,
+			idA, i, fmt.Sprintf("chunk %d text", i), MarshalEmbedding(unitVecWithCosine(c)),
+		); err != nil {
+			t.Fatalf("insert chunk %d: %v", i, err)
+		}
+	}
+
+	// Memory B: no chunks, row embedding with cosine = 0.6.
+	resB, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, embedding)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"xzq9_unique_maxsim_memB_delta_echo_foxtrot", "lesson", "[]", "self_report", 0.8,
+		MarshalEmbedding(unitVecWithCosine(0.6)),
+	)
+	if err != nil {
+		t.Fatalf("insert memory B: %v", err)
+	}
+	idB, _ := resB.LastInsertId()
+
+	results, err := store.vectorSearch(ctx, queryVec, 10, "")
+	if err != nil {
+		t.Fatalf("vectorSearch: %v", err)
+	}
+
+	scoreByID := make(map[int64]float64, len(results))
+	for _, r := range results {
+		scoreByID[r.ID] = r.Score
+	}
+
+	scoreA, okA := scoreByID[idA]
+	scoreB, okB := scoreByID[idB]
+	if !okA {
+		t.Fatalf("memory A (id=%d) not in vectorSearch results; got IDs: %v", idA, idsOf(results))
+	}
+	if !okB {
+		t.Fatalf("memory B (id=%d) not in vectorSearch results; got IDs: %v", idB, idsOf(results))
+	}
+
+	// A must score ≈0.9 (max over chunks), not mean(0.3,0.4,0.9)≈0.533 or last(0.9).
+	if math.Abs(scoreA-0.9) > 1e-3 {
+		t.Errorf("memory A vector score = %.6f, want ~0.9 (max over chunks)", scoreA)
+	}
+	if math.Abs(scoreB-0.6) > 1e-3 {
+		t.Errorf("memory B vector score = %.6f, want ~0.6 (row embedding)", scoreB)
+	}
+	if scoreA <= scoreB {
+		t.Errorf("memory A (score=%.4f) must rank above memory B (score=%.4f)", scoreA, scoreB)
+	}
+}
+
+// TestHybridSearchParentWithoutChunksFallsBackToRowEmbedding verifies that a
+// memory with no chunk rows (pre-migration row) is still scored via its
+// memories.embedding column rather than being silently excluded.
+func TestHybridSearchParentWithoutChunksFallsBackToRowEmbedding(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDBWithChunks(t)
+
+	queryVec := []float32{1.0, 0.0, 0.0}
+	store := NewStore(db)
+	store.SetEmbedder(&fixedEmbedder{vec: queryVec})
+
+	const wantCosine = float32(0.75)
+	resC, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence, embedding)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"xzq9_unique_fallback_nochunks_gamma_delta_epsilon", "gotcha", "[]", "self_report", 0.8,
+		MarshalEmbedding(unitVecWithCosine(wantCosine)),
+	)
+	if err != nil {
+		t.Fatalf("insert memory C: %v", err)
+	}
+	idC, _ := resC.LastInsertId()
+
+	// Confirm no chunks exist for C (pre-migration row simulation).
+	var chunkCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_chunks WHERE memory_id = ?`, idC,
+	).Scan(&chunkCount); err != nil {
+		t.Fatalf("count chunks: %v", err)
+	}
+	if chunkCount != 0 {
+		t.Fatalf("test setup: expected 0 chunks for memory C, got %d", chunkCount)
+	}
+
+	results, err := store.vectorSearch(ctx, queryVec, 10, "")
+	if err != nil {
+		t.Fatalf("vectorSearch: %v", err)
+	}
+
+	for _, r := range results {
+		if r.ID == idC {
+			if math.Abs(r.Score-float64(wantCosine)) > 1e-3 {
+				t.Errorf("fallback row score = %.6f, want ~%.3f", r.Score, wantCosine)
+			}
+			return
+		}
+	}
+	t.Errorf("memory C (id=%d, no chunks) not found in vectorSearch; expected fallback via row embedding; got IDs: %v", idC, idsOf(results))
+}
+
+// idsOf extracts memory IDs from a result slice for diagnostic messages.
+func idsOf(results []ScoredMemory) []int64 {
+	ids := make([]int64, len(results))
+	for i, r := range results {
+		ids[i] = r.ID
+	}
+	return ids
 }

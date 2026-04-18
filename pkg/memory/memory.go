@@ -797,11 +797,178 @@ func (s *Store) fetchMemoriesByIDs(ctx context.Context, ids []int64) ([]ScoredMe
 	return results, nil
 }
 
-// vectorSearchLinear is the fallback path used when no VectorIndex is set.
-// It loads up to linearScanCap rows with stored embeddings and ranks by cosine.
+// vectorSearchLinear scores memories using max-sim over chunks when
+// memory_chunks exists, with row-embedding fallback for unchunked memories.
+// For each parent memory: score = MAX(cosine(queryVec, chunkEmbedding)) over its
+// chunks. Memories with no chunks fall back to their memories.embedding column.
+// Memories with neither chunks nor a row embedding are excluded.
+//
+// Falls back to vectorSearchLinearRowOnly when memory_chunks does not exist
+// (pre-migration databases).
+//
+//nolint:funlen // orchestration of three phases; each helper is compact
+func (s *Store) vectorSearchLinear(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	// Phase 1: Max cosine over chunks per parent memory_id.
+	chunkScores, err := s.chunkMaxSim(ctx, queryVec, typeFilter)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return s.vectorSearchLinearRowOnly(ctx, queryVec, limit, typeFilter)
+		}
+		return nil, fmt.Errorf("chunk max-sim: %w", err)
+	}
+
+	// Phase 2: Row-level cosine for all memories (overridden by chunk score below).
+	rowScores, err := s.rowEmbeddingScores(ctx, queryVec, typeFilter)
+	if err != nil {
+		return nil, fmt.Errorf("row embedding scores: %w", err)
+	}
+
+	// Phase 3: Merge — chunk max-sim takes precedence over row embedding for same ID.
+	allScores := make(map[int64]float64, len(rowScores)+len(chunkScores))
+	for id, score := range rowScores {
+		allScores[id] = score
+	}
+	for id, score := range chunkScores {
+		allScores[id] = score
+	}
+
+	type idScore struct {
+		id    int64
+		score float64
+	}
+	sorted := make([]idScore, 0, len(allScores))
+	for id, score := range allScores {
+		sorted = append(sorted, idScore{id: id, score: score})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
+	if len(sorted) > limit {
+		sorted = sorted[:limit]
+	}
+	if len(sorted) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]int64, len(sorted))
+	for i, s := range sorted {
+		ids[i] = s.id
+	}
+	fetched, err := s.fetchMemoriesByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	scoreByID := make(map[int64]float64, len(sorted))
+	for _, s := range sorted {
+		scoreByID[s.id] = s.score
+	}
+	results := make([]ScoredMemory, 0, len(fetched))
+	for _, sm := range fetched {
+		sm.Score = scoreByID[sm.ID]
+		results = append(results, sm)
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	return results, nil
+}
+
+// chunkMaxSim computes MAX(cosine(queryVec, chunkEmbedding)) per parent memory_id
+// over all rows in memory_chunks. Returns a map[memory_id]maxScore.
+func (s *Store) chunkMaxSim(ctx context.Context, queryVec []float32, typeFilter string) (map[int64]float64, error) {
+	q := `SELECT mc.memory_id, mc.embedding
+	FROM memory_chunks mc
+	JOIN memories m ON mc.memory_id = m.id`
+
+	var args []any
+	var conds []string
+	if typeFilter != "" {
+		conds = append(conds, "m.type = ?")
+		args = append(args, typeFilter)
+	}
+	if s.project != "" {
+		conds = append(conds, "m.project = ?")
+		args = append(args, s.project)
+	}
+	if len(conds) > 0 {
+		q += " WHERE " + strings.Join(conds, " AND ") //nolint:gosec // G202 false positive: only hardcoded "?" placeholders, no string interpolation
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("chunk query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	maxScore := make(map[int64]float64)
+	for rows.Next() {
+		var memID int64
+		var embBlob []byte
+		if err := rows.Scan(&memID, &embBlob); err != nil {
+			return nil, fmt.Errorf("chunk scan: %w", err)
+		}
+		vec := UnmarshalEmbedding(embBlob)
+		if len(vec) == 0 {
+			continue
+		}
+		if cos := CosineSimilarity(queryVec, vec); cos > maxScore[memID] {
+			maxScore[memID] = cos
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chunk rows: %w", err)
+	}
+	return maxScore, nil
+}
+
+// rowEmbeddingScores scores all memories by cosine similarity against their
+// row-level embedding column. Used as the fallback path for memories with no
+// chunk rows and as a baseline overridden by chunkMaxSim in the merge phase.
+func (s *Store) rowEmbeddingScores(ctx context.Context, queryVec []float32, typeFilter string) (map[int64]float64, error) {
+	q := `SELECT id, embedding FROM memories WHERE embedding IS NOT NULL`
+	var args []any
+	if typeFilter != "" {
+		q += " AND type = ?"
+		args = append(args, typeFilter)
+	}
+	if s.project != "" {
+		q += " AND project = ?"
+		args = append(args, s.project)
+	}
+	q += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, linearScanCap)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("row embeddings query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	scores := make(map[int64]float64)
+	for rows.Next() {
+		var id int64
+		var embBlob []byte
+		if err := rows.Scan(&id, &embBlob); err != nil {
+			return nil, fmt.Errorf("row embedding scan: %w", err)
+		}
+		vec := UnmarshalEmbedding(embBlob)
+		if len(vec) == 0 {
+			continue
+		}
+		scores[id] = CosineSimilarity(queryVec, vec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row embeddings rows: %w", err)
+	}
+	return scores, nil
+}
+
+// vectorSearchLinearRowOnly is the pre-migration fallback for databases that
+// do not have the memory_chunks table. Scores memories by row-level embedding only.
 //
 //nolint:funlen // extra lines from file tracking columns in SELECT
-func (s *Store) vectorSearchLinear(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
+func (s *Store) vectorSearchLinearRowOnly(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
 	q := `SELECT id, content, type, tags, source,
 	       COALESCE(bead_id, '') AS bead_id,
 	       COALESCE(worker_id, '') AS worker_id,
