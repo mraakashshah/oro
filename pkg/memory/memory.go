@@ -660,10 +660,8 @@ func (s *Store) vectorSearchViaIndex(ctx context.Context, queryVec []float32, li
 	}
 
 	ids := make([]int64, len(annResults))
-	scoreByID := make(map[int64]float64, len(annResults))
 	for i, r := range annResults {
 		ids[i] = r.MemoryID
-		scoreByID[r.MemoryID] = r.Score
 	}
 
 	fetched, err := s.fetchMemoriesByIDs(ctx, ids)

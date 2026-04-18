@@ -27,7 +27,7 @@ func TestStoreVectorSearchReturnsANNResults(t *testing.T) {
 	}
 
 	store := memory.NewStore(db)
-	embedder := testhelpers.NewFakeEmbedder(0) // dim=128
+	embedder := testhelpers.NewFakeEmbedder(384) // matches SQLiteVecIndex vec0 FLOAT[384] DDL
 	store.SetEmbedder(embedder)
 	store.SetVectorIndex(idx)
 
