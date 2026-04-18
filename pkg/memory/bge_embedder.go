@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ const (
 // Unit tests inject a fake; integration tests use a real ORT session via newORTSession.
 type ortSession interface {
 	Run(tokenIDs, attentionMask []int64) ([]float32, error)
+	Close() error
 }
 
 // BGEEmbedder computes 384-dimensional L2-normalized embeddings using the
@@ -130,10 +132,16 @@ func (b *BGEEmbedder) Close() error {
 		return nil
 	}
 	b.closed = true
-	if b.tokenizer != nil {
-		if err := b.tokenizer.Close(); err != nil {
-			return fmt.Errorf("BGEEmbedder: close tokenizer: %w", err)
+	var sessErr, tokErr error
+	if b.session != nil {
+		if err := b.session.Close(); err != nil {
+			sessErr = fmt.Errorf("BGEEmbedder: close ORT session: %w", err)
 		}
 	}
-	return nil
+	if b.tokenizer != nil {
+		if err := b.tokenizer.Close(); err != nil {
+			tokErr = fmt.Errorf("BGEEmbedder: close tokenizer: %w", err)
+		}
+	}
+	return errors.Join(sessErr, tokErr)
 }

@@ -20,6 +20,8 @@ type fakeORTSession struct {
 	capturedMask []int64
 	output       []float32
 	err          error
+	closeErr     error
+	closeCalls   int
 }
 
 func (f *fakeORTSession) Run(tokenIDs, attentionMask []int64) ([]float32, error) {
@@ -31,6 +33,11 @@ func (f *fakeORTSession) Run(tokenIDs, attentionMask []int64) ([]float32, error)
 	out := make([]float32, len(f.output))
 	copy(out, f.output)
 	return out, nil
+}
+
+func (f *fakeORTSession) Close() error {
+	f.closeCalls++
+	return f.closeErr
 }
 
 // testdataTokenizerPath returns the path to the bundled test tokenizer.
@@ -135,4 +142,31 @@ func TestBGEEmbedderCloseIdempotent(t *testing.T) {
 
 	assert.NoError(t, emb.Close())
 	assert.NoError(t, emb.Close()) // double-close must not panic or error
+	assert.Equal(t, 1, sess.closeCalls, "session.Close must be called exactly once")
+}
+
+func TestBGEEmbedderCloseReleasesSession(t *testing.T) {
+	tok, err := tokenizers.FromFile(testdataTokenizerPath(t))
+	require.NoError(t, err)
+
+	sess := &fakeORTSession{output: make([]float32, memory.BGEDim)}
+	emb := memory.NewBGEEmbedderFromParts(sess, tok)
+
+	require.NoError(t, emb.Close())
+	assert.Equal(t, 1, sess.closeCalls,
+		"BGEEmbedder.Close must release the underlying ORT session")
+}
+
+func TestBGEEmbedderCloseJoinsErrors(t *testing.T) {
+	tok, err := tokenizers.FromFile(testdataTokenizerPath(t))
+	require.NoError(t, err)
+
+	sessErr := errors.New("ort destroy failed")
+	sess := &fakeORTSession{output: make([]float32, memory.BGEDim), closeErr: sessErr}
+	emb := memory.NewBGEEmbedderFromParts(sess, tok)
+
+	err = emb.Close()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sessErr,
+		"Close must surface the session close error via errors.Join")
 }

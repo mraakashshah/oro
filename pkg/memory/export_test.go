@@ -10,6 +10,7 @@ const BGEDim = bgeDim
 // inject a fake ortSession without loading a real ONNX model.
 func NewBGEEmbedderFromParts(sess interface {
 	Run(tokenIDs, attentionMask []int64) ([]float32, error)
+	Close() error
 }, tok *tokenizers.Tokenizer,
 ) *BGEEmbedder {
 	return newBGEEmbedderFromParts(sess, tok)

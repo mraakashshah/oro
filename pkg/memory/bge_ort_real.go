@@ -82,6 +82,20 @@ func (s *ortRealSession) Run(tokenIDs, attentionMask []int64) ([]float32, error)
 	return result, nil
 }
 
+// Close destroys the underlying DynamicAdvancedSession, releasing its
+// native allocator, file handles, and thread pool. Must be called by
+// BGEEmbedder.Close to avoid leaking ORT resources.
+func (s *ortRealSession) Close() error {
+	if s == nil || s.session == nil {
+		return nil
+	}
+	if err := s.session.Destroy(); err != nil {
+		return fmt.Errorf("destroy ORT session: %w", err)
+	}
+	s.session = nil
+	return nil
+}
+
 // newORTSession creates a DynamicAdvancedSession for the BGE-small-en-v1.5 model.
 func newORTSession(modelPath string) (ortSession, error) {
 	if err := initORTEnv(); err != nil {
