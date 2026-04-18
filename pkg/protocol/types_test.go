@@ -283,6 +283,49 @@ func TestCountDistinctModulesSymbols(t *testing.T) {
 	}
 }
 
+func TestCountDistinctModulesParenthetical(t *testing.T) {
+	tests := []struct {
+		name       string
+		acceptance string
+		expected   int
+	}{
+		{
+			name:       "exact case from oro-ot51 swarm stall",
+			acceptance: "Read: pkg/memory/memory.go:25,36,43,61-103 (Store struct field + SetEmbedder), pkg/memory/embed.go:Embedder (from bead 1.1)",
+			expected:   1,
+		},
+		{
+			name:       "parenthetical with dotted annotation does not contribute",
+			acceptance: "Read: pkg/a/foo.go, (type.Go annotation here), pkg/a/bar.go",
+			expected:   1,
+		},
+		{
+			name:       "parenthetical with version dot does not contribute",
+			acceptance: "Read: pkg/a/foo.go, (from bead 1.1), pkg/a/bar.go",
+			expected:   1,
+		},
+		{
+			name:       "semicolons treated as additional separators",
+			acceptance: "Read: pkg/a/foo.go; pkg/b/bar.go",
+			expected:   2,
+		},
+		{
+			name:       "semicolons and commas both work as separators",
+			acceptance: "Read: pkg/a/foo.go; pkg/b/bar.go, pkg/c/baz.go",
+			expected:   3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := protocol.CountDistinctModules(tt.acceptance)
+			if got != tt.expected {
+				t.Errorf("CountDistinctModules(%q) = %d, want %d", tt.acceptance, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBeadUnmarshalNewFields(t *testing.T) {
 	tests := []struct {
 		name            string

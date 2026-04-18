@@ -3,8 +3,12 @@ package protocol
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// parenAnnotation matches parenthetical annotations in Read: tokens, e.g. "(from bead 1.1)".
+var parenAnnotation = regexp.MustCompile(`\s*\([^)]*\)`)
 
 // Dependency represents a dependency relationship between beads.
 type Dependency struct {
@@ -145,7 +149,11 @@ func CountDistinctModules(acceptance string) int {
 			continue
 		}
 		content := strings.TrimPrefix(line, "Read:")
+		// Treat semicolons as additional separators like commas.
+		content = strings.ReplaceAll(content, ";", ",")
 		for _, part := range strings.Split(content, ",") {
+			// Strip parenthetical annotations (e.g. "(from bead 1.1)") before processing.
+			part = parenAnnotation.ReplaceAllString(part, "")
 			part = strings.TrimSpace(part)
 			if part == "" || isAllDigits(part) {
 				continue
