@@ -1,0 +1,23 @@
+pkg/memory/models_test.go
+  f60920410e9529f7 192-202,207,210,213-218,227-228,232,237-248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "60e36825d0f5b3d14917f5ade1ee907e1ff247ea",
+  "prompts": {
+    "f60920410e9529f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "efa50fb0-52fc-48e6-8625-b1efc286b53b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 33,
+      "total_deletions": 12,
+      "accepted_lines": 33,
+      "overriden_lines": 0
+    }
+  }
+}
