@@ -1,0 +1,25 @@
+pkg/memory/memory.go
+  43a6691b41eb5332 9,650-651,661-665,667-680,683-704,707
+pkg/memory/telemetry_test.go
+  43a6691b41eb5332 5,7-8,147-281
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "a56530046daca13dd29e7dd1c5c0181a8538da4c",
+  "prompts": {
+    "43a6691b41eb5332": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32c8d99e-9d0d-45f6-9539-06dc17d04b01",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 183,
+      "total_deletions": 12,
+      "accepted_lines": 183,
+      "overriden_lines": 0
+    }
+  }
+}
