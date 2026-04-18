@@ -175,7 +175,7 @@ bundle_libs() {
 			run install -m 0644 "${src_dir}/${lib}" "${lib_dir}/${lib}"
 			try_codesign "${lib_dir}/${lib}"
 		else
-			log_warning "${lib} not present in tarball — skipping (semantic memory features may be unavailable)"
+			log_warning "semantic memory disabled; dylib missing: ${lib} not present in tarball"
 		fi
 	done
 }

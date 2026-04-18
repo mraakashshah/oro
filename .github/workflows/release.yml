@@ -26,6 +26,9 @@ jobs:
       - name: Stage assets
         run: make stage-assets
 
+      - name: Vendor sqlite-vec (both darwin arches)
+        run: make vendor-sqlite-vec-release
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

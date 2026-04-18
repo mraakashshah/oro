@@ -96,8 +96,11 @@ else
 	fail "unknown flag" "did not report error for --bogus"
 fi
 
-# ── Test 7: bundle_libs — dylibs copied to prefix/lib/ with mode 0644 ────────
-echo "Test 7: bundle_libs copies dylibs to prefix/lib/ with mode 0644 and codesigns each"
+# ── Test 7: bundle_libs — ORT/tokenizer dylibs copied with mode 0644 ─────────
+# sqlite-vec.dylib assertions live in Test 9 (test_sqlite_vec_bundled) — the AC
+# function for oro-05fa — so Test 7 covers only the other two dylibs to avoid
+# duplicate coverage that drifts over time.
+echo "Test 7: bundle_libs copies ORT/tokenizer dylibs to prefix/lib/ with mode 0644 and codesigns each"
 
 BTEST_TMPDIR=$(mktemp -d)
 FAKE_STAGE="${BTEST_TMPDIR}/stage"
@@ -129,8 +132,9 @@ else
 	fail "install.sh run" "non-zero exit with --prefix and tarball override"
 fi
 
-# Assert dylibs landed in prefix/lib/ with mode 0644
-for lib in libonnxruntime.dylib libtokenizers.dylib sqlite-vec.dylib; do
+# Assert ORT/tokenizer dylibs landed in prefix/lib/ with mode 0644.
+# sqlite-vec is covered by test_sqlite_vec_bundled below.
+for lib in libonnxruntime.dylib libtokenizers.dylib; do
 	LIB_PATH="${PREFIX_DIR}/lib/${lib}"
 	if [[ -f "${LIB_PATH}" ]]; then
 		pass "${lib} present in prefix/lib/"
@@ -146,7 +150,7 @@ for lib in libonnxruntime.dylib libtokenizers.dylib sqlite-vec.dylib; do
 done
 
 # Assert codesign was invoked for each dylib
-for lib in libonnxruntime.dylib libtokenizers.dylib sqlite-vec.dylib; do
+for lib in libonnxruntime.dylib libtokenizers.dylib; do
 	if grep -q "${lib}" "${CODESIGN_LOG}" 2>/dev/null; then
 		pass "codesign invoked for ${lib}"
 	else
@@ -185,10 +189,17 @@ else
 	fail "install exit code" "expected 0 (non-fatal), got ${t8_rc}"
 fi
 
-if echo "${t8_output}" | grep -qi "sqlite-vec\|skipping\|unavailable"; then
-	pass "warning logged when sqlite-vec.dylib absent"
+# AC edge text is "semantic memory disabled; dylib missing" — assert the exact
+# phrase so drift between install.sh and AC is caught by this test.
+if echo "${t8_output}" | grep -q "semantic memory disabled; dylib missing"; then
+	pass "warning matches AC wording 'semantic memory disabled; dylib missing'"
 else
-	fail "warning missing" "expected warning about missing sqlite-vec.dylib"
+	fail "warning wording" "expected AC phrase 'semantic memory disabled; dylib missing' in output"
+fi
+if echo "${t8_output}" | grep -q "sqlite-vec.dylib"; then
+	pass "warning names the missing dylib (sqlite-vec.dylib)"
+else
+	fail "warning dylib name" "expected 'sqlite-vec.dylib' in warning"
 fi
 
 if [[ ! -f "${T8_PREFIX}/lib/sqlite-vec.dylib" ]]; then

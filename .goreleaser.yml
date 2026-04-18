@@ -42,6 +42,13 @@ archives:
     builds:
       - oro
       - oro-search-hook
+    # sqlite-vec.dylib is vendored per-arch by `make vendor-sqlite-vec-release`
+    # in the release workflow before GoReleaser runs. The template picks the
+    # matching arch so each archive ships exactly one dylib at the root, where
+    # scripts/install.sh looks for it.
+    files:
+      - src: "_assets/lib/darwin_{{ .Arch }}/sqlite-vec.dylib"
+        dst: sqlite-vec.dylib
 
 checksum:
   name_template: "checksums.txt"

@@ -1,4 +1,4 @@
-.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec test-vendor-sqlite-vec
+.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -7,10 +7,11 @@ GOLANGCI_LINT_VERSION ?= v2.10.1
 
 SQLITE_VEC_VERSION         ?= 0.1.6
 SQLITE_VEC_REPO            := asg017/sqlite-vec
-# Pin SHA256 for each macOS arch after first download.
-# Update these when bumping SQLITE_VEC_VERSION.
-SQLITE_VEC_SHA256_DARWIN_ARM64 ?=
-SQLITE_VEC_SHA256_DARWIN_AMD64 ?=
+# SHA256 pinned against the upstream release tarballs. Bump together with
+# SQLITE_VEC_VERSION (recompute by running `make vendor-sqlite-vec` on an
+# unpinned checkout and pasting the printed digest).
+SQLITE_VEC_SHA256_DARWIN_ARM64 ?= 142e195b654092632fecfadbad2825f3140026257a70842778637597f6b8c827
+SQLITE_VEC_SHA256_DARWIN_AMD64 ?= 35d014e5f7bcac52645a97f1f1ca34fdb51dcd61d81ac6e6ba1c712393fbf8fd
 
 # stage-assets copies oro config assets from the repo's assets/ directory into
 # cmd/oro/_assets/ so that go:embed can bundle them into the binary.
@@ -195,50 +196,66 @@ download-ort:
 	@echo "      tarball so that 'bash scripts/install.sh' can bundle them to ~/.oro/lib/."
 	@echo "      For sqlite-vec, run: make vendor-sqlite-vec"
 
-# vendor-sqlite-vec downloads the sqlite-vec loadable extension for the current macOS
-# arch (arm64 or amd64), saves it to _assets/lib/sqlite-vec.dylib for release bundling,
-# and installs it to $(ORO_HOME)/lib/sqlite-vec.dylib with ad-hoc codesign for local dev.
+# _fetch_sqlite_vec downloads + verifies the sqlite-vec dylib for one arch and
+# writes it to $(DEST). Expects DEST (output path), OS_ARCH (macos-aarch64 |
+# macos-x86_64), and SHA256 (pinned digest, optional) as make variables.
 #
-# To pin SHA256 after first download, set SQLITE_VEC_SHA256_DARWIN_ARM64 /
-# SQLITE_VEC_SHA256_DARWIN_AMD64 in the Makefile variables above.
-vendor-sqlite-vec:
-	@set -euo pipefail; \
-	ARCH=$$(uname -m); \
-	case "$$ARCH" in \
-		arm64)  OS_ARCH=macos-aarch64; SHA256="$(SQLITE_VEC_SHA256_DARWIN_ARM64)" ;; \
-		x86_64) OS_ARCH=macos-x86_64;  SHA256="$(SQLITE_VEC_SHA256_DARWIN_AMD64)" ;; \
-		*) echo "Unsupported arch: $$ARCH"; exit 1 ;; \
-	esac; \
-	TARBALL="sqlite-vec-v$(SQLITE_VEC_VERSION)-loadable-$$OS_ARCH.tar.gz"; \
+# Factored out so vendor-sqlite-vec (local dev, current arch) and
+# vendor-sqlite-vec-release (CI, both arches) share one download path.
+define _fetch_sqlite_vec
+	set -euo pipefail; \
+	TARBALL="sqlite-vec-$(SQLITE_VEC_VERSION)-loadable-$(1).tar.gz"; \
 	URL="https://github.com/$(SQLITE_VEC_REPO)/releases/download/v$(SQLITE_VEC_VERSION)/$$TARBALL"; \
 	VTMPDIR=$$(mktemp -d); \
 	trap "rm -rf '$$VTMPDIR'" EXIT; \
 	echo "Downloading $$URL..."; \
 	curl -fsSL "$$URL" -o "$$VTMPDIR/$$TARBALL"; \
-	if [ -n "$$SHA256" ]; then \
-		echo "Verifying SHA256..."; \
-		echo "$$SHA256  $$VTMPDIR/$$TARBALL" | shasum -a 256 -c --quiet; \
+	if [ -n "$(2)" ]; then \
+		echo "Verifying SHA256 ($(1))..."; \
+		echo "$(2)  $$VTMPDIR/$$TARBALL" | shasum -a 256 -c --quiet; \
 		echo "SHA256 verified."; \
 	else \
 		COMPUTED=$$(shasum -a 256 "$$VTMPDIR/$$TARBALL" | awk '{print $$1}'); \
-		echo "Info: SHA256 not pinned. To pin, add to Makefile:"; \
-		echo "  SQLITE_VEC_SHA256_$$(echo $$ARCH | tr a-z A-Z | tr - _) = $$COMPUTED"; \
+		echo "Info: SHA256 not pinned for $(1). To pin, paste into Makefile:"; \
+		echo "  $$COMPUTED"; \
 	fi; \
 	tar -xzf "$$VTMPDIR/$$TARBALL" -C "$$VTMPDIR"; \
 	DYLIB=$$(find "$$VTMPDIR" -maxdepth 1 -name '*.dylib' | head -1); \
 	[ -z "$$DYLIB" ] && { echo "ERROR: no .dylib found in tarball"; exit 1; }; \
-	mkdir -p _assets/lib; \
-	cp "$$DYLIB" _assets/lib/sqlite-vec.dylib; \
-	echo "Saved _assets/lib/sqlite-vec.dylib ($$(wc -c <_assets/lib/sqlite-vec.dylib | tr -d ' ') bytes)"; \
-	mkdir -p $(ORO_HOME)/lib; \
-	install -m 0644 _assets/lib/sqlite-vec.dylib $(ORO_HOME)/lib/sqlite-vec.dylib; \
-	if command -v codesign >/dev/null 2>&1; then \
+	mkdir -p "$$(dirname $(3))"; \
+	cp "$$DYLIB" "$(3)"; \
+	echo "Saved $(3) ($$(wc -c <$(3) | tr -d ' ') bytes)"
+endef
+
+# vendor-sqlite-vec downloads the sqlite-vec loadable extension for the current macOS
+# arch (arm64 or amd64), saves it to _assets/lib/sqlite-vec.dylib for release bundling,
+# and installs it to $(ORO_HOME)/lib/sqlite-vec.dylib with ad-hoc codesign for local dev.
+vendor-sqlite-vec:
+	@ARCH=$$(uname -m); \
+	case "$$ARCH" in \
+		arm64)  OS_ARCH=macos-aarch64; SHA256="$(SQLITE_VEC_SHA256_DARWIN_ARM64)" ;; \
+		x86_64) OS_ARCH=macos-x86_64;  SHA256="$(SQLITE_VEC_SHA256_DARWIN_AMD64)" ;; \
+		*) echo "Unsupported arch: $$ARCH"; exit 1 ;; \
+	esac; \
+	$(call _fetch_sqlite_vec,$$OS_ARCH,$$SHA256,_assets/lib/sqlite-vec.dylib)
+	@mkdir -p $(ORO_HOME)/lib
+	@install -m 0644 _assets/lib/sqlite-vec.dylib $(ORO_HOME)/lib/sqlite-vec.dylib
+	@if command -v codesign >/dev/null 2>&1; then \
 		codesign --force --sign - $(ORO_HOME)/lib/sqlite-vec.dylib; \
 		echo "✓ Ad-hoc codesigned $(ORO_HOME)/lib/sqlite-vec.dylib"; \
 	else \
 		echo "Info: codesign unavailable, skipping ad-hoc signing"; \
-	fi; \
-	echo "✓ sqlite-vec $(SQLITE_VEC_VERSION) ready at $(ORO_HOME)/lib/sqlite-vec.dylib"
+	fi
+	@echo "✓ sqlite-vec $(SQLITE_VEC_VERSION) ready at $(ORO_HOME)/lib/sqlite-vec.dylib"
+
+# vendor-sqlite-vec-release fetches BOTH darwin arches and stages per-arch
+# copies at _assets/lib/darwin_{arm64,amd64}/sqlite-vec.dylib. Called from the
+# release workflow before GoReleaser so archives.files can template the src
+# by {{.Arch}} and each tarball ships its matching dylib.
+vendor-sqlite-vec-release:
+	@$(call _fetch_sqlite_vec,macos-aarch64,$(SQLITE_VEC_SHA256_DARWIN_ARM64),_assets/lib/darwin_arm64/sqlite-vec.dylib)
+	@$(call _fetch_sqlite_vec,macos-x86_64,$(SQLITE_VEC_SHA256_DARWIN_AMD64),_assets/lib/darwin_amd64/sqlite-vec.dylib)
+	@echo "✓ sqlite-vec $(SQLITE_VEC_VERSION) staged for both darwin arches"
 
 # test-vendor-sqlite-vec verifies _assets/lib/sqlite-vec.dylib is present and non-empty.
 # Requires 'make vendor-sqlite-vec' to have been run first.
