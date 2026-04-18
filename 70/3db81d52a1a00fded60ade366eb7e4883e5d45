@@ -1,0 +1,27 @@
+pkg/memory/embed.go
+  5437e86773551898 12-24
+pkg/memory/vec_index_test.go
+  5437e86773551898 1-141
+pkg/memory/inmem_vec_index.go
+  5437e86773551898 1-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "703db81d52a1a00fded60ade366eb7e4883e5d45",
+  "prompts": {
+    "5437e86773551898": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fa694764-ad71-441d-9968-677687428d2e",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 253,
+      "total_deletions": 13,
+      "accepted_lines": 239,
+      "overriden_lines": 0
+    }
+  }
+}
