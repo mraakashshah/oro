@@ -28,6 +28,18 @@ type EmbedResponse struct {
 	Err string    `json:"err,omitempty"`
 }
 
+// RerankByIDsRequest is sent to request re-ranking of memories by relevance.
+type RerankByIDsRequest struct {
+	Query     string  `json:"query"`
+	MemoryIDs []int64 `json:"memory_ids"`
+}
+
+// RerankByIDsResponse contains re-ranking scores or an error.
+type RerankByIDsResponse struct {
+	Scores []float64 `json:"scores,omitempty"`
+	Err    string    `json:"err,omitempty"`
+}
+
 // Bead represents a ready work item from the bead source.
 type Bead struct {
 	ID                 string         `json:"id"`
