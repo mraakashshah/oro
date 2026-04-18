@@ -1,0 +1,25 @@
+pkg/memory/vec_index_test.go
+  1b0469f8245ab7f6 4-6,10,12,15-195
+pkg/memory/vec_index.go
+  1b0469f8245ab7f6 1-149
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "9e19f907b69c7163a4b7397611d1cfd25a4525c1",
+  "prompts": {
+    "1b0469f8245ab7f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "870185ba-70d1-4fcd-b633-62695f620ed8",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 337,
+      "total_deletions": 1,
+      "accepted_lines": 336,
+      "overriden_lines": 0
+    }
+  }
+}
