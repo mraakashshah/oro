@@ -1,0 +1,40 @@
+pkg/memory/backfill_test.go
+  a0664fa7bdc32b7b 450-714
+pkg/memory/backfill.go
+  a0664fa7bdc32b7b 77-82,84-88,93,101,108-113,144-145,150-152,155,158,165,169-178,180,183-192,195,199-202,204-209,214-216,220,225,228-232,235-246
+pkg/memory/memory.go
+  a0664fa7bdc32b7b 30-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "36ade9cd0a48cef50fc80e1777bd31fd91f360a5",
+  "prompts": {
+    "8a8f925cbb74680f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f3a4b416-8fdb-4370-abf8-91a843430de0",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 217,
+      "overriden_lines": 0
+    },
+    "a0664fa7bdc32b7b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0753fa8-5900-4de0-872e-99712bc558a9",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 371,
+      "total_deletions": 49,
+      "accepted_lines": 350,
+      "overriden_lines": 0
+    }
+  }
+}
