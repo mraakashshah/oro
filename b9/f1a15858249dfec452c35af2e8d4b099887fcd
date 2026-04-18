@@ -1,0 +1,23 @@
+pkg/protocol/rerank_test.go
+  5b3fa2b741c7b40b 11-14,17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "b9f1a15858249dfec452c35af2e8d4b099887fcd",
+  "prompts": {
+    "5b3fa2b741c7b40b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d44f93b5-1138-4031-90a3-9ee85cdcd3ea",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 1,
+      "accepted_lines": 5,
+      "overriden_lines": 0
+    }
+  }
+}
