@@ -1,0 +1,41 @@
+pkg/memory/bge_embedder_test.go
+  366e2f7e7678edea 1-138
+pkg/memory/bge_ort_real.go
+  366e2f7e7678edea 1-100
+pkg/memory/bge_embedder_integration_test.go
+  366e2f7e7678edea 1-43
+pkg/memory/cgo_ldflags.go
+  366e2f7e7678edea 1-6
+pkg/memory/testdata/bge-tokenizer-test.json
+  366e2f7e7678edea 1-30671
+go.mod
+  366e2f7e7678edea 20,38-39,59
+pkg/memory/models.go
+  366e2f7e7678edea 1-14
+pkg/memory/bge_embedder.go
+  366e2f7e7678edea 1-139
+pkg/memory/export_test.go
+  366e2f7e7678edea 1-16
+pkg/memory/bge_ort_stub.go
+  366e2f7e7678edea 1-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "4fddf03393788e75a4a1e68d9094dcb121e9040e",
+  "prompts": {
+    "366e2f7e7678edea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "367a7c04-0a3b-493e-8188-9c2cf63aeddb",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 31163,
+      "total_deletions": 23,
+      "accepted_lines": 31142,
+      "overriden_lines": 0
+    }
+  }
+}
