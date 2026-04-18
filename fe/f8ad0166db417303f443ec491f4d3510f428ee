@@ -1,0 +1,27 @@
+pkg/dispatcher/dispatcher.go
+  9e5fa5e8d81ae4e4 1646-1652
+pkg/memory/retention_test.go
+  9e5fa5e8d81ae4e4 1-157
+pkg/memory/retention.go
+  9e5fa5e8d81ae4e4 1-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "fef8ad0166db417303f443ec491f4d3510f428ee",
+  "prompts": {
+    "9e5fa5e8d81ae4e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e833a889-ba41-48d0-b750-ad8fa75d5148",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 202,
+      "total_deletions": 8,
+      "accepted_lines": 194,
+      "overriden_lines": 0
+    }
+  }
+}
