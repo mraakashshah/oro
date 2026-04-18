@@ -712,6 +712,18 @@ func TestVocabPersisterInterfaceShape(t *testing.T) {
 	var _ VocabPersister = (*TFIDFEmbedder)(nil) //nolint:staticcheck
 }
 
+// TestTFIDFEmbedderImplementsEmbedder is a compile-time assertion that
+// *TFIDFEmbedder satisfies the Embedder interface.
+func TestTFIDFEmbedderImplementsEmbedder(t *testing.T) {
+	var _ Embedder = (*TFIDFEmbedder)(nil)
+}
+
+// TestTFIDFEmbedderImplementsVocabPersister is a compile-time assertion that
+// *TFIDFEmbedder satisfies the VocabPersister interface.
+func TestTFIDFEmbedderImplementsVocabPersister(t *testing.T) {
+	var _ VocabPersister = (*TFIDFEmbedder)(nil)
+}
+
 // assertUnitVector checks that a float32 vector has L2 norm ~1.0.
 func assertUnitVector(t *testing.T, v []float32) {
 	t.Helper()
