@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -50,6 +51,103 @@ func (s *Store) HasEmbedder() bool {
 // all memories are accessible (no project filtering).
 func (s *Store) SetProject(project string) {
 	s.project = project
+}
+
+// embeddingDenseModelKey is the kv_store key for the embedder model sentinel.
+const embeddingDenseModelKey = "embedding_dense_model"
+
+// resetEmbedderData clears embedding_dense, memory_chunks, and backfill state
+// when the model changes, then updates the sentinel. Assumes a transaction.
+func resetEmbedderData(ctx context.Context, tx *sql.Tx, newModel string) error {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE memories SET embedding_dense = NULL`,
+	); err != nil {
+		return fmt.Errorf("clear embedding_dense: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM memory_chunks`,
+	); err != nil {
+		return fmt.Errorf("delete memory_chunks: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE backfill_semantic_memory_state SET state = 'pending' WHERE id = 1`,
+	); err != nil {
+		return fmt.Errorf("reset backfill state: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE kv_store SET value = ?, updated_at = datetime('now') WHERE key = ?`,
+		newModel, embeddingDenseModelKey,
+	); err != nil {
+		return fmt.Errorf("update sentinel: %w", err)
+	}
+
+	return nil
+}
+
+// checkEmbedderModelMatch verifies that the stored embedder model matches the
+// current model. On mismatch (or missing sentinel on first run):
+//   - First run (no sentinel): writes sentinel with currentModel, returns.
+//   - Mismatch: clears embedding_dense column (set to NULL), deletes all
+//     memory_chunks rows, flips backfill_semantic_memory_state to 'pending',
+//     and rewrites sentinel to currentModel.
+//   - Match: returns (no-op).
+//
+// All state changes occur in a single transaction to prevent partial updates.
+func (s *Store) checkEmbedderModelMatch(ctx context.Context, currentModel string) error {
+	if currentModel == "" {
+		return fmt.Errorf("embedder model name required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	var sentinel string
+	err = tx.QueryRowContext(ctx,
+		`SELECT value FROM kv_store WHERE key = ?`, embeddingDenseModelKey,
+	).Scan(&sentinel)
+	if errors.Is(err, sql.ErrNoRows) {
+		// First run: write sentinel
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+			embeddingDenseModelKey, currentModel,
+		); err != nil {
+			return fmt.Errorf("write sentinel: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit first-run: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read sentinel: %w", err)
+	}
+
+	// If sentinel matches, no-op
+	if sentinel == currentModel {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit noop: %w", err)
+		}
+		return nil
+	}
+
+	// Mismatch: clear state and update sentinel
+	if err := resetEmbedderData(ctx, tx, currentModel); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit reset: %w", err)
+	}
+
+	return nil
 }
 
 // vocabKVKey is the kv_store key used to persist the embedder vocabulary.
