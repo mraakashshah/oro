@@ -164,3 +164,73 @@ func TestPrefetchModelsHTTPError(t *testing.T) {
 		t.Error("no .corrupt file should be written on HTTP error")
 	}
 }
+
+func TestRerankerModelEntry(t *testing.T) {
+	fixture := []byte("fake reranker model bytes for testing")
+	sum := sha256.Sum256(fixture)
+	digest := hex.EncodeToString(sum[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	spec := memory.ModelSpec{
+		Name:     "bge-reranker-base",
+		URL:      srv.URL + "/model.onnx",
+		SHA256:   digest,
+		Filename: "model.onnx",
+	}
+
+	// Test ModelPath returns correct path
+	modelPath := memory.ModelPath(dir, "bge-reranker-base")
+	expectedPath := filepath.Join(dir, "bge-reranker-base", "model.onnx")
+	if modelPath != expectedPath {
+		t.Errorf("ModelPath = %q, want %q", modelPath, expectedPath)
+	}
+
+	// Test PrefetchModels downloads and verifies the reranker model
+	if err := memory.PrefetchModels(context.Background(), dir, []memory.ModelSpec{spec}); err != nil {
+		t.Fatalf("PrefetchModels: %v", err)
+	}
+
+	// Verify the file was downloaded with correct content
+	data, err := os.ReadFile(modelPath)
+	if err != nil {
+		t.Fatalf("read model file: %v", err)
+	}
+	if string(data) != string(fixture) {
+		t.Errorf("model content = %q, want %q", data, fixture)
+	}
+
+	// Test SHA256 verification on mismatch
+	wrongDigest := "0000000000000000000000000000000000000000000000000000000000000000"
+	badSpec := memory.ModelSpec{
+		Name:     "bge-reranker-base",
+		URL:      srv.URL + "/model.onnx",
+		SHA256:   wrongDigest,
+		Filename: "model.onnx",
+	}
+
+	badDir := t.TempDir()
+	err = memory.PrefetchModels(context.Background(), badDir, []memory.ModelSpec{badSpec})
+	if err == nil {
+		t.Fatal("expected error on SHA256 mismatch, got nil")
+	}
+	if !errors.Is(err, memory.ErrDigestMismatch) {
+		t.Errorf("expected ErrDigestMismatch in error chain, got: %v", err)
+	}
+
+	// Verify model.onnx does not exist after mismatch
+	badModelPath := filepath.Join(badDir, "bge-reranker-base", "model.onnx")
+	if _, statErr := os.Stat(badModelPath); !os.IsNotExist(statErr) {
+		t.Error("model.onnx should not exist at dest path after SHA256 mismatch")
+	}
+
+	// Verify .corrupt file exists
+	corruptPath := badModelPath + ".corrupt"
+	if _, statErr := os.Stat(corruptPath); statErr != nil {
+		t.Errorf("corrupt file should exist at %s: %v", corruptPath, statErr)
+	}
+}
