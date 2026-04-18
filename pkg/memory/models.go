@@ -30,19 +30,19 @@ var KnownModels = []ModelSpec{ //nolint:gochecknoglobals // static config table,
 	{
 		Name:     "bge-small-en-v1.5",
 		URL:      "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx",
-		SHA256:   "TODO_fill_after_download",
+		SHA256:   "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35",
 		Filename: "model.onnx",
 	},
 	{
 		Name:     "bge-reranker-base",
 		URL:      "https://huggingface.co/BAAI/bge-reranker-base/resolve/main/onnx/model.onnx",
-		SHA256:   "TODO_fill_after_download",
+		SHA256:   "15b9a8c3da82eddf263df571281166e00e9308fe19d077084b642ebfcaf06d2b",
 		Filename: "model.onnx",
 	},
 	{
 		Name:     "bge-tokenizer",
 		URL:      "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json",
-		SHA256:   "TODO_fill_after_download",
+		SHA256:   "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
 		Filename: "tokenizer.json",
 	},
 }
