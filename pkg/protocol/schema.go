@@ -197,6 +197,26 @@ INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES ('backfill_semant
 INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES ('embedding_dense_model', 'bge-small-en-v1.5', datetime('now'));
 `
 
+// MigrateSemanticMemorySearchEvents creates the memory_search_events table for
+// recording hybrid-search queries (query hash, top-k results, latency, feature
+// flags). Idempotent: CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS.
+const MigrateSemanticMemorySearchEvents = `
+CREATE TABLE IF NOT EXISTS memory_search_events (
+    id INTEGER PRIMARY KEY,
+    ts DATETIME NOT NULL DEFAULT (datetime('now')),
+    project TEXT,
+    query_hash TEXT,
+    top_k_ids TEXT,
+    top_k_scores TEXT,
+    latency_ms INTEGER,
+    used_rerank INTEGER DEFAULT 0,
+    used_bge INTEGER DEFAULT 0,
+    ann_candidates INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_mse_ts ON memory_search_events(ts);
+`
+
 // MigrateSemanticMemoryChunks creates the memory_chunks table for storing
 // chunked semantic memory embeddings. Each chunk belongs to a parent memory
 // and includes the text and its embedding vector. ON DELETE CASCADE ensures

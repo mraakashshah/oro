@@ -305,6 +305,130 @@ func TestEmbeddingDenseModelSentinel(t *testing.T) {
 	}
 }
 
+func TestMigrateSemanticMemorySearchEvents(t *testing.T) {
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec(protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("exec schema DDL: %v", err)
+	}
+
+	_, err = db.Exec(protocol.MigrateSemanticMemorySearchEvents)
+	if err != nil {
+		t.Fatalf("exec MigrateSemanticMemorySearchEvents: %v", err)
+	}
+
+	// Verify table exists.
+	var tableName string
+	err = db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='memory_search_events'",
+	).Scan(&tableName)
+	if err != nil {
+		t.Fatalf("memory_search_events table not found: %v", err)
+	}
+
+	// Verify exact column set via PRAGMA table_info.
+	type colInfo struct {
+		name    string
+		typ     string
+		notNull bool
+		dflt    *string
+		pk      bool
+	}
+	wantCols := []colInfo{
+		{name: "id", typ: "INTEGER", notNull: false, pk: true},
+		{name: "ts", typ: "DATETIME", notNull: true, dflt: ptr("datetime('now')")},
+		{name: "project", typ: "TEXT", notNull: false},
+		{name: "query_hash", typ: "TEXT", notNull: false},
+		{name: "top_k_ids", typ: "TEXT", notNull: false},
+		{name: "top_k_scores", typ: "TEXT", notNull: false},
+		{name: "latency_ms", typ: "INTEGER", notNull: false},
+		{name: "used_rerank", typ: "INTEGER", notNull: false, dflt: ptr("0")},
+		{name: "used_bge", typ: "INTEGER", notNull: false, dflt: ptr("0")},
+		{name: "ann_candidates", typ: "INTEGER", notNull: false},
+	}
+
+	rows, err := db.Query("PRAGMA table_info(memory_search_events)")
+	if err != nil {
+		t.Fatalf("pragma table_info: %v", err)
+	}
+	defer rows.Close()
+
+	var gotCols []colInfo
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var dfltVal *string
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dfltVal, &pk); err != nil {
+			t.Fatalf("scan column info: %v", err)
+		}
+		gotCols = append(gotCols, colInfo{
+			name:    name,
+			typ:     typ,
+			notNull: notNull != 0,
+			dflt:    dfltVal,
+			pk:      pk != 0,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows error: %v", err)
+	}
+
+	if len(gotCols) != len(wantCols) {
+		t.Fatalf("expected %d columns, got %d: %v", len(wantCols), len(gotCols), gotCols)
+	}
+	for i, want := range wantCols {
+		got := gotCols[i]
+		if got.name != want.name {
+			t.Errorf("col[%d] name: want %q, got %q", i, want.name, got.name)
+		}
+		if got.typ != want.typ {
+			t.Errorf("col[%d] %q type: want %q, got %q", i, want.name, want.typ, got.typ)
+		}
+		if got.notNull != want.notNull {
+			t.Errorf("col[%d] %q notNull: want %v, got %v", i, want.name, want.notNull, got.notNull)
+		}
+		if got.pk != want.pk {
+			t.Errorf("col[%d] %q pk: want %v, got %v", i, want.name, want.pk, got.pk)
+		}
+		wantDflt := want.dflt
+		gotDflt := got.dflt
+		switch {
+		case wantDflt == nil && gotDflt == nil:
+			// both nil — ok
+		case wantDflt == nil && gotDflt != nil:
+			t.Errorf("col[%d] %q default: want nil, got %q", i, want.name, *gotDflt)
+		case wantDflt != nil && gotDflt == nil:
+			t.Errorf("col[%d] %q default: want %q, got nil", i, want.name, *wantDflt)
+		case *wantDflt != *gotDflt:
+			t.Errorf("col[%d] %q default: want %q, got %q", i, want.name, *wantDflt, *gotDflt)
+		}
+	}
+
+	// Verify idx_mse_ts index exists.
+	var indexName string
+	err = db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_mse_ts'",
+	).Scan(&indexName)
+	if err != nil {
+		t.Fatalf("idx_mse_ts index not found: %v", err)
+	}
+
+	// Idempotency: running migration a second time must not error.
+	_, err = db.Exec(protocol.MigrateSemanticMemorySearchEvents)
+	if err != nil {
+		t.Fatalf("second exec (idempotency): %v", err)
+	}
+}
+
+func ptr(s string) *string { return &s }
+
 func TestMigrateSemanticMemoryChunksConstant(t *testing.T) {
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
