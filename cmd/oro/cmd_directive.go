@@ -32,7 +32,8 @@ Supported operations:
   status                   - Query dispatcher state
   restart-worker <id>      - Kill and respawn a worker, requeue its bead
   preempt <id>             - Gracefully preempt a worker for higher-priority work
-  worker-logs <id> [N]     - Read last N lines from worker output.log (default 20)`,
+  worker-logs <id> [N]     - Read last N lines from worker output.log (default 20)
+  max-workers N            - Adjust the runtime worker pool ceiling (0 disables autoscale)`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDirective(cmd.Context(), cmd.OutOrStdout(), args)
