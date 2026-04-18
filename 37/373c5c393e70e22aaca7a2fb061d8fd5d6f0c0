@@ -1,0 +1,23 @@
+pkg/memory/models_test.go
+  5a854131f0bc061c 167-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "37373c5c393e70e22aaca7a2fb061d8fd5d6f0c0",
+  "prompts": {
+    "5a854131f0bc061c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78c28482-abb8-4c0f-aaf3-5b35c83439b0",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 70,
+      "total_deletions": 0,
+      "accepted_lines": 70,
+      "overriden_lines": 0
+    }
+  }
+}
