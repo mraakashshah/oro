@@ -676,9 +676,10 @@ func (*stubVecIndex) Delete(_ int64) error                                     {
 
 // Compile-time interface shape assertions.
 var (
-	_ Embedder    = (*stubEmbedder)(nil)
-	_ Reranker    = (*stubReranker)(nil)
-	_ VectorIndex = (*stubVecIndex)(nil)
+	_ Embedder       = (*stubEmbedder)(nil)
+	_ Reranker       = (*stubReranker)(nil)
+	_ VectorIndex    = (*stubVecIndex)(nil)
+	_ VocabPersister = (*TFIDFEmbedder)(nil)
 )
 
 func TestEmbedderInterfaceShape(t *testing.T) {
@@ -702,6 +703,13 @@ func TestANNResultType(t *testing.T) {
 	if r.Score != 0.95 {
 		t.Errorf("ANNResult.Score = %f, want 0.95", r.Score)
 	}
+}
+
+// TestVocabPersisterInterfaceShape verifies that VocabPersister interface
+// is properly defined with the exact two methods: ExportVocab and ImportVocab.
+func TestVocabPersisterInterfaceShape(t *testing.T) {
+	// Compile-time assertion: *TFIDFEmbedder implicitly satisfies VocabPersister.
+	var _ VocabPersister = (*TFIDFEmbedder)(nil) //nolint:staticcheck
 }
 
 // assertUnitVector checks that a float32 vector has L2 norm ~1.0.

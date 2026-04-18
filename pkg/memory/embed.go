@@ -54,6 +54,14 @@ type TFIDFEmbedder struct {
 	vocab map[string]int // term -> dimension index
 }
 
+// VocabPersister is an optional interface for embedders that support
+// vocabulary import/export (persistence across restarts).
+// Implementations can type-assert at use site for optional vocab persistence.
+type VocabPersister interface {
+	ExportVocab() map[string]int
+	ImportVocab(vocab map[string]int)
+}
+
 // NewEmbedder creates a TFIDFEmbedder with an empty vocabulary.
 func NewEmbedder() *TFIDFEmbedder {
 	return &TFIDFEmbedder{vocab: make(map[string]int)}
