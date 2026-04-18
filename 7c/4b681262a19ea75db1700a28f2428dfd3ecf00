@@ -1,0 +1,25 @@
+pkg/langprofile/config_test.go
+  829a5887523cebe1 303-410
+pkg/langprofile/config.go
+  829a5887523cebe1 21,34-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "7c4b681262a19ea75db1700a28f2428dfd3ecf00",
+  "prompts": {
+    "829a5887523cebe1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aac0e26c-8c5e-4b6a-bb18-d2124283b2fc",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 206,
+      "total_deletions": 19,
+      "accepted_lines": 203,
+      "overriden_lines": 0
+    }
+  }
+}
