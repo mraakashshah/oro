@@ -15,7 +15,32 @@ import (
 // vectorSearch which loads up to 1000 rows of embeddings into memory.
 const maxVocabSize = 10000
 
-// Embedder computes TF-IDF-style term-frequency vectors for text.
+// Embedder is the interface for computing dense embedding vectors from text.
+type Embedder interface {
+	Embed(text string) []float32
+	Dim() int
+	Name() string
+}
+
+// Reranker re-scores a set of candidate documents against a query.
+type Reranker interface {
+	Rerank(query string, docs []string) []float64
+}
+
+// VectorIndex stores and searches dense embedding vectors.
+type VectorIndex interface {
+	Upsert(id int64, vec []float32, project string) error
+	Search(queryVec []float32, project string, k int) ([]ANNResult, error)
+	Delete(id int64) error
+}
+
+// ANNResult is a single hit returned by VectorIndex.Search.
+type ANNResult struct {
+	MemoryID int64
+	Score    float64
+}
+
+// TFIDFEmbedder computes TF-IDF-style term-frequency vectors for text.
 // It maintains a vocabulary (term -> dimension index) that grows as new terms
 // are encountered. All embeddings share the same vector space defined by the
 // vocabulary at the time of computation.
@@ -24,14 +49,14 @@ const maxVocabSize = 10000
 // weights) because IDF requires a corpus scan that would be expensive at insert
 // time. The RRF hybrid scoring is the main innovation here — even simple TF
 // vectors provide useful semantic signal when combined with FTS5 BM25 via RRF.
-type Embedder struct {
+type TFIDFEmbedder struct {
 	mu    sync.RWMutex
 	vocab map[string]int // term -> dimension index
 }
 
-// NewEmbedder creates an Embedder with an empty vocabulary.
-func NewEmbedder() *Embedder {
-	return &Embedder{vocab: make(map[string]int)}
+// NewEmbedder creates a TFIDFEmbedder with an empty vocabulary.
+func NewEmbedder() *TFIDFEmbedder {
+	return &TFIDFEmbedder{vocab: make(map[string]int)}
 }
 
 // tokenize splits text into lowercase alphanumeric tokens.
@@ -46,7 +71,7 @@ func tokenize(text string) []string {
 // Embed computes a TF vector for the given text. New terms are added to the
 // vocabulary. Returns a float32 slice normalized to unit length (L2 norm = 1).
 // An empty input returns nil.
-func (e *Embedder) Embed(text string) []float32 {
+func (e *TFIDFEmbedder) Embed(text string) []float32 {
 	tokens := tokenize(text)
 	if len(tokens) == 0 {
 		return nil
@@ -83,10 +108,20 @@ func (e *Embedder) Embed(text string) []float32 {
 	return vec
 }
 
+// Dim returns the current vocabulary size (number of embedding dimensions).
+func (e *TFIDFEmbedder) Dim() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return len(e.vocab)
+}
+
+// Name returns the embedder name.
+func (e *TFIDFEmbedder) Name() string { return "tfidf" }
+
 // VocabSize returns the current vocabulary size (number of dimensions).
 //
 //oro:testonly
-func (e *Embedder) VocabSize() int {
+func (e *TFIDFEmbedder) VocabSize() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return len(e.vocab)
@@ -95,7 +130,7 @@ func (e *Embedder) VocabSize() int {
 // ExportVocab returns a copy of the current vocabulary mapping (term → index).
 // Used for persistence: pass the result to ImportVocab on a fresh Embedder to
 // restore the same vector space after a restart.
-func (e *Embedder) ExportVocab() map[string]int {
+func (e *TFIDFEmbedder) ExportVocab() map[string]int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	out := make(map[string]int, len(e.vocab))
@@ -108,7 +143,7 @@ func (e *Embedder) ExportVocab() map[string]int {
 // ImportVocab replaces the embedder's vocabulary with the provided mapping.
 // Any prior vocabulary is discarded. After import, Embed() assigns new terms
 // indices that extend beyond the imported vocab's existing indices.
-func (e *Embedder) ImportVocab(vocab map[string]int) {
+func (e *TFIDFEmbedder) ImportVocab(vocab map[string]int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.vocab = make(map[string]int, len(vocab))

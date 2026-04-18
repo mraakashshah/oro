@@ -22,7 +22,7 @@ import (
 // Store manages the memories table in SQLite.
 type Store struct {
 	db       *sql.DB
-	embedder *Embedder
+	embedder *TFIDFEmbedder
 	project  string // current project scope for queries and inserts
 }
 
@@ -33,7 +33,7 @@ func NewStore(db *sql.DB) *Store {
 
 // SetEmbedder attaches an Embedder to the store. When set, Insert() computes
 // and stores TF-IDF embeddings, and HybridSearch() uses them for RRF scoring.
-func (s *Store) SetEmbedder(e *Embedder) {
+func (s *Store) SetEmbedder(e *TFIDFEmbedder) {
 	s.embedder = e
 }
 

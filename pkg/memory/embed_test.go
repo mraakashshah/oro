@@ -651,6 +651,59 @@ func TestEmbedder_VocabPersistence(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Interface shape assertions (compile-time + runtime)
+// ---------------------------------------------------------------------------
+
+// stubEmbedder satisfies the Embedder interface for compile-time shape probes.
+type stubEmbedder struct{}
+
+func (*stubEmbedder) Embed(_ string) []float32 { return nil }
+func (*stubEmbedder) Dim() int                 { return 0 }
+func (*stubEmbedder) Name() string             { return "" }
+
+// stubReranker satisfies the Reranker interface.
+type stubReranker struct{}
+
+func (*stubReranker) Rerank(_ string, _ []string) []float64 { return nil }
+
+// stubVecIndex satisfies the VectorIndex interface.
+type stubVecIndex struct{}
+
+func (*stubVecIndex) Upsert(_ int64, _ []float32, _ string) error              { return nil }
+func (*stubVecIndex) Search(_ []float32, _ string, _ int) ([]ANNResult, error) { return nil, nil }
+func (*stubVecIndex) Delete(_ int64) error                                     { return nil }
+
+// Compile-time interface shape assertions.
+var (
+	_ Embedder    = (*stubEmbedder)(nil)
+	_ Reranker    = (*stubReranker)(nil)
+	_ VectorIndex = (*stubVecIndex)(nil)
+)
+
+func TestEmbedderInterfaceShape(t *testing.T) {
+	var e Embedder = &stubEmbedder{}
+	if got := e.Dim(); got != 0 {
+		t.Errorf("stubEmbedder.Dim() = %d, want 0", got)
+	}
+	if got := e.Name(); got != "" {
+		t.Errorf("stubEmbedder.Name() = %q, want empty", got)
+	}
+	if got := e.Embed("test"); got != nil {
+		t.Errorf("stubEmbedder.Embed() = %v, want nil", got)
+	}
+}
+
+func TestANNResultType(t *testing.T) {
+	r := ANNResult{MemoryID: 42, Score: 0.95}
+	if r.MemoryID != 42 {
+		t.Errorf("ANNResult.MemoryID = %d, want 42", r.MemoryID)
+	}
+	if r.Score != 0.95 {
+		t.Errorf("ANNResult.Score = %f, want 0.95", r.Score)
+	}
+}
+
 // assertUnitVector checks that a float32 vector has L2 norm ~1.0.
 func assertUnitVector(t *testing.T, v []float32) {
 	t.Helper()
