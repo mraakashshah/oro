@@ -47,6 +47,7 @@ func newRootCmd() *cobra.Command {
 		newDoctorCmd(),
 		newBdCmd(),
 		newUninstallCmd(),
+		newModelsCmd(),
 	)
 
 	return cmd
