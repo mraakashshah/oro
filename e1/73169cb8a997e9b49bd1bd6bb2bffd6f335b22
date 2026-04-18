@@ -1,0 +1,27 @@
+cmd/oro/cmd_models_test.go
+  f8cb8a26f4b0b90f 1-276
+cmd/oro/root.go
+  f8cb8a26f4b0b90f 50
+cmd/oro/cmd_models.go
+  f8cb8a26f4b0b90f 1-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "e173169cb8a997e9b49bd1bd6bb2bffd6f335b22",
+  "prompts": {
+    "f8cb8a26f4b0b90f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6c3a890a-8506-43c2-a82e-52fab24bbd49",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 675,
+      "total_deletions": 6,
+      "accepted_lines": 669,
+      "overriden_lines": 0
+    }
+  }
+}
