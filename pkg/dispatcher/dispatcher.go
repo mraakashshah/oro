@@ -297,6 +297,7 @@ type Config struct {
 	WebEnabled            bool          // Enable HTTP server for dashboard/health endpoints (default false).
 	WebAddr               string        // HTTP server listen address (default 127.0.0.1:4444 in withDefaults).
 	SemanticModelDir      string        // Directory containing the BGE ONNX model files. Empty means semantic search is disabled.
+	RerankerModelDir      string        // Directory containing the BGE reranker ONNX model files. Empty means reranker unavailable.
 }
 
 // intDefault returns v if non-zero, otherwise dflt.
@@ -424,6 +425,13 @@ type Dispatcher struct {
 	embedderReady   chan struct{}
 	embedderErr     error
 	embedderFactory func(modelDir string) (memory.Embedder, error)
+
+	// reranker fields — populated lazily on first RerankByIDsRequest (sync.Once-guarded).
+	// rerankerFactory == nil means reranker is unavailable for this session.
+	reranker        memory.Reranker
+	rerankerOnce    sync.Once
+	rerankerErr     error
+	rerankerFactory func(modelDir string) (memory.Reranker, error)
 	procMgr         ProcessManager
 	acceptance      AcceptanceRunner   // runs epic acceptance test commands
 	qgRunner        QGRunner           // runs quality gate before merge (defaults to &ShellQGRunner{})
@@ -1080,6 +1088,12 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 		if msg.Type == protocol.MsgDirective {
 			d.handleDirectiveWithACK(ctx, conn, msg)
 			return // Manager disconnects after receiving ACK
+		}
+
+		// Handle RERANK_BY_IDS_REQUEST from short-lived callers (e.g. search pipeline).
+		if msg.Type == protocol.MsgRerankByIDsRequest {
+			d.handleRerankByIDsWithResponse(ctx, conn, msg)
+			return
 		}
 
 		// Extract workerID from the first message that carries one.

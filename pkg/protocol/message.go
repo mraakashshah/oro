@@ -45,6 +45,9 @@ const (
 const (
 	MsgEmbedRequest  MessageType = "EMBED_REQUEST"
 	MsgEmbedResponse MessageType = "EMBED_RESPONSE"
+
+	MsgRerankByIDsRequest  MessageType = "RERANK_BY_IDS_REQUEST"
+	MsgRerankByIDsResponse MessageType = "RERANK_BY_IDS_RESPONSE"
 )
 
 // Message is the envelope for all UDS messages. The Type field selects which
@@ -65,6 +68,8 @@ type Message struct {
 	ReviewResult     *ReviewResultPayload     `json:"review_result,omitempty"`
 	Embed            *EmbedRequest            `json:"embed,omitempty"`
 	EmbedResp        *EmbedResponse           `json:"embed_response,omitempty"`
+	RerankReq        *RerankByIDsRequest      `json:"rerank_req,omitempty"`
+	RerankResp       *RerankByIDsResponse     `json:"rerank_resp,omitempty"`
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.
