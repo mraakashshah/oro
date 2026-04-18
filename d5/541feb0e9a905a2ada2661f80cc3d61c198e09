@@ -1,0 +1,38 @@
+pkg/memory/embed_test.go
+  3418300dd55b4cab 654-663,665-666,669-671,673-675
+.gitignore
+  3418300dd55b4cab 48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "d5541feb0e9a905a2ada2661f80cc3d61c198e09",
+  "prompts": {
+    "3418300dd55b4cab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3d84d536-4b57-4078-b8f2-bef5e9997dce",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 25,
+      "total_deletions": 18,
+      "accepted_lines": 20,
+      "overriden_lines": 0
+    },
+    "babf581b91b453c0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70093251-92f6-49a8-ba91-29b4e5ab97ab",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
