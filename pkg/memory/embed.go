@@ -25,8 +25,7 @@ type VectorIndex interface {
 
 // maxVocabSize caps the number of unique terms in the vocabulary to prevent
 // embedding vectors from growing without bound. Once the cap is reached, new
-// unseen terms are silently ignored (zero weight). This prevents OOM in
-// vectorSearch which loads up to 1000 rows of embeddings into memory.
+// unseen terms are silently ignored (zero weight).
 const maxVocabSize = 10000
 
 // Embedder is the interface for computing dense embedding vectors from text.

@@ -3331,3 +3331,102 @@ func TestFTS5Search8192CharContentNoMatchError(t *testing.T) {
 		t.Error("expected search to find the 8192-char memory")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// VectorIndex integration tests (oro-d6j9)
+// ---------------------------------------------------------------------------
+
+// TestHybridSearchUsesVectorIndex verifies that HybridSearch routes through the
+// injected VectorIndex when one is set, retrieving memories whose IDs are
+// returned by idx.Search even when those memories have no DB embedding.
+func TestHybridSearchUsesVectorIndex(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	store := NewStore(db)
+
+	embedder := NewEmbedder()
+	store.SetEmbedder(embedder)
+
+	// Insert with embedder so vocabulary is populated.
+	id, err := store.Insert(ctx, InsertParams{
+		Content:    "xzq9_unique_vecindex_alpha_bravo_charlie",
+		Type:       "lesson",
+		Source:     "self_report",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Clear DB embedding — linear-scan fallback cannot find this memory.
+	if _, err := db.ExecContext(ctx, `UPDATE memories SET embedding = NULL WHERE id = ?`, id); err != nil {
+		t.Fatalf("clear embedding: %v", err)
+	}
+
+	// Build a query vector and register it in the index under the same ID.
+	// Store project is "" → vecIndex project resolves to "oro".
+	query := "golang concurrency patterns"
+	queryVec := embedder.Embed(query)
+
+	idx := NewInMemoryVecIndex()
+	if err := idx.Upsert(ctx, id, queryVec, "oro"); err != nil {
+		t.Fatalf("idx upsert: %v", err)
+	}
+	store.SetVectorIndex(idx)
+
+	results, err := store.HybridSearch(ctx, query, SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+
+	for _, r := range results {
+		if r.ID == id {
+			return // found via vecIndex — success
+		}
+	}
+	t.Errorf("memory id=%d not found in HybridSearch results; got %d result(s)", id, len(results))
+}
+
+// TestHybridSearchFallsBackWhenIndexNil verifies that HybridSearch uses the
+// linear DB scan for vector similarity when no VectorIndex is set.
+func TestHybridSearchFallsBackWhenIndexNil(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	store := NewStore(db)
+
+	// Set embedder so HybridSearch runs the vector path; leave vecIndex nil.
+	embedder := NewEmbedder()
+	store.SetEmbedder(embedder)
+
+	id, err := store.Insert(ctx, InsertParams{
+		Content:    "xzq9_unique_fallback_delta_echo_foxtrot",
+		Type:       "lesson",
+		Source:     "self_report",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// Verify DB has the embedding (needed by linear scan).
+	var embBlob []byte
+	if err := db.QueryRowContext(ctx, `SELECT embedding FROM memories WHERE id = ?`, id).Scan(&embBlob); err != nil {
+		t.Fatalf("check embedding: %v", err)
+	}
+	if len(embBlob) == 0 {
+		t.Fatal("embedding must be stored in DB for linear-scan test")
+	}
+
+	// vecIndex is nil — should use linear-scan fallback without panic/error.
+	results, err := store.HybridSearch(ctx, "xzq9_unique_fallback_delta_echo_foxtrot", SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("HybridSearch with nil vecIndex: %v", err)
+	}
+
+	for _, r := range results {
+		if r.ID == id {
+			return // found via linear scan — success
+		}
+	}
+	t.Errorf("memory id=%d not found in HybridSearch linear-scan fallback; got %d result(s)", id, len(results))
+}

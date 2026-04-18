@@ -25,7 +25,8 @@ import (
 type Store struct {
 	db              *sql.DB
 	embedder        Embedder
-	project         string // current project scope for queries and inserts
+	vecIndex        VectorIndex // optional HNSW index; nil uses linear-scan fallback
+	project         string      // current project scope for queries and inserts
 	backfillLimiter interface{ Wait(context.Context) error }
 	// testCompleteBackfillFault, if non-nil and returns true, aborts
 	// completeBackfill between the final Exec and Commit so tests can verify
@@ -49,6 +50,14 @@ func (s *Store) SetEmbedder(e Embedder) {
 //oro:testonly
 func (s *Store) HasEmbedder() bool {
 	return s.embedder != nil
+}
+
+// SetVectorIndex attaches a VectorIndex for HNSW-backed vector search.
+// When set, vectorSearch uses idx.Search instead of the linear DB scan.
+//
+//oro:testonly — wired from production by the sqlite-vec load bead (oro-p545)
+func (s *Store) SetVectorIndex(idx VectorIndex) {
+	s.vecIndex = idx
 }
 
 // SetProject sets the project scope for subsequent Insert, Search, and
@@ -616,19 +625,123 @@ func maxHybridCandidates(limit int) int {
 	return n
 }
 
-// maxVectorCandidates is the maximum number of candidate rows loaded from the
-// database for vector similarity scoring, to bound memory usage.
-const maxVectorCandidates = 1000
+// linearScanCap is the maximum number of candidate rows loaded from the
+// database in the linear-scan fallback path, to bound memory usage.
+const linearScanCap = 1000
 
-// vectorSearch retrieves memories and ranks them by cosine similarity to queryVec.
-//
-//nolint:funlen // extra lines from file tracking columns in SELECT
+// vectorSearch returns memories ranked by cosine similarity to queryVec.
+// When a VectorIndex is set it delegates to the HNSW index; otherwise it falls
+// back to a linear scan of DB-stored embeddings.
 func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
 	if len(queryVec) == 0 {
 		return nil, nil
 	}
+	if s.vecIndex != nil {
+		return s.vectorSearchViaIndex(ctx, queryVec, limit, typeFilter)
+	}
+	return s.vectorSearchLinear(ctx, queryVec, limit, typeFilter)
+}
 
-	// Fetch recent memories that have embeddings, bounded by maxVectorCandidates.
+// vectorSearchViaIndex calls the HNSW index for approximate nearest neighbours
+// then batch-fetches the full memory rows by ID, applying typeFilter in Go.
+func (s *Store) vectorSearchViaIndex(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
+	// Normalise project: "" means "oro" to match the Upsert convention.
+	project := s.project
+	if project == "" {
+		project = "oro"
+	}
+
+	annResults, err := s.vecIndex.Search(ctx, queryVec, project, limit)
+	if err != nil {
+		return nil, fmt.Errorf("vec index search: %w", err)
+	}
+	if len(annResults) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]int64, len(annResults))
+	scoreByID := make(map[int64]float64, len(annResults))
+	for i, r := range annResults {
+		ids[i] = r.MemoryID
+		scoreByID[r.MemoryID] = r.Score
+	}
+
+	fetched, err := s.fetchMemoriesByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	rowByID := make(map[int64]ScoredMemory, len(fetched))
+	for _, sm := range fetched {
+		rowByID[sm.ID] = sm
+	}
+
+	// Reconstruct results in ANN rank order; skip stale IDs and type mismatches.
+	results := make([]ScoredMemory, 0, len(annResults))
+	for _, ann := range annResults {
+		sm, ok := rowByID[ann.MemoryID]
+		if !ok {
+			log.Printf("memory: vec index returned stale id %d (not in memories table), skipping", ann.MemoryID)
+			continue
+		}
+		if typeFilter != "" && sm.Type != typeFilter {
+			continue
+		}
+		sm.Score = ann.Score
+		results = append(results, sm)
+	}
+	return results, nil
+}
+
+// fetchMemoriesByIDs loads full memory rows for the given IDs in a single
+// IN-clause query. Result order is not guaranteed (caller re-orders by score).
+func (s *Store) fetchMemoriesByIDs(ctx context.Context, ids []int64) ([]ScoredMemory, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	placeholders := strings.Repeat("?,", len(ids)-1) + "?"
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	q := fmt.Sprintf( //nolint:gosec // G201 false positive: placeholders are hardcoded "?" strings, args are parameterized
+		`SELECT id, content, type, tags, source,
+		COALESCE(bead_id, '') AS bead_id,
+		COALESCE(worker_id, '') AS worker_id,
+		confidence, created_at, embedding,
+		COALESCE(files_read, '[]') AS files_read,
+		COALESCE(files_modified, '[]') AS files_modified,
+		(julianday('now') - julianday(created_at)) AS age_days,
+		COALESCE(pinned, 0) AS pinned
+	FROM memories WHERE id IN (%s)`, placeholders)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("fetch memories by ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []ScoredMemory
+	for rows.Next() {
+		sm, err := scanScoredMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, sm)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fetch memories by ids rows: %w", err)
+	}
+	return results, nil
+}
+
+// vectorSearchLinear is the fallback path used when no VectorIndex is set.
+// It loads up to linearScanCap rows with stored embeddings and ranks by cosine.
+//
+//nolint:funlen // extra lines from file tracking columns in SELECT
+func (s *Store) vectorSearchLinear(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
 	q := `SELECT id, content, type, tags, source,
 	       COALESCE(bead_id, '') AS bead_id,
 	       COALESCE(worker_id, '') AS worker_id,
@@ -650,7 +763,7 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 	}
 
 	q += " ORDER BY created_at DESC LIMIT ?"
-	args = append(args, maxVectorCandidates)
+	args = append(args, linearScanCap)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -680,12 +793,10 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 		return nil, fmt.Errorf("vector search rows: %w", err)
 	}
 
-	// Sort by cosine similarity descending.
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].cos > candidates[j].cos
 	})
 
-	// Truncate to limit.
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
 	}
@@ -693,7 +804,6 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 	results := make([]ScoredMemory, len(candidates))
 	for i, c := range candidates {
 		results[i] = c.sm
-		// Overwrite Score with cosine for later RRF ranking.
 		results[i].Score = c.cos
 	}
 	return results, nil
