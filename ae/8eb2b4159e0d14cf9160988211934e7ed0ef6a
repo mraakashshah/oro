@@ -1,0 +1,27 @@
+pkg/memory/memory.go
+  7686d0bc29038aef 25-26,35-36,59-61,66-70,87-88,93-96,111
+pkg/memory/embed.go
+  7686d0bc29038aef 18-59,68,73-75,90,127-138,142,149,151,164
+pkg/memory/embed_test.go
+  7686d0bc29038aef 589-611
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "ae8eb2b4159e0d14cf9160988211934e7ed0ef6a",
+  "prompts": {
+    "7686d0bc29038aef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "827f93c2-311d-44e4-bc0a-bb25c160dfa5",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 110,
+      "total_deletions": 23,
+      "accepted_lines": 106,
+      "overriden_lines": 0
+    }
+  }
+}
