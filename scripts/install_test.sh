@@ -173,9 +173,11 @@ done
 tar -czf "${T8_TGZ}" -C "${T8_STAGE}" \
 	oro oro-dash oro-search-hook libonnxruntime.dylib libtokenizers.dylib
 
+set +e
 t8_output=$(_ORO_TARBALL_OVERRIDE="${T8_TGZ}" \
-	bash "${INSTALL_SCRIPT}" --prefix "${T8_PREFIX}" --version v0.1.0 2>&1) || true
+	bash "${INSTALL_SCRIPT}" --prefix "${T8_PREFIX}" --version v0.1.0 2>&1)
 t8_rc=$?
+set -e
 
 if [[ ${t8_rc} -eq 0 ]]; then
 	pass "install succeeds even when sqlite-vec.dylib absent"
