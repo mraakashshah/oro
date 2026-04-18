@@ -1,0 +1,25 @@
+cmd/oro/embedder_client_test.go
+  0d0e0da27e187206 1-177
+cmd/oro/embedder_client.go
+  0d0e0da27e187206 1-95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "43dab562e7c44c6f22fbb94cec28e5d2f6297bac",
+  "prompts": {
+    "0d0e0da27e187206": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbddc0fc-e229-4133-96a2-abbfa56f73ce",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 492,
+      "total_deletions": 4,
+      "accepted_lines": 488,
+      "overriden_lines": 0
+    }
+  }
+}
