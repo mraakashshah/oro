@@ -1,0 +1,25 @@
+pkg/protocol/schema_test.go
+  f5d0f57421aeb324 308-431
+pkg/protocol/schema.go
+  f5d0f57421aeb324 200-219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "21493a9749fc4ca7058f7784e8256b060dcb5484",
+  "prompts": {
+    "f5d0f57421aeb324": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "274bd239-c066-4542-a7e0-b848d80a9ebb",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 144,
+      "total_deletions": 0,
+      "accepted_lines": 144,
+      "overriden_lines": 0
+    }
+  }
+}
