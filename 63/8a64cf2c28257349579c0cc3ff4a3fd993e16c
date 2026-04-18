@@ -1,0 +1,29 @@
+pkg/protocol/message.go
+  7f794038d58025e6 48-50,71-72
+pkg/dispatcher/rerank_handler.go
+  7f794038d58025e6 1-78
+pkg/dispatcher/rerank_handler_test.go
+  7f794038d58025e6 1-228
+pkg/dispatcher/dispatcher.go
+  7f794038d58025e6 300,428-434,1093-1098
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "638a64cf2c28257349579c0cc3ff4a3fd993e16c",
+  "prompts": {
+    "7f794038d58025e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6aaacca8-75bc-4d69-821e-b19a08451618",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 326,
+      "total_deletions": 1,
+      "accepted_lines": 325,
+      "overriden_lines": 0
+    }
+  }
+}
