@@ -8,9 +8,13 @@ import (
 )
 
 func TestRerankByIDsRequestRoundTrip(t *testing.T) {
+	ids := make([]int64, 50)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
 	req := protocol.RerankByIDsRequest{
 		Query:     "what retries a failed bead",
-		MemoryIDs: []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20},
+		MemoryIDs: ids,
 	}
 
 	data, err := json.Marshal(req)
