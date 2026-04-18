@@ -1,0 +1,72 @@
+pkg/memory/bge_embedder_test.go
+  366e2f7e7678edea 3-9,11-20,23,25-28,31-33,35-36,38-39,44-46,54-143
+  3ff50a0396f452e8 144,52-53,160-161,163-168,173-174,176-178,181-182,1-2,10,21-22,24,34,37,40-43,48-49,147-150,152,155-159,162,169-170,172,188-232
+  1f99bd9370a73e6f 145-146,151,154,171,175,179-180,183-186,153
+pkg/memory/bge_ort_real.go
+  366e2f7e7678edea 2-82,99-114,91,94,97
+  1f99bd9370a73e6f 83-84,85-90,92-93,95-96,98
+  3ff50a0396f452e8 1
+pkg/memory/cgo_ldflags.go
+  366e2f7e7678edea 3,7-10,2
+  3ff50a0396f452e8 1,4-6
+pkg/memory/export_test.go
+  366e2f7e7678edea 3-14,16-19,2
+  1f99bd9370a73e6f 15
+  3ff50a0396f452e8 1
+pkg/memory/bge_embedder.go
+  366e2f7e7678edea 3-5,7-24,26-33,35-89,93-94,104-138,140-146,153-154,156-157,159,151-152,2,100-103
+  3ff50a0396f452e8 95-97,1,34,90-92,98-99,139
+  1f99bd9370a73e6f 6,25,147-150,155,158
+pkg/memory/bge_embedder_integration_test.go
+  366e2f7e7678edea 2-6,9-16,20-47
+  3ff50a0396f452e8 1
+pkg/memory/bge_ort_stub.go
+  366e2f7e7678edea 2-11
+  3ff50a0396f452e8 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "90df1af7eef11de18e4b445290a60561224305bb",
+  "prompts": {
+    "1f99bd9370a73e6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f99e0da-6491-40a3-9a2f-6a09899b1f3f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 59,
+      "total_deletions": 2,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "366e2f7e7678edea": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "367a7c04-0a3b-493e-8188-9c2cf63aeddb",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 31163,
+      "total_deletions": 23,
+      "accepted_lines": 7,
+      "overriden_lines": 0
+    },
+    "3ff50a0396f452e8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1eab61f1-ddbd-4f62-9bc3-962cc3c6e369",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 97,
+      "total_deletions": 19,
+      "accepted_lines": 89,
+      "overriden_lines": 0
+    }
+  }
+}
