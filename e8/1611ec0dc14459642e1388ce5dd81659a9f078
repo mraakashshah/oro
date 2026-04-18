@@ -1,0 +1,25 @@
+pkg/memory/bge_reranker_integration_test.go
+  90eeaabd415abb55 1-125
+pkg/memory/memory_test.go
+  90eeaabd415abb55 3909-3952
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "e81611ec0dc14459642e1388ce5dd81659a9f078",
+  "prompts": {
+    "90eeaabd415abb55": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9bcac84d-5580-48e4-812b-fe951828f9fa",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 169,
+      "total_deletions": 0,
+      "accepted_lines": 169,
+      "overriden_lines": 0
+    }
+  }
+}
