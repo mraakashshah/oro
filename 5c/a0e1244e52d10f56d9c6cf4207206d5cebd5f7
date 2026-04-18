@@ -1,0 +1,29 @@
+pkg/memory/bge_ort_real.go
+  1f99bd9370a73e6f 85-98
+pkg/memory/bge_embedder_test.go
+  1f99bd9370a73e6f 23-24,38-42,145-171
+pkg/memory/export_test.go
+  1f99bd9370a73e6f 13
+pkg/memory/bge_embedder.go
+  1f99bd9370a73e6f 4,23,135-140,143,146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "5ca0e1244e52d10f56d9c6cf4207206d5cebd5f7",
+  "prompts": {
+    "1f99bd9370a73e6f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f99e0da-6491-40a3-9a2f-6a09899b1f3f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 59,
+      "total_deletions": 2,
+      "accepted_lines": 59,
+      "overriden_lines": 0
+    }
+  }
+}
