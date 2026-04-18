@@ -61,6 +61,14 @@ const MetaBranch = "branch"
 // redundant rebuilds when the manager sends bursts of 2-5 status calls.
 const statusThrottleWindow = 5 * time.Second
 
+// ErrSemanticDisabled is returned by WaitForEmbedder when semantic search has
+// not been configured (embedderReady channel was never created).
+var ErrSemanticDisabled = errors.New("semantic search disabled")
+
+// ErrEmbedderUnavailable is returned by WaitForEmbedder when the embedder
+// goroutine completed but the embedder could not be initialised.
+var ErrEmbedderUnavailable = errors.New("embedder unavailable")
+
 // --- Domain types ---
 
 // Bead, BeadDetail, and model constants are now in pkg/protocol/types.go
@@ -399,21 +407,28 @@ func (c Config) validate() error {
 // directly (e.g. d.workers, d.attemptCounts). Both embedded structs share
 // the Dispatcher-level mu for synchronisation.
 type Dispatcher struct {
-	cfg            Config
-	db             *sql.DB
-	merger         *merge.Coordinator
-	ops            *ops.Spawner
-	beads          BeadSource
-	worktrees      WorktreeManager
-	escalator      Escalator
-	memories       *memory.Store
-	codeIndex      CodeIndex // interface for FTS5 code search (nil means no search)
-	procMgr        ProcessManager
-	acceptance     AcceptanceRunner   // runs epic acceptance test commands
-	qgRunner       QGRunner           // runs quality gate before merge (defaults to &ShellQGRunner{})
-	paneRestarter  PaneRestarter      // restarts named tmux panes (nil means no restart)
-	estimator      BeadEstimator      // estimates bead completion time (nil means no estimation)
-	sseBroadcaster web.SSEBroadcaster // broadcasts server-sent events (never nil, initialized in New)
+	cfg       Config
+	db        *sql.DB
+	merger    *merge.Coordinator
+	ops       *ops.Spawner
+	beads     BeadSource
+	worktrees WorktreeManager
+	escalator Escalator
+	memories  *memory.Store
+	codeIndex CodeIndex // interface for FTS5 code search (nil means no search)
+
+	// embedder fields — populated by the warm-up goroutine (next bead).
+	// embedderReady == nil means semantic search is disabled for this session.
+	embedder        memory.Embedder
+	embedderReady   chan struct{}
+	embedderErr     error
+	embedderFactory func(modelDir string) (memory.Embedder, error) //nolint:unused // wired by next bead's warm-up goroutine
+	procMgr         ProcessManager
+	acceptance      AcceptanceRunner   // runs epic acceptance test commands
+	qgRunner        QGRunner           // runs quality gate before merge (defaults to &ShellQGRunner{})
+	paneRestarter   PaneRestarter      // restarts named tmux panes (nil means no restart)
+	estimator       BeadEstimator      // estimates bead completion time (nil means no estimation)
+	sseBroadcaster  web.SSEBroadcaster // broadcasts server-sent events (never nil, initialized in New)
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
 	WorkerPool
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
@@ -619,6 +634,32 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		nowFunc:           time.Now,
 		acceptSem:         make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
+}
+
+// EmbedderWaiter is satisfied by Dispatcher and any type that exposes the
+// embedder warm-up gate. Callers (e.g. semantic-search HTTP handlers) use this
+// interface to block until the embedder is ready without importing the full Dispatcher.
+type EmbedderWaiter interface {
+	WaitForEmbedder(ctx context.Context) (memory.Embedder, error)
+}
+
+// WaitForEmbedder blocks until the embedder warm-up goroutine signals readiness,
+// then returns the initialised Embedder. It returns ErrSemanticDisabled immediately
+// when embedderReady is nil (semantic search not configured). ctx cancellation is
+// honoured — the caller receives ctx.Err() if the context is cancelled first.
+func (d *Dispatcher) WaitForEmbedder(ctx context.Context) (memory.Embedder, error) {
+	if d.embedderReady == nil {
+		return nil, ErrSemanticDisabled
+	}
+	select {
+	case <-d.embedderReady:
+		if d.embedderErr != nil {
+			return nil, d.embedderErr
+		}
+		return d.embedder, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for embedder: %w", ctx.Err())
+	}
 }
 
 // loopPanicBackoff returns the exponential backoff duration for the n-th
