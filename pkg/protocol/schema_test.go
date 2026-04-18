@@ -304,3 +304,96 @@ func TestEmbeddingDenseModelSentinel(t *testing.T) {
 		t.Errorf("expected model='bge-small-en-v1.5' after re-run, got %q", modelAfter)
 	}
 }
+
+func TestMigrateSemanticMemoryChunksConstant(t *testing.T) {
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Apply base schema first (creates memories table)
+	_, err = db.Exec(protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("exec schema DDL: %v", err)
+	}
+
+	// Apply the migration
+	_, err = db.Exec(protocol.MigrateSemanticMemoryChunks)
+	if err != nil {
+		t.Fatalf("exec migration: %v", err)
+	}
+
+	// Verify memory_chunks table exists
+	var tableName string
+	err = db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='memory_chunks'",
+	).Scan(&tableName)
+	if err != nil {
+		t.Fatalf("memory_chunks table not found: %v", err)
+	}
+
+	// Verify required columns exist
+	requiredCols := []string{"id", "memory_id", "chunk_idx", "text", "embedding"}
+	for _, col := range requiredCols {
+		var colName string
+		err := db.QueryRow(
+			"SELECT name FROM pragma_table_info('memory_chunks') WHERE name=?",
+			col,
+		).Scan(&colName)
+		if err != nil {
+			t.Errorf("required column %q not found: %v", col, err)
+		}
+	}
+
+	// Verify idx_memory_chunks_memory_id index exists
+	var indexName string
+	err = db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_memory_chunks_memory_id'",
+	).Scan(&indexName)
+	if err != nil {
+		t.Fatalf("idx_memory_chunks_memory_id index not found: %v", err)
+	}
+
+	// Test idempotency: apply migration again (should not error due to IF NOT EXISTS)
+	_, err = db.Exec(protocol.MigrateSemanticMemoryChunks)
+	if err != nil {
+		t.Fatalf("second migration exec (idempotency): %v", err)
+	}
+
+	// Insert a memory row to test FK constraint
+	_, err = db.Exec(
+		`INSERT INTO memories (content, type, source) VALUES ('test memory', 'test', 'test_source')`,
+	)
+	if err != nil {
+		t.Fatalf("insert test memory: %v", err)
+	}
+
+	var memoryID int64
+	err = db.QueryRow(`SELECT id FROM memories WHERE content='test memory'`).Scan(&memoryID)
+	if err != nil {
+		t.Fatalf("query memory ID: %v", err)
+	}
+
+	// Insert a chunk row to verify the table works
+	_, err = db.Exec(
+		`INSERT INTO memory_chunks (memory_id, chunk_idx, text, embedding) VALUES (?, ?, ?, ?)`,
+		memoryID, 0, "chunk text", []byte{},
+	)
+	if err != nil {
+		t.Fatalf("insert memory chunk: %v", err)
+	}
+
+	// Verify the chunk was inserted
+	var chunkText string
+	err = db.QueryRow(
+		`SELECT text FROM memory_chunks WHERE memory_id=? AND chunk_idx=?`,
+		memoryID, 0,
+	).Scan(&chunkText)
+	if err != nil {
+		t.Fatalf("query memory chunk: %v", err)
+	}
+	if chunkText != "chunk text" {
+		t.Errorf("expected chunk_text='chunk text', got %q", chunkText)
+	}
+}

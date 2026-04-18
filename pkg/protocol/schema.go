@@ -196,3 +196,21 @@ const MigrateSemanticMemoryBackfillState = `
 INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES ('backfill_semantic_memory_state', 'pending', datetime('now'));
 INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES ('embedding_dense_model', 'bge-small-en-v1.5', datetime('now'));
 `
+
+// MigrateSemanticMemoryChunks creates the memory_chunks table for storing
+// chunked semantic memory embeddings. Each chunk belongs to a parent memory
+// and includes the text and its embedding vector. ON DELETE CASCADE ensures
+// that chunk orphans are cleaned up when the parent memory is deleted.
+// Idempotent: CREATE TABLE IF NOT EXISTS guards both table and index creation.
+const MigrateSemanticMemoryChunks = `
+CREATE TABLE IF NOT EXISTS memory_chunks (
+    id INTEGER PRIMARY KEY,
+    memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    chunk_idx INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    UNIQUE(memory_id, chunk_idx)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_memory_id ON memory_chunks(memory_id);
+`
