@@ -2456,13 +2456,13 @@ func TestInsertQualityGate(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects content longer than 2048 chars", func(t *testing.T) {
+	t.Run("rejects content longer than 8192 chars", func(t *testing.T) {
 		_, err := store.Insert(ctx, InsertParams{
-			Content: strings.Repeat("a", 2049),
+			Content: strings.Repeat("a", 8193),
 			Type:    "lesson",
 		})
 		if err == nil {
-			t.Error("expected error for content > 2048 chars, got nil")
+			t.Error("expected error for content > 8192 chars, got nil")
 		}
 	})
 
@@ -3254,5 +3254,80 @@ func TestTagFilterSpecialChars(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Errorf("expected exactly 1 result for Tag=%q, got %d", "100%%_done", len(results))
+	}
+}
+
+func TestPrepareInsertContentCap8192(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Test 1: exactly 8192 chars should pass
+	content8192 := strings.Repeat("x", 8192)
+	_, err := store.Insert(ctx, InsertParams{
+		Content: content8192, Type: "lesson",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Errorf("insert with exactly 8192 chars should pass, got error: %v", err)
+	}
+
+	// Test 2: 8193 chars should fail with correct error message
+	content8193 := strings.Repeat("y", 8193)
+	_, err = store.Insert(ctx, InsertParams{
+		Content: content8193, Type: "lesson",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err == nil {
+		t.Error("insert with 8193 chars should fail")
+	}
+	if !strings.Contains(err.Error(), "content too long (max 8192 chars") {
+		t.Errorf("error message should mention '8192 chars' limit, got: %v", err)
+	}
+
+	// Test 3: < 10 chars still rejected
+	_, err = store.Insert(ctx, InsertParams{
+		Content: "short", Type: "lesson",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err == nil {
+		t.Error("insert with <10 chars should fail")
+	}
+	if !strings.Contains(err.Error(), "content too short") {
+		t.Errorf("error message should mention minimum length, got: %v", err)
+	}
+}
+
+func TestFTS5Search8192CharContentNoMatchError(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	// Insert a memory with exactly 8192-char content
+	content8192 := strings.Repeat("test substring here ", 410) // ~8190 chars + buffer
+	// Pad to exactly 8192
+	if len(content8192) < 8192 {
+		content8192 += strings.Repeat(" ", 8192-len(content8192))
+	} else if len(content8192) > 8192 {
+		content8192 = content8192[:8192]
+	}
+
+	_, err := store.Insert(ctx, InsertParams{
+		Content: content8192, Type: "lesson",
+		Source: "self_report", Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert 8192-char content: %v", err)
+	}
+
+	// Search with a short query substring that appears in the content
+	results, err := store.Search(ctx, "test substring", SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("search should not error with 8192-char content: %v", err)
+	}
+
+	// Verify we got a result (smoke test: FTS5 handles 8192-char corpus without MATCH error)
+	if len(results) == 0 {
+		t.Error("expected search to find the 8192-char memory")
 	}
 }

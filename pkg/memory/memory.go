@@ -341,8 +341,8 @@ func (s *Store) prepareInsert(params InsertParams, errPrefix string) (preparedFi
 	if len(params.Content) < 10 {
 		return preparedFields{}, fmt.Errorf("%s: content too short (min 10 chars, got %d)", errPrefix, len(params.Content))
 	}
-	if len(params.Content) > 2048 {
-		return preparedFields{}, fmt.Errorf("%s: content too long (max 2048 chars, got %d)", errPrefix, len(params.Content))
+	if len(params.Content) > 8192 {
+		return preparedFields{}, fmt.Errorf("%s: content too long (max 8192 chars, got %d)", errPrefix, len(params.Content))
 	}
 	if _, ok := validMemoryTypes[params.Type]; !ok {
 		return preparedFields{}, fmt.Errorf("%s: invalid type %q", errPrefix, params.Type)
