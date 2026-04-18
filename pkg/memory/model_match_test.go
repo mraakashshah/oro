@@ -3,6 +3,7 @@ package memory //nolint:testpackage // white-box tests for checkEmbedderModelMat
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"oro/pkg/dbutil"
@@ -28,8 +29,8 @@ func setupTestDBWithSemanticTables(t *testing.T) *sql.DB {
 	if _, err := db.Exec(`
 		ALTER TABLE memories ADD COLUMN embedding_dense BLOB;
 	`); err != nil {
-		// Ignore if column already exists
-		if err.Error() != "duplicate column name: embedding_dense" {
+		// Ignore if column already exists (driver wording varies slightly).
+		if !strings.Contains(err.Error(), "duplicate column name") {
 			t.Fatalf("add embedding_dense column: %v", err)
 		}
 	}
@@ -94,6 +95,15 @@ func TestCheckEmbedderModelMatchHappyNoop(t *testing.T) {
 		t.Fatalf("insert memory: %v", err)
 	}
 
+	// Seed backfill state to 'completed' so we can assert it stays unchanged.
+	_, err = db.ExecContext(ctx,
+		`UPDATE backfill_semantic_memory_state SET state = ? WHERE id = 1`,
+		"completed",
+	)
+	if err != nil {
+		t.Fatalf("seed backfill state: %v", err)
+	}
+
 	// Call checkEmbedderModelMatch with matching model
 	err = store.checkEmbedderModelMatch(ctx, currentModel)
 	if err != nil {
@@ -133,6 +143,18 @@ func TestCheckEmbedderModelMatchHappyNoop(t *testing.T) {
 	}
 	if sentinel != currentModel {
 		t.Errorf("sentinel changed; expected %q, got %q", currentModel, sentinel)
+	}
+
+	// Verify backfill state is unchanged (still 'completed')
+	var state string
+	err = db.QueryRowContext(ctx,
+		`SELECT state FROM backfill_semantic_memory_state WHERE id = 1`,
+	).Scan(&state)
+	if err != nil {
+		t.Fatalf("query backfill state: %v", err)
+	}
+	if state != "completed" {
+		t.Errorf("backfill state changed; expected 'completed', got %q", state)
 	}
 }
 

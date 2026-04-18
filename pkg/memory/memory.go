@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"regexp"
 	"sort"
@@ -55,6 +56,26 @@ func (s *Store) SetProject(project string) {
 
 // embeddingDenseModelKey is the kv_store key for the embedder model sentinel.
 const embeddingDenseModelKey = "embedding_dense_model"
+
+// logModelChangeReset counts the rows that resetEmbedderData is about to clear
+// and emits a single operator-visible line via log.Printf. Errors from the
+// COUNT queries are returned so the caller can abort the transaction.
+func logModelChangeReset(ctx context.Context, tx *sql.Tx, oldModel, newModel string) error {
+	var denseN, chunkN int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memories WHERE embedding_dense IS NOT NULL`,
+	).Scan(&denseN); err != nil {
+		return fmt.Errorf("count dense vectors: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_chunks`,
+	).Scan(&chunkN); err != nil {
+		return fmt.Errorf("count memory_chunks: %w", err)
+	}
+	log.Printf("memory: model changed from %s to %s; clearing %d dense vectors, %d chunks",
+		oldModel, newModel, denseN, chunkN)
+	return nil
+}
 
 // resetEmbedderData clears embedding_dense, memory_chunks, and backfill state
 // when the model changes, then updates the sentinel. Assumes a transaction.
@@ -138,7 +159,10 @@ func (s *Store) checkEmbedderModelMatch(ctx context.Context, currentModel string
 		return nil
 	}
 
-	// Mismatch: clear state and update sentinel
+	// Mismatch: log audit line with row counts, then clear and update sentinel.
+	if err := logModelChangeReset(ctx, tx, sentinel, currentModel); err != nil {
+		return err
+	}
 	if err := resetEmbedderData(ctx, tx, currentModel); err != nil {
 		return err
 	}
