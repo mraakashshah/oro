@@ -1,0 +1,25 @@
+pkg/memory/models.go
+  b0c430fe1d19a05b 43,120-123
+pkg/memory/models_test.go
+  b0c430fe1d19a05b 12,130-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "3e02514508771bd32189115a1f2bb029c066f795",
+  "prompts": {
+    "b0c430fe1d19a05b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f42da3d6-c4b8-42e1-8acd-d6ff83d17214",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 43,
+      "total_deletions": 1,
+      "accepted_lines": 43,
+      "overriden_lines": 0
+    }
+  }
+}
