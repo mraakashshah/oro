@@ -1,0 +1,27 @@
+pkg/memory/embed.go
+  01cfc971ca8e3c02 18-33,42,47-49,64,101-112,116,125,138
+pkg/memory/memory.go
+  01cfc971ca8e3c02 25,36
+pkg/memory/embed_test.go
+  01cfc971ca8e3c02 654-661
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "59be5db2be0bf5b93288f9abbae2c57b77ff048a",
+  "prompts": {
+    "01cfc971ca8e3c02": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae257998-5c84-4bfe-9101-31f83ab231e1",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 50,
+      "total_deletions": 14,
+      "accepted_lines": 47,
+      "overriden_lines": 0
+    }
+  }
+}
