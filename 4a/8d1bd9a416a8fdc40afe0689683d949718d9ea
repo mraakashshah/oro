@@ -1,0 +1,25 @@
+pkg/memory/testhelpers/fake_embedder_test.go
+  3623b9a976aa1839 1-54
+pkg/memory/testhelpers/fake_embedder.go
+  3623b9a976aa1839 1-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "4a8d1bd9a416a8fdc40afe0689683d949718d9ea",
+  "prompts": {
+    "3623b9a976aa1839": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf390d40-2a92-4816-9d05-8b6bd14aa6b7",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 148,
+      "total_deletions": 11,
+      "accepted_lines": 136,
+      "overriden_lines": 0
+    }
+  }
+}
