@@ -189,21 +189,32 @@ func TestRerankerModelEntry(t *testing.T) {
 		t.Error("KnownModels[bge-reranker-base].SHA256 must not be empty")
 	}
 
-	fixture := []byte("fake reranker model bytes for testing")
-	sum := sha256.Sum256(fixture)
-	digest := hex.EncodeToString(sum[:])
+	rerankerBytes := []byte("fake reranker model bytes for testing")
+	rerankerDigest := hex.EncodeToString(func() []byte { s := sha256.Sum256(rerankerBytes); return s[:] }())
+	tokenizerBytes := []byte(`{"tokenizer": "fake"}`)
+	tokenizerDigest := hex.EncodeToString(func() []byte { s := sha256.Sum256(tokenizerBytes); return s[:] }())
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(fixture)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "tokenizer.json") {
+			_, _ = w.Write(tokenizerBytes)
+			return
+		}
+		_, _ = w.Write(rerankerBytes)
 	}))
 	defer srv.Close()
 
 	dir := t.TempDir()
-	spec := memory.ModelSpec{
+	rerankerSpec := memory.ModelSpec{
 		Name:     registered.Name,
 		URL:      srv.URL + "/model.onnx",
-		SHA256:   digest,
+		SHA256:   rerankerDigest,
 		Filename: registered.Filename,
+	}
+	tokenizerSpec := memory.ModelSpec{
+		Name:     "bge-reranker-base",
+		URL:      srv.URL + "/tokenizer.json",
+		SHA256:   tokenizerDigest,
+		Filename: "tokenizer.json",
 	}
 
 	// Test ModelPath returns correct path
@@ -213,18 +224,28 @@ func TestRerankerModelEntry(t *testing.T) {
 		t.Errorf("ModelPath = %q, want %q", modelPath, expectedPath)
 	}
 
-	// Test PrefetchModels downloads and verifies the reranker model
-	if err := memory.PrefetchModels(context.Background(), dir, []memory.ModelSpec{spec}); err != nil {
+	// Test PrefetchModels downloads reranker model + tokenizer.json when absent
+	if err := memory.PrefetchModels(context.Background(), dir, []memory.ModelSpec{rerankerSpec, tokenizerSpec}); err != nil {
 		t.Fatalf("PrefetchModels: %v", err)
 	}
 
-	// Verify the file was downloaded with correct content
+	// Verify the reranker model.onnx landed with correct content
 	data, err := os.ReadFile(modelPath)
 	if err != nil {
 		t.Fatalf("read model file: %v", err)
 	}
-	if string(data) != string(fixture) {
-		t.Errorf("model content = %q, want %q", data, fixture)
+	if string(data) != string(rerankerBytes) {
+		t.Errorf("model content = %q, want %q", data, rerankerBytes)
+	}
+
+	// Verify tokenizer.json co-downloaded alongside the reranker
+	tokenizerPath := filepath.Join(dir, "bge-reranker-base", "tokenizer.json")
+	tokData, err := os.ReadFile(tokenizerPath)
+	if err != nil {
+		t.Fatalf("read tokenizer file: %v", err)
+	}
+	if string(tokData) != string(tokenizerBytes) {
+		t.Errorf("tokenizer content = %q, want %q", tokData, tokenizerBytes)
 	}
 
 	// Test SHA256 verification on mismatch
