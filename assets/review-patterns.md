@@ -25,3 +25,29 @@ case-insensitive-header-search: matching markdown headers → lowercase both sid
 `buffer-before-response`: HTTP handler executes template into `bytes.Buffer` first → prevents partial HTML on error, enables atomic content-type + body write
 `buffer-template-render`: template renders to `http.ResponseWriter` incrementally → buffer into `bytes.Buffer`, check error, then `buf.WriteTo(w)` for atomic all-or-nothing HTTP responses.
 `like-escape-clause-reminder`: pure escapeLike function escapes with backslash → caller must add `ESCAPE '\'` to the SQL LIKE expression for SQLite to honor the escaping.
+test-hook-on-prod-struct: adding a `testXxxFn func()` field on a production struct that is read without holding the struct's mutex → either guard the read with the same lock or gate the field behind `_test.go`-only extension.
+worker-internal-monologue: test comments read like chat-thinking ("wait", "let me reconsider", "actually") → strip before landing; comments describe the scenario, not the author's deliberation.
+backoff-fn-injection: new retry/recovery path needs deterministic tests → add `somethingBackoffFn func(int) time.Duration` field on Dispatcher, gate real backoff through `d.somethingBackoff(n)`, let tests set it to `return 0`. Mirror the `loopPanicBackoffFn` pattern (dispatcher.go:619-633).
+misnamed-negative-test: test name claims to verify a failure path but body only smokes the success path → rename to match what's asserted, or delete if redundant with the primary contract test.
+helper-migration-leaves-redundant-setup: replacing `sql.Open` with a helper that encapsulates PRAGMA setup → search the call site for manual `PRAGMA journal_mode` / `busy_timeout` execs that are now no-ops and remove them in the same edit.
+redundant-pragma-after-openDB: test opens via `dbutil.OpenDB` but keeps the old explicit `PRAGMA journal_mode=WAL`/`busy_timeout` calls from its pre-migration state → remove the redundant Execs, rely on OpenDB's contract.
+misleading-nolint-justification: adding `//nolint:foo // reason` whose reason doesn't match the file's actual code → verify the justification is true at the time of writing, or drop it.
+wrapcheck-vs-thin-delegation: AC asks for `return other.Fn()` single-line delegation but `wrapcheck` is enabled → either add `//nolint:wrapcheck` with justification or accept a redundant outer wrap; document choice in bead.
+dbutil-openDB-probe-tautology: WAL-verification test using dbutil.OpenDB as the probe → probe may set WAL itself, masking regressions in the unit under test; use a raw sql.Open probe or file-header inspection.
+ac-contradiction-resolution: AC signature and edges conflict → satisfy the concrete edge case in tests, note the deviation.
+optional-capability-interface: core interface shouldn't force capabilities all impls support → extract separate interface (e.g., VocabPersister) and type-assert at the call site.
+interface-unused-until-followup-bead: introducing interface + renaming concrete in one bead, widening callers in follow-ups → keep concrete receivers in call sites this bead to preserve shape compatibility; land widening after dependents rebase.
+interface-widen-struct-rename: widening Store field to interface named same as existing concrete struct → rename struct (e.g. Embedder→TFIDFEmbedder), define interface + optional extension, add compile-time assertions in test file
+parenthetical-token-noise: comma-split field has inline `(annotations)` with dots or numbers → strip `\s*\([^)]*\)` from each token before path heuristics
+cli-doc-existing-directive: documentation bead exposing already-implemented protocol behavior → CLI test with stateful mock dispatcher; semantic correctness lives in the dispatcher package's own tests.
+stale-ac-field-name: AC references field name that conflicts with linter → update doc comments to match the actually-chosen identifier, not the AC's original spec
+placeholder-digest-registry: static registry ships with placeholder hashes → mark with `TODO(bead-id)` so future bead that fills in real values is easy to locate.
+yaml-tri-state-bool: YAML field must distinguish unset/true/false → `*bool` with `XOrDefault()` accessor returning the default when nil (keeps zero-value round-trip safe).
+installer-test-hook: local-tarball test needs to bypass curl+checksum → add `_ORO_TARBALL_OVERRIDE` env var branch + PATH-prepended mock binary writing to a log file.
+ac-test-vs-assert-mismatch: AC "Test" column enumerates N tests but "Assert" column describes N+1 behaviors → either add the missing test or prune the assertion from AC before closing.
+vendored-arch-specific-static-archive: checking in a `.a` under a `cgo && darwin` tag when the archive is arm64-only → either narrow tag to `arm64` or fetch/bundle per-arch in installer before the epic lands.
+cancel-vs-result-race: buffered resultCh + select on ctx.Done → document that the resource from a late-arriving result may need disposal if it owns external handles.
+rate-limiter-default-injection: production worker needs configurable rate limiter for testing → declare struct field as `interface{ Wait(context.Context) error }`, fall back to `rate.NewLimiter(rate.Limit(N), 1)` when nil, tests inject `rate.NewLimiter(rate.Inf, 1)` for instant runs
+best-effort-retention-prelude: synchronous trim before periodic background work → log via existing channel, never return error, no new goroutine
+ad-hoc-cli-split: extraction library + thin `cmd/main.go` flag wrapper → keeps pure logic testable while satisfying "extract.go or equivalent" CLI requirement.
+swallowed-handler-error: conn-handler dispatches to sub-handler returning error → assign to `_` → log-and-drop becomes silent-drop, lose observability on write failures.

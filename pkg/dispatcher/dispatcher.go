@@ -296,6 +296,7 @@ type Config struct {
 	DefaultBranch         string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
 	WebEnabled            bool          // Enable HTTP server for dashboard/health endpoints (default false).
 	WebAddr               string        // HTTP server listen address (default 127.0.0.1:4444 in withDefaults).
+	SemanticModelDir      string        // Directory containing the BGE ONNX model files. Empty means semantic search is disabled.
 }
 
 // intDefault returns v if non-zero, otherwise dflt.
@@ -422,7 +423,7 @@ type Dispatcher struct {
 	embedder        memory.Embedder
 	embedderReady   chan struct{}
 	embedderErr     error
-	embedderFactory func(modelDir string) (memory.Embedder, error) //nolint:unused // wired by next bead's warm-up goroutine
+	embedderFactory func(modelDir string) (memory.Embedder, error)
 	procMgr         ProcessManager
 	acceptance      AcceptanceRunner   // runs epic acceptance test commands
 	qgRunner        QGRunner           // runs quality gate before merge (defaults to &ShellQGRunner{})
@@ -660,6 +661,40 @@ func (d *Dispatcher) WaitForEmbedder(ctx context.Context) (memory.Embedder, erro
 	case <-ctx.Done():
 		return nil, fmt.Errorf("wait for embedder: %w", ctx.Err())
 	}
+}
+
+// warmupEmbedder loads the BGE model via embedderFactory and closes embedderReady
+// when done (success or failure). embedderReady == nil means semantic search is
+// disabled — warmupEmbedder returns immediately in that case. Intended to run in
+// a goroutine spawned by Run() after the context is available.
+func (d *Dispatcher) warmupEmbedder(ctx context.Context) {
+	if d.embedderReady == nil {
+		return
+	}
+	var once sync.Once
+	closeReady := func() { once.Do(func() { close(d.embedderReady) }) }
+	defer closeReady()
+	defer func() {
+		if r := recover(); r != nil {
+			d.embedderErr = fmt.Errorf("embedder factory panic: %v", r)
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		d.embedderErr = ctx.Err()
+		return
+	default:
+	}
+	emb, err := d.embedderFactory(d.cfg.SemanticModelDir)
+	if err != nil {
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) {
+			fmt.Fprintf(os.Stderr, "BGE model missing at %s — run `oro models prefetch` to download\n", pathErr.Path)
+		}
+		d.embedderErr = ErrEmbedderUnavailable
+		return
+	}
+	d.embedder = emb
 }
 
 // loopPanicBackoff returns the exponential backoff duration for the n-th
