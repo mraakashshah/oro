@@ -1,0 +1,25 @@
+cmd/oro/cmd_directive_test.go
+  6e84d8ec87b15e37 10,12,237-400
+cmd/oro/cmd_directive.go
+  6e84d8ec87b15e37 35-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "760926ce1ca40bb83f609bae281b6856af9e20e5",
+  "prompts": {
+    "6e84d8ec87b15e37": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8751d188-865a-4dee-a073-6e4c7593b6dd",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 168,
+      "total_deletions": 1,
+      "accepted_lines": 168,
+      "overriden_lines": 0
+    }
+  }
+}
