@@ -2,7 +2,10 @@ package memory //nolint:testpackage // white-box test: accesses unexported logSe
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"oro/pkg/dbutil"
@@ -140,4 +143,139 @@ func TestLogSearchEventWritesRow(t *testing.T) {
 	if emptyScores != "[]" {
 		t.Errorf("empty TopKScores: got %q, want %q", emptyScores, "[]")
 	}
+}
+
+// queryHash returns hex(sha256(q))[:16].
+func queryHash(q string) string {
+	h := sha256.Sum256([]byte(q))
+	return fmt.Sprintf("%x", h)[:16]
+}
+
+// countSearchEvents returns the row count in memory_search_events.
+func countSearchEvents(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM memory_search_events").Scan(&n); err != nil {
+		t.Fatalf("count search events: %v", err)
+	}
+	return n
+}
+
+// TestHybridSearchLogsOneRow verifies that HybridSearch writes exactly one
+// telemetry row per call, with correct field values, and is non-fatal on error.
+func TestHybridSearchLogsOneRow(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("NoEmbedder_logsRow", func(t *testing.T) {
+		db := setupTelemetryDB(t)
+		store := NewStore(db)
+
+		if _, err := store.Insert(ctx, InsertParams{
+			Content: "unique telemetry content xyz123", Type: "lesson",
+			Source: "test", Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+
+		query := "unique telemetry content"
+		results, err := store.HybridSearch(ctx, query, SearchOpts{Limit: 5})
+		if err != nil {
+			t.Fatalf("HybridSearch: %v", err)
+		}
+
+		if n := countSearchEvents(t, db); n != 1 {
+			t.Fatalf("want 1 search event row, got %d", n)
+		}
+
+		var (
+			gotHash       string
+			topKIDs       string
+			topKScores    string
+			latencyMs     int
+			usedBGE       int
+			usedRerank    int
+			annCandidates int
+		)
+		row := db.QueryRowContext(ctx, `
+			SELECT query_hash, top_k_ids, top_k_scores, latency_ms,
+			       used_bge, used_rerank, ann_candidates
+			FROM memory_search_events LIMIT 1
+		`)
+		if err := row.Scan(&gotHash, &topKIDs, &topKScores, &latencyMs,
+			&usedBGE, &usedRerank, &annCandidates); err != nil {
+			t.Fatalf("scan event row: %v", err)
+		}
+
+		if want := queryHash(query); gotHash != want {
+			t.Errorf("query_hash: got %q, want %q", gotHash, want)
+		}
+
+		wantIDs := make([]int64, len(results))
+		for i, r := range results {
+			wantIDs[i] = r.ID
+		}
+		wantIDsJSON, _ := json.Marshal(wantIDs)
+		if topKIDs != string(wantIDsJSON) {
+			t.Errorf("top_k_ids: got %s, want %s", topKIDs, wantIDsJSON)
+		}
+
+		wantScores := make([]float64, len(results))
+		for i, r := range results {
+			wantScores[i] = r.Score
+		}
+		wantScoresJSON, _ := json.Marshal(wantScores)
+		if topKScores != string(wantScoresJSON) {
+			t.Errorf("top_k_scores: got %s, want %s", topKScores, wantScoresJSON)
+		}
+
+		if latencyMs < 0 {
+			t.Errorf("latency_ms should be >= 0, got %d", latencyMs)
+		}
+		if usedBGE != 0 {
+			t.Errorf("used_bge: got %d, want 0 (no embedder)", usedBGE)
+		}
+		if usedRerank != 0 {
+			t.Errorf("used_rerank: got %d, want 0", usedRerank)
+		}
+		if annCandidates != 0 {
+			t.Errorf("ann_candidates: got %d, want 0 (no embedder)", annCandidates)
+		}
+	})
+
+	t.Run("EmptyQuery_noRow", func(t *testing.T) {
+		db := setupTelemetryDB(t)
+		store := NewStore(db)
+
+		if _, err := store.HybridSearch(ctx, "", SearchOpts{}); err != nil {
+			t.Fatalf("HybridSearch empty: %v", err)
+		}
+		if n := countSearchEvents(t, db); n != 0 {
+			t.Errorf("empty query must log no rows, got %d", n)
+		}
+	})
+
+	t.Run("DBError_nonFatal", func(t *testing.T) {
+		db := setupTelemetryDB(t)
+		store := NewStore(db)
+
+		if _, err := store.Insert(ctx, InsertParams{
+			Content: "db error test content unique_abc987", Type: "lesson",
+			Source: "test", Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+
+		// Drop the table to force logSearchEvent to fail.
+		if _, err := db.ExecContext(ctx, "DROP TABLE memory_search_events"); err != nil {
+			t.Fatalf("drop table: %v", err)
+		}
+
+		results, err := store.HybridSearch(ctx, "db error test content", SearchOpts{Limit: 5})
+		if err != nil {
+			t.Errorf("HybridSearch must not return error on telemetry failure, got: %v", err)
+		}
+		if len(results) == 0 {
+			t.Error("HybridSearch must still return results when telemetry fails")
+		}
+	})
 }

@@ -6,6 +6,7 @@ package memory
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -646,6 +647,8 @@ func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts)
 		return nil, nil
 	}
 
+	start := time.Now()
+
 	// Phase 1: FTS5 text search (always available).
 	ftsResults, err := s.Search(ctx, query, SearchOpts{
 		Limit: maxHybridCandidates(opts.Limit),
@@ -655,23 +658,53 @@ func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts)
 		return nil, fmt.Errorf("hybrid fts search: %w", err)
 	}
 
-	// If no embedder, fall back to FTS5-only with original filtering.
+	var (
+		results       []ScoredMemory
+		annCandidates int
+	)
+
 	if s.embedder == nil {
-		return applyFilters(ftsResults, opts), nil
+		// No embedder: fall back to FTS5-only with original filtering.
+		results = applyFilters(ftsResults, opts)
+	} else {
+		// Phase 2: Vector similarity search.
+		queryVec := s.embedder.Embed(query)
+		vectorResults, vecErr := s.vectorSearch(ctx, queryVec, maxHybridCandidates(opts.Limit), opts.Type)
+		if vecErr != nil {
+			// Vector search failure is non-fatal; degrade gracefully to FTS-only.
+			results = applyFilters(ftsResults, opts) //nolint:nilerr // intentional graceful degradation
+		} else {
+			annCandidates = len(vectorResults)
+			// Phase 3: Fuse with RRF.
+			results = applyFilters(fuseRRF(ftsResults, vectorResults), opts)
+		}
 	}
 
-	// Phase 2: Vector similarity search.
-	queryVec := s.embedder.Embed(query)
-	vectorResults, vecErr := s.vectorSearch(ctx, queryVec, maxHybridCandidates(opts.Limit), opts.Type)
-	if vecErr != nil {
-		// Vector search failure is non-fatal; degrade gracefully to FTS-only.
-		return applyFilters(ftsResults, opts), nil //nolint:nilerr // intentional graceful degradation
+	ids := make([]int64, len(results))
+	scores := make([]float64, len(results))
+	for i, r := range results {
+		ids[i] = r.ID
+		scores[i] = r.Score
+	}
+	h := sha256.Sum256([]byte(query))
+	logCtx := ctx
+	if ctx.Err() != nil {
+		logCtx = context.Background()
+	}
+	if logErr := s.logSearchEvent(logCtx, SearchEvent{
+		Project:       s.project,
+		QueryHash:     fmt.Sprintf("%x", h)[:16],
+		TopKIDs:       ids,
+		TopKScores:    scores,
+		LatencyMs:     int(time.Since(start).Milliseconds()),
+		UsedBGE:       s.embedder != nil,
+		UsedRerank:    false,
+		ANNCandidates: annCandidates,
+	}); logErr != nil {
+		log.Printf("memory: telemetry write failed: %v", logErr)
 	}
 
-	// Phase 3: Fuse with RRF.
-	fused := fuseRRF(ftsResults, vectorResults)
-
-	return applyFilters(fused, opts), nil
+	return results, nil
 }
 
 // maxHybridCandidates returns the candidate pool size for each search phase.
