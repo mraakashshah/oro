@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"oro/pkg/memory"
@@ -124,5 +125,42 @@ func TestPrefetchModelsQuarantineOnMismatch(t *testing.T) {
 	corrupt := dest + ".corrupt"
 	if _, statErr := os.Stat(corrupt); statErr != nil {
 		t.Errorf("corrupt file should exist at %s: %v", corrupt, statErr)
+	}
+}
+
+func TestPrefetchModelsHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	spec := memory.ModelSpec{
+		Name:     "bge-small-en-v1.5",
+		URL:      srv.URL + "/model.onnx",
+		SHA256:   "0000000000000000000000000000000000000000000000000000000000000000",
+		Filename: "model.onnx",
+	}
+
+	err := memory.PrefetchModels(context.Background(), dir, []memory.ModelSpec{spec})
+	if err == nil {
+		t.Fatal("expected error on HTTP 500, got nil")
+	}
+	if errors.Is(err, memory.ErrDigestMismatch) {
+		t.Errorf("expected HTTP error, got ErrDigestMismatch: %v", err)
+	}
+	if !strings.Contains(err.Error(), spec.URL) {
+		t.Errorf("error should include URL %q, got: %v", spec.URL, err)
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should include status code 500, got: %v", err)
+	}
+
+	dest := filepath.Join(dir, "bge-small-en-v1.5", "model.onnx")
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Error("no file should be written on HTTP error")
+	}
+	if _, statErr := os.Stat(dest + ".corrupt"); !os.IsNotExist(statErr) {
+		t.Error("no .corrupt file should be written on HTTP error")
 	}
 }

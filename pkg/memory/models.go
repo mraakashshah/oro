@@ -40,7 +40,7 @@ var KnownModels = []ModelSpec{ //nolint:gochecknoglobals // static config table,
 		Filename: "model.onnx",
 	},
 	{
-		Name:     "tokenizer",
+		Name:     "bge-tokenizer",
 		URL:      "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json",
 		SHA256:   "TODO_fill_after_download",
 		Filename: "tokenizer.json",
@@ -116,6 +116,10 @@ func fetchAndVerify(ctx context.Context, dest string, spec ModelSpec) error {
 		return fmt.Errorf("download %s: %w", spec.URL, err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download %s: http %d %s", spec.URL, resp.StatusCode, resp.Status)
+	}
 
 	tmp := dest + ".tmp"
 	f, err := os.Create(tmp) //nolint:gosec // tmp path is internally constructed, not from user input
