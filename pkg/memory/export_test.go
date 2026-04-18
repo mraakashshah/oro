@@ -17,3 +17,13 @@ func NewBGEEmbedderFromParts(sess interface {
 ) *BGEEmbedder {
 	return newBGEEmbedderFromParts(sess, tok)
 }
+
+// NewBGERerankerFromParts exposes the internal constructor for tests that
+// inject a fake ortSession without loading a real ONNX model.
+func NewBGERerankerFromParts(sess interface {
+	Run(tokenIDs, attentionMask []int64) ([]float32, error)
+	Close() error
+}, tok *tokenizers.Tokenizer,
+) *BGEReranker {
+	return newBGERerankerFromParts(sess, tok)
+}
