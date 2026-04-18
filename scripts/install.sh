@@ -165,14 +165,14 @@ try_codesign() {
 bundle_libs() {
 	local src_dir="$1"
 	local lib_dir="$2"
-	local libs=("libonnxruntime.dylib" "libtokenizers.dylib" "libsqlite-vec.dylib")
+	local libs=("libonnxruntime.dylib" "libtokenizers.dylib" "sqlite-vec.dylib")
 
 	run mkdir -p "${lib_dir}"
 
 	for lib in "${libs[@]}"; do
 		if [[ -f "${src_dir}/${lib}" ]]; then
 			log_info "Installing ${lib} to ${lib_dir}/"
-			run install -m 0755 "${src_dir}/${lib}" "${lib_dir}/${lib}"
+			run install -m 0644 "${src_dir}/${lib}" "${lib_dir}/${lib}"
 			try_codesign "${lib_dir}/${lib}"
 		else
 			log_warning "${lib} not present in tarball — skipping (semantic memory features may be unavailable)"
@@ -301,9 +301,9 @@ main() {
 
 	# 10b. Bundle dylibs (ORT, tokenizer, sqlite-vec) to lib_dir
 	if [[ "${DRY_RUN}" == "true" ]]; then
-		local dry_libs=("libonnxruntime.dylib" "libtokenizers.dylib" "libsqlite-vec.dylib")
+		local dry_libs=("libonnxruntime.dylib" "libtokenizers.dylib" "sqlite-vec.dylib")
 		for lib in "${dry_libs[@]}"; do
-			log_info "[dry-run] install -m 0755 ${tmpdir}/${lib} ${lib_dir}/${lib}"
+			log_info "[dry-run] install -m 0644 ${tmpdir}/${lib} ${lib_dir}/${lib}"
 			log_info "[dry-run] codesign --force --sign - ${lib_dir}/${lib}"
 		done
 	else

@@ -1,9 +1,16 @@
-.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort
+.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec test-vendor-sqlite-vec
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
 ORO_HOME ?= $(HOME)/.oro
 GOLANGCI_LINT_VERSION ?= v2.10.1
+
+SQLITE_VEC_VERSION         ?= 0.1.6
+SQLITE_VEC_REPO            := asg017/sqlite-vec
+# Pin SHA256 for each macOS arch after first download.
+# Update these when bumping SQLITE_VEC_VERSION.
+SQLITE_VEC_SHA256_DARWIN_ARM64 ?=
+SQLITE_VEC_SHA256_DARWIN_AMD64 ?=
 
 # stage-assets copies oro config assets from the repo's assets/ directory into
 # cmd/oro/_assets/ so that go:embed can bundle them into the binary.
@@ -162,7 +169,7 @@ mutate-py-full:
 verify-bundled-libs:
 	@echo "Checking $(ORO_HOME)/lib/ for bundled dylibs..."
 	@missing=0; \
-	for lib in libonnxruntime.dylib libtokenizers.dylib libsqlite-vec.dylib; do \
+	for lib in libonnxruntime.dylib libtokenizers.dylib sqlite-vec.dylib; do \
 		if [ -f "$(ORO_HOME)/lib/$$lib" ]; then \
 			echo "  ✓ $$lib"; \
 		else \
@@ -173,7 +180,7 @@ verify-bundled-libs:
 	if [ "$$missing" -gt 0 ]; then \
 		echo ""; \
 		echo "Warning: $$missing dylib(s) absent from $(ORO_HOME)/lib/"; \
-		echo "         Run 'make download-ort' once acquisition is available."; \
+		echo "         Run 'make vendor-sqlite-vec' to fetch sqlite-vec."; \
 	else \
 		echo "✓ All dylibs present in $(ORO_HOME)/lib/"; \
 	fi
@@ -184,9 +191,61 @@ verify-bundled-libs:
 # the actual acquisition logic.
 download-ort:
 	@echo "TODO: ORT/tokenizer dylib acquisition not yet implemented."
-	@echo "      Place libonnxruntime.dylib, libtokenizers.dylib, and"
-	@echo "      libsqlite-vec.dylib into a release tarball so that"
-	@echo "      'bash scripts/install.sh' can bundle them to ~/.oro/lib/."
+	@echo "      Place libonnxruntime.dylib and libtokenizers.dylib into a release"
+	@echo "      tarball so that 'bash scripts/install.sh' can bundle them to ~/.oro/lib/."
+	@echo "      For sqlite-vec, run: make vendor-sqlite-vec"
+
+# vendor-sqlite-vec downloads the sqlite-vec loadable extension for the current macOS
+# arch (arm64 or amd64), saves it to _assets/lib/sqlite-vec.dylib for release bundling,
+# and installs it to $(ORO_HOME)/lib/sqlite-vec.dylib with ad-hoc codesign for local dev.
+#
+# To pin SHA256 after first download, set SQLITE_VEC_SHA256_DARWIN_ARM64 /
+# SQLITE_VEC_SHA256_DARWIN_AMD64 in the Makefile variables above.
+vendor-sqlite-vec:
+	@set -euo pipefail; \
+	ARCH=$$(uname -m); \
+	case "$$ARCH" in \
+		arm64)  OS_ARCH=macos-aarch64; SHA256="$(SQLITE_VEC_SHA256_DARWIN_ARM64)" ;; \
+		x86_64) OS_ARCH=macos-x86_64;  SHA256="$(SQLITE_VEC_SHA256_DARWIN_AMD64)" ;; \
+		*) echo "Unsupported arch: $$ARCH"; exit 1 ;; \
+	esac; \
+	TARBALL="sqlite-vec-v$(SQLITE_VEC_VERSION)-loadable-$$OS_ARCH.tar.gz"; \
+	URL="https://github.com/$(SQLITE_VEC_REPO)/releases/download/v$(SQLITE_VEC_VERSION)/$$TARBALL"; \
+	VTMPDIR=$$(mktemp -d); \
+	trap "rm -rf '$$VTMPDIR'" EXIT; \
+	echo "Downloading $$URL..."; \
+	curl -fsSL "$$URL" -o "$$VTMPDIR/$$TARBALL"; \
+	if [ -n "$$SHA256" ]; then \
+		echo "Verifying SHA256..."; \
+		echo "$$SHA256  $$VTMPDIR/$$TARBALL" | shasum -a 256 -c --quiet; \
+		echo "SHA256 verified."; \
+	else \
+		COMPUTED=$$(shasum -a 256 "$$VTMPDIR/$$TARBALL" | awk '{print $$1}'); \
+		echo "Info: SHA256 not pinned. To pin, add to Makefile:"; \
+		echo "  SQLITE_VEC_SHA256_$$(echo $$ARCH | tr a-z A-Z | tr - _) = $$COMPUTED"; \
+	fi; \
+	tar -xzf "$$VTMPDIR/$$TARBALL" -C "$$VTMPDIR"; \
+	DYLIB=$$(find "$$VTMPDIR" -maxdepth 1 -name '*.dylib' | head -1); \
+	[ -z "$$DYLIB" ] && { echo "ERROR: no .dylib found in tarball"; exit 1; }; \
+	mkdir -p _assets/lib; \
+	cp "$$DYLIB" _assets/lib/sqlite-vec.dylib; \
+	echo "Saved _assets/lib/sqlite-vec.dylib ($$(wc -c <_assets/lib/sqlite-vec.dylib | tr -d ' ') bytes)"; \
+	mkdir -p $(ORO_HOME)/lib; \
+	install -m 0644 _assets/lib/sqlite-vec.dylib $(ORO_HOME)/lib/sqlite-vec.dylib; \
+	if command -v codesign >/dev/null 2>&1; then \
+		codesign --force --sign - $(ORO_HOME)/lib/sqlite-vec.dylib; \
+		echo "✓ Ad-hoc codesigned $(ORO_HOME)/lib/sqlite-vec.dylib"; \
+	else \
+		echo "Info: codesign unavailable, skipping ad-hoc signing"; \
+	fi; \
+	echo "✓ sqlite-vec $(SQLITE_VEC_VERSION) ready at $(ORO_HOME)/lib/sqlite-vec.dylib"
+
+# test-vendor-sqlite-vec verifies _assets/lib/sqlite-vec.dylib is present and non-empty.
+# Requires 'make vendor-sqlite-vec' to have been run first.
+test-vendor-sqlite-vec:
+	@test -f _assets/lib/sqlite-vec.dylib || { echo "FAIL: run 'make vendor-sqlite-vec' first"; exit 1; }
+	@test -s _assets/lib/sqlite-vec.dylib || { echo "FAIL: _assets/lib/sqlite-vec.dylib is empty"; exit 1; }
+	@echo "PASS: _assets/lib/sqlite-vec.dylib present ($$(wc -c <_assets/lib/sqlite-vec.dylib | tr -d ' ') bytes)"
 
 # setup installs all dev tooling required by the quality gate:
 #   - npm deps (biome, markdownlint-cli2) from package.json
