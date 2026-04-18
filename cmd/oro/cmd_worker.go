@@ -91,6 +91,7 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 // similarity against old embeddings may be noisy until vocab re-accumulates).
 func openWorkerMemoryStore(db *sql.DB) *memory.Store {
 	store := memory.NewStore(db)
+	// NewEmbedder returns the default *TFIDFEmbedder implementation of the Embedder interface.
 	store.SetEmbedder(memory.NewEmbedder())
 	_ = store.LoadVocab(context.Background()) // non-fatal: empty vocab is valid
 	return store

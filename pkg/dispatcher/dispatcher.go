@@ -570,6 +570,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		beadsDir = protocol.BeadsDir
 	}
 	memStore := memory.NewStore(db)
+	// NewEmbedder returns the default *TFIDFEmbedder implementation of the Embedder interface.
 	memStore.SetEmbedder(memory.NewEmbedder())
 	return &Dispatcher{
 		cfg:            resolved,
