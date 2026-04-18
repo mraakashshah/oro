@@ -2,6 +2,7 @@
 package memory
 
 import (
+	"context"
 	"encoding/binary"
 	"math"
 	"strings"
@@ -17,9 +18,9 @@ type ANNResult struct {
 
 // VectorIndex stores and retrieves dense float32 embeddings per project partition.
 type VectorIndex interface {
-	Upsert(id int64, vec []float32, project string) error
-	Search(queryVec []float32, project string, k int) ([]ANNResult, error)
-	Delete(id int64) error
+	Upsert(ctx context.Context, id int64, vec []float32, project string) error
+	Search(ctx context.Context, queryVec []float32, project string, k int) ([]ANNResult, error)
+	Delete(ctx context.Context, id int64, project string) error
 }
 
 // maxVocabSize caps the number of unique terms in the vocabulary to prevent

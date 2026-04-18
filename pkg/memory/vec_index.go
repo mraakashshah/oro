@@ -129,15 +129,16 @@ func (i *SQLiteVecIndex) Search(ctx context.Context, queryVec []float32, project
 	return results, nil
 }
 
-// Delete removes id from the project partition. No-op if the table does not
-// exist.
+// Delete removes id from the project partition. The vec0 table is ensured
+// (CREATE IF NOT EXISTS) so the call works after a process restart where the
+// in-memory createdTables cache is cold but the table exists on disk.
 func (i *SQLiteVecIndex) Delete(ctx context.Context, id int64, project string) error {
 	proj, err := resolveProject(project)
 	if err != nil {
 		return err
 	}
-	if _, ok := i.createdTables.Load(proj); !ok {
-		return nil
+	if err := i.ensureTable(ctx, proj); err != nil {
+		return err
 	}
 	if _, err := i.db.ExecContext(ctx,
 		fmt.Sprintf("DELETE FROM %s WHERE rowid = ?", tableNameFor(proj)),

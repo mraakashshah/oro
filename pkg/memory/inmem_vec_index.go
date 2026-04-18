@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -23,7 +24,7 @@ func NewInMemoryVecIndex() *InMemoryVecIndex {
 }
 
 // Upsert stores vec under (project, id). Returns an error if vec is nil.
-func (v *InMemoryVecIndex) Upsert(id int64, vec []float32, project string) error {
+func (v *InMemoryVecIndex) Upsert(_ context.Context, id int64, vec []float32, project string) error {
 	if vec == nil {
 		return fmt.Errorf("upsert: nil vec")
 	}
@@ -41,7 +42,7 @@ func (v *InMemoryVecIndex) Upsert(id int64, vec []float32, project string) error
 // Search returns up to k results from the given project partition sorted by
 // cosine similarity descending. Ties are broken by MemoryID ascending.
 // Returns an empty slice (no error) for an empty partition or k <= 0.
-func (v *InMemoryVecIndex) Search(queryVec []float32, project string, k int) ([]ANNResult, error) {
+func (v *InMemoryVecIndex) Search(_ context.Context, queryVec []float32, project string, k int) ([]ANNResult, error) {
 	if k <= 0 {
 		return nil, nil
 	}
@@ -73,11 +74,11 @@ func (v *InMemoryVecIndex) Search(queryVec []float32, project string, k int) ([]
 	return results, nil
 }
 
-// Delete removes id from every project partition. No-op if id is not found.
-func (v *InMemoryVecIndex) Delete(id int64) error {
+// Delete removes id from the given project partition. No-op if id is not found.
+func (v *InMemoryVecIndex) Delete(_ context.Context, id int64, project string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	for _, partition := range v.partitions {
+	if partition := v.partitions[project]; partition != nil {
 		delete(partition, id)
 	}
 	return nil

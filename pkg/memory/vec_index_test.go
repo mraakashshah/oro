@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -164,6 +165,113 @@ func TestSQLiteVecIndex_InvalidProject(t *testing.T) {
 	}
 }
 
+// TestSQLiteVecIndex_SearchReturnsResultsOrderedByDistanceAsc is the AC's
+// headline ordering check: with multiple inserted vectors at varying distance
+// from the query, results must come back ordered by ascending distance
+// (i.e. descending Score = 1 - distance).
+func TestSQLiteVecIndex_SearchReturnsResultsOrderedByDistanceAsc(t *testing.T) {
+	db := openVecTestDB(t)
+	ctx := context.Background()
+
+	idx, err := memory.NewSQLiteVecIndex(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteVecIndex: %v", err)
+	}
+
+	// Three deterministic vectors with distinct token sets so cosine distance
+	// to the query differs predictably.
+	query := det384("alpha beta gamma")
+	near := det384("alpha beta gamma delta") // shares all 3 query tokens
+	mid := det384("alpha epsilon zeta eta")  // shares 1 query token
+	far := det384("theta iota kappa lambda") // shares 0 query tokens
+
+	for id, v := range map[int64][]float32{1: near, 2: mid, 3: far} {
+		if err := idx.Upsert(ctx, id, v, "rank"); err != nil {
+			t.Fatalf("Upsert id=%d: %v", id, err)
+		}
+	}
+
+	results, err := idx.Search(ctx, query, "rank", 3)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	// Ordering: distance ASC ⇒ Score DESC (Score = 1 - distance).
+	for i := 1; i < len(results); i++ {
+		if results[i].Score > results[i-1].Score {
+			t.Errorf("results not ordered by distance ASC: results[%d].Score=%f > results[%d].Score=%f",
+				i, results[i].Score, i-1, results[i-1].Score)
+		}
+	}
+
+	// First result must be the nearest vector (id=1).
+	if results[0].MemoryID != 1 {
+		t.Errorf("nearest result expected id=1, got id=%d", results[0].MemoryID)
+	}
+}
+
+// TestSQLiteVecIndex_DeleteWorksAfterReopen verifies the persistence-correctness
+// fix: a fresh SQLiteVecIndex over the same on-disk DB must successfully delete
+// rows from a vec0 table created by a prior instance, even with a cold
+// in-memory createdTables cache.
+func TestSQLiteVecIndex_DeleteWorksAfterReopen(t *testing.T) {
+	if _, err := dbutil.ResolveSqliteVecLibPath(); err != nil {
+		t.Skipf("sqlite-vec extension not available: %v", err)
+	}
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "vec.db")
+
+	db1, err := dbutil.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db1: %v", err)
+	}
+	t.Cleanup(func() { _ = db1.Close() })
+	if _, err := db1.ExecContext(context.Background(), "SELECT vec_version()"); err != nil {
+		t.Skipf("sqlite-vec not loaded: %v", err)
+	}
+
+	idx1, err := memory.NewSQLiteVecIndex(db1)
+	if err != nil {
+		t.Fatalf("NewSQLiteVecIndex db1: %v", err)
+	}
+	vec := det384("persistence test")
+	if err := idx1.Upsert(context.Background(), 100, vec, "persist"); err != nil {
+		t.Fatalf("Upsert via db1: %v", err)
+	}
+	_ = db1.Close()
+
+	// Reopen DB; new SQLiteVecIndex has empty createdTables cache.
+	db2, err := dbutil.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db2: %v", err)
+	}
+	t.Cleanup(func() { _ = db2.Close() })
+	if _, err := db2.ExecContext(context.Background(), "SELECT vec_version()"); err != nil {
+		t.Skipf("sqlite-vec not loaded on db2: %v", err)
+	}
+
+	idx2, err := memory.NewSQLiteVecIndex(db2)
+	if err != nil {
+		t.Fatalf("NewSQLiteVecIndex db2: %v", err)
+	}
+	if err := idx2.Delete(context.Background(), 100, "persist"); err != nil {
+		t.Fatalf("Delete after reopen: %v", err)
+	}
+
+	results, err := idx2.Search(context.Background(), vec, "persist", 5)
+	if err != nil {
+		t.Fatalf("Search after reopen-delete: %v", err)
+	}
+	for _, r := range results {
+		if r.MemoryID == 100 {
+			t.Errorf("id=100 still present after Delete on reopened DB — persistence-correctness regression")
+		}
+	}
+}
+
 func TestSQLiteVecIndex_EmptyProjectDefaultsToOro(t *testing.T) {
 	db := openVecTestDB(t)
 	ctx := context.Background()
@@ -196,13 +304,14 @@ func TestSQLiteVecIndex_EmptyProjectDefaultsToOro(t *testing.T) {
 
 func TestInMemoryVecIndex_UpsertSearchDelete(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
+	ctx := context.Background()
 
 	vec := []float32{1.0, 0.0, 0.0}
-	if err := idx.Upsert(42, vec, "proj"); err != nil {
+	if err := idx.Upsert(ctx, 42, vec, "proj"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	results, err := idx.Search(vec, "proj", 5)
+	results, err := idx.Search(ctx, vec, "proj", 5)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -216,11 +325,11 @@ func TestInMemoryVecIndex_UpsertSearchDelete(t *testing.T) {
 		t.Errorf("expected Score>0.99, got %f", results[0].Score)
 	}
 
-	if err := idx.Delete(42); err != nil {
+	if err := idx.Delete(ctx, 42, "proj"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	results, err = idx.Search(vec, "proj", 5)
+	results, err = idx.Search(ctx, vec, "proj", 5)
 	if err != nil {
 		t.Fatalf("Search after delete: %v", err)
 	}
@@ -231,13 +340,14 @@ func TestInMemoryVecIndex_UpsertSearchDelete(t *testing.T) {
 
 func TestInMemoryVecIndex_ProjectIsolation(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
+	ctx := context.Background()
 
 	vec := []float32{1.0, 0.0, 0.0}
-	if err := idx.Upsert(7, vec, "a"); err != nil {
+	if err := idx.Upsert(ctx, 7, vec, "a"); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	results, err := idx.Search(vec, "b", 5)
+	results, err := idx.Search(ctx, vec, "b", 5)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -250,14 +360,14 @@ func TestInMemoryVecIndex_ProjectIsolation(t *testing.T) {
 
 func TestInMemoryVecIndex_NilVecError(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
-	if err := idx.Upsert(1, nil, "proj"); err == nil {
+	if err := idx.Upsert(context.Background(), 1, nil, "proj"); err == nil {
 		t.Error("expected error for nil vec")
 	}
 }
 
 func TestInMemoryVecIndex_EmptyPartition(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
-	results, err := idx.Search([]float32{1.0}, "missing", 5)
+	results, err := idx.Search(context.Background(), []float32{1.0}, "missing", 5)
 	if err != nil {
 		t.Fatalf("Search on empty partition: %v", err)
 	}
@@ -268,16 +378,17 @@ func TestInMemoryVecIndex_EmptyPartition(t *testing.T) {
 
 func TestInMemoryVecIndex_DeleteNonExistent(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
-	if err := idx.Delete(999); err != nil {
+	if err := idx.Delete(context.Background(), 999, "proj"); err != nil {
 		t.Errorf("Delete of non-existent id should be no-op, got: %v", err)
 	}
 }
 
 func TestInMemoryVecIndex_KZeroReturnsEmpty(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
-	_ = idx.Upsert(1, []float32{1.0}, "proj")
+	ctx := context.Background()
+	_ = idx.Upsert(ctx, 1, []float32{1.0}, "proj")
 
-	results, err := idx.Search([]float32{1.0}, "proj", 0)
+	results, err := idx.Search(ctx, []float32{1.0}, "proj", 0)
 	if err != nil {
 		t.Fatalf("Search k=0: %v", err)
 	}
@@ -288,12 +399,13 @@ func TestInMemoryVecIndex_KZeroReturnsEmpty(t *testing.T) {
 
 func TestInMemoryVecIndex_TieBreakByMemoryID(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
+	ctx := context.Background()
 	vec := []float32{1.0, 0.0}
-	_ = idx.Upsert(3, vec, "proj")
-	_ = idx.Upsert(1, vec, "proj")
-	_ = idx.Upsert(2, vec, "proj")
+	_ = idx.Upsert(ctx, 3, vec, "proj")
+	_ = idx.Upsert(ctx, 1, vec, "proj")
+	_ = idx.Upsert(ctx, 2, vec, "proj")
 
-	results, err := idx.Search(vec, "proj", 3)
+	results, err := idx.Search(ctx, vec, "proj", 3)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -305,23 +417,33 @@ func TestInMemoryVecIndex_TieBreakByMemoryID(t *testing.T) {
 	}
 }
 
-func TestInMemoryVecIndex_DeleteFromAllProjects(t *testing.T) {
+func TestInMemoryVecIndex_DeleteScopedByProject(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
+	ctx := context.Background()
 	vec := []float32{1.0, 0.0}
-	_ = idx.Upsert(5, vec, "a")
-	_ = idx.Upsert(5, vec, "b")
+	_ = idx.Upsert(ctx, 5, vec, "a")
+	_ = idx.Upsert(ctx, 5, vec, "b")
 
-	if err := idx.Delete(5); err != nil {
+	if err := idx.Delete(ctx, 5, "a"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	for _, proj := range []string{"a", "b"} {
-		results, _ := idx.Search(vec, proj, 5)
-		for _, r := range results {
-			if r.MemoryID == 5 {
-				t.Errorf("id=5 still present in project %q after Delete", proj)
-			}
+	// id=5 must be gone from "a" but still present in "b".
+	resultsA, _ := idx.Search(ctx, vec, "a", 5)
+	for _, r := range resultsA {
+		if r.MemoryID == 5 {
+			t.Errorf("id=5 still present in project 'a' after scoped Delete")
 		}
+	}
+	resultsB, _ := idx.Search(ctx, vec, "b", 5)
+	found := false
+	for _, r := range resultsB {
+		if r.MemoryID == 5 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("id=5 missing from 'b' after scoped Delete on 'a'")
 	}
 }
 
@@ -330,8 +452,9 @@ func TestInMemoryVecIndex_DeleteFromAllProjects(t *testing.T) {
 // Must be run with -race to be meaningful.
 func TestInMemoryVecIndex_ConcurrentSearchUpsert(t *testing.T) {
 	idx := memory.NewInMemoryVecIndex()
+	ctx := context.Background()
 	vec := []float32{1.0, 0.0, 0.0}
-	if err := idx.Upsert(1, vec, "proj"); err != nil {
+	if err := idx.Upsert(ctx, 1, vec, "proj"); err != nil {
 		t.Fatalf("seed Upsert: %v", err)
 	}
 
@@ -341,7 +464,7 @@ func TestInMemoryVecIndex_ConcurrentSearchUpsert(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iters; i++ {
-			if err := idx.Upsert(int64(i+2), vec, "proj"); err != nil {
+			if err := idx.Upsert(ctx, int64(i+2), vec, "proj"); err != nil {
 				t.Errorf("Upsert: %v", err)
 				return
 			}
@@ -350,7 +473,7 @@ func TestInMemoryVecIndex_ConcurrentSearchUpsert(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iters; i++ {
-			if _, err := idx.Search(vec, "proj", 10); err != nil {
+			if _, err := idx.Search(ctx, vec, "proj", 10); err != nil {
 				t.Errorf("Search: %v", err)
 				return
 			}
@@ -359,5 +482,8 @@ func TestInMemoryVecIndex_ConcurrentSearchUpsert(t *testing.T) {
 	wg.Wait()
 }
 
-// compile-time check: *InMemoryVecIndex must satisfy VectorIndex.
-var _ memory.VectorIndex = (*memory.InMemoryVecIndex)(nil) //nolint:staticcheck
+// Compile-time check: *InMemoryVecIndex and *SQLiteVecIndex must satisfy VectorIndex.
+var (
+	_ memory.VectorIndex = (*memory.InMemoryVecIndex)(nil) //nolint:staticcheck
+	_ memory.VectorIndex = (*memory.SQLiteVecIndex)(nil)   //nolint:staticcheck
+)

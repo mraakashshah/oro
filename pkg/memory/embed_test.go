@@ -672,9 +672,15 @@ func (*stubReranker) Rerank(_ string, _ []string) []float64 { return nil }
 // stubVecIndex satisfies the VectorIndex interface.
 type stubVecIndex struct{}
 
-func (*stubVecIndex) Upsert(_ int64, _ []float32, _ string) error              { return nil }
-func (*stubVecIndex) Search(_ []float32, _ string, _ int) ([]ANNResult, error) { return nil, nil }
-func (*stubVecIndex) Delete(_ int64) error                                     { return nil }
+func (*stubVecIndex) Upsert(_ context.Context, _ int64, _ []float32, _ string) error {
+	return nil
+}
+
+func (*stubVecIndex) Search(_ context.Context, _ []float32, _ string, _ int) ([]ANNResult, error) {
+	return nil, nil
+}
+
+func (*stubVecIndex) Delete(_ context.Context, _ int64, _ string) error { return nil }
 
 // Compile-time interface shape assertions.
 var (
