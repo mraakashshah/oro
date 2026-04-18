@@ -27,6 +27,10 @@ type Store struct {
 	embedder        Embedder
 	project         string // current project scope for queries and inserts
 	backfillLimiter interface{ Wait(context.Context) error }
+	// testCompleteBackfillFault, if non-nil and returns true, aborts
+	// completeBackfill between the final Exec and Commit so tests can verify
+	// the single-tx atomicity guarantee (both side effects roll back together).
+	testCompleteBackfillFault func() bool
 }
 
 // NewStore creates a new Store backed by the given SQLite database.

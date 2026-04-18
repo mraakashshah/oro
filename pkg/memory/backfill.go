@@ -74,12 +74,23 @@ type backfillRow struct {
 // sets state=complete and clears the owner PID in a single transaction.
 // On ctx cancellation it stops gracefully without clearing the owner so
 // the next launch can steal the stale lock.
+//
+// Termination guarantees:
+//   - nil embedder → immediate return (owner retained for future steal).
+//   - zero-progress batch (no row successfully UPDATEd) → return to avoid a
+//     hot loop on permanently-failing rows. Owner retained so the stale-steal
+//     mechanism can reclaim the lock once the upstream issue is fixed.
 func (s *Store) backfillWorker(ctx context.Context) {
+	if s.embedder == nil {
+		log.Printf("memory: backfillWorker started with nil embedder; aborting (owner retained for stale-steal)")
+		return
+	}
+
 	lim := s.backfillLimiter
 	if lim == nil {
 		lim = rate.NewLimiter(rate.Limit(50), 1)
 	}
-	chunksTableMissing := false
+	cw := &chunkWriter{}
 
 	for {
 		if ctx.Err() != nil {
@@ -87,13 +98,19 @@ func (s *Store) backfillWorker(ctx context.Context) {
 		}
 		batch, err := s.fetchBackfillBatch(ctx)
 		if err != nil {
+			log.Printf("memory: backfill fetch: %v", err)
 			return
 		}
 		if len(batch) == 0 {
 			s.completeBackfill(ctx)
 			return
 		}
-		if !s.processBatch(ctx, batch, lim, &chunksTableMissing) {
+		updated, cont := s.processBatch(ctx, batch, lim, cw)
+		if !cont {
+			return // ctx cancelled mid-batch — owner retained
+		}
+		if updated == 0 {
+			log.Printf("memory: backfill made zero progress on %d-row batch; aborting (owner retained for stale-steal)", len(batch))
 			return
 		}
 	}
@@ -124,73 +141,109 @@ func (s *Store) fetchBackfillBatch(ctx context.Context) ([]backfillRow, error) {
 	return batch, nil
 }
 
-// processBatch embeds and stores each row in the batch. Returns false when
-// ctx is cancelled so the caller can stop without clearing the owner PID.
+// processBatch embeds and stores each row in the batch. Returns (rowsUpdated,
+// shouldContinue). shouldContinue=false means ctx was cancelled mid-batch.
 func (s *Store) processBatch(
 	ctx context.Context,
 	batch []backfillRow,
 	lim interface{ Wait(context.Context) error },
-	chunksTableMissing *bool,
-) bool {
+	cw *chunkWriter,
+) (int, bool) {
+	updated := 0
 	for _, r := range batch {
 		if ctx.Err() != nil {
-			return false
+			return updated, false
 		}
 		if waitErr := lim.Wait(ctx); waitErr != nil {
-			return false
-		}
-		if s.embedder == nil {
-			continue
+			return updated, false
 		}
 		vec := s.embedder.Embed(r.content)
 		if vec == nil {
 			continue // embedder returned nil — skip row, do not error
 		}
 		blob := MarshalEmbedding(vec)
-		_, _ = s.db.ExecContext(ctx,
+		res, err := s.db.ExecContext(ctx,
 			`UPDATE memories SET embedding_dense=? WHERE id=? AND embedding_dense IS NULL`,
 			blob, r.id,
 		)
-		s.maybeWriteChunk(ctx, r.id, blob, chunksTableMissing)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("memory: backfill UPDATE row %d: %v", r.id, err)
+			}
+			continue
+		}
+		if n, raErr := res.RowsAffected(); raErr == nil && n > 0 {
+			updated++
+		}
+		cw.maybeWrite(ctx, s.db, r.id, blob)
 	}
-	return true
+	return updated, true
 }
 
-// maybeWriteChunk attempts INSERT OR IGNORE into memory_chunks. On the first
-// "no such table" error it logs once and sets the flag to skip future attempts.
-func (s *Store) maybeWriteChunk(ctx context.Context, id int64, blob []byte, missing *bool) {
-	if *missing {
+// chunkWriter writes INSERT OR IGNORE rows to memory_chunks. It logs once when
+// the table is missing (and suppresses subsequent attempts) and once on the
+// first non-missing-table error (so recurring errors are visible but not spammy).
+type chunkWriter struct {
+	tableMissing bool
+	loggedErr    bool
+}
+
+func (c *chunkWriter) maybeWrite(ctx context.Context, db *sql.DB, id int64, blob []byte) {
+	if c.tableMissing {
 		return
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO memory_chunks (memory_id, embedding_dense) VALUES (?, ?)`,
 		id, blob,
 	)
-	if err != nil && strings.Contains(err.Error(), "no such table") {
+	if err == nil {
+		return
+	}
+	if strings.Contains(err.Error(), "no such table") {
 		log.Printf("memory: memory_chunks table missing, skipping chunk writes")
-		*missing = true
+		c.tableMissing = true
+		return
+	}
+	if !c.loggedErr && ctx.Err() == nil {
+		log.Printf("memory: memory_chunks INSERT error (future errors suppressed): %v", err)
+		c.loggedErr = true
 	}
 }
 
 // completeBackfill marks the backfill as complete and removes the owner PID
-// in a single transaction.
+// in a single transaction. On any failure the tx rolls back and neither
+// side effect persists; state stays pending and the owner stays, so the
+// stale-steal mechanism reclaims the lock on the next launch.
 func (s *Store) completeBackfill(ctx context.Context) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		log.Printf("memory: completeBackfill BeginTx: %v", err)
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	_, _ = tx.ExecContext(ctx,
+	if _, err := tx.ExecContext(ctx,
 		`INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
 		backfillStateKey, backfillStateComplete,
-	)
-	_, _ = tx.ExecContext(ctx,
+	); err != nil {
+		log.Printf("memory: completeBackfill state UPSERT: %v", err)
+		return
+	}
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM kv_store WHERE key = ?`,
 		backfillOwnerKey,
-	)
-
-	_ = tx.Commit()
+	); err != nil {
+		log.Printf("memory: completeBackfill owner DELETE: %v", err)
+		return
+	}
+	// Test-only: inject a fault between the final Exec and Commit so the
+	// atomicity test can verify both side effects roll back together.
+	if s.testCompleteBackfillFault != nil && s.testCompleteBackfillFault() {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("memory: completeBackfill commit: %v", err)
+	}
 }
 
 // acquireBackfillLock attempts to claim the backfill owner key via INSERT OR
