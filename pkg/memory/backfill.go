@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // ErrBackfillLocked is returned by MaybeStartBackfill when another process
@@ -16,10 +19,12 @@ import (
 var ErrBackfillLocked = errors.New("backfill already running on another process")
 
 const (
-	backfillStateKey     = "backfill_semantic_memory_state"
-	backfillOwnerKey     = "backfill_owner_pid"
-	backfillStatePending = "pending"
-	staleThreshold       = 10 * time.Minute
+	backfillStateKey      = "backfill_semantic_memory_state"
+	backfillOwnerKey      = "backfill_owner_pid"
+	backfillStatePending  = "pending"
+	backfillStateComplete = "complete"
+	backfillBatchSize     = 100
+	staleThreshold        = 10 * time.Minute
 )
 
 // BackfillStarter is satisfied by any *Store — the interface declaration
@@ -54,7 +59,138 @@ func (s *Store) MaybeStartBackfill(ctx context.Context) error {
 	if !ok {
 		return ErrBackfillLocked
 	}
+	go s.backfillWorker(ctx)
 	return nil
+}
+
+// backfillRow holds a single memory row to be embedded.
+type backfillRow struct {
+	id      int64
+	content string
+}
+
+// backfillWorker processes memories without embedding_dense in batches,
+// computing and storing embeddings at up to 50/sec. On an empty batch it
+// sets state=complete and clears the owner PID in a single transaction.
+// On ctx cancellation it stops gracefully without clearing the owner so
+// the next launch can steal the stale lock.
+func (s *Store) backfillWorker(ctx context.Context) {
+	lim := s.backfillLimiter
+	if lim == nil {
+		lim = rate.NewLimiter(rate.Limit(50), 1)
+	}
+	chunksTableMissing := false
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		batch, err := s.fetchBackfillBatch(ctx)
+		if err != nil {
+			return
+		}
+		if len(batch) == 0 {
+			s.completeBackfill(ctx)
+			return
+		}
+		if !s.processBatch(ctx, batch, lim, &chunksTableMissing) {
+			return
+		}
+	}
+}
+
+// fetchBackfillBatch loads the next batch of rows with embedding_dense IS NULL.
+func (s *Store) fetchBackfillBatch(ctx context.Context) ([]backfillRow, error) {
+	dbRows, err := s.db.QueryContext(ctx,
+		`SELECT id, content FROM memories WHERE embedding_dense IS NULL ORDER BY id LIMIT ?`,
+		backfillBatchSize,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("backfill batch query: %w", err)
+	}
+	defer func() { _ = dbRows.Close() }()
+
+	var batch []backfillRow
+	for dbRows.Next() {
+		var r backfillRow
+		if scanErr := dbRows.Scan(&r.id, &r.content); scanErr != nil {
+			return nil, fmt.Errorf("backfill batch scan: %w", scanErr)
+		}
+		batch = append(batch, r)
+	}
+	if rowsErr := dbRows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("backfill batch rows: %w", rowsErr)
+	}
+	return batch, nil
+}
+
+// processBatch embeds and stores each row in the batch. Returns false when
+// ctx is cancelled so the caller can stop without clearing the owner PID.
+func (s *Store) processBatch(
+	ctx context.Context,
+	batch []backfillRow,
+	lim interface{ Wait(context.Context) error },
+	chunksTableMissing *bool,
+) bool {
+	for _, r := range batch {
+		if ctx.Err() != nil {
+			return false
+		}
+		if waitErr := lim.Wait(ctx); waitErr != nil {
+			return false
+		}
+		if s.embedder == nil {
+			continue
+		}
+		vec := s.embedder.Embed(r.content)
+		if vec == nil {
+			continue // embedder returned nil — skip row, do not error
+		}
+		blob := MarshalEmbedding(vec)
+		_, _ = s.db.ExecContext(ctx,
+			`UPDATE memories SET embedding_dense=? WHERE id=? AND embedding_dense IS NULL`,
+			blob, r.id,
+		)
+		s.maybeWriteChunk(ctx, r.id, blob, chunksTableMissing)
+	}
+	return true
+}
+
+// maybeWriteChunk attempts INSERT OR IGNORE into memory_chunks. On the first
+// "no such table" error it logs once and sets the flag to skip future attempts.
+func (s *Store) maybeWriteChunk(ctx context.Context, id int64, blob []byte, missing *bool) {
+	if *missing {
+		return
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO memory_chunks (memory_id, embedding_dense) VALUES (?, ?)`,
+		id, blob,
+	)
+	if err != nil && strings.Contains(err.Error(), "no such table") {
+		log.Printf("memory: memory_chunks table missing, skipping chunk writes")
+		*missing = true
+	}
+}
+
+// completeBackfill marks the backfill as complete and removes the owner PID
+// in a single transaction.
+func (s *Store) completeBackfill(ctx context.Context) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, _ = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+		backfillStateKey, backfillStateComplete,
+	)
+	_, _ = tx.ExecContext(ctx,
+		`DELETE FROM kv_store WHERE key = ?`,
+		backfillOwnerKey,
+	)
+
+	_ = tx.Commit()
 }
 
 // acquireBackfillLock attempts to claim the backfill owner key via INSERT OR

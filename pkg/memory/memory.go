@@ -23,9 +23,10 @@ import (
 
 // Store manages the memories table in SQLite.
 type Store struct {
-	db       *sql.DB
-	embedder Embedder
-	project  string // current project scope for queries and inserts
+	db              *sql.DB
+	embedder        Embedder
+	project         string // current project scope for queries and inserts
+	backfillLimiter interface{ Wait(context.Context) error }
 }
 
 // NewStore creates a new Store backed by the given SQLite database.
