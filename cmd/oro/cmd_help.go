@@ -27,6 +27,7 @@ Memory:
   recall     Search memories
   forget     Delete memories by ID
   memories   Browse and manage the memory store
+  models     Manage embedding/reranker model files (list, verify, prefetch)
 
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
