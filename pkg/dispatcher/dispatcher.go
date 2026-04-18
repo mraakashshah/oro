@@ -1643,6 +1643,13 @@ func (d *Dispatcher) triggerDream(ctx context.Context) {
 	if d.cfg.DreamInterval <= 0 {
 		return
 	}
+	if n, err := memory.TrimSearchEvents(ctx, d.db, 30*24*time.Hour); err != nil {
+		_ = d.logEvent(ctx, "retention_trim_failed", "dispatcher", "", "",
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+	} else if n > 0 {
+		_ = d.logEvent(ctx, "retention_trim", "dispatcher", "", "",
+			fmt.Sprintf(`{"deleted":%d}`, n))
+	}
 	memories := d.dumpMemoriesForDream(ctx)
 	resultCh := d.ops.Dream(ctx, ops.DreamOpts{Memories: memories})
 	d.safeGo(func() { d.handleDreamResult(ctx, resultCh) })
