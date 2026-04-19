@@ -1,4 +1,4 @@
-//go:build cgo && darwin
+//go:build integration && cgo && darwin
 
 package main
 
