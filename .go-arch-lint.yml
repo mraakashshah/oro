@@ -5,6 +5,7 @@ allow:
 excludeFiles:
   - "archive/.+"
   - "references/.+"
+  - "ad_hoc/.+"
   - "\\.worktrees/.+"
   - "\\.claude/worktrees/.+"
   - "readme_test\\.go"
