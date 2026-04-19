@@ -3,8 +3,13 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -102,6 +107,109 @@ func TestSelectAnchorsEmptyDB(t *testing.T) {
 	_, err := SelectAnchors(db, 42, 50)
 	if err == nil {
 		t.Fatal("want error on empty DB, got nil")
+	}
+}
+
+func TestFilterByTokenCountDropsOverLimit(t *testing.T) {
+	dense := strings.Repeat("a ", 600) // 600 tokens in 1200 chars
+	if tc := countTokens(dense); tc != 600 {
+		t.Fatalf("countTokens(dense) = %d, want 600", tc)
+	}
+	anchors := []CorpusAnchor{
+		{ID: 1, Type: "lesson", Content: "short lesson content"},
+		{ID: 2, Type: "gotcha", Content: dense},
+		{ID: 3, Type: "pattern", Content: "another short pattern content"},
+	}
+	got := filterByTokenCount(anchors, 512)
+	if len(got) != 2 {
+		t.Fatalf("want 2 anchors after filter, got %d", len(got))
+	}
+	for _, a := range got {
+		if a.ID == 2 {
+			t.Errorf("anchor id=2 with %d tokens not dropped by filter", countTokens(a.Content))
+		}
+	}
+}
+
+func TestCountTokensBoundary(t *testing.T) {
+	// Exactly at the 512 boundary — should pass.
+	at := strings.Repeat("x ", 512)
+	if tc := countTokens(at); tc != 512 {
+		t.Fatalf("countTokens(512 tokens) = %d, want 512", tc)
+	}
+	kept := filterByTokenCount([]CorpusAnchor{{ID: 1, Content: at}}, 512)
+	if len(kept) != 1 {
+		t.Errorf("boundary anchor (512 tokens) was dropped; want kept")
+	}
+	// One over — should be dropped.
+	over := strings.Repeat("x ", 513)
+	dropped := filterByTokenCount([]CorpusAnchor{{ID: 1, Content: over}}, 512)
+	if len(dropped) != 0 {
+		t.Errorf("over-boundary anchor (513 tokens) was kept; want dropped")
+	}
+}
+
+func TestWriteCorpusAnchorsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "corpus_anchors.jsonl")
+	anchors := []CorpusAnchor{
+		{ID: 1, Type: "lesson", Content: "first anchor content"},
+		{ID: 2, Type: "gotcha", Content: "second anchor content"},
+		{ID: 3, Type: "pattern", Content: "third anchor content"},
+	}
+
+	if err := WriteCorpusAnchors(path, anchors); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Atomicity: tmp file must not exist after successful rename.
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("tmp file %q exists after rename; want removed (err=%v)", path+".tmp", err)
+	}
+
+	f, err := os.Open(path) //nolint:gosec // test-controlled path
+	if err != nil {
+		t.Fatalf("open written file: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var got []CorpusAnchor
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var a CorpusAnchor
+		if err := json.Unmarshal(scanner.Bytes(), &a); err != nil {
+			t.Fatalf("unmarshal line: %v", err)
+		}
+		got = append(got, a)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if len(got) != len(anchors) {
+		t.Fatalf("roundtrip: want %d anchors, got %d", len(anchors), len(got))
+	}
+	for i := range anchors {
+		if got[i] != anchors[i] {
+			t.Errorf("roundtrip line %d: got %+v, want %+v", i, got[i], anchors[i])
+		}
+	}
+}
+
+func TestWriteCorpusAnchorsRenameFailureCleansTmp(t *testing.T) {
+	dir := t.TempDir()
+	// Make the destination path a directory so os.Rename fails.
+	path := filepath.Join(dir, "out.jsonl")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	err := WriteCorpusAnchors(path, []CorpusAnchor{{ID: 1, Type: "t", Content: "c"}})
+	if err == nil {
+		t.Fatal("want error when destination is a directory, got nil")
+	}
+	if _, statErr := os.Stat(path + ".tmp"); !os.IsNotExist(statErr) {
+		t.Errorf("tmp file %q not cleaned up after rename failure (err=%v)", path+".tmp", statErr)
 	}
 }
 

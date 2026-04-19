@@ -35,6 +35,17 @@ func countTokens(s string) int {
 	return count
 }
 
+// filterByTokenCount returns anchors where countTokens(content) <= max.
+func filterByTokenCount(anchors []CorpusAnchor, max int) []CorpusAnchor {
+	filtered := make([]CorpusAnchor, 0, len(anchors))
+	for _, a := range anchors {
+		if countTokens(a.Content) <= max {
+			filtered = append(filtered, a)
+		}
+	}
+	return filtered
+}
+
 // SelectAnchors returns count anchor memories from db, selected deterministically
 // by seed. Rows are ordered by (id * 2654435761 + seed) % (1<<31). SQL filters
 // content length to [50, 400]; Go filters token count to <=512. Returns an error
@@ -52,20 +63,19 @@ func SelectAnchors(db *sql.DB, seed int64, count int) ([]CorpusAnchor, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	var candidates []CorpusAnchor
+	var raw []CorpusAnchor
 	for rows.Next() {
 		var a CorpusAnchor
 		if err := rows.Scan(&a.ID, &a.Content, &a.Type); err != nil {
 			return nil, fmt.Errorf("scan anchor: %w", err)
 		}
-		if countTokens(a.Content) <= 512 {
-			candidates = append(candidates, a)
-		}
+		raw = append(raw, a)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate anchors: %w", err)
 	}
 
+	candidates := filterByTokenCount(raw, 512)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no anchor candidates in DB")
 	}
@@ -98,5 +108,9 @@ func WriteCorpusAnchors(path string, anchors []CorpusAnchor) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("close tmp: %w", err)
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
 }
