@@ -1,0 +1,25 @@
+ad_hoc/memory_eval/metrics_test.go
+  9b3f502839c410a2 1-181
+ad_hoc/memory_eval/metrics.go
+  9b3f502839c410a2 1-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "71bfee0ddd8ccc434f7d7b71e062d33ad10a7d7a",
+  "prompts": {
+    "9b3f502839c410a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4e128eaa-08d0-4c3a-86a8-9d2da93faf00",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 226,
+      "total_deletions": 0,
+      "accepted_lines": 226,
+      "overriden_lines": 0
+    }
+  }
+}
