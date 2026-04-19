@@ -140,7 +140,7 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: load corpus: %v\n", err)
 		return 2
 	}
-	anchors, err := eval.LoadAnchors(*anchorsPath)
+	anchors, err := eval.LoadCorpusAnchors(*anchorsPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: load anchors: %v\n", err)
 		return 2
@@ -174,7 +174,9 @@ func run(args []string) int {
 	cfgs := []string{"tfidf", "dispatcher-warm", "solo-cli-cold"}
 	configs := make(map[string]ConfigMetrics, len(cfgs))
 	for _, cfg := range cfgs {
-		mrr, hit10, hit1, runtimeMS, runErr := eval.RunConfigMRR(sampledCorpus, anchors, cfg, *k)
+		start := time.Now()
+		mrr, hit10, hit1, runErr := eval.RunConfigWithEmbedder(sampledCorpus, anchors, cfg, *k)
+		runtimeMS := time.Since(start).Milliseconds()
 		if runErr != nil {
 			fmt.Fprintf(os.Stderr, "error: config %q: %v\n", cfg, runErr)
 			return 2
@@ -192,8 +194,12 @@ func run(args []string) int {
 	coldMRR := configs["solo-cli-cold"].MRR
 
 	warmRatio, coldRatio := ratios(baseMRR, warmMRR, coldMRR)
-	gatePass := eval.CheckGate(baseMRR, warmMRR, coldMRR)
-	reason := gateReason(warmRatio, coldRatio, gatePass)
+	gate := eval.CheckGate(baseMRR, warmMRR, coldMRR)
+	gatePass := gate.Pass
+	reason := gate.Reason
+	if reason == "" {
+		reason = gateReason(warmRatio, coldRatio, gatePass)
+	}
 
 	report := EvalReport{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
