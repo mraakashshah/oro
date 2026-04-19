@@ -1,0 +1,36 @@
+.go-arch-lint.yml
+  6b2eb2b4123437d2 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "1627787c235559f36def3e1e150db340272f8a52",
+  "prompts": {
+    "6b2eb2b4123437d2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b557bbaa-a3b6-44aa-8854-7adce2991e55",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "8d13834da3e3e27f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6db90904-5ab7-4fd0-aa10-6b03cc18ac38",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 6,
+      "overriden_lines": 0
+    }
+  }
+}
