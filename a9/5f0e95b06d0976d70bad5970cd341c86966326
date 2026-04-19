@@ -1,0 +1,25 @@
+ad_hoc/memory_eval/cmd/rebuild_corpus/paraphrase.go
+  350985f5f4983a67 1-205
+ad_hoc/memory_eval/cmd/rebuild_corpus/paraphrase_test.go
+  350985f5f4983a67 1-373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "a95f0e95b06d0976d70bad5970cd341c86966326",
+  "prompts": {
+    "350985f5f4983a67": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bf40247e-ff2a-45d8-a3d0-b510184a46dc",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 578,
+      "total_deletions": 0,
+      "accepted_lines": 578,
+      "overriden_lines": 0
+    }
+  }
+}
