@@ -1,0 +1,29 @@
+ad_hoc/memory_eval/metrics_test.go
+  05625952dd889ac6 1-84
+ad_hoc/memory_eval/compare.go
+  05625952dd889ac6 129-130,132-133
+ad_hoc/memory_eval/metrics.go
+  05625952dd889ac6 1-50
+ad_hoc/memory_eval/compare_test.go
+  05625952dd889ac6 6,64-65,72-73,80-81,87-93,188-189,205-210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "182e051f2fd0f2807a6a1e04edf556f1db070d9e",
+  "prompts": {
+    "05625952dd889ac6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c4e8b8ce-c7b7-439c-9dbf-2a29c2b69da7",
+        "model": "claude-haiku-4-5-20251001"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 169,
+      "total_deletions": 30,
+      "accepted_lines": 160,
+      "overriden_lines": 0
+    }
+  }
+}
