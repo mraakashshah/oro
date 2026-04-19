@@ -40,6 +40,16 @@ var KnownModels = []ModelSpec{ //nolint:gochecknoglobals // static config table,
 		Filename: "model.onnx",
 	},
 	{
+		// Reranker tokenizer is XLM-RoBERTa SentencePiece (Unigram), distinct
+		// from the BERT WordPiece tokenizer used by bge-small-en-v1.5. Loading
+		// bge-small's tokenizer against the reranker model produces nonsense
+		// token IDs in its vocabulary and garbage relevance scores.
+		Name:     "bge-reranker-tokenizer",
+		URL:      "https://huggingface.co/BAAI/bge-reranker-base/resolve/main/tokenizer.json",
+		SHA256:   "9eb652ac4e40cc093272bbbe0f55d521cf67570060227109b5cdc20945a4489e",
+		Filename: "tokenizer.json",
+	},
+	{
 		Name:     "bge-tokenizer",
 		URL:      "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json",
 		SHA256:   "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",

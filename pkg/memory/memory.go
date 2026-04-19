@@ -926,7 +926,14 @@ func (s *Store) vectorSearchLinear(ctx context.Context, queryVec []float32, limi
 	for id, score := range allScores {
 		sorted = append(sorted, idScore{id: id, score: score})
 	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].score > sorted[j].score })
+	// Sort by score desc with deterministic ID tiebreak so map-iteration
+	// randomness can't leak into downstream result ordering.
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].score != sorted[j].score {
+			return sorted[i].score > sorted[j].score
+		}
+		return sorted[i].id < sorted[j].id
+	})
 	if len(sorted) > limit {
 		sorted = sorted[:limit]
 	}
@@ -952,7 +959,7 @@ func (s *Store) vectorSearchLinear(ctx context.Context, queryVec []float32, limi
 		sm.Score = scoreByID[sm.ID]
 		results = append(results, sm)
 	}
-	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	sortByScoreDesc(results)
 	return results, nil
 }
 
@@ -1102,8 +1109,11 @@ func (s *Store) vectorSearchLinearRowOnly(ctx context.Context, queryVec []float3
 		return nil, fmt.Errorf("vector search rows: %w", err)
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].cos > candidates[j].cos
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].cos != candidates[j].cos {
+			return candidates[i].cos > candidates[j].cos
+		}
+		return candidates[i].sm.ID < candidates[j].sm.ID
 	})
 
 	if len(candidates) > limit {
@@ -1275,8 +1285,15 @@ func anyTagMatch(a, b []string) bool {
 
 // sortByScoreDesc sorts ScoredMemory results by Score descending.
 func sortByScoreDesc(results []ScoredMemory) {
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		// Deterministic tie-break by ID (ascending). RRF fusion frequently
+		// produces ties since scores come from a discrete set of rank
+		// reciprocals; without this, Go's random map iteration order on
+		// fuseRRF's byID map makes tied-score ranks non-deterministic.
+		return results[i].ID < results[j].ID
 	})
 }
 

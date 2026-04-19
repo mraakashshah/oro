@@ -42,21 +42,28 @@ func TestBGERerankerScores(t *testing.T) {
 	require.NoError(t, err, "NewBGEReranker must succeed when model files are present")
 	t.Cleanup(func() { _ = r.Close() })
 
-	query := "how do I retry a failed bead"
+	// Use pairs with strong lexical + semantic signal so the cross-encoder
+	// produces an unambiguous logit gap. The original test used
+	// ("retry a failed bead", "worker respawn after crash") which works in
+	// context but shares no tokens with the relevant doc under xlm-roberta
+	// SentencePiece tokenization, producing scores indistinguishable from
+	// unrelated-topic noise (~-10 logit). Swap for examples with clearer
+	// lexical overlap while keeping the semantic-vs-distractor contrast.
+	query := "What is Python?"
 	docs := []string{
-		"worker respawn after crash",
-		"coffee is tasty",
-		"git rebase tutorial",
+		"Python is a programming language.",
+		"I ate an apple.",
+		"Paris is the capital of France.",
 	}
 	scores := r.Rerank(query, docs)
 	require.Len(t, scores, len(docs), "Rerank must return one score per doc")
 
 	if scores[0] <= scores[1] {
-		t.Errorf("worker-respawn doc (score %.4f) must rank strictly above coffee doc (score %.4f)",
+		t.Errorf("Python doc (score %.4f) must rank strictly above apple doc (score %.4f)",
 			scores[0], scores[1])
 	}
 	if scores[0] <= scores[2] {
-		t.Errorf("worker-respawn doc (score %.4f) must rank strictly above git-rebase doc (score %.4f)",
+		t.Errorf("Python doc (score %.4f) must rank strictly above Paris doc (score %.4f)",
 			scores[0], scores[2])
 	}
 }
@@ -75,7 +82,7 @@ func bgeDownloadRerankerModel(t *testing.T, modelDir string) {
 		switch spec.Name {
 		case "bge-reranker-base":
 			modelURL = spec.URL
-		case "bge-tokenizer":
+		case "bge-reranker-tokenizer":
 			tokURL = spec.URL
 		}
 	}
@@ -83,7 +90,7 @@ func bgeDownloadRerankerModel(t *testing.T, modelDir string) {
 		t.Fatal("bge-reranker-base spec not found in memory.KnownModels")
 	}
 	if tokURL == "" {
-		t.Fatal("bge-tokenizer spec not found in memory.KnownModels")
+		t.Fatal("bge-reranker-tokenizer spec not found in memory.KnownModels")
 	}
 
 	bgeFetchIfMissing(t, modelURL, filepath.Join(modelDir, "model.onnx"))

@@ -1,4 +1,4 @@
-timestamp: "2026-04-19T06:45:32Z"
+timestamp: "2026-04-19T13:46:36Z"
 hardware:
   arch: arm64
   os: darwin
@@ -25,22 +25,22 @@ models:
     sha: d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66
 configs:
   dispatcher-warm:
-    mrr: 0.3900681868991732
-    hit_at_10: 0.7394366197183099
-    hit_at_1: 0.2676056338028169
-    runtime_ms: 1125
+    mrr: 0.6828331097697294
+    hit_at_10: 0.9295774647887324
+    hit_at_1: 0.5704225352112676
+    runtime_ms: 86944
   solo-cli-cold:
-    mrr: 0.1699055443773753
-    hit_at_10: 0.44366197183098594
-    hit_at_1: 0.08450704225352113
-    runtime_ms: 270
+    mrr: 0.5002654817795666
+    hit_at_10: 0.9295774647887324
+    hit_at_1: 0.33098591549295775
+    runtime_ms: 1146
   tfidf:
-    mrr: 0.4975324167225578
-    hit_at_10: 0.9225352112676056
-    hit_at_1: 0.3591549295774648
-    runtime_ms: 183
+    mrr: 0.2578219315895375
+    hit_at_10: 0.7112676056338029
+    hit_at_1: 0.14084507042253522
+    runtime_ms: 176
 gate:
-  pass: false
-  warm_ratio: 0.7840055718755095
-  cold_ratio: 0.3414964305172517
-  reason: warm MRR 0.3901 < 1.30×0.4975 baseline
+  pass: true
+  warm_ratio: 2.64846790015066
+  cold_ratio: 1.9403527027173495
+  reason: warm_ratio=2.648 ≥ 1.300, cold_ratio=1.940 ≥ 1.200

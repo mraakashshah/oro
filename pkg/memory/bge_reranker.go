@@ -13,7 +13,16 @@ import (
 	"github.com/daulet/tokenizers"
 )
 
-const bgeRerankerMaxTokens = 512
+const (
+	bgeRerankerMaxTokens = 512
+	// XLM-RoBERTa special token IDs (bge-reranker-base). The model's
+	// tokenizer.json post-processor emits pairs as [<s> A </s></s> B </s>],
+	// but daulet/tokenizers has no pair-encoding API, so we tokenize query
+	// and doc separately (addSpecialTokens=false) and assemble the sequence
+	// from raw IDs here.
+	xlmRobertaBOSID = 0 // <s>
+	xlmRobertaEOSID = 2 // </s>
+)
 
 // BGEReranker re-scores candidate documents against a query using a
 // cross-encoder ONNX model with WordPiece tokenization.
@@ -85,28 +94,45 @@ func (r *BGEReranker) Rerank(query string, docs []string) []float64 {
 		return make([]float64, len(docs))
 	}
 
+	// Pre-tokenize query once (without special tokens). Each doc is
+	// tokenized fresh so we can build the cross-encoder pair sequence
+	// [<s> query </s></s> doc </s>] from raw IDs.
+	qIDs, _ := r.tokenizer.Encode(query, false)
+
 	scores := make([]float64, len(docs))
 	for i, doc := range docs {
-		enc := r.tokenizer.EncodeWithOptions(
-			query+" "+doc,
-			true,
-			tokenizers.WithReturnAttentionMask(),
-		)
+		dIDs, _ := r.tokenizer.Encode(doc, false)
 
-		ids := enc.IDs
-		mask := enc.AttentionMask
-		if len(ids) > bgeRerankerMaxTokens {
-			ids = ids[:bgeRerankerMaxTokens]
-			mask = mask[:bgeRerankerMaxTokens]
+		// Build pair: [<s>] + query + [</s>, </s>] + doc + [</s>]
+		// Total: 4 + len(query) + len(doc) special/sequence tokens.
+		fixed := 4
+		budget := bgeRerankerMaxTokens - fixed
+		// Reserve roughly half the budget for each side; truncate doc first
+		// (it's usually longer and less information-dense than a query).
+		qMax := budget / 2
+		if len(qIDs) > qMax {
+			qIDs = qIDs[:qMax]
+		}
+		dMax := budget - len(qIDs)
+		if len(dIDs) > dMax {
+			dIDs = dIDs[:dMax]
 		}
 
-		ids64 := make([]int64, len(ids))
-		for j, id := range ids {
-			ids64[j] = int64(id)
+		seqLen := fixed + len(qIDs) + len(dIDs)
+		ids64 := make([]int64, 0, seqLen)
+		ids64 = append(ids64, xlmRobertaBOSID)
+		for _, id := range qIDs {
+			ids64 = append(ids64, int64(id))
 		}
-		mask64 := make([]int64, len(mask))
-		for j, m := range mask {
-			mask64[j] = int64(m)
+		ids64 = append(ids64, xlmRobertaEOSID, xlmRobertaEOSID)
+		for _, id := range dIDs {
+			ids64 = append(ids64, int64(id))
+		}
+		ids64 = append(ids64, xlmRobertaEOSID)
+
+		mask64 := make([]int64, len(ids64))
+		for j := range mask64 {
+			mask64[j] = 1
 		}
 
 		out, err := r.session.Run(ids64, mask64)
