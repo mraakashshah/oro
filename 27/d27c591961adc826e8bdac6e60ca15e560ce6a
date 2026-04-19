@@ -1,0 +1,40 @@
+ad_hoc/memory_eval/cmd/rebuild_corpus/anchors.go
+  2fe820b5e8df345c 1-37,49-65,67-70,73-77,79-109,116,41,44,47-48
+  3efa4761bc130810 110,38-40,42-43,45-46,66,72,78,111-115
+ad_hoc/memory_eval/cmd/rebuild_corpus/anchors_test.go
+  2fe820b5e8df345c 1-5,7,9,13-109,216-231,117,122,126,130-132,139,143,149-150,159,163,168,173,182,184,187,191,195-197,205,208,210,213-214
+  3efa4761bc130810 110-112,6,8,10-12,113-116,118-121,123-125,127-129,133-138,140-142,144-148,151-158,160-162,164-167,169-172,174-181,183,185-186,188-190,192-194,198-204,206-207,209,211-212,215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "27d27c591961adc826e8bdac6e60ca15e560ce6a",
+  "prompts": {
+    "2fe820b5e8df345c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9a610c15-edf4-43fa-a85a-17b612a94ab7",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 240,
+      "total_deletions": 9,
+      "accepted_lines": 30,
+      "overriden_lines": 0
+    },
+    "3efa4761bc130810": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e2f1e531-b0de-44e3-a286-501f5134dd80",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 127,
+      "total_deletions": 5,
+      "accepted_lines": 97,
+      "overriden_lines": 0
+    }
+  }
+}

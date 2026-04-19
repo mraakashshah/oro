@@ -1,0 +1,42 @@
+ad_hoc/memory_eval/cmd/rebuild_corpus/main.go
+  2fe820b5e8df345c 1-5
+ad_hoc/memory_eval/cmd/rebuild_corpus/anchors_test.go
+  2fe820b5e8df345c 1-104,108-123
+  3efa4761bc130810 105-107
+ad_hoc/memory_eval/cmd/rebuild_corpus/anchors.go
+  2fe820b5e8df345c 1-54,56-59,63-99,102
+  3efa4761bc130810 100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "16903cabb0fd338dc787648d6eb81076f27a9ab7",
+  "prompts": {
+    "2fe820b5e8df345c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9a610c15-edf4-43fa-a85a-17b612a94ab7",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 240,
+      "total_deletions": 9,
+      "accepted_lines": 221,
+      "overriden_lines": 0
+    },
+    "3efa4761bc130810": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e2f1e531-b0de-44e3-a286-501f5134dd80",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 127,
+      "total_deletions": 5,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    }
+  }
+}
