@@ -2,6 +2,13 @@
 
 All notable changes to oro. Entries are grouped by theme, not release — oro does not yet tag releases.
 
+## 2026-04-19 — Post-overhaul cleanups
+
+Two bugs surfaced while operating the overhaul that had been masked by the broken eval gate; landed now that the gate is honest.
+
+- `fix(protocol)`: `CountDistinctModules` stripped `filepath.Dir` directly from Read: entries like `pkg/a/cache.go:ReadCache/WriteCache/CacheKey`. POSIX `filepath.Dir` treats slashes as separators and ignores colons, so the `/WriteCache/CacheKey` symbol suffix was parsed as two phantom subdirectories and each symbol name produced a fake module key. Across Read: lines with slash-separated symbol lists the count was inflated, false-positively tripping `OVERSIZED_BEAD` and reopening correctly-scoped beads (the exact failure mode that kept biting `oro-njtv` and `oro-hw4e` during the 2026-04-19 swarm). Fix: split on the first `:` before computing the directory. Pinned by `TestCountDistinctModulesMultiSymbolSuffix` including the exact `oro-njtv` acceptance-criteria string.
+- `fix(cli)`: wire the four semantic-memory migrations (`MigrateSemanticMemoryDense`, `…BackfillState`, `…SearchEvents`, `…Chunks`) into `migrateStateDB` in `cmd/oro/db.go`. They existed as constants in `pkg/protocol` from Phase 7 but were never invoked, so production `state.db` never grew `memory_search_events` and `logSearchEvent` failed silently with `no such table` on every `HybridSearch` — Phase 7 telemetry was emitting to `/dev/null`. All four use the existing try/ignore pattern so re-application is safe. Verified by running `./oro logs` against the pre-existing `state.db`; tables now present, `kv_store` sentinels seeded. Regression test `TestOpenStateDB_SemanticMemoryMigrationsApplied` pins the wiring. Telemetry now captures real-world query data — becomes a third eval-matrix axis once enough rows accumulate.
+
 ## 2026-04-19 — Eval Harness Rebuild + BGE Correctness Fixes
 
 The 2026-04-18 eval gate passed trivially with a 0/0/0 facade (see below). Rebuilt the harness to actually test BGE vs TFIDF, then found and fixed three compounding bugs that had been masking BGE's real performance.
