@@ -32,12 +32,12 @@ type BGEReranker struct {
 //oro:testonly — wired into production by subsequent semantic-memory beads (HybridSearch rerank arm)
 func NewBGEReranker(modelDir string) (*BGEReranker, error) {
 	modelPath := filepath.Join(modelDir, "model.onnx")
-	if _, err := os.Stat(modelPath); err != nil {
+	if _, err := os.Stat(modelPath); err != nil { //nolint:gosec // G703: modelDir is operator-supplied config, not external input
 		return nil, fmt.Errorf("BGEReranker: model not found (run oro models prefetch): %w", err)
 	}
 
 	tokPath := filepath.Join(modelDir, "tokenizer.json")
-	if _, err := os.Stat(tokPath); err != nil {
+	if _, err := os.Stat(tokPath); err != nil { //nolint:gosec // G703: modelDir is operator-supplied config, not external input
 		return nil, fmt.Errorf("BGEReranker: tokenizer not found (run oro models prefetch): %w", err)
 	}
 

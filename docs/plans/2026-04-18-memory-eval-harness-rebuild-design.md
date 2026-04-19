@@ -382,41 +382,41 @@ rebuild_corpus: pick 50 anchors, paraphrase (≤2-word overlap), build pairs
 
 ### Unit tests (no BGE, no external API — always run)
 
-5. `TestMRRSingleRelevant` — anchor at rank 1 → MRR=1.0; rank 5 → MRR=0.2; absent → contributes 0 to sum; denominator = total query count.
-6. `TestCheckGateZeroBaselineFails` — `CheckGate(0, 1, 1).Pass == false`.
-7. `TestCheckGatePassesWhenRatiosMet` — `CheckGate(0.5, 0.65, 0.60).Pass == true`.
-8. `TestParaphraseValidator` — golden inputs: 0 overlap PASS, 2 overlap PASS, 3 overlap PASS, 4 overlap FAIL; case-folded; stop-word list applied; lemma-match for simple plurals (`worker/workers`, `crash/crashes`).
-9. `TestParaphraseCacheRoundtrip` — write 3 entries, re-read, assert equal; keys sorted in file.
-10. `TestRebuildCorpusDeterministic` — with `--no-api` and a fully-populated fixture cache, two runs with identical `--seed 42` produce byte-identical `corpus.jsonl` + `corpus_anchors.jsonl`.
-11. `TestGroundTruthIntegrity` — every `candidate_memory_id` in `corpus.jsonl` has a matching row in `corpus_anchors.jsonl`; no null `relevant` values; every anchor appears as `relevant:true` for ≥1 query.
-12. `TestFallbackRateAbort` — when fallback rate exceeds 20%, `rebuild_corpus` returns a non-zero exit.
+1. `TestMRRSingleRelevant` — anchor at rank 1 → MRR=1.0; rank 5 → MRR=0.2; absent → contributes 0 to sum; denominator = total query count.
+2. `TestCheckGateZeroBaselineFails` — `CheckGate(0, 1, 1).Pass == false`.
+3. `TestCheckGatePassesWhenRatiosMet` — `CheckGate(0.5, 0.65, 0.60).Pass == true`.
+4. `TestParaphraseValidator` — golden inputs: 0 overlap PASS, 2 overlap PASS, 3 overlap PASS, 4 overlap FAIL; case-folded; stop-word list applied; lemma-match for simple plurals (`worker/workers`, `crash/crashes`).
+5. `TestParaphraseCacheRoundtrip` — write 3 entries, re-read, assert equal; keys sorted in file.
+6. `TestRebuildCorpusDeterministic` — with `--no-api` and a fully-populated fixture cache, two runs with identical `--seed 42` produce byte-identical `corpus.jsonl` + `corpus_anchors.jsonl`.
+7. `TestGroundTruthIntegrity` — every `candidate_memory_id` in `corpus.jsonl` has a matching row in `corpus_anchors.jsonl`; no null `relevant` values; every anchor appears as `relevant:true` for ≥1 query.
+8. `TestFallbackRateAbort` — when fallback rate exceeds 20%, `rebuild_corpus` returns a non-zero exit.
 
 ### Integration tests (require BGE + dylibs — skipped under `-short`)
 
-13. `TestSetupConfigWarmUsesBGE` — asserts `setupConfig("dispatcher-warm")` returns a `*BGEEmbedder`, not a `*TFIDFEmbedder`. Wrapped in `if testing.Short() { t.Skip(...) }`.
-14. `TestSetupConfigColdUsesBGENoRerank` — BGE embedder + nil reranker. Same skip.
-15. `TestSeedFromAnchorSidecar` — loads anchors, seeds store via helper, asserts `vecIndex.Upsert` was called N times (where N = number of anchors). Same skip.
-16. `TestOpenEvalDBLoadsSqliteVec` — `SELECT vec_version()` returns non-empty; same skip.
-17. `TestCompareExitCodeReflectsGate` — construct a synthetic corpus where TFIDF beats BGE (or use a mock), run `compare`, assert exit code 1 when gate fails. Assert exit 0 when gate passes.
-18. `TestCompareFastCompletesUnder30s` — `go run ./cmd/compare --fast --corpus <fixture>` finishes within 30s wallclock on the test machine. Skip under `-short`.
+1. `TestSetupConfigWarmUsesBGE` — asserts `setupConfig("dispatcher-warm")` returns a `*BGEEmbedder`, not a `*TFIDFEmbedder`. Wrapped in `if testing.Short() { t.Skip(...) }`.
+2. `TestSetupConfigColdUsesBGENoRerank` — BGE embedder + nil reranker. Same skip.
+3. `TestSeedFromAnchorSidecar` — loads anchors, seeds store via helper, asserts `vecIndex.Upsert` was called N times (where N = number of anchors). Same skip.
+4. `TestOpenEvalDBLoadsSqliteVec` — `SELECT vec_version()` returns non-empty; same skip.
+5. `TestCompareExitCodeReflectsGate` — construct a synthetic corpus where TFIDF beats BGE (or use a mock), run `compare`, assert exit code 1 when gate fails. Assert exit 0 when gate passes.
+6. `TestCompareFastCompletesUnder30s` — `go run ./cmd/compare --fast --corpus <fixture>` finishes within 30s wallclock on the test machine. Skip under `-short`.
 
 ### Command runs
 
-19. `go run ./ad_hoc/memory_eval/cmd/rebuild_corpus --db ~/.oro/projects/oro/state.db --out ad_hoc/memory_eval/corpus.jsonl --anchors ad_hoc/memory_eval/corpus_anchors.jsonl --seed 42` produces:
+1. `go run ./ad_hoc/memory_eval/cmd/rebuild_corpus --db ~/.oro/projects/oro/state.db --out ad_hoc/memory_eval/corpus.jsonl --anchors ad_hoc/memory_eval/corpus_anchors.jsonl --seed 42` produces:
     - 50-line `corpus_anchors.jsonl`
     - 750-line `corpus.jsonl` with `# APPROVED` header and `relevant: true|false` on every entry
     - Updated `paraphrase_cache.jsonl`
     - Fallback rate ≤20% (else non-zero exit)
-20. `go run ./ad_hoc/memory_eval/cmd/compare --corpus ad_hoc/memory_eval/corpus.jsonl --anchors ad_hoc/memory_eval/corpus_anchors.jsonl` (after `make install`) runs end-to-end:
+2. `go run ./ad_hoc/memory_eval/cmd/compare --corpus ad_hoc/memory_eval/corpus.jsonl --anchors ad_hoc/memory_eval/corpus_anchors.jsonl` (after `make install`) runs end-to-end:
     - Loads all 3 configs without ORT/tokenizer/sqlite-vec errors
     - `tfidf` baseline MRR is **> 0** (guaranteed by ≤3 overlap rule)
     - Writes `eval_report.yaml` with full schema (see above)
     - Exits with code per revised `CheckGate`
-21. `git diff --stat HEAD~N HEAD` shows: new corpus files + report + design doc + ~5 new source files + ~11 new test files. No changes to main binary build tags.
+3. `git diff --stat HEAD~N HEAD` shows: new corpus files + report + design doc + ~5 new source files + ~11 new test files. No changes to main binary build tags.
 
 ### Benchmark prerequisite
 
-22. `go test -bench BenchmarkBGERerankPair -benchtime=20x ./pkg/memory/...` output committed to `ad_hoc/memory_eval/bench.txt` before finalizing `--fast` sample size. If per-pair latency measured as `X ms`, `--fast` sample size is:
+1. `go test -bench BenchmarkBGERerankPair -benchtime=20x ./pkg/memory/...` output committed to `ad_hoc/memory_eval/bench.txt` before finalizing `--fast` sample size. If per-pair latency measured as `X ms`, `--fast` sample size is:
 
     ```
     size = max(5, min(10, floor(30000 / (20 * X))))
