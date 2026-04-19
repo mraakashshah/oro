@@ -1,0 +1,31 @@
+ad_hoc/memory_eval/cmd/rebuild_corpus/anchors.go
+  2fe820b5e8df345c 1-102
+ad_hoc/memory_eval/cmd/rebuild_corpus/main.go
+  2fe820b5e8df345c 1-5
+docs/plans/2026-04-18-memory-eval-harness-rebuild-design.md
+  2fe820b5e8df345c 426
+ad_hoc/memory_eval/cmd/rebuild_corpus/anchors_test.go
+  2fe820b5e8df345c 1-123
+.markdownlint.yml
+  2fe820b5e8df345c 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "a6415225e6e4c0ea1c10899b1d75384c9c311df4",
+  "prompts": {
+    "2fe820b5e8df345c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9a610c15-edf4-43fa-a85a-17b612a94ab7",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 240,
+      "total_deletions": 9,
+      "accepted_lines": 232,
+      "overriden_lines": 0
+    }
+  }
+}
