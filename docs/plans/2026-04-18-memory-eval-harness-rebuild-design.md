@@ -1,12 +1,24 @@
 # Memory Eval Harness Rebuild — Real BGE vs TF-IDF Validation
 
 **Date:** 2026-04-18
-**Status:** design v2 / fixes from adversarial review R1
+**Status:** design v3 / fixes from adversarial review R2
 **Related:** `docs/plans/2026-04-16-semantic-memory-overhaul-design.md` (v3.2), bead `oro-pvw8` (reopened), master epic `oro-0hjm`
 
 ## Changelog
 
-- **v2 (this)** — fixes from R1 adversarial review:
+- **v3 (this)** — fixes from R2 adversarial review:
+  - **Build tag isolation** — explicit file-split plan for `ad_hoc/memory_eval` so `GOOS=linux CGO_ENABLED=0 go vet ./...` still passes. BGE/mattn code lives under `//go:build cgo && darwin`; metric math + paraphrase validator are untagged.
+  - **Paraphrase cache fixture** — committed `ad_hoc/memory_eval/paraphrase_cache.jsonl` keyed by `(anchor_content_sha, prompt_version)`. `rebuild_corpus` reads cache first, only calls Haiku on miss. `TestRebuildCorpusDeterministic` uses a fully-populated cache → no Haiku at test time.
+  - **Overlap threshold widened to ≤3 shared content words** — empirically, natural paraphrases of short technical notes ("worker respawns on crash" ↔ "how do workers recover from crashes") share ~2-3 content words. ≤3 keeps TFIDF baseline non-trivial while still forcing semantic retrieval for the rest.
+  - **Fixed `NewSQLiteVecIndex(db)` signature** — 1 arg, not 2. `libPath` is loaded inside `OpenEvalDB` via `ConnectHook` before `vec_version()` runs.
+  - **`eval_report.yaml` format** (renamed from .txt) — structured: `corpus_seed`, `corpus_sha`, `timestamp`, `hardware`, `model_sha` (from `KnownModels`), per-config `{MRR, Hit@10, Hit@1}`, `fallback_paraphrase_rate`, `gate_result`. Machine-parseable.
+  - **MRR convention pinned** — denominator = total query count; absent-anchor contributes 0.
+  - **Rerank latency measured before budget** — new prerequisite bead runs `BenchmarkBGERerankPair` to calibrate `--fast` sample size empirically.
+  - **`testing.Short()` bail-out** — all BGE-loading tests `t.Skip` under `-short`. `make test-short` target added.
+  - **Timing + exit-code ACs** — concrete tests: `TestCompareFastCompletesUnder30s`, `TestCompareExitCodeReflectsGate`.
+  - **File lifecycle specified** — `compare.go` (`//go:build ignore`) moves to `ad_hoc/memory_eval/cmd/compare/main.go`; `RunConfig` + `embedderForCfg` deleted.
+  - **Paraphrase validator terminal path** — hard-abort on triple failure; no silent fallback to bad data.
+- **v2** — fixes from R1 adversarial review:
   - Replaced precision@k with **MRR + Hit@10** as primary metrics (1-relevant-per-query made precision@10 mathematically capped at 0.10)
   - Added explicit `vecIndex.Upsert` step alongside `Store.Insert` during seed (BGE configs would otherwise query empty vec0 table)
   - Replaced "zero-overlap paraphrase" with "≤2 shared content words" (zero-overlap made TFIDF baseline deterministically 0 → re-introduced 0/0 gate facade)
@@ -36,11 +48,25 @@ A corpus that actually tests semantic retrieval + an eval harness that actually 
 ### Corpus shape
 
 - **50 anchor memories** drawn from `~/.oro/projects/oro/state.db` (699 memories). Diverse by `type` field: `gotcha`, `lesson`, `pattern`, `decision`, `self_report`.
-- **3 paraphrased queries per anchor** via `claude -p --model claude-haiku-4-5-20251001`. Prompt: rephrase as natural questions using different phrasing; **validator enforces ≤2 shared content words with source** (case-folded, stop-words excluded). Returns JSON array.
+- **3 paraphrased queries per anchor** via `claude -p --model claude-haiku-4-5-20251001`. Prompt: rephrase as natural questions using different phrasing; **validator enforces ≤3 shared content words with source** (case-folded, stop-words excluded, lemmas compared). Returns JSON array. Paraphrases are **cached in `ad_hoc/memory_eval/paraphrase_cache.jsonl`** keyed by `(sha256(anchor_content), prompt_version)`. Cache hits skip Haiku entirely. The cache file is committed — reruns are reproducible without hitting the API.
 - **4 distractors per query**, drawn from anchors of different `type`. Distractors are labeled `false` **relative to this specific query** (not necessarily non-relevant in the abstract — the metric only consumes anchor labels anyway). Total: 5 candidates × 150 queries = **750 pairs**.
 - **Ground truth by construction.** Anchor→query pair is `true`; distractor→query is `false`. No human step.
 
-Why ≤2 overlap instead of zero: with zero overlap, TFIDF baseline is mathematically forced to MRR=0 (no FTS5 match, no cosine similarity). That resurrects the 0/0 gate facade this rebuild is meant to eliminate. Allowing ≤2 shared content words gives the baseline a realistic chance to rank the anchor in top-k while still testing semantic retrieval (BGE should find the anchor through conceptual similarity, not just 2-word overlap).
+Why ≤3 overlap instead of zero: with zero overlap, TFIDF baseline is mathematically forced to MRR=0 (no FTS5 match, no cosine similarity). That resurrects the 0/0 gate facade this rebuild is meant to eliminate. Natural paraphrases of short technical notes typically share 2-3 content words at the lemma level (e.g. "worker respawns on crash" ↔ "how do workers recover from crashes" shares `worker`, `crash`). Allowing ≤3 shared content words gives the baseline a realistic chance to rank the anchor in top-k while still requiring BGE to find semantically-aligned queries that TFIDF misses (queries that share 0-1 content words but describe the same concept).
+
+### Paraphrase caching
+
+`ad_hoc/memory_eval/paraphrase_cache.jsonl` is a committed fixture with schema `{anchor_sha: string, prompt_version: string, queries: [string, string, string]}`. Keys are `sha256(anchor_content)[:16] + "/" + prompt_version` (e.g. `"a1b2c3d4e5f67890/v1"`).
+
+`rebuild_corpus` flow:
+1. Compute `anchor_sha` for each of the 50 anchors.
+2. Look up `(anchor_sha, current_prompt_version)` in the cache.
+3. Cache hit → use cached queries; cache miss → call Haiku, validate, write back to cache.
+4. At end, re-serialize the cache (sorted by key) back to `paraphrase_cache.jsonl`.
+
+`TestRebuildCorpusDeterministic` pre-populates the cache with golden paraphrases for a fixed anchor set, runs `rebuild_corpus --seed=42 --no-api`, asserts byte-identical output on two runs. The `--no-api` flag errors on cache miss (never calls Haiku in tests).
+
+`prompt_version` is a string constant in code (`const ParaphrasePromptVersion = "v1"`). Bumping it invalidates the whole cache — used when the prompt changes and we want fresh paraphrases.
 
 ### Corpus artifacts
 
@@ -61,8 +87,8 @@ Why ≤2 overlap instead of zero: with zero overlap, TFIDF baseline is mathemati
 | Config | Embedder | Vector Index | Reranker |
 |--------|----------|--------------|----------|
 | `tfidf` | `memory.NewEmbedder()` | `nil` (linear scan on `memories.embedding` blob) | `nil` |
-| `dispatcher-warm` | `memory.NewBGEEmbedder(~/.oro/models/bge-small-en-v1.5)` | `memory.NewSQLiteVecIndex(db, libPath)` via `dbutil.OpenEvalDB` (see below) | `memory.NewBGEReranker(~/.oro/models/bge-reranker-base)` + `SemanticConfig{rerankEnabled:true, rerankTopK:20, rerankFinalK:10}` |
-| `solo-cli-cold` | `memory.NewBGEEmbedder(...)` | `memory.NewSQLiteVecIndex(db, libPath)` | `nil` |
+| `dispatcher-warm` | `memory.NewBGEEmbedder(~/.oro/models/bge-small-en-v1.5)` | `memory.NewSQLiteVecIndex(db)` where `db` comes from `OpenEvalDB(libPath)` | `memory.NewBGEReranker(~/.oro/models/bge-reranker-base)` + `SemanticConfig{rerankEnabled:true, rerankTopK:20, rerankFinalK:10}` |
+| `solo-cli-cold` | `memory.NewBGEEmbedder(...)` | `memory.NewSQLiteVecIndex(db)` where `db` comes from `OpenEvalDB(libPath)` | `nil` |
 
 Model dir resolution: check `ORO_MODEL_DIR` env override, else default `~/.oro/models`.
 
@@ -79,49 +105,160 @@ Strategy: **purpose-built helper in the eval package**, does not touch main code
 
 ### Runtime prerequisites
 
-- **`make install`** must have been run to place `libonnxruntime.dylib` + `libtokenizers.dylib` under `~/.oro/lib/` and wire DYLD paths. `go run ad_hoc/memory_eval/compare.go` without prior `make install` will fail at ORT session init with "image not found".
+- **`make install`** must have been run to place `libonnxruntime.dylib` + `libtokenizers.dylib` under `~/.oro/lib/` and wire DYLD paths. `go run ./ad_hoc/memory_eval/cmd/compare` without prior `make install` fails at ORT session init with "image not found".
 - The eval harness logs a clear error pointing to `make install` when dylibs are missing.
-- Runtime budget: with `rerankTopK=20` (top 20 fused results fed to reranker), `dispatcher-warm` on 150 queries is ~150 × 20 × 0.02s ≈ 60s total (M-series CPU). Acceptable for manual run, too slow for CI. Add `--fast` flag to `compare.go` that uses a 10-query random sample for CI smoke tests.
+- Runtime budget is **empirically measured**, not assumed: a prerequisite bead runs `go test -bench BenchmarkBGERerankPair -benchtime=20x ./pkg/memory/...` to calibrate per-pair cross-encoder latency. Result is committed to `ad_hoc/memory_eval/bench.txt` with hardware tag. The `--fast` sample size is chosen so wallclock ≤ 30s on the measured hardware.
+- `--fast` flag samples 10 random queries (seed-controlled) for CI smoke tests. Full eval (150 queries) is manual-run only, documented in `ad_hoc/memory_eval/README.md`.
+
+### Build tag strategy
+
+The eval package previously had no build tags. BGE types require `cgo && darwin`; adding mattn/go-sqlite3 doubles down on that. To keep `GOOS=linux CGO_ENABLED=0 go vet ./...` and `make test` green, files are split:
+
+| File | Build tags | Depends on |
+|------|-----------|------------|
+| `corpus.go` (existing) | none | stdlib only |
+| `metrics.go` (NEW) | none | stdlib only — MRR, Hit@K, CheckGate |
+| `paraphrase_validator.go` (NEW) | none | stdlib — lemma overlap computation |
+| `paraphrase_cache.go` (NEW) | none | stdlib — JSONL read/write |
+| `extract.go` (existing) | none | `modernc.org/sqlite` via `pkg/dbutil` (already unused for eval, kept for backward compat) |
+| `openevaldb.go` (NEW) | `//go:build cgo && darwin` | `github.com/mattn/go-sqlite3` — ConnectHook + LoadExtension |
+| `harness.go` (NEW) | `//go:build cgo && darwin` | `pkg/memory` BGEEmbedder/BGEReranker, SQLiteVecIndex, OpenEvalDB |
+| `compare_impl.go` (REWRITE) | `//go:build cgo && darwin` | harness.go |
+| `cmd/compare/main.go` (NEW, replaces `compare.go`) | `//go:build cgo && darwin` | compare_impl.go |
+| `cmd/rebuild_corpus/main.go` (NEW) | `//go:build cgo && darwin` | extract.go, paraphrase_cache.go |
+| Tests | same tag as the file under test | |
+
+Acceptance test: `GOOS=linux CGO_ENABLED=0 go vet ./ad_hoc/memory_eval/...` passes (vets only the untagged files). `go vet -tags "cgo darwin" ./ad_hoc/memory_eval/...` passes (vets all files). Linux CI remains green because all BGE-referencing files are excluded.
+
+Non-cgo/non-darwin impact on main codebase: mattn/go-sqlite3 is added to `go.mod` as an indirect dependency, but only reachable under the tagged files. `GOOS=linux CGO_ENABLED=0 go build ./cmd/oro/...` continues to resolve via modernc.org/sqlite (main codebase unchanged). Verified in QG.
+
+### `testing.Short()` contract
+
+All tests that instantiate real BGE models (load 127MB+ ONNX files, create ORT sessions) wrap in:
+
+```go
+if testing.Short() {
+    t.Skip("BGE model load; rerun without -short")
+}
+```
+
+`make test-short` target added: `go test ./... -short -timeout 120s`. `make test` continues to run full suite (existing behavior).
+
+Tests that use `FakeEmbedder` (from `pkg/memory/testhelpers`) or test pure-Go logic (MRR, validator, cache read/write) do NOT skip under `-short`.
 
 ### Corpus generator
 
-New binary under `ad_hoc/memory_eval/cmd/rebuild_corpus/main.go` (or extension of `extract.go`):
+New binary under `ad_hoc/memory_eval/cmd/rebuild_corpus/main.go`:
 
 1. Open `~/.oro/projects/oro/state.db` (path via flag, default to this).
-2. Select 50 anchors: `SELECT id, type, content FROM memories WHERE length(content) BETWEEN 50 AND 400 GROUP BY type ORDER BY RANDOM() LIMIT 50` — varied length, varied types, deterministic seed via flag.
-3. For each anchor: shell `claude -p --model claude-haiku-4-5-20251001 --output-format json` with a structured prompt. Parse the JSON response; validate lexical overlap constraint; retry once if violated, fall back to templated paraphrase if retry fails.
-4. For each query: pick 4 distractors from anchors of different `type`.
-5. Write `corpus.jsonl` + `corpus_anchors.jsonl`.
-6. Header: `# APPROVED` + `# generated: <ISO ts>` + `# source_db: <path>`.
+2. Select 50 anchors deterministically: parameterize SQLite's `RANDOM()` with `ORDER BY (id * 2654435761 + seed) % (1<<31)` (simple seeded hash, no requires for deterministic RANDOM across builds). Filter `WHERE length(content) BETWEEN 50 AND 400 AND token_count(content) <= 512` (the latter computed in Go post-fetch). Group by type to get balanced distribution.
+3. For each anchor, compute `anchor_sha = sha256(content)[:16]`.
+4. **Look up `(anchor_sha, ParaphrasePromptVersion)` in `paraphrase_cache.jsonl`.**
+   - Cache hit: use cached 3 queries.
+   - Cache miss AND `--no-api` flag set: abort with clear error listing missing anchors.
+   - Cache miss: `claude -p --model claude-haiku-4-5-20251001 --output-format json --system "<prompt>" <anchor_content>` with retry logic (see below).
+5. **Paraphrase retry/abort logic:**
+   - Parse Haiku response as JSON array of 3 strings. On parse error: retry once. On second parse error: abort the whole run with anchor context in error message.
+   - Validate each query: ≤3 shared content words with anchor (case-folded, stop-words excluded via a committed `stopwords.txt` from standard English set). On violation: re-prompt once with stricter instructions. On second violation: templated fallback using `extractVerbPhrase(anchor)` → `"how do I " + verbPhrase + " in this system"`.
+   - Templated fallback is also validated. On violation: **abort with hard error**, do not silently accept. (Per R2: no silent fallback to bad data.)
+   - Write validated queries back to paraphrase_cache.jsonl, re-sort by key, overwrite the file.
+6. For each query: pick 4 distractors from anchors of different `type`, deterministic by seeded hash.
+7. Write `corpus.jsonl` + `corpus_anchors.jsonl` + updated `paraphrase_cache.jsonl`.
+8. Header in corpus.jsonl: `# APPROVED` + `# generated: <ISO ts>` + `# source_db: <path>` + `# seed: <N>` + `# fallback_rate: <pct>`.
+9. **Report `fallback_paraphrase_rate` on stderr.** If `>20%`, abort with clear error — signals the threshold or prompt is misconfigured.
 
 ### Metrics (revised)
 
 With 1 relevant memory per query, `precision@10` is capped at 0.10 — the metric hides rank information. Replaced with:
 
-- **MRR (Mean Reciprocal Rank)** — primary. For each query, `1/rank` of the anchor in top-k, averaged. MRR=1.0 means anchor is always #1; MRR=0 means anchor never appears in top-k.
-- **Hit@10 (Hit Rate)** — secondary. Fraction of queries where the anchor appears in top-10.
-- **Hit@1** — sanity. Fraction of queries where the anchor is the #1 result.
+- **MRR (Mean Reciprocal Rank)** — primary. For each query, compute `1/rank` of the anchor in top-k (0 if anchor is absent from top-k). **Denominator is total query count, not queries-with-any-hit.** MRR=1.0 means anchor is always rank 1; MRR=0 means anchor never appears in top-k.
+- **Hit@10 (Hit Rate)** — secondary. Fraction of queries where the anchor appears in top-10. Denominator = total query count.
+- **Hit@1** — sanity. Fraction of queries where the anchor is rank 1.
+
+Formally:
+
+```go
+MRR = (1/N) * Σᵢ (1/rankᵢ if anchor in top-K, else 0)   where N = total queries
+Hit@K = (1/N) * Σᵢ 1{anchor in top-K}
+Hit@1 = (1/N) * Σᵢ 1{anchor is rank 1}
+```
 
 ### Gate (revised)
 
 Replaces `warm >= 1.30 * base AND cold >= 1.20 * base`:
 
 ```go
+type GateResult struct {
+    Pass   bool
+    Reason string
+}
+
 func CheckGate(baseMRR, warmMRR, coldMRR float64) GateResult {
     if baseMRR == 0 {
-        return GateFail{Reason: "baseline MRR is 0 — search is broken, cannot compute ratio"}
+        return GateResult{Pass: false, Reason: "baseline MRR is 0 — search is broken, cannot compute ratio"}
     }
     if warmMRR < 1.30*baseMRR {
-        return GateFail{Reason: fmt.Sprintf("warm MRR %.4f < 1.30×%.4f baseline", warmMRR, baseMRR)}
+        return GateResult{Pass: false, Reason: fmt.Sprintf("warm MRR %.4f < 1.30×%.4f baseline", warmMRR, baseMRR)}
     }
     if coldMRR < 1.20*baseMRR {
-        return GateFail{Reason: fmt.Sprintf("cold MRR %.4f < 1.20×%.4f baseline", coldMRR, baseMRR)}
+        return GateResult{Pass: false, Reason: fmt.Sprintf("cold MRR %.4f < 1.20×%.4f baseline", coldMRR, baseMRR)}
     }
-    return GatePass{}
+    return GateResult{Pass: true}
 }
 ```
 
 The explicit `baseMRR == 0` guard is the key fix from R1: without it, a zero baseline makes every ratio trivially pass, reproducing the facade.
+
+### `eval_report.yaml` schema
+
+Machine-parseable YAML, committed to `ad_hoc/memory_eval/eval_report.yaml` on every `compare` run (overwrites prior). Schema:
+
+```yaml
+timestamp: 2026-04-18T16:22:10-07:00      # RFC3339
+hardware:
+  arch: arm64                              # runtime.GOARCH
+  os: darwin                               # runtime.GOOS
+  cpu: Apple M3 Pro                        # from sysctl -n machdep.cpu.brand_string
+corpus:
+  seed: 42
+  sha: 9a8f2e6d...                         # sha256 of corpus.jsonl content
+  num_queries: 150
+  num_anchors: 50
+  num_pairs: 750
+  fallback_paraphrase_rate: 0.04           # fraction of paraphrases from templated fallback (0-1)
+models:
+  embedder:
+    name: bge-small-en-v1.5
+    sha: 828e1496d7fab...                  # from memory.KnownModels, re-verified at load
+  reranker:
+    name: bge-reranker-base
+    sha: 15b9a8c3da82e...
+  tokenizer:
+    sha: d241a60d5e8f0...
+configs:
+  tfidf:
+    mrr: 0.4127
+    hit_at_10: 0.6400
+    hit_at_1: 0.2867
+    runtime_ms: 1247
+  dispatcher-warm:
+    mrr: 0.6845
+    hit_at_10: 0.9067
+    hit_at_1: 0.5200
+    runtime_ms: 58432
+  solo-cli-cold:
+    mrr: 0.5932
+    hit_at_10: 0.8533
+    hit_at_1: 0.4200
+    runtime_ms: 4891
+gate:
+  pass: true
+  warm_ratio: 1.658                        # warm_mrr / tfidf_mrr
+  cold_ratio: 1.437
+  reason: ""                               # populated when pass=false
+```
+
+Also prints a human-readable summary table to stdout (tab-writer), for quick inspection.
 
 ### Data flow
 
@@ -166,39 +303,64 @@ rebuild_corpus: pick 50 anchors, paraphrase (≤2-word overlap), build pairs
 
 ## Acceptance Criteria
 
-1. `go test ./ad_hoc/memory_eval/... -count=1 -tags "cgo darwin"` passes, including:
-   - `TestSetupConfigWarmUsesBGE` — asserts `setupConfig("dispatcher-warm")` returns a `*BGEEmbedder`, not a `*TFIDFEmbedder`
-   - `TestSetupConfigColdUsesBGENoRerank` — BGE embedder + nil reranker
-   - `TestSeedFromAnchorSidecar` — loading anchors from sidecar seeds store with correct IDs and calls `vecIndex.Upsert` for BGE configs
-   - `TestOpenEvalDBLoadsSqliteVec` — `SELECT vec_version()` returns non-empty
-   - `TestMRRSingleRelevant` — anchor at rank 1 → MRR=1.0; at rank 5 → MRR=0.2; absent → MRR=0
-   - `TestCheckGateZeroBaselineFails` — `CheckGate(0, 1, 1)` returns `GateFail` (prevents facade regression)
-   - `TestParaphraseValidator` — golden inputs: 0 overlap PASS, 2 overlap PASS, 3 overlap FAIL (case-folded, stop-words excluded)
-   - `TestRebuildCorpusDeterministic` — two runs with identical `--seed` produce byte-identical `corpus.jsonl` + `corpus_anchors.jsonl`
-   - `TestGroundTruthIntegrity` — every `candidate_memory_id` in `corpus.jsonl` has a matching row in `corpus_anchors.jsonl`; no null `relevant` values; every anchor appears as `relevant:true` for ≥1 query
-2. `go run ./ad_hoc/memory_eval/cmd/rebuild_corpus --db ~/.oro/projects/oro/state.db --out ad_hoc/memory_eval/corpus.jsonl --anchors ad_hoc/memory_eval/corpus_anchors.jsonl --seed 42` produces:
-   - 50-line `corpus_anchors.jsonl`
-   - 750-line `corpus.jsonl` with `# APPROVED` header and `relevant: true|false` on every entry (no nulls)
-   - Every anchor content ≤512 tokens (token check enforced by generator)
-3. `go run ./ad_hoc/memory_eval/cmd/compare --corpus ad_hoc/memory_eval/corpus.jsonl --anchors ad_hoc/memory_eval/corpus_anchors.jsonl` (after `make install`) runs end-to-end:
-   - Loads all 3 configs without ORT/tokenizer/sqlite-vec errors
-   - Prints per-config table with MRR, Hit@10, Hit@1
-   - `tfidf` baseline MRR is **> 0** (proves search works; guaranteed by ≤2-word overlap rule)
-4. `go run ./ad_hoc/memory_eval/cmd/compare --fast` completes in <30s on M-series CPU (10-query smoke set).
-5. Exit code reflects the real gate outcome per the revised `CheckGate`. Report committed to `ad_hoc/memory_eval/eval_report.txt` with all three metrics.
+### Build/compile gates
+
+1. `GOOS=linux CGO_ENABLED=0 go vet ./ad_hoc/memory_eval/...` passes (vets untagged files only; all BGE-referencing files excluded by build tag).
+2. `GOOS=linux CGO_ENABLED=0 go build ./cmd/oro/...` passes (main codebase unaffected by mattn addition).
+3. `go vet -tags "cgo darwin" ./ad_hoc/memory_eval/...` passes.
+4. `make test` on a non-darwin or non-cgo machine does not regress (eval package excluded via tags).
+
+### Unit tests (no BGE, no external API — always run)
+
+5. `TestMRRSingleRelevant` — anchor at rank 1 → MRR=1.0; rank 5 → MRR=0.2; absent → contributes 0 to sum; denominator = total query count.
+6. `TestCheckGateZeroBaselineFails` — `CheckGate(0, 1, 1).Pass == false`.
+7. `TestCheckGatePassesWhenRatiosMet` — `CheckGate(0.5, 0.65, 0.60).Pass == true`.
+8. `TestParaphraseValidator` — golden inputs: 0 overlap PASS, 2 overlap PASS, 3 overlap PASS, 4 overlap FAIL; case-folded; stop-word list applied; lemma-match for simple plurals (`worker/workers`, `crash/crashes`).
+9. `TestParaphraseCacheRoundtrip` — write 3 entries, re-read, assert equal; keys sorted in file.
+10. `TestRebuildCorpusDeterministic` — with `--no-api` and a fully-populated fixture cache, two runs with identical `--seed 42` produce byte-identical `corpus.jsonl` + `corpus_anchors.jsonl`.
+11. `TestGroundTruthIntegrity` — every `candidate_memory_id` in `corpus.jsonl` has a matching row in `corpus_anchors.jsonl`; no null `relevant` values; every anchor appears as `relevant:true` for ≥1 query.
+12. `TestFallbackRateAbort` — when fallback rate exceeds 20%, `rebuild_corpus` returns a non-zero exit.
+
+### Integration tests (require BGE + dylibs — skipped under `-short`)
+
+13. `TestSetupConfigWarmUsesBGE` — asserts `setupConfig("dispatcher-warm")` returns a `*BGEEmbedder`, not a `*TFIDFEmbedder`. Wrapped in `if testing.Short() { t.Skip(...) }`.
+14. `TestSetupConfigColdUsesBGENoRerank` — BGE embedder + nil reranker. Same skip.
+15. `TestSeedFromAnchorSidecar` — loads anchors, seeds store via helper, asserts `vecIndex.Upsert` was called N times (where N = number of anchors). Same skip.
+16. `TestOpenEvalDBLoadsSqliteVec` — `SELECT vec_version()` returns non-empty; same skip.
+17. `TestCompareExitCodeReflectsGate` — construct a synthetic corpus where TFIDF beats BGE (or use a mock), run `compare`, assert exit code 1 when gate fails. Assert exit 0 when gate passes.
+18. `TestCompareFastCompletesUnder30s` — `go run ./cmd/compare --fast --corpus <fixture>` finishes within 30s wallclock on the test machine. Skip under `-short`.
+
+### Command runs
+
+19. `go run ./ad_hoc/memory_eval/cmd/rebuild_corpus --db ~/.oro/projects/oro/state.db --out ad_hoc/memory_eval/corpus.jsonl --anchors ad_hoc/memory_eval/corpus_anchors.jsonl --seed 42` produces:
+    - 50-line `corpus_anchors.jsonl`
+    - 750-line `corpus.jsonl` with `# APPROVED` header and `relevant: true|false` on every entry
+    - Updated `paraphrase_cache.jsonl`
+    - Fallback rate ≤20% (else non-zero exit)
+20. `go run ./ad_hoc/memory_eval/cmd/compare --corpus ad_hoc/memory_eval/corpus.jsonl --anchors ad_hoc/memory_eval/corpus_anchors.jsonl` (after `make install`) runs end-to-end:
+    - Loads all 3 configs without ORT/tokenizer/sqlite-vec errors
+    - `tfidf` baseline MRR is **> 0** (guaranteed by ≤3 overlap rule)
+    - Writes `eval_report.yaml` with full schema (see above)
+    - Exits with code per revised `CheckGate`
+21. `git diff --stat HEAD~N HEAD` shows: new corpus files + report + design doc + ~5 new source files + ~11 new test files. No changes to main binary build tags.
+
+### Benchmark prerequisite
+
+22. `go test -bench BenchmarkBGERerankPair -benchtime=20x ./pkg/memory/...` output committed to `ad_hoc/memory_eval/bench.txt` before finalizing `--fast` sample size. If per-pair latency measured as X ms, `--fast` sample size is chosen as `min(10, floor(30000 / (20 * X)))` — documented in design.
 
 ### Anti-criteria (explicit non-goals)
 
 - **Not** required: `dispatcher-warm` MRR must beat `tfidf` by 1.30×. If BGE loses on this domain, that's a finding we report, not a failure we paper over.
-- **Not** required: distractor labels validated as truly non-relevant. The metric only consumes anchor labels; distractor labels are informational only.
+- **Not** required: distractor labels validated as truly non-relevant. The metric only consumes anchor labels; distractor labels are informational only. ACs explicitly note this rather than papering over it.
 - **Not** required: corpus entries exactly 100. The spec's "warning below 100" threshold is satisfied by 750.
 - **Not** required: the driver swap (modernc → mattn) in the main codebase. Eval uses a purpose-built helper that bypasses the issue; main binary unchanged.
+- **Not** required: paraphrases remain semantically "perfect" — the ≤3 overlap constraint + templated fallback means some paraphrases may be stilted. That's fine. Gate is what matters.
 
 ## Premortem
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
-| Haiku overlap constraint violated | medium | Validator enforces ≤2 shared content words (case-folded, stop-word filtered); re-prompt once with stricter phrasing; fall back to templated `"how do I <verb-phrase>"` rewrite from anchor |
+| Haiku overlap constraint violated | medium | Validator enforces ≤3 shared content words (case-folded, stop-word filtered, lemma-compared); re-prompt once; fall back to templated `"how do I <verb-phrase>"` rewrite from anchor; abort with hard error if templated also fails (no silent bad data); abort whole run if fallback rate >20% |
 | BGE genuinely underperforms TF-IDF on keyword-heavy technical notes | low (this is a finding, not failure) | Report MRR+Hit@10 table; gate fails honestly; follow-up bead to revisit thresholds or embedding strategy |
 | Distractor accidentally relevant to query | low (doesn't affect metric) | Metric only consumes anchor labels; distractors exist to pad candidate count, not to gate precision |
 | ORT runtime library missing | high but observable | `NewBGEEmbedder` returns clear error at startup pointing to `make install`; investigate and install before proceeding |
@@ -211,13 +373,21 @@ rebuild_corpus: pick 50 anchors, paraphrase (≤2-word overlap), build pairs
 
 ## Implementation Outline
 
-Roughly five beads (to be formalized by `beadcraft`). Order matters — each depends on the previous:
+Seven beads (to be formalized by `beadcraft`). Each lists its test dependencies. Beads are tagged build-tag-isolated; run order matters.
 
-1. **`OpenEvalDB` + sqlite-vec loading** — `ad_hoc/memory_eval/openevaldb.go` (+ `openevaldb_test.go`). TDD: `TestOpenEvalDBLoadsSqliteVec`. Smallest, unblocks everything.
-2. **MRR + Hit@k metrics + CheckGate v2** — replace precision@k in `compare_impl.go`. TDD: `TestMRRSingleRelevant`, `TestCheckGateZeroBaselineFails`.
-3. **Paraphrase validator + rebuild_corpus CLI** — `ad_hoc/memory_eval/paraphrase.go` + `cmd/rebuild_corpus/main.go`. TDD: `TestParaphraseValidator`, `TestRebuildCorpusDeterministic`, `TestGroundTruthIntegrity`.
-4. **Harness wiring for BGE configs** — rewrite `setupConfig` + `RunConfigWithEmbedder` to seed from sidecar with `vecIndex.Upsert` and use BGE/reranker. TDD: `TestSetupConfigWarmUsesBGE`, `TestSetupConfigColdUsesBGENoRerank`, `TestSeedFromAnchorSidecar`.
-5. **Run + commit** — execute end-to-end, capture real numbers, commit corpus + sidecar + `eval_report.txt`. Close `oro-pvw8` properly (or supersede it). This bead gates the master epic `oro-0hjm`.
+1. **Metrics + CheckGate (pure Go, no tags)** — `ad_hoc/memory_eval/metrics.go` + tests. Implement MRR, Hit@K, CheckGate v2 per the formal definitions above. Tests: `TestMRRSingleRelevant`, `TestCheckGateZeroBaselineFails`, `TestCheckGatePassesWhenRatiosMet`. ~150 LOC.
+
+2. **Paraphrase validator + cache (pure Go, no tags)** — `ad_hoc/memory_eval/paraphrase_validator.go` + `ad_hoc/memory_eval/paraphrase_cache.go` + tests. Content-word overlap count (stop-words excluded, lemmatized via simple plural rule), cache JSONL read/write. Tests: `TestParaphraseValidator`, `TestParaphraseCacheRoundtrip`. ~200 LOC. Also commits initial `stopwords.txt` (standard English).
+
+3. **Benchmark prerequisite** — `pkg/memory/bge_reranker_bench_test.go` adds `BenchmarkBGERerankPair`. Run benchmark, commit result to `ad_hoc/memory_eval/bench.txt`. Choose `--fast` sample size from result. ~30 LOC.
+
+4. **`OpenEvalDB` + sqlite-vec loading (`//go:build cgo && darwin`)** — `ad_hoc/memory_eval/openevaldb.go` registers `sqlite3_with_vec` driver with ConnectHook; `OpenEvalDB(dbPath)` returns `*sql.DB`. Test: `TestOpenEvalDBLoadsSqliteVec`. Adds mattn/go-sqlite3 to go.mod. QG verifies Linux/no-cgo build still passes. ~100 LOC.
+
+5. **Harness rewrite (`//go:build cgo && darwin`)** — `ad_hoc/memory_eval/harness.go` (NEW) with `setupConfig(cfg)` + `seedStoreWithVectors(store, idx, emb, anchors)`; `compare_impl.go` rewritten to use harness. Tests: `TestSetupConfigWarmUsesBGE`, `TestSetupConfigColdUsesBGENoRerank`, `TestSeedFromAnchorSidecar`. ~400 LOC.
+
+6. **`rebuild_corpus` CLI (`//go:build cgo && darwin` because of paraphrase cache + state.db path)** — `ad_hoc/memory_eval/cmd/rebuild_corpus/main.go`. Opens state.db, selects anchors, calls Haiku with cache, validates, writes corpus + sidecar + updated cache. Tests: `TestRebuildCorpusDeterministic`, `TestGroundTruthIntegrity`, `TestFallbackRateAbort`. Commits initial `paraphrase_cache.jsonl` fixture. ~400 LOC.
+
+7. **`compare` CLI (`//go:build cgo && darwin`) + Run + commit numbers** — move `compare.go` to `ad_hoc/memory_eval/cmd/compare/main.go` (drop `//go:build ignore`), wire `--fast`, write `eval_report.yaml`. Tests: `TestCompareFastCompletesUnder30s`, `TestCompareExitCodeReflectsGate`. Final step: run the whole pipeline end-to-end against live state.db, commit corpus + sidecar + cache + `eval_report.yaml`. Close `oro-pvw8` with the committed report hash as evidence. This bead gates master epic `oro-0hjm`.
 
 ## Success Definition
 
