@@ -1,12 +1,18 @@
 # Memory Eval Harness Rebuild — Real BGE vs TF-IDF Validation
 
 **Date:** 2026-04-18
-**Status:** design v4 / fixes from adversarial review R3
+**Status:** design v5 / fixes from adversarial review R4
 **Related:** `docs/plans/2026-04-16-semantic-memory-overhaul-design.md` (v3.2), bead `oro-pvw8` (reopened), master epic `oro-0hjm`
 
 ## Changelog
 
-- **v4 (this)** — fixes from R3 adversarial review (must-fix tier):
+- **v5 (this)** — fixes from R4 adversarial review:
+  - **Project name `oro-eval` → `oro_eval`** — hyphen caused SQL syntax error in `CREATE VIRTUAL TABLE vec_memories_oro-eval USING vec0(...)` because `pkg/memory/vec_index.go:60-63` does not quote identifiers. The regex at `vec_index.go:16` accepts hyphens but the CREATE statement doesn't tolerate them. Underscore is always safe.
+  - **Determinism selector form unified** — `(id * 2654435761 + seed) % (1<<31)` used everywhere (paraphrase-caching hedge line now matches generator step 2).
+  - **`inputs_sha` concatenation spec tightened** — order is exactly `corpus.jsonl → corpus_anchors.jsonl → paraphrase_cache.jsonl`; all files written LF-only by the generator.
+  - **Constant locations named** — `ParaphrasePromptVersion` in `paraphrase_cache.go`, `MaxSharedContentWords` in `paraphrase_validator.go`, `WarmMRRRatio`/`ColdMRRRatio` in `metrics.go`. Residual-risk recovery paths are now findable.
+  - **`make install` prereq** — labeled as explicit human precondition in "Runtime prerequisites" with a check command. Not a bead dependency (beadcraft only models inter-bead deps); bead 3's Read: field includes the check and clear error.
+- **v4** — fixes from R3 adversarial review (must-fix tier):
   - **`seedStoreWithVectors` project contract pinned** — signature now `seedStoreWithVectors(store, idx, emb, anchors, project string)`. Caller MUST call `store.SetProject(project)` before invoking. `idx.Upsert` uses the same `project`. Pattern copied from `pkg/memory/hybrid_integration_test.go:160-193`.
   - **Paraphrase cache bootstrap procedure documented** — dedicated subsection below. One-time: run `rebuild_corpus --seed 42` without `--no-api`. Cache regeneration triggers when anchor set changes (state.db content drift) or `ParaphrasePromptVersion` is bumped.
   - **`eval_report.yaml` inputs_sha** — replaces single `corpus.sha`. Hashes concatenation of `corpus.jsonl` + `corpus_anchors.jsonl` + `paraphrase_cache.jsonl`. Reproducibility now captures all three input files.
@@ -98,7 +104,7 @@ The cache is keyed by `(sha256(anchor_content), prompt_version)`. It becomes sta
 
 Recovery (same as bootstrap): re-run `rebuild_corpus --seed 42` without `--no-api`, commit the updated cache. This is expected developer workflow when evolving the prompt or seed; the only constraint is "commit the cache when regenerating".
 
-**Anchor-set stability hedge**: to reduce churn-driven cache misses, `rebuild_corpus` uses a stable deterministic selector (`id * 2654435761 + seed`) rather than `ORDER BY RANDOM()`. New memories at higher ids don't displace existing low-id selections until the selection modulo shifts. For the `--seed 42` fixture we'll commit, stability is good for thousands of new memories.
+**Anchor-set stability hedge**: to reduce churn-driven cache misses, `rebuild_corpus` uses a stable deterministic selector (`(id * 2654435761 + seed) % (1<<31)` — same form as step 2 in the generator pseudocode) rather than `ORDER BY RANDOM()`. New memories at higher ids don't displace existing low-id selections until the selection modulo shifts. For the `--seed 42` fixture we'll commit, stability is good for thousands of new memories.
 
 ### Corpus artifacts
 
@@ -128,9 +134,9 @@ Recovery (same as bootstrap): re-run `rebuild_corpus --seed 42` without `--no-ap
   Caller sequence:
 
   ```go
-  store.SetProject("oro-eval")                      // SOURCE OF TRUTH for scope
+  store.SetProject("oro_eval")                      // SOURCE OF TRUTH for scope
   idx, _ := memory.NewSQLiteVecIndex(db)            // project comes via Upsert arg
-  anchorMap, _ := seedStoreWithVectors(store, idx, emb, anchors, "oro-eval")
+  anchorMap, _ := seedStoreWithVectors(store, idx, emb, anchors, "oro_eval")
   ```
 
   If the two project strings disagree, the eval runs against an empty vec0 partition — silently degrading to FTS5-only. `TestSeedFromAnchorSidecar` asserts upsert count matches seed count under a specific project name; a follow-up assertion verifies `vec_version`-scoped partition table `vec_memories_oro_eval` exists with 50 rows.
@@ -159,7 +165,14 @@ Strategy: **purpose-built helper in the eval package**, does not touch main code
 
 ### Runtime prerequisites
 
-- **`make install`** must have been run to place `libonnxruntime.dylib` + `libtokenizers.dylib` under `~/.oro/lib/` and wire DYLD paths. `go run ./ad_hoc/memory_eval/cmd/compare` without prior `make install` fails at ORT session init with "image not found".
+- **`make install` — human precondition**, checked at bead 3 / bead 5 startup via:
+
+  ```bash
+  test -f ~/.oro/lib/libonnxruntime.dylib && test -f ~/.oro/lib/libtokenizers.dylib \
+    || { echo "run 'make install' first"; exit 1; }
+  ```
+
+  Must have been run to place `libonnxruntime.dylib` + `libtokenizers.dylib` under `~/.oro/lib/` and wire DYLD paths. `go run ./ad_hoc/memory_eval/cmd/compare` without prior `make install` fails at ORT session init with "image not found". Not modeled as a bead dependency because beadcraft only captures inter-bead deps; callers of `oro work` on bead 3 or bead 5 must satisfy this first.
 - The eval harness logs a clear error pointing to `make install` when dylibs are missing.
 - Runtime budget is **empirically measured**, not assumed: a prerequisite bead runs `go test -bench BenchmarkBGERerankPair -benchtime=20x ./pkg/memory/...` to calibrate per-pair cross-encoder latency. Result is committed to `ad_hoc/memory_eval/bench.txt` with hardware tag. The `--fast` sample size is chosen so wallclock ≤ 30s on the measured hardware.
 - `--fast` flag samples 10 random queries (seed-controlled) for CI smoke tests. Full eval (150 queries) is manual-run only, documented in `ad_hoc/memory_eval/README.md`.
@@ -278,7 +291,7 @@ corpus:
   corpus_sha: 9a8f2e6d...                  # sha256 of corpus.jsonl only
   anchors_sha: 7b3f1c2a...                 # sha256 of corpus_anchors.jsonl only
   paraphrase_cache_sha: 4e9d0a8b...        # sha256 of paraphrase_cache.jsonl only
-  inputs_sha: a1b2c3d4...                  # sha256 of (corpus || anchors || cache) — reproducibility key
+  inputs_sha: a1b2c3d4...                  # sha256 of corpus.jsonl || corpus_anchors.jsonl || paraphrase_cache.jsonl, in that exact order; files LF-only — reproducibility key
   num_queries_scored: 150                  # unique queries evaluated
   num_anchors: 50
   num_pairs: 750                           # total corpus entries incl. distractors
@@ -425,9 +438,9 @@ rebuild_corpus: pick 50 anchors, paraphrase (≤2-word overlap), build pairs
 
 Per R3 recommendation: the following are acknowledged tradeoffs rather than design defects. If any materializes as a real problem during first-run, file a follow-up bead.
 
-1. **≤3 overlap threshold is a first-run guess, not an empirical measurement.** R3 asked for sampling 10 anchors through live Haiku and measuring overlap distribution before committing. Not done. Risk: if actual Haiku output exceeds ≤3 on >20% of attempts, `rebuild_corpus` aborts per step 9. Recovery path: bump threshold to ≤4 OR loosen the prompt instruction OR raise the fallback abort threshold. Any of these is a one-line change. Documented in `ad_hoc/memory_eval/README.md` under "Troubleshooting".
+1. **≤3 overlap threshold is a first-run guess, not an empirical measurement.** R3 asked for sampling 10 anchors through live Haiku and measuring overlap distribution before committing. Not done. Risk: if actual Haiku output exceeds ≤3 on >20% of attempts, `rebuild_corpus` aborts per step 9. Recovery path: bump `MaxSharedContentWords` in `ad_hoc/memory_eval/paraphrase_validator.go` (one-line change) OR loosen the prompt instruction OR raise the fallback abort threshold. Documented in `ad_hoc/memory_eval/README.md` under "Troubleshooting".
 
-2. **Gate thresholds 1.30× / 1.20× inherited from original precision@k spec.** MRR is scaled differently; at low baselines (e.g. MRR=0.05) a 1.30× ratio is noise. Not re-justified for v4. If the first run shows tfidf MRR in a low-signal range, file a follow-up bead to either (a) re-justify the thresholds with literature, (b) switch to absolute-delta gating (`warm_mrr - base_mrr ≥ 0.10`), or (c) require both absolute and ratio. Eval still runs; gate decision is just interpretable or not.
+2. **Gate thresholds 1.30× / 1.20× inherited from original precision@k spec.** MRR is scaled differently; at low baselines (e.g. MRR=0.05) a 1.30× ratio is noise. Not re-justified for v5. If the first run shows tfidf MRR in a low-signal range, file a follow-up bead to either (a) re-justify the thresholds with literature, (b) switch to absolute-delta gating (`warm_mrr - base_mrr ≥ 0.10`), or (c) require both absolute and ratio. Constants to change: `WarmMRRRatio` / `ColdMRRRatio` in `ad_hoc/memory_eval/metrics.go`. Eval still runs; gate decision is just interpretable or not.
 
 3. **Lemmatizer scope = plural-s only.** Verb inflections (`run/ran/running`, `retry/retried`) bypass overlap detection. Over-counts as "non-overlap" where real overlap exists; TFIDF baseline slightly weaker than reality, warm more likely to beat it for a wrong reason. Acceptable for first-run signal. If gate ambiguity arises, upgrade to a proper lemmatizer (`github.com/aaaton/golem` or Snowball stemmer).
 
@@ -454,9 +467,9 @@ Per R3 recommendation: the following are acknowledged tradeoffs rather than desi
 
 Seven beads (to be formalized by `beadcraft`). Each lists its test dependencies. Beads are tagged build-tag-isolated; run order matters.
 
-1. **Metrics + CheckGate (pure Go, no tags)** — `ad_hoc/memory_eval/metrics.go` + tests. Implement MRR, Hit@K, CheckGate v2 per the formal definitions above. Tests: `TestMRRSingleRelevant`, `TestCheckGateZeroBaselineFails`, `TestCheckGatePassesWhenRatiosMet`. ~150 LOC.
+1. **Metrics + CheckGate (pure Go, no tags)** — `ad_hoc/memory_eval/metrics.go` + tests. Implement MRR, Hit@K, CheckGate v2 per the formal definitions above. Constants to expose as package-level `const`: `WarmMRRRatio = 1.30`, `ColdMRRRatio = 1.20`. Tests: `TestMRRSingleRelevant`, `TestCheckGateZeroBaselineFails`, `TestCheckGatePassesWhenRatiosMet`. ~150 LOC.
 
-2. **Paraphrase validator + cache (pure Go, no tags)** — `ad_hoc/memory_eval/paraphrase_validator.go` + `ad_hoc/memory_eval/paraphrase_cache.go` + tests. Content-word overlap count (stop-words excluded, lemmatized via simple plural rule), cache JSONL read/write. Tests: `TestParaphraseValidator`, `TestParaphraseCacheRoundtrip`. ~200 LOC. Also commits initial `stopwords.txt` (standard English).
+2. **Paraphrase validator + cache (pure Go, no tags)** — `ad_hoc/memory_eval/paraphrase_validator.go` + `ad_hoc/memory_eval/paraphrase_cache.go` + tests. Content-word overlap count (stop-words excluded, lemmatized via simple plural rule), cache JSONL read/write. Constants to expose as package-level `const`: `MaxSharedContentWords = 3` (in `paraphrase_validator.go`), `ParaphrasePromptVersion = "v1"` (in `paraphrase_cache.go`). Tests: `TestParaphraseValidator`, `TestParaphraseCacheRoundtrip`. ~200 LOC. Also commits initial `stopwords.txt` (standard English).
 
 3. **Benchmark prerequisite** — `pkg/memory/bge_reranker_bench_test.go` adds `BenchmarkBGERerankPair`. Run benchmark, commit result to `ad_hoc/memory_eval/bench.txt`. Choose `--fast` sample size from result. ~30 LOC.
 
