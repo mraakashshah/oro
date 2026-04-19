@@ -33,3 +33,40 @@ func CheckGate(baseMRR, warmMRR, coldMRR float64) GateResult {
 	}
 	return GateResult{Pass: true}
 }
+
+// MRR returns the reciprocal rank of relevantID in topKIDs[:k].
+// Returns 0 if relevantID is absent, k <= 0, or topKIDs is empty.
+// Caller averages over queries to get Mean Reciprocal Rank.
+func MRR(topKIDs []int64, relevantID int64, k int) float64 {
+	if k <= 0 || len(topKIDs) == 0 {
+		return 0
+	}
+	limit := k
+	if limit > len(topKIDs) {
+		limit = len(topKIDs)
+	}
+	for i, id := range topKIDs[:limit] {
+		if id == relevantID {
+			return 1.0 / float64(i+1)
+		}
+	}
+	return 0
+}
+
+// HitAtK returns 1.0 if relevantID appears in topKIDs[:k], else 0.0.
+// Returns 0 if k <= 0 or topKIDs is empty.
+func HitAtK(topKIDs []int64, relevantID int64, k int) float64 {
+	if k <= 0 || len(topKIDs) == 0 {
+		return 0
+	}
+	limit := k
+	if limit > len(topKIDs) {
+		limit = len(topKIDs)
+	}
+	for _, id := range topKIDs[:limit] {
+		if id == relevantID {
+			return 1.0
+		}
+	}
+	return 0
+}
