@@ -1,4 +1,4 @@
-//go:build cgo && darwin
+//go:build integration && cgo && darwin
 
 package memory_test
 
@@ -19,7 +19,11 @@ func BenchmarkBGERerankPair(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewBGEReranker: %v", err)
 	}
-	defer reranker.Close()
+	defer func() {
+		if closeErr := reranker.Close(); closeErr != nil {
+			b.Logf("reranker.Close: %v", closeErr)
+		}
+	}()
 
 	query := "What is a worker?"
 	docs := []string{"A worker is a process that executes tasks."}
