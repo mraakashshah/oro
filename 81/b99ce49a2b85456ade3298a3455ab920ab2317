@@ -1,0 +1,25 @@
+pkg/memory/bge_reranker_bench_test.go
+  20b37eb2f0826ed4 1,22-26
+ad_hoc/memory_eval/bench.txt
+  20b37eb2f0826ed4 1-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "81b99ce49a2b85456ade3298a3455ab920ab2317",
+  "prompts": {
+    "20b37eb2f0826ed4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aaf35f02-3951-4155-83f6-5dc2508c6c69",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 204,
+      "total_deletions": 91,
+      "accepted_lines": 157,
+      "overriden_lines": 0
+    }
+  }
+}
