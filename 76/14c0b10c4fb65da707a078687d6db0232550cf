@@ -1,0 +1,25 @@
+ad_hoc/memory_eval/cmd/rebuild_corpus/main.go
+  135efccffa078143 5-186
+ad_hoc/memory_eval/cmd/rebuild_corpus/main_test.go
+  135efccffa078143 1-208
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "7614c0b10c4fb65da707a078687d6db0232550cf",
+  "prompts": {
+    "135efccffa078143": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17e4dfdf-810f-4586-881d-b06e505e2cf6",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 390,
+      "total_deletions": 1,
+      "accepted_lines": 390,
+      "overriden_lines": 0
+    }
+  }
+}
