@@ -52,4 +52,14 @@ func migrateStateDB(db *sql.DB) {
 	_, _ = db.ExecContext(ctx, protocol.MigrateKVStore)
 	_, _ = db.ExecContext(ctx, protocol.MigrateRejectionHistory)
 	_, _ = db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_rejection_bead ON rejection_history(bead_id)")
+	// Semantic memory migrations: the overhaul added these tables/columns but
+	// they were never wired into the startup path, so HybridSearch telemetry
+	// was writing to /dev/null on production state.db. Same try/ignore pattern;
+	// the bare ALTER TABLE in MigrateSemanticMemoryDense errors when columns
+	// already exist and MigrateSemanticMemoryBackfillState depends on kv_store
+	// created by the earlier MigrateKVStore call.
+	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemoryDense)
+	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemoryBackfillState)
+	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemorySearchEvents)
+	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemoryChunks)
 }

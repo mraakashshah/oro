@@ -198,6 +198,53 @@ func TestOpenStateDBIdempotent(t *testing.T) {
 	}
 }
 
+// TestOpenStateDB_SemanticMemoryMigrationsApplied is a regression test for
+// the post-overhaul gap where semantic_memory_search_events (and related
+// telemetry/chunk tables) existed as separate migration constants in
+// pkg/protocol but were never wired into migrateStateDB. HybridSearch's
+// logSearchEvent was failing silently with "no such table: memory_search_events"
+// on every production query, dropping Phase 7 telemetry on the floor.
+func TestOpenStateDB_SemanticMemoryMigrationsApplied(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDB: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// memory_search_events must be queryable (MigrateSemanticMemorySearchEvents).
+	if _, err := db.Exec("INSERT INTO memory_search_events (query_hash) VALUES ('deadbeef')"); err != nil {
+		t.Errorf("memory_search_events must be writable after openStateDB: %v", err)
+	}
+
+	// memory_chunks must exist (MigrateSemanticMemoryChunks). Query its
+	// schema via PRAGMA rather than probing with INSERT — the insert path
+	// was brittle to column-name drift.
+	var chunkCol string
+	if err := db.QueryRow("SELECT name FROM pragma_table_info('memory_chunks') WHERE name = 'memory_id'").Scan(&chunkCol); err != nil {
+		t.Errorf("memory_chunks.memory_id column missing: %v", err)
+	}
+	if chunkCol != "memory_id" {
+		t.Errorf("memory_chunks schema incomplete; expected memory_id column, got %q", chunkCol)
+	}
+
+	// Backfill state + embedding model must be seeded in kv_store
+	// (MigrateSemanticMemoryBackfillState).
+	var modelName string
+	err = db.QueryRow("SELECT value FROM kv_store WHERE key = 'embedding_dense_model'").Scan(&modelName)
+	if err != nil {
+		t.Errorf("embedding_dense_model not seeded in kv_store: %v", err)
+	} else if modelName != "bge-small-en-v1.5" {
+		t.Errorf("embedding_dense_model = %q, want bge-small-en-v1.5", modelName)
+	}
+
+	// memories.embedding_dense column must exist (MigrateSemanticMemoryDense).
+	// The column is added via bare ALTER TABLE so we verify by selecting it.
+	if _, err := db.Exec("SELECT embedding_dense FROM memories LIMIT 1"); err != nil {
+		t.Errorf("embedding_dense column missing on memories: %v", err)
+	}
+}
+
 // TestBuildDispatcher_UsesOpenDB verifies that buildDispatcher produces a
 // database with WAL mode and busy_timeout set (indirectly tests that it uses openDB).
 func TestBuildDispatcher_WALMode(t *testing.T) {
