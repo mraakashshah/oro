@@ -1,0 +1,23 @@
+ad_hoc/memory_eval/haiku_eval_report.yaml
+  8d13834da3e3e27f 1-46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "6aaaeaabcbf407b5c7b6c81f79111d15d349231c",
+  "prompts": {
+    "8d13834da3e3e27f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6db90904-5ab7-4fd0-aa10-6b03cc18ac38",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 46,
+      "total_deletions": 0,
+      "accepted_lines": 225,
+      "overriden_lines": 0
+    }
+  }
+}
