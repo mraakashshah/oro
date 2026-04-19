@@ -1,0 +1,42 @@
+ad_hoc/memory_eval/harness_test.go
+  e07470eed2febe4f 5-73
+ad_hoc/memory_eval/harness.go
+  e07470eed2febe4f 3-219
+ad_hoc/memory_eval/compare_impl.go
+  e07470eed2febe4f 2-3
+ad_hoc/memory_eval/corpus.go
+  e07470eed2febe4f 21-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "d42fb7ac0a27757e9a9930a7b8c24057757d5ee4",
+  "prompts": {
+    "75a6e8ccc47bdc23": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9e51f1f1-8e92-4ae0-b9ec-453b00037538",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 250,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "e07470eed2febe4f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "563f537b-236d-4e87-bc45-31e5fe5b8712",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 497,
+      "total_deletions": 412,
+      "accepted_lines": 252,
+      "overriden_lines": 0
+    }
+  }
+}
