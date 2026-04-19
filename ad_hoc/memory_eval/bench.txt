@@ -1,0 +1,42 @@
+ABORT: BLOCKER - Missing ORT Runtime Library
+================================================================================
+
+The BenchmarkBGERerankPair test cannot execute because the ONNX Runtime library
+is missing at ~/.oro/lib/onnxruntime.dylib.
+
+Per bead specification edge condition: "PREREQ make install done
+(test -f ~/.oro/lib/libonnxruntime.dylib && test -f ~/.oro/lib/libtokenizers.dylib || fail)"
+
+Status:
+  - libonnxruntime.dylib: MISSING (blocker)
+  - libtokenizers.dylib: MISSING (blocker)
+  - Model (bge-reranker-base): OK at ~/.oro/models/bge-reranker-base/model.onnx
+  - Tokenizer: OK at ~/.oro/models/bge-reranker-base/tokenizer.json (copied from shared)
+
+Root Cause:
+  The Makefile's 'make download-ort' target is a TODO stub (implementation not
+  yet complete). The build system does not acquire or deploy the ONNX Runtime
+  library, which is required for integration tests and benchmarks.
+
+Resolution:
+  A separate blocker bead (P0 bug) must be created to track ORT library
+  acquisition. This bead (oro-wlos) cannot proceed until that blocker is
+  resolved.
+
+Benchmark Test Implementation:
+  ✓ Test file created: pkg/memory/bge_reranker_bench_test.go
+    - BenchmarkBGERerankPair(b *testing.B) signature matches spec
+    - Calls NewBGEReranker(~/.oro/models/bge-reranker-base) once
+    - Executes b.N iterations of Rerank(query, [doc]) in loop
+    - Resets timer after setup
+  ✓ Test compiles successfully (with integration + cgo + darwin tags)
+  ✗ Test execution blocked by missing ORT library
+
+Compiler Output:
+  gofmt: pass
+  golangci-lint: pending
+  go build: OK
+  go test -bench BenchmarkBGERerankPair -benchtime=20x -tags 'integration cgo darwin' ./pkg/memory/...: FAIL
+
+  Error from test run:
+  bge_reranker_bench_test.go:19: NewBGEReranker: BGEReranker: init ORT session: ORT library not found at /Users/as21/.oro/lib/onnxruntime.dylib (run oro models prefetch): stat /Users/as21/.oro/lib/onnxruntime.dylib: no such file or directory
