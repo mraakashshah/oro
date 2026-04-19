@@ -1,12 +1,18 @@
 # Memory Eval Harness Rebuild — Real BGE vs TF-IDF Validation
 
 **Date:** 2026-04-18
-**Status:** design v3 / fixes from adversarial review R2
+**Status:** design v4 / fixes from adversarial review R3
 **Related:** `docs/plans/2026-04-16-semantic-memory-overhaul-design.md` (v3.2), bead `oro-pvw8` (reopened), master epic `oro-0hjm`
 
 ## Changelog
 
-- **v3 (this)** — fixes from R2 adversarial review:
+- **v4 (this)** — fixes from R3 adversarial review (must-fix tier):
+  - **`seedStoreWithVectors` project contract pinned** — signature now `seedStoreWithVectors(store, idx, emb, anchors, project string)`. Caller MUST call `store.SetProject(project)` before invoking. `idx.Upsert` uses the same `project`. Pattern copied from `pkg/memory/hybrid_integration_test.go:160-193`.
+  - **Paraphrase cache bootstrap procedure documented** — dedicated subsection below. One-time: run `rebuild_corpus --seed 42` without `--no-api`. Cache regeneration triggers when anchor set changes (state.db content drift) or `ParaphrasePromptVersion` is bumped.
+  - **`eval_report.yaml` inputs_sha** — replaces single `corpus.sha`. Hashes concatenation of `corpus.jsonl` + `corpus_anchors.jsonl` + `paraphrase_cache.jsonl`. Reproducibility now captures all three input files.
+  - **`--fast` sample size floor** — formula changed to `size = max(5, min(10, floor(30000/(20*X))))`. Bead 3 aborts if `floor(30000/(20*X)) < 5` (hardware too slow for meaningful CI smoke).
+  - **R3 should-fix items accepted as documented residual risks** (per R3 recommendation): threshold empirical validation deferred to first-run data; 1.30×/1.20× gate thresholds annotated as inherited-from-precision-spec, re-justification follow-up bead; lemmatizer scope = plural-s only; fallback rate check fires at end of run.
+- **v3** — fixes from R2 adversarial review:
   - **Build tag isolation** — explicit file-split plan for `ad_hoc/memory_eval` so `GOOS=linux CGO_ENABLED=0 go vet ./...` still passes. BGE/mattn code lives under `//go:build cgo && darwin`; metric math + paraphrase validator are untagged.
   - **Paraphrase cache fixture** — committed `ad_hoc/memory_eval/paraphrase_cache.jsonl` keyed by `(anchor_content_sha, prompt_version)`. `rebuild_corpus` reads cache first, only calls Haiku on miss. `TestRebuildCorpusDeterministic` uses a fully-populated cache → no Haiku at test time.
   - **Overlap threshold widened to ≤3 shared content words** — empirically, natural paraphrases of short technical notes ("worker respawns on crash" ↔ "how do workers recover from crashes") share ~2-3 content words. ≤3 keeps TFIDF baseline non-trivial while still forcing semantic retrieval for the rest.
@@ -68,6 +74,32 @@ Why ≤3 overlap instead of zero: with zero overlap, TFIDF baseline is mathemati
 
 `prompt_version` is a string constant in code (`const ParaphrasePromptVersion = "v1"`). Bumping it invalidates the whole cache — used when the prompt changes and we want fresh paraphrases.
 
+#### Cache bootstrap (one-time)
+
+The first time anyone builds a corpus — before `paraphrase_cache.jsonl` exists in the repo — someone must populate it via a live Haiku run. Documented procedure in `ad_hoc/memory_eval/README.md`:
+
+```
+# One-time cache bootstrap — requires CLAUDE CLI + HF models + make install
+go run ./ad_hoc/memory_eval/cmd/rebuild_corpus \
+    --db ~/.oro/projects/oro/state.db \
+    --out corpus.jsonl --anchors corpus_anchors.jsonl \
+    --seed 42
+# Commits paraphrase_cache.jsonl with ~50 entries
+git add ad_hoc/memory_eval/paraphrase_cache.jsonl
+git commit -m "chore(eval): bootstrap paraphrase cache"
+```
+
+#### When the cache must be regenerated
+
+The cache is keyed by `(sha256(anchor_content), prompt_version)`. It becomes stale when either changes:
+
+- **Anchor set changes** — state.db has churn (new memories, deleted memories); `--seed 42` now picks a different set of 50 anchors, and their content hashes don't match cached keys. Symptom: `TestRebuildCorpusDeterministic` with `--no-api` aborts with "cache miss for anchor <sha>".
+- **`ParaphrasePromptVersion` is bumped** — developer changed the prompt; every cache entry is now invalid.
+
+Recovery (same as bootstrap): re-run `rebuild_corpus --seed 42` without `--no-api`, commit the updated cache. This is expected developer workflow when evolving the prompt or seed; the only constraint is "commit the cache when regenerating".
+
+**Anchor-set stability hedge**: to reduce churn-driven cache misses, `rebuild_corpus` uses a stable deterministic selector (`id * 2654435761 + seed`) rather than `ORDER BY RANDOM()`. New memories at higher ids don't displace existing low-id selections until the selection modulo shifts. For the `--seed 42` fixture we'll commit, stability is good for thousands of new memories.
+
 ### Corpus artifacts
 
 - `ad_hoc/memory_eval/corpus.jsonl` — 750 `CorpusEntry` lines. Existing schema. Header `# APPROVED`.
@@ -79,7 +111,29 @@ Why ≤3 overlap instead of zero: with zero overlap, TFIDF baseline is mathemati
 
 - **Load anchors from sidecar**, not `builtinFixtures()`.
 - **Seed store with sidecar memories**, track corpus-id → store-id map.
-- **After each `Store.Insert`, explicitly call `vecIndex.Upsert(storeID, embedder.Embed(content), project)`** for BGE configs. `Store.Insert` does NOT auto-populate the vec0 table (confirmed by reading pkg/memory/memory.go:448-531 — `insertDirect`/`insertWithChunks` write the `memories` table + optional `memory_chunks` table, never `vecIndex`). The pattern is extracted into a shared helper `seedStoreWithVectors(store, idx, embedder, anchors)` — same pattern as `pkg/memory/hybrid_integration_test.go:186-193`.
+- **After each `Store.Insert`, explicitly call `vecIndex.Upsert(storeID, embedder.Embed(content), project)`** for BGE configs. `Store.Insert` does NOT auto-populate the vec0 table (confirmed by reading pkg/memory/memory.go:448-531 — `insertDirect`/`insertWithChunks` write the `memories` table + optional `memory_chunks` table, never `vecIndex`). The pattern is extracted into a shared helper:
+
+  ```go
+  // seedStoreWithVectors seeds store with anchors and upserts their embeddings
+  // into idx. The caller is responsible for calling store.SetProject(project)
+  // BEFORE invoking this helper — helper does not re-apply SetProject. The
+  // same `project` MUST be passed to idx.Upsert so vec0 partition matches
+  // what the store queries. This contract is lifted from
+  // pkg/memory/hybrid_integration_test.go:160-193.
+  func seedStoreWithVectors(store *memory.Store, idx memory.VectorIndex,
+                            emb memory.Embedder, anchors []CorpusAnchor,
+                            project string) (map[int64]int64, error)
+  ```
+
+  Caller sequence:
+
+  ```go
+  store.SetProject("oro-eval")                      // SOURCE OF TRUTH for scope
+  idx, _ := memory.NewSQLiteVecIndex(db)            // project comes via Upsert arg
+  anchorMap, _ := seedStoreWithVectors(store, idx, emb, anchors, "oro-eval")
+  ```
+
+  If the two project strings disagree, the eval runs against an empty vec0 partition — silently degrading to FTS5-only. `TestSeedFromAnchorSidecar` asserts upsert count matches seed count under a specific project name; a follow-up assertion verifies `vec_version`-scoped partition table `vec_memories_oro_eval` exists with 50 rows.
 - **Run all migrations** when opening the in-memory DB: `SchemaDDL` + `MigrateSemanticMemorySearchEvents` + `MigrateSemanticMemoryChunks` + `MigrateSemanticMemoryDense` + `MigrateSemanticMemoryBackfillState`. Without these, `insertWithChunks` fails with "no such table: memory_chunks" for any anchor whose content exceeds 512 tokens.
 
 `embedderForCfg` replaced by a per-config setup function `setupConfig(cfg) → (store, embedder, cleanup)` that wires vector index + reranker:
@@ -221,10 +275,13 @@ hardware:
   cpu: Apple M3 Pro                        # from sysctl -n machdep.cpu.brand_string
 corpus:
   seed: 42
-  sha: 9a8f2e6d...                         # sha256 of corpus.jsonl content
-  num_queries: 150
+  corpus_sha: 9a8f2e6d...                  # sha256 of corpus.jsonl only
+  anchors_sha: 7b3f1c2a...                 # sha256 of corpus_anchors.jsonl only
+  paraphrase_cache_sha: 4e9d0a8b...        # sha256 of paraphrase_cache.jsonl only
+  inputs_sha: a1b2c3d4...                  # sha256 of (corpus || anchors || cache) — reproducibility key
+  num_queries_scored: 150                  # unique queries evaluated
   num_anchors: 50
-  num_pairs: 750
+  num_pairs: 750                           # total corpus entries incl. distractors
   fallback_paraphrase_rate: 0.04           # fraction of paraphrases from templated fallback (0-1)
 models:
   embedder:
@@ -346,7 +403,15 @@ rebuild_corpus: pick 50 anchors, paraphrase (≤2-word overlap), build pairs
 
 ### Benchmark prerequisite
 
-22. `go test -bench BenchmarkBGERerankPair -benchtime=20x ./pkg/memory/...` output committed to `ad_hoc/memory_eval/bench.txt` before finalizing `--fast` sample size. If per-pair latency measured as X ms, `--fast` sample size is chosen as `min(10, floor(30000 / (20 * X)))` — documented in design.
+22. `go test -bench BenchmarkBGERerankPair -benchtime=20x ./pkg/memory/...` output committed to `ad_hoc/memory_eval/bench.txt` before finalizing `--fast` sample size. If per-pair latency measured as `X ms`, `--fast` sample size is:
+
+    ```
+    size = max(5, min(10, floor(30000 / (20 * X))))
+    ```
+
+    Floor=5 guarantees minimum statistical meaning (one query MRR is noise; 5 queries gives a discernible trend). If `floor(30000 / (20 * X)) < 5` — i.e. per-pair latency >300ms — bead 3 aborts with a clear error pointing to either faster hardware or a longer `--fast` budget. This prevents the "CI-fast but nobody runs full eval" facade.
+    
+    **Bead 3 prereq**: `make install` must have been run so ORT + tokenizer dylibs are at `~/.oro/lib/` and BGE models are under `~/.oro/models/`. Stated in bead's Read: field.
 
 ### Anti-criteria (explicit non-goals)
 
@@ -355,6 +420,20 @@ rebuild_corpus: pick 50 anchors, paraphrase (≤2-word overlap), build pairs
 - **Not** required: corpus entries exactly 100. The spec's "warning below 100" threshold is satisfied by 750.
 - **Not** required: the driver swap (modernc → mattn) in the main codebase. Eval uses a purpose-built helper that bypasses the issue; main binary unchanged.
 - **Not** required: paraphrases remain semantically "perfect" — the ≤3 overlap constraint + templated fallback means some paraphrases may be stilted. That's fine. Gate is what matters.
+
+## Documented Residual Risks (accepted, not mitigated this round)
+
+Per R3 recommendation: the following are acknowledged tradeoffs rather than design defects. If any materializes as a real problem during first-run, file a follow-up bead.
+
+1. **≤3 overlap threshold is a first-run guess, not an empirical measurement.** R3 asked for sampling 10 anchors through live Haiku and measuring overlap distribution before committing. Not done. Risk: if actual Haiku output exceeds ≤3 on >20% of attempts, `rebuild_corpus` aborts per step 9. Recovery path: bump threshold to ≤4 OR loosen the prompt instruction OR raise the fallback abort threshold. Any of these is a one-line change. Documented in `ad_hoc/memory_eval/README.md` under "Troubleshooting".
+
+2. **Gate thresholds 1.30× / 1.20× inherited from original precision@k spec.** MRR is scaled differently; at low baselines (e.g. MRR=0.05) a 1.30× ratio is noise. Not re-justified for v4. If the first run shows tfidf MRR in a low-signal range, file a follow-up bead to either (a) re-justify the thresholds with literature, (b) switch to absolute-delta gating (`warm_mrr - base_mrr ≥ 0.10`), or (c) require both absolute and ratio. Eval still runs; gate decision is just interpretable or not.
+
+3. **Lemmatizer scope = plural-s only.** Verb inflections (`run/ran/running`, `retry/retried`) bypass overlap detection. Over-counts as "non-overlap" where real overlap exists; TFIDF baseline slightly weaker than reality, warm more likely to beat it for a wrong reason. Acceptable for first-run signal. If gate ambiguity arises, upgrade to a proper lemmatizer (`github.com/aaaton/golem` or Snowball stemmer).
+
+4. **Fallback rate check fires at end of run.** 50 anchors, 150 paraphrase attempts. Worst case: 31 fallbacks (21% of 150) after 49 anchors — burns all API calls before aborting. Accepted; checking per-anchor has its own problems (early-run variance).
+
+5. **Distractor entries in `corpus.jsonl` are dead data for the current metric.** Kept for (a) future metrics that may consume them (e.g. pair-ranking loss), (b) explicit ground truth provenance. `eval_report.yaml.num_queries_scored: 150` vs `num_pairs: 750` makes the distinction explicit.
 
 ## Premortem
 
