@@ -1,0 +1,23 @@
+ad_hoc/memory_eval/cmd/compare/main.go
+  8d13834da3e3e27f 143,177-179,197-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "83ff2d02201ac6310725aef6805d91e518cbfe14",
+  "prompts": {
+    "8d13834da3e3e27f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6db90904-5ab7-4fd0-aa10-6b03cc18ac38",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 156,
+      "total_deletions": 4,
+      "accepted_lines": 156,
+      "overriden_lines": 0
+    }
+  }
+}
