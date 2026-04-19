@@ -1,0 +1,27 @@
+ad_hoc/memory_eval/stopwords.txt
+  5713994da8b8ef2f 1-125
+ad_hoc/memory_eval/paraphrase_validator.go
+  5713994da8b8ef2f 1-102
+ad_hoc/memory_eval/paraphrase_validator_test.go
+  5713994da8b8ef2f 1-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "8af7d7d6319a1e00c158a745fe4fe747dd57db24",
+  "prompts": {
+    "5713994da8b8ef2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c6fc183-a084-4ba3-afd9-b76d85fdf0f1",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 282,
+      "total_deletions": 1,
+      "accepted_lines": 280,
+      "overriden_lines": 0
+    }
+  }
+}
