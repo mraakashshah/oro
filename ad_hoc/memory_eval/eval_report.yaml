@@ -1,0 +1,46 @@
+timestamp: "2026-04-19T06:45:32Z"
+hardware:
+  arch: arm64
+  os: darwin
+  cpu: Apple M2 Max
+corpus:
+  seed: 0
+  corpus_sha: 081af57c4e4e637d2932c676ec42767fb144245c3c7fdd7e2b9e9e8bfd8f4517
+  anchors_sha: 1536685ff10d055f3f28371947fd19c5ac188c75abb3f29e0365fa86a92011f2
+  paraphrase_cache_sha: 82030687b0eb20766d5cda6edfaf5d1cc44265fa8cfe0a41d02176e0a48679b4
+  inputs_sha: 74a78fe89f5e947a403a8e928c796c3ca70eefd206903624a5c409ecba9d569b
+  num_queries_scored: 142
+  num_anchors: 50
+  num_pairs: 750
+  fallback_paraphrase_rate: 0.647887323943662
+models:
+  embedder:
+    name: bge-small-en-v1.5
+    sha: 828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35
+  reranker:
+    name: bge-reranker-base
+    sha: 15b9a8c3da82eddf263df571281166e00e9308fe19d077084b642ebfcaf06d2b
+  tokenizer:
+    name: bge-tokenizer
+    sha: d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66
+configs:
+  dispatcher-warm:
+    mrr: 0.3900681868991732
+    hit_at_10: 0.7394366197183099
+    hit_at_1: 0.2676056338028169
+    runtime_ms: 1125
+  solo-cli-cold:
+    mrr: 0.1699055443773753
+    hit_at_10: 0.44366197183098594
+    hit_at_1: 0.08450704225352113
+    runtime_ms: 270
+  tfidf:
+    mrr: 0.4975324167225578
+    hit_at_10: 0.9225352112676056
+    hit_at_1: 0.3591549295774648
+    runtime_ms: 183
+gate:
+  pass: false
+  warm_ratio: 0.7840055718755095
+  cold_ratio: 0.3414964305172517
+  reason: warm MRR 0.3901 < 1.30×0.4975 baseline

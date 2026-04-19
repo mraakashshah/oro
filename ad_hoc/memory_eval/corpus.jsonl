@@ -1,102 +1,754 @@
-# source: history
 # APPROVED
-{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot — it exits after first connection closes. Use nc -k -l \u003cport\u003e for persistent listeners in tests (keep-open mode)","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"nc -l \u003cport\u003e on macOS is one-shot —","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"gotcha: nc -l \u003cport\u003e on macOS","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes — after SIGTERMing a child process, add a background reaper goroutine calling proc.Wait() so the zombie is reaped and Signal(0) starts returning ESRCH","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"IsProcessAlive via Signal(0) returns true for zombie processes","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"gotcha: IsProcessAlive via Signal(0) returns true","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported (BuildFoo) to unexported (buildFoo), internal tests (package foo, not package foo_test) fail typecheck with 'undefined: BuildFoo' — check all test files for the old capitalization","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"when a Go function is renamed from exported","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"gotcha: when a Go function is","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"gotcha: when a Go function is","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"gotcha: when a Go function is","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"gotcha: when a Go function is","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"gotcha: when a Go function is","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"gotcha: when a Go function is","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"gotcha: when a Go function is","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"gotcha: when a Go function is","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function (e.g. absProjectRoot via filepath.Abs) is later re-declared with := further down, Go reports 'no new variables on left side of :=' — reuse the earlier var instead","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"if a variable computed early in a function","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"gotcha: if a variable computed early","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"gotcha: if a variable computed early","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"gotcha: if a variable computed early","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"gotcha: if a variable computed early","candidate_memory_id":13,"relevant":null,"source":"history"}
-{"query":"gotcha: if a variable computed early","candidate_memory_id":12,"relevant":null,"source":"history"}
-{"query":"gotcha: if a variable computed early","candidate_memory_id":11,"relevant":null,"source":"history"}
-{"query":"gotcha: if a variable computed early","candidate_memory_id":10,"relevant":null,"source":"history"}
-{"query":"gotcha: if a variable computed early","candidate_memory_id":1,"relevant":null,"source":"history"}
-{"query":"when removing a struct field in Go, grep all test files for direct field assignments (cfg.fieldName = ...) — they fail to compile silently until go test runs","candidate_memory_id":16,"relevant":null,"source":"history"}
-{"query":"when removing a struct field in Go, grep all test files for direct field assignments (cfg.fieldName = ...) — they fail to compile silently until go test runs","candidate_memory_id":15,"relevant":null,"source":"history"}
-{"query":"when removing a struct field in Go, grep all test files for direct field assignments (cfg.fieldName = ...) — they fail to compile silently until go test runs","candidate_memory_id":14,"relevant":null,"source":"history"}
-{"query":"when removing a struct field in Go, grep all test files for direct field assignments (cfg.fieldName = ...) — they fail to compile silently until go test runs","candidate_memory_id":13,"relevant":null,"source":"history"}
+# generated: 2026-04-19T06:44:40Z
+# seed: 42
+# fallback_rate: 0.0000
+{"query":"What is the purpose of stealth in this codebase?","candidate_memory_id":305,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of stealth in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of stealth in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of stealth in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of stealth in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does projects interact with other components here?","candidate_memory_id":305,"relevant":true,"source":"anchor"}
+{"query":"How does projects interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does projects interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does projects interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does projects interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around sha-256(resolved.","candidate_memory_id":305,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around sha-256(resolved.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around sha-256(resolved.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around sha-256(resolved.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around sha-256(resolved.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of wrapping in this codebase?","candidate_memory_id":610,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of wrapping in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of wrapping in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of wrapping in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of wrapping in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does `io.reader` interact with other components here?","candidate_memory_id":610,"relevant":true,"source":"anchor"}
+{"query":"How does `io.reader` interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does `io.reader` interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does `io.reader` interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does `io.reader` interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around context.","candidate_memory_id":610,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around context.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around context.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around context.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around context.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dead in this codebase?","candidate_memory_id":233,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of dead in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dead in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dead in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dead in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does export interact with other components here?","candidate_memory_id":233,"relevant":true,"source":"anchor"}
+{"query":"How does export interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does export interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does export interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does export interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around lint.","candidate_memory_id":233,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around lint.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around lint.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around lint.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around lint.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of listsql in this codebase?","candidate_memory_id":538,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of listsql in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of listsql in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of listsql in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of listsql in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does filter interact with other components here?","candidate_memory_id":538,"relevant":true,"source":"anchor"}
+{"query":"How does filter interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does filter interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does filter interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does filter interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around previously.","candidate_memory_id":538,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around previously.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around previously.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around previously.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around previously.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of doctor in this codebase?","candidate_memory_id":161,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of doctor in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of doctor in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of doctor in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of doctor in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":161,"relevant":true,"source":"anchor"}
+{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around corrupt.","candidate_memory_id":161,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around corrupt.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around corrupt.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around corrupt.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around corrupt.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of race in this codebase?","candidate_memory_id":466,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of race in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of race in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of race in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of race in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does condition interact with other components here?","candidate_memory_id":466,"relevant":true,"source":"anchor"}
+{"query":"How does condition interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does condition interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does condition interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does condition interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around fixes.","candidate_memory_id":466,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around fixes.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around fixes.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around fixes.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around fixes.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of quality in this codebase?","candidate_memory_id":89,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of quality in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of quality in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of quality in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of quality in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does gate interact with other components here?","candidate_memory_id":89,"relevant":true,"source":"anchor"}
+{"query":"How does gate interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does gate interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does gate interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does gate interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around background.","candidate_memory_id":89,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around background.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around background.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around background.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around background.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dashboard in this codebase?","candidate_memory_id":394,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of dashboard in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dashboard in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dashboard in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dashboard in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does design interact with other components here?","candidate_memory_id":394,"relevant":true,"source":"anchor"}
+{"query":"How does design interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does design interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does design interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does design interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around intentionally.","candidate_memory_id":394,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around intentionally.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around intentionally.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around intentionally.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around intentionally.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of compare.go in this codebase?","candidate_memory_id":699,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of compare.go in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of compare.go in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of compare.go in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of compare.go in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does precision@k interact with other components here?","candidate_memory_id":699,"relevant":true,"source":"anchor"}
+{"query":"How does precision@k interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does precision@k interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does precision@k interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does precision@k interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around gate.","candidate_memory_id":699,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around gate.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around gate.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around gate.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around gate.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of defaultmemorystore in this codebase?","candidate_memory_id":17,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of defaultmemorystore in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of defaultmemorystore in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of defaultmemorystore in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of defaultmemorystore in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does cmd/oro/store.go:13 interact with other components here?","candidate_memory_id":17,"relevant":true,"source":"anchor"}
+{"query":"How does cmd/oro/store.go:13 interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does cmd/oro/store.go:13 interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does cmd/oro/store.go:13 interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does cmd/oro/store.go:13 interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around opens.","candidate_memory_id":17,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around opens.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around opens.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around opens.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around opens.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of pre-existing in this codebase?","candidate_memory_id":322,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of pre-existing in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of pre-existing in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of pre-existing in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of pre-existing in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does blank-identifier interact with other components here?","candidate_memory_id":322,"relevant":true,"source":"anchor"}
+{"query":"How does blank-identifier interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does blank-identifier interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does blank-identifier interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does blank-identifier interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around anti-patterns.","candidate_memory_id":322,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around anti-patterns.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around anti-patterns.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around anti-patterns.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around anti-patterns.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":627,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does exported interact with other components here?","candidate_memory_id":627,"relevant":true,"source":"anchor"}
+{"query":"How does exported interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does exported interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does exported interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does exported interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around method.","candidate_memory_id":627,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around method.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around method.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around method.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around method.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dispatcher in this codebase?","candidate_memory_id":250,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of dispatcher in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dispatcher in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dispatcher in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dispatcher in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":250,"relevant":true,"source":"anchor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around flaky.","candidate_memory_id":250,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around flaky.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around flaky.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around flaky.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around flaky.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":555,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of scaffolding in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":555,"relevant":true,"source":"anchor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around fields.","candidate_memory_id":555,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around fields.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around fields.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around fields.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around fields.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":178,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":178,"relevant":true,"source":"anchor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does struct interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around field.","candidate_memory_id":178,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around field.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around field.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around field.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around field.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of select in this codebase?","candidate_memory_id":483,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of select in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of select in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of select in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of select in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does statement interact with other components here?","candidate_memory_id":483,"relevant":true,"source":"anchor"}
+{"query":"How does statement interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does statement interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does statement interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does statement interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around order.","candidate_memory_id":483,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around order.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around order.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around order.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around order.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of plumbing in this codebase?","candidate_memory_id":106,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of plumbing in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of plumbing in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of plumbing in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of plumbing in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does partially interact with other components here?","candidate_memory_id":106,"relevant":true,"source":"anchor"}
+{"query":"How does partially interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does partially interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does partially interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does partially interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around built.","candidate_memory_id":106,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around built.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around built.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around built.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around built.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of epic in this codebase?","candidate_memory_id":411,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of epic in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of epic in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of epic in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of epic in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does merge interact with other components here?","candidate_memory_id":411,"relevant":true,"source":"anchor"}
+{"query":"How does merge interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does merge interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does merge interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does merge interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around failures.","candidate_memory_id":411,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around failures.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around failures.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around failures.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around failures.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of missing in this codebase?","candidate_memory_id":716,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of missing in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of missing in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of missing in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of missing in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does `cgo` interact with other components here?","candidate_memory_id":716,"relevant":true,"source":"anchor"}
+{"query":"How does `cgo` interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does `cgo` interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does `cgo` interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does `cgo` interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around build.","candidate_memory_id":716,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around build.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around build.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around build.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around build.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of tests/ in this codebase?","candidate_memory_id":34,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of tests/ in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of tests/ in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of tests/ in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of tests/ in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does directory interact with other components here?","candidate_memory_id":34,"relevant":true,"source":"anchor"}
+{"query":"How does directory interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does directory interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does directory interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does directory interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around mirrors.","candidate_memory_id":34,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around mirrors.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around mirrors.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around mirrors.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around mirrors.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of decomposing in this codebase?","candidate_memory_id":339,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of decomposing in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of decomposing in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of decomposing in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of decomposing in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does epic interact with other components here?","candidate_memory_id":339,"relevant":true,"source":"anchor"}
+{"query":"How does epic interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does epic interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does epic interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does epic interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around beadcraft.","candidate_memory_id":339,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around beadcraft.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around beadcraft.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around beadcraft.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around beadcraft.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of testpackage in this codebase?","candidate_memory_id":644,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of testpackage in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of testpackage in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of testpackage in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of testpackage in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":644,"relevant":true,"source":"anchor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around requires.","candidate_memory_id":644,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around requires.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around requires.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around requires.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around requires.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of installlaunchagent in this codebase?","candidate_memory_id":267,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of installlaunchagent in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of installlaunchagent in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of installlaunchagent in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of installlaunchagent in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does similar interact with other components here?","candidate_memory_id":267,"relevant":true,"source":"anchor"}
+{"query":"How does similar interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does similar interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does similar interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does similar interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around install.","candidate_memory_id":267,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around install.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around install.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around install.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around install.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dbutil in this codebase?","candidate_memory_id":572,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of dbutil in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dbutil in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dbutil in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of dbutil in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does another interact with other components here?","candidate_memory_id":572,"relevant":true,"source":"anchor"}
+{"query":"How does another interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does another interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does another interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does another interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around lives.","candidate_memory_id":572,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around lives.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around lives.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around lives.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around lives.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":195,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does template interact with other components here?","candidate_memory_id":195,"relevant":true,"source":"anchor"}
+{"query":"How does template interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does template interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does template interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does template interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around variables.","candidate_memory_id":195,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around variables.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around variables.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around variables.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around variables.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of http in this codebase?","candidate_memory_id":500,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of http in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of http in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of http in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of http in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does headers interact with other components here?","candidate_memory_id":500,"relevant":true,"source":"anchor"}
+{"query":"How does headers interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does headers interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does headers interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does headers interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around implicitly.","candidate_memory_id":500,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around implicitly.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around implicitly.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around implicitly.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around implicitly.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of worktree in this codebase?","candidate_memory_id":123,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of worktree in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of worktree in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of worktree in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of worktree in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does externally interact with other components here?","candidate_memory_id":123,"relevant":true,"source":"anchor"}
+{"query":"How does externally interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does externally interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does externally interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does externally interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around gc'd.","candidate_memory_id":123,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around gc'd.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around gc'd.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around gc'd.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around gc'd.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of biome in this codebase?","candidate_memory_id":428,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of biome in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of biome in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of biome in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of biome in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does 2.4.4 interact with other components here?","candidate_memory_id":428,"relevant":true,"source":"anchor"}
+{"query":"How does 2.4.4 interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does 2.4.4 interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does 2.4.4 interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does 2.4.4 interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around rejects.","candidate_memory_id":428,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around rejects.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around rejects.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around rejects.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around rejects.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of runconfigwithembedder in this codebase?","candidate_memory_id":733,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of runconfigwithembedder in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of runconfigwithembedder in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of runconfigwithembedder in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of runconfigwithembedder in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does signature interact with other components here?","candidate_memory_id":733,"relevant":true,"source":"anchor"}
+{"query":"How does signature interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does signature interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does signature interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does signature interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around entries.","candidate_memory_id":733,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around entries.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around entries.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around entries.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around entries.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of signal(0 in this codebase?","candidate_memory_id":51,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of signal(0 in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of signal(0 in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of signal(0 in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of signal(0 in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does returns interact with other components here?","candidate_memory_id":51,"relevant":true,"source":"anchor"}
+{"query":"How does returns interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does returns interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does returns interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does returns interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around success.","candidate_memory_id":51,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around success.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around success.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around success.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around success.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of oro's in this codebase?","candidate_memory_id":356,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of oro's in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of oro's in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of oro's in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of oro's in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":356,"relevant":true,"source":"anchor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around exports.","candidate_memory_id":356,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around exports.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around exports.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around exports.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around exports.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of sqlite-vec in this codebase?","candidate_memory_id":661,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of sqlite-vec in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of sqlite-vec in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of sqlite-vec in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of sqlite-vec in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does bundled interact with other components here?","candidate_memory_id":661,"relevant":true,"source":"anchor"}
+{"query":"How does bundled interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does bundled interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does bundled interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does bundled interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around release.","candidate_memory_id":661,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around release.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around release.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around release.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around release.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of testshutdown_worktreesremovedafterworkerstop in this codebase?","candidate_memory_id":284,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of testshutdown_worktreesremovedafterworkerstop in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of testshutdown_worktreesremovedafterworkerstop in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of testshutdown_worktreesremovedafterworkerstop in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of testshutdown_worktreesremovedafterworkerstop in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does dispatcher_test.go interact with other components here?","candidate_memory_id":284,"relevant":true,"source":"anchor"}
+{"query":"How does dispatcher_test.go interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does dispatcher_test.go interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does dispatcher_test.go interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does dispatcher_test.go interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around timing-sensitive.","candidate_memory_id":284,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around timing-sensitive.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around timing-sensitive.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around timing-sensitive.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around timing-sensitive.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":589,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does distinguishes interact with other components here?","candidate_memory_id":589,"relevant":true,"source":"anchor"}
+{"query":"How does distinguishes interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does distinguishes interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does distinguishes interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does distinguishes interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around bare.","candidate_memory_id":589,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around bare.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around bare.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around bare.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around bare.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":212,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of adding in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does `configpath` interact with other components here?","candidate_memory_id":212,"relevant":true,"source":"anchor"}
+{"query":"How does `configpath` interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does `configpath` interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does `configpath` interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does `configpath` interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around parameter.","candidate_memory_id":212,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around parameter.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around parameter.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around parameter.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around parameter.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of html/template.executetemplate in this codebase?","candidate_memory_id":517,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of html/template.executetemplate in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of html/template.executetemplate in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of html/template.executetemplate in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of html/template.executetemplate in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does writes interact with other components here?","candidate_memory_id":517,"relevant":true,"source":"anchor"}
+{"query":"How does writes interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does writes interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does writes interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does writes interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around io.writer.","candidate_memory_id":517,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around io.writer.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around io.writer.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around io.writer.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around io.writer.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":140,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of removing in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":140,"relevant":true,"source":"anchor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does dead interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around injectable.","candidate_memory_id":140,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around injectable.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around injectable.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around injectable.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around injectable.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of `t.fatal`/`t.fatalf` in this codebase?","candidate_memory_id":445,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of `t.fatal`/`t.fatalf` in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of `t.fatal`/`t.fatalf` in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of `t.fatal`/`t.fatalf` in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of `t.fatal`/`t.fatalf` in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does goroutines interact with other components here?","candidate_memory_id":445,"relevant":true,"source":"anchor"}
+{"query":"How does goroutines interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does goroutines interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does goroutines interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does goroutines interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around causes.","candidate_memory_id":445,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around causes.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around causes.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around causes.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around causes.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of os.mkdirall in this codebase?","candidate_memory_id":68,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of os.mkdirall in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of os.mkdirall in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of os.mkdirall in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of os.mkdirall in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does applies interact with other components here?","candidate_memory_id":68,"relevant":true,"source":"anchor"}
+{"query":"How does applies interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does applies interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does applies interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does applies interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around mode.","candidate_memory_id":68,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around mode.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around mode.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around mode.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around mode.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of rebasing in this codebase?","candidate_memory_id":373,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of rebasing in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of rebasing in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of rebasing in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of rebasing in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does feature interact with other components here?","candidate_memory_id":373,"relevant":true,"source":"anchor"}
+{"query":"How does feature interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does feature interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does feature interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does feature interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around branch.","candidate_memory_id":373,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around branch.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around branch.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around branch.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around branch.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of integration in this codebase?","candidate_memory_id":678,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of integration in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of integration in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of integration in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of integration in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":678,"relevant":true,"source":"anchor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does tests interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around memory.store.hybridsearch.","candidate_memory_id":678,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around memory.store.hybridsearch.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around memory.store.hybridsearch.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around memory.store.hybridsearch.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around memory.store.hybridsearch.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of reconcileorphanedbeads in this codebase?","candidate_memory_id":301,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of reconcileorphanedbeads in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of reconcileorphanedbeads in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of reconcileorphanedbeads in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of reconcileorphanedbeads in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does must interact with other components here?","candidate_memory_id":301,"relevant":true,"source":"anchor"}
+{"query":"How does must interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does must interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does must interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does must interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around also.","candidate_memory_id":301,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around also.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around also.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around also.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around also.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of fakeembedder in this codebase?","candidate_memory_id":606,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of fakeembedder in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of fakeembedder in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of fakeembedder in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of fakeembedder in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does field interact with other components here?","candidate_memory_id":606,"relevant":true,"source":"anchor"}
+{"query":"How does field interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does field interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does field interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does field interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around named.","candidate_memory_id":606,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around named.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around named.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around named.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around named.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":229,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of countdistinctmodules in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does regex interact with other components here?","candidate_memory_id":229,"relevant":true,"source":"anchor"}
+{"query":"How does regex interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does regex interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does regex interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does regex interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around approach.","candidate_memory_id":229,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around approach.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around approach.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around approach.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around approach.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of committed in this codebase?","candidate_memory_id":534,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of committed in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of committed in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of committed in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of committed in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":534,"relevant":true,"source":"anchor"}
+{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around directory.","candidate_memory_id":534,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around directory.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around directory.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around directory.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around directory.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of handlereviewrejection in this codebase?","candidate_memory_id":157,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of handlereviewrejection in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of handlereviewrejection in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of handlereviewrejection in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of handlereviewrejection in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does inline interact with other components here?","candidate_memory_id":157,"relevant":true,"source":"anchor"}
+{"query":"How does inline interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does inline interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does inline interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does inline interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around payload.","candidate_memory_id":157,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around payload.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around payload.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around payload.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around payload.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of extract in this codebase?","candidate_memory_id":462,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of extract in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of extract in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of extract in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of extract in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does connclosecleanup(workerid interact with other components here?","candidate_memory_id":462,"relevant":true,"source":"anchor"}
+{"query":"How does connclosecleanup(workerid interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does connclosecleanup(workerid interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does connclosecleanup(workerid interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does connclosecleanup(workerid interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around string.","candidate_memory_id":462,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around string.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around string.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around string.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around string.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of errcheck in this codebase?","candidate_memory_id":85,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of errcheck in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of errcheck in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of errcheck in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of errcheck in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":85,"relevant":true,"source":"anchor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does linter interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around flags.","candidate_memory_id":85,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around flags.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around flags.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around flags.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around flags.","candidate_memory_id":538,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of handler in this codebase?","candidate_memory_id":390,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of handler in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of handler in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of handler in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of handler in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does test interact with other components here?","candidate_memory_id":390,"relevant":true,"source":"anchor"}
+{"query":"How does test interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does test interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does test interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does test interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around httptest.responserecorder.","candidate_memory_id":390,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around httptest.responserecorder.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around httptest.responserecorder.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around httptest.responserecorder.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around httptest.responserecorder.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of store.insert in this codebase?","candidate_memory_id":695,"relevant":true,"source":"anchor"}
+{"query":"What is the purpose of store.insert in this codebase?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of store.insert in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of store.insert in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"What is the purpose of store.insert in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"How does takes interact with other components here?","candidate_memory_id":695,"relevant":true,"source":"anchor"}
+{"query":"How does takes interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"How does takes interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"How does takes interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"How does takes interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around memory.insertparams.","candidate_memory_id":695,"relevant":true,"source":"anchor"}
+{"query":"Describe the design decision around memory.insertparams.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around memory.insertparams.","candidate_memory_id":233,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around memory.insertparams.","candidate_memory_id":161,"relevant":false,"source":"distractor"}
+{"query":"Describe the design decision around memory.insertparams.","candidate_memory_id":466,"relevant":false,"source":"distractor"}
