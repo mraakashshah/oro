@@ -60,29 +60,29 @@ func TestPrecisionAtKAndGates(t *testing.T) {
 	t.Run("checkGate_passes", func(t *testing.T) {
 		// warmP10 = 0.26 >= 1.30 * 0.2 = 0.26 → pass
 		// coldP10 = 0.24 >= 1.20 * 0.2 = 0.24 → pass
-		if !CheckGate(0.2, 0.26, 0.24) {
+		if !CheckGate(0.2, 0.26, 0.24).Pass {
 			t.Error("expected gate to pass")
 		}
 	})
 
 	t.Run("checkGate_fails_warm", func(t *testing.T) {
 		// warmP10 = 0.25 < 1.30 * 0.2 = 0.26 → fail
-		if CheckGate(0.2, 0.25, 0.24) {
+		if CheckGate(0.2, 0.25, 0.24).Pass {
 			t.Error("expected gate to fail (warm below threshold)")
 		}
 	})
 
 	t.Run("checkGate_fails_cold", func(t *testing.T) {
 		// coldP10 = 0.23 < 1.20 * 0.2 = 0.24 → fail
-		if CheckGate(0.2, 0.26, 0.23) {
+		if CheckGate(0.2, 0.26, 0.23).Pass {
 			t.Error("expected gate to fail (cold below threshold)")
 		}
 	})
 
 	t.Run("checkGate_degenerate_zeros", func(t *testing.T) {
-		// 0 >= 1.30*0 = 0 ≥ 0 → pass; 0 >= 1.20*0 = 0 → pass
-		if !CheckGate(0, 0, 0) {
-			t.Error("expected gate to pass with all-zero precision")
+		// zero-baseline guard: baseMRR == 0 always fails regardless of warm/cold
+		if CheckGate(0, 0, 0).Pass {
+			t.Error("expected gate to fail when baseline is 0")
 		}
 	})
 
@@ -177,8 +177,9 @@ func TestPrecisionAtKAndGates(t *testing.T) {
 		}
 	})
 
-	t.Run("gatePassesWithUnlabeledCorpus", func(t *testing.T) {
-		// No labeled relevant items → precision = 0 for all configs → gate passes (0 ≥ 0).
+	t.Run("gateFailsWithUnlabeledCorpus", func(t *testing.T) {
+		// No labeled relevant items → precision = 0 for all configs.
+		// Zero-baseline guard triggers: base==0 → gate fails.
 		corpus := makeUnlabeledCorpus()
 
 		_, baseP10, err := RunConfigWithEmbedder(corpus, memory.NewEmbedder(), 10)
@@ -194,8 +195,8 @@ func TestPrecisionAtKAndGates(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if !CheckGate(baseP10, warmP10, coldP10) {
-			t.Errorf("gate should pass with all-zero precision: base=%v warm=%v cold=%v",
+		if CheckGate(baseP10, warmP10, coldP10).Pass {
+			t.Errorf("gate should fail when baseline is 0: base=%v warm=%v cold=%v",
 				baseP10, warmP10, coldP10)
 		}
 	})

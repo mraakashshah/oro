@@ -14,11 +14,7 @@ import (
 	"oro/pkg/protocol"
 )
 
-const (
-	approvalMarker = "# APPROVED"
-	warmThreshold  = 1.30
-	coldThreshold  = 1.20
-)
+const approvalMarker = "# APPROVED"
 
 // HasApprovalMarker reports whether path contains a line equal to "# APPROVED".
 // Returns false (not true) when the line is absent; only returns an error on I/O failure.
@@ -52,13 +48,6 @@ func PrecisionAtK(topKIDs []int64, relevant map[int64]bool, k int) float64 {
 		}
 	}
 	return float64(hits) / float64(k)
-}
-
-// CheckGate returns true iff:
-//
-//	warmP10 >= 1.30 * baseP10  AND  coldP10 >= 1.20 * baseP10
-func CheckGate(baseP10, warmP10, coldP10 float64) bool {
-	return warmP10 >= warmThreshold*baseP10 && coldP10 >= coldThreshold*baseP10
 }
 
 // RunConfig evaluates precision@5 and precision@10 for the named configuration.
