@@ -423,7 +423,7 @@ rebuild_corpus: pick 50 anchors, paraphrase (≤2-word overlap), build pairs
     ```
 
     Floor=5 guarantees minimum statistical meaning (one query MRR is noise; 5 queries gives a discernible trend). If `floor(30000 / (20 * X)) < 5` — i.e. per-pair latency >300ms — bead 3 aborts with a clear error pointing to either faster hardware or a longer `--fast` budget. This prevents the "CI-fast but nobody runs full eval" facade.
-    
+
     **Bead 3 prereq**: `make install` must have been run so ORT + tokenizer dylibs are at `~/.oro/lib/` and BGE models are under `~/.oro/models/`. Stated in bead's Read: field.
 
 ### Anti-criteria (explicit non-goals)

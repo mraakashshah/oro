@@ -13,3 +13,4 @@ MD060: false    # Table column style
 MD041: false    # First line heading
 MD034: false    # Bare URLs
 MD046: false    # Code block style (indented vs fenced)
+MD029: false    # Ordered list numbering (design docs use global AC numbering intentionally)
