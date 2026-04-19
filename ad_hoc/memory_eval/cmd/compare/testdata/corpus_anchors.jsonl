@@ -1,0 +1,3 @@
+{"id": 1, "content": "ruff --fix must run before pyright in CI/CD pipelines for Python linting", "type": "gotcha"}
+{"id": 2, "content": "SQLite WAL mode requires single-writer for consistency under concurrent access", "type": "lesson"}
+{"id": 3, "content": "always use table-driven tests in Go for comprehensive test coverage", "type": "decision"}

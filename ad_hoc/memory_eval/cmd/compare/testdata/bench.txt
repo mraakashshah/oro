@@ -1,0 +1,1 @@
+reranker_ms_per_pair: 1500
