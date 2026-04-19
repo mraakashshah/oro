@@ -186,6 +186,15 @@ func CountDistinctModules(acceptance string) int {
 			if !strings.Contains(part, "/") && !strings.Contains(part, ".") {
 				continue
 			}
+			// Strip the symbol suffix after ':'. A bead Read: line often carries
+			// slash-separated symbol names like "pkg/a/cache.go:ReadCache/WriteCache/CacheKey";
+			// without this trim, filepath.Dir treats "/WriteCache/CacheKey" as path
+			// segments and counts each symbol suffix as its own fake module,
+			// inflating the OVERSIZED_BEAD count. Colon isn't valid in POSIX paths,
+			// so splitting on the first one is safe.
+			if i := strings.Index(part, ":"); i >= 0 {
+				part = part[:i]
+			}
 			seen[filepath.Dir(part)] = struct{}{}
 		}
 	}

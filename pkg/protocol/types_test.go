@@ -283,6 +283,39 @@ func TestCountDistinctModulesSymbols(t *testing.T) {
 	}
 }
 
+func TestCountDistinctModulesMultiSymbolSuffix(t *testing.T) {
+	tests := []struct {
+		name       string
+		acceptance string
+		expected   int
+	}{
+		{
+			name:       "slash-separated symbols after colon do not inflate module count",
+			acceptance: "Read: pkg/a/cache.go:ReadCache/WriteCache/CacheKey",
+			expected:   1,
+		},
+		{
+			name:       "multiple files with slash-separated symbols same module",
+			acceptance: "Read: ad_hoc/memory_eval/validator.go:CountSharedContentWords, ad_hoc/memory_eval/cache.go:ReadCache/WriteCache/CacheKey",
+			expected:   1,
+		},
+		{
+			name:       "exact case from oro-njtv false positive",
+			acceptance: "Read: ad_hoc/memory_eval/paraphrase_validator.go:CountSharedContentWords (from bead oro-h9oj), ad_hoc/memory_eval/paraphrase_cache.go:ReadCache/WriteCache/CacheKey (from bead oro-ohcg), docs/plans/2026-04-18-memory-eval-harness-rebuild-design.md (Corpus generator step 3-5)",
+			expected:   2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := protocol.CountDistinctModules(tt.acceptance)
+			if got != tt.expected {
+				t.Errorf("CountDistinctModules(%q) = %d, want %d", tt.acceptance, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestCountDistinctModulesParenthetical(t *testing.T) {
 	tests := []struct {
 		name       string
