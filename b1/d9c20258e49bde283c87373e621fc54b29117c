@@ -1,0 +1,25 @@
+ad_hoc/memory_eval/harness.go
+  182c04aa4b7f8886 1-145,147-158
+ad_hoc/memory_eval/harness_test.go
+  182c04aa4b7f8886 1-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "b1d9c20258e49bde283c87373e621fc54b29117c",
+  "prompts": {
+    "182c04aa4b7f8886": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "acd33366-4eb3-4aa9-91ec-4f11abb7c24a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Aakash Shah",
+      "messages": [],
+      "total_additions": 251,
+      "total_deletions": 249,
+      "accepted_lines": 216,
+      "overriden_lines": 0
+    }
+  }
+}
