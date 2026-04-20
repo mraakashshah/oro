@@ -35,11 +35,179 @@ type processProbe struct {
 	readPSArgs  func(pid int) (string, error)
 }
 
+// serverIdentity is the persistent short-circuit cache written after a
+// successful identity probe. Lives at <oroHome>/dolt/.server-identity.json.
 type serverIdentity struct {
-	PID        int       `json:"pid"`
-	StartTime  string    `json:"start_time"`
-	DataDir    string    `json:"data_dir"`
-	ObservedAt time.Time `json:"observed_at"`
+	PID             int       `json:"pid"`
+	StartTime       string    `json:"start_time"`
+	DataDir         string    `json:"data_dir"`
+	DatabasePresent bool      `json:"database_present"`
+	ObservedAt      time.Time `json:"observed_at"`
+}
+
+// probeResult is the outcome of a successful runIdentityProbe call.
+type probeResult struct {
+	PID             int
+	DataDir         string
+	DatabasePresent bool
+}
+
+const cookieTTL = 60 * time.Second
+
+// identityProbeConfig holds injectable dependencies for runIdentityProbeImpl.
+type identityProbeConfig struct {
+	oroHome string
+	dbName  string
+	nowFn   func() time.Time
+
+	// Process probe deps
+	aliveFn    func(int) bool
+	getArgsFn  func(int) (string, error) // ps -p <pid> -o args=
+	getStartFn func(int) (string, error) // ps -p <pid> -o lstart=
+	findPIDFn  func() (int, error)       // lsof fallback
+
+	// SQL probe dep (returns dbPresent, err; exec.ErrNotFound means dolt absent)
+	sqlFn func(dbName string) (bool, error)
+}
+
+// runIdentityProbe verifies the shared dolt server is running with the
+// expected data directory and database. Uses a cookie to short-circuit
+// repeated probes within 60s.
+func runIdentityProbe(oroHome, dbName string) (probeResult, error) {
+	cfg := &identityProbeConfig{
+		oroHome:    oroHome,
+		dbName:     dbName,
+		nowFn:      time.Now,
+		aliveFn:    IsProcessAlive,
+		getArgsFn:  defaultReadPSArgs,
+		getStartFn: getProcessStartTime,
+		findPIDFn:  func() (int, error) { return discoverPIDByPort(SharedDoltPort) },
+		sqlFn:      doltSQLDatabasePresent,
+	}
+	return runIdentityProbeImpl(cfg)
+}
+
+// runIdentityProbeImpl is the testable core of runIdentityProbe.
+func runIdentityProbeImpl(cfg *identityProbeConfig) (probeResult, error) {
+	cookiePath := filepath.Join(cfg.oroHome, "dolt", ".server-identity.json")
+	expectedDataDir := filepath.Join(cfg.oroHome, "dolt")
+
+	if result, ok := tryCookieShortCircuit(cookiePath, cfg); ok {
+		return result, nil
+	}
+
+	pid, dataDir, startTime, err := identityProcessProbe(cfg, expectedDataDir)
+	if err != nil {
+		return probeResult{}, err
+	}
+
+	dbPresent, err := runSQLProbe(cfg)
+	if err != nil {
+		return probeResult{}, fmt.Errorf("sql probe: %w", err)
+	}
+
+	result := probeResult{PID: pid, DataDir: dataDir, DatabasePresent: dbPresent}
+
+	writeCookieFile(cookiePath, &serverIdentity{
+		PID:             pid,
+		StartTime:       startTime,
+		DataDir:         dataDir,
+		DatabasePresent: dbPresent,
+		ObservedAt:      cfg.nowFn(),
+	})
+
+	return result, nil
+}
+
+// tryCookieShortCircuit returns (result, true) if the on-disk cookie is fresh
+// (<60s), the recorded PID is still alive, and the process start_time matches.
+func tryCookieShortCircuit(cookiePath string, cfg *identityProbeConfig) (probeResult, bool) {
+	cookie, err := readCookieFile(cookiePath)
+	if err != nil {
+		return probeResult{}, false
+	}
+
+	age := cfg.nowFn().Sub(cookie.ObservedAt)
+	if age >= cookieTTL {
+		return probeResult{}, false
+	}
+
+	if !cfg.aliveFn(cookie.PID) {
+		return probeResult{}, false
+	}
+
+	startTime, psErr := cfg.getStartFn(cookie.PID)
+	if psErr != nil || strings.TrimSpace(startTime) != strings.TrimSpace(cookie.StartTime) {
+		return probeResult{}, false
+	}
+
+	return probeResult{
+		PID:             cookie.PID,
+		DataDir:         cookie.DataDir,
+		DatabasePresent: cookie.DatabasePresent,
+	}, true
+}
+
+// identityProcessProbe resolves the dolt server PID (via PID file or lsof),
+// reads its --data-dir arg, and compares it against expectedDataDir.
+// Returns (pid int, dataDir string, startTime string, error).
+//
+//nolint:gocritic // unnamedResult: four returns are documented in comment above
+func identityProcessProbe(cfg *identityProbeConfig, expectedDataDir string) (int, string, string, error) {
+	pid, err := resolvePID(cfg)
+	if err != nil {
+		return 0, "", "", err
+	}
+
+	args, err := cfg.getArgsFn(pid)
+	if err != nil {
+		return 0, "", "", fmt.Errorf("read process args for PID %d: %w", pid, err)
+	}
+
+	dataDir, parseErr := parseDataDir(args)
+	if parseErr != nil {
+		return 0, "", "", fmt.Errorf("process_data_dir_mismatch: %w", parseErr)
+	}
+
+	if filepath.Clean(dataDir) != filepath.Clean(expectedDataDir) {
+		return 0, "", "", fmt.Errorf("process_data_dir_mismatch: got %q, want %q", dataDir, expectedDataDir)
+	}
+
+	startTime, _ := cfg.getStartFn(pid)
+
+	return pid, dataDir, startTime, nil
+}
+
+// resolvePID returns the PID of the running dolt server by reading the PID
+// file first, then falling back to lsof discovery.
+func resolvePID(cfg *identityProbeConfig) (int, error) {
+	pidPath := filepath.Join(cfg.oroHome, "dolt-server.pid")
+	data, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
+	if err == nil {
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr == nil && cfg.aliveFn(pid) {
+			return pid, nil
+		}
+	}
+
+	pid, lsofErr := cfg.findPIDFn()
+	if lsofErr != nil {
+		return 0, fmt.Errorf("cannot identify dolt owner: PID file absent or stale, lsof: %w", lsofErr)
+	}
+	if !cfg.aliveFn(pid) {
+		return 0, fmt.Errorf("cannot identify dolt owner: lsof PID %d not alive", pid)
+	}
+	return pid, nil
+}
+
+// runSQLProbe checks whether cfg.dbName is present in the dolt server.
+// Returns (false, nil) with a warning when dolt CLI is absent.
+func runSQLProbe(cfg *identityProbeConfig) (bool, error) {
+	present, err := cfg.sqlFn(cfg.dbName)
+	if errors.Is(err, exec.ErrNotFound) {
+		return false, nil
+	}
+	return present, err
 }
 
 // runProcessProbe probes the shared dolt server process on port SharedDoltPort.
@@ -191,4 +359,72 @@ func getProcessStartTime(pid int) (string, error) {
 		return "", fmt.Errorf("get process start time: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// doltSQLDatabasePresent runs `dolt sql -h 127.0.0.1 -P 13307 --result-format json -q "SHOW DATABASES;"`
+// and checks whether dbName appears in the output.
+// Returns exec.ErrNotFound if dolt is not in PATH.
+func doltSQLDatabasePresent(dbName string) (bool, error) {
+	doltPath, err := exec.LookPath("dolt")
+	if err != nil {
+		return false, exec.ErrNotFound
+	}
+	//nolint:gosec,noctx // args are trusted internal values; background context appropriate for one-shot SQL probe
+	out, err := exec.CommandContext(context.Background(), doltPath, "sql",
+		"-h", "127.0.0.1",
+		"-P", strconv.Itoa(SharedDoltPort),
+		"--result-format", "json",
+		"-q", "SHOW DATABASES;",
+	).Output()
+	if err != nil {
+		return false, fmt.Errorf("dolt sql SHOW DATABASES: %w", err)
+	}
+	return containsDatabase(out, dbName), nil
+}
+
+// containsDatabase parses the JSON output of `dolt sql --result-format json
+// -q "SHOW DATABASES;"` and returns true if dbName appears in the rows.
+func containsDatabase(jsonOut []byte, dbName string) bool {
+	var result struct {
+		Rows []map[string]string `json:"rows"`
+	}
+	if err := json.Unmarshal(jsonOut, &result); err != nil {
+		return false
+	}
+	for _, row := range result.Rows {
+		for _, v := range row {
+			if strings.EqualFold(v, dbName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// readCookieFile reads and unmarshals the server identity cookie at cookiePath
+// without validation. Validation happens in tryCookieShortCircuit, which needs
+// injectable alive/start-time checks.
+func readCookieFile(cookiePath string) (*serverIdentity, error) {
+	data, err := os.ReadFile(cookiePath) //nolint:gosec // cookiePath derived from trusted oroHome
+	if err != nil {
+		return nil, fmt.Errorf("read cookie: %w", err)
+	}
+	var c serverIdentity
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, fmt.Errorf("parse cookie: %w", err)
+	}
+	return &c, nil
+}
+
+// writeCookieFile marshals c and writes it atomically to cookiePath.
+// Errors are silently dropped — cookie is a best-effort optimisation.
+func writeCookieFile(cookiePath string, c *serverIdentity) {
+	if err := os.MkdirAll(filepath.Dir(cookiePath), 0o750); err != nil {
+		return
+	}
+	data, err := json.Marshal(c)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(cookiePath, data, 0o600) //nolint:gosec // cookiePath derived from trusted oroHome
 }
