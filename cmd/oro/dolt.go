@@ -79,26 +79,21 @@ func readDoltMeta(beadsDir string) (*doltMeta, error) {
 // MigrateMetadataPort removes stale dolt_server_port fields from metadata.json.
 // Files written before oro assigned derived ports have dolt_server_port=3307
 // (upstream default). This migration strips that field so that subsequent reads
-// will derive a fresh port. Best-effort: logs warnings on error but does not fail.
-func MigrateMetadataPort(beadsDir string) error {
+// will derive a fresh port. Best-effort: silently ignores errors.
+func MigrateMetadataPort(beadsDir string) {
 	metaPath := filepath.Join(beadsDir, "metadata.json")
 	data, err := os.ReadFile(metaPath) //nolint:gosec // beadsDir is caller-controlled
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return nil // best-effort: silently ignore read errors
+		return // best-effort: silently ignore read errors (including missing file)
 	}
 
 	var meta map[string]interface{}
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return nil // best-effort: silently ignore parse errors
-	}
+	_ = json.Unmarshal(data, &meta) // best-effort: silently ignore parse errors
 
 	// Only remove the field if it has the stale upstream default value
 	port, ok := meta["dolt_server_port"]
 	if !ok {
-		return nil // field doesn't exist, nothing to migrate
+		return // field doesn't exist, nothing to migrate
 	}
 
 	// Check if the port is the upstream default (3307)
@@ -109,25 +104,17 @@ func MigrateMetadataPort(beadsDir string) error {
 	case int:
 		portVal = v
 	default:
-		return nil // unexpected type, skip migration
+		return // unexpected type, skip migration
 	}
 
 	if portVal != doltUpstreamDefaultPort {
-		return nil // port is not the stale default, nothing to migrate
+		return // port is not the stale default, nothing to migrate
 	}
 
 	// Remove the stale field and write back
 	delete(meta, "dolt_server_port")
-	updated, err := json.MarshalIndent(meta, "", "\t")
-	if err != nil {
-		return nil // best-effort: silently ignore marshal errors
-	}
-
-	if err := os.WriteFile(metaPath, updated, 0o600); err != nil {
-		return nil // best-effort: silently ignore write errors
-	}
-
-	return nil
+	updated, _ := json.MarshalIndent(meta, "", "\t") // best-effort: silently ignore errors
+	_ = os.WriteFile(metaPath, updated, 0o600)       // best-effort: silently ignore errors
 }
 
 // isDoltServerRunning returns true if a TCP listener is accepting connections

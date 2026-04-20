@@ -425,7 +425,7 @@ func makeDoltLifecycle(workDir, oroHome string) (func() (int, error), func() err
 		return nil, nil
 	}
 	beadsDir := projPaths.BeadsDir
-	_ = MigrateMetadataPort(beadsDir) // best-effort; migration errors don't block start
+	MigrateMetadataPort(beadsDir) // best-effort; migration errors don't block start
 	meta, err := readDoltMeta(beadsDir)
 	if err != nil || meta == nil {
 		return nil, nil
