@@ -121,7 +121,7 @@ func fetchAndVerify(ctx context.Context, dest string, spec ModelSpec) error {
 		return fmt.Errorf("build request for %s: %w", spec.URL, err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // spec.URL comes from hardcoded KnownModels list, not user input
 	if err != nil {
 		return fmt.Errorf("download %s: %w", spec.URL, err)
 	}
