@@ -378,6 +378,10 @@ func isSharedServer(port int) bool {
 // diagnose the conflict.
 //
 // Returns exec.ErrNotFound if dolt is not in PATH.
+//
+// LEGAL CALLERS: newDoltSetupCmd, newDoltRepairCmd — DO NOT add more without
+// updating D6 in docs/plans/2026-04-20-oro-dolt-shared-lifecycle-coordination-design.md
+// and adding to allowedStartSharedDoltServerCallers in allowlist_test.go.
 func startSharedDoltServer(oroHome string) (int, error) { //nolint:unparam // PID return will be used by downstream callers (oro-4zky, oro-hcuy)
 	if isDoltServerRunning(SharedDoltPort) {
 		return 0, checkSharedPortConflict(oroHome)
