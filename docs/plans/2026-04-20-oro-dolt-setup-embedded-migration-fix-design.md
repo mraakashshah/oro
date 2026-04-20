@@ -13,9 +13,11 @@
 
 1. **Wrong source path.** `cmd/oro/cmd_dolt.go:198` builds `srcDir := filepath.Join(p.beadsDir, "dolt", p.dbName)`. For embedded-mode projects, the live data lives at `.beads/embeddeddolt/<dolt_database>/`. The path the code reads is empty (or absent).
 2. **Silent skip on missing source.** `atomicCopyDir` (`cmd_dolt.go:341-369`) returns `nil` when source doesn't exist. Setup reports success.
-3. **Metadata not flipped.** `setDoltPort` writes `dolt_server_port` only. Neither `dolt_mode: "server"` (in `metadata.json`) nor `.beads/dolt-server.port` (the file bd reads at startup) is written. Even when migration *does* succeed, bd still treats the project as embedded.
+3. **Metadata not flipped.** `setDoltPort` writes `dolt_server_port` only. Neither `dolt_mode: "server"` (in `metadata.json`) nor a per-project `.beads/dolt-server.port` file is written by the migration path. `startSharedDoltServer` writes a *shared* `~/.oro/dolt-server.port`, not per-project. Even when migration *does* succeed, individual projects can still appear unconfigured to bd.
 
-A test (`TestRunDoltSetup_SkipsEmptyProjectWithoutError`) cements layer 2 as expected behavior.
+A test (`TestAtomicCopyDir_SrcNotExists` at `cmd_dolt_test.go:1087`) cements layer 2 as expected behavior — it asserts `atomicCopyDir` returns `nil` when source is absent.
+
+**bd-mode confirmation (added 2026-04-20):** The shipped Homebrew bd 1.0.0 binary contains the `embeddeddolt` mode compiled in (verifiable via `strings $(which bd) | grep embeddeddolt` — yields `embeddeddolt: begin tx`, `embeddeddolt: init schema`, `.beads/embeddeddolt/`). bd selects mode at runtime based on `metadata.json`. Stale upstream archive at `archive/yap/reference/beads-upstream/` shows a build-tagged variant; the shipped binary does not behave that way.
 
 ## Goals
 
@@ -64,8 +66,11 @@ If either probe fails, the migration is reverted (destination directory removed)
 
 **Cost:** ~hundreds of ms per project for the SQL connect. Acceptable.
 
+**Lock semantics:** Embedded dolt is single-writer. The probe MUST run `dolt sql` as a subprocess against the source data directory while bd processes are idle. `runDoltSetup` already aborts if the dispatcher is running; extend that guard to also reject if any `bd` process holds the embedded lock (check via `lsof` on `.dolt/sql-server.lock` or equivalent). On lock conflict: hard fail with "stop bd processes and re-run."
+
 **Risks accepted:**
 - *Tigers:* schema coupling — `issues` table is bd's, not oro's. If bd renames the table, this code breaks. Mitigation: integration test (deferred per D5) catches format drift.
+- *Tigers:* lock-acquisition failure mode is a new error class for users with active bd sessions. Remediation message must be clear.
 - *Paper tiger:* "dolt rewrites chunks during compaction so byte size diverges" — handled because we use row count, not bytes.
 
 ### D3 — Metadata atomicity: per-file atomic, no cross-file transaction
@@ -144,8 +149,8 @@ ERROR: project "<dolt_database>" metadata mismatch
 |-----------------------------------|------------------------------------------------------------------------------------------|
 | `cmd/oro/cmd_dolt.go`             | Replace `srcDir` line; add `resolveSourcePath`, `verifyMigration`, `flipMetadataAtomic`. |
 | `cmd/oro/cmd_dolt.go`             | New shared `validateAndHealProjects` consumed by setup and `oro start`.                  |
-| `cmd/oro/cmd_start.go`            | Call `validateAndHealProjects` before dispatcher launch; TTY-prompt on drift.            |
-| `cmd/oro/cmd_dolt_test.go`        | Drop `TestRunDoltSetup_SkipsEmptyProjectWithoutError` (false-positive). Add new tests.   |
+| `cmd/oro/cmd_start.go`            | Call `validateAndHealProjects` from `startFreshSwarm` (parent process, between `makeDoltLifecycle` and `runFullStart` — see `cmd_start.go:444-469`). MUST NOT be called from `runDaemonOnly` (daemon has no TTY). TTY-prompt on drift. |
+| `cmd/oro/cmd_dolt_test.go`        | Update `TestAtomicCopyDir_SrcNotExists` (`cmd_dolt_test.go:1087`) — it currently asserts silent-nil-on-missing-source, which is the cemented bug. New assertion: `atomicCopyDir` returns a typed error when source missing AND the caller asked it to migrate (or callers wrap with explicit pre-check). Add new tests below. |
 | `cmd/oro/testdata/`               | Three new fixture trees (embedded, shared, broken).                                      |
 | `cmd/oro/atomic.go` (new or co-located) | `writeFileAtomic(path, content)` helper — write-temp + rename.                     |
 
@@ -195,6 +200,15 @@ oro start
 | Integration      | `oro start` against broken project: hard-fails with correct message; with TTY+y: heals and proceeds. |
 | Deferred         | Real-`bd init` integration test, build-tagged, run pre-release.                    |
 
+## Pre-flight Diagnostic (must run BEFORE shipping heal logic)
+
+Before writing the heal pathway, run `oro dolt setup --dry-run` (or a one-off script `scripts/dolt-diagnose.sh`) against the 8 currently-registered projects on this machine. Report per project:
+
+| Project | metadata.dolt_mode | `.beads/embeddeddolt/<db>/` issues | `.beads/dolt/<db>/` issues | `~/.oro/dolt/<db>/` issues | Heal feasible? |
+|---------|--------------------|------------------------------------|------------------------------|------------------------------|----------------|
+
+If any project has zero issues in *all four* candidate locations, the heal cannot recover it — file a separate bead for that project and document the data loss. **If the diagnostic shows different recovery patterns across the 8 projects, this spec must be revised before decomposition.**
+
 ## Out of Scope
 
 - Modifying bd or shimming for new bd versions.
@@ -204,9 +218,19 @@ oro start
 
 ## Acceptance Criteria
 
-1. Running `oro dolt setup` against a fresh embedded-mode project migrates the data, with row-count match verified, and flips both `metadata.json` and `dolt-server.port`.
-2. Running `oro dolt setup` against the scriptwriter-style broken state heals it: pre-existing empty shared DB is replaced with a correctly-populated one.
-3. Running `oro start` against a project with a known-broken shared DB hard-fails with the standardized error message and refuses to launch the dispatcher.
-4. Running `oro start` against a healthy project incurs no perceptible startup delay (validation is sub-second per project).
-5. New unit + integration tests pass; the false-positive `TestRunDoltSetup_SkipsEmptyProjectWithoutError` is removed.
-6. `oro dolt setup` is idempotent — re-running on a healthy machine is a no-op (validation only).
+A single shell-runnable acceptance script `scripts/test-dolt-migration.sh` covers the end-to-end happy path:
+
+1. Builds the synthetic broken fixture (empty `.beads/dolt/<db>/`, populated `.beads/embeddeddolt/<db>/` with N issues), confirms `dolt sql -q 'SELECT COUNT(*) FROM issues'` against the embedded path returns N.
+2. Runs `oro dolt setup`, exits 0.
+3. Asserts `~/.oro/dolt/<db>/.dolt/noms/` non-empty.
+4. Asserts `dolt sql --use-db <db> -q 'SELECT COUNT(*) FROM issues'` against the shared server returns N.
+5. Asserts `.beads/metadata.json` contains `"dolt_mode": "server"` and `"dolt_server_port": 13307`.
+6. Asserts `.beads/dolt-server.port` exists and contains `13307\n`.
+
+Additional criteria:
+
+7. **Pre-flight diagnostic** (new, added per review): `oro dolt setup --dry-run` (or equivalent) reports per-registered-project: which mode metadata says, which paths actually have data, and what the heal action would be — without executing. Run this first against the user's 8 registered projects to confirm recoverability before shipping the heal.
+8. Running `oro start` against a project flagged broken by the diagnostic hard-fails with the standardized error message and refuses to launch the dispatcher.
+9. `validateAndHealProjects` completes in under 500ms wall clock for 10 healthy projects, measured by a benchmark test (`BenchmarkValidateAndHealProjects`).
+10. `oro dolt setup` is idempotent — re-running on a healthy machine performs validation only and exits 0 with no metadata writes.
+11. `TestAtomicCopyDir_SrcNotExists` is updated to assert the new error-on-missing-source behavior (or, if `atomicCopyDir`'s contract is preserved, callers are explicitly tested to pre-check existence).
