@@ -240,7 +240,7 @@ lane_go() {
 	}
 
 	local tier2_checks=(
-		"golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
+		"golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
 		"dead exports" "check_dead_exports"
 	)
 	if [ -f ".go-arch-lint.yml" ] && command -v go-arch-lint >/dev/null 2>&1; then

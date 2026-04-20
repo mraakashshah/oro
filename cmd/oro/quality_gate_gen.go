@@ -551,7 +551,7 @@ lane_go() {
     # --- Tier 2: Lint (parallel) ---
     header "GO TIER 2: LINT"
     parallel_checks \
-        "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m ./cmd/... ./internal/... ./pkg/..."
+        "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
 
