@@ -257,7 +257,7 @@ Audit: `cmd/oro/cmd_setup.go` phases 1–5 are prereqs/language-detect/tools/boo
 | `cmd/oro/cmd_dolt.go` | 608-618 | D6.2: `newDoltStartCmd` routes through `ensureSharedDoltRunning` instead of calling `startSharedDoltServer` directly. |
 | `cmd/oro/cmd_init.go` | 722 | D6.5: `initDoltForProject` refuses per-project spawn when derived port == `SharedDoltPort`. |
 | `cmd/oro/cmd_init.go` | (port/metadata write) | D4: stop writing `dolt_server_port` to `metadata.json`. |
-| `cmd/oro/dolt_migrate.go` | NEW | D4: `MigrateMetadataPort(beadsDir) error`. Idempotent. Atomic write via `writeFileAtomic` (dep: oro-kn25 code must actually land). |
+| `cmd/oro/dolt_migrate.go` | NEW | D4: `MigrateMetadataPort(beadsDir) error`. Idempotent. Atomic write via inline private `atomicWriteFile` helper (switch to shared helper if/when oro-kn25 lands). |
 | `cmd/oro/cmd_start.go` | 419-442 | D1, D4: `makeDoltLifecycle` calls `MigrateMetadataPort` first, then probe-before-adopt. |
 | `cmd/oro/daemon.go` | 182-194 | D5: `SetupSignalHandler` stop closure guards on shared port → no-op. |
 | `cmd/oro/dolt.go` | 229-278 | D5: `stopDoltServer` UNCHANGED (legitimate callers `runDoltStop`/`runDoltTeardown` must still work). |
@@ -370,8 +370,9 @@ All error messages include the offending paths/PIDs/observed values, never just 
 ### Integration test — synthetic rogue
 
 `scripts/test-dolt-coordination.sh`:
+0. Fixture preconditions: `HOME=$(mktemp -d)`, then `oro dolt setup` to install plist + bring up launchd agent against scratch HOME. All subsequent steps run in this isolated environment.
 1. Set up two synthetic projects (A and B) using existing oro-tjq1 fixture machinery (oro-p5el).
-2. Start dolt with the *wrong* `--data-dir` on :13307 (simulates today's rogue).
+2. Kill the legitimate dolt; start a rogue dolt with the *wrong* `--data-dir` on :13307 (simulates today's actual failure).
 3. Run `oro start` from project A → expect non-zero exit with `process_data_dir_mismatch`.
 4. Run `oro dolt repair` → expect exit 0 + relaunched with correct data dir.
 5. Re-run `oro start` from project A → expect adopt success.
@@ -403,6 +404,6 @@ Run `oro dolt repair --dry-run` against this machine's current state (after manu
 5. D5: audit `cmd_stop.go` — does anything call dolt-stop unconditionally?
 6. D6: confirm `startSharedDoltServer` is only reachable from `oro dolt setup` and `oro dolt repair` after the change. Grep all call sites.
 7. Identity cookie: what happens on launchd restart (start_time changes)? Verify cookie invalidates.
-8. SQL probe via Go MySQL driver: confirm we're not adding a new dependency that changes the binary surface.
+8. SQL probe mechanism: confirm D2 shells to `dolt sql --result-format json` and does NOT add `go-sql-driver/mysql` to go.sum.
 9. Error message audit: every failure mode in the table above must have a corresponding test asserting the exact message text.
 10. Onboarding: trace `oro setup` (existing, not `oro dolt setup`) end-to-end. Does it now require `oro dolt setup` to have run? If not, first `oro start` will fail.
