@@ -9,13 +9,13 @@
 
 ## Problem
 
-The dispatcher decides which beads workers receive via `filterAssignable()` (`pkg/dispatcher/dispatcher.go:2943`). Beads can be rejected for **10 distinct reasons** (table below), but every rejection is silent — no log, no status field, no per-bead reason exposed.
+The dispatcher decides which beads workers receive via `filterAssignable()` (`pkg/dispatcher/dispatcher.go:2943`). Beads can be rejected for **25 distinct reasons** (table below), but every rejection is silent — no log, no status field, no per-bead reason exposed.
 
 When workers are idle and `queue_depth > 0`, the user sees the same status payload as "everything healthy, nothing to do." There is no way to tell the difference between:
 - "the queue is genuinely empty"
 - "the queue has 4 beads, all silently rejected by `filterAssignable` for reason X"
 
-This is the bug class scriptwriter hit. We don't yet know *which* of the 10 reasons applied; we have no way to find out without modifying the dispatcher.
+This is the bug class scriptwriter hit. We don't yet know *which* of the 25 reasons applied; we have no way to find out without modifying the dispatcher.
 
 ### Two layers of silent rejection
 
@@ -54,8 +54,9 @@ The dispatcher has two distinct surfaces where a ready bead can be silently drop
 | B12| `worktree_create_failed`             | 3331        | `error`                              |
 | B13| `update_status_failed`               | 3260        | `error`                              |
 | B14| `assignment_race_detected`           | 3237/3248   | `winning_worker_id`                  |
+| B15| `epic_branch_resolve_error`          | 3290-3298   | `error`, `epic_id` (from `bead.Epic`) |
 
-**Total: 24 silent-rejection paths.** Both layers must be instrumented.
+**Total: 25 silent-rejection paths** (10 layer-A + 15 layer-B). Both layers must be instrumented.
 
 **Scriptwriter root cause hypothesis (likely):** V2 was an epic + 3 children. The epic hits **B11** (`epic_has_open_children` at line 3445) — silent skip, no event, returned to ready next tick. The children pass `filterAssignable` (their dep on the epic is `parent-child`, non-blocking), enter `assignBead`, hit **B6** (`epic_branch_pending` at line 3143) because the epic was never assigned for decomposition (so `agent/<epic-id>` branch doesn't exist) — reset to ready, removed from `assigningBeads`, infinite silent loop. Without instrumenting layer B, `oro doctor bead` would return either "no skip reason" (if filterAssignable didn't reject it that tick) or `worktree_failure_cooldown` (if a prior B3/B4 escalation set the cooldown — wrong reason). Layer B instrumentation is mandatory.
 
@@ -97,7 +98,7 @@ The dispatcher has two distinct surfaces where a ready bead can be silently drop
 ```go
 type SkipReason struct {
     BeadID    string                 `json:"bead_id"`
-    Reason    string                 `json:"reason"`            // one of the 10 keys
+    Reason    string                 `json:"reason"`            // one of the 25 keys (A1-A10 + B1-B15)
     Detail    map[string]any         `json:"detail,omitempty"`  // reason-specific
     DetectedAt time.Time              `json:"detected_at"`
 }
@@ -117,8 +118,24 @@ The `Detail` map's keys depend on `Reason`:
 | `exhausted`                  | `attempt_count`                              |
 | `dependency_blocked_by`      | `blocker_id`                                 |
 | `branch_already_merged`      | `branch`                                     |
+| **Layer B (assignBead-path)** |                                              |
+| `invalid_bead_id`             | `error`                                      |
+| `bead_status_changed_during_assign` | `current_status`                       |
+| `missing_acceptance_criteria` | (empty — escalation also writes A4 cooldown) |
+| `oversized_bead`              | `module_count`                               |
+| `epic_show_error`             | `error`, `epic_id`                           |
+| `epic_branch_pending`         | `epic_id`, `epic_status`                     |
+| `epic_branch_missing`         | `epic_id`, `branch`                          |
+| `epic_branch_create_failed`   | `error`, `epic_id`                           |
+| `epic_has_children_error`     | `error`                                      |
+| `epic_all_children_closed_error` | `error`                                   |
+| `epic_has_open_children`      | `child_count` (computed via `HasChildren`)   |
+| `worktree_create_failed`      | `error`                                      |
+| `update_status_failed`        | `error`                                      |
+| `assignment_race_detected`    | `winning_worker_id`                          |
+| `epic_branch_resolve_error`   | `error`, `epic_id` (from `bead.Epic`)         |
 
-First-match short-circuit: the order in `isBeadAssignable` is the order of evaluation, and the first match wins. If a bead is both `status_blocked` AND has an unresolved dep, the user sees `status_blocked` (the more fundamental reason). If they fix that, the next status call surfaces the dep reason.
+First-match short-circuit: within layer A, the order in `isBeadAssignable` is the order of evaluation. Within layer B, the order is the assignBead call sequence. Across layers, A wins (a bead never reaches assignBead if filterAssignable rejected it). If a bead is both `status_blocked` AND has an unresolved dep, the user sees `status_blocked` (the more fundamental reason). If they fix that, the next status call surfaces the dep reason.
 
 ### D3 — Data location: cached at both filter and assign points; fresh for doctor
 
@@ -149,6 +166,7 @@ A single `recordSkip(beadID, reason, detail)` helper writes into `d.skipReasons`
 RecomputeSkipReason(ctx, beadID):
   bead := d.beads.Show(ctx, beadID)            // LOCK-FREE — subprocess shellout
   if bead == nil { return ErrBeadNotFound }
+  ready := d.beads.Ready(ctx)                   // LOCK-FREE — needed for A9 openBeadIDs
 
   // Critical section: snapshot all maps the synchronous checks need.
   d.mu.Lock()
@@ -160,6 +178,7 @@ RecomputeSkipReason(ctx, beadID):
     exhaustedBeads:   copyMap(d.exhaustedBeads),
     worktreeFailures: copyMap(d.worktreeFailures),
     attemptCounts:    copyMap(d.attemptCounts),
+    openBeadIDs:      buildOpenBeadIDs(ready), // for A9 dependency_blocked_by
   }
   d.mu.Unlock()
 
@@ -251,14 +270,14 @@ Forensic finding becomes a separate root-cause-fix bead, scoped after evidence i
 | `pkg/dispatcher/dispatcher.go`    | Add `skipReasons` and `prevSkipReasons map[string]SkipReason` + `skipReasonsAt` to `Dispatcher` struct. |
 | `pkg/dispatcher/dispatcher.go`    | New `recordSkip(beadID, reason, detail)` helper (acquires `d.mu`). Single discipline used by both layers. |
 | `pkg/dispatcher/dispatcher.go`    | Augment `filterAssignable` to call `recordSkip` for layers A1-A10 (10 sites). |
-| `pkg/dispatcher/dispatcher.go`    | Augment `assignBead`, `checkBeadReady`, `checkEpicAssignable`, `handleEpicBranchMissing` to call `recordSkip` for layers B1-B14 (14 sites). |
+| `pkg/dispatcher/dispatcher.go`    | Augment `assignBead`, `checkBeadReady`, `checkEpicAssignable`, `handleEpicBranchMissing` to call `recordSkip` for layers B1-B15 (15 sites — including B15 `epic_branch_resolve_error` at line 3290-3298). |
 | `pkg/dispatcher/dispatcher.go`    | At end of `tryAssign` tick: snapshot, diff, emit `bead_skip_entered` / `bead_skip_reason_changed` / `bead_skip_exited` events lock-free. |
 | `pkg/dispatcher/dispatcher.go`    | New exported `RecomputeSkipReason(ctx, beadID) (SkipReason, error)` — fresh single-bead check. Lock dance per D3 (snapshot maps under lock, run synchronous checks against snapshot, shellouts lock-free). |
-| `pkg/dispatcher/protocol_skip_reason.go` (new) | Define `SkipReason` struct, 24 reason key constants (A1-A10, B1-B14), `Detail` builder helpers documenting the source-of-truth field for each detail key (e.g., `retry_after = failedAt + worktreeFailureCooldown`; `attempt_count` from `d.attemptCounts[id]`). |
+| `pkg/dispatcher/protocol_skip_reason.go` (new) | Define `SkipReason` struct, 25 reason key constants (A1-A10, B1-B15), `Detail` builder helpers documenting the source-of-truth field for each detail key (e.g., `retry_after = failedAt + worktreeFailureCooldown`; `attempt_count` from `d.attemptCounts[id]`). |
 | `pkg/dispatcher/dispatcher.go`    | Extend `statusResponse` (the dispatcher-side definition at line 3473) with `SkippedBeads []SkipReason` + `SkipReasonsCachedAt time.Time` + `BuiltAt time.Time`. |
 | `cmd/oro/cmd_status.go`           | **Update the duplicate `statusResponse` definition at cmd_status.go:25** to mirror dispatcher-side fields. Render `Skipped beads` block. Default summary line; `-v/--verbose` expands inline. Add a regression test that the two struct definitions remain field-compatible (use reflection or a generated-shared types file as a follow-up). |
 | `cmd/oro/cmd_doctor.go`           | Add `oro doctor bead <id>` and `oro doctor queue` subcommands (sibling to existing `recover-dolt`). |
-| `pkg/dispatcher/dispatcher_test.go` | Unit tests for `recordSkip` per category (24 reasons × 1 test each — synthesize state to trigger each layer-A and layer-B reason). |
+| `pkg/dispatcher/dispatcher_test.go` | Unit tests for `recordSkip` per category (25 reasons × 1 test each — synthesize state to trigger each layer-A and layer-B reason). |
 | `pkg/dispatcher/dispatcher_test.go` | Test for transition event emission: enter/exit/change. No event on persistent reason. |
 | `pkg/dispatcher/dispatcher_test.go` | Concurrency test: `RecomputeSkipReason` runs while `tryAssign` runs in parallel, with `-race` — must not deadlock or corrupt cache. |
 | `pkg/dispatcher/dispatcher_test.go` | Throttle-cache test: confirm `SkipReasonsCachedAt` round-trips through the throttle cache without being mutated at serve time. |
@@ -314,7 +333,7 @@ filterAssignable(allBeads):
 
 ## Testing Strategy
 
-- **Unit:** synthetic `Dispatcher` state with crafted `workers`, `assigningBeads`, `worktreeFailures`, `exhaustedBeads`, `mergingBeads` maps. For each of the 10 reasons, set up state that triggers it, run `filterAssignable`, assert `d.skipReasons[bead] == expected`.
+- **Unit:** synthetic `Dispatcher` state with crafted `workers`, `assigningBeads`, `worktreeFailures`, `exhaustedBeads`, `mergingBeads` maps. For each of the 25 reasons (A1-A10 trigger via `filterAssignable`; B1-B15 trigger via direct calls to `assignBead`/`checkBeadReady`/`checkEpicAssignable`/`handleEpicBranchMissing` with state crafted to fire each silent path), set up state that triggers it and assert `d.skipReasons[bead] == expected`.
 - **Unit:** transition events. Run `filterAssignable` twice with different state. Assert events emitted on enter/exit; no event when reason unchanged.
 - **Integration:** spin up a real `Dispatcher` against fake `BeadSource`, run a full assign loop tick, send `DirectiveStatus` IPC, parse response, verify `SkippedBeads` is populated.
 - **Integration:** end-to-end `oro doctor bead <id>` against in-memory dispatcher with a known-skipped bead. Verify reason + detail + remediation message.
@@ -330,8 +349,8 @@ filterAssignable(allBeads):
 
 A single shell-runnable acceptance script `scripts/test-skip-reasons.sh` exercises the happy path:
 
-1. Start a test dispatcher against a synthetic bead source returning a bead that triggers each of the 10 reasons.
-2. Send `DirectiveStatus`; assert `skipped_beads` contains all 10 with correct reason+detail per D2 table.
+1. Start a test dispatcher against a synthetic bead source returning beads that trigger each of the 25 reasons (10 layer-A via filterAssignable + 15 layer-B via assignBead-path execution).
+2. Send `DirectiveStatus`; assert `skipped_beads` contains all 25 with correct reason+detail per the per-reason tables in §Problem.
 3. Run `oro doctor bead <id>` against the `assignment_in_flight` test bead; assert response includes:
    - `reason: "assignment_in_flight"`
    - empty `detail`
@@ -341,7 +360,7 @@ A single shell-runnable acceptance script `scripts/test-skip-reasons.sh` exercis
 
 Additional criteria:
 
-6. **Forensic gate**: after D1-D4 ship, run `oro doctor bead scriptwriter-gts.1` (and the other 3 stuck beads) against the scriptwriter project's still-stuck V2 beads. Capture the output as committed evidence (`docs/plans/2026-04-20-scriptwriter-forensic.md`). The reason identified must match one of the 24 keys (A1-A10 or B1-B14). Hypothesis to confirm: the epic returns `epic_has_open_children` (B11), the children return `epic_branch_pending` (B6). If either matches, the forensic gate succeeds and a follow-up root-cause-fix bead is scoped (likely "auto-assign epic for decomposition before children attempt to assign"). If `oro doctor bead` returns "no skip reason," the diagnostic missed a 25th path — file a spec-revision bead.
+6. **Forensic gate**: after D1-D4 ship, run `oro doctor bead scriptwriter-gts.1` (and the other 3 stuck beads) against the scriptwriter project's still-stuck V2 beads. Capture the output as committed evidence (`docs/plans/2026-04-20-scriptwriter-forensic.md`). The reason identified must match one of the 25 keys (A1-A10 or B1-B15). Hypothesis to confirm: the epic returns `epic_has_open_children` (B11), the children return `epic_branch_pending` (B6) or `epic_branch_resolve_error` (B15) or `epic_branch_create_failed` (B8) — depending on whether `lazyCreateEpicBranch` succeeded earlier. Whichever fires, the forensic gate succeeds and a follow-up root-cause-fix bead is scoped (likely "auto-assign epic for decomposition before children attempt to assign"). If `oro doctor bead` returns "no skip reason," the diagnostic missed a 26th path — file a spec-revision bead.
 7. `oro status` without `-v` shows a one-line summary if `SkippedBeads` is non-empty (e.g., `Skipped: 4 beads (see oro doctor queue)`). With `-v`, expands inline.
 8. Event log emits `bead_skip_entered` / `bead_skip_exited` only on transitions; idempotent loop ticks emit nothing.
 9. `oro doctor bead <unknown-id>` returns a clear error: "bead not found" (not a stack trace).
