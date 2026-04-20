@@ -425,8 +425,12 @@ func startSharedDoltServer(oroHome string) (int, error) { //nolint:unparam // PI
 }
 
 // ensureSharedDoltRunning verifies the shared Dolt server on SharedDoltPort is
-// reachable. If not, it attempts launchctl kickstart (launchd auto-start) and
-// falls back to startSharedDoltServer (direct spawn) when kickstart fails.
+// reachable. If not, it attempts launchctl kickstart (launchd auto-start).
+//
+// D6.1: direct spawn is intentionally removed. If kickstart fails the caller
+// must run `oro dolt setup` (first-time install) or `oro dolt repair`
+// (post-failure restart). This prevents race conditions when multiple oro
+// instances start concurrently and each falls through to spawn.
 func ensureSharedDoltRunning(oroHome string) (int, error) {
 	// Already running — adopt.
 	if isDoltServerRunning(SharedDoltPort) {
@@ -440,8 +444,11 @@ func ensureSharedDoltRunning(oroHome string) (int, error) {
 		}
 	}
 
-	// Fall back to direct spawn.
-	return startSharedDoltServer(oroHome)
+	return 0, fmt.Errorf(
+		"shared dolt server is not running and launchctl kickstart failed: "+
+			"run 'oro dolt setup' to install the server, or 'oro dolt repair' to restart it (oroHome: %s)",
+		oroHome,
+	)
 }
 
 // kickstartServiceTarget builds the launchctl kickstart service target string

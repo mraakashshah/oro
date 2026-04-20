@@ -1095,7 +1095,7 @@ func TestMakeDoltLifecycleSharedServer(t *testing.T) {
 		}
 	})
 
-	t.Run("shared unreachable falls back to startSharedDoltServer", func(t *testing.T) {
+	t.Run("shared unreachable returns error (D6.1: direct spawn disabled)", func(t *testing.T) {
 		if isDoltServerRunning(SharedDoltPort) {
 			t.Skipf("port %d already in use — cannot test fallback", SharedDoltPort)
 		}
@@ -1121,23 +1121,15 @@ func TestMakeDoltLifecycleSharedServer(t *testing.T) {
 			t.Fatal("expected non-nil startFn for shared server")
 		}
 
-		// dial 13307 → fail, launchctl kickstart → fail,
-		// fall back to startSharedDoltServer: either exec.ErrNotFound (no dolt)
-		// or actual spawn (dolt in PATH).
-		pid, err := startFn()
-		if errors.Is(err, exec.ErrNotFound) {
-			return // dolt not in PATH — correct fallback behavior
+		// D6.1: dial 13307 → fail, launchctl kickstart → fail →
+		// error pointing user to 'oro dolt setup' / 'oro dolt repair'.
+		_, err := startFn()
+		if err == nil {
+			t.Fatal("expected error when shared dolt unreachable (D6.1: direct spawn disabled)")
 		}
-		if err != nil {
-			t.Fatalf("unexpected error from fallback: %v", err)
+		if !strings.Contains(err.Error(), "oro dolt") {
+			t.Errorf("error should mention 'oro dolt' commands, got: %v", err)
 		}
-		// dolt in PATH — startSharedDoltServer actually spawned a server.
-		if pid == 0 {
-			t.Error("expected pid > 0 when dolt spawns via fallback")
-		}
-		t.Cleanup(func() {
-			_ = killAndWait(pid, oroHome)
-		})
 	})
 
 	t.Run("non-shared port returns startFn that calls startDoltServer", func(t *testing.T) {

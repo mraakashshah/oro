@@ -45,6 +45,7 @@ Subcommands:
 	cmd.AddCommand(newDoltStartCmd())
 	cmd.AddCommand(newDoltStopCmd())
 	cmd.AddCommand(newDoltTeardownCmd())
+	cmd.AddCommand(newDoltRepairCmd())
 
 	return cmd
 }
