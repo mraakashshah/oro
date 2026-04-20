@@ -4539,7 +4539,7 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 		return
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		branch := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "*"))
+		branch := strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "*+"))
 		if branch == "" {
 			continue
 		}

@@ -17568,3 +17568,69 @@ func TestPruneStaleAgentBranches_NoRepoRoot(t *testing.T) {
 
 	d.pruneStaleAgentBranches(context.Background())
 }
+
+// TestPruneStaleAgentBranches_StripsPlusPrefix verifies that the prune logic
+// strips both '*' (current branch) and '+' (checked out in another worktree)
+// prefixes from git branch --list output. Given branches with mixed prefixes:
+// '  agent/oro-z', '* agent/oro-y', '+ agent/oro-x', all three should be
+// deleted with exact branch names (no leading sigils).
+func TestPruneStaleAgentBranches_StripsPlusPrefix(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.repoRoot = t.TempDir()
+
+	var mu sync.Mutex
+	var deleted []string
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "git" {
+				return nil, fmt.Errorf("unexpected command: %s", name)
+			}
+			// Find the git subcommand (first arg after "-C <repoRoot>" prefix).
+			var sub string
+			for i, a := range args {
+				if a == "branch" && i+1 < len(args) {
+					sub = args[i+1]
+					break
+				}
+			}
+			switch sub {
+			case "--list":
+				// Simulate three stale agent branches with different prefixes:
+				// no prefix, * (current), + (checked out in another worktree).
+				return []byte("  agent/oro-z\n* agent/oro-y\n+ agent/oro-x\n"), nil
+			case "-D":
+				// Last arg is the branch to delete.
+				mu.Lock()
+				deleted = append(deleted, args[len(args)-1])
+				mu.Unlock()
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unexpected git subcommand: %v", args)
+		},
+	}
+	d.shutdownRunner = runner
+
+	d.pruneStaleAgentBranches(context.Background())
+
+	mu.Lock()
+	snapshot := append([]string(nil), deleted...)
+	mu.Unlock()
+
+	want := map[string]bool{
+		"agent/oro-z": false,
+		"agent/oro-y": false,
+		"agent/oro-x": false,
+	}
+	for _, b := range snapshot {
+		if _, ok := want[b]; !ok {
+			t.Errorf("unexpected branch deleted: %q", b)
+			continue
+		}
+		want[b] = true
+	}
+	for b, ok := range want {
+		if !ok {
+			t.Errorf("expected branch %q to be deleted, got deleted=%v", b, snapshot)
+		}
+	}
+}
