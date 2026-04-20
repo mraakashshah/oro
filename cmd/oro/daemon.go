@@ -188,9 +188,17 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	stopDolt := func() {
-		if beadsDir != "" {
-			_ = stopDoltServer(beadsDir)
+		if beadsDir == "" {
+			return
 		}
+		// Never stop the shared dolt server — its lifecycle is owned by launchd
+		// (or another oro instance) and persists across sessions. Per-project
+		// dolt servers are still stopped.
+		if isSharedBeadsDir(beadsDir) {
+			fmt.Fprintf(os.Stderr, "shutdown: shared dolt server preserved across sessions\n")
+			return
+		}
+		_ = stopDoltServer(beadsDir)
 	}
 
 	go func() {

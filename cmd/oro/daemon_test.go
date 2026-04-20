@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -16,6 +18,78 @@ import (
 
 	"oro/pkg/protocol"
 )
+
+// TestIsSharedBeadsDir_TruePort verifies the helper used by SetupSignalHandler
+// correctly identifies shared-port projects so the signal handler can preserve
+// the machine-wide dolt server across stop/restart cycles.
+func TestIsSharedBeadsDir_TruePort(t *testing.T) {
+	beadsDir := t.TempDir()
+	meta := []byte(`{"backend":"dolt","dolt_database":"beads_oro","dolt_server_port":13307}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !isSharedBeadsDir(beadsDir) {
+		t.Fatal("isSharedBeadsDir = false, want true for shared-port metadata")
+	}
+}
+
+// TestIsSharedBeadsDir_FalsePort verifies non-shared per-project ports are
+// recognized as such — signal handler must still stop those.
+func TestIsSharedBeadsDir_FalsePort(t *testing.T) {
+	beadsDir := t.TempDir()
+	meta := []byte(`{"backend":"dolt","dolt_database":"beads","dolt_server_port":53127}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if isSharedBeadsDir(beadsDir) {
+		t.Error("isSharedBeadsDir = true, want false for per-project port 53127")
+	}
+}
+
+// TestIsSharedBeadsDir_MissingMetadata returns false (safe default — no metadata
+// means we don't know it's shared, so per-project stop logic still applies).
+func TestIsSharedBeadsDir_MissingMetadata(t *testing.T) {
+	beadsDir := t.TempDir()
+	if isSharedBeadsDir(beadsDir) {
+		t.Error("isSharedBeadsDir = true, want false when metadata.json is absent")
+	}
+}
+
+// TestSetupSignalHandlerNoStopsSharedDolt verifies the aipkm regression fix:
+// SetupSignalHandler's cleanup must NOT call stopDoltServer when beadsDir
+// resolves to the shared port. Asserts the preservation log is emitted.
+func TestSetupSignalHandlerNoStopsSharedDolt(t *testing.T) {
+	beadsDir := t.TempDir()
+	meta := []byte(`{"backend":"dolt","dolt_database":"beads_oro","dolt_server_port":13307}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture stderr to assert the preservation log fires.
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, cleanup := SetupSignalHandler(ctx, "", nil, beadsDir)
+	cleanup()
+
+	_ = w.Close()
+	captured, _ := io.ReadAll(r)
+	os.Stderr = origStderr
+
+	if !strings.Contains(string(captured), "shared dolt server preserved") {
+		t.Errorf("expected stderr to contain 'shared dolt server preserved', got:\n%s", string(captured))
+	}
+}
 
 func TestDaemonLifecycle(t *testing.T) {
 	// Use a temp directory instead of ~/.oro for isolation.

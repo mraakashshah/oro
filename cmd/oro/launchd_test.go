@@ -124,6 +124,23 @@ func TestInstallLaunchAgent(t *testing.T) {
 	})
 }
 
+// TestKickstartLabelMatchesPlist guards against drift between the launchd plist
+// label (used at install time) and the kickstart service target (used at start
+// time). A mismatch makes `launchctl kickstart` a silent no-op, which previously
+// caused oro start to fall through to direct-spawn dolt with a stale --data-dir.
+func TestKickstartLabelMatchesPlist(t *testing.T) {
+	target := kickstartServiceTarget(501)
+
+	want := "gui/501/" + launchAgentLabel
+	if target != want {
+		t.Errorf("kickstartServiceTarget(501) = %q, want %q", target, want)
+	}
+
+	if !strings.HasSuffix(target, launchAgentLabel) {
+		t.Errorf("kickstart target %q must end with launchAgentLabel %q", target, launchAgentLabel)
+	}
+}
+
 func TestIsLaunchAgentLoaded(t *testing.T) {
 	t.Run("returns false when agent is not loaded", func(t *testing.T) {
 		// The test agent label is not expected to be loaded in CI or dev environments.

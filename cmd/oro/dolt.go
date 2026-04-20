@@ -444,9 +444,16 @@ func ensureSharedDoltRunning(oroHome string) (int, error) {
 	return startSharedDoltServer(oroHome)
 }
 
+// kickstartServiceTarget builds the launchctl kickstart service target string
+// for the shared Dolt server. The label MUST match launchAgentLabel (used at
+// install time) — a mismatch makes kickstart a silent no-op.
+func kickstartServiceTarget(uid int) string {
+	return fmt.Sprintf("gui/%d/%s", uid, launchAgentLabel)
+}
+
 // tryLaunchctlKickstart attempts to start the shared Dolt server via the
-// macOS launchd service com.oro.dolt-server. Returns true if the kickstart
-// command succeeds, false otherwise (not macOS, service not installed, etc.).
+// macOS launchd service. Returns true if the kickstart command succeeds,
+// false otherwise (not macOS, service not installed, etc.).
 func tryLaunchctlKickstart() bool {
 	launchctlPath, err := exec.LookPath("launchctl")
 	if err != nil {
@@ -454,8 +461,20 @@ func tryLaunchctlKickstart() bool {
 	}
 	//nolint:gosec // uid from trusted os.Getuid()
 	cmd := exec.CommandContext(context.Background(), launchctlPath, "kickstart", "-k",
-		fmt.Sprintf("gui/%d/com.oro.dolt-server", os.Getuid()))
+		kickstartServiceTarget(os.Getuid()))
 	return cmd.Run() == nil
+}
+
+// isSharedBeadsDir returns true when beadsDir's metadata.json declares the
+// shared Dolt port. The shared dolt server's lifecycle is owned by launchd
+// (or another oro instance) and must NOT be stopped from this process — the
+// signal handler uses this to preserve the server across stop/restart cycles.
+func isSharedBeadsDir(beadsDir string) bool {
+	meta, err := readDoltMeta(beadsDir)
+	if err != nil || meta == nil {
+		return false
+	}
+	return meta.DoltServerPort == SharedDoltPort
 }
 
 // waitForPort polls isDoltServerRunning until the port is reachable or timeout
