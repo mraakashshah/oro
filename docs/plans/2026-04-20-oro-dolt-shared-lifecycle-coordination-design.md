@@ -79,7 +79,7 @@ Add regression test `TestKickstartLabelMatchesPlist` asserting the kickstart ser
    - On success → re-run identity probe.
    - On failure → exit non-zero with `oro dolt setup` hint.
 
-**Test/CI escape hatch:** **build tag** `//go:build testonly` gates the direct-spawn path. Production binaries (built without the tag) physically cannot take the direct-spawn path — a plaintext env var was rejected because CI/dev shell rc files could silently re-enable the bug. Tests that need direct spawn run under `go test -tags testonly`. The released binary has no escape hatch.
+**Test/CI escape hatch:** **build tag** `//go:build integration` gates the direct-spawn path. Production binaries (built without the tag) physically cannot take the direct-spawn path — a plaintext env var was rejected because CI/dev shell rc files could silently re-enable the bug. Tests that need direct spawn run under `go test -tags integration`. The released binary has no escape hatch.
 
 **Risks accepted:**
 - *Tigers:* onboarding pain — first `oro start` after install requires `oro dolt setup` to have run. Mitigation: `oro setup` (existing) wires `oro dolt setup` into its prereq sequence.
@@ -112,7 +112,7 @@ On every adoption attempt:
 
 **Risks accepted:**
 - *Tigers:* `lsof` may be missing on minimal macOS images. Mitigation: PID file is primary; lsof is fallback only. If both missing, probe fails closed with `cannot identify dolt owner` and repair hint.
-- *Tigers:* SQL probe needs `dolt` CLI in PATH or a Go MySQL driver. Decision: use Go MySQL driver (`github.com/go-sql-driver/mysql` already used elsewhere) — no new dependency, no PATH coupling.
+- *Tigers:* `dolt` CLI may be absent in minimal macOS/CI images. Mitigation: process probe is authoritative; SQL probe logs a warn and skips when dolt is not in PATH (see D2 Step 2 last bullet). `dolt sql --result-format json` is confirmed supported by dolt 1.85.0+ (bd-shipped).
 - *Elephants:* race between cookie write and a launchd restart. Mitigation: cookie includes `start_time` (parse from `ps -o lstart=`); mismatched start_time invalidates cookie.
 
 ### D3 — `oro dolt repair` subcommand (single repair pathway)
@@ -162,11 +162,13 @@ Migration runs at every `oro start`:
 
 **Root cause (direct, not investigation):** `cmd/oro/daemon.go:182-194` — `SetupSignalHandler` accepts `beadsDir` and unconditionally calls `stopDoltServer(beadsDir)` on SIGTERM/SIGINT. In shared mode, `stopDoltServer` (`cmd/oro/dolt.go:229-278`) falls through the PID-file-absent branch, reads `metadata.json.dolt_server_port=13307` (written by `oro dolt setup` → `setDoltPort`), discovers the shared dolt PID via `lsof`, and kills it. Also: `cmd/oro/cmd_start.go:440-441` — `makeDoltLifecycle`'s non-shared branch returns `stopDoltServer` for per-project ports only, but has no defense if a shared-port project leaks into this code path.
 
-**Fix (simple, not pending investigation):**
+**Fix (simple, guards at preserving call sites only — NOT in `stopDoltServer`):**
+
+Guards must live at the callers that should preserve the shared dolt, not inside `stopDoltServer` itself. `stopDoltServer` is also called by `runDoltStop` (`oro dolt stop`) and `runDoltTeardown` (`oro dolt teardown`) — both legitimate user-invoked kill paths whose entire purpose is to stop the shared server. Adding a defensive guard inside `stopDoltServer` would silently break those commands.
 
 1. `cmd/oro/daemon.go:SetupSignalHandler` — resolve port from `beadsDir`; if `port == SharedDoltPort`, stop closure is a no-op with log `"shared dolt server preserved across sessions"`.
-2. `cmd/oro/dolt.go:stopDoltServer` — defensive early return if the resolved port is `SharedDoltPort`. Even if a caller passes a shared-mode beadsDir, the function refuses to kill.
-3. `cmd/oro/cmd_start.go:makeDoltLifecycle` — shared-port branch already returns `nil` stop func (correct); add an assertion in the non-shared branch that asserts port != SharedDoltPort before wrapping `stopDoltServer`.
+2. `cmd/oro/cmd_start.go:makeDoltLifecycle` — shared-port branch already returns `nil` stop func (correct); add an assertion in the non-shared branch that asserts port != SharedDoltPort before wrapping `stopDoltServer` (belt-and-suspenders; this path should already never see shared port thanks to the existing `isSharedServer(port)` check).
+3. `stopDoltServer` itself is **unchanged** — callers from `oro dolt stop` / `oro dolt teardown` rightly terminate the shared server.
 
 **Regression test** `TestOroStopPreservesSharedDolt`:
 - Spawn shared dolt on `SharedDoltPort`.
@@ -183,7 +185,7 @@ Complete audit. Every code path that can call `dolt sql-server` (directly via `s
 
 | # | Call site | Current behavior | Post-fix behavior |
 |---|-----------|------------------|-------------------|
-| 1 | `ensureSharedDoltRunning` fallback (`cmd/oro/dolt.go:444`) | Spawns `startSharedDoltServer` if kickstart fails | Return error, point at `oro dolt setup` / `oro dolt repair`. Gate direct spawn behind `testonly build tag=1`. |
+| 1 | `ensureSharedDoltRunning` fallback (`cmd/oro/dolt.go:444`) | Spawns `startSharedDoltServer` if kickstart fails | Return error, point at `oro dolt setup` / `oro dolt repair`. Gate direct spawn behind `integration build tag=1`. |
 | 2 | `newDoltStartCmd` RunE (`cmd/oro/cmd_dolt.go:614`) | Operator-facing `oro dolt start` → direct `startSharedDoltServer` | Route through `ensureSharedDoltRunning` (same probe-then-kickstart pathway). Operator command uses same single-owner contract. |
 | 3 | `newDoltSetupCmd` (`cmd/oro/cmd_dolt.go:68`) → `runDoltSetup` → `startFn` | First-time bring-up, legitimate | **Keep** — `oro dolt setup` is the legitimate bootstrap. Add comment calling out this is the ONLY legal direct spawn. |
 | 4 | `oro dolt repair` (new in D3) | N/A | Legitimate post-failure repair. Explicit allowlist. |
@@ -196,13 +198,13 @@ Complete audit. Every code path that can call `dolt sql-server` (directly via `s
 
 **Risks accepted:**
 - *Tigers:* `oro dolt start` users may expect idempotent direct spawn; routing through probe pathway changes the error surface. Mitigation: keep exit-code semantics; error messages suggest next command.
-- *Paper tigers:* `--force-direct-spawn` flag for ops operators — deferred. Use `testonly build tag=1` for now.
+- *Paper tigers:* `--force-direct-spawn` flag for ops operators — deferred. Use `integration build tag=1` for now.
 
 ### D7 — Wire `oro dolt setup` into `oro setup` onboarding (prevents onboarding regression from D6)
 
 Audit: `cmd/oro/cmd_setup.go` phases 1–5 are prereqs/language-detect/tools/bootstrap/doctor. None invoke `runDoltSetup`. After D6 removes direct-spawn fallback, the first-ever `oro start` on a clean machine exits with "shared dolt is not running and launchctl kickstart failed" because no plist is installed yet.
 
-**Fix:** invoke `runDoltSetup` from `setupPhase4Bootstrap` **after** `executeBootstrap` returns success (`executeBootstrap` writes `~/.oro/projects/<name>/project.root`, which `runDoltSetup`'s `discoverBreadsDirs` needs). Guard: skip if backend is not dolt (detect via `resolveBackend(beadsDir)` or `metadata.json` presence); skip if launchd plist already installed (check via `launchAgentPlistPath(homeDir)` existence). Idempotent.
+**Fix:** invoke `runDoltSetup` from `setupPhase4Bootstrap` **after** `executeBootstrap` returns success (`executeBootstrap` writes `~/.oro/projects/<name>/project.root`, which `runDoltSetup`'s `discoverBreadsDirs` needs). Guard: skip if backend is not dolt (detect via `resolveBackend(beadsDir)` or `metadata.json` presence); skip **only if** plist exists at `launchAgentPlistPath(homeDir)` AND `isLaunchAgentLoaded()` returns true (plist existence alone is not sufficient — `launchctl unload` leaves the file but no registered agent). When plist exists but not loaded, `runDoltSetup` re-bootstraps (idempotent). When agent loaded but plist path differs, log warn and continue.
 
 **Acceptance:** on a fresh install, `oro setup && oro start` works end-to-end with no manual `oro dolt setup` call.
 
@@ -248,7 +250,7 @@ Audit: `cmd/oro/cmd_setup.go` phases 1–5 are prereqs/language-detect/tools/boo
 | File | Line (current) | Change |
 |------|----------------|--------|
 | `cmd/oro/dolt.go` | 457 | D0: fix `tryLaunchctlKickstart` label from `com.oro.dolt-server` to `launchAgentLabel` (`dev.getoro.dolt`). |
-| `cmd/oro/dolt.go` | 427-445 | D1, D6.1: `ensureSharedDoltRunning`: probe-before-adopt; remove direct-spawn fallback (gated by `testonly build tag`). Add `runIdentityProbe(oroHome, dbName) (probeResult, error)` and cookie I/O. |
+| `cmd/oro/dolt.go` | 427-445 | D1, D6.1: `ensureSharedDoltRunning`: probe-before-adopt; remove direct-spawn fallback (gated by `integration build tag`). Add `runIdentityProbe(oroHome, dbName) (probeResult, error)` and cookie I/O. |
 | `cmd/oro/dolt.go` | 490-515 | D2: retire `checkSharedPortConflict` or delegate to `runIdentityProbe`. |
 | `cmd/oro/cmd_dolt_repair.go` | NEW | D3: `oro dolt repair` subcommand. Flock on `~/.oro/.dolt-spawn.lock`. Exit codes 0/2/3/4/5. |
 | `cmd/oro/cmd_dolt.go` | 43-49 | D3: register `repair` subcommand in `newDoltCmd()`. |
@@ -258,10 +260,11 @@ Audit: `cmd/oro/cmd_setup.go` phases 1–5 are prereqs/language-detect/tools/boo
 | `cmd/oro/dolt_migrate.go` | NEW | D4: `MigrateMetadataPort(beadsDir) error`. Idempotent. Atomic write via `writeFileAtomic` (dep: oro-kn25 code must actually land). |
 | `cmd/oro/cmd_start.go` | 419-442 | D1, D4: `makeDoltLifecycle` calls `MigrateMetadataPort` first, then probe-before-adopt. |
 | `cmd/oro/daemon.go` | 182-194 | D5: `SetupSignalHandler` stop closure guards on shared port → no-op. |
-| `cmd/oro/dolt.go` | 229-278 | D5: `stopDoltServer` defensive early return on shared port (belt-and-suspenders). |
+| `cmd/oro/dolt.go` | 229-278 | D5: `stopDoltServer` UNCHANGED (legitimate callers `runDoltStop`/`runDoltTeardown` must still work). |
 | `cmd/oro/cmd_start.go` | 440-441 | D5: `makeDoltLifecycle` non-shared branch asserts port != SharedDoltPort. |
-| `cmd/oro/cmd_setup.go` | 87-113 | D7: new phase chains `runDoltSetup` when backend=dolt AND plist not installed. |
+| `cmd/oro/cmd_setup.go` | 188-204 | D7: insert `runDoltSetup` call inside `setupPhase4Bootstrap` AFTER `executeBootstrap` returns success. |
 | `cmd/oro/launchd.go` | — | No code change. Regression test (D0) asserts plist Label == kickstart target. |
+| `Makefile` | test target | Add `test-integration` target: `go test -tags integration ./cmd/oro/...`. CI invokes it. |
 
 New test files:
 - `cmd/oro/cmd_dolt_repair_test.go`
@@ -348,7 +351,7 @@ oro start (every invocation)
 | Port up, can't identify owner (no PID file, no lsof) | start: 1; repair: 2 | `cannot identify dolt server owner on port 13307` | `oro dolt repair` (or manual investigation) |
 | Port down, launchctl kickstart fails | start: 1 | `shared dolt is not running and launchctl kickstart failed` | `oro dolt setup` |
 | Repair flock contended | repair: 5 | `another oro process is repairing dolt; re-probe in 30s` | wait or retry |
-| Direct-spawn requested without env | start: 1 | (kept for legacy paths only) | unset `testonly build tag` if intentional |
+| Direct-spawn path reached in release binary | — | (unreachable by construction — compile-gated behind `//go:build integration`) | N/A |
 
 All error messages include the offending paths/PIDs/observed values, never just "failed."
 
