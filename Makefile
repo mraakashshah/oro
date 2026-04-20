@@ -1,4 +1,4 @@
-.PHONY: build build-search-hook install install-git-hooks setup test lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec
+.PHONY: build build-search-hook install install-git-hooks setup test test-integration lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
@@ -87,6 +87,13 @@ build-search-hook:
 
 test: stage-assets
 	go test -race -shuffle=on -p 2 ./...
+	@$(MAKE) clean-assets
+
+# test-integration runs tests tagged with //go:build integration.
+# CI-only target. Runs integration tests in cmd/oro/ package.
+# For local development, run the default 'test' target instead.
+test-integration: stage-assets
+	go test -tags integration ./cmd/oro/...
 	@$(MAKE) clean-assets
 
 lint:
