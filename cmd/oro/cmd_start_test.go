@@ -1162,6 +1162,58 @@ func TestMakeDoltLifecycleSharedServer(t *testing.T) {
 	})
 }
 
+// TestMakeDoltLifecycleRunsMigration verifies that makeDoltLifecycle calls
+// MigrateMetadataPort before readDoltMeta, stripping stale dolt_server_port
+// values (3307 upstream default) from metadata.json.
+func TestMakeDoltLifecycleRunsMigration(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create metadata.json with stale dolt_server_port (3307 upstream default)
+	writeMetadata(t, beadsDir, map[string]any{
+		"backend":          "dolt",
+		"dolt_server_port": doltUpstreamDefaultPort, // 3307
+		"dolt_database":    "beads",
+	})
+
+	oroHome := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroHome, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Call makeDoltLifecycle which should trigger MigrateMetadataPort
+	startFn, stopFn := makeDoltLifecycle(tmpDir, oroHome)
+
+	// Verify makeDoltLifecycle returned functions (didn't error on migration)
+	if startFn == nil {
+		t.Fatal("expected non-nil startFn after migration")
+	}
+
+	// Verify the stale port field was removed from metadata.json
+	metaData, err := os.ReadFile(filepath.Join(beadsDir, "metadata.json"))
+	if err != nil {
+		t.Fatalf("read metadata after migration: %v", err)
+	}
+
+	var meta map[string]any
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		t.Fatalf("parse metadata: %v", err)
+	}
+
+	// The dolt_server_port field should be removed (not present in JSON)
+	if _, exists := meta["dolt_server_port"]; exists {
+		t.Errorf("expected dolt_server_port to be removed from metadata, but it still exists")
+	}
+
+	// Non-shared server should have stop function
+	if stopFn == nil {
+		t.Error("expected non-nil stopFn for non-shared server")
+	}
+}
+
 // TestSendStartDirectiveTimeout verifies that sendStartDirective times out
 // after 10 seconds if the dispatcher doesn't send an ACK response.
 func TestSendStartDirectiveTimeout(t *testing.T) {
