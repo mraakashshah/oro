@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -1138,7 +1139,16 @@ func TestCLIBeadSource_HasChildren_Assertions(t *testing.T) {
 
 func TestCLIBeadSource_Update(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		runner := &mockCommandRunner{output: []byte("")}
+		// Update now makes two bd calls: update + show (post-verify).
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if sliceContains(args, "update") {
+					return []byte(""), nil
+				}
+				// show verify: return the expected new status
+				return []byte(`[{"id":"abc.1","title":"T","status":"in_progress"}]`), nil
+			},
+		}
 		src := NewCLIBeadSource(runner)
 
 		err := src.Update(context.Background(), "abc.1", "in_progress")
@@ -1146,21 +1156,25 @@ func TestCLIBeadSource_Update(t *testing.T) {
 			t.Fatalf("Update: %v", err)
 		}
 
-		if len(runner.calls) != 1 {
-			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		if len(runner.calls) != 2 {
+			t.Fatalf("expected 2 calls (update + show verify), got %d", len(runner.calls))
 		}
-		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		updateCall := runner.calls[0]
+		if updateCall.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", updateCall.Name, "bd")
 		}
-		if !sliceContains(call.Args, "update") {
-			t.Errorf("expected 'update' in args, got %v", call.Args)
+		if !sliceContains(updateCall.Args, "update") {
+			t.Errorf("expected 'update' in args, got %v", updateCall.Args)
 		}
-		if !sliceContains(call.Args, "abc.1") {
-			t.Errorf("expected 'abc.1' in args, got %v", call.Args)
+		if !sliceContains(updateCall.Args, "abc.1") {
+			t.Errorf("expected 'abc.1' in args, got %v", updateCall.Args)
 		}
-		if !sliceContains(call.Args, "--status=in_progress") {
-			t.Errorf("expected '--status=in_progress' in args, got %v", call.Args)
+		if !sliceContains(updateCall.Args, "--status=in_progress") {
+			t.Errorf("expected '--status=in_progress' in args, got %v", updateCall.Args)
+		}
+		showCall := runner.calls[1]
+		if !sliceContains(showCall.Args, "show") {
+			t.Errorf("expected 'show' in verify call args, got %v", showCall.Args)
 		}
 	})
 
@@ -1618,7 +1632,14 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 	})
 
 	t.Run("update_prepends_extra_args", func(t *testing.T) {
-		runner := &mockCommandRunner{output: []byte("")}
+		runner := &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if sliceContains(args, "update") {
+					return []byte(""), nil
+				}
+				return []byte(`[{"id":"x.1","title":"T","status":"in_progress"}]`), nil
+			},
+		}
 		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
 
 		if err := src.Update(context.Background(), "x.1", "in_progress"); err != nil {
@@ -1627,6 +1648,11 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 		assertPrepended(t, runner.calls[0], extraArgs)
 		if !sliceContains(runner.calls[0].Args, "update") {
 			t.Errorf("expected 'update' subcommand in args: %v", runner.calls[0].Args)
+		}
+		// show verify call also uses extra args
+		assertPrepended(t, runner.calls[1], extraArgs)
+		if !sliceContains(runner.calls[1].Args, "show") {
+			t.Errorf("expected 'show' in verify call args: %v", runner.calls[1].Args)
 		}
 	})
 
@@ -1849,6 +1875,87 @@ func TestCLIBeadSourceClosed(t *testing.T) {
 			t.Fatal("expected error from Closed when output is invalid JSON")
 		}
 	})
+}
+
+// TestCLIBeadSource_Update_ReturnsErrorWhenStatusDoesNotChange verifies that
+// Update() returns an error when bd update exits 0 but the status is not actually
+// changed (e.g. cwd mismatch, wrong db path, silent no-op).
+func TestCLIBeadSource_Update_ReturnsErrorWhenStatusDoesNotChange(t *testing.T) {
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if sliceContains(args, "update") {
+				return []byte(""), nil // bd update exits 0 (no-op)
+			}
+			// bd show returns old status — update was a no-op
+			return []byte(`[{"id":"abc.1","title":"T","status":"open"}]`), nil
+		},
+	}
+	src := NewCLIBeadSource(runner)
+
+	err := src.Update(context.Background(), "abc.1", "in_progress")
+	if err == nil {
+		t.Fatal("expected error when bd update exits 0 but status did not change")
+	}
+	if !strings.Contains(err.Error(), "status") {
+		t.Errorf("expected error to mention status mismatch, got: %v", err)
+	}
+}
+
+// TestCLIBeadSource_UpdateInProgressPersists is an integration test against a real
+// bd-backed fixture: after Update(id, "in_progress"), Show(id).Status must be
+// "in_progress". Skipped when bd is not in PATH.
+func TestCLIBeadSource_UpdateInProgressPersists(t *testing.T) {
+	bdBin, err := exec.LookPath("bd")
+	if err != nil {
+		t.Skip("bd binary not in PATH, skipping integration test")
+	}
+
+	tmpDir := t.TempDir()
+
+	run := func(name string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command(name, args...) //nolint:gosec
+		cmd.Dir = tmpDir
+		cmd.Env = append(cmd.Environ(), "BD_NON_INTERACTIVE=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+		}
+		return string(out)
+	}
+
+	run("git", "init")
+	run("git", "config", "user.email", "test@test.com")
+	run("git", "config", "user.name", "Test")
+	run("git", "commit", "--allow-empty", "-m", "init")
+	run(bdBin, "init")
+
+	out := run(bdBin, "create", "--title=Integration test bead", "--type=task",
+		"--priority=1", "--description=Integration test fixture", "--json")
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatalf("parse bd create output: %v\noutput: %s", err, out)
+	}
+	beadID := created.ID
+
+	runner := &ExecCommandRunner{Dir: tmpDir}
+	src := NewCLIBeadSource(runner)
+
+	ctx := context.Background()
+	if err := src.Update(ctx, beadID, "in_progress"); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	detail, err := src.Show(ctx, beadID)
+	if err != nil {
+		t.Fatalf("Show after Update: %v", err)
+	}
+	if detail.Status != "in_progress" {
+		t.Errorf("status after Update: got %q, want %q", detail.Status, "in_progress")
+	}
 }
 
 // sliceContains checks if a string slice contains a given string.

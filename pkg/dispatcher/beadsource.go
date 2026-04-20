@@ -260,11 +260,20 @@ func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
 	return nil
 }
 
-// Update runs `bd update <id> --status=<status>`.
+// Update runs `bd update <id> --status=<status>` then re-reads bd show to verify
+// the status was actually persisted. bd update exits 0 even on a no-op (e.g. cwd
+// mismatch, wrong db path), so we must verify explicitly rather than trust exit code.
 func (s *CLIBeadSource) Update(ctx context.Context, id, status string) error {
 	_, err := s.runner.Run(ctx, "bd", s.bdArgs("update", id, "--status="+status)...)
 	if err != nil {
 		return fmt.Errorf("bd update %s: %w", id, err)
+	}
+	detail, err := s.Show(ctx, id)
+	if err != nil {
+		return fmt.Errorf("bd update %s: post-update verify failed: %w", id, err)
+	}
+	if detail.Status != status {
+		return fmt.Errorf("bd update %s: status not persisted (got %q, want %q) — possible cwd mismatch or wrong db path", id, detail.Status, status)
 	}
 	return nil
 }
