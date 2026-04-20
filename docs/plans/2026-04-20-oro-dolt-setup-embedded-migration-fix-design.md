@@ -66,7 +66,14 @@ If either probe fails, the migration is reverted (destination directory removed)
 
 **Cost:** ~hundreds of ms per project for the SQL connect. Acceptable.
 
-**Lock semantics:** Embedded dolt is single-writer. The probe MUST run `dolt sql` as a subprocess against the source data directory while bd processes are idle. `runDoltSetup` already aborts if the dispatcher is running; extend that guard to also reject if any `bd` process holds the embedded lock (check via `lsof` on `.dolt/sql-server.lock` or equivalent). On lock conflict: hard fail with "stop bd processes and re-run."
+**Lock semantics:** Embedded dolt is single-writer (the actual lock is `noms/LOCK` + an `embeddeddolt` advisory flock taken at process start — there is no `sql-server.lock` in embedded mode). Rather than probing the lock file (path is internal and may change), rely on:
+
+1. The existing dispatcher-running guard (covers the common case — workers don't run when setup runs).
+2. Dolt's own error surface: when `dolt sql` runs against a locked directory, the embedded mode emits "another process holds the exclusive lock on %s" (verified in bd 1.0.0 binary strings). The probe must detect this error string and surface a typed `ErrEmbeddedLockHeld` with remediation: "stop active bd processes and re-run."
+
+This is intentionally less defensive than a lock-file probe but more robust to bd internal layout changes.
+
+**PATH dependency:** SQL probe requires the `dolt` binary in PATH (already required by `startSharedDoltServer`). If absent, MIGRATION fails hard with "install dolt CLI." START-time validation (D4) degrades to stat-only with a warning — the stricter SQL probe is migration-only.
 
 **Risks accepted:**
 - *Tigers:* schema coupling — `issues` table is bd's, not oro's. If bd renames the table, this code breaks. Mitigation: integration test (deferred per D5) catches format drift.
@@ -83,6 +90,17 @@ Both writes use write-temp-then-rename:
 **Order matters:** metadata.json first, port file second. If step 2 fails, bd will error on next invocation looking for the port file — visible failure rather than silent drift.
 
 No two-phase commit, no rollback. Cross-file inconsistency is possible only if the process is killed between the two renames; the doctor/heal logic (D4) detects and corrects.
+
+**Port-file 4-state enumeration** — `validateAndHealProjects` must distinguish:
+
+| State | per-project `.beads/dolt-server.port` | metadata `dolt_mode` | Per-project pid alive? | Action |
+|-------|---------------------------------------|----------------------|-----------------------|--------|
+| (a)   | present + content matches metadata port | `server`           | n/a                   | healthy — no-op |
+| (b)   | present + content mismatches metadata   | `server`           | n/a                   | rewrite port file (file is stale from old per-project server mode) |
+| (c)   | absent                                  | `server`           | n/a                   | the migration's missing write — write port file |
+| (d)   | present + per-project `.beads/dolt-server.pid` exists AND process is alive | any | yes | **REFUSE TO TOUCH** — a legacy per-project dolt server is actively running. Hard fail with "stop legacy server first." |
+
+State (d) is the abort condition that protects users mid-migration from a legacy per-project server. Must be checked before any write.
 
 **Alternatives considered:**
 - D (single source of truth in metadata, retire port file): rejected — requires bd PR + brew release, never going to happen for downstream users.
@@ -122,6 +140,27 @@ Confirmed from oro's own metadata: `dolt_database: "beads_oro"` matches both `.b
 - Missing `dolt_database` → fall back to `"beads"` (current behavior) with a warning logged.
 - Project basename is **not** consulted.
 
+### D8 — Pre-flight diagnostic (separate subcommand)
+
+Pin to `oro dolt diagnose` (new subcommand), NOT `--dry-run` on setup. Reasons: setup's flag surface stays focused on the action; diagnose can be safely re-run without needing to know setup's flags; exit codes are diagnostic-specific.
+
+**CLI:** `oro dolt diagnose [--project <path>]` — without `--project`, scans all `~/.oro/projects/*/project.root` registered projects.
+
+**Output:** the table from §Pre-flight Diagnostic (one row per project) printed as both human-readable text and `--json` for scripting.
+
+**Exit codes:**
+
+| Code | Meaning                                                                              |
+|------|---------------------------------------------------------------------------------------|
+| 0    | All registered projects healthy. No action needed.                                    |
+| 1    | Drift found, heal feasible (data exists in `.beads/embeddeddolt/<db>/` for every broken project). Run `oro dolt setup` to fix. |
+| 2    | Drift found, **NOT** all recoverable from `embeddeddolt`. At least one project has zero issues across all 4 candidate paths — data loss. Spec must be revised before heal logic ships. |
+| 3    | Lock conflict — at least one project's source DB is held by an active bd process. Stop bd and re-run. |
+
+**Concurrency:** respects the dispatcher-running guard. If the dispatcher is up, exits 4 with "stop dispatcher and re-run." Issue counts are obtained via `dolt sql --readonly` (verify flag exists in shipped dolt; if not, fall back to opening dolt with no commit).
+
+**Spec-revision threshold:** if exit code 2 fires for any project, this design doc must be revised — the heal pathway as designed cannot recover that project. Threshold is exact: every project must be heal-feasible from `.beads/embeddeddolt/<db>/`.
+
 ### D7 — Failure UX
 
 Two messages standardized across setup and start:
@@ -147,12 +186,12 @@ ERROR: project "<dolt_database>" metadata mismatch
 
 | File                              | Change                                                                                  |
 |-----------------------------------|------------------------------------------------------------------------------------------|
-| `cmd/oro/cmd_dolt.go`             | Replace `srcDir` line; add `resolveSourcePath`, `verifyMigration`, `flipMetadataAtomic`. |
-| `cmd/oro/cmd_dolt.go`             | New shared `validateAndHealProjects` consumed by setup and `oro start`.                  |
-| `cmd/oro/cmd_start.go`            | Call `validateAndHealProjects` from `startFreshSwarm` (parent process, between `makeDoltLifecycle` and `runFullStart` — see `cmd_start.go:444-469`). MUST NOT be called from `runDaemonOnly` (daemon has no TTY). TTY-prompt on drift. |
+| `cmd/oro/cmd_dolt.go`             | Replace `srcDir` line; add `resolveSourcePath`, `verifyMigration`, `flipMetadataAtomic`, `writeFileAtomic` (co-located in `cmd_dolt.go`, not a new file — only callers are migration helpers). |
+| `cmd/oro/cmd_dolt.go`             | New exported `HealProjects(oroHome string, beadsDirs []string, w io.Writer, opts HealOptions) error` consumed by setup's Cobra `RunE` and by `cmd_start.go`. `HealOptions{Interactive bool, DryRun bool}` controls TTY-prompt vs hard-fail vs report-only. |
+| `cmd/oro/cmd_dolt.go`             | New `DiagnoseProjects(oroHome string, beadsDirs []string, w io.Writer) (DiagnosticReport, error)` powering `oro dolt diagnose`. |
+| `cmd/oro/cmd_start.go`            | Call `HealProjects` from `startFreshSwarm` (parent process, between `makeDoltLifecycle` and `runFullStart` — see `cmd_start.go:444-469`) with `HealOptions{Interactive: isatty(stdin)}`. MUST NOT be called from `runDaemonOnly` (daemon has no TTY). |
 | `cmd/oro/cmd_dolt_test.go`        | Update `TestAtomicCopyDir_SrcNotExists` (`cmd_dolt_test.go:1087`) — it currently asserts silent-nil-on-missing-source, which is the cemented bug. New assertion: `atomicCopyDir` returns a typed error when source missing AND the caller asked it to migrate (or callers wrap with explicit pre-check). Add new tests below. |
 | `cmd/oro/testdata/`               | Three new fixture trees (embedded, shared, broken).                                      |
-| `cmd/oro/atomic.go` (new or co-located) | `writeFileAtomic(path, content)` helper — write-temp + rename.                     |
 
 ### Data flow (happy path, embedded → shared)
 
@@ -231,6 +270,6 @@ Additional criteria:
 
 7. **Pre-flight diagnostic** (new, added per review): `oro dolt setup --dry-run` (or equivalent) reports per-registered-project: which mode metadata says, which paths actually have data, and what the heal action would be — without executing. Run this first against the user's 8 registered projects to confirm recoverability before shipping the heal.
 8. Running `oro start` against a project flagged broken by the diagnostic hard-fails with the standardized error message and refuses to launch the dispatcher.
-9. `validateAndHealProjects` completes in under 500ms wall clock for 10 healthy projects, measured by a benchmark test (`BenchmarkValidateAndHealProjects`).
+9. **Start-time validation budget**: `HealProjects` (in stat-only mode, the happy-path used by `oro start`) completes in under 500ms wall clock for 10 healthy projects, measured by `BenchmarkHealProjectsStatOnly`. The SQL probe (D2) runs only during MIGRATION/HEAL execution, not during start-time validation, so per-start cost is bounded by a directory stat + JSON parse per project.
 10. `oro dolt setup` is idempotent — re-running on a healthy machine performs validation only and exits 0 with no metadata writes.
 11. `TestAtomicCopyDir_SrcNotExists` is updated to assert the new error-on-missing-source behavior (or, if `atomicCopyDir`'s contract is preserved, callers are explicitly tested to pre-check existence).
