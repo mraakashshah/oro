@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -2143,5 +2144,72 @@ func TestOroInit_LocalFlagUsesStandardMode(t *testing.T) {
 	// Standard .oro/config.yaml MUST exist with --local.
 	if _, err := os.Stat(filepath.Join(projectDir, ".oro", "config.yaml")); os.IsNotExist(err) {
 		t.Error("--local must create .oro/config.yaml in project root")
+	}
+}
+
+// findBeadsDirHashingToSharedPort brute-forces a beads directory path that
+// DerivePort will hash to SharedDoltPort. Used for testing port collision detection.
+func findBeadsDirHashingToSharedPort(t *testing.T) string {
+	t.Helper()
+	// DerivePort returns doltPortBase (13307) + hash%doltPortRange (1000).
+	// For DerivePort to return SharedDoltPort (13307), we need hash%1000 == 0.
+	// Expected collision rate: 1 in 1000, so should find one quickly.
+	tmpBase := t.TempDir()
+	for i := 0; i < 100000; i++ {
+		candidate := filepath.Join(tmpBase, fmt.Sprintf("beads_%d", i))
+		port := DerivePort(candidate)
+		if port == SharedDoltPort {
+			return candidate
+		}
+	}
+	t.Fatalf("could not find a beads path that hashes to SharedDoltPort after 100000 attempts")
+	return ""
+}
+
+// TestInitDoltForProject_RefusesSharedPort verifies that when DerivePort
+// returns SharedDoltPort (port collision), initDoltForProject refuses
+// initialization and does not spawn a per-project dolt server.
+func TestInitDoltForProject_RefusesSharedPort(t *testing.T) {
+	// Find a beads directory path that hashes to SharedDoltPort (collision).
+	beadsDir := findBeadsDirHashingToSharedPort(t)
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use empty oroHome to ensure no shared server file exists.
+	// This ensures deriveEffectivePort will call DerivePort and return SharedDoltPort.
+	oroHome := ""
+
+	// Capture stderr to check for error message.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	// Call initDoltForProject with port collision scenario.
+	initDoltForProject(beadsDir, oroHome)
+
+	// Restore stderr and read captured output.
+	w.Close()
+	os.Stderr = oldStderr
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	stderrOutput := buf.String()
+
+	// Verify that the function refused initialization:
+	// - Should print an error message
+	if !strings.Contains(stderrOutput, "oro dolt setup") {
+		t.Errorf("expected error message mentioning 'oro dolt setup', got stderr: %q", stderrOutput)
+	}
+
+	// - Should NOT spawn a dolt server (no dolt-server.port file in beadsDir)
+	beadsDoltPortPath := filepath.Join(beadsDir, "dolt-server.port")
+	if _, err := os.Stat(beadsDoltPortPath); err == nil {
+		t.Error("expected no dolt-server.port file in beadsDir when port is SharedDoltPort, but file was created")
+	}
+
+	// - Should NOT spawn a dolt server (no dolt-server.pid file in beadsDir)
+	beadsDoltPIDPath := filepath.Join(beadsDir, "dolt-server.pid")
+	if _, err := os.Stat(beadsDoltPIDPath); err == nil {
+		t.Error("expected no dolt-server.pid file in beadsDir when port is SharedDoltPort, but file was created")
 	}
 }

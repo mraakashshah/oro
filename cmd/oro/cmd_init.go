@@ -712,9 +712,30 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 // initDoltForProject ensures dolt metadata and server are ready for a .beads path.
 // When oroHome contains a dolt-server.port file (shared server mode), port 13307
 // is used. Otherwise the port is derived per-project from the beads path hash.
-// Fail-open: logs warnings but does not return errors.
+// Fails if the derived port is SharedDoltPort but no shared server is active
+// (port collision): advises user to run 'oro dolt setup' to migrate to shared-server mode.
+// Fail-open: logs warnings but does not return errors (except for port collision).
 func initDoltForProject(beadsPath, oroHome string) {
 	port := deriveEffectivePort(beadsPath, oroHome)
+
+	// Check for port collision: port is SharedDoltPort but shared server is not active.
+	// In shared server mode, deriveEffectivePort returns SharedDoltPort because the
+	// dolt-server.port file exists. In collision mode, DerivePort returned SharedDoltPort
+	// by chance, but the dolt-server.port file does not exist.
+	sharedServerActive := false
+	if oroHome != "" {
+		portPath := filepath.Join(oroHome, "dolt-server.port")
+		if _, err := os.Stat(portPath); err == nil {
+			sharedServerActive = true
+		}
+	}
+
+	if port == SharedDoltPort && !sharedServerActive {
+		fmt.Fprintf(os.Stderr, "error: cannot initialize per-project dolt when port collides with shared server\n")
+		fmt.Fprintf(os.Stderr, "hint: run 'oro dolt setup' to migrate to shared-server mode\n")
+		return
+	}
+
 	if err := ensureDoltMetadata(beadsPath, port); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: dolt metadata setup failed: %v\n", err)
 	}
