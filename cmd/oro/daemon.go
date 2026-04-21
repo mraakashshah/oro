@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -187,21 +188,30 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	// stopDolt is wrapped in sync.Once so the multiple shutdown paths (signal
+	// receipt, ctx.Done(), explicit cleanup) coalesce to a single call. This
+	// also avoids racing reads/writes on os.Stderr between the handler
+	// goroutine and the caller's cleanup, which previously failed under -race.
+	var stopOnce sync.Once
 	stopDolt := func() {
-		if beadsDir == "" {
-			return
-		}
-		// Never stop the shared dolt server — its lifecycle is owned by launchd
-		// (or another oro instance) and persists across sessions. Per-project
-		// dolt servers are still stopped.
-		if isSharedBeadsDir(beadsDir) {
-			fmt.Fprintf(os.Stderr, "shutdown: shared dolt server preserved across sessions\n")
-			return
-		}
-		_ = stopDoltServer(beadsDir)
+		stopOnce.Do(func() {
+			if beadsDir == "" {
+				return
+			}
+			// Never stop the shared dolt server — its lifecycle is owned by launchd
+			// (or another oro instance) and persists across sessions. Per-project
+			// dolt servers are still stopped.
+			if isSharedBeadsDir(beadsDir) {
+				fmt.Fprintf(os.Stderr, "shutdown: shared dolt server preserved across sessions\n")
+				return
+			}
+			_ = stopDoltServer(beadsDir)
+		})
 	}
 
+	goroutineDone := make(chan struct{})
 	go func() {
+		defer close(goroutineDone)
 		for {
 			select {
 			case sig := <-sigCh:
@@ -235,6 +245,7 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 	cleanup = func() {
 		stopDolt()
 		cancel()
+		<-goroutineDone
 		_ = RemovePIDFile(pidPath)
 	}
 
