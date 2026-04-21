@@ -2984,13 +2984,31 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 	return out
 }
 
-// isBranchMerged reports whether agent/<beadID> is an ancestor of main,
-// meaning the branch has already been merged. Uses git merge-base --is-ancestor.
-// Returns false when the branch does not exist, the git command fails, or the
-// bead has never been assigned (no branch exists yet).
+// isBranchMerged reports whether agent/<beadID> represents work that has been
+// merged into the default branch. A branch is considered merged only when it
+// (1) has at least one commit beyond its merge-base with the default branch
+// AND (2) is an ancestor of the default branch.
+//
+// The empty-branch guard (1) prevents a destructive false positive: a stale
+// agent branch sitting at a commit already in main's history (e.g., the worker
+// never committed implementation) would otherwise satisfy --is-ancestor
+// trivially, causing the dispatcher to close the bead as "branch already
+// merged" and orphan any earlier worker's implementation commits. Returns false
+// when the branch does not exist or any git command fails.
 func (d *Dispatcher) isBranchMerged(ctx context.Context, beadID string) bool {
 	branch := protocol.BranchPrefix + beadID // "agent/<beadID>"
-	_, err := d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, d.cfg.DefaultBranch)
+	tipOut, err := d.shutdownRunner.Run(ctx, "git", "rev-parse", branch)
+	if err != nil {
+		return false
+	}
+	baseOut, err := d.shutdownRunner.Run(ctx, "git", "merge-base", branch, d.cfg.DefaultBranch)
+	if err != nil {
+		return false
+	}
+	if strings.TrimSpace(string(tipOut)) == strings.TrimSpace(string(baseOut)) {
+		return false
+	}
+	_, err = d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, d.cfg.DefaultBranch)
 	return err == nil
 }
 

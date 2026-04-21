@@ -10315,15 +10315,28 @@ func TestFilterAssignable_SkipsAlreadyMergedBead(t *testing.T) {
 	const mergedID = "oro-merged"
 	const openID = "oro-open"
 
-	// shutdownRunner: exit 0 for the merged bead, non-zero for all others.
+	// shutdownRunner: for the merged bead, return distinct SHAs for rev-parse
+	// vs merge-base (so the empty-branch guard does not short-circuit) then
+	// exit 0 on merge-base --is-ancestor. All other beads exit non-zero.
 	d.shutdownRunner = &mockCommandRunner{
 		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			isMerged := false
 			for _, a := range args {
 				if a == "agent/"+mergedID {
-					return nil, nil // exit 0 → merged
+					isMerged = true
+					break
 				}
 			}
-			return nil, errors.New("exit status 1")
+			if !isMerged {
+				return nil, errors.New("exit status 1")
+			}
+			if len(args) >= 1 && args[0] == "rev-parse" {
+				return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+			}
+			if len(args) >= 1 && args[0] == "merge-base" && (len(args) < 2 || args[1] != "--is-ancestor") {
+				return []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"), nil
+			}
+			return nil, nil // merge-base --is-ancestor → merged
 		},
 	}
 
@@ -16485,17 +16498,30 @@ func TestAssignBead_MetadataBranch(t *testing.T) {
 // TestIsBranchMerged_DefaultBranch verifies that isBranchMerged checks against
 // d.cfg.DefaultBranch, not the hardcoded string "main".
 func TestIsBranchMerged_DefaultBranch(t *testing.T) {
+	// Mock that returns distinct SHAs for rev-parse vs merge-base so the
+	// empty-branch guard does not short-circuit, then exits 0 on
+	// merge-base --is-ancestor.
+	mergedRunner := func(captured *[]string) *mockCommandRunner {
+		return &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				*captured = args
+				if len(args) >= 1 && args[0] == "rev-parse" {
+					return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+				}
+				if len(args) >= 1 && args[0] == "merge-base" && (len(args) < 2 || args[1] != "--is-ancestor") {
+					return []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"), nil
+				}
+				return nil, nil
+			},
+		}
+	}
+
 	t.Run("uses DefaultBranch in git merge-base check", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		d.cfg.DefaultBranch = "develop"
 
 		var gotArgs []string
-		d.shutdownRunner = &mockCommandRunner{
-			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-				gotArgs = args
-				return nil, nil // exit 0 → merged
-			},
-		}
+		d.shutdownRunner = mergedRunner(&gotArgs)
 
 		result := d.isBranchMerged(context.Background(), "bead-abc")
 		if !result {
@@ -16517,12 +16543,7 @@ func TestIsBranchMerged_DefaultBranch(t *testing.T) {
 		// DefaultBranch is "main" by default (withDefaults).
 
 		var gotArgs []string
-		d.shutdownRunner = &mockCommandRunner{
-			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-				gotArgs = args
-				return nil, nil
-			},
-		}
+		d.shutdownRunner = mergedRunner(&gotArgs)
 
 		_ = d.isBranchMerged(context.Background(), "bead-xyz")
 
@@ -16532,6 +16553,102 @@ func TestIsBranchMerged_DefaultBranch(t *testing.T) {
 		last := gotArgs[len(gotArgs)-1]
 		if last != "main" {
 			t.Errorf("isBranchMerged checked against %q, want %q", last, "main")
+		}
+	})
+}
+
+// TestIsBranchMerged_EmptyBranch verifies the fix for the false-merge bug:
+// when agent/<bead> exists but has zero commits beyond its merge-base with main
+// (e.g., the worker never committed implementation work), isBranchMerged must
+// return false. The previous behavior used `git merge-base --is-ancestor` alone,
+// which trivially returns true for an empty branch sitting at a commit already
+// in main's history — falsely closing beads as "branch already merged" and
+// orphaning any earlier worker's implementation commits.
+func TestIsBranchMerged_EmptyBranch(t *testing.T) {
+	t.Run("returns false when branch tip equals merge-base with main", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		const sameSHA = "abc1234567890abcdef1234567890abcdef12345"
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if len(args) >= 1 && args[0] == "rev-parse" {
+					return []byte(sameSHA + "\n"), nil
+				}
+				if len(args) >= 1 && args[0] == "merge-base" && (len(args) < 2 || args[1] != "--is-ancestor") {
+					return []byte(sameSHA + "\n"), nil
+				}
+				if len(args) >= 2 && args[0] == "merge-base" && args[1] == "--is-ancestor" {
+					return nil, nil
+				}
+				return nil, nil
+			},
+		}
+
+		if d.isBranchMerged(context.Background(), "oro-bl08") {
+			t.Error("isBranchMerged should return false for empty branch (tip == merge-base)")
+		}
+	})
+
+	t.Run("returns true when branch has commits and is ancestor of main", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if len(args) >= 1 && args[0] == "rev-parse" {
+					return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+				}
+				if len(args) >= 1 && args[0] == "merge-base" && (len(args) < 2 || args[1] != "--is-ancestor") {
+					return []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"), nil
+				}
+				if len(args) >= 2 && args[0] == "merge-base" && args[1] == "--is-ancestor" {
+					return nil, nil
+				}
+				return nil, nil
+			},
+		}
+
+		if !d.isBranchMerged(context.Background(), "oro-real") {
+			t.Error("isBranchMerged should return true when branch has commits and is ancestor")
+		}
+	})
+
+	t.Run("returns false when branch has commits but is not ancestor of main", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if len(args) >= 1 && args[0] == "rev-parse" {
+					return []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+				}
+				if len(args) >= 1 && args[0] == "merge-base" && (len(args) < 2 || args[1] != "--is-ancestor") {
+					return []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"), nil
+				}
+				if len(args) >= 2 && args[0] == "merge-base" && args[1] == "--is-ancestor" {
+					return nil, errors.New("not ancestor")
+				}
+				return nil, nil
+			},
+		}
+
+		if d.isBranchMerged(context.Background(), "oro-unmerged") {
+			t.Error("isBranchMerged should return false when branch has commits but is not ancestor")
+		}
+	})
+
+	t.Run("returns false when branch does not exist (rev-parse fails)", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if len(args) >= 1 && args[0] == "rev-parse" {
+					return nil, errors.New("unknown revision")
+				}
+				return nil, nil
+			},
+		}
+
+		if d.isBranchMerged(context.Background(), "oro-missing") {
+			t.Error("isBranchMerged should return false when branch does not exist")
 		}
 	})
 }
