@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -433,6 +434,133 @@ func TestStartSharedDoltServer(t *testing.T) {
 			t.Fatal("startSharedDoltServer should return error when port 13307 occupied by foreign process")
 		}
 	})
+}
+
+// findPathWithPort returns an absolute path under baseDir whose DerivePort equals targetPort.
+func findPathWithPort(t *testing.T, baseDir string, targetPort int) string {
+	t.Helper()
+	for i := 0; i < 500000; i++ {
+		p := filepath.Join(baseDir, fmt.Sprintf("p%d", i), ".beads")
+		if DerivePort(p) == targetPort {
+			return p
+		}
+	}
+	t.Fatalf("could not find path hashing to port %d in 500k iterations", targetPort)
+	return ""
+}
+
+func TestAllocatePort_NewProject(t *testing.T) {
+	oroHome := t.TempDir()
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+
+	port, err := AllocatePort(beadsDir, "test-project", oroHome)
+	if err != nil {
+		t.Fatalf("AllocatePort error: %v", err)
+	}
+	if port < doltPortBase+1 || port > doltPortBase+doltPortRange-1 {
+		t.Errorf("AllocatePort = %d, want in [%d, %d]", port, doltPortBase+1, doltPortBase+doltPortRange-1)
+	}
+	if port == SharedDoltPort {
+		t.Errorf("AllocatePort = %d = SharedDoltPort, must never return it", port)
+	}
+}
+
+func TestAllocatePort_Idempotent(t *testing.T) {
+	oroHome := t.TempDir()
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+
+	port1, err := AllocatePort(beadsDir, "test-project", oroHome)
+	if err != nil {
+		t.Fatalf("first AllocatePort error: %v", err)
+	}
+	port2, err := AllocatePort(beadsDir, "test-project", oroHome)
+	if err != nil {
+		t.Fatalf("second AllocatePort error: %v", err)
+	}
+	if port1 != port2 {
+		t.Errorf("AllocatePort not idempotent: first=%d second=%d", port1, port2)
+	}
+}
+
+func TestAllocatePort_Collision(t *testing.T) {
+	oroHome := t.TempDir()
+
+	// Register project1; its parent dir must exist so pruneRegistry doesn't remove it.
+	projDir1 := t.TempDir()
+	beadsDir1 := filepath.Join(projDir1, ".beads")
+	port1, err := AllocatePort(beadsDir1, "project1", oroHome)
+	if err != nil {
+		t.Fatalf("AllocatePort(project1) error: %v", err)
+	}
+
+	// Find a different beadsDir that DerivePort maps to the same port as project1.
+	searchBase := t.TempDir()
+	beadsDir2 := findPathWithPort(t, searchBase, port1)
+
+	port2, err := AllocatePort(beadsDir2, "project2", oroHome)
+	if err != nil {
+		t.Fatalf("AllocatePort(project2) error: %v", err)
+	}
+	if port2 == port1 {
+		t.Errorf("collision not resolved: both projects got port %d", port1)
+	}
+	if port2 == SharedDoltPort {
+		t.Errorf("AllocatePort(project2) = SharedDoltPort %d, must never return it", port2)
+	}
+}
+
+func TestAllocatePort_SharedPortReserved(t *testing.T) {
+	oroHome := t.TempDir()
+	baseDir := t.TempDir()
+
+	// Allocate multiple projects; none should get SharedDoltPort.
+	for i := 0; i < 20; i++ {
+		beadsDir := filepath.Join(baseDir, fmt.Sprintf("proj%d", i), ".beads")
+		port, err := AllocatePort(beadsDir, fmt.Sprintf("project%d", i), oroHome)
+		if err != nil {
+			t.Fatalf("AllocatePort(proj%d) error: %v", i, err)
+		}
+		if port == SharedDoltPort {
+			t.Errorf("AllocatePort(proj%d) = %d = SharedDoltPort, must never allocate it", i, port)
+		}
+	}
+}
+
+func TestAllocatePort_DeriveReturns13307(t *testing.T) {
+	oroHome := t.TempDir()
+	searchBase := t.TempDir()
+	beadsDir := findPathWithPort(t, searchBase, SharedDoltPort)
+
+	port, err := AllocatePort(beadsDir, "test", oroHome)
+	if err != nil {
+		t.Fatalf("AllocatePort error: %v", err)
+	}
+	if port == SharedDoltPort {
+		t.Errorf("AllocatePort = %d = SharedDoltPort, must not return it even when DerivePort would", port)
+	}
+	if port != SharedDoltPort+1 {
+		t.Errorf("AllocatePort = %d, want %d (immediate bump from 13307)", port, SharedDoltPort+1)
+	}
+}
+
+func TestAllocatePort_CorruptRegistry(t *testing.T) {
+	oroHome := t.TempDir()
+	registryPath := filepath.Join(oroHome, "port-registry.json")
+	if err := os.WriteFile(registryPath, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatalf("write corrupt registry: %v", err)
+	}
+
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	port, err := AllocatePort(beadsDir, "test", oroHome)
+	if err != nil {
+		t.Fatalf("AllocatePort with corrupt registry should not error: %v", err)
+	}
+	if port < doltPortBase+1 || port > doltPortBase+doltPortRange-1 {
+		t.Errorf("AllocatePort = %d, want in [%d, %d]", port, doltPortBase+1, doltPortBase+doltPortRange-1)
+	}
+	if port == SharedDoltPort {
+		t.Errorf("AllocatePort = SharedDoltPort, must not allocate it")
+	}
 }
 
 // writeMetadata writes a JSON object to <beadsDir>/metadata.json.
