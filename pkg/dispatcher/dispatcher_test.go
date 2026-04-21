@@ -9848,8 +9848,80 @@ func TestProgressTimeoutTriggersEscalation(t *testing.T) {
 			t.Errorf("expected no escalation for idle worker, got %d", len(esc.Messages()))
 		}
 	})
+}
 
-	t.Run("reviewing worker is exempt from progress timeout", func(t *testing.T) {
+// TestReviewProgressTimeout verifies that a worker in the reviewing state is
+// killed after progress_timeout_secs with no stdout (no lastProgress update),
+// and that recent progress prevents the kill.
+func TestReviewProgressTimeout(t *testing.T) {
+	t.Run("reviewing worker with stale progress is killed after ProgressTimeout", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+
+		d.cfg.ProgressTimeout = 1 * time.Second
+
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		beadID := "bead-review-stalled"
+		workerID := "w-review-stalled"
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			conn:         server,
+			state:        protocol.WorkerReviewing,
+			beadID:       beadID,
+			worktree:     "/tmp/worktree-review-stalled",
+			lastSeen:     now,                       // heartbeat fresh — worker alive
+			lastProgress: now.Add(-2 * time.Second), // progress stale (>1s ago)
+			encoder:      json.NewEncoder(server),
+		}
+		d.attemptCounts[beadID] = 1
+		d.handoffCounts[beadID] = 1
+		d.mu.Unlock()
+
+		if d.ConnectedWorkers() != 1 {
+			t.Fatalf("expected 1 worker, got %d", d.ConnectedWorkers())
+		}
+
+		d.checkHeartbeats(context.Background())
+
+		if d.ConnectedWorkers() != 0 {
+			t.Fatalf("expected 0 workers after progress timeout, got %d", d.ConnectedWorkers())
+		}
+
+		msgs := esc.Messages()
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 escalation message, got %d: %v", len(msgs), msgs)
+		}
+		if !strings.Contains(msgs[0], string(protocol.EscStuckWorker)) {
+			t.Errorf("expected escalation to contain %q, got %q", protocol.EscStuckWorker, msgs[0])
+		}
+		if !strings.Contains(msgs[0], beadID) {
+			t.Errorf("expected escalation to mention bead %q, got %q", beadID, msgs[0])
+		}
+
+		d.mu.Lock()
+		_, hasAttempt := d.attemptCounts[beadID]
+		_, hasHandoff := d.handoffCounts[beadID]
+		d.mu.Unlock()
+		if hasAttempt {
+			t.Error("expected attemptCounts to be cleared for stalled reviewing worker")
+		}
+		if hasHandoff {
+			t.Error("expected handoffCounts to be cleared for stalled reviewing worker")
+		}
+
+		count := eventCount(t, d.db, "progress_timeout")
+		if count != 1 {
+			t.Fatalf("expected 1 progress_timeout event, got %d", count)
+		}
+	})
+
+	t.Run("reviewing worker with recent progress is not killed", func(t *testing.T) {
 		d, _, _, esc, _, _ := newTestDispatcher(t)
 
 		d.cfg.ProgressTimeout = 1 * time.Second
@@ -9861,13 +9933,13 @@ func TestProgressTimeoutTriggersEscalation(t *testing.T) {
 		d.nowFunc = func() time.Time { return now }
 
 		d.mu.Lock()
-		d.workers["w-review"] = &trackedWorker{
-			id:           "w-review",
+		d.workers["w-review-active"] = &trackedWorker{
+			id:           "w-review-active",
 			conn:         server,
 			state:        protocol.WorkerReviewing,
-			beadID:       "bead-review",
+			beadID:       "bead-review-active",
 			lastSeen:     now,
-			lastProgress: now.Add(-10 * time.Second), // stale but reviewing
+			lastProgress: now.Add(-500 * time.Millisecond), // progress recent (within 1s)
 			encoder:      json.NewEncoder(server),
 		}
 		d.mu.Unlock()
@@ -9875,10 +9947,46 @@ func TestProgressTimeoutTriggersEscalation(t *testing.T) {
 		d.checkHeartbeats(context.Background())
 
 		if d.ConnectedWorkers() != 1 {
-			t.Fatalf("expected reviewing worker to survive, got %d workers", d.ConnectedWorkers())
+			t.Fatalf("expected reviewing worker with recent progress to survive, got %d workers", d.ConnectedWorkers())
 		}
 		if len(esc.Messages()) != 0 {
-			t.Errorf("expected no escalation for reviewing worker, got %d", len(esc.Messages()))
+			t.Errorf("expected no escalation for reviewing worker with recent progress, got %d", len(esc.Messages()))
+		}
+	})
+
+	t.Run("review produces output resets progress timer", func(t *testing.T) {
+		d, _, _, esc, _, _ := newTestDispatcher(t)
+
+		d.cfg.ProgressTimeout = 1 * time.Second
+
+		conn := newMockConn()
+		workerID := "w-review-output"
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			conn:         conn,
+			state:        protocol.WorkerReviewing,
+			beadID:       "bead-review-output",
+			lastSeen:     now,
+			lastProgress: now.Add(-2 * time.Second), // initially stale
+			encoder:      json.NewEncoder(conn),
+		}
+		d.mu.Unlock()
+
+		// Simulate review output: touchProgress resets the timer.
+		d.touchProgress(workerID)
+
+		d.checkHeartbeats(context.Background())
+
+		if d.ConnectedWorkers() != 1 {
+			t.Fatalf("expected worker to survive after progress reset, got %d workers", d.ConnectedWorkers())
+		}
+		if len(esc.Messages()) != 0 {
+			t.Errorf("expected no escalation after progress reset, got %d", len(esc.Messages()))
 		}
 	})
 }
