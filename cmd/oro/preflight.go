@@ -63,10 +63,6 @@ func ensureSearchHook(w io.Writer, binPath, srcDir string) error {
 		return fmt.Errorf("create hook dir: %w", err)
 	}
 
-	// Remove stale binary before rebuilding; go build refuses to overwrite a
-	// file that isn't a valid object/executable (Go 1.21+).
-	_ = os.Remove(binPath)
-
 	// Derive repo root (two levels up from srcDir which is cmd/oro-search-hook).
 	repoRoot := filepath.Dir(filepath.Dir(srcDir))
 
@@ -76,13 +72,25 @@ func ensureSearchHook(w io.Writer, binPath, srcDir string) error {
 		return fmt.Errorf("compute relative path: %w", err)
 	}
 
+	// Build to a temp file first, then atomic rename. This avoids deleting the
+	// existing binary before the build succeeds — workers in worktrees trigger
+	// stale detection (fresh checkout timestamps) and the build can fail silently,
+	// leaving no binary at all.
+	tmpBin := binPath + ".tmp"
+	defer os.Remove(tmpBin) //nolint:errcheck // best-effort cleanup
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", binPath, "./"+relPkg) //nolint:gosec // args constructed internally from known paths
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", tmpBin, "./"+relPkg) //nolint:gosec // args constructed internally from known paths
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
-		// Fail-open: log warning but don't block startup.
+		// Fail-open: log warning but don't block startup. Existing binary preserved.
 		fmt.Fprintf(w, "warning: failed to build search hook: %v\n%s\n", err, out)
+		return nil
+	}
+
+	if err := os.Rename(tmpBin, binPath); err != nil {
+		fmt.Fprintf(w, "warning: failed to install search hook: %v\n", err)
 		return nil
 	}
 
