@@ -52,8 +52,6 @@ type serverIdentity struct {
 // line. Returns ErrDataDirMismatch if --data-dir is absent or does not equal
 // <oroHome>/dolt. Returns ErrCannotIdentify if neither the pid file nor lsof
 // can locate the process.
-//
-//nolint:unused // called by downstream coordination logic (D2 steps 2+)
 func runProcessProbe(oroHome string) (pid int, dataDir string, err error) {
 	return runProcessProbeWith(oroHome, processProbe{
 		readPIDFile: defaultReadPIDFile,
@@ -107,7 +105,6 @@ func parseDataDir(args string) (string, error) {
 	return "", errors.New("--data-dir not found in process args")
 }
 
-//nolint:unused // support function for runProcessProbe — used by downstream D2 coordination logic
 func defaultReadPIDFile(path string) (int, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is oroHome/dolt-server.pid — caller-controlled
 	if err != nil {
@@ -120,7 +117,6 @@ func defaultReadPIDFile(path string) (int, error) {
 	return pid, nil
 }
 
-//nolint:unused // support function for runProcessProbe — used by downstream D2 coordination logic
 func defaultReadPSArgs(pid int) (string, error) {
 	out, err := exec.CommandContext(context.Background(), "ps", "-p", strconv.Itoa(pid), "-o", "args=").Output() //nolint:gosec,noctx // pid is int from trusted internal sources
 	if err != nil {
