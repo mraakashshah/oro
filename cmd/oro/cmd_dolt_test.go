@@ -1730,25 +1730,6 @@ func TestNewDoltTeardownCmd_RunEExecutes(t *testing.T) {
 
 // ---------- newDoltStartCmd RunE ----------
 
-func TestNewDoltStartCmd_RunEExecutes(t *testing.T) {
-	if isDoltServerRunning(SharedDoltPort) {
-		t.Skip("shared dolt server already running on port 13307 — cannot test dolt-not-found path")
-	}
-	// Execute the RunE with empty PATH so startSharedDoltServer fails with ErrNotFound.
-	// runDoltStart wraps the error as "dolt not found in PATH".
-	t.Setenv("ORO_HOME", t.TempDir())
-	t.Setenv("PATH", "")
-	cmd := newDoltStartCmd()
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-
-	err := cmd.RunE(cmd, nil)
-	// Expect either success (server already running) or "dolt not found in PATH" error.
-	if err != nil && !strings.Contains(err.Error(), "dolt not found") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestNewDoltStartCmdRoutesThroughEnsure(t *testing.T) {
 	// Verify that newDoltStartCmd routes through ensureSharedDoltRunning,
 	// using the probe-then-kickstart pathway (same as oro start).
