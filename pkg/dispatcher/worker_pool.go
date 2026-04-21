@@ -451,6 +451,11 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	d.unexpectedManagedExits += newManagedExits
 	d.mu.Unlock()
 
+	// Wake the assign loop so reconcileScale can spawn replacements immediately.
+	if len(deadWorkers)+len(stuckWorkers) > 0 {
+		d.notifyAssignLoop()
+	}
+
 	// Escalate outside the lock and clear tracking maps for abandoned beads.
 	d.escalateTimedOutWorkers(ctx, deadWorkers, stuckWorkers)
 

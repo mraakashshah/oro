@@ -6132,6 +6132,108 @@ func TestDispatcher_ScaleDirective_InvalidArgs(t *testing.T) {
 	}
 }
 
+// TestDispatcher_RespawnsWorkersToTarget verifies that when connected managed
+// workers drop below targetWorkers AND the ready queue is non-empty, the
+// dispatcher's assign loop spawns up to (target - active) new workers within
+// one tick — without requiring a manual 'oro directive scale' nudge.
+//
+// Design: BeadsDir is set to a non-existent path so fsnotify.Add fails and the
+// dispatcher falls back to assignLoopPoll. PollInterval is set to 5s so no
+// automatic tick fires within the 2s assertion window. Only a workerReadyCh
+// signal from connCloseCleanup drives an immediate spawn; without it the test
+// times out.
+func TestDispatcher_RespawnsWorkersToTarget(t *testing.T) {
+	sockPath := fmt.Sprintf("/tmp/oro-respawn-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	db := newTestDB(t)
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+	spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+	opsSpawner := ops.NewSpawner(spawnMock)
+	beadSrc := &mockBeadSource{
+		beads: []protocol.Bead{{ID: "bead-q1", Title: "queued bead"}},
+		shown: make(map[string]*protocol.BeadDetail),
+	}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	cfg := Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		BeadsDir:         "/nonexistent-beads-dir-forces-poll-fallback", // fsnotify.Add fails → assignLoopPoll
+		MaxWorkers:       5,
+		PollInterval:     5 * time.Second, // long poll: no tick within 2s assertion window
+		HeartbeatTimeout: 500 * time.Millisecond,
+		ShutdownTimeout:  200 * time.Millisecond,
+	}
+
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	d.qgRunner = &mockQGRunner{passed: true}
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	// Bypass initial reconcileScale: set state + targetWorkers directly.
+	d.mu.Lock()
+	d.targetWorkers = 3
+	d.mu.Unlock()
+
+	// Start dispatcher and enter Running state.
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	sendDirective(t, sockPath, "start")
+	waitForState(t, d, StateRunning, 2*time.Second)
+
+	// Connect 3 managed workers: pre-register as pending so registerWorker
+	// marks them managed=true. Send a heartbeat to register each.
+	// Each connection signals workerReadyCh, which triggers tryAssign — but
+	// since workers are idle and there is a bead, tryAssign will assign the
+	// bead. We close the connections later to simulate a worker kill.
+	workerIDs := []string{"respawn-w0", "respawn-w1", "respawn-w2"}
+	conns := make([]net.Conn, 3)
+	for i, wid := range workerIDs {
+		d.mu.Lock()
+		d.pendingManagedIDs[wid] = true
+		d.mu.Unlock()
+		conn, _ := connectWorker(t, sockPath)
+		conns[i] = conn
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: wid, ContextPct: 5},
+		})
+	}
+	waitForWorkers(t, d, 3, 2*time.Second)
+
+	// Allow any pending tryAssign calls (triggered by workerReadyCh during
+	// registration) to settle. After this, the assign loop is idle — it cannot
+	// fire again until either: a workerReadyCh signal, or a 5s poll tick.
+	time.Sleep(200 * time.Millisecond)
+
+	// Reset spawn counter — we only care about spawns that happen AFTER the kill.
+	pm.mu.Lock()
+	pm.spawned = nil
+	pm.mu.Unlock()
+
+	// Kill one worker (whichever is in d.workers) by closing its connection.
+	// connCloseCleanup will remove it and — with the fix — signal workerReadyCh.
+	// Without the fix, the next spawn cannot happen until the 5s poll tick.
+	_ = conns[0].Close()
+
+	// Must spawn within 2s (well under the 5s poll tick).
+	// Fails without the workerReadyCh signal from connCloseCleanup.
+	waitFor(t, func() bool {
+		return len(pm.SpawnedIDs()) >= 1
+	}, 2*time.Second)
+
+	if got := len(pm.SpawnedIDs()); got < 1 {
+		t.Errorf("expected ≥1 respawn after worker kill (target=3, active=2), got %d", got)
+	}
+}
+
 // --- Review rejection counter tests (oro-jhs) ---
 
 // helper: set up dispatcher with rejected reviewer, connect worker, assign bead, trigger review.

@@ -747,6 +747,16 @@ func (d *Dispatcher) handleLoopPanic(ctx context.Context, r interface{}, restart
 	}
 }
 
+// notifyAssignLoop wakes the assign loop so it calls tryAssign immediately.
+// Non-blocking: if the channel already has a pending signal the send is dropped
+// (a tryAssign is already queued and this signal is redundant).
+func (d *Dispatcher) notifyAssignLoop() {
+	select {
+	case d.workerReadyCh <- struct{}{}:
+	default:
+	}
+}
+
 // callTryAssign calls tryAssignFn if set (test injection), otherwise tryAssign.
 func (d *Dispatcher) callTryAssign(ctx context.Context) {
 	if d.tryAssignFn != nil {
@@ -1060,6 +1070,10 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 		d.clearBeadTracking(beadID)
 		_ = d.beads.Update(context.Background(), beadID, "open")
 	}
+
+	// Wake the assign loop so reconcileScale can spawn a replacement immediately
+	// rather than waiting for the next fsnotify event or fallback tick.
+	d.notifyAssignLoop()
 }
 
 // handleConn reads line-delimited JSON messages from a worker connection.
