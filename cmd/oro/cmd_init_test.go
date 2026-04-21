@@ -1966,9 +1966,15 @@ func TestInitDetectsSharedServer(t *testing.T) {
 		if meta == nil {
 			t.Fatal("expected metadata.json to be written, got nil")
 		}
-		expectedPort := DerivePort(beadsDir)
-		if meta.DoltServerPort != expectedPort {
-			t.Errorf("expected per-project port %d when no shared server, got %d", expectedPort, meta.DoltServerPort)
+		// Port must be a valid per-project port (not SharedDoltPort).
+		// AllocatePort is now used instead of DerivePort; the two agree unless
+		// DerivePort would return SharedDoltPort, in which case AllocatePort bumps.
+		if meta.DoltServerPort == SharedDoltPort {
+			t.Errorf("per-project port must not be SharedDoltPort (%d)", SharedDoltPort)
+		}
+		if meta.DoltServerPort < doltPortBase+1 || meta.DoltServerPort > doltPortBase+doltPortRange-1 {
+			t.Errorf("per-project port %d not in valid range [%d, %d]",
+				meta.DoltServerPort, doltPortBase+1, doltPortBase+doltPortRange-1)
 		}
 	})
 }

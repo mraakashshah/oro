@@ -82,7 +82,11 @@ func acquireRegistryLock(lockPath string) (func() error, error) {
 	if tryLock() {
 		return unlock, nil
 	}
-	for _, delay := range [3]time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 500 * time.Millisecond} {
+	for _, delay := range []time.Duration{
+		50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond,
+		300 * time.Millisecond, 500 * time.Millisecond, 500 * time.Millisecond,
+		500 * time.Millisecond, 500 * time.Millisecond,
+	} {
 		time.Sleep(delay)
 		if tryLock() {
 			return unlock, nil
@@ -90,6 +94,19 @@ func acquireRegistryLock(lockPath string) (func() error, error) {
 	}
 	_ = f.Close()
 	return nil, fmt.Errorf("registry lock contended after retries")
+}
+
+// clearPortRegistry replaces the on-disk registry with an empty one.
+// Best-effort: errors are silently ignored since callers use it for cleanup.
+func clearPortRegistry(oroHome string) {
+	registryPath := filepath.Join(oroHome, "port-registry.json")
+	lockPath := filepath.Join(oroHome, "port-registry.lock")
+	unlock, err := acquireRegistryLock(lockPath)
+	if err != nil {
+		return
+	}
+	defer func() { _ = unlock() }()
+	_ = writeRegistryAtomic(registryPath, emptyRegistry())
 }
 
 // projectRootAlive returns true if the project root for beadsDir still exists.

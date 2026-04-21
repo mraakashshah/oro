@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1009,5 +1010,130 @@ func TestAllocatePort_ConcurrentLocking(t *testing.T) {
 	}
 	if port2 != port {
 		t.Errorf("AllocatePort after migration returned %d, want %d", port2, port)
+	}
+}
+
+// TestAllocatePort_MetadataSync verifies that when AllocatePort assigns a port
+// that differs from the port already recorded in metadata.json (because the
+// preferred port was taken by another project), initDoltForProject updates
+// metadata.json to match the registry-assigned port via setDoltPort.
+func TestAllocatePort_MetadataSync(t *testing.T) {
+	oroHome := t.TempDir()
+
+	// Project 1: allocate a port so that project 2 cannot have it.
+	projDir1 := t.TempDir() // parent must exist so projectRootAlive keeps it during pruneRegistry
+	beadsDir1 := filepath.Join(projDir1, ".beads")
+	port1, err := AllocatePort(beadsDir1, "project1", oroHome)
+	if err != nil {
+		t.Fatalf("AllocatePort(project1): %v", err)
+	}
+
+	// Project 2: find a path whose DerivePort equals port1 (collision scenario).
+	searchBase := t.TempDir()
+	beadsDir2 := findPathWithPort(t, searchBase, port1)
+	if err := os.MkdirAll(filepath.Dir(beadsDir2), 0o750); err != nil {
+		t.Fatalf("mkdir beadsDir2 parent: %v", err)
+	}
+	if err := os.MkdirAll(beadsDir2, 0o750); err != nil {
+		t.Fatalf("mkdir beadsDir2: %v", err)
+	}
+
+	// Write stale metadata.json for project2 with the colliding port.
+	writeMetadata(t, beadsDir2, map[string]interface{}{
+		"backend":          "dolt",
+		"dolt_server_port": port1,
+		"dolt_database":    "beads",
+	})
+
+	// initDoltForProject must call AllocatePort (getting a bumped port ≠ port1)
+	// and sync metadata.json to the registry-assigned port.
+	initDoltForProject(beadsDir2, oroHome)
+
+	// Read back the registry entry for beadsDir2.
+	absBeadsDir2, _ := filepath.Abs(beadsDir2)
+	registryPath := filepath.Join(oroHome, "port-registry.json")
+	regData, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	var reg portRegistry
+	if err := json.Unmarshal(regData, &reg); err != nil {
+		t.Fatalf("unmarshal registry: %v", err)
+	}
+	alloc, ok := reg.Allocations[absBeadsDir2]
+	if !ok {
+		t.Fatal("beadsDir2 not in registry after initDoltForProject — AllocatePort was not called")
+	}
+	registryPort := alloc.Port
+
+	// Registry port must not be port1 (collision must have been resolved).
+	if registryPort == port1 {
+		t.Errorf("registry port = %d = port1; collision not resolved", registryPort)
+	}
+
+	// Metadata port must match registry port.
+	meta, err := readDoltMeta(beadsDir2)
+	if err != nil {
+		t.Fatalf("readDoltMeta: %v", err)
+	}
+	if meta == nil {
+		t.Fatal("metadata.json missing after initDoltForProject")
+	}
+	if meta.DoltServerPort != registryPort {
+		t.Errorf("metadata.DoltServerPort = %d, want registry port %d (setDoltPort not called)", meta.DoltServerPort, registryPort)
+	}
+}
+
+// TestAllocatePort_ConcurrentProcesses verifies that concurrent initDoltForProject
+// calls — simulating two concurrent "oro init" processes — produce no duplicate ports.
+func TestAllocatePort_ConcurrentProcesses(t *testing.T) {
+	oroHome := t.TempDir()
+
+	// Use paths that all DerivePort to the same value so they would collide without
+	// registry-based allocation.
+	const n = 5
+	targetPort := SharedDoltPort + 1 // 13308 — guaranteed to be chosen by DerivePort for matching paths
+
+	searchBase := t.TempDir()
+	beadsDirs := make([]string, n)
+	for i := 0; i < n; i++ {
+		subBase := filepath.Join(searchBase, fmt.Sprintf("sub%d", i))
+		bd := findPathWithPort(t, subBase, targetPort)
+		if err := os.MkdirAll(filepath.Dir(bd), 0o750); err != nil {
+			t.Fatalf("mkdir parent[%d]: %v", i, err)
+		}
+		beadsDirs[i] = bd
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for _, bd := range beadsDirs {
+		bd := bd
+		go func() {
+			defer wg.Done()
+			initDoltForProject(bd, oroHome)
+		}()
+	}
+	wg.Wait()
+
+	portsSeen := make(map[int]string)
+	for _, bd := range beadsDirs {
+		meta, err := readDoltMeta(bd)
+		if err != nil {
+			t.Errorf("readDoltMeta(%s): %v", bd, err)
+			continue
+		}
+		if meta == nil {
+			t.Errorf("metadata missing for %s", bd)
+			continue
+		}
+		port := meta.DoltServerPort
+		if port == SharedDoltPort {
+			t.Errorf("got SharedDoltPort for %s", bd)
+		}
+		if prev, dup := portsSeen[port]; dup {
+			t.Errorf("duplicate port %d: assigned to both %s and %s", port, prev, bd)
+		}
+		portsSeen[port] = bd
 	}
 }

@@ -270,6 +270,11 @@ func runDoltSetup(cfg *doltSetupConfig, w io.Writer) error {
 		}
 	}
 
+	// Migration complete and shared server running: per-project registry entries
+	// are now stale (all projects use SharedDoltPort). Clear them so subsequent
+	// AllocatePort calls in per-project mode start from a clean slate.
+	clearPortRegistry(cfg.oroHome)
+
 	fmt.Fprintln(w, "dolt setup complete")
 	return nil
 }
@@ -466,12 +471,16 @@ func runDoltTeardown(cfg *doltCmdConfig, homeDir string, w io.Writer) error {
 
 // restorePerProjectDBs copies each project's dolt database from the shared
 // ~/.oro/dolt/<dbName> directory back to <beadsDir>/dolt/<dbName> and resets
-// the per-project metadata port to the derived per-project value.
+// the per-project metadata port via AllocatePort.
 //
 // Edges:
 //   - <beadsDir>/dolt/<dbName> already exists → skip copy, emit warning.
 //   - No dolt metadata for a beadsDir → skip that project.
 func restorePerProjectDBs(cfg *doltCmdConfig, w io.Writer) error {
+	// Clear all per-project allocations first so each project gets a fresh
+	// collision-free port assignment via AllocatePort below.
+	clearPortRegistry(cfg.oroHome)
+
 	for _, beadsDir := range cfg.beadsDirs {
 		meta, err := readDoltMeta(beadsDir)
 		if err != nil {
@@ -499,7 +508,11 @@ func restorePerProjectDBs(cfg *doltCmdConfig, w io.Writer) error {
 			return fmt.Errorf("copy DB %q back to %s: %w", dbName, beadsDir, err)
 		}
 
-		perProjectPort := DerivePort(beadsDir)
+		projectName := filepath.Base(filepath.Dir(beadsDir))
+		perProjectPort, allocErr := AllocatePort(beadsDir, projectName, cfg.oroHome)
+		if allocErr != nil {
+			perProjectPort = DerivePort(beadsDir)
+		}
 		if err := setDoltPort(beadsDir, perProjectPort); err != nil {
 			return fmt.Errorf("restore per-project port for %s: %w", beadsDir, err)
 		}

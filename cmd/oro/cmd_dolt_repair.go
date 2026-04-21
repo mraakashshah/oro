@@ -182,6 +182,8 @@ func runDoltRepair(deps doltRepairDeps, w io.Writer) error {
 			fmt.Fprintln(w, "dolt server data-dir correct but no database found; run 'oro dolt setup' to migrate")
 			return &exitError{code: repairExitNoDB, msg: "no database in dolt data directory"}
 		}
+		// Warn (non-blocking) if any project's registry port differs from its metadata port.
+		warnPortMismatches(deps.oroHome, w)
 		fmt.Fprintln(w, "dolt server identity probe passed; no repair needed")
 		return nil
 
@@ -198,6 +200,35 @@ func runDoltRepair(deps doltRepairDeps, w io.Writer) error {
 
 	default:
 		return fmt.Errorf("identity probe: %w", probeErr)
+	}
+}
+
+// warnPortMismatches scans all registered projects and warns when a project's
+// registry-allocated port does not match its metadata.json port. Non-blocking:
+// errors reading the registry or metadata are silently skipped.
+func warnPortMismatches(oroHome string, w io.Writer) {
+	registryPath := filepath.Join(oroHome, "port-registry.json")
+	reg, err := readRegistry(registryPath)
+	if err != nil {
+		return
+	}
+	for _, beadsDir := range discoverBreadsDirs(oroHome) {
+		meta, metaErr := readDoltMeta(beadsDir)
+		if metaErr != nil || meta == nil {
+			continue
+		}
+		absBeadsDir, absErr := filepath.Abs(beadsDir)
+		if absErr != nil {
+			absBeadsDir = beadsDir
+		}
+		alloc, ok := reg.Allocations[absBeadsDir]
+		if !ok {
+			continue
+		}
+		if alloc.Port != meta.DoltServerPort {
+			fmt.Fprintf(w, "warning: registry port %d != metadata port %d for %s\n",
+				alloc.Port, meta.DoltServerPort, beadsDir)
+		}
 	}
 }
 
