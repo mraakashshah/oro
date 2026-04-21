@@ -619,6 +619,12 @@ func TestParseResultNonZeroExitNonReviewStillFails(t *testing.T) {
 
 // --- Timeout tests ---
 
+func TestOpsReviewTimeout(t *testing.T) {
+	if OpsReview.Timeout() != 10*time.Minute {
+		t.Fatalf("OpsReview.Timeout() = %v, want %v", OpsReview.Timeout(), 10*time.Minute)
+	}
+}
+
 func TestOneShotTimeout(t *testing.T) {
 	// Process that never completes (blocks forever).
 	proc := newMockProcess("", nil)
@@ -705,9 +711,9 @@ func TestOpsWriteAC(t *testing.T) {
 		t.Fatalf("OpsWriteAC.Timeout() = %v, want %v", OpsWriteAC.Timeout(), 10*time.Minute)
 	}
 
-	// Verify OpsReview.Timeout() returns 0 (no per-type timeout)
-	if OpsReview.Timeout() != 0 {
-		t.Fatalf("OpsReview.Timeout() = %v, want 0", OpsReview.Timeout())
+	// Verify OpsReview.Timeout() returns 10 minutes (review needs time for test runs + analysis)
+	if OpsReview.Timeout() != 10*time.Minute {
+		t.Fatalf("OpsReview.Timeout() = %v, want %v", OpsReview.Timeout(), 10*time.Minute)
 	}
 
 	// Verify WriteAC spawns with model "opus"

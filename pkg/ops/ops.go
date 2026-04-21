@@ -70,6 +70,8 @@ func (t Type) Model() string {
 // When 0, the Spawner falls back to its default timeout.
 func (t Type) Timeout() time.Duration {
 	switch t {
+	case OpsReview:
+		return 10 * time.Minute
 	case OpsWriteAC:
 		return 10 * time.Minute
 	case OpsDream:

@@ -2290,8 +2290,12 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 		case ops.VerdictRejected:
 			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
-			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, result.Feedback)
-			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review failed", result.Feedback), beadID, workerID)
+			detail := result.Feedback
+			if detail == "" && result.Err != nil {
+				detail = result.Err.Error()
+			}
+			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, detail)
+			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review failed", detail), beadID, workerID)
 			d.clearBeadTracking(beadID)
 		}
 	}
