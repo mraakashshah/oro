@@ -32,9 +32,9 @@ pid1=$!
 "$wt2/scripts/quality_gate.sh" > "$log2" 2>&1 &
 pid2=$!
 
-# Wait for both to complete
-wait $pid1 2>/dev/null || rc1=$?
-wait $pid2 2>/dev/null || rc2=$?
+# Wait for both to complete (exit code is ignored — we assert on log contents below)
+wait "$pid1" 2>/dev/null || true
+wait "$pid2" 2>/dev/null || true
 
 # Check if either output contains the "parallel golangci-lint is running" error
 if grep -q "parallel golangci-lint is running" "$log1" 2>/dev/null; then
