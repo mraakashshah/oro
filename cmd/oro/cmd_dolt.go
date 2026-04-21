@@ -608,13 +608,23 @@ func newDoltStartCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
 			}
-			cfg := &doltCmdConfig{
-				oroHome:  paths.OroHome,
-				aliveFn:  IsProcessAlive,
-				isPortUp: isDoltServerRunning,
-				startFn:  startSharedDoltServer,
+
+			pid, err := ensureSharedDoltRunningFn(paths.OroHome)
+			if err != nil {
+				if errors.Is(err, exec.ErrNotFound) {
+					return fmt.Errorf("dolt not found in PATH: %w", err)
+				}
+				return fmt.Errorf("start shared dolt server: %w", err)
 			}
-			return runDoltStart(cfg, cmd.OutOrStdout())
+
+			if pid == 0 {
+				// Already running — adopted existing server.
+				fmt.Fprintln(cmd.OutOrStdout(), "shared dolt server already running")
+				return nil
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "shared dolt server started (PID %d, port %d)\n", pid, SharedDoltPort)
+			return nil
 		},
 	}
 }

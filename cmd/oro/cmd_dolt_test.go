@@ -1748,3 +1748,37 @@ func TestNewDoltStartCmd_RunEExecutes(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestNewDoltStartCmdRoutesThroughEnsure(t *testing.T) {
+	// Verify that newDoltStartCmd routes through ensureSharedDoltRunning,
+	// using the probe-then-kickstart pathway (same as oro start).
+	var ensureWasCalled bool
+	var ensureGotOroHome string
+
+	orig := ensureSharedDoltRunningFn
+	ensureSharedDoltRunningFn = func(oroHome string) (int, error) {
+		ensureWasCalled = true
+		ensureGotOroHome = oroHome
+		return 0, nil // already running
+	}
+	t.Cleanup(func() { ensureSharedDoltRunningFn = orig })
+
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	cmd := newDoltStartCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	err := cmd.RunE(cmd, nil)
+	if err != nil {
+		t.Fatalf("newDoltStartCmd RunE failed: %v", err)
+	}
+
+	if !ensureWasCalled {
+		t.Error("ensureSharedDoltRunning was not called")
+	}
+
+	if ensureGotOroHome == "" {
+		t.Error("ensureSharedDoltRunning was called with empty oroHome")
+	}
+}

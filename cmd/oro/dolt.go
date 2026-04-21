@@ -503,6 +503,11 @@ func kickstartServiceTarget(uid int) string {
 	return fmt.Sprintf("gui/%d/%s", uid, launchAgentLabel)
 }
 
+// ensureSharedDoltRunningFn is injectable for testing.
+//
+//nolint:gochecknoglobals // replaceable in tests
+var ensureSharedDoltRunningFn = ensureSharedDoltRunning
+
 // tryLaunchctlKickstart attempts to start the shared Dolt server via the
 // macOS launchd service. Returns true if the kickstart command succeeds,
 // false otherwise (not macOS, service not installed, etc.).
