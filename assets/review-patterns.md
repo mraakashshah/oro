@@ -51,3 +51,10 @@ rate-limiter-default-injection: production worker needs configurable rate limite
 best-effort-retention-prelude: synchronous trim before periodic background work → log via existing channel, never return error, no new goroutine
 ad-hoc-cli-split: extraction library + thin `cmd/main.go` flag wrapper → keeps pure logic testable while satisfying "extract.go or equivalent" CLI requirement.
 swallowed-handler-error: conn-handler dispatches to sub-handler returning error → assign to `_` → log-and-drop becomes silent-drop, lose observability on write failures.
+stage-assets-prereq: running `go test ./...` in a fresh worktree hits embed.go `_assets` pattern miss → run `make stage-assets` before any full-suite verification.
+format-string-vs-named-constant: `%.2f` literal in error/log message duplicates a nearby `const` → reference the constant via the format arg so the two stay in sync.
+stale-hardcoded-after-wiring: moving a function out of a file → grep for identifiers only that function used, delete the now-orphan private constants in the old file.
+unused-asset-shipped: AC requires committing a data file alongside code that embeds the same data inline → file and inline source will drift; note in bead that a successor should unify (load from file or delete the duplicate).
+ac-tag-vs-convention: AC specifies build tags that conflict with package-wide integration test convention → follow package convention and document the deviation in the output artifact.
+deferred-setupConfig-wiring: bead scopes down the design's Embedder+VectorIndex+Reranker setupConfig contract to just Embedder → file a follow-up bead and note the partial contract in a `TODO(bead-id)` comment on `setupConfig`.
+qg-absorb-pre-existing-fixes: QG on your branch flags issues pre-existing on main → absorb small fixes in separate commits with descriptive messages + memory note, rather than blocking the bead or reverting.
