@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -115,6 +116,8 @@ func projectRootAlive(beadsDir, projectsBase string) bool {
 
 // pruneRegistry removes entries whose project root no longer exists.
 // Returns the number of entries removed.
+//
+//nolint:unparam // return value used for debugging, not critical path
 func pruneRegistry(reg *portRegistry, oroHome string) int {
 	projectsBase := filepath.Join(oroHome, "projects")
 	removed := 0
@@ -147,6 +150,72 @@ func resolveCandidatePort(beadsDir string, allocated map[int]bool) (int, error) 
 	return 0, fmt.Errorf("no free ports in range [%d, %d)", doltPortBase+1, doltPortBase+doltPortRange)
 }
 
+// migrateExistingPorts discovers existing per-project dolt-server.port files
+// from discoverBreadsDirs and populates the registry with them. Falls back to
+// DerivePort if dolt-server.port is missing. Handles collisions by bumping to
+// the next free port. Prunes stale entries afterward.
+func migrateExistingPorts(reg *portRegistry, oroHome string) error {
+	dirs := discoverBreadsDirs(oroHome)
+	if len(dirs) == 0 {
+		return nil // no-op if no projects discovered
+	}
+
+	// Build set of already-allocated ports. 13307 is always reserved.
+	allocated := make(map[int]bool, len(reg.Allocations)+1)
+	allocated[SharedDoltPort] = true
+	for _, a := range reg.Allocations {
+		allocated[a.Port] = true
+	}
+
+	for _, beadsDir := range dirs {
+		absBeadsDir, err := filepath.Abs(beadsDir)
+		if err != nil {
+			absBeadsDir = beadsDir
+		}
+
+		// Skip if already in registry.
+		if _, ok := reg.Allocations[absBeadsDir]; ok {
+			continue
+		}
+
+		// Try to read dolt-server.port file; fall back to DerivePort if missing.
+		var port int
+		portPath := filepath.Join(beadsDir, "dolt-server.port")
+		data, readErr := os.ReadFile(portPath) //nolint:gosec // beadsDir from trusted discoverBreadsDirs
+		if readErr == nil {
+			p, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if parseErr == nil {
+				port = p
+			} else {
+				port = DerivePort(beadsDir)
+			}
+		} else {
+			port = DerivePort(beadsDir)
+		}
+
+		// Handle collision: bump to next free port if already allocated.
+		if allocated[port] {
+			candidate, resolveErr := resolveCandidatePort(beadsDir, allocated)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			port = candidate
+		}
+
+		allocated[port] = true
+		reg.Allocations[absBeadsDir] = portAllocation{
+			Port:        port,
+			Project:     filepath.Base(filepath.Dir(beadsDir)),
+			AllocatedAt: time.Now().UTC(),
+		}
+	}
+
+	// Prune stale entries (project roots no longer exist).
+	_ = pruneRegistry(reg, oroHome)
+
+	return nil
+}
+
 func AllocatePort(beadsDir, projectName, oroHome string) (int, error) {
 	absBeadsDir, err := filepath.Abs(beadsDir)
 	if err != nil {
@@ -176,7 +245,7 @@ func AllocatePort(beadsDir, projectName, oroHome string) (int, error) {
 		return alloc.Port, nil
 	}
 
-	pruneRegistry(reg, oroHome)
+	_ = pruneRegistry(reg, oroHome)
 
 	// Build set of already-allocated ports. 13307 is always reserved.
 	allocated := make(map[int]bool, len(reg.Allocations)+1)

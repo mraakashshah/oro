@@ -812,3 +812,202 @@ func TestStopDoltServerPortFallback(t *testing.T) {
 		}
 	})
 }
+
+func TestAllocatePort_MigrationPopulates(t *testing.T) {
+	oroHome := t.TempDir()
+	projectsDir := filepath.Join(oroHome, "projects")
+
+	// Create two projects with dolt-server.port files.
+	projDir1 := filepath.Join(projectsDir, "p1")
+	projRoot1 := t.TempDir()
+	if err := os.MkdirAll(projDir1, 0o750); err != nil {
+		t.Fatalf("mkdir proj1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir1, "project.root"), []byte(projRoot1), 0o600); err != nil {
+		t.Fatalf("write project.root 1: %v", err)
+	}
+
+	beadsDir1 := filepath.Join(projRoot1, ".beads")
+	if err := os.MkdirAll(beadsDir1, 0o750); err != nil {
+		t.Fatalf("mkdir beads1: %v", err)
+	}
+	port1 := 13400
+	if err := os.WriteFile(filepath.Join(beadsDir1, "dolt-server.port"), []byte(strconv.Itoa(port1)), 0o600); err != nil {
+		t.Fatalf("write port 1: %v", err)
+	}
+
+	projDir2 := filepath.Join(projectsDir, "p2")
+	projRoot2 := t.TempDir()
+	if err := os.MkdirAll(projDir2, 0o750); err != nil {
+		t.Fatalf("mkdir proj2: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir2, "project.root"), []byte(projRoot2), 0o600); err != nil {
+		t.Fatalf("write project.root 2: %v", err)
+	}
+
+	beadsDir2 := filepath.Join(projRoot2, ".beads")
+	if err := os.MkdirAll(beadsDir2, 0o750); err != nil {
+		t.Fatalf("mkdir beads2: %v", err)
+	}
+	port2 := 13401
+	if err := os.WriteFile(filepath.Join(beadsDir2, "dolt-server.port"), []byte(strconv.Itoa(port2)), 0o600); err != nil {
+		t.Fatalf("write port 2: %v", err)
+	}
+
+	reg := emptyRegistry()
+	err := migrateExistingPorts(reg, oroHome)
+	if err != nil {
+		t.Fatalf("migrateExistingPorts error: %v", err)
+	}
+
+	if len(reg.Allocations) != 2 {
+		t.Errorf("after migration, registry has %d allocations, want 2", len(reg.Allocations))
+	}
+
+	abs1, _ := filepath.Abs(beadsDir1)
+	abs2, _ := filepath.Abs(beadsDir2)
+
+	if alloc, ok := reg.Allocations[abs1]; !ok {
+		t.Errorf("beadsDir1 not in registry")
+	} else if alloc.Port != port1 {
+		t.Errorf("beadsDir1 port = %d, want %d", alloc.Port, port1)
+	}
+
+	if alloc, ok := reg.Allocations[abs2]; !ok {
+		t.Errorf("beadsDir2 not in registry")
+	} else if alloc.Port != port2 {
+		t.Errorf("beadsDir2 port = %d, want %d", alloc.Port, port2)
+	}
+}
+
+func TestAllocatePort_PruneStale(t *testing.T) {
+	oroHome := t.TempDir()
+	projectsDir := filepath.Join(oroHome, "projects")
+
+	// Create project with deleted project root.
+	projDir := filepath.Join(projectsDir, "stale")
+	projRoot := t.TempDir()
+	if err := os.MkdirAll(projDir, 0o750); err != nil {
+		t.Fatalf("mkdir proj: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "project.root"), []byte(projRoot), 0o600); err != nil {
+		t.Fatalf("write project.root: %v", err)
+	}
+
+	beadsDir := filepath.Join(projRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir beads: %v", err)
+	}
+	port := 13400
+	if err := os.WriteFile(filepath.Join(beadsDir, "dolt-server.port"), []byte(strconv.Itoa(port)), 0o600); err != nil {
+		t.Fatalf("write port: %v", err)
+	}
+
+	// Now delete the project root.
+	if err := os.RemoveAll(projRoot); err != nil {
+		t.Fatalf("remove project root: %v", err)
+	}
+
+	reg := emptyRegistry()
+	err := migrateExistingPorts(reg, oroHome)
+	if err != nil {
+		t.Fatalf("migrateExistingPorts error: %v", err)
+	}
+
+	if len(reg.Allocations) != 0 {
+		t.Errorf("after migration with deleted root, registry has %d allocations, want 0 (should prune stale)", len(reg.Allocations))
+	}
+}
+
+func TestAllocatePort_PruneStealth(t *testing.T) {
+	oroHome := t.TempDir()
+	projectsDir := filepath.Join(oroHome, "projects")
+
+	// Create project with stealth dir (project.root exists but points to deleted root).
+	stealthHash := "s-abc123"
+	stealthDir := filepath.Join(projectsDir, stealthHash)
+	projRoot := t.TempDir()
+	if err := os.MkdirAll(stealthDir, 0o750); err != nil {
+		t.Fatalf("mkdir stealth: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stealthDir, "project.root"), []byte(projRoot), 0o600); err != nil {
+		t.Fatalf("write project.root: %v", err)
+	}
+
+	beadsDir := filepath.Join(projRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir beads: %v", err)
+	}
+	port := 13400
+	if err := os.WriteFile(filepath.Join(beadsDir, "dolt-server.port"), []byte(strconv.Itoa(port)), 0o600); err != nil {
+		t.Fatalf("write port: %v", err)
+	}
+
+	// Delete project root but leave stealth dir intact.
+	if err := os.RemoveAll(projRoot); err != nil {
+		t.Fatalf("remove project root: %v", err)
+	}
+
+	reg := emptyRegistry()
+	err := migrateExistingPorts(reg, oroHome)
+	if err != nil {
+		t.Fatalf("migrateExistingPorts error: %v", err)
+	}
+
+	if len(reg.Allocations) != 0 {
+		t.Errorf("after migration with stealth dir, registry has %d allocations, want 0 (should prune stealth)", len(reg.Allocations))
+	}
+}
+
+func TestAllocatePort_ConcurrentLocking(t *testing.T) {
+	oroHome := t.TempDir()
+	projectsDir := filepath.Join(oroHome, "projects")
+
+	// Create a project.
+	projDir := filepath.Join(projectsDir, "p1")
+	projRoot := t.TempDir()
+	if err := os.MkdirAll(projDir, 0o750); err != nil {
+		t.Fatalf("mkdir proj: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "project.root"), []byte(projRoot), 0o600); err != nil {
+		t.Fatalf("write project.root: %v", err)
+	}
+
+	beadsDir := filepath.Join(projRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatalf("mkdir beads: %v", err)
+	}
+	port := 13400
+	if err := os.WriteFile(filepath.Join(beadsDir, "dolt-server.port"), []byte(strconv.Itoa(port)), 0o600); err != nil {
+		t.Fatalf("write port: %v", err)
+	}
+
+	// Test that concurrent AllocatePort calls work safely.
+	reg := emptyRegistry()
+	err := migrateExistingPorts(reg, oroHome)
+	if err != nil {
+		t.Fatalf("migrateExistingPorts error: %v", err)
+	}
+
+	abs, _ := filepath.Abs(beadsDir)
+	if alloc, ok := reg.Allocations[abs]; !ok {
+		t.Errorf("beadsDir not in registry after migration")
+	} else if alloc.Port != port {
+		t.Errorf("port = %d, want %d", alloc.Port, port)
+	}
+
+	// Write the migrated registry to disk.
+	registryPath := filepath.Join(oroHome, "port-registry.json")
+	if err := writeRegistryAtomic(registryPath, reg); err != nil {
+		t.Fatalf("writeRegistryAtomic error: %v", err)
+	}
+
+	// Now allocate again; should return same port (idempotent).
+	port2, err := AllocatePort(beadsDir, "p1", oroHome)
+	if err != nil {
+		t.Fatalf("AllocatePort error: %v", err)
+	}
+	if port2 != port {
+		t.Errorf("AllocatePort after migration returned %d, want %d", port2, port)
+	}
+}
