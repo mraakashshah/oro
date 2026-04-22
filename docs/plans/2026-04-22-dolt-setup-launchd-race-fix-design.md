@@ -198,6 +198,20 @@ func drainSharedDoltServer(oroHome string, w io.Writer) {
 
 ### Existing tests that must be updated
 
+**0. `TestDoltSetup` happy-path (first `t.Run`, ~line 196)**
+
+Has `startFn` that writes PID/port files; asserts those files exist at lines 274-279.
+After the change: `startFn` is never called; `waitForPort` real implementation fires
+and times out (8s); test hangs then fails.
+
+Fix: replace `startFn` with the two new fields:
+```go
+waitForPortFn: func(int, time.Duration) bool { return true },
+discoverPIDFn: func(int) (int, error) { return 42, nil },
+```
+Remove `startFn`. The PID/port file assertions at lines 274-279 remain valid because
+`discoverPIDFn` now drives the writes (pid=42, port=SharedDoltPort).
+
 **1. Stale-tmp retry test (~line 395 in `cmd_dolt_test.go`)**
 
 Has `startFn: func(string) (int, error) { return 42, nil }` but no `waitForPortFn`.
