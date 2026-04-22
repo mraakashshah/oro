@@ -187,13 +187,52 @@ func drainSharedDoltServer(oroHome string, w io.Writer) {
 
 ## Test cases
 
+### New tests
+
 | Test | What it asserts |
 |------|----------------|
 | `TestDoltSetup_LaunchdOwnsStartup` | `startFn` is NOT called; `waitForPortFn` is called once with `(13307, 8s)`; PID file written with value from `discoverPIDFn` |
 | `TestDoltSetup_WaitTimeout` | When `waitForPortFn` returns false, `runDoltSetup` returns error containing "8s" and "oro dolt repair" |
-| `TestDoltSetup_DrainKillsExisting` | When `killSharedFn` is injected, it is called before `installPlistFn` |
-| `TestDoltSetup_DiscoverPIDFailsGracefully` | When `discoverPIDFn` returns error, setup succeeds (no PID file written, no error returned) |
-| Existing `TestDoltSetup` happy path | Update mock: remove `startFn` write, add `waitForPortFn: func(...) bool { return true }`, `discoverPIDFn: func(...) (int, error) { return 42, nil }` |
+| `TestDoltSetup_DrainBeforePlistInstall` | `killSharedFn` is called before `installPlistFn` (sequence counters) |
+| `TestDoltSetup_DiscoverPIDFailsGracefully` | When `discoverPIDFn` returns `(0, error)`, setup succeeds and no PID file is written |
+
+### Existing tests that must be updated
+
+**1. Stale-tmp retry test (~line 395 in `cmd_dolt_test.go`)**
+
+Has `startFn: func(string) (int, error) { return 42, nil }` but no `waitForPortFn`.
+After the change, `waitForPort` real implementation fires and times out (8s). Test calls
+`t.Fatalf` on any error.
+
+Fix: add these two fields to the `doltSetupConfig` literal:
+```go
+waitForPortFn: func(int, time.Duration) bool { return true },
+discoverPIDFn: func(int) (int, error) { return 42, nil },
+```
+Also remove `startFn` (it is no longer called; leave the field unset or nil).
+
+**2. Orphan-kill ordering test (`TestDoltSetup_KillsOrphanPerProjectServers`, ~line 730)**
+
+Has `startFn` with a `seq` counter; asserts `killOrder < startOrder`. After the change,
+`startFn` is never called so `startOrder` stays 0 and the ordering assertion fails.
+
+Fix: replace `startFn` sequence tracking with `killSharedFn` tracking. The new invariant
+is: drain fires before `installPlistFn`. Update the test to:
+- Inject `killSharedFn: func(string) { seq++; drainOrder = seq }` 
+- Inject `installPlistFn` with a counter: `func([]byte, string) error { seq++; plistOrder = seq; return nil }`
+- Inject `waitForPortFn: func(int, time.Duration) bool { return true }` and `discoverPIDFn: func(int) (int, error) { return 42, nil }`
+- Assert `drainOrder < plistOrder`
+- Remove `startFn`
+
+**3. `TestRunDoltSetup_StartFnError` (~line 1250)**
+
+Sets `startFn: func(string) (int, error) { return 0, errors.New("start failed") }` and
+asserts `runDoltSetup` returns an error. After the change, `startFn` is never called;
+setup returns nil; `t.Fatal("expected error when startFn fails")` fires.
+
+Fix: delete this test. The error path it tests no longer exists in `runDoltSetup`.
+The `TestDoltSetup_WaitTimeout` new test covers the equivalent failure mode (server
+didn't come up after launchd bootstrap → hard error).
 
 ---
 
