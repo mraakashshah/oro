@@ -438,10 +438,11 @@ class TestMainIntegration:
         assert requested_file.exists(), "handoff_requested should exist before main()"
         assert complete_file.exists(), "handoff_complete should exist before main()"
 
-        # Set environment
+        # Set environment — clear ORO_WORKER to ensure the full non-worker path runs
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("ORO_HOME", str(oro_home))
         monkeypatch.setenv("ORO_ROLE", "test-worker")
+        monkeypatch.delenv("ORO_WORKER", raising=False)
 
         # Create empty stdin
         mock_stdin = io.StringIO("{}")
@@ -638,3 +639,49 @@ class TestRecentMemoriesDB:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         assert recent_memories_db(n=5) == []
+
+
+# --- TestWorkerShortCircuit ---
+
+
+class TestWorkerShortCircuit:
+    def test_worker_makes_no_subprocess_calls(self, tmp_path, monkeypatch):
+        """When ORO_WORKER=1, main() makes zero subprocess.run calls and outputs superpowers + skills."""
+        import io
+        import subprocess
+        import sys
+        import time
+
+        oro_home = tmp_path / ".oro"
+        skills_dir = oro_home / ".claude" / "skills" / "using-skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# Using Skills\n\nAlways check for skills first.")
+
+        monkeypatch.setenv("ORO_HOME", str(oro_home))
+        monkeypatch.setenv("ORO_WORKER", "1")
+
+        subprocess_calls: list = []
+
+        def fake_run(cmd, **kwargs):
+            subprocess_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        mock_stdin = io.StringIO("{}")
+        monkeypatch.setattr(sys, "stdin", mock_stdin)
+        mock_stdout = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", mock_stdout)
+
+        start = time.monotonic()
+        _mod.main()
+        elapsed = time.monotonic() - start
+
+        assert subprocess_calls == [], f"Expected zero subprocess.run calls, got: {subprocess_calls}"
+
+        output = json.loads(mock_stdout.getvalue())
+        additional_context = output["hookSpecificOutput"]["additionalContext"]
+        assert "# Superpowers" in additional_context
+        assert "# Auto-loaded Skill: using-skills" in additional_context
+
+        assert elapsed < 2.0, f"Worker path took {elapsed:.2f}s (expected < 2s)"

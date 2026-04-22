@@ -166,6 +166,7 @@ def find_merged_worktrees(worktrees_dir: str, main_branch: str = "main") -> list
                 capture_output=True,
                 text=True,
                 timeout=5,
+                start_new_session=True,
             )
             if result.returncode != 0:
                 continue
@@ -180,6 +181,7 @@ def find_merged_worktrees(worktrees_dir: str, main_branch: str = "main") -> list
                 capture_output=True,
                 text=True,
                 timeout=5,
+                start_new_session=True,
             )
             if merged_result.returncode != 0:
                 continue
@@ -211,6 +213,7 @@ def recent_memories_db(n: int = 5) -> list[dict]:
             capture_output=True,
             text=True,
             timeout=10,
+            start_new_session=True,
         )
         if result.returncode != 0:
             return []
@@ -240,6 +243,7 @@ def recently_closed_beads(limit: int = 3) -> list[dict]:
             capture_output=True,
             text=True,
             timeout=10,
+            start_new_session=True,
         )
         if result.returncode != 0:
             return []
@@ -262,6 +266,7 @@ def ready_beads(limit: int = 4) -> list[dict]:
             capture_output=True,
             text=True,
             timeout=10,
+            start_new_session=True,
         )
         if result.returncode != 0:
             return []
@@ -459,7 +464,7 @@ def project_state() -> str:
 
     # bd ready
     try:
-        result = subprocess.run(["bd", "ready"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run(["bd", "ready"], capture_output=True, text=True, timeout=10, start_new_session=True)
         if result.returncode == 0 and result.stdout.strip():
             sections.append(f"## Ready Work\n```\n{result.stdout.strip()}\n```")
     except (subprocess.TimeoutExpired, OSError):
@@ -467,8 +472,12 @@ def project_state() -> str:
 
     # git status + log
     try:
-        status = subprocess.run(["git", "status", "--short"], capture_output=True, text=True, timeout=5)
-        log = subprocess.run(["git", "log", "--oneline", "-5"], capture_output=True, text=True, timeout=5)
+        status = subprocess.run(
+            ["git", "status", "--short"], capture_output=True, text=True, timeout=5, start_new_session=True
+        )
+        log = subprocess.run(
+            ["git", "log", "--oneline", "-5"], capture_output=True, text=True, timeout=5, start_new_session=True
+        )
         git_lines = []
         if status.returncode == 0:
             git_lines.append(f"Status:\n{status.stdout.strip() or '(clean)'}")
@@ -526,6 +535,28 @@ def _format_output(stale: list[dict], merged: list[dict], learnings: list[dict])
 
 
 def main() -> None:
+    # Worker agents get minimal context: superpowers + skills only.
+    # Check first to skip all subprocess calls (prevents dolt grandchild pipe hangs).
+    is_worker = os.environ.get("ORO_WORKER") == "1"
+    if is_worker:
+        with contextlib.suppress(json.JSONDecodeError, ValueError):
+            sys.stdin.read()
+        skills_file = Path(oro_home()) / ".claude" / "skills" / "using-skills" / "SKILL.md"
+        auto_skills = auto_load_skills(str(skills_file))
+        parts = [_SUPERPOWERS]
+        if auto_skills:
+            parts.append(auto_skills)
+        json.dump(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": "\n\n".join(parts),
+                }
+            },
+            sys.stdout,
+        )
+        return
+
     # Read hook input from stdin (SessionStart event)
     hook_input = {}
     with contextlib.suppress(json.JSONDecodeError, ValueError):
@@ -542,6 +573,7 @@ def main() -> None:
             capture_output=True,
             text=True,
             timeout=10,
+            start_new_session=True,
         )
         if bd_ids_result.returncode == 0 and bd_ids_result.stdout.strip():
             # For each bead, get its show output to find Updated date
@@ -553,6 +585,7 @@ def main() -> None:
                     capture_output=True,
                     text=True,
                     timeout=5,
+                    start_new_session=True,
                 )
                 if show_result.returncode == 0:
                     show_lines.append(show_result.stdout)
@@ -595,32 +628,17 @@ def main() -> None:
     skills_file = Path(oro_home()) / ".claude" / "skills" / "using-skills" / "SKILL.md"
     auto_skills = auto_load_skills(str(skills_file))
 
-    # Worker agents get minimal context: superpowers + skills + learnings only.
-    # Full context (handoff, project state, bd ready) overwhelms sonnet workers.
-    is_worker = os.environ.get("ORO_WORKER") == "1"
-
-    if is_worker:
-        parts = [_SUPERPOWERS]
-        if auto_skills:
-            parts.append(auto_skills)
-        if learnings:
-            lines = ["## Recent Learnings"]
-            for entry in learnings:
-                lines.append(_format_learning_entry(entry))
-            parts.append("\n".join(lines))
-        context = "\n\n".join(parts)
-    else:
-        # Full injection for manager/architect sessions
-        situational = _format_output(stale, merged, learnings)
-        parts = [_SUPERPOWERS]
-        if auto_skills:
-            parts.append(auto_skills)
-        if beacon:
-            parts.append(f"# Role Beacon ({oro_role})\n\n{beacon}")
-        for section_content in (handoff, state, situational):
-            if section_content:
-                parts.append(section_content)
-        context = "\n\n".join(parts)
+    # Full injection for manager/architect sessions
+    situational = _format_output(stale, merged, learnings)
+    parts = [_SUPERPOWERS]
+    if auto_skills:
+        parts.append(auto_skills)
+    if beacon:
+        parts.append(f"# Role Beacon ({oro_role})\n\n{beacon}")
+    for section_content in (handoff, state, situational):
+        if section_content:
+            parts.append(section_content)
+    context = "\n\n".join(parts)
 
     output: dict = {
         "hookSpecificOutput": {
@@ -629,8 +647,8 @@ def main() -> None:
         }
     }
 
-    # 8. User-visible banner (only when priming, skip for workers)
-    if is_priming and not is_worker:
+    # 8. User-visible banner (only when priming)
+    if is_priming:
         closed = recently_closed_beads(limit=3)
         ready = ready_beads(limit=4)
         banner = session_banner(closed, ready)
