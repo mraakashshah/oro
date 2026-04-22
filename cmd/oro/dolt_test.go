@@ -1199,3 +1199,186 @@ func TestAllocatePort_ConcurrentProcesses(t *testing.T) {
 		portsSeen[port] = bd
 	}
 }
+
+func TestSetDoltMode(t *testing.T) {
+	t.Run("sets dolt_mode field when metadata.json missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		err := setDoltMode(beadsDir, "server")
+		if err != nil {
+			t.Fatalf("setDoltMode error: %v", err)
+		}
+
+		// Since backend is not set, readDoltMeta returns nil for non-dolt backends.
+		// Read raw JSON to verify DoltMode was written.
+		metaPath := filepath.Join(beadsDir, "metadata.json")
+		rawData, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("read metadata.json: %v", err)
+		}
+		var rawMeta map[string]interface{}
+		if err := json.Unmarshal(rawData, &rawMeta); err != nil {
+			t.Fatalf("parse metadata.json: %v", err)
+		}
+		if val, ok := rawMeta["dolt_mode"]; !ok {
+			t.Error("dolt_mode field not in metadata.json")
+		} else if val != "server" {
+			t.Errorf("dolt_mode = %v, want %q", val, "server")
+		}
+	})
+
+	t.Run("preserves existing fields when setting dolt_mode", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		// Write initial metadata with backend and port.
+		data := map[string]interface{}{
+			"backend":          "dolt",
+			"dolt_server_port": 13400,
+			"dolt_database":    "beads",
+		}
+		writeMetadata(t, beadsDir, data)
+
+		// Set dolt_mode.
+		err := setDoltMode(beadsDir, "server")
+		if err != nil {
+			t.Fatalf("setDoltMode error: %v", err)
+		}
+
+		// Read metadata and verify all fields are present.
+		meta, err := readDoltMeta(beadsDir)
+		if err != nil {
+			t.Fatalf("readDoltMeta error: %v", err)
+		}
+		if meta == nil {
+			t.Fatal("readDoltMeta = nil, want non-nil")
+		}
+		if meta.Backend != "dolt" {
+			t.Errorf("Backend = %q, want %q", meta.Backend, "dolt")
+		}
+		if meta.DoltServerPort != 13400 {
+			t.Errorf("DoltServerPort = %d, want 13400", meta.DoltServerPort)
+		}
+		if meta.DoltDatabase != "beads" {
+			t.Errorf("DoltDatabase = %q, want %q", meta.DoltDatabase, "beads")
+		}
+		if meta.DoltMode != "server" {
+			t.Errorf("DoltMode = %q, want %q", meta.DoltMode, "server")
+		}
+	})
+
+	t.Run("overwrites existing dolt_mode on second call", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		// Write initial metadata.
+		data := map[string]interface{}{
+			"backend":          "dolt",
+			"dolt_server_port": 13400,
+			"dolt_database":    "beads",
+		}
+		writeMetadata(t, beadsDir, data)
+
+		// First call: set to "server".
+		if err := setDoltMode(beadsDir, "server"); err != nil {
+			t.Fatalf("setDoltMode(server) error: %v", err)
+		}
+
+		meta, _ := readDoltMeta(beadsDir)
+		if meta.DoltMode != "server" {
+			t.Errorf("first setDoltMode: DoltMode = %q, want %q", meta.DoltMode, "server")
+		}
+
+		// Second call: set to "embedded".
+		if err := setDoltMode(beadsDir, "embedded"); err != nil {
+			t.Fatalf("setDoltMode(embedded) error: %v", err)
+		}
+
+		meta, _ = readDoltMeta(beadsDir)
+		if meta.DoltMode != "embedded" {
+			t.Errorf("second setDoltMode: DoltMode = %q, want %q", meta.DoltMode, "embedded")
+		}
+
+		// Verify other fields still present.
+		if meta.Backend != "dolt" {
+			t.Errorf("Backend = %q, want %q", meta.Backend, "dolt")
+		}
+		if meta.DoltServerPort != 13400 {
+			t.Errorf("DoltServerPort = %d, want 13400", meta.DoltServerPort)
+		}
+	})
+
+	t.Run("omitempty tag: field omitted from JSON when zero value", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		// Create metadata with backend only (no dolt_mode).
+		data := map[string]interface{}{
+			"backend": "dolt",
+		}
+		writeMetadata(t, beadsDir, data)
+
+		// Read back raw JSON to verify dolt_mode is not present initially.
+		metaPath := filepath.Join(beadsDir, "metadata.json")
+		rawData, _ := os.ReadFile(metaPath)
+		var rawMeta map[string]interface{}
+		json.Unmarshal(rawData, &rawMeta)
+		if _, ok := rawMeta["dolt_mode"]; ok {
+			t.Error("dolt_mode should not be in initial metadata")
+		}
+
+		// Now set dolt_mode to "server".
+		setDoltMode(beadsDir, "server")
+
+		// Read raw JSON again and verify dolt_mode is present.
+		rawData, _ = os.ReadFile(metaPath)
+		json.Unmarshal(rawData, &rawMeta)
+		if val, ok := rawMeta["dolt_mode"]; !ok {
+			t.Error("dolt_mode not added to metadata.json")
+		} else if val != "server" {
+			t.Errorf("dolt_mode = %v, want %q", val, "server")
+		}
+	})
+
+	t.Run("accepts invalid mode string (validation is caller responsibility)", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		beadsDir := filepath.Join(tmpDir, ".beads")
+		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		// Set with invalid mode string.
+		err := setDoltMode(beadsDir, "invalid-mode")
+		if err != nil {
+			t.Fatalf("setDoltMode with invalid mode should not error: %v", err)
+		}
+
+		// Verify it was written.
+		meta, _ := readDoltMeta(beadsDir)
+		if meta == nil {
+			// If backend is not set, try reading raw JSON.
+			metaPath := filepath.Join(beadsDir, "metadata.json")
+			rawData, _ := os.ReadFile(metaPath)
+			var rawMeta map[string]interface{}
+			json.Unmarshal(rawData, &rawMeta)
+			if val, ok := rawMeta["dolt_mode"]; !ok || val != "invalid-mode" {
+				t.Error("invalid mode string was not written")
+			}
+		} else if meta.DoltMode != "invalid-mode" {
+			t.Errorf("DoltMode = %q, want %q", meta.DoltMode, "invalid-mode")
+		}
+	})
+}

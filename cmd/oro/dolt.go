@@ -37,6 +37,7 @@ type doltMeta struct {
 	Backend        string `json:"backend"`
 	DoltServerPort int    `json:"dolt_server_port"`
 	DoltDatabase   string `json:"dolt_database"`
+	DoltMode       string `json:"dolt_mode,omitempty"`
 }
 
 // DerivePort computes a stable port in [13307, 14306] for the given beads
@@ -384,6 +385,41 @@ func setDoltPort(beadsDir string, port int) error {
 	}
 
 	existing["dolt_server_port"] = port
+
+	out, marshalErr := json.MarshalIndent(existing, "", "  ")
+	if marshalErr != nil {
+		return fmt.Errorf("marshal metadata.json: %w", marshalErr)
+	}
+
+	if mkdirErr := os.MkdirAll(beadsDir, 0o750); mkdirErr != nil {
+		return fmt.Errorf("mkdir %s: %w", beadsDir, mkdirErr)
+	}
+
+	if writeErr := os.WriteFile(metaPath, append(out, '\n'), 0o600); writeErr != nil { //nolint:gosec // beadsDir is caller-controlled
+		return fmt.Errorf("write metadata.json: %w", writeErr)
+	}
+
+	return nil
+}
+
+// setDoltMode unconditionally overwrites the "dolt_mode" field in
+// <beadsDir>/metadata.json. If the file does not exist, it creates a minimal
+// metadata.json with only the dolt_mode field set.
+func setDoltMode(beadsDir, mode string) error {
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+
+	existing := map[string]any{}
+	data, err := os.ReadFile(metaPath) //nolint:gosec // beadsDir is caller-controlled
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read metadata.json: %w", err)
+	}
+	if err == nil {
+		if jsonErr := json.Unmarshal(data, &existing); jsonErr != nil {
+			return fmt.Errorf("parse metadata.json: %w", jsonErr)
+		}
+	}
+
+	existing["dolt_mode"] = mode
 
 	out, marshalErr := json.MarshalIndent(existing, "", "  ")
 	if marshalErr != nil {
