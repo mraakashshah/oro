@@ -48,7 +48,7 @@ dev-sync:
 	fi
 	@echo "Syncing assets/ to ~/.oro/..."
 	@mkdir -p ~/.oro/hooks ~/.oro/.claude/skills ~/.oro/beacons ~/.oro/.claude/commands
-	@rsync --archive --delete assets/hooks/ ~/.oro/hooks/ && echo "  ✓ hooks"
+	@rsync --archive --delete --exclude=oro-search-hook assets/hooks/ ~/.oro/hooks/ && echo "  ✓ hooks"
 	@cp -r assets/skills/* ~/.oro/.claude/skills/ && echo "  ✓ skills"
 	@cp -r assets/beacons/* ~/.oro/beacons/ && echo "  ✓ beacons"
 	@cp -r assets/commands/* ~/.oro/.claude/commands/ && echo "  ✓ commands"
