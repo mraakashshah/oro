@@ -252,9 +252,21 @@ func AllocatePort(beadsDir, projectName, oroHome string) (int, error) {
 	}
 	defer func() { _ = unlock() }()
 
+	// Check whether this is the first registry creation (file missing).
+	firstCreation := false
+	if _, statErr := os.Stat(registryPath); errors.Is(statErr, os.ErrNotExist) {
+		firstCreation = true
+	}
+
 	reg, err := readRegistry(registryPath)
 	if err != nil {
 		return 0, err
+	}
+
+	// On first creation, scan all known projects and pre-populate the registry
+	// so that the caller doesn't claim a port already in use by an unregistered project.
+	if firstCreation {
+		_ = migrateExistingPorts(reg, oroHome)
 	}
 
 	// Idempotent: return existing allocation unchanged.

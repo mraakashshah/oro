@@ -1013,6 +1013,68 @@ func TestAllocatePort_ConcurrentLocking(t *testing.T) {
 	}
 }
 
+// TestAllocatePort_MigrationOnFirstCall verifies that when the registry file does
+// not exist, AllocatePort auto-discovers existing projects via discoverBreadsDirs
+// and pre-populates the registry before allocating the requested port. This
+// prevents the first project to init from claiming a port already in use by an
+// unregistered existing project.
+func TestAllocatePort_MigrationOnFirstCall(t *testing.T) {
+	oroHome := t.TempDir()
+	projectsDir := filepath.Join(oroHome, "projects")
+
+	// Set up an existing project (projA) with a known port in dolt-server.port.
+	projDirA := filepath.Join(projectsDir, "projA")
+	projRootA := t.TempDir()
+	if err := os.MkdirAll(projDirA, 0o750); err != nil {
+		t.Fatalf("mkdir projA: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDirA, "project.root"), []byte(projRootA), 0o600); err != nil {
+		t.Fatalf("write project.root A: %v", err)
+	}
+	beadsDirA := filepath.Join(projRootA, ".beads")
+	if err := os.MkdirAll(beadsDirA, 0o750); err != nil {
+		t.Fatalf("mkdir beadsA: %v", err)
+	}
+	portA := 13400
+	if err := os.WriteFile(filepath.Join(beadsDirA, "dolt-server.port"), []byte(strconv.Itoa(portA)), 0o600); err != nil {
+		t.Fatalf("write portA: %v", err)
+	}
+
+	// NO registry file exists yet. Now call AllocatePort for a NEW project (projB).
+	projRootB := t.TempDir()
+	beadsDirB := filepath.Join(projRootB, ".beads")
+	if err := os.MkdirAll(beadsDirB, 0o750); err != nil {
+		t.Fatalf("mkdir beadsB: %v", err)
+	}
+
+	portB, err := AllocatePort(beadsDirB, "projB", oroHome)
+	if err != nil {
+		t.Fatalf("AllocatePort(projB): %v", err)
+	}
+
+	// Read the registry that AllocatePort created.
+	registryPath := filepath.Join(oroHome, "port-registry.json")
+	reg, err := readRegistry(registryPath)
+	if err != nil {
+		t.Fatalf("readRegistry: %v", err)
+	}
+
+	// projA should have been auto-discovered and registered with its existing port.
+	absA, _ := filepath.Abs(beadsDirA)
+	allocA, ok := reg.Allocations[absA]
+	if !ok {
+		t.Fatalf("projA not in registry after AllocatePort — migration did not run")
+	}
+	if allocA.Port != portA {
+		t.Errorf("projA port = %d, want %d", allocA.Port, portA)
+	}
+
+	// projB should NOT have been given projA's port (13400).
+	if portB == portA {
+		t.Errorf("projB got projA's port %d — migration did not prevent collision", portA)
+	}
+}
+
 // TestAllocatePort_MetadataSync verifies that when AllocatePort assigns a port
 // that differs from the port already recorded in metadata.json (because the
 // preferred port was taken by another project), initDoltForProject updates
