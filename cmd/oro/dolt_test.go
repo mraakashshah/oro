@@ -960,6 +960,28 @@ func TestAllocatePort_PruneStealth(t *testing.T) {
 	}
 }
 
+func TestAllocatePort_PruneInvalidProjectRootPath(t *testing.T) {
+	oroHome := t.TempDir()
+	projectsDir := filepath.Join(oroHome, "projects")
+
+	projDir := filepath.Join(projectsDir, "invalid-root")
+	if err := os.MkdirAll(projDir, 0o750); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, "project.root"), []byte("./relative/root"), 0o600); err != nil {
+		t.Fatalf("write project.root: %v", err)
+	}
+
+	reg := emptyRegistry()
+	if err := migrateExistingPorts(reg, oroHome); err != nil {
+		t.Fatalf("migrateExistingPorts error: %v", err)
+	}
+
+	if len(reg.Allocations) != 0 {
+		t.Errorf("after migration with invalid project.root path, registry has %d allocations, want 0", len(reg.Allocations))
+	}
+}
+
 func TestAllocatePort_ConcurrentLocking(t *testing.T) {
 	oroHome := t.TempDir()
 	projectsDir := filepath.Join(oroHome, "projects")

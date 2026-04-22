@@ -239,6 +239,10 @@ func (s *mockWorkerSpawner) Spawn(_ context.Context, model, prompt, workdir stri
 	return s.process, nil, nil, nil
 }
 
+func (s *mockWorkerSpawner) StreamFormat() worker.StreamFormat {
+	return worker.StreamFormatClaudeJSON
+}
+
 func (s *mockWorkerSpawner) SpawnCalls() []spawnCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()

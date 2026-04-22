@@ -102,6 +102,8 @@ func (m *mockSpawner) Spawn(ctx context.Context, model string, prompt string, wo
 	return &mockProcess{}, io.NopCloser(strings.NewReader("")), nil, nil
 }
 
+func (m *mockSpawner) StreamFormat() StreamFormat { return StreamFormatClaudeJSON }
+
 type mockProcess struct{}
 
 func (m *mockProcess) Wait() error { return nil }

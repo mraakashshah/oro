@@ -126,6 +126,10 @@ func newProductionDeps() (*workDeps, error) {
 	if err != nil {
 		return nil, fmt.Errorf("getwd: %w", err)
 	}
+	runtime, err := resolveProductionRuntime()
+	if err != nil {
+		return nil, err
+	}
 	runner := &dispatcher.ExecCommandRunner{}
 
 	// Initialize memory store and code index from project-scoped DB paths.
@@ -152,8 +156,8 @@ func newProductionDeps() (*workDeps, error) {
 	return &workDeps{
 		beadSrc:       dispatcher.NewCLIBeadSource(runner),
 		wtMgr:         dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
-		spawner:       &worker.ClaudeSpawner{},
-		opsMgr:        ops.NewSpawner(&ops.ClaudeOpsSpawner{}),
+		spawner:       runtime.workerSpawn,
+		opsMgr:        ops.NewSpawner(runtime.opsSpawn),
 		merger:        merge.NewCoordinator(&merge.ExecGitRunner{}),
 		repoRoot:      repoRoot,
 		memStore:      memStore,
@@ -500,7 +504,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		if deps.memStore != nil {
 			memInserter = deps.memStore
 		}
-		worker.DrainOutput(ctx, stdout, memInserter, cfg.beadID, &memory.CLISpawner{}, writers...)
+		worker.DrainOutput(ctx, stdout, deps.spawner.StreamFormat(), memInserter, cfg.beadID, &memory.CLISpawner{}, writers...)
 	}
 
 	if err := proc.Wait(); err != nil {

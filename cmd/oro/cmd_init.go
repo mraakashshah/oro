@@ -1074,6 +1074,8 @@ var assetMapping = map[string]string{ //nolint:gochecknoglobals // static config
 	"commands": filepath.Join(".claude", "commands"),
 }
 
+const sharedAgentInstructionsFile = "ORO_AGENT.md"
+
 // fileExists returns true if a file exists at path (not a directory).
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
@@ -1093,10 +1095,32 @@ func filePermForAsset(path string) os.FileMode {
 	return 0o644
 }
 
-// extractClaudeMD extracts the CLAUDE.md file from assets to dest/.claude/CLAUDE.md.
-// Skips writing if force is false and the file already exists.
+// extractSharedAgentInstructions extracts the shared instruction source to
+// dest/ORO_AGENT.md. Skips writing if force is false and the file already exists.
+func extractSharedAgentInstructions(dest string, assets fs.FS, force bool) error {
+	data, err := fs.ReadFile(assets, sharedAgentInstructionsFile)
+	if err != nil {
+		return nil //nolint:nilerr // shared instructions are optional during migration
+	}
+	destPath := filepath.Join(dest, sharedAgentInstructionsFile)
+	if !force && fileExists(destPath) {
+		return nil
+	}
+	if err := os.WriteFile(destPath, data, 0o644); err != nil { //nolint:gosec // needs to be readable
+		return fmt.Errorf("write %s: %w", sharedAgentInstructionsFile, err)
+	}
+	return nil
+}
+
+// extractClaudeMD extracts the Claude compatibility instructions to
+// dest/.claude/CLAUDE.md. When shared instructions exist, they are the
+// canonical source for the Claude compatibility view. Falls back to a direct
+// CLAUDE.md asset for older bundles.
 func extractClaudeMD(dest string, assets fs.FS, force bool) error {
-	data, err := fs.ReadFile(assets, "CLAUDE.md")
+	data, err := fs.ReadFile(assets, sharedAgentInstructionsFile)
+	if err != nil {
+		data, err = fs.ReadFile(assets, "CLAUDE.md")
+	}
 	if err != nil {
 		return nil //nolint:nilerr // CLAUDE.md is optional in assets
 	}
@@ -1166,6 +1190,9 @@ func extractThresholdsJSON(dest string, assets fs.FS, force bool) error {
 // When force is true, all files are overwritten (current behavior for version bumps).
 // The version stamp is always written regardless of the force flag.
 func extractAssets(dest string, assets fs.FS, force bool) error {
+	if err := extractSharedAgentInstructions(dest, assets, force); err != nil {
+		return err
+	}
 	if err := extractClaudeMD(dest, assets, force); err != nil {
 		return err
 	}

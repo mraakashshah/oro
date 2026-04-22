@@ -52,6 +52,12 @@ func TestStageAssetsUsesRepoAssetsDir(t *testing.T) {
 		t.Error("CLAUDE.md was not copied to _assets/")
 	}
 
+	// Verify the shared runtime-agnostic instructions were copied.
+	sharedInstructionsFile := filepath.Join(assetsDir, "ORO_AGENT.md")
+	if _, err := os.Stat(sharedInstructionsFile); os.IsNotExist(err) {
+		t.Error("ORO_AGENT.md was not copied to _assets/")
+	}
+
 	// CRITICAL TEST: Verify .test-marker was copied from repo's assets/ directory.
 	// This marker file exists in assets/ but NOT in ~/.oro/, proving we're
 	// copying from the correct source.

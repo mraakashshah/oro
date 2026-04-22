@@ -2,11 +2,11 @@
 
 Thirty minutes into a coding session, the agent starts drifting. The function signatures stop matching the architecture it established twenty minutes ago. The variable names contradict the conventions from ten minutes ago. The code still compiles. It just isn't what you asked for anymore.
 
-I watched this happen dozens of times at Wyndly, shipping production features with Claude in long single-agent sessions. The pattern was always the same: sharp start, clean decisions, then a slow decay as the context window filled with abandoned approaches, stale error messages, and files the agent read once and never referenced again. Every token of noise competing with the tokens that matter.
+I watched this happen dozens of times at Wyndly, shipping production features with an LLM coding agent in long single-agent sessions. The pattern was always the same: sharp start, clean decisions, then a slow decay as the context window filled with abandoned approaches, stale error messages, and files the agent read once and never referenced again. Every token of noise competing with the tokens that matter.
 
 The model didn't get dumber. The relevant context got buried under irrelevant context. And that's when I realized: the model wasn't the problem. The model was fine. What was missing was everything around the model — the process, the feedback, the memory, the isolation. I was blaming the engine for a chassis problem.
 
-I've since built [Oro](https://github.com/mraakashshah/oro), an agent swarm orchestrator that coordinates multiple Claude workers to write, test, review, and merge code. But the five problems I'll describe here aren't specific to swarms. You'll hit every one of them with a single agent in a single session.
+I've since built [Oro](https://github.com/mraakashshah/oro), an agent swarm orchestrator that coordinates multiple agent workers to write, test, review, and merge code. But the five problems I'll describe here aren't specific to swarms. You'll hit every one of them with a single agent in a single session.
 
 ![Output quality degrades as session length increases — sharp start, slow decay after 30 minutes as noise accumulates](images/01-decay-curve.png)
 *Agent output quality vs. session time. The signal-to-noise ratio degrades continuously.*
@@ -55,7 +55,7 @@ The model can produce correct code. But without feedback loops, it has no way to
 Oro wraps every unit of work in three independent gates.
 
 1. A 19-check quality gate — tests with race detection, linters, formatters, vulnerability scanners. Mechanical, deterministic, with no judgment required.
-2. a code review by a separate Claude instance that reads the diff against the acceptance criteria and the original spec, returning APPROVED or REJECTED with specific feedback.
+2. a code review by a separate agent runtime instance that reads the diff against the acceptance criteria and the original spec, returning APPROVED or REJECTED with specific feedback.
 3. Human PR review
 
 The worker cannot merge to prod without passing all three. Not "should pass" — *cannot*. Guards you can't skip are more valuable than best practices you should follow.
@@ -99,4 +99,4 @@ A better model in a bad harness still produces slop. A good model in a good harn
 
 ---
 
-*[Oro](https://github.com/mraakashshah/oro) is an open-source autonomous agent swarm orchestrator. It coordinates Claude workers to execute software engineering tasks with TDD, quality gates, code review, and cross-session memory baked into every cycle.*
+*[Oro](https://github.com/mraakashshah/oro) is an open-source autonomous agent swarm orchestrator. It coordinates agent workers to execute software engineering tasks with TDD, quality gates, code review, and cross-session memory baked into every cycle.*

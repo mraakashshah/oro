@@ -1,10 +1,35 @@
 package ops //nolint:testpackage // internal test needs access to unexported opsProcess
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
 )
+
+func TestOpsSpawnerUsesRuntime(t *testing.T) {
+	spawner := NewExecSpawner(RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(model, prompt string) []string {
+			return []string{"-c", "printf '%s|%s|%s' \"$1\" \"$2\" \"$PWD\"", "sh", model, prompt}
+		},
+	})
+
+	proc, err := spawner.Spawn(context.Background(), "balanced", "review this", t.TempDir())
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	output, err := proc.Output()
+	if err != nil {
+		t.Fatalf("Output() error = %v", err)
+	}
+	if !strings.Contains(output, "balanced|review this|") {
+		t.Fatalf("output = %q, want runtime-built args to include model and prompt", output)
+	}
+}
 
 func TestOpsProcessWaitNilSuccess(t *testing.T) {
 	// "true" exits 0 — cmd.Wait() returns nil.

@@ -211,7 +211,7 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
           ▼          ▼          ▼          ▼
       ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
       │ w-01   │ │ w-02   │ │ w-03   │ │ w-04   │
-      │ claude │ │ claude │ │ claude │ │ claude │
+      │ agent  │ │ agent  │ │ agent  │ │ agent  │
       │   -p   │ │   -p   │ │   -p   │ │   -p   │
       └────┬───┘ └────┬───┘ └────┬───┘ └────┬───┘
            │          │          │          │
@@ -222,7 +222,7 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
 
 **Dispatcher states:** `inert` → `running` → `paused` / `stopping`
 
-**Worker lifecycle:** spawn → connect (UDS) → receive ASSIGN → execute bead via `claude -p` → run quality gate → send DONE → dispatcher merges to main → next bead
+**Worker lifecycle:** spawn → connect (UDS) → receive ASSIGN → execute bead via the configured runtime adapter → run quality gate → send DONE → dispatcher merges to main → next bead
 
 **Context exhaustion (ralph loop):** When a worker hits its context threshold, it writes a handoff file and signals the dispatcher. A fresh worker spawns in the same worktree, reads the handoff, and continues — no work lost.
 
@@ -247,8 +247,9 @@ Workers emit `[MEMORY]` markers during execution. The dispatcher also runs LLM-b
 Runtime requirements (macOS only):
 
 ```bash
-# Claude Code CLI
+# Supported agent runtime CLIs
 claude --version
+codex --version
 
 # Beads issue tracker
 brew install beads
@@ -456,7 +457,7 @@ When a worker exhausts its context window, it writes a YAML handoff file capturi
 
 ### Ops Agents
 
-Short-lived `claude -p` processes spawned by the dispatcher for judgment-heavy tasks: code review (post-completion), merge conflict resolution, stuck-worker diagnosis, acceptance criteria writing, and memory dreaming (cross-session synthesis). Review and diagnosis ops use Opus; dreaming uses Haiku.
+Short-lived runtime subprocesses spawned by the dispatcher for judgment-heavy tasks: code review (post-completion), merge conflict resolution, stuck-worker diagnosis, acceptance criteria writing, and memory dreaming (cross-session synthesis). Current default routing still maps review and diagnosis to the deep tier and dreaming to the background tier.
 
 ## Development
 

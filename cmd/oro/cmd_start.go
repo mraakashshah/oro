@@ -628,6 +628,10 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 // Zero-value timeouts use dispatcher defaults (ProgressTimeout=10m, ReviewTimeout=15m).
 // initialWorkers sets the initial targetWorkers; maxWorkers sets the auto-scale ceiling.
 func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTimeout time.Duration, baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+	runtime, err := resolveProductionRuntime()
+	if err != nil {
+		return nil, nil, err
+	}
 	// All paths (socket, PID, DB) are now project-scoped via ResolvePaths.
 	paths, err := ResolveDaemonPaths()
 	if err != nil {
@@ -673,7 +677,7 @@ func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTime
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner)
 	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
-	opsSpawner := ops.NewSpawner(&ops.ClaudeOpsSpawner{})
+	opsSpawner := ops.NewSpawner(runtime.opsSpawn)
 
 	cfg := dispatcher.Config{
 		SocketPath:      sockPath,

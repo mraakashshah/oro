@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"oro/pkg/protocol"
+
 	"github.com/google/uuid"
 )
 
@@ -45,24 +47,29 @@ const (
 	OpsDream      Type = "dream"     // spawned for background memory consolidation
 )
 
-// Model returns the preferred Claude model for this ops type.
-func (t Type) Model() string {
+// Tier returns the provider-neutral routing tier for this ops type.
+func (t Type) Tier() protocol.Tier {
 	switch t {
 	case OpsMerge, OpsDiagnosis, OpsEpicFix:
-		return "opus" // judgment-heavy
+		return protocol.TierDeep // judgment-heavy
 	case OpsReview:
-		return "opus" // full code review requires judgment
+		return protocol.TierDeep // full code review requires judgment
 	case OpsWriteAC:
-		return "opus" // acceptance-criteria writing requires careful reasoning
+		return protocol.TierDeep // acceptance-criteria writing requires careful reasoning
 	case OpsEscalation:
-		return "sonnet" // one-shot triage is fast, not judgment-heavy
+		return protocol.TierBalanced // one-shot triage is fast, not judgment-heavy
 	case OpsDecompose:
-		return "opus" // bead decomposition requires careful judgment
+		return protocol.TierDeep // bead decomposition requires careful judgment
 	case OpsDream:
-		return "haiku" // lightweight background memory consolidation
+		return protocol.TierBackground // lightweight background memory consolidation
 	default:
-		return "sonnet"
+		return protocol.DefaultTier
 	}
+}
+
+// Model returns the preferred legacy-model equivalent for this ops type.
+func (t Type) Model() string {
+	return t.Tier().DefaultModel()
 }
 
 // Timeout returns the per-type process timeout. Returns 0 for all types except
@@ -122,7 +129,8 @@ type ReviewOpts struct {
 	Worktree           string
 	AcceptanceCriteria string
 	BaseBranch         string // defaults to "main" if empty
-	ProjectRoot        string // for reading CLAUDE.md, .claude/rules/, assets/review-patterns.md
+	ProjectRoot        string // for reading shared instructions, Claude compatibility files, .claude/rules/, assets/review-patterns.md
+	AgentInstructions  string // explicit shared instructions path; falls back to ProjectRoot/ORO_AGENT.md when empty
 	ClaudeMD           string // explicit path to CLAUDE.md; falls back to ProjectRoot/CLAUDE.md when empty
 	ReviewPatterns     string // explicit path to review-patterns.md; falls back to ProjectRoot/assets/review-patterns.md when empty
 }

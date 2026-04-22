@@ -52,7 +52,7 @@ Transform human intent into executable work:
 
 ## Research
 
-Spawn Claude subagents for:
+Spawn agent subagents for:
 
 - Codebase exploration
 - Architecture analysis
@@ -86,4 +86,4 @@ Avoid these mistakes:
 - **No vague beads.** "Improve error handling" is not a bead. "Add retry with exponential backoff to dispatcher.SendBead RPC" is.
 - **No skipping dependency mapping.** Always run `bd dep add` before creating downstream work.
 - **No hoarding knowledge.** Everything you learn goes into beads or specs, not just your memory.
-- **No using `oro` CLI commands.** You interact through `bd` and Claude tools, never through the `oro` CLI directly.
+- **No using `oro` CLI commands.** You interact through `bd` and agent tools, never through the `oro` CLI directly.

@@ -62,3 +62,4 @@ assign-loop-wake-on-removal: any code path that removes a managed worker from `d
 redundant-timeout-branch-after-union: widening an earlier `continue`-guarded condition to absorb a later branch's trigger state → later branch becomes unreachable in default config; either note the config dependency in a comment or test both config regimes.
 injectable-derive-fn: pure deterministic helper needs test control → expose as package-level `var foo = realFoo` with `//nolint:gochecknoglobals` and let tests save/restore around the call
 `omitempty-test-bait`: subtest named "omitempty tag does X" but body never marshals a zero-value struct → either marshal `T{}` and assert key absent, or rename to describe the actual setter-side behavior verified.
+daemon-only-bypass: cobra RunE forks between startFreshSwarm and runDaemonOnly → safety checks added to one path must be mirrored (or hoisted) to the other, or explicitly scoped in AC.

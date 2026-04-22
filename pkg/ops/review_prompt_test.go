@@ -86,6 +86,60 @@ func TestBuildReviewPrompt_IncludesProjectStandards(t *testing.T) {
 	}
 }
 
+func TestReviewPromptResolvesSharedInstructions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	//nolint:gosec // test file permissions
+	if err := os.WriteFile(filepath.Join(tmpDir, sharedInstructionsFilename), []byte("shared instructions first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // test file permissions
+	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"), []byte("claude compatibility fallback"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := buildReviewPrompt(ReviewOpts{
+		BeadID:      "oro-test",
+		Worktree:    tmpDir,
+		BaseBranch:  "main",
+		ProjectRoot: tmpDir,
+	})
+
+	if !strings.Contains(prompt, "shared instructions first") {
+		t.Fatal("prompt missing shared instructions content")
+	}
+	if strings.Contains(prompt, "claude compatibility fallback") {
+		t.Fatal("prompt should prefer shared instructions over CLAUDE.md when both exist")
+	}
+}
+
+func TestReviewPromptPrefersSharedInstructions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	//nolint:gosec // test file permissions
+	if err := os.WriteFile(filepath.Join(tmpDir, sharedInstructionsFilename), []byte("shared instructions win"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // test file permissions
+	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"), []byte("legacy claude instructions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := buildReviewPrompt(ReviewOpts{
+		BeadID:      "oro-test",
+		Worktree:    tmpDir,
+		BaseBranch:  "main",
+		ProjectRoot: tmpDir,
+	})
+
+	if !strings.Contains(prompt, "shared instructions win") {
+		t.Fatal("prompt missing shared instructions content")
+	}
+	if strings.Contains(prompt, "legacy claude instructions") {
+		t.Fatal("prompt should not prefer CLAUDE.md when shared instructions exist")
+	}
+}
+
 func TestBuildReviewPrompt_IncludesRules(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -491,7 +545,7 @@ func TestReadProjectStandards_SkipsDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := readProjectStandards(tmpDir, "")
+	result := readProjectStandards(tmpDir, "", "")
 
 	if !strings.Contains(result, "valid rule content") {
 		t.Error("readProjectStandards must include valid .md rule files")
@@ -655,7 +709,7 @@ func TestReadProjectStandards_MissingClaudeMd(t *testing.T) {
 	}
 	// No CLAUDE.md
 
-	result := readProjectStandards(tmpDir, "")
+	result := readProjectStandards(tmpDir, "", "")
 
 	if !strings.Contains(result, "only rule here") {
 		t.Error("readProjectStandards must return rules content even without CLAUDE.md")

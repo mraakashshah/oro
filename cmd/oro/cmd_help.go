@@ -40,11 +40,11 @@ Search:
 
 Workflow:
   work       Execute a bead through the full lifecycle
-  shell      Launch interactive claude with oro settings
+  shell      Launch an interactive agent session with oro settings
   bd         Run bd with project-aware --db flag (stealth mode support)
 
 Global:
-  global-skills        Sync oro skills and hooks to ~/.claude/ for all sessions
+  agent-assets         Sync oro skills and runtime assets for agent sessions
 
 Maintenance:
   doctor     Diagnose and repair oro installation issues (e.g. corrupt Dolt)

@@ -26,6 +26,7 @@ stage-assets:
 	@cp assets/hooks/*.py assets/hooks/*.sh cmd/oro/_assets/hooks/ 2>/dev/null || true
 	@cp -r assets/beacons/* cmd/oro/_assets/beacons/ 2>/dev/null || true
 	@test -d assets/commands && cp -r assets/commands/* cmd/oro/_assets/commands/ 2>/dev/null || true
+	@test -f assets/ORO_AGENT.md && cp assets/ORO_AGENT.md cmd/oro/_assets/ || true
 	@test -f assets/CLAUDE.md && cp assets/CLAUDE.md cmd/oro/_assets/ || true
 	@test -f assets/thresholds.json && cp assets/thresholds.json cmd/oro/_assets/ || true
 	@test -f assets/.test-marker && cp assets/.test-marker cmd/oro/_assets/ || true

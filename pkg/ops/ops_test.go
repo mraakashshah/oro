@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 // --- Mock infrastructure ---
@@ -298,6 +300,32 @@ func TestModelRouting(t *testing.T) {
 			got := tt.opsType.Model()
 			if got != tt.want {
 				t.Fatalf("Model() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpsTasksRouteByTier(t *testing.T) {
+	tests := []struct {
+		opsType    Type
+		wantTier   protocol.Tier
+		wantLegacy string
+	}{
+		{OpsReview, protocol.TierDeep, protocol.ModelOpus},
+		{OpsMerge, protocol.TierDeep, protocol.ModelOpus},
+		{OpsDiagnosis, protocol.TierDeep, protocol.ModelOpus},
+		{OpsEscalation, protocol.TierBalanced, protocol.ModelSonnet},
+		{OpsDream, protocol.TierBackground, protocol.ModelHaiku},
+		{Type("unknown"), protocol.DefaultTier, protocol.DefaultModel},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.opsType), func(t *testing.T) {
+			if got := tt.opsType.Tier(); got != tt.wantTier {
+				t.Fatalf("Tier() = %q, want %q", got, tt.wantTier)
+			}
+			if got := tt.opsType.Model(); got != tt.wantLegacy {
+				t.Fatalf("Model() = %q, want %q", got, tt.wantLegacy)
 			}
 		})
 	}

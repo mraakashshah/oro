@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	codexruntime "oro/pkg/agentruntime/codex"
 	"oro/pkg/codesearch"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/worker"
 )
 
 func TestNewWorkCmd_Flags(t *testing.T) {
@@ -529,6 +532,143 @@ func TestWorkDepsMemoryAndCodeIndex(t *testing.T) {
 			t.Errorf("ORO_PROJECT at worktree creation = %q, want %q", capturedProject, "testproject")
 		}
 	})
+}
+
+type testRuntimeWorkerSpawner struct{}
+
+func (s *testRuntimeWorkerSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	return nil, nil, nil, nil
+}
+
+func (s *testRuntimeWorkerSpawner) StreamFormat() worker.StreamFormat {
+	return worker.StreamFormatClaudeJSON
+}
+
+type testRuntimeOpsSpawner struct{}
+
+func (s *testRuntimeOpsSpawner) Spawn(_ context.Context, _, _, _ string) (ops.Process, error) {
+	return nil, nil
+}
+
+func TestBuildDepsResolvesRuntime(t *testing.T) {
+	t.Run("defaults to claude runtime when unset", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Chdir(tmpDir)
+		t.Setenv(agentRuntimeEnvVar, "")
+		t.Setenv("ORO_HOME", tmpDir)
+		t.Setenv("ORO_PROJECT", "")
+
+		wantWorker := &testRuntimeWorkerSpawner{}
+		wantOps := &testRuntimeOpsSpawner{}
+		prevWorker := newClaudeWorkerSpawner
+		prevOps := newClaudeOpsSpawner
+		newClaudeWorkerSpawner = func() worker.StreamingSpawner { return wantWorker }
+		newClaudeOpsSpawner = func() ops.BatchSpawner { return wantOps }
+		defer func() {
+			newClaudeWorkerSpawner = prevWorker
+			newClaudeOpsSpawner = prevOps
+		}()
+
+		deps, err := newProductionDeps()
+		if err != nil {
+			t.Fatalf("newProductionDeps: %v", err)
+		}
+		if deps.spawner != wantWorker {
+			t.Fatalf("spawner = %#v, want injected claude runtime spawner %#v", deps.spawner, wantWorker)
+		}
+
+		rt, err := resolveProductionRuntime()
+		if err != nil {
+			t.Fatalf("resolveProductionRuntime: %v", err)
+		}
+		if rt.opsSpawn != wantOps {
+			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.opsSpawn, wantOps)
+		}
+	})
+
+	t.Run("codex runtime resolves injected spawners", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Chdir(tmpDir)
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+		t.Setenv("ORO_HOME", tmpDir)
+		t.Setenv("ORO_PROJECT", "")
+
+		wantWorker := &testRuntimeWorkerSpawner{}
+		wantOps := &testRuntimeOpsSpawner{}
+		prevWorker := newCodexWorkerSpawner
+		prevOps := newCodexOpsSpawner
+		newCodexWorkerSpawner = func() worker.StreamingSpawner { return wantWorker }
+		newCodexOpsSpawner = func() ops.BatchSpawner { return wantOps }
+		defer func() {
+			newCodexWorkerSpawner = prevWorker
+			newCodexOpsSpawner = prevOps
+		}()
+
+		deps, err := newProductionDeps()
+		if err != nil {
+			t.Fatalf("newProductionDeps: %v", err)
+		}
+		if deps.spawner != wantWorker {
+			t.Fatalf("spawner = %#v, want injected codex runtime spawner %#v", deps.spawner, wantWorker)
+		}
+
+		rt, err := resolveProductionRuntime()
+		if err != nil {
+			t.Fatalf("resolveProductionRuntime: %v", err)
+		}
+		if rt.opsSpawn != wantOps {
+			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.opsSpawn, wantOps)
+		}
+	})
+}
+
+func TestCodexBootstrapWithoutHooks(t *testing.T) {
+	tmpDir := t.TempDir()
+	worktree := filepath.Join(tmpDir, "wt")
+	if err := os.MkdirAll(worktree, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	sharedInstructions := "# Shared Oro Instructions\nAlways use using-skills first.\n"
+	if err := os.WriteFile(filepath.Join(worktree, "ORO_AGENT.md"), []byte(sharedInstructions), 0o644); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+
+	prompt := codexruntime.BuildBootstrapPrompt("Finish the bead.", worktree)
+	if !strings.Contains(prompt, "Shared Oro Instructions") {
+		t.Fatal("codex bootstrap prompt should include shared instructions without relying on Claude hooks")
+	}
+	if !strings.Contains(prompt, "using-skills") {
+		t.Fatal("codex bootstrap prompt should carry portable skill guidance")
+	}
+	if !strings.Contains(prompt, "## Task") || !strings.Contains(prompt, "Finish the bead.") {
+		t.Fatal("codex bootstrap prompt should preserve the materialized task prompt")
+	}
+	if strings.Contains(prompt, ".claude/hooks") {
+		t.Fatal("codex bootstrap prompt should not depend on Claude hook paths")
+	}
+}
+
+func TestClaudeRuntimeDefaultPath(t *testing.T) {
+	t.Setenv(agentRuntimeEnvVar, "")
+	rt, err := resolveProductionRuntime()
+	if err != nil {
+		t.Fatalf("resolveProductionRuntime: %v", err)
+	}
+	if rt == nil {
+		t.Fatal("resolveProductionRuntime returned nil runtime")
+	}
+	if rt.id != runtimeClaude {
+		t.Fatalf("runtime id = %q, want %q", rt.id, runtimeClaude)
+	}
+	if rt.workerSpawn == nil || rt.opsSpawn == nil {
+		t.Fatal("default Claude runtime must provide worker and ops spawners")
+	}
+}
+
+func TestCodexRuntimeNoHookBootstrap(t *testing.T) {
+	t.Parallel()
+
+	TestCodexBootstrapWithoutHooks(t)
 }
 
 // envCapturingWorktreeManager implements dispatcher.WorktreeManager and

@@ -28,32 +28,51 @@ var portableHooks = []string{ //nolint:gochecknoglobals // static config
 	"session_start_global.py",
 }
 
-// globalOroApproachConfig holds injectable paths for testability.
-type globalOroApproachConfig struct {
-	oroSkillsDir    string   // source: ~/.oro/.claude/skills/
-	oroHooksDir     string   // source: ~/.oro/hooks/
-	claudeSkillsDir string   // dest: ~/.claude/skills/
-	claudeHooksDir  string   // dest: ~/.claude/hooks/
-	settingsPath    string   // ~/.claude/settings.json
+const (
+	agentRuntimeClaude = "claude"
+	agentRuntimeCodex  = "codex"
+)
+
+// agentAssetsConfig holds injectable paths for testability.
+type agentAssetsConfig struct {
+	runtime       string
+	oroSkillsDir  string // source bundle under ~/.oro/
+	oroHooksDir   string // source hooks under ~/.oro/
+	destSkillsDir string // runtime-specific destination for skills
+	destHooksDir  string // runtime-specific destination for hooks; empty when unsupported
+	settingsPath  string // runtime-specific settings.json; empty when unsupported
+	// Legacy Claude-specific aliases kept for test and caller compatibility.
+	claudeSkillsDir string
+	claudeHooksDir  string
 	portableHooks   []string // nil means use the package-level portableHooks default
 }
 
+// globalOroApproachConfig remains as a compatibility alias for existing tests
+// and callers while agent-assets becomes the canonical command surface.
+type globalOroApproachConfig = agentAssetsConfig
+
 func newGlobalOroApproachCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:     "global-skills",
-		Aliases: []string{"global-oro-approach"},
-		Short:   "Sync oro skills and hooks to ~/.claude/ for use in all Claude sessions",
-		Long: `Symlinks oro skills and copies portable hooks from ~/.oro/ into ~/.claude/
-so every Claude session (not just oro projects) benefits from the same
-TDD, debugging, and verification workflows.
+	var runtimeID string
+	cmd := &cobra.Command{
+		Use:     "agent-assets",
+		Aliases: []string{"global-skills", "global-oro-approach"},
+		Short:   "Sync oro skills and runtime bootstrap assets to agent homes",
+		Long: `Syncs shared oro skills and portable runtime bootstrap assets from ~/.oro/
+into a runtime-specific agent home.
 
 What gets synced:
-  Skills: all skills except restart-oro and watching-oro → ~/.claude/skills/ (symlinks)
-  Hooks:  auto-format, prompt-injection-guard, pre-compact, context-pruner,
-          stop-checklist, enforce-skills → ~/.claude/hooks/ (copies)
+  Claude runtime:
+    Skills: all skills except restart-oro and watching-oro → ~/.claude/skills/ (symlinks)
+    Hooks:  portable hooks → ~/.claude/hooks/ (copies)
+    Settings: ~/.claude/settings.json hooks section is updated
 
-The hooks section of ~/.claude/settings.json is replaced with wiring for
-the copied hooks. All other settings are preserved.
+  Codex runtime:
+    Skills: all skills except restart-oro and watching-oro → $CODEX_HOME/skills/ (symlinks)
+    Hooks: skipped
+    Settings: skipped
+
+The legacy 'global-skills' alias remains as a Claude-targeted compatibility path
+during migration.
 
 Re-run after adding or removing skills in ~/.oro/.claude/skills/.
 Editing existing skills doesn't require re-running (symlinks are live).`,
@@ -62,22 +81,56 @@ Editing existing skills doesn't require re-running (symlinks are live).`,
 			if err != nil {
 				return fmt.Errorf("get home dir: %w", err)
 			}
-			cfg := globalOroApproachConfig{
-				oroSkillsDir:    filepath.Join(homeDir, ".oro", ".claude", "skills"),
-				oroHooksDir:     filepath.Join(homeDir, ".oro", "hooks"),
-				claudeSkillsDir: filepath.Join(homeDir, ".claude", "skills"),
-				claudeHooksDir:  filepath.Join(homeDir, ".claude", "hooks"),
-				settingsPath:    filepath.Join(homeDir, ".claude", "settings.json"),
-			}
+			cfg := defaultAgentAssetsConfig(homeDir, runtimeID)
 			return runGlobalOroApproach(cfg, cmd.OutOrStdout())
 		},
 	}
+
+	cmd.Flags().StringVar(&runtimeID, "runtime", agentRuntimeClaude, "target runtime for synced agent assets (claude or codex)")
+	return cmd
+}
+
+func defaultAgentAssetsConfig(homeDir, runtimeID string) agentAssetsConfig {
+	cfg := agentAssetsConfig{
+		runtime:      runtimeID,
+		oroSkillsDir: filepath.Join(homeDir, ".oro", ".claude", "skills"),
+		oroHooksDir:  filepath.Join(homeDir, ".oro", "hooks"),
+	}
+	switch runtimeID {
+	case agentRuntimeCodex:
+		codexHome := os.Getenv("CODEX_HOME")
+		if codexHome == "" {
+			codexHome = filepath.Join(homeDir, ".codex")
+		}
+		cfg.destSkillsDir = filepath.Join(codexHome, "skills")
+	default:
+		cfg.runtime = agentRuntimeClaude
+		cfg.destSkillsDir = filepath.Join(homeDir, ".claude", "skills")
+		cfg.destHooksDir = filepath.Join(homeDir, ".claude", "hooks")
+		cfg.settingsPath = filepath.Join(homeDir, ".claude", "settings.json")
+	}
+	return cfg
 }
 
 // runGlobalOroApproach is the testable core of the global-oro-approach command.
 func runGlobalOroApproach(cfg globalOroApproachConfig, w io.Writer) error {
+	if cfg.runtime == "" {
+		cfg.runtime = agentRuntimeClaude
+	}
+	if cfg.runtime == agentRuntimeClaude {
+		fmt.Fprintln(w, "warning: `oro global-skills` is deprecated; use `oro agent-assets --runtime claude`.")
+	}
+	return runAgentAssetsSync(cfg, w)
+}
+
+// runAgentAssetsSync syncs portable Oro assets into the chosen runtime home.
+func runAgentAssetsSync(cfg agentAssetsConfig, w io.Writer) error {
 	if err := copySkills(cfg, w); err != nil {
 		return err
+	}
+	if !runtimeSupportsHooks(cfg) {
+		fmt.Fprintf(w, "hooks: skipped for runtime %s\n", cfg.runtime)
+		return nil
 	}
 	if err := copyHooks(cfg, w); err != nil {
 		return err
@@ -85,9 +138,27 @@ func runGlobalOroApproach(cfg globalOroApproachConfig, w io.Writer) error {
 	return updateGlobalSettings(cfg, w)
 }
 
-// copySkills symlinks all skill directories (except blocked ones) from oroSkillsDir into claudeSkillsDir.
+func runtimeSupportsHooks(cfg agentAssetsConfig) bool {
+	return cfg.hooksDir() != "" && cfg.settingsPath != ""
+}
+
+func (cfg agentAssetsConfig) skillsDir() string {
+	if cfg.destSkillsDir != "" {
+		return cfg.destSkillsDir
+	}
+	return cfg.claudeSkillsDir
+}
+
+func (cfg agentAssetsConfig) hooksDir() string {
+	if cfg.destHooksDir != "" {
+		return cfg.destHooksDir
+	}
+	return cfg.claudeHooksDir
+}
+
+// copySkills symlinks all skill directories (except blocked ones) from oroSkillsDir into destSkillsDir.
 // Any existing entry at the destination (symlink or directory) is removed first so re-runs are idempotent.
-func copySkills(cfg globalOroApproachConfig, w io.Writer) error {
+func copySkills(cfg agentAssetsConfig, w io.Writer) error {
 	entries, err := os.ReadDir(cfg.oroSkillsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -97,7 +168,8 @@ func copySkills(cfg globalOroApproachConfig, w io.Writer) error {
 		return fmt.Errorf("read skills dir: %w", err)
 	}
 
-	if err := os.MkdirAll(cfg.claudeSkillsDir, 0o750); err != nil {
+	destSkillsDir := cfg.skillsDir()
+	if err := os.MkdirAll(destSkillsDir, 0o750); err != nil {
 		return fmt.Errorf("create skills dest: %w", err)
 	}
 
@@ -110,7 +182,7 @@ func copySkills(cfg globalOroApproachConfig, w io.Writer) error {
 			continue
 		}
 		src := filepath.Join(cfg.oroSkillsDir, e.Name())
-		dst := filepath.Join(cfg.claudeSkillsDir, e.Name())
+		dst := filepath.Join(destSkillsDir, e.Name())
 
 		// Remove any existing entry (old copy or stale symlink) before creating a fresh symlink.
 		if _, lstatErr := os.Lstat(dst); lstatErr == nil {
@@ -124,14 +196,15 @@ func copySkills(cfg globalOroApproachConfig, w io.Writer) error {
 		}
 		linked++
 	}
-	fmt.Fprintf(w, "skills: linked %d to %s\n", linked, cfg.claudeSkillsDir)
+	fmt.Fprintf(w, "skills: linked %d to %s\n", linked, destSkillsDir)
 	return nil
 }
 
 // copyHooks copies the portable hooks, fixes hardcoded ~/.oro paths, and
 // removes any stale files from claudeHooksDir that are no longer in the list.
-func copyHooks(cfg globalOroApproachConfig, w io.Writer) error {
-	if err := os.MkdirAll(cfg.claudeHooksDir, 0o750); err != nil {
+func copyHooks(cfg agentAssetsConfig, w io.Writer) error {
+	destHooksDir := cfg.hooksDir()
+	if err := os.MkdirAll(destHooksDir, 0o750); err != nil {
 		return fmt.Errorf("create hooks dest: %w", err)
 	}
 
@@ -161,7 +234,7 @@ func copyHooks(cfg globalOroApproachConfig, w io.Writer) error {
 		// Fix hardcoded ~/.oro paths to ~/.claude
 		content := strings.ReplaceAll(string(data), `".oro"`, `".claude"`)
 
-		dst := filepath.Join(cfg.claudeHooksDir, name)
+		dst := filepath.Join(destHooksDir, name)
 		info, err := os.Stat(src)
 		if err != nil {
 			return fmt.Errorf("stat hook %s: %w", name, err)
@@ -173,16 +246,16 @@ func copyHooks(cfg globalOroApproachConfig, w io.Writer) error {
 	}
 
 	// Remove stale files in the destination that are no longer portable.
-	if existing, err := os.ReadDir(cfg.claudeHooksDir); err == nil {
+	if existing, err := os.ReadDir(destHooksDir); err == nil {
 		for _, entry := range existing {
 			if entry.IsDir() || allow[entry.Name()] {
 				continue
 			}
-			_ = os.Remove(filepath.Join(cfg.claudeHooksDir, entry.Name()))
+			_ = os.Remove(filepath.Join(destHooksDir, entry.Name()))
 		}
 	}
 
-	fmt.Fprintf(w, "hooks: copied %d to %s\n", copied, cfg.claudeHooksDir)
+	fmt.Fprintf(w, "hooks: copied %d to %s\n", copied, destHooksDir)
 	return nil
 }
 
@@ -224,7 +297,7 @@ func globalHooks(hooksDir string) map[string][]hookGroup {
 
 // updateGlobalSettings merges the portable hooks into ~/.claude/settings.json,
 // preserving all other keys.
-func updateGlobalSettings(cfg globalOroApproachConfig, w io.Writer) error {
+func updateGlobalSettings(cfg agentAssetsConfig, w io.Writer) error {
 	data, err := os.ReadFile(cfg.settingsPath) //nolint:gosec // trusted path
 	if err != nil {
 		return fmt.Errorf("read %s: %w", cfg.settingsPath, err)

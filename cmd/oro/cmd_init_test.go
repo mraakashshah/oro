@@ -501,6 +501,7 @@ func TestInitCommand_GeneratesConfig(t *testing.T) {
 // testAssets returns a minimal fstest.MapFS that simulates embedded oro assets.
 func testAssets() fstest.MapFS {
 	return fstest.MapFS{
+		"ORO_AGENT.md":                            &fstest.MapFile{Data: []byte("# Shared Oro Instructions\n")},
 		"skills/brainstorming/SKILL.md":           &fstest.MapFile{Data: []byte("# Brainstorming\n")},
 		"skills/test-driven-development/SKILL.md": &fstest.MapFile{Data: []byte("# TDD\n")},
 		"hooks/session_start_extras.py":           &fstest.MapFile{Data: []byte("# session start\n")},
@@ -1271,6 +1272,85 @@ func TestExtractAssets(t *testing.T) {
 	bdCreateNotifierPath := filepath.Join(dest, "hooks", "bd_create_notifier.py")
 	if _, err := os.Stat(bdCreateNotifierPath); err == nil {
 		t.Errorf("bd_create_notifier.py should NOT be extracted, but found at: %s", bdCreateNotifierPath)
+	}
+}
+
+func TestExtractAgentAssetsSharedSource(t *testing.T) {
+	assets := fstest.MapFS{
+		"ORO_AGENT.md":                   &fstest.MapFile{Data: []byte("# Shared Oro Instructions\nUse portable skills.\n")},
+		"skills/brainstorming/SKILL.md":  &fstest.MapFile{Data: []byte("# Brainstorming\n")},
+		"hooks/session_start_extras.py":  &fstest.MapFile{Data: []byte("# session start\n")},
+		"beacons/architect.md":           &fstest.MapFile{Data: []byte("# Architect\n")},
+		"commands/restart-oro/prompt.md": &fstest.MapFile{Data: []byte("restart\n")},
+	}
+	dest := t.TempDir()
+
+	if err := extractAssets(dest, assets, true); err != nil {
+		t.Fatalf("extractAssets failed: %v", err)
+	}
+
+	sharedPath := filepath.Join(dest, "ORO_AGENT.md")
+	sharedData, err := os.ReadFile(sharedPath) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("ORO_AGENT.md not extracted: %v", err)
+	}
+	if !strings.Contains(string(sharedData), "Shared Oro Instructions") {
+		t.Fatalf("ORO_AGENT.md content mismatch: %q", string(sharedData))
+	}
+
+	claudePath := filepath.Join(dest, ".claude", "CLAUDE.md")
+	claudeData, err := os.ReadFile(claudePath) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("CLAUDE.md compatibility wrapper not generated: %v", err)
+	}
+	if string(claudeData) != string(sharedData) {
+		t.Fatalf("CLAUDE.md should be generated from shared source.\nshared=%q\nclaude=%q", string(sharedData), string(claudeData))
+	}
+
+	if _, err := os.Stat(filepath.Join(dest, ".claude", "skills", "brainstorming", "SKILL.md")); err != nil {
+		t.Fatalf("skills should still extract through shared assets: %v", err)
+	}
+}
+
+func TestOroInitGeneratesSharedAndClaudeViews(t *testing.T) {
+	assets := fstest.MapFS{
+		"ORO_AGENT.md":                            &fstest.MapFile{Data: []byte("# Shared Oro Instructions\nUse portable skills.\n")},
+		"skills/brainstorming/SKILL.md":           &fstest.MapFile{Data: []byte("# Brainstorming\n")},
+		"skills/test-driven-development/SKILL.md": &fstest.MapFile{Data: []byte("# TDD\n")},
+		"hooks/session_start_extras.py":           &fstest.MapFile{Data: []byte("# session start\n")},
+		"beacons/architect.md":                    &fstest.MapFile{Data: []byte("# Architect\n")},
+		"commands/restart-oro/prompt.md":          &fstest.MapFile{Data: []byte("restart\n")},
+	}
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+
+	if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+		t.Fatalf("bootstrapProject failed: %v", err)
+	}
+
+	sharedPath := filepath.Join(oroHome, "ORO_AGENT.md")
+	sharedData, err := os.ReadFile(sharedPath) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("shared ORO_AGENT.md not created: %v", err)
+	}
+	if !strings.Contains(string(sharedData), "Use portable skills.") {
+		t.Fatalf("shared ORO_AGENT.md content mismatch: %q", string(sharedData))
+	}
+
+	claudePath := filepath.Join(oroHome, ".claude", "CLAUDE.md")
+	claudeData, err := os.ReadFile(claudePath) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("Claude compatibility view not created: %v", err)
+	}
+	if string(claudeData) != string(sharedData) {
+		t.Fatalf("Claude compatibility view should mirror shared instructions.\nshared=%q\nclaude=%q", string(sharedData), string(claudeData))
+	}
+
+	if _, err := os.Stat(filepath.Join(oroHome, ".claude", "skills", "brainstorming", "SKILL.md")); err != nil {
+		t.Fatalf("Claude compatibility skill view missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oroHome, "hooks", "session_start_extras.py")); err != nil {
+		t.Fatalf("shared hooks should still be materialized: %v", err)
 	}
 }
 

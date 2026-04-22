@@ -89,6 +89,8 @@ func (m *mockSpawnerSimple) Spawn(_ context.Context, _, _, _ string) (Process, i
 	return &mockProcessSimple{}, io.NopCloser(strings.NewReader("")), nil, nil
 }
 
+func (m *mockSpawnerSimple) StreamFormat() StreamFormat { return StreamFormatClaudeJSON }
+
 type mockProcessSimple struct{}
 
 func (m *mockProcessSimple) Wait() error { return nil }

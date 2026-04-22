@@ -48,7 +48,8 @@ type Bead struct {
 	Priority           int            `json:"priority"`
 	Epic               string         `json:"parent,omitempty"`              // parent epic ID for focus filtering
 	Type               string         `json:"issue_type,omitempty"`          // task, bug, feature, epic
-	Model              string         `json:"model,omitempty"`               // claude model override; empty = auto-route by estimate
+	Model              string         `json:"model,omitempty"`               // provider-native model override; empty = route by tier/estimate
+	Tier               Tier           `json:"tier,omitempty"`                // provider-neutral routing tier
 	EstimatedMinutes   int            `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
 	AcceptanceCriteria string         `json:"acceptance_criteria,omitempty"` // acceptance criteria text
 	Dependencies       []Dependency   `json:"dependencies,omitempty"`        // dependency relationships
@@ -74,6 +75,7 @@ type BeadDetail struct {
 	Epic               string         `json:"parent,omitempty"`     // parent ID; empty for standalone beads
 	Type               string         `json:"issue_type,omitempty"` // task, bug, feature, epic
 	Model              string         `json:"model,omitempty"`
+	Tier               Tier           `json:"tier,omitempty"`
 	WorkerID           string         `json:"worker_id,omitempty"`
 	ContextPercent     int            `json:"context_percent,omitempty"`
 	LastHeartbeat      string         `json:"last_heartbeat,omitempty"`
@@ -96,22 +98,97 @@ const (
 	ModelHaiku  = "haiku"
 )
 
+// Tier identifies a provider-neutral routing tier.
+type Tier string
+
+// Provider-neutral tier constants.
+const (
+	TierFast       Tier = "fast"
+	TierBalanced   Tier = "balanced"
+	TierDeep       Tier = "deep"
+	TierBackground Tier = "background"
+)
+
 // DefaultModel is used when a bead has no explicit model set and estimate-based
 // routing does not apply.
 const DefaultModel = ModelSonnet
 
+// DefaultTier is used when a bead has no explicit tier set and estimate-based
+// routing does not apply.
+const DefaultTier = TierBalanced
+
+// DefaultModel returns the legacy-model equivalent for the neutral tier.
+func (t Tier) DefaultModel() string {
+	switch t {
+	case TierFast:
+		return ModelHaiku
+	case TierDeep:
+		return ModelOpus
+	case TierBackground:
+		return ModelHaiku
+	default:
+		return ModelSonnet
+	}
+}
+
+// IsKnown reports whether the tier is one of Oro's defined routing tiers.
+func (t Tier) IsKnown() bool {
+	switch t {
+	case TierFast, TierBalanced, TierDeep, TierBackground:
+		return true
+	default:
+		return false
+	}
+}
+
+// ParseTier normalizes a serialized tier value.
+func ParseTier(raw string) (Tier, bool) {
+	tier := Tier(strings.TrimSpace(strings.ToLower(raw)))
+	return tier, tier.IsKnown()
+}
+
+// LegacyModelToTier maps legacy Claude-family model names onto neutral tiers.
+func LegacyModelToTier(model string) (Tier, bool) {
+	switch strings.TrimSpace(strings.ToLower(model)) {
+	case ModelHaiku:
+		return TierFast, true
+	case ModelSonnet:
+		return TierBalanced, true
+	case ModelOpus:
+		return TierDeep, true
+	default:
+		return "", false
+	}
+}
+
 // ResolveModel returns the model to use for this bead. Priority:
 //  1. Explicit Model field (bead-level override)
+//  2. Explicit Tier field
 //  2. Estimate-based routing: <=5 min -> Haiku, >5 min -> Sonnet
 //  3. DefaultModel (Sonnet) as fallback
 func (b Bead) ResolveModel() string {
 	if b.Model != "" {
 		return b.Model
 	}
-	if b.EstimatedMinutes > 0 && b.EstimatedMinutes <= 5 {
-		return ModelHaiku
+	return b.ResolveTier().DefaultModel()
+}
+
+// ResolveTier returns the neutral routing tier for this bead. Priority:
+//  1. Explicit Tier field
+//  2. Legacy model mapping from explicit Model field
+//  3. Estimate-based routing: <=5 min -> fast, >5 min -> balanced
+//  4. DefaultTier (balanced) as fallback
+func (b Bead) ResolveTier() Tier {
+	if b.Tier.IsKnown() {
+		return b.Tier
 	}
-	return ModelSonnet
+	if tier, ok := LegacyModelToTier(b.Model); ok {
+		return tier
+	}
+	if b.EstimatedMinutes > 0 && b.EstimatedMinutes <= 5 {
+		return TierFast
+	}
+	return DefaultTier
 }
 
 // WorkerState represents the state of a connected worker.

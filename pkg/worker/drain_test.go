@@ -78,7 +78,7 @@ func TestDrainOutput_FormatsToolActivity(t *testing.T) {
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf bytes.Buffer
 
-	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, nil, "oro-test", nil, &buf)
 
 	got := buf.String()
 	// Tool activity and text content both echoed to output.
@@ -103,7 +103,7 @@ func TestDrainOutput_ExtractsMemoryMarkers(t *testing.T) {
 	store := &mockMemStore{}
 	var buf bytes.Buffer
 
-	worker.DrainOutput(context.Background(), reader, store, "oro-bead1", nil, &buf)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, store, "oro-bead1", nil, &buf)
 
 	if len(store.inserted) != 1 {
 		t.Fatalf("expected 1 memory inserted, got %d", len(store.inserted))
@@ -129,7 +129,7 @@ func TestDrainOutput_NilStore(t *testing.T) {
 	var buf bytes.Buffer
 
 	// Should not panic with nil store.
-	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, nil, "oro-test", nil, &buf)
 
 	// Text content should be echoed to output for debugging visibility.
 	if !strings.Contains(buf.String(), "regular line") {
@@ -145,7 +145,7 @@ func TestDrainOutput_MultiWriter(t *testing.T) {
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf1, buf2 bytes.Buffer
 
-	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf1, &buf2)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, nil, "oro-test", nil, &buf1, &buf2)
 
 	for i, buf := range []*bytes.Buffer{&buf1, &buf2} {
 		s := buf.String()
@@ -161,7 +161,7 @@ func TestDrainOutput_NilWriterFiltered(t *testing.T) {
 	var buf bytes.Buffer
 
 	// nil writer in slice should not panic
-	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf, nil)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, nil, "oro-test", nil, &buf, nil)
 
 	if !strings.Contains(buf.String(), "-> Bash") {
 		t.Fatalf("expected '-> Bash' in output, got %q", buf.String())
@@ -173,14 +173,14 @@ func TestDrainOutput_NoWriters(t *testing.T) {
 	reader := io.NopCloser(strings.NewReader(input))
 
 	// empty writers slice — should not panic
-	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, nil, "oro-test", nil)
 }
 
 func TestDrainOutput_EmptyInput(t *testing.T) {
 	reader := io.NopCloser(strings.NewReader(""))
 	var buf bytes.Buffer
 
-	worker.DrainOutput(context.Background(), reader, nil, "oro-test", nil, &buf)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, nil, "oro-test", nil, &buf)
 
 	// Only stats line expected (no actual content).
 	if !strings.Contains(buf.String(), "0 lines") {
@@ -203,7 +203,7 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf bytes.Buffer
 
-	worker.DrainOutput(context.Background(), reader, store, "oro-llm1", spawner, &buf)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, store, "oro-llm1", spawner, &buf)
 
 	// Spawner must have been called.
 	if !spawner.called {
@@ -247,7 +247,7 @@ func TestDrainOutput_NilSpawner(t *testing.T) {
 	reader := io.NopCloser(strings.NewReader(input))
 	var buf bytes.Buffer
 
-	worker.DrainOutput(context.Background(), reader, store, "oro-nil-sp", nil, &buf)
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatClaudeJSON, store, "oro-nil-sp", nil, &buf)
 
 	// Explicit [MEMORY] markers should still be captured via ParseMarker.
 	if len(store.inserted) != 1 {
@@ -260,5 +260,24 @@ func TestDrainOutput_NilSpawner(t *testing.T) {
 	// Text content should be echoed to output for debugging visibility.
 	if !strings.Contains(buf.String(), "doing work") {
 		t.Errorf("expected text echo in output, got %q", buf.String())
+	}
+}
+
+func TestWorkerDrainSelectsParserByRuntimeFormat(t *testing.T) {
+	store := &mockMemStore{}
+	input := "[MEMORY] type=lesson: plain text markers still work\nregular text line\n"
+	reader := io.NopCloser(strings.NewReader(input))
+	var buf bytes.Buffer
+
+	worker.DrainOutput(context.Background(), reader, worker.StreamFormatLineText, store, "oro-line", nil, &buf)
+
+	if len(store.inserted) != 1 {
+		t.Fatalf("expected 1 memory inserted, got %d", len(store.inserted))
+	}
+	if !strings.Contains(store.inserted[0].Content, "plain text markers still work") {
+		t.Fatalf("memory content = %q, want plain text marker content", store.inserted[0].Content)
+	}
+	if !strings.Contains(buf.String(), "regular text line") {
+		t.Fatalf("expected plain text output to be echoed, got %q", buf.String())
 	}
 }

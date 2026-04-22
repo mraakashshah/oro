@@ -21,10 +21,21 @@ import (
 	"oro/pkg/protocol"
 )
 
-// StreamingSpawner abstracts claude -p invocation for testing.
+// StreamFormat identifies how a runtime emits subprocess stdout.
+type StreamFormat string
+
+const (
+	// StreamFormatClaudeJSON is the Claude event stream format used by the legacy runtime.
+	StreamFormatClaudeJSON StreamFormat = "claude_stream_json"
+	// StreamFormatLineText is a plain-text line-oriented stream format.
+	StreamFormatLineText StreamFormat = "line_text"
+)
+
+// StreamingSpawner abstracts runtime subprocess invocation for testing.
 // Spawn returns the process, stdout reader, stdin writer (both may be nil), and any error.
 type StreamingSpawner interface {
 	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, error)
+	StreamFormat() StreamFormat
 }
 
 // Process abstracts a running subprocess.
@@ -88,6 +99,7 @@ type Worker struct {
 	beadID              string
 	worktree            string
 	model               string
+	streamFormat        StreamFormat
 	mu                  sync.Mutex
 	spawner             StreamingSpawner
 	socketPath          string // for reconnection
@@ -400,6 +412,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.mu.Lock()
 	w.proc = proc
 	w.model = model
+	w.streamFormat = w.spawner.StreamFormat()
 	w.subprocExitCh = make(chan struct{})
 	w.subprocExitClosed = false
 	w.handleExitClaimed = false
@@ -580,41 +593,50 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	_ = w.SendReadyForReview(ctx)
 }
 
-// processOutput reads subprocess stdout line by line (NDJSON from
-// --output-format stream-json), parses each event, logs tool-call activity
-// to the log file, and accumulates text content for memory extraction.
-// When stdout closes (subprocess exits), it extracts implicit memories so that
-// learnings from failed attempts are persisted before the dispatcher re-assigns.
+// processOutput reads subprocess stdout according to the runtime stream format,
+// logs tool-call activity where available, and accumulates text content for
+// memory extraction. When stdout closes (subprocess exits), it extracts
+// implicit memories so that learnings from failed attempts are persisted
+// before the dispatcher re-assigns.
 func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 	defer w.outputWg.Done()
 	defer func() { _ = stdout.Close() }()
+
+	w.mu.Lock()
+	format := w.streamFormat
+	w.mu.Unlock()
 
 	var lineBuf strings.Builder
 
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
-		activity := ParseStreamEvent(scanner.Bytes())
+		switch format {
+		case StreamFormatLineText:
+			w.processPlaintextLine(ctx, scanner.Text())
+		default:
+			activity := ParseStreamEvent(scanner.Bytes())
 
-		// Log formatted tool-call activity (best-effort; don't block on I/O errors).
-		if formatted := FormatActivity(activity); formatted != "" {
-			w.mu.Lock()
-			lw := w.logWriter
-			w.mu.Unlock()
-			if lw != nil {
-				_, _ = lw.WriteString(formatted)
-				_, _ = lw.WriteString("\n")
+			// Log formatted tool-call activity (best-effort; don't block on I/O errors).
+			if formatted := FormatActivity(activity); formatted != "" {
+				w.mu.Lock()
+				lw := w.logWriter
+				w.mu.Unlock()
+				if lw != nil {
+					_, _ = lw.WriteString(formatted)
+					_, _ = lw.WriteString("\n")
+				}
 			}
-		}
 
-		// Accumulate text content and process complete lines.
-		if activity.Text != "" {
-			lineBuf.WriteString(activity.Text)
-			w.flushCompleteLines(ctx, &lineBuf)
+			// Accumulate text content and process complete lines.
+			if activity.Text != "" {
+				lineBuf.WriteString(activity.Text)
+				w.flushCompleteLines(ctx, &lineBuf)
+			}
 		}
 	}
 
-	// Flush any remaining buffered text (incomplete final line).
-	if lineBuf.Len() > 0 {
+	// Flush any remaining buffered text (incomplete final line) for structured streams.
+	if format != StreamFormatLineText && lineBuf.Len() > 0 {
 		w.processTextLine(ctx, lineBuf.String())
 	}
 
@@ -628,6 +650,17 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 	// Subprocess stdout closed — extract implicit memories so learnings from
 	// failed attempts (e.g. QG failure) are persisted regardless of outcome.
 	w.extractImplicitMemories(ctx)
+}
+
+func (w *Worker) processPlaintextLine(ctx context.Context, line string) {
+	w.mu.Lock()
+	lw := w.logWriter
+	w.mu.Unlock()
+	if lw != nil {
+		_, _ = lw.WriteString(line)
+		_, _ = lw.WriteString("\n")
+	}
+	w.processTextLine(ctx, line)
 }
 
 // flushCompleteLines extracts complete newline-terminated lines from buf,
@@ -1244,6 +1277,9 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 
 // ClaudeSpawner is the production StreamingSpawner that invokes `claude -p`.
 type ClaudeSpawner struct{}
+
+// StreamFormat reports the stdout event format emitted by the Claude runtime.
+func (s *ClaudeSpawner) StreamFormat() StreamFormat { return StreamFormatClaudeJSON }
 
 // buildClaudeArgs constructs the argument slice for the claude command.
 // When both ORO_HOME and ORO_PROJECT env vars are set, it appends

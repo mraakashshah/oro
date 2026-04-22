@@ -160,6 +160,8 @@ func (m *mockSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, 
 	return m.proc, io.NopCloser(strings.NewReader("")), nil, nil
 }
 
+func (m *mockSpawner) StreamFormat() worker.StreamFormat { return worker.StreamFormatClaudeJSON }
+
 // mockMerger implements the merger interface.
 type mockMerger struct {
 	result *merge.Result
@@ -209,6 +211,8 @@ func (m *contentSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Proces
 	m.called = true
 	return m.proc, io.NopCloser(strings.NewReader(m.content)), nil, nil
 }
+
+func (m *contentSpawner) StreamFormat() worker.StreamFormat { return worker.StreamFormatClaudeJSON }
 
 // --- Tests ---
 
@@ -531,6 +535,8 @@ func (m *captureSpawner) Spawn(_ context.Context, _, prompt, _ string) (worker.P
 	return m.proc, io.NopCloser(strings.NewReader(m.stdout)), nil, nil
 }
 
+func (m *captureSpawner) StreamFormat() worker.StreamFormat { return worker.StreamFormatClaudeJSON }
+
 // --- stream-json NDJSON helpers for cmd/oro tests ---
 
 // sjTextDelta wraps text in a stream-json assistant text event.
@@ -756,6 +762,10 @@ type modelCapturingSpawner struct {
 func (m *modelCapturingSpawner) Spawn(_ context.Context, model, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	m.capturedModel = model
 	return m.proc, io.NopCloser(strings.NewReader(m.stdout)), nil, nil
+}
+
+func (m *modelCapturingSpawner) StreamFormat() worker.StreamFormat {
+	return worker.StreamFormatClaudeJSON
 }
 
 func TestExecuteWork_DryRunShowsResolvedModel(t *testing.T) {

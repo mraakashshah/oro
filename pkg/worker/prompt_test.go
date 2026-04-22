@@ -1205,6 +1205,48 @@ func TestPromptContainsContextThresholds(t *testing.T) {
 	}
 }
 
+func TestPromptUsesNeutralTierLanguage(t *testing.T) {
+	t.Parallel()
+
+	workerPrompt := worker.AssemblePrompt(worker.PromptParams{
+		BeadID:             "bead-neutral-tier",
+		Title:              "Neutral tier wording",
+		Description:        "Ensure worker prompt prefers neutral tier language",
+		AcceptanceCriteria: "Prompt uses fast/balanced/deep/background tiers",
+		WorktreePath:       "/tmp/wt-neutral-tier",
+		Model:              "opus",
+	})
+	epicPrompt := worker.BuildEpicDecompositionPrompt(worker.EpicPromptParams{
+		BeadID:      "epic-neutral-tier",
+		Title:       "Neutral tier decomposition",
+		Description: "Ensure decomposition prompt avoids Claude-family routing terms",
+	})
+
+	for _, term := range []string{"fast", "balanced", "deep", "background"} {
+		if !strings.Contains(workerPrompt, term) {
+			t.Fatalf("worker prompt missing neutral tier term %q", term)
+		}
+		if !strings.Contains(epicPrompt, term) {
+			t.Fatalf("epic decomposition prompt missing neutral tier term %q", term)
+		}
+	}
+
+	workerHandoffStart := strings.Index(workerPrompt, "## Context Handoff")
+	if workerHandoffStart == -1 {
+		t.Fatal("worker prompt missing Context Handoff section")
+	}
+	workerHandoffEnd := strings.Index(workerPrompt[workerHandoffStart+1:], "## ")
+	workerHandoff := workerPrompt[workerHandoffStart:]
+	if workerHandoffEnd != -1 {
+		workerHandoff = workerPrompt[workerHandoffStart : workerHandoffStart+1+workerHandoffEnd]
+	}
+	for _, legacy := range []string{"opus", "sonnet", "haiku"} {
+		if strings.Contains(workerHandoff, legacy) {
+			t.Fatalf("worker Context Handoff should not use legacy model term %q as the primary control surface", legacy)
+		}
+	}
+}
+
 func TestAssemblePrompt_EndToEnd(t *testing.T) {
 	t.Parallel()
 

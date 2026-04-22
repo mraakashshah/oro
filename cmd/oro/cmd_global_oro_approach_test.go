@@ -582,3 +582,117 @@ func TestRunGlobalOroApproach_SettingsJSON_MissingFile(t *testing.T) {
 		t.Fatal("expected error for missing settings.json, got nil")
 	}
 }
+
+func TestAgentAssetsSyncSupportsClaudeAndCodex(t *testing.T) {
+	tmp := t.TempDir()
+	srcSkills := filepath.Join(tmp, "src", "skills")
+	srcHooks := filepath.Join(tmp, "src", "hooks")
+	makeSkillsDir(t, srcSkills, []string{"using-skills", "brainstorming", "restart-oro"})
+	makeHooksDir(t, srcHooks, map[string]string{
+		"auto-format.sh":            "#!/bin/bash\n",
+		"prompt_injection_guard.py": "# guard\n",
+		"pre_compact.py":            "# compact\n",
+		"context_pruner.py":         "# pruner\n",
+		"stop-checklist.sh":         "#!/bin/bash\n",
+		"enforce_skills.py":         "# marker\n",
+		"session_start_global.py":   "# global session start\n",
+	})
+
+	claudeSettings := filepath.Join(tmp, "claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(claudeSettings), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claudeSettings, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	claudeCfg := agentAssetsConfig{
+		runtime:       agentRuntimeClaude,
+		oroSkillsDir:  srcSkills,
+		oroHooksDir:   srcHooks,
+		destSkillsDir: filepath.Join(tmp, "claude", "skills"),
+		destHooksDir:  filepath.Join(tmp, "claude", "hooks"),
+		settingsPath:  claudeSettings,
+	}
+	if err := runAgentAssetsSync(claudeCfg, os.Stdout); err != nil {
+		t.Fatalf("Claude sync failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(claudeCfg.destSkillsDir, "using-skills", "SKILL.md")); err != nil {
+		t.Fatalf("Claude runtime should receive synced skills: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(claudeCfg.destHooksDir, "session_start_global.py")); err != nil {
+		t.Fatalf("Claude runtime should receive hooks: %v", err)
+	}
+
+	codexCfg := agentAssetsConfig{
+		runtime:       agentRuntimeCodex,
+		oroSkillsDir:  srcSkills,
+		oroHooksDir:   srcHooks,
+		destSkillsDir: filepath.Join(tmp, "codex", "skills"),
+	}
+	if err := runAgentAssetsSync(codexCfg, os.Stdout); err != nil {
+		t.Fatalf("Codex sync failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(codexCfg.destSkillsDir, "using-skills", "SKILL.md")); err != nil {
+		t.Fatalf("Codex runtime should receive synced skills: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(codexCfg.destSkillsDir, "restart-oro")); err == nil {
+		t.Fatal("blocked skill restart-oro should not be synced to Codex")
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "codex", "hooks")); err == nil {
+		t.Fatal("Codex runtime should not require hooks to be installed")
+	}
+
+	globalAliasCfg := agentAssetsConfig{
+		runtime:       agentRuntimeClaude,
+		oroSkillsDir:  srcSkills,
+		oroHooksDir:   srcHooks,
+		destSkillsDir: filepath.Join(tmp, "alias", "skills"),
+		destHooksDir:  filepath.Join(tmp, "alias", "hooks"),
+		settingsPath:  filepath.Join(tmp, "alias", "settings.json"),
+	}
+	if err := os.MkdirAll(filepath.Dir(globalAliasCfg.settingsPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalAliasCfg.settingsPath, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGlobalOroApproach(globalAliasCfg, os.Stdout); err != nil {
+		t.Fatalf("global-skills compatibility alias failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(globalAliasCfg.destSkillsDir, "brainstorming", "SKILL.md")); err != nil {
+		t.Fatalf("global-skills alias should still sync Claude-compatible skills: %v", err)
+	}
+}
+
+func TestCodexSkillSyncInstallsPortableSkills(t *testing.T) {
+	tmp := t.TempDir()
+	srcSkills := filepath.Join(tmp, "src", "skills")
+	makeSkillsDir(t, srcSkills, []string{"using-skills", "brainstorming", "restart-oro"})
+
+	cfg := agentAssetsConfig{
+		runtime:       agentRuntimeCodex,
+		oroSkillsDir:  srcSkills,
+		destSkillsDir: filepath.Join(tmp, "codex", "skills"),
+	}
+	if err := runAgentAssetsSync(cfg, os.Stdout); err != nil {
+		t.Fatalf("Codex sync failed: %v", err)
+	}
+
+	for _, want := range []string{"using-skills", "brainstorming"} {
+		if _, err := os.Stat(filepath.Join(cfg.destSkillsDir, want, "SKILL.md")); err != nil {
+			t.Fatalf("expected portable skill %q in Codex-visible location: %v", want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(cfg.destSkillsDir, "restart-oro")); err == nil {
+		t.Fatal("restart-oro should not be installed as a portable Codex skill")
+	}
+}
+
+func TestAgentAssetsSyncAllRuntimes(t *testing.T) {
+	t.Parallel()
+
+	TestAgentAssetsSyncSupportsClaudeAndCodex(t)
+}

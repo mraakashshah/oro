@@ -68,6 +68,7 @@ type mockSpawner struct {
 	spawnErr error
 	stdout   io.ReadCloser  // optional: simulated subprocess stdout
 	stdin    io.WriteCloser // optional: simulated subprocess stdin
+	format   worker.StreamFormat
 }
 
 type spawnCall struct {
@@ -88,6 +89,13 @@ func (s *mockSpawner) Spawn(_ context.Context, model, prompt, workdir string) (w
 		return nil, nil, nil, s.spawnErr
 	}
 	return s.process, s.stdout, s.stdin, nil
+}
+
+func (s *mockSpawner) StreamFormat() worker.StreamFormat {
+	if s.format != "" {
+		return s.format
+	}
+	return worker.StreamFormatClaudeJSON
 }
 
 func (s *mockSpawner) SpawnCalls() []spawnCall {
@@ -213,6 +221,90 @@ func TestReceiveAssign_StoresState(t *testing.T) {
 	}
 	if calls[0].Prompt == "" {
 		t.Error("expected non-empty prompt")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestWorkerUsesRuntimeSpawn(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	spawner.format = worker.StreamFormatLineText
+	spawner.stdout = io.NopCloser(strings.NewReader("plain text runtime output\n"))
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-runtime", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-runtime",
+			Worktree: "/tmp/wt-runtime",
+		},
+	})
+
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus {
+		t.Fatalf("expected STATUS, got %s", msg.Type)
+	}
+
+	calls := spawner.SpawnCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 spawn call, got %d", len(calls))
+	}
+	if calls[0].Workdir != "/tmp/wt-runtime" {
+		t.Fatalf("workdir = %q, want %q", calls[0].Workdir, "/tmp/wt-runtime")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestWorkerRunsWithCodexLineStream(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	spawner.format = worker.StreamFormatLineText
+	spawner.stdout = io.NopCloser(strings.NewReader("codex says hello\n[MEMORY] fact: line stream works\n"))
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-codex", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-codex",
+			Worktree: "/tmp/wt-codex",
+			Model:    "gpt-5-codex",
+		},
+	})
+
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus {
+		t.Fatalf("expected STATUS, got %s", msg.Type)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(w.SessionText(), "codex says hello") ||
+		!strings.Contains(w.SessionText(), "[MEMORY] fact: line stream works") {
+		if time.Now().After(deadline) {
+			t.Fatalf("session text did not capture codex line stream output, got %q", w.SessionText())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	cancel()
@@ -2147,6 +2239,10 @@ func (s *connClosingSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Pr
 	return s.process, nil, nil, nil
 }
 
+func (s *connClosingSpawner) StreamFormat() worker.StreamFormat {
+	return worker.StreamFormatClaudeJSON
+}
+
 func TestRun_ErrChWithCancelledContext(t *testing.T) {
 	t.Parallel()
 
@@ -3476,6 +3572,10 @@ func (s *multiMockSpawner) Spawn(_ context.Context, model, prompt, workdir strin
 	proc := s.processes[s.idx]
 	s.idx++
 	return proc, nil, nil, nil
+}
+
+func (s *multiMockSpawner) StreamFormat() worker.StreamFormat {
+	return worker.StreamFormatClaudeJSON
 }
 
 func TestHandleAssign_KillsOldSubprocess(t *testing.T) {

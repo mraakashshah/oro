@@ -56,6 +56,85 @@ func TestBeadResolveModel(t *testing.T) {
 	}
 }
 
+func TestLegacyModelMappingToTier(t *testing.T) {
+	tests := []struct {
+		name      string
+		bead      protocol.Bead
+		wantTier  protocol.Tier
+		wantModel string
+	}{
+		{
+			name:      "explicit tier routes to neutral deep",
+			bead:      protocol.Bead{Tier: protocol.TierDeep},
+			wantTier:  protocol.TierDeep,
+			wantModel: protocol.ModelOpus,
+		},
+		{
+			name:      "legacy opus maps to deep",
+			bead:      protocol.Bead{Model: protocol.ModelOpus},
+			wantTier:  protocol.TierDeep,
+			wantModel: protocol.ModelOpus,
+		},
+		{
+			name:      "legacy sonnet maps to balanced",
+			bead:      protocol.Bead{Model: protocol.ModelSonnet},
+			wantTier:  protocol.TierBalanced,
+			wantModel: protocol.ModelSonnet,
+		},
+		{
+			name:      "legacy haiku maps to fast",
+			bead:      protocol.Bead{Model: protocol.ModelHaiku},
+			wantTier:  protocol.TierFast,
+			wantModel: protocol.ModelHaiku,
+		},
+		{
+			name:      "custom override survives round-trip through resolve model",
+			bead:      protocol.Bead{Model: "custom-provider-model"},
+			wantTier:  protocol.DefaultTier,
+			wantModel: "custom-provider-model",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.bead.ResolveTier(); got != tt.wantTier {
+				t.Fatalf("ResolveTier() = %q, want %q", got, tt.wantTier)
+			}
+			if got := tt.bead.ResolveModel(); got != tt.wantModel {
+				t.Fatalf("ResolveModel() = %q, want %q", got, tt.wantModel)
+			}
+		})
+	}
+}
+
+func TestLegacyModelCompatibilityMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		model string
+		tier  protocol.Tier
+	}{
+		{protocol.ModelOpus, protocol.TierDeep},
+		{protocol.ModelSonnet, protocol.TierBalanced},
+		{protocol.ModelHaiku, protocol.TierFast},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			gotTier, ok := protocol.LegacyModelToTier(tt.model)
+			if !ok {
+				t.Fatalf("LegacyModelToTier(%q) returned !ok", tt.model)
+			}
+			if gotTier != tt.tier {
+				t.Fatalf("LegacyModelToTier(%q) = %q, want %q", tt.model, gotTier, tt.tier)
+			}
+			if gotModel := tt.tier.DefaultModel(); gotModel != tt.model {
+				t.Fatalf("tier %q default model = %q, want %q", tt.tier, gotModel, tt.model)
+			}
+		})
+	}
+}
+
 func TestFormatEscalation(t *testing.T) {
 	tests := []struct {
 		name     string

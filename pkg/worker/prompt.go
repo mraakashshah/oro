@@ -136,6 +136,7 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 		"2. **Premortem**: Before decomposing, identify what could go wrong — tigers (likely failures), elephants (unlikely but catastrophic), paper tigers (seem scary but aren't).",
 		"3. **Decompose with beadcraft**: Break the epic into task/bug beads using `bd create`.",
 		"   - Each bead must have full acceptance criteria: `Test: | Cmd: | Assert:`",
+		"   - Use neutral runtime tier language when a bead needs routing guidance: `fast`, `balanced`, `deep`, `background`",
 		"   - Each bead must have `Read:`, `Signature:` (when adding functions), and `Edges:` fields",
 		"   - Run the Rule of Five (P1-P5) on every bead before creating it",
 		"   - Size limit: <=7 min estimate, 1-3 source files, single-purpose title",
@@ -169,6 +170,7 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 		"- Do NOT write code or create worktrees — only create beads",
 		"- Do NOT close the epic — children must complete first",
 		"- Do NOT push to git",
+		"- Prefer neutral routing tiers over provider names: `fast`, `balanced`, `deep`, `background`",
 		"- Every bead must pass beadcraft Rule of Five before creation",
 	}, "\n"))
 
@@ -266,16 +268,17 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	appendExitSection(b)
 }
 
-// appendContextHandoffSection writes the Context Handoff section with model thresholds.
+// appendContextHandoffSection writes the Context Handoff section with neutral tier thresholds.
 func appendContextHandoffSection(b *strings.Builder) {
 	section(b, "Context Handoff", strings.Join([]string{
-		"Complete each atomic step before context fills. Context thresholds by model:",
+		"Complete each atomic step before context fills. Context thresholds by tier:",
 		"",
-		"| Model   | Soft (warn) | Hard (stop) |",
-		"|---------|-------------|-------------|",
-		"| opus    | 40%         | 50%         |",
-		"| sonnet  | 40%         | 50%         |",
-		"| haiku   | 40%         | 50%         |",
+		"| Tier       | Soft (warn) | Hard (stop) |",
+		"|------------|-------------|-------------|",
+		"| fast       | 40%         | 50%         |",
+		"| balanced   | 40%         | 50%         |",
+		"| deep       | 40%         | 50%         |",
+		"| background | 40%         | 50%         |",
 		"",
 		"At the soft threshold: run `git add && git commit` to save your work, then invoke the `create-handoff` skill. After creating the handoff, exit immediately — do not continue working.",
 		"At the hard threshold: the dispatcher will force-stop the worker.",

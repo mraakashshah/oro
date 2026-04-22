@@ -6,8 +6,11 @@ import (
 	"strings"
 )
 
+const sharedInstructionsFilename = "ORO_AGENT.md"
+
 // buildReviewPrompt assembles a comprehensive code review prompt from project
-// files (CLAUDE.md, .claude/rules/, assets/review-patterns.md) and bead context.
+// files (shared instructions, Claude compatibility files, .claude/rules/,
+// assets/review-patterns.md) and bead context.
 func buildReviewPrompt(opts ReviewOpts) string {
 	base := opts.BaseBranch
 	if base == "" {
@@ -66,7 +69,7 @@ func writeProjectContext(b *strings.Builder, opts ReviewOpts) {
 		return
 	}
 
-	if standards := readProjectStandards(root, opts.ClaudeMD); standards != "" {
+	if standards := readProjectStandards(root, opts.AgentInstructions, opts.ClaudeMD); standards != "" {
 		b.WriteString("## Project Standards\n")
 		b.WriteString(standards)
 		b.WriteString("\n\n")
@@ -151,19 +154,17 @@ func writeVerdictAndOutput(b *strings.Builder) {
 	b.WriteString("add a line:\nPATTERN: tag: trigger → fix\n")
 }
 
-// readProjectStandards reads CLAUDE.md and .claude/rules/*.md from the project root.
-// claudeMDPath, when non-empty, is used directly instead of root/CLAUDE.md.
-func readProjectStandards(root, claudeMDPath string) string {
+// readProjectStandards reads shared instructions, Claude compatibility files,
+// and .claude/rules/*.md from the project root.
+func readProjectStandards(root, agentInstructionsPath, claudeMDPath string) string {
 	var parts []string
 
-	// Read CLAUDE.md — use explicit path when provided, fall back to root/CLAUDE.md.
-	claudeMDFile := claudeMDPath
-	if claudeMDFile == "" {
-		claudeMDFile = filepath.Join(root, "CLAUDE.md")
-	}
-	claudeMD := readFileIfExists(claudeMDFile)
-	if claudeMD != "" {
-		parts = append(parts, claudeMD)
+	for _, candidate := range instructionCandidates(root, agentInstructionsPath, claudeMDPath) {
+		content := readFileIfExists(candidate)
+		if content != "" {
+			parts = append(parts, content)
+			break
+		}
 	}
 
 	// Read .claude/rules/*.md
@@ -182,6 +183,28 @@ func readProjectStandards(root, claudeMDPath string) string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+func instructionCandidates(root, agentInstructionsPath, claudeMDPath string) []string {
+	var candidates []string
+	if agentInstructionsPath != "" {
+		candidates = append(candidates, agentInstructionsPath)
+	}
+	if root != "" {
+		candidates = append(candidates,
+			filepath.Join(root, sharedInstructionsFilename),
+		)
+	}
+	if claudeMDPath != "" {
+		candidates = append(candidates, claudeMDPath)
+	}
+	if root != "" {
+		candidates = append(candidates,
+			filepath.Join(root, "CLAUDE.md"),
+			filepath.Join(root, ".claude", "CLAUDE.md"),
+		)
+	}
+	return candidates
 }
 
 // readAntiPatterns reads assets/review-patterns.md if it exists.

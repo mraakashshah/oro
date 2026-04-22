@@ -124,11 +124,26 @@ func projectRootAlive(beadsDir, projectsBase string) bool {
 		if err != nil {
 			return false
 		}
-		_, err = os.Stat(strings.TrimSpace(string(data)))
+		rootPath, ok := sanitizeProjectRootPath(data)
+		if !ok {
+			return false
+		}
+		_, err = os.Stat(rootPath) //nolint:gosec // project.root content is normalized and validated by sanitizeProjectRootPath
 		return err == nil
 	}
 	_, err := os.Stat(filepath.Dir(beadsDir))
 	return err == nil
+}
+
+func sanitizeProjectRootPath(data []byte) (string, bool) {
+	rootPath := filepath.Clean(strings.TrimSpace(string(data)))
+	if rootPath == "." || rootPath == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(rootPath) {
+		return "", false
+	}
+	return rootPath, true
 }
 
 // pruneRegistry removes entries whose project root no longer exists.

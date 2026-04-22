@@ -15,14 +15,13 @@ type MemoryInserter interface {
 	Insert(ctx context.Context, m memory.InsertParams) (int64, error)
 }
 
-// DrainOutput reads subprocess stdout line by line (NDJSON from
-// --output-format stream-json), parses each event, writes formatted
-// tool-call activity and text content to writers, and extracts [MEMORY]
-// markers from text in real time. After the stream is fully drained, it
-// runs LLM-based extraction on the accumulated text via memory.ExtractWithLLM.
-// Safe when store or spawner is nil.
-// Nil writers in the slice are filtered out. Empty writers slice is a no-op for output.
-func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter, beadID string, spawner memory.Spawner, writers ...io.Writer) {
+// DrainOutput reads subprocess stdout according to format, writes formatted
+// activity and/or text content to writers, and extracts [MEMORY] markers
+// from text in real time. After the stream is fully drained, it runs
+// LLM-based extraction on the accumulated text via memory.ExtractWithLLM.
+// Safe when store or spawner is nil. Nil writers in the slice are filtered out.
+// Empty writers slice is a no-op for output.
+func DrainOutput(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner memory.Spawner, writers ...io.Writer) {
 	defer func() { _ = stdout.Close() }()
 
 	out := filterWriters(writers)
@@ -35,12 +34,18 @@ func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024) // 10MB max line
 	for scanner.Scan() {
 		totalLines++
-		activity := ParseStreamEvent(scanner.Bytes())
-		if activity.Kind == ActivityUnknown {
-			unknownLines++
+		switch format {
+		case StreamFormatLineText:
+			drainWritePlaintext(out, scanner.Text())
+			drainAccumulatePlaintext(ctx, scanner.Text(), &accumulated, store, beadID)
+		default:
+			activity := ParseStreamEvent(scanner.Bytes())
+			if activity.Kind == ActivityUnknown {
+				unknownLines++
+			}
+			drainWriteActivity(out, activity)
+			drainAccumulateText(ctx, activity, &lineBuf, &accumulated, store, beadID)
 		}
-		drainWriteActivity(out, activity)
-		drainAccumulateText(ctx, activity, &lineBuf, &accumulated, store, beadID)
 	}
 	if err := scanner.Err(); err != nil && out != nil {
 		fmt.Fprintf(out, "--- Scanner error: %v\n", err)
@@ -49,11 +54,32 @@ func DrainOutput(ctx context.Context, stdout io.ReadCloser, store MemoryInserter
 		fmt.Fprintf(out, "--- Stream stats: %d lines (%d unknown)\n", totalLines, unknownLines)
 	}
 
-	drainFlushRemaining(ctx, &lineBuf, &accumulated, store, beadID)
+	if format != StreamFormatLineText {
+		drainFlushRemaining(ctx, &lineBuf, &accumulated, store, beadID)
+	}
 
 	// Post-drain LLM extraction on accumulated session text.
 	if spawner != nil && store != nil {
 		_ = memory.ExtractWithLLM(ctx, spawner, accumulated.String(), beadID, store)
+	}
+}
+
+func drainWritePlaintext(out io.Writer, line string) {
+	if out == nil {
+		return
+	}
+	_, _ = io.WriteString(out, line)
+	_, _ = io.WriteString(out, "\n")
+}
+
+func drainAccumulatePlaintext(ctx context.Context, line string, accumulated *strings.Builder, store MemoryInserter, beadID string) {
+	accumulated.WriteString(line)
+	accumulated.WriteString("\n")
+	if store != nil {
+		if params := memory.ParseMarker(line); params != nil {
+			params.BeadID = beadID
+			_, _ = store.Insert(ctx, *params)
+		}
 	}
 }
 

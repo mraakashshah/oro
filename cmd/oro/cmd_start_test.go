@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"oro/pkg/dispatcher"
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
@@ -710,6 +711,68 @@ func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
 	if eventType != "test_marker" {
 		t.Errorf("expected test_marker, got %q", eventType)
 	}
+}
+
+func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
+	t.Run("defaults to claude runtime when unset", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Chdir(tmpDir)
+		t.Setenv(agentRuntimeEnvVar, "")
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		wantOps := &testRuntimeOpsSpawner{}
+		prevOps := newClaudeOpsSpawner
+		newClaudeOpsSpawner = func() ops.BatchSpawner { return wantOps }
+		defer func() { newClaudeOpsSpawner = prevOps }()
+
+		rt, err := resolveProductionRuntime()
+		if err != nil {
+			t.Fatalf("resolveProductionRuntime: %v", err)
+		}
+		if rt.opsSpawn != wantOps {
+			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.opsSpawn, wantOps)
+		}
+
+		d, db, err := buildDispatcher(1, 1, 0, 0, "", false, "")
+		if err != nil {
+			t.Fatalf("buildDispatcher: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+		_ = d
+	})
+
+	t.Run("codex runtime resolves injected ops spawner", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Chdir(tmpDir)
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		wantOps := &testRuntimeOpsSpawner{}
+		prevOps := newCodexOpsSpawner
+		newCodexOpsSpawner = func() ops.BatchSpawner { return wantOps }
+		defer func() { newCodexOpsSpawner = prevOps }()
+
+		rt, err := resolveProductionRuntime()
+		if err != nil {
+			t.Fatalf("resolveProductionRuntime: %v", err)
+		}
+		if rt.opsSpawn != wantOps {
+			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.opsSpawn, wantOps)
+		}
+
+		d, db, err := buildDispatcher(1, 1, 0, 0, "", false, "")
+		if err != nil {
+			t.Fatalf("buildDispatcher: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+		_ = d
+	})
 }
 
 // callOrderSpawner delegates to an inner fakeSpawner but records its call
