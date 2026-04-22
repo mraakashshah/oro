@@ -1427,6 +1427,24 @@ func TestReadSharedServerState_InvalidPort(t *testing.T) {
 	}
 }
 
+func TestReadSharedServerState_NoPIDFileButPortActive(t *testing.T) {
+	oroHome := t.TempDir()
+	pidPath := filepath.Join(oroHome, "dolt-server.pid")   // intentionally absent
+	portPath := filepath.Join(oroHome, "dolt-server.port") // intentionally absent
+
+	cfg := &doltCmdConfig{
+		aliveFn:  func(int) bool { return true },
+		isPortUp: func(int) bool { return true }, // simulate launchd-managed dolt on port
+	}
+	_, port, running := readSharedServerState(cfg, pidPath, portPath)
+	if !running {
+		t.Error("readSharedServerState = running false, want true when port is active and no PID file (launchd-managed server)")
+	}
+	if port != SharedDoltPort {
+		t.Errorf("port = %d, want SharedDoltPort (%d)", port, SharedDoltPort)
+	}
+}
+
 // ---------- runDoltStart edge cases ----------
 
 func TestRunDoltStart_PidZeroAdopted(t *testing.T) {

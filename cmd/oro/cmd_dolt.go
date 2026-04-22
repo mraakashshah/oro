@@ -571,10 +571,16 @@ func runDoltStatus(cfg *doltCmdConfig, w io.Writer) error {
 }
 
 // readSharedServerState reads PID and port files, then checks liveness.
+// Falls back to port-based detection when the PID file is absent (e.g. launchd-managed server).
 // Returns (pid, port, running).
 func readSharedServerState(cfg *doltCmdConfig, pidPath, portPath string) (pid, port int, running bool) {
 	pidData, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
 	if err != nil {
+		// No PID file — check if the port is active (covers launchd-managed servers).
+		if cfg.isPortUp != nil && cfg.isPortUp(SharedDoltPort) {
+			discoveredPID, _ := discoverPIDByPort(SharedDoltPort) // best-effort; 0 if lsof unavailable
+			return discoveredPID, SharedDoltPort, true
+		}
 		return 0, 0, false
 	}
 	pid, err = strconv.Atoi(strings.TrimSpace(string(pidData)))
