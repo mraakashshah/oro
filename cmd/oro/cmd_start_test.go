@@ -1267,3 +1267,51 @@ func TestSendStartDirectiveTimeout(t *testing.T) {
 		t.Logf("warning: timeout took longer than expected: %v", elapsed)
 	}
 }
+
+// TestCheckDoltModeForWorkers verifies that checkDoltModeForWorkers blocks
+// embedded-mode dolt from starting with multiple workers, fails closed when
+// metadata.json is missing or unreadable, and allows single-worker starts
+// regardless of mode.
+func TestCheckDoltModeForWorkers(t *testing.T) {
+	t.Run("embedded+workers==2 returns error with oro dolt setup and beadsDir", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		writeMetadata(t, tmpDir, map[string]any{"dolt_mode": "embedded"})
+		err := checkDoltModeForWorkers(tmpDir, 2)
+		if err == nil {
+			t.Fatal("expected error for embedded mode with 2 workers, got nil")
+		}
+		if !strings.Contains(err.Error(), "oro dolt setup") {
+			t.Errorf("error must contain 'oro dolt setup', got: %v", err)
+		}
+		if !strings.Contains(err.Error(), tmpDir) {
+			t.Errorf("error must contain beadsDir path %q, got: %v", tmpDir, err)
+		}
+	})
+
+	t.Run("server+workers==2 returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		writeMetadata(t, tmpDir, map[string]any{"dolt_mode": "server"})
+		if err := checkDoltModeForWorkers(tmpDir, 2); err != nil {
+			t.Errorf("expected nil for server mode with 2 workers, got: %v", err)
+		}
+	})
+
+	t.Run("embedded+workers==1 returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		writeMetadata(t, tmpDir, map[string]any{"dolt_mode": "embedded"})
+		if err := checkDoltModeForWorkers(tmpDir, 1); err != nil {
+			t.Errorf("expected nil for embedded mode with 1 worker, got: %v", err)
+		}
+	})
+
+	t.Run("no metadata.json+workers==2 returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		err := checkDoltModeForWorkers(tmpDir, 2)
+		if err == nil {
+			t.Fatal("expected error for missing metadata.json with 2 workers, got nil")
+		}
+		if !strings.Contains(err.Error(), "oro dolt setup") {
+			t.Errorf("error must contain 'oro dolt setup', got: %v", err)
+		}
+	})
+}

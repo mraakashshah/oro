@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -442,6 +443,38 @@ func makeDoltLifecycle(workDir, oroHome string) (func() (int, error), func() err
 		func() error { return stopDoltServer(beadsDir) }
 }
 
+// checkDoltModeForWorkers returns an error when dolt_mode in
+// <beadsDir>/metadata.json is "embedded" (or missing/unreadable) and
+// workerCount > 1. Embedded dolt is a single-writer store — concurrent
+// workers corrupt it. Falls through (nil) when workers == 1 or dolt_mode
+// is "server".
+func checkDoltModeForWorkers(beadsDir string, workerCount int) error {
+	if workerCount <= 1 {
+		return nil
+	}
+
+	metaPath := filepath.Join(beadsDir, "metadata.json")
+	data, err := os.ReadFile(metaPath) //nolint:gosec // beadsDir is caller-controlled
+	if err != nil {
+		return fmt.Errorf(
+			"dolt is in embedded mode (metadata unreadable) at %s: cannot start with %d workers — run 'oro dolt setup' to switch to server mode",
+			beadsDir, workerCount,
+		)
+	}
+
+	var cfg struct {
+		DoltMode string `json:"dolt_mode"`
+	}
+	if jsonErr := json.Unmarshal(data, &cfg); jsonErr != nil || cfg.DoltMode != "server" {
+		return fmt.Errorf(
+			"dolt is in embedded mode at %s: cannot start with %d workers — run 'oro dolt setup' to switch to server mode",
+			beadsDir, workerCount,
+		)
+	}
+
+	return nil
+}
+
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
 func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, reviewTimeout time.Duration) error {
 	project, err := readProjectConfig(".")
@@ -459,6 +492,13 @@ func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach 
 	}
 	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
 		return fmt.Errorf("set ORO_HOME: %w", err)
+	}
+	beadsDir, err := absoluteBeadsDir()
+	if err != nil {
+		return fmt.Errorf("resolve beads dir: %w", err)
+	}
+	if err := checkDoltModeForWorkers(beadsDir, workers); err != nil {
+		return err
 	}
 	doltStart, _ := makeDoltLifecycle(".", oroHome)
 	return runFullStart(w, workers, maxWorkers, model, project,
