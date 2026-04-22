@@ -78,8 +78,8 @@ func TestDreamTriggersAfterNBeads(t *testing.T) {
 		}
 
 		// Two completions: counter must be 2, no dream triggered.
-		d.mergeAndComplete(ctx, "bead-a", "worker-x", "/tmp/wt-da", "agent/bead-a", "", "")
-		d.mergeAndComplete(ctx, "bead-b", "worker-x", "/tmp/wt-db", "agent/bead-b", "", "")
+		d.mergeAndComplete(ctx, "bead-a", "worker-x", "/tmp/wt-da", "agent/bead-a", "", "", 0)
+		d.mergeAndComplete(ctx, "bead-b", "worker-x", "/tmp/wt-db", "agent/bead-b", "", "", 0)
 
 		d.mu.Lock()
 		got := d.beadsSinceDream
@@ -95,7 +95,7 @@ func TestDreamTriggersAfterNBeads(t *testing.T) {
 		}
 
 		// Third completion hits DreamInterval=3: dream triggered, counter resets to 0.
-		d.mergeAndComplete(ctx, "bead-c", "worker-x", "/tmp/wt-dc", "agent/bead-c", "", "")
+		d.mergeAndComplete(ctx, "bead-c", "worker-x", "/tmp/wt-dc", "agent/bead-c", "", "", 0)
 
 		waitFor(t, func() bool {
 			mu.Lock()
@@ -136,7 +136,7 @@ func TestDreamTriggersAfterNBeads(t *testing.T) {
 
 		// Complete many beads — no dream should fire.
 		for i := 0; i < 20; i++ {
-			d.mergeAndComplete(ctx, "bead-z", "worker-x", "/tmp/wt-dz", "agent/bead-z", "", "")
+			d.mergeAndComplete(ctx, "bead-z", "worker-x", "/tmp/wt-dz", "agent/bead-z", "", "", 0)
 		}
 
 		// Give any async goroutines a moment to run.
@@ -246,7 +246,7 @@ func TestDreamPassesMemories(t *testing.T) {
 	}
 
 	// DreamInterval=1 means first mergeAndComplete triggers a dream.
-	d.mergeAndComplete(ctx, "bead-mem", "worker-x", "/tmp/wt-mem", "agent/bead-mem", "", "")
+	d.mergeAndComplete(ctx, "bead-mem", "worker-x", "/tmp/wt-mem", "agent/bead-mem", "", "", 0)
 
 	// Wait for the dream spawn to happen.
 	waitFor(t, func() bool {

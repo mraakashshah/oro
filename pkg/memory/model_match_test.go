@@ -2,71 +2,13 @@ package memory //nolint:testpackage // white-box tests for checkEmbedderModelMat
 
 import (
 	"context"
-	"database/sql"
-	"strings"
 	"testing"
 
-	"oro/pkg/dbutil"
 	"oro/pkg/memory/testhelpers"
-	"oro/pkg/protocol"
 )
 
-// setupTestDBWithSemanticTables creates an in-memory SQLite database with the
-// full schema plus the semantic memory tables needed for model matching tests.
-func setupTestDBWithSemanticTables(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := dbutil.OpenDB(":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
-		t.Fatalf("exec schema: %v", err)
-	}
-
-	// Add embedding_dense column to memories table for semantic search
-	if _, err := db.Exec(`
-		ALTER TABLE memories ADD COLUMN embedding_dense BLOB;
-	`); err != nil {
-		// Ignore if column already exists (driver wording varies slightly).
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			t.Fatalf("add embedding_dense column: %v", err)
-		}
-	}
-
-	// Create memory_chunks table for chunked semantic embeddings
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS memory_chunks (
-			id INTEGER PRIMARY KEY,
-			memory_id INTEGER NOT NULL,
-			chunk_index INTEGER NOT NULL,
-			content TEXT NOT NULL,
-			embedding_dense BLOB,
-			created_at TEXT NOT NULL DEFAULT (datetime('now')),
-			FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,
-			UNIQUE(memory_id, chunk_index)
-		);
-	`); err != nil {
-		t.Fatalf("create memory_chunks: %v", err)
-	}
-
-	// Create backfill state table
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS backfill_semantic_memory_state (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
-			state TEXT NOT NULL DEFAULT 'pending'
-		);
-		INSERT OR IGNORE INTO backfill_semantic_memory_state (id, state) VALUES (1, 'pending');
-	`); err != nil {
-		t.Fatalf("create backfill state: %v", err)
-	}
-
-	return db
-}
-
 func TestCheckEmbedderModelMatchHappyNoop(t *testing.T) {
-	db := setupTestDBWithSemanticTables(t)
+	db := setupSemanticProductionDB(t)
 	embedder := testhelpers.NewFakeEmbedder(0)
 	store := NewStore(db)
 	store.SetEmbedder(embedder)
@@ -76,7 +18,7 @@ func TestCheckEmbedderModelMatchHappyNoop(t *testing.T) {
 
 	// Write sentinel matching current model
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+		`INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
 		"embedding_dense_model", currentModel,
 	)
 	if err != nil {
@@ -97,8 +39,8 @@ func TestCheckEmbedderModelMatchHappyNoop(t *testing.T) {
 
 	// Seed backfill state to 'completed' so we can assert it stays unchanged.
 	_, err = db.ExecContext(ctx,
-		`UPDATE backfill_semantic_memory_state SET state = ? WHERE id = 1`,
-		"completed",
+		`UPDATE kv_store SET value = ?, updated_at = datetime('now') WHERE key = ?`,
+		"completed", backfillStateKey,
 	)
 	if err != nil {
 		t.Fatalf("seed backfill state: %v", err)
@@ -148,7 +90,7 @@ func TestCheckEmbedderModelMatchHappyNoop(t *testing.T) {
 	// Verify backfill state is unchanged (still 'completed')
 	var state string
 	err = db.QueryRowContext(ctx,
-		`SELECT state FROM backfill_semantic_memory_state WHERE id = 1`,
+		`SELECT value FROM kv_store WHERE key = ?`, backfillStateKey,
 	).Scan(&state)
 	if err != nil {
 		t.Fatalf("query backfill state: %v", err)
@@ -158,8 +100,8 @@ func TestCheckEmbedderModelMatchHappyNoop(t *testing.T) {
 	}
 }
 
-func TestCheckEmbedderModelMatchResetsOnMismatch(t *testing.T) {
-	db := setupTestDBWithSemanticTables(t)
+func TestCheckEmbedderModelMatchAgainstProductionSchema(t *testing.T) {
+	db := setupSemanticProductionDB(t)
 	embedder := testhelpers.NewFakeEmbedder(0)
 	store := NewStore(db)
 	store.SetEmbedder(embedder)
@@ -170,7 +112,7 @@ func TestCheckEmbedderModelMatchResetsOnMismatch(t *testing.T) {
 
 	// Write old sentinel
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+		`INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
 		"embedding_dense_model", oldModel,
 	)
 	if err != nil {
@@ -191,7 +133,7 @@ func TestCheckEmbedderModelMatchResetsOnMismatch(t *testing.T) {
 
 	// Insert a test chunk
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO memory_chunks (memory_id, chunk_index, content, embedding_dense)
+		`INSERT INTO memory_chunks (memory_id, chunk_idx, text, embedding)
 		 VALUES (?, ?, ?, ?)`,
 		1, 0, "chunk content", testVecBlob,
 	)
@@ -201,8 +143,8 @@ func TestCheckEmbedderModelMatchResetsOnMismatch(t *testing.T) {
 
 	// Set backfill state to "completed"
 	_, err = db.ExecContext(ctx,
-		`UPDATE backfill_semantic_memory_state SET state = ? WHERE id = 1`,
-		"completed",
+		`UPDATE kv_store SET value = ?, updated_at = datetime('now') WHERE key = ?`,
+		"completed", backfillStateKey,
 	)
 	if err != nil {
 		t.Fatalf("update backfill state: %v", err)
@@ -252,7 +194,7 @@ func TestCheckEmbedderModelMatchResetsOnMismatch(t *testing.T) {
 	// Verify backfill state flipped to pending
 	var state string
 	err = db.QueryRowContext(ctx,
-		`SELECT state FROM backfill_semantic_memory_state WHERE id = 1`,
+		`SELECT value FROM kv_store WHERE key = ?`, backfillStateKey,
 	).Scan(&state)
 	if err != nil {
 		t.Fatalf("query backfill state: %v", err)
@@ -263,7 +205,7 @@ func TestCheckEmbedderModelMatchResetsOnMismatch(t *testing.T) {
 }
 
 func TestCheckEmbedderModelMatchFirstRunWritesSentinel(t *testing.T) {
-	db := setupTestDBWithSemanticTables(t)
+	db := setupSemanticProductionDB(t)
 	embedder := testhelpers.NewFakeEmbedder(0)
 	store := NewStore(db)
 	store.SetEmbedder(embedder)
@@ -311,5 +253,31 @@ func TestCheckEmbedderModelMatchFirstRunWritesSentinel(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected 1 memory (unchanged), got %d", count)
+	}
+}
+
+func TestSemanticTestsUseProductionMigrations(t *testing.T) {
+	db := setupSemanticProductionDB(t)
+	ctx := context.Background()
+
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='backfill_semantic_memory_state'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("query fabricated table: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no fabricated backfill_semantic_memory_state table, found %d", count)
+	}
+
+	for _, col := range []string{"chunk_idx", "text", "embedding"} {
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('memory_chunks') WHERE name=?`, col,
+		).Scan(&count); err != nil {
+			t.Fatalf("query memory_chunks column %s: %v", col, err)
+		}
+		if count != 1 {
+			t.Fatalf("expected production memory_chunks column %q to exist", col)
+		}
 	}
 }

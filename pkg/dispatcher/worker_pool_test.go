@@ -325,7 +325,45 @@ func TestRegisterWorker_EarlyReturnWhenWorkerGoneAfterRelock(t *testing.T) {
 
 	wg.Wait()
 	d.testUnlockHook = nil
+
+	d.mu.Lock()
+	_, stillPending := d.pendingHandoffs["gone-bead"]
+	d.mu.Unlock()
+	if !stillPending {
+		t.Fatal("expected pending handoff to remain recoverable after worker deletion")
+	}
 	// Test succeeds if there's no panic/deadlock — the guard prevents sending to a deleted worker
+}
+
+func TestRegisterWorkerRetainsPendingHandoffOnSendFailure(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	workerID := "send-failure-worker"
+	beadID := "send-failure-bead"
+	conn := &failConn{}
+
+	d.mu.Lock()
+	d.pendingHandoffs[beadID] = &pendingHandoff{
+		beadID:   beadID,
+		worktree: "/tmp/send-failure-wt",
+		model:    "test-model",
+	}
+	d.mu.Unlock()
+
+	d.registerWorker(workerID, conn)
+
+	d.mu.Lock()
+	_, stillPending := d.pendingHandoffs[beadID]
+	_, workerExists := d.workers[workerID]
+	d.mu.Unlock()
+
+	if !stillPending {
+		t.Fatal("expected pending handoff to remain recoverable after ASSIGN send failure")
+	}
+	if workerExists {
+		t.Fatal("expected failed worker registration to be discarded after ASSIGN send failure")
+	}
 }
 
 // --- ConnectedWorkers tests ---

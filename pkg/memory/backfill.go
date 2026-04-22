@@ -175,7 +175,7 @@ func (s *Store) processBatch(
 		if n, raErr := res.RowsAffected(); raErr == nil && n > 0 {
 			updated++
 		}
-		cw.maybeWrite(ctx, s.db, r.id, blob)
+		cw.maybeWrite(ctx, s.db, r.id, r.content, blob)
 	}
 	return updated, true
 }
@@ -188,13 +188,13 @@ type chunkWriter struct {
 	loggedErr    bool
 }
 
-func (c *chunkWriter) maybeWrite(ctx context.Context, db *sql.DB, id int64, blob []byte) {
+func (c *chunkWriter) maybeWrite(ctx context.Context, db *sql.DB, id int64, content string, blob []byte) {
 	if c.tableMissing {
 		return
 	}
 	_, err := db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO memory_chunks (memory_id, embedding_dense) VALUES (?, ?)`,
-		id, blob,
+		`INSERT OR IGNORE INTO memory_chunks (memory_id, chunk_idx, text, embedding) VALUES (?, 0, ?, ?)`,
+		id, content, blob,
 	)
 	if err == nil {
 		return

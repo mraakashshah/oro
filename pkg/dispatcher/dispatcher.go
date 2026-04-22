@@ -235,6 +235,7 @@ type trackedWorker struct {
 	id               string
 	conn             net.Conn
 	state            protocol.WorkerState
+	assignmentID     int64
 	beadID           string
 	epicID           string // parent epic ID if the assigned bead is a child of an epic
 	isEpicDecomp     bool   // true when worker is assigned an epic for decomposition (no merge on done)
@@ -257,6 +258,7 @@ type trackedWorker struct {
 // during a ralph handoff. The next worker to connect will be assigned this
 // bead+worktree instead of going through normal assignment.
 type pendingHandoff struct {
+	assignmentID int64
 	beadID       string
 	epicID       string // parent epic ID if the bead is a child of an epic
 	worktree     string
@@ -900,18 +902,20 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
 	}
 
-	// Delete any stale agent/* branches left over from a previous session so
-	// that fresh worktrees always branch from main HEAD.
-	d.pruneStaleAgentBranches(ctx)
+	d.logAssignmentInvariantViolations(ctx)
 
 	// Restore in-memory tracking maps from active assignments persisted in SQLite.
-	if err := d.restoreState(ctx); err != nil {
+	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
+	if err != nil {
 		return fmt.Errorf("restore state: %w", err)
 	}
 
 	// Reset any in_progress beads left over from a previous crash so they
 	// become re-assignable. Non-fatal: errors are logged and startup continues.
-	d.resetOrphanedBeads(ctx)
+	reopened, skipped := d.resetOrphanedBeads(ctx, recoverableBeads)
+	_ = d.logEvent(ctx, "startup_reconciliation_summary", "dispatcher", "", "",
+		fmt.Sprintf(`{"recovered_attempts":%d,"quarantined_assignments":%d,"reopened_beads":%d,"skipped_in_progress":%d}`,
+			recoveryStats.recoverable, recoveryStats.quarantined, reopened, skipped))
 
 	// Clean up stale socket from a previous crash (if any). If another
 	// dispatcher is actively listening, this returns an error so we don't
@@ -1256,14 +1260,17 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
 	var worktree, branch, epicID, targetBranch string
+	var assignmentID int64
 	var isEpicDecomp bool
 	if ok {
+		assignmentID = w.assignmentID
 		worktree = w.worktree
 		branch = protocol.BranchPrefix + beadID
 		epicID = w.epicID             // Capture epicID before clearing
 		targetBranch = w.targetBranch // Capture targetBranch before clearing
 		isEpicDecomp = w.isEpicDecomp
 		w.state = protocol.WorkerIdle
+		w.assignmentID = 0
 		w.beadID = ""
 		w.epicID = ""
 		w.isEpicDecomp = false
@@ -1300,7 +1307,9 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	}
 
 	// Merge in background
-	d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch) })
+	d.safeGo(func() {
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, assignmentID)
+	})
 }
 
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
@@ -1334,10 +1343,11 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	d.attemptCounts[beadID]++
 	attempt := d.attemptCounts[beadID]
 	qgErr.Attempt = attempt
+	assignmentID := d.assignmentIDLocked(workerID, beadID)
 
 	if attempt >= maxQGRetries {
 		d.mu.Unlock()
-		d.handleQGExhausted(ctx, workerID, beadID, qgOutput, attempt, qgErr)
+		d.handleQGExhausted(ctx, workerID, beadID, assignmentID, qgOutput, attempt, qgErr)
 		return
 	}
 
@@ -1347,7 +1357,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	}
 	d.mu.Unlock()
 
-	d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
+	d.persistBeadCount(ctx, assignmentID, beadID, "attempt_count", attempt)
 	d.qgRetryWithReservation(ctx, workerID, beadID, qgOutput, attempt)
 }
 
@@ -1423,7 +1433,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 				w.isEpicDecomp = false
 				_ = d.logEvent(ctx, "qg_retry_send_failed", workerID, beadID, workerID,
 					fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
-				_ = d.completeAssignment(ctx, beadID)
+				_ = d.completeAssignment(ctx, w.assignmentID, beadID)
 				return false
 			}
 			w.state = protocol.WorkerBusy
@@ -1532,7 +1542,7 @@ func (d *Dispatcher) guardMerge(beadID string) func() {
 // checkPreMergeQG runs the mutation quality gate before merging. It returns
 // true when the gate passes and the merge should proceed. On failure or error
 // it handles cleanup and returns false so the caller can return early.
-func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string) bool {
+func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64) bool {
 	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, false)
 	if qgErr != nil {
 		_ = d.logEvent(ctx, "pre_merge_qg_error", "dispatcher", beadID, workerID,
@@ -1545,6 +1555,7 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 		_ = d.logEvent(ctx, "pre_merge_qg_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"output":%q}`, qgOutput))
 		_ = d.beads.Update(ctx, beadID, "open")
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 		return false
 	}
@@ -1586,10 +1597,10 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 	return true
 }
 
-func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, epicID, targetBranch string) {
+func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, epicID, targetBranch string, assignmentID int64) {
 	defer d.guardMerge(beadID)()
 
-	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree) {
+	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID) {
 		return
 	}
 
@@ -1610,7 +1621,9 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 				ConflictFiles: conflictErr.Files,
 				TargetBranch:  targetBranch,
 			})
-			d.safeGo(func() { d.handleMergeConflictResult(ctx, beadID, workerID, worktree, epicID, targetBranch, resultCh) })
+			d.safeGo(func() {
+				d.handleMergeConflictResult(ctx, beadID, workerID, worktree, epicID, targetBranch, assignmentID, resultCh)
+			})
 			_ = d.logEvent(ctx, "merge_conflict", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"files":%q}`, conflictErr.Files))
 			return
@@ -1624,7 +1637,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 
 	// Clean merge — close bead, complete assignment, remove worktree.
 	_ = d.beads.Close(ctx, beadID, fmt.Sprintf("Merged: %s", result.CommitSHA))
-	_ = d.completeAssignment(ctx, beadID)
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
 
 	// Cancel any in-flight ops agents for this bead to prevent stale escalations.
 	d.cancelOpsAgents(ctx, beadID, workerID, "bead_merged")
@@ -2008,7 +2021,7 @@ func parseAcceptanceCmd(ac string) string {
 }
 
 // handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
-func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, workerID, worktree, epicID, targetBranch string, resultCh <-chan ops.Result) {
+func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, workerID, worktree, epicID, targetBranch string, assignmentID int64, resultCh <-chan ops.Result) {
 	select {
 	case <-ctx.Done():
 		return
@@ -2017,11 +2030,12 @@ func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, work
 		case ops.VerdictResolved:
 			_ = d.logEvent(ctx, "merge_conflict_resolved", "ops", beadID, workerID, result.Feedback)
 			// Resolution succeeded — retry the merge.
-			d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, epicID, targetBranch)
+			d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, epicID, targetBranch, assignmentID)
 		default:
 			// Resolution failed or unknown verdict — clean up and escalate.
 			_ = d.logEvent(ctx, "merge_conflict_failed", "ops", beadID, workerID, result.Feedback)
 			_ = d.beads.Update(ctx, beadID, "open")
+			_ = d.completeAssignment(ctx, assignmentID, beadID)
 			d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 			d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID,
 				"merge conflict resolution failed", result.Feedback), beadID, workerID)
@@ -2052,9 +2066,10 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	d.mu.Lock()
 	d.handoffCounts[beadID]++
 	handoffCount := d.handoffCounts[beadID]
+	assignmentID := d.assignmentIDLocked(workerID, beadID)
 	d.mu.Unlock()
 
-	d.persistBeadCount(ctx, beadID, "handoff_count", handoffCount)
+	d.persistBeadCount(ctx, assignmentID, beadID, "handoff_count", handoffCount)
 
 	// Send SHUTDOWN to the old worker and capture worktree+model+epic context for respawn.
 	d.mu.Lock()
@@ -2068,6 +2083,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		targetBranch = w.targetBranch // Capture targetBranch before clearing
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
+		w.assignmentID = 0
 		w.beadID = ""
 		w.epicID = ""
 		w.isEpicDecomp = false
@@ -2129,8 +2145,10 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 
 // respawnWorker stores a pending handoff and spawns a fresh worker process.
 func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model, epicID, baseBranch, targetBranch, title string, labels []string) {
+	assignmentID := d.activeAssignmentIDForBead(ctx, beadID)
 	d.mu.Lock()
 	d.pendingHandoffs[beadID] = &pendingHandoff{
+		assignmentID: assignmentID,
 		beadID:       beadID,
 		epicID:       epicID,
 		worktree:     worktree,
@@ -2557,11 +2575,14 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
 	var beadID string
+	var assignmentID int64
 	if ok {
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		w.shutdownApproved = true
 		beadID = w.beadID // capture before clearing
+		assignmentID = w.assignmentID
 		w.state = protocol.WorkerIdle
+		w.assignmentID = 0
 		w.beadID = ""
 		w.epicID = ""
 		w.isEpicDecomp = false
@@ -2575,6 +2596,7 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
 		d.clearBeadTracking(beadID)
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		_ = d.logEvent(ctx, "bead_requeued_scale_down", "dispatcher", beadID, workerID,
 			`{"reason":"shutdown_approved"}`)
 	}
@@ -2919,9 +2941,11 @@ func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadI
 	// Send SHUTDOWN, capture worktree, and clear worker state under lock.
 	// Mark as processed here so any concurrent or subsequent call returns early (FM2).
 	var worktree, epicID, targetBranch string
+	var assignmentID int64
 	d.mu.Lock()
 	d.processedExternalClose[beadID] = true
 	if w, ok := d.workers[workerID]; ok && w.beadID == beadID {
+		assignmentID = w.assignmentID
 		worktree = w.worktree
 		epicID = w.epicID             // Capture epicID before clearing
 		targetBranch = w.targetBranch // Capture targetBranch before clearing
@@ -2932,23 +2956,34 @@ func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadI
 			delete(d.workers, workerID)
 		} else {
 			w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
+			w.assignmentID = 0
 			w.beadID = ""
 			w.epicID = ""
 			w.worktree = ""
+			w.baseBranch = ""
+			w.targetBranch = ""
+			w.model = ""
 		}
 	}
 	d.mu.Unlock()
 
-	// If the worker had a worktree, attempt to merge any commits on the
-	// agent branch before cleaning up. mergeAndComplete handles assignment
-	// completion, tracking cleanup, and worktree removal internally.
+	// External close is a cancellation signal, not an implicit merge. Clean up
+	// the assignment and worktree without reopening or merging the branch.
 	if worktree != "" {
-		branch := protocol.BranchPrefix + beadID
-		d.safeGo(func() { d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch) })
+		d.safeGo(func() {
+			_ = d.completeAssignment(ctx, assignmentID, beadID)
+			d.cancelOpsAgents(ctx, beadID, workerID, "external_close")
+			d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+			d.clearBeadTracking(beadID)
+			_ = d.logEvent(ctx, "external_close_cancelled", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"assignment_id":%d,"epic_id":%q,"target_branch":%q}`, assignmentID, epicID, targetBranch))
+		})
 	} else {
 		// No worktree — just complete the DB record and clear tracking.
-		_ = d.completeAssignment(ctx, beadID)
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		d.clearBeadTracking(beadID)
+		_ = d.logEvent(ctx, "external_close_cancelled", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"assignment_id":%d,"epic_id":%q,"target_branch":%q}`, assignmentID, epicID, targetBranch))
 	}
 }
 
@@ -3379,7 +3414,22 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		d.mu.Unlock()
 	}
 
-	_ = d.createAssignment(ctx, bead.ID, w.id, worktree)
+	assignmentID, assignErr := d.createAssignment(ctx, bead.ID, w.id, worktree)
+	if assignErr != nil {
+		_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
+		d.recordAssignmentFailure(bead.ID)
+		_ = d.beads.Update(ctx, bead.ID, "ready")
+		if existingWorktree == "" {
+			_ = d.worktrees.Remove(ctx, worktree)
+			d.mu.Lock()
+			delete(d.worktreeByBead, bead.ID)
+			d.mu.Unlock()
+		}
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		return nil
+	}
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
 
@@ -3408,6 +3458,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	}
 	d.mu.Lock()
 	w.state = protocol.WorkerBusy
+	w.assignmentID = assignmentID
 	w.beadID = bead.ID
 	w.epicID = resolvedEpicID // actual epic ancestor ID for auto-close on merge
 	w.isEpicDecomp = isEpicDecomp
@@ -3442,7 +3493,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	delete(d.assigningBeads, bead.ID)
 	d.mu.Unlock()
 	if err != nil {
-		if completeErr := d.completeAssignment(ctx, bead.ID); completeErr != nil {
+		if completeErr := d.completeAssignment(ctx, assignmentID, bead.ID); completeErr != nil {
 			_ = d.logEvent(ctx, "assignment_cleanup_failed", "dispatcher", bead.ID, w.id, completeErr.Error())
 		}
 		_ = d.worktrees.Remove(ctx, worktree)
@@ -3837,6 +3888,7 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 
 	// Capture fields before removing worker.
 	beadID := w.beadID
+	assignmentID := w.assignmentID
 	managed := w.managed
 
 	// Close connection and remove worker from pool.
@@ -3861,7 +3913,7 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
 		d.clearBeadTracking(beadID)
-		_ = d.completeAssignment(ctx, beadID)
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		_ = d.logEvent(ctx, "worker_killed", "dispatcher", beadID, workerID,
 			`{"reason":"kill-worker directive"}`)
 	}
@@ -3933,8 +3985,9 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 		return "", fmt.Errorf("worker not found")
 	}
 
-	// Capture bead ID and managed flag before removing worker.
+	// Capture bead ID, assignment ID, and managed flag before removing worker.
 	beadID := w.beadID
+	assignmentID := w.assignmentID
 	wasManaged := w.managed
 
 	// Close connection and remove worker from pool
@@ -3958,7 +4011,7 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
 		d.clearBeadTracking(beadID)
-		_ = d.completeAssignment(ctx, beadID)
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
 			`{"reason":"restart-worker directive"}`)
 	}
@@ -4531,20 +4584,24 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID in
 	}
 }
 
-func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) error {
-	_, err := d.db.ExecContext(ctx,
+func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) (int64, error) {
+	res, err := d.db.ExecContext(ctx,
 		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
 		beadID, workerID, worktree)
 	if err != nil {
-		return fmt.Errorf("create assignment: %w", err)
+		return 0, fmt.Errorf("create assignment: %w", err)
 	}
-	return nil
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("create assignment last insert id: %w", err)
+	}
+	return id, nil
 }
 
 // persistBeadCount updates a counter column on the active assignment row for a bead.
 // column must be one of "attempt_count" or "handoff_count". This is a best-effort
 // operation: errors are logged but do not propagate.
-func (d *Dispatcher) persistBeadCount(ctx context.Context, beadID, column string, value int) {
+func (d *Dispatcher) persistBeadCount(ctx context.Context, assignmentID int64, beadID, column string, value int) {
 	if d.db == nil {
 		return
 	}
@@ -4554,12 +4611,30 @@ func (d *Dispatcher) persistBeadCount(ctx context.Context, beadID, column string
 	default:
 		return
 	}
-	_, err := d.db.ExecContext(ctx,
-		fmt.Sprintf(`UPDATE assignments SET %s=? WHERE bead_id=? AND status='active'`, column),
-		value, beadID)
+	var (
+		err error
+		res sql.Result
+	)
+	if assignmentID > 0 {
+		res, err = d.db.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE assignments SET %s=? WHERE id=?`, column),
+			value, assignmentID)
+	} else {
+		res, err = d.db.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE assignments SET %s=? WHERE bead_id=? AND status='active'`, column),
+			value, beadID)
+	}
 	if err != nil {
 		_ = d.logEvent(ctx, "persist_count_failed", "dispatcher", beadID, "",
 			fmt.Sprintf(`{"column":%q,"value":%d,"error":%q}`, column, value, err.Error()))
+		return
+	}
+	if assignmentID > 0 {
+		rows, rowsErr := res.RowsAffected()
+		if rowsErr == nil && rows != 1 {
+			_ = d.logEvent(ctx, "persist_count_target_mismatch", "dispatcher", beadID, "",
+				fmt.Sprintf(`{"assignment_id":%d,"column":%q,"value":%d,"rows_affected":%d}`, assignmentID, column, value, rows))
+		}
 	}
 }
 
@@ -4601,64 +4676,208 @@ func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerI
 		fmt.Sprintf(`{"branch":%q}`, branch))
 }
 
-// resetOrphanedBeads resets any in_progress beads back to open on startup.
-// This handles crash recovery: if the dispatcher crashed while beads were
-// in_progress, they would remain stuck in that state without this reset.
+// resetOrphanedBeads resets recoverable dispatcher-owned in_progress beads back
+// to open on startup. Human-owned in_progress beads are left untouched because
+// they have no dispatcher-owned active assignment state to recover from.
 // Errors are non-fatal — logged via logEvent and startup continues.
-func (d *Dispatcher) resetOrphanedBeads(ctx context.Context) {
+func (d *Dispatcher) resetOrphanedBeads(ctx context.Context, recoverable map[string]bool) (reopened int, skipped int) {
 	beads, err := d.beads.InProgress(ctx)
 	if err != nil {
 		_ = d.logEvent(ctx, "startup_reset_list_failed", "dispatcher", "", "", err.Error())
-		return
+		return 0, 0
 	}
 	for _, b := range beads {
+		if !recoverable[b.ID] {
+			skipped++
+			continue
+		}
 		if updateErr := d.beads.Update(ctx, b.ID, "open"); updateErr != nil {
 			_ = d.logEvent(ctx, "startup_reset_bead_failed", "dispatcher", b.ID, "", updateErr.Error())
+			continue
 		}
+		reopened++
 	}
+	return reopened, skipped
 }
 
 // restoreState reconstructs the in-memory attemptCounts and handoffCounts maps
-// from active assignments persisted in SQLite. This ensures tracking state
-// survives a dispatcher restart.
-func (d *Dispatcher) restoreState(ctx context.Context) error {
+// from recoverable active assignments persisted in SQLite. This ensures
+// tracking state survives a dispatcher restart without reopening inconsistent
+// rows that would destroy or overwrite recoverable work.
+type startupRecoveryStats struct {
+	recoverable int
+	quarantined int
+}
+
+func (d *Dispatcher) restoreState(ctx context.Context) (map[string]bool, startupRecoveryStats, error) {
+	type restoredAssignment struct {
+		id           int64
+		beadID       string
+		worktree     string
+		attemptCount int
+		handoffCount int
+	}
+	type quarantinedAssignment struct {
+		id     int64
+		beadID string
+		reason string
+	}
+
 	rows, err := d.db.QueryContext(ctx,
-		`SELECT bead_id, attempt_count, handoff_count FROM assignments WHERE status='active'`)
+		`SELECT id, bead_id, worktree, attempt_count, handoff_count FROM assignments WHERE status='active'`)
 	if err != nil {
-		return fmt.Errorf("query active assignments: %w", err)
+		return nil, startupRecoveryStats{}, fmt.Errorf("query active assignments: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
+	var (
+		restored    []restoredAssignment
+		quarantined []quarantinedAssignment
+	)
+
+	for rows.Next() {
+		var a restoredAssignment
+		if err := rows.Scan(&a.id, &a.beadID, &a.worktree, &a.attemptCount, &a.handoffCount); err != nil {
+			return nil, startupRecoveryStats{}, fmt.Errorf("scan assignment: %w", err)
+		}
+
+		switch {
+		case a.worktree == "":
+			quarantined = append(quarantined, quarantinedAssignment{
+				id:     a.id,
+				beadID: a.beadID,
+				reason: "missing_worktree",
+			})
+			continue
+		case !d.worktrees.Exists(ctx, a.worktree):
+			quarantined = append(quarantined, quarantinedAssignment{
+				id:     a.id,
+				beadID: a.beadID,
+				reason: "missing_worktree_path",
+			})
+			continue
+		}
+
+		branch := protocol.BranchPrefix + a.beadID
+		exists, branchErr := d.worktrees.BranchExists(ctx, branch)
+		if branchErr != nil {
+			quarantined = append(quarantined, quarantinedAssignment{
+				id:     a.id,
+				beadID: a.beadID,
+				reason: "branch_check_failed",
+			})
+			continue
+		}
+		if !exists {
+			quarantined = append(quarantined, quarantinedAssignment{
+				id:     a.id,
+				beadID: a.beadID,
+				reason: "missing_branch",
+			})
+			continue
+		}
+
+		restored = append(restored, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, startupRecoveryStats{}, fmt.Errorf("iterate assignments: %w", err)
+	}
+
+	for _, q := range quarantined {
+		if err := d.completeAssignment(ctx, q.id, q.beadID); err != nil {
+			return nil, startupRecoveryStats{}, fmt.Errorf("quarantine assignment %s: %w", q.beadID, err)
+		}
+		_ = d.logEvent(ctx, "startup_recovery_quarantined", "dispatcher", q.beadID, "",
+			fmt.Sprintf(`{"assignment_id":%d,"reason":%q}`, q.id, q.reason))
+	}
+
+	recoverable := make(map[string]bool, len(restored))
+	stats := startupRecoveryStats{recoverable: len(restored), quarantined: len(quarantined)}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	for _, a := range restored {
+		recoverable[a.beadID] = true
+		d.worktreeByBead[a.beadID] = a.worktree
+		if a.attemptCount > 0 {
+			d.attemptCounts[a.beadID] = a.attemptCount
+		}
+		if a.handoffCount > 0 {
+			d.handoffCounts[a.beadID] = a.handoffCount
+		}
+	}
+	return recoverable, stats, nil
+}
+
+func (d *Dispatcher) logAssignmentInvariantViolations(ctx context.Context) {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT bead_id, COUNT(*) FROM assignments WHERE status='active' GROUP BY bead_id HAVING COUNT(*) > 1`)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var beadID string
-		var attemptCount, handoffCount int
-		if err := rows.Scan(&beadID, &attemptCount, &handoffCount); err != nil {
-			return fmt.Errorf("scan assignment: %w", err)
+		var activeCount int
+		if err := rows.Scan(&beadID, &activeCount); err != nil {
+			return
 		}
-		if attemptCount > 0 {
-			d.attemptCounts[beadID] = attemptCount
-		}
-		if handoffCount > 0 {
-			d.handoffCounts[beadID] = handoffCount
-		}
+		_ = d.logEvent(ctx, "assignment_invariant_violation", "dispatcher", beadID, "",
+			fmt.Sprintf(`{"active_assignments":%d}`, activeCount))
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate assignments: %w", err)
+}
+
+func (d *Dispatcher) completeAssignment(ctx context.Context, assignmentID int64, beadID string) error {
+	var (
+		err error
+		res sql.Result
+	)
+	if assignmentID > 0 {
+		res, err = d.db.ExecContext(ctx,
+			`UPDATE assignments SET status='completed', completed_at=datetime('now') WHERE id=?`,
+			assignmentID)
+	} else {
+		res, err = d.db.ExecContext(ctx,
+			`UPDATE assignments SET status='completed', completed_at=datetime('now') WHERE bead_id=? AND status='active'`,
+			beadID)
+	}
+	if err != nil {
+		return fmt.Errorf("complete assignment: %w", err)
+	}
+	if assignmentID > 0 {
+		rows, rowsErr := res.RowsAffected()
+		if rowsErr == nil && rows != 1 {
+			return fmt.Errorf("complete assignment: assignment_id %d affected %d rows", assignmentID, rows)
+		}
 	}
 	return nil
 }
 
-func (d *Dispatcher) completeAssignment(ctx context.Context, beadID string) error {
-	_, err := d.db.ExecContext(ctx,
-		`UPDATE assignments SET status='completed', completed_at=datetime('now') WHERE bead_id=? AND status='active'`,
-		beadID)
-	if err != nil {
-		return fmt.Errorf("complete assignment: %w", err)
+func (d *Dispatcher) assignmentIDLocked(workerID, beadID string) int64 {
+	if w, ok := d.workers[workerID]; ok && (beadID == "" || w.beadID == beadID) {
+		return w.assignmentID
 	}
-	return nil
+	return 0
+}
+
+func (d *Dispatcher) assignmentIDForWorker(workerID, beadID string) int64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.assignmentIDLocked(workerID, beadID)
+}
+
+func (d *Dispatcher) activeAssignmentIDForBead(ctx context.Context, beadID string) int64 {
+	if d.db == nil || beadID == "" {
+		return 0
+	}
+	var assignmentID int64
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT id FROM assignments WHERE bead_id=? AND status='active' ORDER BY id DESC LIMIT 1`,
+		beadID,
+	).Scan(&assignmentID); err != nil {
+		return 0
+	}
+	return assignmentID
 }
 
 func (d *Dispatcher) pendingCommands(ctx context.Context) ([]protocol.CommandRow, error) {
@@ -4817,16 +5036,17 @@ func (d *Dispatcher) cancelOpsAgents(ctx context.Context, beadID, workerID, reas
 // then spawns a Decompose ops agent as a fallback. If Decompose succeeds
 // (VerdictResolved), no P0 bug is created. If it fails, handleQGExhaustedFallback
 // runs the existing P0 bug + EscStuck escalation path.
-func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
-	d.persistBeadCount(ctx, beadID, "attempt_count", attempt)
+func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID string, assignmentID int64, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
+	d.persistBeadCount(ctx, assignmentID, beadID, "attempt_count", attempt)
 
-	_ = d.completeAssignment(ctx, beadID)
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
 
 	// Release the worker so checkHeartbeats won't find a stale busy worker
 	// and call clearBeadTracking (which would wipe exhaustedBeads).
 	d.mu.Lock()
 	if w, ok := d.workers[workerID]; ok {
 		w.state = protocol.WorkerIdle
+		w.assignmentID = 0
 		w.beadID = ""
 		w.worktree = ""
 		w.epicID = ""
@@ -4843,6 +5063,7 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID, qg
 	d.mu.Lock()
 	if w, ok := d.workers[workerID]; ok {
 		w.state = protocol.WorkerIdle
+		w.assignmentID = 0
 		w.beadID = ""
 		w.epicID = ""
 		w.isEpicDecomp = false

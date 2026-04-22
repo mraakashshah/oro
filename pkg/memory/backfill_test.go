@@ -266,6 +266,75 @@ func TestBackfillStaleOwnerStealRowsAffected(t *testing.T) {
 	})
 }
 
+func TestBackfillWritesChunksAgainstProductionSchema(t *testing.T) {
+	db := setupSemanticProductionDB(t)
+	store := NewStore(db)
+	store.SetEmbedder(testhelpers.NewFakeEmbedder(384))
+	ctx := context.Background()
+
+	res, err := db.ExecContext(ctx,
+		`INSERT INTO memories (content, type, tags, source, confidence) VALUES (?, ?, ?, ?, ?)`,
+		"semantic backfill content", "lesson", `["semantic"]`, "self_report", 0.9,
+	)
+	if err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+	memoryID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	blob := MarshalEmbedding(store.embedder.Embed("semantic backfill content"))
+	var cw chunkWriter
+	cw.maybeWrite(ctx, db, memoryID, "semantic backfill content", blob)
+
+	var chunkIdx int
+	var text string
+	var embedding []byte
+	if err := db.QueryRowContext(ctx,
+		`SELECT chunk_idx, text, embedding FROM memory_chunks WHERE memory_id = ?`,
+		memoryID,
+	).Scan(&chunkIdx, &text, &embedding); err != nil {
+		t.Fatalf("query backfilled chunk: %v", err)
+	}
+	if chunkIdx != 0 {
+		t.Fatalf("chunk_idx = %d, want 0", chunkIdx)
+	}
+	if text != "semantic backfill content" {
+		t.Fatalf("text = %q, want semantic backfill content", text)
+	}
+	if len(embedding) == 0 {
+		t.Fatal("expected non-empty embedding blob")
+	}
+}
+
+func TestSemanticSchemaSmokeMatchesRuntimeSQL(t *testing.T) {
+	db := setupSemanticProductionDB(t)
+	ctx := context.Background()
+
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM kv_store WHERE key IN (?, ?)`,
+		backfillStateKey, embeddingDenseModelKey,
+	).Scan(&count); err != nil {
+		t.Fatalf("query kv_store sentinels: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected both production semantic kv_store sentinels, got %d", count)
+	}
+
+	for _, col := range []string{"chunk_idx", "text", "embedding"} {
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('memory_chunks') WHERE name=?`, col,
+		).Scan(&count); err != nil {
+			t.Fatalf("query memory_chunks column %s: %v", col, err)
+		}
+		if count != 1 {
+			t.Fatalf("expected production memory_chunks column %q to exist", col)
+		}
+	}
+}
+
 // seedMemories inserts n rows with the given content prefix into memories.
 // Returns the inserted IDs.
 func seedMemories(t *testing.T, db *sql.DB, n int, contentPrefix string) []int64 {

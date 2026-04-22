@@ -151,7 +151,8 @@ func resetEmbedderData(ctx context.Context, tx *sql.Tx, newModel string) error {
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE backfill_semantic_memory_state SET state = 'pending' WHERE id = 1`,
+		`UPDATE kv_store SET value = 'pending', updated_at = datetime('now') WHERE key = ?`,
+		backfillStateKey,
 	); err != nil {
 		return fmt.Errorf("reset backfill state: %w", err)
 	}
@@ -789,10 +790,13 @@ func (s *Store) vectorSearch(ctx context.Context, queryVec []float32, limit int,
 // vectorSearchViaIndex calls the HNSW index for approximate nearest neighbours
 // then batch-fetches the full memory rows by ID, applying typeFilter in Go.
 func (s *Store) vectorSearchViaIndex(ctx context.Context, queryVec []float32, limit int, typeFilter string) ([]ScoredMemory, error) {
-	// Normalise project: "" means "oro" to match the Upsert convention.
+	// Empty project scope means "all projects". The vec index is partitioned by
+	// project, so the low-risk correct behaviour is to bypass it and fall back to
+	// the global linear path rather than collapsing empty scope to a single
+	// partition such as "oro".
 	project := s.project
 	if project == "" {
-		project = "oro"
+		return s.vectorSearchLinear(ctx, queryVec, limit, typeFilter)
 	}
 
 	annResults, err := s.vecIndex.Search(ctx, queryVec, project, limit)

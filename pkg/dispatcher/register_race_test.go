@@ -35,7 +35,7 @@ func drainConn(conn net.Conn) {
 	}
 }
 
-// TestRegisterWorker_SafeAgainstConcurrentDeletion verifies that registerWorker
+// TestRegisterWorkerRetainsPendingHandoffOnConcurrentDeletion verifies that registerWorker
 // does not call sendToWorker on a stale worker pointer after the worker was
 // deleted from the map while the lock was released for memory.ForPrompt.
 //
@@ -43,7 +43,7 @@ func drainConn(conn net.Conn) {
 // unlocks to call ForPrompt, and another goroutine (checkHeartbeats) deletes
 // the worker. After re-acquiring the lock, registerWorker must re-check that
 // the worker still exists before calling sendToWorker.
-func TestRegisterWorker_SafeAgainstConcurrentDeletion(t *testing.T) {
+func TestRegisterWorkerRetainsPendingHandoffOnConcurrentDeletion(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
 	defer cancel()
@@ -111,6 +111,13 @@ func TestRegisterWorker_SafeAgainstConcurrentDeletion(t *testing.T) {
 	if n := spy.writeCalled.Load(); n > 0 {
 		t.Fatalf("registerWorker called sendToWorker %d time(s) on a worker "+
 			"that was deleted during the unlock window; expected 0", n)
+	}
+
+	d.mu.Lock()
+	_, stillPending := d.pendingHandoffs["race-bead"]
+	d.mu.Unlock()
+	if !stillPending {
+		t.Fatal("expected pending handoff to remain recoverable after concurrent worker deletion")
 	}
 }
 

@@ -192,7 +192,7 @@ func TestPersistBeadCount_NilDB(t *testing.T) {
 
 	// Should not panic.
 	ctx := context.Background()
-	d.persistBeadCount(ctx, "bead-x", "attempt_count", 1)
+	d.persistBeadCount(ctx, 0, "bead-x", "attempt_count", 1)
 }
 
 // TestPersistBeadCount_NoMatchingRow ensures no error when there is no active assignment.
@@ -201,7 +201,7 @@ func TestPersistBeadCount_NoMatchingRow(t *testing.T) {
 
 	ctx := context.Background()
 	// No assignment row exists for "bead-nope" -- should be a no-op.
-	d.persistBeadCount(ctx, "bead-nope", "attempt_count", 5)
+	d.persistBeadCount(ctx, 0, "bead-nope", "attempt_count", 5)
 
 	// Verify no rows were affected (the function should not create rows).
 	var count int

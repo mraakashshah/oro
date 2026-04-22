@@ -28,6 +28,22 @@ CREATE TABLE IF NOT EXISTS assignments (
     handoff_count INTEGER DEFAULT 0
 );
 
+-- Normalize any legacy duplicate active rows before enforcing the invariant.
+UPDATE assignments
+SET status = 'completed',
+    completed_at = COALESCE(completed_at, datetime('now'))
+WHERE status = 'active'
+  AND id NOT IN (
+    SELECT MAX(id)
+    FROM assignments
+    WHERE status = 'active'
+    GROUP BY bead_id
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assignments_one_active_per_bead
+ON assignments(bead_id)
+WHERE status = 'active';
+
 -- Manager directives to the dispatcher (start, stop, pause, focus)
 CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY,

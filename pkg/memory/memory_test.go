@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"oro/pkg/dbutil"
+	"oro/pkg/memory/testhelpers"
 	"oro/pkg/protocol"
 )
 
@@ -2757,6 +2758,69 @@ func TestDumpAll(t *testing.T) {
 	}
 	if len(results) != 3 {
 		t.Errorf("expected 3 memories with empty project scope, got %d", len(results))
+	}
+}
+
+type recordingVecIndex struct {
+	called  bool
+	project string
+}
+
+func (r *recordingVecIndex) Upsert(context.Context, int64, []float32, string) error { return nil }
+func (r *recordingVecIndex) Delete(context.Context, int64, string) error            { return nil }
+func (r *recordingVecIndex) Search(_ context.Context, _ []float32, project string, _ int) ([]ANNResult, error) {
+	r.called = true
+	r.project = project
+	return nil, nil
+}
+
+func TestEmptyProjectScopeSearchesAllProjectsWithVecIndex(t *testing.T) {
+	db := setupSemanticProductionDB(t)
+	store := NewStore(db)
+	embedder := testhelpers.NewFakeEmbedder(384)
+	store.SetEmbedder(embedder)
+	idx := &recordingVecIndex{}
+	store.SetVectorIndex(idx)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		project string
+		content string
+	}{
+		{project: "alpha", content: "retry failed bead alpha"},
+		{project: "beta", content: "retry failed bead beta"},
+	} {
+		res, err := db.ExecContext(ctx,
+			`INSERT INTO memories (content, type, tags, source, confidence, project, embedding_dense)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			tc.content, "lesson", `["semantic"]`, "self_report", 0.9, tc.project,
+			MarshalEmbedding(embedder.Embed(tc.content)),
+		)
+		if err != nil {
+			t.Fatalf("insert %s memory: %v", tc.project, err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("last insert id for %s: %v", tc.project, err)
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO memory_chunks (memory_id, chunk_idx, text, embedding) VALUES (?, 0, ?, ?)`,
+			id, tc.content, MarshalEmbedding(embedder.Embed(tc.content)),
+		); err != nil {
+			t.Fatalf("insert %s chunk: %v", tc.project, err)
+		}
+	}
+
+	store.SetProject("")
+	results, err := store.vectorSearch(ctx, embedder.Embed("retry failed bead"), 10, "")
+	if err != nil {
+		t.Fatalf("vectorSearch: %v", err)
+	}
+	if idx.called {
+		t.Fatalf("expected empty project scope to bypass vec index, got Search(project=%q)", idx.project)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 cross-project results, got %d", len(results))
 	}
 }
 

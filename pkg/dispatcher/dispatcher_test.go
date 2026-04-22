@@ -3236,13 +3236,13 @@ func TestSQLiteHelpers_ClosedDB(t *testing.T) {
 	}
 
 	// createAssignment should return error
-	err = d.createAssignment(ctx, "b1", "w1", "/tmp/wt")
+	_, err = d.createAssignment(ctx, "b1", "w1", "/tmp/wt")
 	if err == nil {
 		t.Fatal("expected error from createAssignment on closed db")
 	}
 
 	// completeAssignment should return error
-	err = d.completeAssignment(ctx, "b1")
+	err = d.completeAssignment(ctx, 0, "b1")
 	if err == nil {
 		t.Fatal("expected error from completeAssignment on closed db")
 	}
@@ -5482,7 +5482,7 @@ func TestQGRetry_DeadWorker_RequeuesBead(t *testing.T) {
 
 	// Create an active assignment in the DB so completeAssignment has
 	// something to mark as completed.
-	if err := d.createAssignment(ctx, beadID, workerID, "/tmp/test-worktree"); err != nil {
+	if _, err := d.createAssignment(ctx, beadID, workerID, "/tmp/test-worktree"); err != nil {
 		t.Fatalf("create assignment: %v", err)
 	}
 
@@ -7126,7 +7126,7 @@ func TestMergeClosesBead(t *testing.T) {
 	branch := "agent/" + beadID
 
 	// Call mergeAndComplete directly (white-box).
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 	// Verify beads.Close was called with the correct bead ID.
 	beadSrc.mu.Lock()
@@ -7163,7 +7163,7 @@ func TestMergeAndCompleteEscalatesMergeComplete(t *testing.T) {
 	worktree := "/tmp/worktree-" + beadID
 	branch := "agent/" + beadID
 
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 	found := false
 	for _, msg := range esc.Messages() {
@@ -7200,7 +7200,7 @@ func TestMergeCompleteEscalationAutoAcked(t *testing.T) {
 	branch := "agent/" + beadID
 
 	// Perform merge - this creates a MERGE_COMPLETE escalation
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 	// Verify escalation was created with status='pending'
 	var escID int64
@@ -7280,7 +7280,7 @@ func TestMergeAndCompleteUsesTargetBranch(t *testing.T) {
 	branch := "agent/" + beadID
 
 	t.Run("explicit target branch", func(t *testing.T) {
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "epic/my-epic")
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "epic/my-epic", 0)
 
 		calls := gitRunner.RebaseCalls()
 		if len(calls) == 0 {
@@ -7297,7 +7297,7 @@ func TestMergeAndCompleteUsesTargetBranch(t *testing.T) {
 	})
 
 	t.Run("empty target defaults to main", func(t *testing.T) {
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 		calls := gitRunner.RebaseCalls()
 		last := calls[len(calls)-1]
@@ -7334,7 +7334,7 @@ func TestMergeAndComplete_CleansUpOnNonConflictError(t *testing.T) {
 	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 	// Verify worktrees.Remove was called.
 	wtMgr.mu.Lock()
@@ -7408,7 +7408,7 @@ func TestMergeAndComplete_RunsMutationQG(t *testing.T) {
 		qgRunner := &mockQGRunner{passed: true, output: "all green"}
 		d.qgRunner = qgRunner
 
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 		// QG was called with the correct worktree.
 		qgRunner.mu.Lock()
@@ -7473,7 +7473,7 @@ func TestMergeAndComplete_RunsMutationQG(t *testing.T) {
 		d.worktreeByBead[beadID] = worktree
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 		// QG was called with the correct worktree.
 		qgRunner.mu.Lock()
@@ -7550,7 +7550,7 @@ func TestMergeAndComplete_RunsMutationQG(t *testing.T) {
 		d.worktreeByBead[beadID] = worktree
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 		// QG was called.
 		qgRunner.mu.Lock()
@@ -9296,7 +9296,13 @@ func TestShutdownTimeout_ForceKill(t *testing.T) {
 
 func TestRestoreStateOnStartup(t *testing.T) {
 	// Setup: create dispatcher with test DB.
-	d, _, _, _, _, _ := newTestDispatcher(t)
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch != "agent/oro-quarantine", nil
+	}
+	wtMgr.existsFn = func(_ context.Context, path string) bool {
+		return path != "/tmp/wt-quarantine"
+	}
 
 	// Insert active assignments with known attempt_count and handoff_count values
 	// directly into SQLite BEFORE the dispatcher starts.
@@ -9313,6 +9319,12 @@ func TestRestoreStateOnStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert assignment 2: %v", err)
 	}
+	_, err = d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status, attempt_count, handoff_count)
+		 VALUES ('oro-quarantine', 'w4', '/tmp/wt-quarantine', 'active', 9, 9)`)
+	if err != nil {
+		t.Fatalf("insert quarantined assignment: %v", err)
+	}
 	// Insert a completed assignment — should NOT be restored.
 	_, err = d.db.ExecContext(ctx,
 		`INSERT INTO assignments (bead_id, worker_id, worktree, status, attempt_count, handoff_count)
@@ -9322,6 +9334,7 @@ func TestRestoreStateOnStartup(t *testing.T) {
 	}
 
 	// Start dispatcher — Run() should restore state from SQLite.
+	d.shutdownRunner = &mockCommandRunner{}
 	cancel := startDispatcher(t, d)
 	defer cancel()
 
@@ -9330,9 +9343,14 @@ func TestRestoreStateOnStartup(t *testing.T) {
 	gotAttemptAAA := d.attemptCounts["oro-aaa"]
 	gotAttemptBBB := d.attemptCounts["oro-bbb"]
 	_, hasCCC := d.attemptCounts["oro-ccc"]
+	_, hasQuarantine := d.attemptCounts["oro-quarantine"]
 	gotHandoffAAA := d.handoffCounts["oro-aaa"]
 	gotHandoffBBB := d.handoffCounts["oro-bbb"]
 	_, hasHandoffCCC := d.handoffCounts["oro-ccc"]
+	_, hasQuarantineHandoff := d.handoffCounts["oro-quarantine"]
+	gotWorktreeAAA := d.worktreeByBead["oro-aaa"]
+	gotWorktreeBBB := d.worktreeByBead["oro-bbb"]
+	_, hasWorktreeQuarantine := d.worktreeByBead["oro-quarantine"]
 	d.mu.Unlock()
 
 	if gotAttemptAAA != 2 {
@@ -9344,6 +9362,9 @@ func TestRestoreStateOnStartup(t *testing.T) {
 	if hasCCC {
 		t.Errorf("attemptCounts should not contain completed bead oro-ccc")
 	}
+	if hasQuarantine {
+		t.Errorf("attemptCounts should not contain quarantined bead oro-quarantine")
+	}
 	if gotHandoffAAA != 1 {
 		t.Errorf("handoffCounts[oro-aaa]: got %d, want 1", gotHandoffAAA)
 	}
@@ -9352,6 +9373,268 @@ func TestRestoreStateOnStartup(t *testing.T) {
 	}
 	if hasHandoffCCC {
 		t.Errorf("handoffCounts should not contain completed bead oro-ccc")
+	}
+	if hasQuarantineHandoff {
+		t.Errorf("handoffCounts should not contain quarantined bead oro-quarantine")
+	}
+	if gotWorktreeAAA != "/tmp/wt-aaa" {
+		t.Errorf("worktreeByBead[oro-aaa]: got %q, want %q", gotWorktreeAAA, "/tmp/wt-aaa")
+	}
+	if gotWorktreeBBB != "/tmp/wt-bbb" {
+		t.Errorf("worktreeByBead[oro-bbb]: got %q, want %q", gotWorktreeBBB, "/tmp/wt-bbb")
+	}
+	if hasWorktreeQuarantine {
+		t.Errorf("worktreeByBead should not contain quarantined bead oro-quarantine")
+	}
+
+	var quarantineStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE bead_id='oro-quarantine'`).Scan(&quarantineStatus); err != nil {
+		t.Fatalf("query quarantine status: %v", err)
+	}
+	if quarantineStatus != "completed" {
+		t.Fatalf("quarantined assignment status = %q, want completed", quarantineStatus)
+	}
+}
+
+func TestStartupDoesNotPruneRecoverableAgentBranch(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	worktree := t.TempDir()
+	d.repoRoot = t.TempDir()
+
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == "agent/oro-recover", nil
+	}
+
+	d.shutdownRunner = &mockCommandRunner{
+		callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "git" {
+				for i := 0; i < len(args)-2; i++ {
+					if args[i] == "branch" && args[i+1] == "--list" && args[i+2] == "agent/*" {
+						t.Fatalf("startup should not prune agent branches, got git %v", args)
+					}
+				}
+			}
+			return nil, nil
+		},
+	}
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-recover', 'w1', ?, 'active')`,
+		worktree); err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	d.mu.Lock()
+	got := d.worktreeByBead["oro-recover"]
+	d.mu.Unlock()
+	if got != worktree {
+		t.Fatalf("recoverable worktree missing after startup: got %q want %q", got, worktree)
+	}
+}
+
+func TestStartupRecoversFromActiveAssignmentBranchState(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	worktree := t.TempDir()
+
+	beadSrc.inProgressBeads = []protocol.Bead{{ID: "oro-recover"}}
+	d.shutdownRunner = &mockCommandRunner{}
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == "agent/oro-recover", nil
+	}
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status, attempt_count, handoff_count)
+		 VALUES ('oro-recover', 'w1', ?, 'active', 4, 2)`,
+		worktree); err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	beadSrc.mu.Lock()
+	updated := beadSrc.updated
+	beadSrc.mu.Unlock()
+	if updated["oro-recover"] != "open" {
+		t.Fatalf("expected recovered bead to reopen, got updates=%v", updated)
+	}
+
+	d.mu.Lock()
+	gotWorktree := d.worktreeByBead["oro-recover"]
+	gotAttempts := d.attemptCounts["oro-recover"]
+	gotHandoffs := d.handoffCounts["oro-recover"]
+	d.mu.Unlock()
+	if gotWorktree != worktree {
+		t.Fatalf("worktreeByBead[oro-recover] = %q, want %q", gotWorktree, worktree)
+	}
+	if gotAttempts != 4 {
+		t.Fatalf("attemptCounts[oro-recover] = %d, want 4", gotAttempts)
+	}
+	if gotHandoffs != 2 {
+		t.Fatalf("handoffCounts[oro-recover] = %d, want 2", gotHandoffs)
+	}
+}
+
+func TestStartupQuarantinesInconsistentRecoveryState(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	beadSrc.inProgressBeads = []protocol.Bead{{ID: "oro-bad"}}
+	d.shutdownRunner = &mockCommandRunner{}
+	wtMgr.existsFn = func(_ context.Context, _ string) bool { return false }
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == "agent/oro-bad", nil
+	}
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-bad', 'w1', '/tmp/missing', 'active')`); err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	beadSrc.mu.Lock()
+	updated := beadSrc.updated
+	beadSrc.mu.Unlock()
+	if _, ok := updated["oro-bad"]; ok {
+		t.Fatalf("expected quarantined bead to remain untouched, got updates=%v", updated)
+	}
+
+	var status string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE bead_id='oro-bad'`).Scan(&status); err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("quarantined assignment status = %q, want completed", status)
+	}
+
+	var eventCount int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE type='startup_recovery_quarantined' AND bead_id='oro-bad'`).Scan(&eventCount); err != nil {
+		t.Fatalf("query quarantine events: %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("expected one startup_recovery_quarantined event, got %d", eventCount)
+	}
+}
+
+func TestResetOrphanedBeadsOnlyReopensDispatcherOwnedClaims(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	worktree := t.TempDir()
+
+	beadSrc.inProgressBeads = []protocol.Bead{{ID: "oro-owned"}, {ID: "oro-human"}}
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == "agent/oro-owned", nil
+	}
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-owned', 'w1', ?, 'active')`,
+		worktree); err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+
+	recoverable, _, err := d.restoreState(ctx)
+	if err != nil {
+		t.Fatalf("restoreState: %v", err)
+	}
+	_, _ = d.resetOrphanedBeads(ctx, recoverable)
+
+	beadSrc.mu.Lock()
+	updated := beadSrc.updated
+	beadSrc.mu.Unlock()
+
+	if updated["oro-owned"] != "open" {
+		t.Fatalf("expected dispatcher-owned bead to reopen, got updates=%v", updated)
+	}
+	if _, ok := updated["oro-human"]; ok {
+		t.Fatalf("expected human-owned bead to remain untouched, got updates=%v", updated)
+	}
+}
+
+func TestHumanOwnedInProgressBeadRemainsNonAssignableAfterRestart(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	assignable := d.filterAssignable(context.Background(), []protocol.Bead{
+		{ID: "oro-human", Status: "in_progress"},
+		{ID: "oro-ready", Status: "ready"},
+	})
+	if len(assignable) != 1 || assignable[0].ID != "oro-ready" {
+		t.Fatalf("assignable = %+v, want only oro-ready", assignable)
+	}
+}
+
+func TestStartupReconciliationEmitsRecoverySummary(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	worktree := t.TempDir()
+
+	beadSrc.inProgressBeads = []protocol.Bead{{ID: "oro-owned"}, {ID: "oro-human"}}
+	d.shutdownRunner = &mockCommandRunner{}
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == "agent/oro-owned", nil
+	}
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-owned', 'w1', ?, 'active')`,
+		worktree); err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	var payload string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT payload FROM events WHERE type='startup_reconciliation_summary' ORDER BY id DESC LIMIT 1`,
+	).Scan(&payload); err != nil {
+		t.Fatalf("query startup summary: %v", err)
+	}
+	for _, want := range []string{
+		`"recovered_attempts":1`,
+		`"quarantined_assignments":0`,
+		`"reopened_beads":1`,
+		`"skipped_in_progress":1`,
+	} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("startup summary %q missing %s", payload, want)
+		}
+	}
+}
+
+func TestAssignmentInvariantViolationIsLogged(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, `DROP INDEX idx_assignments_one_active_per_bead`); err != nil {
+		t.Fatalf("drop unique index: %v", err)
+	}
+	for _, workerID := range []string{"w1", "w2"} {
+		if _, err := d.db.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-dup', ?, ?, 'active')`,
+			workerID, "/tmp/"+workerID); err != nil {
+			t.Fatalf("insert duplicate assignment for %s: %v", workerID, err)
+		}
+	}
+
+	d.logAssignmentInvariantViolations(ctx)
+
+	var payload string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT payload FROM events WHERE type='assignment_invariant_violation' AND bead_id='oro-dup' ORDER BY id DESC LIMIT 1`,
+	).Scan(&payload); err != nil {
+		t.Fatalf("query invariant event: %v", err)
+	}
+	if !strings.Contains(payload, `"active_assignments":2`) {
+		t.Fatalf("unexpected invariant payload: %q", payload)
 	}
 }
 
@@ -10827,7 +11110,7 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		d.mu.Unlock()
 
 		// Trigger merge and complete (white-box test).
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "", 0)
 
 		// Wait for async auto-close goroutine to close the epic.
 		waitFor(t, func() bool {
@@ -10902,7 +11185,7 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "", 0)
 
 		// Wait for the child bead to be closed (confirms goroutine ran).
 		waitFor(t, func() bool {
@@ -10959,7 +11242,7 @@ func TestAutoCloseEpicWhenAllChildrenCompleted(t *testing.T) {
 		d.mu.Unlock()
 
 		// mergeAndComplete should complete successfully even if AllChildrenClosed errors.
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "", "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, "", "", 0)
 
 		// Wait for the child bead to be closed (merge flow not blocked).
 		waitFor(t, func() bool {
@@ -11027,7 +11310,7 @@ func TestEpicCompletionAlert(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "", 0)
 
 		// Wait for async auto-close goroutine to produce escalation.
 		waitFor(t, func() bool {
@@ -11096,7 +11379,7 @@ func TestEpicCompletionAlert(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "", 0)
 
 		// Wait for the epic to be auto-closed (confirms goroutine completed).
 		waitFor(t, func() bool {
@@ -11150,7 +11433,7 @@ func TestEpicCompletionAlert(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
+		d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "", 0)
 
 		// Wait for the epic to be auto-closed.
 		waitFor(t, func() bool {
@@ -11231,7 +11514,7 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acp1", "agent/"+childID, epicID, "")
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acp1", "agent/"+childID, epicID, "", 0)
 
 		// Wait for async auto-close goroutine.
 		waitFor(t, func() bool {
@@ -11313,7 +11596,7 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acf1", "agent/"+childID, epicID, "")
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-acf1", "agent/"+childID, epicID, "", 0)
 
 		// Wait for async goroutine to run.
 		waitFor(t, func() bool {
@@ -11392,7 +11675,7 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 		}
 		d.mu.Unlock()
 
-		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-nc1", "agent/"+childID, epicID, "")
+		d.mergeAndComplete(ctx, childID, workerID, "/tmp/wt-nc1", "agent/"+childID, epicID, "", 0)
 
 		// Epic should still be closed (count-based fallback).
 		waitFor(t, func() bool {
@@ -14510,12 +14793,11 @@ func TestExternalCloseBlockedDuringPendingMerge(t *testing.T) {
 	}
 }
 
-// TestBeadClosedExternally_TriggersMerge verifies that when a bead is closed
-// externally (e.g., via `bd close`) while a worker is assigned, the dispatcher
-// triggers mergeAndComplete for the worker's branch so that committed code
-// on the agent branch gets merged to main instead of being stranded.
-func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
-	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+// TestExternalCloseDoesNotMergeWorkerBranch verifies that external close acts
+// as cancellation only: the dispatcher shuts the worker down and cleans up the
+// assignment without calling beads.Close or implicitly merging the branch.
+func TestExternalCloseDoesNotMergeWorkerBranch(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
 	// Init schema so logEvent, completeAssignment, etc. work.
@@ -14527,26 +14809,37 @@ func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
 	beadID := "bead-ext-close"
 	workerID := "w-ext"
 	worktree := "/tmp/worktree-" + beadID
+	var removed []string
+	wtMgr.removeFn = func(_ context.Context, path string) error {
+		removed = append(removed, path)
+		return nil
+	}
 
 	// Register an assignment so completeAssignment has something to update.
-	_, err = d.db.ExecContext(ctx,
+	res, err := d.db.ExecContext(ctx,
 		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
 		beadID, workerID, worktree)
 	if err != nil {
 		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
 	}
 
 	// Set up a tracked worker that is busy on this bead with a worktree.
 	conn := newMockConn()
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:       workerID,
-		conn:     conn,
-		beadID:   beadID,
-		state:    protocol.WorkerBusy,
-		worktree: worktree,
-		encoder:  json.NewEncoder(conn),
+		id:           workerID,
+		conn:         conn,
+		assignmentID: assignmentID,
+		beadID:       beadID,
+		state:        protocol.WorkerBusy,
+		worktree:     worktree,
+		encoder:      json.NewEncoder(conn),
 	}
+	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 
 	// Configure the mock bead source to return "closed" status for this bead.
@@ -14561,17 +14854,9 @@ func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
 	// Trigger the handler that detects externally-closed beads.
 	d.checkClosedBeadAssignments(ctx)
 
-	// Wait for the async mergeAndComplete goroutine to run — indicated by
-	// beads.Close being called (mergeAndComplete closes the bead after merge).
+	// Wait for async cancellation cleanup to complete.
 	waitFor(t, func() bool {
-		beadSrc.mu.Lock()
-		defer beadSrc.mu.Unlock()
-		for _, id := range beadSrc.closed {
-			if id == beadID {
-				return true
-			}
-		}
-		return false
+		return len(removed) == 1
 	}, 2*time.Second)
 
 	// Verify the worker was transitioned to ShuttingDown (not Idle) and bead cleared.
@@ -14596,6 +14881,20 @@ func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
 	if wBead != "" {
 		t.Errorf("expected worker beadID cleared, got %q", wBead)
 	}
+	if len(beadSrc.closed) != 0 {
+		t.Fatalf("expected external close to avoid implicit beads.Close merge path, got closed=%v", beadSrc.closed)
+	}
+	if len(removed) != 1 || removed[0] != worktree {
+		t.Fatalf("expected worktree cleanup for %q, got removed=%v", worktree, removed)
+	}
+
+	var status string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&status); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("assignment status = %q, want completed", status)
+	}
 
 	// Verify SHUTDOWN was sent to the worker.
 	conn.mu.Lock()
@@ -14609,6 +14908,134 @@ func TestBeadClosedExternally_TriggersMerge(t *testing.T) {
 	conn.mu.Unlock()
 	if !gotShutdown {
 		t.Error("expected SHUTDOWN message to be sent to worker")
+	}
+}
+
+func TestExternalCloseDoesNotReopenAfterQGFailure(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	beadID := "bead-ext-close-no-reopen"
+	workerID := "w-ext-no-reopen"
+	worktree := "/tmp/worktree-" + beadID
+	d.qgRunner = &mockQGRunner{passed: false, output: "should not run"}
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		assignmentID: assignmentID,
+		beadID:       beadID,
+		state:        protocol.WorkerBusy,
+		worktree:     worktree,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "closed"}
+	beadSrc.mu.Unlock()
+
+	d.handleClosedAssignment(ctx, workerID, beadID)
+	d.wg.Wait()
+
+	beadSrc.mu.Lock()
+	updated := beadSrc.updated
+	beadSrc.mu.Unlock()
+	if _, ok := updated[beadID]; ok {
+		t.Fatalf("expected external close to avoid reopening bead after cleanup, got updates=%v", updated)
+	}
+}
+
+func TestExternalCloseCleansUpAssignmentAndTracking(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	beadID := "bead-ext-close-cleanup"
+	workerID := "w-ext-cleanup"
+	worktree := "/tmp/worktree-" + beadID
+
+	removed := make(chan struct{}, 1)
+	wtMgr.removeFn = func(_ context.Context, path string) error {
+		if path != worktree {
+			t.Fatalf("remove path = %q, want %q", path, worktree)
+		}
+		removed <- struct{}{}
+		return nil
+	}
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		assignmentID: assignmentID,
+		beadID:       beadID,
+		state:        protocol.WorkerBusy,
+		worktree:     worktree,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.worktreeByBead[beadID] = worktree
+	d.attemptCounts[beadID] = 3
+	d.handoffCounts[beadID] = 2
+	d.processedExternalClose[beadID] = false
+	d.mu.Unlock()
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "closed"}
+	beadSrc.mu.Unlock()
+
+	d.handleClosedAssignment(ctx, workerID, beadID)
+
+	select {
+	case <-removed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for external close cleanup")
+	}
+	d.wg.Wait()
+
+	var status string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&status); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("assignment status = %q, want completed", status)
+	}
+
+	d.mu.Lock()
+	_, trackedWorktree := d.worktreeByBead[beadID]
+	_, trackedAttempt := d.attemptCounts[beadID]
+	_, trackedHandoff := d.handoffCounts[beadID]
+	processed := d.processedExternalClose[beadID]
+	d.mu.Unlock()
+
+	if trackedWorktree || trackedAttempt || trackedHandoff || processed {
+		t.Fatalf("expected tracking to be cleared, got worktree=%v attempt=%v handoff=%v processed=%v",
+			trackedWorktree, trackedAttempt, trackedHandoff, processed)
 	}
 }
 
@@ -15023,7 +15450,7 @@ func TestDispatcher_ResetOrphanedBeads(t *testing.T) {
 			{ID: "oro-y"},
 		}
 
-		d.resetOrphanedBeads(ctx)
+		d.resetOrphanedBeads(ctx, map[string]bool{"oro-x": true, "oro-y": true})
 
 		beadSrc.mu.Lock()
 		updated := beadSrc.updated
@@ -15045,7 +15472,7 @@ func TestDispatcher_ResetOrphanedBeads(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		beadSrc.inProgressErr = fmt.Errorf("bd not found")
 
-		d.resetOrphanedBeads(ctx)
+		d.resetOrphanedBeads(ctx, map[string]bool{"oro-x": true})
 
 		// No Update() calls should have been made.
 		beadSrc.mu.Lock()
@@ -15076,7 +15503,7 @@ func TestDispatcher_ResetOrphanedBeads(t *testing.T) {
 			"oro-x": fmt.Errorf("bd update failed"),
 		}
 
-		d.resetOrphanedBeads(ctx)
+		d.resetOrphanedBeads(ctx, map[string]bool{"oro-x": true, "oro-y": true})
 
 		// oro-y must still be updated despite oro-x error.
 		beadSrc.mu.Lock()
@@ -15111,13 +15538,34 @@ func TestDispatcher_ResetOrphanedBeads(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		// Default: inProgressBeads is nil → InProgress returns nil.
 
-		d.resetOrphanedBeads(ctx)
+		d.resetOrphanedBeads(ctx, map[string]bool{"oro-x": true})
 
 		beadSrc.mu.Lock()
 		updated := beadSrc.updated
 		beadSrc.mu.Unlock()
 		if len(updated) > 0 {
 			t.Errorf("expected no Update() calls for empty InProgress, got %v", updated)
+		}
+	})
+
+	t.Run("skips_human_owned_in_progress_beads_without_recoverable_assignment", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		beadSrc.inProgressBeads = []protocol.Bead{
+			{ID: "dispatcher-owned"},
+			{ID: "human-owned"},
+		}
+
+		d.resetOrphanedBeads(ctx, map[string]bool{"dispatcher-owned": true})
+
+		beadSrc.mu.Lock()
+		updated := beadSrc.updated
+		beadSrc.mu.Unlock()
+
+		if updated["dispatcher-owned"] != "open" {
+			t.Fatalf("expected dispatcher-owned bead to reopen, got %q", updated["dispatcher-owned"])
+		}
+		if _, ok := updated["human-owned"]; ok {
+			t.Fatalf("expected human-owned bead to remain untouched, got updates=%v", updated)
 		}
 	})
 }
@@ -16881,7 +17329,7 @@ func TestMergeComplete_InterpolatesBranch(t *testing.T) {
 		branch := "agent/" + beadID
 		targetBranch := "epic/my-epic"
 
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", targetBranch)
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", targetBranch, 0)
 
 		wantSummary := "merged to " + targetBranch
 		found := false
@@ -16914,7 +17362,7 @@ func TestMergeComplete_InterpolatesBranch(t *testing.T) {
 		branch := "agent/" + beadID
 
 		// targetBranch = "" → should say "merged to main" (DefaultBranch)
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "")
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
 
 		found := false
 		for _, msg := range esc.Messages() {
@@ -17447,7 +17895,7 @@ func TestEpicMergeFailedClearedOnChildComplete(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "")
+	d.mergeAndComplete(ctx, childID, workerID, worktree, branch, epicID, "", 0)
 
 	// Wait for the async auto-close goroutine to close the epic.
 	// This only happens if epicMergeFailed was cleared before autoCloseEpicIfComplete.
@@ -17564,7 +18012,7 @@ func (b *blockingQGRunner) Run(ctx context.Context, _ string, _ bool) (bool, str
 //	(4) processedExternalClose entries appear in allTrackingKeys and are pruned by
 //	    deleteOrphanedTracking.
 func TestExternalClose_NoReEntry(t *testing.T) {
-	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
 	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
@@ -17576,12 +18024,16 @@ func TestExternalClose_NoReEntry(t *testing.T) {
 	const workerID = "w-no-reentry"
 	const worktreePath = "/tmp/worktree-no-reentry"
 
-	// Insert assignment record so completeAssignment / mergeAndComplete can update it.
-	_, err = d.db.ExecContext(ctx,
+	// Insert assignment record so completeAssignment can update it.
+	res, err := d.db.ExecContext(ctx,
 		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
 		beadID, workerID, worktreePath)
 	if err != nil {
 		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
 	}
 
 	// Mark bead as closed externally.
@@ -17589,29 +18041,37 @@ func TestExternalClose_NoReEntry(t *testing.T) {
 	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "closed"}
 	beadSrc.mu.Unlock()
 
-	// Install a blocking QG runner so the async mergeAndComplete goroutine parks
-	// inside checkPreMergeQG. This prevents clearBeadTracking from running before
-	// we can assert that processedExternalClose[beadID] is set (assertion 2).
-	qgBlockCh := make(chan struct{})
+	// Block worktree removal so the async external-close cleanup goroutine parks
+	// before clearBeadTracking runs. This keeps processedExternalClose observable
+	// long enough for the re-entry assertion.
+	removeBlockCh := make(chan struct{})
 	closed := false
 	defer func() {
 		if !closed {
-			close(qgBlockCh)
+			close(removeBlockCh)
 		}
 	}()
-	d.qgRunner = &blockingQGRunner{ch: qgBlockCh}
+	wtMgr.removeFn = func(_ context.Context, path string) error {
+		if path != worktreePath {
+			t.Fatalf("remove path = %q, want %q", path, worktreePath)
+		}
+		<-removeBlockCh
+		return nil
+	}
 
 	// --- (1) First call processes the bead: sends SHUTDOWN. ---
 	conn := newMockConn()
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:       workerID,
-		conn:     conn,
-		beadID:   beadID,
-		state:    protocol.WorkerBusy,
-		worktree: worktreePath,
-		encoder:  json.NewEncoder(conn),
+		id:           workerID,
+		conn:         conn,
+		assignmentID: assignmentID,
+		beadID:       beadID,
+		state:        protocol.WorkerBusy,
+		worktree:     worktreePath,
+		encoder:      json.NewEncoder(conn),
 	}
+	d.worktreeByBead[beadID] = worktreePath
 	d.mu.Unlock()
 
 	d.handleClosedAssignment(ctx, workerID, beadID)
@@ -17630,8 +18090,8 @@ func TestExternalClose_NoReEntry(t *testing.T) {
 	}
 
 	// --- (2) processedExternalClose[beadID] is true after the first call. ---
-	// The mergeAndComplete goroutine is parked in checkPreMergeQG (qgBlockCh not
-	// yet closed), so clearBeadTracking has not run — the flag is observable here.
+	// The cleanup goroutine is parked in worktree removal (removeBlockCh not yet
+	// closed), so clearBeadTracking has not run — the flag is observable here.
 	d.mu.Lock()
 	processed := d.processedExternalClose[beadID]
 	d.mu.Unlock()
@@ -17643,12 +18103,13 @@ func TestExternalClose_NoReEntry(t *testing.T) {
 	conn2 := newMockConn()
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:       workerID,
-		conn:     conn2,
-		beadID:   beadID,
-		state:    protocol.WorkerBusy,
-		worktree: worktreePath,
-		encoder:  json.NewEncoder(conn2),
+		id:           workerID,
+		conn:         conn2,
+		assignmentID: assignmentID,
+		beadID:       beadID,
+		state:        protocol.WorkerBusy,
+		worktree:     worktreePath,
+		encoder:      json.NewEncoder(conn2),
 	}
 	d.mu.Unlock()
 
@@ -17667,25 +18128,17 @@ func TestExternalClose_NoReEntry(t *testing.T) {
 		t.Error("(2) expected no SHUTDOWN on re-entry when processedExternalClose is set")
 	}
 
-	// Release the blocked goroutine and wait for mergeAndComplete to finish.
-	close(qgBlockCh)
+	// Release the blocked goroutine and wait for cleanup to finish.
+	close(removeBlockCh)
 	closed = true
 	d.wg.Wait()
 
 	// --- (3) clearBeadTracking removes the processedExternalClose entry. ---
-	// Re-set the entry (mergeAndComplete does not call clearBeadTracking, so it may
-	// still be set; either way, force it for a deterministic test).
-	d.mu.Lock()
-	d.processedExternalClose[beadID] = true
-	d.mu.Unlock()
-
-	d.clearBeadTracking(beadID)
-
 	d.mu.Lock()
 	processedAfterClear := d.processedExternalClose[beadID]
 	d.mu.Unlock()
 	if processedAfterClear {
-		t.Error("(3) expected processedExternalClose[beadID] to be cleared by clearBeadTracking")
+		t.Error("(3) expected processedExternalClose[beadID] to be cleared after cleanup")
 	}
 
 	// --- (4a) allTrackingKeys includes processedExternalClose entries. ---

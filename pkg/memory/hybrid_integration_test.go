@@ -156,6 +156,70 @@ func TestHybridSearchFullStackSQLiteVec(t *testing.T) {
 	}
 }
 
+func TestHybridSearchEmptyScopeMatchesAllProjectContract(t *testing.T) {
+	if _, err := dbutil.ResolveSqliteVecLibPath(); err != nil {
+		t.Skipf("sqlite-vec not available in this environment: %v", err)
+	}
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "hybrid_empty_scope.db")
+	db, err := dbutil.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.ExecContext(ctx, "SELECT vec_version()"); err != nil {
+		t.Skipf("sqlite-vec extension did not load on this connection: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("apply schema: %v", err)
+	}
+
+	idx, err := memory.NewSQLiteVecIndex(db)
+	if err != nil {
+		t.Fatalf("NewSQLiteVecIndex: %v", err)
+	}
+	embedder := testhelpers.NewFakeEmbedder(384)
+
+	storeAlpha := memory.NewStore(db)
+	storeAlpha.SetEmbedder(embedder)
+	storeAlpha.SetVectorIndex(idx)
+	storeAlpha.SetProject("alpha")
+
+	storeBeta := memory.NewStore(db)
+	storeBeta.SetEmbedder(embedder)
+	storeBeta.SetVectorIndex(idx)
+	storeBeta.SetProject("beta")
+
+	alphaIDs := seedMemories(t, ctx, storeAlpha, idx, embedder, "alpha", []string{
+		"retry failed bead alpha integration path",
+	})
+	betaIDs := seedMemories(t, ctx, storeBeta, idx, embedder, "beta", []string{
+		"retry failed bead beta integration path",
+	})
+
+	storeAll := memory.NewStore(db)
+	storeAll.SetEmbedder(embedder)
+	storeAll.SetVectorIndex(idx)
+	storeAll.SetProject("")
+
+	results, err := storeAll.HybridSearch(ctx, "retry failed bead", memory.SearchOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("HybridSearch empty project: %v", err)
+	}
+
+	got := make(map[int64]bool, len(results))
+	for _, r := range results {
+		got[r.ID] = true
+	}
+	for _, id := range append(alphaIDs, betaIDs...) {
+		if !got[id] {
+			t.Fatalf("expected empty project scope to include id=%d, got %v", id, idsOf(results))
+		}
+	}
+}
+
 // seedMemories inserts each content string into store and mirrors the
 // embedding into idx under project. The project parameter is used only for
 // the vec-index Upsert and MUST match the project the store was already

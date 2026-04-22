@@ -102,9 +102,10 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 
 	// Check for pending ralph handoffs — assign immediately if one exists.
 	var h *pendingHandoff
+	var handoffBeadID string
 	for beadID, ph := range d.pendingHandoffs {
 		h = ph
-		delete(d.pendingHandoffs, beadID)
+		handoffBeadID = beadID
 		break
 	}
 
@@ -112,6 +113,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		w := d.workers[id]
 		// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
 		w.state = protocol.WorkerReserved
+		w.assignmentID = h.assignmentID
 		w.beadID = h.beadID
 		w.worktree = h.worktree
 		w.model = h.model
@@ -133,11 +135,14 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		// Phase 2: Verify reservation still valid, then transition to Busy.
 		w, ok := d.workers[id]
 		if !ok || w.state != protocol.WorkerReserved {
+			if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
+				d.pendingHandoffs[handoffBeadID] = h
+			}
 			d.mu.Unlock()
 			return
 		}
 		w.state = protocol.WorkerBusy
-		_ = d.sendToWorker(w, protocol.Message{
+		if err := d.sendToWorker(w, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
 				BeadID:        h.beadID,
@@ -146,7 +151,16 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 				MemoryContext: memCtx,
 				TargetBranch:  h.targetBranch,
 			},
-		})
+		}); err != nil {
+			_ = w.conn.Close()
+			delete(d.workers, id)
+			if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
+				d.pendingHandoffs[handoffBeadID] = h
+			}
+			d.mu.Unlock()
+			return
+		}
+		delete(d.pendingHandoffs, handoffBeadID)
 	}
 	d.mu.Unlock()
 
@@ -219,10 +233,11 @@ func (d *Dispatcher) touchProgress(workerID string) {
 // workerExitInfo holds the minimal details needed to escalate a timed-out
 // worker exit after releasing d.mu.
 type workerExitInfo struct {
-	workerID    string
-	beadID      string
-	prevSession bool // worker is from a previous dispatcher session
-	managed     bool // worker was spawned by the dispatcher (procMgr)
+	workerID     string
+	beadID       string
+	assignmentID int64
+	prevSession  bool // worker is from a previous dispatcher session
+	managed      bool // worker was spawned by the dispatcher (procMgr)
 }
 
 // escalateTimedOutWorkers dispatches escalation messages and clears bead
@@ -242,6 +257,7 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 					_ = d.logEvent(ctx, "heartbeat_bead_reset_failed", "dispatcher", dw.beadID, dw.workerID,
 						fmt.Sprintf(`{"error":%q}`, err.Error()))
 				}
+				_ = d.completeAssignment(ctx, dw.assignmentID, dw.beadID)
 			}
 		}
 		// Always clear internal tracking for timed-out workers, regardless of
@@ -260,6 +276,7 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 				_ = d.logEvent(ctx, "progress_timeout_bead_reset_failed", "dispatcher", sw.beadID, sw.workerID,
 					fmt.Sprintf(`{"error":%q}`, err.Error()))
 			}
+			_ = d.completeAssignment(ctx, sw.assignmentID, sw.beadID)
 			d.clearBeadTracking(sw.beadID)
 		}
 	}
@@ -429,7 +446,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	deadWorkers := make([]workerExitInfo, 0, len(dead))
 	for _, id := range dead {
 		w := d.workers[id]
-		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, prevSession: w.prevSession, managed: w.managed})
+		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, prevSession: w.prevSession, managed: w.managed})
 		if w.managed {
 			newManagedExits++
 		}
@@ -441,7 +458,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	stuckWorkers := make([]workerExitInfo, 0, len(stuck))
 	for _, id := range stuck {
 		w := d.workers[id]
-		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, managed: w.managed})
+		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, managed: w.managed})
 		if w.managed {
 			newManagedExits++
 		}
@@ -570,11 +587,14 @@ func (d *Dispatcher) shutdownWaitLoop(shutdownCtx context.Context, cancelFunc co
 func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 	d.mu.Lock()
 	var beadID string
+	var assignmentID int64
 	w, ok := d.workers[workerID]
 	if ok {
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		beadID = w.beadID // capture before clearing
+		assignmentID = w.assignmentID
 		w.state = protocol.WorkerIdle
+		w.assignmentID = 0
 		w.beadID = ""
 		w.shutdownCancel = nil
 	}
@@ -587,6 +607,7 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 			_ = d.logEvent(ctx, "scale_down_bead_reset_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		d.clearBeadTracking(beadID)
 		_ = d.logEvent(ctx, "bead_requeued_scale_down", "dispatcher", beadID, workerID,
 			`{"reason":"shutdown_timeout"}`)

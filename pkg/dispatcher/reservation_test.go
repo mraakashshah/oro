@@ -458,6 +458,13 @@ func TestReservationPattern_InvalidReservationAfterRelock(t *testing.T) {
 		t.Fatalf("registerWorker sent ASSIGN %d time(s) despite invalidated reservation; "+
 			"expected 0 writes after reservation was tampered with", n)
 	}
+
+	d.mu.Lock()
+	_, stillPending := d.pendingHandoffs["invalidated-bead"]
+	d.mu.Unlock()
+	if !stillPending {
+		t.Fatal("expected pending handoff to remain recoverable after reservation invalidation")
+	}
 }
 
 // compileSentinel ensures protocol.WorkerReserved is defined at compile time.
