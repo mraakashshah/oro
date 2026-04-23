@@ -89,6 +89,19 @@ func stubPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge stri
 	}
 }
 
+func stubCodexPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge string) {
+	fake.output[key("tmux", "display-message", "-p", "-t", sessionName+":architect", "#{pane_current_command}")] = "codex"
+	fake.output[key("tmux", "display-message", "-p", "-t", sessionName+":manager", "#{pane_current_command}")] = "codex"
+
+	archCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":architect")
+	mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
+	fake.output[archCapture] = "Codex ready\n" + architectNudge + "\n"
+	fake.seqOut[mgrCapture] = []string{
+		"Codex ready\n" + managerNudge + "\n",
+		"bd stats\nrunning\n",
+	}
+}
+
 // findCall returns the first call matching the given tmux subcommand, or nil.
 func findCall(calls [][]string, subcmd string) []string {
 	for _, call := range calls {
@@ -335,6 +348,45 @@ func TestTmuxLayout(t *testing.T) {
 		}
 		if strings.Contains(mgrCmd, "claude -p") {
 			t.Errorf("should use interactive claude, not 'claude -p', got: %s", mgrCmd)
+		}
+	})
+
+	t.Run("Create launches interactive codex when codex runtime is configured", func(t *testing.T) {
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		stubCodexPaneReady(fake, "oro", "architect nudge", "manager nudge")
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+		sess.WaitBeacon()
+
+		newSessionCall := findCall(fake.calls, "new-session")
+		if newSessionCall == nil {
+			t.Fatal("expected tmux new-session to be called")
+		}
+		archCmd := newSessionCall[len(newSessionCall)-1]
+		if !strings.Contains(archCmd, " codex") {
+			t.Errorf("new-session command should run codex, got: %s", archCmd)
+		}
+		if strings.Contains(archCmd, "CLAUDE_CONFIG_DIR=") {
+			t.Errorf("new-session command should avoid CLAUDE_CONFIG_DIR for codex, got: %s", archCmd)
+		}
+
+		newWindowCall := findCall(fake.calls, "new-window")
+		if newWindowCall == nil {
+			t.Fatal("expected tmux new-window to be called")
+		}
+		mgrCmd := newWindowCall[len(newWindowCall)-1]
+		if !strings.Contains(mgrCmd, " codex") {
+			t.Errorf("new-window command should run codex, got: %s", mgrCmd)
+		}
+		if strings.Contains(mgrCmd, "CLAUDE_CONFIG_DIR=") {
+			t.Errorf("new-window command should avoid CLAUDE_CONFIG_DIR for codex, got: %s", mgrCmd)
 		}
 	})
 
@@ -874,6 +926,22 @@ func TestExecEnvCmd(t *testing.T) {
 			t.Errorf("expected execEnvCmd to NOT contain --ide flag, got: %s", cmd)
 		}
 	})
+
+	t.Run("uses codex when codex runtime is configured", func(t *testing.T) {
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+
+		cmd := execEnvCmd("architect", "")
+
+		if !strings.Contains(cmd, " codex") {
+			t.Errorf("expected execEnvCmd to contain 'codex', got: %s", cmd)
+		}
+		if strings.Contains(cmd, "claude") {
+			t.Errorf("expected codex command to avoid claude-specific launch, got: %s", cmd)
+		}
+		if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+			t.Errorf("expected codex command to avoid CLAUDE_CONFIG_DIR, got: %s", cmd)
+		}
+	})
 }
 
 func TestExecEnvCmdWithProject(t *testing.T) {
@@ -942,6 +1010,26 @@ func TestExecEnvCmdWithProject(t *testing.T) {
 			if !strings.Contains(cmd, envVar) {
 				t.Errorf("expected %s in command, got: %s", envVar, cmd)
 			}
+		}
+	})
+
+	t.Run("codex runtime keeps project env without claude flags", func(t *testing.T) {
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+		t.Setenv("ORO_HOME", "/tmp/test-oro-home")
+
+		cmd := execEnvCmd("architect", "myproject")
+
+		if !strings.Contains(cmd, " ORO_PROJECT=myproject ") {
+			t.Errorf("expected ORO_PROJECT=myproject env var, got: %s", cmd)
+		}
+		if !strings.HasSuffix(cmd, " codex") {
+			t.Errorf("expected codex command suffix, got: %s", cmd)
+		}
+		if strings.Contains(cmd, "--add-dir") || strings.Contains(cmd, "--settings") {
+			t.Errorf("expected codex command to avoid claude project flags, got: %s", cmd)
+		}
+		if strings.Contains(cmd, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD") {
+			t.Errorf("expected codex command to avoid claude env vars, got: %s", cmd)
 		}
 	})
 }
@@ -1059,6 +1147,20 @@ func TestExecEnvCmdBackwardCompat(t *testing.T) {
 			}
 			if !strings.HasSuffix(cmd, " claude") {
 				t.Errorf("execEnvCmd(%q, \"\") should end with ' claude', got: %s", role, cmd)
+			}
+		}
+	})
+
+	t.Run("codex runtime omits claude-only env for all roles", func(t *testing.T) {
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+
+		for _, role := range []string{"architect", "manager", "worker"} {
+			cmd := execEnvCmd(role, "")
+			if !strings.HasSuffix(cmd, " codex") {
+				t.Errorf("execEnvCmd(%q, \"\") should end with ' codex', got: %s", role, cmd)
+			}
+			if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+				t.Errorf("execEnvCmd(%q, \"\") should not include CLAUDE_CONFIG_DIR for codex, got: %s", role, cmd)
 			}
 		}
 	})
@@ -1533,6 +1635,31 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[1] == "new-session" {
 				t.Error("should NOT create new session when Claude is running")
+			}
+		}
+	})
+
+	t.Run("keeps session when Codex is running in panes", func(t *testing.T) {
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+
+		fake := newFakeCmd()
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = "codex"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "codex"
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		err := sess.Create("architect nudge", "manager nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+		sess.WaitBeacon()
+
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[1] == "kill-session" {
+				t.Error("should NOT kill-session when Codex is running")
+			}
+			if len(call) >= 2 && call[1] == "new-session" {
+				t.Error("should NOT create new session when Codex is running")
 			}
 		}
 	})

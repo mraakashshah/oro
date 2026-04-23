@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"oro/pkg/agentruntime"
 )
 
 // CmdRunner abstracts command execution for testability.
@@ -29,7 +31,7 @@ func (e *ExecRunner) Run(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// defaultReadyTimeout is the default time to wait for Claude to become ready.
+// defaultReadyTimeout is the default time to wait for the runtime CLI to become ready.
 // Claude Code with SessionStart hooks (bd list, bd ready, git status, etc.)
 // can take 30-45s to initialize.
 const defaultReadyTimeout = 60 * time.Second
@@ -64,7 +66,7 @@ func getSessionNudgeLock(target string) *sync.Mutex {
 // TmuxSession manages a tmux session with the Oro layout.
 type TmuxSession struct {
 	Name          string
-	Project       string // optional project name; when set, adds --add-dir/--settings to Claude launch
+	Project       string // optional project name; runtime-specific launch behavior may use this
 	Runner        CmdRunner
 	Sleeper       func(time.Duration) // optional; overrides time.Sleep for testing
 	ReadyTimeout  time.Duration       // timeout for Claude readiness polling; 0 means defaultReadyTimeout
@@ -83,8 +85,8 @@ func (s *TmuxSession) Exists() bool {
 	return err == nil
 }
 
-// isHealthy checks whether Claude is running in both panes. Returns false
-// if either pane shows a shell (zombie session — Claude crashed back to shell).
+// isHealthy checks whether the runtime CLI is running in both panes. Returns
+// false if either pane shows a shell (zombie session — agent crashed back to shell).
 func (s *TmuxSession) isHealthy() bool {
 	for _, window := range []string{"architect", "manager"} {
 		pane := s.Name + ":" + window
@@ -97,6 +99,23 @@ func (s *TmuxSession) isHealthy() bool {
 		}
 	}
 	return true
+}
+
+func activeRuntime() string {
+	return agentruntime.ReadRuntime()
+}
+
+func runtimeBinary() string {
+	switch activeRuntime() {
+	case agentruntime.RuntimeCodex:
+		return "codex"
+	default:
+		return "claude"
+	}
+}
+
+func runtimeUsesClaudeConfig() bool {
+	return activeRuntime() == agentruntime.RuntimeClaude
 }
 
 // claudeConfigBase returns the base Claude Code config directory.
@@ -209,18 +228,23 @@ func preTrustProject(roleDir, projectPath string) error {
 	return os.WriteFile(configPath, out, 0o600) //nolint:gosec,wrapcheck // roleDir is trusted
 }
 
-// execEnvCmd builds an exec-env command that replaces the shell with Claude,
-// setting ORO_ROLE, BD_ACTOR, GIT_AUTHOR_NAME, and CLAUDE_CONFIG_DIR for the
-// given role. Uses exec to eliminate the shell phase entirely — Claude IS the
-// initial process. CLAUDE_CONFIG_DIR is set per role so that each role maintains
-// its own input history (history.jsonl) while sharing all other config via symlinks.
-// When project is non-empty, adds --add-dir and --settings flags pointing to
-// the project's ORO_HOME directory and settings.json file.
+// execEnvCmd builds an exec-env command that replaces the shell with the active
+// runtime CLI, setting ORO_ROLE, BD_ACTOR, and GIT_AUTHOR_NAME for the given
+// role. Claude-specific config/trust wiring is only applied when Claude is the
+// selected runtime.
 func execEnvCmd(role, project string) string {
+	base := fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s", role, role, role)
+	if project != "" {
+		base += fmt.Sprintf(" ORO_PROJECT=%s", project)
+	}
+
+	if !runtimeUsesClaudeConfig() {
+		return base + " " + runtimeBinary()
+	}
+
 	configBase := claudeConfigBase()
 	configDir := roleConfigDir(configBase, role)
-	base := fmt.Sprintf("exec env ORO_ROLE=%s BD_ACTOR=%s GIT_AUTHOR_NAME=%s CLAUDE_CONFIG_DIR=%s",
-		role, role, role, configDir)
+	base += fmt.Sprintf(" CLAUDE_CONFIG_DIR=%s", configDir)
 	if project == "" {
 		return base + " claude"
 	}
@@ -230,12 +254,12 @@ func execEnvCmd(role, project string) string {
 		oroHome = filepath.Join(home, ".oro")
 	}
 	settingsPath := filepath.Join(oroHome, "projects", project, "settings.json")
-	return fmt.Sprintf("%s ORO_PROJECT=%s CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 claude --add-dir %s --settings %s",
-		base, project, oroHome, settingsPath)
+	return fmt.Sprintf("%s CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 claude --add-dir %s --settings %s",
+		base, oroHome, settingsPath)
 }
 
 // Create creates the Oro tmux session with two windows (architect + manager).
-// Both windows launch interactive claude with role env vars (ORO_ROLE, BD_ACTOR,
+// Both windows launch the active interactive runtime with role env vars (ORO_ROLE, BD_ACTOR,
 // GIT_AUTHOR_NAME) set, then poll for Claude readiness before injecting a short
 // nudge via send-keys. The full role context is injected by the SessionStart hook
 // reading the ORO_ROLE env var — send-keys only sends a short nudge/kick.
@@ -249,20 +273,22 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		_ = s.Kill()
 	}
 
-	// Set up role-scoped Claude config directories so each role gets isolated
-	// input history (history.jsonl) while sharing all other config via symlinks.
-	// Then pre-trust the current project so the workspace trust dialog doesn't
-	// block headless panes (trust is stored per-project in .claude.json).
-	configBase := claudeConfigBase()
-	cwd, _ := os.Getwd()
-	for _, role := range []string{"architect", "manager"} {
-		roleDir := roleConfigDir(configBase, role)
-		if err := setupRoleConfigDir(configBase, roleDir); err != nil {
-			return fmt.Errorf("setup %s config dir: %w", role, err)
-		}
-		if cwd != "" {
-			if err := preTrustProject(roleDir, cwd); err != nil {
-				return fmt.Errorf("pre-trust project for %s: %w", role, err)
+	if runtimeUsesClaudeConfig() {
+		// Set up role-scoped Claude config directories so each role gets isolated
+		// input history (history.jsonl) while sharing all other config via symlinks.
+		// Then pre-trust the current project so the workspace trust dialog doesn't
+		// block headless panes (trust is stored per-project in .claude.json).
+		configBase := claudeConfigBase()
+		cwd, _ := os.Getwd()
+		for _, role := range []string{"architect", "manager"} {
+			roleDir := roleConfigDir(configBase, role)
+			if err := setupRoleConfigDir(configBase, roleDir); err != nil {
+				return fmt.Errorf("setup %s config dir: %w", role, err)
+			}
+			if cwd != "" {
+				if err := preTrustProject(roleDir, cwd); err != nil {
+					return fmt.Errorf("pre-trust project for %s: %w", role, err)
+				}
 			}
 		}
 	}
@@ -394,13 +420,17 @@ func (s *TmuxSession) launchAndNudgeAll(architectNudge, managerNudge string) err
 	return nil
 }
 
-// launchAndNudge waits for Claude to be ready in a window (already launched via
-// exec-env as the initial process), then sends the nudge message with verified
-// delivery. No send-keys launch or WaitForCommand needed — Claude IS the process.
+// launchAndNudge waits for the active runtime to be ready in a window (already
+// launched via exec-env as the initial process), then sends the nudge message
+// with verified delivery.
 func (s *TmuxSession) launchAndNudge(role, nudge string) error {
 	pane := s.Name + ":" + role
-	if err := s.WaitForPrompt(pane); err != nil {
-		return fmt.Errorf("wait for %s prompt: %w", role, err)
+	if runtimeUsesClaudeConfig() {
+		if err := s.WaitForPrompt(pane); err != nil {
+			return fmt.Errorf("wait for %s prompt: %w", role, err)
+		}
+	} else if err := s.WaitForCommand(pane); err != nil {
+		return fmt.Errorf("wait for %s runtime: %w", role, err)
 	}
 	nudgeTimeout := s.ReadyTimeout
 	if nudgeTimeout == 0 {
@@ -423,7 +453,7 @@ func isShell(cmd string) bool {
 }
 
 // WaitForCommand polls tmux pane_current_command until the foreground process
-// is no longer a shell, indicating Claude has started. This is more reliable
+// is no longer a shell, indicating the runtime CLI has started. This is more reliable
 // than scraping pane content for a prompt character.
 func (s *TmuxSession) WaitForCommand(paneTarget string) error {
 	timeout := s.ReadyTimeout
@@ -442,7 +472,7 @@ func (s *TmuxSession) WaitForCommand(paneTarget string) error {
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("claude did not start in pane %s within %v (last command: %s)", paneTarget, timeout, lastCmd)
+			return fmt.Errorf("%s did not start in pane %s within %v (last command: %s)", runtimeBinary(), paneTarget, timeout, lastCmd)
 		}
 		s.sleep(pollInterval)
 	}
@@ -488,7 +518,7 @@ func (s *TmuxSession) WaitForPrompt(paneTarget string) error {
 			trustAccepted = true
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("claude prompt %q not found in pane %s within %v", promptIndicator, paneTarget, timeout)
+			return fmt.Errorf("runtime prompt %q not found in pane %s within %v", promptIndicator, paneTarget, timeout)
 		}
 		s.sleep(pollInterval)
 	}

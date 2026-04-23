@@ -397,6 +397,33 @@ func TestWireDependencies_SetsPaneRestarter(t *testing.T) {
 			t.Errorf("expected cmdStr to contain 'ORO_ROLE=manager', got: %s", cmdStr)
 		}
 	})
+
+	t.Run("uses codex pane command when codex runtime is configured", func(t *testing.T) {
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+		t.Setenv("ORO_PROJECT", "test-project")
+
+		mockDispatcher := &dispatcher.Dispatcher{}
+		runner := &fakeCommandRunner{}
+
+		wireDependencies(mockDispatcher, "/tmp/test.sock", "/tmp/oro", runner, false)
+
+		pr := mockDispatcher.GetPaneRestarter()
+		if pr == nil {
+			t.Fatal("expected paneRestarter to be set, but got nil")
+		}
+		tmuxRestarter, ok := pr.(*dispatcher.TmuxPaneRestarter)
+		if !ok {
+			t.Fatalf("expected TmuxPaneRestarter, got %T", pr)
+		}
+
+		cmdStr := tmuxRestarter.CmdStr()
+		if !strings.Contains(cmdStr, "codex") {
+			t.Errorf("expected cmdStr to contain 'codex', got: %s", cmdStr)
+		}
+		if strings.Contains(cmdStr, "CLAUDE_CONFIG_DIR=") {
+			t.Errorf("expected codex cmdStr to avoid CLAUDE_CONFIG_DIR, got: %s", cmdStr)
+		}
+	})
 }
 
 // TestStartProgressTimeoutFlag verifies that --progress-timeout and --review-timeout
