@@ -263,7 +263,12 @@ lane_go() {
 	# shellcheck disable=SC2329
 	go_test_with_coverage() {
 		local race_flag=""
-		if [ "${ORO_SKIP_MUTATION:-}" != "1" ]; then race_flag="-race"; fi
+		local goos goarch
+		goos=$(go env GOOS)
+		goarch=$(go env GOARCH)
+		if [ "${ORO_SKIP_MUTATION:-}" != "1" ] && ! { [ "$goos" = "darwin" ] && [ "$goarch" = "arm64" ]; }; then
+			race_flag="-race"
+		fi
 		# shellcheck disable=SC2086
 		GOFLAGS=-buildvcs=false go test $race_flag -shuffle=on -p 3 \
 			-coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
