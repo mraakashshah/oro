@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -254,5 +255,25 @@ func TestCLISpawner_SetsStdinToDevNull(t *testing.T) {
 	// claude ran — clean up.
 	if reader != nil {
 		_ = reader.Close()
+	}
+}
+
+func TestSpawnCommand_DefaultsToClaude(t *testing.T) {
+	t.Setenv("ORO_AGENT_RUNTIME", "")
+
+	got := spawnCommand("haiku", "test prompt")
+	want := []string{"claude", "-p", "test prompt", "--model", "haiku"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("spawnCommand() = %v, want %v", got, want)
+	}
+}
+
+func TestSpawnCommand_UsesCodexWhenConfigured(t *testing.T) {
+	t.Setenv("ORO_AGENT_RUNTIME", "codex")
+
+	got := spawnCommand("haiku", "test prompt")
+	want := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-5-codex", "test prompt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("spawnCommand() = %v, want %v", got, want)
 	}
 }

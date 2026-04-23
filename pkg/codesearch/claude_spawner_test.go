@@ -59,3 +59,16 @@ func TestSpawnCmdSetup(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildCmd_UsesCodexWhenConfigured(t *testing.T) {
+	t.Setenv("ORO_AGENT_RUNTIME", "codex")
+
+	cmd := codesearch.BuildCmd(context.Background(), "test prompt")
+
+	if got := cmd.Args[0]; got != "codex" {
+		t.Fatalf("BuildCmd command = %q, want codex", got)
+	}
+	if !strings.Contains(strings.Join(cmd.Args, " "), "--skip-git-repo-check") {
+		t.Fatalf("BuildCmd args = %v, want codex exec args", cmd.Args)
+	}
+}

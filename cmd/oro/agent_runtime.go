@@ -2,18 +2,17 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
+	"oro/pkg/agentruntime"
 	codexruntime "oro/pkg/agentruntime/codex"
 	"oro/pkg/ops"
 	"oro/pkg/worker"
 )
 
 const (
-	agentRuntimeEnvVar = "ORO_AGENT_RUNTIME"
-	runtimeClaude      = "claude"
-	runtimeCodex       = "codex"
+	agentRuntimeEnvVar = agentruntime.EnvVar
+	runtimeClaude      = agentruntime.RuntimeClaude
+	runtimeCodex       = agentruntime.RuntimeCodex
 )
 
 type productionRuntime struct {
@@ -30,11 +29,7 @@ var (
 )
 
 func readAgentRuntime() string {
-	runtime := strings.TrimSpace(strings.ToLower(os.Getenv(agentRuntimeEnvVar)))
-	if runtime == "" {
-		return runtimeClaude
-	}
-	return runtime
+	return agentruntime.ReadRuntime()
 }
 
 func resolveProductionRuntime() (*productionRuntime, error) {

@@ -8,15 +8,27 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+
+	"oro/pkg/agentruntime"
 )
 
-// ClaudeRerankSpawner implements RerankSpawner using claude -p.
-type ClaudeRerankSpawner struct{}
+const codexRerankModel = "gpt-5-codex"
 
-// BuildCmd constructs the exec.Cmd for a claude -p invocation.
-// It sets Stdin to an empty reader (prevents hang in non-TTY daemon context)
-// and strips CLAUDECODE* env vars (prevents altered spawned-claude behavior).
+// RuntimeRerankSpawner implements RerankSpawner using the configured runtime CLI.
+type RuntimeRerankSpawner struct{}
+
+// ClaudeRerankSpawner is retained as a compatibility alias for older call sites.
+type ClaudeRerankSpawner = RuntimeRerankSpawner
+
+// BuildCmd constructs the exec.Cmd for the configured rerank runtime.
 func BuildCmd(ctx context.Context, prompt string) *exec.Cmd {
+	if agentruntime.ReadRuntime() == agentruntime.RuntimeCodex {
+		return buildCodexCmd(ctx, prompt)
+	}
+	return buildClaudeCmd(ctx, prompt)
+}
+
+func buildClaudeCmd(ctx context.Context, prompt string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", "haiku", "--output-format", "json") //nolint:gosec // prompt is constructed internally
 	cmd.Stdin = strings.NewReader("")
 	cmd.Env = slices.DeleteFunc(os.Environ(), func(e string) bool {
@@ -25,12 +37,21 @@ func BuildCmd(ctx context.Context, prompt string) *exec.Cmd {
 	return cmd
 }
 
-// Spawn runs claude -p with the given prompt and extracts the result from the JSON envelope.
-func (s *ClaudeRerankSpawner) Spawn(ctx context.Context, prompt string) (string, error) {
+func buildCodexCmd(ctx context.Context, prompt string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", codexRerankModel, prompt) //nolint:gosec // prompt is constructed internally
+	cmd.Stdin = strings.NewReader("")
+	return cmd
+}
+
+// Spawn runs the configured rerank CLI and normalizes its output into raw JSON.
+func (s *RuntimeRerankSpawner) Spawn(ctx context.Context, prompt string) (string, error) {
 	cmd := BuildCmd(ctx, prompt)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("claude rerank: %w", err)
+		return "", fmt.Errorf("runtime rerank: %w", err)
+	}
+	if agentruntime.ReadRuntime() == agentruntime.RuntimeCodex {
+		return strings.TrimSpace(string(out)), nil
 	}
 	return ExtractResultFromEnvelope(out)
 }

@@ -8,7 +8,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
+
+	"oro/pkg/agentruntime"
 )
 
 // maxSessionBytes is the maximum number of bytes taken from sessionText.
@@ -55,7 +58,9 @@ type Inserter interface {
 	Insert(ctx context.Context, m InsertParams) (int64, error)
 }
 
-// CLISpawner is the production Spawner that invokes `claude -p`.
+const codexExtractionModel = "gpt-5-codex"
+
+// CLISpawner is the production Spawner that invokes the configured runtime CLI.
 type CLISpawner struct{}
 
 // waitCloser wraps a pipe reader and calls cmd.Wait() on Close to reap the child process.
@@ -73,13 +78,13 @@ func (w *waitCloser) Close() error {
 	return nil
 }
 
-// Spawn starts a `claude -p` subprocess with the given model and prompt.
+// Spawn starts a runtime subprocess with the given model and prompt.
 // Stdin is set to /dev/null to prevent the process from inheriting parent stdin
 // and hanging (see pkg/worker/worker.go:1249-1256 for full rationale).
 // The returned ReadCloser's Close method reaps the child process via cmd.Wait().
 func (c CLISpawner) Spawn(ctx context.Context, model, prompt string) (io.ReadCloser, error) {
-	args := []string{"-p", prompt, "--model", model}
-	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args constructed internally
+	args := spawnCommand(model, prompt)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // args constructed internally
 
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
@@ -94,10 +99,31 @@ func (c CLISpawner) Spawn(ctx context.Context, model, prompt string) (io.ReadClo
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start claude: %w", err)
+		return nil, fmt.Errorf("start runtime subprocess: %w", err)
 	}
 
 	return &waitCloser{ReadCloser: stdout, cmd: cmd}, nil
+}
+
+func spawnCommand(model, prompt string) []string {
+	if agentruntime.ReadRuntime() == agentruntime.RuntimeCodex {
+		args := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write"}
+		if codexModel := normalizeCodexModel(model); codexModel != "" {
+			args = append(args, "--model", codexModel)
+		}
+		return append(args, prompt)
+	}
+	return []string{"claude", "-p", prompt, "--model", model}
+}
+
+func normalizeCodexModel(model string) string {
+	model = strings.TrimSpace(model)
+	switch model {
+	case "", "haiku", "sonnet", "opus":
+		return codexExtractionModel
+	default:
+		return model
+	}
 }
 
 // ExtractWithLLM runs a lightweight LLM extraction pass over sessionText and
