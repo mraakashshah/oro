@@ -27,9 +27,9 @@ git -C "$repo_root" worktree add "$wt2" HEAD 2>/dev/null || true
 echo "Running quality_gate.sh concurrently in both worktrees..."
 
 # Run QG in both worktrees in parallel, capturing output to files
-"$wt1/scripts/quality_gate.sh" > "$log1" 2>&1 &
+"$wt1/scripts/quality_gate.sh" >"$log1" 2>&1 &
 pid1=$!
-"$wt2/scripts/quality_gate.sh" > "$log2" 2>&1 &
+"$wt2/scripts/quality_gate.sh" >"$log2" 2>&1 &
 pid2=$!
 
 # Wait for both to complete (exit code is ignored — we assert on log contents below)
@@ -38,15 +38,15 @@ wait "$pid2" 2>/dev/null || true
 
 # Check if either output contains the "parallel golangci-lint is running" error
 if grep -q "parallel golangci-lint is running" "$log1" 2>/dev/null; then
-    printf '%bFAIL: Worktree 1 got parallel lock error:%b\n' "$RED" "$NC"
-    head -20 "$log1"
-    exit 1
+	printf '%bFAIL: Worktree 1 got parallel lock error:%b\n' "$RED" "$NC"
+	head -20 "$log1"
+	exit 1
 fi
 
 if grep -q "parallel golangci-lint is running" "$log2" 2>/dev/null; then
-    printf '%bFAIL: Worktree 2 got parallel lock error:%b\n' "$RED" "$NC"
-    head -20 "$log2"
-    exit 1
+	printf '%bFAIL: Worktree 2 got parallel lock error:%b\n' "$RED" "$NC"
+	head -20 "$log2"
+	exit 1
 fi
 
 printf '%bPASS: Both concurrent QG runs completed without parallel lock error%b\n' "$GREEN" "$NC"
