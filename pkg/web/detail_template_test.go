@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	"oro/pkg/protocol"
+	"oro/pkg/web"
 )
 
 // TestDetailTemplate validates that the templates/detail.html template renders
 // *protocol.BeadDetail data with correct structure and conditional sections.
 func TestDetailTemplate(t *testing.T) {
-	tmpl, err := template.ParseFS(os.DirFS("templates"), "detail.html")
+	tmpl, err := template.New("").Funcs(web.TemplateFuncMap()).ParseFS(os.DirFS("templates"), "detail.html")
 	if err != nil {
 		t.Fatalf("parse templates/detail.html: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestDetailTemplate(t *testing.T) {
 		// .ID in outer div
 		assertContains(t, body, `id="oro-x1"`)
 		// .Title in <h2>
-		assertContains(t, body, "<h2>Test bead</h2>")
+		assertContains(t, body, "Test bead</h2>")
 		// .Status with status indicator
 		assertContains(t, body, "in_progress")
 		assertContains(t, body, "detail-meta")
@@ -83,7 +84,7 @@ func TestDetailTemplate(t *testing.T) {
 
 		// Required fields still present
 		assertContains(t, body, `id="oro-x2"`)
-		assertContains(t, body, "<h2>Minimal bead</h2>")
+		assertContains(t, body, "Minimal bead</h2>")
 		assertContains(t, body, "open")
 
 		// Description section hidden when empty

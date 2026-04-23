@@ -13,7 +13,7 @@ import (
 
 func TestParadeTemplate(t *testing.T) {
 	fsys := os.DirFS("templates")
-	tmpl, err := template.New("").ParseFS(fsys, "parade.html")
+	tmpl, err := template.New("").Funcs(web.TemplateFuncMap()).ParseFS(fsys, "parade.html")
 	if err != nil {
 		t.Fatalf("parse parade.html: %v", err)
 	}

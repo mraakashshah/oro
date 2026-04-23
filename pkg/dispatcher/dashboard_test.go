@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -262,6 +263,58 @@ func TestDashboardDataHealth(t *testing.T) {
 			t.Errorf("received message after unsubscribe: %q", msg)
 		default:
 			// correct — no message
+		}
+	})
+
+	t.Run("Workers exposes heartbeat age and context", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		now := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
+		d.nowFunc = func() time.Time { return now }
+		d.mu.Lock()
+		d.workers["worker-1"] = &trackedWorker{
+			id:         "worker-1",
+			state:      protocol.WorkerBusy,
+			beadID:     "oro-123",
+			contextPct: 72,
+			lastSeen:   now.Add(-12 * time.Second),
+		}
+		d.mu.Unlock()
+
+		workers, err := d.Workers(context.Background())
+		if err != nil {
+			t.Fatalf("Workers() error: %v", err)
+		}
+		if len(workers) != 1 {
+			t.Fatalf("Workers() len = %d, want 1", len(workers))
+		}
+		if workers[0].LastHeartbeatSecs != 12 {
+			t.Errorf("LastHeartbeatSecs = %v, want 12", workers[0].LastHeartbeatSecs)
+		}
+		if workers[0].ContextPct != 72 {
+			t.Errorf("ContextPct = %d, want 72", workers[0].ContextPct)
+		}
+	})
+
+	t.Run("Throughput counts merged events in the last hour", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		_, err := d.db.ExecContext(ctx, `
+			INSERT INTO events (type, source, created_at) VALUES
+			('merged', 'dispatcher', datetime('now', '-10 minutes')),
+			('merged', 'dispatcher', datetime('now', '-50 minutes')),
+			('merged', 'dispatcher', datetime('now', '-2 hours')),
+			('quality_gate_rejected', 'dispatcher', datetime('now', '-5 minutes'))
+		`)
+		if err != nil {
+			t.Fatalf("insert events: %v", err)
+		}
+
+		data, err := d.Throughput(ctx)
+		if err != nil {
+			t.Fatalf("Throughput() error: %v", err)
+		}
+		if data.BeadsPerHour != 2 {
+			t.Errorf("BeadsPerHour = %d, want 2", data.BeadsPerHour)
 		}
 	})
 }

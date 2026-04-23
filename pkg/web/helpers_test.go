@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/protocol"
 	"oro/pkg/web"
 )
 
@@ -145,5 +146,42 @@ func TestTruncTitle(t *testing.T) {
 	}
 	if got := fn("hello", -1); got != "hello" {
 		t.Errorf("truncTitle max=-1 = %q, want hello", got)
+	}
+}
+
+func TestEventHelpers(t *testing.T) {
+	fm := web.TemplateFuncMap()
+	symbol := fm["eventSymbol"].(func(string) string)
+	symbolClass := fm["eventSymbolClass"].(func(string) string)
+	summary := fm["eventSummary"].(func(protocol.Event) string)
+
+	if got := symbol("merged"); got != "✓" {
+		t.Errorf("eventSymbol(merged) = %q, want ✓", got)
+	}
+	if got := symbolClass("merge_conflict"); got != "event-feed__symbol--warn" {
+		t.Errorf("eventSymbolClass(merge_conflict) = %q", got)
+	}
+	if got := summary(protocol.Event{Type: "handoff", BeadID: "oro-123"}); got != "handoff for oro-123" {
+		t.Errorf("eventSummary(handoff) = %q", got)
+	}
+}
+
+func TestWorkerHelpers(t *testing.T) {
+	fm := web.TemplateFuncMap()
+	contextClass := fm["contextClass"].(func(int) string)
+	heartbeatClass := fm["heartbeatClass"].(func(float64) string)
+	heartbeatLabel := fm["heartbeatLabel"].(func(float64) string)
+
+	if got := contextClass(85); got != "worker-row__context--danger" {
+		t.Errorf("contextClass(85) = %q", got)
+	}
+	if got := heartbeatClass(35); got != "worker-row__heartbeat--warn" {
+		t.Errorf("heartbeatClass(35) = %q", got)
+	}
+	if got := heartbeatLabel(0); got != "just now" {
+		t.Errorf("heartbeatLabel(0) = %q", got)
+	}
+	if got := heartbeatLabel(5); got != "5s ago" {
+		t.Errorf("heartbeatLabel(5) = %q", got)
 	}
 }

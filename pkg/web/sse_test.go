@@ -9,17 +9,23 @@ import (
 func TestFormatSSEEvent_ValidJSON(t *testing.T) {
 	event := formatSSEEvent("bead_started", "oro-abc1", "worker-1")
 
-	// Must start with "data: " and end with double newline
-	if !strings.HasPrefix(event, "data: ") {
-		t.Fatalf("event must start with 'data: ', got %q", event)
+	if !strings.Contains(event, "event: new-event\n") {
+		t.Fatalf("event must contain named new-event frame, got %q", event)
 	}
 	if !strings.HasSuffix(event, "\n\n") {
 		t.Fatalf("event must end with double newline, got %q", event)
 	}
 
-	// Extract JSON payload
-	jsonStr := strings.TrimPrefix(event, "data: ")
-	jsonStr = strings.TrimSuffix(jsonStr, "\n\n")
+	parts := strings.Split(event, "\n\n")
+	if len(parts) < 2 {
+		t.Fatalf("event must contain at least one SSE frame, got %q", event)
+	}
+	frame := parts[0]
+	lines := strings.Split(frame, "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[1], "data: ") {
+		t.Fatalf("first frame malformed: %q", frame)
+	}
+	jsonStr := strings.TrimPrefix(lines[1], "data: ")
 
 	var parsed map[string]string
 	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
@@ -41,8 +47,9 @@ func TestFormatSSEEvent_SpecialChars(t *testing.T) {
 	// Values with quotes and backslashes must produce valid JSON
 	event := formatSSEEvent(`ev"ent`, `bead\1`, `worker"2`)
 
-	jsonStr := strings.TrimPrefix(event, "data: ")
-	jsonStr = strings.TrimSuffix(jsonStr, "\n\n")
+	parts := strings.Split(event, "\n\n")
+	frame := strings.Split(parts[0], "\n")
+	jsonStr := strings.TrimPrefix(frame[1], "data: ")
 
 	var parsed map[string]string
 	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
@@ -69,11 +76,25 @@ func TestSendBroadcastsToClients(t *testing.T) {
 
 	select {
 	case msg := <-ch:
-		if !strings.Contains(msg, `"type":"test_event"`) {
+		if !strings.Contains(msg, "event: new-event") || !strings.Contains(msg, `"type":"test_event"`) {
 			t.Errorf("unexpected event: %q", msg)
 		}
 	default:
 		t.Error("expected a message on the client channel")
+	}
+}
+
+func TestFormatSSEEvent_IncludesDashboardRefreshFrames(t *testing.T) {
+	event := formatSSEEvent("merged", "oro-xyz", "worker-3")
+	for _, want := range []string{
+		"event: new-event",
+		"event: parade-update",
+		"event: worker-update",
+		"event: throughput-update",
+	} {
+		if !strings.Contains(event, want) {
+			t.Fatalf("event missing %q: %q", want, event)
+		}
 	}
 }
 

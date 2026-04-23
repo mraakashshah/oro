@@ -7,30 +7,52 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/htmx.min.js"></script>
 </head>
-<body hx-ext="sse" sse-connect="/events">
+<body>
   {{if .HealthErr}}
   <div id="health-error" class="health-banner">{{.HealthErr}}</div>
   {{end}}
   <div class="layout">
     <div id="parade"
          hx-get="/fragments/parade"
-         hx-trigger="sse:parade-update"
+         hx-trigger="dashboard-parade from:body"
          hx-swap="innerHTML">
       {{template "parade-content" .Parade}}
     </div>
     <div id="sidebar">
       <div id="workers"
            hx-get="/fragments/workers"
-           hx-trigger="sse:worker-update"
+           hx-trigger="dashboard-workers from:body"
            hx-swap="innerHTML">
+        {{template "workers.html" .Workers}}
       </div>
       <div id="events"
            hx-get="/fragments/events"
+           hx-trigger="dashboard-events from:body"
            hx-swap="innerHTML">
+        {{template "events.html" .Events}}
       </div>
-      <div id="throughput">
+      <div id="throughput"
+           hx-get="/fragments/throughput"
+           hx-trigger="dashboard-throughput from:body"
+           hx-swap="innerHTML">
+        {{template "throughput.html" .Throughput}}
       </div>
     </div>
   </div>
+  <script>
+    (function () {
+      if (!window.EventSource) return;
+      var target = document.body;
+      var source = new EventSource("/events");
+      function dispatch(name) {
+        target.dispatchEvent(new CustomEvent(name));
+      }
+      source.addEventListener("parade-update", function () { dispatch("dashboard-parade"); });
+      source.addEventListener("worker-update", function () { dispatch("dashboard-workers"); });
+      source.addEventListener("new-event", function () { dispatch("dashboard-events"); });
+      source.addEventListener("throughput-update", function () { dispatch("dashboard-throughput"); });
+      window.addEventListener("beforeunload", function () { source.close(); });
+    })();
+  </script>
 </body>
 </html>

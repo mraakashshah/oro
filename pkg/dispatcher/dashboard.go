@@ -160,10 +160,11 @@ func (d *Dispatcher) Workers(_ context.Context) ([]web.WorkerInfo, error) {
 	result := make([]web.WorkerInfo, len(workers))
 	for i, w := range workers {
 		result[i] = web.WorkerInfo{
-			ID:         w.ID,
-			State:      w.State,
-			BeadID:     w.BeadID,
-			ContextPct: w.ContextPct,
+			ID:                w.ID,
+			State:             w.State,
+			BeadID:            w.BeadID,
+			ContextPct:        w.ContextPct,
+			LastHeartbeatSecs: w.LastHeartbeatSecs,
 		}
 	}
 	return result, nil
@@ -192,8 +193,18 @@ func (d *Dispatcher) Throughput(_ context.Context) (*web.ThroughputData, error) 
 		uptimeStr = fmt.Sprintf("%.0fm", uptime.Minutes())
 	}
 
+	var beadsPerHour int
+	if err := d.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM events
+		WHERE type = 'merged'
+		  AND datetime(created_at) >= datetime('now', '-1 hour')
+	`).Scan(&beadsPerHour); err != nil {
+		return nil, fmt.Errorf("throughput merged count: %w", err)
+	}
+
 	return &web.ThroughputData{
-		BeadsPerHour:  0,
+		BeadsPerHour:  beadsPerHour,
 		ActiveWorkers: active,
 		TotalWorkers:  len(workers),
 		Uptime:        uptimeStr,

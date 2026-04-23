@@ -1,6 +1,7 @@
 package dispatcher //nolint:testpackage // white-box test needs internal access
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net"
@@ -225,5 +226,78 @@ func TestHTTPServerServesDashboard(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "<!DOCTYPE") {
 		t.Errorf("GET / body missing <!DOCTYPE; got first 200 chars: %q", truncate(string(body), 200))
+	}
+	for _, want := range []string{"Beads / hour", "Workers active", "event-feed", `id="workers"`} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("GET / body missing %q; got first 300 chars: %q", want, truncate(string(body), 300))
+		}
+	}
+}
+
+func TestHTTPServerStreamsDashboardEvents(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	addr := freeAddr(t)
+	d.cfg.WebEnabled = true
+	d.cfg.WebAddr = addr
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	waitFor(t, func() bool {
+		resp, err := http.Get("http://" + addr + "/healthz") //nolint:noctx
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return true
+	}, 2*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/events", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	done := make(chan []string, 1)
+	go func() {
+		reader := bufio.NewReader(resp.Body)
+		lines := make([]string, 0, 8)
+		for len(lines) < 8 {
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil {
+				break
+			}
+			line = strings.TrimSpace(line)
+			if line != "" {
+				lines = append(lines, line)
+			}
+		}
+		done <- lines
+	}()
+
+	d.sseBroadcaster.Send("merged", "oro-123", "worker-1")
+
+	select {
+	case lines := <-done:
+		got := strings.Join(lines, "\n")
+		for _, want := range []string{
+			"event: new-event",
+			`data: {"type":"merged","bead_id":"oro-123","worker_id":"worker-1"}`,
+			"event: parade-update",
+			"event: worker-update",
+			"event: throughput-update",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("SSE stream missing %q:\n%s", want, got)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SSE frames")
 	}
 }

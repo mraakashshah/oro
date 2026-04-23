@@ -3428,13 +3428,14 @@ func TestHybridSearchUsesVectorIndex(t *testing.T) {
 		t.Fatalf("clear embedding: %v", err)
 	}
 
-	// Build a query vector and register it in the index under the same ID.
-	// Store project is "" → vecIndex project resolves to "oro".
+	// Build a query vector and register it in the index under the same project.
+	// Non-empty project scope should route through the vec index.
 	query := "golang concurrency patterns"
 	queryVec := embedder.Embed(query)
+	store.SetProject("alpha")
 
 	idx := NewInMemoryVecIndex()
-	if err := idx.Upsert(ctx, id, queryVec, "oro"); err != nil {
+	if err := idx.Upsert(ctx, id, queryVec, "alpha"); err != nil {
 		t.Fatalf("idx upsert: %v", err)
 	}
 	store.SetVectorIndex(idx)

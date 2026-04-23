@@ -4,6 +4,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -74,5 +75,27 @@ type sseEvent struct {
 // formatSSEEvent formats an event as Server-Sent Event data.
 func formatSSEEvent(eventType, beadID, workerID string) string {
 	b, _ := json.Marshal(sseEvent{Type: eventType, BeadID: beadID, WorkerID: workerID})
-	return "data: " + string(b) + "\n\n"
+	data := string(b)
+	events := []string{
+		"event: new-event\n" +
+			"data: " + data + "\n\n",
+	}
+
+	for _, name := range dashboardEventNames(eventType) {
+		events = append(events,
+			"event: "+name+"\n"+
+				"data: "+data+"\n\n",
+		)
+	}
+
+	return strings.Join(events, "")
+}
+
+func dashboardEventNames(eventType string) []string {
+	names := []string{"parade-update", "worker-update"}
+	switch eventType {
+	case "merged", "epic_acceptance_passed", "epic_acceptance_failed":
+		names = append(names, "throughput-update")
+	}
+	return names
 }

@@ -17,6 +17,9 @@ func TestMgFlagParsing(t *testing.T) {
 	if cmd.Use != "mg" {
 		t.Fatalf("expected Use='mg', got %q", cmd.Use)
 	}
+	if cmd.Deprecated == "" {
+		t.Fatal("expected mg command to be marked deprecated")
+	}
 
 	// Check all required flags exist.
 	flags := []struct {

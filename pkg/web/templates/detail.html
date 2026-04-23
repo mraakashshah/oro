@@ -1,13 +1,13 @@
 <div class="bead-detail" id="{{.ID}}">
-  <h2>{{.Title}}</h2>
+  <h2 class="bead-detail__title">{{.Title}}</h2>
   <div class="detail-meta">
-    <span class="status">{{.Status}}</span>
-    <span class="type">{{.Type}}</span>
-    <span class="epic">{{.Epic}}</span>
-    <span class="model">{{.Model}}</span>
+    <span class="badge badge--priority">{{statusSymbol .Status}} {{.Status}}</span>
+    {{if .Type}}<span class="badge">{{.Type}}</span>{{end}}
+    {{if .Epic}}<span class="badge">epic {{.Epic}}</span>{{end}}
+    {{if .Model}}<span class="badge">model {{.Model}}</span>{{end}}
   </div>
   {{if .Description}}<div class="detail-description">{{.Description}}</div>{{end}}
   {{if .AcceptanceCriteria}}<pre class="detail-ac">{{.AcceptanceCriteria}}</pre>{{end}}
-  {{if .Dependencies}}<div class="detail-deps">{{range .Dependencies}}<div class="dep-item">{{.DependsOnID}}</div>{{end}}</div>{{end}}
+  {{if .Dependencies}}<div class="detail-deps">{{range .Dependencies}}<div class="dep-item">depends on {{.DependsOnID}}</div>{{end}}</div>{{end}}
   {{if .WorkerID}}<div class="detail-worker">Worker: {{.WorkerID}} ({{.ContextPercent}}%)</div>{{end}}
 </div>

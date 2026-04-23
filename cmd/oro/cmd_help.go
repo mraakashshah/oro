@@ -20,7 +20,8 @@ Lifecycle:
 Monitoring:
   status     Show current swarm state
   logs       Query and tail dispatcher event logs
-  mg         Launch interactive dashboard
+  dashboard  Show the local web dashboard (requires 'oro start --web')
+  mg         Legacy BubbleTea dashboard (deprecated)
 
 Memory:
   remember   Store a memory

@@ -84,7 +84,7 @@ func testTemplates() fstest.MapFS {
 <body>
 {{if .HealthErr}}<div id="health-error">{{.HealthErr}}</div>{{end}}
 <div id="parade">{{template "parade-content" .Parade}}</div>
-<div id="sidebar">sidebar</div>
+<div id="sidebar">{{template "workers.html" .Workers}}{{template "events.html" .Events}}{{template "throughput.html" .Throughput}}</div>
 </body>
 </html>`),
 		},
@@ -95,14 +95,6 @@ func testTemplates() fstest.MapFS {
 <section id="stalled"><h2>Stalled</h2>{{range .Blocked}}<div class="bead">{{.ID}}</div>{{end}}</section>
 <section id="finished"><h2>Finished</h2>{{range .Closed}}<div class="bead">{{.ID}}</div>{{end}}</section>
 {{end}}`),
-		},
-		"workers.html": &fstest.MapFile{
-			Data: []byte(`{{range .}}<div class="worker-row" data-id="{{.ID}}" class="state state-{{.State}}">
-<span class="state-indicator">{{if eq .State "busy"}}●{{else if eq .State "idle"}}○{{else}}⚠{{end}}</span>
-<div class="context-bar" style="width:{{.ContextPct}}%"></div>
-<span class="context-pct">{{.ContextPct}}%</span>
-{{if ne .BeadID ""}}<span class="bead-id">{{.BeadID}}</span>{{else}}<span class="bead-id">idle</span>{{end}}
-</div>{{end}}`),
 		},
 		"detail.html": &fstest.MapFile{
 			Data: []byte(`<div class="bead-detail" id="{{.ID}}">
@@ -120,10 +112,19 @@ Dependencies:
 </div>`),
 		},
 		"events.html": &fstest.MapFile{
-			Data: []byte(`<div class="events-feed">{{range .}}<div class="event-row"><span class="time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span><span class="symbol">{{if eq .Type "merged"}}✓{{else if eq .Type "quality_gate_rejected"}}✗{{else if eq .Type "merge_conflict"}}⚠{{else if eq .Type "qg_stuck_detected"}}⚠{{else if eq .Type "handoff"}}↻{{else if eq .Type "escalation"}}▲{{else}}{{.Type}}{{end}}</span>{{if .BeadID}}<span class="bead-id">{{.BeadID}}</span>{{end}}</div>{{end}}</div>`),
+			Data: []byte(`{{define "events.html"}}<div class="event-feed">{{range .}}<div class="event-feed__item"><span class="event-feed__time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span><span class="event-feed__symbol">{{.Type}}</span>{{if .BeadID}}<span class="event-feed__text">{{.BeadID}}</span>{{end}}</div>{{end}}</div>{{end}}`),
 		},
 		"throughput.html": &fstest.MapFile{
-			Data: []byte(`<div class="throughput"><div class="stat">{{.BeadsPerHour}} beads/hr</div><div class="stat">{{.CostPerHour}}/hr</div><div class="stat">{{.ActiveWorkers}}/{{.TotalWorkers}} workers</div><div class="stat">uptime {{.Uptime}}</div></div>`),
+			Data: []byte(`{{define "throughput.html"}}<div class="throughput"><div class="throughput__stat"><div class="throughput__value">{{.BeadsPerHour}}</div><div class="throughput__label">Beads / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.CostPerHour}}</div><div class="throughput__label">Cost / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.ActiveWorkers}}/{{.TotalWorkers}}</div><div class="throughput__label">Workers active</div></div><div class="throughput__stat"><div class="throughput__value">{{.Uptime}}</div><div class="throughput__label">Uptime</div></div></div>{{end}}`),
+		},
+		"workers.html": &fstest.MapFile{
+			Data: []byte(`{{define "workers.html"}}{{range .}}<div class="worker-row state-{{.State}}" data-id="{{.ID}}">
+<span class="worker-row__dot worker-row__dot--{{.State}}"></span>
+<span class="worker-row__id">{{.ID}}</span>
+<span class="worker-row__bead">{{if ne .BeadID ""}}{{.BeadID}}{{else}}idle{{end}}</span>
+<span class="worker-row__context">{{.ContextPct}}%</span>
+<span class="worker-row__heartbeat">{{printf "%.0fs ago" .LastHeartbeatSecs}}</span>
+</div>{{end}}{{end}}`),
 		},
 	}
 }
@@ -132,6 +133,9 @@ func TestFullPageRender(t *testing.T) {
 	data := &mockDashboard{
 		ready:      []protocol.Bead{{ID: "oro-r1", Title: "Ready bead"}},
 		inProgress: []protocol.Bead{{ID: "oro-ip1", Title: "In progress"}},
+		workers:    []web.WorkerInfo{{ID: "worker-1", State: "busy", BeadID: "oro-ip1", ContextPct: 42}},
+		events:     []protocol.Event{{Type: "merged", BeadID: "oro-ip1", CreatedAt: "2026-04-22T12:01:00Z"}},
+		throughput: &web.ThroughputData{BeadsPerHour: 3, CostPerHour: "—", ActiveWorkers: 1, TotalWorkers: 2, Uptime: "5m"},
 	}
 	h := web.NewHandler(data, testTemplates())
 
@@ -148,6 +152,11 @@ func TestFullPageRender(t *testing.T) {
 	}
 	if !strings.Contains(body, "sidebar") {
 		t.Errorf("GET / body missing 'sidebar'; got: %q", body)
+	}
+	for _, want := range []string{"worker-1", "oro-ip1", "Beads / hour", ">3<"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GET / body missing %q; got: %q", want, body)
+		}
 	}
 }
 
@@ -350,7 +359,7 @@ func TestFragmentThroughput(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"3 beads/hr", "2/4 workers", "2h 14m", "—"} {
+	for _, want := range []string{"Beads / hour", ">3<", ">2/4<", "2h 14m", "—"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q; body: %q", want, body)
 		}
@@ -432,7 +441,7 @@ func TestFragmentEvents(t *testing.T) {
 			t.Errorf("Content-Type = %q, want text/html", ct)
 		}
 		body := rec.Body.String()
-		for _, want := range []string{"14:30", "09:05", "22:00", "✓", "✗", "▲", "oro-a1", "oro-b2"} {
+		for _, want := range []string{"14:30", "09:05", "22:00", "merged", "quality_gate_rejected", "escalation", "oro-a1", "oro-b2"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("body missing %q; body: %q", want, body)
 			}
@@ -451,7 +460,7 @@ func TestFragmentEvents(t *testing.T) {
 			t.Fatalf("GET /fragments/events status = %d, want 200", rec.Code)
 		}
 		body := rec.Body.String()
-		if !strings.Contains(body, "events-feed") {
+		if !strings.Contains(body, "event-feed") {
 			t.Errorf("body missing events container; got: %q", body)
 		}
 	})

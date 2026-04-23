@@ -1,6 +1,18 @@
 <div class="throughput">
-  <div class="stat">{{.BeadsPerHour}} beads/hr</div>
-  <div class="stat">{{.CostPerHour}}/hr</div>
-  <div class="stat">{{.ActiveWorkers}}/{{.TotalWorkers}} workers</div>
-  <div class="stat">uptime {{.Uptime}}</div>
+  <div class="throughput__stat">
+    <div class="throughput__value">{{.BeadsPerHour}}</div>
+    <div class="throughput__label">Beads / hour</div>
+  </div>
+  <div class="throughput__stat">
+    <div class="throughput__value">{{.CostPerHour}}</div>
+    <div class="throughput__label">Cost / hour</div>
+  </div>
+  <div class="throughput__stat">
+    <div class="throughput__value">{{.ActiveWorkers}}/{{.TotalWorkers}}</div>
+    <div class="throughput__label">Workers active</div>
+  </div>
+  <div class="throughput__stat">
+    <div class="throughput__value">{{.Uptime}}</div>
+    <div class="throughput__label">Uptime</div>
+  </div>
 </div>

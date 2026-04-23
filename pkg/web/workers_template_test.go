@@ -1,77 +1,60 @@
 package web_test
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"bytes"
+	"html/template"
+	"os"
 	"strings"
 	"testing"
 
 	"oro/pkg/web"
 )
 
-// TestWorkersTemplate verifies that workers.html template renders []web.WorkerInfo
-// with state indicators, context percentage bar, and bead IDs.
 func TestWorkersTemplate(t *testing.T) {
-	// Test data: one busy worker with a bead, one idle worker
-	data := &mockDashboard{
-		workers: []web.WorkerInfo{
-			{
-				ID:         "worker-1",
-				State:      "busy",
-				BeadID:     "oro-ip1",
-				ContextPct: 42,
-			},
-			{
-				ID:         "worker-2",
-				State:      "idle",
-				BeadID:     "",
-				ContextPct: 0,
-			},
+	tmpl, err := template.New("").Funcs(web.TemplateFuncMap()).ParseFS(os.DirFS("templates"), "workers.html")
+	if err != nil {
+		t.Fatalf("parse workers.html: %v", err)
+	}
+
+	workers := []web.WorkerInfo{
+		{
+			ID:                "worker-1",
+			State:             "busy",
+			BeadID:            "oro-ip1",
+			ContextPct:        42,
+			LastHeartbeatSecs: 4,
+		},
+		{
+			ID:                "worker-2",
+			State:             "idle",
+			BeadID:            "",
+			ContextPct:        85,
+			LastHeartbeatSecs: 45,
 		},
 	}
 
-	h := web.NewHandler(data, testTemplates())
-
-	req := httptest.NewRequest(http.MethodGet, "/fragments/workers", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /fragments/workers status = %d, want 200", rec.Code)
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "workers.html", workers); err != nil {
+		t.Fatalf("execute workers.html: %v", err)
 	}
+	body := buf.String()
 
-	body := rec.Body.String()
-
-	// Assertions per acceptance criteria:
-	// Each worker row contains: .ID, state indicator, .ContextPct with %, .BeadID when non-empty
-	assertions := []struct {
-		name string
-		want string
-	}{
-		// Worker IDs
-		{"busy worker ID", "worker-1"},
-		{"idle worker ID", "worker-2"},
-		// State indicators (● for busy, ○ for idle)
-		{"busy indicator bullet", "●"},
-		{"idle indicator circle", "○"},
-		// Context percentages with % suffix
-		{"busy context pct", "42%"},
-		{"idle context pct", "0%"},
-		// BeadID for busy worker
-		{"busy bead ID", "oro-ip1"},
-		// "idle" text for worker with no BeadID (instead of empty)
-		{"idle text when no bead", "idle"},
-		// State class on worker-row
-		{"busy state class", `state-busy`},
-		{"idle state class", `state-idle`},
-		// Context bar with width style
-		{"busy context bar width", `style="width:42%"`},
-		{"idle context bar width", `style="width:0%"`},
-	}
-
-	for _, a := range assertions {
-		if !strings.Contains(body, a.want) {
-			t.Errorf("assertion %q failed: body missing %q\nGot:\n%s", a.name, a.want, body)
+	for _, want := range []string{
+		"worker-row__dot--busy",
+		"worker-row__dot--idle",
+		"worker-1",
+		"worker-2",
+		"oro-ip1",
+		"idle",
+		"42%",
+		"85%",
+		"4s ago",
+		"45s ago",
+		"worker-row__heartbeat--warn",
+		"worker-row__context--danger",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("workers.html missing %q:\n%s", want, body)
 		}
 	}
 }

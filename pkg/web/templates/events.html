@@ -1,9 +1,9 @@
-<div class="events-feed">
+<div class="event-feed">
 {{- range .}}
-<div class="event-row">
-  <span class="time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span>
-  <span class="symbol">{{if eq .Type "merged"}}✓{{else if eq .Type "quality_gate_rejected"}}✗{{else if eq .Type "merge_conflict"}}⚠{{else if eq .Type "qg_stuck_detected"}}⚠{{else if eq .Type "handoff"}}↻{{else if eq .Type "escalation"}}▲{{else}}{{.Type}}{{end}}</span>
-  {{- if .BeadID}}<span class="bead-id">{{.BeadID}}</span>{{end}}
-</div>
+  <div class="event-feed__item">
+    <span class="event-feed__time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span>
+    <span class="event-feed__symbol {{eventSymbolClass .Type}}">{{eventSymbol .Type}}</span>
+    <span class="event-feed__text">{{eventSummary .}}</span>
+  </div>
 {{- end}}
 </div>

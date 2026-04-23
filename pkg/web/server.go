@@ -14,10 +14,11 @@ import (
 
 // WorkerInfo summarises a live worker for the web dashboard.
 type WorkerInfo struct {
-	ID         string
-	State      string
-	BeadID     string
-	ContextPct int
+	ID               string
+	State            string
+	BeadID           string
+	ContextPct       int
+	LastHeartbeatSecs float64
 }
 
 // ThroughputData holds metrics for the throughput panel.
@@ -52,6 +53,9 @@ type DashboardData interface {
 type indexData struct {
 	HealthErr string
 	Parade    ParadeData
+	Workers   []WorkerInfo
+	Events    []protocol.Event
+	Throughput *ThroughputData
 }
 
 // ParadeData holds the four bead buckets rendered by the parade fragment.
@@ -99,7 +103,7 @@ func NewHandler(data DashboardData, content fs.FS) http.Handler {
 
 	h := &handler{
 		data:           data,
-		indexTmpl:      mustParse("index.html", "parade.html"),
+		indexTmpl:      mustParse("index.html", "parade.html", "workers.html", "events.html", "throughput.html"),
 		paradeTmpl:     mustParse("parade.html"),
 		workersTmpl:    mustParse("workers.html"),
 		detailTmpl:     mustParse("detail.html"),
@@ -151,13 +155,34 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	workers, err := h.data.Workers(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	events, err := h.data.RecentEvents(r.Context(), 50)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	throughput, err := h.data.Throughput(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if throughput == nil {
+		throughput = &ThroughputData{}
+	}
 	var healthMsg string
 	if herr := h.data.HealthError(); herr != nil {
 		healthMsg = herr.Error()
 	}
 	h.renderTemplate(w, r, h.indexTmpl, "index.html", indexData{
-		HealthErr: healthMsg,
-		Parade:    parade,
+		HealthErr:  healthMsg,
+		Parade:     parade,
+		Workers:    workers,
+		Events:     events,
+		Throughput: throughput,
 	})
 }
 
@@ -208,6 +233,9 @@ func (h *handler) throughputHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if data == nil {
+		data = &ThroughputData{}
 	}
 	h.renderTemplate(w, r, h.throughputTmpl, "throughput.html", data)
 }

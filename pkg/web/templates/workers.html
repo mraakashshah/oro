@@ -1,6 +1,9 @@
-{{range .}}<div class="worker-row" data-id="{{.ID}}" class="state state-{{.State}}">
-<span class="state-indicator">{{if eq .State "busy"}}●{{else if eq .State "idle"}}○{{else}}⚠{{end}}</span>
-<div class="context-bar" style="width:{{.ContextPct}}%"></div>
-<span class="context-pct">{{.ContextPct}}%</span>
-{{if ne .BeadID ""}}<span class="bead-id">{{.BeadID}}</span>{{else}}<span class="bead-id">idle</span>{{end}}
-</div>{{end}}
+{{range .}}
+<div class="worker-row state-{{.State}}" data-id="{{.ID}}">
+  <span class="worker-row__dot worker-row__dot--{{.State}}"></span>
+  <span class="worker-row__id">{{.ID}}</span>
+  <span class="worker-row__bead">{{if ne .BeadID ""}}{{.BeadID}}{{else}}idle{{end}}</span>
+  <span class="worker-row__context {{contextClass .ContextPct}}">{{.ContextPct}}%</span>
+  <span class="worker-row__heartbeat {{heartbeatClass .LastHeartbeatSecs}}">{{heartbeatLabel .LastHeartbeatSecs}}</span>
+</div>
+{{end}}

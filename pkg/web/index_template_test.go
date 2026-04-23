@@ -12,8 +12,11 @@ import (
 // indexTemplateData mirrors indexData for use in external test package.
 // Go templates access fields by name via reflection, so field names must match.
 type indexTemplateData struct {
-	HealthErr string
-	Parade    struct{}
+	HealthErr  string
+	Parade     struct{}
+	Workers    []struct{}
+	Events     []struct{}
+	Throughput struct{}
 }
 
 // TestIndexTemplate validates that templates/index.html is a complete page shell
@@ -32,10 +35,13 @@ func TestIndexTemplate(t *testing.T) {
 	tFS := fstest.MapFS{
 		"index.html":  {Data: indexContent},
 		"parade.html": {Data: []byte(`{{define "parade-content"}}PARADE-STUB{{end}}`)},
+		"workers.html": {Data: []byte(`{{define "workers.html"}}WORKERS-STUB{{end}}`)},
+		"events.html": {Data: []byte(`{{define "events.html"}}EVENTS-STUB{{end}}`)},
+		"throughput.html": {Data: []byte(`{{define "throughput.html"}}THROUGHPUT-STUB{{end}}`)},
 	}
 
 	// Parse without a custom FuncMap — index.html must not use FuncMap helpers.
-	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html")
+	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html", "workers.html", "events.html", "throughput.html")
 	if err != nil {
 		t.Fatalf("template.ParseFS: %v", err)
 	}
@@ -60,9 +66,19 @@ func TestIndexTemplate(t *testing.T) {
 			`id="parade"`,
 			`id="sidebar"`,
 			"PARADE-STUB",   // stub "parade-content" rendered inside #parade
+			"WORKERS-STUB",
+			"EVENTS-STUB",
+			"THROUGHPUT-STUB",
 			"/events",       // SSE endpoint wired
-			"parade-update", // SSE trigger for parade panel
-			"worker-update", // SSE trigger for worker grid
+			"dashboard-parade",
+			"dashboard-workers",
+			"dashboard-events",
+			"dashboard-throughput",
+			"EventSource",
+			"parade-update",
+			"worker-update",
+			"new-event",
+			"throughput-update",
 		}
 		for _, want := range wants {
 			if !strings.Contains(body, want) {

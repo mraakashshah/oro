@@ -313,6 +313,21 @@ h2 {
   color: #E74C3C;
 }
 
+.worker-row__heartbeat {
+  min-width: 58px;
+  text-align: right;
+  font-size: 11px;
+  color: #666;
+}
+
+.worker-row__heartbeat--ok {
+  color: #888;
+}
+
+.worker-row__heartbeat--warn {
+  color: #E67E22;
+}
+
 /* ── Event feed ───────────────────────────────────────────── */
 
 .event-feed {
