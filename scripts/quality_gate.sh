@@ -511,8 +511,11 @@ lane_other() {
 
 	header "DOCS & CONFIG"
 	# Build biome paths
+	# Note: .beads/ is intentionally excluded — bd writes metadata.json/issues.jsonl
+	# in a format biome rejects (tabs vs spaces) and re-writes them on every command.
+	# Linting these auto-generated files would block every bead's QG.
 	local BIOME_PATHS=""
-	for p in docs/ .github/ .beads/; do
+	for p in docs/ .github/; do
 		[ -d "$p" ] && BIOME_PATHS="$BIOME_PATHS $p"
 	done
 	if compgen -G "*.json" >/dev/null 2>&1; then
