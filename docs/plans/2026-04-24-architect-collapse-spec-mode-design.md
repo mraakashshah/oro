@@ -1,7 +1,7 @@
 # Collapse architect persona into Claude Code spec-mode
 
 **Date**: 2026-04-24
-**Status**: design — R1 review complete, R2 pending
+**Status**: design — R2 review complete, R3 pending
 **Scope**: architect-only (manager untouched); Claude Code runtime only (Codex is a follow-up)
 
 ## Context
@@ -24,6 +24,8 @@ Delete the architect persona as a standing presence. Preserve all planning disci
 - **No spec-bead type.** Beads produced by `/spec` are normal beads; the swarm dispatches them unchanged.
 - **No `/spec` skill changes** beyond absorbing two patterns from the architect beacon (AskUserQuestion 4-part, Engineering Cognitive Patterns) into the `brainstorming` skill.
 - **No historical data migration.** `.beads/issues.jsonl` has ~20+ rows with `"created_by":"architect"`. These are immutable historical records and are deliberately left alone.
+- **No `~/.oro/state.db::pane_activity` row cleanup.** Legacy rows with `pane='architect'` persist in the user's state DB. The schema tolerates any string; nothing in post-collapse code reads these rows (`ArchitectPane` field is removed). They are harmless historical records.
+- **No `docs/handoffs/` rewrite.** Handoff YAMLs reference architect pane workflows historically; they're immutable session records.
 
 ## Current state (what we're deleting)
 
@@ -45,11 +47,18 @@ From research (verified by grep):
 - `pkg/memory/extract_llm.go` — architect ref (audit during impl; likely harmless text in prompt)
 - `pkg/ops/review_prompt.go` — architect ref (audit during impl; likely harmless text)
 
-**Assets** (source + staged copies; both must be deleted):
+**Assets** (three locations per file; all must be deleted):
+
+Each hook exists in three places: the source under `assets/hooks/`, the binary-staged copy under `cmd/oro/_assets/hooks/` (produced by `make stage-assets`, embedded via `embed.go`), and the project-local dogfood copy under `.claude/hooks/` (used when a Claude Code session opens in the oro repo itself). Every asset-touching bead MUST touch all three and explicitly run `make stage-assets` so the staged tree doesn't drift.
+
 - `assets/beacons/architect.md` + `cmd/oro/_assets/beacons/architect.md`
-- `assets/hooks/architect_router.py` + `cmd/oro/_assets/hooks/architect_router.py`
-- `assets/hooks/notify_manager_on_bead_create.py` + `cmd/oro/_assets/hooks/notify_manager_on_bead_create.py`
-- `assets/hooks/bd_create_notifier.py` + `cmd/oro/_assets/hooks/bd_create_notifier.py` (imports `from architect_router import send_to_manager_pane` — will ImportError without architect_router)
+- `assets/hooks/architect_router.py` + `cmd/oro/_assets/hooks/architect_router.py` + `.claude/hooks/architect_router.py`
+- `assets/hooks/notify_manager_on_bead_create.py` + `cmd/oro/_assets/hooks/notify_manager_on_bead_create.py` + `.claude/hooks/notify_manager_on_bead_create.py`
+- `assets/hooks/bd_create_notifier.py` + `cmd/oro/_assets/hooks/bd_create_notifier.py` + `.claude/hooks/bd_create_notifier.py` (imports `from architect_router import send_to_manager_pane` — will ImportError without architect_router)
+- `.claude/hooks/test_architect_router.py`, `.claude/hooks/test_architect_router_new.py`, `.claude/hooks/test_notify_manager_on_bead_create.py` — delete (project-local test copies)
+
+**Project-local settings** (checked in, required update — distinct from the `cmd_init.go` template):
+- `/Users/as21/codehouse/oro/.claude/settings.json:108` — PreToolUse:Bash hook entry `python3 .claude/hooks/architect_router.py` must be deleted. After the hook file is removed but this entry remains, every Bash tool call by any Claude Code session opened in the oro repo fails. This is the repo's own dogfood config and is separate from `cmd_init.go:1009` (which templates *future* projects).
 
 **Hooks that reference `ORO_ROLE=architect` and survive (but change behavior)**:
 - `assets/hooks/session_start_extras.py` (+ staged) — currently loads beacon for `ORO_ROLE=architect`; must change to loud-warn on that value
@@ -121,22 +130,42 @@ Update `cmd_init_test.go` assertions (new `oro init` output should not register 
 
 `Create(ArchitectNudge(), ManagerNudge())` → `Create(ManagerNudge())`. These are the only callers in non-test code.
 
-### 5. Change sequencing (avoiding broken-build mid-sequence)
+### 5. Change sequencing — compile-safe sub-beads
 
-The R1 review flagged that deleting `architect.go` breaks `cmd_start.go:202` immediately (`ArchitectNudge()` undefined). The fix is atomicity: **ship the full collapse as a single reviewable commit set**, not one-file-per-bead. Breakdown must respect this. Proposed shape (see beadcraft):
+The R1 review flagged broken-build risk on naive deletion. The R2 review flagged that bundling everything into one "Go core" bead (19 files) violates beadcraft's `>4 source / >1 test = too large` rule and risks triggering the dead-code no-op anti-pattern from MEMORY.md:oro-7nzy. Fix: decompose into **compile-safe sub-beads** where each bead leaves `go build ./...` + `go test ./...` green at HEAD.
 
-1. One bead for the "Go core" deletion: touches `architect.go`, `architect_test.go`, `tmux.go`, `manager.go`, `cmd_start.go`, `cmd_init.go`, `router.go`, `cmd_directive.go`, `cmd_cleanup.go`, plus every Go test that references architect. Builds must be green at HEAD after this bead lands.
-2. Parallel-safe beads (depend on #1 only for grep-cleanliness):
-   - Hook + asset deletion (Python + markdown + staged mirrors)
-   - Dispatcher state deletion (`health.go`, `pane_monitor.go`)
-   - Protocol schema update (`schema.go:77` comment + `schema_test.go`)
-   - Documentation updates (README, skills, restart-oro)
-   - Migration-detection bead (see D7)
-   - `brainstorming` skill migration (AskUserQuestion + Engineering Cognitive Patterns)
+Ordered decomposition:
 
-### 6. What migrates (precise paths, no ambiguity)
+1. **Add parallel `Create(managerNudge string)` signature**. Keep old `Create(architectNudge, managerNudge string)` as a thin wrapper calling the new one with `architectNudge=""` (ignored). New in-code uses are blocked until later beads. Touches: `cmd/oro/tmux.go`. Builds green.
+2. **Migrate `Create` callers**. Update `cmd_start.go:202` and `cmd_start.go:313` to call the new signature; update unit tests that call `sess.Create(...)`. Touches: `cmd/oro/cmd_start.go`, `cmd/oro/tmux_test.go`, `cmd/oro/cmd_start_test.go`, `cmd/oro/start_test.go`, `cmd/oro/start_full_test.go`. Builds green.
+3. **Delete old `Create` wrapper + `architect.go` + `architect_test.go`**. Remove the compat wrapper and the no-longer-referenced beacon/nudge. Touches: `cmd/oro/tmux.go` (wrapper removal), `cmd/oro/architect.go`, `cmd/oro/architect_test.go`. Builds green (no callers remain).
+4. **Retrofit `tmux.go` hot spots** — `isHealthy`, `Kill`, `AttachInteractive`, status-bar hook, `launchAndNudgeAll`, `new-session` window name, `RegisterPaneDiedHooks`, `buildPaneDiedHook`, `CleanupPaneDiedHooks`. Co-edit `tmux_test.go` subtests. This is the single oversize bead and is marked **explicit oversize exception** per beadcraft policy — the functions are too tightly coupled to split further without intermediate broken-build states. Touches: `cmd/oro/tmux.go`, `cmd/oro/tmux_test.go`. Builds green.
+5. **Delete `cmd_init.go:1009` + update `cmd_init_test.go`**. Generated settings no longer register `architect_router.py`. Touches: `cmd/oro/cmd_init.go`, `cmd/oro/cmd_init_test.go`. Builds green.
+6. **Delete `router.go` ArchitectLocal branch + `router_test.go`**. Touches: `cmd/oro/router.go`, `cmd/oro/router_test.go`. Builds green.
+7. **Update manager beacon** (§ 2 table). Touches: `cmd/oro/manager.go`. Builds green.
+8. **Delete `ArchitectPane` from `pkg/dispatcher`**. Touches: `pkg/dispatcher/health.go`, `pkg/dispatcher/health_test.go`, `pkg/dispatcher/pane_monitor.go`, `pkg/dispatcher/pane_monitor_test.go`, `pkg/dispatcher/pane_restarter_test.go`. Verified (by grep) that no `cmd/oro` code reads the field; independent of other beads. Builds green.
+9. **Update `pkg/protocol/schema.go:77` comment + `schema_test.go`**. Pure doc/test change. Builds green.
+10. **Audit + clean `cmd_directive.go`, `cmd_cleanup.go`, `cmd_global_oro_approach_test.go`, `startup_log_test.go`, `tmux_name_test.go`, `cmd_attach_test.go`** for residual architect references. Builds green.
+11. **Asset + hook deletion**. Touches: all Python hooks + beacons + `.claude/hooks/` + `.claude/settings.json` edit + `cmd_init.go` settings template + `make stage-assets` run. Independent of Go beads but must land before testing the full collapse.
+12. **Hook behavior updates (D4)**. Touches: `assets/hooks/session_start_extras.py`, `assets/hooks/context_pct_writer.py`, their `_assets/` + `.claude/hooks/` copies, + associated Python tests. Per D4.
+13. **Migration detection (D7)**. Adds `isPreCollapseLayout()` check at the top of `tmux.go:Create()` before the `Exists/isHealthy` early-return. Kills stale session + prints one-liner. Unit test + integration test. Touches: `cmd/oro/tmux.go`, `cmd/oro/tmux_test.go`.
+14. **Documentation sync (D8)**. Touches: `README.md`, `.claude/skills/oro/SKILL.md`, `.claude/skills/watching-oro/SKILL.md`, `.claude/skills/watching-oro/references/deep-observation.md`, `.claude/skills/watching-oro/scripts/oro-monitor.sh`, `.claude/commands/restart-oro.md` + all staged mirrors under `cmd/oro/_assets/` and `assets/`.
+15. **Brainstorming skill migration (D6)**. In-repo targets only (see § 6).
 
-Two patterns absorbed into `brainstorming` skill (`/Users/as21/.claude/skills/brainstorming/SKILL.md`):
+Beads 8, 9, 11, 14, 15 are truly parallel-safe (independent file sets). Beads 1-7 are strictly sequential. Bead 12 depends on bead 11. Bead 13 depends on bead 4.
+
+**Anti-pattern guard** (explicit bead AC): no bead may pass QG via the dead-code no-op pattern (replacing a call with `_, _ = fn, arg`). Every deletion must be a true deletion — the grep on `ArchitectNudge|ArchitectBeacon|ArchitectPane|ArchitectLocal` in the final tree must return zero production-code hits.
+
+### 6. What migrates (precise paths, in-repo only)
+
+Two patterns absorbed into the `brainstorming` skill. **Migration targets are in-repo copies, not the user's private global.** The repo has three brainstorming copies that must stay in sync:
+- `assets/skills/brainstorming/SKILL.md` — source of truth (edited first)
+- `cmd/oro/_assets/skills/brainstorming/SKILL.md` — staged copy (produced by `make stage-assets`)
+- `.claude/skills/brainstorming/SKILL.md` — project-local dogfood copy (kept in sync manually or via the staging pipeline)
+
+The user's private `~/.claude/skills/brainstorming/SKILL.md` is outside this repo and out of scope.
+
+Patterns to migrate:
 - **AskUserQuestion 4-part structure** (Reground / Simplify / Recommend / Options) — from `architect.go:89-98`
 - **Engineering Cognitive Patterns** (5 patterns, max 5 active) — from `architect.go:40-48`
 
@@ -168,17 +197,23 @@ The **anti-sycophancy rule** (`architect.go:126` + `manager.go:159-168`) is gene
 - **Tiger**: manager beacon references architect in 3 spots. Mitigation: surgical rewrite enumerated under "Proposed design § 2."
 - **Elephant**: 16+ test callsites for `TmuxSession.Create`. Mitigation: signature change is mechanical; impl bead must update all callers atomically.
 
-### D4: Treat `ORO_ROLE=architect` as a loud error — explicit behavior
+### D4: Treat `ORO_ROLE=architect` as a loud warning — explicit behavior
 
-Previously underspecified; now explicit:
+Previously underspecified; now explicit per R2 feedback.
 
-- `assets/hooks/session_start_extras.py`:
-  - If `ORO_ROLE == "architect"`: print a one-line warning to stderr (`[oro] ORO_ROLE=architect is no longer supported — this value was removed in <release>. See release notes.`) AND continue session startup normally with no beacon injection (session still works; user just gets a plain Claude Code session).
-  - Exit code: 0 (do not break the session).
-- `assets/hooks/context_pct_writer.py`:
-  - If `ORO_ROLE == "architect"`: silently no-op (do not write `context_pct` to the now-orphaned `~/.oro/panes/architect/` dir). No warning (the SessionStart hook already warned).
+`assets/hooks/session_start_extras.py` when `ORO_ROLE == "architect"`:
+- **Print to stderr**: `[oro] ORO_ROLE=architect is no longer supported — this value was removed in <release>. See release notes.`
+- **Skip beacon injection** (legacy `architectBeacon` is gone; there is no beacon to load).
+- **Skip `update_pane_activity("architect")`** — do not INSERT a new row into `~/.oro/state.db::pane_activity` with `pane='architect'`. (Legacy rows already there are harmless per Non-goals; we just stop adding new ones.)
+- **Keep all other injections**: Superpowers auto-loader, auto-skills, handoff banner, stale-bead banner, situational context. The user should get a normal Claude Code session minus the role-specific bits.
+- **Exit code**: 0. Do not brick the session.
 
-Rationale: loud but non-fatal. A stale env var shouldn't brick the user's session, but they must see the signal to update their shell rc.
+`assets/hooks/context_pct_writer.py` when `ORO_ROLE == "architect"`:
+- Silently no-op. No warning (SessionStart already warned). Do not write to `~/.oro/panes/architect/`.
+
+`assets/hooks/pane_handoff_reminder.py`: no change required — it already early-returns on non-`manager` roles (and won't read the orphaned architect panes dir with any new behavior).
+
+Rationale: loud but non-fatal. A stale env var shouldn't brick the user's session, but they must see the signal to update their shell rc. `update_pane_activity` gate prevents new legacy rows from contaminating the DB.
 
 ### D5: Leave `~/.claude/roles/architect/` orphaned on disk
 
@@ -194,12 +229,16 @@ Rationale: loud but non-fatal. A stale env var shouldn't brick the user's sessio
 
 ### D7 (new): Detect and force-recreate pre-collapse tmux sessions on upgrade
 
-R1 found that `TmuxSession.isHealthy()` currently checks for both panes. On upgrade, a running oro session from the previous version still has an architect pane — so `isHealthy()` returns true after the binary is updated, and `oro start` no-ops instead of recreating. The user keeps their broken two-pane session indefinitely.
+R1 found that `TmuxSession.isHealthy()` currently checks for both panes. After the Go-core beads land, `isHealthy()` iterates only `{"manager"}`. A running oro session from the previous version still has both windows — the manager check alone returns healthy, so `Create()` at `tmux.go:270` early-returns without recreating. The user keeps their broken two-pane session indefinitely.
 
-**Chosen**: On `oro start`, detect the pre-collapse session shape (has an `:architect` window) and kill it before recreating. Print a user-visible one-liner: `[oro] Detected pre-collapse session layout — recreating with the new single-window layout.`
+**Chosen**: Add `isPreCollapseLayout()` check at the **top of `tmux.go:Create()`**, before the `if s.Exists() && s.isHealthy() { return nil }` early-return. If detection fires, kill the session and fall through to the normal Create path. Print a user-visible one-liner: `[oro] Detected pre-collapse session layout — recreating with the new single-window layout.`
+
+**Integration site (required for correctness)**: detection lives **inside `Create()`**, not in `cmd_start.go`. Both `oro start` code paths (`startSwarm` at `cmd_start.go:202` and `reconnectTmux` at `cmd_start.go:313`) route through `Create()`, so placing the check there covers both without duplication.
+
+**Detection logic**: session exists with name `oro` AND `tmux list-windows -t oro -F '#{window_name}'` returns a window named `architect`. Scoping to this specific shape avoids false-positives on user-named unrelated sessions.
 
 - **Tiger**: user has in-progress work in their architect pane when they run `oro start`. Mitigation: architect is conversational history only; no code state lives there. Manager pane recreates cleanly (it's stateless modulo the dispatcher).
-- **Elephant**: detection logic could false-positive on unrelated sessions sharing the `oro` name. Mitigation: scope detection to sessions where both `oro:architect` and `oro:manager` exist (current oro-specific layout).
+- **Elephant**: detection only looks at window names; if a user renamed `architect` → something else, detection misses. Mitigation: acceptable — they've left the default layout.
 
 ### D8 (new): README/docs truth sync
 
@@ -227,7 +266,7 @@ No data migration: beads, design docs, `.beads/issues.jsonl` historical rows (in
 - `tests/test_architect_router_new.py`
 - Any `test_notify_manager_on_bead_create.py` / `test_bd_create_notifier.py` if present
 
-### Rewrites (non-exhaustive — grep in impl phase)
+### Rewrites (exhaustive — any additional hits found during impl must be added by the worker as part of the bead)
 - `cmd/oro/tmux_test.go` — specifically: `TestAttachInteractiveFocusesArchitectPane` (delete entirely); `TestRespawnPane` subtests with `oro:architect` (update to manager); all `Create` signature call sites (~16); any assertion on env vars containing `architect`
 - `cmd/oro/cmd_start_test.go` — Create call sites; startup assertions
 - `cmd/oro/start_test.go`, `start_full_test.go` — Create call sites
@@ -253,16 +292,24 @@ No data migration: beads, design docs, `.beads/issues.jsonl` historical rows (in
 ### Acceptance test (goes in the epic bead AC)
 
 ```
-1. `go test ./...` passes with zero architect-referencing test failures.
-2. `uv run pytest tests/ assets/hooks/` passes.
-3. `grep -rn "architect" cmd/ pkg/ assets/hooks/ assets/beacons/ --include="*.go" --include="*.py" --include="*.md"` returns:
-   - zero matches in Go production code paths (excluding historical handoffs in docs/plans/ and docs/handoffs/)
-   - zero matches in Python hook sources (source + staged)
-   - zero matches in asset beacons
-4. `oro start` on a clean machine produces exactly one tmux window named `manager`.
-5. `oro start` on a pre-collapse session layout (architect + manager windows) kills and recreates as single-window, printing the migration one-liner.
-6. `oro attach` succeeds without stderr warnings about select-window.
-7. Manager beacon contains zero occurrences of the word "architect" (or one, at line 5's unrelated "architecture spec" comment — acceptable).
+1. `make build && go test ./...` passes. Zero test failures whose stderr contains /architect|ArchitectPane|ArchitectNudge|ArchitectBeacon|ArchitectLocal|architect_router/.
+2. `uv run pytest tests/ assets/hooks/ .claude/hooks/` passes.
+3. `grep -rn "architect" cmd/ pkg/ assets/ .claude/hooks/ .claude/skills/ --include="*.go" --include="*.py" --include="*.md" --include="*.sh" --include="*.json" --exclude-dir=testdata` returns:
+   - zero matches in Go production code paths
+   - zero matches in Python hook sources (assets/hooks/, cmd/oro/_assets/hooks/, .claude/hooks/)
+   - zero matches in asset beacons (assets/beacons/, cmd/oro/_assets/beacons/)
+   - zero matches in skill docs or oro-monitor.sh
+   - zero matches in .claude/settings.json
+   - matches in .git-blame-ignore-revs, docs/plans/, docs/handoffs/, and testdata/ are excluded as historical/fixture data
+4. `oro start` on a clean machine produces EXACTLY one tmux window, named `manager`. Assertion: `tmux list-windows -t oro -F '#{window_name}' | sort -u` equals the single line `manager`. No `architect` window present.
+5. `oro start` on a pre-collapse session layout (architect + manager windows) kills the old session and recreates as single-window, printing the D7 migration one-liner to stdout. Verified by test setup that pre-creates the two-window layout via `tmux new-session ... -n architect && tmux new-window ... -n manager`.
+6. `oro attach` succeeds without any stderr output containing `select-window` or `architect`.
+7. Manager beacon: `grep -c "architect" cmd/oro/manager.go` returns 0 (or 1 if line 5's unrelated "architecture spec" comment is kept — acceptable; line 5 is the only allowable residual).
+8. `.claude/settings.json` has no `architect_router.py` hook entry. Assertion: `grep -c architect_router .claude/settings.json` returns 0.
+9. `make stage-assets` produces no diff after the asset beads land (staging is up to date).
+10. D7 unit test: `oro start` on a fake session with both architect + manager windows triggers the kill+recreate path; on a fake session with only manager, no-ops.
+11. D4 unit test: `ORO_ROLE=architect python3 assets/hooks/session_start_extras.py < /dev/null` prints the documented warning to stderr, exits 0, and does not attempt to load a beacon or call `update_pane_activity`.
+12. Brainstorming skill: `.claude/skills/brainstorming/SKILL.md`, `assets/skills/brainstorming/SKILL.md`, and `cmd/oro/_assets/skills/brainstorming/SKILL.md` all contain the AskUserQuestion 4-part section and the Engineering Cognitive Patterns section. (String-match each heading.)
 ```
 
 ## Follow-ups (explicitly out of scope)
@@ -275,4 +322,4 @@ No data migration: beads, design docs, `.beads/issues.jsonl` historical rows (in
 
 Architect dies as a persona. `/spec` in any Claude Code session picks up the work. One fewer tmux window, one fewer beacon, one fewer router hook, one fewer isolated config dir, one fewer mental model. Planning discipline unchanged because it never lived in the pane — it lived in the skill chain, and the skill chain is untouched.
 
-Concrete deletion surface: ~4 Go source files (plus partial edits to ~12 others), 4 Python hooks × 2 staged copies = 8 files, 1 asset beacon × 2 = 2 files, plus test rewrites across ~14 Go test files and ~2 Python test files, plus doc updates across README + 4 skills + 1 slash command. Full collapse ships atomically to avoid broken-build mid-sequence.
+Concrete deletion surface: ~4 Go source files (plus partial edits to ~15 others), 4 Python hooks × 3 copies (source + staged + `.claude/hooks/`) = 12 files, 1 asset beacon × 2 = 2 files, 1 project settings file (`.claude/settings.json`), plus test rewrites across ~14 Go test files and ~4 Python test files, plus doc updates across README + 4 skills + 1 slash command + 3 brainstorming skill copies. Full collapse ships as 15 compile-safe sub-beads per § 5, each leaving `go build` + `go test` green at HEAD.
