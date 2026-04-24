@@ -1,7 +1,7 @@
 # Collapse architect persona into Claude Code spec-mode
 
 **Date**: 2026-04-24
-**Status**: design — R3 review complete, R4 pending
+**Status**: design — R4 adversarial review PASSED, ready for beadcraft decomposition
 **Scope**: architect-only (manager untouched); Claude Code runtime only (Codex is a follow-up)
 
 ## Context
@@ -161,7 +161,6 @@ Ordered decomposition (15 sub-beads). **Note on Go method overloading**: Go forb
     - `assets/hooks/session_start_extras.py` (+ `_assets/` mirror + `.claude/hooks/` copy) — implement D4 skip-beacon + skip-update_pane_activity + warn-to-stderr behavior.
     - `assets/hooks/context_pct_writer.py` (+ mirrors) — silent no-op on ORO_ROLE=architect; remove architect docstring at line 13.
     - `assets/hooks/no_cd_guard.py` (+ mirrors) — drop `"architect"` from role allowlist; remove architect mention in docstring lines 4, 86, 93.
-    - `assets/hooks/compact_trigger.py` (+ mirrors) — remove architect docstring at line 15.
     - Associated Python tests updated to assert new behavior.
 14. **Documentation sync (D8)**. Touches: `README.md`, `.claude/skills/oro/SKILL.md`, `.claude/skills/watching-oro/SKILL.md`, `.claude/skills/watching-oro/references/deep-observation.md`, `.claude/skills/watching-oro/scripts/oro-monitor.sh`, `.claude/commands/restart-oro.md` + all staged mirrors under `cmd/oro/_assets/` and `assets/`. Also `.claude/skills/workflow-routing/SKILL.md:19` — either remove the "architect" keyword trigger or explicitly word-boundary-exclude it in AC (see testing plan).
 15. **Brainstorming skill migration (D6)**. Edit `assets/skills/brainstorming/SKILL.md` (source), run `make stage-assets` to sync `cmd/oro/_assets/skills/brainstorming/SKILL.md`, and edit `.claude/skills/brainstorming/SKILL.md` (project-local dogfood) by hand to mirror.
