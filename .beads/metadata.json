@@ -1,8 +1,8 @@
 {
-	"backend": "dolt",
-	"database": "sqlite",
-	"dolt_database": "beads_oro",
-	"dolt_mode": "server",
-	"dolt_server_port": 13307,
-	"project_id": "21750745-5a59-47fc-8def-0c39a43adf86"
+  "database": "sqlite",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_server_port": 13310,
+  "dolt_database": "beads_oro",
+  "project_id": "21750745-5a59-47fc-8def-0c39a43adf86"
 }
