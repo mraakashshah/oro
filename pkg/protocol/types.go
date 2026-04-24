@@ -272,10 +272,33 @@ func CountDistinctModules(acceptance string) int {
 			if i := strings.Index(part, ":"); i >= 0 {
 				part = part[:i]
 			}
-			seen[filepath.Dir(part)] = struct{}{}
+			seen[filepath.Dir(stripMirrorPrefix(part))] = struct{}{}
 		}
 	}
 	return len(seen)
+}
+
+// mirrorPrefixes are path prefixes for skill/asset files that are mirrored
+// copies of a single logical source. Paths carrying these prefixes point at
+// the same module (skill/command) and should collapse to one module when
+// counting bead scope. Order doesn't matter — none is a prefix of another.
+var mirrorPrefixes = []string{
+	"cmd/oro/_assets/", // auto-staged via `make stage-assets`
+	".claude/",         // project dogfood mirror
+	"assets/",          // canonical source of truth
+}
+
+// stripMirrorPrefix removes a known mirror prefix from path so that mirrored
+// files (e.g. assets/skills/X/SKILL.md, .claude/skills/X/SKILL.md,
+// cmd/oro/_assets/skills/X/SKILL.md) normalize to the same canonical path
+// before module counting. Returns path unchanged when no mirror prefix matches.
+func stripMirrorPrefix(path string) string {
+	for _, prefix := range mirrorPrefixes {
+		if rest, ok := strings.CutPrefix(path, prefix); ok {
+			return rest
+		}
+	}
+	return path
 }
 
 // isAllDigits reports whether s is non-empty and contains only ASCII digits.

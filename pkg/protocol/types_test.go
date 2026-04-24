@@ -438,6 +438,49 @@ func TestCountDistinctModulesParenthetical(t *testing.T) {
 	}
 }
 
+func TestCountDistinctModulesMirrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		acceptance string
+		expected   int
+	}{
+		{
+			name:       "three-way skill mirror collapses to 1",
+			acceptance: "Read: assets/skills/brainstorming/SKILL.md, cmd/oro/_assets/skills/brainstorming/SKILL.md, .claude/skills/brainstorming/SKILL.md",
+			expected:   1,
+		},
+		{
+			name:       "mirror pair plus distinct source counts 2",
+			acceptance: "Read: cmd/oro/architect.go:40-48, assets/skills/brainstorming/SKILL.md, .claude/skills/brainstorming/SKILL.md",
+			expected:   2,
+		},
+		{
+			name:       "distinct skill dirs under .claude each count",
+			acceptance: "Read: .claude/skills/oro/SKILL.md, .claude/skills/watching-oro/SKILL.md, .claude/skills/workflow-routing/SKILL.md",
+			expected:   3,
+		},
+		{
+			name:       "script mirror + command mirror collapses across assets paths",
+			acceptance: "Read: .claude/skills/watching-oro/scripts/oro-monitor.sh, assets/skills/watching-oro/scripts/oro-monitor.sh, .claude/commands/restart-oro.md, assets/commands/restart-oro.md",
+			expected:   2,
+		},
+		{
+			name:       "README.md at repo root stays as its own module",
+			acceptance: "Read: README.md, .claude/skills/oro/SKILL.md, assets/skills/oro/SKILL.md",
+			expected:   2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := protocol.CountDistinctModules(tt.acceptance)
+			if got != tt.expected {
+				t.Errorf("CountDistinctModules(%q) = %d, want %d", tt.acceptance, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBeadUnmarshalNewFields(t *testing.T) {
 	tests := []struct {
 		name            string
