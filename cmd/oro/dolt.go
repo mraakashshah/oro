@@ -132,6 +132,27 @@ func isDoltServerRunning(port int) bool {
 	return true
 }
 
+// buildDoltCommand constructs the *exec.Cmd that startDoltServer will Start.
+// It sets SysProcAttr.Setpgid=true so the dolt server runs in its own process
+// group, surviving SIGINT/SIGHUP delivered to the dispatcher's group when
+// `oro stop` runs. Without this, dolt dies on every dispatcher shutdown
+// despite cmd_stop.go's documented intent that it should persist.
+//
+// Extracted from startDoltServer for testability — tests assert on the
+// configured cmd before Start (no actual dolt binary required).
+func buildDoltCommand(doltPath, beadsDir string, port int) *exec.Cmd {
+	dataDir := filepath.Join(beadsDir, "dolt")
+	//nolint:gosec // args constructed from trusted internal values
+	cmd := exec.CommandContext(context.Background(), doltPath, //nolint:noctx // background context appropriate for long-lived server process
+		"sql-server",
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(port),
+		"--data-dir", dataDir,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
 // startDoltServer spawns `dolt sql-server` bound to 127.0.0.1:<port> with
 // data directory at <beadsDir>/dolt. It writes the PID to
 // <beadsDir>/dolt-server.pid and the port to <beadsDir>/dolt-server.port.
@@ -150,14 +171,7 @@ func startDoltServer(beadsDir string, port int) (int, error) {
 		return 0, exec.ErrNotFound
 	}
 
-	dataDir := filepath.Join(beadsDir, "dolt")
-	//nolint:gosec // args constructed from trusted internal values
-	cmd := exec.CommandContext(context.Background(), doltPath, //nolint:noctx // background context appropriate for long-lived server process
-		"sql-server",
-		"--host", "127.0.0.1",
-		"--port", strconv.Itoa(port),
-		"--data-dir", dataDir,
-	)
+	cmd := buildDoltCommand(doltPath, beadsDir, port)
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start dolt server: %w", err)
 	}

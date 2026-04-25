@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -205,6 +206,42 @@ func TestStartDoltServer(t *testing.T) {
 			t.Errorf("startDoltServer error = %v, want exec.ErrNotFound", err)
 		}
 	})
+}
+
+// TestBuildDoltCommandSetsPgid verifies that the dolt server command is
+// configured to run in its own process group (Setpgid=true). Without this,
+// the dolt child inherits the dispatcher's process group and dies on every
+// `oro stop` even though cmd_stop.go documents the opposite intent.
+// See bead oro-5k1p.
+func TestBuildDoltCommandSetsPgid(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmd := buildDoltCommand("/usr/local/bin/dolt", tmpDir, 13310)
+
+	if cmd == nil {
+		t.Fatal("buildDoltCommand returned nil")
+	}
+	if cmd.SysProcAttr == nil {
+		t.Fatal("buildDoltCommand: SysProcAttr is nil — dolt will inherit dispatcher process group and die on oro stop")
+	}
+	if !cmd.SysProcAttr.Setpgid {
+		t.Error("buildDoltCommand: SysProcAttr.Setpgid = false, want true (dolt must run in its own process group to survive dispatcher termination)")
+	}
+	// Verify the command is wired to the right binary + key flags.
+	if len(cmd.Args) < 1 || !strings.HasSuffix(cmd.Args[0], "dolt") {
+		t.Errorf("buildDoltCommand: cmd.Args[0] = %q, expected dolt path", cmd.Args[0])
+	}
+	wantPort := "--port"
+	wantPortVal := "13310"
+	foundPort := false
+	for i, a := range cmd.Args {
+		if a == wantPort && i+1 < len(cmd.Args) && cmd.Args[i+1] == wantPortVal {
+			foundPort = true
+			break
+		}
+	}
+	if !foundPort {
+		t.Errorf("buildDoltCommand: expected --port %s in args %v", wantPortVal, cmd.Args)
+	}
 }
 
 func TestStartDoltServerAdoptsRunning(t *testing.T) {
