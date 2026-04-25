@@ -14,10 +14,10 @@ import (
 
 // WorkerInfo summarises a live worker for the web dashboard.
 type WorkerInfo struct {
-	ID               string
-	State            string
-	BeadID           string
-	ContextPct       int
+	ID                string
+	State             string
+	BeadID            string
+	ContextPct        int
 	LastHeartbeatSecs float64
 }
 
@@ -51,10 +51,10 @@ type DashboardData interface {
 
 // indexData is the top-level template data for the full-page render.
 type indexData struct {
-	HealthErr string
-	Parade    ParadeData
-	Workers   []WorkerInfo
-	Events    []protocol.Event
+	HealthErr  string
+	Parade     ParadeData
+	Workers    []WorkerInfo
+	Events     []protocol.Event
 	Throughput *ThroughputData
 }
 

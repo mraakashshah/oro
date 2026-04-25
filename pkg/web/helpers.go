@@ -11,16 +11,16 @@ import (
 // TemplateFuncMap returns a template.FuncMap with dashboard helpers.
 func TemplateFuncMap() template.FuncMap {
 	return template.FuncMap{
-		"statusSymbol":    statusSymbol,
-		"heatColor":       heatColor,
-		"relativeTime":    relativeTime,
-		"truncTitle":      truncTitle,
-		"eventSymbol":     eventSymbol,
+		"statusSymbol":     statusSymbol,
+		"heatColor":        heatColor,
+		"relativeTime":     relativeTime,
+		"truncTitle":       truncTitle,
+		"eventSymbol":      eventSymbol,
 		"eventSymbolClass": eventSymbolClass,
-		"eventSummary":    eventSummary,
-		"contextClass":    contextClass,
-		"heartbeatClass":  heartbeatClass,
-		"heartbeatLabel":  heartbeatLabel,
+		"eventSummary":     eventSummary,
+		"contextClass":     contextClass,
+		"heartbeatClass":   heartbeatClass,
+		"heartbeatLabel":   heartbeatLabel,
 	}
 }
 

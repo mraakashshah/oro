@@ -23,9 +23,9 @@ func newMgCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "mg",
-		Short: "Legacy Mardi Gras TUI for beads issues",
-		Long:  "Legacy BubbleTea dashboard. Prefer `oro dashboard` with `oro start --web` for the supported web UI.",
+		Use:        "mg",
+		Short:      "Legacy Mardi Gras TUI for beads issues",
+		Long:       "Legacy BubbleTea dashboard. Prefer `oro dashboard` with `oro start --web` for the supported web UI.",
 		Deprecated: "use `oro dashboard` with `oro start --web`; mg is the legacy BubbleTea UI",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			blockingTypes := parseBlockingTypes(blockTypes)

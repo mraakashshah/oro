@@ -33,10 +33,10 @@ func TestIndexTemplate(t *testing.T) {
 
 	// Build a MapFS: real index.html + stub parade.html defining "parade-content".
 	tFS := fstest.MapFS{
-		"index.html":  {Data: indexContent},
-		"parade.html": {Data: []byte(`{{define "parade-content"}}PARADE-STUB{{end}}`)},
-		"workers.html": {Data: []byte(`{{define "workers.html"}}WORKERS-STUB{{end}}`)},
-		"events.html": {Data: []byte(`{{define "events.html"}}EVENTS-STUB{{end}}`)},
+		"index.html":      {Data: indexContent},
+		"parade.html":     {Data: []byte(`{{define "parade-content"}}PARADE-STUB{{end}}`)},
+		"workers.html":    {Data: []byte(`{{define "workers.html"}}WORKERS-STUB{{end}}`)},
+		"events.html":     {Data: []byte(`{{define "events.html"}}EVENTS-STUB{{end}}`)},
 		"throughput.html": {Data: []byte(`{{define "throughput.html"}}THROUGHPUT-STUB{{end}}`)},
 	}
 
@@ -65,11 +65,11 @@ func TestIndexTemplate(t *testing.T) {
 			"/static/htmx.min.js",
 			`id="parade"`,
 			`id="sidebar"`,
-			"PARADE-STUB",   // stub "parade-content" rendered inside #parade
+			"PARADE-STUB", // stub "parade-content" rendered inside #parade
 			"WORKERS-STUB",
 			"EVENTS-STUB",
 			"THROUGHPUT-STUB",
-			"/events",       // SSE endpoint wired
+			"/events", // SSE endpoint wired
 			"dashboard-parade",
 			"dashboard-workers",
 			"dashboard-events",
