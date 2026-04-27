@@ -3408,7 +3408,16 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			fmt.Sprintf(`{"worktree":%q}`, worktree))
 	} else {
 		// Proactively delete any stale agent branch before creating a fresh worktree.
-		d.deleteStaleAgentBranch(ctx, bead.ID, w.id)
+		// On failure (e.g. branch checked out in an unremovable stale worktree) abort
+		// the assignment — proceeding would create the worktree with stale QG context.
+		if cleanErr := d.deleteStaleAgentBranch(ctx, bead.ID, w.id); cleanErr != nil {
+			d.recordAssignmentFailure(bead.ID)
+			_ = d.beads.Update(ctx, bead.ID, "ready")
+			d.mu.Lock()
+			delete(d.assigningBeads, bead.ID)
+			d.mu.Unlock()
+			return nil
+		}
 		// Create new worktree, branching from the resolved base branch.
 		worktree, branch, err = d.worktrees.Create(ctx, bead.ID, baseBranch)
 		if err != nil {
@@ -4675,18 +4684,41 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 
 // deleteStaleAgentBranch deletes agent/<beadID> if it exists, logging the outcome.
 // Called before worktree.Create to ensure the new worktree always branches from main HEAD.
-func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerID string) {
+// When the branch is checked out in a stale worktree, removes the worktree first so that
+// git can delete the branch. Returns an error only when cleanup fails completely, signalling
+// the caller to abort the assignment (stale QG context must not proceed).
+func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerID string) error {
 	branch := protocol.BranchPrefix + beadID
 	exists, _ := d.worktrees.BranchExists(ctx, branch)
 	if !exists {
-		return
+		return nil
 	}
-	if err := d.worktrees.DeleteBranch(ctx, branch); err != nil {
+	err := d.worktrees.DeleteBranch(ctx, branch)
+	if err == nil {
+		_ = d.logEvent(ctx, "stale_agent_branch_deleted", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q}`, branch))
+		return nil
+	}
+	if !strings.Contains(err.Error(), "checked out") {
 		_ = d.logEvent(ctx, "stale_agent_branch_delete_error", "dispatcher", beadID, workerID, err.Error())
-		return
+		return fmt.Errorf("delete stale branch %s: %w", branch, err)
+	}
+	// Branch is checked out in a stale worktree — remove the worktree first so the
+	// branch can be deleted without "Cannot delete branch checked out" errors.
+	worktreePath := filepath.Join(d.repoRoot, ".worktrees", beadID)
+	if removeErr := d.worktrees.Remove(ctx, worktreePath); removeErr != nil {
+		_ = d.logEvent(ctx, "stale_branch_cleanup_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"phase":"remove","error":%q}`, removeErr.Error()))
+		return fmt.Errorf("remove stale worktree %s: %w", worktreePath, removeErr)
+	}
+	if retryErr := d.worktrees.DeleteBranch(ctx, branch); retryErr != nil {
+		_ = d.logEvent(ctx, "stale_branch_cleanup_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"phase":"delete_retry","error":%q}`, retryErr.Error()))
+		return fmt.Errorf("delete stale branch %s after worktree removal: %w", branch, retryErr)
 	}
 	_ = d.logEvent(ctx, "stale_agent_branch_deleted", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"branch":%q}`, branch))
+	return nil
 }
 
 // resetOrphanedBeads resets recoverable dispatcher-owned in_progress beads back
