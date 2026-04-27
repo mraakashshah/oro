@@ -4866,12 +4866,6 @@ func (d *Dispatcher) assignmentIDLocked(workerID, beadID string) int64 {
 	return 0
 }
 
-func (d *Dispatcher) assignmentIDForWorker(workerID, beadID string) int64 {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.assignmentIDLocked(workerID, beadID)
-}
-
 func (d *Dispatcher) activeAssignmentIDForBead(ctx context.Context, beadID string) int64 {
 	if d.db == nil || beadID == "" {
 		return 0

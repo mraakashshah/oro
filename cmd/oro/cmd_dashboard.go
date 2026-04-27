@@ -23,7 +23,7 @@ func newDashboardCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("dashboard not reachable at %s: %w\nrun `oro start --web` first", url, err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				return fmt.Errorf("dashboard returned %d at %s\nrun `oro start --web` first", resp.StatusCode, url)
 			}
@@ -42,7 +42,8 @@ func normalizeDashboardURL(addr string) string {
 		addr = "127.0.0.1:4444"
 	}
 	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
-		return addr
+		_ = addr
+
 	}
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr

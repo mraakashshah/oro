@@ -110,70 +110,73 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	}
 
 	if h != nil {
-		w := d.workers[id]
-		// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
-		w.state = protocol.WorkerReserved
-		w.assignmentID = h.assignmentID
-		w.beadID = h.beadID
-		w.worktree = h.worktree
-		w.model = h.model
-		w.epicID = h.epicID
-		w.baseBranch = h.baseBranch
-		w.targetBranch = h.targetBranch
-		w.lastProgress = d.nowFunc()
-
-		// Retrieve relevant memories (best-effort, outside lock).
-		// We need to unlock before calling memory.ForPrompt.
-		d.mu.Unlock()
-		if d.testUnlockHook != nil {
-			d.testUnlockHook()
-		}
-
-		memCtx := d.buildHandoffMemoryContext(h)
-
-		d.mu.Lock()
-		// Phase 2: Verify reservation still valid, then transition to Busy.
-		w, ok := d.workers[id]
-		if !ok || w.state != protocol.WorkerReserved {
-			if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
-				d.pendingHandoffs[handoffBeadID] = h
-			}
-			d.mu.Unlock()
-			return
-		}
-		w.state = protocol.WorkerBusy
-		if err := d.sendToWorker(w, protocol.Message{
-			Type: protocol.MsgAssign,
-			Assign: &protocol.AssignPayload{
-				BeadID:        h.beadID,
-				Worktree:      h.worktree,
-				Model:         h.model,
-				MemoryContext: memCtx,
-				TargetBranch:  h.targetBranch,
-			},
-		}); err != nil {
-			_ = w.conn.Close()
-			delete(d.workers, id)
-			if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
-				d.pendingHandoffs[handoffBeadID] = h
-			}
-			d.mu.Unlock()
-			return
-		}
-		delete(d.pendingHandoffs, handoffBeadID)
+		d.assignHandoffToWorker(id, handoffBeadID, h)
+		return
 	}
 	d.mu.Unlock()
 
-	// Worker is idle (no handoff was dispatched) — wake the assign loop so it
-	// can call tryAssign immediately instead of waiting for the next poll tick.
-	// Non-blocking send: if the channel is already full, a tryAssign is already
-	// queued and this signal is redundant.
-	if h == nil {
-		select {
-		case d.workerReadyCh <- struct{}{}:
-		default:
-		}
+	// Worker is idle — wake the assign loop so it can call tryAssign immediately
+	// instead of waiting for the next poll tick. Non-blocking send: if the channel
+	// is already full, a tryAssign is already queued and this signal is redundant.
+	select {
+	case d.workerReadyCh <- struct{}{}:
+	default:
 	}
+}
+
+// assignHandoffToWorker assigns pending handoff h to the just-registered worker id.
+// Caller must hold d.mu; on return d.mu is unlocked. The function temporarily
+// releases d.mu during memory retrieval. handoffBeadID is the key for h in
+// d.pendingHandoffs.
+func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingHandoff) {
+	w := d.workers[id]
+	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
+	w.state = protocol.WorkerReserved
+	w.assignmentID = h.assignmentID
+	w.beadID = h.beadID
+	w.worktree = h.worktree
+	w.model = h.model
+	w.epicID = h.epicID
+	w.baseBranch = h.baseBranch
+	w.targetBranch = h.targetBranch
+	w.lastProgress = d.nowFunc()
+
+	// Retrieve relevant memories (best-effort, outside lock).
+	d.mu.Unlock()
+	if d.testUnlockHook != nil {
+		d.testUnlockHook()
+	}
+	memCtx := d.buildHandoffMemoryContext(h)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Phase 2: Verify reservation still valid, then transition to Busy.
+	w, ok := d.workers[id]
+	if !ok || w.state != protocol.WorkerReserved {
+		if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
+			d.pendingHandoffs[handoffBeadID] = h
+		}
+		return
+	}
+	w.state = protocol.WorkerBusy
+	if err := d.sendToWorker(w, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:        h.beadID,
+			Worktree:      h.worktree,
+			Model:         h.model,
+			MemoryContext: memCtx,
+			TargetBranch:  h.targetBranch,
+		},
+	}); err != nil {
+		_ = w.conn.Close()
+		delete(d.workers, id)
+		if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
+			d.pendingHandoffs[handoffBeadID] = h
+		}
+		return
+	}
+	delete(d.pendingHandoffs, handoffBeadID)
 }
 
 // ConnectedWorkers returns the number of currently connected workers.

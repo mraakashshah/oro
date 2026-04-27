@@ -18011,22 +18011,6 @@ func TestCheckEpicAssignable_DelegatesToCompleteEpicClose(t *testing.T) {
 	}
 }
 
-// blockingQGRunner blocks in Run until ch is closed, then returns passed=true.
-// Used in tests to park the mergeAndComplete goroutine inside checkPreMergeQG so
-// that processedExternalClose entries remain observable before clearBeadTracking runs.
-type blockingQGRunner struct {
-	ch <-chan struct{}
-}
-
-func (b *blockingQGRunner) Run(ctx context.Context, _ string, _ bool) (bool, string, error) {
-	select {
-	case <-b.ch:
-		return true, "", nil
-	case <-ctx.Done():
-		return false, "", ctx.Err()
-	}
-}
-
 // TestExternalClose_NoReEntry verifies the processedExternalClose re-entry guard:
 //
 //	(1) First call to handleClosedAssignment processes a closed bead (sends SHUTDOWN)

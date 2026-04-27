@@ -273,24 +273,8 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		_ = s.Kill()
 	}
 
-	if runtimeUsesClaudeConfig() {
-		// Set up role-scoped Claude config directories so each role gets isolated
-		// input history (history.jsonl) while sharing all other config via symlinks.
-		// Then pre-trust the current project so the workspace trust dialog doesn't
-		// block headless panes (trust is stored per-project in .claude.json).
-		configBase := claudeConfigBase()
-		cwd, _ := os.Getwd()
-		for _, role := range []string{"architect", "manager"} {
-			roleDir := roleConfigDir(configBase, role)
-			if err := setupRoleConfigDir(configBase, roleDir); err != nil {
-				return fmt.Errorf("setup %s config dir: %w", role, err)
-			}
-			if cwd != "" {
-				if err := preTrustProject(roleDir, cwd); err != nil {
-					return fmt.Errorf("pre-trust project for %s: %w", role, err)
-				}
-			}
-		}
+	if err := bootstrapRoleConfigs(); err != nil {
+		return err
 	}
 
 	// Create a detached session with first window named "architect".
@@ -323,6 +307,32 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 		fmt.Fprintf(os.Stderr, "warning: failed to register pane-died hooks: %v\n", err)
 	}
 
+	return nil
+}
+
+// bootstrapRoleConfigs sets up role-scoped Claude config directories so each
+// role gets isolated input history (history.jsonl) while sharing all other
+// config via symlinks, then pre-trusts the current project so the workspace
+// trust dialog doesn't block headless panes. No-op when the active runtime
+// does not use Claude config.
+func bootstrapRoleConfigs() error {
+	if !runtimeUsesClaudeConfig() {
+		return nil
+	}
+	configBase := claudeConfigBase()
+	cwd, _ := os.Getwd()
+	for _, role := range []string{"architect", "manager"} {
+		roleDir := roleConfigDir(configBase, role)
+		if err := setupRoleConfigDir(configBase, roleDir); err != nil {
+			return fmt.Errorf("setup %s config dir: %w", role, err)
+		}
+		if cwd == "" {
+			continue
+		}
+		if err := preTrustProject(roleDir, cwd); err != nil {
+			return fmt.Errorf("pre-trust project for %s: %w", role, err)
+		}
+	}
 	return nil
 }
 

@@ -171,7 +171,7 @@ func (d *Dispatcher) Workers(_ context.Context) ([]web.WorkerInfo, error) {
 }
 
 // Throughput implements web.DashboardData. It returns basic swarm metrics.
-func (d *Dispatcher) Throughput(_ context.Context) (*web.ThroughputData, error) {
+func (d *Dispatcher) Throughput(ctx context.Context) (*web.ThroughputData, error) {
 	d.mu.Lock()
 	workers, _, _, _ := d.snapshotWorkers(d.nowFunc())
 	uptime := d.nowFunc().Sub(d.startTime).Round(time.Second)
@@ -194,7 +194,7 @@ func (d *Dispatcher) Throughput(_ context.Context) (*web.ThroughputData, error) 
 	}
 
 	var beadsPerHour int
-	if err := d.db.QueryRow(`
+	if err := d.db.QueryRowContext(ctx, `
 		SELECT COUNT(*)
 		FROM events
 		WHERE type = 'merged'

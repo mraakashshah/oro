@@ -76,16 +76,11 @@ type sseEvent struct {
 func formatSSEEvent(eventType, beadID, workerID string) string {
 	b, _ := json.Marshal(sseEvent{Type: eventType, BeadID: beadID, WorkerID: workerID})
 	data := string(b)
-	events := []string{
-		"event: new-event\n" +
-			"data: " + data + "\n\n",
-	}
-
-	for _, name := range dashboardEventNames(eventType) {
-		events = append(events,
-			"event: "+name+"\n"+
-				"data: "+data+"\n\n",
-		)
+	names := dashboardEventNames(eventType)
+	events := make([]string, 0, len(names)+1)
+	events = append(events, "event: new-event\n"+"data: "+data+"\n\n")
+	for _, name := range names {
+		events = append(events, "event: "+name+"\n"+"data: "+data+"\n\n")
 	}
 
 	return strings.Join(events, "")

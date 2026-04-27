@@ -262,7 +262,7 @@ func TestHTTPServerStreamsDashboardEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /events: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	done := make(chan []string, 1)
 	go func() {
