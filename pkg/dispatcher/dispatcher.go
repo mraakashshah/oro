@@ -1237,7 +1237,11 @@ func (d *Dispatcher) handleStatus(ctx context.Context, workerID string, msg prot
 		return
 	}
 	d.touchProgress(workerID)
-	_ = d.logEvent(ctx, "status", workerID, msg.Status.BeadID, workerID,
+	evType := "status"
+	if msg.Status.State == "qg_retry_received" {
+		evType = "qg_retry_received"
+	}
+	_ = d.logEvent(ctx, evType, workerID, msg.Status.BeadID, workerID,
 		fmt.Sprintf(`{"state":%q,"result":%q}`, msg.Status.State, msg.Status.Result))
 }
 
@@ -1436,6 +1440,8 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 				_ = d.completeAssignment(ctx, w.assignmentID, beadID)
 				return false
 			}
+			_ = d.logEventLocked(ctx, "qg_retry_assign_sent", workerID, beadID, workerID,
+				fmt.Sprintf(`{"attempt":%d,"model":%q}`, attempt, payload.Model))
 			w.state = protocol.WorkerBusy
 			w.beadID = beadID
 			w.lastProgress = d.nowFunc()

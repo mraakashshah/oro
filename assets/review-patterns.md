@@ -63,3 +63,4 @@ redundant-timeout-branch-after-union: widening an earlier `continue`-guarded con
 injectable-derive-fn: pure deterministic helper needs test control → expose as package-level `var foo = realFoo` with `//nolint:gochecknoglobals` and let tests save/restore around the call
 `omitempty-test-bait`: subtest named "omitempty tag does X" but body never marshals a zero-value struct → either marshal `T{}` and assert key absent, or rename to describe the actual setter-side behavior verified.
 daemon-only-bypass: cobra RunE forks between startFreshSwarm and runDaemonOnly → safety checks added to one path must be mirrored (or hoisted) to the other, or explicitly scoped in AC.
+word-boundary-grep-false-positive: AC uses `\barchitect\b` → underscore-prefixed identifiers like `architect_router.py` don't match (underscore is a word character), so test-fixture filenames that filter oro-specific hooks can remain legitimately.

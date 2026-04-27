@@ -82,6 +82,9 @@ func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
 			if msg.Assign.Attempt != i {
 				t.Fatalf("expected Attempt=%d, got %d", i, msg.Assign.Attempt)
 			}
+			waitFor(t, func() bool {
+				return eventCount(t, d.db, "qg_retry_assign_sent") >= i
+			}, 1*time.Second)
 		}
 	}
 

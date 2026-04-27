@@ -3098,6 +3098,32 @@ func TestHandleStatus_LogsEvent(t *testing.T) {
 	}, 1*time.Second)
 }
 
+func TestHandleStatus_QGRetryReceivedLogsSpecificEvent(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-qg-status", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgStatus,
+		Status: &protocol.StatusPayload{
+			WorkerID: "w-qg-status",
+			BeadID:   "bead-qg-status",
+			State:    "qg_retry_received",
+			Result:   `{"attempt":1,"model":"opus"}`,
+		},
+	})
+
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "qg_retry_received") > 0
+	}, 1*time.Second)
+}
+
 func TestHandleStatus_NilPayload(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

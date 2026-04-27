@@ -382,6 +382,18 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 		return fmt.Errorf("invalid assign payload: %w", err)
 	}
 
+	if msg.Assign.Attempt > 0 {
+		_ = w.sendMessage(protocol.Message{
+			Type: protocol.MsgStatus,
+			Status: &protocol.StatusPayload{
+				BeadID:   msg.Assign.BeadID,
+				WorkerID: w.ID,
+				State:    "qg_retry_received",
+				Result:   fmt.Sprintf(`{"attempt":%d,"model":%q}`, msg.Assign.Attempt, msg.Assign.Model),
+			},
+		})
+	}
+
 	// Kill any existing subprocess from a previous assignment to prevent zombie leaks.
 	w.killProc()
 

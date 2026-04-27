@@ -227,6 +227,53 @@ func TestReceiveAssign_StoresState(t *testing.T) {
 	<-errCh
 }
 
+func TestReceiveAssign_QGRetryReportsReceipt(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-1", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-42",
+			Worktree: "/tmp/wt-42",
+			Model:    protocol.ModelOpus,
+			Attempt:  1,
+		},
+	})
+
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus {
+		t.Fatalf("expected STATUS, got %s", msg.Type)
+	}
+	if msg.Status.State != "qg_retry_received" {
+		t.Fatalf("expected qg_retry_received status, got %s", msg.Status.State)
+	}
+	if msg.Status.BeadID != "bead-42" {
+		t.Errorf("expected bead_id bead-42, got %s", msg.Status.BeadID)
+	}
+	if !strings.Contains(msg.Status.Result, `"attempt":1`) {
+		t.Errorf("expected attempt in status result, got %q", msg.Status.Result)
+	}
+
+	msg = readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus || msg.Status.State != "running" {
+		t.Fatalf("expected running STATUS after retry receipt, got %+v", msg)
+	}
+
+	cancel()
+	<-errCh
+}
+
 func TestWorkerUsesRuntimeSpawn(t *testing.T) {
 	t.Parallel()
 
