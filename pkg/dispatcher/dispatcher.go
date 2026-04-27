@@ -865,9 +865,9 @@ func (d *Dispatcher) startHTTPServer() {
 	srv := &http.Server{
 		Addr:              d.cfg.WebAddr,
 		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second, //nolint:gomnd // standard defensive timeout (G112)
-		WriteTimeout:      30 * time.Second, //nolint:gomnd // prevent slow-write resource exhaustion
-		IdleTimeout:       60 * time.Second, //nolint:gomnd // reclaim idle keep-alive connections
+		ReadHeaderTimeout: 10 * time.Second, //nolint:mnd // standard defensive timeout (G112)
+		WriteTimeout:      30 * time.Second, //nolint:mnd // prevent slow-write resource exhaustion
+		IdleTimeout:       60 * time.Second, //nolint:mnd // reclaim idle keep-alive connections
 	}
 	d.mu.Lock()
 	d.httpServer = srv
@@ -891,86 +891,83 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	d.startTime = d.nowFunc()
 	d.mu.Unlock()
 
-	// Init schema
-	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
-		return fmt.Errorf("init schema: %w", err)
+	if err := d.startupRecovery(ctx); err != nil {
+		return err
 	}
 
-	// Prune orphaned worktrees from a previous crash. Errors are logged
-	// but non-fatal — they must not prevent dispatcher startup.
-	if pruneErr := d.worktrees.Prune(ctx); pruneErr != nil {
-		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
-	}
-
-	d.logAssignmentInvariantViolations(ctx)
-
-	// Restore in-memory tracking maps from active assignments persisted in SQLite.
-	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
+	ln, err := d.openSocket()
 	if err != nil {
-		return fmt.Errorf("restore state: %w", err)
+		return err
 	}
 
-	// Reset any in_progress beads left over from a previous crash so they
-	// become re-assignable. Non-fatal: errors are logged and startup continues.
-	reopened, skipped := d.resetOrphanedBeads(ctx, recoverableBeads)
-	_ = d.logEvent(ctx, "startup_reconciliation_summary", "dispatcher", "", "",
-		fmt.Sprintf(`{"recovered_attempts":%d,"quarantined_assignments":%d,"reopened_beads":%d,"skipped_in_progress":%d}`,
-			recoveryStats.recoverable, recoveryStats.quarantined, reopened, skipped))
-
-	// Clean up stale socket from a previous crash (if any). If another
-	// dispatcher is actively listening, this returns an error so we don't
-	// clobber it.
-	if err := cleanStaleSocket(d.cfg.SocketPath); err != nil {
-		return fmt.Errorf("stale socket check %s: %w", d.cfg.SocketPath, err)
-	}
-
-	// Start UDS listener
-	ln, err := net.Listen("unix", d.cfg.SocketPath) //nolint:noctx // UDS bind is instant
-	if err != nil {
-		return fmt.Errorf("listen unix %s: %w", d.cfg.SocketPath, err)
-	}
-	// Restrict socket permissions to 0600 (owner-only access) to prevent
-	// unauthorized local users from connecting and impersonating workers.
-	if err := os.Chmod(d.cfg.SocketPath, 0o600); err != nil {
-		_ = ln.Close()
-		return fmt.Errorf("chmod socket %s: %w", d.cfg.SocketPath, err)
-	}
-	d.mu.Lock()
-	d.listener = ln
-	d.mu.Unlock()
-
-	// Accept connections
-	d.safeGo(func() { d.acceptLoop(ctx, ln) })
-
-	// Bead assignment loop
-	d.safeGo(func() { d.assignLoop(ctx) })
-
-	// Heartbeat monitor
-	d.safeGo(func() { d.heartbeatLoop(ctx) })
-
-	// Pane context monitor
-	d.safeGo(func() { d.paneMonitorLoop(ctx) })
-
-	// Escalation retry loop — re-deliver unacked escalations every 2 minutes.
-	d.safeGo(func() { d.escalationRetryLoop(ctx) })
-
-	// HTTP server — started only when WebEnabled=true.
-	if d.cfg.WebEnabled {
-		d.startHTTPServer()
-	}
+	d.spawnBackgroundLoops(ctx, ln)
 
 	select {
 	case <-ctx.Done():
 	case <-d.shutdownCh:
 	}
 
-	// Close listener first so acceptLoop will exit
 	_ = ln.Close()
-
-	// --- Graceful shutdown ---
 	d.shutdownWithTimeout()
-
 	return nil
+}
+
+// startupRecovery initializes the schema, prunes orphaned worktrees, and runs
+// state-restoration / orphaned-bead reconciliation. Errors from prune and
+// reconciliation are logged but non-fatal — only schema or state-restore
+// failures abort startup.
+func (d *Dispatcher) startupRecovery(ctx context.Context) error {
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		return fmt.Errorf("init schema: %w", err)
+	}
+	if pruneErr := d.worktrees.Prune(ctx); pruneErr != nil {
+		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
+	}
+	d.logAssignmentInvariantViolations(ctx)
+
+	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
+	if err != nil {
+		return fmt.Errorf("restore state: %w", err)
+	}
+	reopened, skipped := d.resetOrphanedBeads(ctx, recoverableBeads)
+	_ = d.logEvent(ctx, "startup_reconciliation_summary", "dispatcher", "", "",
+		fmt.Sprintf(`{"recovered_attempts":%d,"quarantined_assignments":%d,"reopened_beads":%d,"skipped_in_progress":%d}`,
+			recoveryStats.recoverable, recoveryStats.quarantined, reopened, skipped))
+	return nil
+}
+
+// openSocket cleans any stale socket, binds the UDS listener with 0600
+// permissions (owner-only), and stashes the listener on the dispatcher.
+func (d *Dispatcher) openSocket() (net.Listener, error) {
+	if err := cleanStaleSocket(d.cfg.SocketPath); err != nil {
+		return nil, fmt.Errorf("stale socket check %s: %w", d.cfg.SocketPath, err)
+	}
+	ln, err := net.Listen("unix", d.cfg.SocketPath) //nolint:noctx // UDS bind is instant
+	if err != nil {
+		return nil, fmt.Errorf("listen unix %s: %w", d.cfg.SocketPath, err)
+	}
+	if err := os.Chmod(d.cfg.SocketPath, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("chmod socket %s: %w", d.cfg.SocketPath, err)
+	}
+	d.mu.Lock()
+	d.listener = ln
+	d.mu.Unlock()
+	return ln, nil
+}
+
+// spawnBackgroundLoops starts the accept/assign/heartbeat/pane/escalation
+// goroutines (each via safeGo for panic recovery) and the HTTP server when
+// WebEnabled is true.
+func (d *Dispatcher) spawnBackgroundLoops(ctx context.Context, ln net.Listener) {
+	d.safeGo(func() { d.acceptLoop(ctx, ln) })
+	d.safeGo(func() { d.assignLoop(ctx) })
+	d.safeGo(func() { d.heartbeatLoop(ctx) })
+	d.safeGo(func() { d.paneMonitorLoop(ctx) })
+	d.safeGo(func() { d.escalationRetryLoop(ctx) })
+	if d.cfg.WebEnabled {
+		d.startHTTPServer()
+	}
 }
 
 // shutdownWithTimeout orchestrates graceful shutdown with a hard timeout.
@@ -2944,53 +2941,63 @@ func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadI
 		return
 	}
 
-	// Send SHUTDOWN, capture worktree, and clear worker state under lock.
-	// Mark as processed here so any concurrent or subsequent call returns early (FM2).
-	var worktree, epicID, targetBranch string
-	var assignmentID int64
-	d.mu.Lock()
-	d.processedExternalClose[beadID] = true
-	if w, ok := d.workers[workerID]; ok && w.beadID == beadID {
-		assignmentID = w.assignmentID
-		worktree = w.worktree
-		epicID = w.epicID             // Capture epicID before clearing
-		targetBranch = w.targetBranch // Capture targetBranch before clearing
-		if err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown}); err != nil {
-			// Socket is dead — remove worker entirely to prevent
-			// tryAssign from cycling beads through a zombie (oro-e2jk).
-			_ = w.conn.Close()
-			delete(d.workers, workerID)
-		} else {
-			w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
-			w.assignmentID = 0
-			w.beadID = ""
-			w.epicID = ""
-			w.worktree = ""
-			w.baseBranch = ""
-			w.targetBranch = ""
-			w.model = ""
-		}
-	}
-	d.mu.Unlock()
+	worktree, epicID, targetBranch, assignmentID := d.shutdownWorkerForClose(workerID, beadID)
+	d.finalizeExternalClose(ctx, workerID, beadID, worktree, epicID, targetBranch, assignmentID)
+}
 
-	// External close is a cancellation signal, not an implicit merge. Clean up
-	// the assignment and worktree without reopening or merging the branch.
+// shutdownWorkerForClose sends SHUTDOWN, captures the worker's worktree/epic/
+// targetBranch/assignmentID, clears worker state under lock, and marks the
+// close as processed (FM2). Removes the worker entirely when sendToWorker
+// fails so tryAssign doesn't cycle beads through a zombie (oro-e2jk).
+func (d *Dispatcher) shutdownWorkerForClose(workerID, beadID string) (worktree, epicID, targetBranch string, assignmentID int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.processedExternalClose[beadID] = true
+	w, ok := d.workers[workerID]
+	if !ok || w.beadID != beadID {
+		return "", "", "", 0
+	}
+	assignmentID = w.assignmentID
+	worktree = w.worktree
+	epicID = w.epicID
+	targetBranch = w.targetBranch
+	if err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown}); err != nil {
+		_ = w.conn.Close()
+		delete(d.workers, workerID)
+		return worktree, epicID, targetBranch, assignmentID
+	}
+	w.state = protocol.WorkerShuttingDown
+	w.assignmentID = 0
+	w.beadID = ""
+	w.epicID = ""
+	w.worktree = ""
+	w.baseBranch = ""
+	w.targetBranch = ""
+	w.model = ""
+	return worktree, epicID, targetBranch, assignmentID
+}
+
+// finalizeExternalClose cleans up the assignment record, worktree, and ops
+// agents after an external close. External close is a cancellation, not a
+// merge — the agent branch is discarded.
+func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID, worktree, epicID, targetBranch string, assignmentID int64) {
+	logCancelled := func() {
+		_ = d.logEvent(ctx, "external_close_cancelled", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"assignment_id":%d,"epic_id":%q,"target_branch":%q}`, assignmentID, epicID, targetBranch))
+	}
 	if worktree != "" {
 		d.safeGo(func() {
 			_ = d.completeAssignment(ctx, assignmentID, beadID)
 			d.cancelOpsAgents(ctx, beadID, workerID, "external_close")
 			d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 			d.clearBeadTracking(beadID)
-			_ = d.logEvent(ctx, "external_close_cancelled", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"assignment_id":%d,"epic_id":%q,"target_branch":%q}`, assignmentID, epicID, targetBranch))
+			logCancelled()
 		})
-	} else {
-		// No worktree — just complete the DB record and clear tracking.
-		_ = d.completeAssignment(ctx, assignmentID, beadID)
-		d.clearBeadTracking(beadID)
-		_ = d.logEvent(ctx, "external_close_cancelled", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"assignment_id":%d,"epic_id":%q,"target_branch":%q}`, assignmentID, epicID, targetBranch))
+		return
 	}
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	d.clearBeadTracking(beadID)
+	logCancelled()
 }
 
 // filterAssignable returns beads eligible for assignment: excludes closed beads,
@@ -4686,7 +4693,7 @@ func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerI
 // to open on startup. Human-owned in_progress beads are left untouched because
 // they have no dispatcher-owned active assignment state to recover from.
 // Errors are non-fatal — logged via logEvent and startup continues.
-func (d *Dispatcher) resetOrphanedBeads(ctx context.Context, recoverable map[string]bool) (reopened int, skipped int) {
+func (d *Dispatcher) resetOrphanedBeads(ctx context.Context, recoverable map[string]bool) (reopened, skipped int) {
 	beads, err := d.beads.InProgress(ctx)
 	if err != nil {
 		_ = d.logEvent(ctx, "startup_reset_list_failed", "dispatcher", "", "", err.Error())
@@ -4715,24 +4722,40 @@ type startupRecoveryStats struct {
 	quarantined int
 }
 
-func (d *Dispatcher) restoreState(ctx context.Context) (map[string]bool, startupRecoveryStats, error) {
-	type restoredAssignment struct {
-		id           int64
-		beadID       string
-		worktree     string
-		attemptCount int
-		handoffCount int
-	}
-	type quarantinedAssignment struct {
-		id     int64
-		beadID string
-		reason string
-	}
+type restoredAssignment struct {
+	id           int64
+	beadID       string
+	worktree     string
+	attemptCount int
+	handoffCount int
+}
 
+type quarantinedAssignment struct {
+	id     int64
+	beadID string
+	reason string
+}
+
+func (d *Dispatcher) restoreState(ctx context.Context) (map[string]bool, startupRecoveryStats, error) {
+	restored, quarantined, err := d.loadActiveAssignments(ctx)
+	if err != nil {
+		return nil, startupRecoveryStats{}, err
+	}
+	if err := d.processQuarantined(ctx, quarantined); err != nil {
+		return nil, startupRecoveryStats{}, err
+	}
+	recoverable := d.applyRestoredAssignments(restored)
+	stats := startupRecoveryStats{recoverable: len(restored), quarantined: len(quarantined)}
+	return recoverable, stats, nil
+}
+
+// loadActiveAssignments reads all status='active' assignments and partitions
+// them into restorable (worktree + branch present) and quarantinable sets.
+func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssignment, []quarantinedAssignment, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, bead_id, worktree, attempt_count, handoff_count FROM assignments WHERE status='active'`)
 	if err != nil {
-		return nil, startupRecoveryStats{}, fmt.Errorf("query active assignments: %w", err)
+		return nil, nil, fmt.Errorf("query active assignments: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -4740,65 +4763,60 @@ func (d *Dispatcher) restoreState(ctx context.Context) (map[string]bool, startup
 		restored    []restoredAssignment
 		quarantined []quarantinedAssignment
 	)
-
 	for rows.Next() {
 		var a restoredAssignment
 		if err := rows.Scan(&a.id, &a.beadID, &a.worktree, &a.attemptCount, &a.handoffCount); err != nil {
-			return nil, startupRecoveryStats{}, fmt.Errorf("scan assignment: %w", err)
+			return nil, nil, fmt.Errorf("scan assignment: %w", err)
 		}
-
-		switch {
-		case a.worktree == "":
-			quarantined = append(quarantined, quarantinedAssignment{
-				id:     a.id,
-				beadID: a.beadID,
-				reason: "missing_worktree",
-			})
-			continue
-		case !d.worktrees.Exists(ctx, a.worktree):
-			quarantined = append(quarantined, quarantinedAssignment{
-				id:     a.id,
-				beadID: a.beadID,
-				reason: "missing_worktree_path",
-			})
+		if reason := d.classifyAssignment(ctx, a); reason != "" {
+			quarantined = append(quarantined, quarantinedAssignment{id: a.id, beadID: a.beadID, reason: reason})
 			continue
 		}
-
-		branch := protocol.BranchPrefix + a.beadID
-		exists, branchErr := d.worktrees.BranchExists(ctx, branch)
-		if branchErr != nil {
-			quarantined = append(quarantined, quarantinedAssignment{
-				id:     a.id,
-				beadID: a.beadID,
-				reason: "branch_check_failed",
-			})
-			continue
-		}
-		if !exists {
-			quarantined = append(quarantined, quarantinedAssignment{
-				id:     a.id,
-				beadID: a.beadID,
-				reason: "missing_branch",
-			})
-			continue
-		}
-
 		restored = append(restored, a)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, startupRecoveryStats{}, fmt.Errorf("iterate assignments: %w", err)
+		return nil, nil, fmt.Errorf("iterate assignments: %w", err)
 	}
+	return restored, quarantined, nil
+}
 
+// classifyAssignment returns "" if the assignment is recoverable, or a
+// quarantine reason otherwise: missing_worktree | missing_worktree_path |
+// branch_check_failed | missing_branch.
+func (d *Dispatcher) classifyAssignment(ctx context.Context, a restoredAssignment) string {
+	switch {
+	case a.worktree == "":
+		return "missing_worktree"
+	case !d.worktrees.Exists(ctx, a.worktree):
+		return "missing_worktree_path"
+	}
+	exists, branchErr := d.worktrees.BranchExists(ctx, protocol.BranchPrefix+a.beadID)
+	switch {
+	case branchErr != nil:
+		return "branch_check_failed"
+	case !exists:
+		return "missing_branch"
+	}
+	return ""
+}
+
+// processQuarantined completes each quarantined assignment in the DB and emits
+// a startup_recovery_quarantined event with the recorded reason.
+func (d *Dispatcher) processQuarantined(ctx context.Context, quarantined []quarantinedAssignment) error {
 	for _, q := range quarantined {
 		if err := d.completeAssignment(ctx, q.id, q.beadID); err != nil {
-			return nil, startupRecoveryStats{}, fmt.Errorf("quarantine assignment %s: %w", q.beadID, err)
+			return fmt.Errorf("quarantine assignment %s: %w", q.beadID, err)
 		}
 		_ = d.logEvent(ctx, "startup_recovery_quarantined", "dispatcher", q.beadID, "",
 			fmt.Sprintf(`{"assignment_id":%d,"reason":%q}`, q.id, q.reason))
 	}
+	return nil
+}
 
+// applyRestoredAssignments populates worktreeByBead/attemptCounts/handoffCounts
+// from the recovered assignments and returns the set of recoverable bead IDs.
+func (d *Dispatcher) applyRestoredAssignments(restored []restoredAssignment) map[string]bool {
 	recoverable := make(map[string]bool, len(restored))
-	stats := startupRecoveryStats{recoverable: len(restored), quarantined: len(quarantined)}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, a := range restored {
@@ -4811,7 +4829,7 @@ func (d *Dispatcher) restoreState(ctx context.Context) (map[string]bool, startup
 			d.handoffCounts[a.beadID] = a.handoffCount
 		}
 	}
-	return recoverable, stats, nil
+	return recoverable
 }
 
 func (d *Dispatcher) logAssignmentInvariantViolations(ctx context.Context) {

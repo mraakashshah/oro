@@ -376,8 +376,6 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if msg.Assign == nil {
 		return fmt.Errorf("assign message missing payload")
 	}
-
-	// Validate the payload before processing.
 	if err := msg.Assign.Validate(); err != nil {
 		return fmt.Errorf("invalid assign payload: %w", err)
 	}
@@ -394,34 +392,53 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 		})
 	}
 
-	// Kill any existing subprocess from a previous assignment to prevent zombie leaks.
-	w.killProc()
-
-	w.mu.Lock()
-	w.beadID = msg.Assign.BeadID
-	w.worktree = msg.Assign.Worktree
-	w.sessionText.Reset()
-	w.pendingQGOutput = ""
-	w.isEpicDecomposition = msg.Assign.IsEpicDecomposition
-	w.mu.Unlock()
-
-	// Remove stale handoff_done from a previous worker so watchContext does
-	// not immediately trigger a spurious handoff on the new assignment.
-	if msg.Assign.Worktree != "" {
-		_ = os.Remove(filepath.Join(msg.Assign.Worktree, protocol.OroDir, "handoff_done"))
-	}
-
-	// Truncate log file for new assignment (best-effort; continue if fails)
-	w.closeLogFile()
-	_ = w.openLogFile()
+	w.resetForNewAssignment(msg.Assign)
 
 	prompt, model := BuildAssignPrompt(msg.Assign)
 	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)
 	}
+	w.recordSpawnedProc(proc, model)
 
+	if stdout != nil {
+		w.outputWg.Add(1)
+		go w.processOutput(ctx, stdout)
+	}
+	if err := w.SendStatus(ctx, "running", ""); err != nil {
+		return fmt.Errorf("send status: %w", err)
+	}
+	go w.monitorSubprocessExit(proc)
+	go w.watchContext(ctx)
+	go w.awaitSubprocessAndReport(ctx) // wait for exit, run QG, send DONE
+	return nil
+}
+
+// resetForNewAssignment kills any prior subprocess, clears worker state under
+// the lock, removes the stale handoff_done sentinel from the new worktree, and
+// truncates the log file before the next subprocess spawns.
+func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload) {
+	w.killProc()
 	w.mu.Lock()
+	w.beadID = a.BeadID
+	w.worktree = a.Worktree
+	w.sessionText.Reset()
+	w.pendingQGOutput = ""
+	w.isEpicDecomposition = a.IsEpicDecomposition
+	w.mu.Unlock()
+
+	if a.Worktree != "" {
+		_ = os.Remove(filepath.Join(a.Worktree, protocol.OroDir, "handoff_done"))
+	}
+	w.closeLogFile()
+	_ = w.openLogFile()
+}
+
+// recordSpawnedProc captures the freshly spawned subprocess + model and resets
+// the exit-coordination flags under the worker lock.
+func (w *Worker) recordSpawnedProc(proc Process, model string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.proc = proc
 	w.model = model
 	w.streamFormat = w.spawner.StreamFormat()
@@ -429,28 +446,6 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.subprocExitClosed = false
 	w.handleExitClaimed = false
 	w.subprocKilledByUs = false
-	w.mu.Unlock()
-
-	// Pipe subprocess stdout through memory marker extraction.
-	if stdout != nil {
-		w.outputWg.Add(1)
-		go w.processOutput(ctx, stdout)
-	}
-
-	// Send STATUS running
-	if err := w.SendStatus(ctx, "running", ""); err != nil {
-		return fmt.Errorf("send status: %w", err)
-	}
-
-	// Start subprocess exit monitor
-	go w.monitorSubprocessExit(proc)
-
-	// Start context file watcher (also monitors subprocess health)
-	go w.watchContext(ctx)
-
-	go w.awaitSubprocessAndReport(ctx) // wait for exit, run QG, send DONE
-
-	return nil
 }
 
 // BuildAssignPrompt constructs the prompt and resolves the model from an ASSIGN payload.
