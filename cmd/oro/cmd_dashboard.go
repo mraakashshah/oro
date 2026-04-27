@@ -42,8 +42,7 @@ func normalizeDashboardURL(addr string) string {
 		addr = "127.0.0.1:4444"
 	}
 	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
-		_ = addr
-
+		return addr
 	}
 	if strings.HasPrefix(addr, ":") {
 		addr = "127.0.0.1" + addr
