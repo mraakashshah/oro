@@ -90,6 +90,8 @@ type BeadSource interface {
 	HasChildren(ctx context.Context, epicID string) (bool, error)
 	FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error)
 	Export(ctx context.Context) ([]byte, error)
+	Defer(ctx context.Context, id, until string) error
+	Undefer(ctx context.Context, id string) error
 }
 
 // WorktreeManager creates and removes git worktrees.

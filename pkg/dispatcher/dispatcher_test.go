@@ -253,6 +253,9 @@ func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) {
 	return m.exportData, nil
 }
 
+func (m *mockBeadSource) Defer(_ context.Context, _, _ string) error { return nil }
+func (m *mockBeadSource) Undefer(_ context.Context, _ string) error  { return nil }
+
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

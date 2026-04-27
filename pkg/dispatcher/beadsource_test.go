@@ -1961,6 +1961,87 @@ func TestCLIBeadSource_UpdateInProgressPersists(t *testing.T) {
 	}
 }
 
+func TestCLIBeadSource_DeferUndefer(t *testing.T) {
+	// (a) Defer(ctx, "oro-x", "2099-01-01") invokes runner with args [defer oro-x --until=2099-01-01]
+	t.Run("defer_invokes_bd_defer_with_until", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("")}
+		src := NewCLIBeadSource(runner)
+
+		err := src.Defer(context.Background(), "oro-x", "2099-01-01")
+		if err != nil {
+			t.Fatalf("Defer: %v", err)
+		}
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "defer") {
+			t.Errorf("expected 'defer' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "oro-x") {
+			t.Errorf("expected 'oro-x' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "--until=2099-01-01") {
+			t.Errorf("expected '--until=2099-01-01' in args, got %v", call.Args)
+		}
+	})
+
+	// (b) Undefer(ctx, "oro-x") invokes runner with args [undefer oro-x]
+	t.Run("undefer_invokes_bd_undefer", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("")}
+		src := NewCLIBeadSource(runner)
+
+		err := src.Undefer(context.Background(), "oro-x")
+		if err != nil {
+			t.Fatalf("Undefer: %v", err)
+		}
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 call, got %d", len(runner.calls))
+		}
+		call := runner.calls[0]
+		if call.Name != "bd" {
+			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		}
+		if !sliceContains(call.Args, "undefer") {
+			t.Errorf("expected 'undefer' in args, got %v", call.Args)
+		}
+		if !sliceContains(call.Args, "oro-x") {
+			t.Errorf("expected 'oro-x' in args, got %v", call.Args)
+		}
+	})
+
+	// (c) runner error wraps as "bd defer oro-x: <err>"
+	t.Run("defer_error_wraps_with_subcommand_context", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("defer failed")}
+		src := NewCLIBeadSource(runner)
+
+		err := src.Defer(context.Background(), "oro-x", "2099-01-01")
+		if err == nil {
+			t.Fatal("expected error from Defer when command fails")
+		}
+		if !strings.Contains(err.Error(), "bd defer oro-x") {
+			t.Errorf("expected error to contain 'bd defer oro-x', got: %v", err)
+		}
+	})
+
+	// (c) runner error wraps as "bd undefer oro-x: <err>"
+	t.Run("undefer_error_wraps_with_subcommand_context", func(t *testing.T) {
+		runner := &mockCommandRunner{err: fmt.Errorf("undefer failed")}
+		src := NewCLIBeadSource(runner)
+
+		err := src.Undefer(context.Background(), "oro-x")
+		if err == nil {
+			t.Fatal("expected error from Undefer when command fails")
+		}
+		if !strings.Contains(err.Error(), "bd undefer oro-x") {
+			t.Errorf("expected error to contain 'bd undefer oro-x', got: %v", err)
+		}
+	})
+}
+
 // sliceContains checks if a string slice contains a given string.
 func sliceContains(s []string, target string) bool {
 	for _, v := range s {

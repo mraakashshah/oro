@@ -83,7 +83,9 @@ func (m *mockBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, erro
 	return nil, nil
 }
 
-func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) { return nil, nil }
+func (m *mockBeadSource) Export(_ context.Context) ([]byte, error)   { return nil, nil }
+func (m *mockBeadSource) Defer(_ context.Context, _, _ string) error { return nil }
+func (m *mockBeadSource) Undefer(_ context.Context, _ string) error  { return nil }
 
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()

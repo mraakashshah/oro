@@ -260,6 +260,24 @@ func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+// Defer runs `bd defer <id> --until=<until>`.
+func (s *CLIBeadSource) Defer(ctx context.Context, id, until string) error {
+	_, err := s.runner.Run(ctx, "bd", s.bdArgs("defer", id, "--until="+until)...)
+	if err != nil {
+		return fmt.Errorf("bd defer %s: %w", id, err)
+	}
+	return nil
+}
+
+// Undefer runs `bd undefer <id>`.
+func (s *CLIBeadSource) Undefer(ctx context.Context, id string) error {
+	_, err := s.runner.Run(ctx, "bd", s.bdArgs("undefer", id)...)
+	if err != nil {
+		return fmt.Errorf("bd undefer %s: %w", id, err)
+	}
+	return nil
+}
+
 // Update runs `bd update <id> --status=<status>` then re-reads bd show to verify
 // the status was actually persisted. bd update exits 0 even on a no-op (e.g. cwd
 // mismatch, wrong db path), so we must verify explicitly rather than trust exit code.

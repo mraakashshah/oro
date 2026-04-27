@@ -78,7 +78,9 @@ func (m *trackingBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, 
 	return nil, nil
 }
 
-func (m *trackingBeadSource) Export(_ context.Context) ([]byte, error) { return nil, nil }
+func (m *trackingBeadSource) Export(_ context.Context) ([]byte, error)   { return nil, nil }
+func (m *trackingBeadSource) Defer(_ context.Context, _, _ string) error { return nil }
+func (m *trackingBeadSource) Undefer(_ context.Context, _ string) error  { return nil }
 
 func (m *trackingBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()

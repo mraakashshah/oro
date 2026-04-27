@@ -72,8 +72,10 @@ func (m *mockBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error)    
 func (m *mockBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
 	return nil, nil
 }
-func (m *mockBeadSource) Sync(_ context.Context) error             { return nil }
-func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) { return nil, nil }
+func (m *mockBeadSource) Sync(_ context.Context) error               { return nil }
+func (m *mockBeadSource) Export(_ context.Context) ([]byte, error)   { return nil, nil }
+func (m *mockBeadSource) Defer(_ context.Context, _, _ string) error { return nil }
+func (m *mockBeadSource) Undefer(_ context.Context, _ string) error  { return nil }
 
 // mockWorktreeManager records Create/Remove calls.
 type mockWorktreeManager struct {
