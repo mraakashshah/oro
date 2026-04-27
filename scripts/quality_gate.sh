@@ -62,6 +62,24 @@ qg_git() {
 	fi
 }
 
+# shellcheck disable=SC2317,SC2329
+restore_go_mutation_worktree() {
+	local unstaged_patch="$1"
+	local -a restore_paths=()
+	local path
+	for path in pkg internal cmd; do
+		if git ls-files -- "$path/" | grep -q .; then
+			restore_paths+=("$path/")
+		fi
+	done
+	if [ "${#restore_paths[@]}" -gt 0 ]; then
+		git checkout -- "${restore_paths[@]}" 2>/dev/null || true
+	fi
+	if [ -s "$unstaged_patch" ]; then
+		git apply --3way --whitespace=nowarn "$unstaged_patch"
+	fi
+}
+
 header() {
 	echo ""
 	echo "═══════════════════════════════════════════════════════════════"
@@ -339,8 +357,13 @@ lane_go() {
 				echo "Limiting mutations to touched functions: $touched_funcs"
 			fi
 
-			# Restore source files on exit (handles Ctrl-C, OOM, timeout, and normal exit)
-			trap 'git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true' EXIT
+			# Restore source files on exit, then reapply pre-existing unstaged work.
+			# This handles Ctrl-C, OOM, timeout, and normal exit without wiping edits
+			# that existed before mutation testing started.
+			local pre_mutation_patch="$QG_DIR/go-mutation-pre-${RANDOM}.patch"
+			git diff -- pkg/ internal/ cmd/ >"$pre_mutation_patch" || true
+			GO_MUTATION_PRE_PATCH="$pre_mutation_patch"
+			trap 'restore_go_mutation_worktree "$GO_MUTATION_PRE_PATCH" >/dev/null 2>&1 || true' EXIT
 			echo "Mutating changed files: $changed"
 			local output mutesting_exit=0
 			local -a changed_files
@@ -351,7 +374,10 @@ lane_go() {
 
 			# 8-minute overall cap — if exceeded, pass with warning (best-effort signal).
 			output=$(timeout 480 go tool go-mutesting --exec-timeout=60 "${match_args[@]}" "${changed_files[@]}" 2>&1) || mutesting_exit=$?
-			git checkout -- pkg/ internal/ cmd/ 2>/dev/null || true
+			if ! restore_go_mutation_worktree "$pre_mutation_patch"; then
+				echo "FAIL: failed to restore pre-existing unstaged changes after mutation testing"
+				return 1
+			fi
 
 			if [ "$mutesting_exit" -eq 124 ]; then
 				echo "WARNING: mutation testing timed out after 8min — skipping score check"

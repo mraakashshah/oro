@@ -171,12 +171,42 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 test_quality_gate_mutation_trap_present() {
 	# Extract run_go_mutation_test function body (up to 60 lines after definition)
 	# and verify a trap EXIT handler is present
-	if grep -A 60 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | grep -q 'trap.*EXIT'; then
+	if grep -A 90 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | grep -q 'trap.*EXIT'; then
 		return 0
 	fi
 	echo "FAIL: quality_gate.sh run_go_mutation_test() has no trap EXIT handler"
 	echo "  Mutated source files will remain on disk if go-mutesting is killed"
 	return 1
+}
+
+# Test: quality_gate.sh mutation cleanup preserves pre-existing unstaged edits.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_mutation_cleanup_preserves_unstaged_work() {
+	local mutation_body
+	mutation_body=$(grep -A 100 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -100)
+
+	if ! grep -q 'restore_go_mutation_worktree()' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh lacks restore_go_mutation_worktree helper"
+		return 1
+	fi
+	if ! grep -A 20 'restore_go_mutation_worktree()' "$SCRIPT_DIR/quality_gate.sh" | grep -q 'git apply'; then
+		echo "FAIL: restore_go_mutation_worktree does not reapply pre-existing unstaged changes"
+		return 1
+	fi
+	if ! echo "$mutation_body" | grep -q 'pre_mutation_patch'; then
+		echo "FAIL: run_go_mutation_test does not capture pre-existing unstaged changes"
+		return 1
+	fi
+	if ! echo "$mutation_body" | grep -q 'restore_go_mutation_worktree'; then
+		echo "FAIL: run_go_mutation_test does not restore via safe helper"
+		return 1
+	fi
+	if echo "$mutation_body" | grep -q 'git checkout -- pkg/ internal/ cmd/'; then
+		echo "FAIL: run_go_mutation_test still directly resets source directories"
+		echo "  Direct reset wipes pre-existing unstaged work; use restore_go_mutation_worktree."
+		return 1
+	fi
+	return 0
 }
 
 # Test: Makefile mutate-go target has trap EXIT handler
@@ -584,6 +614,7 @@ echo "Testing mutation trap handlers (oro-bl44)"
 echo "=============================================="
 
 test_case "quality_gate.sh mutation has trap EXIT" test_quality_gate_mutation_trap_present
+test_case "quality_gate.sh mutation preserves unstaged work" test_quality_gate_mutation_cleanup_preserves_unstaged_work
 test_case "Makefile mutate-go has trap" test_makefile_mutate_go_trap_present
 test_case "Makefile mutate-go-diff has trap" test_makefile_mutate_go_diff_trap_present
 
