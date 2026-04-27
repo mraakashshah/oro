@@ -110,6 +110,85 @@ func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
 	}
 }
 
+func TestHandleDone_QGFailRetryAttemptContinuesAcrossModelEscalation(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	conn, scanner := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-escalate", Title: "QG escalation attempt test", Priority: 1, Type: "task", Model: protocol.ModelSonnet}})
+	readMsg(t, conn, 2*time.Second)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		sendMsg(t, conn, protocol.Message{
+			Type: protocol.MsgDone,
+			Done: &protocol.DonePayload{
+				BeadID:            "bead-qg-escalate",
+				WorkerID:          "w1",
+				QualityGatePassed: false,
+				QGOutput:          fmt.Sprintf("unique-sonnet-opus-fail-%d", attempt),
+			},
+		})
+
+		msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+		if !ok {
+			t.Fatalf("expected re-ASSIGN on attempt %d", attempt)
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN on attempt %d, got %s", attempt, msg.Type)
+		}
+		if msg.Assign.Model != protocol.ModelOpus {
+			t.Fatalf("expected retry model opus on attempt %d, got %q", attempt, msg.Assign.Model)
+		}
+		if msg.Assign.Attempt != attempt {
+			t.Fatalf("expected Attempt=%d across model escalation, got %d", attempt, msg.Assign.Attempt)
+		}
+	}
+
+	d.mu.Lock()
+	count := d.attemptCounts["bead-qg-escalate"]
+	d.mu.Unlock()
+	if count != 2 {
+		t.Fatalf("attemptCounts after two QG failures = %d, want 2", count)
+	}
+
+	var payload string
+	if err := d.db.QueryRowContext(context.Background(),
+		`SELECT payload FROM events WHERE type='qg_retry_assign_sent' AND bead_id='bead-qg-escalate' ORDER BY id DESC LIMIT 1`,
+	).Scan(&payload); err != nil {
+		t.Fatalf("query qg_retry_assign_sent payload: %v", err)
+	}
+	if !strings.Contains(payload, `"attempt":2`) {
+		t.Fatalf("latest qg_retry_assign_sent payload = %s, want attempt 2", payload)
+	}
+
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-escalate",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+			QGOutput:          "unique-sonnet-opus-fail-3",
+		},
+	})
+
+	if msg, ok := readMsgFromScanner(t, scanner, 300*time.Millisecond); ok && msg.Type == protocol.MsgAssign {
+		t.Fatalf("expected no third retry ASSIGN after max total attempts, got %+v", msg.Assign)
+	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "qg_retry_escalated") > 0
+	}, 2*time.Second)
+}
+
 func TestHandleDone_QGFailRetryPassesQGOutput(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)

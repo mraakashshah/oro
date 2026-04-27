@@ -5332,13 +5332,12 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 		t.Fatalf("expected stored model %q after escalation, got %q", protocol.ModelOpus, model)
 	}
 
-	// Verify attempt counter was reset to 0 (the retry incremented it to 1,
-	// then escalation reset it to 0, so current value should be 0).
+	// Verify attempt counter remains total across model escalation.
 	d.mu.Lock()
 	count := d.attemptCounts["bead-qg-model"]
 	d.mu.Unlock()
-	if count != 0 {
-		t.Fatalf("expected attempt count reset to 0 after escalation, got %d", count)
+	if count != 1 {
+		t.Fatalf("expected attempt count 1 after escalation, got %d", count)
 	}
 }
 

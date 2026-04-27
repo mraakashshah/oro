@@ -1424,7 +1424,6 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 			// Escalate to opus if not already opus.
 			if w.model != protocol.ModelOpus {
 				w.model = protocol.ModelOpus
-				d.attemptCounts[beadID] = 0 // Reset so opus gets fresh retries
 			}
 			payload.Model = w.model // sync with live escalated value
 
