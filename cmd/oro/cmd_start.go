@@ -240,7 +240,7 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 	// Auto-run oro init if no project config exists (neither standard nor stealth).
 	if _, _, detectErr := readProjectName("."); detectErr != nil || !projectInitialized(".") {
 		fmt.Fprintf(w, "project not initialized — running oro init (stealth)...\n")
-		if initErr := runInit(w, false, false, true, ".", ""); initErr != nil {
+		if initErr := runInit(w, false, false, true, false, ".", ""); initErr != nil {
 			return "", fmt.Errorf("auto-init failed: %w — run 'oro init' manually", initErr)
 		}
 	}

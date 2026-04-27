@@ -1,24 +1,38 @@
 #!/usr/bin/env sh
-# --- BEGIN BEADS INTEGRATION v0.60.0 ---
-# This section is managed by beads. Do not remove these markers.
-if command -v bd >/dev/null 2>&1; then
-  export BD_GIT_HOOK=1
-  _bd_timeout=${BEADS_HOOK_TIMEOUT:-30}
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "$_bd_timeout" bd hooks run pre-push "$@"
-    _bd_exit=$?
-    if [ $_bd_exit -eq 124 ]; then
-      echo >&2 "beads: hook 'pre-push' timed out after ${_bd_timeout}s — continuing without beads"
-      _bd_exit=0
-    fi
-  else
-    bd hooks run pre-push "$@"
-    _bd_exit=$?
-  fi
-  if [ $_bd_exit -eq 3 ]; then
-    echo >&2 "beads: database not initialized — skipping hook 'pre-push'"
-    _bd_exit=0
-  fi
-  if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
+# managed by oro — do not edit manually (run 'oro init --force' to regenerate)
+#
+# Canonical pre-push hook installed by 'oro init'.
+# Design markers: golangci-lint, quality_gate.sh
+
+# --- Beads-injection guard ---
+# Detect if beads has rewritten this hook (look for BEADS INTEGRATION markers
+# in the hook file itself). If found, fail with a clear error.
+if grep -q 'BEADS INTEGRATION' "$0" 2>/dev/null; then
+    printf 'oro: pre-push hook was rewritten by beads\n       run: oro init --force\n' >&2
+    exit 1
 fi
-# --- END BEADS INTEGRATION v0.60.0 ---
+
+# --- Block agent/* and epic/* branches ---
+# Oro worker branches must not be pushed to the shared remote.
+while IFS= read -r line; do
+    local_ref="$(echo "$line" | awk '{print $1}')"
+    case "$local_ref" in
+        refs/heads/agent/*|refs/heads/epic/*)
+            printf 'oro: pushing %s is not allowed (agent/epic branches stay local)\n' "$local_ref" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# --- golangci-lint ---
+# Static analysis for Go projects (skip when not available or not a Go project).
+if command -v golangci-lint >/dev/null 2>&1 && [ -f go.mod ]; then
+    GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m ./... || exit 1
+fi
+
+# --- quality_gate.sh (all checks) ---
+# Project-level quality gate. Runs all configured checks.
+if [ -x ./quality_gate.sh ]; then
+    printf 'oro: running quality_gate.sh (all checks)...\n'
+    ./quality_gate.sh || exit 1
+fi

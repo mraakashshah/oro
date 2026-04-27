@@ -13,7 +13,7 @@ import (
 // Acceptance criteria (oro-e2tg.2):
 //   - pre-commit hook exists in .git/hooks/ after stealth init
 //   - pre-push hook exists in .git/hooks/ after stealth init
-//   - existing executable user hooks are backed up to .user suffix
+//   - existing non-canonical hooks trigger drift warning (fail-open, unchanged without --force)
 //   - no hooks installed (no error) when .git dir is absent
 func TestBootstrapStealthProjectHooks(t *testing.T) {
 	t.Run("installs_pre_commit_hook_when_git_dir_present", func(t *testing.T) {
@@ -26,7 +26,7 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -53,7 +53,7 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -70,7 +70,7 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 		}
 	})
 
-	t.Run("backs_up_existing_user_hooks_to_dot_user", func(t *testing.T) {
+	t.Run("drift_leaves_existing_hook_unchanged_without_force", func(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
@@ -82,21 +82,22 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 		}
 
 		userHook := "#!/bin/sh\necho user-pre-commit"
-		if err := os.WriteFile(filepath.Join(hooksDir, "pre-commit"), []byte(userHook), 0o755); err != nil {
+		hookPath := filepath.Join(hooksDir, "pre-commit")
+		if err := os.WriteFile(hookPath, []byte(userHook), 0o755); err != nil {
 			t.Fatal(err)
 		}
 
-		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
-		backupPath := filepath.Join(hooksDir, "pre-commit.user")
-		data, err := os.ReadFile(backupPath)
+		// Without --force, a drifted hook must not be overwritten.
+		data, err := os.ReadFile(hookPath)
 		if err != nil {
-			t.Fatalf("pre-commit.user backup missing: %v", err)
+			t.Fatalf("hook should still exist: %v", err)
 		}
-		if !strings.Contains(string(data), "echo user-pre-commit") {
-			t.Error(".user backup should contain original hook content")
+		if string(data) != userHook {
+			t.Error("drifted hook must not be overwritten without --force")
 		}
 	})
 
@@ -105,7 +106,7 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 		// No .git dir — bootstrap should succeed without installing hooks.
-		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
 			t.Fatalf("bootstrapStealthProject should not fail without .git: %v", err)
 		}
 		// NOTE: ensureGitRepo creates .git — this is arguably a bug for stealth
@@ -125,7 +126,7 @@ func TestBootstrapStealthProject(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 
-		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -143,7 +144,7 @@ func TestBootstrapStealthProject(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 
-		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 
@@ -164,7 +165,7 @@ func TestBootstrapStealthProject(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 
-		if err := bootstrapStealthProject(projectDir, oroHome, testAssets()); err != nil {
+		if err := bootstrapStealthProject(projectDir, oroHome, testAssets(), false); err != nil {
 			t.Fatalf("bootstrapStealthProject: %v", err)
 		}
 

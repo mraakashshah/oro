@@ -291,6 +291,7 @@ func newInitCmd() *cobra.Command {
 		checkOnly   bool
 		quiet       bool
 		local       bool
+		force       bool
 		projectRoot string
 	)
 
@@ -313,6 +314,8 @@ Flags:
   --quiet         Suppress all output (useful for CI scripts).
   --local         In-repo mode: create .oro/ directory in the project root.
                   By default oro uses stealth mode (zero footprint).
+  --force         Overwrite existing files (git hooks, quality_gate.sh).
+                  Without --force, drifted hooks print a warning and are left unchanged.
   --project-root  Specify a different project directory (default: current directory).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -322,20 +325,21 @@ Flags:
 				projectName = args[0]
 			}
 			stealth := !local
-			return runInit(w, checkOnly, quiet, stealth, projectRoot, projectName)
+			return runInit(w, checkOnly, quiet, stealth, force, projectRoot, projectName)
 		},
 	}
 
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "verify tools without installing (exit 1 if any missing)")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress output, just exit code")
 	cmd.Flags().BoolVar(&local, "local", false, "in-repo mode: create .oro/ in project root (default: stealth)")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing files (hooks, quality_gate.sh)")
 	cmd.Flags().StringVar(&projectRoot, "project-root", ".", "project root directory for config generation")
 
 	return cmd
 }
 
 // runInit is the core logic for the init command, separated for testability.
-func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectName string) error {
+func runInit(w io.Writer, checkOnly, quiet, stealth, force bool, projectRoot, projectName string) error {
 	// Resolve real repo root for worktree support (e.g. when running from inside .worktrees/).
 	if resolved, err := langprofile.ResolveProjectRoot(projectRoot); err == nil {
 		projectRoot = resolved
@@ -374,7 +378,7 @@ func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectNa
 	}
 
 	if stealth {
-		return runInitStealth(w, projectRoot, oroHome, subAssets)
+		return runInitStealth(w, projectRoot, oroHome, subAssets, force)
 	}
 
 	name, err := resolveProjectName(projectRoot, projectName)
@@ -382,7 +386,7 @@ func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectNa
 		return err
 	}
 
-	if _, err := bootstrapProject(projectRoot, name, oroHome, subAssets, false); err != nil {
+	if _, err := bootstrapProject(projectRoot, name, oroHome, subAssets, force); err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
 	}
 
@@ -397,8 +401,8 @@ func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectNa
 
 // runInitStealth handles the stealth branch of runInit: bootstraps a stealth
 // project and prints the success message.
-func runInitStealth(w io.Writer, projectRoot, oroHome string, assets fs.FS) error {
-	if err := bootstrapStealthProject(projectRoot, oroHome, assets); err != nil {
+func runInitStealth(w io.Writer, projectRoot, oroHome string, assets fs.FS, force bool) error {
+	if err := bootstrapStealthProject(projectRoot, oroHome, assets, force); err != nil {
 		return fmt.Errorf("bootstrap stealth project: %w", err)
 	}
 	hash, err := projectHash(projectRoot)
@@ -413,39 +417,11 @@ func runInitStealth(w io.Writer, projectRoot, oroHome string, assets fs.FS) erro
 	return nil
 }
 
-// installAgentBranchGuard installs a pre-push hook that blocks agent/* and epic/*
-// branch pushes. Used by all oro projects (not just stealth). Fail-open.
-func installAgentBranchGuard(absProjectRoot string) {
-	gitDir := filepath.Join(absProjectRoot, ".git")
-	if _, err := os.Stat(gitDir); err != nil {
-		return
-	}
-	if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: install pre-push hook: %v\n", err)
-	}
-}
-
-// installStealthGitHooks installs oro pre-commit and pre-push wrappers in the
-// project's .git/hooks directory. Errors are logged as warnings; the function
-// is fail-open because missing hooks are recoverable.
-func installStealthGitHooks(absProjectRoot string) {
-	gitDir := filepath.Join(absProjectRoot, ".git")
-	if _, err := os.Stat(gitDir); err != nil {
-		return
-	}
-	if err := installHookWrapper(gitDir, "pre-commit", oroPreCommitCheck); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: install pre-commit hook: %v\n", err)
-	}
-	if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: install pre-push hook: %v\n", err)
-	}
-}
-
 // bootstrapStealthProject creates a zero-footprint oro project.
 // Rather than writing .oro/config.yaml into the project root, it creates
 // <oroHome>/projects/s-<hash>/config.yaml with mode: stealth.
 // Git pre-commit and pre-push hooks are installed to prevent accidental leakage.
-func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { //nolint:funlen // sequential bootstrap steps, mirrors bootstrapProject
+func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bool) error { //nolint:funlen // sequential bootstrap steps, mirrors bootstrapProject
 	hash, err := projectHash(projectRoot)
 	if err != nil {
 		return fmt.Errorf("compute project hash: %w", err)
@@ -498,8 +474,8 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { 
 	// 7. Initialize dolt for stealth beads dir (fail-open).
 	initDoltForProject(beadsDir, oroHome)
 
-	// 8. Install git hooks to prevent accidental leakage in stealth mode.
-	installStealthGitHooks(absProjectRoot)
+	// 8. Install canonical git hooks (fail-open: drift warnings printed, not fatal).
+	installCanonicalHooks(absProjectRoot, force, os.Stderr)
 
 	// 9. Generate settings.json.
 	settingsData, err := generateSettings("$HOME/.oro")
@@ -693,8 +669,8 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
 	}
 
-	// 7b. Install pre-push hook to block agent/* and epic/* branch pushes (fail-open).
-	installAgentBranchGuard(absProjectRoot)
+	// 7b. Install canonical git hooks (fail-open: drift warnings printed, not fatal).
+	installCanonicalHooks(absProjectRoot, force, os.Stderr)
 
 	// 8. Build oro-search-hook binary. Fail-open: ensureSearchHook logs a
 	// warning and returns nil when srcDir is missing (go-install users lack

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -260,6 +261,238 @@ func TestInstallHookWrapper(t *testing.T) {
 		}
 		if !strings.Contains(string(data), "pre-push.user") {
 			t.Error("pre-push wrapper should reference pre-push.user")
+		}
+	})
+}
+
+func TestCanonicalHookContent(t *testing.T) {
+	t.Run("pre-commit has required design markers", func(t *testing.T) {
+		content, ok := canonicalHookContent("pre-commit")
+		if !ok {
+			t.Fatal("canonicalHookContent should return ok=true for pre-commit")
+		}
+		for _, marker := range []string{"managed by oro", "Author identity guard", "gofumpt"} {
+			if !strings.Contains(content, marker) {
+				t.Errorf("pre-commit canonical hook missing marker %q", marker)
+			}
+		}
+	})
+
+	t.Run("pre-push has required design markers", func(t *testing.T) {
+		content, ok := canonicalHookContent("pre-push")
+		if !ok {
+			t.Fatal("canonicalHookContent should return ok=true for pre-push")
+		}
+		for _, marker := range []string{"managed by oro", "golangci-lint", "quality_gate.sh", "all checks"} {
+			if !strings.Contains(content, marker) {
+				t.Errorf("pre-push canonical hook missing marker %q", marker)
+			}
+		}
+	})
+
+	t.Run("unknown hook returns ok=false", func(t *testing.T) {
+		_, ok := canonicalHookContent("commit-msg")
+		if ok {
+			t.Error("canonicalHookContent should return ok=false for unknown hook")
+		}
+	})
+}
+
+func TestInstallCanonicalHook(t *testing.T) {
+	t.Run("fresh_repo_installs_canonical_content", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		alreadyInstalled, err := installCanonicalHook(gitDir, "pre-commit", false)
+		if err != nil {
+			t.Fatalf("installCanonicalHook: %v", err)
+		}
+		if alreadyInstalled {
+			t.Error("fresh install should return alreadyInstalled=false")
+		}
+
+		hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+		data, err := os.ReadFile(hookPath) //nolint:gosec // test path
+		if err != nil {
+			t.Fatalf("read hook: %v", err)
+		}
+		content := string(data)
+
+		for _, marker := range []string{"managed by oro", "Author identity guard", "gofumpt"} {
+			if !strings.Contains(content, marker) {
+				t.Errorf("installed pre-commit hook missing marker %q", marker)
+			}
+		}
+
+		info, _ := os.Stat(hookPath)
+		if info.Mode()&0o111 == 0 {
+			t.Error("installed hook must be executable (0755)")
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("hook mode should be 0755, got %v", info.Mode().Perm())
+		}
+	})
+
+	t.Run("idempotent_returns_already_installed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := installCanonicalHook(gitDir, "pre-commit", false); err != nil {
+			t.Fatalf("first install: %v", err)
+		}
+
+		alreadyInstalled, err := installCanonicalHook(gitDir, "pre-commit", false)
+		if err != nil {
+			t.Fatalf("second install: %v", err)
+		}
+		if !alreadyInstalled {
+			t.Error("second install should return alreadyInstalled=true")
+		}
+
+		// Verify hook content unchanged.
+		hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+		data, err := os.ReadFile(hookPath) //nolint:gosec // test path
+		if err != nil {
+			t.Fatalf("read hook: %v", err)
+		}
+		canonical, _ := canonicalHookContent("pre-commit")
+		if string(data) != canonical {
+			t.Error("idempotent reinstall must not change hook content")
+		}
+	})
+
+	t.Run("drift_detected_returns_error_without_force", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		hooksDir := filepath.Join(gitDir, "hooks")
+		if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		// Simulate bd rewriting the hook with BEADS INTEGRATION content.
+		bdHook := "#!/usr/bin/env sh\n# --- BEGIN BEADS INTEGRATION v0.60.0 ---\nexec bd hook pre-commit\n# --- END BEADS INTEGRATION v0.60.0 ---\n"
+		hookPath := filepath.Join(hooksDir, "pre-commit")
+		if err := os.WriteFile(hookPath, []byte(bdHook), 0o755); err != nil { //nolint:gosec // test
+			t.Fatal(err)
+		}
+
+		_, err := installCanonicalHook(gitDir, "pre-commit", false)
+		if err == nil {
+			t.Fatal("expected HookDriftError for drifted hook, got nil")
+		}
+		var driftErr *HookDriftError
+		if !errors.As(err, &driftErr) {
+			t.Fatalf("expected *HookDriftError, got %T: %v", err, err)
+		}
+		if driftErr.HookName != "pre-commit" {
+			t.Errorf("HookDriftError.HookName should be 'pre-commit', got %q", driftErr.HookName)
+		}
+		// Hook content must be unchanged (we refused to overwrite).
+		data, _ := os.ReadFile(hookPath) //nolint:gosec // test path
+		if string(data) != bdHook {
+			t.Error("drifted hook must not be overwritten without --force")
+		}
+	})
+
+	t.Run("force_overwrites_drifted_hook", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		hooksDir := filepath.Join(gitDir, "hooks")
+		if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		bdHook := "#!/usr/bin/env sh\nexec bd hook pre-commit\n"
+		hookPath := filepath.Join(hooksDir, "pre-commit")
+		if err := os.WriteFile(hookPath, []byte(bdHook), 0o755); err != nil { //nolint:gosec // test
+			t.Fatal(err)
+		}
+
+		alreadyInstalled, err := installCanonicalHook(gitDir, "pre-commit", true)
+		if err != nil {
+			t.Fatalf("installCanonicalHook --force: %v", err)
+		}
+		if alreadyInstalled {
+			t.Error("force overwrite should return alreadyInstalled=false")
+		}
+
+		data, err := os.ReadFile(hookPath) //nolint:gosec // test path
+		if err != nil {
+			t.Fatalf("read hook after force: %v", err)
+		}
+		canonical, _ := canonicalHookContent("pre-commit")
+		if string(data) != canonical {
+			t.Error("--force should overwrite drifted hook with canonical content")
+		}
+
+		info, _ := os.Stat(hookPath)
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("forced hook mode should be 0755, got %v", info.Mode().Perm())
+		}
+	})
+
+	t.Run("unknown_hook_returns_error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		_, err := installCanonicalHook(gitDir, "commit-msg", false)
+		if err == nil {
+			t.Error("unknown hook should return an error")
+		}
+	})
+
+	t.Run("creates_hooks_dir_if_missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		if err := os.MkdirAll(gitDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		// No hooks dir.
+		if _, err := installCanonicalHook(gitDir, "pre-push", false); err != nil {
+			t.Fatalf("installCanonicalHook: %v", err)
+		}
+		hookPath := filepath.Join(gitDir, "hooks", "pre-push")
+		if _, err := os.Stat(hookPath); err != nil {
+			t.Errorf("hook should exist after auto-creating hooks dir: %v", err)
+		}
+	})
+}
+
+func TestUninstallCanonicalHook(t *testing.T) {
+	t.Run("removes_installed_hook", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := installCanonicalHook(gitDir, "pre-commit", false); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		if err := uninstallCanonicalHook(gitDir, "pre-commit"); err != nil {
+			t.Fatalf("uninstall: %v", err)
+		}
+		hookPath := filepath.Join(gitDir, "hooks", "pre-commit")
+		if _, err := os.Stat(hookPath); err == nil {
+			t.Error("hook should be removed after uninstall")
+		}
+	})
+
+	t.Run("no_error_if_hook_missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := uninstallCanonicalHook(gitDir, "pre-commit"); err != nil {
+			t.Fatalf("uninstall of non-existent hook should not error: %v", err)
 		}
 	})
 }

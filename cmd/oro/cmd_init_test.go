@@ -2299,3 +2299,173 @@ func TestInitDoltForProject_RefusesSharedPort(t *testing.T) {
 		t.Error("expected no dolt-server.pid file in beadsDir when port is SharedDoltPort, but file was created")
 	}
 }
+
+// TestBootstrapProjectCanonicalHooks verifies that bootstrapProject installs
+// canonical git hooks with the required design markers, correct permissions,
+// idempotency, and drift detection.
+func TestBootstrapProjectCanonicalHooks(t *testing.T) {
+	assets := testAssets()
+
+	t.Run("installs_pre_commit_with_design_markers", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+			t.Fatalf("bootstrapProject: %v", err)
+		}
+
+		hookPath := filepath.Join(projectDir, ".git", "hooks", "pre-commit")
+		data, err := os.ReadFile(hookPath) //nolint:gosec // test path
+		if err != nil {
+			t.Fatalf("pre-commit hook not found: %v", err)
+		}
+		content := string(data)
+		for _, marker := range []string{"managed by oro", "Author identity guard", "gofumpt"} {
+			if !strings.Contains(content, marker) {
+				t.Errorf("pre-commit hook missing design marker %q", marker)
+			}
+		}
+	})
+
+	t.Run("installs_pre_push_with_design_markers", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+			t.Fatalf("bootstrapProject: %v", err)
+		}
+
+		hookPath := filepath.Join(projectDir, ".git", "hooks", "pre-push")
+		data, err := os.ReadFile(hookPath) //nolint:gosec // test path
+		if err != nil {
+			t.Fatalf("pre-push hook not found: %v", err)
+		}
+		content := string(data)
+		for _, marker := range []string{"managed by oro", "golangci-lint", "quality_gate.sh", "all checks"} {
+			if !strings.Contains(content, marker) {
+				t.Errorf("pre-push hook missing design marker %q", marker)
+			}
+		}
+	})
+
+	t.Run("hooks_are_executable_0755", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+			t.Fatalf("bootstrapProject: %v", err)
+		}
+
+		for _, hook := range []string{"pre-commit", "pre-push"} {
+			hookPath := filepath.Join(projectDir, ".git", "hooks", hook)
+			info, err := os.Stat(hookPath)
+			if err != nil {
+				t.Fatalf("%s hook not found: %v", hook, err)
+			}
+			if info.Mode().Perm() != 0o755 {
+				t.Errorf("%s hook mode should be 0755, got %v", hook, info.Mode().Perm())
+			}
+		}
+	})
+
+	t.Run("idempotent_second_run_is_noop", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+			t.Fatalf("first bootstrapProject: %v", err)
+		}
+
+		hookPath := filepath.Join(projectDir, ".git", "hooks", "pre-commit")
+		data1, err := os.ReadFile(hookPath) //nolint:gosec // test path
+		if err != nil {
+			t.Fatalf("read hook after first run: %v", err)
+		}
+
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+			t.Fatalf("second bootstrapProject: %v", err)
+		}
+
+		data2, err := os.ReadFile(hookPath) //nolint:gosec // test path
+		if err != nil {
+			t.Fatalf("read hook after second run: %v", err)
+		}
+
+		if string(data1) != string(data2) {
+			t.Error("idempotent re-run must not change hook content")
+		}
+	})
+
+	t.Run("drift_detected_warns_on_stderr_without_force", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// First run: install canonical hooks.
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+			t.Fatalf("first bootstrapProject: %v", err)
+		}
+
+		// Simulate bd rewriting the hook.
+		hookPath := filepath.Join(projectDir, ".git", "hooks", "pre-commit")
+		bdContent := "#!/usr/bin/env sh\nexec bd hook pre-commit\n"
+		if err := os.WriteFile(hookPath, []byte(bdContent), 0o755); err != nil { //nolint:gosec // test
+			t.Fatal(err)
+		}
+
+		// Capture stderr.
+		r, w, _ := os.Pipe()
+		oldStderr := os.Stderr
+		os.Stderr = w
+
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+			os.Stderr = oldStderr
+			w.Close()
+			t.Fatalf("second bootstrapProject should succeed (fail-open): %v", err)
+		}
+
+		w.Close()
+		os.Stderr = oldStderr
+		var stderrBuf bytes.Buffer
+		stderrBuf.ReadFrom(r)
+		stderr := stderrBuf.String()
+
+		// Hook content must be unchanged (drift without --force = warn only).
+		data, _ := os.ReadFile(hookPath) //nolint:gosec // test path
+		if string(data) != bdContent {
+			t.Error("drifted hook must not be overwritten without --force")
+		}
+		if !strings.Contains(stderr, "drift") && !strings.Contains(stderr, "warning") {
+			t.Errorf("expected drift warning on stderr, got: %q", stderr)
+		}
+	})
+
+	t.Run("force_overwrites_drifted_hook", func(t *testing.T) {
+		projectDir := t.TempDir()
+		oroHome := t.TempDir()
+
+		// First run: install canonical hooks.
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, false); err != nil {
+			t.Fatalf("first bootstrapProject: %v", err)
+		}
+
+		// Simulate drift.
+		hookPath := filepath.Join(projectDir, ".git", "hooks", "pre-commit")
+		if err := os.WriteFile(hookPath, []byte("#!/usr/bin/env sh\nexec bd hook pre-commit\n"), 0o755); err != nil { //nolint:gosec // test
+			t.Fatal(err)
+		}
+
+		// Second run with force=true.
+		if _, err := bootstrapProject(projectDir, "myproject", oroHome, assets, true); err != nil {
+			t.Fatalf("force bootstrapProject: %v", err)
+		}
+
+		data, err := os.ReadFile(hookPath) //nolint:gosec // test path
+		if err != nil {
+			t.Fatalf("read hook after force: %v", err)
+		}
+		canonical, _ := canonicalHookContent("pre-commit")
+		if string(data) != canonical {
+			t.Error("--force should restore canonical hook content")
+		}
+	})
+}

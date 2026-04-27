@@ -162,8 +162,8 @@ func cleanProjectArtifacts(w io.Writer, oroHome string) {
 		// Remove git hooks.
 		gitDir := filepath.Join(root, ".git")
 		if fi, err := os.Stat(gitDir); err == nil && fi.IsDir() { //nolint:gosec // root validated as absolute path from trusted project.root
-			_ = uninstallHookWrapper(gitDir, "pre-push")
-			_ = uninstallHookWrapper(gitDir, "pre-commit")
+			_ = uninstallCanonicalHook(gitDir, "pre-push")
+			_ = uninstallCanonicalHook(gitDir, "pre-commit")
 		}
 	}
 }
