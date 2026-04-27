@@ -111,6 +111,17 @@ Before handing off to implementation, run `adversarial-spec-review` on the desig
 - **Explore alternatives** — Always 2-3 approaches before settling
 - **Incremental validation** — Present in sections, validate each
 
+## AskUserQuestion
+
+When you need to ask the human a question, use this 4-part structure:
+
+1. **Reground** — restate what you understand to be true so far. One sentence. Surfaces misalignments early.
+2. **Simplify** — reduce the question to its single most important unknown. Don't ask three things when one unlocks the rest.
+3. **Recommend** — give your current best answer with a completeness score (e.g. "I'd go with X — 70% confident"). Forces a concrete position and makes it easy for the human to agree, correct, or refine.
+4. **Options** — list 2-3 alternatives with effort estimates (e.g. "Option A: 1 bead, low risk. Option B: 3 beads, rewrites the data model."). Gives the human a decision frame, not an open-ended prompt.
+
+Do not ask a question you can answer by reading the code. Do not ask multiple questions in one message.
+
 ## Red Flags
 
 - **Proposing approaches without citing specific files or sources you read** -- the #1 failure mode
