@@ -310,6 +310,77 @@ func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
 	return nil
 }
 
+// CreateWithManagerOnly creates the Oro tmux session with a single manager window.
+// If the session already exists and the manager pane is healthy, it is a no-op.
+func (s *TmuxSession) CreateWithManagerOnly(managerNudge string) error {
+	if s.Exists() {
+		pane := s.Name + ":manager"
+		out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
+		if err == nil && !isShell(strings.TrimSpace(out)) {
+			return nil
+		}
+		_ = s.Kill()
+	}
+
+	if err := bootstrapRoleConfigs(); err != nil {
+		return err
+	}
+
+	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", "manager", execEnvCmd("manager", s.Project)); err != nil {
+		return fmt.Errorf("tmux new-session: %w", err)
+	}
+
+	if err := s.configureSessionOptions(); err != nil {
+		_ = s.Kill()
+		return err
+	}
+
+	if err := s.launchAndNudgeManagerOnly(managerNudge); err != nil {
+		_ = s.Kill()
+		return err
+	}
+
+	if err := s.RegisterPaneDiedHooks(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to register pane-died hooks: %v\n", err)
+	}
+
+	return nil
+}
+
+// launchAndNudgeManagerOnly waits for the manager pane to be ready, sends the
+// nudge if non-empty, then starts async beacon verification.
+func (s *TmuxSession) launchAndNudgeManagerOnly(nudge string) error {
+	pane := s.Name + ":manager"
+	if runtimeUsesClaudeConfig() {
+		if err := s.WaitForPrompt(pane); err != nil {
+			return fmt.Errorf("wait for manager prompt: %w", err)
+		}
+	} else if err := s.WaitForCommand(pane); err != nil {
+		return fmt.Errorf("wait for manager runtime: %w", err)
+	}
+	if nudge != "" {
+		nudgeTimeout := s.ReadyTimeout
+		if nudgeTimeout == 0 {
+			nudgeTimeout = defaultReadyTimeout
+		}
+		if err := s.SendKeysVerified(pane, nudge, nudgeTimeout); err != nil {
+			return fmt.Errorf("manager nudge: %w", err)
+		}
+	}
+	beaconTimeout := s.BeaconTimeout
+	if beaconTimeout == 0 {
+		beaconTimeout = defaultBeaconTimeout
+	}
+	s.beaconWg.Add(1)
+	go func() {
+		defer s.beaconWg.Done()
+		if err := s.VerifyBeaconReceived(s.Name+":manager", "bd stats", beaconTimeout); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
+		}
+	}()
+	return nil
+}
+
 // bootstrapRoleConfigs sets up role-scoped Claude config directories so each
 // role gets isolated input history (history.jsonl) while sharing all other
 // config via symlinks, then pre-trusts the current project so the workspace

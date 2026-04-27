@@ -3027,3 +3027,102 @@ func TestCreateParallelNudge(t *testing.T) {
 		}
 	})
 }
+
+func TestCreateWithManagerOnly(t *testing.T) {
+	t.Run("creates session with exactly one window named manager", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		mgrCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
+		fake.seqOut[mgrCapture] = []string{
+			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
+			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
+			"bd stats\nrunning\n",                  // VerifyBeaconReceived (async)
+		}
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.CreateWithManagerOnly("manager nudge")
+		if err != nil {
+			t.Fatalf("CreateWithManagerOnly returned error: %v", err)
+		}
+		sess.WaitBeacon()
+
+		newSessionCall := findCall(fake.getCalls(), "new-session")
+		if newSessionCall == nil {
+			t.Fatal("expected tmux new-session to be called")
+		}
+		if !callHasArgPair(newSessionCall, "-n", "manager") {
+			t.Error("new-session should name the first window 'manager'")
+		}
+		if !callHasArg(newSessionCall, "-d") {
+			t.Error("new-session should be detached (-d)")
+		}
+
+		for _, call := range fake.getCalls() {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-window" {
+				t.Error("CreateWithManagerOnly must not call new-window (only one window)")
+			}
+		}
+	})
+
+	t.Run("no-op when session already exists and manager is healthy", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		err := sess.CreateWithManagerOnly("manager nudge")
+		if err != nil {
+			t.Fatalf("CreateWithManagerOnly should return nil for healthy session, got: %v", err)
+		}
+
+		for _, call := range fake.getCalls() {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-session" {
+				t.Error("should not create new session when one already exists and is healthy")
+			}
+		}
+	})
+
+	t.Run("empty nudge creates session without sending keys", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		mgrCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
+		fake.seqOut[mgrCapture] = []string{
+			"Welcome\n❯ \nstatus bar", // WaitForPrompt
+			"bd stats\nrunning\n",     // VerifyBeaconReceived (async)
+		}
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
+		err := sess.CreateWithManagerOnly("")
+		if err != nil {
+			t.Fatalf("CreateWithManagerOnly with empty nudge returned error: %v", err)
+		}
+		sess.WaitBeacon()
+
+		newSessionCall := findCall(fake.getCalls(), "new-session")
+		if newSessionCall == nil {
+			t.Fatal("expected tmux new-session to be called")
+		}
+
+		for _, call := range fake.getCalls() {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
+				t.Errorf("expected no send-keys calls for empty nudge, got: %v", call)
+			}
+		}
+	})
+
+	t.Run("propagates error when manager prompt never appears", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "loading..."
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
+		err := sess.CreateWithManagerOnly("manager nudge")
+		if err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		sess.WaitBeacon()
+		if !strings.Contains(err.Error(), "prompt") {
+			t.Errorf("expected 'prompt' in error, got: %v", err)
+		}
+	})
+}
