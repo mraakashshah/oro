@@ -250,9 +250,12 @@ type trackedWorker struct {
 	pendingMsgs      []protocol.Message // buffered messages for disconnected worker
 	shutdownCancel   context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
 	shutdownApproved bool               // set by handleShutdownApproved; checked by checkShutdownApproved
+	shutdownReason   string             // why graceful shutdown was requested
 	managed          bool               // true if spawned by the dispatcher (vs externally connected)
 	prevSession      bool               // true if worker ID predates this dispatcher's startTime (previous session)
 }
+
+const shutdownReasonScaleDown = "scale_down"
 
 // pendingHandoff holds context for a bead whose worker has been shut down
 // during a ralph handoff. The next worker to connect will be assigned this
@@ -459,6 +462,7 @@ type Dispatcher struct {
 	listener                    net.Listener
 	focusedEpic                 string
 	targetWorkers               int
+	explicitScaleTarget         bool
 	completionsSinceConsolidate int // counts completed beads since last context consolidation
 	beadsSinceDream             int // counts completed beads since last dream trigger
 
@@ -2061,38 +2065,22 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	}
 	beadID := msg.Handoff.BeadID
 
+	if d.suppressScaleDownHandoff(ctx, workerID, beadID) {
+		d.persistHandoffContext(ctx, msg.Handoff)
+		return
+	}
+
 	_ = d.logEvent(ctx, "handoff", workerID, beadID, workerID, "")
 
 	// Persist learnings and decisions from the handoff payload as memories.
 	d.persistHandoffContext(ctx, msg.Handoff)
 
 	// Track handoff count per bead.
-	d.mu.Lock()
-	d.handoffCounts[beadID]++
-	handoffCount := d.handoffCounts[beadID]
-	assignmentID := d.assignmentIDLocked(workerID, beadID)
-	d.mu.Unlock()
-
+	handoffCount, assignmentID := d.incrementHandoffCount(workerID, beadID)
 	d.persistBeadCount(ctx, assignmentID, beadID, "handoff_count", handoffCount)
 
 	// Send SHUTDOWN to the old worker and capture worktree+model+epic context for respawn.
-	d.mu.Lock()
-	w, ok := d.workers[workerID]
-	var worktree, model, epicID, baseBranch, targetBranch string
-	if ok {
-		worktree = w.worktree
-		model = w.model
-		epicID = w.epicID             // Capture epicID before clearing
-		baseBranch = w.baseBranch     // Capture baseBranch before clearing
-		targetBranch = w.targetBranch // Capture targetBranch before clearing
-		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-		w.state = protocol.WorkerShuttingDown // transient state — invisible to tryAssign
-		w.assignmentID = 0
-		w.beadID = ""
-		w.epicID = ""
-		w.isEpicDecomp = false
-	}
-	d.mu.Unlock()
+	worktree, model, epicID, baseBranch, targetBranch := d.shutdownWorkerForHandoff(workerID)
 
 	if worktree == "" {
 		return
@@ -2113,6 +2101,47 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	}
 
 	d.respawnWorker(ctx, beadID, worktree, model, epicID, baseBranch, targetBranch, title, labels)
+}
+
+func (d *Dispatcher) incrementHandoffCount(workerID, beadID string) (handoffCount int, assignmentID int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.handoffCounts[beadID]++
+	return d.handoffCounts[beadID], d.assignmentIDLocked(workerID, beadID)
+}
+
+func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) (worktree, model, epicID, baseBranch, targetBranch string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		return "", "", "", "", ""
+	}
+	worktree = w.worktree
+	model = w.model
+	epicID = w.epicID
+	baseBranch = w.baseBranch
+	targetBranch = w.targetBranch
+	_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+	w.state = protocol.WorkerShuttingDown
+	w.assignmentID = 0
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	return worktree, model, epicID, baseBranch, targetBranch
+}
+
+func (d *Dispatcher) suppressScaleDownHandoff(ctx context.Context, workerID, beadID string) bool {
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	suppress := ok && w.shutdownReason == shutdownReasonScaleDown
+	d.mu.Unlock()
+	if !suppress {
+		return false
+	}
+	_ = d.logEvent(ctx, "handoff_suppressed_scale_down", workerID, beadID, workerID,
+		`{"reason":"scale_down"}`)
+	return true
 }
 
 // handleHandoffExhaustion spawns a diagnosis agent and creates a continuation bead
@@ -2585,7 +2614,12 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 		w.shutdownApproved = true
 		beadID = w.beadID // capture before clearing
 		assignmentID = w.assignmentID
-		w.state = protocol.WorkerIdle
+		if w.shutdownReason == shutdownReasonScaleDown {
+			w.state = protocol.WorkerShuttingDown
+		} else {
+			w.state = protocol.WorkerIdle
+			w.shutdownReason = ""
+		}
 		w.assignmentID = 0
 		w.beadID = ""
 		w.epicID = ""
@@ -3853,6 +3887,7 @@ func (d *Dispatcher) applyScaleDirective(args string) (string, error) {
 		target = maxW
 	}
 	d.targetWorkers = target
+	d.explicitScaleTarget = true
 	d.unexpectedManagedExits = 0
 	connected := len(d.workers)
 	d.mu.Unlock()
@@ -4107,7 +4142,17 @@ func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount i
 	d.mu.Lock()
 	currentTarget := d.targetWorkers
 	maxWorkers := d.cfg.MaxWorkers
+	explicitScaleTarget := d.explicitScaleTarget
+	managedCount := d.managedWorkerCountLocked()
+	if explicitScaleTarget && managedCount <= currentTarget {
+		d.explicitScaleTarget = false
+		explicitScaleTarget = false
+	}
 	d.mu.Unlock()
+
+	if explicitScaleTarget {
+		return
+	}
 
 	if currentTarget >= maxWorkers {
 		return
@@ -4149,12 +4194,7 @@ func (d *Dispatcher) reconcileScale() string {
 	// Count both connected managed workers AND pending spawns (oro-ovpc).
 	// Without counting pending, concurrent reconcileScale calls both see
 	// managedCount=0 and spawn duplicates before workers connect.
-	managedCount := len(d.pendingManagedIDs)
-	for _, w := range d.workers {
-		if w.managed {
-			managedCount++
-		}
-	}
+	managedCount := d.managedWorkerCountLocked()
 	// Guard: cap at 2*target using only managed workers (connected + pending +
 	// exits) to prevent runaway crash-respawn loops (oro-135n, oro-kdne).
 	// Unmanaged (orphaned) workers are excluded so they cannot block managed
@@ -4174,6 +4214,16 @@ func (d *Dispatcher) reconcileScale() string {
 	default:
 		return ""
 	}
+}
+
+func (d *Dispatcher) managedWorkerCountLocked() int {
+	count := len(d.pendingManagedIDs)
+	for _, w := range d.workers {
+		if w.managed {
+			count++
+		}
+	}
+	return count
 }
 
 // scaleUp spawns (target - connected) new worker processes.
@@ -4229,7 +4279,7 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 	}
 
 	for _, id := range victims {
-		d.GracefulShutdownWorker(id, d.cfg.ShutdownTimeout)
+		d.gracefulShutdownWorker(id, d.cfg.ShutdownTimeout, shutdownReasonScaleDown)
 	}
 
 	return fmt.Sprintf("target=%d, shutting down %d", target, len(victims))

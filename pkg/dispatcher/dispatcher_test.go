@@ -6067,6 +6067,171 @@ func TestDispatcher_ReconcileScale_ScaleDown(t *testing.T) {
 	}
 }
 
+func TestScaleDownSuppressesHandoffRespawnAndAutoScaleRaise(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.MaxWorkers = 5
+	d.cfg.ShutdownTimeout = time.Second
+
+	d.mu.Lock()
+	d.workers["w-scale-down"] = &trackedWorker{
+		id:           "w-scale-down",
+		conn:         newMockConn(),
+		state:        protocol.WorkerBusy,
+		beadID:       "bead-scale-down",
+		worktree:     "/tmp/bead-scale-down",
+		model:        protocol.ModelSonnet,
+		assignmentID: 42,
+		managed:      true,
+	}
+	d.targetWorkers = 1
+	d.mu.Unlock()
+
+	detail, err := d.applyScaleDirective("0")
+	if err != nil {
+		t.Fatalf("apply scale directive: %v", err)
+	}
+	if !strings.Contains(detail, "target=0") {
+		t.Fatalf("expected scale detail to keep target=0, got %q", detail)
+	}
+
+	d.maybeAutoScale(ctx, 10, 0)
+	if got := d.TargetWorkers(); got != 0 {
+		t.Fatalf("explicit scale-down target was auto-raised to %d, want 0", got)
+	}
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-new", Title: "New work", Priority: 1}})
+	d.tryAssign(ctx)
+	workerState, assignedBead, ok := d.WorkerInfo("w-scale-down")
+	if !ok {
+		t.Fatal("expected scale-down worker to remain tracked until shutdown finishes")
+	}
+	if workerState != protocol.WorkerShuttingDown {
+		t.Fatalf("scale-down worker state = %s, want %s", workerState, protocol.WorkerShuttingDown)
+	}
+	if assignedBead == "bead-new" {
+		t.Fatal("tryAssign assigned new work to a worker already selected for scale-down")
+	}
+
+	d.handleHandoff(ctx, "w-scale-down", protocol.Message{
+		Type: protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{
+			BeadID:   "bead-scale-down",
+			WorkerID: "w-scale-down",
+		},
+	})
+
+	d.mu.Lock()
+	_, hasPending := d.pendingHandoffs["bead-scale-down"]
+	d.mu.Unlock()
+	if hasPending {
+		t.Fatal("scale-down handoff created a pending handoff")
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("scale-down handoff spawned replacement workers: %v", spawned)
+	}
+	if got := eventCount(t, d.db, "handoff_spawned"); got != 0 {
+		t.Fatalf("handoff_spawned events = %d, want 0", got)
+	}
+	if got := eventCount(t, d.db, "handoff_suppressed_scale_down"); got != 1 {
+		t.Fatalf("handoff_suppressed_scale_down events = %d, want 1", got)
+	}
+
+	d.handleShutdownApproved(ctx, "w-scale-down", protocol.Message{
+		Type:             protocol.MsgShutdownApproved,
+		ShutdownApproved: &protocol.ShutdownApprovedPayload{WorkerID: "w-scale-down"},
+	})
+
+	beadSrc.mu.Lock()
+	status := beadSrc.updated["bead-scale-down"]
+	beadSrc.mu.Unlock()
+	if status != "open" {
+		t.Fatalf("scale-down shutdown approval requeued bead status %q, want open", status)
+	}
+	if got := eventCount(t, d.db, "bead_requeued_scale_down"); got != 1 {
+		t.Fatalf("bead_requeued_scale_down events = %d, want 1", got)
+	}
+
+	d.handleHandoff(ctx, "w-scale-down", protocol.Message{
+		Type: protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{
+			BeadID:   "bead-scale-down",
+			WorkerID: "w-scale-down",
+		},
+	})
+	if hasPendingHandoff(d, "bead-scale-down") {
+		t.Fatal("late handoff after shutdown approval created a pending handoff")
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("late handoff after approval spawned replacement workers: %v", spawned)
+	}
+	if got := eventCount(t, d.db, "handoff_suppressed_scale_down"); got != 2 {
+		t.Fatalf("handoff_suppressed_scale_down events = %d, want 2", got)
+	}
+}
+
+func TestScaleDownSuppressesLateHandoffAfterTimeout(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.MaxWorkers = 5
+	d.cfg.ShutdownTimeout = time.Millisecond
+
+	d.mu.Lock()
+	d.workers["w-scale-timeout"] = &trackedWorker{
+		id:           "w-scale-timeout",
+		conn:         newMockConn(),
+		state:        protocol.WorkerBusy,
+		beadID:       "bead-scale-timeout",
+		worktree:     "/tmp/bead-scale-timeout",
+		model:        protocol.ModelSonnet,
+		assignmentID: 43,
+		managed:      true,
+	}
+	d.targetWorkers = 1
+	d.mu.Unlock()
+
+	if _, err := d.applyScaleDirective("0"); err != nil {
+		t.Fatalf("apply scale directive: %v", err)
+	}
+	d.handleShutdownTimeout("w-scale-timeout")
+
+	beadSrc.mu.Lock()
+	status := beadSrc.updated["bead-scale-timeout"]
+	beadSrc.mu.Unlock()
+	if status != "open" {
+		t.Fatalf("scale-down timeout requeued bead status %q, want open", status)
+	}
+
+	d.handleHandoff(ctx, "w-scale-timeout", protocol.Message{
+		Type: protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{
+			BeadID:   "bead-scale-timeout",
+			WorkerID: "w-scale-timeout",
+		},
+	})
+
+	if hasPendingHandoff(d, "bead-scale-timeout") {
+		t.Fatal("late handoff after shutdown timeout created a pending handoff")
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("late handoff after timeout spawned replacement workers: %v", spawned)
+	}
+	if got := eventCount(t, d.db, "handoff_suppressed_scale_down"); got != 1 {
+		t.Fatalf("handoff_suppressed_scale_down events = %d, want 1", got)
+	}
+}
+
+func hasPendingHandoff(d *Dispatcher, beadID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.pendingHandoffs[beadID]
+	return ok
+}
+
 // TestDispatcher_ScaleDirective_ACKIncludesDetail verifies that the ACK
 // response from a scale directive includes the expected detail string.
 func TestDispatcher_ScaleDirective_ACKIncludesDetail(t *testing.T) {

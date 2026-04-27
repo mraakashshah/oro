@@ -536,6 +536,10 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 // If the worker does not respond within the timeout, it sends a hard SHUTDOWN.
 // Duplicate shutdown calls for the same worker cancel the previous goroutine.
 func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Duration) {
+	d.gracefulShutdownWorker(workerID, timeout, "")
+}
+
+func (d *Dispatcher) gracefulShutdownWorker(workerID string, timeout time.Duration, reason string) {
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
 	if !ok {
@@ -551,6 +555,10 @@ func (d *Dispatcher) GracefulShutdownWorker(workerID string, timeout time.Durati
 	// Create a new context for this shutdown attempt
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	w.shutdownCancel = cancel
+	w.shutdownReason = reason
+	if reason == shutdownReasonScaleDown {
+		w.state = protocol.WorkerShuttingDown
+	}
 
 	_ = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgPrepareShutdown,
@@ -597,7 +605,12 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		beadID = w.beadID // capture before clearing
 		assignmentID = w.assignmentID
-		w.state = protocol.WorkerIdle
+		if w.shutdownReason == shutdownReasonScaleDown {
+			w.state = protocol.WorkerShuttingDown
+		} else {
+			w.state = protocol.WorkerIdle
+			w.shutdownReason = ""
+		}
 		w.assignmentID = 0
 		w.beadID = ""
 		w.shutdownCancel = nil
