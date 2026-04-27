@@ -1,6 +1,7 @@
 package dispatcher //nolint:testpackage // white-box tests for CLIBeadSource
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1917,9 +1918,11 @@ func TestCLIBeadSource_UpdateInProgressPersists(t *testing.T) {
 		cmd := exec.Command(name, args...) //nolint:gosec
 		cmd.Dir = tmpDir
 		cmd.Env = append(cmd.Environ(), "BD_NON_INTERACTIVE=1")
-		out, err := cmd.CombinedOutput()
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
 		if err != nil {
-			t.Fatalf("%s %v: %v\n%s", name, args, err, out)
+			t.Fatalf("%s %v: %v\n%s", name, args, err, stderr.String())
 		}
 		return string(out)
 	}
