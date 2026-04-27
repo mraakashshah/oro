@@ -292,8 +292,7 @@ For development or contributing:
 git clone https://github.com/mraakashshah/oro.git
 cd oro
 make setup      # npm deps, golangci-lint, git hooks
-make build
-make install    # installs to $GOPATH/bin
+make install    # builds and installs oro, oro-search-hook, and runtime assets
 ```
 
 ### Launch
@@ -466,7 +465,7 @@ Short-lived runtime subprocesses spawned by the dispatcher for judgment-heavy ta
 ```bash
 make setup          # Install dev tooling (npm deps, golangci-lint, git hooks)
 make build          # Build oro + oro-search-hook
-make install        # Install to $GOPATH/bin
+make install        # Build and install oro + oro-search-hook + runtime assets
 make test           # Run tests with race detector
 make lint           # Run golangci-lint
 make fmt            # Format Go files (gofumpt + goimports)

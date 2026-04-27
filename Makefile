@@ -35,32 +35,32 @@ stage-assets:
 clean-assets:
 	@rm -rf cmd/oro/_assets
 
-# dev-sync copies assets/ to ~/.oro/ for local development.
+# dev-sync copies assets/ to $(ORO_HOME)/ for local development.
 # Path mapping (NOT 1:1):
-#   assets/hooks/     -> ~/.oro/hooks/
-#   assets/skills/    -> ~/.oro/.claude/skills/
-#   assets/beacons/   -> ~/.oro/beacons/
-#   assets/commands/  -> ~/.oro/.claude/commands/
-#   assets/CLAUDE.md  -> ~/.oro/.claude/CLAUDE.md
+#   assets/hooks/     -> $(ORO_HOME)/hooks/
+#   assets/skills/    -> $(ORO_HOME)/.claude/skills/
+#   assets/beacons/   -> $(ORO_HOME)/beacons/
+#   assets/commands/  -> $(ORO_HOME)/.claude/commands/
+#   assets/CLAUDE.md  -> $(ORO_HOME)/.claude/CLAUDE.md
 dev-sync:
 	@if [ ! -d assets ]; then \
 		echo "Error: Run from oro repo root (assets/ not found)"; \
 		exit 1; \
 	fi
-	@echo "Syncing assets/ to ~/.oro/..."
-	@mkdir -p ~/.oro/hooks ~/.oro/.claude/skills ~/.oro/beacons ~/.oro/.claude/commands
-	@rsync --archive --delete --exclude=oro-search-hook assets/hooks/ ~/.oro/hooks/ && echo "  ✓ hooks"
-	@cp -r assets/skills/* ~/.oro/.claude/skills/ && echo "  ✓ skills"
-	@cp -r assets/beacons/* ~/.oro/beacons/ && echo "  ✓ beacons"
-	@cp -r assets/commands/* ~/.oro/.claude/commands/ && echo "  ✓ commands"
-	@cp assets/CLAUDE.md ~/.oro/.claude/CLAUDE.md && echo "  ✓ CLAUDE.md"
-	@test -f assets/thresholds.json && cp assets/thresholds.json ~/.oro/thresholds.json && echo "  ✓ thresholds.json" || true
+	@echo "Syncing assets/ to $(ORO_HOME)/..."
+	@mkdir -p "$(ORO_HOME)/hooks" "$(ORO_HOME)/.claude/skills" "$(ORO_HOME)/beacons" "$(ORO_HOME)/.claude/commands"
+	@rsync --archive --delete --exclude=oro-search-hook assets/hooks/ "$(ORO_HOME)/hooks/" && echo "  ✓ hooks"
+	@cp -r assets/skills/* "$(ORO_HOME)/.claude/skills/" && echo "  ✓ skills"
+	@cp -r assets/beacons/* "$(ORO_HOME)/beacons/" && echo "  ✓ beacons"
+	@cp -r assets/commands/* "$(ORO_HOME)/.claude/commands/" && echo "  ✓ commands"
+	@cp assets/CLAUDE.md "$(ORO_HOME)/.claude/CLAUDE.md" && echo "  ✓ CLAUDE.md"
+	@test -f assets/thresholds.json && cp assets/thresholds.json "$(ORO_HOME)/thresholds.json" && echo "  ✓ thresholds.json" || true
 	@echo "Sanity check..."
-	@test -f ~/.oro/hooks/enforce_skills.py && echo "  ✓ ~/.oro/hooks/ ok" || (echo "  ✗ ~/.oro/hooks/ FAILED" && exit 1)
-	@test -d ~/.oro/.claude/skills/test-driven-development && echo "  ✓ ~/.oro/.claude/skills/ ok" || (echo "  ✗ ~/.oro/.claude/skills/ FAILED" && exit 1)
-	@test -d ~/.oro/beacons && echo "  ✓ ~/.oro/beacons/ ok" || (echo "  ✗ ~/.oro/beacons/ FAILED" && exit 1)
-	@test -d ~/.oro/.claude/commands && echo "  ✓ ~/.oro/.claude/commands/ ok" || (echo "  ✗ ~/.oro/.claude/commands/ FAILED" && exit 1)
-	@test -f ~/.oro/.claude/CLAUDE.md && echo "  ✓ ~/.oro/.claude/CLAUDE.md ok" || (echo "  ✗ ~/.oro/.claude/CLAUDE.md FAILED" && exit 1)
+	@test -f "$(ORO_HOME)/hooks/enforce_skills.py" && echo "  ✓ $(ORO_HOME)/hooks/ ok" || (echo "  ✗ $(ORO_HOME)/hooks/ FAILED" && exit 1)
+	@test -d "$(ORO_HOME)/.claude/skills/test-driven-development" && echo "  ✓ $(ORO_HOME)/.claude/skills/ ok" || (echo "  ✗ $(ORO_HOME)/.claude/skills/ FAILED" && exit 1)
+	@test -d "$(ORO_HOME)/beacons" && echo "  ✓ $(ORO_HOME)/beacons/ ok" || (echo "  ✗ $(ORO_HOME)/beacons/ FAILED" && exit 1)
+	@test -d "$(ORO_HOME)/.claude/commands" && echo "  ✓ $(ORO_HOME)/.claude/commands/ ok" || (echo "  ✗ $(ORO_HOME)/.claude/commands/ FAILED" && exit 1)
+	@test -f "$(ORO_HOME)/.claude/CLAUDE.md" && echo "  ✓ $(ORO_HOME)/.claude/CLAUDE.md ok" || (echo "  ✗ $(ORO_HOME)/.claude/CLAUDE.md FAILED" && exit 1)
 	@echo "✓ dev-sync complete"
 
 build: stage-assets
@@ -75,11 +75,13 @@ build: stage-assets
 install: stage-assets
 	go install $(LDFLAGS) ./cmd/oro
 	@if [ -d cmd/oro-search-hook ]; then \
-		mkdir -p $(ORO_HOME)/hooks && \
-		go build -o $(ORO_HOME)/hooks/oro-search-hook ./cmd/oro-search-hook; \
+		mkdir -p .claude/hooks $(ORO_HOME)/hooks && \
+		go build -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook && \
+		install -m 0755 .claude/hooks/oro-search-hook $(ORO_HOME)/hooks/oro-search-hook; \
 	else \
 		echo "Warning: cmd/oro-search-hook/ not found, skipping oro-search-hook build"; \
 	fi
+	@$(MAKE) dev-sync
 	@$(MAKE) clean-assets
 
 build-search-hook:
