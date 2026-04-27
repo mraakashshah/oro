@@ -6,6 +6,8 @@ package ops
 import (
 	"context"
 	"fmt"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -78,7 +80,7 @@ func (t Type) Model() string {
 func (t Type) Timeout() time.Duration {
 	switch t {
 	case OpsReview:
-		return 10 * time.Minute
+		return 35 * time.Minute
 	case OpsWriteAC:
 		return 10 * time.Minute
 	case OpsDream:
@@ -185,10 +187,11 @@ type EpicFixOpts struct {
 
 // Spawner manages short-lived claude -p processes for ops tasks.
 type Spawner struct {
-	mu      sync.Mutex
-	active  map[string]*Agent
-	spawner BatchSpawner
-	timeout time.Duration // one-shot process timeout (defaults to 5 minutes)
+	mu            sync.Mutex
+	active        map[string]*Agent
+	spawner       BatchSpawner
+	timeout       time.Duration // one-shot process timeout (defaults to 5 minutes)
+	reviewTimeout time.Duration // optional OpsReview override; zero preserves Type.Timeout().
 }
 
 // NewSpawner creates a Spawner backed by the given BatchSpawner.
@@ -200,9 +203,29 @@ func NewSpawner(sp BatchSpawner) *Spawner {
 	}
 }
 
+// NewSpawnerWithReviewTimeout creates a Spawner with an optional OpsReview
+// timeout override. A zero or negative reviewTimeout preserves the per-type
+// default returned by OpsReview.Timeout().
+func NewSpawnerWithReviewTimeout(sp BatchSpawner, reviewTimeout time.Duration) *Spawner {
+	s := NewSpawner(sp)
+	s.reviewTimeout = reviewTimeout
+	return s
+}
+
 // Review spawns a two-stage review agent. The result is delivered on the
 // returned channel (non-blocking for the caller).
 func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
+	if docsOnly, err := isDocsOnlyDiff(ctx, opts.Worktree, opts.BaseBranch); err == nil && docsOnly {
+		ch := make(chan Result, 1)
+		ch <- Result{
+			Type:     OpsReview,
+			BeadID:   opts.BeadID,
+			Verdict:  VerdictApproved,
+			Feedback: "Approved automatically: diff only touches markdown/docs files.",
+		}
+		return ch
+	}
+
 	prompt := buildReviewPrompt(opts)
 	return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, prompt)
 }
@@ -380,10 +403,7 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 		done <- proc.Wait()
 	}()
 
-	timeout := s.timeout
-	if t := opsType.Timeout(); t > 0 {
-		timeout = t
-	}
+	timeout := s.effectiveTimeout(opsType)
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -410,6 +430,64 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 		}
 		return false, nil
 	}
+}
+
+func (s *Spawner) effectiveTimeout(opsType Type) time.Duration {
+	timeout := s.timeout
+	if t := opsType.Timeout(); t > 0 {
+		timeout = t
+	}
+	if opsType == OpsReview && s.reviewTimeout > 0 {
+		timeout = s.reviewTimeout
+	}
+	return timeout
+}
+
+func isDocsOnlyDiff(ctx context.Context, worktree, baseBranch string) (bool, error) {
+	if worktree == "" {
+		return false, nil
+	}
+	base := baseBranch
+	if base == "" {
+		base = "main"
+	}
+
+	diffCmd := exec.CommandContext(ctx, "git", "diff", "--name-only", base, "--") //nolint:gosec // fixed git invocation
+	diffCmd.Dir = worktree
+	diffOut, err := diffCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git diff docs-only check: %w", err)
+	}
+
+	untrackedCmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard") //nolint:gosec // fixed git invocation
+	untrackedCmd.Dir = worktree
+	untrackedOut, err := untrackedCmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git ls-files docs-only check: %w", err)
+	}
+
+	paths := append(strings.Fields(string(diffOut)), strings.Fields(string(untrackedOut))...)
+	if len(paths) == 0 {
+		return false, nil
+	}
+	for _, path := range paths {
+		if !isDocsOnlyPath(path) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func isDocsOnlyPath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != ".md" && ext != ".markdown" && ext != ".mdx" {
+		return false
+	}
+	clean := filepath.ToSlash(path)
+	return clean == "README.md" ||
+		strings.HasPrefix(clean, "docs/") ||
+		strings.HasPrefix(clean, "assets/") ||
+		strings.HasPrefix(clean, ".claude/")
 }
 
 // --- Result parsing ---

@@ -3,6 +3,9 @@ package ops //nolint:testpackage // internal test needs access to unexported typ
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -178,6 +181,84 @@ func TestReviewUsesCorrectModel(t *testing.T) {
 	}
 	if calls[0].model != OpsReview.Model() {
 		t.Fatalf("expected model %q, got %q", OpsReview.Model(), calls[0].model)
+	}
+}
+
+func TestReviewDocsOnlyDiffShortCircuits(t *testing.T) {
+	worktree := initReviewTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(worktree, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "docs", "guide.md"), []byte("# Guide\n"), 0o644); err != nil {
+		t.Fatalf("write docs change: %v", err)
+	}
+
+	mock := &mockBatchSpawner{process: newReadyMockProcess("REJECTED", nil)}
+	s := NewSpawner(mock)
+
+	ch := s.Review(context.Background(), ReviewOpts{
+		BeadID:     "oro-docs",
+		Worktree:   worktree,
+		BaseBranch: "main",
+	})
+	result := waitResult(t, ch)
+
+	if result.Verdict != VerdictApproved {
+		t.Fatalf("docs-only review verdict = %q, want approved", result.Verdict)
+	}
+	if result.Feedback == "" {
+		t.Fatal("expected feedback explaining docs-only short-circuit")
+	}
+	if calls := mock.getCalls(); len(calls) != 0 {
+		t.Fatalf("docs-only review should not spawn ops process, got %d calls", len(calls))
+	}
+}
+
+func TestReviewCodeDiffStillSpawns(t *testing.T) {
+	worktree := initReviewTestRepo(t)
+	if err := os.WriteFile(filepath.Join(worktree, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write code change: %v", err)
+	}
+
+	mock := &mockBatchSpawner{process: newReadyMockProcess("APPROVED", nil)}
+	s := NewSpawner(mock)
+
+	ch := s.Review(context.Background(), ReviewOpts{
+		BeadID:     "oro-code",
+		Worktree:   worktree,
+		BaseBranch: "main",
+	})
+	result := waitResult(t, ch)
+
+	if result.Verdict != VerdictApproved {
+		t.Fatalf("code review verdict = %q, want approved", result.Verdict)
+	}
+	if calls := mock.getCalls(); len(calls) != 1 {
+		t.Fatalf("code review should spawn ops process, got %d calls", len(calls))
+	}
+}
+
+func initReviewTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-b", "main")
+	runGit(t, dir, "config", "user.email", "test@example.com")
+	runGit(t, dir, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "initial")
+	return dir
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...) //nolint:gosec // test helper with fixed args
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, string(out))
 	}
 }
 
@@ -648,8 +729,52 @@ func TestParseResultNonZeroExitNonReviewStillFails(t *testing.T) {
 // --- Timeout tests ---
 
 func TestOpsReviewTimeout(t *testing.T) {
-	if OpsReview.Timeout() != 10*time.Minute {
-		t.Fatalf("OpsReview.Timeout() = %v, want %v", OpsReview.Timeout(), 10*time.Minute)
+	if OpsReview.Timeout() != 35*time.Minute {
+		t.Fatalf("OpsReview.Timeout() = %v, want %v", OpsReview.Timeout(), 35*time.Minute)
+	}
+}
+
+func TestTypeTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  Type
+		want time.Duration
+	}{
+		{name: "review", typ: OpsReview, want: 35 * time.Minute},
+		{name: "write ac", typ: OpsWriteAC, want: 10 * time.Minute},
+		{name: "dream", typ: OpsDream, want: 60 * time.Second},
+		{name: "merge fallback", typ: OpsMerge, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.typ.Timeout(); got != tt.want {
+				t.Fatalf("%s.Timeout() = %v, want %v", tt.typ, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSpawnerReviewTimeoutOverride(t *testing.T) {
+	mock := &mockBatchSpawner{process: newReadyMockProcess("APPROVED", nil)}
+	s := NewSpawnerWithReviewTimeout(mock, 45*time.Minute)
+
+	if got := s.effectiveTimeout(OpsReview); got != 45*time.Minute {
+		t.Fatalf("OpsReview effective timeout = %v, want 45m", got)
+	}
+	if got := s.effectiveTimeout(OpsWriteAC); got != 10*time.Minute {
+		t.Fatalf("OpsWriteAC effective timeout = %v, want 10m", got)
+	}
+	if got := s.effectiveTimeout(OpsDream); got != 60*time.Second {
+		t.Fatalf("OpsDream effective timeout = %v, want 60s", got)
+	}
+
+	fallback := NewSpawnerWithReviewTimeout(mock, 0)
+	if got := fallback.effectiveTimeout(OpsReview); got != 35*time.Minute {
+		t.Fatalf("zero override OpsReview effective timeout = %v, want 35m", got)
+	}
+	if got := fallback.effectiveTimeout(OpsMerge); got != 5*time.Minute {
+		t.Fatalf("zero override OpsMerge effective timeout = %v, want spawner default 5m", got)
 	}
 }
 
@@ -739,9 +864,9 @@ func TestOpsWriteAC(t *testing.T) {
 		t.Fatalf("OpsWriteAC.Timeout() = %v, want %v", OpsWriteAC.Timeout(), 10*time.Minute)
 	}
 
-	// Verify OpsReview.Timeout() returns 10 minutes (review needs time for test runs + analysis)
-	if OpsReview.Timeout() != 10*time.Minute {
-		t.Fatalf("OpsReview.Timeout() = %v, want %v", OpsReview.Timeout(), 10*time.Minute)
+	// Verify OpsReview.Timeout() returns 35 minutes (review needs time for test runs + analysis)
+	if OpsReview.Timeout() != 35*time.Minute {
+		t.Fatalf("OpsReview.Timeout() = %v, want %v", OpsReview.Timeout(), 35*time.Minute)
 	}
 
 	// Verify WriteAC spawns with model "opus"

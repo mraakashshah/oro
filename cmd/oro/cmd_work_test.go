@@ -33,6 +33,7 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 	}{
 		{"model", ""}, // empty means "use bead metadata then default"; resolved at runtime
 		{"timeout", "15m0s"},
+		{"review-timeout", "0s"},
 		{"skip-review", "false"},
 		{"dry-run", "false"},
 	}
@@ -478,7 +479,7 @@ func TestWorkDepsMemoryAndCodeIndex(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 		t.Chdir(tmpDir) // avoid picking up project from repo .oro/config.yaml
 
-		deps, err := newProductionDeps()
+		deps, err := newProductionDeps(0)
 		if err != nil {
 			t.Fatalf("newProductionDeps: %v", err)
 		}
@@ -569,7 +570,7 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 			newClaudeOpsSpawner = prevOps
 		}()
 
-		deps, err := newProductionDeps()
+		deps, err := newProductionDeps(0)
 		if err != nil {
 			t.Fatalf("newProductionDeps: %v", err)
 		}
@@ -604,7 +605,7 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 			newCodexOpsSpawner = prevOps
 		}()
 
-		deps, err := newProductionDeps()
+		deps, err := newProductionDeps(0)
 		if err != nil {
 			t.Fatalf("newProductionDeps: %v", err)
 		}

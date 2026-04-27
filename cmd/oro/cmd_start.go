@@ -677,7 +677,7 @@ func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewTime
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner)
 	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
-	opsSpawner := ops.NewSpawner(runtime.opsSpawn)
+	opsSpawner := ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout)
 
 	cfg := dispatcher.Config{
 		SocketPath:      sockPath,

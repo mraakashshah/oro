@@ -37,13 +37,14 @@ const (
 
 // workConfig holds parsed flags and loaded bead for the work command.
 type workConfig struct {
-	beadID     string
-	model      string
-	timeout    time.Duration
-	skipReview bool
-	dryRun     bool
-	baseBranch string
-	bead       *protocol.BeadDetail
+	beadID        string
+	model         string
+	timeout       time.Duration
+	reviewTimeout time.Duration
+	skipReview    bool
+	dryRun        bool
+	baseBranch    string
+	bead          *protocol.BeadDetail
 }
 
 // validate checks that the loaded bead has the required fields.
@@ -78,6 +79,7 @@ automatically. Exit code 0 means the bead landed on main.`,
 
 	cmd.Flags().StringVar(&cfg.model, "model", "", "starting Claude model (opus/sonnet/haiku); empty uses bead metadata")
 	cmd.Flags().DurationVar(&cfg.timeout, "timeout", 15*time.Minute, "per-claude-spawn timeout")
+	cmd.Flags().DurationVar(&cfg.reviewTimeout, "review-timeout", 0, "ops review process timeout override (default: ops review default)")
 	cmd.Flags().BoolVar(&cfg.skipReview, "skip-review", false, "skip ops review gate")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "show execution plan without running")
 	cmd.Flags().StringVar(&cfg.baseBranch, "base-branch", "", "base branch for worktree (default: config default_branch, or current HEAD)")
@@ -121,7 +123,7 @@ type exitError struct {
 func (e *exitError) Error() string { return e.msg }
 
 // newProductionDeps creates real dependencies.
-func newProductionDeps() (*workDeps, error) {
+func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("getwd: %w", err)
@@ -157,7 +159,7 @@ func newProductionDeps() (*workDeps, error) {
 		beadSrc:       dispatcher.NewCLIBeadSource(runner),
 		wtMgr:         dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
 		spawner:       runtime.workerSpawn,
-		opsMgr:        ops.NewSpawner(runtime.opsSpawn),
+		opsMgr:        ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
 		merger:        merge.NewCoordinator(&merge.ExecGitRunner{}),
 		repoRoot:      repoRoot,
 		memStore:      memStore,
@@ -195,7 +197,7 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	deps, err := newProductionDeps()
+	deps, err := newProductionDeps(cfg.reviewTimeout)
 	if err != nil {
 		return err
 	}
