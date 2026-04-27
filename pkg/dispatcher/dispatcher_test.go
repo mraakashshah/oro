@@ -14407,10 +14407,12 @@ func TestScaleDown_BusyWorker_BeadRequeued(t *testing.T) {
 			t.Fatalf("expected bead requeued to 'open', got %q", status)
 		}
 
-		// A requeue escalation event must be logged
-		if eventCount(t, d.db, "bead_requeued_scale_down") == 0 {
-			t.Fatal("expected bead_requeued_scale_down event")
-		}
+		// A requeue escalation event must be logged. The dispatcher logs this
+		// event AFTER the bead status update, so we must poll rather than check
+		// synchronously.
+		waitFor(t, func() bool {
+			return eventCount(t, d.db, "bead_requeued_scale_down") > 0
+		}, 2*time.Second)
 
 		// Tracking maps must not retain the bead
 		d.mu.Lock()
@@ -14482,10 +14484,12 @@ func TestScaleDown_BusyWorker_BeadRequeued(t *testing.T) {
 			t.Fatalf("expected bead requeued to 'open', got %q", status)
 		}
 
-		// A requeue escalation event must be logged
-		if eventCount(t, d.db, "bead_requeued_scale_down") == 0 {
-			t.Fatal("expected bead_requeued_scale_down event")
-		}
+		// A requeue escalation event must be logged. The dispatcher logs this
+		// event AFTER the bead status update, so we must poll rather than check
+		// synchronously.
+		waitFor(t, func() bool {
+			return eventCount(t, d.db, "bead_requeued_scale_down") > 0
+		}, 2*time.Second)
 
 		// Tracking maps must not retain the bead
 		d.mu.Lock()
