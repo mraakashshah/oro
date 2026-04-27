@@ -329,6 +329,7 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 				d.maybeChangeDetectionBackup(ctx)
 			case <-pruneTicker.C:
 				d.pruneStaleTracking(ctx)
+				d.detectAndResolveDuplicateActiveAssignments(ctx)
 			case <-gcTicker.C:
 				d.gcWorktrees(ctx)
 			case <-backupTicker.C:

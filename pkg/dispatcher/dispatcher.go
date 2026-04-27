@@ -924,6 +924,7 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
 	}
 	d.logAssignmentInvariantViolations(ctx)
+	d.detectAndResolveDuplicateActiveAssignments(ctx)
 
 	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
 	if err != nil {
