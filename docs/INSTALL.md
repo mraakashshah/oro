@@ -74,6 +74,12 @@ Develop oro itself.
 
 **Prerequisites:** macOS, Go 1.23+, Claude Code CLI
 
+During the beadstore replatform Phase 0 through Phase 9 window, contributors and
+operators must use the pinned bd version recorded during Phase 0:
+`bd version 1.0.2 (Homebrew)`. Operators must not upgrade bd between Phase 0 and
+Phase 9; the migration and shadow checks compare against this pinned version and
+can abort on version drift.
+
 ```bash
 git clone git@github.com:mraakashshah/oro.git
 cd oro
