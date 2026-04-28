@@ -80,3 +80,22 @@ func TestCodexUnsupportedModel(t *testing.T) {
 		t.Fatal("expected non-nil Err for nonzero exit")
 	}
 }
+
+func TestCodexOpsErrorPayloadFailsClosed(t *testing.T) {
+	spawner := ops.NewExecSpawner(ops.RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-c", "echo 'ERROR: {\"type\":\"error\",\"message\":\"unsupported model\"}'; exit 1"}
+		},
+	})
+	s := ops.NewSpawner(spawner)
+	ch := s.Review(context.Background(), ops.ReviewOpts{BeadID: "test-codex-error"})
+	result := <-ch
+
+	if result.Verdict != ops.VerdictFailed {
+		t.Fatalf("Codex ops error payload verdict = %q, want failed", result.Verdict)
+	}
+	if result.Err == nil {
+		t.Fatal("Codex ops error payload should preserve non-nil Err")
+	}
+}

@@ -3,11 +3,13 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
@@ -244,5 +246,67 @@ func TestMissingAcceptanceDoesNotBlock(t *testing.T) {
 	}
 	if skipCount == 0 {
 		t.Errorf("no bead_skipped_missing_ac event for malformed bead %q", malformedID)
+	}
+}
+
+// TestMissingACOpsFailureAcksAndCooldown verifies that a failed one-shot
+// MISSING_AC ops run fails closed: the failure is visible, the bead is kept out
+// of immediate reassignment, and the persisted escalation is acked so the retry
+// loop does not replay the same broken one-shot forever.
+func TestMissingACOpsFailureAcksAndCooldown(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID   = "oro-noac-opserr"
+		workerID = "w-noac-opserr"
+	)
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO escalations (type, bead_id, worker_id, message) VALUES (?, ?, ?, ?)`,
+		protocol.EscMissingAC, beadID, workerID, "missing AC")
+	if err != nil {
+		t.Fatalf("insert escalation: %v", err)
+	}
+	escalationID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Type:    ops.OpsWriteAC,
+		BeadID:  beadID,
+		Verdict: ops.VerdictFailed,
+		Err:     errors.New("codex unsupported model"),
+	}
+
+	d.handleEscalationResult(ctx, escalationID, string(protocol.EscMissingAC), beadID, workerID, resultCh)
+
+	var failedCount int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM events WHERE type='oneshot_escalation_failed' AND bead_id=?`,
+		beadID).Scan(&failedCount); err != nil {
+		t.Fatalf("query oneshot failure events: %v", err)
+	}
+	if failedCount != 1 {
+		t.Fatalf("oneshot_escalation_failed count = %d for %s, want 1", failedCount, beadID)
+	}
+
+	d.mu.Lock()
+	_, inCooldown := d.worktreeFailures[beadID]
+	d.mu.Unlock()
+	if !inCooldown {
+		t.Fatalf("MISSING_AC ops failure should put %s in assignment cooldown", beadID)
+	}
+
+	var status string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT status FROM escalations WHERE id=?`,
+		escalationID).Scan(&status); err != nil {
+		t.Fatalf("query escalation status: %v", err)
+	}
+	if status != "acked" {
+		t.Fatalf("escalation status = %q, want acked to prevent retry loop", status)
 	}
 }

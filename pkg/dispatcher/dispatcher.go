@@ -4678,6 +4678,9 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID in
 	if result.Err != nil {
 		_ = d.logEvent(ctx, "oneshot_escalation_failed", "ops", beadID, workerID,
 			fmt.Sprintf(`{"type":%q,"error":%q}`, escType, result.Err.Error()))
+		if protocol.EscalationType(escType) == protocol.EscMissingAC {
+			d.recordAssignmentFailure(beadID)
+		}
 
 		// Escalate to persistent manager when one-shot fails.
 		failMsg := fmt.Sprintf("[ORO-DISPATCH] ONESHOT_FAILED: %s — One-shot %s agent failed: %v",
@@ -4686,12 +4689,17 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID in
 			_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q,"message":%q}`, err.Error(), failMsg))
 		}
+		d.ackEscalation(ctx, escalationID, beadID, workerID)
 		return
 	}
 	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
 		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
 
 	// Ack the escalation in the persistent queue so the retry loop doesn't re-deliver it.
+	d.ackEscalation(ctx, escalationID, beadID, workerID)
+}
+
+func (d *Dispatcher) ackEscalation(ctx context.Context, escalationID int64, beadID, workerID string) {
 	if escalationID > 0 {
 		res, err := d.db.ExecContext(ctx,
 			`UPDATE escalations SET status='acked', acked_at=datetime('now') WHERE id=? AND status='pending'`,
