@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,14 +33,24 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 			if opts.ignoreVersionDrift {
 				return writeBeadCommandErrorIfJSON(cmd, "unsupported", errors.New("--ignore-version-drift is not implemented in this migration seam"))
 			}
-			if !opts.dryRun {
-				return writeBeadCommandErrorIfJSON(cmd, "unsupported", errors.New("only --dry-run is implemented for migrate-from-dolt"))
-			}
 
 			source, data, err := readBeadMigrationSource(opts)
 			if err != nil {
 				return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
 			}
+			if !opts.dryRun {
+				if err := runBeadMigration(cmd.Context(), data); err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Migration complete\nsource: %s", source.kind)
+				if source.path != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), " (%s)", source.path)
+				}
+				fmt.Fprintln(cmd.OutOrStdout())
+				_ = store
+				return nil
+			}
+
 			plan, err := planBeadMigration(data)
 			if err != nil {
 				return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
@@ -107,6 +119,154 @@ type bdExportBead struct {
 	Labels             []string              `json:"labels"`
 	Metadata           map[string]any        `json:"metadata"`
 	Notes              json.RawMessage       `json:"notes"`
+}
+
+func runBeadMigration(ctx context.Context, data []byte) error {
+	beads, err := decodeBDExport(data)
+	if err != nil {
+		return err
+	}
+	paths, err := ResolveProjectDBPaths()
+	if err != nil {
+		return fmt.Errorf("resolve bead store paths: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.StateDBPath), 0o700); err != nil {
+		return fmt.Errorf("create bead store dir: %w", err)
+	}
+	db, err := openStateDB(paths.StateDBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := setBeadParentTouchTriggers(ctx, tx, false); err != nil {
+		return err
+	}
+	for _, raw := range beads {
+		var bead bdExportBead
+		if err := json.Unmarshal(raw, &bead); err != nil {
+			return fmt.Errorf("decode bd export bead: %w", err)
+		}
+		if err := insertMigratedBead(ctx, tx, bead); err != nil {
+			return err
+		}
+	}
+	if err := setBeadParentTouchTriggers(ctx, tx, true); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertMigratedBead(ctx context.Context, tx *sql.Tx, bead bdExportBead) error {
+	if strings.TrimSpace(bead.ID) == "" {
+		return fmt.Errorf("bd export bead is missing id")
+	}
+	if strings.TrimSpace(bead.Title) == "" {
+		return fmt.Errorf("bd export bead %s is missing title", bead.ID)
+	}
+	beadType := firstNonEmpty(bead.IssueType, bead.Type, "task")
+	createdAt := firstNonEmpty(bead.CreatedAt, bead.UpdatedAt)
+	updatedAt := firstNonEmpty(bead.UpdatedAt, bead.CreatedAt)
+	if createdAt == "" || updatedAt == "" {
+		return fmt.Errorf("bd export bead %s is missing created_at or updated_at", bead.ID)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO beads (
+	id, title, description, acceptance_criteria, status, priority, type, parent_id,
+	owner, estimated_minutes, tier, model, deferred_until, close_reason,
+	created_at, updated_at, closed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		bead.ID,
+		bead.Title,
+		bead.Description,
+		bead.AcceptanceCriteria,
+		normalizeMigrationInsertStatus(bead.Status),
+		bead.Priority,
+		beadType,
+		emptyStringToNil(firstNonEmpty(bead.ParentID, bead.Parent)),
+		emptyStringToNil(firstNonEmpty(bead.Owner, bead.Assignee)),
+		positiveIntToNil(bead.EstimatedMinutes),
+		emptyStringToNil(bead.Tier),
+		emptyStringToNil(bead.Model),
+		emptyStringToNil(firstNonEmpty(bead.DeferredUntil, bead.DeferUntil)),
+		emptyStringToNil(bead.CloseReason),
+		createdAt,
+		updatedAt,
+		emptyStringToNil(bead.ClosedAt),
+	); err != nil {
+		return fmt.Errorf("insert migrated bead %s: %w", bead.ID, err)
+	}
+	for _, dep := range bead.Dependencies {
+		depType := firstNonEmpty(dep.Type, "blocks")
+		dependsOn := strings.TrimSpace(dep.DependsOnID)
+		if dependsOn == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, bead.ID, dependsOn, depType); err != nil {
+			return fmt.Errorf("insert migrated dependency for %s: %w", bead.ID, err)
+		}
+	}
+	for _, tag := range bead.Tags {
+		if strings.TrimSpace(tag) == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bead_tags (bead_id, tag) VALUES (?, ?)`, bead.ID, tag); err != nil {
+			return fmt.Errorf("insert migrated tag for %s: %w", bead.ID, err)
+		}
+	}
+	for _, label := range bead.Labels {
+		if strings.TrimSpace(label) == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bead_labels (bead_id, label) VALUES (?, ?)`, bead.ID, label); err != nil {
+			return fmt.Errorf("insert migrated label for %s: %w", bead.ID, err)
+		}
+	}
+	for key, value := range bead.Metadata {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		encoded, err := migrationMetadataValue(value)
+		if err != nil {
+			return fmt.Errorf("encode metadata %s for %s: %w", key, bead.ID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bead_metadata (bead_id, key, value) VALUES (?, ?, ?)`, bead.ID, key, encoded); err != nil {
+			return fmt.Errorf("insert migrated metadata for %s: %w", bead.ID, err)
+		}
+	}
+	notes, err := migrationNotes(bead.Notes)
+	if err != nil {
+		return fmt.Errorf("decode notes for %s: %w", bead.ID, err)
+	}
+	for _, note := range notes {
+		if strings.TrimSpace(note) == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bead_notes (bead_id, author, content, created_at) VALUES (?, 'bd', ?, ?)`, bead.ID, note, updatedAt); err != nil {
+			return fmt.Errorf("insert migrated note for %s: %w", bead.ID, err)
+		}
+	}
+	return nil
+}
+
+func setBeadParentTouchTriggers(ctx context.Context, tx *sql.Tx, enabled bool) error {
+	if enabled {
+		_, err := tx.ExecContext(ctx, protocol.BeadParentTouchTriggerDDL)
+		return err
+	}
+	for _, name := range protocol.BeadParentTouchTriggerNames {
+		if _, err := tx.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func readBeadMigrationSource(opts beadMigrateOptions) (beadMigrationSource, []byte, error) {
@@ -255,6 +415,76 @@ func normalizeMigrationStatus(status string) string {
 	default:
 		return "open"
 	}
+}
+
+func normalizeMigrationInsertStatus(status string) string {
+	switch normalizeMigrationStatus(status) {
+	case "in_progress", "closed":
+		return normalizeMigrationStatus(status)
+	default:
+		return "open"
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func emptyStringToNil(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
+}
+
+func positiveIntToNil(value int) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
+}
+
+func migrationMetadataValue(value any) (string, error) {
+	if s, ok := value.(string); ok {
+		return s, nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func migrationNotes(raw json.RawMessage) ([]string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	var noteString string
+	if err := json.Unmarshal(trimmed, &noteString); err == nil {
+		return []string{noteString}, nil
+	}
+	var noteStrings []string
+	if err := json.Unmarshal(trimmed, &noteStrings); err == nil {
+		return noteStrings, nil
+	}
+	var notes []struct {
+		Content string `json:"content"`
+		Text    string `json:"text"`
+	}
+	if err := json.Unmarshal(trimmed, &notes); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(notes))
+	for _, note := range notes {
+		out = append(out, firstNonEmpty(note.Content, note.Text))
+	}
+	return out, nil
 }
 
 func knownBDExportField(field string) bool {

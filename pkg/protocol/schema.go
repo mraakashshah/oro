@@ -231,6 +231,60 @@ CREATE TRIGGER IF NOT EXISTS beads_fts_au AFTER UPDATE ON beads BEGIN
   VALUES (new.rowid, new.title, new.description, new.acceptance_criteria);
 END;
 
+` + BeadParentTouchTriggerDDL + `
+
+CREATE VIEW IF NOT EXISTS beads_ready AS
+SELECT b.*
+FROM beads b
+WHERE b.deleted = 0
+  AND b.status = 'open'
+  AND (b.deferred_until IS NULL OR datetime(b.deferred_until) <= datetime('now'))
+  AND NOT EXISTS (
+    SELECT 1 FROM bead_deps d
+    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+    WHERE d.bead_id = b.id
+      AND d.type IN ('blocks','conditional-blocks')
+      AND parent.status != 'closed'
+  );
+
+CREATE VIEW IF NOT EXISTS beads_blocked AS
+SELECT b.*
+FROM beads b
+WHERE b.deleted = 0
+  AND b.status = 'open'
+  AND EXISTS (
+    SELECT 1 FROM bead_deps d
+    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+    WHERE d.bead_id = b.id
+      AND d.type IN ('blocks','conditional-blocks')
+      AND parent.status != 'closed'
+  );
+`
+
+// BeadParentTouchTriggerNames names the triggers that bump a bead's updated_at
+// after child-table mutations. Migrations can drop and recreate these around
+// verbatim imports.
+var BeadParentTouchTriggerNames = []string{
+	"bead_deps_touch_parent_ai",
+	"bead_deps_touch_parent_au",
+	"bead_deps_touch_parent_ad",
+	"bead_tags_touch_parent_ai",
+	"bead_tags_touch_parent_au",
+	"bead_tags_touch_parent_ad",
+	"bead_labels_touch_parent_ai",
+	"bead_labels_touch_parent_au",
+	"bead_labels_touch_parent_ad",
+	"bead_metadata_touch_parent_ai",
+	"bead_metadata_touch_parent_au",
+	"bead_metadata_touch_parent_ad",
+	"bead_notes_touch_parent_ai",
+	"bead_notes_touch_parent_au",
+	"bead_notes_touch_parent_ad",
+}
+
+// BeadParentTouchTriggerDDL creates the triggers listed in
+// BeadParentTouchTriggerNames.
+const BeadParentTouchTriggerDDL = `
 CREATE TRIGGER IF NOT EXISTS bead_deps_touch_parent_ai AFTER INSERT ON bead_deps BEGIN
   UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
 END;
@@ -295,33 +349,6 @@ END;
 CREATE TRIGGER IF NOT EXISTS bead_notes_touch_parent_ad AFTER DELETE ON bead_notes BEGIN
   UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = old.bead_id;
 END;
-
-CREATE VIEW IF NOT EXISTS beads_ready AS
-SELECT b.*
-FROM beads b
-WHERE b.deleted = 0
-  AND b.status = 'open'
-  AND (b.deferred_until IS NULL OR datetime(b.deferred_until) <= datetime('now'))
-  AND NOT EXISTS (
-    SELECT 1 FROM bead_deps d
-    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-    WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND parent.status != 'closed'
-  );
-
-CREATE VIEW IF NOT EXISTS beads_blocked AS
-SELECT b.*
-FROM beads b
-WHERE b.deleted = 0
-  AND b.status = 'open'
-  AND EXISTS (
-    SELECT 1 FROM bead_deps d
-    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-    WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND parent.status != 'closed'
-  );
 `
 
 // MigrateBeadSchema adds the native bead store schema to the dispatcher state DB.
