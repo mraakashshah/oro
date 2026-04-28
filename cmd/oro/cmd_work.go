@@ -529,7 +529,19 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, 
 			BaseBranch:         targetBranch,
 			ProjectRoot:        worktree,
 		})
-		result := <-resultCh
+		var result ops.Result
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("review interrupted: %w", ctx.Err())
+		case received, ok := <-resultCh:
+			if !ok {
+				return &exitError{
+					code: exitCodeRetries,
+					msg:  "Review failed without returning a verdict",
+				}
+			}
+			result = received
+		}
 
 		switch result.Verdict {
 		case ops.VerdictApproved:
@@ -572,9 +584,18 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, 
 			logStep("Quality gate passed")
 
 		default:
-			// Review failed (timeout, etc.) — log and continue without review.
-			logStep("Review failed: %s — continuing without review", result.Feedback)
-			return nil
+			msg := result.Feedback
+			if msg == "" {
+				msg = fmt.Sprintf("missing or unsupported verdict %q", result.Verdict)
+			}
+			if result.Err != nil {
+				msg = fmt.Sprintf("%s: %v", msg, result.Err)
+			}
+			logStep("Review failed: %s", msg)
+			return &exitError{
+				code: exitCodeRetries,
+				msg:  fmt.Sprintf("Review failed without approval:\n%s", msg),
+			}
 		}
 	}
 }

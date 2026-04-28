@@ -1286,25 +1286,77 @@ func TestReviewLoop_SpawnErrorAfterRejection(t *testing.T) {
 	}
 }
 
-// TestReviewLoop_VerdictFailed_ReturnsNil verifies that a failed verdict (timeout etc.)
-// causes reviewLoop to log and return nil (continue without review).
-func TestReviewLoop_VerdictFailed_ReturnsNil(t *testing.T) {
-	opsMgr := &sequentialOpsReviewer{results: []ops.Result{
-		{Verdict: ops.VerdictFailed, Feedback: "timed out"},
-	}}
-	deps := &workDeps{opsMgr: opsMgr}
-	cfg := &workConfig{
-		beadID:  "oro-test",
-		timeout: 5 * time.Second,
-		bead:    testBead(),
+// TestWorkReviewFailsClosedOnFailedOrUnknownVerdict verifies that reviewLoop
+// never treats failed, missing, unknown, or rejected review outcomes as approval.
+func TestWorkReviewFailsClosedOnFailedOrUnknownVerdict(t *testing.T) {
+	tests := []struct {
+		name   string
+		result ops.Result
+	}{
+		{
+			name:   "failed timeout",
+			result: ops.Result{Verdict: ops.VerdictFailed, Feedback: "timed out"},
+		},
+		{
+			name:   "empty output",
+			result: ops.Result{Verdict: ops.VerdictFailed},
+		},
+		{
+			name:   "missing verdict",
+			result: ops.Result{Feedback: "no verdict in output"},
+		},
+		{
+			name:   "unknown verdict",
+			result: ops.Result{Verdict: ops.Verdict("maybe"), Feedback: "ambiguous"},
+		},
+		{
+			name:   "unsupported model or tool error",
+			result: ops.Result{Verdict: ops.VerdictFailed, Feedback: "unsupported model", Err: errors.New("unsupported tool")},
+		},
+		{
+			name:   "context cancellation result",
+			result: ops.Result{Verdict: ops.VerdictFailed, Feedback: "context canceled", Err: context.Canceled},
+		},
+		{
+			name:   "rejected twice",
+			result: ops.Result{Verdict: ops.VerdictRejected, Feedback: "not acceptable"},
+		},
 	}
-	model := "sonnet"
-	attempt := 0
-	feedback := ""
 
-	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
-	if err != nil {
-		t.Fatalf("expected nil when review verdict is Failed (timeout), got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := []ops.Result{tt.result}
+			if tt.result.Verdict == ops.VerdictRejected {
+				results = append(results, tt.result)
+			}
+			opsMgr := &sequentialOpsReviewer{results: results}
+			deps := &workDeps{
+				opsMgr:  opsMgr,
+				spawner: &mockSpawner{proc: &mockProcess{}},
+				runQG:   func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+			}
+			cfg := &workConfig{
+				beadID:  "oro-test",
+				timeout: 5 * time.Second,
+				bead:    testBead(),
+			}
+			model := "sonnet"
+			attempt := 0
+			feedback := ""
+
+			var logs strings.Builder
+			oldLogOut := logOut
+			logOut = &logs
+			defer func() { logOut = oldLogOut }()
+
+			err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+			if err == nil {
+				t.Fatal("expected reviewLoop to fail closed")
+			}
+			if strings.Contains(logs.String(), "continuing without review") {
+				t.Fatalf("reviewLoop must not continue without review; logs:\n%s", logs.String())
+			}
+		})
 	}
 }
 
