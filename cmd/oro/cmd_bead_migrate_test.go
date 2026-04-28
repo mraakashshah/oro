@@ -99,7 +99,7 @@ func TestMigrateFromDoltReconcileApplyIdempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	initialJSONL := filepath.Join(tmpDir, "initial.jsonl")
 	if err := os.WriteFile(initialJSONL, []byte(strings.Join([]string{
-		`{"id":"oro-stale","title":"Old title","description":"Old description","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T03:04:05.1000Z","tags":["old"],"labels":["keep"],"metadata":{"k":"old"},"notes":["old note"]}`,
+		`{"id":"oro-stale","title":"Old title","description":"Old description","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T03:04:04.9999Z","tags":["old"],"labels":["keep"],"metadata":{"k":"old"},"notes":["old note"]}`,
 		`{"id":"oro-conflict","title":"Old tied title","description":"Same timestamp conflict","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T03:04:06Z"}`,
 		`{"id":"oro-deleted","title":"Deleted in bd","description":"Only in sqlite","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
 		"",
@@ -201,6 +201,79 @@ func TestMigrateFromDoltReconcileDryRunDoesNotCreateDB(t *testing.T) {
 	}
 	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
 		t.Fatalf("plain --reconcile created DB path %s: stat err=%v", dbPath, err)
+	}
+}
+
+func TestMigrateFromDoltReconcileSameSecondTimestampTieAppliesBD(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	tmpDir := t.TempDir()
+	initialJSONL := filepath.Join(tmpDir, "initial.jsonl")
+	if err := os.WriteFile(initialJSONL, []byte(`{"id":"oro-tie","title":"SQLite stale title","description":"sqlite side","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T03:04:05.500Z"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write initial jsonl: %v", err)
+	}
+	reconcileJSONL := filepath.Join(tmpDir, "reconcile.jsonl")
+	if err := os.WriteFile(reconcileJSONL, []byte(`{"id":"oro-tie","title":"BD authoritative title","description":"bd side","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T03:04:05Z"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write reconcile jsonl: %v", err)
+	}
+
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", initialJSONL)
+	firstOut := runBeadMigrateCommand(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", reconcileJSONL)
+	for _, want := range []string{"updates: 0", "conflicts: 1", "conflict: oro-tie"} {
+		if !strings.Contains(firstOut, want) {
+			t.Fatalf("first reconcile output missing %q:\n%s", want, firstOut)
+		}
+	}
+
+	secondOut := runBeadMigrateCommand(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", reconcileJSONL)
+	for _, want := range []string{"updates: 0", "conflicts: 0"} {
+		if !strings.Contains(secondOut, want) {
+			t.Fatalf("second reconcile output missing %q:\n%s", want, secondOut)
+		}
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open reconciled db: %v", err)
+	}
+	defer db.Close()
+	var title, updatedAt string
+	if err := db.QueryRow(`SELECT title, updated_at FROM beads WHERE id='oro-tie' AND deleted=0`).Scan(&title, &updatedAt); err != nil {
+		t.Fatalf("query tie bead: %v", err)
+	}
+	if title != "BD authoritative title" || updatedAt != "2026-01-02T03:04:05Z" {
+		t.Fatalf("tie bead = (%q, %q), want bd authoritative title and timestamp", title, updatedAt)
+	}
+}
+
+func TestMigrateFromDoltReconcileSameSecondTimestampOnlyTieIsClean(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	tmpDir := t.TempDir()
+	initialJSONL := filepath.Join(tmpDir, "initial.jsonl")
+	if err := os.WriteFile(initialJSONL, []byte(`{"id":"oro-timestamp-only","title":"Same content","description":"only timestamp precision differs","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T03:04:05.500Z"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write initial jsonl: %v", err)
+	}
+	reconcileJSONL := filepath.Join(tmpDir, "reconcile.jsonl")
+	if err := os.WriteFile(reconcileJSONL, []byte(`{"id":"oro-timestamp-only","title":"Same content","description":"only timestamp precision differs","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T03:04:05Z"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write reconcile jsonl: %v", err)
+	}
+
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", initialJSONL)
+	out := runBeadMigrateCommand(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", reconcileJSONL)
+	for _, want := range []string{"updates: 0", "conflicts: 0"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("reconcile output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "conflict: oro-timestamp-only") {
+		t.Fatalf("timestamp-only tie surfaced conflict:\n%s", out)
 	}
 }
 

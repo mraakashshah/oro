@@ -524,7 +524,7 @@ FROM beads`)
 }
 
 func compareMigrationTimestamps(left, right string) int {
-	return parseMigrationTimestamp(left).Compare(parseMigrationTimestamp(right))
+	return migrationTimestampSecond(left).Compare(migrationTimestampSecond(right))
 }
 
 func parseMigrationTimestamp(value string) time.Time {
@@ -535,6 +535,10 @@ func parseMigrationTimestamp(value string) time.Time {
 		return t
 	}
 	return time.Time{}
+}
+
+func migrationTimestampSecond(value string) time.Time {
+	return parseMigrationTimestamp(value).UTC().Truncate(time.Second)
 }
 
 func openReconcileStateDB(path string, apply bool) (*sql.DB, error) {
@@ -624,7 +628,7 @@ func normalizeMigrationBeadForCompare(bead bdExportBead) string {
 		DeferredUntil:      firstNonEmpty(bead.DeferredUntil, bead.DeferUntil),
 		CloseReason:        bead.CloseReason,
 		CreatedAt:          firstNonEmpty(bead.CreatedAt, bead.UpdatedAt),
-		UpdatedAt:          firstNonEmpty(bead.UpdatedAt, bead.CreatedAt),
+		UpdatedAt:          migrationTimestampSecond(firstNonEmpty(bead.UpdatedAt, bead.CreatedAt)).Format(time.RFC3339),
 		ClosedAt:           bead.ClosedAt,
 		Dependencies:       sortedCopy(deps),
 		Tags:               sortedNonEmptyCopy(bead.Tags),
