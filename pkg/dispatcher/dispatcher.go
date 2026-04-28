@@ -1559,9 +1559,13 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 		return false
 	}
 	if !qgPassed {
-		_ = d.logEvent(ctx, "pre_merge_qg_failed", "dispatcher", beadID, workerID,
+		_ = d.logEvent(ctx, "qg_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"output":%q}`, qgOutput))
-		_ = d.beads.Update(ctx, beadID, "open")
+		// Only requeue if not already closed on main — a stale QG failure must
+		// not reopen a bead that was successfully merged externally.
+		if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && (detail == nil || detail.Status != "closed") {
+			_ = d.beads.Update(ctx, beadID, "open")
+		}
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 		return false
