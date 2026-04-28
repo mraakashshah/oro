@@ -40,6 +40,7 @@ func newBeadCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadClosedCmd(store),
 		newBeadDepCmd(store),
 		newBeadExportCmd(store),
+		newBeadMigrateFromDoltCmd(store),
 	)
 
 	return cmd
