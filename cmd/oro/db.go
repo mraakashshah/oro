@@ -35,6 +35,10 @@ func openStateDB(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply state schema on %s: %w", path, err)
 	}
+	if err := protocol.MigrateBeadSchema(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("apply bead schema on %s: %w", path, err)
+	}
 
 	migrateStateDB(db)
 

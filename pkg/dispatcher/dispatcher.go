@@ -926,6 +926,9 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
 		return fmt.Errorf("init schema: %w", err)
 	}
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		return fmt.Errorf("init bead schema: %w", err)
+	}
 	if pruneErr := d.worktrees.Prune(ctx); pruneErr != nil {
 		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
 	}

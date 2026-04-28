@@ -1,5 +1,11 @@
 package protocol
 
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
 // SchemaDDL defines the SQLite schema for the Oro dispatcher runtime database.
 // Tables: events, assignments, commands, memories, memories_fts (FTS5).
 // Execute against a SQLite database with: db.Exec(SchemaDDL)
@@ -133,6 +139,199 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
     INSERT INTO memories_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
 END;
 `
+
+const beadSchemaDDL = `
+CREATE TABLE IF NOT EXISTS beads (
+    id                    TEXT PRIMARY KEY,
+    title                 TEXT NOT NULL,
+    description           TEXT NOT NULL DEFAULT '',
+    acceptance_criteria   TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL CHECK (status IN
+                          ('open','in_progress','closed')),
+    priority              INTEGER NOT NULL DEFAULT 2,
+    type                  TEXT NOT NULL DEFAULT 'task',
+    parent_id             TEXT REFERENCES beads(id),
+    owner                 TEXT,
+    estimated_minutes     INTEGER,
+    tier                  TEXT,
+    model                 TEXT,
+    deferred_until        TEXT,
+    close_reason          TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    closed_at             TEXT,
+    deleted               INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_beads_status     ON beads(status) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_beads_parent     ON beads(parent_id) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_beads_type       ON beads(type) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_beads_priority   ON beads(priority) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_beads_deferred   ON beads(deferred_until) WHERE deleted = 0;
+
+CREATE TABLE IF NOT EXISTS bead_deps (
+    bead_id          TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    depends_on_id    TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    type             TEXT NOT NULL DEFAULT 'blocks',
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    created_by       TEXT,
+    PRIMARY KEY (bead_id, depends_on_id, type)
+);
+CREATE INDEX IF NOT EXISTS idx_bead_deps_depends_on ON bead_deps(depends_on_id);
+
+CREATE TABLE IF NOT EXISTS bead_tags (
+    bead_id    TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    tag        TEXT NOT NULL,
+    PRIMARY KEY (bead_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_bead_tags_tag ON bead_tags(tag);
+
+CREATE TABLE IF NOT EXISTS bead_labels (
+    bead_id    TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    label      TEXT NOT NULL,
+    PRIMARY KEY (bead_id, label)
+);
+CREATE INDEX IF NOT EXISTS idx_bead_labels_label ON bead_labels(label);
+
+CREATE TABLE IF NOT EXISTS bead_metadata (
+    bead_id    TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    key        TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    PRIMARY KEY (bead_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS bead_notes (
+    id          INTEGER PRIMARY KEY,
+    bead_id     TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    author      TEXT,
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bead_notes_bead ON bead_notes(bead_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS beads_fts USING fts5(
+    title, description, acceptance_criteria,
+    content='beads', content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS beads_fts_ai AFTER INSERT ON beads BEGIN
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria);
+END;
+
+CREATE TRIGGER IF NOT EXISTS beads_fts_ad AFTER DELETE ON beads BEGIN
+  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria)
+  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria);
+END;
+
+CREATE TRIGGER IF NOT EXISTS beads_fts_au AFTER UPDATE ON beads BEGIN
+  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria)
+  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria);
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria);
+END;
+
+CREATE TRIGGER IF NOT EXISTS bead_deps_touch_parent_ai AFTER INSERT ON bead_deps BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_deps_touch_parent_au AFTER UPDATE ON bead_deps
+  WHEN old.type IS NOT new.type
+    OR old.depends_on_id IS NOT new.depends_on_id
+    OR old.created_at IS NOT new.created_at
+    OR old.created_by IS NOT new.created_by
+BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_deps_touch_parent_ad AFTER DELETE ON bead_deps BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = old.bead_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS bead_tags_touch_parent_ai AFTER INSERT ON bead_tags BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_tags_touch_parent_au AFTER UPDATE ON bead_tags
+  WHEN old.tag IS NOT new.tag
+BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_tags_touch_parent_ad AFTER DELETE ON bead_tags BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = old.bead_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS bead_labels_touch_parent_ai AFTER INSERT ON bead_labels BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_labels_touch_parent_au AFTER UPDATE ON bead_labels
+  WHEN old.label IS NOT new.label
+BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_labels_touch_parent_ad AFTER DELETE ON bead_labels BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = old.bead_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS bead_metadata_touch_parent_ai AFTER INSERT ON bead_metadata BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_metadata_touch_parent_au AFTER UPDATE ON bead_metadata
+  WHEN old.value IS NOT new.value OR old.key IS NOT new.key
+BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_metadata_touch_parent_ad AFTER DELETE ON bead_metadata BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = old.bead_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS bead_notes_touch_parent_ai AFTER INSERT ON bead_notes BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_notes_touch_parent_au AFTER UPDATE ON bead_notes
+  WHEN old.content IS NOT new.content
+    OR old.author IS NOT new.author
+    OR old.created_at IS NOT new.created_at
+BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = new.bead_id;
+END;
+CREATE TRIGGER IF NOT EXISTS bead_notes_touch_parent_ad AFTER DELETE ON bead_notes BEGIN
+  UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = old.bead_id;
+END;
+
+CREATE VIEW IF NOT EXISTS beads_ready AS
+SELECT b.*
+FROM beads b
+WHERE b.deleted = 0
+  AND b.status = 'open'
+  AND (b.deferred_until IS NULL OR datetime(b.deferred_until) <= datetime('now'))
+  AND NOT EXISTS (
+    SELECT 1 FROM bead_deps d
+    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+    WHERE d.bead_id = b.id
+      AND d.type IN ('blocks','conditional-blocks')
+      AND parent.status != 'closed'
+  );
+
+CREATE VIEW IF NOT EXISTS beads_blocked AS
+SELECT b.*
+FROM beads b
+WHERE b.deleted = 0
+  AND b.status = 'open'
+  AND EXISTS (
+    SELECT 1 FROM bead_deps d
+    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+    WHERE d.bead_id = b.id
+      AND d.type IN ('blocks','conditional-blocks')
+      AND parent.status != 'closed'
+  );
+`
+
+// MigrateBeadSchema adds the native bead store schema to the dispatcher state DB.
+func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, beadSchemaDDL)
+	if err != nil {
+		return fmt.Errorf("migrate bead schema: %w", err)
+	}
+	return nil
+}
 
 // MigrateFileTracking adds files_read and files_modified columns to existing memories tables.
 const MigrateFileTracking = `

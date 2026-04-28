@@ -1,6 +1,8 @@
 package protocol_test
 
 import (
+	"context"
+	"database/sql"
 	"testing"
 
 	"oro/pkg/dbutil"
@@ -124,6 +126,85 @@ func TestSchemaIsIdempotent(t *testing.T) {
 	_, err = db.Exec(protocol.SchemaDDL)
 	if err != nil {
 		t.Fatalf("second exec (idempotency): %v", err)
+	}
+}
+
+func TestMigration11(t *testing.T) {
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("first migration: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("second migration: %v", err)
+	}
+
+	for _, table := range []string{
+		"beads",
+		"bead_deps",
+		"bead_tags",
+		"bead_labels",
+		"bead_metadata",
+		"bead_notes",
+		"beads_fts",
+	} {
+		assertSQLiteObjectExists(t, db, "table", table)
+	}
+	for _, index := range []string{
+		"idx_beads_status",
+		"idx_beads_parent",
+		"idx_beads_type",
+		"idx_beads_priority",
+		"idx_beads_deferred",
+		"idx_bead_deps_depends_on",
+		"idx_bead_tags_tag",
+		"idx_bead_labels_label",
+		"idx_bead_notes_bead",
+	} {
+		assertSQLiteObjectExists(t, db, "index", index)
+	}
+	for _, view := range []string{"beads_ready", "beads_blocked"} {
+		assertSQLiteObjectExists(t, db, "view", view)
+	}
+	for _, trigger := range []string{
+		"beads_fts_ai",
+		"beads_fts_ad",
+		"beads_fts_au",
+		"bead_deps_touch_parent_ai",
+		"bead_deps_touch_parent_au",
+		"bead_deps_touch_parent_ad",
+		"bead_tags_touch_parent_ai",
+		"bead_tags_touch_parent_au",
+		"bead_tags_touch_parent_ad",
+		"bead_labels_touch_parent_ai",
+		"bead_labels_touch_parent_au",
+		"bead_labels_touch_parent_ad",
+		"bead_metadata_touch_parent_ai",
+		"bead_metadata_touch_parent_au",
+		"bead_metadata_touch_parent_ad",
+		"bead_notes_touch_parent_ai",
+		"bead_notes_touch_parent_au",
+		"bead_notes_touch_parent_ad",
+	} {
+		assertSQLiteObjectExists(t, db, "trigger", trigger)
+	}
+}
+
+func assertSQLiteObjectExists(t *testing.T, db *sql.DB, objectType, name string) {
+	t.Helper()
+	var got string
+	err := db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type = ? AND name = ?",
+		objectType,
+		name,
+	).Scan(&got)
+	if err != nil {
+		t.Fatalf("%s %q not found: %v", objectType, name, err)
 	}
 }
 
