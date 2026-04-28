@@ -261,6 +261,25 @@ func TestExecWorkerSpawnerImplementsInterface(t *testing.T) {
 	var _ WorkerSpawner = &ExecWorkerSpawner{}
 }
 
+func TestExecWorkerSpawnerUsesResolvedSelfExecutable(t *testing.T) {
+	repoRoot := t.TempDir()
+	installedOro := filepath.Join(t.TempDir(), "oro")
+
+	got, err := resolveTrustedSelfExecutable(
+		repoRoot,
+		"oro",
+		func() (string, error) { return installedOro, nil },
+		func(string) (string, error) { return installedOro, nil },
+	)
+	if err != nil {
+		t.Fatalf("resolveTrustedSelfExecutable returned error: %v", err)
+	}
+	want := cleanExecutablePath(installedOro)
+	if got != want {
+		t.Fatalf("resolved executable = %q, want %q", got, want)
+	}
+}
+
 // --- helpers ---
 
 // findSubcmd returns the first cobra.Command with the given name, or nil.

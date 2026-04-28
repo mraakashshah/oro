@@ -26,7 +26,11 @@ type ExecWorkerSpawner struct{}
 // SpawnWorker forks a child process running the current binary as a worker.
 // stdout/stderr are redirected to logPath. The child is detached via Setsid.
 func (e *ExecWorkerSpawner) SpawnWorker(socketPath, workerID, logPath string) error {
-	child := exec.Command(os.Args[0], "worker", "--socket", socketPath, "--id", workerID) //nolint:gosec,noctx // intentionally re-executing self; no context — worker must outlive parent
+	self, err := trustedSelfExecutable()
+	if err != nil {
+		return err
+	}
+	child := exec.Command(self, "worker", "--socket", socketPath, "--id", workerID) //nolint:gosec,noctx // intentionally re-executing self; no context — worker must outlive parent
 
 	// Ensure log directory exists.
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {

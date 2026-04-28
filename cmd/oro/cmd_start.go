@@ -55,7 +55,11 @@ func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers, maxWorkers int)
 	// Use exec.Command (not CommandContext) — the daemon is a long-lived child
 	// that must survive parent exit. CommandContext starts an internal goroutine
 	// tied to the parent process lifecycle; plain Command avoids this entirely.
-	child := exec.Command(os.Args[0], e.buildArgs(workers, maxWorkers)...) //nolint:gosec,noctx // intentionally re-executing self; no context — daemon must outlive parent
+	self, err := trustedSelfExecutable()
+	if err != nil {
+		return 0, err
+	}
+	child := exec.Command(self, e.buildArgs(workers, maxWorkers)...) //nolint:gosec,noctx // intentionally re-executing self; no context — daemon must outlive parent
 
 	// Redirect daemon stdout/stderr to a log file. Inheriting the parent's
 	// stdout/stderr causes SIGPIPE when the parent exits (broken pipe),
@@ -77,6 +81,80 @@ func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers, maxWorkers int)
 	// logFile fd is inherited by the child; parent can close its copy.
 	_ = logFile.Close()
 	return child.Process.Pid, nil
+}
+
+func trustedSelfExecutable() (string, error) {
+	return resolveTrustedSelfExecutable(currentRepoRoot(), os.Args[0], os.Executable, exec.LookPath)
+}
+
+func resolveTrustedSelfExecutable(
+	repoRoot string,
+	argv0 string,
+	executable func() (string, error),
+	lookPath func(string) (string, error),
+) (string, error) {
+	self, err := executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve current executable: %w", err)
+	}
+	self = cleanExecutablePath(self)
+
+	candidate := argv0
+	if !filepath.IsAbs(candidate) {
+		resolved, lookErr := lookPath(candidate)
+		if lookErr != nil {
+			return "", fmt.Errorf("resolve executable %q from PATH: %w", argv0, lookErr)
+		}
+		candidate = resolved
+	}
+	candidate = cleanExecutablePath(candidate)
+
+	if isRepoLocalOro(repoRoot, candidate) {
+		return "", fmt.Errorf("refusing to re-exec repo-local oro binary %s; current executable is %s", candidate, self)
+	}
+	return self, nil
+}
+
+func cleanExecutablePath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		parent, parentErr := filepath.EvalSymlinks(filepath.Dir(abs))
+		if parentErr != nil {
+			return abs
+		}
+		return filepath.Join(parent, filepath.Base(abs))
+	}
+	return resolved
+}
+
+func isRepoLocalOro(repoRoot, candidate string) bool {
+	if filepath.Base(candidate) != "oro" {
+		return false
+	}
+	root := cleanExecutablePath(repoRoot)
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+}
+
+func currentRepoRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	for {
+		if fileExists(filepath.Join(cwd, ".git")) || fileExists(filepath.Join(cwd, "go.mod")) {
+			return cwd
+		}
+		parent := filepath.Dir(cwd)
+		if parent == cwd {
+			return cwd
+		}
+		cwd = parent
+	}
 }
 
 // cleanEnvForDaemon returns a copy of env with vars that should not leak

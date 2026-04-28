@@ -66,6 +66,66 @@ func TestStartReadsProjectConfig(t *testing.T) {
 	})
 }
 
+func TestStartRejectsRepoLocalOroShadow(t *testing.T) {
+	t.Run("PATH resolves to repo-local shadow", func(t *testing.T) {
+		repoRoot := t.TempDir()
+		localOro := filepath.Join(repoRoot, "oro")
+		installedOro := filepath.Join(t.TempDir(), "oro")
+
+		got, err := resolveTrustedSelfExecutable(
+			repoRoot,
+			"oro",
+			func() (string, error) { return installedOro, nil },
+			func(string) (string, error) { return localOro, nil },
+		)
+
+		if err == nil {
+			t.Fatalf("expected repo-local oro shadow error, got path %q", got)
+		}
+		if !strings.Contains(err.Error(), cleanExecutablePath(localOro)) {
+			t.Fatalf("error %q must name repo-local shadow path %q", err, cleanExecutablePath(localOro))
+		}
+	})
+
+	t.Run("current executable is repo-local shadow", func(t *testing.T) {
+		repoRoot := t.TempDir()
+		localOro := filepath.Join(repoRoot, "oro")
+
+		got, err := resolveTrustedSelfExecutable(
+			repoRoot,
+			"./oro",
+			func() (string, error) { return localOro, nil },
+			func(string) (string, error) { return localOro, nil },
+		)
+
+		if err == nil {
+			t.Fatalf("expected repo-local current executable error, got path %q", got)
+		}
+		if !strings.Contains(err.Error(), cleanExecutablePath(localOro)) {
+			t.Fatalf("error %q must name repo-local executable path %q", err, cleanExecutablePath(localOro))
+		}
+	})
+}
+
+func TestDaemonSpawnerUsesResolvedSelfExecutable(t *testing.T) {
+	repoRoot := t.TempDir()
+	installedOro := filepath.Join(t.TempDir(), "oro")
+
+	got, err := resolveTrustedSelfExecutable(
+		repoRoot,
+		"oro",
+		func() (string, error) { return installedOro, nil },
+		func(string) (string, error) { return installedOro, nil },
+	)
+	if err != nil {
+		t.Fatalf("resolveTrustedSelfExecutable returned error: %v", err)
+	}
+	want := cleanExecutablePath(installedOro)
+	if got != want {
+		t.Fatalf("resolved executable = %q, want %q", got, want)
+	}
+}
+
 func TestCleanStaleWorkerLogs(t *testing.T) {
 	t.Run("old dirs deleted, new dirs survive", func(t *testing.T) {
 		tmpDir := t.TempDir()
