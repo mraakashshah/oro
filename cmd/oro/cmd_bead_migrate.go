@@ -50,12 +50,24 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 				if err != nil {
 					return writeBeadCommandErrorIfJSON(cmd, "reconcile", err)
 				}
-				report, err := runBeadReconcile(cmd.Context(), data, opts.apply)
+				applyReconcile := opts.apply && !opts.dryRun
+				var backupPath string
+				if applyReconcile {
+					backupPath, err = writePreReconcileSQLiteBackup(cmd.Context())
+					if err != nil {
+						return writeBeadCommandErrorIfJSON(cmd, "reconcile", fmt.Errorf("write pre-reconcile backup: %w", err))
+					}
+				}
+				report, err := runBeadReconcile(cmd.Context(), data, applyReconcile)
+				report.BackupPath = backupPath
 				var validationErr beadMigrationValidationError
 				if err != nil && !errors.As(err, &validationErr) {
+					if backupPath != "" {
+						return writeBeadCommandErrorIfJSON(cmd, "reconcile", fmt.Errorf("reconcile failed after backup %s: %w", backupPath, err))
+					}
 					return writeBeadCommandErrorIfJSON(cmd, "reconcile", err)
 				}
-				writeBeadReconcileReport(cmd.OutOrStdout(), source, report, opts.apply)
+				writeBeadReconcileReport(cmd.OutOrStdout(), source, report, applyReconcile)
 				if err != nil {
 					return writeBeadCommandErrorIfJSON(cmd, "reconcile", err)
 				}
@@ -206,6 +218,7 @@ func (err beadMigrationValidationError) Error() string {
 type beadReconcileReport struct {
 	SourceBeads      int
 	SQLiteBeads      int
+	BackupPath       string
 	Inserts          int
 	Updates          int
 	Deletes          int
@@ -300,6 +313,10 @@ func runBeadMigration(ctx context.Context, data []byte) (beadMigrationValidation
 }
 
 func writeBeadMigrationBackup(data []byte) (string, error) {
+	return writeBeadMigrationBackupFile(data, "pre-migration.jsonl")
+}
+
+func writeBeadMigrationBackupFile(data []byte, suffix string) (string, error) {
 	paths, err := ResolveProjectDBPaths()
 	if err != nil {
 		return "", fmt.Errorf("resolve bead store paths: %w", err)
@@ -311,9 +328,9 @@ func writeBeadMigrationBackup(data []byte) (string, error) {
 	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
 	var backupPath string
 	for attempt := 0; attempt < 10; attempt++ {
-		name := stamp + "-pre-migration.jsonl"
+		name := stamp + "-" + suffix
 		if attempt > 0 {
-			name = fmt.Sprintf("%s-%d-pre-migration.jsonl", stamp, attempt)
+			name = fmt.Sprintf("%s-%d-%s", stamp, attempt, suffix)
 		}
 		backupPath = filepath.Join(backupDir, name)
 		file, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
@@ -333,6 +350,48 @@ func writeBeadMigrationBackup(data []byte) (string, error) {
 		return backupPath, nil
 	}
 	return "", fmt.Errorf("write migration backup %s: backup path already exists after retries", backupPath)
+}
+
+func writePreReconcileSQLiteBackup(ctx context.Context) (string, error) {
+	paths, err := ResolveProjectDBPaths()
+	if err != nil {
+		return "", fmt.Errorf("resolve bead store paths: %w", err)
+	}
+	db, err := openReconcileStateDB(paths.StateDBPath, false)
+	if err != nil {
+		return "", err
+	}
+	if db == nil {
+		return writeBeadMigrationBackupFile(nil, "pre-reconcile-sqlite.jsonl")
+	}
+	defer db.Close()
+	sqliteBeads, err := loadSQLiteMigrationBeads(ctx, db)
+	if err != nil {
+		return "", err
+	}
+	return writeBeadReconcileBackup(sqliteBeads)
+}
+
+func writeBeadReconcileBackup(sqliteBeads map[string]sqliteMigrationBead) (string, error) {
+	ids := make([]string, 0, len(sqliteBeads))
+	for id, bead := range sqliteBeads {
+		if bead.Deleted {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	var buf bytes.Buffer
+	for _, id := range ids {
+		row, err := json.Marshal(sqliteBeads[id].BDExportBead)
+		if err != nil {
+			return "", fmt.Errorf("encode sqlite bead %s: %w", id, err)
+		}
+		buf.Write(row)
+		buf.WriteByte('\n')
+	}
+	return writeBeadMigrationBackupFile(buf.Bytes(), "pre-reconcile-sqlite.jsonl")
 }
 
 func verifyMigratedBeadCount(ctx context.Context, db *sql.DB, beadIDs []string) (int, error) {
@@ -1802,6 +1861,9 @@ func writeBeadReconcileReport(w io.Writer, source beadMigrationSource, report be
 	}
 	fmt.Fprintf(w, "bd beads: %d\n", report.SourceBeads)
 	fmt.Fprintf(w, "sqlite beads: %d\n", report.SQLiteBeads)
+	if report.BackupPath != "" {
+		fmt.Fprintf(w, "backup snapshot: %s\n", report.BackupPath)
+	}
 	fmt.Fprintf(w, "inserts: %d\n", report.Inserts)
 	fmt.Fprintf(w, "updates: %d\n", report.Updates)
 	fmt.Fprintf(w, "deletes: %d\n", report.Deletes)

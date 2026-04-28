@@ -1117,6 +1117,138 @@ func TestMigrateFromDoltReconcileApplyIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateFromDoltReconcileApplyBackup(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	oroHome := filepath.Join(t.TempDir(), "oro-home")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+
+	tmpDir := t.TempDir()
+	initialJSONL := filepath.Join(tmpDir, "initial.jsonl")
+	if err := os.WriteFile(initialJSONL, []byte(strings.Join([]string{
+		`{"id":"oro-backup-delete","title":"Delete candidate","description":"Only in sqlite","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-backup-stale","title":"Old title","description":"Old description","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T03:04:04Z","tags":["old"],"labels":["keep"],"metadata":{"k":"old"},"notes":["old note"]}`,
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write initial jsonl: %v", err)
+	}
+	reconcileJSONL := filepath.Join(tmpDir, "reconcile.jsonl")
+	if err := os.WriteFile(reconcileJSONL, []byte(strings.Join([]string{
+		`{"id":"oro-backup-new","title":"Created in bd","description":"New bead","status":"open","priority":3,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`,
+		`{"id":"oro-backup-stale","title":"New title","description":"New description","status":"closed","priority":1,"issue_type":"bug","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T03:04:05Z","closed_at":"2026-01-02T03:04:05Z","close_reason":"done","tags":["new"]}`,
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write reconcile jsonl: %v", err)
+	}
+
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", initialJSONL)
+
+	firstOut := runBeadMigrateCommand(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", reconcileJSONL)
+	for _, want := range []string{"backup snapshot:", "inserts: 1", "updates: 1", "deletes: 1", "conflicts: 0", "APPLIED"} {
+		if !strings.Contains(firstOut, want) {
+			t.Fatalf("first reconcile output missing %q:\n%s", want, firstOut)
+		}
+	}
+	firstBackupPath := migrationOutputValue(t, firstOut, "backup snapshot:")
+	if !strings.HasPrefix(firstBackupPath, filepath.Join(oroHome, "migrations")+string(os.PathSeparator)) {
+		t.Fatalf("first backup path = %q, want under %s", firstBackupPath, filepath.Join(oroHome, "migrations"))
+	}
+	firstBackup := readMigrationBackupBeads(t, firstBackupPath)
+	if got := firstBackup["oro-backup-stale"].Title; got != "Old title" {
+		t.Fatalf("pre-apply backup stale title = %q, want Old title", got)
+	}
+	if got := firstBackup["oro-backup-delete"].Title; got != "Delete candidate" {
+		t.Fatalf("pre-apply backup delete candidate title = %q, want Delete candidate", got)
+	}
+	if _, ok := firstBackup["oro-backup-new"]; ok {
+		t.Fatalf("pre-apply backup contains post-apply insert oro-backup-new")
+	}
+
+	secondOut := runBeadMigrateCommand(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", reconcileJSONL)
+	for _, want := range []string{"backup snapshot:", "inserts: 0", "updates: 0", "deletes: 0", "conflicts: 0", "APPLIED"} {
+		if !strings.Contains(secondOut, want) {
+			t.Fatalf("second reconcile output missing %q:\n%s", want, secondOut)
+		}
+	}
+	secondBackupPath := migrationOutputValue(t, secondOut, "backup snapshot:")
+	if secondBackupPath == firstBackupPath {
+		t.Fatalf("second reconcile reused first backup path %q", secondBackupPath)
+	}
+	secondBackup := readMigrationBackupBeads(t, secondBackupPath)
+	if got := secondBackup["oro-backup-stale"].Title; got != "New title" {
+		t.Fatalf("second pre-apply backup stale title = %q, want New title", got)
+	}
+	if got := secondBackup["oro-backup-new"].Title; got != "Created in bd" {
+		t.Fatalf("second pre-apply backup new title = %q, want Created in bd", got)
+	}
+	if _, ok := secondBackup["oro-backup-delete"]; ok {
+		t.Fatalf("second pre-apply backup contains soft-deleted row oro-backup-delete")
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open reconciled db: %v", err)
+	}
+	defer db.Close()
+	var title string
+	if err := db.QueryRow(`SELECT title FROM beads WHERE id='oro-backup-stale' AND deleted=0`).Scan(&title); err != nil {
+		t.Fatalf("query reconciled stale bead: %v", err)
+	}
+	if title != "New title" {
+		t.Fatalf("reconciled stale title = %q, want New title", title)
+	}
+
+	dryRunApplyJSONL := filepath.Join(tmpDir, "dry-run-apply.jsonl")
+	if err := os.WriteFile(dryRunApplyJSONL, []byte(`{"id":"oro-backup-stale","title":"Dry run apply must not mutate","description":"New description","status":"closed","priority":1,"issue_type":"bug","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T03:04:06Z"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write dry-run apply jsonl: %v", err)
+	}
+	dryRunApplyOut := runBeadMigrateCommand(t, "migrate-from-dolt", "--dry-run", "--reconcile", "--apply", "--from-jsonl", dryRunApplyJSONL)
+	for _, want := range []string{"updates: 1", "DRY RUN -- pass --apply to write changes"} {
+		if !strings.Contains(dryRunApplyOut, want) {
+			t.Fatalf("dry-run --reconcile --apply output missing %q:\n%s", want, dryRunApplyOut)
+		}
+	}
+	for _, forbidden := range []string{"backup snapshot:", "APPLIED"} {
+		if strings.Contains(dryRunApplyOut, forbidden) {
+			t.Fatalf("dry-run --reconcile --apply output unexpectedly contains %q:\n%s", forbidden, dryRunApplyOut)
+		}
+	}
+	if err := db.QueryRow(`SELECT title FROM beads WHERE id='oro-backup-stale' AND deleted=0`).Scan(&title); err != nil {
+		t.Fatalf("query after dry-run apply: %v", err)
+	}
+	if title != "New title" {
+		t.Fatalf("dry-run --reconcile --apply mutated title to %q, want New title", title)
+	}
+
+	if err := os.RemoveAll(filepath.Join(oroHome, "migrations")); err != nil {
+		t.Fatalf("remove migrations dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oroHome, "migrations"), []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("create migrations path conflict: %v", err)
+	}
+	failureJSONL := filepath.Join(tmpDir, "failure.jsonl")
+	if err := os.WriteFile(failureJSONL, []byte(`{"id":"oro-backup-stale","title":"Backup failure must not apply","description":"New description","status":"closed","priority":1,"issue_type":"bug","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T03:04:06Z"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write failure jsonl: %v", err)
+	}
+	out, cmdErr := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", failureJSONL)
+	if cmdErr == nil {
+		t.Fatalf("reconcile apply succeeded despite backup failure:\n%s", out)
+	}
+	for _, want := range []string{"write pre-reconcile backup", filepath.Join(oroHome, "migrations")} {
+		if !strings.Contains(out+cmdErr.Error(), want) {
+			t.Fatalf("backup failure output missing %q:\nerr=%v\nout=%s", want, cmdErr, out)
+		}
+	}
+	var afterFailureTitle string
+	if err := db.QueryRow(`SELECT title FROM beads WHERE id='oro-backup-stale' AND deleted=0`).Scan(&afterFailureTitle); err != nil {
+		t.Fatalf("query after failed backup: %v", err)
+	}
+	if afterFailureTitle != "New title" {
+		t.Fatalf("failed backup mutated title to %q, want New title", afterFailureTitle)
+	}
+}
+
 func TestMigrateFromDoltReconcileDryRunDoesNotCreateDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "missing", "state.db")
 	t.Setenv("ORO_DB_PATH", dbPath)
@@ -1349,6 +1481,27 @@ func migrationOutputValue(t *testing.T, out, prefix string) string {
 	}
 	t.Fatalf("output missing prefix %q:\n%s", prefix, out)
 	return ""
+}
+
+func readMigrationBackupBeads(t *testing.T, path string) map[string]bdExportBead {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read migration backup: %v", err)
+	}
+	rawBeads, err := decodeBDExport(data)
+	if err != nil {
+		t.Fatalf("decode migration backup: %v", err)
+	}
+	beads := make(map[string]bdExportBead, len(rawBeads))
+	for _, raw := range rawBeads {
+		var bead bdExportBead
+		if err := json.Unmarshal(raw, &bead); err != nil {
+			t.Fatalf("decode backup bead: %v", err)
+		}
+		beads[bead.ID] = bead
+	}
+	return beads
 }
 
 type fakeBeadMigrationRunner struct {
