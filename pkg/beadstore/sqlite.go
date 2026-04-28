@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -56,20 +57,61 @@ func NewSQLiteStore(db *sql.DB, opts ...Option) *SQLiteStore {
 }
 
 func (s *SQLiteStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
-	return s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC`)
+	beads, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	return s.filterUnassigned(ctx, beads)
 }
 
 func (s *SQLiteStore) InProgress(ctx context.Context) ([]protocol.Bead, error) {
-	return s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND status='in_progress' ORDER BY updated_at DESC, created_at ASC`)
+	beads, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND status='in_progress' ORDER BY updated_at DESC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	active, err := s.activeAssignments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(beads))
+	for i := range beads {
+		seen[beads[i].ID] = struct{}{}
+		if workerID := active[beads[i].ID]; workerID != "" {
+			beads[i].WorkerID = workerID
+		}
+	}
+	activeIDs := make([]string, 0, len(active))
+	for beadID := range active {
+		if _, ok := seen[beadID]; !ok {
+			activeIDs = append(activeIDs, beadID)
+		}
+	}
+	sort.Strings(activeIDs)
+	for _, beadID := range activeIDs {
+		assigned, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND status!='closed' AND id=?`, beadID)
+		if err != nil {
+			return nil, err
+		}
+		if len(assigned) == 0 {
+			continue
+		}
+		assigned[0].WorkerID = active[beadID]
+		beads = append(beads, assigned[0])
+	}
+	return beads, nil
 }
 
 func (s *SQLiteStore) Blocked(ctx context.Context) ([]protocol.Bead, error) {
-	return s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads_blocked ORDER BY priority ASC, created_at ASC`)
+	beads, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads_blocked ORDER BY priority ASC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	return s.filterUnassigned(ctx, beads)
 }
 
 func (s *SQLiteStore) Closed(ctx context.Context, limit int) ([]protocol.Bead, error) {
 	if limit <= 0 {
-		limit = 50
+		return []protocol.Bead{}, nil
 	}
 	return s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND status='closed' ORDER BY closed_at DESC, updated_at DESC LIMIT ?`, limit)
 }
@@ -396,6 +438,50 @@ func (s *SQLiteStore) queryBeads(ctx context.Context, query string, args ...any)
 		return nil, err
 	}
 	return beads, nil
+}
+
+func (s *SQLiteStore) filterUnassigned(ctx context.Context, beads []protocol.Bead) ([]protocol.Bead, error) {
+	active, err := s.activeAssignments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(active) == 0 {
+		return beads, nil
+	}
+	filtered := beads[:0]
+	for _, bead := range beads {
+		if _, ok := active[bead.ID]; ok {
+			continue
+		}
+		filtered = append(filtered, bead)
+	}
+	return filtered, nil
+}
+
+func (s *SQLiteStore) activeAssignments(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT bead_id, worker_id FROM assignments WHERE status='active' ORDER BY assigned_at DESC, id DESC`)
+	if err != nil {
+		if isNoSuchTable(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+
+	active := map[string]string{}
+	for rows.Next() {
+		var beadID, workerID string
+		if err := rows.Scan(&beadID, &workerID); err != nil {
+			return nil, err
+		}
+		if _, ok := active[beadID]; !ok {
+			active[beadID] = workerID
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return active, nil
 }
 
 func scanBead(rows *sql.Rows) (protocol.Bead, error) {

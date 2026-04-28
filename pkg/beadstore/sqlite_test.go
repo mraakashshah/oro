@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -396,6 +397,270 @@ func TestRaceSQLiteStoreConcurrentReadyShowClose(t *testing.T) {
 	}
 }
 
+func TestParityStoreLifecycleMethods(t *testing.T) {
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			created, err := fixture.store.Create(ctx, CreateParams{
+				ID:                 "oro-lifecycle",
+				Title:              "lifecycle",
+				Type:               "task",
+				Priority:           2,
+				Description:        "exercise store methods",
+				AcceptanceCriteria: "parity",
+				ParentID:           "oro-parent",
+				Tags:               []string{"phase-1", "store"},
+				Labels:             []string{"beadstore"},
+				Metadata:           map[string]string{"model": "haiku", "source": "parity"},
+				EstimatedMinutes:   13,
+			})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if created.ID != "oro-lifecycle" || created.Status != "open" || created.Epic != "oro-parent" || created.Type != "task" {
+				t.Fatalf("created bead = %#v", created)
+			}
+
+			shown, err := fixture.store.Show(ctx, "oro-lifecycle")
+			if err != nil {
+				t.Fatalf("Show: %v", err)
+			}
+			if shown == nil || shown.ID != created.ID || shown.Description != "exercise store methods" || shown.Metadata["source"] != "parity" {
+				t.Fatalf("shown bead = %#v", shown)
+			}
+			missing, err := fixture.store.Show(ctx, "oro-missing")
+			if err != nil {
+				t.Fatalf("Show missing: %v", err)
+			}
+			if missing != nil {
+				t.Fatalf("Show missing = %#v, want nil", missing)
+			}
+
+			status := "in_progress"
+			priority := 0
+			beadType := "bug"
+			acceptance := "updated acceptance"
+			notes := "first note"
+			parent := ""
+			owner := "worker-1"
+			if err := fixture.store.Update(ctx, "oro-lifecycle", UpdateParams{
+				Status:             &status,
+				Priority:           &priority,
+				Type:               &beadType,
+				AcceptanceCriteria: &acceptance,
+				Notes:              &notes,
+				ParentID:           &parent,
+				Owner:              &owner,
+			}); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			updated, err := fixture.store.Show(ctx, "oro-lifecycle")
+			if err != nil {
+				t.Fatalf("Show updated: %v", err)
+			}
+			if updated.Status != "in_progress" || updated.Priority != 0 || updated.Type != "bug" ||
+				updated.AcceptanceCriteria != acceptance || updated.Notes != notes || updated.Epic != "" || updated.Owner != owner {
+				t.Fatalf("updated bead = %#v", updated)
+			}
+
+			if err := fixture.store.Close(ctx, "oro-lifecycle", "done"); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			closed, err := fixture.store.Show(ctx, "oro-lifecycle")
+			if err != nil {
+				t.Fatalf("Show closed: %v", err)
+			}
+			if closed.Status != "closed" || closed.CloseReason != "done" || closed.ClosedAt == "" {
+				t.Fatalf("closed bead = %#v", closed)
+			}
+
+			if err := fixture.store.Update(ctx, "oro-missing", UpdateParams{Status: &status}); !isBeadNotFound(err) {
+				t.Fatalf("Update missing error = %v, want BeadNotFoundError", err)
+			}
+			if err := fixture.store.Close(ctx, "oro-missing", "done"); !isBeadNotFound(err) {
+				t.Fatalf("Close missing error = %v, want BeadNotFoundError", err)
+			}
+		})
+	}
+}
+
+func TestParityStoreListMethods(t *testing.T) {
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-ready", Title: "ready", Priority: 2})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-blocker", Title: "blocker", Priority: 1})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-blocked", Title: "blocked", Priority: 0})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-assigned", Title: "assigned", Priority: 0})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-assigned-blocked", Title: "assigned blocked", Priority: 0})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-progress", Title: "progress", Priority: 0})
+			fixture.addDependency(t, "oro-blocked", "oro-blocker", "conditional-blocks")
+			fixture.addDependency(t, "oro-assigned-blocked", "oro-blocker", "conditional-blocks")
+			fixture.assignActive(t, "oro-assigned", "worker-1")
+			fixture.assignActive(t, "oro-assigned-blocked", "worker-2")
+
+			status := "in_progress"
+			if err := fixture.store.Update(ctx, "oro-progress", UpdateParams{Status: &status}); err != nil {
+				t.Fatalf("Update progress: %v", err)
+			}
+
+			ready, err := fixture.store.Ready(ctx)
+			if err != nil {
+				t.Fatalf("Ready: %v", err)
+			}
+			if ids(ready) != "oro-blocker,oro-ready" {
+				t.Fatalf("Ready ids = %s, want oro-blocker,oro-ready", ids(ready))
+			}
+
+			blocked, err := fixture.store.Blocked(ctx)
+			if err != nil {
+				t.Fatalf("Blocked: %v", err)
+			}
+			if ids(blocked) != "oro-blocked" {
+				t.Fatalf("Blocked ids = %s, want oro-blocked", ids(blocked))
+			}
+
+			inProgress, err := fixture.store.InProgress(ctx)
+			if err != nil {
+				t.Fatalf("InProgress: %v", err)
+			}
+			if sortedIDs(inProgress) != "oro-assigned,oro-assigned-blocked,oro-progress" {
+				t.Fatalf("InProgress ids = %s, want assigned and status in-progress beads", sortedIDs(inProgress))
+			}
+
+			if err := fixture.store.Close(ctx, "oro-blocker", "unblocks children"); err != nil {
+				t.Fatalf("Close blocker: %v", err)
+			}
+			ready, err = fixture.store.Ready(ctx)
+			if err != nil {
+				t.Fatalf("Ready after blocker close: %v", err)
+			}
+			if ids(ready) != "oro-blocked,oro-ready" {
+				t.Fatalf("Ready after blocker close ids = %s, want oro-blocked,oro-ready", ids(ready))
+			}
+		})
+	}
+}
+
+func TestParityClosedLimitSemantics(t *testing.T) {
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-closed-a", Title: "closed a"})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-closed-b", Title: "closed b"})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-open", Title: "open"})
+			if err := fixture.store.Close(ctx, "oro-closed-a", "done"); err != nil {
+				t.Fatalf("Close a: %v", err)
+			}
+			if err := fixture.store.Close(ctx, "oro-closed-b", "done"); err != nil {
+				t.Fatalf("Close b: %v", err)
+			}
+
+			closed, err := fixture.store.Closed(ctx, 1)
+			if err != nil {
+				t.Fatalf("Closed positive limit: %v", err)
+			}
+			if len(closed) != 1 || closed[0].Status != "closed" {
+				t.Fatalf("Closed positive limit = %#v, want one closed bead", closed)
+			}
+
+			closed, err = fixture.store.Closed(ctx, 0)
+			if err != nil {
+				t.Fatalf("Closed zero limit: %v", err)
+			}
+			if len(closed) != 0 {
+				t.Fatalf("Closed zero limit len = %d, want 0", len(closed))
+			}
+
+			closed, err = fixture.store.Closed(ctx, -1)
+			if err != nil {
+				t.Fatalf("Closed negative limit: %v", err)
+			}
+			if len(closed) != 0 {
+				t.Fatalf("Closed negative limit len = %d, want 0", len(closed))
+			}
+		})
+	}
+}
+
+func TestParityChildQueries(t *testing.T) {
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-empty", Title: "empty epic", Type: "epic"})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-epic", Title: "epic", Type: "epic"})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-child-open", Title: "open child", ParentID: "oro-epic", Tags: []string{"phase-1"}})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-child-closed", Title: "closed child", ParentID: "oro-epic", Tags: []string{"phase-2"}})
+
+			if has, err := fixture.store.HasChildren(ctx, "oro-empty"); err != nil || has {
+				t.Fatalf("HasChildren empty = %v, %v; want false, nil", has, err)
+			}
+			if allClosed, err := fixture.store.AllChildrenClosed(ctx, "oro-empty"); err != nil || !allClosed {
+				t.Fatalf("AllChildrenClosed empty = %v, %v; want true, nil", allClosed, err)
+			}
+			if has, err := fixture.store.HasChildren(ctx, "oro-epic"); err != nil || !has {
+				t.Fatalf("HasChildren epic = %v, %v; want true, nil", has, err)
+			}
+			if allClosed, err := fixture.store.AllChildrenClosed(ctx, "oro-epic"); err != nil || allClosed {
+				t.Fatalf("AllChildrenClosed with open child = %v, %v; want false, nil", allClosed, err)
+			}
+
+			tagged, err := fixture.store.FindByParentAndTag(ctx, "oro-epic", "phase-1")
+			if err != nil {
+				t.Fatalf("FindByParentAndTag: %v", err)
+			}
+			if ids(tagged) != "oro-child-open" {
+				t.Fatalf("FindByParentAndTag ids = %s, want oro-child-open", ids(tagged))
+			}
+
+			if err := fixture.store.Close(ctx, "oro-child-open", "done"); err != nil {
+				t.Fatalf("Close child open: %v", err)
+			}
+			if err := fixture.store.Close(ctx, "oro-child-closed", "done"); err != nil {
+				t.Fatalf("Close child closed: %v", err)
+			}
+			if allClosed, err := fixture.store.AllChildrenClosed(ctx, "oro-epic"); err != nil || !allClosed {
+				t.Fatalf("AllChildrenClosed after close = %v, %v; want true, nil", allClosed, err)
+			}
+		})
+	}
+}
+
+func TestParityExportSnapshot(t *testing.T) {
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-export-b", Title: "export b", Tags: []string{"b"}})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-export-a", Title: "export a", Tags: []string{"a"}})
+			if err := fixture.store.Close(ctx, "oro-export-a", "done"); err != nil {
+				t.Fatalf("Close export a: %v", err)
+			}
+
+			data, err := fixture.store.Export(ctx)
+			if err != nil {
+				t.Fatalf("Export: %v", err)
+			}
+			got := map[string]protocol.Bead{}
+			for _, line := range splitJSONLines(string(data)) {
+				var bead protocol.Bead
+				if err := json.Unmarshal([]byte(line), &bead); err != nil {
+					t.Fatalf("export line is not JSON bead: %v", err)
+				}
+				got[bead.ID] = bead
+			}
+			if len(got) != 2 {
+				t.Fatalf("Export bead count = %d, want 2: %#v", len(got), got)
+			}
+			if got["oro-export-a"].Status != "closed" || got["oro-export-a"].CloseReason != "done" {
+				t.Fatalf("Export closed bead = %#v", got["oro-export-a"])
+			}
+			if got["oro-export-b"].Status != "open" || !reflect.DeepEqual(got["oro-export-b"].Tags, []string{"b"}) {
+				t.Fatalf("Export open bead = %#v", got["oro-export-b"])
+			}
+		})
+	}
+}
+
 func TestParityReadyTracksOpenAndClosedDependencies(t *testing.T) {
 	for _, fixture := range newParityFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
@@ -585,6 +850,7 @@ type parityFixture struct {
 	name          string
 	store         parityStore
 	addDependency func(t *testing.T, beadID, dependsOnID, depType string)
+	assignActive  func(t *testing.T, beadID, workerID string)
 	deferredUntil func(t *testing.T, id string) string
 }
 
@@ -601,6 +867,10 @@ func newParityFixtures(t *testing.T) []parityFixture {
 			addDependency: func(t *testing.T, beadID, dependsOnID, depType string) {
 				t.Helper()
 				mustExec(t, sqliteStore.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, beadID, dependsOnID, depType)
+			},
+			assignActive: func(t *testing.T, beadID, workerID string) {
+				t.Helper()
+				mustExec(t, sqliteStore.db, `INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`, beadID, workerID, "/tmp/"+beadID)
 			},
 			deferredUntil: func(t *testing.T, id string) string {
 				t.Helper()
@@ -630,6 +900,17 @@ func newParityFixtures(t *testing.T) []parityFixture {
 					DependsOnID: dependsOnID,
 					Type:        depType,
 				})
+				fakeStore.beads[beadID] = bead
+			},
+			assignActive: func(t *testing.T, beadID, workerID string) {
+				t.Helper()
+				fakeStore.mu.Lock()
+				defer fakeStore.mu.Unlock()
+				bead, ok := fakeStore.beads[beadID]
+				if !ok {
+					t.Fatalf("missing fake bead %s", beadID)
+				}
+				bead.WorkerID = workerID
 				fakeStore.beads[beadID] = bead
 			},
 			deferredUntil: func(t *testing.T, id string) string {
@@ -700,6 +981,15 @@ func ids(beads []protocol.Bead) string {
 		out += bead.ID
 	}
 	return out
+}
+
+func sortedIDs(beads []protocol.Bead) string {
+	values := make([]string, 0, len(beads))
+	for _, bead := range beads {
+		values = append(values, bead.ID)
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
 }
 
 func splitJSONLines(s string) []string {
