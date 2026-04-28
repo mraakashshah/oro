@@ -1,6 +1,7 @@
 package data
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -117,6 +118,24 @@ type Issue struct {
 	Validations  []Validation `json:"validations,omitempty"`
 	QualityScore *float32     `json:"quality_score,omitempty"`
 	Crystallizes *bool        `json:"crystallizes,omitempty"`
+}
+
+// UnmarshalJSON accepts both legacy bd issue JSON and Oro-native bead JSON.
+func (i *Issue) UnmarshalJSON(data []byte) error {
+	type issueAlias Issue
+	aux := struct {
+		*issueAlias
+		OroType string `json:"type"`
+	}{
+		issueAlias: (*issueAlias)(i),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if i.IssueType == "" && aux.OroType != "" {
+		i.IssueType = IssueType(aux.OroType)
+	}
+	return nil
 }
 
 // EvaluateDependencies is the canonical function for classifying all dependency

@@ -138,6 +138,11 @@ func fetchIssuesCLIWithArgs(projectDir string, args ...string) ([]Issue, error) 
 	return parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir))
 }
 
+// ParseIssuesJSON parses Beads/Oro issue arrays through mg's CLI JSON path.
+func ParseIssuesJSON(out []byte, expectedPrefix string) ([]Issue, error) {
+	return parseIssuesCLIOutput(out, expectedPrefix)
+}
+
 func parseIssuesCLIOutput(out []byte, expectedPrefix string) ([]Issue, error) {
 	var issues []Issue
 	if err := json.Unmarshal(out, &issues); err != nil {
