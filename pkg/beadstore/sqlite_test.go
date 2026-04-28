@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"oro/pkg/protocol"
 
@@ -311,6 +313,86 @@ func TestSQLiteStoreOpenAppliesDBUtilPragmas(t *testing.T) {
 
 	if _, err := store.Create(ctx, CreateParams{ID: "oro-open", Title: "opened store"}); err != nil {
 		t.Fatalf("Create after OpenSQLiteStore: %v", err)
+	}
+}
+
+func TestRaceSQLiteStoreConcurrentReadyShowClose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	store, err := OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.db.Close() })
+
+	const beadID = "oro-race"
+	if _, err := store.Create(ctx, CreateParams{ID: beadID, Title: "race"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 10)
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+
+			if _, err := store.Ready(ctx); err != nil {
+				errs <- err
+				return
+			}
+			shown, err := store.Show(ctx, beadID)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if shown == nil {
+				errs <- errors.New("Show returned nil for race bead")
+				return
+			}
+			if err := store.Close(ctx, beadID, "race"); err != nil {
+				errs <- err
+				return
+			}
+		}()
+	}
+
+	close(start)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+		close(errs)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("concurrent Ready/Show/Close did not finish: %v", ctx.Err())
+	}
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Ready/Show/Close: %v", err)
+		}
+	}
+
+	closed, err := store.Show(context.Background(), beadID)
+	if err != nil {
+		t.Fatalf("Show after concurrent close: %v", err)
+	}
+	if closed == nil || closed.Status != "closed" || closed.CloseReason != "race" {
+		t.Fatalf("closed bead = %#v", closed)
+	}
+	ready, err := store.Ready(context.Background())
+	if err != nil {
+		t.Fatalf("Ready after concurrent close: %v", err)
+	}
+	if ids(ready) != "" {
+		t.Fatalf("Ready after concurrent close ids = %s, want none", ids(ready))
 	}
 }
 

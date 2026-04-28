@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"oro/pkg/dbutil"
@@ -31,6 +32,7 @@ type SQLiteStore struct {
 	db           *sql.DB
 	memory       MemoryFetcher
 	memMaxTokens int
+	writeMu      sync.Mutex
 }
 
 func OpenSQLiteStore(ctx context.Context, path string, opts ...Option) (*SQLiteStore, error) {
@@ -104,6 +106,9 @@ func (s *SQLiteStore) Create(ctx context.Context, params CreateParams) (*protoco
 	}
 	now := nowString()
 
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -150,6 +155,9 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 	if params.Status != nil && !validStatus(*params.Status) {
 		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
 	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -215,6 +223,9 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 
 func (s *SQLiteStore) Close(ctx context.Context, id, reason string) error {
 	now := nowString()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -245,6 +256,9 @@ WHERE id=? AND deleted=0`, reason, now, now, id)
 }
 
 func (s *SQLiteStore) Defer(ctx context.Context, id, until string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -272,6 +286,9 @@ WHERE id=? AND deleted=0`, until, nowString(), id)
 }
 
 func (s *SQLiteStore) Undefer(ctx context.Context, id string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
