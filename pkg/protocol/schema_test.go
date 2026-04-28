@@ -130,6 +130,15 @@ func TestSchemaIsIdempotent(t *testing.T) {
 }
 
 func TestMigration11(t *testing.T) {
+	testBeadSchemaMigration(t)
+}
+
+func TestSchemaMigration11(t *testing.T) {
+	testBeadSchemaMigration(t)
+}
+
+func testBeadSchemaMigration(t *testing.T) {
+	t.Helper()
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
