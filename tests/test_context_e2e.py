@@ -249,10 +249,11 @@ class TestLayer3E2E:
         ):
             session_start_main()
 
-        # Verify bd create was called with continuation bead args
+        # Verify oro bead create was called with continuation bead args
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
-        assert "bd" in call_args[0]
+        assert call_args[0] == "oro"
+        assert call_args[1] == "bead"
         assert "create" in call_args
         assert any("Continue: oro-high-ctx" in a for a in call_args)
         assert any("--parent=oro-high-ctx" in a for a in call_args)

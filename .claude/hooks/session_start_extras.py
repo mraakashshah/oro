@@ -69,8 +69,8 @@ You are an expert autonomous coding agent. These rules override defaults.
 - **Functional first**: Pure functions, immutability, early returns. Impure edges only.
 
 ## Session Protocol
-- Start: `bd ready` to find work. Check latest handoff in `docs/handoffs/`.
-- End: `bd close` → `git add` → `git commit` → `git push` (pre-commit hook auto-syncs beads).
+- Start: `oro bead ready` to find work. Check latest handoff in `docs/handoffs/`.
+- End: `oro bead close` → `git add` → `git commit` → `git push` (pre-commit hook auto-syncs beads).
 - **Never say "ready to push" — just push.**
 
 ## Anti-Patterns (STOP if you catch yourself)
@@ -104,7 +104,7 @@ _UPDATED_RE = re.compile(r"Updated:\s*(\d{4}-\d{2}-\d{2})")
 
 
 def find_stale_beads(bd_output: str, days_threshold: int = 3) -> list[dict]:
-    """Parse bd list/show output and return beads not updated in >days_threshold days.
+    """Parse bead list/show output and return beads not updated in >days_threshold days.
 
     Expects input where each bead header line is followed by a line containing
     'Updated: YYYY-MM-DD'. Returns list of dicts with id, title, days_stale.
@@ -143,6 +143,30 @@ def find_stale_beads(bd_output: str, days_threshold: int = 3) -> list[dict]:
                 current_title = None
 
     return stale
+
+
+def find_stale_beads_from_json(items: list[dict], days_threshold: int = 3) -> list[dict]:
+    """Return beads whose updated_at timestamp is older than ``days_threshold`` days."""
+    stale = []
+    now = datetime.now(UTC)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        updated_raw = str(item.get("updated_at", ""))
+        if not updated_raw:
+            continue
+        with contextlib.suppress(ValueError):
+            updated_at = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
+            days_old = (now - updated_at).days
+            if days_old > days_threshold:
+                stale.append(
+                    {
+                        "id": str(item.get("id", "")),
+                        "title": str(item.get("title", item.get("id", ""))).strip(),
+                        "days_stale": days_old,
+                    }
+                )
+    return [b for b in stale if b["id"]]
 
 
 def find_merged_worktrees(worktrees_dir: str, main_branch: str = "main") -> list[dict]:
@@ -234,12 +258,11 @@ _CLOSED_LINE_RE = re.compile(r"^✓\s+([\w.-]+)\s+\[.*?\]\s+\[.*?\]\s+-\s+(.+)$"
 def recently_closed_beads(limit: int = 3) -> list[dict]:
     """Get the most recently closed beads (sorted by close date, descending).
 
-    Fetches all closed beads without --limit (bd applies limit before sort,
-    which returns wrong results). Slices to ``limit`` in Python instead.
+    Uses the oro bead command and falls back to an empty list on failures.
     """
     try:
         result = subprocess.run(
-            ["bd", "list", "--status=closed", "--sort=closed", "--limit=0"],
+            ["oro", "bead", "closed", f"--limit={limit}", "--json"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -250,19 +273,24 @@ def recently_closed_beads(limit: int = 3) -> list[dict]:
     except (subprocess.TimeoutExpired, OSError):
         return []
 
+    try:
+        items = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
     beads = []
-    for line in result.stdout.splitlines():
-        m = _CLOSED_LINE_RE.match(line.strip())
-        if m:
-            beads.append({"id": m.group(1), "title": m.group(2).strip()})
-    return beads[:limit]
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            beads.append({"id": str(item.get("id", "")), "title": str(item.get("title", "")).strip()})
+    return [b for b in beads if b["id"]]
 
 
 def ready_beads(limit: int = 4) -> list[dict]:
     """Get beads that are ready to work on (no blockers)."""
     try:
         result = subprocess.run(
-            ["bd", "ready"],
+            ["oro", "bead", "ready", "--json"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -273,14 +301,17 @@ def ready_beads(limit: int = 4) -> list[dict]:
     except (subprocess.TimeoutExpired, OSError):
         return []
 
+    try:
+        items = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
     beads = []
-    # Pattern: 1. [● P2] [feature] oro-xyz: Title
-    ready_re = re.compile(r"^\d+\.\s+\[.*?\]\s+\[.*?\]\s+([\w.-]+):\s+(.+)$")
-    for line in result.stdout.splitlines():
-        m = ready_re.match(line.strip())
-        if m:
-            beads.append({"id": m.group(1), "title": m.group(2).strip()})
-    return beads[:limit]
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            beads.append({"id": str(item.get("id", "")), "title": str(item.get("title", "")).strip()})
+    return [b for b in beads if b["id"]]
 
 
 def session_banner(closed: list[dict], ready: list[dict]) -> str:
@@ -459,12 +490,14 @@ def auto_load_skills(skills_file: str) -> str:
 
 
 def project_state() -> str:
-    """Gather bd ready, git status, git log, and current.md into a context string."""
+    """Gather ready beads, git status, git log, and current.md into a context string."""
     sections = []
 
-    # bd ready
+    # ready beads
     try:
-        result = subprocess.run(["bd", "ready"], capture_output=True, text=True, timeout=10, start_new_session=True)
+        result = subprocess.run(
+            ["oro", "bead", "ready"], capture_output=True, text=True, timeout=10, start_new_session=True
+        )
         if result.returncode == 0 and result.stdout.strip():
             sections.append(f"## Ready Work\n```\n{result.stdout.strip()}\n```")
     except (subprocess.TimeoutExpired, OSError):
@@ -569,28 +602,20 @@ def main() -> None:
     stale = []
     try:
         bd_ids_result = subprocess.run(
-            ["bd", "list", "--status=in_progress"],
+            ["oro", "bead", "list", "--status=in_progress", "--json"],
             capture_output=True,
             text=True,
             timeout=10,
             start_new_session=True,
         )
         if bd_ids_result.returncode == 0 and bd_ids_result.stdout.strip():
-            # For each bead, get its show output to find Updated date
-            bead_ids = _BEAD_LINE_RE.findall(bd_ids_result.stdout)
-            show_lines = []
-            for bead_id in bead_ids:
-                show_result = subprocess.run(
-                    ["bd", "show", bead_id],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    start_new_session=True,
-                )
-                if show_result.returncode == 0:
-                    show_lines.append(show_result.stdout)
-            combined = "\n".join(show_lines)
-            stale = find_stale_beads(combined, days_threshold=3)
+            # Parse timestamps directly from oro bead JSON output.
+            items = []
+            with contextlib.suppress(json.JSONDecodeError, ValueError):
+                parsed = json.loads(bd_ids_result.stdout)
+                if isinstance(parsed, list):
+                    items = parsed
+            stale = find_stale_beads_from_json(items, days_threshold=3)
     except (subprocess.TimeoutExpired, OSError):
         pass
 

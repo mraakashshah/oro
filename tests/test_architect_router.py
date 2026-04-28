@@ -316,7 +316,7 @@ class TestNotifyOnBeadCreate:
         # Verify the notification message content
         call_args = mock_send.call_args[0]
         assert "[NEW WORK]" in call_args[0]
-        assert "Check bd ready" in call_args[0]
+        assert "Check oro bead ready" in call_args[0]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane", return_value=True)

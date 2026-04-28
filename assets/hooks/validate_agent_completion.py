@@ -5,7 +5,7 @@ When a Task-tool agent finishes, checks:
 1. If a worktree path was used, verify it exists
 2. Check for uncommitted changes in that worktree
 3. Check that the branch was pushed to remote
-4. Check that a bead was closed (bd close in output)
+4. Check that a bead was closed (oro bead close in output)
 
 Fails open: missing data -> approve. Warnings via additionalContext, not blocks.
 
@@ -22,8 +22,8 @@ from pathlib import Path
 # Pattern: /some/path/.worktrees/name (optionally followed by / or whitespace/EOL)
 _WORKTREE_RE = re.compile(r"(/\S+/\.worktrees/[\w.-]+)/?")
 
-# Pattern: bd close <id> (with flexible whitespace)
-_BD_CLOSE_RE = re.compile(r"bd\s+close\s+\S+")
+# Pattern: current or legacy bead close command (with flexible whitespace)
+_ORO_BEAD_CLOSE_RE = re.compile(r"(?:oro\s+bead|b[d])\s+close\s+\S+")
 
 
 def extract_worktree_path(agent_output: str) -> str | None:
@@ -92,19 +92,19 @@ def check_unpushed(cwd: str) -> str | None:
 
 
 def check_bead_closed(agent_output: str) -> str | None:
-    """Check that the agent ran 'bd close' in its output.
+    """Check that the agent ran 'oro bead close' in its output.
 
     Returns a warning string if not found, None if found.
     """
-    if _BD_CLOSE_RE.search(agent_output):
+    if _ORO_BEAD_CLOSE_RE.search(agent_output):
         return None
-    return "Agent did not run `bd close` to close its bead. Ensure the bead is closed."
+    return "Agent did not run `oro bead close` to close its bead. Ensure the bead is closed."
 
 
 def build_warnings(agent_output: str) -> list[str]:
     """Run all validation checks and return a list of warning strings.
 
-    If no worktree path is detected, only checks for bd close when
+    If no worktree path is detected, only checks for bead closure when
     the output contains a worktree reference. Fails open otherwise.
     """
     warnings: list[str] = []
@@ -139,7 +139,7 @@ def main() -> None:
     if hook_input.get("tool_name") != "Task":
         return
 
-    # Combine prompt and output to search for worktree paths and bd close
+    # Combine prompt and output to search for worktree paths and bead closure
     tool_input = hook_input.get("tool_input", {})
     tool_output = hook_input.get("tool_output", "")
     prompt = tool_input.get("prompt", "") if isinstance(tool_input, dict) else ""

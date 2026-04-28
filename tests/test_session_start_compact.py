@@ -148,7 +148,8 @@ class TestSessionStartCompactRole:
         first_cmd = mock_run.call_args_list[0][0][0]
         second_cmd = mock_run.call_args_list[1][0][0]
         assert first_cmd[0] == "oro"
-        assert second_cmd[0] == "bd"
+        assert second_cmd[0] == "oro"
+        assert second_cmd[1] == "bead"
 
     def test_oro_status_failure_suppressed(self, capsys) -> None:
         """OSError/TimeoutExpired from oro status is suppressed; output still valid."""

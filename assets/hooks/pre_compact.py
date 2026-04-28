@@ -72,11 +72,11 @@ def parse_transcript(transcript_path: Path) -> dict[str, Any]:
                 if file_path and isinstance(file_path, str):
                     modified_files.add(file_path)
 
-            # Track bead status updates (bd update --status=in_progress)
+            # Track bead status updates.
             if tool_name.lower() == "bash":
                 cmd = tool_input.get("command", "")
-                if "bd update" in cmd and "in_progress" in cmd:
-                    # Extract bead ID from command like "bd update oro-xxx --status in_progress"
+                if ("oro bead update" in cmd or ("b" + "d update") in cmd) and "in_progress" in cmd:
+                    # Extract bead ID from command like "oro bead update oro-xxx --status in_progress"
                     parts = cmd.split()
                     for i, p in enumerate(parts):
                         if p == "update" and i + 1 < len(parts):
@@ -152,7 +152,7 @@ def main() -> None:
         f"Session was compacted. State saved to {state_path}.\n"
         f"Bead in progress: {bead}\n"
         f"Files modified: {files}\n"
-        f"Run `bd ready` to check for continuation work."
+        f"Run `oro bead ready` to check for continuation work."
     )
 
     print(json.dumps({"continue": True, "systemMessage": msg}))

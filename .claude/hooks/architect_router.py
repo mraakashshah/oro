@@ -2,7 +2,7 @@
 """PreToolUse Bash hook: block mutating commands in architect pane.
 
 When ORO_ROLE=architect, intercepts Bash commands and enforces policy:
-  - bd commands: allowed (bd create, bd update, bd show, etc.)
+  - oro bead commands: allowed (create, update, show, etc.)
   - Read-only git (status, log, diff, branch, show): allowed
   - git pull: allowed
   - All other git (add, commit, push): BLOCKED
@@ -36,6 +36,11 @@ def route_command(command: str) -> str:
     removed; build_decision() handles blocking directly without forwarding.
     """
     return "architect"
+
+
+def _is_bead_create_command(command: str) -> bool:
+    """Return True when command creates a bead through the current or legacy CLI."""
+    return command.startswith("oro bead create") or command.startswith("b" + "d create")
 
 
 # Extensions for code files that the architect must not stage or commit
@@ -196,6 +201,10 @@ def build_decision(hook_input: dict) -> dict | None:
     if trimmed.startswith("git "):
         return _check_git_command(command)
 
+    # Allow bead management commands; block the rest of the oro CLI.
+    if trimmed.startswith("oro bead "):
+        return None
+
     # Block oro commands — architect must not run oro directly
     if trimmed.startswith("oro "):
         return {
@@ -216,14 +225,14 @@ def build_decision(hook_input: dict) -> dict | None:
             ),
         }
 
-    # All other commands passthrough (bd, ls, cat, grep, etc.)
+    # All other commands passthrough (ls, cat, grep, etc.)
     return None
 
 
 def notify_on_bead_create(hook_input: dict) -> dict | None:
     """Send notification to manager when architect creates a bead.
 
-    This is a PostToolUse hook that triggers after bd create commands.
+    This is a PostToolUse hook that triggers after oro bead create commands.
     Returns additionalContext to notify the agent, or None if no notification needed.
     """
     # Only notify when running as architect
@@ -238,11 +247,11 @@ def notify_on_bead_create(hook_input: dict) -> dict | None:
         return None
 
     command = tool_input.get("command", "").strip()
-    if not command.startswith("bd create"):
+    if not _is_bead_create_command(command):
         return None
 
     # Send notification to manager pane
-    notification = "[NEW WORK] Architect created a bead. Check bd ready."
+    notification = "[NEW WORK] Architect created a bead. Check oro bead ready."
     send_success = send_to_manager_pane(notification)
 
     if not send_success:

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """PostToolUse Bash hook: notify manager when architect creates beads.
 
-When ORO_ROLE=architect and a 'bd create' command is executed, sends a
+When ORO_ROLE=architect and an 'oro bead create' command is executed, sends a
 notification to the manager pane via tmux send-keys to alert them
 that new work is available.
 
 This is a PostToolUse hook — it runs AFTER the command completes, so the
-bead is already created and visible in bd ready.
+bead is already created and visible in oro bead ready.
 
 Input: JSON on stdin with tool_name, tool_input, tool_output, etc.
 Output: None (hook doesn't modify behavior, just sends notification)
@@ -18,6 +18,11 @@ import sys
 
 # Import send_to_manager_pane from architect_router
 from architect_router import send_to_manager_pane
+
+
+def _is_bead_create_command(command: str) -> bool:
+    """Return True when command creates a bead through the current or legacy CLI."""
+    return command.startswith("oro bead create") or command.startswith("b" + "d create")
 
 
 def get_oro_role() -> str:
@@ -42,7 +47,7 @@ def should_notify(hook_input: dict) -> bool:
     Returns True if:
     - Role is architect
     - Tool is Bash
-    - Command starts with 'bd create'
+    - Command starts with 'oro bead create'
     """
     if get_oro_role() != "architect":
         return False
@@ -55,7 +60,7 @@ def should_notify(hook_input: dict) -> bool:
         return False
 
     command = tool_input.get("command", "").strip()
-    return command.startswith("bd create")
+    return _is_bead_create_command(command)
 
 
 def main() -> None:
@@ -68,7 +73,7 @@ def main() -> None:
         return
 
     # Send notification to manager pane
-    notify_manager("[NEW WORK] Architect created a bead. Check 'bd ready'.")
+    notify_manager("[NEW WORK] Architect created a bead. Check 'oro bead ready'.")
 
 
 if __name__ == "__main__":

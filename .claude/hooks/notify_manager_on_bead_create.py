@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PostToolUse Bash hook: batch notify manager when architect creates beads.
 
-When ORO_ROLE=architect and a Bash command starting with "bd create" executes,
+When ORO_ROLE=architect and a Bash command starting with "oro bead create" executes,
 accumulate the bead into a debounce state file. After a debounce window of no
 new creates (default 30s), send a single grouped notification to the manager
 pane listing all new beads.
@@ -34,6 +34,11 @@ from pathlib import Path
 
 _DEBOUNCE_WINDOW_SECS = 30
 _EMPTY_STATE: dict = {"beads": [], "last_create_ts": 0.0}
+
+
+def _is_bead_create_command(command: str) -> bool:
+    """Return True when command creates a bead through the current or legacy CLI."""
+    return command.startswith("oro bead create") or command.startswith("b" + "d create")
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +96,7 @@ def format_batch_notification(state: dict) -> str:
     """Format a grouped notification message for all pending beads."""
     beads = state.get("beads", [])
     count = len(beads)
-    lines = [f"[NEW WORK] {count} bead(s) ready — check bd ready:"]
+    lines = [f"[NEW WORK] {count} bead(s) ready — check oro bead ready:"]
     for b in beads:
         lines.append(f"  • {b['id']}: {b['title']}")
     return "\n".join(lines)
@@ -140,7 +145,7 @@ def handle_post_tool_use(
 ) -> None:
     """Handle a PostToolUse hook event with batched notification logic.
 
-    1. If role != architect or tool != Bash or command != bd create → skip.
+    1. If role != architect or tool != Bash or command != oro bead create → skip.
     2. Load state, check if window expired (should_notify).
        - If yes: flush accumulated beads as a single grouped notification,
          clear state, then record the new bead.
@@ -169,7 +174,7 @@ def handle_post_tool_use(
         return
 
     trimmed = command.strip()
-    if not trimmed.startswith("bd create"):
+    if not _is_bead_create_command(trimmed):
         return
 
     if state_file is None:
@@ -199,7 +204,7 @@ def handle_post_tool_use(
 
 
 def _extract_title_from_command(command: str) -> str:
-    """Extract --title value from a bd create command string.
+    """Extract --title value from an oro bead create command string.
 
     Returns empty string if not found.
     """
@@ -213,14 +218,17 @@ def _extract_title_from_command(command: str) -> str:
 
 
 def extract_bead_id_from_output(tool_output: str) -> str:
-    """Extract bead ID from bd create tool output.
+    """Extract bead ID from oro bead create tool output.
 
-    Parses lines like '✓ Created issue: oro-xyz' or 'Created issue: oro-xyz'.
+    Parses current output like 'oro-xyz' and older output like 'Created issue: oro-xyz'.
     Returns empty string if not found.
     """
     import re
 
     m = re.search(r"Created issue:\s+([\w.-]+)", tool_output)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"\b(oro-[\w.-]+)\b", tool_output)
     if m:
         return m.group(1).strip()
     return ""

@@ -33,7 +33,7 @@ def _clear_debounce(role: str) -> None:
 
 
 def _live_swarm_context() -> str:
-    """Return live swarm context from oro status and bd list, or empty string on failure."""
+    """Return live swarm context from oro status and bead list, or empty string on failure."""
     parts = []
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         result = subprocess.run(
@@ -46,7 +46,7 @@ def _live_swarm_context() -> str:
         parts.append(result.stdout)
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         result = subprocess.run(
-            ["bd", "list", "--status=in_progress"],
+            ["oro", "bead", "list", "--status=in_progress"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -139,7 +139,8 @@ def _create_continuation_bead(
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         subprocess.run(
             [
-                "bd",
+                "oro",
+                "bead",
                 "create",
                 f"--title=Continue: {bead_id}",
                 "--type=task",
