@@ -55,7 +55,7 @@ func TestBuildDecomposePromptContainsBeadID(t *testing.T) {
 		t.Errorf("prompt does not contain BeadID %q", opts.BeadID)
 	}
 	if strings.Contains(prompt, "create --parent") {
-		t.Error("prompt must not use bd create --parent (creates circular dependency deadlock)")
+		t.Error("prompt must not use create --parent (creates circular dependency deadlock)")
 	}
 }
 
@@ -66,6 +66,6 @@ func TestBuildDecomposePromptNoCreateParent(t *testing.T) {
 	}
 	prompt := buildDecomposePrompt(opts)
 	if strings.Contains(prompt, "create --parent") {
-		t.Error("prompt must not use bd create --parent (creates circular dependency deadlock)")
+		t.Error("prompt must not use create --parent (creates circular dependency deadlock)")
 	}
 }

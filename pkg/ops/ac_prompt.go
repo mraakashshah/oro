@@ -9,7 +9,7 @@ import (
 // buildACPrompt assembles the exploratory Opus prompt that reads bead context,
 // explores the codebase, and writes precise testable acceptance criteria.
 //
-// The agent is instructed to use 'bd update --acceptance' to save its output —
+// The agent is instructed to use 'oro bead update --acceptance' to save its output —
 // it does NOT write source code or create worktrees.
 func buildACPrompt(opts WriteACOpts) string {
 	var b strings.Builder
@@ -46,9 +46,9 @@ func writeACPlaybook(b *strings.Builder, opts WriteACOpts) {
 	b.WriteString("## Exploration Steps\n\n")
 	b.WriteString("Work through these steps in order before writing any acceptance criteria:\n\n")
 
-	fmt.Fprintf(b, "1. Run `bd show %s` to read the full bead context, including title, description, and any existing notes.\n\n", opts.BeadID)
+	fmt.Fprintf(b, "1. Run `oro bead show %s` to read the full bead context, including title, description, and any existing notes.\n\n", opts.BeadID)
 
-	b.WriteString("2. If the bead has blocking or blocked dependencies, run `bd show <dep-id>` on each to understand how they relate. " +
+	b.WriteString("2. If the bead has blocking or blocked dependencies, run `oro bead show <dep-id>` on each to understand how they relate. " +
 		"Acceptance criteria must be compatible with what depends on or is depended on by this bead.\n\n")
 
 	b.WriteString("3. Use Grep and Glob to explore the codebase for symbols, file paths, and packages referenced in the bead title and description. " +
@@ -81,5 +81,5 @@ func writeACOutputFormat(b *strings.Builder, opts WriteACOpts) {
 	b.WriteString("- Assert must be 'PASS' or a specific observable output\n\n")
 
 	fmt.Fprintf(b, "When you have written the acceptance criteria, save it with:\n\n")
-	fmt.Fprintf(b, "  bd update %s --acceptance \"Test: <file>:<Fn> | Cmd: <cmd> | Assert: PASS\"\n", opts.BeadID)
+	fmt.Fprintf(b, "  oro bead update %s --acceptance=\"Test: <file>:<Fn> | Cmd: <cmd> | Assert: PASS\"\n", opts.BeadID)
 }

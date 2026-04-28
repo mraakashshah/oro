@@ -15,9 +15,9 @@ func TestBuildACPrompt(t *testing.T) {
 
 	got := buildACPrompt(opts)
 
-	t.Run("bd show present", func(t *testing.T) {
-		if !strings.Contains(got, "bd show") {
-			t.Errorf("prompt missing 'bd show'; got:\n%s", got)
+	t.Run("oro bead show present", func(t *testing.T) {
+		if !strings.Contains(got, "oro bead show") {
+			t.Errorf("prompt missing 'oro bead show'; got:\n%s", got)
 		}
 	})
 
@@ -84,9 +84,9 @@ func TestBuildACPrompt(t *testing.T) {
 		}
 	})
 
-	t.Run("bd update with acceptance instruction present", func(t *testing.T) {
-		if !strings.Contains(got, "bd update") {
-			t.Errorf("prompt missing 'bd update' instruction; got:\n%s", got)
+	t.Run("oro bead update with acceptance instruction present", func(t *testing.T) {
+		if !strings.Contains(got, "oro bead update") {
+			t.Errorf("prompt missing 'oro bead update' instruction; got:\n%s", got)
 		}
 	})
 
