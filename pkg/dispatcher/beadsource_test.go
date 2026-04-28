@@ -1931,7 +1931,7 @@ func TestCLIBeadSource_UpdateInProgressPersists(t *testing.T) {
 	run("git", "config", "user.email", "test@test.com")
 	run("git", "config", "user.name", "Test")
 	run("git", "commit", "--allow-empty", "-m", "init")
-	run(bdBin, "init")
+	run(bdBin, "init", "--skip-agents", "--skip-hooks", "--quiet")
 
 	out := run(bdBin, "create", "--title=Integration test bead", "--type=task",
 		"--priority=1", "--description=Integration test fixture", "--json")
