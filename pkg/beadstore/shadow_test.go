@@ -262,6 +262,42 @@ func TestShadowStore(t *testing.T) {
 			t.Fatalf("secondary was written to: %#v", secondaryBead)
 		}
 	})
+
+	t.Run("defer operations go to primary only", func(t *testing.T) {
+		ctx := context.Background()
+		primary := beadstore.NewFakeStore(protocol.Bead{ID: "later", Title: "later", Status: "open"})
+		secondary := beadstore.NewFakeStore(protocol.Bead{ID: "later", Title: "later", Status: "open"})
+		store := beadstore.NewShadowStore(primary, secondary)
+
+		if err := store.Defer(ctx, "later", "2026-04-28T15:00:00Z"); err != nil {
+			t.Fatalf("Defer: %v", err)
+		}
+		primaryBead, err := primary.Show(ctx, "later")
+		if err != nil {
+			t.Fatalf("primary Show: %v", err)
+		}
+		if primaryBead.DeferUntil != "2026-04-28T15:00:00Z" {
+			t.Fatalf("primary DeferUntil = %q, want deferred timestamp", primaryBead.DeferUntil)
+		}
+		secondaryBead, err := secondary.Show(ctx, "later")
+		if err != nil {
+			t.Fatalf("secondary Show: %v", err)
+		}
+		if secondaryBead.DeferUntil != "" {
+			t.Fatalf("secondary DeferUntil = %q, want unchanged", secondaryBead.DeferUntil)
+		}
+
+		if err := store.Undefer(ctx, "later"); err != nil {
+			t.Fatalf("Undefer: %v", err)
+		}
+		primaryBead, err = primary.Show(ctx, "later")
+		if err != nil {
+			t.Fatalf("primary Show after Undefer: %v", err)
+		}
+		if primaryBead.DeferUntil != "" {
+			t.Fatalf("primary DeferUntil after Undefer = %q, want empty", primaryBead.DeferUntil)
+		}
+	})
 }
 
 type recordingStore struct {

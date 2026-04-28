@@ -103,10 +103,29 @@ func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sq
 		if strings.EqualFold(strings.TrimSpace(mode), "sqlite") {
 			return sqliteStore, nil
 		}
-		return beadstore.NewShadowStore(primary, sqliteStore), nil
+		return beadstore.NewShadowStore(primary, sqliteStore, beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+			logBeadstoreDivergence(ctx, db, event)
+		})), nil
 	default:
 		return nil, fmt.Errorf("unknown %s %q", "ORO_BEADSOURCE_MODE", mode)
 	}
+}
+
+func logBeadstoreDivergence(ctx context.Context, db *sql.DB, event beadstore.ShadowDivergence) {
+	if db == nil {
+		return
+	}
+	payload, err := json.Marshal(map[string]string{
+		"operation": event.Operation,
+		"kind":      string(event.Kind),
+		"reason":    event.Reason,
+	})
+	if err != nil {
+		return
+	}
+	_, _ = db.ExecContext(ctx,
+		`INSERT INTO events (type, source, payload) VALUES (?, ?, ?)`,
+		"beadstore_divergence", "beadstore_shadow", string(payload))
 }
 
 func updateBeadStatus(ctx context.Context, beads beadstore.Store, id, status string) error {

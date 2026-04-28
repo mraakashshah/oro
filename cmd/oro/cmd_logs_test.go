@@ -215,6 +215,50 @@ func TestQueryEventsWithSinceTimestamp(t *testing.T) {
 	}
 }
 
+func TestEventsCommandFiltersDivergenceEventsSinceDuration(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	insertTestEvent(t, db, "heartbeat", "dispatcher", "", "worker-1", "", "2026-04-28 09:59:00")
+	insertTestEvent(t, db, "beadstore_divergence", "beadstore_shadow", "", "", `{"operation":"Ready","kind":"real","reason":"bead result mismatch"}`, "2026-04-28 10:00:10")
+	insertTestEvent(t, db, "beadstore_divergence", "beadstore_shadow", "", "", `{"operation":"Ready","kind":"drift","reason":"bead result mismatch"}`, "2026-04-28 10:00:20")
+
+	var buf bytes.Buffer
+	err := printEvents(context.Background(), db, &buf, eventFilter{
+		eventType: "beadstore_divergence",
+		since:     "2026-04-28 10:00:15",
+		limit:     20,
+	})
+	if err != nil {
+		t.Fatalf("printEvents failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "beadstore_divergence") {
+		t.Fatalf("output missing divergence event: %s", output)
+	}
+	if !strings.Contains(output, `"kind":"drift"`) || !strings.Contains(output, `"operation":"Ready"`) {
+		t.Fatalf("output missing structured classifier payload: %s", output)
+	}
+	if strings.Contains(output, `"kind":"real"`) {
+		t.Fatalf("output included event before since cutoff: %s", output)
+	}
+	if strings.Contains(output, "heartbeat") {
+		t.Fatalf("output included non-divergence event: %s", output)
+	}
+}
+
+func TestParseEventSinceDuration(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 30, 0, 0, time.UTC)
+	got, err := parseEventSince("10m", now)
+	if err != nil {
+		t.Fatalf("parseEventSince: %v", err)
+	}
+	if got != "2026-04-28 10:20:00" {
+		t.Fatalf("parseEventSince = %q, want 2026-04-28 10:20:00", got)
+	}
+}
+
 func TestFormatEvent(t *testing.T) {
 	evt := event{
 		ID:        1,

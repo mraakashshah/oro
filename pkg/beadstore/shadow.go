@@ -67,6 +67,11 @@ type ShadowStore struct {
 	logger          *slog.Logger
 }
 
+type deferredStore interface {
+	Defer(ctx context.Context, id, until string) error
+	Undefer(ctx context.Context, id string) error
+}
+
 // NewShadowStore returns a Store that dual-reads primary and secondary stores.
 func NewShadowStore(primary, secondary Store, opts ...ShadowStoreOption) *ShadowStore {
 	store := &ShadowStore{
@@ -137,22 +142,18 @@ func (s *ShadowStore) Close(ctx context.Context, id, reason string) error {
 
 // Defer writes to primary only when the primary store supports deferred beads.
 func (s *ShadowStore) Defer(ctx context.Context, id, until string) error {
-	primary, ok := s.primary.(interface {
-		Defer(context.Context, string, string) error
-	})
+	primary, ok := s.primary.(deferredStore)
 	if !ok {
-		return fmt.Errorf("shadow store primary does not support defer")
+		return fmt.Errorf("primary store does not support defer")
 	}
 	return primary.Defer(ctx, id, until)
 }
 
 // Undefer writes to primary only when the primary store supports deferred beads.
 func (s *ShadowStore) Undefer(ctx context.Context, id string) error {
-	primary, ok := s.primary.(interface {
-		Undefer(context.Context, string) error
-	})
+	primary, ok := s.primary.(deferredStore)
 	if !ok {
-		return fmt.Errorf("shadow store primary does not support undefer")
+		return fmt.Errorf("primary store does not support undefer")
 	}
 	return primary.Undefer(ctx, id)
 }

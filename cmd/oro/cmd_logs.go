@@ -20,6 +20,12 @@ type logsConfig struct {
 	raw    bool
 }
 
+type eventsConfig struct {
+	eventType string
+	since     string
+	limit     int
+}
+
 // newLogsCmd creates the "oro logs" subcommand.
 func newLogsCmd() *cobra.Command {
 	var cfg logsConfig
@@ -79,6 +85,47 @@ func newLogsCmd() *cobra.Command {
 	return cmd
 }
 
+func newEventsCmd() *cobra.Command {
+	var cfg eventsConfig
+
+	cmd := &cobra.Command{
+		Use:   "events",
+		Short: "Query dispatcher events",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			paths, err := ResolveProjectDBPaths()
+			if err != nil {
+				return fmt.Errorf("resolve paths: %w", err)
+			}
+			db, err := openStateDB(paths.StateDBPath)
+			if err != nil {
+				return fmt.Errorf("open db: %w", err)
+			}
+			defer db.Close()
+
+			since, err := parseEventSince(cfg.since, time.Now())
+			if err != nil {
+				return err
+			}
+			return printEvents(cmd.Context(), db, cmd.OutOrStdout(), eventFilter{
+				eventType: cfg.eventType,
+				since:     since,
+				limit:     cfg.limit,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&cfg.eventType, "type", "", "filter by event type")
+	cmd.Flags().StringVar(&cfg.since, "since", "", "filter events since a duration or timestamp")
+	cmd.Flags().IntVar(&cfg.limit, "limit", 100, "maximum events to show")
+	return cmd
+}
+
+type eventFilter struct {
+	eventType string
+	since     string
+	limit     int
+}
+
 // event represents a row from the events table.
 type event struct {
 	ID        int
@@ -107,6 +154,70 @@ func printLogs(ctx context.Context, db *sql.DB, w io.Writer, workerID string, ta
 	}
 
 	return nil
+}
+
+func printEvents(ctx context.Context, db *sql.DB, w io.Writer, filter eventFilter) error {
+	events, err := queryFilteredEvents(ctx, db, filter)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		fmt.Fprintln(w, "no events found")
+		return nil
+	}
+	for _, evt := range events {
+		formatEvent(w, &evt)
+	}
+	return nil
+}
+
+func parseEventSince(raw string, now time.Time) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		return now.Add(-d).Format("2006-01-02 15:04:05"), nil
+	}
+	layouts := []string{"2006-01-02 15:04:05", time.RFC3339}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			return parsed.Format("2006-01-02 15:04:05"), nil
+		}
+	}
+	return "", fmt.Errorf("parse --since %q as duration or timestamp", raw)
+}
+
+func queryFilteredEvents(ctx context.Context, db *sql.DB, filter eventFilter) ([]event, error) {
+	query, args := buildFilteredEventQuery(filter)
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query events: %w", err)
+	}
+	defer rows.Close()
+	return scanEvents(rows)
+}
+
+func buildFilteredEventQuery(filter eventFilter) (string, []interface{}) {
+	query := `
+		SELECT id, type, source, bead_id, worker_id, payload, created_at
+		FROM events
+		WHERE 1=1
+	`
+	args := []interface{}{}
+	if filter.eventType != "" {
+		query += " AND type = ?"
+		args = append(args, filter.eventType)
+	}
+	if filter.since != "" {
+		query += " AND created_at > ?"
+		args = append(args, filter.since)
+	}
+	query += " ORDER BY created_at ASC"
+	if filter.limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.limit)
+	}
+	return query, args
 }
 
 // followLogs continuously polls for new events and displays them.
