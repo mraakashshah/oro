@@ -59,6 +59,69 @@ func TestEpicNotAssigned(t *testing.T) {
 	}, 2*time.Second)
 }
 
+// TestReadyQueueSkipsNonExecutableOperationalBeads verifies that operational
+// ready beads with command-only acceptance criteria do not consume workers or
+// block the next executable bug/task bead.
+func TestReadyQueueSkipsNonExecutableOperationalBeads(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	const (
+		operationalID = "oro-operational"
+		executableID  = "oro-executable"
+	)
+	beadSrc.shown[operationalID] = &protocol.BeadDetail{
+		ID:                 operationalID,
+		Title:              "Restart dispatcher",
+		AcceptanceCriteria: "Cmd: oro restart\nAssert: dispatcher PID changes",
+	}
+	beadSrc.shown[executableID] = &protocol.BeadDetail{
+		ID:                 executableID,
+		Title:              "Fix executable bug",
+		AcceptanceCriteria: "Test: pkg/dispatcher/epic_filter_test.go:TestExecutable | Cmd: go test ./pkg/dispatcher/... | Assert: PASS",
+	}
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-epic", Title: "Planning epic", Priority: 0, Type: "epic"},
+		{ID: operationalID, Title: "Restart dispatcher", Priority: 0, Type: "task"},
+		{ID: executableID, Title: "Fix executable bug", Priority: 1, Type: "bug"},
+	})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("timed out waiting for ASSIGN; expected executable bead to be assigned")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected MsgAssign, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != executableID {
+		t.Fatalf("expected %s assigned, got %s", executableID, msg.Assign.BeadID)
+	}
+
+	var operationalSkips int
+	if err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM events WHERE type = ? AND bead_id = ?`,
+		"bead_skipped_non_tdd_acceptance", operationalID,
+	).Scan(&operationalSkips); err != nil {
+		t.Fatalf("query operational skip event: %v", err)
+	}
+	if operationalSkips == 0 {
+		t.Fatalf("expected bead_skipped_non_tdd_acceptance event for %s", operationalID)
+	}
+}
+
 // TestAssignableQueueFiltersEpics verifies that calculateLiveQueueDepth excludes
 // epics from the assignable queue depth. If only epics are ready, depth must be 0.
 func TestAssignableQueueFiltersEpics(t *testing.T) {

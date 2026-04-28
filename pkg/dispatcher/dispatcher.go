@@ -3252,6 +3252,12 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		d.recordAssignmentFailure(bead.ID) // 60-second cooldown prevents re-triggering
 		return title, "", false            // skip assignment this cycle
 	}
+	if executable, reason := isWorkerExecutableBead(bead, protocol.BeadDetail{AcceptanceCriteria: acceptance}); !executable {
+		_ = d.logEvent(ctx, "bead_skipped_non_tdd_acceptance", "dispatcher", bead.ID, workerID,
+			fmt.Sprintf(`{"reason":%q}`, reason))
+		d.recordAssignmentFailure(bead.ID)
+		return title, "", false
+	}
 	if modules := protocol.CountDistinctModules(acceptance); modules > 2 {
 		// Epics are expected to span multiple modules; skip the oversized check.
 		// Also skip if the bead already has children — it was decomposed externally.
@@ -3265,6 +3271,22 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		}
 	}
 	return title, acceptance, true
+}
+
+func isWorkerExecutableBead(bead protocol.Bead, detail protocol.BeadDetail) (executable bool, reason string) {
+	if strings.EqualFold(bead.Type, "epic") {
+		return false, "non_executable_type"
+	}
+	if strings.TrimSpace(detail.AcceptanceCriteria) == "" {
+		return false, "missing_acceptance"
+	}
+	hasTest := strings.Contains(detail.AcceptanceCriteria, "Test:")
+	hasOperationalMarker := strings.Contains(detail.AcceptanceCriteria, "Cmd:") ||
+		strings.Contains(detail.AcceptanceCriteria, "Assert:")
+	if !hasTest && hasOperationalMarker {
+		return false, "non_tdd_acceptance"
+	}
+	return true, ""
 }
 
 // handleEpicBranchMissing checks if an epic branch is missing and decides whether to
