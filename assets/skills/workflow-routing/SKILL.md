@@ -16,7 +16,7 @@ Detect the user's primary goal from their message:
 | Signal | Goal | Skill Chain |
 |--------|------|-------------|
 | "how does", "what is", "find", "understand" | **Research** | `explore` → document findings |
-| "design", "architect", "plan", "break down" | **Plan** | `brainstorming` → `premortem` → `writing-plans` |
+| "design", "plan", "break down" | **Plan** | `brainstorming` → `premortem` → `writing-plans` |
 | "spec", "decompose", "break into beads", "encode" | **Encode** | `beadcraft` (decompose mode) |
 | "add", "implement", "create", "build" | **Build** | `executing-beads` → `finishing-work` |
 | "fix", "broken", "failing", "debug", "bug" | **Fix** | `systematic-debugging` → `test-driven-development` → `finishing-work` |
