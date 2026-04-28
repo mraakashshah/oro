@@ -3042,6 +3042,19 @@ func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID
 // Epics are allowed through; assignBead performs the HasChildren check.
 func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
+
+	// Separate non-executable issue types (epics cannot be assigned to workers).
+	// Log a non_executable_issue_type event for each and check auto-close before discarding.
+	executable := make([]protocol.Bead, 0, len(allBeads))
+	for _, b := range allBeads {
+		if strings.EqualFold(b.Type, "epic") {
+			d.processEpicSkip(ctx, b)
+		} else {
+			executable = append(executable, b)
+		}
+	}
+	allBeads = executable
+
 	d.mu.Lock()
 
 	// Build the set of open bead IDs for dependency resolution.
@@ -3082,6 +3095,25 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 		out = append(out, b)
 	}
 	return out
+}
+
+// processEpicSkip handles an epic found in the ready queue that must not be
+// assigned to a worker. It logs non_executable_issue_type and checks whether
+// all children are done so the epic can be auto-closed (fallback path for epics
+// whose last child completed before the epic status was updated).
+func (d *Dispatcher) processEpicSkip(ctx context.Context, bead protocol.Bead) {
+	_ = d.logEvent(ctx, "non_executable_issue_type", "dispatcher", bead.ID, "",
+		`{"reason":"non_executable_issue_type","issue_type":"epic"}`)
+	hasChildren, err := d.beads.HasChildren(ctx, bead.ID)
+	if err != nil || !hasChildren {
+		return
+	}
+	allClosed, err := d.beads.AllChildrenClosed(ctx, bead.ID)
+	if err != nil || !allClosed {
+		return
+	}
+	targetBranch := resolveEpicTargetBranch(bead.Metadata, d.cfg.DefaultBranch)
+	d.completeEpicClose(ctx, bead.ID, "", "All children completed", targetBranch)
 }
 
 // isBranchMerged reports whether agent/<beadID> represents work that has been
@@ -3799,9 +3831,12 @@ func calculateLiveQueueDepth(readyBeads []protocol.Bead, workers map[string]*tra
 		}
 	}
 
-	// Count ready beads that are not assigned.
+	// Count ready beads that are not assigned, excluding non-executable types (epics).
 	queueDepth := 0
 	for _, bead := range readyBeads {
+		if strings.EqualFold(bead.Type, "epic") {
+			continue
+		}
 		if !assignedBeadIDs[bead.ID] {
 			queueDepth++
 		}
