@@ -83,6 +83,32 @@ type DeferredStore interface {
 	Undefer(ctx context.Context, id string) error
 }
 
+func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sql.DB, memories *memory.Store) (DeferredStore, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "cli":
+		return primary, nil
+	case "sqlite", "shadow":
+		if db == nil {
+			return nil, fmt.Errorf("select bead source %q: db is nil", mode)
+		}
+		if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+			return nil, fmt.Errorf("select bead source %q: migrate bead schema: %w", mode, err)
+		}
+		sqliteStore := beadstore.NewSQLiteStore(db, beadstore.WithMemoryFetcher(func(ctx context.Context, tags []string, description string, maxTokens int) (string, error) {
+			if memories == nil {
+				return "", nil
+			}
+			return memory.ForPrompt(ctx, memories, tags, description, maxTokens)
+		}))
+		if strings.EqualFold(strings.TrimSpace(mode), "sqlite") {
+			return sqliteStore, nil
+		}
+		return beadstore.NewShadowStore(primary, sqliteStore), nil
+	default:
+		return nil, fmt.Errorf("unknown %s %q", "ORO_BEADSOURCE_MODE", mode)
+	}
+}
+
 func updateBeadStatus(ctx context.Context, beads beadstore.Store, id, status string) error {
 	return beads.Update(ctx, id, beadstore.UpdateParams{Status: &status})
 }
@@ -601,12 +627,16 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	memStore := memory.NewStore(db)
 	// NewEmbedder returns the default *TFIDFEmbedder implementation of the Embedder interface.
 	memStore.SetEmbedder(memory.NewEmbedder())
+	selectedBeads, err := selectStore(context.Background(), os.Getenv("ORO_BEADSOURCE_MODE"), beads, db, memStore)
+	if err != nil {
+		return nil, err
+	}
 	return &Dispatcher{
 		cfg:            resolved,
 		db:             db,
 		merger:         merger,
 		ops:            opsSpawner,
-		beads:          beads,
+		beads:          selectedBeads,
 		worktrees:      wt,
 		escalator:      esc,
 		memories:       memStore,

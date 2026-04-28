@@ -135,6 +135,28 @@ func (s *ShadowStore) Close(ctx context.Context, id, reason string) error {
 	return s.primary.Close(ctx, id, reason)
 }
 
+// Defer writes to primary only when the primary store supports deferred beads.
+func (s *ShadowStore) Defer(ctx context.Context, id, until string) error {
+	primary, ok := s.primary.(interface {
+		Defer(context.Context, string, string) error
+	})
+	if !ok {
+		return fmt.Errorf("shadow store primary does not support defer")
+	}
+	return primary.Defer(ctx, id, until)
+}
+
+// Undefer writes to primary only when the primary store supports deferred beads.
+func (s *ShadowStore) Undefer(ctx context.Context, id string) error {
+	primary, ok := s.primary.(interface {
+		Undefer(context.Context, string) error
+	})
+	if !ok {
+		return fmt.Errorf("shadow store primary does not support undefer")
+	}
+	return primary.Undefer(ctx, id)
+}
+
 // HasChildren returns primary's answer after comparing the secondary read.
 func (s *ShadowStore) HasChildren(ctx context.Context, epicID string) (bool, error) {
 	primary, primaryErr := s.primary.HasChildren(ctx, epicID)
