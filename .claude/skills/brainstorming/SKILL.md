@@ -122,6 +122,16 @@ When you need to ask the human a question, use this 4-part structure:
 
 Do not ask a question you can answer by reading the code. Do not ask multiple questions in one message.
 
+## Engineering Cognitive Patterns
+
+These apply to all design work. Max 5 active at once — prioritize the most load-bearing:
+
+1. **Prefer proven boring solutions over novel ones.** A well-understood approach with known failure modes beats an elegant unknown. Novelty is a liability until it's a necessity.
+2. **Estimate blast radius before proposing changes.** Ask: if this goes wrong, what breaks? Small blast radius = safe to try. Large blast radius = needs proof.
+3. **Name the constraint, not just the solution.** A good design decision explains what constraint it satisfies. If you can't name the constraint, the decision is arbitrary.
+4. **Distinguish reversible from irreversible decisions.** Irreversible decisions (schema changes, public API shapes, deleted data) deserve 10x more scrutiny than reversible ones.
+5. **Surface the assumption that would invalidate this design.** Every design has a load-bearing assumption. Name it explicitly so workers and the human can verify it before committing.
+
 ## Red Flags
 
 - **Proposing approaches without citing specific files or sources you read** -- the #1 failure mode
