@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -443,6 +444,143 @@ func TestMigrateFromDoltLocks(t *testing.T) {
 	})
 }
 
+func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
+	validJSONL := `{"id":"oro-preflight","title":"Preflight migration","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}` + "\n"
+
+	t.Run("default source aborts on export and dolt count mismatch without mutating", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		fake := &fakeBeadMigrationRunner{
+			outputs: map[string][]byte{
+				key("bd", "export"): []byte(validJSONL),
+				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): []byte(`{"rows":[{"count":2}]}`),
+			},
+		}
+		restoreBeadMigrationRunner(t, fake)
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--dry-run")
+		if err == nil {
+			t.Fatalf("migration succeeded despite preflight mismatch:\n%s", out)
+		}
+		for _, want := range []string{"pre-flight", "bd export count: 1", "dolt internal count: 2", "partial dolt corruption", "--force-recover", "Aborting"} {
+			if !strings.Contains(err.Error()+out, want) {
+				t.Fatalf("preflight mismatch output missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+		if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+			t.Fatalf("dry-run mismatch mutated DB path %s: stat err=%v", dbPath, statErr)
+		}
+		if fake.count("bd", "export") != 1 || fake.count("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;") != 1 {
+			t.Fatalf("unexpected command calls: %#v", fake.calls)
+		}
+	})
+
+	t.Run("force recover reports acknowledgement and migrates readable export", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		fake := &fakeBeadMigrationRunner{
+			outputs: map[string][]byte{
+				key("bd", "export"): []byte(validJSONL),
+				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): []byte(`{"rows":[{"count":2}]}`),
+			},
+		}
+		restoreBeadMigrationRunner(t, fake)
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--force-recover")
+		for _, want := range []string{"WARNING", "--force-recover", "bd export count: 1", "dolt internal count: 2", "data loss acknowledged", "source: bd export", "Migration complete"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("force-recover output missing %q:\n%s", want, out)
+			}
+		}
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open migrated db: %v", err)
+		}
+		defer db.Close()
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-preflight' AND deleted=0`).Scan(&count); err != nil {
+			t.Fatalf("query migrated bead: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("migrated bead count = %d, want 1", count)
+		}
+	})
+
+	t.Run("default source aborts on dolt count error unless forced", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		fake := &fakeBeadMigrationRunner{
+			outputs: map[string][]byte{
+				key("bd", "export"): []byte(validJSONL),
+			},
+			errs: map[string]error{
+				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): fmt.Errorf("dolt corruption"),
+			},
+		}
+		restoreBeadMigrationRunner(t, fake)
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--dry-run")
+		if err == nil {
+			t.Fatalf("migration succeeded despite dolt count error:\n%s", out)
+		}
+		for _, want := range []string{"pre-flight", "bd export count: 1", "dolt internal count error", "dolt corruption", "--force-recover", "Aborting"} {
+			if !strings.Contains(err.Error()+out, want) {
+				t.Fatalf("preflight error output missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+		if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+			t.Fatalf("dry-run count error mutated DB path %s: stat err=%v", dbPath, statErr)
+		}
+	})
+
+	t.Run("force recover continues after dolt count error", func(t *testing.T) {
+		fake := &fakeBeadMigrationRunner{
+			outputs: map[string][]byte{
+				key("bd", "export"): []byte(validJSONL),
+			},
+			errs: map[string]error{
+				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): fmt.Errorf("dolt corruption"),
+			},
+		}
+		restoreBeadMigrationRunner(t, fake)
+		setupMigrationLockTestEnv(t)
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--force-recover")
+		for _, want := range []string{"WARNING", "dolt internal count error", "dolt corruption", "data loss acknowledged", "Migration complete"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("force-recover count-error output missing %q:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("explicit jsonl and fixture sources skip dolt preflight", func(t *testing.T) {
+		jsonlPath := writeMigrationJSONL(t, validJSONL)
+		fixtureDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(fixtureDir, "export.jsonl"), []byte(validJSONL), 0o600); err != nil {
+			t.Fatalf("write fixture export: %v", err)
+		}
+		for _, tc := range []struct {
+			name string
+			args []string
+		}{
+			{name: "jsonl", args: []string{"migrate-from-dolt", "--dry-run", "--from-jsonl", jsonlPath}},
+			{name: "fixture", args: []string{"migrate-from-dolt", "--dry-run", "--from-fixture", fixtureDir}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				fake := &fakeBeadMigrationRunner{}
+				restoreBeadMigrationRunner(t, fake)
+				setupMigrationLockTestEnv(t)
+
+				out := runBeadMigrateCommand(t, tc.args...)
+				if !strings.Contains(out, "Migration plan") {
+					t.Fatalf("expected dry-run plan:\n%s", out)
+				}
+				if fake.count("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;") != 0 {
+					t.Fatalf("explicit source unexpectedly ran dolt preflight: %#v", fake.calls)
+				}
+			})
+		}
+	})
+}
+
 type comparableMigratedFixtureBead struct {
 	ID                 string
 	Title              string
@@ -801,6 +939,42 @@ func writeMigrationJSONL(t *testing.T, contents string) string {
 		t.Fatalf("write jsonl: %v", err)
 	}
 	return path
+}
+
+type fakeBeadMigrationRunner struct {
+	outputs map[string][]byte
+	errs    map[string]error
+	calls   [][]string
+}
+
+func (f *fakeBeadMigrationRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
+	call := append([]string{name}, args...)
+	f.calls = append(f.calls, call)
+	k := key(name, args...)
+	if err := f.errs[k]; err != nil {
+		return nil, err
+	}
+	return f.outputs[k], nil
+}
+
+func (f *fakeBeadMigrationRunner) count(name string, args ...string) int {
+	k := key(name, args...)
+	var count int
+	for _, call := range f.calls {
+		if key(call[0], call[1:]...) == k {
+			count++
+		}
+	}
+	return count
+}
+
+func restoreBeadMigrationRunner(t *testing.T, runner beadMigrationCommandRunner) {
+	t.Helper()
+	previous := defaultBeadMigrationRunner
+	defaultBeadMigrationRunner = runner
+	t.Cleanup(func() {
+		defaultBeadMigrationRunner = previous
+	})
 }
 
 func setupMigrationLockTestEnv(t *testing.T) string {

@@ -46,7 +46,7 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 				defer func() { _ = unlockMigration() }()
 			}
 			if opts.reconcile {
-				source, data, err := readBeadMigrationSource(opts)
+				source, data, _, err := readBeadMigrationSource(cmd.Context(), opts, false, defaultBeadMigrationRunner)
 				if err != nil {
 					return writeBeadCommandErrorIfJSON(cmd, "reconcile", err)
 				}
@@ -61,8 +61,11 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 				return writeBeadCommandErrorIfJSON(cmd, "unsupported", errors.New("--ignore-version-drift is not implemented in this migration seam"))
 			}
 
-			source, data, err := readBeadMigrationSource(opts)
+			source, data, preflight, err := readBeadMigrationSource(cmd.Context(), opts, true, defaultBeadMigrationRunner)
 			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
+			}
+			if err := reportBeadMigrationPreflight(cmd.OutOrStdout(), source, preflight, opts.forceRecover); err != nil {
 				return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
 			}
 			if !opts.dryRun {
@@ -94,6 +97,7 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 	cmd.Flags().StringVar(&opts.fromFixture, "from-fixture", "", "read a test fixture directory or JSONL file instead of invoking bd")
 	cmd.Flags().BoolVar(&opts.ignoreVersionDrift, "ignore-version-drift", false, "acknowledge bd/dolt version drift during migration")
 	cmd.Flags().BoolVar(&opts.allowRunningDispatcher, "allow-running-dispatcher", false, "allow migration while a dispatcher PID lock is active")
+	cmd.Flags().BoolVar(&opts.forceRecover, "force-recover", false, "acknowledge partial Dolt corruption and migrate readable bd export rows")
 	return cmd
 }
 
@@ -105,11 +109,40 @@ type beadMigrateOptions struct {
 	fromFixture            string
 	ignoreVersionDrift     bool
 	allowRunningDispatcher bool
+	forceRecover           bool
 }
 
 type beadMigrationSource struct {
 	kind string
 	path string
+}
+
+type beadMigrationCommandRunner interface {
+	Run(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+type execBeadMigrationRunner struct{}
+
+func (execBeadMigrationRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // command names are fixed by migration code
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return out, nil
+}
+
+var defaultBeadMigrationRunner beadMigrationCommandRunner = execBeadMigrationRunner{}
+
+type beadMigrationPreflight struct {
+	checked     bool
+	exportCount int
+	doltCount   int
+	doltErr     error
 }
 
 type beadMigrationPlan struct {
@@ -1036,34 +1069,137 @@ func setBeadParentTouchTriggers(ctx context.Context, tx *sql.Tx, enabled bool) e
 	return nil
 }
 
-func readBeadMigrationSource(opts beadMigrateOptions) (beadMigrationSource, []byte, error) {
+func readBeadMigrationSource(ctx context.Context, opts beadMigrateOptions, preflightDefaultSource bool, runner beadMigrationCommandRunner) (beadMigrationSource, []byte, beadMigrationPreflight, error) {
 	if opts.fromFixture != "" && opts.fromJSONL != "" {
-		return beadMigrationSource{}, nil, fmt.Errorf("--from-fixture and --from-jsonl are mutually exclusive")
+		return beadMigrationSource{}, nil, beadMigrationPreflight{}, fmt.Errorf("--from-fixture and --from-jsonl are mutually exclusive")
 	}
 	if opts.fromFixture != "" {
 		path, err := resolveMigrationFixturePath(opts.fromFixture)
 		if err != nil {
-			return beadMigrationSource{}, nil, err
+			return beadMigrationSource{}, nil, beadMigrationPreflight{}, err
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return beadMigrationSource{}, nil, fmt.Errorf("read fixture export: %w", err)
+			return beadMigrationSource{}, nil, beadMigrationPreflight{}, fmt.Errorf("read fixture export: %w", err)
 		}
-		return beadMigrationSource{kind: "fixture", path: path}, data, nil
+		return beadMigrationSource{kind: "fixture", path: path}, data, beadMigrationPreflight{}, nil
 	}
 	if opts.fromJSONL != "" {
 		data, err := os.ReadFile(opts.fromJSONL)
 		if err != nil {
-			return beadMigrationSource{}, nil, fmt.Errorf("read JSONL export: %w", err)
+			return beadMigrationSource{}, nil, beadMigrationPreflight{}, fmt.Errorf("read JSONL export: %w", err)
 		}
-		return beadMigrationSource{kind: "jsonl", path: opts.fromJSONL}, data, nil
+		return beadMigrationSource{kind: "jsonl", path: opts.fromJSONL}, data, beadMigrationPreflight{}, nil
 	}
 
-	out, err := exec.Command("bd", "export").Output()
-	if err != nil {
-		return beadMigrationSource{}, nil, fmt.Errorf("run bd export: %w", err)
+	if runner == nil {
+		runner = defaultBeadMigrationRunner
 	}
-	return beadMigrationSource{kind: "bd export"}, out, nil
+	out, err := runner.Run(ctx, "bd", "export")
+	if err != nil {
+		return beadMigrationSource{}, nil, beadMigrationPreflight{}, fmt.Errorf("run bd export: %w", err)
+	}
+	source := beadMigrationSource{kind: "bd export"}
+	if cwd, err := os.Getwd(); err == nil {
+		source.path = cwd
+	}
+	if !preflightDefaultSource {
+		return source, out, beadMigrationPreflight{}, nil
+	}
+	preflight, err := runBeadMigrationCorruptionPreflight(ctx, out, runner)
+	if err != nil {
+		return beadMigrationSource{}, nil, beadMigrationPreflight{}, err
+	}
+	return source, out, preflight, nil
+}
+
+func runBeadMigrationCorruptionPreflight(ctx context.Context, export []byte, runner beadMigrationCommandRunner) (beadMigrationPreflight, error) {
+	beads, err := decodeBDExport(export)
+	if err != nil {
+		return beadMigrationPreflight{}, fmt.Errorf("decode bd export for pre-flight: %w", err)
+	}
+	preflight := beadMigrationPreflight{
+		checked:     true,
+		exportCount: len(beads),
+	}
+	out, err := runner.Run(ctx, "dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;")
+	if err != nil {
+		preflight.doltErr = err
+		return preflight, nil
+	}
+	count, err := parseDoltBeadCount(out)
+	if err != nil {
+		preflight.doltErr = err
+		return preflight, nil
+	}
+	preflight.doltCount = count
+	return preflight, nil
+}
+
+func reportBeadMigrationPreflight(w io.Writer, source beadMigrationSource, preflight beadMigrationPreflight, forceRecover bool) error {
+	if !preflight.checked {
+		return nil
+	}
+	failed := preflight.doltErr != nil || preflight.doltCount != preflight.exportCount
+	if !failed {
+		return nil
+	}
+	var b strings.Builder
+	if forceRecover {
+		b.WriteString("[oro] WARNING: --force-recover is enabled; data loss acknowledged.\n")
+	} else {
+		b.WriteString("[oro] Pre-flight detected possible partial dolt corruption.\n")
+	}
+	fmt.Fprintf(&b, "[oro] source: %s", source.kind)
+	if source.path != "" {
+		fmt.Fprintf(&b, " (%s)", source.path)
+	}
+	b.WriteByte('\n')
+	fmt.Fprintf(&b, "[oro] bd export count: %d\n", preflight.exportCount)
+	if preflight.doltErr != nil {
+		fmt.Fprintf(&b, "[oro] dolt internal count error: %v\n", preflight.doltErr)
+	} else {
+		fmt.Fprintf(&b, "[oro] dolt internal count: %d\n", preflight.doltCount)
+		if preflight.doltCount > preflight.exportCount {
+			fmt.Fprintf(&b, "[oro] MISMATCH: dolt has %d more beads than bd export returned.\n", preflight.doltCount-preflight.exportCount)
+		} else {
+			fmt.Fprintf(&b, "[oro] MISMATCH: bd export returned %d more beads than dolt counted.\n", preflight.exportCount-preflight.doltCount)
+		}
+	}
+	b.WriteString("[oro] This indicates partial dolt corruption or an unreadable Dolt source.\n")
+	if !forceRecover {
+		b.WriteString("[oro] Override with --force-recover to migrate the readable bd export rows.\n")
+		b.WriteString("[oro] Aborting.\n")
+		fmt.Fprint(w, b.String())
+		return errors.New("pre-flight detected possible partial dolt corruption; rerun with --force-recover to acknowledge possible data loss")
+	}
+	fmt.Fprint(w, b.String())
+	return nil
+}
+
+func parseDoltBeadCount(out []byte) (int, error) {
+	var result struct {
+		Rows []map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &result); err != nil {
+		return 0, fmt.Errorf("parse dolt count JSON: %w", err)
+	}
+	if len(result.Rows) == 0 {
+		return 0, fmt.Errorf("parse dolt count JSON: no rows")
+	}
+	for _, value := range result.Rows[0] {
+		switch v := value.(type) {
+		case float64:
+			return int(v), nil
+		case string:
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				return 0, fmt.Errorf("parse dolt count value %q: %w", v, err)
+			}
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("parse dolt count JSON: no numeric count field")
 }
 
 func resolveMigrationFixturePath(path string) (string, error) {
