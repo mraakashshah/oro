@@ -51,10 +51,14 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 					return writeBeadCommandErrorIfJSON(cmd, "reconcile", err)
 				}
 				report, err := runBeadReconcile(cmd.Context(), data, opts.apply)
-				if err != nil {
+				var validationErr beadMigrationValidationError
+				if err != nil && !errors.As(err, &validationErr) {
 					return writeBeadCommandErrorIfJSON(cmd, "reconcile", err)
 				}
 				writeBeadReconcileReport(cmd.OutOrStdout(), source, report, opts.apply)
+				if err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "reconcile", err)
+				}
 				return nil
 			}
 			if opts.ignoreVersionDrift {
@@ -69,7 +73,9 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 				return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
 			}
 			if !opts.dryRun {
-				if err := runBeadMigration(cmd.Context(), data); err != nil {
+				report, err := runBeadMigration(cmd.Context(), data)
+				var validationErr beadMigrationValidationError
+				if err != nil && !errors.As(err, &validationErr) {
 					return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Migration complete\nsource: %s", source.kind)
@@ -77,15 +83,23 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 					fmt.Fprintf(cmd.OutOrStdout(), " (%s)", source.path)
 				}
 				fmt.Fprintln(cmd.OutOrStdout())
+				writeBeadMigrationValidationReport(cmd.OutOrStdout(), report)
+				if err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
+				}
 				_ = store
 				return nil
 			}
 
 			plan, err := planBeadMigration(data)
-			if err != nil {
+			var validationErr beadMigrationValidationError
+			if err != nil && !errors.As(err, &validationErr) {
 				return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
 			}
 			writeBeadMigrationPlan(cmd.OutOrStdout(), source, plan)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
+			}
 			_ = store
 			return nil
 		},
@@ -153,17 +167,35 @@ type beadMigrationPlan struct {
 	MetadataEntries int
 	Notes           int
 	UnknownFields   int
+	Errors          []string
+	Warnings        []string
 	StatusCounts    map[string]int
 }
 
+type beadMigrationValidationReport struct {
+	UnknownFields int
+	Errors        []string
+	Warnings      []string
+	SkippedIDs    []string
+}
+
+type beadMigrationValidationError struct {
+	count int
+}
+
+func (err beadMigrationValidationError) Error() string {
+	return fmt.Sprintf("migration validation failed: %d row error(s)", err.count)
+}
+
 type beadReconcileReport struct {
-	SourceBeads   int
-	SQLiteBeads   int
-	Inserts       int
-	Updates       int
-	Deletes       int
-	Conflicts     int
-	ConflictedIDs []string
+	SourceBeads      int
+	SQLiteBeads      int
+	Inserts          int
+	Updates          int
+	Deletes          int
+	Conflicts        int
+	ConflictedIDs    []string
+	ValidationReport beadMigrationValidationReport
 }
 
 type bdExportBead struct {
@@ -199,46 +231,86 @@ const beadMigrationPIDLockMaxAge = time.Hour
 
 var beadMigrationBeforeRemoveInspectedPIDLockForTest = func(inspectedPIDLock) {}
 
-func runBeadMigration(ctx context.Context, data []byte) error {
-	beads, err := decodeBDExport(data)
+func runBeadMigration(ctx context.Context, data []byte) (beadMigrationValidationReport, error) {
+	beads, report, err := validateBDExportForMigration(data)
 	if err != nil {
-		return err
+		return report, err
 	}
 	paths, err := ResolveProjectDBPaths()
 	if err != nil {
-		return fmt.Errorf("resolve bead store paths: %w", err)
+		return report, fmt.Errorf("resolve bead store paths: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(paths.StateDBPath), 0o700); err != nil {
-		return fmt.Errorf("create bead store dir: %w", err)
+		return report, fmt.Errorf("create bead store dir: %w", err)
 	}
 	db, err := openStateDB(paths.StateDBPath)
 	if err != nil {
-		return err
+		return report, err
 	}
 	defer db.Close()
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return report, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	if err := setBeadParentTouchTriggers(ctx, tx, false); err != nil {
-		return err
+		return report, err
 	}
-	for _, raw := range beads {
-		var bead bdExportBead
-		if err := json.Unmarshal(raw, &bead); err != nil {
-			return fmt.Errorf("decode bd export bead: %w", err)
-		}
-		if err := insertMigratedBead(ctx, tx, bead); err != nil {
-			return err
+	for _, bead := range beads {
+		if err := insertMigratedBeadAtomically(ctx, tx, bead); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", migrationRowLabel(bead.ID), err))
+			continue
 		}
 	}
 	if err := setBeadParentTouchTriggers(ctx, tx, true); err != nil {
+		return report, err
+	}
+	if err := tx.Commit(); err != nil {
+		return report, err
+	}
+	return report, report.err()
+}
+
+func insertMigratedBeadAtomically(ctx context.Context, tx *sql.Tx, bead bdExportBead) error {
+	return writeMigratedBeadAtomically(ctx, tx, bead, false)
+}
+
+func updateMigratedBeadAtomically(ctx context.Context, tx *sql.Tx, bead bdExportBead) error {
+	return writeMigratedBeadAtomically(ctx, tx, bead, true)
+}
+
+func writeMigratedBeadAtomically(ctx context.Context, tx *sql.Tx, bead bdExportBead, update bool) error {
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT migrate_bead_row`); err != nil {
+		return fmt.Errorf("create row savepoint for %s: %w", bead.ID, err)
+	}
+	if err := writeMigratedBead(ctx, tx, bead, update); err != nil {
+		if rollbackErr := rollbackMigratedBeadSavepoint(ctx, tx); rollbackErr != nil {
+			return errors.Join(err, rollbackErr)
+		}
 		return err
 	}
-	return tx.Commit()
+	if _, err := tx.ExecContext(ctx, `RELEASE SAVEPOINT migrate_bead_row`); err != nil {
+		return fmt.Errorf("release row savepoint for %s: %w", bead.ID, err)
+	}
+	return nil
+}
+
+func rollbackMigratedBeadSavepoint(ctx context.Context, tx *sql.Tx) error {
+	_, rollbackErr := tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT migrate_bead_row`)
+	_, releaseErr := tx.ExecContext(ctx, `RELEASE SAVEPOINT migrate_bead_row`)
+	return errors.Join(
+		wrapIfErr(rollbackErr, "rollback row savepoint"),
+		wrapIfErr(releaseErr, "release row savepoint"),
+	)
+}
+
+func wrapIfErr(err error, message string) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 func acquireBeadMigrationLocks(stateDBPath string, allowRunningDispatcher bool, warnings io.Writer) (func() error, error) {
@@ -671,40 +743,46 @@ INSERT INTO beads (
 }
 
 func runBeadReconcile(ctx context.Context, data []byte, apply bool) (beadReconcileReport, error) {
-	rawBeads, err := decodeBDExport(data)
+	beads, validationReport, err := validateBDExportForMigration(data)
 	if err != nil {
 		return beadReconcileReport{}, err
 	}
-	sourceBeads := make(map[string]bdExportBead, len(rawBeads))
-	for _, raw := range rawBeads {
-		var bead bdExportBead
-		if err := json.Unmarshal(raw, &bead); err != nil {
-			return beadReconcileReport{}, fmt.Errorf("decode bd export bead: %w", err)
-		}
-		if strings.TrimSpace(bead.ID) == "" {
-			return beadReconcileReport{}, fmt.Errorf("bd export bead is missing id")
-		}
+	sourceBeads := make(map[string]bdExportBead, len(beads))
+	for _, bead := range beads {
 		sourceBeads[bead.ID] = bead
 	}
+	report := beadReconcileReport{
+		SourceBeads:      len(sourceBeads),
+		ValidationReport: validationReport,
+	}
+	validationErr := validationReport.err()
 
 	paths, err := ResolveProjectDBPaths()
 	if err != nil {
-		return beadReconcileReport{}, fmt.Errorf("resolve bead store paths: %w", err)
+		return report, fmt.Errorf("resolve bead store paths: %w", err)
 	}
 	db, err := openReconcileStateDB(paths.StateDBPath, apply)
 	if err != nil {
-		return beadReconcileReport{}, err
+		return report, err
 	}
 	if db == nil {
-		return beadReconcileReport{SourceBeads: len(sourceBeads), Inserts: len(sourceBeads)}, nil
+		report.Inserts = len(sourceBeads)
+		return report, validationErr
 	}
 	defer db.Close()
 
 	sqliteBeads, err := loadSQLiteMigrationBeads(ctx, db)
 	if err != nil {
-		return beadReconcileReport{}, err
+		return report, err
 	}
-	report := beadReconcileReport{SourceBeads: len(sourceBeads), SQLiteBeads: len(sqliteBeads)}
+	report.SQLiteBeads = len(sqliteBeads)
+	sourceIDs := make(map[string]struct{}, len(sourceBeads)+len(validationReport.SkippedIDs))
+	for id := range sourceBeads {
+		sourceIDs[id] = struct{}{}
+	}
+	for _, id := range validationReport.SkippedIDs {
+		sourceIDs[id] = struct{}{}
+	}
 	inserts := map[string]bdExportBead{}
 	updates := map[string]bdExportBead{}
 	deletes := map[string]sqliteMigrationBead{}
@@ -731,17 +809,19 @@ func runBeadReconcile(ctx context.Context, data []byte, apply bool) (beadReconci
 			updates[id] = source
 		}
 	}
-	for id, current := range sqliteBeads {
-		if current.Deleted {
-			continue
-		}
-		if _, ok := sourceBeads[id]; !ok {
-			report.Deletes++
-			deletes[id] = current
+	if validationErr == nil {
+		for id, current := range sqliteBeads {
+			if current.Deleted {
+				continue
+			}
+			if _, ok := sourceIDs[id]; !ok {
+				report.Deletes++
+				deletes[id] = current
+			}
 		}
 	}
 	if !apply {
-		return report, nil
+		return report, validationErr
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -753,13 +833,15 @@ func runBeadReconcile(ctx context.Context, data []byte, apply bool) (beadReconci
 		return beadReconcileReport{}, err
 	}
 	for _, source := range inserts {
-		if err := insertMigratedBead(ctx, tx, source); err != nil {
-			return beadReconcileReport{}, err
+		if err := insertMigratedBeadAtomically(ctx, tx, source); err != nil {
+			report.ValidationReport.Errors = append(report.ValidationReport.Errors, fmt.Sprintf("%s: %v", migrationRowLabel(source.ID), err))
+			continue
 		}
 	}
 	for _, source := range updates {
-		if err := updateMigratedBead(ctx, tx, source); err != nil {
-			return beadReconcileReport{}, err
+		if err := updateMigratedBeadAtomically(ctx, tx, source); err != nil {
+			report.ValidationReport.Errors = append(report.ValidationReport.Errors, fmt.Sprintf("%s: %v", migrationRowLabel(source.ID), err))
+			continue
 		}
 	}
 	for id := range deletes {
@@ -773,7 +855,7 @@ func runBeadReconcile(ctx context.Context, data []byte, apply bool) (beadReconci
 	if err := tx.Commit(); err != nil {
 		return beadReconcileReport{}, err
 	}
-	return report, nil
+	return report, report.ValidationReport.err()
 }
 
 type sqliteMigrationBead struct {
@@ -1114,13 +1196,13 @@ func readBeadMigrationSource(ctx context.Context, opts beadMigrateOptions, prefl
 }
 
 func runBeadMigrationCorruptionPreflight(ctx context.Context, export []byte, runner beadMigrationCommandRunner) (beadMigrationPreflight, error) {
-	beads, err := decodeBDExport(export)
+	exportCount, err := countBDExportRowsForPreflight(export)
 	if err != nil {
 		return beadMigrationPreflight{}, fmt.Errorf("decode bd export for pre-flight: %w", err)
 	}
 	preflight := beadMigrationPreflight{
 		checked:     true,
-		exportCount: len(beads),
+		exportCount: exportCount,
 	}
 	out, err := runner.Run(ctx, "dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;")
 	if err != nil {
@@ -1134,6 +1216,27 @@ func runBeadMigrationCorruptionPreflight(ctx context.Context, export []byte, run
 	}
 	preflight.doltCount = count
 	return preflight, nil
+}
+
+func countBDExportRowsForPreflight(data []byte) (int, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return 0, fmt.Errorf("bd export is empty")
+	}
+	if trimmed[0] == '[' {
+		var rows []json.RawMessage
+		if err := json.Unmarshal(trimmed, &rows); err != nil {
+			return 0, fmt.Errorf("decode bd export JSON array: %w", err)
+		}
+		return len(rows), nil
+	}
+	count := 0
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) > 0 {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func reportBeadMigrationPreflight(w io.Writer, source beadMigrationSource, preflight beadMigrationPreflight, forceRecover bool) error {
@@ -1220,18 +1323,18 @@ func resolveMigrationFixturePath(path string) (string, error) {
 }
 
 func planBeadMigration(data []byte) (beadMigrationPlan, error) {
-	beads, err := decodeBDExport(data)
+	beads, report, err := validateBDExportForMigration(data)
 	if err != nil {
 		return beadMigrationPlan{}, err
 	}
 
-	plan := beadMigrationPlan{StatusCounts: map[string]int{}}
-	for _, raw := range beads {
-		var bead bdExportBead
-		if err := json.Unmarshal(raw, &bead); err != nil {
-			return beadMigrationPlan{}, fmt.Errorf("decode bd export bead: %w", err)
-		}
-
+	plan := beadMigrationPlan{
+		UnknownFields: report.UnknownFields,
+		Errors:        report.Errors,
+		Warnings:      report.Warnings,
+		StatusCounts:  map[string]int{},
+	}
+	for _, bead := range beads {
 		plan.Beads++
 		plan.Dependencies += len(bead.Dependencies)
 		plan.Tags += len(bead.Tags)
@@ -1243,18 +1346,119 @@ func planBeadMigration(data []byte) (beadMigrationPlan, error) {
 		}
 		plan.Notes += notes
 		plan.StatusCounts[normalizeMigrationStatus(bead.Status)]++
+	}
+	return plan, report.err()
+}
 
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &fields); err != nil {
-			return beadMigrationPlan{}, err
+func validateBDExportForMigration(data []byte) ([]bdExportBead, beadMigrationValidationReport, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil, beadMigrationValidationReport{}, fmt.Errorf("bd export is empty")
+	}
+	if trimmed[0] == '[' {
+		var rows []json.RawMessage
+		if err := json.Unmarshal(trimmed, &rows); err != nil {
+			return nil, beadMigrationValidationReport{}, fmt.Errorf("decode bd export JSON array: %w", err)
 		}
-		for field := range fields {
-			if !knownBDExportField(field) {
-				plan.UnknownFields++
+		beads := make([]bdExportBead, 0, len(rows))
+		var report beadMigrationValidationReport
+		for i, raw := range rows {
+			bead, ok := validateBDExportRow(raw, fmt.Sprintf("row %d", i+1), &report)
+			if ok {
+				beads = append(beads, bead)
 			}
 		}
+		return beads, report, nil
 	}
-	return plan, nil
+
+	beads := []bdExportBead{}
+	var report beadMigrationValidationReport
+	for lineNumber, line := range bytes.Split(data, []byte("\n")) {
+		trimmedLine := bytes.TrimSpace(line)
+		if len(trimmedLine) == 0 {
+			continue
+		}
+		var raw json.RawMessage
+		if err := json.Unmarshal(trimmedLine, &raw); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("line %d: decode bd export JSONL: %v", lineNumber+1, err))
+			continue
+		}
+		bead, ok := validateBDExportRow(raw, fmt.Sprintf("line %d", lineNumber+1), &report)
+		if ok {
+			beads = append(beads, bead)
+		}
+	}
+	return beads, report, nil
+}
+
+func validateBDExportRow(raw json.RawMessage, label string, report *beadMigrationValidationReport) (bdExportBead, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: decode bd export bead: %v", label, err))
+		return bdExportBead{}, false
+	}
+	rawID := rawBDExportID(fields)
+	var bead bdExportBead
+	recordSkippedID := func() {
+		if rawID != "" {
+			report.SkippedIDs = append(report.SkippedIDs, rawID)
+		}
+	}
+	if err := json.Unmarshal(raw, &bead); err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: decode bd export bead: %v", label, err))
+		recordSkippedID()
+		return bdExportBead{}, false
+	}
+	for field := range fields {
+		if !knownBDExportField(field) {
+			report.UnknownFields++
+		}
+	}
+	if priority, ok := fields["priority"]; !ok || bytes.Equal(bytes.TrimSpace(priority), []byte("null")) {
+		bead.Priority = 2
+	}
+	status, err := normalizeMigrationStatusStrict(bead.Status)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", label, err))
+		recordSkippedID()
+		return bdExportBead{}, false
+	}
+	if status == "blocked" {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("%s: status %q will be stored as open because native blocked state is derived from dependencies", label, bead.Status))
+	}
+	bead.Status = status
+	if strings.TrimSpace(bead.ID) == "" {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: bd export bead is missing id", label))
+		return bdExportBead{}, false
+	}
+	if strings.TrimSpace(bead.Title) == "" {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: bd export bead %s is missing title", label, bead.ID))
+		recordSkippedID()
+		return bdExportBead{}, false
+	}
+	if firstNonEmpty(bead.CreatedAt, bead.UpdatedAt) == "" || firstNonEmpty(bead.UpdatedAt, bead.CreatedAt) == "" {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: bd export bead %s is missing created_at or updated_at", label, bead.ID))
+		recordSkippedID()
+		return bdExportBead{}, false
+	}
+	if _, err := countMigrationNotes(bead.Notes); err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: decode notes for %s: %v", label, bead.ID, err))
+		recordSkippedID()
+		return bdExportBead{}, false
+	}
+	return bead, true
+}
+
+func rawBDExportID(fields map[string]json.RawMessage) string {
+	raw, ok := fields["id"]
+	if !ok {
+		return ""
+	}
+	var id string
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(id)
 }
 
 func decodeBDExport(data []byte) ([]json.RawMessage, error) {
@@ -1286,23 +1490,13 @@ func decodeBDExport(data []byte) ([]json.RawMessage, error) {
 }
 
 func countMigrationNotes(raw json.RawMessage) (int, error) {
-	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return 0, nil
-	}
-	var noteString string
-	if err := json.Unmarshal(raw, &noteString); err == nil {
-		if strings.TrimSpace(noteString) == "" {
-			return 0, nil
-		}
-		return 1, nil
-	}
-	var notes []json.RawMessage
-	if err := json.Unmarshal(raw, &notes); err != nil {
+	notes, err := migrationNotes(raw)
+	if err != nil {
 		return 0, err
 	}
 	count := 0
 	for _, note := range notes {
-		if len(bytes.TrimSpace(note)) > 0 && !bytes.Equal(bytes.TrimSpace(note), []byte("null")) {
+		if strings.TrimSpace(note) != "" {
 			count++
 		}
 	}
@@ -1310,13 +1504,21 @@ func countMigrationNotes(raw json.RawMessage) (int, error) {
 }
 
 func normalizeMigrationStatus(status string) string {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "", "open", "pending", "to-do":
-		return "open"
-	case "in_progress", "blocked", "closed":
+	normalized, err := normalizeMigrationStatusStrict(status)
+	if err != nil {
 		return strings.ToLower(strings.TrimSpace(status))
+	}
+	return normalized
+}
+
+func normalizeMigrationStatusStrict(status string) (string, error) {
+	switch normalized := strings.ToLower(strings.TrimSpace(status)); normalized {
+	case "", "open", "pending", "to-do":
+		return "open", nil
+	case "in_progress", "blocked", "closed":
+		return normalized, nil
 	default:
-		return "open"
+		return "", fmt.Errorf("unknown status %q", status)
 	}
 }
 
@@ -1440,10 +1642,45 @@ func writeBeadMigrationPlan(w io.Writer, source beadMigrationSource, plan beadMi
 	fmt.Fprintf(w, "labels: %d\n", plan.Labels)
 	fmt.Fprintf(w, "metadata entries: %d\n", plan.MetadataEntries)
 	fmt.Fprintf(w, "notes: %d\n", plan.Notes)
-	if plan.UnknownFields > 0 {
-		fmt.Fprintf(w, "unknown fields: %d\n", plan.UnknownFields)
-	}
+	writeBeadMigrationValidationReport(w, beadMigrationValidationReport{
+		UnknownFields: plan.UnknownFields,
+		Errors:        plan.Errors,
+		Warnings:      plan.Warnings,
+	})
 	fmt.Fprintln(w, "DRY RUN -- no writes performed")
+}
+
+func writeBeadMigrationValidationReport(w io.Writer, report beadMigrationValidationReport) {
+	if report.UnknownFields > 0 {
+		fmt.Fprintf(w, "unknown fields: %d\n", report.UnknownFields)
+	}
+	if len(report.Errors) > 0 {
+		fmt.Fprintf(w, "migration errors: %d\n", len(report.Errors))
+		for _, err := range report.Errors {
+			fmt.Fprintf(w, "migration error: %s\n", err)
+		}
+	}
+	if len(report.Warnings) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "migration warnings: %d\n", len(report.Warnings))
+	for _, warning := range report.Warnings {
+		fmt.Fprintf(w, "migration warning: %s\n", warning)
+	}
+}
+
+func (report beadMigrationValidationReport) err() error {
+	if len(report.Errors) == 0 {
+		return nil
+	}
+	return beadMigrationValidationError{count: len(report.Errors)}
+}
+
+func migrationRowLabel(id string) string {
+	if strings.TrimSpace(id) == "" {
+		return "row"
+	}
+	return fmt.Sprintf("row %s", id)
 }
 
 func writeBeadReconcileReport(w io.Writer, source beadMigrationSource, report beadReconcileReport, apply bool) {
@@ -1462,6 +1699,7 @@ func writeBeadReconcileReport(w io.Writer, source beadMigrationSource, report be
 	for _, id := range sortedCopy(report.ConflictedIDs) {
 		fmt.Fprintf(w, "conflict: %s\n", id)
 	}
+	writeBeadMigrationValidationReport(w, report.ValidationReport)
 	if apply {
 		fmt.Fprintln(w, "APPLIED")
 	} else {

@@ -157,6 +157,177 @@ func TestMigrateUpdatedAtVerbatim(t *testing.T) {
 	}
 }
 
+func TestMigrateFromDoltValidationReport(t *testing.T) {
+	jsonlPath := writeMigrationJSONL(t, strings.Join([]string{
+		`{"id":"oro-default-priority","title":"Default priority","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-p0","title":"Explicit P0","status":"open","priority":0,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-blocked","title":"Blocked","status":"blocked","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-bad-notes","title":"Bad notes","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","notes":[123]}`,
+		`{"id":"oro-unknown-status","title":"Unknown status","status":"triaged","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-malformed","title":"Broken",`,
+		`{"id":"oro-after-error","title":"Valid after errors","status":"closed","priority":3,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","unexpected_field":"reported"}`,
+		"",
+	}, "\n"))
+
+	t.Run("dry run reports row validation errors", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "state.db")
+		t.Setenv("ORO_DB_PATH", dbPath)
+		t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+		t.Setenv("ORO_PROJECT", "")
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--dry-run", "--from-jsonl", jsonlPath)
+		if err == nil {
+			t.Fatalf("dry-run succeeded despite validation errors:\n%s", out)
+		}
+		for _, want := range []string{
+			"Migration plan",
+			"beads: 4",
+			"unknown fields: 1",
+			"migration errors: 3",
+			"migration warnings: 1",
+			"line 3: status \"blocked\" will be stored as open",
+			"line 4: decode notes for oro-bad-notes",
+			"line 5: unknown status \"triaged\"",
+			"line 6: decode bd export JSONL",
+			"DRY RUN -- no writes performed",
+		} {
+			if !strings.Contains(out+err.Error(), want) {
+				t.Fatalf("dry-run validation report missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+		if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+			t.Fatalf("dry-run validation mutated DB path %s: stat err=%v", dbPath, statErr)
+		}
+	})
+
+	t.Run("real import reports validation errors and imports safe rows", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "state.db")
+		t.Setenv("ORO_DB_PATH", dbPath)
+		t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+		t.Setenv("ORO_PROJECT", "")
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", jsonlPath)
+		if err == nil {
+			t.Fatalf("migration succeeded despite validation errors:\n%s", out)
+		}
+		for _, want := range []string{
+			"Migration complete",
+			"unknown fields: 1",
+			"migration errors: 3",
+			"migration warnings: 1",
+			"line 3: status \"blocked\" will be stored as open",
+			"line 4: decode notes for oro-bad-notes",
+			"line 5: unknown status \"triaged\"",
+			"line 6: decode bd export JSONL",
+		} {
+			if !strings.Contains(out+err.Error(), want) {
+				t.Fatalf("migration validation report missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open migrated db: %v", err)
+		}
+		defer db.Close()
+		rows, err := db.Query(`SELECT id, status, priority FROM beads ORDER BY id`)
+		if err != nil {
+			t.Fatalf("query migrated beads: %v", err)
+		}
+		defer rows.Close()
+		got := map[string]struct {
+			status   string
+			priority int
+		}{}
+		for rows.Next() {
+			var id string
+			var row struct {
+				status   string
+				priority int
+			}
+			if err := rows.Scan(&id, &row.status, &row.priority); err != nil {
+				t.Fatalf("scan migrated bead: %v", err)
+			}
+			got[id] = row
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate migrated beads: %v", err)
+		}
+		want := map[string]struct {
+			status   string
+			priority int
+		}{
+			"oro-after-error":      {status: "closed", priority: 3},
+			"oro-blocked":          {status: "open", priority: 1},
+			"oro-default-priority": {status: "open", priority: 2},
+			"oro-p0":               {status: "open", priority: 0},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("migrated rows = %#v, want %#v", got, want)
+		}
+		if _, ok := got["oro-unknown-status"]; ok {
+			t.Fatalf("unknown status row was silently imported: %#v", got["oro-unknown-status"])
+		}
+		if _, ok := got["oro-bad-notes"]; ok {
+			t.Fatalf("bad notes row was imported: %#v", got["oro-bad-notes"])
+		}
+	})
+
+	t.Run("real import rolls back unsafe partial row and continues", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "state.db")
+		t.Setenv("ORO_DB_PATH", dbPath)
+		t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+		t.Setenv("ORO_PROJECT", "")
+		partialJSONLPath := writeMigrationJSONL(t, strings.Join([]string{
+			`{"id":"oro-before-partial","title":"Before partial","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+			`{"id":"oro-partial","title":"Partial","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","tags":["dup","dup"]}`,
+			`{"id":"oro-after-partial","title":"After partial","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+			"",
+		}, "\n"))
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", partialJSONLPath)
+		if err == nil {
+			t.Fatalf("migration succeeded despite unsafe partial row:\n%s", out)
+		}
+		for _, want := range []string{
+			"Migration complete",
+			"migration errors: 1",
+			"row oro-partial: insert migrated tag for oro-partial",
+		} {
+			if !strings.Contains(out+err.Error(), want) {
+				t.Fatalf("partial-row report missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open migrated db: %v", err)
+		}
+		defer db.Close()
+		var partialCount int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-partial'`).Scan(&partialCount); err != nil {
+			t.Fatalf("query partial bead: %v", err)
+		}
+		if partialCount != 0 {
+			t.Fatalf("partial failed row persisted %d bead(s), want 0", partialCount)
+		}
+		var safeCount int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id IN ('oro-before-partial', 'oro-after-partial')`).Scan(&safeCount); err != nil {
+			t.Fatalf("query safe beads: %v", err)
+		}
+		if safeCount != 2 {
+			t.Fatalf("safe row count = %d, want 2", safeCount)
+		}
+		var tagCount int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM bead_tags WHERE bead_id='oro-partial'`).Scan(&tagCount); err != nil {
+			t.Fatalf("query partial tags: %v", err)
+		}
+		if tagCount != 0 {
+			t.Fatalf("partial failed row persisted %d tag(s), want 0", tagCount)
+		}
+	})
+}
+
 func TestMigrateFromDoltLocks(t *testing.T) {
 	validJSONL := writeMigrationJSONL(t, `{"id":"oro-lock","title":"Lock migration","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`+"\n")
 	invalidJSONL := writeMigrationJSONL(t, `{"id":"oro-lock-fail","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`+"\n")
@@ -505,6 +676,51 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 		}
 	})
 
+	t.Run("default source reports malformed JSONL rows after preflight", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		export := strings.Join([]string{
+			`{"id":"oro-default-valid","title":"Default valid","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+			`{"id":"oro-default-bad","title":"Broken",`,
+			`{"id":"oro-default-after","title":"Default after","status":"closed","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+			"",
+		}, "\n")
+		fake := &fakeBeadMigrationRunner{
+			outputs: map[string][]byte{
+				key("bd", "export"): []byte(export),
+				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): []byte(`{"rows":[{"count":3}]}`),
+			},
+		}
+		restoreBeadMigrationRunner(t, fake)
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt")
+		if err == nil {
+			t.Fatalf("default migration succeeded despite malformed row:\n%s", out)
+		}
+		for _, want := range []string{
+			"Migration complete",
+			"source: bd export",
+			"migration errors: 1",
+			"line 2: decode bd export JSONL",
+		} {
+			if !strings.Contains(out+err.Error(), want) {
+				t.Fatalf("default malformed-row output missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open migrated db: %v", err)
+		}
+		defer db.Close()
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id IN ('oro-default-valid', 'oro-default-after') AND deleted=0`).Scan(&count); err != nil {
+			t.Fatalf("query migrated default beads: %v", err)
+		}
+		if count != 2 {
+			t.Fatalf("default migrated safe row count = %d, want 2", count)
+		}
+	})
+
 	t.Run("default source aborts on dolt count error unless forced", func(t *testing.T) {
 		dbPath := setupMigrationLockTestEnv(t)
 		fake := &fakeBeadMigrationRunner{
@@ -836,6 +1052,105 @@ func TestMigrateFromDoltReconcileDryRunDoesNotCreateDB(t *testing.T) {
 	}
 	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
 		t.Fatalf("plain --reconcile created DB path %s: stat err=%v", dbPath, err)
+	}
+}
+
+func TestMigrateFromDoltReconcileReportsBlockedStatusRemap(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	tmpDir := t.TempDir()
+	initialJSONL := filepath.Join(tmpDir, "initial.jsonl")
+	if err := os.WriteFile(initialJSONL, []byte(strings.Join([]string{
+		`{"id":"oro-existing","title":"Existing","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-delete-candidate","title":"Delete candidate","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-typed-invalid","title":"Typed invalid old","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write initial jsonl: %v", err)
+	}
+	reconcileJSONL := filepath.Join(tmpDir, "reconcile.jsonl")
+	if err := os.WriteFile(reconcileJSONL, []byte(strings.Join([]string{
+		`{"id":"oro-existing","title":"Existing","status":"open","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-blocked-reconcile","title":"Blocked reconcile","status":"blocked","priority":1,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`,
+		`{"id":"oro-invalid-reconcile","title":"Invalid reconcile","status":"triaged","priority":1,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`,
+		`{"id":"oro-typed-invalid","title":"Typed invalid new","status":"open","priority":"P1","issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`,
+		`{"id":"oro-unsafe-reconcile","title":"Unsafe reconcile","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","tags":["dup","dup"]}`,
+		`{"id":"oro-after-unsafe","title":"After unsafe","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`,
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write reconcile jsonl: %v", err)
+	}
+
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", initialJSONL)
+	out, cmdErr := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", reconcileJSONL)
+	if cmdErr == nil {
+		t.Fatalf("reconcile apply succeeded despite validation error:\n%s", out)
+	}
+	for _, want := range []string{
+		"inserts: 3",
+		"deletes: 0",
+		"migration errors: 3",
+		"migration warnings: 1",
+		"line 2: status \"blocked\" will be stored as open",
+		"line 3: unknown status \"triaged\"",
+		"line 4: decode bd export bead",
+		"row oro-unsafe-reconcile: insert migrated tag for oro-unsafe-reconcile",
+		"APPLIED",
+	} {
+		if !strings.Contains(out+cmdErr.Error(), want) {
+			t.Fatalf("reconcile validation output missing %q:\nerr=%v\nout=%s", want, cmdErr, out)
+		}
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open reconciled db: %v", err)
+	}
+	defer db.Close()
+	var status string
+	if err := db.QueryRow(`SELECT status FROM beads WHERE id='oro-blocked-reconcile'`).Scan(&status); err != nil {
+		t.Fatalf("query reconciled blocked bead: %v", err)
+	}
+	if status != "open" {
+		t.Fatalf("reconciled blocked status = %q, want open with warning", status)
+	}
+	var invalidCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-invalid-reconcile'`).Scan(&invalidCount); err != nil {
+		t.Fatalf("query invalid reconcile bead: %v", err)
+	}
+	if invalidCount != 0 {
+		t.Fatalf("invalid reconcile row persisted %d bead(s), want 0", invalidCount)
+	}
+	var typedTitle, typedDeleted string
+	if err := db.QueryRow(`SELECT title, deleted FROM beads WHERE id='oro-typed-invalid'`).Scan(&typedTitle, &typedDeleted); err != nil {
+		t.Fatalf("query typed invalid existing bead: %v", err)
+	}
+	if typedTitle != "Typed invalid old" || typedDeleted != "0" {
+		t.Fatalf("typed invalid existing bead = title %q deleted %q, want preserved old/not deleted", typedTitle, typedDeleted)
+	}
+	var deleteCandidateDeleted int
+	if err := db.QueryRow(`SELECT deleted FROM beads WHERE id='oro-delete-candidate'`).Scan(&deleteCandidateDeleted); err != nil {
+		t.Fatalf("query delete candidate: %v", err)
+	}
+	if deleteCandidateDeleted != 0 {
+		t.Fatalf("delete candidate deleted = %d, want preserved when source validation has errors", deleteCandidateDeleted)
+	}
+	var unsafeCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-unsafe-reconcile'`).Scan(&unsafeCount); err != nil {
+		t.Fatalf("query unsafe reconcile bead: %v", err)
+	}
+	if unsafeCount != 0 {
+		t.Fatalf("unsafe reconcile row persisted %d bead(s), want 0", unsafeCount)
+	}
+	var afterUnsafeCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-after-unsafe' AND deleted=0`).Scan(&afterUnsafeCount); err != nil {
+		t.Fatalf("query after unsafe bead: %v", err)
+	}
+	if afterUnsafeCount != 1 {
+		t.Fatalf("after unsafe row count = %d, want 1", afterUnsafeCount)
 	}
 }
 
