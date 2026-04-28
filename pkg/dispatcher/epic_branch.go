@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 )
 
 // ResolveEpicBranch is the exported form of resolveEpicBranch, for use by
 // packages outside the dispatcher (e.g. cmd/oro work command) that need the
 // same parent-chain-walking logic.
-func ResolveEpicBranch(ctx context.Context, beads BeadSource, parentID, defaultBranch string) (branch, epicID string, err error) {
+func ResolveEpicBranch(ctx context.Context, beads beadstore.Store, parentID, defaultBranch string) (branch, epicID string, err error) {
 	return resolveEpicBranch(ctx, beads, parentID, defaultBranch)
 }
 
@@ -21,7 +22,7 @@ func ResolveEpicBranch(ctx context.Context, beads BeadSource, parentID, defaultB
 //
 // parentID is the raw bead.Epic value, which maps to the JSON "parent" field
 // and may point to any bead type — not necessarily an epic.
-func resolveEpicBranch(ctx context.Context, beads BeadSource, parentID, defaultBranch string) (branch, epicID string, err error) {
+func resolveEpicBranch(ctx context.Context, beads beadstore.Store, parentID, defaultBranch string) (branch, epicID string, err error) {
 	if parentID == "" {
 		return defaultBranch, "", nil
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
@@ -46,11 +47,13 @@ func (m *trackingBeadSource) Close(_ context.Context, id string, _ string) error
 	return nil
 }
 
-func (m *trackingBeadSource) Create(_ context.Context, _, _ string, _ int, _, _, _ string) (string, error) {
-	return "", nil
+func (m *trackingBeadSource) Create(_ context.Context, _ beadstore.CreateParams) (*protocol.Bead, error) {
+	return &protocol.Bead{ID: "oro-new"}, nil
 }
 
-func (m *trackingBeadSource) Update(_ context.Context, _, _ string) error { return nil }
+func (m *trackingBeadSource) Update(_ context.Context, _ string, _ beadstore.UpdateParams) error {
+	return nil
+}
 
 func (m *trackingBeadSource) Sync(_ context.Context) error { return nil }
 

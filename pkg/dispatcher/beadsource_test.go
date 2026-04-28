@@ -1,4 +1,4 @@
-package dispatcher //nolint:testpackage // white-box tests for CLIBeadSource
+package dispatcher //nolint:testpackage // white-box tests for CLIStore
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 )
 
@@ -36,9 +37,24 @@ func (m *mockCommandRunner) Run(ctx context.Context, name string, args ...string
 	return m.output, m.err
 }
 
+func createParams(title, beadType string, priority int, description, parent, acceptance string) beadstore.CreateParams {
+	return beadstore.CreateParams{
+		Title:              title,
+		Type:               beadType,
+		Priority:           priority,
+		Description:        description,
+		ParentID:           parent,
+		AcceptanceCriteria: acceptance,
+	}
+}
+
+func statusParams(status string) beadstore.UpdateParams {
+	return beadstore.UpdateParams{Status: &status}
+}
+
 // --- Tests ---
 
-func TestCLIBeadSource_Ready_ParsesJSON(t *testing.T) {
+func TestCLIStore_Ready_ParsesJSON(t *testing.T) {
 	beads := []protocol.Bead{
 		{ID: "abc.1", Title: "Implement widget", Priority: 1},
 		{ID: "def.2", Title: "Fix bug", Priority: 2},
@@ -49,7 +65,7 @@ func TestCLIBeadSource_Ready_ParsesJSON(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{output: data}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.Ready(context.Background())
 	if err != nil {
@@ -82,7 +98,7 @@ func TestCLIBeadSource_Ready_ParsesJSON(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Ready_ParsesModelField(t *testing.T) {
+func TestCLIStore_Ready_ParsesModelField(t *testing.T) {
 	beads := []protocol.Bead{
 		{ID: "abc.1", Title: "Opus task", Priority: 1, Model: "opus"},
 		{ID: "def.2", Title: "Sonnet task", Priority: 2, Model: "sonnet"},
@@ -94,7 +110,7 @@ func TestCLIBeadSource_Ready_ParsesModelField(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{output: data}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.Ready(context.Background())
 	if err != nil {
@@ -111,7 +127,7 @@ func TestCLIBeadSource_Ready_ParsesModelField(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Show_ParsesModelField(t *testing.T) {
+func TestCLIStore_Show_ParsesModelField(t *testing.T) {
 	detail := protocol.BeadDetail{
 		ID:                 "abc.1",
 		Title:              "Sonnet task",
@@ -124,7 +140,7 @@ func TestCLIBeadSource_Show_ParsesModelField(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{output: data}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.Show(context.Background(), "abc.1")
 	if err != nil {
@@ -135,9 +151,9 @@ func TestCLIBeadSource_Show_ParsesModelField(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Ready_EmptyList(t *testing.T) {
+func TestCLIStore_Ready_EmptyList(t *testing.T) {
 	runner := &mockCommandRunner{output: []byte("[]")}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.Ready(context.Background())
 	if err != nil {
@@ -148,9 +164,9 @@ func TestCLIBeadSource_Ready_EmptyList(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Ready_CommandError(t *testing.T) {
+func TestCLIStore_Ready_CommandError(t *testing.T) {
 	runner := &mockCommandRunner{err: fmt.Errorf("bd not found")}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	_, err := src.Ready(context.Background())
 	if err == nil {
@@ -158,9 +174,9 @@ func TestCLIBeadSource_Ready_CommandError(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Ready_InvalidJSON(t *testing.T) {
+func TestCLIStore_Ready_InvalidJSON(t *testing.T) {
 	runner := &mockCommandRunner{output: []byte("not json")}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	_, err := src.Ready(context.Background())
 	if err == nil {
@@ -168,12 +184,12 @@ func TestCLIBeadSource_Ready_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
+func TestCLIStore_Show_ParsesJSON(t *testing.T) {
 	// AC1: object-form JSON {"id":"x","title":"T","description":"D"} populates fields.
 	t.Run("object_form_populates_id_title_description", func(t *testing.T) {
 		raw := `{"id":"x","title":"T","description":"D"}`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Show(context.Background(), "x")
 		if err != nil {
@@ -194,7 +210,7 @@ func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
 	t.Run("array_form_populates_id_and_title", func(t *testing.T) {
 		raw := `[{"id":"x","title":"T"}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Show(context.Background(), "x")
 		if err != nil {
@@ -213,7 +229,7 @@ func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
 	t.Run("ac_extracted_from_description_when_explicit_field_empty", func(t *testing.T) {
 		raw := `{"id":"x","title":"T","description":"Context.\n\n## Acceptance Criteria\n- [ ] Must work","acceptance_criteria":""}`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Show(context.Background(), "x")
 		if err != nil {
@@ -231,7 +247,7 @@ func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
 	t.Run("explicit_ac_field_not_overwritten", func(t *testing.T) {
 		raw := `{"id":"x","title":"T","description":"Desc.\n\n## Acceptance Criteria\n- [ ] From description","acceptance_criteria":"Explicit AC"}`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Show(context.Background(), "x")
 		if err != nil {
@@ -245,7 +261,7 @@ func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
 	// AC5: empty array "[]" → non-nil error returned.
 	t.Run("empty_array_returns_error", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("[]")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.Show(context.Background(), "x")
 		if err == nil {
@@ -254,9 +270,9 @@ func TestCLIBeadSource_Show_ParsesJSON(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSource_Show_CommandError(t *testing.T) {
+func TestCLIStore_Show_CommandError(t *testing.T) {
 	runner := &mockCommandRunner{err: fmt.Errorf("bead not found")}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	_, err := src.Show(context.Background(), "nonexistent")
 	if err == nil {
@@ -264,7 +280,7 @@ func TestCLIBeadSource_Show_CommandError(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Show_ArrayJSON(t *testing.T) {
+func TestCLIStore_Show_ArrayJSON(t *testing.T) {
 	// bd show --json returns an array: [{...}]
 	detail := protocol.BeadDetail{
 		ID:                 "abc.1",
@@ -277,7 +293,7 @@ func TestCLIBeadSource_Show_ArrayJSON(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{output: data}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.Show(context.Background(), "abc.1")
 	if err != nil {
@@ -291,10 +307,10 @@ func TestCLIBeadSource_Show_ArrayJSON(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Show_EmptyArray(t *testing.T) {
+func TestCLIStore_Show_EmptyArray(t *testing.T) {
 	data, _ := json.Marshal([]protocol.BeadDetail{})
 	runner := &mockCommandRunner{output: data}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	_, err := src.Show(context.Background(), "abc.1")
 	if err == nil {
@@ -302,9 +318,9 @@ func TestCLIBeadSource_Show_EmptyArray(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Show_InvalidJSON(t *testing.T) {
+func TestCLIStore_Show_InvalidJSON(t *testing.T) {
 	runner := &mockCommandRunner{output: []byte("not json")}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	_, err := src.Show(context.Background(), "abc.1")
 	if err == nil {
@@ -312,9 +328,9 @@ func TestCLIBeadSource_Show_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Close_Success(t *testing.T) {
+func TestCLIStore_Close_Success(t *testing.T) {
 	runner := &mockCommandRunner{output: []byte("")}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	err := src.Close(context.Background(), "abc.1", "Completed successfully")
 	if err != nil {
@@ -348,9 +364,9 @@ func TestCLIBeadSource_Close_Success(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Close_CommandError(t *testing.T) {
+func TestCLIStore_Close_CommandError(t *testing.T) {
 	runner := &mockCommandRunner{err: fmt.Errorf("close failed")}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	err := src.Close(context.Background(), "abc.1", "Done")
 	if err == nil {
@@ -358,9 +374,9 @@ func TestCLIBeadSource_Close_CommandError(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Sync_Success(t *testing.T) {
+func TestCLIStore_Sync_Success(t *testing.T) {
 	runner := &mockCommandRunner{output: []byte("")}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	err := src.Sync(context.Background())
 	if err != nil {
@@ -459,17 +475,17 @@ func TestBead_TypeField_JSON(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Create(t *testing.T) {
+func TestCLIStore_Create(t *testing.T) {
 	t.Run("with_parent", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-abc"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		id, err := src.Create(context.Background(), "Fix login bug", "bug", 1, "Login fails on retry", "oro-parent", "")
+		id, err := src.Create(context.Background(), createParams("Fix login bug", "bug", 1, "Login fails on retry", "oro-parent", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if id != "oro-abc" {
-			t.Errorf("ID: got %q, want %q", id, "oro-abc")
+		if id.ID != "oro-abc" {
+			t.Errorf("ID: got %q, want %q", id.ID, "oro-abc")
 		}
 
 		// Verify correct command.
@@ -505,14 +521,14 @@ func TestCLIBeadSource_Create(t *testing.T) {
 
 	t.Run("without_parent", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-xyz"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		id, err := src.Create(context.Background(), "Add feature", "task", 2, "New feature desc", "", "")
+		id, err := src.Create(context.Background(), createParams("Add feature", "task", 2, "New feature desc", "", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if id != "oro-xyz" {
-			t.Errorf("ID: got %q, want %q", id, "oro-xyz")
+		if id.ID != "oro-xyz" {
+			t.Errorf("ID: got %q, want %q", id.ID, "oro-xyz")
 		}
 
 		// Verify --parent is NOT in args when parent is empty.
@@ -526,9 +542,9 @@ func TestCLIBeadSource_Create(t *testing.T) {
 
 	t.Run("command_error", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd create failed")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "")
+		_, err := src.Create(context.Background(), createParams("Title", "task", 1, "Desc", "", ""))
 		if err == nil {
 			t.Fatal("expected error from Create when command fails")
 		}
@@ -536,9 +552,9 @@ func TestCLIBeadSource_Create(t *testing.T) {
 
 	t.Run("invalid_json", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not json")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "")
+		_, err := src.Create(context.Background(), createParams("Title", "task", 1, "Desc", "", ""))
 		if err == nil {
 			t.Fatal("expected error from Create when output is invalid JSON")
 		}
@@ -546,15 +562,15 @@ func TestCLIBeadSource_Create(t *testing.T) {
 
 	t.Run("with_acceptance_criteria", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		ac := "- [ ] Test passes\n- [ ] Code compiles"
-		id, err := src.Create(context.Background(), "Test task", "task", 2, "Test description", "", ac)
+		id, err := src.Create(context.Background(), createParams("Test task", "task", 2, "Test description", "", ac))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if id != "oro-test" {
-			t.Errorf("ID: got %q, want %q", id, "oro-test")
+		if id.ID != "oro-test" {
+			t.Errorf("ID: got %q, want %q", id.ID, "oro-test")
 		}
 
 		// Verify --acceptance flag is present.
@@ -566,14 +582,14 @@ func TestCLIBeadSource_Create(t *testing.T) {
 
 	t.Run("empty_acceptance_criteria_omitted", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test2"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		id, err := src.Create(context.Background(), "Test task", "task", 2, "Test description", "", "")
+		id, err := src.Create(context.Background(), createParams("Test task", "task", 2, "Test description", "", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if id != "oro-test2" {
-			t.Errorf("ID: got %q, want %q", id, "oro-test2")
+		if id.ID != "oro-test2" {
+			t.Errorf("ID: got %q, want %q", id.ID, "oro-test2")
 		}
 
 		// Verify --acceptance flag is NOT in args when empty.
@@ -707,13 +723,13 @@ func TestFindHeaderAtLineStart(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSource_Show_ExtractsACFromDescription(t *testing.T) {
+func TestCLIStore_Show_ExtractsACFromDescription(t *testing.T) {
 	// Simulate real bd show --json output: no acceptance_criteria field,
 	// AC embedded in description markdown.
 	raw := `[{"id":"oro-k9lk","title":"Fix AC parsing","description":"Some context.\n\n## Acceptance Criteria\n- [ ] Parser works\n- [ ] Tests pass","status":"open","priority":0}]`
 
 	runner := &mockCommandRunner{output: []byte(raw)}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.Show(context.Background(), "oro-k9lk")
 	if err != nil {
@@ -727,11 +743,11 @@ func TestCLIBeadSource_Show_ExtractsACFromDescription(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Show_NoACInDescription(t *testing.T) {
+func TestCLIStore_Show_NoACInDescription(t *testing.T) {
 	raw := `[{"id":"oro-abc","title":"No AC bead","description":"Just a plain description.","status":"open","priority":2}]`
 
 	runner := &mockCommandRunner{output: []byte(raw)}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.Show(context.Background(), "oro-abc")
 	if err != nil {
@@ -742,7 +758,7 @@ func TestCLIBeadSource_Show_NoACInDescription(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_Show_ExplicitACFieldTakesPrecedence(t *testing.T) {
+func TestCLIStore_Show_ExplicitACFieldTakesPrecedence(t *testing.T) {
 	// If the JSON already has acceptance_criteria populated, don't override it.
 	detail := protocol.BeadDetail{
 		ID:                 "abc.1",
@@ -756,7 +772,7 @@ func TestCLIBeadSource_Show_ExplicitACFieldTakesPrecedence(t *testing.T) {
 	}
 
 	runner := &mockCommandRunner{output: data}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.Show(context.Background(), "abc.1")
 	if err != nil {
@@ -767,12 +783,13 @@ func TestCLIBeadSource_Show_ExplicitACFieldTakesPrecedence(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_ImplementsBeadSource(t *testing.T) {
-	// Compile-time check that CLIBeadSource implements BeadSource.
-	var _ BeadSource = (*CLIBeadSource)(nil)
+func TestCLIStore_ImplementsBeadStore(t *testing.T) {
+	// Compile-time check that CLIStore implements the store boundaries.
+	var _ beadstore.Store = (*CLIStore)(nil)
+	var _ DeferredStore = (*CLIStore)(nil)
 }
 
-func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
+func TestCLIStore_AllChildrenClosed(t *testing.T) {
 	t.Run("returns true when all children are closed", func(t *testing.T) {
 		children := []protocol.Bead{
 			{ID: "child-1", Title: "Done task", Status: "closed"},
@@ -780,7 +797,7 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 		}
 		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.AllChildrenClosed(context.Background(), "epic-123")
 		if err != nil {
@@ -822,7 +839,7 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 		}
 		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.AllChildrenClosed(context.Background(), "epic-456")
 		if err != nil {
@@ -840,7 +857,7 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 		}
 		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.AllChildrenClosed(context.Background(), "epic-456")
 		if err != nil {
@@ -853,7 +870,7 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 
 	t.Run("returns false when no children", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("[]")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.AllChildrenClosed(context.Background(), "epic-empty")
 		if err != nil {
@@ -866,7 +883,7 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 
 	t.Run("returns error on command failure", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd list failed")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.AllChildrenClosed(context.Background(), "epic-789")
 		if err == nil {
@@ -876,7 +893,7 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 
 	t.Run("returns error on invalid JSON", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not json")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.AllChildrenClosed(context.Background(), "epic-999")
 		if err == nil {
@@ -885,17 +902,17 @@ func TestCLIBeadSource_AllChildrenClosed(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSource_CreateWithAcceptanceCriteria(t *testing.T) {
+func TestCLIStore_CreateWithAcceptanceCriteria(t *testing.T) {
 	t.Run("adds_ac_flag_when_non_empty", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		id, err := src.Create(context.Background(), "Fix bug", "bug", 1, "Bug description", "", "Test passes and verified")
+		id, err := src.Create(context.Background(), createParams("Fix bug", "bug", 1, "Bug description", "", "Test passes and verified"))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if id != "oro-test" {
-			t.Errorf("ID: got %q, want %q", id, "oro-test")
+		if id.ID != "oro-test" {
+			t.Errorf("ID: got %q, want %q", id.ID, "oro-test")
 		}
 
 		// Verify --acceptance flag is present with the AC value.
@@ -910,14 +927,14 @@ func TestCLIBeadSource_CreateWithAcceptanceCriteria(t *testing.T) {
 
 	t.Run("omits_ac_flag_when_empty", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test2"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		id, err := src.Create(context.Background(), "Fix bug", "bug", 1, "Bug description", "", "")
+		id, err := src.Create(context.Background(), createParams("Fix bug", "bug", 1, "Bug description", "", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if id != "oro-test2" {
-			t.Errorf("ID: got %q, want %q", id, "oro-test2")
+		if id.ID != "oro-test2" {
+			t.Errorf("ID: got %q, want %q", id.ID, "oro-test2")
 		}
 
 		// Verify --acceptance flag is NOT present when empty.
@@ -931,14 +948,14 @@ func TestCLIBeadSource_CreateWithAcceptanceCriteria(t *testing.T) {
 
 	t.Run("includes_ac_with_parent", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-test3"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		id, err := src.Create(context.Background(), "Subtask", "task", 2, "Task desc", "oro-parent", "Subtask completed")
+		id, err := src.Create(context.Background(), createParams("Subtask", "task", 2, "Task desc", "oro-parent", "Subtask completed"))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if id != "oro-test3" {
-			t.Errorf("ID: got %q, want %q", id, "oro-test3")
+		if id.ID != "oro-test3" {
+			t.Errorf("ID: got %q, want %q", id.ID, "oro-test3")
 		}
 
 		// Verify both --parent and --acceptance are present.
@@ -952,14 +969,14 @@ func TestCLIBeadSource_CreateWithAcceptanceCriteria(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSource_HasChildren(t *testing.T) {
+func TestCLIStore_HasChildren(t *testing.T) {
 	t.Run("returns true when children exist", func(t *testing.T) {
 		children := []protocol.Bead{
 			{ID: "child-1", Title: "Child task", Priority: 2},
 		}
 		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.HasChildren(context.Background(), "epic-123")
 		if err != nil {
@@ -990,7 +1007,7 @@ func TestCLIBeadSource_HasChildren(t *testing.T) {
 
 	t.Run("returns false when no children", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("[]")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.HasChildren(context.Background(), "epic-456")
 		if err != nil {
@@ -1003,7 +1020,7 @@ func TestCLIBeadSource_HasChildren(t *testing.T) {
 
 	t.Run("returns error on command failure", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd list failed")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.HasChildren(context.Background(), "epic-789")
 		if err == nil {
@@ -1013,7 +1030,7 @@ func TestCLIBeadSource_HasChildren(t *testing.T) {
 
 	t.Run("returns error on invalid JSON", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not json")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.HasChildren(context.Background(), "epic-999")
 		if err == nil {
@@ -1022,15 +1039,15 @@ func TestCLIBeadSource_HasChildren(t *testing.T) {
 	})
 }
 
-// TestCLIBeadSource_Create_Assertions covers the 7 explicit assertions (a–e) required
+// TestCLIStore_Create_Assertions covers the 7 explicit assertions (a–e) required
 // by the bead spec for Create() flag handling.
-func TestCLIBeadSource_Create_Assertions(t *testing.T) {
+func TestCLIStore_Create_Assertions(t *testing.T) {
 	// (a) Create() always includes "--json" in args.
 	t.Run("a_always_includes_json_flag", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-a"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "")
+		_, err := src.Create(context.Background(), createParams("Title", "task", 1, "Desc", "", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -1043,9 +1060,9 @@ func TestCLIBeadSource_Create_Assertions(t *testing.T) {
 	// (b) Create(parent="epic-1") → args include "--parent=epic-1".
 	t.Run("b_parent_epic1_includes_parent_flag", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-b"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "epic-1", "")
+		_, err := src.Create(context.Background(), createParams("Title", "task", 1, "Desc", "epic-1", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -1058,9 +1075,9 @@ func TestCLIBeadSource_Create_Assertions(t *testing.T) {
 	// (c) Create(parent="") → "--parent" NOT in args.
 	t.Run("c_empty_parent_omits_parent_flag", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-c"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "")
+		_, err := src.Create(context.Background(), createParams("Title", "task", 1, "Desc", "", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -1075,9 +1092,9 @@ func TestCLIBeadSource_Create_Assertions(t *testing.T) {
 	// (d) Create(acceptanceCriteria="do X") → args include "--acceptance=do X".
 	t.Run("d_acceptance_criteria_do_x_included", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-d"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		_, err := src.Create(context.Background(), "Title", "task", 1, "Desc", "", "do X")
+		_, err := src.Create(context.Background(), createParams("Title", "task", 1, "Desc", "", "do X"))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -1090,9 +1107,9 @@ func TestCLIBeadSource_Create_Assertions(t *testing.T) {
 	// (e) Create(beadType="bug", priority=3) → args include "--priority=0" (bug forces priority to 0).
 	t.Run("e_bug_type_forces_priority_to_zero", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"oro-e"}`)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		_, err := src.Create(context.Background(), "Login broken", "bug", 3, "Desc", "", "")
+		_, err := src.Create(context.Background(), createParams("Login broken", "bug", 3, "Desc", "", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -1107,12 +1124,12 @@ func TestCLIBeadSource_Create_Assertions(t *testing.T) {
 	})
 }
 
-// TestCLIBeadSource_HasChildren_Assertions covers assertions (f–g) required by the bead spec.
-func TestCLIBeadSource_HasChildren_Assertions(t *testing.T) {
+// TestCLIStore_HasChildren_Assertions covers assertions (f–g) required by the bead spec.
+func TestCLIStore_HasChildren_Assertions(t *testing.T) {
 	// (f) runner returns "[]" → HasChildren returns false, nil (not true).
 	t.Run("f_empty_list_returns_false_nil", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("[]")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.HasChildren(context.Background(), "epic-1")
 		if err != nil {
@@ -1126,7 +1143,7 @@ func TestCLIBeadSource_HasChildren_Assertions(t *testing.T) {
 	// (g) AllChildrenClosed with unparseable JSON → returns false, non-nil error.
 	t.Run("g_allchildrenclosed_unparseable_json_returns_error", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not valid json {")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.AllChildrenClosed(context.Background(), "epic-1")
 		if err == nil {
@@ -1138,7 +1155,7 @@ func TestCLIBeadSource_HasChildren_Assertions(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSource_Update(t *testing.T) {
+func TestCLIStore_Update(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		// Update now makes two bd calls: update + show (post-verify).
 		runner := &mockCommandRunner{
@@ -1150,9 +1167,9 @@ func TestCLIBeadSource_Update(t *testing.T) {
 				return []byte(`[{"id":"abc.1","title":"T","status":"in_progress"}]`), nil
 			},
 		}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		err := src.Update(context.Background(), "abc.1", "in_progress")
+		err := src.Update(context.Background(), "abc.1", statusParams("in_progress"))
 		if err != nil {
 			t.Fatalf("Update: %v", err)
 		}
@@ -1181,9 +1198,9 @@ func TestCLIBeadSource_Update(t *testing.T) {
 
 	t.Run("bd_error_wrapped", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("update failed")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
-		err := src.Update(context.Background(), "abc.1", "in_progress")
+		err := src.Update(context.Background(), "abc.1", statusParams("in_progress"))
 		if err == nil {
 			t.Fatal("expected error from Update when command fails")
 		}
@@ -1193,7 +1210,7 @@ func TestCLIBeadSource_Update(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSource_InProgress(t *testing.T) {
+func TestCLIStore_InProgress(t *testing.T) {
 	t.Run("shells_out_to_bd_list_status_in_progress_json", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "oro-1", Title: "Work in progress", Priority: 1},
@@ -1205,7 +1222,7 @@ func TestCLIBeadSource_InProgress(t *testing.T) {
 		}
 
 		runner := &mockCommandRunner{output: data}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.InProgress(context.Background())
 		if err != nil {
@@ -1242,7 +1259,7 @@ func TestCLIBeadSource_InProgress(t *testing.T) {
 
 	t.Run("empty_json_array_returns_nil_slice", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("[]")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.InProgress(context.Background())
 		if err != nil {
@@ -1255,7 +1272,7 @@ func TestCLIBeadSource_InProgress(t *testing.T) {
 
 	t.Run("command_error_wrapped_and_returned", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd not found")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.InProgress(context.Background())
 		if err == nil {
@@ -1265,7 +1282,7 @@ func TestCLIBeadSource_InProgress(t *testing.T) {
 
 	t.Run("invalid_json_returns_error", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not json")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.InProgress(context.Background())
 		if err == nil {
@@ -1281,7 +1298,7 @@ func TestFindByParentAndTag(t *testing.T) {
 		}
 		data, _ := json.Marshal(beads)
 		runner := &mockCommandRunner{output: data}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.FindByParentAndTag(context.Background(), "epic-123", "epic-branch")
 		if err != nil {
@@ -1318,7 +1335,7 @@ func TestFindByParentAndTag(t *testing.T) {
 
 	t.Run("returns empty slice when no match", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("[]")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.FindByParentAndTag(context.Background(), "epic-456", "no-such-tag")
 		if err != nil {
@@ -1331,7 +1348,7 @@ func TestFindByParentAndTag(t *testing.T) {
 
 	t.Run("returns wrapped error on bd cli failure", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd list failed")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.FindByParentAndTag(context.Background(), "epic-789", "some-tag")
 		if err == nil {
@@ -1344,7 +1361,7 @@ func TestFindByParentAndTag(t *testing.T) {
 
 	t.Run("returns error on invalid JSON", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not json")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.FindByParentAndTag(context.Background(), "epic-999", "tag")
 		if err == nil {
@@ -1353,13 +1370,13 @@ func TestFindByParentAndTag(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSource_Ready_PopulatesEpic(t *testing.T) {
+func TestCLIStore_Ready_PopulatesEpic(t *testing.T) {
 	// Simulate bd ready --json output where the parent field carries the epic ID.
 	// The Bead.Epic field must deserialize from JSON "parent", not "epic".
 	t.Run("bead_with_parent_populates_epic", func(t *testing.T) {
 		raw := `[{"id":"oro-abc","title":"Child task","priority":1,"parent":"oro-p1pj"}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Ready(context.Background())
 		if err != nil {
@@ -1376,7 +1393,7 @@ func TestCLIBeadSource_Ready_PopulatesEpic(t *testing.T) {
 	t.Run("bead_without_parent_epic_stays_empty", func(t *testing.T) {
 		raw := `[{"id":"oro-xyz","title":"Standalone task","priority":2}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Ready(context.Background())
 		if err != nil {
@@ -1391,13 +1408,13 @@ func TestCLIBeadSource_Ready_PopulatesEpic(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSource_Show_PopulatesEpic(t *testing.T) {
+func TestCLIStore_Show_PopulatesEpic(t *testing.T) {
 	// Simulate bd show --json output where the parent field carries the epic ID.
 	// BeadDetail.Epic must deserialize from JSON "parent", not "epic".
 	t.Run("detail_with_parent_populates_epic", func(t *testing.T) {
 		raw := `[{"id":"oro-abc","title":"Child task","description":"desc","acceptance_criteria":"ac","parent":"oro-p1pj"}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Show(context.Background(), "oro-abc")
 		if err != nil {
@@ -1411,7 +1428,7 @@ func TestCLIBeadSource_Show_PopulatesEpic(t *testing.T) {
 	t.Run("detail_without_parent_epic_stays_empty", func(t *testing.T) {
 		raw := `[{"id":"oro-xyz","title":"Standalone task","description":"desc","acceptance_criteria":"ac"}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Show(context.Background(), "oro-xyz")
 		if err != nil {
@@ -1423,13 +1440,13 @@ func TestCLIBeadSource_Show_PopulatesEpic(t *testing.T) {
 	})
 }
 
-// TestCLIBeadSource_Ready_ExtractsMetadataModel verifies that Ready() extracts
+// TestCLIStore_Ready_ExtractsMetadataModel verifies that Ready() extracts
 // metadata.model into bead.Model when no top-level model is set.
-func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
+func TestCLIStore_Ready_ExtractsMetadataModel(t *testing.T) {
 	t.Run("metadata_model_opus_sets_bead_model", func(t *testing.T) {
 		raw := `[{"id":"oro-1","title":"Opus task","priority":1,"metadata":{"model":"opus"}}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Ready(context.Background())
 		if err != nil {
@@ -1447,7 +1464,7 @@ func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
 		// model=opus (string) and count=42 (number) in same metadata map.
 		raw := `[{"id":"oro-2","title":"Mixed metadata","priority":1,"metadata":{"model":"opus","count":42}}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Ready(context.Background())
 		if err != nil {
@@ -1464,7 +1481,7 @@ func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
 	t.Run("invalid_model_gpt4_stays_empty", func(t *testing.T) {
 		raw := `[{"id":"oro-3","title":"GPT task","priority":1,"metadata":{"model":"gpt4"}}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Ready(context.Background())
 		if err != nil {
@@ -1481,7 +1498,7 @@ func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
 	t.Run("nil_metadata_is_no_op", func(t *testing.T) {
 		raw := `[{"id":"oro-4","title":"No metadata","priority":1}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Ready(context.Background())
 		if err != nil {
@@ -1499,7 +1516,7 @@ func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
 		// top-level model="sonnet" + metadata.model="opus" → sonnet wins.
 		raw := `[{"id":"oro-5","title":"Explicit model","priority":1,"model":"sonnet","metadata":{"model":"opus"}}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Ready(context.Background())
 		if err != nil {
@@ -1516,7 +1533,7 @@ func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
 	t.Run("non_string_model_value_is_no_op", func(t *testing.T) {
 		raw := `[{"id":"oro-6","title":"Non-string model","priority":1,"metadata":{"model":42}}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Ready(context.Background())
 		if err != nil {
@@ -1531,12 +1548,12 @@ func TestCLIBeadSource_Ready_ExtractsMetadataModel(t *testing.T) {
 	})
 }
 
-// TestCLIBeadSource_InProgress_ExtractsMetadataModel verifies InProgress() also
+// TestCLIStore_InProgress_ExtractsMetadataModel verifies InProgress() also
 // promotes metadata.model into bead.Model.
-func TestCLIBeadSource_InProgress_ExtractsMetadataModel(t *testing.T) {
+func TestCLIStore_InProgress_ExtractsMetadataModel(t *testing.T) {
 	raw := `[{"id":"oro-7","title":"In-progress opus","priority":1,"metadata":{"model":"opus"}}]`
 	runner := &mockCommandRunner{output: []byte(raw)}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	got, err := src.InProgress(context.Background())
 	if err != nil {
@@ -1550,13 +1567,13 @@ func TestCLIBeadSource_InProgress_ExtractsMetadataModel(t *testing.T) {
 	}
 }
 
-// TestCLIBeadSource_Show_ExtractsMetadataModel verifies Show() promotes
+// TestCLIStore_Show_ExtractsMetadataModel verifies Show() promotes
 // metadata.model into detail.Model.
-func TestCLIBeadSource_Show_ExtractsMetadataModel(t *testing.T) {
+func TestCLIStore_Show_ExtractsMetadataModel(t *testing.T) {
 	t.Run("extracts_metadata_model_into_detail", func(t *testing.T) {
 		raw := `[{"id":"oro-8","title":"Opus detail","description":"desc","acceptance_criteria":"ac","metadata":{"model":"opus"}}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Show(context.Background(), "oro-8")
 		if err != nil {
@@ -1570,7 +1587,7 @@ func TestCLIBeadSource_Show_ExtractsMetadataModel(t *testing.T) {
 	t.Run("explicit_top_level_model_not_overwritten_in_detail", func(t *testing.T) {
 		raw := `[{"id":"oro-9","title":"Sonnet detail","description":"desc","acceptance_criteria":"ac","model":"sonnet","metadata":{"model":"opus"}}]`
 		runner := &mockCommandRunner{output: []byte(raw)}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Show(context.Background(), "oro-9")
 		if err != nil {
@@ -1582,10 +1599,10 @@ func TestCLIBeadSource_Show_ExtractsMetadataModel(t *testing.T) {
 	})
 }
 
-// TestCLIBeadSource_ExtraArgs verifies that BdExtraArgs are prepended to every
+// TestCLIStore_ExtraArgs verifies that BdExtraArgs are prepended to every
 // bd invocation (Ready, Show, Update, Close, Create), and that empty BdExtraArgs
 // leaves behavior unchanged.
-func TestCLIBeadSource_ExtraArgs(t *testing.T) {
+func TestCLIStore_ExtraArgs(t *testing.T) {
 	extraArgs := []string{"--db", "/path/to/beads"}
 
 	// assertPrepended checks that extraArgs appear at the start of call.Args.
@@ -1604,7 +1621,7 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 	t.Run("ready_prepends_extra_args", func(t *testing.T) {
 		data, _ := json.Marshal([]protocol.Bead{{ID: "x.1", Title: "T"}})
 		runner := &mockCommandRunner{output: data}
-		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+		src := &CLIStore{runner: runner, BdExtraArgs: extraArgs}
 
 		_, err := src.Ready(context.Background())
 		if err != nil {
@@ -1620,7 +1637,7 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 		detail := protocol.BeadDetail{ID: "x.1", Title: "T", AcceptanceCriteria: "ac"}
 		data, _ := json.Marshal([]protocol.BeadDetail{detail})
 		runner := &mockCommandRunner{output: data}
-		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+		src := &CLIStore{runner: runner, BdExtraArgs: extraArgs}
 
 		_, err := src.Show(context.Background(), "x.1")
 		if err != nil {
@@ -1641,9 +1658,9 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 				return []byte(`[{"id":"x.1","title":"T","status":"in_progress"}]`), nil
 			},
 		}
-		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+		src := &CLIStore{runner: runner, BdExtraArgs: extraArgs}
 
-		if err := src.Update(context.Background(), "x.1", "in_progress"); err != nil {
+		if err := src.Update(context.Background(), "x.1", statusParams("in_progress")); err != nil {
 			t.Fatalf("Update: %v", err)
 		}
 		assertPrepended(t, runner.calls[0], extraArgs)
@@ -1659,7 +1676,7 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 
 	t.Run("close_prepends_extra_args", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("")}
-		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+		src := &CLIStore{runner: runner, BdExtraArgs: extraArgs}
 
 		if err := src.Close(context.Background(), "x.1", "done"); err != nil {
 			t.Fatalf("Close: %v", err)
@@ -1672,9 +1689,9 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 
 	t.Run("create_prepends_extra_args", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte(`{"id":"x.1"}`)}
-		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+		src := &CLIStore{runner: runner, BdExtraArgs: extraArgs}
 
-		_, err := src.Create(context.Background(), "T", "task", 1, "D", "", "")
+		_, err := src.Create(context.Background(), createParams("T", "task", 1, "D", "", ""))
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -1687,7 +1704,7 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 	t.Run("empty_extra_args_no_change", func(t *testing.T) {
 		data, _ := json.Marshal([]protocol.Bead{{ID: "x.1", Title: "T"}})
 		runner := &mockCommandRunner{output: data}
-		src := &CLIBeadSource{runner: runner, BdExtraArgs: nil}
+		src := &CLIStore{runner: runner, BdExtraArgs: nil}
 
 		_, err := src.Ready(context.Background())
 		if err != nil {
@@ -1701,7 +1718,7 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 
 	t.Run("error_passthrough_not_masked", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("exit status 1: db path not found")}
-		src := &CLIBeadSource{runner: runner, BdExtraArgs: extraArgs}
+		src := &CLIStore{runner: runner, BdExtraArgs: extraArgs}
 
 		_, err := src.Ready(context.Background())
 		if err == nil {
@@ -1713,7 +1730,7 @@ func TestCLIBeadSource_ExtraArgs(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSourceBlocked(t *testing.T) {
+func TestCLIStoreBlocked(t *testing.T) {
 	t.Run("shells_out_to_bd_list_status_blocked_json", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "oro-1", Title: "Blocked work", Priority: 1},
@@ -1725,7 +1742,7 @@ func TestCLIBeadSourceBlocked(t *testing.T) {
 		}
 
 		runner := &mockCommandRunner{output: data}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Blocked(context.Background())
 		if err != nil {
@@ -1762,7 +1779,7 @@ func TestCLIBeadSourceBlocked(t *testing.T) {
 
 	t.Run("empty_json_array_returns_nil_slice", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("[]")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Blocked(context.Background())
 		if err != nil {
@@ -1775,7 +1792,7 @@ func TestCLIBeadSourceBlocked(t *testing.T) {
 
 	t.Run("command_error_wrapped_and_returned", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd not found")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.Blocked(context.Background())
 		if err == nil {
@@ -1785,7 +1802,7 @@ func TestCLIBeadSourceBlocked(t *testing.T) {
 
 	t.Run("invalid_json_returns_error", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not json")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.Blocked(context.Background())
 		if err == nil {
@@ -1794,7 +1811,7 @@ func TestCLIBeadSourceBlocked(t *testing.T) {
 	})
 }
 
-func TestCLIBeadSourceClosed(t *testing.T) {
+func TestCLIStoreClosed(t *testing.T) {
 	t.Run("shells_out_to_bd_list_status_closed_json_with_limit", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "oro-1", Title: "Closed task", Priority: 1},
@@ -1806,7 +1823,7 @@ func TestCLIBeadSourceClosed(t *testing.T) {
 		}
 
 		runner := &mockCommandRunner{output: data}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Closed(context.Background(), 10)
 		if err != nil {
@@ -1846,7 +1863,7 @@ func TestCLIBeadSourceClosed(t *testing.T) {
 
 	t.Run("empty_json_array_returns_nil_slice", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("[]")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		got, err := src.Closed(context.Background(), 5)
 		if err != nil {
@@ -1859,7 +1876,7 @@ func TestCLIBeadSourceClosed(t *testing.T) {
 
 	t.Run("command_error_wrapped_and_returned", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd not found")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.Closed(context.Background(), 5)
 		if err == nil {
@@ -1869,7 +1886,7 @@ func TestCLIBeadSourceClosed(t *testing.T) {
 
 	t.Run("invalid_json_returns_error", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("not json")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		_, err := src.Closed(context.Background(), 5)
 		if err == nil {
@@ -1878,10 +1895,10 @@ func TestCLIBeadSourceClosed(t *testing.T) {
 	})
 }
 
-// TestCLIBeadSource_Update_ReturnsErrorWhenStatusDoesNotChange verifies that
+// TestCLIStore_Update_ReturnsErrorWhenStatusDoesNotChange verifies that
 // Update() returns an error when bd update exits 0 but the status is not actually
 // changed (e.g. cwd mismatch, wrong db path, silent no-op).
-func TestCLIBeadSource_Update_ReturnsErrorWhenStatusDoesNotChange(t *testing.T) {
+func TestCLIStore_Update_ReturnsErrorWhenStatusDoesNotChange(t *testing.T) {
 	runner := &mockCommandRunner{
 		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if sliceContains(args, "update") {
@@ -1891,9 +1908,9 @@ func TestCLIBeadSource_Update_ReturnsErrorWhenStatusDoesNotChange(t *testing.T) 
 			return []byte(`[{"id":"abc.1","title":"T","status":"open"}]`), nil
 		},
 	}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
-	err := src.Update(context.Background(), "abc.1", "in_progress")
+	err := src.Update(context.Background(), "abc.1", statusParams("in_progress"))
 	if err == nil {
 		t.Fatal("expected error when bd update exits 0 but status did not change")
 	}
@@ -1902,10 +1919,10 @@ func TestCLIBeadSource_Update_ReturnsErrorWhenStatusDoesNotChange(t *testing.T) 
 	}
 }
 
-// TestCLIBeadSource_UpdateInProgressPersists is an integration test against a real
+// TestCLIStore_UpdateInProgressPersists is an integration test against a real
 // bd-backed fixture: after Update(id, "in_progress"), Show(id).Status must be
 // "in_progress". Skipped when bd is not in PATH.
-func TestCLIBeadSource_UpdateInProgressPersists(t *testing.T) {
+func TestCLIStore_UpdateInProgressPersists(t *testing.T) {
 	bdBin, err := exec.LookPath("bd")
 	if err != nil {
 		t.Skip("bd binary not in PATH, skipping integration test")
@@ -1945,10 +1962,10 @@ func TestCLIBeadSource_UpdateInProgressPersists(t *testing.T) {
 	beadID := created.ID
 
 	runner := &ExecCommandRunner{Dir: tmpDir}
-	src := NewCLIBeadSource(runner)
+	src := NewCLIStore(runner)
 
 	ctx := context.Background()
-	if err := src.Update(ctx, beadID, "in_progress"); err != nil {
+	if err := src.Update(ctx, beadID, statusParams("in_progress")); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -1961,11 +1978,11 @@ func TestCLIBeadSource_UpdateInProgressPersists(t *testing.T) {
 	}
 }
 
-func TestCLIBeadSource_DeferUndefer(t *testing.T) {
+func TestCLIStore_DeferUndefer(t *testing.T) {
 	// (a) Defer(ctx, "oro-x", "2099-01-01") invokes runner with args [defer oro-x --until=2099-01-01]
 	t.Run("defer_invokes_bd_defer_with_until", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		err := src.Defer(context.Background(), "oro-x", "2099-01-01")
 		if err != nil {
@@ -1992,7 +2009,7 @@ func TestCLIBeadSource_DeferUndefer(t *testing.T) {
 	// (b) Undefer(ctx, "oro-x") invokes runner with args [undefer oro-x]
 	t.Run("undefer_invokes_bd_undefer", func(t *testing.T) {
 		runner := &mockCommandRunner{output: []byte("")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		err := src.Undefer(context.Background(), "oro-x")
 		if err != nil {
@@ -2016,7 +2033,7 @@ func TestCLIBeadSource_DeferUndefer(t *testing.T) {
 	// (c) runner error wraps as "bd defer oro-x: <err>"
 	t.Run("defer_error_wraps_with_subcommand_context", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("defer failed")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		err := src.Defer(context.Background(), "oro-x", "2099-01-01")
 		if err == nil {
@@ -2030,7 +2047,7 @@ func TestCLIBeadSource_DeferUndefer(t *testing.T) {
 	// (c) runner error wraps as "bd undefer oro-x: <err>"
 	t.Run("undefer_error_wraps_with_subcommand_context", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("undefer failed")}
-		src := NewCLIBeadSource(runner)
+		src := NewCLIStore(runner)
 
 		err := src.Undefer(context.Background(), "oro-x")
 		if err == nil {

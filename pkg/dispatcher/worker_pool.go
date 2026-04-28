@@ -256,7 +256,7 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 		if !dw.prevSession {
 			d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
 			if dw.beadID != "" {
-				if err := d.beads.Update(ctx, dw.beadID, "open"); err != nil {
+				if err := d.updateBeadStatus(ctx, dw.beadID, "open"); err != nil {
 					_ = d.logEvent(ctx, "heartbeat_bead_reset_failed", "dispatcher", dw.beadID, dw.workerID,
 						fmt.Sprintf(`{"error":%q}`, err.Error()))
 				}
@@ -275,7 +275,7 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 		if sw.beadID != "" {
 			// Reset the bead to "open" so it can be reassigned, mirroring the
 			// graceful-disconnect path in dispatcher.go.
-			if err := d.beads.Update(ctx, sw.beadID, "open"); err != nil {
+			if err := d.updateBeadStatus(ctx, sw.beadID, "open"); err != nil {
 				_ = d.logEvent(ctx, "progress_timeout_bead_reset_failed", "dispatcher", sw.beadID, sw.workerID,
 					fmt.Sprintf(`{"error":%q}`, err.Error()))
 			}
@@ -620,7 +620,7 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 	// Requeue any in-flight bead so it can be reassigned.
 	if beadID != "" {
 		ctx := context.Background()
-		if err := d.beads.Update(ctx, beadID, "open"); err != nil {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
 			_ = d.logEvent(ctx, "scale_down_bead_reset_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/dbutil"
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
@@ -47,11 +48,11 @@ func (m *mockBeadSource) Close(_ context.Context, _ string, _ string) error {
 	return nil
 }
 
-func (m *mockBeadSource) Create(_ context.Context, _, _ string, _ int, _, _, _ string) (string, error) {
-	return "", nil
+func (m *mockBeadSource) Create(_ context.Context, _ beadstore.CreateParams) (*protocol.Bead, error) {
+	return &protocol.Bead{ID: "oro-new"}, nil
 }
 
-func (m *mockBeadSource) Update(_ context.Context, _, _ string) error {
+func (m *mockBeadSource) Update(_ context.Context, _ string, _ beadstore.UpdateParams) error {
 	return nil
 }
 

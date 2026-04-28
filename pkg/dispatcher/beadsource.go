@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 )
 
@@ -15,20 +16,23 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-// CLIBeadSource implements BeadSource by shelling out to the bd CLI tool.
-type CLIBeadSource struct {
+var _ beadstore.Store = (*CLIStore)(nil)
+var _ DeferredStore = (*CLIStore)(nil)
+
+// CLIStore implements the bead store interfaces by shelling out to the bd CLI tool.
+type CLIStore struct {
 	runner      CommandRunner
 	BdExtraArgs []string // optional args prepended to every bd invocation (e.g. ["--db", "/path"])
 }
 
-// NewCLIBeadSource creates a CLIBeadSource backed by the given CommandRunner.
-func NewCLIBeadSource(runner CommandRunner) *CLIBeadSource {
-	return &CLIBeadSource{runner: runner}
+// NewCLIStore creates a CLIStore backed by the given CommandRunner.
+func NewCLIStore(runner CommandRunner) *CLIStore {
+	return &CLIStore{runner: runner}
 }
 
 // bdArgs returns the full argument list for a bd invocation, prepending
 // BdExtraArgs (if any) before the provided subcommand args.
-func (s *CLIBeadSource) bdArgs(args ...string) []string {
+func (s *CLIStore) bdArgs(args ...string) []string {
 	if len(s.BdExtraArgs) == 0 {
 		return args
 	}
@@ -39,7 +43,7 @@ func (s *CLIBeadSource) bdArgs(args ...string) []string {
 }
 
 // Ready runs `bd ready --json` and parses the output into a slice of Bead.
-func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
+func (s *CLIStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("ready", "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd ready: %w", err)
@@ -55,7 +59,7 @@ func (s *CLIBeadSource) Ready(ctx context.Context) ([]protocol.Bead, error) {
 
 // InProgress runs `bd list --status=in_progress --json` and parses the output into a slice of Bead.
 // Returns nil slice (not empty slice) when bd reports no in-progress beads.
-func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error) {
+func (s *CLIStore) InProgress(ctx context.Context) ([]protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--status=in_progress", "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd list --status=in_progress: %w", err)
@@ -74,7 +78,7 @@ func (s *CLIBeadSource) InProgress(ctx context.Context) ([]protocol.Bead, error)
 
 // Blocked runs `bd list --status=blocked --json` and parses the output into a slice of Bead.
 // Returns nil slice (not empty slice) when bd reports no blocked beads.
-func (s *CLIBeadSource) Blocked(ctx context.Context) ([]protocol.Bead, error) {
+func (s *CLIStore) Blocked(ctx context.Context) ([]protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--status=blocked", "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd list --status=blocked: %w", err)
@@ -93,7 +97,7 @@ func (s *CLIBeadSource) Blocked(ctx context.Context) ([]protocol.Bead, error) {
 
 // Closed runs `bd list --status=closed --json --limit=<limit>` and parses the output into a slice of Bead.
 // Returns nil slice (not empty slice) when bd reports no closed beads.
-func (s *CLIBeadSource) Closed(ctx context.Context, limit int) ([]protocol.Bead, error) {
+func (s *CLIStore) Closed(ctx context.Context, limit int) ([]protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--status=closed", fmt.Sprintf("--limit=%d", limit), "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd list --status=closed: %w", err)
@@ -110,8 +114,8 @@ func (s *CLIBeadSource) Closed(ctx context.Context, limit int) ([]protocol.Bead,
 	return beads, nil
 }
 
-// Show runs `bd show <id> --json` and parses the output into a BeadDetail.
-func (s *CLIBeadSource) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
+// Show runs `bd show <id> --json` and parses the output into a Bead.
+func (s *CLIStore) Show(ctx context.Context, id string) (*protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("show", id, "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd show %s: %w", id, err)
@@ -252,7 +256,7 @@ func findHeaderAtLineStart(text, header string) int {
 }
 
 // Close runs `bd close <id> --reason="<reason>"`.
-func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
+func (s *CLIStore) Close(ctx context.Context, id, reason string) error {
 	_, err := s.runner.Run(ctx, "bd", s.bdArgs("close", id, "--reason="+reason)...)
 	if err != nil {
 		return fmt.Errorf("bd close %s: %w", id, err)
@@ -261,7 +265,7 @@ func (s *CLIBeadSource) Close(ctx context.Context, id, reason string) error {
 }
 
 // Defer runs `bd defer <id> --until=<until>`.
-func (s *CLIBeadSource) Defer(ctx context.Context, id, until string) error {
+func (s *CLIStore) Defer(ctx context.Context, id, until string) error {
 	_, err := s.runner.Run(ctx, "bd", s.bdArgs("defer", id, "--until="+until)...)
 	if err != nil {
 		return fmt.Errorf("bd defer %s: %w", id, err)
@@ -270,7 +274,7 @@ func (s *CLIBeadSource) Defer(ctx context.Context, id, until string) error {
 }
 
 // Undefer runs `bd undefer <id>`.
-func (s *CLIBeadSource) Undefer(ctx context.Context, id string) error {
+func (s *CLIStore) Undefer(ctx context.Context, id string) error {
 	_, err := s.runner.Run(ctx, "bd", s.bdArgs("undefer", id)...)
 	if err != nil {
 		return fmt.Errorf("bd undefer %s: %w", id, err)
@@ -278,20 +282,39 @@ func (s *CLIBeadSource) Undefer(ctx context.Context, id string) error {
 	return nil
 }
 
-// Update runs `bd update <id> --status=<status>` then re-reads bd show to verify
+// Update runs `bd update <id> ...` then re-reads bd show to verify
 // the status was actually persisted. bd update exits 0 even on a no-op (e.g. cwd
 // mismatch, wrong db path), so we must verify explicitly rather than trust exit code.
-func (s *CLIBeadSource) Update(ctx context.Context, id, status string) error {
-	_, err := s.runner.Run(ctx, "bd", s.bdArgs("update", id, "--status="+status)...)
+func (s *CLIStore) Update(ctx context.Context, id string, params beadstore.UpdateParams) error {
+	args := []string{"update", id}
+	if params.Status != nil {
+		args = append(args, "--status="+*params.Status)
+	}
+	if params.Priority != nil {
+		args = append(args, fmt.Sprintf("--priority=%d", *params.Priority))
+	}
+	if params.Type != nil {
+		args = append(args, "--type="+*params.Type)
+	}
+	if params.ParentID != nil {
+		args = append(args, "--parent="+*params.ParentID)
+	}
+	if params.Owner != nil {
+		args = append(args, "--owner="+*params.Owner)
+	}
+
+	_, err := s.runner.Run(ctx, "bd", s.bdArgs(args...)...)
 	if err != nil {
 		return fmt.Errorf("bd update %s: %w", id, err)
 	}
-	detail, err := s.Show(ctx, id)
-	if err != nil {
-		return fmt.Errorf("bd update %s: post-update verify failed: %w", id, err)
-	}
-	if detail.Status != status {
-		return fmt.Errorf("bd update %s: status not persisted (got %q, want %q) — possible cwd mismatch or wrong db path", id, detail.Status, status)
+	if params.Status != nil {
+		detail, err := s.Show(ctx, id)
+		if err != nil {
+			return fmt.Errorf("bd update %s: post-update verify failed: %w", id, err)
+		}
+		if detail.Status != *params.Status {
+			return fmt.Errorf("bd update %s: status not persisted (got %q, want %q) — possible cwd mismatch or wrong db path", id, detail.Status, *params.Status)
+		}
 	}
 	return nil
 }
@@ -300,48 +323,52 @@ func (s *CLIBeadSource) Update(ctx context.Context, id, status string) error {
 // and optionally `--parent=...` if parent is non-empty and `--acceptance=...`
 // if acceptanceCriteria is non-empty. It parses the JSON output to extract and return
 // the new bead ID.
-func (s *CLIBeadSource) Create(ctx context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error) {
+func (s *CLIStore) Create(ctx context.Context, params beadstore.CreateParams) (*protocol.Bead, error) {
 	// Bugs are always P0 — if it's not urgent, it should be a task or feature.
-	if beadType == "bug" {
-		priority = 0
+	if params.Type == "bug" {
+		params.Priority = 0
 	}
 	args := []string{
 		"create",
-		"--title=" + title,
-		"--type=" + beadType,
-		fmt.Sprintf("--priority=%d", priority),
-		"--description=" + description,
+		"--title=" + params.Title,
+		"--type=" + params.Type,
+		fmt.Sprintf("--priority=%d", params.Priority),
+		"--description=" + params.Description,
 	}
-	if parent != "" {
-		args = append(args, "--parent="+parent)
+	if params.ParentID != "" {
+		args = append(args, "--parent="+params.ParentID)
 	}
-	if acceptanceCriteria != "" {
-		args = append(args, "--acceptance="+acceptanceCriteria)
+	if params.AcceptanceCriteria != "" {
+		args = append(args, "--acceptance="+params.AcceptanceCriteria)
 	}
 	args = append(args, "--json")
 
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs(args...)...)
 	if err != nil {
-		return "", fmt.Errorf("bd create: %w", err)
+		return nil, fmt.Errorf("bd create: %w", err)
 	}
 
 	var result struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(out, &result); err != nil {
-		return "", fmt.Errorf("parse bd create output: %w", err)
+		return nil, fmt.Errorf("parse bd create output: %w", err)
 	}
-	return result.ID, nil
+	if result.ID == "" {
+		return nil, fmt.Errorf("parse bd create output: missing id")
+	}
+	return &protocol.Bead{ID: result.ID}, nil
 }
 
-// Sync is a no-op. Beads syncing is now handled elsewhere.
-func (s *CLIBeadSource) Sync(ctx context.Context) error {
+// Sync is a no-op retained for older callers that still treat the CLI adapter
+// as a flushable boundary.
+func (s *CLIStore) Sync(ctx context.Context) error {
 	return nil
 }
 
 // HasChildren checks whether the given epic has any children (open or closed).
 // Returns true if at least one child exists, false otherwise.
-func (s *CLIBeadSource) HasChildren(ctx context.Context, epicID string) (bool, error) {
+func (s *CLIStore) HasChildren(ctx context.Context, epicID string) (bool, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--parent="+epicID, "--json")...)
 	if err != nil {
 		return false, fmt.Errorf("bd list --parent=%s: %w", epicID, err)
@@ -358,7 +385,7 @@ func (s *CLIBeadSource) HasChildren(ctx context.Context, epicID string) (bool, e
 // FindByParentAndTag runs `bd list --parent=<parentID> --tag=<tag> --json` and
 // returns all matching beads. Returns an empty slice (not an error) when no
 // beads match; returns a wrapped error on bd CLI failure or JSON parse failure.
-func (s *CLIBeadSource) FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error) {
+func (s *CLIStore) FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--parent="+parentID, "--tag="+tag, "--json")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd list --parent=%s --tag=%s: %w", parentID, tag, err)
@@ -377,7 +404,7 @@ func (s *CLIBeadSource) FindByParentAndTag(ctx context.Context, parentID, tag st
 
 // Export runs `bd export` and returns the raw JSONL output containing all issues
 // (both open and closed). Returns an error if the command fails.
-func (s *CLIBeadSource) Export(ctx context.Context) ([]byte, error) {
+func (s *CLIStore) Export(ctx context.Context) ([]byte, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("export")...)
 	if err != nil {
 		return nil, fmt.Errorf("bd export: %w", err)
@@ -388,7 +415,7 @@ func (s *CLIBeadSource) Export(ctx context.Context) ([]byte, error) {
 // AllChildrenClosed checks whether all children of the given epic are closed.
 // Fetches all children and checks status locally to avoid bd query filter quirks.
 // Returns true only if every child has status "closed".
-func (s *CLIBeadSource) AllChildrenClosed(ctx context.Context, epicID string) (bool, error) {
+func (s *CLIStore) AllChildrenClosed(ctx context.Context, epicID string) (bool, error) {
 	out, err := s.runner.Run(ctx, "bd", s.bdArgs("list", "--parent="+epicID, "--json")...)
 	if err != nil {
 		return false, fmt.Errorf("bd list --parent=%s: %w", epicID, err)

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/dbutil"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
@@ -160,7 +161,7 @@ func (m *mockBeadSource) Close(_ context.Context, id string, reason string) erro
 	return nil
 }
 
-func (m *mockBeadSource) Update(_ context.Context, id, status string) error {
+func (m *mockBeadSource) Update(_ context.Context, id string, params beadstore.UpdateParams) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updateErrs != nil {
@@ -171,7 +172,9 @@ func (m *mockBeadSource) Update(_ context.Context, id, status string) error {
 	if m.updated == nil {
 		m.updated = make(map[string]string)
 	}
-	m.updated[id] = status
+	if params.Status != nil {
+		m.updated[id] = *params.Status
+	}
 	return nil
 }
 
@@ -182,15 +185,22 @@ func (m *mockBeadSource) Sync(_ context.Context) error {
 	return nil
 }
 
-func (m *mockBeadSource) Create(_ context.Context, title, beadType string, priority int, description, parent, acceptanceCriteria string) (string, error) {
+func (m *mockBeadSource) Create(_ context.Context, params beadstore.CreateParams) (*protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.created = append(m.created, createCall{title, beadType, priority, description, parent, acceptanceCriteria})
+	m.created = append(m.created, createCall{
+		title:              params.Title,
+		beadType:           params.Type,
+		priority:           params.Priority,
+		description:        params.Description,
+		parent:             params.ParentID,
+		acceptanceCriteria: params.AcceptanceCriteria,
+	})
 	id := "oro-new1"
 	if m.createID != "" {
 		id = m.createID
 	}
-	return id, nil
+	return &protocol.Bead{ID: id}, nil
 }
 
 func (m *mockBeadSource) AllChildrenClosed(_ context.Context, epicID string) (bool, error) {
@@ -7226,7 +7236,7 @@ func TestDispatcher_Handoff_CountResetsOnDone(t *testing.T) {
 	}
 }
 
-func TestShutdownCleanup_CallsBeadSync(t *testing.T) {
+func TestShutdownCleanup_DoesNotSyncBeads(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
 	// Call shutdownRemoveWorktrees directly (no need to start the full dispatcher).
@@ -7236,8 +7246,8 @@ func TestShutdownCleanup_CallsBeadSync(t *testing.T) {
 	synced := beadSrc.synced
 	beadSrc.mu.Unlock()
 
-	if !synced {
-		t.Fatal("expected BeadSource.Sync to be called during shutdownRemoveWorktrees")
+	if synced {
+		t.Fatal("expected shutdownRemoveWorktrees not to call bead Sync")
 	}
 }
 

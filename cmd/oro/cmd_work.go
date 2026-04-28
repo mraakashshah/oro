@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
 	"oro/pkg/langprofile"
@@ -44,7 +45,7 @@ type workConfig struct {
 	skipReview    bool
 	dryRun        bool
 	baseBranch    string
-	bead          *protocol.BeadDetail
+	bead          *protocol.Bead
 }
 
 // validate checks that the loaded bead has the required fields.
@@ -99,7 +100,7 @@ type opsReviewer interface {
 
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
-	beadSrc       dispatcher.BeadSource
+	beadSrc       beadstore.Store
 	wtMgr         dispatcher.WorktreeManager
 	spawner       worker.StreamingSpawner
 	opsMgr        opsReviewer
@@ -111,6 +112,10 @@ type workDeps struct {
 	hasNewWork    func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
 	runQG         func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
 	runShellCmd   func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
+}
+
+func updateWorkBeadStatus(ctx context.Context, beads beadstore.Store, id, status string) error {
+	return beads.Update(ctx, id, beadstore.UpdateParams{Status: &status})
 }
 
 // exitError carries an exit code through the normal error return path,
@@ -156,7 +161,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	}
 
 	return &workDeps{
-		beadSrc:       dispatcher.NewCLIBeadSource(runner),
+		beadSrc:       dispatcher.NewCLIStore(runner),
 		wtMgr:         dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
 		spawner:       runtime.workerSpawn,
 		opsMgr:        ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
@@ -262,13 +267,13 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	// Step 2: Mark in_progress and set up deferred bead reset.
-	_ = deps.beadSrc.Update(ctx, cfg.beadID, "in_progress")
+	_ = updateWorkBeadStatus(ctx, deps.beadSrc, cfg.beadID, "in_progress")
 	var merged bool
 	defer func() {
 		if !merged {
 			// Reset bead to open so it can be re-assigned.
 			// Use Background context because the parent ctx may be cancelled.
-			_ = deps.beadSrc.Update(context.Background(), cfg.beadID, "open")
+			_ = updateWorkBeadStatus(context.Background(), deps.beadSrc, cfg.beadID, "open")
 		}
 	}()
 

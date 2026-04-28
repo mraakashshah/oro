@@ -765,7 +765,7 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	}
 	projectPaths, _ := ResolvePaths(repoRoot)
 	runner := &dispatcher.ExecCommandRunner{}
-	beadSrc := dispatcher.NewCLIBeadSource(runner)
+	beadSrc := dispatcher.NewCLIStore(runner)
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner)
 	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
