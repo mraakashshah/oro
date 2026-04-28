@@ -109,6 +109,51 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 	assertArgs(t, calls[5], "/repo", "rev-parse", "HEAD")
 }
 
+func TestMerge_CommonDirWithoutDotGitUsesShowTopLevel(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// 0. git rev-list --count main..bead/linked — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
+			// 1. git rebase main bead/linked — success
+			{Stdout: "", Stderr: "", Err: nil},
+			// 2. git rev-parse --git-common-dir returns a path that cannot be
+			// converted to a primary repo by stripping "/.git".
+			{Stdout: ".git\n", Stderr: "", Err: nil},
+			// 3. fallback to git rev-parse --show-toplevel.
+			{Stdout: "/repo\n", Stderr: "", Err: nil},
+			// 4. git merge --ff-only bead/linked
+			{Stdout: "", Stderr: "", Err: nil},
+			// 5. git worktree remove --force <path>
+			{Stdout: "", Stderr: "", Err: nil},
+			// 6. git rev-parse HEAD
+			{Stdout: "linked123\n", Stderr: "", Err: nil},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	result, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/linked",
+		Worktree: "/tmp/wt-linked",
+		BeadID:   "oro-linked",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result.CommitSHA != "linked123" {
+		t.Fatalf("commit SHA = %q, want linked123", result.CommitSHA)
+	}
+
+	calls := mock.getCalls()
+	if len(calls) != 7 {
+		t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
+	}
+	assertArgs(t, calls[2], "/tmp/wt-linked", "rev-parse", "--git-common-dir")
+	assertArgs(t, calls[3], "/tmp/wt-linked", "rev-parse", "--show-toplevel")
+	assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/linked")
+	assertArgs(t, calls[5], "/repo", "worktree", "remove", "--force", "/tmp/wt-linked")
+	assertArgs(t, calls[6], "/repo", "rev-parse", "HEAD")
+}
+
 func TestMerge_RebaseConflict_ReturnsConflictError(t *testing.T) {
 	rebaseStderr := `error: could not apply fa39187... something
 Resolve all conflicts manually, mark them as resolved with
@@ -580,6 +625,24 @@ func TestNewCoordinator_SetsGitRunner(t *testing.T) {
 	}
 }
 
+func TestCoordinator_GetOrCreateRebaseLock_ReusesTargetLock(t *testing.T) {
+	coord := NewCoordinator(&mockGitRunner{})
+
+	first := coord.getOrCreateRebaseLock("main")
+	second := coord.getOrCreateRebaseLock("main")
+	other := coord.getOrCreateRebaseLock("release")
+
+	if first == nil || second == nil || other == nil {
+		t.Fatal("expected non-nil locks")
+	}
+	if first != second {
+		t.Fatal("expected repeated calls for the same target to return the stored lock")
+	}
+	if first == other {
+		t.Fatal("expected different targets to use different locks")
+	}
+}
+
 func TestConflictError_EmptyFiles(t *testing.T) {
 	err := &ConflictError{
 		Files:  nil,
@@ -806,14 +869,16 @@ func TestMerge_BranchAlreadyMerged_DiffCheck(t *testing.T) {
 	})
 }
 
-func TestMerge_RebaseNoConflictPattern(t *testing.T) {
-	// Rebase fails but stderr doesn't contain CONFLICT pattern
+func TestMerge_RebaseNoConflictPatternReturnsNonConflictError(t *testing.T) {
+	// Rebase fails but neither git output nor the index contains unmerged paths.
 	mock := &mockGitRunner{
 		results: []mockResult{
 			// git rev-list --count main..bead/noconf — not merged yet
 			{Stdout: "1\n", Stderr: "", Err: nil},
-			// git rebase fails with non-conflict error (left in-progress; no --abort)
+			// git rebase fails with non-conflict error.
 			{Stdout: "", Stderr: "fatal: not a git repository", Err: fmt.Errorf("exit status 128")},
+			// git diff --name-only --diff-filter=U finds no unmerged paths.
+			{Stdout: "", Stderr: "", Err: nil},
 		},
 	}
 
@@ -828,12 +893,69 @@ func TestMerge_RebaseNoConflictPattern(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	var conflictErr *ConflictError
+	if errors.As(err, &conflictErr) {
+		t.Fatalf("expected non-conflict error, got ConflictError: %v", err)
+	}
+	if !strings.Contains(err.Error(), "failed without unmerged paths") {
+		t.Fatalf("expected unmerged-path diagnostic, got: %v", err)
+	}
+	calls := mock.getCalls()
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 git calls, got %d: %+v", len(calls), calls)
+	}
+	assertArgs(t, calls[2], "/tmp/wt-noconf", "diff", "--name-only", "--diff-filter=U")
+}
+
+func TestMerge_RebaseFailureUsesUnmergedDiffFallback(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// git rev-list --count main..bead/diffconf — not merged yet
+			{Stdout: "1\n", Stderr: "", Err: nil},
+			// git rebase fails without parseable CONFLICT lines.
+			{Stdout: "", Stderr: "error: could not apply abc123", Err: fmt.Errorf("exit status 1")},
+			// The index still identifies real unmerged paths.
+			{Stdout: "pkg/a.go\npkg/b.go\n", Stderr: "", Err: nil},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/diffconf",
+		Worktree: "/tmp/wt-diffconf",
+		BeadID:   "oro-diffconf",
+	})
+
+	var conflictErr *ConflictError
 	if !errors.As(err, &conflictErr) {
 		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
 	}
-	// Files should be nil since no CONFLICT pattern matched
-	if conflictErr.Files != nil {
-		t.Errorf("expected nil files, got: %v", conflictErr.Files)
+	want := []string{"pkg/a.go", "pkg/b.go"}
+	if strings.Join(conflictErr.Files, ",") != strings.Join(want, ",") {
+		t.Fatalf("conflict files = %v, want %v", conflictErr.Files, want)
+	}
+}
+
+func TestMerge_RebaseConflictParsesStdout(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			{Stdout: "1\n", Stderr: "", Err: nil},
+			{Stdout: "CONFLICT (content): Merge conflict in stdout.go\n", Stderr: "", Err: fmt.Errorf("exit status 1")},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/stdout",
+		Worktree: "/tmp/wt-stdout",
+		BeadID:   "oro-stdout",
+	})
+
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
+	}
+	if len(conflictErr.Files) != 1 || conflictErr.Files[0] != "stdout.go" {
+		t.Fatalf("conflict files = %v, want [stdout.go]", conflictErr.Files)
 	}
 }
 

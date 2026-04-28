@@ -144,14 +144,13 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	}
 
 	// Step 1: Rebase branch onto target.
-	_, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", target, opts.Branch)
+	stdout, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", target, opts.Branch)
 	if err != nil {
 		// Context cancelled/deadline exceeded takes priority over conflict handling.
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("merge cancelled: %w", ctx.Err())
 		}
-		// Rebase failed — abort and return conflict error.
-		return nil, c.handleRebaseFailure(ctx, opts, stderr)
+		return nil, c.handleRebaseFailure(ctx, opts, target, stdout, stderr, err)
 	}
 
 	// Rebase done — deregister from activeWorktrees (abort no longer applicable).
@@ -203,9 +202,9 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 			return nil, fmt.Errorf("rev-parse HEAD for retry base: %w", headErr)
 		}
 		retryBase := strings.TrimSpace(currentHead)
-		_, stderr, rebaseErr := c.git.Run(ctx, opts.Worktree, "rebase", retryBase, opts.Branch)
+		stdout, stderr, rebaseErr := c.git.Run(ctx, opts.Worktree, "rebase", retryBase, opts.Branch)
 		if rebaseErr != nil {
-			return nil, c.handleRebaseFailure(ctx, opts, stderr)
+			return nil, c.handleRebaseFailure(ctx, opts, retryBase, stdout, stderr, rebaseErr)
 		}
 		_, _, err = c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch)
 		if err != nil {
@@ -274,16 +273,30 @@ func (c *Coordinator) isBranchMerged(ctx context.Context, opts Opts) (merged boo
 	return true, strings.TrimSpace(sha), nil
 }
 
-// handleRebaseFailure returns a ConflictError with the parsed conflicting file
-// paths. The rebase is intentionally left in-progress so the ops merge agent
-// can resolve the conflicts in the worktree and run git rebase --continue.
-// Aborting here would destroy the conflict state before the agent can act.
-func (c *Coordinator) handleRebaseFailure(_ context.Context, opts Opts, rebaseStderr string) error {
-	files := parseConflictFiles(rebaseStderr)
-	return &ConflictError{
-		Files:  files,
-		BeadID: opts.BeadID,
+// handleRebaseFailure returns a ConflictError only when git left unmerged
+// paths behind. The rebase is intentionally left in-progress for real
+// conflicts so the ops merge agent can resolve them and run git rebase
+// --continue. Non-conflict rebase errors must not be routed through the
+// merge-conflict loop.
+func (c *Coordinator) handleRebaseFailure(ctx context.Context, opts Opts, target, rebaseStdout, rebaseStderr string, cause error) error {
+	output := strings.TrimSpace(rebaseStdout + "\n" + rebaseStderr)
+	files := parseConflictFiles(output)
+	if len(files) == 0 {
+		unmerged, _, err := c.git.Run(ctx, opts.Worktree, "diff", "--name-only", "--diff-filter=U")
+		if err == nil {
+			files = parseConflictFileList(unmerged)
+		}
 	}
+	if len(files) > 0 {
+		return &ConflictError{
+			Files:  files,
+			BeadID: opts.BeadID,
+		}
+	}
+	if output == "" {
+		return fmt.Errorf("rebase %s onto %s failed without unmerged paths: %w", opts.Branch, target, cause)
+	}
+	return fmt.Errorf("rebase %s onto %s failed without unmerged paths: %w: %s", opts.Branch, target, cause, output)
 }
 
 // Abort runs best-effort 'git rebase --abort' on the worktree currently rebasing
@@ -338,6 +351,17 @@ func parseConflictFiles(stderr string) []string {
 	files := make([]string, 0, len(matches))
 	for _, m := range matches {
 		files = append(files, strings.TrimSpace(m[1]))
+	}
+	return files
+}
+
+func parseConflictFileList(stdout string) []string {
+	var files []string
+	for _, line := range strings.Split(stdout, "\n") {
+		file := strings.TrimSpace(line)
+		if file != "" {
+			files = append(files, file)
+		}
 	}
 	return files
 }
