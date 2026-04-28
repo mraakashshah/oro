@@ -1,5 +1,12 @@
 # Decisions and Discoveries
 
+## 2026-04-28: Phase 0 schema sign-off
+**Reviewer:** Codex manual adversarial review (GPT-5 coding agent), 2026-04-28.
+**Scope:** Replatform beads spec sections 6, 9.6, and 12.1.
+**Decision:** Sign off for Phase 1 implementation with the Phase 0 audit notes treated as required inputs, not optional commentary.
+**Review:** The core tables, bd-to-SQLite field mapping, tombstone handling, two-pass import, and trigger envelope are structurally sound for the replatform path. The review did find material readiness and interface-drift risks, but those are already captured in `docs/plans/notes/bd-ready-semantics.md`, `docs/plans/notes/beadsource-interface.md`, and `docs/plans/notes/jsonl-inventory.md`.
+**Comments resolved/escalated:** Phase 1 must implement bd parity beyond the simple `beads_ready` sketch: pinned exclusions, default type filters, `waits-for`, child-of-deferred-parent, child-of-blocked-parent, and bd sort/limit behavior. Phase 1 must also explicitly preserve deferred-bead behavior from legacy `Defer` and `Undefer` even though the target store interface is reshaped. The JSONL fallback implementation must prefer `.beads/backup/full-state.jsonl` and treat `.beads/full-state.jsonl` only as a legacy alias.
+
 ## 2026-04-01: Epic management has 6 failure modes — design doc written
 **Tags:** #dispatcher #epic #bugs #architecture
 **Context:** During a live swarm session, observed: workers idle with work available (type promotion confused dispatcher), `bead_closed_externally` spam, zombie bead reassignment, ff-merge infinite retry loops, false STUCK_WORKER escalations for missing epic branches. Deep-explored all epic code paths in dispatcher.go.
