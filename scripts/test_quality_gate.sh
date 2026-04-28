@@ -179,6 +179,78 @@ test_quality_gate_mutation_trap_present() {
 	return 1
 }
 
+# shellcheck disable=SC2317,SC2329
+test_beadstore_import_boundary_rejects_forbidden_imports() {
+	local tmpdir oldpwd output
+	tmpdir=$(mktemp -d)
+	oldpwd="$PWD"
+
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	mkdir -p "$tmpdir/scripts" "$tmpdir/pkg/beadstore"
+	cp "$SCRIPT_DIR/check-beadstore-imports.sh" "$tmpdir/scripts/"
+	cat >"$tmpdir/pkg/beadstore/bad.go" <<'EOF'
+package beadstore
+
+import (
+	"oro/pkg/dispatcher"
+	"oro/pkg/mg/data"
+	"oro/pkg/ops"
+	"oro/pkg/worker"
+)
+
+var _ = dispatcher.ErrLocked
+EOF
+
+	cd "$tmpdir"
+	set +e
+	output=$(scripts/check-beadstore-imports.sh 2>&1)
+	result=$?
+	set -e
+	cd "$oldpwd"
+
+	if [ "$result" -eq 0 ]; then
+		echo "Expected forbidden dispatcher import to fail"
+		return 1
+	fi
+	for expected in \
+		'pkg/beadstore/bad.go:4:.*oro/pkg/dispatcher' \
+		'pkg/beadstore/bad.go:5:.*oro/pkg/mg/data' \
+		'pkg/beadstore/bad.go:6:.*oro/pkg/ops' \
+		'pkg/beadstore/bad.go:7:.*oro/pkg/worker'; do
+		if ! echo "$output" | grep -q "$expected"; then
+			echo "Expected output to include $expected, got:"
+			echo "$output"
+			return 1
+		fi
+	done
+}
+
+# shellcheck disable=SC2317,SC2329
+test_beadstore_import_boundary_allows_protocol_import() {
+	local tmpdir oldpwd
+	tmpdir=$(mktemp -d)
+	oldpwd="$PWD"
+
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	mkdir -p "$tmpdir/scripts" "$tmpdir/pkg/beadstore"
+	cp "$SCRIPT_DIR/check-beadstore-imports.sh" "$tmpdir/scripts/"
+	cat >"$tmpdir/pkg/beadstore/good.go" <<'EOF'
+package beadstore
+
+import "oro/pkg/protocol"
+
+var _ = protocol.Bead{}
+EOF
+
+	cd "$tmpdir"
+	scripts/check-beadstore-imports.sh
+	cd "$oldpwd"
+}
+
 # Test: quality_gate.sh mutation cleanup preserves pre-existing unstaged edits.
 # shellcheck disable=SC2317,SC2329
 test_quality_gate_mutation_cleanup_preserves_unstaged_work() {
@@ -640,6 +712,13 @@ echo "=============================================="
 test_case "worktree env restores GIT_DIR" test_worktree_ref_resolution_after_env_cleanup
 test_case "worktree rev-parse main works" test_worktree_rev_parse_main_functional
 test_case "worktree env no GIT_WORK_TREE leak" test_worktree_env_no_leak_to_subprocesses
+
+echo ""
+echo "Testing beadstore import boundary (oro-8ghm)"
+echo "=============================================="
+
+test_case "beadstore import boundary rejects forbidden imports" test_beadstore_import_boundary_rejects_forbidden_imports
+test_case "beadstore import boundary allows protocol import" test_beadstore_import_boundary_allows_protocol_import
 
 echo ""
 echo "Testing shell correctness in mutation testing (oro-koon)"

@@ -41,6 +41,9 @@ jobs:
           args: --timeout 5m ./cmd/... ./internal/... ./pkg/...
 
       # Tier 3: Architecture
+      - name: beadstore import boundary
+        run: scripts/check-beadstore-imports.sh
+
       - name: go-arch-lint
         run: |
           go install github.com/fe3dback/go-arch-lint@latest
