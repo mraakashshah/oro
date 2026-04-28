@@ -893,6 +893,15 @@ func (d *Dispatcher) startHTTPServer() {
 //
 // Run blocks until ctx is cancelled.
 func (d *Dispatcher) Run(ctx context.Context) error {
+	lock, err := acquirePIDLock(d.cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.release() }()
+	lockRefreshCtx, cancelLockRefresh := context.WithCancel(ctx)
+	defer cancelLockRefresh()
+	go lock.refreshLoop(lockRefreshCtx, pidLockMaxAge/2)
+
 	d.mu.Lock()
 	d.startTime = d.nowFunc()
 	d.mu.Unlock()
