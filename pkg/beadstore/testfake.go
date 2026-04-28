@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,6 +217,18 @@ func (s *FakeStore) Update(ctx context.Context, id string, params UpdateParams) 
 	}
 	if params.Type != nil {
 		bead.Type = *params.Type
+		changed = true
+	}
+	if params.AcceptanceCriteria != nil {
+		bead.AcceptanceCriteria = *params.AcceptanceCriteria
+		changed = true
+	}
+	if params.Notes != nil && strings.TrimSpace(*params.Notes) != "" {
+		if bead.Notes == "" {
+			bead.Notes = *params.Notes
+		} else {
+			bead.Notes += "\n\n" + *params.Notes
+		}
 		changed = true
 	}
 	if params.ParentID != nil {

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -286,6 +288,76 @@ func TestBeadCreateShowSQLiteRoundTripsParentWithoutDependency(t *testing.T) {
 	}
 	if depRows != 0 {
 		t.Fatalf("bead_deps rows for %s = %d, want 0", id, depRows)
+	}
+}
+
+func TestCmdBeadCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "oro")
+	dbPath := filepath.Join(tmpDir, "state.db")
+	oroHome := filepath.Join(tmpDir, "oro-home")
+
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	build.Env = os.Environ()
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build oro binary: %v\n%s", err, out)
+	}
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(binPath, args...)
+		cmd.Env = append(os.Environ(),
+			"ORO_HOME="+oroHome,
+			"ORO_DB_PATH="+dbPath,
+			"ORO_PROJECT=",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("oro %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+
+	created := decodeBeadJSONObject(t, run(
+		"bead", "create",
+		"--id", "oro-e2e1",
+		"--title", "Binary bead",
+		"--type", "task",
+		"--priority", "2",
+		"--description", "created through the oro binary",
+		"--acceptance-criteria", "create show update close",
+		"--tag", "cli",
+		"--json",
+	))
+	if created["id"] != "oro-e2e1" || created["status"] != "open" {
+		t.Fatalf("created bead = %#v, want open oro-e2e1", created)
+	}
+
+	shown := decodeBeadJSONObject(t, run("bead", "show", "oro-e2e1", "--json"))
+	if shown["title"] != "Binary bead" || shown["acceptance_criteria"] != "create show update close" {
+		t.Fatalf("shown bead did not round-trip create fields: %#v", shown)
+	}
+
+	updated := decodeBeadJSONObject(t, run(
+		"bead", "update", "oro-e2e1",
+		"--status", "in_progress",
+		"--priority", "0",
+		"--type", "bug",
+		"--owner", "worker",
+		"--acceptance", "updated acceptance",
+		"--notes", "updated by e2e",
+		"--json",
+	))
+	if updated["status"] != "in_progress" || updated["priority"] != float64(0) || updated["type"] != "bug" || updated["owner"] != "worker" {
+		t.Fatalf("updated bead did not round-trip update fields: %#v", updated)
+	}
+	if updated["acceptance_criteria"] != "updated acceptance" || updated["notes"] != "updated by e2e" {
+		t.Fatalf("updated bead did not round-trip text fields: %#v", updated)
+	}
+
+	closed := decodeBeadJSONObject(t, run("bead", "close", "oro-e2e1", "--reason", "verified", "--json"))
+	if closed["status"] != "closed" || closed["close_reason"] != "verified" {
+		t.Fatalf("closed bead did not round-trip close fields: %#v", closed)
 	}
 }
 

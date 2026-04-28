@@ -186,6 +186,10 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 		assignments = append(assignments, "type=?")
 		args = append(args, *params.Type)
 	}
+	if params.AcceptanceCriteria != nil {
+		assignments = append(assignments, "acceptance_criteria=?")
+		args = append(args, *params.AcceptanceCriteria)
+	}
 	if params.ParentID != nil {
 		if *params.ParentID == "" {
 			assignments = append(assignments, "parent_id=NULL")
@@ -214,6 +218,11 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 	}
 	if affected == 0 {
 		return &protocol.BeadNotFoundError{BeadID: id}
+	}
+	if params.Notes != nil && strings.TrimSpace(*params.Notes) != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bead_notes (bead_id, author, content, created_at) VALUES (?, 'oro', ?, ?)`, id, *params.Notes, nowString()); err != nil {
+			return fmt.Errorf("beadstore: add note %s: %w", id, err)
+		}
 	}
 	if err := insertEvent(ctx, tx, "bead_updated", id, updatePayload(params)); err != nil {
 		return err
@@ -601,6 +610,12 @@ func updatePayload(params UpdateParams) map[string]any {
 	}
 	if params.Type != nil {
 		payload["type"] = *params.Type
+	}
+	if params.AcceptanceCriteria != nil {
+		payload["acceptance_criteria"] = *params.AcceptanceCriteria
+	}
+	if params.Notes != nil {
+		payload["notes"] = *params.Notes
 	}
 	if params.ParentID != nil {
 		payload["parent_id"] = *params.ParentID

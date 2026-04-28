@@ -1196,6 +1196,32 @@ func TestCLIStore_Update(t *testing.T) {
 		}
 	})
 
+	t.Run("forwards_acceptance_and_notes", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("")}
+		src := NewCLIStore(runner)
+		acceptance := "updated acceptance"
+		notes := "updated note"
+
+		err := src.Update(context.Background(), "abc.1", beadstore.UpdateParams{
+			AcceptanceCriteria: &acceptance,
+			Notes:              &notes,
+		})
+		if err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+
+		if len(runner.calls) != 1 {
+			t.Fatalf("expected 1 update call, got %d", len(runner.calls))
+		}
+		args := runner.calls[0].Args
+		if !sliceContains(args, "--acceptance=updated acceptance") {
+			t.Errorf("expected '--acceptance=updated acceptance' in args, got %v", args)
+		}
+		if !sliceContains(args, "--notes=updated note") {
+			t.Errorf("expected '--notes=updated note' in args, got %v", args)
+		}
+	})
+
 	t.Run("bd_error_wrapped", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("update failed")}
 		src := NewCLIStore(runner)

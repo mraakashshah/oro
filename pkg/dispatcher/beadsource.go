@@ -302,6 +302,12 @@ func (s *CLIStore) Update(ctx context.Context, id string, params beadstore.Updat
 	if params.Owner != nil {
 		args = append(args, "--owner="+*params.Owner)
 	}
+	if params.AcceptanceCriteria != nil {
+		args = append(args, "--acceptance="+*params.AcceptanceCriteria)
+	}
+	if params.Notes != nil {
+		args = append(args, "--notes="+*params.Notes)
+	}
 
 	_, err := s.runner.Run(ctx, "bd", s.bdArgs(args...)...)
 	if err != nil {

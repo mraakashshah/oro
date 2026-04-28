@@ -55,9 +55,11 @@ type CreateParams struct {
 
 // UpdateParams contains optional bead fields to update.
 type UpdateParams struct {
-	Status   *string
-	Priority *int
-	Type     *string
+	Status             *string
+	Priority           *int
+	Type               *string
+	AcceptanceCriteria *string
+	Notes              *string
 	// ParentID uses nil for no change and "" for clearing the parent.
 	ParentID *string
 	Owner    *string

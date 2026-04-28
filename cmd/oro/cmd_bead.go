@@ -184,6 +184,14 @@ func newBeadUpdateCmd(store beadstore.Store) *cobra.Command {
 				value := mustStringFlag(cmd, "owner")
 				params.Owner = &value
 			}
+			if cmd.Flags().Changed("acceptance") {
+				value := mustStringFlag(cmd, "acceptance")
+				params.AcceptanceCriteria = &value
+			}
+			if cmd.Flags().Changed("notes") {
+				value := mustStringFlag(cmd, "notes")
+				params.Notes = &value
+			}
 			if err := s.Update(cmd.Context(), args[0], params); err != nil {
 				return writeBeadCommandErrorIfJSON(cmd, "update", err)
 			}
