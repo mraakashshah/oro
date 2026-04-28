@@ -41,6 +41,7 @@ Search:
 
 Workflow:
   work       Execute a bead through the full lifecycle
+  bead       Manage native Oro beads
   shell      Launch an interactive agent session with oro settings
   bd         Run bd with project-aware --db flag (stealth mode support)
 

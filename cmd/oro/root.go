@@ -42,6 +42,7 @@ func newRootCmd() *cobra.Command {
 		newCleanupCmd(),
 		newHelpCmd(cmd),
 		newWorkCmd(),
+		newBeadCmd(),
 		newMgCmd(),
 		newDoltCmd(),
 		newGlobalOroApproachCmd(),
