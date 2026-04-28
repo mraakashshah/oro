@@ -73,6 +73,10 @@ type createCall struct {
 	acceptanceCriteria  string
 }
 
+type deferCall struct {
+	id, until string
+}
+
 type mockBeadSource struct {
 	mu                   sync.Mutex
 	beads                []protocol.Bead
@@ -99,7 +103,12 @@ type mockBeadSource struct {
 	shownNil             map[string]bool  // per-ID nil detail (returns nil, nil)
 	exportData           []byte           // returned by Export(); nil means no data
 	exportErr            error            // if set, Export() returns this error
-	readyCalled          int              // incremented on every Ready() call
+	deferCalls           []deferCall
+	undeferCalls         []string
+	beadOps              []string
+	deferErrs            map[string]error
+	undeferErrs          map[string]error
+	readyCalled          int // incremented on every Ready() call
 }
 
 func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -253,8 +262,27 @@ func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) {
 	return m.exportData, nil
 }
 
-func (m *mockBeadSource) Defer(_ context.Context, _, _ string) error { return nil }
-func (m *mockBeadSource) Undefer(_ context.Context, _ string) error  { return nil }
+func (m *mockBeadSource) Defer(_ context.Context, id, until string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deferCalls = append(m.deferCalls, deferCall{id: id, until: until})
+	m.beadOps = append(m.beadOps, "defer:"+id)
+	if m.deferErrs != nil {
+		return m.deferErrs[id]
+	}
+	return nil
+}
+
+func (m *mockBeadSource) Undefer(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.undeferCalls = append(m.undeferCalls, id)
+	m.beadOps = append(m.beadOps, "undefer:"+id)
+	if m.undeferErrs != nil {
+		return m.undeferErrs[id]
+	}
+	return nil
+}
 
 func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
