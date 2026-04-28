@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBeadMigrateFromDoltDryRunFixturePrintsPlanWithoutMutatingDB(t *testing.T) {
@@ -152,6 +154,293 @@ func TestMigrateUpdatedAtVerbatim(t *testing.T) {
 	if gotUpdatedAt != wantUpdatedAt {
 		t.Fatalf("updated_at = %q, want %q", gotUpdatedAt, wantUpdatedAt)
 	}
+}
+
+func TestMigrateFromDoltLocks(t *testing.T) {
+	validJSONL := writeMigrationJSONL(t, `{"id":"oro-lock","title":"Lock migration","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`+"\n")
+	invalidJSONL := writeMigrationJSONL(t, `{"id":"oro-lock-fail","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`+"\n")
+
+	t.Run("refuses while dispatcher state db lock is active", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		if err := os.WriteFile(dbPath+".lock", []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write dispatcher lock: %v", err)
+		}
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		if err == nil {
+			t.Fatalf("migration succeeded with active dispatcher lock:\n%s", out)
+		}
+		for _, want := range []string{"dispatcher is running", "state.db", "stop it first"} {
+			if !strings.Contains(err.Error()+out, want) {
+				t.Fatalf("dispatcher lock error missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+	})
+
+	t.Run("uses canonical dispatcher lock path for symlinked state db", func(t *testing.T) {
+		realDBPath, linkDBPath := setupSymlinkedMigrationDBEnv(t)
+		if err := os.WriteFile(realDBPath+".lock", []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write canonical dispatcher lock: %v", err)
+		}
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		if err == nil {
+			t.Fatalf("migration succeeded despite canonical dispatcher lock via %s:\n%s", linkDBPath, out)
+		}
+		if !strings.Contains(err.Error()+out, "dispatcher is running") {
+			t.Fatalf("canonical dispatcher lock error missing actionable message:\nerr=%v\nout=%s", err, out)
+		}
+	})
+
+	t.Run("reclaims old live dispatcher lock", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		lockPath := dbPath + ".lock"
+		if err := os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write dispatcher lock: %v", err)
+		}
+		old := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(lockPath, old, old); err != nil {
+			t.Fatalf("age dispatcher lock: %v", err)
+		}
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		for _, want := range []string{"reclaiming stale dispatcher lock", "Migration complete"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("old dispatcher lock output missing %q:\n%s", want, out)
+			}
+		}
+		if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+			t.Fatalf("dispatcher lock not released after old-live reclaim: %v", err)
+		}
+	})
+
+	t.Run("does not remove fresh dispatcher lock after stale race", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		canonicalDBPath, err := canonicalBeadMigrationStateDBPath(dbPath)
+		if err != nil {
+			t.Fatalf("canonicalize db path: %v", err)
+		}
+		lockPath := canonicalDBPath + ".lock"
+		if err := os.WriteFile(lockPath, []byte("999999"), 0o600); err != nil {
+			t.Fatalf("write stale dispatcher lock: %v", err)
+		}
+
+		freshPID := strconv.Itoa(os.Getpid())
+		previousHook := beadMigrationBeforeRemoveInspectedPIDLockForTest
+		raceAttempted := false
+		beadMigrationBeforeRemoveInspectedPIDLockForTest = func(lock inspectedPIDLock) {
+			if lock.path != lockPath {
+				return
+			}
+			raceAttempted = true
+			beadMigrationBeforeRemoveInspectedPIDLockForTest = func(inspectedPIDLock) {}
+			if err := os.WriteFile(lockPath, []byte(freshPID), 0o600); err != nil {
+				t.Fatalf("replace stale dispatcher lock with fresh lock: %v", err)
+			}
+		}
+		defer func() {
+			beadMigrationBeforeRemoveInspectedPIDLockForTest = previousHook
+		}()
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		if err == nil {
+			t.Fatalf("migration succeeded after fresh dispatcher lock race:\n%s", out)
+		}
+		if !raceAttempted {
+			t.Fatalf("test did not reach dispatcher stale removal race window")
+		}
+		if !strings.Contains(err.Error()+out, "dispatcher is running") {
+			t.Fatalf("dispatcher race error missing actionable message:\nerr=%v\nout=%s", err, out)
+		}
+		got, readErr := os.ReadFile(lockPath)
+		if readErr != nil {
+			t.Fatalf("fresh dispatcher lock missing after stale race: %v", readErr)
+		}
+		if strings.TrimSpace(string(got)) != freshPID {
+			t.Fatalf("fresh dispatcher lock content = %q, want %q", strings.TrimSpace(string(got)), freshPID)
+		}
+	})
+
+	t.Run("refuses concurrent migration lock", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		if err := os.WriteFile(dbPath+".migrate.lock", []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write migrate lock: %v", err)
+		}
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		if err == nil {
+			t.Fatalf("migration succeeded with active migrate lock:\n%s", out)
+		}
+		for _, want := range []string{"another migration is running", "state.db", "migrate.lock"} {
+			if !strings.Contains(err.Error()+out, want) {
+				t.Fatalf("migrate lock error missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+	})
+
+	t.Run("uses canonical migrate lock path for symlinked state db", func(t *testing.T) {
+		realDBPath, linkDBPath := setupSymlinkedMigrationDBEnv(t)
+		if err := os.WriteFile(realDBPath+".migrate.lock", []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write canonical migrate lock: %v", err)
+		}
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		if err == nil {
+			t.Fatalf("migration succeeded despite canonical migrate lock via %s:\n%s", linkDBPath, out)
+		}
+		if !strings.Contains(err.Error()+out, "another migration is running") {
+			t.Fatalf("canonical migrate lock error missing actionable message:\nerr=%v\nout=%s", err, out)
+		}
+	})
+
+	t.Run("reclaims old live migrate lock", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		lockPath := dbPath + ".migrate.lock"
+		if err := os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			t.Fatalf("write migrate lock: %v", err)
+		}
+		old := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(lockPath, old, old); err != nil {
+			t.Fatalf("age migrate lock: %v", err)
+		}
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		for _, want := range []string{"reclaiming stale migration lock", "Migration complete"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("old migrate lock output missing %q:\n%s", want, out)
+			}
+		}
+		if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+			t.Fatalf("migrate lock not released after old-live reclaim: %v", err)
+		}
+	})
+
+	t.Run("does not remove fresh migrate lock after stale race", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		lockPath := dbPath + ".migrate.lock"
+		if err := os.WriteFile(lockPath, []byte("999999"), 0o600); err != nil {
+			t.Fatalf("write stale migrate lock: %v", err)
+		}
+		staleLock, err := inspectPIDLock(lockPath)
+		if err != nil {
+			t.Fatalf("inspect stale migrate lock: %v", err)
+		}
+		if !staleLock.stale {
+			t.Fatalf("test lock is not stale: %+v", staleLock)
+		}
+
+		freshPID := strconv.Itoa(os.Getpid())
+		if err := os.WriteFile(lockPath, []byte(freshPID), 0o600); err != nil {
+			t.Fatalf("replace stale lock with fresh lock: %v", err)
+		}
+		removed, err := removeInspectedPIDLock(staleLock)
+		if err != nil {
+			t.Fatalf("remove stale migrate lock after replacement: %v", err)
+		}
+		if removed {
+			t.Fatalf("removed fresh migrate lock after stale inspection race")
+		}
+		got, err := os.ReadFile(lockPath)
+		if err != nil {
+			t.Fatalf("fresh migrate lock missing after race: %v", err)
+		}
+		if strings.TrimSpace(string(got)) != freshPID {
+			t.Fatalf("fresh migrate lock content = %q, want %q", strings.TrimSpace(string(got)), freshPID)
+		}
+
+		unlock, err := acquireBeadMigrationSelfLock(lockPath, nil)
+		if err == nil {
+			_ = unlock()
+			t.Fatalf("acquired migration lock despite fresh replacement")
+		}
+		if !strings.Contains(err.Error(), "another migration is running") {
+			t.Fatalf("fresh replacement error missing actionable message: %v", err)
+		}
+		got, err = os.ReadFile(lockPath)
+		if err != nil {
+			t.Fatalf("fresh migrate lock removed after failed acquire: %v", err)
+		}
+		if strings.TrimSpace(string(got)) != freshPID {
+			t.Fatalf("fresh migrate lock content after failed acquire = %q, want %q", strings.TrimSpace(string(got)), freshPID)
+		}
+	})
+
+	t.Run("guard blocks fresh migrate lock during stale removal window", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		canonicalDBPath, err := canonicalBeadMigrationStateDBPath(dbPath)
+		if err != nil {
+			t.Fatalf("canonicalize db path: %v", err)
+		}
+		lockPath := canonicalDBPath + ".migrate.lock"
+		if err := os.WriteFile(lockPath, []byte("999999"), 0o600); err != nil {
+			t.Fatalf("write stale migrate lock: %v", err)
+		}
+
+		previousHook := beadMigrationBeforeRemoveInspectedPIDLockForTest
+		raceAttempted := false
+		beadMigrationBeforeRemoveInspectedPIDLockForTest = func(lock inspectedPIDLock) {
+			if lock.path != lockPath {
+				return
+			}
+			raceAttempted = true
+			beadMigrationBeforeRemoveInspectedPIDLockForTest = func(inspectedPIDLock) {}
+			unlock, err := acquireBeadMigrationSelfLock(lockPath, nil)
+			if err == nil {
+				_ = unlock()
+				t.Fatalf("competing migration acquired lock during stale removal window")
+			}
+			if !strings.Contains(err.Error(), "migration is acquiring") {
+				t.Fatalf("competing migration error missing guard message: %v", err)
+			}
+		}
+		defer func() {
+			beadMigrationBeforeRemoveInspectedPIDLockForTest = previousHook
+		}()
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		if !raceAttempted {
+			t.Fatalf("test did not reach stale removal race window")
+		}
+		if !strings.Contains(out, "Migration complete") {
+			t.Fatalf("migration output missing completion:\n%s", out)
+		}
+		if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+			t.Fatalf("migrate lock not released after guarded stale reclaim: %v", err)
+		}
+		if _, err := os.Stat(lockPath + ".guard"); !os.IsNotExist(err) {
+			t.Fatalf("migrate guard lock not released after guarded stale reclaim: %v", err)
+		}
+	})
+
+	t.Run("removes stale migrate lock and releases on success", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		if err := os.WriteFile(dbPath+".migrate.lock", []byte("999999"), 0o600); err != nil {
+			t.Fatalf("write stale migrate lock: %v", err)
+		}
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", validJSONL)
+		if !strings.Contains(out, "Migration complete") {
+			t.Fatalf("migration output missing completion:\n%s", out)
+		}
+		if _, err := os.Stat(dbPath + ".migrate.lock"); !os.IsNotExist(err) {
+			t.Fatalf("migrate lock not released after success: %v", err)
+		}
+	})
+
+	t.Run("releases migrate lock after failure", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", invalidJSONL)
+		if err == nil {
+			t.Fatalf("migration unexpectedly succeeded:\n%s", out)
+		}
+		if !strings.Contains(err.Error()+out, "missing title") {
+			t.Fatalf("migration failed for unexpected reason:\nerr=%v\nout=%s", err, out)
+		}
+		if _, statErr := os.Stat(dbPath + ".migrate.lock"); !os.IsNotExist(statErr) {
+			t.Fatalf("migrate lock not released after failure: %v", statErr)
+		}
+	})
 }
 
 type comparableMigratedFixtureBead struct {
@@ -487,15 +776,59 @@ func TestMigrateFromDoltReconcileSameSecondTimestampOnlyTieIsClean(t *testing.T)
 
 func runBeadMigrateCommand(t *testing.T, args ...string) string {
 	t.Helper()
+	out, err := runBeadMigrateCommandErr(t, args...)
+	if err != nil {
+		t.Fatalf("oro bead %s error: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return out
+}
+
+func runBeadMigrateCommandErr(t *testing.T, args ...string) (string, error) {
+	t.Helper()
 	cmd := newBeadCmdWithStore(nil)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
 	cmd.SetArgs(args)
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("oro bead %s error: %v\n%s", strings.Join(args, " "), err, out.String())
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+func writeMigrationJSONL(t *testing.T, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "export.jsonl")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write jsonl: %v", err)
 	}
-	return out.String()
+	return path
+}
+
+func setupMigrationLockTestEnv(t *testing.T) string {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+	return dbPath
+}
+
+func setupSymlinkedMigrationDBEnv(t *testing.T) (string, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	realDir := filepath.Join(tmpDir, "real")
+	linkDir := filepath.Join(tmpDir, "link")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatalf("create real db dir: %v", err)
+	}
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("create db dir symlink: %v", err)
+	}
+	realDBPath := filepath.Join(realDir, "state.db")
+	linkDBPath := filepath.Join(linkDir, "state.db")
+	t.Setenv("ORO_DB_PATH", linkDBPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+	return realDBPath, linkDBPath
 }
 
 func findRepoRoot(t *testing.T) string {

@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"oro/pkg/beadstore"
@@ -30,6 +32,19 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 		Short: "Plan or run a bd/dolt to native bead-store migration",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			mutatesStateDB := !opts.dryRun && (!opts.reconcile || opts.apply)
+			var unlockMigration func() error
+			if mutatesStateDB {
+				paths, err := ResolveProjectDBPaths()
+				if err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "migrate", fmt.Errorf("resolve bead store paths: %w", err))
+				}
+				unlockMigration, err = acquireBeadMigrationLocks(paths.StateDBPath, opts.allowRunningDispatcher, cmd.ErrOrStderr())
+				if err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
+				}
+				defer func() { _ = unlockMigration() }()
+			}
 			if opts.reconcile {
 				source, data, err := readBeadMigrationSource(opts)
 				if err != nil {
@@ -78,16 +93,18 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 	cmd.Flags().StringVar(&opts.fromJSONL, "from-jsonl", "", "read bd export JSONL from a file instead of invoking bd")
 	cmd.Flags().StringVar(&opts.fromFixture, "from-fixture", "", "read a test fixture directory or JSONL file instead of invoking bd")
 	cmd.Flags().BoolVar(&opts.ignoreVersionDrift, "ignore-version-drift", false, "acknowledge bd/dolt version drift during migration")
+	cmd.Flags().BoolVar(&opts.allowRunningDispatcher, "allow-running-dispatcher", false, "allow migration while a dispatcher PID lock is active")
 	return cmd
 }
 
 type beadMigrateOptions struct {
-	dryRun             bool
-	reconcile          bool
-	apply              bool
-	fromJSONL          string
-	fromFixture        string
-	ignoreVersionDrift bool
+	dryRun                 bool
+	reconcile              bool
+	apply                  bool
+	fromJSONL              string
+	fromFixture            string
+	ignoreVersionDrift     bool
+	allowRunningDispatcher bool
 }
 
 type beadMigrationSource struct {
@@ -145,6 +162,10 @@ type bdExportBead struct {
 	Notes              json.RawMessage       `json:"notes"`
 }
 
+const beadMigrationPIDLockMaxAge = time.Hour
+
+var beadMigrationBeforeRemoveInspectedPIDLockForTest = func(inspectedPIDLock) {}
+
 func runBeadMigration(ctx context.Context, data []byte) error {
 	beads, err := decodeBDExport(data)
 	if err != nil {
@@ -185,6 +206,295 @@ func runBeadMigration(ctx context.Context, data []byte) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func acquireBeadMigrationLocks(stateDBPath string, allowRunningDispatcher bool, warnings io.Writer) (func() error, error) {
+	canonicalStateDBPath, err := canonicalBeadMigrationStateDBPath(stateDBPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(canonicalStateDBPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create migration lock dir: %w", err)
+	}
+	var unlockDispatcher func() error
+	if !allowRunningDispatcher {
+		unlockDispatcher, err = acquireBeadMigrationDispatcherLock(canonicalStateDBPath+".lock", warnings)
+		if err != nil {
+			return nil, err
+		}
+	}
+	unlockMigration, err := acquireBeadMigrationSelfLock(canonicalStateDBPath+".migrate.lock", warnings)
+	if err != nil {
+		if unlockDispatcher != nil {
+			_ = unlockDispatcher()
+		}
+		return nil, err
+	}
+	return func() error {
+		var unlockErr error
+		if err := unlockMigration(); err != nil {
+			unlockErr = err
+		}
+		if unlockDispatcher != nil {
+			if err := unlockDispatcher(); err != nil && unlockErr == nil {
+				unlockErr = err
+			}
+		}
+		return unlockErr
+	}, nil
+}
+
+func canonicalBeadMigrationStateDBPath(dbPath string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(dbPath)
+	if err == nil {
+		return resolved, nil
+	}
+	parent := filepath.Dir(dbPath)
+	if resolvedParent, parentErr := filepath.EvalSymlinks(parent); parentErr == nil {
+		return filepath.Join(resolvedParent, filepath.Base(dbPath)), nil
+	}
+	abs, absErr := filepath.Abs(dbPath)
+	if absErr != nil {
+		return "", fmt.Errorf("canonicalize state db path %s: %w", dbPath, absErr)
+	}
+	return abs, nil
+}
+
+func acquireBeadMigrationDispatcherLock(lockPath string, warnings io.Writer) (func() error, error) {
+	pid := os.Getpid()
+	pidText := []byte(strconv.Itoa(pid))
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // lock path is derived from StateDBPath
+		if err == nil {
+			if _, writeErr := f.Write(pidText); writeErr != nil {
+				_ = f.Close()
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("write dispatcher migration lock %s: %w", lockPath, writeErr)
+			}
+			if closeErr := f.Close(); closeErr != nil {
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("close dispatcher migration lock %s: %w", lockPath, closeErr)
+			}
+			return func() error {
+				return removeOwnedPIDLock(lockPath, pid)
+			}, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("create dispatcher migration lock %s: %w", lockPath, err)
+		}
+		lock, err := inspectPIDLock(lockPath)
+		if err != nil {
+			return nil, err
+		}
+		if !lock.stale {
+			return nil, fmt.Errorf("dispatcher is running (PID %d) against this state.db; stop it first with 'oro stop' before running migrate-from-dolt", lock.pid)
+		}
+		warnStalePIDLock(warnings, "dispatcher", lock)
+		removed, err := removeInspectedPIDLock(lock)
+		if err != nil {
+			return nil, fmt.Errorf("remove stale dispatcher lock %s: %w", lockPath, err)
+		}
+		if removed {
+			continue
+		}
+	}
+	return nil, fmt.Errorf("dispatcher lock %s changed while reclaiming stale lock", lockPath)
+}
+
+func acquireBeadMigrationSelfLock(lockPath string, warnings io.Writer) (func() error, error) {
+	unlockGuard, err := acquireBeadMigrationGuardLock(lockPath+".guard", warnings)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unlockGuard() }()
+
+	pid := os.Getpid()
+	pidText := []byte(strconv.Itoa(pid))
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // lock path is derived from StateDBPath
+		if err == nil {
+			if _, writeErr := f.Write(pidText); writeErr != nil {
+				_ = f.Close()
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("write migration lock %s: %w", lockPath, writeErr)
+			}
+			if closeErr := f.Close(); closeErr != nil {
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("close migration lock %s: %w", lockPath, closeErr)
+			}
+			return func() error {
+				return removeOwnedPIDLock(lockPath, pid)
+			}, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("create migration lock %s: %w", lockPath, err)
+		}
+		lock, inspectErr := inspectPIDLock(lockPath)
+		if inspectErr != nil {
+			return nil, inspectErr
+		}
+		if !lock.stale {
+			return nil, fmt.Errorf("another migration is running (PID %d) for this state.db; lock file: %s", lock.pid, lockPath)
+		}
+		warnStalePIDLock(warnings, "migration", lock)
+		removed, removeErr := removeInspectedPIDLock(lock)
+		if removeErr != nil {
+			return nil, fmt.Errorf("remove stale migration lock %s: %w", lockPath, removeErr)
+		}
+		if !removed {
+			continue
+		}
+	}
+	return nil, fmt.Errorf("create migration lock %s: lock changed while acquiring", lockPath)
+}
+
+func acquireBeadMigrationGuardLock(lockPath string, warnings io.Writer) (func() error, error) {
+	pid := os.Getpid()
+	pidText := []byte(strconv.Itoa(pid))
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // lock path is derived from StateDBPath
+		if err == nil {
+			if _, writeErr := f.Write(pidText); writeErr != nil {
+				_ = f.Close()
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("write migration lock guard %s: %w", lockPath, writeErr)
+			}
+			if closeErr := f.Close(); closeErr != nil {
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("close migration lock guard %s: %w", lockPath, closeErr)
+			}
+			return func() error {
+				return removeOwnedPIDLock(lockPath, pid)
+			}, nil
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("create migration lock guard %s: %w", lockPath, err)
+		}
+		lock, inspectErr := inspectPIDLock(lockPath)
+		if inspectErr != nil {
+			return nil, inspectErr
+		}
+		if !lock.stale {
+			return nil, fmt.Errorf("another migration is acquiring this state.db lock (PID %d); guard file: %s", lock.pid, lockPath)
+		}
+		warnStalePIDLock(warnings, "migration guard", lock)
+		removed, removeErr := removeInspectedPIDLock(lock)
+		if removeErr != nil {
+			return nil, fmt.Errorf("remove stale migration lock guard %s: %w", lockPath, removeErr)
+		}
+		if !removed {
+			continue
+		}
+	}
+	return nil, fmt.Errorf("create migration lock guard %s: lock changed while acquiring", lockPath)
+}
+
+type inspectedPIDLock struct {
+	path    string
+	pid     int
+	exists  bool
+	alive   bool
+	old     bool
+	stale   bool
+	modTime time.Time
+}
+
+func inspectPIDLock(lockPath string) (inspectedPIDLock, error) {
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return inspectedPIDLock{path: lockPath, stale: true}, nil
+		}
+		return inspectedPIDLock{}, fmt.Errorf("stat lock file %s: %w", lockPath, err)
+	}
+	data, err := os.ReadFile(lockPath) //nolint:gosec // lock path is derived from StateDBPath
+	if err != nil {
+		return inspectedPIDLock{}, fmt.Errorf("read lock file %s: %w", lockPath, err)
+	}
+	text := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(text)
+	if err != nil || pid <= 0 {
+		return inspectedPIDLock{path: lockPath, exists: true, old: true, stale: true, modTime: info.ModTime()}, nil
+	}
+	alive := processAlive(pid)
+	old := time.Since(info.ModTime()) > beadMigrationPIDLockMaxAge
+	return inspectedPIDLock{
+		path:    lockPath,
+		pid:     pid,
+		exists:  true,
+		alive:   alive,
+		old:     old,
+		stale:   !alive || old,
+		modTime: info.ModTime(),
+	}, nil
+}
+
+func warnStalePIDLock(w io.Writer, kind string, lock inspectedPIDLock) {
+	if w == nil || lock.pid <= 0 {
+		return
+	}
+	reason := "dead process"
+	if lock.alive && lock.old {
+		reason = "older than 1h"
+	}
+	fmt.Fprintf(w, "warning: reclaiming stale %s lock %s (PID %d, %s)\n", kind, lock.path, lock.pid, reason)
+}
+
+func removeInspectedPIDLock(lock inspectedPIDLock) (bool, error) {
+	current, err := inspectPIDLock(lock.path)
+	if err != nil {
+		return false, err
+	}
+	if !current.exists {
+		return true, nil
+	}
+	if current.pid != lock.pid || !current.modTime.Equal(lock.modTime) || current.stale != lock.stale {
+		return false, nil
+	}
+	beadMigrationBeforeRemoveInspectedPIDLockForTest(lock)
+	stalePath := fmt.Sprintf("%s.stale.%d.%d", lock.path, os.Getpid(), time.Now().UnixNano())
+	if err := os.Rename(lock.path, stalePath); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	moved, err := inspectPIDLock(stalePath)
+	if err != nil {
+		return false, err
+	}
+	if moved.pid != lock.pid || !moved.modTime.Equal(lock.modTime) || moved.stale != lock.stale {
+		if restoreErr := os.Rename(stalePath, lock.path); restoreErr != nil {
+			return false, fmt.Errorf("restore changed lock %s: %w", lock.path, restoreErr)
+		}
+		return false, nil
+	}
+	if err := os.Remove(stalePath); err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	return true, nil
+}
+
+func removeOwnedPIDLock(lockPath string, pid int) error {
+	data, err := os.ReadFile(lockPath) //nolint:gosec // lock path is derived from StateDBPath
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read migration lock %s: %w", lockPath, err)
+	}
+	if strings.TrimSpace(string(data)) != strconv.Itoa(pid) {
+		return nil
+	}
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove migration lock %s: %w", lockPath, err)
+	}
+	return nil
+}
+
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func insertMigratedBead(ctx context.Context, tx *sql.Tx, bead bdExportBead) error {
