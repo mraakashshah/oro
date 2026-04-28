@@ -135,6 +135,37 @@ func TestLegacyModelCompatibilityMapping(t *testing.T) {
 	}
 }
 
+func TestBeadDetailAliasAndRuntimeFields(t *testing.T) {
+	bead := protocol.Bead{
+		ID:             "oro-runtime",
+		WorkerID:       "worker-1",
+		ContextPercent: 42,
+		LastHeartbeat:  "2026-04-28T08:00:00Z",
+		GitDiff:        "diff --git a/file b/file",
+		Memory:         "relevant memory context",
+	}
+
+	acceptDetail := func(detail protocol.BeadDetail) protocol.BeadDetail {
+		return detail
+	}
+	detail := acceptDetail(bead)
+	if detail.WorkerID != bead.WorkerID {
+		t.Fatalf("WorkerID = %q, want %q", detail.WorkerID, bead.WorkerID)
+	}
+	if detail.ContextPercent != bead.ContextPercent {
+		t.Fatalf("ContextPercent = %d, want %d", detail.ContextPercent, bead.ContextPercent)
+	}
+	if detail.LastHeartbeat != bead.LastHeartbeat {
+		t.Fatalf("LastHeartbeat = %q, want %q", detail.LastHeartbeat, bead.LastHeartbeat)
+	}
+	if detail.GitDiff != bead.GitDiff {
+		t.Fatalf("GitDiff = %q, want %q", detail.GitDiff, bead.GitDiff)
+	}
+	if detail.Memory != bead.Memory {
+		t.Fatalf("Memory = %q, want %q", detail.Memory, bead.Memory)
+	}
+}
+
 func TestFormatEscalation(t *testing.T) {
 	tests := []struct {
 		name     string

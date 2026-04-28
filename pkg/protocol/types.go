@@ -50,6 +50,11 @@ type Bead struct {
 	Type               string         `json:"issue_type,omitempty"`          // task, bug, feature, epic
 	Model              string         `json:"model,omitempty"`               // provider-native model override; empty = route by tier/estimate
 	Tier               Tier           `json:"tier,omitempty"`                // provider-neutral routing tier
+	WorkerID           string         `json:"worker_id,omitempty"`           // currently assigned worker, when known
+	ContextPercent     int            `json:"context_percent,omitempty"`     // current worker context usage, when known
+	LastHeartbeat      string         `json:"last_heartbeat,omitempty"`      // latest worker heartbeat timestamp, when known
+	GitDiff            string         `json:"git_diff,omitempty"`            // live worktree diff, when requested
+	Memory             string         `json:"memory,omitempty"`              // retrieved memory context, when requested
 	EstimatedMinutes   int            `json:"estimated_minutes,omitempty"`   // estimated work duration in minutes
 	AcceptanceCriteria string         `json:"acceptance_criteria,omitempty"` // acceptance criteria text
 	Dependencies       []Dependency   `json:"dependencies,omitempty"`        // dependency relationships
@@ -65,28 +70,8 @@ type Bead struct {
 	Labels             []string       `json:"labels,omitempty"`              // structured labels
 }
 
-// BeadDetail holds extended information about a single bead.
-type BeadDetail struct {
-	ID                 string         `json:"id"`
-	Title              string         `json:"title"`
-	Description        string         `json:"description,omitempty"`
-	AcceptanceCriteria string         `json:"acceptance_criteria"`
-	Status             string         `json:"status,omitempty"`
-	Epic               string         `json:"parent,omitempty"`     // parent ID; empty for standalone beads
-	Type               string         `json:"issue_type,omitempty"` // task, bug, feature, epic
-	Model              string         `json:"model,omitempty"`
-	Tier               Tier           `json:"tier,omitempty"`
-	WorkerID           string         `json:"worker_id,omitempty"`
-	ContextPercent     int            `json:"context_percent,omitempty"`
-	LastHeartbeat      string         `json:"last_heartbeat,omitempty"`
-	GitDiff            string         `json:"git_diff,omitempty"`
-	Memory             string         `json:"memory,omitempty"`
-	Dependencies       []Dependency   `json:"dependencies,omitempty"`
-	Owner              string         `json:"owner,omitempty"` // owner/assignee identifier
-	Notes              string         `json:"notes,omitempty"` // freeform notes
-	Metadata           map[string]any `json:"metadata,omitempty"`
-	Labels             []string       `json:"labels,omitempty"`
-}
+// BeadDetail is a migration-window alias for the unified Bead shape.
+type BeadDetail = Bead
 
 // MetaBranch is the metadata key used to store branch information.
 const MetaBranch = "branch"
