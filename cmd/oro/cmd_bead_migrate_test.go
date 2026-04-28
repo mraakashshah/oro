@@ -157,6 +157,90 @@ func TestMigrateUpdatedAtVerbatim(t *testing.T) {
 	}
 }
 
+func TestMigrateFromDoltBackupAndReport(t *testing.T) {
+	validJSONL := strings.Join([]string{
+		`{"id":"oro-backup-a","title":"Backup A","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		`{"id":"oro-backup-b","title":"Backup B","status":"closed","priority":2,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`,
+		"",
+	}, "\n")
+
+	t.Run("writes source backup before import and reports counts", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "state.db")
+		oroHome := filepath.Join(t.TempDir(), "oro-home")
+		t.Setenv("ORO_DB_PATH", dbPath)
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		jsonlPath := writeMigrationJSONL(t, validJSONL)
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", jsonlPath)
+		for _, want := range []string{
+			"Migration complete",
+			"backup snapshot:",
+			filepath.Join(oroHome, "migrations"),
+			"source rows: 2",
+			"imported rows: 2",
+			"verification: OK",
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("migration backup/report output missing %q:\n%s", want, out)
+			}
+		}
+
+		backupPath := migrationOutputValue(t, out, "backup snapshot:")
+		if !strings.HasPrefix(backupPath, filepath.Join(oroHome, "migrations")+string(os.PathSeparator)) {
+			t.Fatalf("backup path = %q, want under %s", backupPath, filepath.Join(oroHome, "migrations"))
+		}
+		backupData, err := os.ReadFile(backupPath)
+		if err != nil {
+			t.Fatalf("read migration backup: %v", err)
+		}
+		if string(backupData) != validJSONL {
+			t.Fatalf("backup bytes = %q, want exact source bytes %q", string(backupData), validJSONL)
+		}
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open migrated db: %v", err)
+		}
+		defer db.Close()
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id IN ('oro-backup-a', 'oro-backup-b') AND deleted=0`).Scan(&count); err != nil {
+			t.Fatalf("query migrated backup beads: %v", err)
+		}
+		if count != 2 {
+			t.Fatalf("migrated backup bead count = %d, want 2", count)
+		}
+	})
+
+	t.Run("backup failure aborts before mutation with clear error", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "state.db")
+		oroHome := filepath.Join(t.TempDir(), "oro-home")
+		t.Setenv("ORO_DB_PATH", dbPath)
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		if err := os.MkdirAll(oroHome, 0o700); err != nil {
+			t.Fatalf("create oro home: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(oroHome, "migrations"), []byte("not a dir"), 0o600); err != nil {
+			t.Fatalf("create migrations path conflict: %v", err)
+		}
+		jsonlPath := writeMigrationJSONL(t, validJSONL)
+
+		out, err := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", jsonlPath)
+		if err == nil {
+			t.Fatalf("migration succeeded despite backup failure:\n%s", out)
+		}
+		for _, want := range []string{"write migration backup", filepath.Join(oroHome, "migrations")} {
+			if !strings.Contains(out+err.Error(), want) {
+				t.Fatalf("backup failure output missing %q:\nerr=%v\nout=%s", want, err, out)
+			}
+		}
+		if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+			t.Fatalf("backup failure mutated DB path %s: stat err=%v", dbPath, statErr)
+		}
+	})
+}
+
 func TestMigrateFromDoltValidationReport(t *testing.T) {
 	jsonlPath := writeMigrationJSONL(t, strings.Join([]string{
 		`{"id":"oro-default-priority","title":"Default priority","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
@@ -1254,6 +1338,17 @@ func writeMigrationJSONL(t *testing.T, contents string) string {
 		t.Fatalf("write jsonl: %v", err)
 	}
 	return path
+}
+
+func migrationOutputValue(t *testing.T, out, prefix string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	t.Fatalf("output missing prefix %q:\n%s", prefix, out)
+	return ""
 }
 
 type fakeBeadMigrationRunner struct {

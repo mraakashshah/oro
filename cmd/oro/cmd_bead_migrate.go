@@ -73,17 +73,26 @@ func newBeadMigrateFromDoltCmd(store beadstore.Store) *cobra.Command {
 				return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
 			}
 			if !opts.dryRun {
+				backupPath, err := writeBeadMigrationBackup(data)
+				if err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "migrate", fmt.Errorf("write migration backup: %w", err))
+				}
 				report, err := runBeadMigration(cmd.Context(), data)
+				report.BackupPath = backupPath
 				var validationErr beadMigrationValidationError
 				if err != nil && !errors.As(err, &validationErr) {
-					return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
+					return writeBeadCommandErrorIfJSON(cmd, "migrate", fmt.Errorf("migration failed after backup %s: %w", backupPath, err))
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Migration complete\nsource: %s", source.kind)
+				if err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "Migration complete with errors\nsource: %s", source.kind)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Migration complete\nsource: %s", source.kind)
+				}
 				if source.path != "" {
 					fmt.Fprintf(cmd.OutOrStdout(), " (%s)", source.path)
 				}
 				fmt.Fprintln(cmd.OutOrStdout())
-				writeBeadMigrationValidationReport(cmd.OutOrStdout(), report)
+				writeBeadMigrationReport(cmd.OutOrStdout(), report)
 				if err != nil {
 					return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
 				}
@@ -173,6 +182,13 @@ type beadMigrationPlan struct {
 }
 
 type beadMigrationValidationReport struct {
+	SourceRows    int
+	ValidRows     int
+	ImportedRows  int
+	VerifiedRows  int
+	Verification  string
+	BackupPath    string
+	importedIDs   []string
 	UnknownFields int
 	Errors        []string
 	Warnings      []string
@@ -263,6 +279,8 @@ func runBeadMigration(ctx context.Context, data []byte) (beadMigrationValidation
 			report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", migrationRowLabel(bead.ID), err))
 			continue
 		}
+		report.ImportedRows++
+		report.importedIDs = append(report.importedIDs, bead.ID)
 	}
 	if err := setBeadParentTouchTriggers(ctx, tx, true); err != nil {
 		return report, err
@@ -270,7 +288,78 @@ func runBeadMigration(ctx context.Context, data []byte) (beadMigrationValidation
 	if err := tx.Commit(); err != nil {
 		return report, err
 	}
+	verifiedRows, err := verifyMigratedBeadCount(ctx, db, report.importedIDs)
+	report.VerifiedRows = verifiedRows
+	if err != nil {
+		report.Verification = "FAILED"
+		report.Errors = append(report.Errors, fmt.Sprintf("verification: %v", err))
+	} else {
+		report.Verification = "OK"
+	}
 	return report, report.err()
+}
+
+func writeBeadMigrationBackup(data []byte) (string, error) {
+	paths, err := ResolveProjectDBPaths()
+	if err != nil {
+		return "", fmt.Errorf("resolve bead store paths: %w", err)
+	}
+	backupDir := filepath.Join(paths.OroHome, "migrations")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return "", fmt.Errorf("create migration backup dir %s: %w", backupDir, err)
+	}
+	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	var backupPath string
+	for attempt := 0; attempt < 10; attempt++ {
+		name := stamp + "-pre-migration.jsonl"
+		if attempt > 0 {
+			name = fmt.Sprintf("%s-%d-pre-migration.jsonl", stamp, attempt)
+		}
+		backupPath = filepath.Join(backupDir, name)
+		file, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("write migration backup %s: %w", backupPath, err)
+		}
+		if _, err := file.Write(data); err != nil {
+			_ = file.Close()
+			return "", fmt.Errorf("write migration backup %s: %w", backupPath, err)
+		}
+		if err := file.Close(); err != nil {
+			return "", fmt.Errorf("close migration backup %s: %w", backupPath, err)
+		}
+		return backupPath, nil
+	}
+	return "", fmt.Errorf("write migration backup %s: backup path already exists after retries", backupPath)
+}
+
+func verifyMigratedBeadCount(ctx context.Context, db *sql.DB, beadIDs []string) (int, error) {
+	if len(beadIDs) == 0 {
+		return 0, nil
+	}
+	seen := map[string]struct{}{}
+	uniqueIDs := make([]string, 0, len(beadIDs))
+	for _, id := range beadIDs {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	count := 0
+	for _, id := range uniqueIDs {
+		var exists int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads WHERE deleted=0 AND id=?`, id).Scan(&exists); err != nil {
+			return count, fmt.Errorf("count imported SQLite row %s: %w", id, err)
+		}
+		count += exists
+	}
+	if count != len(uniqueIDs) {
+		return count, fmt.Errorf("sqlite row count %d does not match imported rows %d", count, len(uniqueIDs))
+	}
+	return count, nil
 }
 
 func insertMigratedBeadAtomically(ctx context.Context, tx *sql.Tx, bead bdExportBead) error {
@@ -1361,13 +1450,14 @@ func validateBDExportForMigration(data []byte) ([]bdExportBead, beadMigrationVal
 			return nil, beadMigrationValidationReport{}, fmt.Errorf("decode bd export JSON array: %w", err)
 		}
 		beads := make([]bdExportBead, 0, len(rows))
-		var report beadMigrationValidationReport
+		report := beadMigrationValidationReport{SourceRows: len(rows)}
 		for i, raw := range rows {
 			bead, ok := validateBDExportRow(raw, fmt.Sprintf("row %d", i+1), &report)
 			if ok {
 				beads = append(beads, bead)
 			}
 		}
+		report.ValidRows = len(beads)
 		return beads, report, nil
 	}
 
@@ -1378,6 +1468,7 @@ func validateBDExportForMigration(data []byte) ([]bdExportBead, beadMigrationVal
 		if len(trimmedLine) == 0 {
 			continue
 		}
+		report.SourceRows++
 		var raw json.RawMessage
 		if err := json.Unmarshal(trimmedLine, &raw); err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("line %d: decode bd export JSONL: %v", lineNumber+1, err))
@@ -1388,6 +1479,7 @@ func validateBDExportForMigration(data []byte) ([]bdExportBead, beadMigrationVal
 			beads = append(beads, bead)
 		}
 	}
+	report.ValidRows = len(beads)
 	return beads, report, nil
 }
 
@@ -1667,6 +1759,24 @@ func writeBeadMigrationValidationReport(w io.Writer, report beadMigrationValidat
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(w, "migration warning: %s\n", warning)
 	}
+}
+
+func writeBeadMigrationReport(w io.Writer, report beadMigrationValidationReport) {
+	if report.BackupPath != "" {
+		fmt.Fprintf(w, "backup snapshot: %s\n", report.BackupPath)
+	}
+	fmt.Fprintf(w, "source rows: %d\n", report.SourceRows)
+	fmt.Fprintf(w, "valid rows: %d\n", report.ValidRows)
+	fmt.Fprintf(w, "imported rows: %d\n", report.ImportedRows)
+	if report.Verification == "" {
+		report.Verification = "SKIPPED"
+	}
+	fmt.Fprintf(w, "verification: %s", report.Verification)
+	if report.Verification == "OK" {
+		fmt.Fprintf(w, " (sqlite rows: %d)", report.VerifiedRows)
+	}
+	fmt.Fprintln(w)
+	writeBeadMigrationValidationReport(w, report)
 }
 
 func (report beadMigrationValidationReport) err() error {
