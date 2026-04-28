@@ -223,7 +223,10 @@ func (s *SQLiteStore) Close(ctx context.Context, id, reason string) error {
 
 	res, err := tx.ExecContext(ctx, `
 UPDATE beads
-SET status='closed', close_reason=?, closed_at=COALESCE(closed_at, ?), updated_at=?
+SET status='closed',
+    close_reason=COALESCE(close_reason, ?),
+    closed_at=COALESCE(closed_at, ?),
+    updated_at=CASE WHEN status='closed' THEN updated_at ELSE ? END
 WHERE id=? AND deleted=0`, reason, now, now, id)
 	if err != nil {
 		return fmt.Errorf("beadstore: close %s: %w", id, err)
@@ -236,6 +239,60 @@ WHERE id=? AND deleted=0`, reason, now, now, id)
 		return &protocol.BeadNotFoundError{BeadID: id}
 	}
 	if err := insertEvent(ctx, tx, "bead_closed", id, map[string]any{"reason": reason}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) Defer(ctx context.Context, id, until string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+UPDATE beads
+SET deferred_until=?, updated_at=?
+WHERE id=? AND deleted=0`, until, nowString(), id)
+	if err != nil {
+		return fmt.Errorf("beadstore: defer %s: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("beadstore: defer %s rows affected: %w", id, err)
+	}
+	if affected == 0 {
+		return &protocol.BeadNotFoundError{BeadID: id}
+	}
+	if err := insertEvent(ctx, tx, "bead_deferred", id, map[string]any{"until": until}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) Undefer(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	res, err := tx.ExecContext(ctx, `
+UPDATE beads
+SET deferred_until=NULL, updated_at=?
+WHERE id=? AND deleted=0`, nowString(), id)
+	if err != nil {
+		return fmt.Errorf("beadstore: undefer %s: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("beadstore: undefer %s rows affected: %w", id, err)
+	}
+	if affected == 0 {
+		return &protocol.BeadNotFoundError{BeadID: id}
+	}
+	if err := insertEvent(ctx, tx, "bead_undeferred", id, map[string]any{}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -281,7 +338,7 @@ func (s *SQLiteStore) Export(ctx context.Context) ([]byte, error) {
 	return []byte(out.String()), nil
 }
 
-const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, close_reason, created_at, updated_at, closed_at`
+const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at`
 
 func prefixedBeadColumns(prefix string) string {
 	parts := strings.Split(beadColumns, ", ")
@@ -317,7 +374,7 @@ func (s *SQLiteStore) queryBeads(ctx context.Context, query string, args ...any)
 
 func scanBead(rows *sql.Rows) (protocol.Bead, error) {
 	var bead protocol.Bead
-	var parent, owner, tier, model, reason, closedAt sql.NullString
+	var parent, owner, tier, model, deferredUntil, reason, closedAt sql.NullString
 	var estimate sql.NullInt64
 	if err := rows.Scan(
 		&bead.ID,
@@ -332,6 +389,7 @@ func scanBead(rows *sql.Rows) (protocol.Bead, error) {
 		&estimate,
 		&tier,
 		&model,
+		&deferredUntil,
 		&reason,
 		&bead.CreatedAt,
 		&bead.UpdatedAt,
@@ -353,6 +411,9 @@ func scanBead(rows *sql.Rows) (protocol.Bead, error) {
 	}
 	if model.Valid {
 		bead.Model = model.String
+	}
+	if deferredUntil.Valid {
+		bead.DeferUntil = deferredUntil.String
 	}
 	if reason.Valid {
 		bead.CloseReason = reason.String

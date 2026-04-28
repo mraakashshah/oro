@@ -61,6 +61,7 @@ type Bead struct {
 	UpdatedAt          string         `json:"updated_at,omitempty"`          // RFC3339 timestamp of last update
 	ClosedAt           string         `json:"closed_at,omitempty"`           // RFC3339 timestamp of when closed
 	CreatedAt          string         `json:"created_at,omitempty"`          // RFC3339 timestamp of creation
+	DeferUntil         string         `json:"defer_until,omitempty"`         // RFC3339 timestamp until the bead is hidden from ready
 	Description        string         `json:"description,omitempty"`         // detailed description
 	CloseReason        string         `json:"close_reason,omitempty"`        // reason for closing
 	Owner              string         `json:"owner,omitempty"`               // owner/assignee identifier

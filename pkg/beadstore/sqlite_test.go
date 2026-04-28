@@ -314,6 +314,167 @@ func TestSQLiteStoreOpenAppliesDBUtilPragmas(t *testing.T) {
 	}
 }
 
+func TestParityReadyTracksOpenAndClosedDependencies(t *testing.T) {
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-ready", Title: "ready", Priority: 2})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-blocker", Title: "blocker", Priority: 1})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-blocked", Title: "blocked", Priority: 0})
+			fixture.addDependency(t, "oro-blocked", "oro-blocker", "blocks")
+
+			ready, err := fixture.store.Ready(ctx)
+			if err != nil {
+				t.Fatalf("Ready: %v", err)
+			}
+			if ids(ready) != "oro-blocker,oro-ready" {
+				t.Fatalf("Ready ids with open dependency = %s", ids(ready))
+			}
+
+			if err := fixture.store.Close(ctx, "oro-blocker", "unblocks dependent"); err != nil {
+				t.Fatalf("Close blocker: %v", err)
+			}
+			ready, err = fixture.store.Ready(ctx)
+			if err != nil {
+				t.Fatalf("Ready after dependency close: %v", err)
+			}
+			if ids(ready) != "oro-blocked,oro-ready" {
+				t.Fatalf("Ready ids with closed dependency = %s", ids(ready))
+			}
+		})
+	}
+}
+
+func TestParityUpdateValidatesStatusTransitions(t *testing.T) {
+	validStatuses := []string{"in_progress", "closed", "open"}
+	invalidStatuses := []string{"ready", "blocked", "deferred", ""}
+
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-status", Title: "status"})
+
+			for _, status := range validStatuses {
+				if err := fixture.store.Update(ctx, "oro-status", UpdateParams{Status: &status}); err != nil {
+					t.Fatalf("Update valid status %q: %v", status, err)
+				}
+				shown, err := fixture.store.Show(ctx, "oro-status")
+				if err != nil {
+					t.Fatalf("Show after valid status %q: %v", status, err)
+				}
+				if shown.Status != status {
+					t.Fatalf("status after valid update = %q, want %q", shown.Status, status)
+				}
+			}
+
+			for _, status := range invalidStatuses {
+				if err := fixture.store.Update(ctx, "oro-status", UpdateParams{Status: &status}); err == nil {
+					t.Fatalf("Update invalid status %q succeeded", status)
+				}
+			}
+		})
+	}
+}
+
+func TestParityCloseIsIdempotent(t *testing.T) {
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-close", Title: "close"})
+
+			if err := fixture.store.Close(ctx, "oro-close", "first"); err != nil {
+				t.Fatalf("Close first: %v", err)
+			}
+			first, err := fixture.store.Show(ctx, "oro-close")
+			if err != nil {
+				t.Fatalf("Show after first close: %v", err)
+			}
+			if first.Status != "closed" || first.CloseReason != "first" || first.ClosedAt == "" {
+				t.Fatalf("first close state = %#v", first)
+			}
+
+			if err := fixture.store.Close(ctx, "oro-close", "second"); err != nil {
+				t.Fatalf("Close second: %v", err)
+			}
+			second, err := fixture.store.Show(ctx, "oro-close")
+			if err != nil {
+				t.Fatalf("Show after second close: %v", err)
+			}
+			if second.Status != "closed" || second.CloseReason != first.CloseReason || second.ClosedAt != first.ClosedAt {
+				t.Fatalf("second close state = %#v, want reason %q closed_at %q", second, first.CloseReason, first.ClosedAt)
+			}
+		})
+	}
+}
+
+func TestParityDeferUndeferRoundTrips(t *testing.T) {
+	const until = "2999-01-01T00:00:00Z"
+
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-deferred", Title: "deferred"})
+
+			if err := fixture.store.Defer(ctx, "oro-deferred", until); err != nil {
+				t.Fatalf("Defer: %v", err)
+			}
+			if got := fixture.deferredUntil(t, "oro-deferred"); got != until {
+				t.Fatalf("deferred_until after Defer = %q, want %q", got, until)
+			}
+			ready, err := fixture.store.Ready(ctx)
+			if err != nil {
+				t.Fatalf("Ready after Defer: %v", err)
+			}
+			if ids(ready) != "" {
+				t.Fatalf("Ready after Defer ids = %s, want none", ids(ready))
+			}
+
+			if err := fixture.store.Undefer(ctx, "oro-deferred"); err != nil {
+				t.Fatalf("Undefer: %v", err)
+			}
+			if got := fixture.deferredUntil(t, "oro-deferred"); got != "" {
+				t.Fatalf("deferred_until after Undefer = %q, want empty", got)
+			}
+			ready, err = fixture.store.Ready(ctx)
+			if err != nil {
+				t.Fatalf("Ready after Undefer: %v", err)
+			}
+			if ids(ready) != "oro-deferred" {
+				t.Fatalf("Ready after Undefer ids = %s", ids(ready))
+			}
+		})
+	}
+}
+
+func TestParityUpdateOpenClearsDeferredUntil(t *testing.T) {
+	const until = "2999-01-01T00:00:00Z"
+
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-reopen", Title: "reopen"})
+			if err := fixture.store.Defer(ctx, "oro-reopen", until); err != nil {
+				t.Fatalf("Defer: %v", err)
+			}
+
+			status := "open"
+			if err := fixture.store.Update(ctx, "oro-reopen", UpdateParams{Status: &status}); err != nil {
+				t.Fatalf("Update open: %v", err)
+			}
+			if got := fixture.deferredUntil(t, "oro-reopen"); got != "" {
+				t.Fatalf("deferred_until after Update(open) = %q, want empty", got)
+			}
+			ready, err := fixture.store.Ready(ctx)
+			if err != nil {
+				t.Fatalf("Ready after Update(open): %v", err)
+			}
+			if ids(ready) != "oro-reopen" {
+				t.Fatalf("Ready after Update(open) ids = %s", ids(ready))
+			}
+		})
+	}
+}
+
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 
@@ -330,6 +491,85 @@ func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 		t.Fatalf("migrate bead schema: %v", err)
 	}
 	return NewSQLiteStore(db)
+}
+
+type parityStore interface {
+	Store
+	Defer(context.Context, string, string) error
+	Undefer(context.Context, string) error
+}
+
+type parityFixture struct {
+	name          string
+	store         parityStore
+	addDependency func(t *testing.T, beadID, dependsOnID, depType string)
+	deferredUntil func(t *testing.T, id string) string
+}
+
+func newParityFixtures(t *testing.T) []parityFixture {
+	t.Helper()
+
+	sqliteStore := newTestSQLiteStore(t)
+	fakeStore := NewFakeStore()
+
+	return []parityFixture{
+		{
+			name:  "sqlite",
+			store: sqliteStore,
+			addDependency: func(t *testing.T, beadID, dependsOnID, depType string) {
+				t.Helper()
+				mustExec(t, sqliteStore.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, beadID, dependsOnID, depType)
+			},
+			deferredUntil: func(t *testing.T, id string) string {
+				t.Helper()
+				var deferred sql.NullString
+				if err := sqliteStore.db.QueryRowContext(context.Background(), `SELECT deferred_until FROM beads WHERE id=?`, id).Scan(&deferred); err != nil {
+					t.Fatalf("query deferred_until: %v", err)
+				}
+				if !deferred.Valid {
+					return ""
+				}
+				return deferred.String
+			},
+		},
+		{
+			name:  "fake",
+			store: fakeStore,
+			addDependency: func(t *testing.T, beadID, dependsOnID, depType string) {
+				t.Helper()
+				fakeStore.mu.Lock()
+				defer fakeStore.mu.Unlock()
+				bead, ok := fakeStore.beads[beadID]
+				if !ok {
+					t.Fatalf("missing fake bead %s", beadID)
+				}
+				bead.Dependencies = append(bead.Dependencies, protocol.Dependency{
+					IssueID:     beadID,
+					DependsOnID: dependsOnID,
+					Type:        depType,
+				})
+				fakeStore.beads[beadID] = bead
+			},
+			deferredUntil: func(t *testing.T, id string) string {
+				t.Helper()
+				shown, err := fakeStore.Show(context.Background(), id)
+				if err != nil {
+					t.Fatalf("Show %s: %v", id, err)
+				}
+				if shown == nil {
+					t.Fatalf("missing fake bead %s", id)
+				}
+				return shown.DeferUntil
+			},
+		},
+	}
+}
+
+func mustCreateStore(t *testing.T, store Store, params CreateParams) {
+	t.Helper()
+	if _, err := store.Create(context.Background(), params); err != nil {
+		t.Fatalf("Create(%s): %v", params.ID, err)
+	}
 }
 
 func mustCreate(t *testing.T, store *SQLiteStore, params CreateParams) {

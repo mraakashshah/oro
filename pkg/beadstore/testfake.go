@@ -46,7 +46,7 @@ func (s *FakeStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
 
 	var ready []protocol.Bead
 	for _, bead := range s.beads {
-		if bead.Status == "open" && bead.WorkerID == "" && !s.hasActiveBlockerLocked(bead) {
+		if bead.Status == "open" && bead.WorkerID == "" && !isFutureDeferred(bead.DeferUntil) && !s.hasActiveBlockerLocked(bead) {
 			ready = append(ready, cloneBead(bead))
 		}
 	}
@@ -192,9 +192,22 @@ func (s *FakeStore) Update(ctx context.Context, id string, params UpdateParams) 
 	if !ok {
 		return &protocol.BeadNotFoundError{BeadID: id}
 	}
+	if params.Status != nil && !validStatus(*params.Status) {
+		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
+	}
 	changed := false
 	if params.Status != nil {
 		bead.Status = *params.Status
+		switch *params.Status {
+		case "open":
+			bead.DeferUntil = ""
+			bead.ClosedAt = ""
+			bead.CloseReason = ""
+		case "closed":
+			if bead.ClosedAt == "" {
+				bead.ClosedAt = nowString()
+			}
+		}
 		changed = true
 	}
 	if params.Priority != nil {
@@ -234,11 +247,50 @@ func (s *FakeStore) Close(ctx context.Context, id, reason string) error {
 	if !ok {
 		return &protocol.BeadNotFoundError{BeadID: id}
 	}
+	if bead.Status == "closed" {
+		return nil
+	}
 	now := nowString()
 	bead.Status = "closed"
 	bead.CloseReason = reason
 	bead.ClosedAt = now
 	bead.UpdatedAt = now
+	s.beads[id] = bead
+	return nil
+}
+
+func (s *FakeStore) Defer(ctx context.Context, id, until string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("defer bead context: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bead, ok := s.beads[id]
+	if !ok {
+		return &protocol.BeadNotFoundError{BeadID: id}
+	}
+	bead.DeferUntil = until
+	bead.UpdatedAt = nowString()
+	s.beads[id] = bead
+	return nil
+}
+
+func (s *FakeStore) Undefer(ctx context.Context, id string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("undefer bead context: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bead, ok := s.beads[id]
+	if !ok {
+		return &protocol.BeadNotFoundError{BeadID: id}
+	}
+	bead.DeferUntil = ""
+	bead.UpdatedAt = nowString()
 	s.beads[id] = bead
 	return nil
 }
@@ -423,6 +475,17 @@ func hasTag(bead protocol.Bead, tag string) bool {
 		}
 	}
 	return false
+}
+
+func isFutureDeferred(until string) bool {
+	if until == "" {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, until)
+	if err != nil {
+		return true
+	}
+	return parsed.After(time.Now().UTC())
 }
 
 func sortBeads(beads []protocol.Bead) {
