@@ -2,9 +2,12 @@ package dispatcher //nolint:testpackage // white-box test needs access to detect
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDetectZombieDeferred(t *testing.T) {
@@ -73,6 +76,101 @@ func TestDetectZombieDeferred(t *testing.T) {
 		}
 		if fixed != 0 {
 			t.Fatalf("fixed = %d, want 0", fixed)
+		}
+		if n := eventCount(t, d.db, "zombie_defer_check_failed"); n != 1 {
+			t.Fatalf("zombie_defer_check_failed events = %d, want 1", n)
+		}
+	})
+}
+
+func latestEventID(t *testing.T, db *sql.DB, evType string) int64 {
+	t.Helper()
+	var id int64
+	err := db.QueryRow(`SELECT id FROM events WHERE type=? ORDER BY id DESC LIMIT 1`, evType).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("query event id %q: %v", evType, err)
+	}
+	return id
+}
+
+func latestEventPayload(t *testing.T, db *sql.DB, evType string) string {
+	t.Helper()
+	var payload string
+	err := db.QueryRow(`SELECT payload FROM events WHERE type=? ORDER BY id DESC LIMIT 1`, evType).Scan(&payload)
+	if err == sql.ErrNoRows {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("query event payload %q: %v", evType, err)
+	}
+	return payload
+}
+
+func TestStartupCallsDetectZombieDeferred(t *testing.T) {
+	t.Run("runs after reconciliation summary and before socket bind", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		beadSrc.exportData = []byte(`{"id":"oro-zombie","status":"open","defer_until":"2026-04-27T04:00:00Z"}` + "\n")
+
+		sockPath := shortSockPath(t, "zombie-run")
+		ln, err := net.Listen("unix", sockPath)
+		if err != nil {
+			t.Fatalf("listen active socket: %v", err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		d.cfg.SocketPath = sockPath
+
+		err = d.Run(context.Background())
+		if err == nil {
+			t.Fatal("Run returned nil error, want active socket error")
+		}
+		if len(beadSrc.deferCalls) != 1 {
+			t.Fatalf("defer calls = %v, want one zombie fix before socket bind", beadSrc.deferCalls)
+		}
+		if got := beadSrc.undeferCalls; len(got) != 1 || got[0] != "oro-zombie" {
+			t.Fatalf("undefer calls = %v, want [oro-zombie]", got)
+		}
+
+		reconciliationID := latestEventID(t, d.db, "startup_reconciliation_summary")
+		zombieSummaryID := latestEventID(t, d.db, "startup_zombie_defer_summary")
+		if reconciliationID == 0 {
+			t.Fatal("startup_reconciliation_summary was not logged")
+		}
+		if zombieSummaryID == 0 {
+			t.Fatal("startup_zombie_defer_summary was not logged")
+		}
+		if zombieSummaryID <= reconciliationID {
+			t.Fatalf("zombie summary event id = %d, want after reconciliation id %d", zombieSummaryID, reconciliationID)
+		}
+		if count := latestEventPayload(t, d.db, "startup_zombie_defer_summary"); !strings.Contains(count, `"fixed":1`) {
+			t.Fatalf("startup_zombie_defer_summary payload = %q, want fixed count 1", count)
+		}
+	})
+
+	t.Run("export error logs and startup continues", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		beadSrc.exportErr = errors.New("boom")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() { errCh <- d.Run(ctx) }()
+
+		waitFor(t, func() bool {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			return d.listener != nil
+		}, 2*time.Second)
+		cancel()
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("Run returned export error: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run did not stop after cancellation")
 		}
 		if n := eventCount(t, d.db, "zombie_defer_check_failed"); n != 1 {
 			t.Fatalf("zombie_defer_check_failed events = %d, want 1", n)

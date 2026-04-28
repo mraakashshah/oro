@@ -940,6 +940,10 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	_ = d.logEvent(ctx, "startup_reconciliation_summary", "dispatcher", "", "",
 		fmt.Sprintf(`{"recovered_attempts":%d,"quarantined_assignments":%d,"reopened_beads":%d,"skipped_in_progress":%d}`,
 			recoveryStats.recoverable, recoveryStats.quarantined, reopened, skipped))
+	if fixed, err := d.detectZombieDeferred(ctx); err == nil && fixed > 0 {
+		_ = d.logEvent(ctx, "startup_zombie_defer_summary", "dispatcher", "", "",
+			fmt.Sprintf(`{"fixed":%d}`, fixed))
+	}
 	return nil
 }
 
