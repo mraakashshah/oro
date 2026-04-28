@@ -1,4 +1,4 @@
-package codex
+package codex //nolint:testpackage // white-box test needs access to buildExecArgs
 
 import (
 	"slices"
