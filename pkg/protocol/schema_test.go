@@ -67,18 +67,18 @@ func TestSchemaDDL(t *testing.T) {
 	}
 
 	// Verify INSERT OR REPLACE works (idempotent upsert)
-	_, err = db.Exec(`INSERT OR REPLACE INTO pane_activity VALUES ("architect", 1234567890)`)
+	_, err = db.Exec(`INSERT OR REPLACE INTO pane_activity VALUES ("manager", 1234567890)`)
 	if err != nil {
 		t.Fatalf("INSERT OR REPLACE into pane_activity: %v", err)
 	}
 
-	_, err = db.Exec(`INSERT OR REPLACE INTO pane_activity VALUES ("architect", 9999999999)`)
+	_, err = db.Exec(`INSERT OR REPLACE INTO pane_activity VALUES ("manager", 9999999999)`)
 	if err != nil {
 		t.Fatalf("second INSERT OR REPLACE (idempotent): %v", err)
 	}
 
 	var ts int64
-	err = db.QueryRow(`SELECT last_seen FROM pane_activity WHERE pane='architect'`).Scan(&ts)
+	err = db.QueryRow(`SELECT last_seen FROM pane_activity WHERE pane='manager'`).Scan(&ts)
 	if err != nil {
 		t.Fatalf("query pane_activity: %v", err)
 	}

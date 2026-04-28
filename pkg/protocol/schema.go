@@ -72,9 +72,9 @@ CREATE TABLE IF NOT EXISTS memories (
     project TEXT DEFAULT 'oro'
 );
 
--- Architect/manager pane SessionStart activity tracking
+-- Manager pane SessionStart activity tracking
 CREATE TABLE IF NOT EXISTS pane_activity (
-    pane TEXT PRIMARY KEY,  -- 'architect' | 'manager'
+    pane TEXT PRIMARY KEY,  -- 'manager'
     last_seen INTEGER       -- unix timestamp (seconds since epoch)
 );
 
