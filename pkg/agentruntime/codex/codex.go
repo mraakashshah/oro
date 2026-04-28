@@ -73,11 +73,22 @@ func NewOpsSpawner() ops.BatchSpawner {
 
 func buildExecArgs(model, prompt string) []string {
 	args := []string{"exec", "--skip-git-repo-check", "--sandbox", "workspace-write"}
+	model = normalizeCodexModel(model)
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	args = append(args, prompt)
 	return args
+}
+
+func normalizeCodexModel(model string) string {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	for _, legacy := range []string{"sonnet", "opus", "haiku"} {
+		if lower == legacy || strings.Contains(lower, legacy) {
+			return ""
+		}
+	}
+	return strings.TrimSpace(model)
 }
 
 // BuildBootstrapPrompt prepends shared Oro guidance for Codex runs without relying
