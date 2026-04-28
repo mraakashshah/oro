@@ -25,7 +25,7 @@ func newDreamTestDispatcher(t *testing.T, dreamInterval int) (*Dispatcher, *mock
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
 
-	spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	opsSpawner := ops.NewSpawner(spawnMock)
 
 	beadSrc := &mockBeadSource{

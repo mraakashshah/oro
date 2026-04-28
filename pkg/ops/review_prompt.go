@@ -148,10 +148,13 @@ func writeVerdictAndOutput(b *strings.Builder) {
 	b.WriteString("- Minor only → APPROVED\n\n")
 
 	b.WriteString("## Output\n")
-	b.WriteString("APPROVED or REJECTED\n\n")
 	b.WriteString("Findings as: [severity] file:line — description and specific fix.\n\n")
 	b.WriteString("If APPROVED and you noticed a recurring pattern worth capturing,\n")
 	b.WriteString("add a line:\nPATTERN: tag: trigger → fix\n")
+	b.WriteString("\nEnd with exactly one terminal machine-readable verdict line:\n")
+	b.WriteString("VERDICT: APPROVED\n")
+	b.WriteString("or\n")
+	b.WriteString("VERDICT: REJECTED\n")
 }
 
 // readProjectStandards reads shared instructions, Claude compatibility files,

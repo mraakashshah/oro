@@ -251,7 +251,7 @@ func TestReservationPattern_HandleReviewResultUsesReserved(t *testing.T) {
 
 	// Make the review ops return rejected verdict.
 	spawnMock.mu.Lock()
-	spawnMock.verdict = "REJECTED: needs fixes"
+	spawnMock.verdict = "needs fixes\n\nVERDICT: REJECTED"
 	spawnMock.mu.Unlock()
 
 	serverConn, clientConn := net.Pipe()

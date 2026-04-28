@@ -257,15 +257,35 @@ func TestBuildReviewPrompt_DefaultBaseBranch(t *testing.T) {
 	}
 }
 
+func TestReviewPromptRequiresMachineReadableVerdict(t *testing.T) {
+	tmpDir := t.TempDir()
+	prompt := buildReviewPrompt(ReviewOpts{
+		BeadID:      "oro-verdict-contract",
+		Worktree:    tmpDir,
+		BaseBranch:  "main",
+		ProjectRoot: tmpDir,
+	})
+
+	if !strings.Contains(prompt, "VERDICT: APPROVED") {
+		t.Fatal("prompt must require terminal VERDICT: APPROVED output")
+	}
+	if !strings.Contains(prompt, "VERDICT: REJECTED") {
+		t.Fatal("prompt must require terminal VERDICT: REJECTED output")
+	}
+	if strings.Contains(prompt, "APPROVED or REJECTED\n\nFindings") {
+		t.Fatal("prompt must not request bare APPROVED or REJECTED output")
+	}
+}
+
 func TestParseReviewOutputExtractsPatterns(t *testing.T) {
 	stdout := `Looking at the code...
-
-APPROVED
 
 All criteria met.
 
 PATTERN: loose-match: strings.Contains for exact lookup → use map key
 PATTERN: happy-only: test covers happy path only → add error cases
+
+VERDICT: APPROVED
 `
 
 	verdict, feedback := parseReviewOutput(stdout)

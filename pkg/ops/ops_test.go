@@ -116,7 +116,7 @@ func (m *multiProcessSpawner) Spawn(_ context.Context, model, prompt, workdir st
 // --- Tests ---
 
 func TestReviewApproved(t *testing.T) {
-	proc := newReadyMockProcess("Looking at the code...\n\nAPPROVED\n\nAll criteria met.", nil)
+	proc := newReadyMockProcess("Looking at the code...\n\nAll criteria met.\n\nVERDICT: APPROVED", nil)
 	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
@@ -142,7 +142,7 @@ func TestReviewApproved(t *testing.T) {
 }
 
 func TestReviewRejected(t *testing.T) {
-	proc := newReadyMockProcess("Reviewing changes...\n\nREJECTED: missing error handling in parse function", nil)
+	proc := newReadyMockProcess("Reviewing changes...\n\nMissing error handling in parse function.\n\nVERDICT: REJECTED", nil)
 	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
@@ -165,7 +165,7 @@ func TestReviewRejected(t *testing.T) {
 }
 
 func TestReviewUsesCorrectModel(t *testing.T) {
-	proc := newReadyMockProcess("APPROVED", nil)
+	proc := newReadyMockProcess("VERDICT: APPROVED", nil)
 	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
@@ -193,7 +193,7 @@ func TestReviewDocsOnlyDiffShortCircuits(t *testing.T) {
 		t.Fatalf("write docs change: %v", err)
 	}
 
-	mock := &mockBatchSpawner{process: newReadyMockProcess("REJECTED", nil)}
+	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: REJECTED", nil)}
 	s := NewSpawner(mock)
 
 	ch := s.Review(context.Background(), ReviewOpts{
@@ -220,7 +220,7 @@ func TestReviewCodeDiffStillSpawns(t *testing.T) {
 		t.Fatalf("write code change: %v", err)
 	}
 
-	mock := &mockBatchSpawner{process: newReadyMockProcess("APPROVED", nil)}
+	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
 	s := NewSpawner(mock)
 
 	ch := s.Review(context.Background(), ReviewOpts{
@@ -501,7 +501,7 @@ func TestSpawnError(t *testing.T) {
 }
 
 func TestReviewPromptContainsCriteria(t *testing.T) {
-	proc := newReadyMockProcess("APPROVED", nil)
+	proc := newReadyMockProcess("VERDICT: APPROVED", nil)
 	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
 
@@ -663,16 +663,84 @@ func TestCancelForBeadNonExistentBead(t *testing.T) {
 	}
 }
 
+func TestParseReviewOutputRequiresVerdictPrefix(t *testing.T) {
+	tests := []struct {
+		name        string
+		stdout      string
+		wantVerdict Verdict
+	}{
+		{
+			name:        "bare approved fails closed",
+			stdout:      "Review complete.\n\nAPPROVED\n\nAll good.",
+			wantVerdict: VerdictFailed,
+		},
+		{
+			name:        "bare rejected fails closed",
+			stdout:      "Review complete.\n\nREJECTED: missing tests\n",
+			wantVerdict: VerdictFailed,
+		},
+		{
+			name:        "prefixed approved parses",
+			stdout:      "Review complete.\n\nAll good.\n\nVERDICT: APPROVED",
+			wantVerdict: VerdictApproved,
+		},
+		{
+			name:        "prefixed rejected parses",
+			stdout:      "Review complete.\n\nMissing tests.\n\nVERDICT: REJECTED",
+			wantVerdict: VerdictRejected,
+		},
+		{
+			name:        "prefixed verdict must be whole trimmed line",
+			stdout:      "Review complete.\n\nVERDICT: APPROVED because tests pass\n",
+			wantVerdict: VerdictFailed,
+		},
+		{
+			name:        "prefixed verdict must be final non-empty line",
+			stdout:      "Review complete.\n\nVERDICT: APPROVED\n\nAll good.",
+			wantVerdict: VerdictFailed,
+		},
+		{
+			name:        "only final prefixed verdict controls",
+			stdout:      "Review complete.\n\nVERDICT: APPROVED\n\nFound a blocker.\n\nVERDICT: REJECTED\n\n",
+			wantVerdict: VerdictRejected,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict, _ := parseReviewOutput(tt.stdout)
+			if verdict != tt.wantVerdict {
+				t.Fatalf("parseReviewOutput() verdict = %q, want %q", verdict, tt.wantVerdict)
+			}
+		})
+	}
+}
+
 // --- Non-zero exit code with verdict in stdout ---
 
-func TestParseResultNonZeroExitApproved(t *testing.T) {
-	// Bug: claude -p sometimes exits non-zero even on successful review.
-	// When stdout contains APPROVED, we should trust the text verdict.
+func TestParseResultReviewProcessErrorFailsClosed(t *testing.T) {
 	waitErr := errors.New("exit status 1")
-	result := parseResult(OpsReview, "oro-nz1", "Looking at code...\n\nAPPROVED\n\nAll good.", waitErr)
+	result := parseResult(OpsReview, "oro-process-error", "VERDICT: APPROVED\n\nAll good.", waitErr)
 
-	if result.Verdict != VerdictApproved {
-		t.Fatalf("expected VerdictApproved, got %q", result.Verdict)
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed, got %q", result.Verdict)
+	}
+	if result.Err == nil {
+		t.Fatal("expected non-nil Err")
+	}
+	if result.Feedback == "" {
+		t.Fatal("expected stdout to be preserved as feedback")
+	}
+}
+
+func TestParseResultNonZeroExitApproved(t *testing.T) {
+	// A non-zero review process exit must fail closed even when stdout contains
+	// an approved machine-readable verdict.
+	waitErr := errors.New("exit status 1")
+	result := parseResult(OpsReview, "oro-nz1", "Looking at code...\n\nVERDICT: APPROVED", waitErr)
+
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed, got %q", result.Verdict)
 	}
 	if result.Type != OpsReview {
 		t.Fatalf("expected OpsReview, got %q", result.Type)
@@ -680,19 +748,19 @@ func TestParseResultNonZeroExitApproved(t *testing.T) {
 	if result.BeadID != "oro-nz1" {
 		t.Fatalf("expected bead ID oro-nz1, got %q", result.BeadID)
 	}
-	// Err should still be set so callers know the exit was non-zero.
 	if result.Err == nil {
 		t.Fatal("expected non-nil Err to record the non-zero exit")
 	}
 }
 
 func TestParseResultNonZeroExitRejected(t *testing.T) {
-	// Non-zero exit with REJECTED in stdout should yield VerdictRejected.
+	// A non-zero review process exit must fail closed even when stdout contains
+	// a rejected machine-readable verdict.
 	waitErr := errors.New("exit status 1")
-	result := parseResult(OpsReview, "oro-nz2", "Code review...\n\nREJECTED: missing tests\n", waitErr)
+	result := parseResult(OpsReview, "oro-nz2", "Code review...\n\nVERDICT: REJECTED\n", waitErr)
 
-	if result.Verdict != VerdictRejected {
-		t.Fatalf("expected VerdictRejected, got %q", result.Verdict)
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed, got %q", result.Verdict)
 	}
 	if result.Feedback == "" {
 		t.Fatal("expected non-empty feedback")
@@ -800,7 +868,7 @@ func TestTypeTimeout(t *testing.T) {
 }
 
 func TestSpawnerReviewTimeoutOverride(t *testing.T) {
-	mock := &mockBatchSpawner{process: newReadyMockProcess("APPROVED", nil)}
+	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
 	s := NewSpawnerWithReviewTimeout(mock, 45*time.Minute)
 
 	if got := s.effectiveTimeout(OpsReview); got != 45*time.Minute {

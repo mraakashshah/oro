@@ -719,7 +719,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
 
-	spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	opsSpawner := ops.NewSpawner(spawnMock)
 
 	beadSrc := &mockBeadSource{
@@ -1819,7 +1819,7 @@ func TestDispatcher_ReadyForReview_SpawnsReviewer(t *testing.T) {
 func TestDispatcher_ReviewApproved_WorkerSignalsDone(t *testing.T) {
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 	spawnMock.mu.Lock()
-	spawnMock.verdict = "APPROVED: all tests pass"
+	spawnMock.verdict = "all tests pass\n\nVERDICT: APPROVED"
 	spawnMock.mu.Unlock()
 
 	startDispatcher(t, d)
@@ -1856,7 +1856,7 @@ func TestDispatcher_ReviewApproved_WorkerSignalsDone(t *testing.T) {
 func TestDispatcher_ReviewRejected_FeedbackSent(t *testing.T) {
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 	spawnMock.mu.Lock()
-	spawnMock.verdict = "REJECTED: missing tests for edge case"
+	spawnMock.verdict = "missing tests for edge case\n\nVERDICT: REJECTED"
 	spawnMock.mu.Unlock()
 
 	startDispatcher(t, d)
@@ -2455,7 +2455,7 @@ func TestNew_TargetWorkersUsesInitialWorkers(t *testing.T) {
 
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
-	spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	opsSpawner := ops.NewSpawner(spawnMock)
 	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
@@ -3456,7 +3456,7 @@ func TestHandleReviewResult_UnknownVerdict(t *testing.T) {
 
 // TestHandleReviewApprovedError verifies that when handleReviewResult receives a
 // result with VerdictApproved AND a non-nil Err (i.e. the subprocess exited
-// nonzero but "APPROVED" appeared in stdout), the dispatcher fails closed:
+// nonzero but "VERDICT: APPROVED" appeared in stdout), the dispatcher fails closed:
 // it must log "review_error" and NOT emit "review_approved". This guards against
 // a Codex/Claude runtime error being silently promoted to an approval.
 func TestHandleReviewApprovedError(t *testing.T) {
@@ -3474,7 +3474,7 @@ func TestHandleReviewApprovedError(t *testing.T) {
 	resultCh := make(chan ops.Result, 1)
 	resultCh <- ops.Result{
 		Verdict:  ops.VerdictApproved,
-		Feedback: "APPROVED",
+		Feedback: "VERDICT: APPROVED",
 		Err:      errors.New("exit status 1"),
 	}
 
@@ -4646,7 +4646,7 @@ func (p *slowProcess) Kill() error {
 	return nil
 }
 
-func (p *slowProcess) Output() (string, error) { return "APPROVED: ok", nil }
+func (p *slowProcess) Output() (string, error) { return "ok\n\nVERDICT: APPROVED", nil }
 
 type slowBatchSpawner struct {
 	mu        sync.Mutex
@@ -6417,7 +6417,7 @@ func TestDispatcher_RespawnsWorkersToTarget(t *testing.T) {
 	db := newTestDB(t)
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
-	spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	opsSpawner := ops.NewSpawner(spawnMock)
 	beadSrc := &mockBeadSource{
 		beads: []protocol.Bead{{ID: "bead-q1", Title: "queued bead"}},
@@ -6510,7 +6510,7 @@ func setupReviewRejection(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, 
 	t.Helper()
 	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 	spawnMock.mu.Lock()
-	spawnMock.verdict = "REJECTED: missing edge case tests"
+	spawnMock.verdict = "missing edge case tests\n\nVERDICT: REJECTED"
 	spawnMock.mu.Unlock()
 
 	startDispatcher(t, d)
@@ -6993,7 +6993,7 @@ func TestDispatcher_ReviewRejection_MemoryContextAccumulatesFeedback(t *testing.
 
 	// Change feedback for second rejection to distinguish from first
 	spawnMock.mu.Lock()
-	spawnMock.verdict = "REJECTED: also missing integration test"
+	spawnMock.verdict = "also missing integration test\n\nVERDICT: REJECTED"
 	spawnMock.mu.Unlock()
 
 	// Second rejection
@@ -7029,7 +7029,7 @@ func TestDispatcher_ReviewRejection_MemoryContextAccumulatesFeedback(t *testing.
 func TestRejectionReassignIncludesMemoryAndAttempt(t *testing.T) {
 	_, conn, _, _ := setupReviewRejection(t)
 
-	// Send READY_FOR_REVIEW — the mock reviewer returns "REJECTED: missing edge case tests".
+	// Send READY_FOR_REVIEW — the mock reviewer returns "missing edge case tests\n\nVERDICT: REJECTED".
 	sendMsg(t, conn, protocol.Message{
 		Type:           protocol.MsgReadyForReview,
 		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-rej", WorkerID: "w1"},
@@ -7317,7 +7317,7 @@ func TestShutdownResetBeadUsesRepoRoot(t *testing.T) {
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 	merger := merge.NewCoordinator(&mockGitRunner{})
-	opsSpawner := ops.NewSpawner(&mockBatchSpawner{verdict: "APPROVED: looks good"})
+	opsSpawner := ops.NewSpawner(&mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"})
 
 	repoRoot := t.TempDir()
 	cfg := Config{
@@ -8771,7 +8771,7 @@ func TestDispatcherBuffering(t *testing.T) {
 	esc := &mockEscalator{}
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
-	spawner := ops.NewSpawner(&mockBatchSpawner{verdict: "APPROVED"})
+	spawner := ops.NewSpawner(&mockBatchSpawner{verdict: "VERDICT: APPROVED"})
 
 	// Use short path for UDS — macOS limits to 108 chars.
 	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
@@ -10023,7 +10023,7 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 		t.Helper()
 		gitRunner := &mockGitRunner{}
 		merger := merge.NewCoordinator(gitRunner)
-		spawnMock := &mockBatchSpawner{verdict: "APPROVED: looks good"}
+		spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 		opsSpawner := ops.NewSpawner(spawnMock)
 
 		sockPath := fmt.Sprintf("/tmp/oro-crash-%d.sock", time.Now().UnixNano())
@@ -16545,7 +16545,7 @@ func TestAllAssignPayloadSitesUseBuildAssignPayload(t *testing.T) {
 	t.Run("review rejection includes bead metadata from beads.Show", func(t *testing.T) {
 		d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 		spawnMock.mu.Lock()
-		spawnMock.verdict = "REJECTED: missing tests"
+		spawnMock.verdict = "missing tests\n\nVERDICT: REJECTED"
 		spawnMock.mu.Unlock()
 		startDispatcher(t, d)
 
@@ -16985,7 +16985,7 @@ func TestDispatcherUsesProjectPaths(t *testing.T) {
 		db := newTestDB(t)
 		gitRunner := &mockGitRunner{}
 		merger := merge.NewCoordinator(gitRunner)
-		opsSpawner := ops.NewSpawner(&mockBatchSpawner{verdict: "APPROVED: looks good"})
+		opsSpawner := ops.NewSpawner(&mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"})
 		beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 		wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 		esc := &mockEscalator{}
