@@ -347,7 +347,7 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-// backupFullState runs bd export and writes all issues (open + closed) to
+// backupFullState runs oro bead export and writes all issues (open + closed) to
 // .beads/backup/full-state.jsonl. Failures are logged as warnings and skipped
 // (non-fatal). An empty export is silently skipped.
 func (d *Dispatcher) backupFullState(ctx context.Context) {

@@ -1,11 +1,11 @@
 package dispatcher //nolint:testpackage // white-box tests for CLIStore
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -86,8 +86,11 @@ func TestCLIStore_Ready_ParsesJSON(t *testing.T) {
 		t.Fatalf("expected 1 call, got %d", len(runner.calls))
 	}
 	call := runner.calls[0]
-	if call.Name != "bd" {
-		t.Errorf("command name: got %q, want %q", call.Name, "bd")
+	if call.Name != "oro" {
+		t.Errorf("command name: got %q, want %q", call.Name, "oro")
+	}
+	if len(call.Args) == 0 || call.Args[0] != "bead" {
+		t.Errorf("expected first arg to be 'bead', got %v", call.Args)
 	}
 	// Should include "ready" and "--json" in args.
 	if !sliceContains(call.Args, "ready") {
@@ -95,6 +98,26 @@ func TestCLIStore_Ready_ParsesJSON(t *testing.T) {
 	}
 	if !sliceContains(call.Args, "--json") {
 		t.Errorf("expected '--json' in args, got %v", call.Args)
+	}
+}
+
+func TestCLIStore_Ready_ParsesOroNativeJSONAliases(t *testing.T) {
+	raw := []byte(`[{"id":"oro-native","title":"Native shape","status":"open","priority":1,"parent_id":"oro-epic","type":"task"}]`)
+	runner := &mockCommandRunner{output: raw}
+	src := NewCLIStore(runner)
+
+	got, err := src.Ready(context.Background())
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 bead, got %d", len(got))
+	}
+	if got[0].Epic != "oro-epic" {
+		t.Errorf("Epic = %q, want %q", got[0].Epic, "oro-epic")
+	}
+	if got[0].Type != "task" {
+		t.Errorf("Type = %q, want %q", got[0].Type, "task")
 	}
 }
 
@@ -342,8 +365,8 @@ func TestCLIStore_Close_Success(t *testing.T) {
 		t.Fatalf("expected 1 call, got %d", len(runner.calls))
 	}
 	call := runner.calls[0]
-	if call.Name != "bd" {
-		t.Errorf("command name: got %q, want %q", call.Name, "bd")
+	if call.Name != "oro" {
+		t.Errorf("command name: got %q, want %q", call.Name, "oro")
 	}
 	if !sliceContains(call.Args, "close") {
 		t.Errorf("expected 'close' in args, got %v", call.Args)
@@ -493,8 +516,8 @@ func TestCLIStore_Create(t *testing.T) {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
 		if !sliceContains(call.Args, "create") {
 			t.Errorf("expected 'create' in args, got %v", call.Args)
@@ -792,8 +815,8 @@ func TestCLIStore_ImplementsBeadStore(t *testing.T) {
 func TestCLIStore_AllChildrenClosed(t *testing.T) {
 	t.Run("returns true when all children are closed", func(t *testing.T) {
 		children := []protocol.Bead{
-			{ID: "child-1", Title: "Done task", Status: "closed"},
-			{ID: "child-2", Title: "Also done", Status: "closed"},
+			{ID: "child-1", Title: "Done task", Status: "closed", Epic: "epic-123"},
+			{ID: "child-2", Title: "Also done", Status: "closed", Epic: "epic-123"},
 		}
 		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
@@ -807,35 +830,23 @@ func TestCLIStore_AllChildrenClosed(t *testing.T) {
 			t.Errorf("AllChildrenClosed: got false, want true (all children closed)")
 		}
 
-		// Verify correct command — no --status filter.
+		// Verify export is used so all child statuses are considered.
 		if len(runner.calls) != 1 {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
-		if !sliceContains(call.Args, "list") {
-			t.Errorf("expected 'list' in args, got %v", call.Args)
-		}
-		if !sliceContains(call.Args, "--parent=epic-123") {
-			t.Errorf("expected '--parent=epic-123' in args, got %v", call.Args)
-		}
-		if !sliceContains(call.Args, "--json") {
-			t.Errorf("expected '--json' in args, got %v", call.Args)
-		}
-		// Must NOT have --status filter — we fetch all and check locally.
-		for _, arg := range call.Args {
-			if strings.HasPrefix(arg, "--status=") {
-				t.Errorf("unexpected --status filter in args: %v", call.Args)
-			}
+		if !sliceContains(call.Args, "export") {
+			t.Errorf("expected 'export' in args, got %v", call.Args)
 		}
 	})
 
 	t.Run("returns false when open children exist", func(t *testing.T) {
 		children := []protocol.Bead{
-			{ID: "child-1", Title: "Done task", Status: "closed"},
-			{ID: "child-2", Title: "Open task", Status: "open"},
+			{ID: "child-1", Title: "Done task", Status: "closed", Epic: "epic-456"},
+			{ID: "child-2", Title: "Open task", Status: "open", Epic: "epic-456"},
 		}
 		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
@@ -852,8 +863,8 @@ func TestCLIStore_AllChildrenClosed(t *testing.T) {
 
 	t.Run("returns false when in_progress children exist", func(t *testing.T) {
 		children := []protocol.Bead{
-			{ID: "child-1", Title: "Done task", Status: "closed"},
-			{ID: "child-2", Title: "WIP task", Status: "in_progress"},
+			{ID: "child-1", Title: "Done task", Status: "closed", Epic: "epic-456"},
+			{ID: "child-2", Title: "WIP task", Status: "in_progress", Epic: "epic-456"},
 		}
 		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
@@ -972,7 +983,7 @@ func TestCLIStore_CreateWithAcceptanceCriteria(t *testing.T) {
 func TestCLIStore_HasChildren(t *testing.T) {
 	t.Run("returns true when children exist", func(t *testing.T) {
 		children := []protocol.Bead{
-			{ID: "child-1", Title: "Child task", Priority: 2},
+			{ID: "child-1", Title: "Child task", Priority: 2, Epic: "epic-123"},
 		}
 		data, _ := json.Marshal(children)
 		runner := &mockCommandRunner{output: data}
@@ -986,22 +997,16 @@ func TestCLIStore_HasChildren(t *testing.T) {
 			t.Errorf("HasChildren: got false, want true (children exist)")
 		}
 
-		// Verify correct command: bd list --parent=epic-123 --json
+		// Verify export is used so children are detected across statuses.
 		if len(runner.calls) != 1 {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
-		if !sliceContains(call.Args, "list") {
-			t.Errorf("expected 'list' in args, got %v", call.Args)
-		}
-		if !sliceContains(call.Args, "--parent=epic-123") {
-			t.Errorf("expected '--parent=epic-123' in args, got %v", call.Args)
-		}
-		if !sliceContains(call.Args, "--json") {
-			t.Errorf("expected '--json' in args, got %v", call.Args)
+		if !sliceContains(call.Args, "export") {
+			t.Errorf("expected 'export' in args, got %v", call.Args)
 		}
 	})
 
@@ -1157,7 +1162,7 @@ func TestCLIStore_HasChildren_Assertions(t *testing.T) {
 
 func TestCLIStore_Update(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		// Update now makes two bd calls: update + show (post-verify).
+		// Update now makes two oro bead calls: update + show (post-verify).
 		runner := &mockCommandRunner{
 			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 				if sliceContains(args, "update") {
@@ -1178,8 +1183,8 @@ func TestCLIStore_Update(t *testing.T) {
 			t.Fatalf("expected 2 calls (update + show verify), got %d", len(runner.calls))
 		}
 		updateCall := runner.calls[0]
-		if updateCall.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", updateCall.Name, "bd")
+		if updateCall.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", updateCall.Name, "oro")
 		}
 		if !sliceContains(updateCall.Args, "update") {
 			t.Errorf("expected 'update' in args, got %v", updateCall.Args)
@@ -1230,14 +1235,14 @@ func TestCLIStore_Update(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error from Update when command fails")
 		}
-		if !strings.Contains(err.Error(), "bd update abc.1") {
-			t.Errorf("expected error to mention 'bd update abc.1', got: %v", err)
+		if !strings.Contains(err.Error(), "oro bead update abc.1") {
+			t.Errorf("expected error to mention 'oro bead update abc.1', got: %v", err)
 		}
 	})
 }
 
 func TestCLIStore_InProgress(t *testing.T) {
-	t.Run("shells_out_to_bd_list_status_in_progress_json", func(t *testing.T) {
+	t.Run("shells_out_to_oro_bead_list_status_in_progress_json", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "oro-1", Title: "Work in progress", Priority: 1},
 			{ID: "oro-2", Title: "Another active bead", Priority: 2},
@@ -1269,8 +1274,8 @@ func TestCLIStore_InProgress(t *testing.T) {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
 		if !sliceContains(call.Args, "list") {
 			t.Errorf("expected 'list' in args, got %v", call.Args)
@@ -1342,8 +1347,8 @@ func TestFindByParentAndTag(t *testing.T) {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
 		if !sliceContains(call.Args, "list") {
 			t.Errorf("expected 'list' in args, got %v", call.Args)
@@ -1372,7 +1377,7 @@ func TestFindByParentAndTag(t *testing.T) {
 		}
 	})
 
-	t.Run("returns wrapped error on bd cli failure", func(t *testing.T) {
+	t.Run("returns wrapped error on bead cli failure", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("bd list failed")}
 		src := NewCLIStore(runner)
 
@@ -1634,12 +1639,15 @@ func TestCLIStore_ExtraArgs(t *testing.T) {
 	// assertPrepended checks that extraArgs appear at the start of call.Args.
 	assertPrepended := func(t *testing.T, call mockCall, extraArgs []string) {
 		t.Helper()
-		if len(call.Args) < len(extraArgs) {
+		if len(call.Args) < 1+len(extraArgs) {
 			t.Fatalf("args too short to contain extraArgs: got %v", call.Args)
 		}
+		if call.Args[0] != "bead" {
+			t.Fatalf("first arg: got %q, want %q (full args: %v)", call.Args[0], "bead", call.Args)
+		}
 		for i, ea := range extraArgs {
-			if call.Args[i] != ea {
-				t.Errorf("extraArgs[%d]: got %q, want %q (full args: %v)", i, call.Args[i], ea, call.Args)
+			if call.Args[i+1] != ea {
+				t.Errorf("extraArgs[%d]: got %q, want %q (full args: %v)", i, call.Args[i+1], ea, call.Args)
 			}
 		}
 	}
@@ -1737,8 +1745,8 @@ func TestCLIStore_ExtraArgs(t *testing.T) {
 			t.Fatalf("Ready: %v", err)
 		}
 		call := runner.calls[0]
-		if len(call.Args) == 0 || call.Args[0] != "ready" {
-			t.Errorf("empty BdExtraArgs: expected 'ready' as first arg, got %v", call.Args)
+		if len(call.Args) < 2 || call.Args[0] != "bead" || call.Args[1] != "ready" {
+			t.Errorf("empty BdExtraArgs: expected 'bead ready' prefix, got %v", call.Args)
 		}
 	})
 
@@ -1789,8 +1797,8 @@ func TestCLIStoreBlocked(t *testing.T) {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
 		if !sliceContains(call.Args, "list") {
 			t.Errorf("expected 'list' in args, got %v", call.Args)
@@ -1870,8 +1878,8 @@ func TestCLIStoreClosed(t *testing.T) {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
 		if !sliceContains(call.Args, "list") {
 			t.Errorf("expected 'list' in args, got %v", call.Args)
@@ -1945,57 +1953,40 @@ func TestCLIStore_Update_ReturnsErrorWhenStatusDoesNotChange(t *testing.T) {
 	}
 }
 
-// TestCLIStore_UpdateInProgressPersists is an integration test against a real
-// bd-backed fixture: after Update(id, "in_progress"), Show(id).Status must be
-// "in_progress". Skipped when bd is not in PATH.
+// TestCLIStore_UpdateInProgressPersists verifies the update-then-show status
+// check against the oro bead subprocess boundary.
 func TestCLIStore_UpdateInProgressPersists(t *testing.T) {
-	bdBin, err := exec.LookPath("bd")
-	if err != nil {
-		t.Skip("bd binary not in PATH, skipping integration test")
-	}
-
 	tmpDir := t.TempDir()
-
-	run := func(name string, args ...string) string {
-		t.Helper()
-		cmd := exec.Command(name, args...) //nolint:gosec
-		cmd.Dir = tmpDir
-		cmd.Env = append(cmd.Environ(), "BD_NON_INTERACTIVE=1")
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		out, err := cmd.Output()
-		if err != nil {
-			t.Fatalf("%s %v: %v\n%s", name, args, err, stderr.String())
-		}
-		return string(out)
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
 	}
-
-	run("git", "init")
-	run("git", "config", "user.email", "test@test.com")
-	run("git", "config", "user.name", "Test")
-	run("git", "commit", "--allow-empty", "-m", "init")
-	run(bdBin, "init", "--skip-agents", "--skip-hooks", "--quiet")
-
-	out := run(bdBin, "create", "--title=Integration test bead", "--type=task",
-		"--priority=1", "--description=Integration test fixture", "--json")
-
-	var created struct {
-		ID string `json:"id"`
+	fakeOro := filepath.Join(binDir, "oro")
+	script := `#!/bin/sh
+if [ "$1" = "bead" ] && [ "$2" = "update" ]; then
+  exit 0
+fi
+if [ "$1" = "bead" ] && [ "$2" = "show" ]; then
+  printf '[{"id":"oro-test","title":"T","status":"in_progress"}]'
+  exit 0
+fi
+echo "unexpected command: $*" >&2
+exit 1
+`
+	if err := os.WriteFile(fakeOro, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake oro: %v", err)
 	}
-	if err := json.Unmarshal([]byte(out), &created); err != nil {
-		t.Fatalf("parse bd create output: %v\noutput: %s", err, out)
-	}
-	beadID := created.ID
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	runner := &ExecCommandRunner{Dir: tmpDir}
 	src := NewCLIStore(runner)
 
 	ctx := context.Background()
-	if err := src.Update(ctx, beadID, statusParams("in_progress")); err != nil {
+	if err := src.Update(ctx, "oro-test", statusParams("in_progress")); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
-	detail, err := src.Show(ctx, beadID)
+	detail, err := src.Show(ctx, "oro-test")
 	if err != nil {
 		t.Fatalf("Show after Update: %v", err)
 	}
@@ -2018,8 +2009,8 @@ func TestCLIStore_DeferUndefer(t *testing.T) {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
 		if !sliceContains(call.Args, "defer") {
 			t.Errorf("expected 'defer' in args, got %v", call.Args)
@@ -2045,8 +2036,8 @@ func TestCLIStore_DeferUndefer(t *testing.T) {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
 		}
 		call := runner.calls[0]
-		if call.Name != "bd" {
-			t.Errorf("command name: got %q, want %q", call.Name, "bd")
+		if call.Name != "oro" {
+			t.Errorf("command name: got %q, want %q", call.Name, "oro")
 		}
 		if !sliceContains(call.Args, "undefer") {
 			t.Errorf("expected 'undefer' in args, got %v", call.Args)
@@ -2056,7 +2047,7 @@ func TestCLIStore_DeferUndefer(t *testing.T) {
 		}
 	})
 
-	// (c) runner error wraps as "bd defer oro-x: <err>"
+	// (c) runner error wraps as "oro bead defer oro-x: <err>"
 	t.Run("defer_error_wraps_with_subcommand_context", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("defer failed")}
 		src := NewCLIStore(runner)
@@ -2065,12 +2056,12 @@ func TestCLIStore_DeferUndefer(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error from Defer when command fails")
 		}
-		if !strings.Contains(err.Error(), "bd defer oro-x") {
-			t.Errorf("expected error to contain 'bd defer oro-x', got: %v", err)
+		if !strings.Contains(err.Error(), "oro bead defer oro-x") {
+			t.Errorf("expected error to contain 'oro bead defer oro-x', got: %v", err)
 		}
 	})
 
-	// (c) runner error wraps as "bd undefer oro-x: <err>"
+	// (c) runner error wraps as "oro bead undefer oro-x: <err>"
 	t.Run("undefer_error_wraps_with_subcommand_context", func(t *testing.T) {
 		runner := &mockCommandRunner{err: fmt.Errorf("undefer failed")}
 		src := NewCLIStore(runner)
@@ -2079,8 +2070,8 @@ func TestCLIStore_DeferUndefer(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error from Undefer when command fails")
 		}
-		if !strings.Contains(err.Error(), "bd undefer oro-x") {
-			t.Errorf("expected error to contain 'bd undefer oro-x', got: %v", err)
+		if !strings.Contains(err.Error(), "oro bead undefer oro-x") {
+			t.Errorf("expected error to contain 'oro bead undefer oro-x', got: %v", err)
 		}
 	})
 }

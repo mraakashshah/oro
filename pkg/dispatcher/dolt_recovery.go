@@ -22,8 +22,8 @@ func (d *Dispatcher) recoverDoltBackoff(n int) time.Duration {
 }
 
 // recoverDolt attempts to restart the dolt bead store and reimport state from
-// the most recent backup. It sets doltRecovering=true, runs "bd dolt start"
-// then "bd import <backupPath>", and clears doltRecovering on success.
+// the most recent backup. It sets doltRecovering=true, runs the legacy dolt
+// start/import recovery commands, and clears doltRecovering on success.
 // On failure it increments doltRecoveryAttempts and applies exponential backoff.
 // After 3 consecutive failures it escalates to the manager via d.escalator.
 func (d *Dispatcher) recoverDolt(ctx context.Context) {

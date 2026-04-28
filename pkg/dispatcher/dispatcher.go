@@ -1,7 +1,7 @@
 // Package dispatcher implements the Oro orchestrator — the core coordination
 // engine that composes protocol, merge, worker, and ops packages into a
 // unified runtime. The Dispatcher manages a UDS server for worker connections,
-// SQLite WAL for runtime state, a priority queue from bd ready, worker
+// SQLite WAL for runtime state, a priority queue from oro bead ready, worker
 // lifecycle supervision, merge execution, ops agent spawning, command
 // processing, and escalation to the Manager.
 //
@@ -277,13 +277,13 @@ type pendingHandoff struct {
 type Config struct {
 	SocketPath            string        // UDS socket path.
 	DBPath                string        // SQLite database path.
-	RepoRoot              string        // Absolute path to the repository root. Used so bd commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
+	RepoRoot              string        // Absolute path to the repository root. Used so oro bead commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
 	BeadsDir              string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
 	MaxWorkers            int           // Worker pool ceiling for auto-scale (default 10).
 	InitialWorkers        int           // Initial targetWorkers on startup (default: MaxWorkers).
 	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
 	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
-	PollInterval          time.Duration // bd ready poll interval (default 10s).
+	PollInterval          time.Duration // oro bead ready poll interval (default 10s).
 	FallbackPollInterval  time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
 	ShutdownTimeout       time.Duration // Graceful shutdown timeout (default 10s).
 	ConsolidateAfterN     int           // Trigger context consolidation after N completed beads (default 5).
@@ -474,7 +474,7 @@ type Dispatcher struct {
 	repoRoot string
 
 	// shutdownRunner is the CommandRunner used by shutdownResetActiveBeads to run
-	// `bd update` from the repo root. Initialised by New() to
+	// `oro bead update` from the repo root. Initialised by New() to
 	// &ExecCommandRunner{Dir: cfg.RepoRoot}; overridable in tests.
 	shutdownRunner CommandRunner
 
@@ -589,7 +589,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if err := resolved.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
-	// Determine the effective repo root for bd commands.
+	// Determine the effective repo root for oro bead commands.
 	// Falls back to the process working directory when RepoRoot is not set.
 	rootDir, beadsDir := resolved.RepoRoot, resolved.BeadsDir
 	if rootDir == "" {
@@ -3210,9 +3210,9 @@ func (d *Dispatcher) isBeadAssignable(b protocol.Bead, now time.Time, activeBead
 		return false
 	}
 	// Skip beads currently being merged and closed. There's a race window
-	// between mergeAndComplete setting mergingBeads and bd close propagating
+	// between mergeAndComplete setting mergingBeads and oro bead close propagating
 	// the status change — without this check the bead appears "ready" to
-	// bd ready --json and gets re-assigned, causing bead_closed_externally spam.
+	// oro bead ready --json and gets re-assigned, causing bead_closed_externally spam.
 	if d.mergingBeads[b.ID] {
 		return false
 	}
@@ -5191,7 +5191,7 @@ func (d *Dispatcher) shutdownRemoveWorktrees(paths []string) {
 // "open" so it becomes re-assignable on next dispatcher start. Best-effort:
 // failures are logged but do not block shutdown.
 //
-// It uses d.shutdownRunner (anchored to cfg.RepoRoot) so that `bd update`
+// It uses d.shutdownRunner (anchored to cfg.RepoRoot) so that `oro bead update`
 // always runs from the repository root, not from a worker worktree that may
 // lack a .beads/ database.
 func (d *Dispatcher) shutdownResetActiveBeads() {
@@ -5203,7 +5203,7 @@ func (d *Dispatcher) shutdownResetActiveBeads() {
 	}
 	defer func() { _ = rows.Close() }()
 
-	// Use a CLIStore backed by the shutdown runner so bd commands are
+	// Use a CLIStore backed by the shutdown runner so oro bead commands are
 	// executed from the repo root regardless of the process working directory.
 	rootBeads := NewCLIStore(d.shutdownRunner)
 

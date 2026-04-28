@@ -85,7 +85,7 @@ func stubPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge stri
 	fake.seqOut[mgrCapture] = []string{
 		"Welcome\n❯ \nstatus bar",                     // WaitForPrompt
 		"Welcome\n❯ " + managerNudge + "\nstatus bar", // SendKeysVerified
-		"bd stats\nrunning\n",                         // VerifyBeaconReceived (async goroutine)
+		"oro bead status\nrunning\n",                  // VerifyBeaconReceived (async goroutine)
 	}
 }
 
@@ -98,7 +98,7 @@ func stubCodexPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge
 	fake.output[archCapture] = "Codex ready\n" + architectNudge + "\n"
 	fake.seqOut[mgrCapture] = []string{
 		"Codex ready\n" + managerNudge + "\n",
-		"bd stats\nrunning\n",
+		"oro bead status\nrunning\n",
 	}
 }
 
@@ -728,10 +728,10 @@ func TestWaitForPromptAcceptsTrustDialog(t *testing.T) {
 func TestVerifyBeaconReceived(t *testing.T) {
 	t.Run("returns nil when indicator found immediately", func(t *testing.T) {
 		fake := newFakeCmd()
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "some output\nbd stats\nmore output"
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "some output\noro bead status\nmore output"
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", time.Second)
+		err := sess.VerifyBeaconReceived("oro:manager", "oro bead status", time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
 		}
@@ -743,11 +743,11 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		fake.seqOut[captureKey] = []string{
 			"claude loading...",
 			"still waiting...",
-			"running bd stats\noutput here",
+			"running oro bead status\noutput here",
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 5*time.Second)
+		err := sess.VerifyBeaconReceived("oro:manager", "oro bead status", 5*time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
 		}
@@ -769,14 +769,14 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "stuck on loading screen"
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 50*time.Millisecond)
+		err := sess.VerifyBeaconReceived("oro:manager", "oro bead status", 50*time.Millisecond)
 		if err == nil {
 			t.Fatal("expected timeout error, got nil")
 		}
 		if !strings.Contains(err.Error(), "oro:manager") {
 			t.Errorf("expected window target in error, got: %v", err)
 		}
-		if !strings.Contains(err.Error(), "bd stats") {
+		if !strings.Contains(err.Error(), "oro bead status") {
 			t.Errorf("expected indicator in error, got: %v", err)
 		}
 		// Error should include last captured pane content for diagnostics
@@ -802,11 +802,11 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		// First call returns empty (simulating error), second has indicator
 		fake.seqOut[captureKey] = []string{
 			"",
-			"bd stats\nsome output",
+			"oro bead status\nsome output",
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		err := sess.VerifyBeaconReceived("oro:manager", "bd stats", 5*time.Second)
+		err := sess.VerifyBeaconReceived("oro:manager", "oro bead status", 5*time.Second)
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
 		}
@@ -820,12 +820,12 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
 		// capture-pane is used by WaitForPrompt (needs ❯), SendKeysVerified
-		// (needs nudge text), and VerifyBeaconReceived (needs "bd stats").
+		// (needs nudge text), and VerifyBeaconReceived (needs "oro bead status").
 		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[managerCapture] = []string{
 			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
 			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"bd stats\n❯ output visible\n",         // VerifyBeaconReceived
+			"oro bead status\n❯ output visible\n",  // VerifyBeaconReceived
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
@@ -1585,7 +1585,7 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 		fake.seqOut[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = []string{
 			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
 			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"bd stats\n❯ output\n",                 // VerifyBeaconReceived
+			"oro bead status\n❯ output\n",          // VerifyBeaconReceived
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
@@ -2939,16 +2939,16 @@ func TestCreateParallelNudge(t *testing.T) {
 		archCapture := key("tmux", "capture-pane", "-p", "-t", "oro:architect")
 		mgrCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[archCapture] = []string{
-			"loading...",                        // WaitForPrompt: not ready yet
-			"Welcome\n❯ \nstatus bar",           // WaitForPrompt: ready
-			"Welcome\n❯ arch nudge\nstatus bar", // SendKeysVerified
-			"bd stats\n❯ output visible\n",      // VerifyBeaconReceived (if sync)
+			"loading...",                          // WaitForPrompt: not ready yet
+			"Welcome\n❯ \nstatus bar",             // WaitForPrompt: ready
+			"Welcome\n❯ arch nudge\nstatus bar",   // SendKeysVerified
+			"oro bead status\n❯ output visible\n", // VerifyBeaconReceived (if sync)
 		}
 		fake.seqOut[mgrCapture] = []string{
-			"loading...",                       // WaitForPrompt: not ready yet
-			"Welcome\n❯ \nstatus bar",          // WaitForPrompt: ready
-			"Welcome\n❯ mgr nudge\nstatus bar", // SendKeysVerified
-			"bd stats\n❯ output visible\n",     // VerifyBeaconReceived (if sync)
+			"loading...",                          // WaitForPrompt: not ready yet
+			"Welcome\n❯ \nstatus bar",             // WaitForPrompt: ready
+			"Welcome\n❯ mgr nudge\nstatus bar",    // SendKeysVerified
+			"oro bead status\n❯ output visible\n", // VerifyBeaconReceived (if sync)
 		}
 
 		// Sleeper records each invocation start time to detect serialization.
@@ -2994,7 +2994,7 @@ func TestCreateParallelNudge(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "arch nudge", "mgr nudge")
 
-		// VerifyBeaconReceived: capture-pane for manager never shows "bd stats".
+		// VerifyBeaconReceived: capture-pane for manager never shows "oro bead status".
 		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[managerCapture] = []string{
 			"Welcome\n❯ \nstatus bar",          // WaitForPrompt
@@ -3036,7 +3036,7 @@ func TestCreateWithManagerOnly(t *testing.T) {
 		fake.seqOut[mgrCapture] = []string{
 			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
 			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"bd stats\nrunning\n",                  // VerifyBeaconReceived (async)
+			"oro bead status\nrunning\n",           // VerifyBeaconReceived (async)
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
@@ -3087,8 +3087,8 @@ func TestCreateWithManagerOnly(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		mgrCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[mgrCapture] = []string{
-			"Welcome\n❯ \nstatus bar", // WaitForPrompt
-			"bd stats\nrunning\n",     // VerifyBeaconReceived (async)
+			"Welcome\n❯ \nstatus bar",    // WaitForPrompt
+			"oro bead status\nrunning\n", // VerifyBeaconReceived (async)
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}

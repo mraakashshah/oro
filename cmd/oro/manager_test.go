@@ -41,7 +41,7 @@ func TestManagerBeacon(t *testing.T) {
 		keyTerms := []string{
 			"oro start",
 			"oro directive scale",
-			"bd ready",
+			"oro bead ready",
 			"[ORO-DISPATCH]",
 			"quality gate",
 		}
@@ -69,7 +69,7 @@ func TestManagerBeacon(t *testing.T) {
 	})
 
 	t.Run("startup section includes initialization steps", func(t *testing.T) {
-		startupTerms := []string{"bd stats", "bd ready", "bd blocked", "oro directive status", "oro directive scale"}
+		startupTerms := []string{"oro bead status", "oro bead ready", "oro bead blocked", "oro directive status", "oro directive scale"}
 		for _, term := range startupTerms {
 			if !strings.Contains(beacon, term) {
 				t.Errorf("expected Startup section to contain %q", term)
@@ -172,7 +172,7 @@ func TestManagerBeacon(t *testing.T) {
 	})
 
 	t.Run("shutdown section includes ordered steps", func(t *testing.T) {
-		shutdownTerms := []string{"oro directive scale 0", "oro stop", "bd sync"}
+		shutdownTerms := []string{"oro directive scale 0", "oro stop", "oro bead status"}
 		for _, term := range shutdownTerms {
 			if !strings.Contains(beacon, term) {
 				t.Errorf("expected Shutdown section to contain %q", term)
@@ -295,11 +295,11 @@ func TestManagerNudge(t *testing.T) {
 	})
 
 	t.Run("suggests orientation commands", func(t *testing.T) {
-		if !strings.Contains(nudge, "bd stats") {
-			t.Error("expected ManagerNudge() to suggest 'bd stats'")
+		if !strings.Contains(nudge, "oro bead status") {
+			t.Error("expected ManagerNudge() to suggest 'oro bead status'")
 		}
-		if !strings.Contains(nudge, "bd ready") {
-			t.Error("expected ManagerNudge() to suggest 'bd ready'")
+		if !strings.Contains(nudge, "oro bead ready") {
+			t.Error("expected ManagerNudge() to suggest 'oro bead ready'")
 		}
 		if !strings.Contains(nudge, "oro directive status") {
 			t.Error("expected ManagerNudge() to suggest 'oro directive status'")

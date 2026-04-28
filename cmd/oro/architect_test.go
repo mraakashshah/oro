@@ -46,9 +46,9 @@ func TestArchitectBeacon_KeyTerms(t *testing.T) {
 		term   string
 		reason string
 	}{
-		{"bd create", "architect creates beads"},
-		{"bd show", "architect inspects beads"},
-		{"bd dep add", "architect maps dependencies"},
+		{"oro bead create", "architect creates beads"},
+		{"oro bead show", "architect inspects beads"},
+		{"oro bead dep add", "architect maps dependencies"},
 		{"acceptance criteria", "beads must have acceptance criteria"},
 		{"worktree", "system map references worktrees"},
 		{"You do not write code", "core role constraint"},
@@ -91,11 +91,11 @@ func TestArchitectNudge(t *testing.T) {
 	})
 
 	t.Run("suggests orientation commands", func(t *testing.T) {
-		if !strings.Contains(nudge, "bd stats") {
-			t.Error("expected ArchitectNudge() to suggest 'bd stats'")
+		if !strings.Contains(nudge, "oro bead status") {
+			t.Error("expected ArchitectNudge() to suggest 'oro bead status'")
 		}
-		if !strings.Contains(nudge, "bd ready") {
-			t.Error("expected ArchitectNudge() to suggest 'bd ready'")
+		if !strings.Contains(nudge, "oro bead ready") {
+			t.Error("expected ArchitectNudge() to suggest 'oro bead ready'")
 		}
 	})
 
@@ -201,15 +201,13 @@ func TestArchitectBeacon_ArchitectConstraints(t *testing.T) {
 		}
 	})
 
-	t.Run("no oro CLI usage", func(t *testing.T) {
+	t.Run("no dispatcher control CLI usage", func(t *testing.T) {
 		lower := strings.ToLower(beacon)
-		hasNoOro := strings.Contains(lower, "no using `oro` cli") ||
-			strings.Contains(lower, "no oro cli") ||
-			strings.Contains(lower, "do not use oro") ||
-			strings.Contains(lower, "never use oro") ||
-			strings.Contains(lower, "oro` cli commands")
-		if !hasNoOro {
-			t.Error("expected ArchitectBeacon() to contain a no-oro-CLI constraint")
+		hasNoDirective := strings.Contains(lower, "no using swarm-control") ||
+			strings.Contains(lower, "oro directive") ||
+			strings.Contains(lower, "dispatcher control commands")
+		if !hasNoDirective {
+			t.Error("expected ArchitectBeacon() to contain a no-dispatcher-control constraint")
 		}
 	})
 }

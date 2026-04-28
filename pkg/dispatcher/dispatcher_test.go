@@ -7286,13 +7286,13 @@ func TestShutdownResetsInProgressBeads(t *testing.T) {
 	// all active assignments to open.
 	d.shutdownSequence()
 
-	// Build a map of beadID -> status from the recorded `bd update` calls.
+	// Build a map of beadID -> status from the recorded `oro bead update` calls.
 	updated := make(map[string]string)
 	for _, call := range captureRunner.calls {
-		if call.Name == "bd" && len(call.Args) >= 3 && call.Args[0] == "update" {
-			beadID := call.Args[1]
-			// args[2] is "--status=open"
-			status := strings.TrimPrefix(call.Args[2], "--status=")
+		if call.Name == "oro" && len(call.Args) >= 4 && call.Args[0] == "bead" && call.Args[1] == "update" {
+			beadID := call.Args[2]
+			// args[3] is "--status=open"
+			status := strings.TrimPrefix(call.Args[3], "--status=")
 			updated[beadID] = status
 		}
 	}
@@ -7300,22 +7300,22 @@ func TestShutdownResetsInProgressBeads(t *testing.T) {
 	for _, beadID := range []string{"bead-reset-a", "bead-reset-b"} {
 		status, ok := updated[beadID]
 		if !ok {
-			t.Errorf("expected bd update %q --status=open to be called, but it was not", beadID)
+			t.Errorf("expected oro bead update %q --status=open to be called, but it was not", beadID)
 			continue
 		}
 		if status != "open" {
-			t.Errorf("expected bd update %q --status=open, got status=%q", beadID, status)
+			t.Errorf("expected oro bead update %q --status=open, got status=%q", beadID, status)
 		}
 	}
 
 	// Completed assignment must not be reset.
 	if status, ok := updated["bead-done"]; ok {
-		t.Errorf("expected completed bead to be left alone, but bd update was called with status=%q", status)
+		t.Errorf("expected completed bead to be left alone, but oro bead update was called with status=%q", status)
 	}
 }
 
 // TestShutdownResetBeadUsesRepoRoot verifies that shutdownResetActiveBeads runs
-// `bd update` with CWD set to the repo root (cfg.RepoRoot), not from the
+// `oro bead update` with CWD set to the repo root (cfg.RepoRoot), not from the
 // worker worktree or process CWD. This prevents "Error: no beads database found"
 // when the process is started from a worktree that lacks a .beads/ directory.
 func TestShutdownResetBeadUsesRepoRoot(t *testing.T) {
@@ -7367,22 +7367,23 @@ func TestShutdownResetBeadUsesRepoRoot(t *testing.T) {
 
 	d.shutdownResetActiveBeads()
 
-	// The mock runner must have been called with `bd update bead-root-check --status=open`.
+	// The mock runner must have been called with `oro bead update bead-root-check --status=open`.
 	if len(captureRunner.calls) == 0 {
 		t.Fatal("shutdownRunner was never called; shutdownResetActiveBeads must use d.shutdownRunner")
 	}
 	found := false
 	for _, call := range captureRunner.calls {
-		if call.Name == "bd" && len(call.Args) >= 3 &&
-			call.Args[0] == "update" &&
-			call.Args[1] == "bead-root-check" &&
-			call.Args[2] == "--status=open" {
+		if call.Name == "oro" && len(call.Args) >= 4 &&
+			call.Args[0] == "bead" &&
+			call.Args[1] == "update" &&
+			call.Args[2] == "bead-root-check" &&
+			call.Args[3] == "--status=open" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected call `bd update bead-root-check --status=open`, got calls: %v", captureRunner.calls)
+		t.Errorf("expected call `oro bead update bead-root-check --status=open`, got calls: %v", captureRunner.calls)
 	}
 }
 

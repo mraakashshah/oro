@@ -43,7 +43,7 @@ func paneAlive(ctx context.Context, db *sql.DB, pane string, nowUnix int64) bool
 }
 
 // checkDoltHealth reports whether the dolt bead store is reachable.
-// It shells out to "bd dolt status" with a 5-second timeout.
+// It shells out to the legacy dolt status command with a 5-second timeout.
 // Returns true if the command exits zero, false on any error or non-zero exit.
 func (d *Dispatcher) checkDoltHealth(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
