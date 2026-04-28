@@ -38,6 +38,13 @@ type Store interface {
 	Export(ctx context.Context) ([]byte, error)
 }
 
+// StatusCounts contains quick bead counts by lifecycle status.
+type StatusCounts struct {
+	Open       int `json:"open"`
+	InProgress int `json:"in_progress"`
+	Closed     int `json:"closed"`
+}
+
 // CreateParams contains the fields needed to create a bead.
 type CreateParams struct {
 	Title              string

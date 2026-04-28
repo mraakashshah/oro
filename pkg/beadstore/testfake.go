@@ -272,6 +272,103 @@ func (s *FakeStore) Close(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+func (s *FakeStore) AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("add dependency context: %w", err)
+	}
+	if strings.TrimSpace(depType) == "" {
+		depType = "blocks"
+	}
+	if beadID == dependsOnID {
+		return fmt.Errorf("beadstore: dependency cannot point to itself")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bead, ok := s.beads[beadID]
+	if !ok {
+		return &protocol.BeadNotFoundError{BeadID: beadID}
+	}
+	if _, ok := s.beads[dependsOnID]; !ok {
+		return &protocol.BeadNotFoundError{BeadID: dependsOnID}
+	}
+	for _, dep := range bead.Dependencies {
+		if dep.DependsOnID == dependsOnID && dep.Type == depType {
+			return nil
+		}
+	}
+	bead.Dependencies = append(bead.Dependencies, protocol.Dependency{
+		IssueID:     beadID,
+		DependsOnID: dependsOnID,
+		Type:        depType,
+	})
+	bead.UpdatedAt = nowString()
+	s.beads[beadID] = bead
+	return nil
+}
+
+func (s *FakeStore) RemoveDependency(ctx context.Context, beadID, dependsOnID string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("remove dependency context: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	bead, ok := s.beads[beadID]
+	if !ok {
+		return &protocol.BeadNotFoundError{BeadID: beadID}
+	}
+	filtered := bead.Dependencies[:0]
+	for _, dep := range bead.Dependencies {
+		if dep.DependsOnID != dependsOnID {
+			filtered = append(filtered, dep)
+		}
+	}
+	bead.Dependencies = cloneDependencies(filtered)
+	bead.UpdatedAt = nowString()
+	s.beads[beadID] = bead
+	return nil
+}
+
+func (s *FakeStore) ListDependencies(ctx context.Context, beadID string) ([]protocol.Dependency, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("list dependency context: %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	bead, ok := s.beads[beadID]
+	if !ok {
+		return nil, &protocol.BeadNotFoundError{BeadID: beadID}
+	}
+	return cloneDependencies(bead.Dependencies), nil
+}
+
+func (s *FakeStore) CountByStatus(ctx context.Context) (StatusCounts, error) {
+	if err := ctx.Err(); err != nil {
+		return StatusCounts{}, fmt.Errorf("count status context: %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var counts StatusCounts
+	for _, bead := range s.beads {
+		switch bead.Status {
+		case "open":
+			counts.Open++
+		case "in_progress":
+			counts.InProgress++
+		case "closed":
+			counts.Closed++
+		}
+	}
+	return counts, nil
+}
+
 func (s *FakeStore) Defer(ctx context.Context, id, until string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("defer bead context: %w", err)

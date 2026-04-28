@@ -306,6 +306,105 @@ WHERE id=? AND deleted=0`, reason, now, now, id)
 	return tx.Commit()
 }
 
+func (s *SQLiteStore) AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error {
+	depType = strings.TrimSpace(depType)
+	if depType == "" {
+		depType = "blocks"
+	}
+	if beadID == dependsOnID {
+		return fmt.Errorf("beadstore: dependency cannot point to itself")
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	if err := ensureBeadExists(ctx, tx, beadID); err != nil {
+		return err
+	}
+	if err := ensureBeadExists(ctx, tx, dependsOnID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO bead_deps (bead_id, depends_on_id, type, created_by)
+VALUES (?, ?, ?, 'oro')`, beadID, dependsOnID, depType); err != nil {
+		return fmt.Errorf("beadstore: add dependency %s -> %s: %w", beadID, dependsOnID, err)
+	}
+	if err := insertEvent(ctx, tx, "bead_dependency_added", beadID, map[string]any{
+		"depends_on_id": dependsOnID,
+		"type":          depType,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) RemoveDependency(ctx context.Context, beadID, dependsOnID string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+
+	if err := ensureBeadExists(ctx, tx, beadID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bead_deps WHERE bead_id=? AND depends_on_id=?`, beadID, dependsOnID); err != nil {
+		return fmt.Errorf("beadstore: remove dependency %s -> %s: %w", beadID, dependsOnID, err)
+	}
+	if err := insertEvent(ctx, tx, "bead_dependency_removed", beadID, map[string]any{
+		"depends_on_id": dependsOnID,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLiteStore) ListDependencies(ctx context.Context, beadID string) ([]protocol.Dependency, error) {
+	bead, err := s.Show(ctx, beadID)
+	if err != nil {
+		return nil, err
+	}
+	if bead == nil {
+		return nil, &protocol.BeadNotFoundError{BeadID: beadID}
+	}
+	return bead.Dependencies, nil
+}
+
+func (s *SQLiteStore) CountByStatus(ctx context.Context) (StatusCounts, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM beads WHERE deleted=0 GROUP BY status`)
+	if err != nil {
+		return StatusCounts{}, err
+	}
+	defer rows.Close()
+
+	var counts StatusCounts
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return StatusCounts{}, err
+		}
+		switch status {
+		case "open":
+			counts.Open = count
+		case "in_progress":
+			counts.InProgress = count
+		case "closed":
+			counts.Closed = count
+		}
+	}
+	return counts, rows.Err()
+}
+
 func (s *SQLiteStore) Defer(ctx context.Context, id, until string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -684,6 +783,17 @@ func insertEvent(ctx context.Context, tx *sql.Tx, eventType, beadID string, payl
 		return nil
 	}
 	return err
+}
+
+func ensureBeadExists(ctx context.Context, tx *sql.Tx, id string) error {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM beads WHERE id=? AND deleted=0`, id).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return &protocol.BeadNotFoundError{BeadID: id}
+		}
+		return err
+	}
+	return nil
 }
 
 func updatePayload(params UpdateParams) map[string]any {

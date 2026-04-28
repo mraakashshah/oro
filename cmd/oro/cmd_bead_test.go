@@ -39,16 +39,26 @@ func TestBeadCommandHelpExposesSubcommands(t *testing.T) {
 
 	out := buf.String()
 	for _, want := range []string{
-		"create",
-		"update",
-		"close",
-		"list",
-		"show",
-		"ready",
 		"blocked",
 		"closed",
+		"create",
+		"close",
+		"defer",
 		"dep",
+		"doctor",
 		"export",
+		"import",
+		"list",
+		"meta",
+		"note",
+		"ready",
+		"reopen",
+		"search",
+		"show",
+		"status",
+		"tag",
+		"undefer",
+		"update",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("bead help missing %q:\n%s", want, out)
@@ -381,6 +391,89 @@ func TestBeadUpdateAndCloseJSONEmitMutatedBead(t *testing.T) {
 	}
 }
 
+func TestCmdBeadDependencyRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	executeBeadCommand(t, store, "create", "--id", "oro-blocker", "--title", "blocker")
+	executeBeadCommand(t, store, "create", "--id", "oro-blocked", "--title", "blocked")
+
+	added := decodeBeadJSONObject(t, executeBeadCommand(t, store, "dep", "add", "oro-blocked", "oro-blocker", "--type", "blocks", "--json"))
+	if added["id"] != "oro-blocked" {
+		t.Fatalf("dep add JSON id = %#v, want oro-blocked", added["id"])
+	}
+	deps, ok := added["dependencies"].([]any)
+	if !ok || len(deps) != 1 {
+		t.Fatalf("dep add dependencies = %#v, want one dependency", added["dependencies"])
+	}
+
+	listed := decodeDependencyJSONArray(t, executeBeadCommand(t, store, "dep", "list", "oro-blocked", "--json"))
+	if len(listed) != 1 || listed[0]["depends_on_id"] != "oro-blocker" || listed[0]["type"] != "blocks" {
+		t.Fatalf("dep list = %#v, want oro-blocked -> oro-blocker blocks", listed)
+	}
+
+	ready := decodeBeadJSONArray(t, executeBeadCommand(t, store, "ready", "--json"))
+	if beadJSONArrayHasID(ready, "oro-blocked") {
+		t.Fatalf("ready included blocked bead before dependency closed: %#v", ready)
+	}
+	if !beadJSONArrayHasID(ready, "oro-blocker") {
+		t.Fatalf("ready did not include blocker before close: %#v", ready)
+	}
+
+	removed := decodeBeadJSONObject(t, executeBeadCommand(t, store, "dep", "rm", "oro-blocked", "oro-blocker", "--json"))
+	removedDeps, ok := removed["dependencies"].([]any)
+	if !ok || len(removedDeps) != 0 {
+		t.Fatalf("dep rm dependencies = %#v, want empty", removed["dependencies"])
+	}
+
+	executeBeadCommand(t, store, "dep", "add", "oro-blocked", "oro-blocker", "--json")
+	executeBeadCommand(t, store, "close", "oro-blocker", "--reason", "done")
+	ready = decodeBeadJSONArray(t, executeBeadCommand(t, store, "ready", "--json"))
+	if !beadJSONArrayHasID(ready, "oro-blocked") {
+		t.Fatalf("ready did not include unblocked bead after dependency close: %#v", ready)
+	}
+}
+
+func TestCmdBeadLifecycleSubcommands(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	executeBeadCommand(t, store, "create", "--id", "oro-life", "--title", "lifecycle")
+
+	status := decodeBeadJSONObject(t, executeBeadCommand(t, store, "status", "--json"))
+	if status["open"] != float64(1) || status["in_progress"] != float64(0) || status["closed"] != float64(0) {
+		t.Fatalf("initial status = %#v, want one open bead", status)
+	}
+
+	deferred := decodeBeadJSONObject(t, executeBeadCommand(t, store, "defer", "oro-life", "--until", "2999-01-01T00:00:00Z", "--json"))
+	if deferred["id"] != "oro-life" {
+		t.Fatalf("defer JSON = %#v, want oro-life", deferred)
+	}
+	if ready := decodeBeadJSONArray(t, executeBeadCommand(t, store, "ready", "--json")); beadJSONArrayHasID(ready, "oro-life") {
+		t.Fatalf("ready included future-deferred bead: %#v", ready)
+	}
+
+	undeferred := decodeBeadJSONObject(t, executeBeadCommand(t, store, "undefer", "oro-life", "--json"))
+	if undeferred["id"] != "oro-life" {
+		t.Fatalf("undefer JSON = %#v, want oro-life", undeferred)
+	}
+	if ready := decodeBeadJSONArray(t, executeBeadCommand(t, store, "ready", "--json")); !beadJSONArrayHasID(ready, "oro-life") {
+		t.Fatalf("ready did not include undeferred bead: %#v", ready)
+	}
+
+	executeBeadCommand(t, store, "close", "oro-life", "--reason", "done")
+	reopened := decodeBeadJSONObject(t, executeBeadCommand(t, store, "reopen", "oro-life", "--json"))
+	if reopened["status"] != "open" || reopened["closed_at"] != nil || reopened["close_reason"] != nil {
+		t.Fatalf("reopen JSON = %#v, want open bead without close metadata", reopened)
+	}
+}
+
 func TestBeadExportJSONEmitsOroNativeArray(t *testing.T) {
 	store := beadstore.NewFakeStore(protocol.Bead{
 		ID:       "oro-export",
@@ -403,25 +496,27 @@ func TestBeadExportJSONEmitsOroNativeArray(t *testing.T) {
 	}
 }
 
-func TestBeadDepJSONEmitsUnsupportedErrorObject(t *testing.T) {
-	store := beadstore.NewFakeStore()
-	for _, args := range [][]string{
-		{"dep", "add", "oro-a", "oro-b", "--json"},
-		{"dep", "rm", "oro-a", "oro-b", "--json"},
-		{"dep", "list", "oro-a", "--json"},
-	} {
-		out := executeBeadCommand(t, store, args...)
-		got := decodeBeadJSONObject(t, out)
-		if got["ok"] != false {
-			t.Fatalf("%s ok = %#v, want false in:\n%s", strings.Join(args, " "), got["ok"], out)
-		}
-		if got["error"] != "unsupported" {
-			t.Fatalf("%s error = %#v, want unsupported in:\n%s", strings.Join(args, " "), got["error"], out)
-		}
-		message, ok := got["message"].(string)
-		if !ok || !strings.Contains(message, "not implemented yet") {
-			t.Fatalf("%s message = %#v, want not implemented yet in:\n%s", strings.Join(args, " "), got["message"], out)
-		}
+func TestBeadDepJSONRoundTripsFakeStore(t *testing.T) {
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "oro-a", Title: "dependent", Status: "open", Type: "task"},
+		protocol.Bead{ID: "oro-b", Title: "blocker", Status: "open", Type: "task"},
+	)
+
+	added := decodeBeadJSONObject(t, executeBeadCommand(t, store, "dep", "add", "oro-a", "oro-b", "--type", "conditional-blocks", "--json"))
+	deps, ok := added["dependencies"].([]any)
+	if !ok || len(deps) != 1 {
+		t.Fatalf("dep add dependencies = %#v, want one dependency", added["dependencies"])
+	}
+
+	listed := decodeDependencyJSONArray(t, executeBeadCommand(t, store, "dep", "list", "oro-a", "--json"))
+	if len(listed) != 1 || listed[0]["depends_on_id"] != "oro-b" || listed[0]["type"] != "conditional-blocks" {
+		t.Fatalf("dep list = %#v, want conditional-blocks dependency", listed)
+	}
+
+	removed := decodeBeadJSONObject(t, executeBeadCommand(t, store, "dep", "rm", "oro-a", "oro-b", "--json"))
+	removedDeps, ok := removed["dependencies"].([]any)
+	if !ok || len(removedDeps) != 0 {
+		t.Fatalf("dep rm dependencies = %#v, want empty", removed["dependencies"])
 	}
 }
 
@@ -458,4 +553,23 @@ func decodeBeadJSONArray(t *testing.T, out string) []map[string]any {
 		t.Fatalf("invalid JSON array: %v\n%s", err, out)
 	}
 	return got
+}
+
+func decodeDependencyJSONArray(t *testing.T, out string) []map[string]any {
+	t.Helper()
+
+	var got []map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("invalid dependency JSON array: %v\n%s", err, out)
+	}
+	return got
+}
+
+func beadJSONArrayHasID(beads []map[string]any, id string) bool {
+	for _, bead := range beads {
+		if bead["id"] == id {
+			return true
+		}
+	}
+	return false
 }
