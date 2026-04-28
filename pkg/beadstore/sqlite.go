@@ -554,10 +554,6 @@ func generateBeadID() string {
 	return "oro-" + suffix.String()
 }
 
-func nowString() string {
-	return time.Now().UTC().Format(time.RFC3339Nano)
-}
-
 func rollback(tx *sql.Tx) {
 	_ = tx.Rollback()
 }
