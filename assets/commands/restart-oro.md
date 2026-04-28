@@ -66,7 +66,7 @@ Run an **indefinite** monitoring loop. Each cycle is 30 seconds apart. Continue 
 ```bash
 ./oro status 2>&1
 ./oro logs 2>&1 | tail -30
-tmux capture-pane -t oro:0 -p 2>&1 | tail -20
+tmux capture-pane -t oro:manager -p 2>&1 | tail -20
 tmux capture-pane -t oro:1 -p 2>&1 | tail -20
 ```
 

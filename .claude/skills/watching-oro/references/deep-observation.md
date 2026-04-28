@@ -145,24 +145,7 @@ done
 sqlite3 ~/.oro/state.db "SELECT * FROM pane_activity WHERE pane='manager';"
 ```
 
-## 4. Architect Pane
-
-The architect is a Claude session in `oro:0` (window 0). It creates beads, plans work, and manages the dependency graph.
-
-### Scrape pane content
-```bash
-tmux capture-pane -t oro:0 -p -S -200
-
-# Watch for bead creation
-tmux capture-pane -t oro:0 -p -S -200 | grep -E 'bd create|bd dep'
-```
-
-### Architect activity tracking
-```bash
-sqlite3 ~/.oro/state.db "SELECT * FROM pane_activity WHERE pane='architect';"
-```
-
-## 5. Dashboard
+## 4. Dashboard
 
 The TUI dashboard is a separate binary `oro-dash`.
 
@@ -178,7 +161,7 @@ tmux split-window -t oro-watch "oro-dash"
 ### Dashboard data sources
 The dashboard reads from the same `state.db` and `bd` CLI — so all observation techniques above feed it too.
 
-## 6. Bead Behavior
+## 5. Bead Behavior
 
 ### Query bead state
 ```bash
@@ -222,7 +205,7 @@ sqlite3 ~/.oro/state.db \
    FROM events WHERE type='QG_FAILED' ORDER BY created_at DESC;"
 ```
 
-## 7. Failure Pattern Recognition
+## 6. Failure Pattern Recognition
 
 ### Event-driven alert stream
 ```bash
@@ -256,7 +239,7 @@ echo "=== Recent Failures ===" && sqlite3 ~/.oro/state.db \
    ORDER BY created_at DESC LIMIT 10;"
 ```
 
-## 8. UDS Socket Observation
+## 7. UDS Socket Observation
 
 The dispatcher communicates with workers via `~/.oro/oro.sock` (Unix domain socket, line-delimited JSON).
 
@@ -280,7 +263,7 @@ socat -v UNIX-LISTEN:~/.oro/oro.sock,fork UNIX-CONNECT:~/.oro/oro.sock.real 2>&1
 
 **Safer alternative**: All socket messages are logged as events in `state.db`. Use the database queries above instead.
 
-## 9. Memory System
+## 8. Memory System
 
 ```bash
 # Recent memories
