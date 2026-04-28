@@ -3198,6 +3198,8 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		return title, acceptance, false
 	}
 	if acceptance == "" {
+		_ = d.logEvent(ctx, "bead_skipped_missing_ac", "dispatcher", bead.ID, workerID,
+			`{"reason":"missing_acceptance"}`)
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMissingAC, bead.ID, "no acceptance criteria — spawning AC writer", ""), bead.ID, workerID)
 		d.recordAssignmentFailure(bead.ID) // 60-second cooldown prevents re-triggering
 		return title, "", false            // skip assignment this cycle
