@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -309,6 +310,20 @@ func TestManagerNudge(t *testing.T) {
 		beacon := ManagerBeacon()
 		if len(nudge) >= len(beacon)/2 {
 			t.Errorf("nudge (%d chars) should be much shorter than beacon (%d chars)", len(nudge), len(beacon))
+		}
+	})
+}
+
+func TestManagerBeacon_NoArchitectReferences(t *testing.T) {
+	beacon := ManagerBeacon()
+
+	t.Run("beacon does not contain standalone architect references", func(t *testing.T) {
+		// Word-boundary regex to match standalone "architect" (lowercase)
+		// This should NOT match "architecture"
+		re := regexp.MustCompile(`\barchitect\b`)
+		if matches := re.FindAllString(beacon, -1); len(matches) > 0 {
+			t.Errorf("expected beacon to have no standalone 'architect' references, but found %d matches: %v",
+				len(matches), matches)
 		}
 	})
 }
