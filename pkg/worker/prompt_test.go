@@ -20,7 +20,7 @@ var expectedSectionHeaders = []string{
 	"## Quality Gate",
 	"## Worktree",
 	"## Git",
-	"## Beads Tools",
+	"## Bead Tools",
 	"## Constraints",
 	"## Autonomy",
 	"## Failure",
@@ -318,8 +318,8 @@ func TestAssemblePrompt_FailureContent(t *testing.T) {
 	if !strings.Contains(prompt, "3 failed test attempts") {
 		t.Error("expected Failure section to contain '3 failed test attempts'")
 	}
-	if !strings.Contains(prompt, "bd create") {
-		t.Error("expected Failure section to mention bd create for decomposition")
+	if !strings.Contains(prompt, "oro bead create") {
+		t.Error("expected Failure section to mention oro bead create for decomposition")
 	}
 }
 
@@ -349,7 +349,7 @@ func TestAssemblePrompt_ExitContent(t *testing.T) {
 	}
 }
 
-func TestAssemblePrompt_BeadsToolsContent(t *testing.T) {
+func TestAssemblePrompt_BeadToolsContent(t *testing.T) {
 	t.Parallel()
 
 	params := worker.PromptParams{
@@ -364,27 +364,71 @@ func TestAssemblePrompt_BeadsToolsContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "bd create") {
-		t.Error("expected Beads Tools section to contain 'bd create'")
+	if !strings.Contains(prompt, "oro bead create") {
+		t.Error("expected Bead Tools section to contain 'oro bead create'")
 	}
-	if !strings.Contains(prompt, "bd dep add") {
-		t.Error("expected Beads Tools section to contain 'bd dep add'")
+	if !strings.Contains(prompt, "oro bead dep add") {
+		t.Error("expected Bead Tools section to contain 'oro bead dep add'")
 	}
 }
 
-// TestAssemblePrompt_BeadsToolsDoesNotContainBdClose verifies that the Beads
-// Tools section does NOT list `bd close` as a worker tool. Workers must not
+func TestPromptGolden(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "oro-prompt-golden",
+		Title:              "Prompt golden",
+		Description:        "Guard worker prompt command strings",
+		AcceptanceCriteria: "Prompt uses oro bead commands",
+		MemoryContext:      "",
+		WorktreePath:       "/tmp/wt-prompt-golden",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+	epicPrompt := worker.BuildEpicDecompositionPrompt(worker.EpicPromptParams{
+		BeadID:      "oro-epic-golden",
+		Title:       "Epic prompt golden",
+		Description: "Guard epic decomposition command strings",
+	})
+	combined := prompt + "\n" + epicPrompt
+
+	for _, oldCommand := range []string{
+		"bd create",
+		"bd update",
+		"bd dep add",
+		"bd show",
+	} {
+		if strings.Contains(combined, oldCommand) {
+			t.Fatalf("prompt must not contain legacy bead command %q", oldCommand)
+		}
+	}
+
+	for _, newCommand := range []string{
+		"oro bead create",
+		"oro bead update",
+		"oro bead dep add",
+		"oro bead show",
+	} {
+		if !strings.Contains(combined, newCommand) {
+			t.Fatalf("prompt must contain %q", newCommand)
+		}
+	}
+}
+
+// TestAssemblePrompt_BeadToolsDoesNotContainBdClose verifies that the Bead
+// Tools section does NOT list `oro bead close` as a worker tool. Workers must not
 // close beads — the dispatcher handles bead closure after merging to main.
 //
-// Context: oro-u74j bug — listing `bd close` in Beads Tools contradicts the
+// Context: oro-u74j bug — listing `oro bead close` in Bead Tools contradicts the
 // Exit section's instruction that the dispatcher handles closure, leading
 // workers to close beads without merging to main.
-func TestAssemblePrompt_BeadsToolsDoesNotContainBdClose(t *testing.T) {
+func TestAssemblePrompt_BeadToolsDoesNotContainBdClose(t *testing.T) {
 	t.Parallel()
 
 	params := worker.PromptParams{
 		BeadID:             "bead-no-close",
-		Title:              "No bd close in tools",
+		Title:              "No oro bead close in tools",
 		Description:        "Workers must not close beads",
 		AcceptanceCriteria: "Tests pass",
 		WorktreePath:       "/tmp/wt-no-close",
@@ -393,10 +437,10 @@ func TestAssemblePrompt_BeadsToolsDoesNotContainBdClose(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	// Extract just the Beads Tools section
-	toolsStart := strings.Index(prompt, "## Beads Tools")
+	// Extract just the Bead Tools section
+	toolsStart := strings.Index(prompt, "## Bead Tools")
 	if toolsStart == -1 {
-		t.Fatal("expected prompt to contain ## Beads Tools section")
+		t.Fatal("expected prompt to contain ## Bead Tools section")
 	}
 	toolsEnd := strings.Index(prompt[toolsStart+1:], "## ")
 	var toolsSection string
@@ -406,8 +450,8 @@ func TestAssemblePrompt_BeadsToolsDoesNotContainBdClose(t *testing.T) {
 		toolsSection = prompt[toolsStart : toolsStart+1+toolsEnd]
 	}
 
-	if strings.Contains(toolsSection, "bd close") {
-		t.Errorf("Beads Tools section must NOT contain 'bd close' — dispatcher handles bead closure (oro-u74j). Got:\n%s", toolsSection)
+	if strings.Contains(toolsSection, "oro bead close") {
+		t.Errorf("Bead Tools section must NOT contain 'oro bead close' — dispatcher handles bead closure (oro-u74j). Got:\n%s", toolsSection)
 	}
 }
 
@@ -437,14 +481,14 @@ func TestAssemblePrompt_GitContent(t *testing.T) {
 	}
 }
 
-func TestAssemblePrompt_FailureSectionHasBdCreateExamples(t *testing.T) {
+func TestAssemblePrompt_FailureSectionHasOroBeadCreateExamples(t *testing.T) {
 	t.Parallel()
 
 	params := worker.PromptParams{
 		BeadID:             "bead-fail-ex",
 		Title:              "Failure examples test",
-		Description:        "Test failure section has bd create examples",
-		AcceptanceCriteria: "bd create examples present in Failure section",
+		Description:        "Test failure section has oro bead create examples",
+		AcceptanceCriteria: "oro bead create examples present in Failure section",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-fail-ex",
 		Model:              "opus",
@@ -465,17 +509,17 @@ func TestAssemblePrompt_FailureSectionHasBdCreateExamples(t *testing.T) {
 		failureSection = prompt[failStart : failStart+1+failEnd]
 	}
 
-	// Each failure mode should have a concrete bd create command example
+	// Each failure mode should have a concrete oro bead create command example
 	checks := []struct {
 		name   string
 		substr string
 	}{
-		{"bd create --title flag", `bd create --title=`},
+		{"oro bead create --title flag", `oro bead create --title=`},
 		{"test failure bug type+priority", `--type=bug --priority=0`},
-		{"decompose sets parent after create", `bd update <child-id> --parent`},
-		{"context limit handoff", `bd create --title="Continue:`},
-		{"blocker bug creation", `bd create --title="Blocker:`},
-		{"bd dep add example", `bd dep add`},
+		{"decompose sets parent after create", `oro bead update <child-id> --parent`},
+		{"context limit handoff", `oro bead create --title="Continue:`},
+		{"blocker bug creation", `oro bead create --title="Blocker:`},
+		{"oro bead dep add example", `oro bead dep add`},
 	}
 
 	for _, c := range checks {
@@ -718,9 +762,9 @@ func TestPromptHandoffTemplate(t *testing.T) {
 		failureSection = prompt[failStart : failStart+1+failEnd]
 	}
 
-	// Check that handoff template sets parent via bd update (not bd create --parent)
+	// Check that handoff template sets parent via oro bead update (not oro bead create --parent)
 	if !strings.Contains(failureSection, "--parent oro-xyz123") {
-		t.Error("expected handoff template to contain 'bd update <child-id> --parent oro-xyz123' (not --parent on create)")
+		t.Error("expected handoff template to contain 'oro bead update <child-id> --parent oro-xyz123' (not --parent on create)")
 	}
 
 	// Check that handoff template contains --acceptance-criteria flag
@@ -764,8 +808,8 @@ func TestAssemblePrompt_ExitSection_RequiresMergeToMain(t *testing.T) {
 		t.Error("expected Exit section to mention 'merge' process")
 	}
 	// Worker should NOT be told to close bead themselves
-	if strings.Contains(exitSection, "bd close") {
-		t.Error("Exit section must NOT tell worker to run 'bd close' (dispatcher handles this)")
+	if strings.Contains(exitSection, "oro bead close") {
+		t.Error("Exit section must NOT tell worker to run 'oro bead close' (dispatcher handles this)")
 	}
 }
 
@@ -819,12 +863,12 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 		if !strings.Contains(prompt, "beadcraft") {
 			t.Errorf("expected epic decomp prompt to contain 'beadcraft', got:\n%s", prompt)
 		}
-		// Must contain bd create and parent wiring via bd update (not --parent on create)
-		if !strings.Contains(prompt, "bd create") {
-			t.Errorf("expected epic decomp prompt to contain 'bd create', got:\n%s", prompt)
+		// Must contain oro bead create and parent wiring via oro bead update (not --parent on create)
+		if !strings.Contains(prompt, "oro bead create") {
+			t.Errorf("expected epic decomp prompt to contain 'oro bead create', got:\n%s", prompt)
 		}
-		if !strings.Contains(prompt, "bd update <child-id> --parent") {
-			t.Errorf("expected epic decomp prompt to contain 'bd update <child-id> --parent', got:\n%s", prompt)
+		if !strings.Contains(prompt, "oro bead update <child-id> --parent") {
+			t.Errorf("expected epic decomp prompt to contain 'oro bead update <child-id> --parent', got:\n%s", prompt)
 		}
 		// Must NOT contain standard worker sections
 		if strings.Contains(prompt, "## Quality Gate") {
@@ -1081,7 +1125,7 @@ func TestBuildEpicDecompositionPrompt(t *testing.T) {
 
 	t.Run("contains_bead_craft_instructions", func(t *testing.T) {
 		t.Parallel()
-		if !strings.Contains(prompt, "beadcraft") || !strings.Contains(prompt, "bd create") {
+		if !strings.Contains(prompt, "beadcraft") || !strings.Contains(prompt, "oro bead create") {
 			t.Error("expected prompt to contain beadcraft decomposition instructions")
 		}
 	})
