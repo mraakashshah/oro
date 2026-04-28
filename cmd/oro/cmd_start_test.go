@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"oro/pkg/dispatcher"
 	"oro/pkg/ops"
@@ -486,13 +488,13 @@ func TestWireDependencies_SetsPaneRestarter(t *testing.T) {
 	})
 }
 
-// TestStartProgressTimeoutFlag verifies that --progress-timeout and --review-timeout
-// flags wire through to buildDispatcher's Config.
+// TestStartProgressTimeoutFlag verifies that progress/review stall timeout
+// flags wire through to daemon handoff and dispatcher config.
 func TestStartProgressTimeoutFlag(t *testing.T) {
 	t.Run("explicit flags set Config timeouts", func(t *testing.T) {
 		cmd := newStartCmd()
-		cmd.SetArgs([]string{"--progress-timeout=20m", "--review-timeout=30m"})
-		if err := cmd.ParseFlags([]string{"--progress-timeout=20m", "--review-timeout=30m"}); err != nil {
+		cmd.SetArgs([]string{"--progress-timeout=20m", "--review-stall-timeout=30m"})
+		if err := cmd.ParseFlags([]string{"--progress-timeout=20m", "--review-stall-timeout=30m"}); err != nil {
 			t.Fatalf("ParseFlags: %v", err)
 		}
 
@@ -504,12 +506,12 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 			t.Errorf("progress-timeout: got %v, want 20m", pt)
 		}
 
-		rt, err := cmd.Flags().GetDuration("review-timeout")
+		rt, err := cmd.Flags().GetDuration("review-stall-timeout")
 		if err != nil {
-			t.Fatalf("GetDuration review-timeout: %v", err)
+			t.Fatalf("GetDuration review-stall-timeout: %v", err)
 		}
 		if rt != 30*time.Minute {
-			t.Errorf("review-timeout: got %v, want 30m", rt)
+			t.Errorf("review-stall-timeout: got %v, want 30m", rt)
 		}
 	})
 
@@ -524,24 +526,24 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 			t.Errorf("progress-timeout default: got %v, want 0 (dispatcher default)", pt)
 		}
 
-		rt, _ := cmd.Flags().GetDuration("review-timeout")
+		rt, _ := cmd.Flags().GetDuration("review-stall-timeout")
 		if rt != 0 {
-			t.Errorf("review-timeout default: got %v, want 0 (dispatcher default)", rt)
+			t.Errorf("review-stall-timeout default: got %v, want 0 (dispatcher default)", rt)
 		}
 	})
 
 	t.Run("ExecDaemonSpawner forwards timeout flags to child", func(t *testing.T) {
 		spawner := &ExecDaemonSpawner{
-			ProgressTimeout: 20 * time.Minute,
-			ReviewTimeout:   30 * time.Minute,
+			ProgressTimeout:    20 * time.Minute,
+			ReviewStallTimeout: 30 * time.Minute,
 		}
 		args := spawner.buildArgs(3, 3)
 		argStr := strings.Join(args, " ")
 		if !strings.Contains(argStr, "--progress-timeout=20m0s") {
 			t.Errorf("expected --progress-timeout=20m0s in args, got: %s", argStr)
 		}
-		if !strings.Contains(argStr, "--review-timeout=30m0s") {
-			t.Errorf("expected --review-timeout=30m0s in args, got: %s", argStr)
+		if !strings.Contains(argStr, "--review-stall-timeout=30m0s") {
+			t.Errorf("expected --review-stall-timeout=30m0s in args, got: %s", argStr)
 		}
 	})
 
@@ -552,8 +554,8 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 		if strings.Contains(argStr, "progress-timeout") {
 			t.Errorf("zero progress-timeout should not appear in args, got: %s", argStr)
 		}
-		if strings.Contains(argStr, "review-timeout") {
-			t.Errorf("zero review-timeout should not appear in args, got: %s", argStr)
+		if strings.Contains(argStr, "review-stall-timeout") {
+			t.Errorf("zero review-stall-timeout should not appear in args, got: %s", argStr)
 		}
 	})
 
@@ -580,6 +582,129 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 			t.Errorf("expected --max-workers 3 in args, got: %s", argStr)
 		}
 	})
+}
+
+func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
+	t.Run("explicit flags parse as distinct timeout concepts", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{"--ops-review-timeout=35m", "--review-stall-timeout=15m"}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+
+		opsTimeout, err := cmd.Flags().GetDuration("ops-review-timeout")
+		if err != nil {
+			t.Fatalf("GetDuration ops-review-timeout: %v", err)
+		}
+		if opsTimeout != 35*time.Minute {
+			t.Errorf("ops-review-timeout: got %v, want 35m", opsTimeout)
+		}
+
+		stallTimeout, err := cmd.Flags().GetDuration("review-stall-timeout")
+		if err != nil {
+			t.Fatalf("GetDuration review-stall-timeout: %v", err)
+		}
+		if stallTimeout != 15*time.Minute {
+			t.Errorf("review-stall-timeout: got %v, want 15m", stallTimeout)
+		}
+	})
+
+	t.Run("legacy review-timeout remains stall timeout alias", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{"--review-timeout=22m"}); err != nil {
+			t.Fatalf("ParseFlags: %v", err)
+		}
+		stallTimeout, err := cmd.Flags().GetDuration("review-stall-timeout")
+		if err != nil {
+			t.Fatalf("GetDuration review-stall-timeout: %v", err)
+		}
+		if stallTimeout != 22*time.Minute {
+			t.Errorf("legacy review-timeout alias: got %v, want 22m", stallTimeout)
+		}
+	})
+
+	t.Run("daemon handoff forwards distinct review timeout flags", func(t *testing.T) {
+		spawner := &ExecDaemonSpawner{
+			OpsReviewTimeout:   35 * time.Minute,
+			ReviewStallTimeout: 15 * time.Minute,
+		}
+		argStr := strings.Join(spawner.buildArgs(2, 2), " ")
+		for _, want := range []string{
+			"--ops-review-timeout=35m0s",
+			"--review-stall-timeout=15m0s",
+		} {
+			if !strings.Contains(argStr, want) {
+				t.Errorf("daemon args missing %q: %s", want, argStr)
+			}
+		}
+		if strings.Contains(argStr, "--review-timeout=") {
+			t.Errorf("daemon args should not use ambiguous --review-timeout: %s", argStr)
+		}
+	})
+
+	t.Run("dispatcher receives stall timeout and ops spawner receives review subprocess timeout", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, "", false, "")
+		if err != nil {
+			t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		cfg := d.GetConfig()
+		if cfg.ProgressTimeout != 7*time.Minute {
+			t.Errorf("ProgressTimeout: got %v, want 7m", cfg.ProgressTimeout)
+		}
+		if cfg.ReviewTimeout != 15*time.Minute {
+			t.Errorf("dispatcher ReviewTimeout: got %v, want review stall timeout 15m", cfg.ReviewTimeout)
+		}
+		if got := opsReviewTimeoutFromDispatcher(t, d); got != 35*time.Minute {
+			t.Errorf("ops review timeout: got %v, want 35m", got)
+		}
+	})
+
+	t.Run("help describes separate review timeout domains", func(t *testing.T) {
+		cmd := newStartCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		if err := cmd.Help(); err != nil {
+			t.Fatalf("Help: %v", err)
+		}
+		help := out.String()
+		for _, want := range []string{
+			"--ops-review-timeout",
+			"max time for ops review subprocess",
+			"--review-stall-timeout",
+			"max time a reviewing worker can stall",
+		} {
+			if !strings.Contains(help, want) {
+				t.Errorf("help missing %q:\n%s", want, help)
+			}
+		}
+	})
+}
+
+func opsReviewTimeoutFromDispatcher(t *testing.T, d *dispatcher.Dispatcher) time.Duration {
+	t.Helper()
+
+	dispatcherValue := reflect.ValueOf(d).Elem()
+	opsField := dispatcherValue.FieldByName("ops")
+	if !opsField.IsValid() {
+		t.Fatal("dispatcher missing ops field")
+	}
+	opsField = reflect.NewAt(opsField.Type(), unsafe.Pointer(opsField.UnsafeAddr())).Elem()
+
+	spawnerValue := opsField.Elem()
+	timeoutField := spawnerValue.FieldByName("reviewTimeout")
+	if !timeoutField.IsValid() {
+		t.Fatal("ops spawner missing reviewTimeout field")
+	}
+	timeoutField = reflect.NewAt(timeoutField.Type(), unsafe.Pointer(timeoutField.UnsafeAddr())).Elem()
+	return time.Duration(timeoutField.Int())
 }
 
 // TestStartBaseBranchFlag verifies that the --base-branch flag exists on the
