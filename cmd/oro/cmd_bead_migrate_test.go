@@ -3,8 +3,12 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -49,6 +53,66 @@ func TestBeadMigrateFromDoltDryRunFixturePrintsPlanWithoutMutatingDB(t *testing.
 	}
 }
 
+func TestMigrate100BeadFixture(t *testing.T) {
+	repoRoot := findRepoRoot(t)
+	fixture := filepath.Join(repoRoot, "testdata", "dolt-100")
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-fixture", fixture)
+
+	data, err := os.ReadFile(filepath.Join(fixture, "export.jsonl"))
+	if err != nil {
+		t.Fatalf("read fixture export: %v", err)
+	}
+	rawBeads, err := decodeBDExport(data)
+	if err != nil {
+		t.Fatalf("decode fixture export: %v", err)
+	}
+	if len(rawBeads) != 100 {
+		t.Fatalf("fixture rows = %d, want 100", len(rawBeads))
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	defer db.Close()
+	migrated, err := loadSQLiteMigrationBeads(t.Context(), db)
+	if err != nil {
+		t.Fatalf("load migrated beads: %v", err)
+	}
+	if len(migrated) != len(rawBeads) {
+		t.Fatalf("migrated bead count = %d, want %d", len(migrated), len(rawBeads))
+	}
+
+	var divergences []string
+	for _, raw := range rawBeads {
+		var source bdExportBead
+		if err := json.Unmarshal(raw, &source); err != nil {
+			t.Fatalf("decode fixture bead: %v", err)
+		}
+		current, ok := migrated[source.ID]
+		if !ok {
+			divergences = append(divergences, fmt.Sprintf("%s: missing from migrated store", source.ID))
+			continue
+		}
+		want := comparableFixtureBead(source, true)
+		got := comparableFixtureBead(current.BDExportBead, false)
+		divergences = append(divergences, diffFixtureBeads(source.ID, got, want)...)
+	}
+	if len(divergences) > 0 {
+		const maxReport = 40
+		report := divergences
+		if len(report) > maxReport {
+			report = report[:maxReport]
+		}
+		t.Fatalf("fixture migration divergences: %d\n%s", len(divergences), strings.Join(report, "\n"))
+	}
+}
+
 func TestMigrateUpdatedAtVerbatim(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "state.db")
 	t.Setenv("ORO_DB_PATH", dbPath)
@@ -88,6 +152,150 @@ func TestMigrateUpdatedAtVerbatim(t *testing.T) {
 	if gotUpdatedAt != wantUpdatedAt {
 		t.Fatalf("updated_at = %q, want %q", gotUpdatedAt, wantUpdatedAt)
 	}
+}
+
+type comparableMigratedFixtureBead struct {
+	ID                 string
+	Title              string
+	Description        string
+	AcceptanceCriteria string
+	Status             string
+	Priority           int
+	Type               string
+	ParentID           string
+	Owner              string
+	EstimatedMinutes   int
+	Tier               string
+	Model              string
+	DeferredUntil      string
+	CloseReason        string
+	CreatedAt          string
+	UpdatedAt          string
+	ClosedAt           string
+	Dependencies       []string
+	Tags               []string
+	Labels             []string
+	Metadata           map[string]string
+	Notes              []string
+}
+
+func comparableFixtureBead(bead bdExportBead, source bool) comparableMigratedFixtureBead {
+	description := bead.Description
+	acceptanceCriteria := bead.AcceptanceCriteria
+	if source {
+		extractedAC, strippedDescription := expectedFixtureExtractAndStripAC(description)
+		description = strippedDescription
+		if strings.TrimSpace(acceptanceCriteria) == "" {
+			acceptanceCriteria = extractedAC
+		}
+	}
+
+	deps := make([]string, 0, len(bead.Dependencies))
+	for _, dep := range bead.Dependencies {
+		if strings.TrimSpace(dep.DependsOnID) == "" {
+			continue
+		}
+		deps = append(deps, dep.DependsOnID+"\x00"+firstNonEmpty(dep.Type, "blocks"))
+	}
+	sort.Strings(deps)
+
+	metadata := map[string]string{}
+	for key, value := range bead.Metadata {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		encoded, err := migrationMetadataValue(value)
+		if err == nil {
+			metadata[key] = encoded
+		}
+	}
+	notes, _ := migrationNotes(bead.Notes)
+
+	return comparableMigratedFixtureBead{
+		ID:                 bead.ID,
+		Title:              bead.Title,
+		Description:        description,
+		AcceptanceCriteria: acceptanceCriteria,
+		Status:             normalizeMigrationInsertStatus(bead.Status),
+		Priority:           bead.Priority,
+		Type:               firstNonEmpty(bead.IssueType, bead.Type, "task"),
+		ParentID:           firstNonEmpty(bead.ParentID, bead.Parent),
+		Owner:              firstNonEmpty(bead.Owner, bead.Assignee),
+		EstimatedMinutes:   bead.EstimatedMinutes,
+		Tier:               bead.Tier,
+		Model:              bead.Model,
+		DeferredUntil:      firstNonEmpty(bead.DeferredUntil, bead.DeferUntil),
+		CloseReason:        bead.CloseReason,
+		CreatedAt:          firstNonEmpty(bead.CreatedAt, bead.UpdatedAt),
+		UpdatedAt:          firstNonEmpty(bead.UpdatedAt, bead.CreatedAt),
+		ClosedAt:           bead.ClosedAt,
+		Dependencies:       deps,
+		Tags:               sortedNonEmptyCopy(bead.Tags),
+		Labels:             sortedNonEmptyCopy(bead.Labels),
+		Metadata:           metadata,
+		Notes:              sortedNonEmptyCopy(notes),
+	}
+}
+
+func expectedFixtureExtractAndStripAC(description string) (string, string) {
+	idx, headerLen := expectedFixtureACHeader(description)
+	if idx < 0 {
+		return "", description
+	}
+
+	bodyStart := idx + headerLen
+	for bodyStart < len(description) && (description[bodyStart] == '\r' || description[bodyStart] == '\n') {
+		bodyStart++
+	}
+
+	body := description[bodyStart:]
+	acEnd := len(body)
+	suffix := ""
+	if next := strings.Index(body, "\n## "); next >= 0 {
+		acEnd = next
+		suffix = body[next+1:]
+	}
+
+	ac := strings.Trim(body[:acEnd], " \t\r\n")
+	desc := strings.TrimRight(description[:idx], " \t\r\n")
+	if suffix != "" {
+		if desc != "" {
+			desc += "\n\n"
+		}
+		desc += strings.TrimLeft(suffix, "\r\n")
+	}
+	desc = strings.TrimRight(desc, " \t\r\n")
+	return ac, desc
+}
+
+func expectedFixtureACHeader(description string) (int, int) {
+	lower := strings.ToLower(description)
+	for _, header := range []string{"## acceptance criteria", "acceptance criteria"} {
+		if strings.HasPrefix(lower, header) {
+			return 0, len(header)
+		}
+		if idx := strings.Index(lower, "\n"+header); idx >= 0 {
+			return idx + 1, len(header)
+		}
+	}
+	return -1, 0
+}
+
+func diffFixtureBeads(id string, got, want comparableMigratedFixtureBead) []string {
+	gotValue := reflect.ValueOf(got)
+	wantValue := reflect.ValueOf(want)
+	gotType := gotValue.Type()
+
+	var divergences []string
+	for i := 0; i < gotValue.NumField(); i++ {
+		field := gotType.Field(i).Name
+		gotField := gotValue.Field(i).Interface()
+		wantField := wantValue.Field(i).Interface()
+		if !reflect.DeepEqual(gotField, wantField) {
+			divergences = append(divergences, fmt.Sprintf("%s.%s: got %#v want %#v", id, field, gotField, wantField))
+		}
+	}
+	return divergences
 }
 
 func TestMigrateFromDoltReconcileApplyIdempotent(t *testing.T) {

@@ -202,6 +202,11 @@ func writeMigratedBead(ctx context.Context, tx *sql.Tx, bead bdExportBead, updat
 	if strings.TrimSpace(bead.Title) == "" {
 		return fmt.Errorf("bd export bead %s is missing title", bead.ID)
 	}
+	normalizedBead, err := normalizeBDExportBeadForMigration(bead)
+	if err != nil {
+		return fmt.Errorf("normalize migrated bead %s: %w", bead.ID, err)
+	}
+	bead = normalizedBead
 	beadType := firstNonEmpty(bead.IssueType, bead.Type, "task")
 	createdAt := firstNonEmpty(bead.CreatedAt, bead.UpdatedAt)
 	updatedAt := firstNonEmpty(bead.UpdatedAt, bead.CreatedAt)
@@ -570,6 +575,11 @@ func migrationBeadsEquivalent(source bdExportBead, current sqliteMigrationBead) 
 }
 
 func normalizeMigrationBeadForCompare(bead bdExportBead) string {
+	normalizedBead, err := normalizeBDExportBeadForMigration(bead)
+	if err == nil {
+		bead = normalizedBead
+	}
+
 	type comparableBead struct {
 		ID                 string
 		Title              string
@@ -638,6 +648,18 @@ func normalizeMigrationBeadForCompare(bead bdExportBead) string {
 	}
 	encoded, _ := json.Marshal(normalized)
 	return string(encoded)
+}
+
+func normalizeBDExportBeadForMigration(bead bdExportBead) (bdExportBead, error) {
+	extractedAC, description, err := beadstore.ExtractAndStripAC(bead.Description)
+	if err != nil {
+		return bead, err
+	}
+	bead.Description = description
+	if strings.TrimSpace(bead.AcceptanceCriteria) == "" {
+		bead.AcceptanceCriteria = extractedAC
+	}
+	return bead, nil
 }
 
 func loadSQLiteMigrationDeps(ctx context.Context, db *sql.DB, id string) ([]protocol.Dependency, error) {

@@ -2,6 +2,12 @@ package beadstore
 
 import "strings"
 
+// ExtractAndStripAC extracts an Acceptance Criteria markdown section from a
+// description and returns the remaining description without that section.
+func ExtractAndStripAC(description string) (string, string, error) {
+	return extractAndStripAC(description)
+}
+
 func extractAndStripAC(description string) (string, string, error) {
 	idx, headerLen := findACHeader(description)
 	if idx < 0 {
