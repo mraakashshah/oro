@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -217,6 +219,73 @@ func TestBeadCreateJSONEmitsCreatedBead(t *testing.T) {
 	}
 	if got["type"] != "task" {
 		t.Fatalf("type = %#v, want task in:\n%s", got["type"], out)
+	}
+}
+
+func TestBeadCreateShowSQLiteRoundTripsParentWithoutDependency(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	store, err := beadstore.OpenSQLiteStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	executeBeadCommand(
+		t,
+		store,
+		"create",
+		"--id", "oro-parent-rt",
+		"--title", "parent",
+		"--type", "epic",
+		"--description", "parent description",
+		"--acceptance-criteria", "parent ac",
+	)
+	id := strings.TrimSpace(executeBeadCommand(
+		t,
+		store,
+		"create",
+		"--title", "t",
+		"--type", "task",
+		"--description", "d",
+		"--acceptance-criteria", "ac",
+		"--parent", "oro-parent-rt",
+		"--tag", "cli",
+		"--tag", "roundtrip",
+	))
+	if id == "" {
+		t.Fatal("bead create emitted empty id")
+	}
+
+	got := decodeBeadJSONObject(t, executeBeadCommand(t, store, "show", id, "--json"))
+	if got["title"] != "t" || got["description"] != "d" || got["acceptance_criteria"] != "ac" {
+		t.Fatalf("show JSON did not round-trip fields: %#v", got)
+	}
+	if got["parent_id"] != "oro-parent-rt" {
+		t.Fatalf("parent_id = %#v, want oro-parent-rt", got["parent_id"])
+	}
+	tags, ok := got["tags"].([]any)
+	if !ok || len(tags) != 2 || tags[0] != "cli" || tags[1] != "roundtrip" {
+		t.Fatalf("tags = %#v, want [cli roundtrip]", got["tags"])
+	}
+	deps, ok := got["dependencies"].([]any)
+	if !ok {
+		t.Fatalf("dependencies = %#v, want empty array", got["dependencies"])
+	}
+	if len(deps) != 0 {
+		t.Fatalf("dependencies count = %d, want 0: %#v", len(deps), deps)
+	}
+
+	db, err := openDB(dbPath)
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer db.Close()
+	var depRows int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bead_deps WHERE bead_id=?`, id).Scan(&depRows); err != nil {
+		t.Fatalf("count bead_deps: %v", err)
+	}
+	if depRows != 0 {
+		t.Fatalf("bead_deps rows for %s = %d, want 0", id, depRows)
 	}
 }
 

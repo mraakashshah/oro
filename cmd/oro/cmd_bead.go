@@ -586,7 +586,7 @@ func nullablePositiveInt(value int) any {
 
 func nullableDependencies(value []protocol.Dependency) []protocol.Dependency {
 	if value == nil {
-		return []protocol.Dependency(nil)
+		return []protocol.Dependency{}
 	}
 	return value
 }
