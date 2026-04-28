@@ -253,6 +253,9 @@ func TestCleanup_DeletesAgentBranches(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns agent branches
 	fake.output[key("git", "branch", "--list", "agent/*")] = "  agent/cleanup-cli\n  agent/fix-bug\n"
+	fake.output[key("git", "worktree", "list", "--porcelain")] = ""
+	fake.output[key("git", "merge-base", "--is-ancestor", "agent/cleanup-cli", "main")] = ""
+	fake.output[key("git", "merge-base", "--is-ancestor", "agent/fix-bug", "main")] = ""
 	fake.output[key("git", "branch", "--list", "epic/*")] = ""
 	// bd list returns empty
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
@@ -274,10 +277,10 @@ func TestCleanup_DeletesAgentBranches(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify git branch -D was called for each agent branch
+	// Verify git branch -d was called for each merged agent branch
 	var deletedBranches []string
 	for _, call := range fake.calls {
-		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" && call[2] == "-D" {
+		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" && call[2] == "-d" {
 			deletedBranches = append(deletedBranches, call[3])
 		}
 	}
@@ -300,6 +303,111 @@ func TestCleanup_DeletesAgentBranches(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "agent/cleanup-cli") || !strings.Contains(out, "agent/fix-bug") {
 		t.Errorf("expected output to mention deleted branches, got: %s", out)
+	}
+}
+
+func TestCleanupReportsMergedAndUnmergedAgentBranches(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = "  agent/merged\n  agent/unmerged\n  agent/checked\n"
+	fake.output[key("git", "worktree", "list", "--porcelain")] = strings.Join([]string{
+		"worktree /repo",
+		"HEAD abc123",
+		"branch refs/heads/main",
+		"",
+		"worktree /repo/.worktrees/oro-checked",
+		"HEAD def456",
+		"branch refs/heads/agent/checked",
+		"",
+	}, "\n")
+	fake.output[key("git", "merge-base", "--is-ancestor", "agent/merged", "main")] = ""
+	fake.errs[key("git", "merge-base", "--is-ancestor", "agent/unmerged", "main")] = fmt.Errorf("not merged")
+	fake.output[key("git", "rev-list", "--count", "main..agent/unmerged")] = "3\n"
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+
+	tmpDir := t.TempDir()
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:   fake,
+		w:        &buf,
+		tmuxName: TmuxSessionName(""),
+		pidPath:  filepath.Join(tmpDir, "oro.pid"),
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		signalFn: func(int) error { return nil },
+		aliveFn:  func(int) bool { return false },
+	}
+
+	err := runCleanup(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var deletedBranches []string
+	for _, call := range fake.calls {
+		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" && call[2] == "-d" {
+			deletedBranches = append(deletedBranches, call[3])
+		}
+		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" && call[2] == "-D" &&
+			strings.HasPrefix(call[3], "agent/") {
+			t.Fatalf("agent branch was force-deleted: %v", call)
+		}
+	}
+	if got, want := deletedBranches, []string{"agent/merged"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("deleted branches = %v, want %v", got, want)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"deleting merged branch agent/merged",
+		"preserving unmerged branch agent/unmerged (3 unique commit(s))",
+		"preserving checked-out branch agent/checked",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestCleanupPreservesUncertainAgentBranchOnGitError(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = "  agent/uncertain\n"
+	fake.output[key("git", "worktree", "list", "--porcelain")] = ""
+	fake.errs[key("git", "merge-base", "--is-ancestor", "agent/uncertain", "main")] = fmt.Errorf("not merged")
+	fake.errs[key("git", "rev-list", "--count", "main..agent/uncertain")] = fmt.Errorf("rev-list failed")
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
+	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
+
+	tmpDir := t.TempDir()
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:   fake,
+		w:        &buf,
+		tmuxName: TmuxSessionName(""),
+		pidPath:  filepath.Join(tmpDir, "oro.pid"),
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		signalFn: func(int) error { return nil },
+		aliveFn:  func(int) bool { return false },
+	}
+
+	err := runCleanup(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected classification error")
+	}
+	if !strings.Contains(err.Error(), "count unique commits for agent/uncertain") {
+		t.Fatalf("expected unique commit count error, got: %v", err)
+	}
+	for _, call := range fake.calls {
+		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" &&
+			(call[2] == "-d" || call[2] == "-D") && call[3] == "agent/uncertain" {
+			t.Fatalf("uncertain branch was deleted: %v", call)
+		}
+	}
+	if out := buf.String(); !strings.Contains(out, "preserving uncertain branch agent/uncertain") {
+		t.Fatalf("expected uncertain branch preservation message, got:\n%s", out)
 	}
 }
 
@@ -395,10 +503,13 @@ func TestCleanup_ContinuesOnErrors(t *testing.T) {
 		aliveFn:  func(int) bool { return true },
 	}
 
-	// Should NOT return an error despite individual step failures
+	// Should return an error for uncertain branch cleanup while still attempting later steps.
 	err := runCleanup(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("expected nil error (best-effort), got: %v", err)
+	if err == nil {
+		t.Fatal("expected branch cleanup classification error")
+	}
+	if !strings.Contains(err.Error(), "list agent branches") {
+		t.Fatalf("expected agent branch list error, got: %v", err)
 	}
 
 	out := buf.String()
@@ -1056,6 +1167,9 @@ func TestCleanup_DeletesAgentAndEpicBranches(t *testing.T) {
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
 	// git branch --list returns both agent and epic branches
 	fake.output[key("git", "branch", "--list", "agent/*")] = "  agent/cleanup-cli\n  agent/fix-bug\n"
+	fake.output[key("git", "worktree", "list", "--porcelain")] = ""
+	fake.output[key("git", "merge-base", "--is-ancestor", "agent/cleanup-cli", "main")] = ""
+	fake.output[key("git", "merge-base", "--is-ancestor", "agent/fix-bug", "main")] = ""
 	fake.output[key("git", "branch", "--list", "epic/*")] = "  epic/oro-5bsn\n  epic/oro-xyz9\n"
 	// bd list returns empty
 	fake.output[key("bd", "list", "--status=in_progress", "--json")] = "[]"
@@ -1077,10 +1191,11 @@ func TestCleanup_DeletesAgentAndEpicBranches(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify git branch -D was called for each agent and epic branch
+	// Verify git branch -d was called for each merged agent branch and -D for each epic branch.
 	var deletedBranches []string
 	for _, call := range fake.calls {
-		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" && call[2] == "-D" {
+		if len(call) >= 4 && call[0] == "git" && call[1] == "branch" &&
+			(call[2] == "-d" || call[2] == "-D") {
 			deletedBranches = append(deletedBranches, call[3])
 		}
 	}

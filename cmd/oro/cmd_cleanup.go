@@ -79,14 +79,15 @@ type beadEntry struct {
 }
 
 // runCleanup performs best-effort cleanup of all Oro state.
-// Each step continues on error, reporting warnings. Returns nil on success
-// even if individual steps had warnings.
-func runCleanup(_ context.Context, cfg *cleanupConfig) error {
+// Each step continues on error, reporting warnings. Uncertain branch cleanup
+// errors are returned so callers can fail loudly instead of deleting unique work.
+func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	if cfg.isTTY != nil && !cfg.isTTY() {
 		return fmt.Errorf("oro cleanup requires an interactive terminal (stdin is not a TTY)")
 	}
 
 	cleaned := false
+	var cleanupErr error
 
 	// 1. Kill tmux session if it exists.
 	if cleanedTmux := cleanupTmux(cfg); cleanedTmux {
@@ -130,8 +131,12 @@ func runCleanup(_ context.Context, cfg *cleanupConfig) error {
 	}
 
 	// 8. Delete agent/* and epic/* branches.
-	if cleanedBranches := cleanupAgentBranches(cfg); cleanedBranches {
+	cleanedBranches, err := cleanupAgentBranches(ctx, cfg)
+	if cleanedBranches {
 		cleaned = true
+	}
+	if err != nil {
+		cleanupErr = err
 	}
 
 	// 9. Reset in_progress beads back to open.
@@ -143,7 +148,7 @@ func runCleanup(_ context.Context, cfg *cleanupConfig) error {
 		fmt.Fprintln(cfg.w, "nothing to clean")
 	}
 
-	return nil
+	return cleanupErr
 }
 
 // cleanupTmux kills the tmux session if it exists. Returns true if something was cleaned.
@@ -274,29 +279,44 @@ func cleanupWorktreeDir(cfg *cleanupConfig) bool {
 	return true
 }
 
-// cleanupAgentBranches deletes local agent/* and epic/* branches. Returns true if branches were deleted.
-func cleanupAgentBranches(cfg *cleanupConfig) bool {
-	cleaned := false
+type branchCleanupAction string
 
-	// Delete agent/* branches
-	out, err := cfg.runner.Run("git", "branch", "--list", "agent/*")
+const (
+	branchCleanupDelete   branchCleanupAction = "delete"
+	branchCleanupPreserve branchCleanupAction = "preserve"
+)
+
+type branchCleanupDecision struct {
+	Branch string
+	Action branchCleanupAction
+	Reason string
+	Ahead  int
+	Err    error
+}
+
+// cleanupAgentBranches deletes merged local agent/* branches and force-deletes epic/* branches.
+// It preserves checked-out, unmerged, and uncertain agent branches.
+func cleanupAgentBranches(ctx context.Context, cfg *cleanupConfig) (bool, error) {
+	cleaned := false
+	var cleanupErr error
+
+	decisions, err := classifyAgentBranches(ctx, "", cfg.runner)
 	if err != nil {
-		fmt.Fprintf(cfg.w, "warning: list agent branches: %v\n", err)
-	} else {
-		branches := parseBranchNames(out)
-		for _, branch := range branches {
-			fmt.Fprintf(cfg.w, "deleting branch %s\n", branch)
-			if _, err := cfg.runner.Run("git", "branch", "-D", branch); err != nil {
-				fmt.Fprintf(cfg.w, "warning: delete branch %s: %v\n", branch, err)
-			}
-		}
-		if len(branches) > 0 {
+		fmt.Fprintf(cfg.w, "warning: classify agent branches: %v\n", err)
+		cleanupErr = err
+	}
+	for _, decision := range decisions {
+		branchCleaned, err := applyAgentBranchDecision(cfg, decision)
+		if branchCleaned {
 			cleaned = true
+		}
+		if err != nil {
+			cleanupErr = err
 		}
 	}
 
 	// Delete epic/* branches
-	out, err = cfg.runner.Run("git", "branch", "--list", "epic/*")
+	out, err := cfg.runner.Run("git", "branch", "--list", "epic/*")
 	if err != nil {
 		fmt.Fprintf(cfg.w, "warning: list epic branches: %v\n", err)
 	} else {
@@ -312,7 +332,133 @@ func cleanupAgentBranches(cfg *cleanupConfig) bool {
 		}
 	}
 
-	return cleaned
+	return cleaned, cleanupErr
+}
+
+func applyAgentBranchDecision(cfg *cleanupConfig, decision branchCleanupDecision) (bool, error) {
+	switch decision.Action {
+	case branchCleanupDelete:
+		fmt.Fprintf(cfg.w, "deleting merged branch %s\n", decision.Branch)
+		if _, err := cfg.runner.Run("git", "branch", "-d", decision.Branch); err != nil {
+			fmt.Fprintf(cfg.w, "warning: delete branch %s: %v\n", decision.Branch, err)
+			return false, fmt.Errorf("delete branch %s: %w", decision.Branch, err)
+		}
+		return true, nil
+	case branchCleanupPreserve:
+		printPreservedAgentBranch(cfg.w, decision)
+		return false, decision.Err
+	default:
+		return false, nil
+	}
+}
+
+func printPreservedAgentBranch(w io.Writer, decision branchCleanupDecision) {
+	switch decision.Reason {
+	case "checked_out":
+		fmt.Fprintf(w, "preserving checked-out branch %s\n", decision.Branch)
+	case "unmerged_unique_commits":
+		fmt.Fprintf(w, "preserving unmerged branch %s (%d unique commit(s))\n", decision.Branch, decision.Ahead)
+	default:
+		fmt.Fprintf(w, "preserving uncertain branch %s: %s\n", decision.Branch, decision.Reason)
+	}
+}
+
+func classifyAgentBranches(ctx context.Context, repoRoot string, runner CmdRunner) ([]branchCleanupDecision, error) {
+	_ = repoRoot
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("check cleanup context: %w", err)
+	}
+
+	out, err := runner.Run("git", "branch", "--list", "agent/*")
+	if err != nil {
+		return nil, fmt.Errorf("list agent branches: %w", err)
+	}
+	branches := parseBranchNames(out)
+	if len(branches) == 0 {
+		return nil, nil
+	}
+
+	out, err = runner.Run("git", "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees: %w", err)
+	}
+	checkedOut := parseCheckedOutBranches(out)
+
+	decisions := make([]branchCleanupDecision, 0, len(branches))
+	var classifyErr error
+	for _, branch := range branches {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("check cleanup context: %w", err)
+		}
+		if checkedOut[branch] {
+			decisions = append(decisions, branchCleanupDecision{
+				Branch: branch,
+				Action: branchCleanupPreserve,
+				Reason: "checked_out",
+			})
+			continue
+		}
+
+		decision, err := classifyAgentBranch(branch, runner)
+		if err != nil {
+			classifyErr = errors.Join(classifyErr, err)
+		}
+		decisions = append(decisions, decision)
+	}
+
+	return decisions, classifyErr
+}
+
+func classifyAgentBranch(branch string, runner CmdRunner) (branchCleanupDecision, error) {
+	if _, err := runner.Run("git", "merge-base", "--is-ancestor", branch, "main"); err == nil {
+		return branchCleanupDecision{
+			Branch: branch,
+			Action: branchCleanupDelete,
+			Reason: "merged",
+		}, nil
+	}
+
+	countOut, err := runner.Run("git", "rev-list", "--count", "main.."+branch)
+	if err != nil {
+		wrapped := fmt.Errorf("count unique commits for %s: %w", branch, err)
+		return branchCleanupDecision{
+			Branch: branch,
+			Action: branchCleanupPreserve,
+			Reason: "classification_error",
+			Err:    wrapped,
+		}, wrapped
+	}
+	ahead, err := strconv.Atoi(strings.TrimSpace(countOut))
+	if err != nil {
+		wrapped := fmt.Errorf("parse unique commit count for %s: %w", branch, err)
+		return branchCleanupDecision{
+			Branch: branch,
+			Action: branchCleanupPreserve,
+			Reason: "classification_error",
+			Err:    wrapped,
+		}, wrapped
+	}
+	return branchCleanupDecision{
+		Branch: branch,
+		Action: branchCleanupPreserve,
+		Reason: "unmerged_unique_commits",
+		Ahead:  ahead,
+	}, nil
+}
+
+func parseCheckedOutBranches(output string) map[string]bool {
+	branches := make(map[string]bool)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "branch refs/heads/") {
+			continue
+		}
+		branch := strings.TrimPrefix(line, "branch refs/heads/")
+		if branch != "" {
+			branches[branch] = true
+		}
+	}
+	return branches
 }
 
 // parseBranchNames parses branch names from git branch output (strips leading whitespace and *).
