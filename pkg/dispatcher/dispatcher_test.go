@@ -3423,6 +3423,45 @@ func TestHandleReviewResult_UnknownVerdict(t *testing.T) {
 	}
 }
 
+// TestHandleReviewApprovedError verifies that when handleReviewResult receives a
+// result with VerdictApproved AND a non-nil Err (i.e. the subprocess exited
+// nonzero but "APPROVED" appeared in stdout), the dispatcher fails closed:
+// it must log "review_error" and NOT emit "review_approved". This guards against
+// a Codex/Claude runtime error being silently promoted to an approval.
+func TestHandleReviewApprovedError(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-approved-err", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	ctx := context.Background()
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictApproved,
+		Feedback: "APPROVED",
+		Err:      errors.New("exit status 1"),
+	}
+
+	d.handleReviewResult(ctx, "w-approved-err", "bead-approved-err", resultCh)
+
+	if eventCount(t, d.db, "review_approved") > 0 {
+		t.Fatal("review_approved must NOT be emitted when result carries a non-nil Err (runtime/model error)")
+	}
+	if eventCount(t, d.db, "review_error") == 0 {
+		t.Fatal("expected 'review_error' event when VerdictApproved has non-nil Err")
+	}
+
+	msgs := esc.Messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected escalation when review result carries an error")
+	}
+}
+
 func TestHandleHeartbeat_NilPayload(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

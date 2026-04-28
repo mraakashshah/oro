@@ -2326,6 +2326,16 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 	case result := <-resultCh:
 		switch result.Verdict {
 		case ops.VerdictApproved:
+			// Fail closed: a nonzero subprocess exit (Err != nil) with "APPROVED"
+			// in stdout signals a model/runtime error, not a genuine review decision.
+			// Trust the exit status over the text to prevent false approvals.
+			if result.Err != nil {
+				detail := result.Err.Error()
+				_ = d.logEvent(ctx, "review_error", "ops", beadID, workerID, detail)
+				d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review error", detail), beadID, workerID)
+				d.clearBeadTracking(beadID)
+				return
+			}
 			_ = d.logEvent(ctx, "review_approved", "ops", beadID, workerID, result.Feedback)
 			d.clearRejectionCount(beadID)
 

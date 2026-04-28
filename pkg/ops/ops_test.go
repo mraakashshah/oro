@@ -726,6 +726,50 @@ func TestParseResultNonZeroExitNonReviewStillFails(t *testing.T) {
 	}
 }
 
+// --- Runtime error / fail-closed regression tests ---
+
+// TestParseResultReviewRuntimeError verifies that when the review subprocess exits
+// nonzero and the output is a runtime error message that incidentally contains
+// "approved" (e.g. "model not approved for endpoint"), parseResult must return
+// VerdictFailed — not VerdictApproved. This guards against false approvals from
+// error payloads and echoed prompt template text.
+func TestParseResultReviewRuntimeError(t *testing.T) {
+	waitErr := errors.New("exit status 1")
+	tests := []struct {
+		name   string
+		stdout string
+	}{
+		{
+			name:   "model_not_approved_in_error_message",
+			stdout: "Error: model 'codex-opus-4-9' is not approved for this endpoint.\n",
+		},
+		{
+			name:   "api_error_not_approved",
+			stdout: "API error: request not approved — contact support\n",
+		},
+		{
+			name:   "prompt_template_text_echoed",
+			stdout: "## Output\nAPPROVED or REJECTED\n\nFindings as: [severity] file:line\n",
+		},
+		{
+			name:   "verdict_section_in_template",
+			stdout: "## Verdict\n- Any Critical → REJECTED\n- Minor only → APPROVED\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseResult(OpsReview, "bead-rt-err", tt.stdout, waitErr)
+			if result.Verdict == VerdictApproved {
+				t.Errorf("stdout %q: must NOT yield VerdictApproved; runtime error output must fail closed", tt.stdout)
+			}
+			if result.Verdict != VerdictFailed {
+				t.Errorf("stdout %q: expected VerdictFailed, got %q", tt.stdout, result.Verdict)
+			}
+		})
+	}
+}
+
 // --- Timeout tests ---
 
 func TestOpsReviewTimeout(t *testing.T) {

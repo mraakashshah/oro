@@ -535,16 +535,46 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 	return r
 }
 
-// parseReviewOutput looks for APPROVED or REJECTED in the output.
+// parseReviewOutput scans stdout line by line for a standalone APPROVED or
+// REJECTED verdict token. A verdict is recognised only when the token is the
+// first word on a trimmed line — not when it appears mid-sentence in an error
+// message (e.g. "model not approved") or in the prompt template instruction
+// ("APPROVED or REJECTED").
 func parseReviewOutput(stdout string) (verdict Verdict, feedback string) {
-	upper := strings.ToUpper(stdout)
-	if strings.Contains(upper, "APPROVED") {
-		return VerdictApproved, extractFeedback(stdout, "APPROVED")
-	}
-	if strings.Contains(upper, "REJECTED") {
-		return VerdictRejected, extractFeedback(stdout, "REJECTED")
+	for line := range strings.SplitSeq(stdout, "\n") {
+		upper := strings.ToUpper(strings.TrimSpace(line))
+		if isReviewVerdictToken(upper, "APPROVED") {
+			return VerdictApproved, extractFeedback(stdout, "APPROVED")
+		}
+		if isReviewVerdictToken(upper, "REJECTED") {
+			return VerdictRejected, extractFeedback(stdout, "REJECTED")
+		}
 	}
 	return VerdictFailed, stdout
+}
+
+// isReviewVerdictToken reports whether s starts with keyword as a standalone
+// verdict token. Accepted forms: exactly keyword, keyword followed by ':' or
+// '-', or keyword followed by space unless the space precedes "OR " (which
+// matches the prompt-template phrase "APPROVED or REJECTED").
+func isReviewVerdictToken(s, keyword string) bool {
+	if s == keyword {
+		return true
+	}
+	if !strings.HasPrefix(s, keyword) {
+		return false
+	}
+	rest := s[len(keyword):]
+	if rest == "" {
+		return true
+	}
+	switch rest[0] {
+	case ':', '-':
+		return true
+	case ' ':
+		return !strings.HasPrefix(rest, " OR ")
+	}
+	return false
 }
 
 // parseMergeOutput looks for RESOLVED or FAILED in the output.
