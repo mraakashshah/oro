@@ -44,6 +44,8 @@ type workConfig struct {
 	reviewTimeout time.Duration
 	skipReview    bool
 	dryRun        bool
+	dryRunSpawn   bool
+	auto          bool
 	baseBranch    string
 	bead          *protocol.Bead
 }
@@ -83,6 +85,8 @@ automatically. Exit code 0 means the bead landed on main.`,
 	cmd.Flags().DurationVar(&cfg.reviewTimeout, "review-timeout", 0, "ops review process timeout override (default: ops review default)")
 	cmd.Flags().BoolVar(&cfg.skipReview, "skip-review", false, "skip ops review gate")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "show execution plan without running")
+	cmd.Flags().BoolVar(&cfg.dryRunSpawn, "dry-run-spawn", false, "print the worker spawn prompt without running")
+	cmd.Flags().BoolVar(&cfg.auto, "auto", false, "run non-interactively")
 	cmd.Flags().StringVar(&cfg.baseBranch, "base-branch", "", "base branch for worktree (default: config default_branch, or current HEAD)")
 
 	return cmd
@@ -254,6 +258,14 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 			cfg.beadID, model, cfg.timeout, cfg.skipReview)
 		return nil
 	}
+	if cfg.dryRunSpawn {
+		prompt, promptErr := dryRunSpawnPrompt(cfg, deps, model)
+		if promptErr != nil {
+			return promptErr
+		}
+		logStep("%s", prompt)
+		return nil
+	}
 
 	// Open per-bead log file for observability.
 	logFile, logFileErr := openBeadLog(cfg.beadID)
@@ -411,6 +423,24 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	return nil
+}
+
+func dryRunSpawnPrompt(cfg *workConfig, deps *workDeps, model string) (string, error) {
+	projPaths, err := ResolvePaths(deps.repoRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve paths: %w", err)
+	}
+	worktree := filepath.Join(projPaths.WorktreesDir, cfg.beadID)
+
+	return worker.AssemblePrompt(worker.PromptParams{
+		BeadID:             cfg.beadID,
+		Title:              cfg.bead.Title,
+		Description:        cfg.bead.Description,
+		AcceptanceCriteria: cfg.bead.AcceptanceCriteria,
+		WorktreePath:       worktree,
+		Model:              model,
+		ProjectRoot:        deps.repoRoot,
+	}), nil
 }
 
 // setupWorktree auto-detects worktree state:

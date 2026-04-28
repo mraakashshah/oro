@@ -36,6 +36,8 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 		{"review-timeout", "0s"},
 		{"skip-review", "false"},
 		{"dry-run", "false"},
+		{"dry-run-spawn", "false"},
+		{"auto", "false"},
 	}
 	for _, tt := range tests {
 		f := cmd.Flag(tt.name)
@@ -45,6 +47,46 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 		if f.DefValue != tt.defValue {
 			t.Fatalf("--%s default: expected %q, got %q", tt.name, tt.defValue, f.DefValue)
 		}
+	}
+}
+
+func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
+	var buf strings.Builder
+	origLogOut := logOut
+	logOut = &buf
+	defer func() { logOut = origLogOut }()
+
+	bs := &mockBeadSource{showDetail: testBead()}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	deps := &workDeps{
+		beadSrc:  bs,
+		spawner:  sp,
+		repoRoot: t.TempDir(),
+	}
+	cfg := &workConfig{
+		beadID:      "oro-test",
+		model:       "sonnet",
+		timeout:     5 * time.Second,
+		dryRunSpawn: true,
+		auto:        true,
+	}
+
+	if err := executeWork(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("executeWork dry-run-spawn: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "oro bead create") {
+		t.Fatalf("dry-run spawn prompt missing oro bead create; got:\n%s", got)
+	}
+	if strings.Contains(got, "bd create") {
+		t.Fatalf("dry-run spawn prompt contains legacy bd create; got:\n%s", got)
+	}
+	if !strings.Contains(got, "## Bead Tools") {
+		t.Fatalf("dry-run spawn did not print assembled worker prompt; got:\n%s", got)
+	}
+	if sp.called {
+		t.Fatal("dry-run-spawn must not call the worker spawner")
 	}
 }
 
