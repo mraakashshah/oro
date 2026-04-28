@@ -122,7 +122,7 @@ func ResolvePaths(repoRoot string) (ProjectPaths, error) {
 	if hash, hashErr := projectHash(repoRoot); hashErr == nil {
 		stealthDir := filepath.Join(oroHome, "projects", "s-"+hash)
 		stealthConfig := filepath.Join(stealthDir, "config.yaml")
-		if _, err := os.Stat(stealthConfig); err == nil {
+		if _, err := os.Stat(stealthConfig); err == nil { //nolint:gosec // stealthConfig is constrained to ~/.oro/projects/s-<hash>/config.yaml
 			// Verify ~/.oro/ is writable before committing to stealth mode.
 			if err := checkDirWritable(oroHome); err != nil {
 				return ProjectPaths{}, fmt.Errorf("stealth mode requires writable ~/.oro: %w", err)
