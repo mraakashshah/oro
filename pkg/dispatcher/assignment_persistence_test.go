@@ -51,8 +51,8 @@ func TestAssignBeadDoesNotSendWhenCreateAssignmentFails(t *testing.T) {
 	beadSrc.mu.Lock()
 	lastStatus := beadSrc.updated[beadID]
 	beadSrc.mu.Unlock()
-	if lastStatus != "ready" {
-		t.Fatalf("bead status after persistence failure: got %q, want ready", lastStatus)
+	if lastStatus != "open" {
+		t.Fatalf("bead status after persistence failure: got %q, want open", lastStatus)
 	}
 
 	wtMgr.mu.Lock()
@@ -112,8 +112,8 @@ func TestAssignBeadRollsBackStatusWithoutDeletingReusedWorktreeOnPersistenceFail
 	beadSrc.mu.Lock()
 	lastStatus := beadSrc.updated["bead-db-reuse"]
 	beadSrc.mu.Unlock()
-	if lastStatus != "ready" {
-		t.Fatalf("bead status after persistence failure: got %q, want ready", lastStatus)
+	if lastStatus != "open" {
+		t.Fatalf("bead status after persistence failure: got %q, want open", lastStatus)
 	}
 
 	wtMgr.mu.Lock()

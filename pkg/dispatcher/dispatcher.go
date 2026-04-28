@@ -3327,7 +3327,7 @@ func (d *Dispatcher) handleEpicBranchMissing(ctx context.Context, bead protocol.
 	if showErr != nil {
 		_ = d.logEvent(ctx, "epic_show_error", "dispatcher", bead.ID, w.id,
 			fmt.Sprintf("error fetching epic %s: %v", resolvedEpicID, showErr))
-		_ = d.updateBeadStatus(ctx, bead.ID, "ready")
+		_ = d.updateBeadStatus(ctx, bead.ID, "open")
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
@@ -3338,7 +3338,7 @@ func (d *Dispatcher) handleEpicBranchMissing(ctx context.Context, bead protocol.
 	if epicDetail == nil {
 		_ = d.logEvent(ctx, "epic_show_error", "dispatcher", bead.ID, w.id,
 			fmt.Sprintf("epic %s returned nil detail", resolvedEpicID))
-		_ = d.updateBeadStatus(ctx, bead.ID, "ready")
+		_ = d.updateBeadStatus(ctx, bead.ID, "open")
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
@@ -3356,7 +3356,7 @@ func (d *Dispatcher) handleEpicBranchMissing(ctx context.Context, bead protocol.
 		// Return without escalating — will retry.
 		_ = d.logEvent(ctx, "epic_branch_pending", "dispatcher", bead.ID, w.id,
 			fmt.Sprintf("epic %s in %s status, branch not yet created", resolvedEpicID, epicDetail.Status))
-		_ = d.updateBeadStatus(ctx, bead.ID, "ready")
+		_ = d.updateBeadStatus(ctx, bead.ID, "open")
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
@@ -3370,7 +3370,7 @@ func (d *Dispatcher) handleEpicBranchMissing(ctx context.Context, bead protocol.
 	}
 	_ = d.logEvent(ctx, "epic_branch_missing", "dispatcher", bead.ID, w.id, reason)
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, bead.ID, "epic branch missing", reason), bead.ID, w.id)
-	_ = d.updateBeadStatus(ctx, bead.ID, "ready")
+	_ = d.updateBeadStatus(ctx, bead.ID, "open")
 	d.mu.Lock()
 	delete(d.assigningBeads, bead.ID)
 	d.mu.Unlock()
@@ -3505,7 +3505,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if resolveErr != nil {
 		_ = d.logEvent(ctx, "epic_branch_resolve_error", "dispatcher", bead.ID, w.id, resolveErr.Error())
 		d.recordAssignmentFailure(bead.ID)
-		_ = d.updateBeadStatus(ctx, bead.ID, "ready")
+		_ = d.updateBeadStatus(ctx, bead.ID, "open")
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
@@ -3542,7 +3542,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		// the assignment — proceeding would create the worktree with stale QG context.
 		if cleanErr := d.deleteStaleAgentBranch(ctx, bead.ID, w.id); cleanErr != nil {
 			d.recordAssignmentFailure(bead.ID)
-			_ = d.updateBeadStatus(ctx, bead.ID, "ready")
+			_ = d.updateBeadStatus(ctx, bead.ID, "open")
 			d.mu.Lock()
 			delete(d.assigningBeads, bead.ID)
 			d.mu.Unlock()
@@ -3554,7 +3554,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			_ = d.logEvent(ctx, "worktree_error", "dispatcher", bead.ID, w.id, err.Error())
 			d.recordAssignmentFailure(bead.ID)
 			// Revert status since assignment failed
-			_ = d.updateBeadStatus(ctx, bead.ID, "ready")
+			_ = d.updateBeadStatus(ctx, bead.ID, "open")
 			d.mu.Lock()
 			delete(d.assigningBeads, bead.ID)
 			d.mu.Unlock()
@@ -3570,7 +3570,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if assignErr != nil {
 		_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
 		d.recordAssignmentFailure(bead.ID)
-		_ = d.updateBeadStatus(ctx, bead.ID, "ready")
+		_ = d.updateBeadStatus(ctx, bead.ID, "open")
 		if existingWorktree == "" {
 			_ = d.worktrees.Remove(ctx, worktree)
 			d.mu.Lock()
