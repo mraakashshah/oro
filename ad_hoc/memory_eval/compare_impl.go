@@ -1,6 +1,5 @@
-// ad_hoc/memory_eval/compare_impl.go
-// Pure-Go evaluation helpers: HasApprovalMarker and PrecisionAtK.
-// CGO-dependent evaluation (RunConfigWithEmbedder) lives in harness.go.
+// Package memoryeval provides pure-Go evaluation helpers. CGO-dependent
+// evaluation lives in harness.go.
 package memoryeval
 
 import (
@@ -15,7 +14,7 @@ const approvalMarker = "# APPROVED"
 // HasApprovalMarker reports whether path contains a line equal to "# APPROVED".
 // Returns false (not true) when the line is absent; only returns an error on I/O failure.
 func HasApprovalMarker(path string) (bool, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // eval corpus path is an explicit caller input
 	if err != nil {
 		return false, fmt.Errorf("open corpus: %w", err)
 	}
@@ -27,7 +26,10 @@ func HasApprovalMarker(path string) (bool, error) {
 			return true, nil
 		}
 	}
-	return false, s.Err()
+	if err := s.Err(); err != nil {
+		return false, fmt.Errorf("scan corpus approval marker: %w", err)
+	}
+	return false, nil
 }
 
 // PrecisionAtK computes precision@k: the fraction of the top-k results that are

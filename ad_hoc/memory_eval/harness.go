@@ -1,7 +1,6 @@
 //go:build cgo && darwin
 
-// Package memoryeval: harness.go — setupConfig, seedStoreWithVectors, and
-// RunConfigWithEmbedder. Requires cgo+darwin for BGE model loading.
+// Package memoryeval provides the cgo-backed memory eval harness.
 package memoryeval
 
 import (
@@ -23,13 +22,13 @@ import (
 //
 // Config matrix:
 //
-//	tfidf           → TFIDFEmbedder,  idx=nil, reranker=nil
-//	dispatcher-warm → BGEEmbedder,    idx=nil (sqlite-vec not yet wired), BGEReranker
-//	solo-cli-cold   → BGEEmbedder,    idx=nil, reranker=nil
-func setupConfig(cfg string) (store *memory.Store, emb memory.Embedder, idx memory.VectorIndex, cleanup func(), err error) {
+//	tfidf           -> TFIDFEmbedder, reranker=nil
+//	dispatcher-warm -> BGEEmbedder,    BGEReranker
+//	solo-cli-cold   -> BGEEmbedder,    reranker=nil
+func setupConfig(cfg string) (store *memory.Store, emb memory.Embedder, cleanup func(), err error) {
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("open in-memory db: %w", err)
+		return nil, nil, nil, fmt.Errorf("open in-memory db: %w", err)
 	}
 	cleanup = func() { _ = db.Close() }
 
@@ -40,9 +39,9 @@ func setupConfig(cfg string) (store *memory.Store, emb memory.Embedder, idx memo
 		protocol.MigrateSemanticMemoryDense,
 		protocol.MigrateSemanticMemoryBackfillState,
 	} {
-		if _, execErr := db.Exec(ddl); execErr != nil {
+		if _, execErr := db.ExecContext(context.Background(), ddl); execErr != nil {
 			cleanup()
-			return nil, nil, nil, nil, fmt.Errorf("run migration: %w", execErr)
+			return nil, nil, nil, fmt.Errorf("run migration: %w", execErr)
 		}
 	}
 
@@ -58,7 +57,7 @@ func setupConfig(cfg string) (store *memory.Store, emb memory.Embedder, idx memo
 		bgeEmb, bgeErr := memory.NewBGEEmbedder(resolveModelPath("bge-small-en-v1.5"))
 		if bgeErr != nil {
 			cleanup()
-			return nil, nil, nil, nil, fmt.Errorf("dispatcher-warm embedder: %w", bgeErr)
+			return nil, nil, nil, fmt.Errorf("dispatcher-warm embedder: %w", bgeErr)
 		}
 		emb = bgeEmb
 		store.SetEmbedder(emb)
@@ -66,7 +65,7 @@ func setupConfig(cfg string) (store *memory.Store, emb memory.Embedder, idx memo
 		reranker, rrErr := memory.NewBGEReranker(resolveModelPath("bge-reranker-base"))
 		if rrErr != nil {
 			cleanup()
-			return nil, nil, nil, nil, fmt.Errorf("dispatcher-warm reranker: %w", rrErr)
+			return nil, nil, nil, fmt.Errorf("dispatcher-warm reranker: %w", rrErr)
 		}
 		store.SetReranker(reranker)
 		rerank := true
@@ -76,17 +75,17 @@ func setupConfig(cfg string) (store *memory.Store, emb memory.Embedder, idx memo
 		bgeEmb, bgeErr := memory.NewBGEEmbedder(resolveModelPath("bge-small-en-v1.5"))
 		if bgeErr != nil {
 			cleanup()
-			return nil, nil, nil, nil, fmt.Errorf("solo-cli-cold embedder: %w", bgeErr)
+			return nil, nil, nil, fmt.Errorf("solo-cli-cold embedder: %w", bgeErr)
 		}
 		emb = bgeEmb
 		store.SetEmbedder(emb)
 
 	default:
 		cleanup()
-		return nil, nil, nil, nil, fmt.Errorf("unknown config %q: must be one of tfidf, dispatcher-warm, solo-cli-cold", cfg)
+		return nil, nil, nil, fmt.Errorf("unknown config %q: must be one of tfidf, dispatcher-warm, solo-cli-cold", cfg)
 	}
 
-	return store, emb, idx, cleanup, nil
+	return store, emb, cleanup, nil
 }
 
 // seedStoreWithVectors inserts anchors into store and, when both idx and emb
@@ -137,7 +136,7 @@ func RunConfigWithEmbedder(entries []CorpusEntry, anchors []CorpusAnchor, cfg st
 		return 0, 0, 0, fmt.Errorf("k must be > 0, got %d", k)
 	}
 
-	store, emb, idx, cleanup, err := setupConfig(cfg)
+	store, emb, cleanup, err := setupConfig(cfg)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("setup config %q: %w", cfg, err)
 	}
@@ -145,37 +144,13 @@ func RunConfigWithEmbedder(entries []CorpusEntry, anchors []CorpusAnchor, cfg st
 
 	ctx := context.Background()
 
-	anchorMap, err := seedStoreWithVectors(ctx, store, idx, emb, anchors, "oro_eval")
+	anchorMap, err := seedStoreWithVectors(ctx, store, nil, emb, anchors, "oro_eval")
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("seed store: %w", err)
 	}
 
-	// Build per-query anchor map: query → store-assigned anchor ID.
-	// Each corpus entry with Relevant=true names the anchor for its query.
-	queryAnchor := make(map[string]int64)
-	for _, e := range entries {
-		if e.Relevant == nil || !*e.Relevant {
-			continue
-		}
-		storeID, ok := anchorMap[e.CandidateMemoryID]
-		if !ok {
-			fmt.Fprintf(os.Stderr,
-				"warning: candidate_memory_id %d not in seeded store, skipping\n",
-				e.CandidateMemoryID)
-			continue
-		}
-		queryAnchor[e.Query] = storeID
-	}
-
-	// Collect unique queries, preserving first-seen order.
-	seen := make(map[string]struct{}, len(entries))
-	queries := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if _, ok := seen[e.Query]; !ok {
-			seen[e.Query] = struct{}{}
-			queries = append(queries, e.Query)
-		}
-	}
+	queryAnchor := queryAnchors(entries, anchorMap)
+	queries := orderedQueries(entries)
 	if len(queries) == 0 {
 		return 0, 0, 0, fmt.Errorf("no queries in corpus")
 	}
@@ -207,6 +182,39 @@ func RunConfigWithEmbedder(entries []CorpusEntry, anchors []CorpusAnchor, cfg st
 
 	n := float64(len(queries))
 	return sumMRR / n, sumHit10 / n, sumHit1 / n, nil
+}
+
+// queryAnchors maps query text to the store-assigned anchor ID marked relevant
+// in the corpus. Unknown anchor references are skipped with a warning.
+func queryAnchors(entries []CorpusEntry, anchorMap map[int64]int64) map[string]int64 {
+	queryAnchor := make(map[string]int64)
+	for _, e := range entries {
+		if e.Relevant == nil || !*e.Relevant {
+			continue
+		}
+		storeID, ok := anchorMap[e.CandidateMemoryID]
+		if !ok {
+			fmt.Fprintf(os.Stderr,
+				"warning: candidate_memory_id %d not in seeded store, skipping\n",
+				e.CandidateMemoryID)
+			continue
+		}
+		queryAnchor[e.Query] = storeID
+	}
+	return queryAnchor
+}
+
+// orderedQueries returns unique queries preserving first-seen order.
+func orderedQueries(entries []CorpusEntry) []string {
+	seen := make(map[string]struct{}, len(entries))
+	queries := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if _, ok := seen[e.Query]; !ok {
+			seen[e.Query] = struct{}{}
+			queries = append(queries, e.Query)
+		}
+	}
+	return queries
 }
 
 // resolveModelPath returns the path to a model subdirectory under the model

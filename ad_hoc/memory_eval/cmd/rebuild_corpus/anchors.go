@@ -1,8 +1,10 @@
 //go:build cgo && darwin
 
+// Package main rebuilds the memory eval corpus from local Oro state.
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -35,11 +37,13 @@ func countTokens(s string) int {
 	return count
 }
 
-// filterByTokenCount returns anchors where countTokens(content) <= max.
-func filterByTokenCount(anchors []CorpusAnchor, max int) []CorpusAnchor {
+const maxAnchorTokens = 512
+
+// filterByTokenCount returns anchors that fit within the eval token cap.
+func filterByTokenCount(anchors []CorpusAnchor) []CorpusAnchor {
 	filtered := make([]CorpusAnchor, 0, len(anchors))
 	for _, a := range anchors {
-		if countTokens(a.Content) <= max {
+		if countTokens(a.Content) <= maxAnchorTokens {
 			filtered = append(filtered, a)
 		}
 	}
@@ -57,7 +61,7 @@ func SelectAnchors(db *sql.DB, seed int64, count int) ([]CorpusAnchor, error) {
 		WHERE length(content) BETWEEN 50 AND 400
 		ORDER BY (id * 2654435761 + ?) % 2147483648
 	`
-	rows, err := db.Query(query, seed)
+	rows, err := db.QueryContext(context.Background(), query, seed)
 	if err != nil {
 		return nil, fmt.Errorf("select anchors: %w", err)
 	}
@@ -75,7 +79,7 @@ func SelectAnchors(db *sql.DB, seed int64, count int) ([]CorpusAnchor, error) {
 		return nil, fmt.Errorf("iterate anchors: %w", err)
 	}
 
-	candidates := filterByTokenCount(raw, 512)
+	candidates := filterByTokenCount(raw)
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no anchor candidates in DB")
 	}

@@ -120,7 +120,7 @@ func TestFilterByTokenCountDropsOverLimit(t *testing.T) {
 		{ID: 2, Type: "gotcha", Content: dense},
 		{ID: 3, Type: "pattern", Content: "another short pattern content"},
 	}
-	got := filterByTokenCount(anchors, 512)
+	got := filterByTokenCount(anchors)
 	if len(got) != 2 {
 		t.Fatalf("want 2 anchors after filter, got %d", len(got))
 	}
@@ -137,13 +137,13 @@ func TestCountTokensBoundary(t *testing.T) {
 	if tc := countTokens(at); tc != 512 {
 		t.Fatalf("countTokens(512 tokens) = %d, want 512", tc)
 	}
-	kept := filterByTokenCount([]CorpusAnchor{{ID: 1, Content: at}}, 512)
+	kept := filterByTokenCount([]CorpusAnchor{{ID: 1, Content: at}})
 	if len(kept) != 1 {
 		t.Errorf("boundary anchor (512 tokens) was dropped; want kept")
 	}
 	// One over — should be dropped.
 	over := strings.Repeat("x ", 513)
-	dropped := filterByTokenCount([]CorpusAnchor{{ID: 1, Content: over}}, 512)
+	dropped := filterByTokenCount([]CorpusAnchor{{ID: 1, Content: over}})
 	if len(dropped) != 0 {
 		t.Errorf("over-boundary anchor (513 tokens) was kept; want dropped")
 	}

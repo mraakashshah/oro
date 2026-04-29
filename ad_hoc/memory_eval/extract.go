@@ -1,10 +1,9 @@
-// ad_hoc/memory_eval/extract.go
-// ExtractCorpus: reads memories from a SQLite state.db and writes 100 candidate
-// (query, candidate_memory_id) pairs to a JSONL corpus file.
-// Falls back to built-in fixture memories when the DB is inaccessible or empty.
+// Package memoryeval extracts JSONL corpus data from a SQLite state database.
+// It falls back to built-in fixture memories when the DB is inaccessible or empty.
 package memoryeval
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -60,7 +59,7 @@ func loadMemoriesFromDB(dbPath string) ([]memoryRow, error) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows, err := db.Query(`SELECT id, content, type FROM memories ORDER BY created_at DESC, id ASC`)
+	rows, err := db.QueryContext(context.Background(), `SELECT id, content, type FROM memories ORDER BY created_at DESC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("query memories: %w", err)
 	}
@@ -74,7 +73,10 @@ func loadMemoriesFromDB(dbPath string) ([]memoryRow, error) {
 		}
 		memories = append(memories, m)
 	}
-	return memories, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memories: %w", err)
+	}
+	return memories, nil
 }
 
 // generateQueries produces a deduplicated set of query strings from memories.
@@ -127,7 +129,7 @@ func buildPairs(queries []string, memories []memoryRow, source string) []CorpusE
 }
 
 func writeCorpus(outputPath, source string, pairs []CorpusEntry) error {
-	f, err := os.Create(outputPath)
+	f, err := os.Create(outputPath) //nolint:gosec // eval corpus path is an explicit caller input
 	if err != nil {
 		return fmt.Errorf("create corpus: %w", err)
 	}

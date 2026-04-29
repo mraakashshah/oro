@@ -1,5 +1,6 @@
 //go:build cgo && darwin
 
+//nolint:testpackage // tests exercise cgo-only package internals and fixtures
 package memoryeval
 
 import (

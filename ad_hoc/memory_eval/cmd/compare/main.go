@@ -18,6 +18,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -100,7 +101,24 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+type cliOptions struct {
+	corpusPath  string
+	anchorsPath string
+	k           int
+	fast        bool
+	reportOut   string
+}
+
 func run(args []string) int {
+	opts, code := parseOptions(args)
+	if code != 0 {
+		return code
+	}
+
+	return runEval(opts)
+}
+
+func parseOptions(args []string) (opts cliOptions, exitCode int) {
 	fs := flag.NewFlagSet("compare", flag.ContinueOnError)
 	corpusPath := fs.String("corpus", "", "path to corpus JSONL file (required)")
 	anchorsPath := fs.String("anchors", "", "path to corpus anchors JSONL file (required)")
@@ -110,54 +128,64 @@ func run(args []string) int {
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return 2
+		return cliOptions{}, 2
 	}
 	if *corpusPath == "" {
 		fmt.Fprintln(os.Stderr, "error: --corpus is required")
-		return 2
+		return cliOptions{}, 2
 	}
 	if *anchorsPath == "" {
 		fmt.Fprintln(os.Stderr, "error: --anchors is required")
-		return 2
+		return cliOptions{}, 2
 	}
 	if *k <= 0 {
 		fmt.Fprintf(os.Stderr, "error: --k must be > 0 (got %d)\n", *k)
-		return 2
+		return cliOptions{}, 2
 	}
+	return cliOptions{
+		corpusPath:  *corpusPath,
+		anchorsPath: *anchorsPath,
+		k:           *k,
+		fast:        *fast,
+		reportOut:   *reportOut,
+	}, 0
+}
 
-	ok, err := eval.HasApprovalMarker(*corpusPath)
+//nolint:funlen // ad hoc eval CLI keeps the linear run/report flow in one place
+func runEval(opts cliOptions) int {
+	ok, err := eval.HasApprovalMarker(opts.corpusPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: check approval marker: %v\n", err)
 		return 3
 	}
 	if !ok {
-		fmt.Fprintf(os.Stderr, "error: corpus %q is missing \"# APPROVED\" marker\n", *corpusPath)
+		fmt.Fprintln(os.Stderr, "error: corpus is missing \"# APPROVED\" marker")
 		return 3
 	}
 
-	corpus, err := eval.LoadCorpus(*corpusPath)
+	corpus, err := eval.LoadCorpus(opts.corpusPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: load corpus: %v\n", err)
 		return 2
 	}
-	anchors, err := eval.LoadCorpusAnchors(*anchorsPath)
+	anchors, err := eval.LoadCorpusAnchors(opts.anchorsPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: load anchors: %v\n", err)
 		return 2
 	}
 
-	paraphrasePath := filepath.Join(filepath.Dir(*corpusPath), "paraphrase_cache.jsonl")
+	paraphrasePath := filepath.Join(filepath.Dir(opts.corpusPath), "paraphrase_cache.jsonl")
 
-	corpusSHA := fileSHA256(*corpusPath)
-	anchorsSHA := fileSHA256(*anchorsPath)
+	corpusSHA := fileSHA256(opts.corpusPath)
+	anchorsSHA := fileSHA256(opts.anchorsPath)
 	paraphraseSHA := fileSHA256(paraphrasePath)
-	inputsSHA := computeInputsSHA(*corpusPath, *anchorsPath, paraphrasePath)
+	inputsSHA := computeInputsSHA(opts.corpusPath, opts.anchorsPath, paraphrasePath)
 
 	allQueries := uniqueQueries(corpus)
 	queries := allQueries
 
-	if *fast {
-		benchPath := filepath.Join(filepath.Dir(*corpusPath), "bench.txt")
+	if opts.fast {
+		benchPath := filepath.Join(filepath.Dir(opts.corpusPath), "bench.txt")
 		msPerPair, benchErr := parseBenchTxt(benchPath)
 		if benchErr != nil {
 			fmt.Fprintf(os.Stderr, "error: parse bench.txt: %v\n", benchErr)
@@ -175,7 +203,7 @@ func run(args []string) int {
 	configs := make(map[string]ConfigMetrics, len(cfgs))
 	for _, cfg := range cfgs {
 		start := time.Now()
-		mrr, hit10, hit1, runErr := eval.RunConfigWithEmbedder(sampledCorpus, anchors, cfg, *k)
+		mrr, hit10, hit1, runErr := eval.RunConfigWithEmbedder(sampledCorpus, anchors, cfg, opts.k)
 		runtimeMS := time.Since(start).Milliseconds()
 		if runErr != nil {
 			fmt.Fprintf(os.Stderr, "error: config %q: %v\n", cfg, runErr)
@@ -225,7 +253,7 @@ func run(args []string) int {
 		},
 	}
 
-	if writeErr := writeReport(*reportOut, report); writeErr != nil {
+	if writeErr := writeReport(opts.reportOut, report); writeErr != nil {
 		fmt.Fprintf(os.Stderr, "error: write report: %v\n", writeErr)
 		return 2
 	}
@@ -246,7 +274,10 @@ func writeReport(path string, r EvalReport) error {
 	defer func() { _ = f.Close() }()
 	enc := yaml.NewEncoder(f)
 	enc.SetIndent(2)
-	return enc.Encode(r)
+	if err := enc.Encode(r); err != nil {
+		return fmt.Errorf("encode report %s: %w", path, err)
+	}
+	return nil
 }
 
 func fileSHA256(path string) string {
@@ -366,9 +397,9 @@ func gatherHardware() HardwareInfo {
 }
 
 func sysctlString(name string) (string, error) {
-	out, err := exec.Command("sysctl", "-n", name).Output() //nolint:gosec // name is a compile-time constant
+	out, err := exec.CommandContext(context.Background(), "sysctl", "-n", name).Output() //nolint:gosec // name is a compile-time constant
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("run sysctl %s: %w", name, err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

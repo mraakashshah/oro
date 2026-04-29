@@ -1,9 +1,10 @@
 //go:build cgo && darwin
 
-// ad_hoc/memory_eval/openevaldb.go
+// Package memoryeval provides ad hoc retrieval evaluation helpers.
 package memoryeval
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sync"
@@ -13,9 +14,10 @@ import (
 	"oro/pkg/dbutil"
 )
 
+//nolint:gochecknoglobals // driver registration must be process-global and one-time
 var (
 	registerOnce sync.Once
-	registerErr  error
+	errRegister  error
 )
 
 // OpenEvalDB opens a SQLite database with sqlite-vec loaded via the mattn
@@ -24,7 +26,7 @@ func OpenEvalDB(dbPath string) (*sql.DB, error) {
 	registerOnce.Do(func() {
 		libPath, err := dbutil.ResolveSqliteVecLibPath()
 		if err != nil {
-			registerErr = fmt.Errorf("run install.sh or set ORO_SQLITE_VEC_LIB: %w", err)
+			errRegister = fmt.Errorf("run install.sh or set ORO_SQLITE_VEC_LIB: %w", err)
 			return
 		}
 		sql.Register("sqlite3_with_vec", &sqlite3.SQLiteDriver{
@@ -33,15 +35,15 @@ func OpenEvalDB(dbPath string) (*sql.DB, error) {
 			},
 		})
 	})
-	if registerErr != nil {
-		return nil, registerErr
+	if errRegister != nil {
+		return nil, errRegister
 	}
 
 	db, err := sql.Open("sqlite3_with_vec", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open eval db %s: %w", dbPath, err)
 	}
-	if err := db.Ping(); err != nil {
+	if err := db.PingContext(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping eval db %s: %w", dbPath, err)
 	}

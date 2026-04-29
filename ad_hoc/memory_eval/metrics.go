@@ -3,15 +3,19 @@ package memoryeval
 import "fmt"
 
 const (
+	// WarmMRRRatio is the minimum warm pipeline improvement over baseline MRR.
 	WarmMRRRatio = 1.30
+	// ColdMRRRatio is the minimum cold pipeline improvement over baseline MRR.
 	ColdMRRRatio = 1.20
 )
 
+// GateResult records whether the memory eval gate passed and why.
 type GateResult struct {
 	Pass   bool
 	Reason string
 }
 
+// CheckGate checks warm and cold MRR against the baseline ratio thresholds.
 func CheckGate(baseMRR, warmMRR, coldMRR float64) GateResult {
 	if baseMRR == 0 {
 		return GateResult{

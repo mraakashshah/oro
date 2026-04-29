@@ -1,5 +1,4 @@
-// ad_hoc/memory_eval/paraphrase_validator.go
-// Content-word overlap validator for paraphrase quality checks.
+// Package memoryeval validates content-word overlap for paraphrase quality.
 package memoryeval
 
 import (

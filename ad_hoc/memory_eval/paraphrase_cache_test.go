@@ -1,4 +1,4 @@
-// ad_hoc/memory_eval/paraphrase_cache_test.go
+//nolint:testpackage // tests stay in-package for cache helpers
 package memoryeval
 
 import (
@@ -69,7 +69,7 @@ func TestParaphraseCacheRoundtrip(t *testing.T) {
 	if aIdx < 0 || bIdx < 0 || cIdx < 0 {
 		t.Fatalf("one or more anchor SHAs missing from file")
 	}
-	if !(aIdx < bIdx && bIdx < cIdx) {
+	if aIdx >= bIdx || bIdx >= cIdx {
 		t.Errorf("keys not sorted lexicographically in file: a=%d b=%d c=%d", aIdx, bIdx, cIdx)
 	}
 }

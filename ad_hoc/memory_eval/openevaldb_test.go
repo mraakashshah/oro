@@ -1,6 +1,6 @@
 //go:build cgo && darwin
 
-// ad_hoc/memory_eval/openevaldb_test.go
+//nolint:testpackage // test needs the package's registered eval driver helper
 package memoryeval
 
 import (

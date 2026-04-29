@@ -1,5 +1,4 @@
-// ad_hoc/memory_eval/corpus.go
-// LoadCorpus + CorpusEntry for the memory retrieval eval corpus.
+// Package memoryeval loads the JSONL memory retrieval eval corpus.
 package memoryeval
 
 import (
@@ -28,7 +27,7 @@ type CorpusAnchor struct {
 // LoadCorpusAnchors reads a JSONL anchor sidecar file, skipping blank lines
 // and comment lines (starting with '#').
 func LoadCorpusAnchors(path string) ([]CorpusAnchor, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // eval anchor path is an explicit caller input
 	if err != nil {
 		return nil, fmt.Errorf("open anchors: %w", err)
 	}
@@ -56,7 +55,7 @@ func LoadCorpusAnchors(path string) ([]CorpusAnchor, error) {
 // LoadCorpus reads a JSONL corpus file, skipping blank lines and lines starting
 // with '#' (used for header comments such as "# source: history").
 func LoadCorpus(path string) ([]CorpusEntry, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // eval corpus path is an explicit caller input
 	if err != nil {
 		return nil, fmt.Errorf("open corpus: %w", err)
 	}

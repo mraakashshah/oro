@@ -32,6 +32,10 @@ type runConfig struct {
 }
 
 func main() {
+	os.Exit(realMain())
+}
+
+func realMain() int {
 	home, _ := os.UserHomeDir()
 	defaultDB := filepath.Join(home, ".oro", "projects", "oro", "state.db")
 	defaultOut := filepath.Join("ad_hoc", "memory_eval", "corpus.jsonl")
@@ -49,11 +53,11 @@ func main() {
 	db, err := sql.Open("sqlite", *dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open db: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer func() { _ = db.Close() }()
 
-	os.Exit(run(runConfig{
+	return run(runConfig{
 		db:           db,
 		dbPath:       *dbPath,
 		outPath:      *outPath,
@@ -63,7 +67,7 @@ func main() {
 		noAPI:        *noAPI,
 		now:          time.Now,
 		paraphraseFn: ParaphraseAnchors,
-	}))
+	})
 }
 
 func run(cfg runConfig) int {
@@ -182,5 +186,8 @@ func writeCorpus(
 		}
 	}
 
-	return os.WriteFile(path, buf.Bytes(), 0o644) //nolint:gosec
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil { //nolint:gosec // output path is an explicit CLI destination
+		return fmt.Errorf("write corpus %s: %w", path, err)
+	}
+	return nil
 }

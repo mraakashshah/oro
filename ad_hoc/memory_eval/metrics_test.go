@@ -1,3 +1,4 @@
+//nolint:testpackage // tests stay in-package for shared table helpers
 package memoryeval
 
 import (

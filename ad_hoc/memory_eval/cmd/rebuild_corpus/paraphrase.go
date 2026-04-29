@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -106,7 +107,7 @@ func paraphraseAnchorsWithCaller(
 	cachePath string,
 	useAPI bool,
 	caller claudeCallerFn,
-) (map[int64][]string, float64, error) {
+) (queriesByAnchor map[int64][]string, fallbackRate float64, err error) {
 	cache, err := memoryeval.ReadCache(cachePath)
 	if err != nil {
 		return nil, 0, fmt.Errorf("read cache: %w", err)
@@ -154,7 +155,7 @@ func paraphraseAnchorsWithCaller(
 			strings.Join(missingFromAPI, ", "))
 	}
 
-	fallbackRate := 0.0
+	fallbackRate = 0.0
 	if len(anchors) > 0 {
 		fallbackRate = float64(fallbackCount) / float64(len(anchors))
 	}
@@ -170,7 +171,7 @@ type claudeEnvelope struct {
 // callClaude shells out to the claude CLI to generate 3 paraphrase queries.
 func callClaude(system, content string) ([]string, error) {
 	//nolint:gosec // args are program-controlled, not user-supplied
-	cmd := exec.Command("claude", "-p",
+	cmd := exec.CommandContext(context.Background(), "claude", "-p",
 		"--model", "claude-haiku-4-5-20251001",
 		"--output-format", "json",
 		"--system", system,
@@ -200,6 +201,10 @@ func callClaude(system, content string) ([]string, error) {
 // ParaphraseAnchors generates paraphrase queries for each anchor, reading from
 // cache first and calling the Haiku model on misses when useAPI is true.
 // Returns queries per anchor ID, the fraction that used templated fallback, and any error.
-func ParaphraseAnchors(anchors []CorpusAnchor, cachePath string, useAPI bool) (map[int64][]string, float64, error) {
+func ParaphraseAnchors(anchors []CorpusAnchor, cachePath string, useAPI bool) (
+	queriesByAnchor map[int64][]string,
+	fallbackRate float64,
+	err error,
+) {
 	return paraphraseAnchorsWithCaller(anchors, cachePath, useAPI, callClaude)
 }

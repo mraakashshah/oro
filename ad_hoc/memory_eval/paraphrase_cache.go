@@ -1,5 +1,4 @@
-// ad_hoc/memory_eval/paraphrase_cache.go
-// JSONL read/write for the paraphrase query cache.
+// Package memoryeval reads and writes the paraphrase query JSONL cache.
 package memoryeval
 
 import (
@@ -41,7 +40,7 @@ func ReadCache(path string) (map[string]CacheEntry, error) {
 		}
 		return nil, fmt.Errorf("open cache: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	result := make(map[string]CacheEntry)
 	scanner := bufio.NewScanner(f)
@@ -83,5 +82,8 @@ func WriteCache(path string, entries map[string]CacheEntry) error {
 		buf.WriteByte('\n')
 	}
 
-	return os.WriteFile(path, buf.Bytes(), 0o644) //nolint:gosec // caller-controlled path
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil { //nolint:gosec // caller-controlled eval cache path
+		return fmt.Errorf("write cache: %w", err)
+	}
+	return nil
 }

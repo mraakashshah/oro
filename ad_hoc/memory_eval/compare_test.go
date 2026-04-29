@@ -1,4 +1,6 @@
 // ad_hoc/memory_eval/compare_test.go
+//
+//nolint:testpackage // tests cover unexported helpers in this ad hoc eval package
 package memoryeval
 
 import (
