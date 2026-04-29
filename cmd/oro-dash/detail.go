@@ -80,7 +80,3 @@ func (d DetailModel) renderOverviewTab(styles Styles) string {
 
 	return strings.Join(lines, "\n")
 }
-
-func main() {
-	// oro-dash TUI dashboard implementation
-}
