@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box test inspects unexported status helper calls
 
 import (
 	"go/ast"

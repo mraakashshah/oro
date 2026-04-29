@@ -25,13 +25,6 @@ func runWithTimeout(timeout time.Duration, name string, args ...string) ([]byte,
 	return exec.CommandContext(ctx, name, args...).Output()
 }
 
-// execWithTimeout executes a command with a context timeout, discarding output.
-func execWithTimeout(timeout time.Duration, name string, args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	return exec.CommandContext(ctx, name, args...).Run()
-}
-
 // bdStderrError represents a structured JSON error from bd's stderr.
 type bdStderrError struct {
 	Error   string `json:"error"`

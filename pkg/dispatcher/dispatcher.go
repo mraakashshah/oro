@@ -138,11 +138,10 @@ func logBeadstoreDivergence(ctx context.Context, db *sql.DB, event beadstore.Sha
 }
 
 func updateBeadStatus(ctx context.Context, beads beadstore.Store, id, status string) error {
-	return beads.Update(ctx, id, beadstore.UpdateParams{Status: &status})
-}
-
-func (d *Dispatcher) updateBeadStatus(ctx context.Context, id, status string) error {
-	return updateBeadStatus(ctx, d.beads, id, status)
+	if err := beads.Update(ctx, id, beadstore.UpdateParams{Status: &status}); err != nil {
+		return fmt.Errorf("update bead %s status to %s: %w", id, status, err)
+	}
+	return nil
 }
 
 // WorktreeManager creates and removes git worktrees.
@@ -631,6 +630,10 @@ type Dispatcher struct {
 	// of the previous one, the cached JSON is returned without rebuilding.
 	lastStatusTime time.Time
 	lastStatusJSON string
+}
+
+func (d *Dispatcher) updateBeadStatus(ctx context.Context, id, status string) error {
+	return updateBeadStatus(ctx, d.beads, id, status)
 }
 
 // New creates a Dispatcher. It does NOT start listening or polling — call Run().

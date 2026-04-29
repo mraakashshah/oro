@@ -64,7 +64,7 @@ func (b cliBeadJSON) toProtocol() protocol.Bead {
 func decodeBeadList(out []byte) ([]protocol.Bead, error) {
 	var raw []cliBeadJSON
 	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode bead list JSON: %w", err)
 	}
 	beads := make([]protocol.Bead, len(raw))
 	for i, bead := range raw {
@@ -85,7 +85,7 @@ func decodeBeadDetail(out []byte) (*protocol.BeadDetail, error) {
 
 	var obj cliBeadJSON
 	if err := json.Unmarshal(out, &obj); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode bead detail JSON: %w", err)
 	}
 	detail := obj.toProtocol()
 	return &detail, nil
@@ -109,7 +109,7 @@ func decodeBeadExport(out []byte) ([]protocol.Bead, error) {
 			if err == io.EOF {
 				break
 			}
-			return nil, err
+			return nil, fmt.Errorf("decode bead export JSON stream: %w", err)
 		}
 		beads = append(beads, raw.toProtocol())
 	}

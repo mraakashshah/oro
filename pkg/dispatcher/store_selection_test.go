@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box tests need access to unexported store selection helpers
 
 import (
 	"context"

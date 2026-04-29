@@ -257,7 +257,7 @@ func assertRenderedJSONField(t *testing.T, fields map[string]json.RawMessage, na
 	if err != nil {
 		t.Fatalf("marshal expected %s field: %v", name, err)
 	}
-	if !reflect.DeepEqual(json.RawMessage(got), json.RawMessage(wantJSON)) {
+	if !reflect.DeepEqual(got, json.RawMessage(wantJSON)) {
 		t.Fatalf("rendered %s = %s, want %s", name, got, wantJSON)
 	}
 }
