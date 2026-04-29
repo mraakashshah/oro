@@ -925,6 +925,81 @@ func TestCheckHeartbeats_ReviewTimeout(t *testing.T) {
 	}
 }
 
+// TestCheckHeartbeats_ReviewingUsesReviewTimeout verifies reviewing workers are
+// governed by ReviewTimeout instead of the normal busy-worker ProgressTimeout.
+func TestCheckHeartbeats_ReviewingUsesReviewTimeout(t *testing.T) {
+	t.Parallel()
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+
+	d.cfg.ProgressTimeout = 100 * time.Millisecond
+	d.cfg.ReviewTimeout = 500 * time.Millisecond
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	youngerConn := newMockConn()
+	olderConn := newMockConn()
+	youngerWorkerID := "review-younger-than-review-timeout"
+	olderWorkerID := "review-older-than-review-timeout"
+	youngerBeadID := "bead-review-younger"
+	olderBeadID := "bead-review-older"
+
+	d.mu.Lock()
+	d.workers[youngerWorkerID] = &trackedWorker{
+		id:           youngerWorkerID,
+		conn:         youngerConn,
+		state:        protocol.WorkerReviewing,
+		beadID:       youngerBeadID,
+		lastSeen:     now.Add(-10 * time.Millisecond),
+		lastProgress: now.Add(-(d.cfg.ProgressTimeout + 100*time.Millisecond)),
+		encoder:      json.NewEncoder(youngerConn),
+	}
+	d.workers[olderWorkerID] = &trackedWorker{
+		id:           olderWorkerID,
+		conn:         olderConn,
+		state:        protocol.WorkerReviewing,
+		beadID:       olderBeadID,
+		lastSeen:     now.Add(-10 * time.Millisecond),
+		lastProgress: now.Add(-(d.cfg.ReviewTimeout + 100*time.Millisecond)),
+		encoder:      json.NewEncoder(olderConn),
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, youngerPresent := d.workers[youngerWorkerID]
+	_, olderPresent := d.workers[olderWorkerID]
+	d.mu.Unlock()
+
+	if !youngerPresent {
+		t.Error("reviewing worker older than ProgressTimeout but younger than ReviewTimeout should remain active")
+	}
+	if youngerConn.closed {
+		t.Error("reviewing worker younger than ReviewTimeout should not have its connection closed")
+	}
+	if olderPresent {
+		t.Error("reviewing worker older than ReviewTimeout should be removed as stalled")
+	}
+	if !olderConn.closed {
+		t.Error("reviewing worker older than ReviewTimeout should have its connection closed")
+	}
+
+	msgs := esc.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected exactly 1 escalation for the older reviewing worker, got %d: %v", len(msgs), msgs)
+	}
+	if !strings.Contains(msgs[0], string(protocol.EscStuckWorker)) {
+		t.Errorf("expected escalation to contain %q, got %q", protocol.EscStuckWorker, msgs[0])
+	}
+	if !strings.Contains(msgs[0], olderBeadID) {
+		t.Errorf("expected escalation to mention bead %q, got %q", olderBeadID, msgs[0])
+	}
+	if strings.Contains(msgs[0], youngerBeadID) {
+		t.Errorf("did not expect escalation to mention younger bead %q, got %q", youngerBeadID, msgs[0])
+	}
+}
+
 // TestCheckHeartbeats_ReviewTimeout_ZeroLastProgressSkipped verifies that a
 // reviewing worker with zero lastProgress is NOT removed.
 func TestCheckHeartbeats_ReviewTimeout_ZeroLastProgressSkipped(t *testing.T) {

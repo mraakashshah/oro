@@ -434,8 +434,8 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 			dead = append(dead, id)
 			continue
 		}
-		// Progress check: worker is busy or reviewing but has not made meaningful progress.
-		if (w.state == protocol.WorkerBusy || w.state == protocol.WorkerReviewing) && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > d.cfg.ProgressTimeout {
+		// Progress check: busy worker has not made meaningful progress.
+		if w.state == protocol.WorkerBusy && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > d.cfg.ProgressTimeout {
 			stuck = append(stuck, id)
 			continue
 		}

@@ -10413,13 +10413,14 @@ func TestProgressTimeoutTriggersEscalation(t *testing.T) {
 }
 
 // TestReviewProgressTimeout verifies that a worker in the reviewing state is
-// killed after progress_timeout_secs with no stdout (no lastProgress update),
-// and that recent progress prevents the kill.
+// killed after ReviewTimeout with no stdout (no lastProgress update), and that
+// recent progress prevents the kill.
 func TestReviewProgressTimeout(t *testing.T) {
-	t.Run("reviewing worker with stale progress is killed after ProgressTimeout", func(t *testing.T) {
+	t.Run("reviewing worker with stale progress is killed after ReviewTimeout", func(t *testing.T) {
 		d, _, _, esc, _, _ := newTestDispatcher(t)
 
 		d.cfg.ProgressTimeout = 1 * time.Second
+		d.cfg.ReviewTimeout = 2 * time.Second
 
 		server, client := net.Pipe()
 		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
@@ -10438,7 +10439,7 @@ func TestReviewProgressTimeout(t *testing.T) {
 			beadID:       beadID,
 			worktree:     "/tmp/worktree-review-stalled",
 			lastSeen:     now,                       // heartbeat fresh — worker alive
-			lastProgress: now.Add(-2 * time.Second), // progress stale (>1s ago)
+			lastProgress: now.Add(-3 * time.Second), // review progress stale (>2s ago)
 			encoder:      json.NewEncoder(server),
 		}
 		d.attemptCounts[beadID] = 1
@@ -10452,7 +10453,7 @@ func TestReviewProgressTimeout(t *testing.T) {
 		d.checkHeartbeats(context.Background())
 
 		if d.ConnectedWorkers() != 0 {
-			t.Fatalf("expected 0 workers after progress timeout, got %d", d.ConnectedWorkers())
+			t.Fatalf("expected 0 workers after review timeout, got %d", d.ConnectedWorkers())
 		}
 
 		msgs := esc.Messages()
