@@ -1,6 +1,141 @@
 package data
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"oro/pkg/beadstore"
+	"oro/pkg/protocol"
+)
+
+func TestMutateSetStatusUsesStore(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	store := beadstore.NewFakeStore(protocol.Bead{ID: "oro-1", Title: "Issue", Status: "open"})
+
+	if err := SetStatus(store, "oro-1", StatusInProgress); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	got := mustShowBead(t, store, "oro-1")
+	if got.Status != "in_progress" {
+		t.Fatalf("status = %q, want in_progress", got.Status)
+	}
+}
+
+func TestMutateClaimIssueUsesStore(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("USER", "alice")
+	store := beadstore.NewFakeStore(protocol.Bead{ID: "oro-claim", Title: "Issue", Status: "open"})
+
+	if err := ClaimIssue(store, "oro-claim"); err != nil {
+		t.Fatalf("ClaimIssue: %v", err)
+	}
+
+	got := mustShowBead(t, store, "oro-claim")
+	if got.Status != "in_progress" {
+		t.Fatalf("status = %q, want in_progress", got.Status)
+	}
+	if got.Owner != "alice" {
+		t.Fatalf("owner = %q, want alice", got.Owner)
+	}
+}
+
+func TestMutateClaimIssueRejectsOtherOwner(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("USER", "alice")
+	store := beadstore.NewFakeStore(protocol.Bead{ID: "oro-owned", Title: "Issue", Status: "open", Owner: "bob"})
+
+	if err := ClaimIssue(store, "oro-owned"); err == nil {
+		t.Fatal("ClaimIssue succeeded for bead owned by another user, want error")
+	}
+
+	got := mustShowBead(t, store, "oro-owned")
+	if got.Status != "open" || got.Owner != "bob" {
+		t.Fatalf("bead changed after rejected claim: %#v", got)
+	}
+}
+
+func TestMutateCloseIssueUsesStore(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	store := beadstore.NewFakeStore(protocol.Bead{ID: "oro-close", Title: "Issue", Status: "open"})
+
+	if err := CloseIssue(store, "oro-close"); err != nil {
+		t.Fatalf("CloseIssue: %v", err)
+	}
+
+	got := mustShowBead(t, store, "oro-close")
+	if got.Status != "closed" {
+		t.Fatalf("status = %q, want closed", got.Status)
+	}
+	if got.ClosedAt == "" {
+		t.Fatal("ClosedAt is empty")
+	}
+}
+
+func TestMutateSetPriorityUsesStore(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	store := beadstore.NewFakeStore(protocol.Bead{ID: "oro-priority", Title: "Issue", Status: "open", Priority: 2})
+
+	if err := SetPriority(store, "oro-priority", PriorityHigh); err != nil {
+		t.Fatalf("SetPriority: %v", err)
+	}
+
+	got := mustShowBead(t, store, "oro-priority")
+	if got.Priority != int(PriorityHigh) {
+		t.Fatalf("priority = %d, want %d", got.Priority, PriorityHigh)
+	}
+}
+
+func TestMutateCreateIssueUsesStore(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	store := beadstore.NewFakeStore()
+
+	id, err := CreateIssue(store, "New issue", TypeBug, PriorityLow)
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	got := mustShowBead(t, store, id)
+	if got.Title != "New issue" {
+		t.Fatalf("title = %q, want New issue", got.Title)
+	}
+	if got.Type != "bug" {
+		t.Fatalf("type = %q, want bug", got.Type)
+	}
+	if got.Priority != int(PriorityLow) {
+		t.Fatalf("priority = %d, want %d", got.Priority, PriorityLow)
+	}
+}
+
+func TestMutateNilStoreReturnsError(t *testing.T) {
+	if err := SetStatus(nil, "oro-1", StatusOpen); err == nil {
+		t.Fatal("SetStatus nil store error = nil, want error")
+	}
+	if err := ClaimIssue(nil, "oro-1"); err == nil {
+		t.Fatal("ClaimIssue nil store error = nil, want error")
+	}
+	if err := CloseIssue(nil, "oro-1"); err == nil {
+		t.Fatal("CloseIssue nil store error = nil, want error")
+	}
+	if err := SetPriority(nil, "oro-1", PriorityHigh); err == nil {
+		t.Fatal("SetPriority nil store error = nil, want error")
+	}
+	if _, err := CreateIssue(nil, "New issue", TypeTask, PriorityMedium); err == nil {
+		t.Fatal("CreateIssue nil store error = nil, want error")
+	}
+}
+
+func mustShowBead(t *testing.T, store beadstore.Store, id string) protocol.Bead {
+	t.Helper()
+	bead, err := store.Show(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Show(%s): %v", id, err)
+	}
+	if bead == nil {
+		t.Fatalf("Show(%s): got nil bead", id)
+	}
+	return *bead
+}
 
 func TestBranchName(t *testing.T) {
 	tests := []struct {

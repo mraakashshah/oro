@@ -247,7 +247,7 @@ type workerStatusMsg struct {
 
 // --- Other message types ---
 
-// mutateResultMsg is sent when a bd CLI mutation completes.
+// mutateResultMsg is sent when a store mutation completes.
 type mutateResultMsg struct {
 	issueID string
 	action  string
@@ -298,7 +298,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		issueType := data.IssueType(result.Type)
 		priority := components.ParsePriority(result.Priority)
 		return m, func() tea.Msg {
-			_, err := data.CreateIssue(title, issueType, priority)
+			_, err := data.CreateIssue(m.store, title, issueType, priority)
 			return mutateResultMsg{issueID: title, action: "created", err: err}
 		}
 	}
@@ -838,7 +838,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// quickAction runs bd update to change issue status. Works on multi-selection if active.
+// quickAction changes issue status. Works on multi-selection if active.
 func (m Model) quickAction(status data.Status, label string) (tea.Model, tea.Cmd) {
 	// Bulk mode: apply to all selected issues
 	if selected := m.parade.SelectedIssues(); len(selected) > 0 {
@@ -849,7 +849,7 @@ func (m Model) quickAction(status data.Status, label string) (tea.Model, tea.Cmd
 			var lastErr error
 			for _, iss := range issues {
 				if iss.Status != status {
-					if err := data.SetStatus(iss.ID, status); err != nil {
+					if err := data.SetStatus(m.store, iss.ID, status); err != nil {
 						lastErr = err
 					}
 				}
@@ -873,15 +873,15 @@ func (m Model) quickAction(status data.Status, label string) (tea.Model, tea.Cmd
 	return m, func() tea.Msg {
 		var err error
 		if status == data.StatusInProgress {
-			err = data.ClaimIssue(issueID)
+			err = data.ClaimIssue(m.store, issueID)
 		} else {
-			err = data.SetStatus(issueID, status)
+			err = data.SetStatus(m.store, issueID, status)
 		}
 		return mutateResultMsg{issueID: issueID, action: label, err: err}
 	}
 }
 
-// closeSelectedIssue runs bd close on the selected issue(s).
+// closeSelectedIssue closes the selected issue(s).
 func (m Model) closeSelectedIssue() (tea.Model, tea.Cmd) {
 	// Bulk mode
 	if selected := m.parade.SelectedIssues(); len(selected) > 0 {
@@ -892,7 +892,7 @@ func (m Model) closeSelectedIssue() (tea.Model, tea.Cmd) {
 			var lastErr error
 			for _, iss := range issues {
 				if iss.Status != data.StatusClosed {
-					if err := data.CloseIssue(iss.ID); err != nil {
+					if err := data.CloseIssue(m.store, iss.ID); err != nil {
 						lastErr = err
 					}
 				}
@@ -914,12 +914,12 @@ func (m Model) closeSelectedIssue() (tea.Model, tea.Cmd) {
 	}
 	issueID := issue.ID
 	return m, func() tea.Msg {
-		err := data.CloseIssue(issueID)
+		err := data.CloseIssue(m.store, issueID)
 		return mutateResultMsg{issueID: issueID, action: "closed", err: err}
 	}
 }
 
-// setPriority runs bd update to change issue priority. Works on multi-selection if active.
+// setPriority changes issue priority. Works on multi-selection if active.
 func (m Model) setPriority(priority data.Priority) (tea.Model, tea.Cmd) {
 	// Bulk mode
 	if selected := m.parade.SelectedIssues(); len(selected) > 0 {
@@ -931,7 +931,7 @@ func (m Model) setPriority(priority data.Priority) (tea.Model, tea.Cmd) {
 			var lastErr error
 			for _, iss := range issues {
 				if iss.Priority != priority {
-					if err := data.SetPriority(iss.ID, priority); err != nil {
+					if err := data.SetPriority(m.store, iss.ID, priority); err != nil {
 						lastErr = err
 					}
 				}
@@ -954,7 +954,7 @@ func (m Model) setPriority(priority data.Priority) (tea.Model, tea.Cmd) {
 	issueID := issue.ID
 	label := fmt.Sprintf("P%d", priority)
 	return m, func() tea.Msg {
-		err := data.SetPriority(issueID, priority)
+		err := data.SetPriority(m.store, issueID, priority)
 		return mutateResultMsg{issueID: issueID, action: label, err: err}
 	}
 }

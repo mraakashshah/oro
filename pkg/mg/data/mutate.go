@@ -1,45 +1,80 @@
 package data
 
 import (
+	"context"
 	"fmt"
 	"strings"
+
+	"oro/pkg/beadstore"
 )
 
-// SetStatus runs `bd update <id> --status=<status>` to change an issue's status.
-func SetStatus(issueID string, status Status) error {
-	return execWithTimeout(timeoutShort, "bd", "update", issueID, "--status="+string(status))
-}
-
-// ClaimIssue runs `bd update <id> --claim` to atomically set assignee and status to in_progress.
-// Fails if the issue is already claimed by another agent, preventing races in multi-agent workflows.
-func ClaimIssue(issueID string) error {
-	return execWithTimeout(timeoutShort, "bd", "update", issueID, "--claim")
-}
-
-// CloseIssue runs `bd close <id>` to close an issue.
-func CloseIssue(issueID string) error {
-	return execWithTimeout(timeoutShort, "bd", "close", issueID)
-}
-
-// SetPriority runs `bd update <id> --priority=<n>` to change priority.
-func SetPriority(issueID string, priority Priority) error {
-	return execWithTimeout(timeoutShort, "bd", "update", issueID, fmt.Sprintf("--priority=%d", priority))
-}
-
-// CreateIssue runs `bd create` with the given parameters and returns the new issue ID.
-func CreateIssue(title string, issueType IssueType, priority Priority) (string, error) {
-	args := []string{
-		"create",
-		"--title=" + title,
-		"--type=" + string(issueType),
-		fmt.Sprintf("--priority=%d", priority),
+// SetStatus changes an issue's status through the bead store.
+func SetStatus(store beadstore.Store, issueID string, status Status) error {
+	if store == nil {
+		return fmt.Errorf("bead store is nil")
 	}
-	out, err := runWithTimeout(timeoutShort, "bd", args...)
+	nextStatus := string(status)
+	return store.Update(context.Background(), issueID, beadstore.UpdateParams{Status: &nextStatus})
+}
+
+// ClaimIssue marks an issue in progress and records the current user as owner.
+func ClaimIssue(store beadstore.Store, issueID string) error {
+	if store == nil {
+		return fmt.Errorf("bead store is nil")
+	}
+	ctx := context.Background()
+	bead, err := store.Show(ctx, issueID)
 	if err != nil {
-		return "", wrapExitError("bd create", err)
+		return err
 	}
-	// bd create prints the new issue ID
-	return strings.TrimSpace(string(out)), nil
+	if bead == nil {
+		return fmt.Errorf("bead %s not found", issueID)
+	}
+	owner := currentUser()
+	if owner != "" && bead.Owner != "" && !strings.EqualFold(bead.Owner, owner) {
+		return fmt.Errorf("bead %s is already claimed by %s", issueID, bead.Owner)
+	}
+	status := string(StatusInProgress)
+	return store.Update(ctx, issueID, beadstore.UpdateParams{
+		Status: &status,
+		Owner:  &owner,
+	})
+}
+
+// CloseIssue closes an issue through the bead store.
+func CloseIssue(store beadstore.Store, issueID string) error {
+	if store == nil {
+		return fmt.Errorf("bead store is nil")
+	}
+	return store.Close(context.Background(), issueID, "")
+}
+
+// SetPriority changes an issue priority through the bead store.
+func SetPriority(store beadstore.Store, issueID string, priority Priority) error {
+	if store == nil {
+		return fmt.Errorf("bead store is nil")
+	}
+	nextPriority := int(priority)
+	return store.Update(context.Background(), issueID, beadstore.UpdateParams{Priority: &nextPriority})
+}
+
+// CreateIssue creates an issue through the bead store and returns the new issue ID.
+func CreateIssue(store beadstore.Store, title string, issueType IssueType, priority Priority) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("bead store is nil")
+	}
+	bead, err := store.Create(context.Background(), beadstore.CreateParams{
+		Title:    title,
+		Type:     string(issueType),
+		Priority: int(priority),
+	})
+	if err != nil {
+		return "", err
+	}
+	if bead == nil {
+		return "", fmt.Errorf("bead store returned nil created bead")
+	}
+	return strings.TrimSpace(bead.ID), nil
 }
 
 // BranchName generates a git branch name from an issue.
