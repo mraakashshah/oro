@@ -18,8 +18,7 @@ type doltCmdConfig struct {
 	oroHome         string
 	aliveFn         func(int) bool
 	isPortUp        func(int) bool
-	startFn         func(string) (int, error) // startSharedDoltServer
-	stopFn          func(string) error        // stopDoltServer for oroHome
+	stopFn          func(string) error // stopDoltServer for oroHome
 	force           bool
 	dispatcherPIDFn func() int // returns dispatcher PID (0 = not running)
 	beadsDirs       []string   // per-project .beads directories (used by teardown)
@@ -646,35 +645,6 @@ func newDoltStartCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
-
-// runDoltStart starts the shared server or reports it's already running.
-func runDoltStart(cfg *doltCmdConfig, w io.Writer) error {
-	pidPath := filepath.Join(cfg.oroHome, "dolt-server.pid")
-	portPath := filepath.Join(cfg.oroHome, "dolt-server.port")
-
-	_, _, running := readSharedServerState(cfg, pidPath, portPath)
-	if running {
-		fmt.Fprintln(w, "shared dolt server already running")
-		return nil
-	}
-
-	pid, err := cfg.startFn(cfg.oroHome)
-	if err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return fmt.Errorf("dolt not found in PATH: %w", err)
-		}
-		return fmt.Errorf("start shared dolt server: %w", err)
-	}
-
-	if pid == 0 {
-		// Adopted existing server.
-		fmt.Fprintln(w, "shared dolt server already running")
-		return nil
-	}
-
-	fmt.Fprintf(w, "shared dolt server started (PID %d, port %d)\n", pid, SharedDoltPort)
-	return nil
 }
 
 // ---------- oro dolt stop ----------

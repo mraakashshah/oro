@@ -712,9 +712,10 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 // buildDispatcher constructs a Dispatcher with all production dependencies.
 // The caller owns the returned *sql.DB and must close it.
 // Zero-value timeouts use dispatcher/ops defaults.
-// initialWorkers sets the initial targetWorkers; maxWorkers sets the auto-scale ceiling.
-func buildDispatcher(initialWorkers, maxWorkers int, progressTimeout, reviewStallTimeout time.Duration, baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) {
-	return buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers, progressTimeout, 0, reviewStallTimeout, baseBranch, webEnabled, webAddr)
+// The initial target and auto-scale ceiling both start at one worker for
+// callers that do not need timeout controls.
+func buildDispatcher(baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) {
+	return buildDispatcherWithReviewTimeouts(1, 1, 0, 0, 0, baseBranch, webEnabled, webAddr)
 }
 
 // buildDispatcherWithReviewTimeouts constructs a Dispatcher with separate

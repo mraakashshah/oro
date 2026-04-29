@@ -122,7 +122,10 @@ type workDeps struct {
 }
 
 func updateWorkBeadStatus(ctx context.Context, beads beadstore.Store, id, status string) error {
-	return beads.Update(ctx, id, beadstore.UpdateParams{Status: &status})
+	if err := beads.Update(ctx, id, beadstore.UpdateParams{Status: &status}); err != nil {
+		return fmt.Errorf("update bead %s status to %s: %w", id, status, err)
+	}
+	return nil
 }
 
 // exitError carries an exit code through the normal error return path,
@@ -503,7 +506,7 @@ func decodeLegacyBDBeadDetail(out []byte) (*protocol.Bead, error) {
 
 	var obj legacyBDBeadJSON
 	if err := json.Unmarshal(out, &obj); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode bd bead detail: %w", err)
 	}
 	detail := obj.toProtocol()
 	completeLegacyBDDetail(&detail)
@@ -684,18 +687,9 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, 
 			BaseBranch:         targetBranch,
 			ProjectRoot:        worktree,
 		})
-		var result ops.Result
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("review interrupted: %w", ctx.Err())
-		case received, ok := <-resultCh:
-			if !ok {
-				return &exitError{
-					code: exitCodeRetries,
-					msg:  "Review failed without returning a verdict",
-				}
-			}
-			result = received
+		result, err := waitForReviewResult(ctx, resultCh)
+		if err != nil {
+			return err
 		}
 
 		switch result.Verdict {
@@ -704,54 +698,80 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, 
 			return nil
 
 		case ops.VerdictRejected:
-			rejects++
-			logStep("Review REJECTED (%d/%d): %s", rejects, maxReviewRejects, truncate(result.Feedback, 200))
-
-			if rejects >= maxReviewRejects {
-				return &exitError{
-					code: exitCodeRetries,
-					msg:  fmt.Sprintf("Review rejected %d times. Last feedback:\n%s", rejects, result.Feedback),
-				}
+			nextRejects, err := handleReviewRejection(ctx, cfg, deps, worktree, result, rejects, model, attempt, feedback, logFile)
+			if err != nil {
+				return err
 			}
-
-			// Re-execute with review feedback.
-			*model = protocol.ModelOpus
-			*attempt = rejects
-			*feedback = result.Feedback
-
-			logStep("Re-executing with review feedback (opus)...")
-			if err := spawnAndWait(ctx, cfg, deps, worktree, *model, *attempt, *feedback, logFile); err != nil {
-				return fmt.Errorf("claude re-spawn after review: %w", err)
-			}
-
-			// Re-run QG before next review (skip mutation — deferred to pre-merge).
-			logStep("Re-running quality gate (skip mutation)...")
-			passed, qgOutput, qgErr := deps.runQG(ctx, worktree, true)
-			if qgErr != nil {
-				return fmt.Errorf("quality gate error: %w", qgErr)
-			}
-			if !passed {
-				return &exitError{
-					code: exitCodeRetries,
-					msg:  fmt.Sprintf("Quality gate failed after review fix:\n%s", qgOutput),
-				}
-			}
-			logStep("Quality gate passed")
+			rejects = nextRejects
 
 		default:
-			msg := result.Feedback
-			if msg == "" {
-				msg = fmt.Sprintf("missing or unsupported verdict %q", result.Verdict)
-			}
-			if result.Err != nil {
-				msg = fmt.Sprintf("%s: %v", msg, result.Err)
-			}
-			logStep("Review failed: %s", msg)
-			return &exitError{
+			return reviewFailure(result)
+		}
+	}
+}
+
+func waitForReviewResult(ctx context.Context, resultCh <-chan ops.Result) (ops.Result, error) {
+	select {
+	case <-ctx.Done():
+		return ops.Result{}, fmt.Errorf("review interrupted: %w", ctx.Err())
+	case result, ok := <-resultCh:
+		if !ok {
+			return ops.Result{}, &exitError{
 				code: exitCodeRetries,
-				msg:  fmt.Sprintf("Review failed without approval:\n%s", msg),
+				msg:  "Review failed without returning a verdict",
 			}
 		}
+		return result, nil
+	}
+}
+
+func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, result ops.Result, rejects int, model *string, attempt *int, feedback *string, logFile *os.File) (int, error) {
+	rejects++
+	logStep("Review REJECTED (%d/%d): %s", rejects, maxReviewRejects, truncate(result.Feedback, 200))
+
+	if rejects >= maxReviewRejects {
+		return rejects, &exitError{
+			code: exitCodeRetries,
+			msg:  fmt.Sprintf("Review rejected %d times. Last feedback:\n%s", rejects, result.Feedback),
+		}
+	}
+
+	*model = protocol.ModelOpus
+	*attempt = rejects
+	*feedback = result.Feedback
+
+	logStep("Re-executing with review feedback (opus)...")
+	if err := spawnAndWait(ctx, cfg, deps, worktree, *model, *attempt, *feedback, logFile); err != nil {
+		return rejects, fmt.Errorf("claude re-spawn after review: %w", err)
+	}
+
+	logStep("Re-running quality gate (skip mutation)...")
+	passed, qgOutput, qgErr := deps.runQG(ctx, worktree, true)
+	if qgErr != nil {
+		return rejects, fmt.Errorf("quality gate error: %w", qgErr)
+	}
+	if !passed {
+		return rejects, &exitError{
+			code: exitCodeRetries,
+			msg:  fmt.Sprintf("Quality gate failed after review fix:\n%s", qgOutput),
+		}
+	}
+	logStep("Quality gate passed")
+	return rejects, nil
+}
+
+func reviewFailure(result ops.Result) error {
+	msg := result.Feedback
+	if msg == "" {
+		msg = fmt.Sprintf("missing or unsupported verdict %q", result.Verdict)
+	}
+	if result.Err != nil {
+		msg = fmt.Sprintf("%s: %v", msg, result.Err)
+	}
+	logStep("Review failed: %s", msg)
+	return &exitError{
+		code: exitCodeRetries,
+		msg:  fmt.Sprintf("Review failed without approval:\n%s", msg),
 	}
 }
 
@@ -780,7 +800,7 @@ var logOut io.Writer = os.Stderr //nolint:gochecknoglobals // package-level writ
 
 // logStep prints a status line to logOut (stderr + optional log file).
 func logStep(format string, args ...any) {
-	fmt.Fprintf(logOut, format+"\n", args...)
+	fmt.Fprintf(logOut, format+"\n", args...) //nolint:gosec // logStep is only called with internal format strings.
 }
 
 // modelShort returns a human-friendly model name.

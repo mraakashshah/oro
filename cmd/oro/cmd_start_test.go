@@ -745,7 +745,7 @@ func TestStartBaseBranchFlag(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		d, db, err := buildDispatcher(1, 1, 0, 0, "feature-base", false, "")
+		d, db, err := buildDispatcher("feature-base", false, "")
 		if err != nil {
 			t.Fatalf("buildDispatcher: %v", err)
 		}
@@ -799,7 +799,7 @@ func TestStartWebFlags(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		d, db, err := buildDispatcher(1, 1, 0, 0, "", true, ":9955")
+		d, db, err := buildDispatcher("", true, ":9955")
 		if err != nil {
 			t.Fatalf("buildDispatcher: %v", err)
 		}
@@ -903,7 +903,7 @@ func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
 	}
 
 	// buildDispatcher should call migrateGlobalDBs, copying global state.db.
-	d, db, err := buildDispatcher(1, 1, 0, 0, "", false, "")
+	d, db, err := buildDispatcher("", false, "")
 	if err != nil {
 		t.Fatalf("buildDispatcher: %v", err)
 	}
@@ -948,7 +948,7 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.opsSpawn, wantOps)
 		}
 
-		d, db, err := buildDispatcher(1, 1, 0, 0, "", false, "")
+		d, db, err := buildDispatcher("", false, "")
 		if err != nil {
 			t.Fatalf("buildDispatcher: %v", err)
 		}
@@ -978,7 +978,7 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.opsSpawn, wantOps)
 		}
 
-		d, db, err := buildDispatcher(1, 1, 0, 0, "", false, "")
+		d, db, err := buildDispatcher("", false, "")
 		if err != nil {
 			t.Fatalf("buildDispatcher: %v", err)
 		}

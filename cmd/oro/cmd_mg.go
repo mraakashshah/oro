@@ -208,13 +208,13 @@ func findProjectDir(dir string) string {
 func openMgStore(projectDir string) (beadstore.Store, error) {
 	oroHome, err := resolveOroHome()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve oro home: %w", err)
 	}
 	stateBase := oroHome
 	if os.Getenv("ORO_DB_PATH") == "" {
 		project, err := readProjectNameForSource(projectDir, oroHome)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read project name: %w", err)
 		}
 		if project != "" {
 			stateBase = filepath.Join(oroHome, "projects", project)
@@ -222,9 +222,13 @@ func openMgStore(projectDir string) (beadstore.Store, error) {
 	}
 	stateDBPath := resolvePathWithEnv("ORO_DB_PATH", stateBase, "state.db")
 	if _, err := os.Stat(stateDBPath); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stat state db %s: %w", stateDBPath, err)
 	}
-	return beadstore.OpenSQLiteStore(context.Background(), stateDBPath)
+	store, err := beadstore.OpenSQLiteStore(context.Background(), stateDBPath)
+	if err != nil {
+		return nil, fmt.Errorf("open mg state db %s: %w", stateDBPath, err)
+	}
+	return store, nil
 }
 
 func readProjectNameForSource(projectDir, oroHome string) (string, error) {
@@ -232,9 +236,9 @@ func readProjectNameForSource(projectDir, oroHome string) (string, error) {
 		return v, nil
 	}
 	configPath := filepath.Join(projectDir, ".oro", "config.yaml")
-	data, err := os.ReadFile(configPath) //nolint:gosec // projectDir is discovered from cwd walk.
+	configData, err := os.ReadFile(configPath) //nolint:gosec // projectDir is discovered from cwd walk.
 	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
+		for _, line := range strings.Split(string(configData), "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "project:") {
 				return strings.TrimSpace(strings.TrimPrefix(line, "project:")), nil
@@ -243,7 +247,7 @@ func readProjectNameForSource(projectDir, oroHome string) (string, error) {
 		return "", nil
 	}
 	if err != nil && !os.IsNotExist(err) {
-		return "", err
+		return "", fmt.Errorf("read project config %s: %w", configPath, err)
 	}
 
 	hash, err := projectHash(projectDir)
@@ -254,7 +258,7 @@ func readProjectNameForSource(projectDir, oroHome string) (string, error) {
 	if _, err := os.Stat(stealthConfig); err == nil {
 		return "s-" + hash, nil
 	} else if err != nil && !os.IsNotExist(err) {
-		return "", err
+		return "", fmt.Errorf("stat stealth config %s: %w", stealthConfig, err)
 	}
 	return "", nil
 }

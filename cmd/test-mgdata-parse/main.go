@@ -1,3 +1,4 @@
+// Command test-mgdata-parse validates mg data parser input from stdin.
 package main
 
 import (
@@ -21,7 +22,7 @@ func run(r io.Reader) error {
 		return fmt.Errorf("read stdin: %w", err)
 	}
 	if _, err := data.ParseIssuesJSON(out, ""); err != nil {
-		return err
+		return fmt.Errorf("parse mg data issues: %w", err)
 	}
 	return nil
 }
