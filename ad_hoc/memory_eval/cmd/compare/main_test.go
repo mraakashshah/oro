@@ -3,13 +3,68 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestCompareMissingApprovalMarkerIncludesCorpusPath(t *testing.T) {
+	dir := t.TempDir()
+	corpusPath := filepath.Join(dir, "unapproved_corpus.jsonl")
+	if err := os.WriteFile(corpusPath, []byte("# source: fixture\n"), 0o600); err != nil {
+		t.Fatalf("write corpus: %v", err)
+	}
+
+	stderr := captureStderr(t, func() {
+		code := run([]string{
+			"--corpus", corpusPath,
+			"--anchors", "testdata/corpus_anchors.jsonl",
+		})
+		if code != 3 {
+			t.Errorf("exit code = %d, want 3", code)
+		}
+	})
+
+	if !strings.Contains(stderr, corpusPath) {
+		t.Fatalf("stderr %q does not include corpus path %q", stderr, corpusPath)
+	}
+	if !strings.Contains(stderr, "missing") || !strings.Contains(stderr, "# APPROVED") {
+		t.Fatalf("stderr %q does not describe the missing approval marker", stderr)
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStderr := os.Stderr
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stderr: %v", err)
+	}
+	os.Stderr = writeEnd
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	fn()
+
+	if err := writeEnd.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	data, err := io.ReadAll(readEnd)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if err := readEnd.Close(); err != nil {
+		t.Fatalf("close stderr reader: %v", err)
+	}
+	return string(data)
+}
 
 func TestCompareFastCompletesUnder30s(t *testing.T) {
 	dir := t.TempDir()

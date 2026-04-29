@@ -159,7 +159,8 @@ func runEval(opts cliOptions) int {
 		return 3
 	}
 	if !ok {
-		fmt.Fprintln(os.Stderr, "error: corpus is missing \"# APPROVED\" marker")
+		//nolint:gosec // corpus path is printed intentionally for operator diagnostics.
+		fmt.Fprintln(os.Stderr, "error: corpus", strconv.Quote(opts.corpusPath), "is missing \"# APPROVED\" marker")
 		return 3
 	}
 
