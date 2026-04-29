@@ -82,9 +82,9 @@ func TestCompareFastCompletesUnder30s(t *testing.T) {
 	if elapsed >= 30*time.Second {
 		t.Errorf("--fast took %v, want < 30s", elapsed)
 	}
-	// With unlabeled corpus all MRR = 0 → gate passes.
-	if code != 0 {
-		t.Errorf("exit code = %d, want 0 (gate should pass with all-zero MRR)", code)
+	// With unlabeled corpus all MRR = 0, so the zero-baseline gate policy fails.
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 (gate should fail with all-zero MRR)", code)
 	}
 	if _, err := os.Stat(reportPath); err != nil {
 		t.Errorf("eval_report.yaml not written: %v", err)
@@ -92,7 +92,7 @@ func TestCompareFastCompletesUnder30s(t *testing.T) {
 }
 
 func TestCompareExitCodeReflectsGate(t *testing.T) {
-	t.Run("gate_pass_exits_0_and_writes_yaml", func(t *testing.T) {
+	t.Run("zero_baseline_exits_1_and_writes_yaml_with_pass_false", func(t *testing.T) {
 		dir := t.TempDir()
 		reportPath := filepath.Join(dir, "eval_report.yaml")
 
@@ -102,8 +102,8 @@ func TestCompareExitCodeReflectsGate(t *testing.T) {
 			"--report-out", reportPath,
 		})
 
-		if code != 0 {
-			t.Errorf("exit code = %d, want 0", code)
+		if code != 1 {
+			t.Errorf("exit code = %d, want 1", code)
 		}
 		data, err := os.ReadFile(reportPath)
 		if err != nil {
@@ -113,8 +113,11 @@ func TestCompareExitCodeReflectsGate(t *testing.T) {
 		if err := yaml.Unmarshal(data, &report); err != nil {
 			t.Fatalf("unmarshal report: %v", err)
 		}
-		if !report.Gate.Pass {
-			t.Errorf("gate.pass = false, want true")
+		if report.Gate.Pass {
+			t.Errorf("gate.pass = true, want false")
+		}
+		if !strings.Contains(report.Gate.Reason, "baseline MRR is 0") {
+			t.Errorf("gate.reason = %q, want zero-baseline failure", report.Gate.Reason)
 		}
 	})
 
