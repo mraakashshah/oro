@@ -317,6 +317,51 @@ func TestSQLiteStoreOpenAppliesDBUtilPragmas(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreOptionsAndGeneratedID(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+
+	var fetched bool
+	store := NewSQLiteStore(db, WithMemoryFetcher(func(_ context.Context, tags []string, description string, maxTokens int) (string, error) {
+		fetched = true
+		if !reflect.DeepEqual(tags, []string{"generated"}) || description != "created without explicit id" || maxTokens != 2000 {
+			t.Fatalf("memory fetch inputs tags=%#v description=%q maxTokens=%d", tags, description, maxTokens)
+		}
+		return "memory for generated bead", nil
+	}))
+
+	if _, err := store.Create(ctx, CreateParams{}); err == nil {
+		t.Fatal("Create blank title succeeded, want error")
+	}
+
+	created, err := store.Create(ctx, CreateParams{
+		Title:       "generated",
+		Description: "created without explicit id",
+		Tags:        []string{"generated"},
+	})
+	if err != nil {
+		t.Fatalf("Create generated id: %v", err)
+	}
+	if !strings.HasPrefix(created.ID, "oro-") || len(created.ID) <= len("oro-") {
+		t.Fatalf("generated ID = %q, want nonempty oro-* id", created.ID)
+	}
+
+	shown, err := store.Show(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Show generated id: %v", err)
+	}
+	if !fetched || shown.Memory != "memory for generated bead" {
+		t.Fatalf("Show memory fetched=%v memory=%q, want callback result", fetched, shown.Memory)
+	}
+}
+
 func TestRaceSQLiteStoreConcurrentReadyShowClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -692,6 +737,88 @@ func TestParityReadyTracksOpenAndClosedDependencies(t *testing.T) {
 	}
 }
 
+func TestParityDependencyAndStatusAPIs(t *testing.T) {
+	for _, fixture := range newDependencyFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-open", Title: "open"})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-progress", Title: "progress"})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-closed", Title: "closed"})
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-dependent", Title: "dependent"})
+
+			status := "in_progress"
+			if err := fixture.store.Update(ctx, "oro-progress", UpdateParams{Status: &status}); err != nil {
+				t.Fatalf("Update progress: %v", err)
+			}
+			if err := fixture.store.Close(ctx, "oro-closed", "done"); err != nil {
+				t.Fatalf("Close closed: %v", err)
+			}
+
+			counts, err := fixture.store.CountByStatus(ctx)
+			if err != nil {
+				t.Fatalf("CountByStatus: %v", err)
+			}
+			if counts != (StatusCounts{Open: 2, InProgress: 1, Closed: 1}) {
+				t.Fatalf("CountByStatus = %#v, want 2 open, 1 in_progress, 1 closed", counts)
+			}
+
+			if err := fixture.store.AddDependency(ctx, "oro-dependent", "oro-open", ""); err != nil {
+				t.Fatalf("AddDependency default type: %v", err)
+			}
+			if err := fixture.store.AddDependency(ctx, "oro-dependent", "oro-open", ""); err != nil {
+				t.Fatalf("AddDependency duplicate default type: %v", err)
+			}
+			if err := fixture.store.AddDependency(ctx, "oro-dependent", "oro-progress", "conditional-blocks"); err != nil {
+				t.Fatalf("AddDependency conditional type: %v", err)
+			}
+
+			deps, err := fixture.store.ListDependencies(ctx, "oro-dependent")
+			if err != nil {
+				t.Fatalf("ListDependencies: %v", err)
+			}
+			if got, want := dependencySummary(deps), "oro-open:blocks,oro-progress:conditional-blocks"; got != want {
+				t.Fatalf("dependencies = %s, want %s", got, want)
+			}
+
+			deps[0].Type = "mutated"
+			deps, err = fixture.store.ListDependencies(ctx, "oro-dependent")
+			if err != nil {
+				t.Fatalf("ListDependencies after mutation: %v", err)
+			}
+			if got, want := dependencySummary(deps), "oro-open:blocks,oro-progress:conditional-blocks"; got != want {
+				t.Fatalf("dependencies after caller mutation = %s, want %s", got, want)
+			}
+
+			if err := fixture.store.RemoveDependency(ctx, "oro-dependent", "oro-open"); err != nil {
+				t.Fatalf("RemoveDependency: %v", err)
+			}
+			deps, err = fixture.store.ListDependencies(ctx, "oro-dependent")
+			if err != nil {
+				t.Fatalf("ListDependencies after remove: %v", err)
+			}
+			if got, want := dependencySummary(deps), "oro-progress:conditional-blocks"; got != want {
+				t.Fatalf("dependencies after remove = %s, want %s", got, want)
+			}
+
+			if err := fixture.store.AddDependency(ctx, "oro-dependent", "oro-dependent", "blocks"); err == nil {
+				t.Fatal("AddDependency self-reference succeeded, want error")
+			}
+			if err := fixture.store.AddDependency(ctx, "oro-missing", "oro-open", "blocks"); !isBeadNotFound(err) {
+				t.Fatalf("AddDependency missing dependent error = %v, want BeadNotFoundError", err)
+			}
+			if err := fixture.store.AddDependency(ctx, "oro-dependent", "oro-missing", "blocks"); !isBeadNotFound(err) {
+				t.Fatalf("AddDependency missing blocker error = %v, want BeadNotFoundError", err)
+			}
+			if err := fixture.store.RemoveDependency(ctx, "oro-missing", "oro-open"); !isBeadNotFound(err) {
+				t.Fatalf("RemoveDependency missing error = %v, want BeadNotFoundError", err)
+			}
+			if _, err := fixture.store.ListDependencies(ctx, "oro-missing"); !isBeadNotFound(err) {
+				t.Fatalf("ListDependencies missing error = %v, want BeadNotFoundError", err)
+			}
+		})
+	}
+}
+
 func TestParityUpdateValidatesStatusTransitions(t *testing.T) {
 	validStatuses := []string{"in_progress", "closed", "open"}
 	invalidStatuses := []string{"ready", "blocked", "deferred", ""}
@@ -720,6 +847,32 @@ func TestParityUpdateValidatesStatusTransitions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadOrInitShadowStartedAt(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	startedAt, err := LoadOrInitShadowStartedAt(ctx, store.db)
+	if err != nil {
+		t.Fatalf("LoadOrInitShadowStartedAt initialize: %v", err)
+	}
+	if startedAt.IsZero() {
+		t.Fatal("LoadOrInitShadowStartedAt returned zero time after initialize")
+	}
+
+	reloaded, err := LoadOrInitShadowStartedAt(ctx, store.db)
+	if err != nil {
+		t.Fatalf("LoadOrInitShadowStartedAt reload: %v", err)
+	}
+	if !reloaded.Equal(startedAt) {
+		t.Fatalf("reload time = %s, want initialized time %s", reloaded.Format(time.RFC3339Nano), startedAt.Format(time.RFC3339Nano))
+	}
+
+	mustExec(t, store.db, `UPDATE kv_store SET value='not-a-time' WHERE key=?`, shadowStartedAtKey)
+	if _, err := LoadOrInitShadowStartedAt(ctx, store.db); err == nil {
+		t.Fatal("LoadOrInitShadowStartedAt invalid persisted time succeeded, want error")
 	}
 }
 
@@ -846,6 +999,14 @@ type parityStore interface {
 	Undefer(context.Context, string) error
 }
 
+type dependencyStore interface {
+	Store
+	AddDependency(context.Context, string, string, string) error
+	RemoveDependency(context.Context, string, string) error
+	ListDependencies(context.Context, string) ([]protocol.Dependency, error)
+	CountByStatus(context.Context) (StatusCounts, error)
+}
+
 type parityFixture struct {
 	name          string
 	store         parityStore
@@ -928,6 +1089,19 @@ func newParityFixtures(t *testing.T) []parityFixture {
 	}
 }
 
+type dependencyFixture struct {
+	name  string
+	store dependencyStore
+}
+
+func newDependencyFixtures(t *testing.T) []dependencyFixture {
+	t.Helper()
+	return []dependencyFixture{
+		{name: "sqlite", store: newTestSQLiteStore(t)},
+		{name: "fake", store: NewFakeStore()},
+	}
+}
+
 func mustCreateStore(t *testing.T, store Store, params CreateParams) {
 	t.Helper()
 	if _, err := store.Create(context.Background(), params); err != nil {
@@ -987,6 +1161,15 @@ func sortedIDs(beads []protocol.Bead) string {
 	values := make([]string, 0, len(beads))
 	for _, bead := range beads {
 		values = append(values, bead.ID)
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
+}
+
+func dependencySummary(deps []protocol.Dependency) string {
+	values := make([]string, 0, len(deps))
+	for _, dep := range deps {
+		values = append(values, dep.DependsOnID+":"+dep.Type)
 	}
 	sort.Strings(values)
 	return strings.Join(values, ",")

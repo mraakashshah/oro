@@ -91,3 +91,16 @@ func TestExtractAC(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractAndStripACPublicWrapper(t *testing.T) {
+	ac, desc, err := ExtractAndStripAC("Build the thing.\n\n## Acceptance Criteria\n- [ ] It works")
+	if err != nil {
+		t.Fatalf("ExtractAndStripAC: %v", err)
+	}
+	if ac != "- [ ] It works" {
+		t.Fatalf("ExtractAndStripAC ac = %q, want extracted criteria", ac)
+	}
+	if desc != "Build the thing." {
+		t.Fatalf("ExtractAndStripAC desc = %q, want stripped description", desc)
+	}
+}

@@ -3,6 +3,8 @@ package beadstore_test
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -93,6 +95,25 @@ func TestShadowStore(t *testing.T) {
 		}
 		if events[0].Operation != "Ready" || events[0].Kind != beadstore.ShadowDivergenceReal {
 			t.Fatalf("divergence = %#v, want real Ready divergence", events[0])
+		}
+	})
+
+	t.Run("logs reported divergences when configured", func(t *testing.T) {
+		ctx := context.Background()
+		updatedAt := "2026-04-28T09:00:00Z"
+		store := beadstore.NewShadowStore(
+			beadstore.NewFakeStore(protocol.Bead{ID: "same", Title: "primary", Status: "open", UpdatedAt: updatedAt}),
+			beadstore.NewFakeStore(protocol.Bead{ID: "same", Title: "secondary", Status: "open", UpdatedAt: updatedAt}),
+			beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+			beadstore.WithShadowLogger(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		)
+
+		ready, err := store.Ready(ctx)
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(ready) != 1 || ready[0].Title != "primary" {
+			t.Fatalf("Ready returned %#v, want primary result", ready)
 		}
 	})
 
@@ -296,6 +317,21 @@ func TestShadowStore(t *testing.T) {
 		}
 		if primaryBead.DeferUntil != "" {
 			t.Fatalf("primary DeferUntil after Undefer = %q, want empty", primaryBead.DeferUntil)
+		}
+	})
+
+	t.Run("defer operations require primary support", func(t *testing.T) {
+		ctx := context.Background()
+		store := beadstore.NewShadowStore(
+			errorStore{Store: beadstore.NewFakeStore()},
+			beadstore.NewFakeStore(),
+		)
+
+		if err := store.Defer(ctx, "later", "2026-04-28T15:00:00Z"); err == nil {
+			t.Fatal("Defer with unsupported primary succeeded, want error")
+		}
+		if err := store.Undefer(ctx, "later"); err == nil {
+			t.Fatal("Undefer with unsupported primary succeeded, want error")
 		}
 	})
 }

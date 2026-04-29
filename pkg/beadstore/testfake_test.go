@@ -356,6 +356,59 @@ func TestFakeStore(t *testing.T) {
 			t.Fatalf("Export IDs = %v, want [a b]", got)
 		}
 	})
+
+	t.Run("test helpers clone state and track closed order", func(t *testing.T) {
+		ctx := context.Background()
+		store := beadstore.NewFakeStore(protocol.Bead{ID: "fake-1", Title: "seeded id", Status: "open"})
+
+		created, err := store.Create(ctx, beadstore.CreateParams{Title: "generated id skips collision"})
+		if err != nil {
+			t.Fatalf("Create generated id: %v", err)
+		}
+		if created.ID != "fake-2" {
+			t.Fatalf("generated fake ID = %q, want fake-2", created.ID)
+		}
+
+		input := []protocol.Bead{{
+			ID:     "defaulted",
+			Title:  "defaulted",
+			Tags:   []string{"initial"},
+			Labels: []string{"label"},
+		}}
+		store.SetBeads(input)
+		input[0].Title = "mutated input"
+		input[0].Tags[0] = "mutated"
+
+		shown, err := store.Show(ctx, "defaulted")
+		if err != nil {
+			t.Fatalf("Show defaulted: %v", err)
+		}
+		if shown.Status != "open" || shown.AcceptanceCriteria != "Test: auto | Assert: PASS" {
+			t.Fatalf("SetBeads defaulted bead = %#v", shown)
+		}
+		if shown.Title != "defaulted" || shown.Tags[0] != "initial" {
+			t.Fatalf("SetBeads stored aliased input: %#v", shown)
+		}
+
+		if _, err := store.Create(ctx, beadstore.CreateParams{ID: "second", Title: "second"}); err != nil {
+			t.Fatalf("Create second: %v", err)
+		}
+		if err := store.Close(ctx, "defaulted", "done"); err != nil {
+			t.Fatalf("Close defaulted: %v", err)
+		}
+		if err := store.Close(ctx, "second", "done"); err != nil {
+			t.Fatalf("Close second: %v", err)
+		}
+
+		closed := store.ClosedBeads()
+		if !reflect.DeepEqual(closed, []string{"defaulted", "second"}) {
+			t.Fatalf("ClosedBeads = %v, want close order", closed)
+		}
+		closed[0] = "mutated"
+		if got := store.ClosedBeads(); !reflect.DeepEqual(got, []string{"defaulted", "second"}) {
+			t.Fatalf("ClosedBeads returned aliased slice: %v", got)
+		}
+	})
 }
 
 func assertIDs(t *testing.T, beads []protocol.Bead, want []string) {
