@@ -1,3 +1,4 @@
+//nolint:testpackage // These tests exercise SQLiteStore internals such as pragmas, callbacks, and rollback state.
 package beadstore
 
 import (
