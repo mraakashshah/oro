@@ -38,7 +38,7 @@ _EMPTY_STATE: dict = {"beads": [], "last_create_ts": 0.0}
 
 def _is_bead_create_command(command: str) -> bool:
     """Return True when command creates a bead through the current CLI."""
-    return command.startswith("oro bead create") or command.startswith("bd create")
+    return command.startswith("oro bead create")
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ def handle_post_tool_use(
 ) -> None:
     """Handle a PostToolUse hook event with batched notification logic.
 
-    1. If role != architect or tool != Bash or command != oro bead create → skip.
+    1. If role != architect or tool != Bash or command != oro bead create -> skip.
     2. Load state, check if window expired (should_notify).
        - If yes: flush accumulated beads as a single grouped notification,
          clear state, then record the new bead.
