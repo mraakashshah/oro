@@ -1,13 +1,13 @@
 package beadstore
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"reflect"
 	"time"
@@ -206,7 +206,7 @@ func (s *ShadowStore) Undefer(ctx context.Context, id string) error {
 func (s *ShadowStore) HasChildren(ctx context.Context, epicID string) (bool, error) {
 	primary, primaryErr := s.primary.HasChildren(ctx, epicID)
 	secondary, secondaryErr := s.secondary.HasChildren(ctx, epicID)
-	s.compareValue("HasChildren", primary, primaryErr, secondary, secondaryErr)
+	s.compareAggregateValue(ctx, "HasChildren", epicID, primary, primaryErr, secondary, secondaryErr)
 	return primary, primaryErr
 }
 
@@ -214,7 +214,7 @@ func (s *ShadowStore) HasChildren(ctx context.Context, epicID string) (bool, err
 func (s *ShadowStore) AllChildrenClosed(ctx context.Context, epicID string) (bool, error) {
 	primary, primaryErr := s.primary.AllChildrenClosed(ctx, epicID)
 	secondary, secondaryErr := s.secondary.AllChildrenClosed(ctx, epicID)
-	s.compareValue("AllChildrenClosed", primary, primaryErr, secondary, secondaryErr)
+	s.compareAggregateValue(ctx, "AllChildrenClosed", epicID, primary, primaryErr, secondary, secondaryErr)
 	return primary, primaryErr
 }
 
@@ -290,6 +290,48 @@ func (s *ShadowStore) compareValue(op string, primary any, primaryErr error, sec
 	if !reflect.DeepEqual(primary, secondary) {
 		s.report(op, ShadowDivergenceReal, "read result mismatch")
 	}
+}
+
+func (s *ShadowStore) compareAggregateValue(ctx context.Context, op, parentID string, primary bool, primaryErr error, secondary bool, secondaryErr error) {
+	if primaryErr != nil || secondaryErr != nil {
+		s.report(op, ShadowDivergenceReal, "read error")
+		return
+	}
+	if primary == secondary {
+		return
+	}
+
+	primaryChildren, primaryChildrenErr := s.childrenForAggregate(ctx, s.primary, parentID)
+	secondaryChildren, secondaryChildrenErr := s.childrenForAggregate(ctx, s.secondary, parentID)
+	if primaryChildrenErr != nil || secondaryChildrenErr != nil {
+		s.report(op, ShadowDivergenceReal, "aggregate child read error")
+		return
+	}
+	kind := ClassifyShadowDivergenceWithResolver(primaryChildren, secondaryChildren, s.shadowStartedAt, func(id string) (*protocol.Bead, error) {
+		return s.primary.Show(ctx, id)
+	})
+	if kind == ShadowDivergenceNone {
+		kind = ShadowDivergenceReal
+	}
+	s.report(op, kind, "aggregate result mismatch")
+}
+
+func (s *ShadowStore) childrenForAggregate(ctx context.Context, store Store, parentID string) ([]protocol.Bead, error) {
+	data, err := store.Export(ctx)
+	if err != nil {
+		return nil, err
+	}
+	beads, err := decodeExportBeads(data)
+	if err != nil {
+		return nil, err
+	}
+	children := make([]protocol.Bead, 0)
+	for _, bead := range beads {
+		if bead.Epic == parentID {
+			children = append(children, bead)
+		}
+	}
+	return children, nil
 }
 
 func (s *ShadowStore) report(op string, kind ShadowDivergenceKind, reason string) {
@@ -424,17 +466,43 @@ func parseShadowTime(raw string) (time.Time, bool) {
 }
 
 func decodeExportBeads(data []byte) ([]protocol.Bead, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	var rawArray []shadowBeadJSON
+	if err := json.Unmarshal(data, &rawArray); err == nil {
+		beads := make([]protocol.Bead, len(rawArray))
+		for i, bead := range rawArray {
+			beads[i] = bead.toProtocol()
+		}
+		return beads, nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	var beads []protocol.Bead
-	for scanner.Scan() {
-		var bead protocol.Bead
-		if err := json.Unmarshal(scanner.Bytes(), &bead); err != nil {
+	for {
+		var raw shadowBeadJSON
+		if err := decoder.Decode(&raw); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return nil, fmt.Errorf("decode exported bead: %w", err)
 		}
-		beads = append(beads, bead)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan exported beads: %w", err)
+		beads = append(beads, raw.toProtocol())
 	}
 	return beads, nil
+}
+
+type shadowBeadJSON struct {
+	protocol.Bead
+	ParentID string `json:"parent_id"`
+	TypeName string `json:"type"`
+}
+
+func (b shadowBeadJSON) toProtocol() protocol.Bead {
+	bead := b.Bead
+	if bead.Epic == "" {
+		bead.Epic = b.ParentID
+	}
+	if bead.Type == "" {
+		bead.Type = b.TypeName
+	}
+	return bead
 }

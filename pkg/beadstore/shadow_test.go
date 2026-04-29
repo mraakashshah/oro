@@ -462,11 +462,226 @@ func TestShadowDivergenceRequiresPrimaryNewerTimestampForDrift(t *testing.T) {
 	}
 }
 
+func TestShadowAggregateDivergence(t *testing.T) {
+	t.Run("classifies aggregate mismatches from child updates during shadow as drift", func(t *testing.T) {
+		ctx := context.Background()
+		allClosedPrimary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "epic", Title: "primary epic", Status: "open", UpdatedAt: "2026-04-28T11:00:00Z"},
+			protocol.Bead{ID: "child", Title: "closed child", Status: "closed", Epic: "epic", UpdatedAt: "2026-04-28T11:00:00Z"},
+		)
+		allClosedSecondary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "epic", Title: "secondary epic", Status: "open", UpdatedAt: "2026-04-28T09:00:00Z"},
+			protocol.Bead{ID: "child", Title: "open child", Status: "open", Epic: "epic", UpdatedAt: "2026-04-28T09:00:00Z"},
+		)
+		var events []beadstore.ShadowDivergence
+		allClosedStore := beadstore.NewShadowStore(
+			allClosedPrimary,
+			allClosedSecondary,
+			beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		got, err := allClosedStore.AllChildrenClosed(ctx, "epic")
+		if err != nil {
+			t.Fatalf("AllChildrenClosed: %v", err)
+		}
+		if !got {
+			t.Fatalf("AllChildrenClosed returned false, want primary true")
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "AllChildrenClosed" || events[0].Kind != beadstore.ShadowDivergenceDrift {
+			t.Fatalf("divergence = %#v, want AllChildrenClosed drift", events[0])
+		}
+
+		hasChildrenPrimary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "epic", Title: "primary epic", Status: "open", UpdatedAt: "2026-04-28T09:00:00Z"},
+			protocol.Bead{ID: "child", Title: "moved child", Status: "open", Epic: "other", UpdatedAt: "2026-04-28T11:00:00Z"},
+		)
+		hasChildrenSecondary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "epic", Title: "secondary epic", Status: "open", UpdatedAt: "2026-04-28T09:00:00Z"},
+			protocol.Bead{ID: "child", Title: "open child", Status: "open", Epic: "epic", UpdatedAt: "2026-04-28T09:00:00Z"},
+		)
+		events = nil
+		hasChildrenStore := beadstore.NewShadowStore(
+			hasChildrenPrimary,
+			hasChildrenSecondary,
+			beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		hasChildren, err := hasChildrenStore.HasChildren(ctx, "epic")
+		if err != nil {
+			t.Fatalf("HasChildren: %v", err)
+		}
+		if hasChildren {
+			t.Fatalf("HasChildren returned true, want primary false")
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "HasChildren" || events[0].Kind != beadstore.ShadowDivergenceDrift {
+			t.Fatalf("divergence = %#v, want HasChildren drift", events[0])
+		}
+	})
+
+	t.Run("decodes cli parent_id export shape for aggregate classification", func(t *testing.T) {
+		ctx := context.Background()
+		primary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "epic", Title: "primary epic", Status: "open", UpdatedAt: "2026-04-28T09:00:00Z"},
+			protocol.Bead{ID: "child", Title: "moved child", Status: "open", Epic: "other", UpdatedAt: "2026-04-28T11:00:00Z"},
+		)
+		secondary := exportOverrideStore{
+			Store: beadstore.NewFakeStore(
+				protocol.Bead{ID: "epic", Title: "secondary epic", Status: "open", UpdatedAt: "2026-04-28T09:00:00Z"},
+				protocol.Bead{ID: "child", Title: "open child", Status: "open", Epic: "epic", UpdatedAt: "2026-04-28T09:00:00Z"},
+			),
+			export: []byte(`{"id":"epic","title":"secondary epic","status":"open","updated_at":"2026-04-28T09:00:00Z"}` + "\n" +
+				`{"id":"child","title":"open child","status":"open","parent_id":"epic","updated_at":"2026-04-28T09:00:00Z"}` + "\n"),
+		}
+		var events []beadstore.ShadowDivergence
+		store := beadstore.NewShadowStore(
+			primary,
+			secondary,
+			beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		got, err := store.HasChildren(ctx, "epic")
+		if err != nil {
+			t.Fatalf("HasChildren: %v", err)
+		}
+		if got {
+			t.Fatalf("HasChildren returned true, want primary false")
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "HasChildren" || events[0].Kind != beadstore.ShadowDivergenceDrift {
+			t.Fatalf("divergence = %#v, want HasChildren drift", events[0])
+		}
+	})
+
+	t.Run("parent timestamp alone does not make aggregate mismatch drift", func(t *testing.T) {
+		ctx := context.Background()
+		primary := beadstore.NewFakeStore(protocol.Bead{ID: "epic", Title: "primary epic", Status: "open", UpdatedAt: "2026-04-28T11:00:00Z"})
+		secondary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "epic", Title: "secondary epic", Status: "open", UpdatedAt: "2026-04-28T09:00:00Z"},
+			protocol.Bead{ID: "child", Title: "stale child", Status: "open", Epic: "epic", UpdatedAt: "2026-04-28T09:00:00Z"},
+		)
+		var events []beadstore.ShadowDivergence
+		store := beadstore.NewShadowStore(
+			primary,
+			secondary,
+			beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		got, err := store.HasChildren(ctx, "epic")
+		if err != nil {
+			t.Fatalf("HasChildren: %v", err)
+		}
+		if got {
+			t.Fatalf("HasChildren returned true, want primary false")
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "HasChildren" || events[0].Kind != beadstore.ShadowDivergenceReal {
+			t.Fatalf("divergence = %#v, want HasChildren real divergence", events[0])
+		}
+	})
+
+	t.Run("classifies stable aggregate mismatches as real", func(t *testing.T) {
+		ctx := context.Background()
+		primary := beadstore.NewFakeStore(protocol.Bead{ID: "epic", Title: "primary epic", Status: "open", UpdatedAt: "2026-04-28T09:00:00Z"})
+		secondary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "epic", Title: "secondary epic", Status: "open", UpdatedAt: "2026-04-28T09:00:00Z"},
+			protocol.Bead{ID: "child", Title: "stale child", Status: "open", Epic: "epic", UpdatedAt: "2026-04-28T09:00:00Z"},
+		)
+		var events []beadstore.ShadowDivergence
+		store := beadstore.NewShadowStore(
+			primary,
+			secondary,
+			beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		got, err := store.HasChildren(ctx, "epic")
+		if err != nil {
+			t.Fatalf("HasChildren: %v", err)
+		}
+		if got {
+			t.Fatalf("HasChildren returned true, want primary false")
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "HasChildren" || events[0].Kind != beadstore.ShadowDivergenceReal {
+			t.Fatalf("divergence = %#v, want HasChildren real divergence", events[0])
+		}
+	})
+
+	t.Run("aggregate read errors remain real and primary error wins", func(t *testing.T) {
+		ctx := context.Background()
+		primaryErr := errors.New("primary aggregate failed")
+		secondary := beadstore.NewFakeStore(protocol.Bead{ID: "epic", Title: "epic", Status: "open"})
+		var events []beadstore.ShadowDivergence
+		store := beadstore.NewShadowStore(
+			errorStore{hasChildrenErr: primaryErr},
+			secondary,
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		got, err := store.HasChildren(ctx, "epic")
+		if !errors.Is(err, primaryErr) {
+			t.Fatalf("HasChildren error = %v, want primary error %v", err, primaryErr)
+		}
+		if got {
+			t.Fatalf("HasChildren returned true, want primary false")
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "HasChildren" || events[0].Kind != beadstore.ShadowDivergenceReal {
+			t.Fatalf("divergence = %#v, want HasChildren real read error", events[0])
+		}
+	})
+}
+
 type errorStore struct {
 	beadstore.Store
-	readyErr error
+	readyErr       error
+	hasChildrenErr error
 }
 
 func (s errorStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
 	return nil, s.readyErr
+}
+
+func (s errorStore) HasChildren(ctx context.Context, epicID string) (bool, error) {
+	return false, s.hasChildrenErr
+}
+
+type exportOverrideStore struct {
+	beadstore.Store
+	export    []byte
+	exportErr error
+}
+
+func (s exportOverrideStore) Export(ctx context.Context) ([]byte, error) {
+	return s.export, s.exportErr
 }
