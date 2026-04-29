@@ -1,9 +1,80 @@
 package data
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
+
+func TestParentIDAccessor(t *testing.T) {
+	t.Run("explicit parent field wins", func(t *testing.T) {
+		iss := Issue{ID: "mg-007.2.1", ParentIDValue: "oro-parent"}
+
+		if got := iss.ParentID(); got != "oro-parent" {
+			t.Fatalf("ParentID() = %q, want explicit parent field", got)
+		}
+	})
+
+	t.Run("dotted id fallback", func(t *testing.T) {
+		iss := Issue{ID: "mg-007.2.1"}
+
+		if got := iss.ParentID(); got != "mg-007.2" {
+			t.Fatalf("ParentID() = %q, want dotted ID parent", got)
+		}
+	})
+
+	t.Run("field and method do not collide", func(t *testing.T) {
+		iss := Issue{ID: "mg-007.2", ParentIDValue: "mg-root"}
+
+		if iss.ParentIDValue != "mg-root" {
+			t.Fatalf("ParentIDValue = %q, want stored field", iss.ParentIDValue)
+		}
+		if got := iss.ParentID(); got != "mg-root" {
+			t.Fatalf("ParentID() = %q, want accessor to read stored field", got)
+		}
+	})
+
+	t.Run("oro native json type and parent id", func(t *testing.T) {
+		var iss Issue
+		if err := json.Unmarshal([]byte(`{"id":"oro-child","title":"Child","status":"open","priority":2,"type":"task","parent_id":"oro-parent"}`), &iss); err != nil {
+			t.Fatalf("UnmarshalJSON() error = %v", err)
+		}
+		if iss.IssueType != TypeTask {
+			t.Fatalf("IssueType = %q, want %q", iss.IssueType, TypeTask)
+		}
+		if got := iss.ParentID(); got != "oro-parent" {
+			t.Fatalf("ParentID() = %q, want explicit JSON parent", got)
+		}
+
+		got, err := json.Marshal(iss)
+		if err != nil {
+			t.Fatalf("MarshalJSON() error = %v", err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(got, &fields); err != nil {
+			t.Fatalf("marshaled JSON did not decode: %v", err)
+		}
+		if _, ok := fields["type"]; !ok {
+			t.Fatalf("marshaled JSON missing type field: %s", got)
+		}
+		if _, ok := fields["issue_type"]; ok {
+			t.Fatalf("marshaled JSON included legacy issue_type field: %s", got)
+		}
+		if _, ok := fields["parent_id"]; !ok {
+			t.Fatalf("marshaled JSON missing parent_id field: %s", got)
+		}
+	})
+
+	t.Run("legacy issue type input", func(t *testing.T) {
+		var iss Issue
+		if err := json.Unmarshal([]byte(`{"id":"legacy-child","title":"Child","status":"open","priority":2,"issue_type":"bug"}`), &iss); err != nil {
+			t.Fatalf("UnmarshalJSON() error = %v", err)
+		}
+		if iss.IssueType != TypeBug {
+			t.Fatalf("IssueType = %q, want legacy issue_type value %q", iss.IssueType, TypeBug)
+		}
+	})
+}
 
 func TestParentID(t *testing.T) {
 	tests := []struct {

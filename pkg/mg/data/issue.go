@@ -95,7 +95,8 @@ type Issue struct {
 	Description        string                 `json:"description,omitempty"`
 	Status             Status                 `json:"status"`
 	Priority           Priority               `json:"priority"`
-	IssueType          IssueType              `json:"issue_type"`
+	IssueType          IssueType              `json:"type"`
+	ParentIDValue      string                 `json:"parent_id,omitempty"`
 	Owner              string                 `json:"owner,omitempty"`
 	Assignee           string                 `json:"assignee,omitempty"`
 	CreatedAt          time.Time              `json:"created_at"`
@@ -125,15 +126,15 @@ func (i *Issue) UnmarshalJSON(data []byte) error {
 	type issueAlias Issue
 	aux := struct {
 		*issueAlias
-		OroType string `json:"type"`
+		LegacyIssueType string `json:"issue_type"`
 	}{
 		issueAlias: (*issueAlias)(i),
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	if i.IssueType == "" && aux.OroType != "" {
-		i.IssueType = IssueType(aux.OroType)
+	if i.IssueType == "" && aux.LegacyIssueType != "" {
+		i.IssueType = IssueType(aux.LegacyIssueType)
 	}
 	return nil
 }
@@ -282,9 +283,12 @@ func PriorityName(p Priority) string {
 	}
 }
 
-// ParentID returns the parent issue ID based on dot-separated hierarchy.
+// ParentID returns the explicit parent issue ID, falling back to dot-separated hierarchy.
 // "mg-007.2.1" → "mg-007.2", "mg-007" → "".
 func (i *Issue) ParentID() string {
+	if i.ParentIDValue != "" {
+		return i.ParentIDValue
+	}
 	idx := strings.LastIndex(i.ID, ".")
 	if idx < 0 {
 		return ""
