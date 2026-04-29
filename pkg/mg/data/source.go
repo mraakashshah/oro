@@ -110,9 +110,6 @@ func bdListArgs() []string {
 
 // FetchActiveIssues fetches only non-closed issues. Used by the poll loop.
 func FetchActiveIssues(store beadstore.Store) ([]Issue, error) {
-	if store == nil {
-		return nil, fmt.Errorf("bead store is nil")
-	}
 	issues, err := FetchIssues(store)
 	if err != nil {
 		return nil, err
@@ -341,21 +338,6 @@ type BeadsContext struct {
 	BdVersion    string `json:"bd_version"`
 }
 
-// FetchContext runs `bd context --json` and returns workspace identity info.
-//
-//oro:testonly
-func FetchContext() (*BeadsContext, error) {
-	out, err := runWithTimeout(timeoutShort, "bd", "context", "--json")
-	if err != nil {
-		return nil, wrapExitError("bd context", err)
-	}
-	var ctx BeadsContext
-	if err := json.Unmarshal(out, &ctx); err != nil {
-		return nil, fmt.Errorf("bd context parse: %w", err)
-	}
-	return &ctx, nil
-}
-
 func validateIssuePrefixes(issues []Issue, expectedPrefix string) error {
 	expectedPrefix = strings.TrimSpace(expectedPrefix)
 	if expectedPrefix == "" || len(issues) == 0 {
@@ -391,28 +373,10 @@ func validateIssuePrefixes(issues []Issue, expectedPrefix string) error {
 
 func issuePrefixFromID(id string) string {
 	prefix, _, ok := strings.Cut(strings.TrimSpace(id), "-")
-	if !ok || prefix == "" {
+	if !ok {
 		return ""
 	}
 	return prefix
-}
-
-// FetchCurrentIssueIDCLI runs `bd show --current --json` and returns the active issue ID.
-// Returns ("", nil) if no current issue exists (bd exits non-zero).
-//
-//oro:testonly
-func FetchCurrentIssueIDCLI() (string, error) {
-	out, err := runWithTimeout(timeoutShort, "bd", "show", "--current", "--json")
-	if err != nil {
-		return "", nil // bd exits non-zero when no current issue — not an error
-	}
-	var result struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(out, &result); err != nil {
-		return "", fmt.Errorf("bd show --current parse: %w", err)
-	}
-	return result.ID, nil
 }
 
 // DoctorDiagnostic represents a single finding from `bd doctor --agent --json`.

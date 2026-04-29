@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,6 +24,11 @@ func TestSourceLabelJSONL(t *testing.T) {
 			name: "JSONL with path",
 			src:  Source{Mode: SourceJSONL, Path: "/foo/.beads/issues.jsonl"},
 			want: "issues.jsonl",
+		},
+		{
+			name: "JSONL with custom path",
+			src:  Source{Mode: SourceJSONL, Path: "/foo/custom-export.jsonl"},
+			want: "custom-export.jsonl",
 		},
 		{
 			name: "JSONL empty path",
@@ -83,6 +89,19 @@ func TestCheckBdVersionUnparseable(t *testing.T) {
 	}
 }
 
+func TestCheckBdVersionIgnoresOutputWhenCommandFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	bdPath := filepath.Join(tmpDir, "bd")
+	if err := os.WriteFile(bdPath, []byte("#!/bin/sh\necho 'bd version 0.59.0'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpDir)
+
+	if got := CheckBdVersion(); got != "" {
+		t.Fatalf("CheckBdVersion() = %q, want empty warning when command exits nonzero", got)
+	}
+}
+
 func TestBdListArgs(t *testing.T) {
 	args := bdListArgs()
 	got := strings.Join(args, " ")
@@ -118,6 +137,16 @@ func TestSourceFetchActiveIssuesUsesFakeStore(t *testing.T) {
 	}
 }
 
+func TestSourceFetchActiveIssuesRejectsNilStore(t *testing.T) {
+	_, err := FetchActiveIssues(nil)
+	if err == nil {
+		t.Fatal("FetchActiveIssues(nil) error = nil, want bead store is nil")
+	}
+	if !strings.Contains(err.Error(), "bead store is nil") {
+		t.Fatalf("FetchActiveIssues(nil) error = %v, want bead store is nil", err)
+	}
+}
+
 func TestSourceFetchIssuesUsesFakeStoreExportForAllIssues(t *testing.T) {
 	store := beadstore.NewFakeStore(
 		protocol.Bead{ID: "mg-1", Title: "open task", Status: "open", Priority: 2, Type: "task", UpdatedAt: "2026-03-01T00:00:00Z"},
@@ -130,6 +159,124 @@ func TestSourceFetchIssuesUsesFakeStoreExportForAllIssues(t *testing.T) {
 	}
 	gotIDs := sourceIssueIDs(issues)
 	wantIDs := []string{"mg-1", "mg-2"}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("issue IDs = %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestSourceFetchIssuesRejectsNilStore(t *testing.T) {
+	_, err := FetchIssues(nil)
+	if err == nil {
+		t.Fatal("FetchIssues(nil) error = nil, want bead store is nil")
+	}
+	if !strings.Contains(err.Error(), "bead store is nil") {
+		t.Fatalf("FetchIssues(nil) error = %v, want bead store is nil", err)
+	}
+}
+
+func TestSourceFetchIssuesWrapsExportError(t *testing.T) {
+	store := rawExportStore{
+		FakeStore: beadstore.NewFakeStore(),
+		err:       errors.New("disk unavailable"),
+	}
+
+	_, err := FetchIssues(store)
+	if err == nil {
+		t.Fatal("FetchIssues() error = nil, want export error")
+	}
+	if !strings.Contains(err.Error(), "export beads: disk unavailable") {
+		t.Fatalf("FetchIssues() error = %v, want wrapped export error", err)
+	}
+}
+
+func TestSourceFetchIssuesRejectsInvalidExportJSONL(t *testing.T) {
+	store := rawExportStore{
+		FakeStore: beadstore.NewFakeStore(),
+		export:    []byte("{not-json}\n"),
+	}
+
+	_, err := FetchIssues(store)
+	if err == nil {
+		t.Fatal("FetchIssues() error = nil, want parse error")
+	}
+	if !strings.Contains(err.Error(), "parse bead export") {
+		t.Fatalf("FetchIssues() error = %v, want parse bead export error", err)
+	}
+}
+
+func TestSourceFetchIssuesIgnoresBlankExportLines(t *testing.T) {
+	export := "\n" +
+		`{"id":"mg-1","title":"first","status":"open","priority":1,"type":"task","updated_at":"2026-03-01T00:00:00Z"}` + "\n" +
+		"   \n" +
+		`{"id":"mg-2","title":"second","status":"closed","priority":2,"type":"bug","updated_at":"2026-03-02T00:00:00Z","closed_at":"2026-03-02T00:00:00Z"}` + "\n"
+	store := rawExportStore{
+		FakeStore: beadstore.NewFakeStore(),
+		export:    []byte(export),
+	}
+
+	issues, err := FetchIssues(store)
+	if err != nil {
+		t.Fatalf("FetchIssues() error = %v", err)
+	}
+	gotIDs := sourceIssueIDs(issues)
+	wantIDs := []string{"mg-1", "mg-2"}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("issue IDs = %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestSourceFetchRecentClosedRejectsNilStore(t *testing.T) {
+	_, err := FetchRecentClosed(nil, 5)
+	if err == nil {
+		t.Fatal("FetchRecentClosed(nil) error = nil, want bead store is nil")
+	}
+	if !strings.Contains(err.Error(), "bead store is nil") {
+		t.Fatalf("FetchRecentClosed(nil) error = %v, want bead store is nil", err)
+	}
+}
+
+func TestSourceFetchRecentClosedWrapsStoreError(t *testing.T) {
+	store := closedErrorStore{
+		FakeStore: beadstore.NewFakeStore(),
+		err:       errors.New("closed query failed"),
+	}
+
+	_, err := FetchRecentClosed(store, 5)
+	if err == nil {
+		t.Fatal("FetchRecentClosed() error = nil, want closed query error")
+	}
+	if !strings.Contains(err.Error(), "fetch closed beads: closed query failed") {
+		t.Fatalf("FetchRecentClosed() error = %v, want wrapped closed query error", err)
+	}
+}
+
+func TestSourceFetchAllClosedPropagatesFetchIssuesError(t *testing.T) {
+	store := rawExportStore{
+		FakeStore: beadstore.NewFakeStore(),
+		err:       errors.New("export unavailable"),
+	}
+
+	_, err := FetchAllClosed(store)
+	if err == nil {
+		t.Fatal("FetchAllClosed() error = nil, want fetch issues error")
+	}
+	if !strings.Contains(err.Error(), "export beads: export unavailable") {
+		t.Fatalf("FetchAllClosed() error = %v, want wrapped export error", err)
+	}
+}
+
+func TestSourceFetchAllClosedFiltersClosedIssues(t *testing.T) {
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "mg-open", Title: "open task", Status: "open", Priority: 2, Type: "task", UpdatedAt: "2026-03-01T00:00:00Z"},
+		protocol.Bead{ID: "mg-closed", Title: "closed task", Status: "closed", Priority: 1, Type: "bug", UpdatedAt: "2026-03-02T00:00:00Z", ClosedAt: "2026-03-02T00:00:00Z"},
+	)
+
+	issues, err := FetchAllClosed(store)
+	if err != nil {
+		t.Fatalf("FetchAllClosed() error = %v", err)
+	}
+	gotIDs := sourceIssueIDs(issues)
+	wantIDs := []string{"mg-closed"}
 	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
 		t.Fatalf("issue IDs = %v, want %v", gotIDs, wantIDs)
 	}
@@ -236,6 +383,62 @@ func TestParseIssuesCLIOutputAllowsExpectedAndHQPrefixes(t *testing.T) {
 	}
 }
 
+func TestParseIssuesCLIOutputRejectsWrongPrefixAlongsideHQ(t *testing.T) {
+	out := mustMarshalIssues(t, []Issue{
+		{ID: "hq-1", Title: "hq item", Status: StatusOpen, Priority: PriorityLow, IssueType: TypeTask},
+		{ID: "vv-12", Title: "wrong project", Status: StatusOpen, Priority: PriorityMedium, IssueType: TypeBug},
+	})
+
+	_, err := parseIssuesCLIOutput(out, "mg")
+	if err == nil {
+		t.Fatal("expected wrong-prefix validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), `"vv" issues`) {
+		t.Fatalf("expected wrong vv prefix only, got %v", err)
+	}
+	if strings.Contains(err.Error(), `"hq" issues`) {
+		t.Fatalf("hq prefix should be ignored, got %v", err)
+	}
+}
+
+func TestParseIssuesCLIOutputAllowsExpectedPrefixAlongsideWrongPrefix(t *testing.T) {
+	out := mustMarshalIssues(t, []Issue{
+		{ID: "mg-1", Title: "expected project", Status: StatusOpen, Priority: PriorityLow, IssueType: TypeTask},
+		{ID: "vv-12", Title: "wrong project", Status: StatusOpen, Priority: PriorityMedium, IssueType: TypeBug},
+	})
+
+	if _, err := parseIssuesCLIOutput(out, "mg"); err != nil {
+		t.Fatalf("parseIssuesCLIOutput() error = %v, want nil when expected prefix is present", err)
+	}
+}
+
+func TestParseIssuesCLIOutputAllowsMultipleWrongPrefixes(t *testing.T) {
+	out := mustMarshalIssues(t, []Issue{
+		{ID: "vv-12", Title: "wrong project", Status: StatusOpen, Priority: PriorityMedium, IssueType: TypeBug},
+		{ID: "zz-99", Title: "another project", Status: StatusOpen, Priority: PriorityLow, IssueType: TypeTask},
+	})
+
+	if _, err := parseIssuesCLIOutput(out, "mg"); err != nil {
+		t.Fatalf("parseIssuesCLIOutput() error = %v, want nil for ambiguous multi-prefix output", err)
+	}
+}
+
+func TestParseIssuesCLIOutputIgnoresIDsWithoutPrefixes(t *testing.T) {
+	out := mustMarshalIssues(t, []Issue{
+		{ID: "orphan", Title: "legacy id", Status: StatusOpen, Priority: PriorityLow, IssueType: TypeTask},
+		{ID: "-missing", Title: "empty prefix", Status: StatusOpen, Priority: PriorityLow, IssueType: TypeTask},
+		{ID: "vv-12", Title: "wrong project", Status: StatusOpen, Priority: PriorityMedium, IssueType: TypeBug},
+	})
+
+	_, err := parseIssuesCLIOutput(out, "mg")
+	if err == nil {
+		t.Fatal("expected single wrong-prefix validation error, got nil")
+	}
+	if !strings.Contains(err.Error(), `"vv" issues`) {
+		t.Fatalf("expected wrong vv prefix only, got %v", err)
+	}
+}
+
 func TestSourceUsesProjectPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -274,6 +477,43 @@ func TestSourceUsesProjectPaths(t *testing.T) {
 	}
 }
 
+func TestIssuePrefixFromID(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{
+			name: "standard bead id",
+			id:   "oro-123",
+			want: "oro",
+		},
+		{
+			name: "trim whitespace",
+			id:   "  mg-456  ",
+			want: "mg",
+		},
+		{
+			name: "missing dash",
+			id:   "orphan",
+			want: "",
+		},
+		{
+			name: "empty prefix",
+			id:   "-123",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := issuePrefixFromID(tt.id); got != tt.want {
+				t.Fatalf("issuePrefixFromID(%q) = %q, want %q", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
 func sourceIssueIDs(issues []Issue) []string {
 	ids := make([]string, len(issues))
 	for i, issue := range issues {
@@ -294,8 +534,18 @@ func mustMarshalIssues(t *testing.T, issues []Issue) []byte {
 type rawExportStore struct {
 	*beadstore.FakeStore
 	export []byte
+	err    error
 }
 
 func (s rawExportStore) Export(ctx context.Context) ([]byte, error) {
-	return s.export, nil
+	return s.export, s.err
+}
+
+type closedErrorStore struct {
+	*beadstore.FakeStore
+	err error
+}
+
+func (s closedErrorStore) Closed(ctx context.Context, limit int) ([]protocol.Bead, error) {
+	return nil, s.err
 }
