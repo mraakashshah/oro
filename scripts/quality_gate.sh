@@ -531,7 +531,7 @@ lane_other() {
 		header "SHELL: FORMAT + LINT"
 		parallel_checks \
 			"shfmt" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shfmt -d {} +" \
-			"shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"
+			"shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"
 		pass=$((pass + TIER_PASS))
 		fail=$((fail + TIER_FAIL))
 	fi
