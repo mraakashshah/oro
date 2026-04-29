@@ -127,7 +127,7 @@ One atomic commit per bead. Include implementation and tests together.
 
 ```bash
 git add <relevant files>
-git commit -m "<type>(<scope>): <desc> (bd-<id>)"
+git commit -m "<type>(<scope>): <desc> (<bead-id>)"
 ```
 
 ### Step 9: CLOSE

@@ -91,7 +91,7 @@ tmux capture-pane -t oro:1 -p 2>&1 | tail -20
 2. **Stuck workers:** Report which worker and bead are stuck, how long, and what the last log entry was.
 3. **Crashes/panics:** Capture the full error from the tmux pane. Report immediately — don't wait for next cycle.
 4. **Bead progress:** Track which beads are assigned, which complete (watch for `merged` events), and which are stuck. Report progress deltas between cycles.
-5. **P0 bugs:** If you observe a new systemic issue (not a one-off), create a bead: `bd create --title="P0: <description>" --type=bug --priority=0`
+5. **P0 bugs:** If you observe a new systemic issue (not a one-off), create a bead: `oro bead create --title="P0: <description>" --type=bug --priority=0`
 
 ### Reporting
 

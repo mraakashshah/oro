@@ -159,17 +159,17 @@ tmux split-window -t oro-watch "oro-dash"
 ```
 
 ### Dashboard data sources
-The dashboard reads from the same `state.db` and `bd` CLI — so all observation techniques above feed it too.
+The dashboard reads from the same `state.db` and `beads` CLI — so all observation techniques above feed it too.
 
 ## 5. Bead Behavior
 
 ### Query bead state
 ```bash
 # Current in-progress beads
-bd list --status=in_progress
+oro bead list --status=in_progress
 
 # Detailed bead view
-bd show <bead-id>
+oro bead show <bead-id>
 
 ```
 

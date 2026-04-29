@@ -16,9 +16,9 @@ Execute one bead at a time through a full TDD cycle. Each closed bead produces o
 ### Step 1: Pick
 
 ```bash
-bd ready                              # find unblocked work
-bd show <id>                          # review details + acceptance
-bd update <id> --status in_progress   # claim it
+oro bead ready                              # find unblocked work
+oro bead show <id>                          # review details + acceptance
+oro bead update <id> --status in_progress   # claim it
 ```
 
 ### Step 2: Parse Acceptance
@@ -104,7 +104,7 @@ One commit per bead. Include implementation and tests together.
 
 ```bash
 git add <relevant files>
-git commit -m "<type>(<scope>): <desc> (bd-<id>)"
+git commit -m "<type>(<scope>): <desc> (oro-<id>)"
 ```
 
 **On feature branches:** Intermediate commits during TDD are fine. Squash to one atomic commit when closing the bead.
@@ -114,7 +114,7 @@ git commit -m "<type>(<scope>): <desc> (bd-<id>)"
 ### Step 8: Close
 
 ```bash
-bd close <id> --reason "Tests pass, gate clean. Commit: <hash>"
+oro bead close <id> --reason "Tests pass, gate clean. Commit: <hash>"
 ```
 
 ### Step 9: Context Checkpoint
@@ -135,9 +135,9 @@ Green → return to Step 1. Otherwise → handoff via `create-handoff` skill.
 If during Step 3 the bead needs multiple unrelated tests:
 
 1. **STOP** — do not continue implementation
-2. Promote: `bd update <id> --type epic`
-3. Create children: `bd create --type task --acceptance "..." --estimate <min>`, then `bd update <child> --parent <id>` + `bd dep add <id> <child>` for each piece (do NOT use `bd create --parent` — it adds a backwards dependency)
-4. Wire dependencies: `bd dep add` where ordering matters
+2. Promote: `oro bead update <id> --type epic`
+3. Create children: `oro bead create --type task --acceptance "..." --estimate <min>`, then `oro bead update <child> --parent <id>` + `oro bead dep add <id> <child>` for each piece (do NOT use `oro bead create --parent` — it adds a backwards dependency)
+4. Wire dependencies: `oro bead dep add` where ordering matters
 5. Return to Step 1 with the first child bead
 
 **Too-large signals:**
@@ -153,8 +153,8 @@ If during Step 3 the bead needs multiple unrelated tests:
 | Test won't fail (Step 3) | You're testing existing behavior. Fix the test. |
 | Test errors instead of fails | Fix the error (imports, syntax), re-run until proper failure. |
 | Quality gate fails (Step 6) | Fix issues. Don't skip the gate. |
-| Blocked by another bead | `bd ready` to find a different bead. Note the blocker. |
-| Acceptance criteria unclear | STOP. `bd update <id> --notes "Blocked: unclear acceptance"`. Ask user. |
+| Blocked by another bead | `oro bead ready` to find a different bead. Note the blocker. |
+| Acceptance criteria unclear | STOP. `oro bead update <id> --notes "Blocked: unclear acceptance"`. Ask user. |
 
 ## Red Flags
 

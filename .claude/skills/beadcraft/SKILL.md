@@ -105,7 +105,7 @@ If spec is vague: ask the user to clarify before decomposing. Don't guess.
 ### Step 2: Create Epic Bead
 
 ```bash
-bd create "<feature name>" --type epic \
+oro bead create "<feature name>" --type epic \
   --acceptance "All child beads closed. Full quality gate passes." \
   --description "<goal from spec>"
 ```
@@ -116,7 +116,7 @@ For each seam/component, create a task bead. Apply the full Bead Anatomy format:
 
 ```bash
 # Create the child (no --parent flag — it adds a backwards dependency)
-bd create "<specific task>" \
+oro bead create "<specific task>" \
   --type task \
   --acceptance "Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
 Read: <file1>:<Symbol1>, <file2>:<Symbol2>
@@ -125,11 +125,11 @@ Edges: <error conditions if applicable>" \
   --estimate <minutes>
 
 # Set parentage and wire epic to depend on child (epic closes when children finish)
-bd update <child-id> --parent <epic-id>
-bd dep add <epic-id> <child-id>
+oro bead update <child-id> --parent <epic-id>
+oro bead dep add <epic-id> <child-id>
 ```
 
-**WARNING:** Do NOT use `bd create --parent`. It auto-adds a dependency from child → parent, blocking children until the epic closes. This is backwards and causes deadlocks.
+**WARNING:** Do NOT use `oro bead create --parent`. It auto-adds a dependency from child → parent, blocking children until the epic closes. This is backwards and causes deadlocks.
 
 ### Step 4: Rule of Five (Apply to Each Bead)
 
@@ -139,14 +139,14 @@ Run all 5 passes (P1-P5) on every bead before emitting. Revise until all pass.
 
 Check every task bead against size heuristics. If too large, decompose:
 
-1. Promote: `bd update <id> --type epic`
-2. Create child tasks (no `--parent`), then `bd update <child> --parent <id>` + `bd dep add <id> <child>`
+1. Promote: `oro bead update <id> --type epic`
+2. Create child tasks (no `--parent`), then `oro bead update <child> --parent <id>` + `oro bead dep add <id> <child>`
 3. Re-apply size test + Rule of Five to children
 
 ### Step 6: Wire Dependencies
 
 ```bash
-bd dep add <later-bead> <earlier-bead>
+oro bead dep add <later-bead> <earlier-bead>
 ```
 
 Common patterns:
@@ -158,7 +158,7 @@ Common patterns:
 ### Step 7: Present Tree
 
 ```bash
-bd show <epic-id>
+oro bead show <epic-id>
 ```
 
 Present the full tree: epic → children, dependencies, estimates, acceptance criteria.
@@ -170,26 +170,26 @@ Proceed to execution automatically. Do not ask for confirmation — the user inv
 Spec: "Add JWT authentication to the API"
 
 ```
-Epic: Implement JWT authentication (bd-001)
-├── Task: Define auth types and interfaces (bd-002, 5min)
+Epic: Implement JWT authentication (oro-001)
+├── Task: Define auth types and interfaces (oro-002, 5min)
 │   Test: internal/auth/types_test.go:TestTokenClaims | Cmd: go test ./internal/auth/... | Assert: Claims struct has required fields
 │   Read: internal/auth/types.go:TokenClaims
 │   Signature: type TokenClaims struct { Sub string; Exp time.Time; Iss string }
-├── Task: Implement token generation (bd-003, 7min, depends: bd-002)
+├── Task: Implement token generation (oro-003, 7min, depends: oro-002)
 │   Test: internal/auth/token_test.go:TestGenerateToken | Cmd: go test ./internal/auth/... -run TestGenerateToken | Assert: returns signed JWT with correct claims
 │   Read: internal/auth/token.go:GenerateToken, internal/auth/types.go:TokenClaims
 │   Signature: func GenerateToken(claims TokenClaims, secret []byte) (string, error)
 │   Edges: nil secret → ErrNoSecret; expired claims → ErrExpiredClaims
-├── Task: Implement token validation (bd-004, 7min, depends: bd-002)
+├── Task: Implement token validation (oro-004, 7min, depends: oro-002)
 │   Test: internal/auth/token_test.go:TestValidateToken | Cmd: go test ./internal/auth/... -run TestValidateToken | Assert: validates signature, expiry, issuer
 │   Read: internal/auth/token.go:ValidateToken
 │   Signature: func ValidateToken(tokenStr string, secret []byte) (*TokenClaims, error)
 │   Edges: invalid signature → ErrInvalidSignature; expired → ErrExpired
-├── Task: Add auth middleware (bd-005, 7min, depends: bd-003, bd-004)
+├── Task: Add auth middleware (oro-005, 7min, depends: oro-003, oro-004)
 │   Test: internal/middleware/auth_test.go:TestAuthMiddleware | Cmd: go test ./internal/middleware/... | Assert: rejects invalid tokens with 401, passes valid tokens
 │   Read: internal/middleware/auth.go:AuthMiddleware, internal/auth/token.go:ValidateToken
 │   Signature: func AuthMiddleware(secret []byte) func(http.Handler) http.Handler
-└── Task: Wire middleware to routes (bd-006, 5min, depends: bd-005)
+└── Task: Wire middleware to routes (oro-006, 5min, depends: oro-005)
     Test: internal/api/routes_test.go:TestProtectedRoutes | Cmd: go test ./internal/api/... | Assert: protected endpoints require valid JWT
     Read: internal/api/routes.go:SetupRoutes
 ```
@@ -214,7 +214,7 @@ Write the full Bead Anatomy:
 - Title (single-purpose, imperative)
 - Acceptance with all fields (Test, Cmd, Assert, Read, Signature, Edges)
 - Estimate
-- Dependencies (check `bd list` for related work)
+- Dependencies (check `oro bead list` for related work)
 
 ### Step 3: Rule of Five
 
@@ -227,14 +227,14 @@ If too large → switch to Decompose mode.
 ### Step 5: Create
 
 ```bash
-bd create "<title>" --type <type> --priority <0-4> \
+oro bead create "<title>" --type <type> --priority <0-4> \
   --acceptance "<full anatomy>" \
   --estimate <minutes>
 ```
 
 Wire dependencies if needed:
 ```bash
-bd dep add <this-bead> <depends-on>
+oro bead dep add <this-bead> <depends-on>
 ```
 
 ---
@@ -246,8 +246,8 @@ Audit existing beads for quality issues.
 ### Step 1: Gather Beads
 
 ```bash
-bd list --status=open
-bd list --status=in_progress
+oro bead list --status=open
+oro bead list --status=in_progress
 ```
 
 ### Step 2: Audit Each Bead
@@ -282,16 +282,16 @@ For each finding, suggest the fix command:
 
 ```bash
 # Add missing acceptance
-bd update <id> --acceptance "Test: ... | Cmd: ... | Assert: ..."
+oro bead update <id> --acceptance "Test: ... | Cmd: ... | Assert: ..."
 
 # Decompose oversized bead
-bd update <id> --type epic
-bd create "<child1>" --type task ...
-bd update <child1-id> --parent <id>
-bd dep add <id> <child1-id>
+oro bead update <id> --type epic
+oro bead create "<child1>" --type task ...
+oro bead update <child1-id> --parent <id>
+oro bead dep add <id> <child1-id>
 
 # Clean stale dep
-bd dep remove <id> <stale-dep>
+oro bead dep rm <id> <stale-dep>
 ```
 
 ---

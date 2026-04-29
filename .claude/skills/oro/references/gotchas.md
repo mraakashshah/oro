@@ -12,7 +12,7 @@
 ## Workers
 - Worker timeout: use `--timeout 20m` (default 15m too short for complex beads)
 - Workers at >45% context may degrade — kill proactively if stuck
-- `oro work` requires `--acceptance-criteria` to be set on the bead
+- `oro work` requires acceptance criteria to be set on the bead
 
 ## Dolt
 - **Never `rm -rf` dolt dir** — use `dolt fsck` then `dolt fsck --revive-journal-with-data-loss`
@@ -21,15 +21,15 @@
 - Shared dolt server runs on port 13307 (`~/.oro/dolt/`)
 
 ## Beads
-- `bd close` then `bd sync` then `git add -f .beads/issues.jsonl` for clean commits
-- `bd close X Y Z` supports closing multiple beads at once
-- Stale beads may reappear after `bd sync` — re-close if needed
-- **Never use `bd create --parent`** — it adds backwards dep (child blocked by epic). Use `bd update <child> --parent <epic>` + `bd dep add <epic> <child>` instead
-- **Never use `bd edit`** — it opens `$EDITOR` which agents cannot use. Use `bd update` with flags.
+- `oro bead close <id>` then export bead metadata, then `git add -f .beads/issues.jsonl` for clean commits
+- Close multiple beads one at a time; `oro bead close` accepts exactly one id.
+- Stale beads may reappear after `bead metadata export` — re-close if needed
+- **Never use `oro bead create --parent`** — it adds backwards dep (child blocked by epic). Use `oro bead update <child> --parent <epic>` + `oro bead dep add <epic> <child>` instead
+- **Never use `interactive bead editing`** — it opens `$EDITOR` which agents cannot use. Use `oro bead update` with flags.
 
 ## Shutdown
 - `oro stop` requires an interactive TTY — use `oro attach` first, then stop from there
-- Stop sequence flushes dolt (`bd dolt commit`) but intentionally leaves dolt server running (standalone `bd` commands still need it)
+- Stop sequence flushes Dolt metadata but intentionally leaves the Dolt server running for standalone bead commands.
 - Dolt server persists across sessions by design — it's managed by LaunchAgent, not the swarm lifecycle
 
 ## Dispatcher

@@ -86,12 +86,12 @@ tmux capture-pane -t oro:1 -p -S -30   # manager
 When you observe a defect:
 
 1. **Characterize**: What's the symptom? What component? Is it reproducible?
-2. **Check if known**: `bd list --status=open | grep -i "<keyword>"` — don't duplicate
+2. **Check if known**: `oro bead list --status=open | grep -i "<keyword>"` — don't duplicate
 3. **Spec it**: Use `spec` skill for systemic issues, or create a bug bead directly:
 
 ```bash
-bd create --title="Bug: <symptom>" --type=bug --priority=1
-bd update <id> --description="..." --notes="Observed: <evidence>"
+oro bead create --title="Bug: <symptom>" --type=bug --priority=1
+oro bead update <id> --description="..." --notes="Observed: <evidence>"
 ```
 
 Set clear acceptance criteria so a worker (or you) can verify the fix.
@@ -141,13 +141,13 @@ make build
 
 ## Dolt/Beads Errors During Monitoring
 
-**NEVER run `bd init --force`.** It destroys all bead history. This has happened 3 times.
+**NEVER run `force-initialization commands`.** It destroys all bead history. This has happened 3 times.
 
-When bd/dolt errors occur during observation:
+When bead database/Dolt errors occur during observation:
 
-1. `bd dolt status` → `bd dolt start` → `bd dolt test`
-2. If still broken: `bd doctor --server` → `bd doctor --fix`
-3. If still broken: `bd doctor --fix --source=jsonl`
+1. `check Dolt server status` → `restart the Dolt server` → `test Dolt connectivity`
+2. If still broken: `run bead-store server diagnostics` → `run non-destructive bead-store repair`
+3. If still broken: `rebuild from JSONL backup`
 4. If still broken: **ask the user**
 
 The dispatcher survives dolt outages — workers stay connected, only bead assignment pauses. Don't panic. Don't nuke.

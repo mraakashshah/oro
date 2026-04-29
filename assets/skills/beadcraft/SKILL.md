@@ -170,26 +170,26 @@ Proceed to execution automatically. Do not ask for confirmation — the user inv
 Spec: "Add JWT authentication to the API"
 
 ```
-Epic: Implement JWT authentication (bd-001)
-├── Task: Define auth types and interfaces (bd-002, 5min)
+Epic: Implement JWT authentication (oro-001)
+├── Task: Define auth types and interfaces (oro-002, 5min)
 │   Test: internal/auth/types_test.go:TestTokenClaims | Cmd: go test ./internal/auth/... | Assert: Claims struct has required fields
 │   Read: internal/auth/types.go:TokenClaims
 │   Signature: type TokenClaims struct { Sub string; Exp time.Time; Iss string }
-├── Task: Implement token generation (bd-003, 7min, depends: bd-002)
+├── Task: Implement token generation (oro-003, 7min, depends: oro-002)
 │   Test: internal/auth/token_test.go:TestGenerateToken | Cmd: go test ./internal/auth/... -run TestGenerateToken | Assert: returns signed JWT with correct claims
 │   Read: internal/auth/token.go:GenerateToken, internal/auth/types.go:TokenClaims
 │   Signature: func GenerateToken(claims TokenClaims, secret []byte) (string, error)
 │   Edges: nil secret → ErrNoSecret; expired claims → ErrExpiredClaims
-├── Task: Implement token validation (bd-004, 7min, depends: bd-002)
+├── Task: Implement token validation (oro-004, 7min, depends: oro-002)
 │   Test: internal/auth/token_test.go:TestValidateToken | Cmd: go test ./internal/auth/... -run TestValidateToken | Assert: validates signature, expiry, issuer
 │   Read: internal/auth/token.go:ValidateToken
 │   Signature: func ValidateToken(tokenStr string, secret []byte) (*TokenClaims, error)
 │   Edges: invalid signature → ErrInvalidSignature; expired → ErrExpired
-├── Task: Add auth middleware (bd-005, 7min, depends: bd-003, bd-004)
+├── Task: Add auth middleware (oro-005, 7min, depends: oro-003, oro-004)
 │   Test: internal/middleware/auth_test.go:TestAuthMiddleware | Cmd: go test ./internal/middleware/... | Assert: rejects invalid tokens with 401, passes valid tokens
 │   Read: internal/middleware/auth.go:AuthMiddleware, internal/auth/token.go:ValidateToken
 │   Signature: func AuthMiddleware(secret []byte) func(http.Handler) http.Handler
-└── Task: Wire middleware to routes (bd-006, 5min, depends: bd-005)
+└── Task: Wire middleware to routes (oro-006, 5min, depends: oro-005)
     Test: internal/api/routes_test.go:TestProtectedRoutes | Cmd: go test ./internal/api/... | Assert: protected endpoints require valid JWT
     Read: internal/api/routes.go:SetupRoutes
 ```

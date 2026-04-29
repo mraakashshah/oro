@@ -61,11 +61,11 @@ Stop after your very next tool call. Write a minimal handoff (goal + files modif
 ### Handoff Steps
 
 1. Close current bead if work is complete
-2. For in-progress work: `bd update <id> --notes "Partial: <what's done, what remains>"`
+2. For in-progress work: `oro bead update <id> --notes "Partial: <what's done, what remains>"`
 3. Verify remaining work exists as beads (create if needed)
 4. Use `create-handoff` skill with `beads:` section
 5. `git pull --rebase && git push`
-   - Note: The pre-commit hook automatically runs `bd sync --flush-only`, so manual sync is not needed
+   - Note: The pre-commit hook automatically runs `bead metadata export`, so manual sync is not needed
 
 ## Handoff Template Addition
 
@@ -73,10 +73,10 @@ When handing off due to context checkpoint, add `beads:` section to handoff YAML
 
 ```yaml
 beads:
-  completed: [bd-xxx, bd-yyy]
-  in_progress: [bd-zzz]
-  remaining: [bd-aaa, bd-bbb]
-  epic: bd-www
+  completed: [oro-xxx, oro-yyy]
+  in_progress: [oro-zzz]
+  remaining: [oro-aaa, oro-bbb]
+  epic: oro-www
 ```
 
 ## Red Flags

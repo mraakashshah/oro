@@ -23,9 +23,9 @@ You never talk directly to workers. The dispatcher is your only interface to the
 
 On receiving this beacon, execute the following initialization sequence:
 
-1. Run `bd stats` to get an overview of the project backlog.
-2. Run `bd ready` to list actionable (unblocked) beads.
-3. Run `bd blocked` to identify blocked work and understand dependency chains.
+1. Run `oro bead status` to get an overview of the project backlog.
+2. Run `oro bead ready` to list actionable (unblocked) beads.
+3. Run `oro bead blocked` to identify blocked work and understand dependency chains.
 4. Decide initial swarm size: `ceil(ready_beads / 2)`, capped at max 10.
 5. Run `oro directive status` to confirm the dispatcher is running.
 6. Run `oro directive scale N` to set the worker count to your chosen size.
@@ -52,14 +52,14 @@ These commands control the swarm. All connect to the dispatcher via UDS.
 
 These commands manage the work backlog.
 
-- `bd ready` — list actionable (unblocked) beads
-- `bd create` — create a new bead with title, description, and acceptance criteria
-- `bd show <id>` — display full bead details
-- `bd close <id> --reason="..."` — mark a bead as done with a completion reason
-- `bd dep add <issue> <depends-on>` — add a dependency edge between beads
-- `bd stats` — show backlog statistics (total, ready, in-progress, blocked, done)
-- `bd blocked` — list blocked beads and their blocking dependencies
-- `bd list` — list all beads with status
+- `oro bead ready` — list actionable (unblocked) beads
+- `oro bead create` — create a new bead with title, description, and acceptance criteria
+- `oro bead show <id>` — display full bead details
+- `oro bead close <id> --reason="..."` — mark a bead as done with a completion reason
+- `oro bead dep add <issue> <depends-on>` — add a dependency edge between beads
+- `oro bead status` — show backlog statistics (total, ready, in-progress, blocked, done)
+- `oro bead blocked` — list blocked beads and their blocking dependencies
+- `oro bead list` — list all beads with status
 
 ## Decomposition
 
@@ -68,7 +68,7 @@ When breaking work into beads, follow these principles:
 - **Ideal bead size**: 1 file or 1 function. A worker should complete it in a single session.
 - **Clear acceptance criteria**: every bead must have explicit, testable criteria.
 - **Independently mergeable**: each bead should produce a commit that passes all quality gates on its own.
-- **Dependency edges**: use `bd dep add` to declare ordering constraints.
+- **Dependency edges**: use `oro bead dep add` to declare ordering constraints.
 - **Split rule**: if a bead touches >3 files or has >3 acceptance criteria bullets, split it.
 - **Vertical slices preferred**: favor end-to-end slices over horizontal layers.
 
@@ -182,4 +182,3 @@ When the human requests shutdown:
 2. Wait for drain confirmation from the dispatcher (`[ORO-DISPATCH] STATUS` with 0 active workers).
 3. Run `oro stop` to shut down the dispatcher.
 4. Report final status to the human: beads completed, beads remaining, any issues encountered.
-

@@ -72,10 +72,10 @@ When handing off due to context checkpoint, add `beads:` section to handoff YAML
 
 ```yaml
 beads:
-  completed: [bd-xxx, bd-yyy]
-  in_progress: [bd-zzz]
-  remaining: [bd-aaa, bd-bbb]
-  epic: bd-www
+  completed: [oro-xxx, oro-yyy]
+  in_progress: [oro-zzz]
+  remaining: [oro-aaa, oro-bbb]
+  epic: oro-www
 ```
 
 ## Red Flags

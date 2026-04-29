@@ -28,8 +28,8 @@ Before dispatching, clean house:
 
 ```bash
 git worktree list              # check for orphaned worktrees from previous sessions
-bd ready                       # get prioritized queue
-bd list --status=in_progress   # check for stale claims
+oro bead ready                       # get prioritized queue
+oro bead list --status=in_progress   # check for stale claims
 ```
 
 Remove stale worktrees from previous sessions. Reset stale in_progress beads if the worker is gone.
@@ -47,7 +47,7 @@ Within each tier: higher priority (P0 > P1 > P2) first.
 ## Scheduling Rules
 
 - **Different files → parallel**: Launch simultaneously
-- **Same file → sequential**: Wire deps with `bd dep add`
+- **Same file → sequential**: Wire deps with `oro bead dep add`
 - **Default concurrency: 5 oro workers**
 
 ## The Pipeline
@@ -68,7 +68,7 @@ oro work <bead-id> &    # background, or use Task tool with run_in_background
 You are working in an isolated git worktree at: /absolute/path/.worktrees/<id>
 Branch: agent/<id>
 
-FIRST: bd update <id> --status=in_progress
+FIRST: oro bead update <id> --status=in_progress
 
 ## Task
 [task description]
@@ -78,7 +78,7 @@ FIRST: bd update <id> --status=in_progress
 - Run tests: go test -C /absolute/path/.worktrees/<id> ./pkg/... -race -count=1
 - Commit your work with a descriptive message before completing
 - Do NOT push, merge, or rebase
-- Close bead: bd close <id> --reason="summary"
+- Close bead: oro bead close <id> --reason="summary"
 ```
 
 **IMPORTANT:** Tell agents to use `go -C <worktree>` or absolute paths, never `cd <worktree>`. The `cd` persists in the Bash tool cwd — if the worktree is later removed, ALL subsequent bash commands fail silently.
@@ -88,8 +88,8 @@ FIRST: bd update <id> --status=in_progress
 - Run background agents with `run_in_background: true`
 - **Never poll** — trust task completion notifications
 - **Never use TaskOutput** to read full transcripts (70k+ tokens eats context)
-- **Do NOT create TaskCreate/TodoWrite entries** to track agents — they go stale after compaction. Use `bd` for persistent tracking.
-- Agent closes bead with `bd close <id>` — the bead IS the output
+- **Do NOT create TaskCreate/TodoWrite entries** to track agents — they go stale after compaction. Use `beads` for persistent tracking.
+- Agent closes bead with `oro bead close <id>` — the bead IS the output
 
 ### 3. Merge (as each worker completes)
 
@@ -179,8 +179,8 @@ Use raw Task agents instead of `oro work` when:
 
 Task agent prompt template must include:
 - Absolute worktree path
-- `bd update <id> --status=in_progress` at start
-- `bd close <id>` at end
+- `oro bead update <id> --status=in_progress` at start
+- `oro bead close <id>` at end
 - Commit instructions (do NOT push/merge/rebase)
 
 ## Common Mistakes
@@ -188,8 +188,8 @@ Task agent prompt template must include:
 | Mistake | Fix |
 |---------|-----|
 | Batch dispatch (wait for all, then merge all) | Pipeline: merge each as it finishes, backfill |
-| Not claiming beads (`in_progress`) | Worker prompt must include `bd update` at start |
-| Dispatching overlapping file scopes | Same file = sequential deps via `bd dep add` |
+| Not claiming beads (`in_progress`) | Worker prompt must include `oro bead update` at start |
+| Dispatching overlapping file scopes | Same file = sequential deps via `oro bead dep add` |
 | Using TaskOutput to read transcripts | Trust notifications. Read bead, not transcript. |
 | Using tools between worktree remove and merge complete | Complete the 7-step merge atomically |
 | Polling agents with sleep loops | Trust task notifications |

@@ -42,7 +42,7 @@ oro attach                                      # connect to running swarm UI
 ORO_HUMAN_CONFIRMED=1 oro stop --force          # shutdown (non-TTY safe)
 ```
 
-**What happens:** Dispatcher polls `bd ready` → assigns beads to idle workers in isolated worktrees → quality gate → ops review → merge → next bead. Workers loop until queue is empty or context exhausted (handoff to fresh worker).
+**What happens:** Dispatcher polls `oro bead ready` → assigns beads to idle workers in isolated worktrees → quality gate → ops review → merge → next bead. Workers loop until queue is empty or context exhausted (handoff to fresh worker).
 
 **When to use:** Multiple beads to execute in parallel. Say "launch oro" to trigger this.
 
@@ -73,14 +73,14 @@ The monitoring prompt should:
 
 | Signal | Meaning | Auto-fix |
 |--------|---------|----------|
-| Worker idle + queue > 0 for 2+ checks | Assignment stuck | Check `bd ready`, restart dispatcher |
+| Worker idle + queue > 0 for 2+ checks | Assignment stuck | Check `oro bead ready`, restart dispatcher |
 | Same bead on same worker for 3+ checks (>15min) | Worker stuck | Check context %, kill if >80% |
 | `REJECTED` repeating >2x for same bead | Worker can't pass review | Read rejection feedback, check if bead AC is achievable |
 | `QG_FAILED` repeating >3x for same bead | Worker can't pass QG | Check QG output, may be flaky test vs real failure |
 | `merge_failed` repeating for same bead | Stale agent branch | Clean branch: `git branch -D agent/<bead-id>`, reopen bead |
-| Bead `IN_PROGRESS` but no worker assigned | Orphaned bead | `bd update <id> --status open` to re-queue |
-| `progress_timeout` → re-assign → timeout loop | Bead merged but not closed | Check if code is on main/epic branch, `bd close <id>` manually |
-| Workers idle, queue 0, beads still open | All work done or blocked | Check `bd ready` — if empty, epic may need closing |
+| Bead `IN_PROGRESS` but no worker assigned | Orphaned bead | `oro bead update <id> --status open` to re-queue |
+| `progress_timeout` → re-assign → timeout loop | Bead merged but not closed | Check if code is on main/epic branch, `oro bead close <id>` manually |
+| Workers idle, queue 0, beads still open | All work done or blocked | Check `oro bead ready` — if empty, epic may need closing |
 
 ### When to stop monitoring
 
@@ -137,7 +137,7 @@ oro start --workers 3        # full swarm
        └─ panes 2+: workers (one per bead)
 
   Dispatcher (background daemon)
-    ├─ polls bd ready for unblocked beads
+    ├─ polls oro bead ready for unblocked beads
     ├─ assigns to idle workers in isolated worktrees
     ├─ runs quality gates (tests, lint, format)
     ├─ sends to ops review → merge to target branch
@@ -150,12 +150,12 @@ oro start --workers 3        # full swarm
 
 ```bash
 # 1. Create the epic
-bd create "Feature name" --type epic \
+oro bead create "Feature name" --type epic \
   --acceptance "All child beads closed. Full quality gate passes." \
   --description "Goal from spec"
 
 # 2. Create child tasks with full AC
-bd create "Specific task" --type task \
+oro bead create "Specific task" --type task \
   --acceptance "Test: path:FnName | Cmd: test_cmd | Assert: expected
 Read: file1.go:Symbol1, file2.go:Symbol2
 Signature: func Name(ctx, arg) (Result, error)
@@ -163,15 +163,15 @@ Edges: nil input → ErrInvalid" \
   --estimate 7
 
 # 3. Wire parent + dependency (order matters!)
-bd update <child-id> --parent <epic-id>
-bd dep add <epic-id> <child-id>
+oro bead update <child-id> --parent <epic-id>
+oro bead dep add <epic-id> <child-id>
 
 # 4. Target a branch (optional — epic children inherit)
-bd create "Feature name" --type epic \
+oro bead create "Feature name" --type epic \
   --metadata branch=feature/auth ...
 ```
 
-**Never use `bd create --parent`** — it adds a backwards dep (child blocked by epic), causing deadlocks.
+**Never use `oro bead create --parent`** — it adds a backwards dep (child blocked by epic), causing deadlocks.
 
 ### Bead Anatomy — Every bead needs:
 
@@ -203,16 +203,16 @@ go test ./pkg/worker/... -v -count=1
 
 ## Dolt/Beads Recovery
 
-**NEVER run `bd init --force`.** It destroys all bead history. This has happened 3 times.
+**NEVER run `force-initialization commands`.** It destroys all bead history. This has happened 3 times.
 
-When bd/dolt errors occur, follow this recovery ladder:
+When bead database/Dolt errors occur, follow this recovery ladder:
 
-1. `bd dolt status` — is the server running?
-2. `bd dolt start` — restart it
-3. `bd dolt test` — can we connect?
-4. `bd doctor --server` — deeper diagnosis
-5. `bd doctor --fix` — auto-repair
-6. `bd doctor --fix --source=jsonl` — rebuild from backup WITHOUT wiping
+1. `check Dolt server status` — is the server running?
+2. `restart the Dolt server` — restart it
+3. `test Dolt connectivity` — can we connect?
+4. `run bead-store server diagnostics` — deeper diagnosis
+5. `run non-destructive bead-store repair` — auto-repair
+6. `rebuild from JSONL backup` — rebuild from backup WITHOUT wiping
 
 If none of these work, **ask the user**. Never nuke the database autonomously.
 

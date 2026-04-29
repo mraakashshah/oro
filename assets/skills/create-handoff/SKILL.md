@@ -64,10 +64,10 @@ files:
   modified: [changed files]
 
 beads:
-  completed: [bd-xxx]
-  in_progress: [bd-yyy]
-  remaining: [bd-zzz]
-  epic: bd-www
+  completed: [oro-xxx]
+  in_progress: [oro-yyy]
+  remaining: [oro-zzz]
+  epic: oro-www
 ```
 
 ### 3. Field Guide

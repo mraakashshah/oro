@@ -16,12 +16,12 @@ End-to-end workflow for executing exactly one bead in isolation. Uses a git work
 ### Step 1: PICK
 
 ```bash
-bd ready                              # find unblocked work
-bd show <id>                          # review details + acceptance
-bd update <id> --status in_progress   # claim it
+oro bead ready                              # find unblocked work
+oro bead show <id>                          # review details + acceptance
+oro bead update <id> --status in_progress   # claim it
 ```
 
-If `bd ready` returns nothing: report "No beads ready." STOP.
+If `oro bead ready` returns nothing: report "No beads ready." STOP.
 
 ### Step 2: WORKTREE
 
@@ -78,7 +78,7 @@ Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
 | `Assert:` | What "pass" looks like |
 
 If acceptance is missing or vague:
-- `bd update <id> --notes "Blocked: unclear acceptance criteria"`
+- `oro bead update <id> --notes "Blocked: unclear acceptance criteria"`
 - Ask user for clarification. STOP.
 
 ### Step 4: RED
@@ -127,13 +127,13 @@ One atomic commit per bead. Include implementation and tests together.
 
 ```bash
 git add <relevant files>
-git commit -m "<type>(<scope>): <desc> (bd-<id>)"
+git commit -m "<type>(<scope>): <desc> (oro-<id>)"
 ```
 
 ### Step 9: CLOSE
 
 ```bash
-bd close <id> --reason "Tests pass, gate clean. Commit: <hash>"
+oro bead close <id> --reason "Tests pass, gate clean. Commit: <hash>"
 ```
 
 ### Step 10: MERGE — Rebase in-place
@@ -172,7 +172,7 @@ If `--ff-only` fails (main moved since rebase): re-run Step 10 rebase, then retr
 git push
 ```
 
-Note: `bd sync --flush-only` is not needed here — the pre-commit hook runs it automatically on every commit.
+Note: `bead metadata export` is not needed here — the pre-commit hook runs it automatically on every commit.
 
 If push fails (no remote): report. Commit is local.
 
@@ -187,8 +187,8 @@ git branch -d bead/<id>
 If during RED the bead needs multiple unrelated tests:
 
 1. Discard uncommitted work in worktree
-2. `bd update <id> --type epic --notes "Decomposed: needed multiple unrelated tests"`
-3. Create child beads, then `bd update <child> --parent <id>` + `bd dep add <id> <child>` (do NOT use `bd create --parent` — it adds a backwards dependency)
+2. `oro bead update <id> --type epic --notes "Decomposed: needed multiple unrelated tests"`
+3. Create child beads, then `oro bead update <child> --parent <id>` + `oro bead dep add <id> <child>` (do NOT use `oro bead create --parent` — it adds a backwards dependency)
 4. Remove worktree: `git worktree remove .worktrees/bead-<id>`
 5. Delete branch: `git checkout main && git branch -D bead/<id>`
 6. **STOP.** Report what was decomposed. Next invocation picks up a child.
@@ -199,8 +199,8 @@ If during RED the bead needs multiple unrelated tests:
 
 | Situation | Action |
 |-----------|--------|
-| `bd ready` returns nothing | Report "No beads ready." STOP. |
-| Acceptance missing/vague | `bd update <id> --notes "Blocked: unclear acceptance"`. Ask user. STOP. |
+| `oro bead ready` returns nothing | Report "No beads ready." STOP. |
+| Acceptance missing/vague | `oro bead update <id> --notes "Blocked: unclear acceptance"`. Ask user. STOP. |
 | Baseline tests fail in worktree | Report failures. Ask whether to proceed. |
 | Test won't fail (RED) | Testing existing behavior. Fix test. |
 | Quality gate fails | Fix issues. Re-run. Never skip. |

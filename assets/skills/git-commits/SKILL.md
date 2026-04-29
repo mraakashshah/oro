@@ -33,7 +33,7 @@ description: Use when creating git commits -- determines type, scope, and messag
 Infer from the primary area of change:
 
 - File path: `internal/auth/token.go` → `auth`
-- Directory: `cmd/bd/` → `bd`
+- Directory: `cmd/oro/` → `oro`
 - Feature: `.claude/skills/` → `skills`
 - Cross-cutting: omit scope — `feat: add retry logic across services`
 

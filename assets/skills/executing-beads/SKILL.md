@@ -104,7 +104,7 @@ One commit per bead. Include implementation and tests together.
 
 ```bash
 git add <relevant files>
-git commit -m "<type>(<scope>): <desc> (bd-<id>)"
+git commit -m "<type>(<scope>): <desc> (<bead-id>)"
 ```
 
 **On feature branches:** Intermediate commits during TDD are fine. Squash to one atomic commit when closing the bead.

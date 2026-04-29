@@ -83,7 +83,7 @@ Before cleanup, briefly note friction encountered during this work:
 
 If genuinely clean run, say so — but clean runs should be rare. Most work has micro-friction worth capturing.
 
-Log friction to the relevant `bd` issue notes or `~/.oro/projects/<name>/decisions&discoveries.md` if it's a broader insight.
+Log friction to the relevant `oro bead` notes or `~/.oro/projects/<name>/decisions&discoveries.md` if it's a broader insight.
 
 **Then invoke `documenting-solutions`** to capture any non-trivial problems solved during this work. This is not optional — if you learned something worth knowing next time, document it.
 
@@ -91,7 +91,7 @@ Log friction to the relevant `bd` issue notes or `~/.oro/projects/<name>/decisio
 
 After integration choice is executed:
 
-1. **File issues** — Create `bd` entries for remaining/discovered work
+1. **File issues** — Create `oro bead` entries for remaining/discovered work
 2. **Quality gates** — Run `./quality_gate.sh` (Go) or `uv run pytest && ruff check . && ruff format --check .` (Python)
 3. **Commit** — Conventional Commits format
 4. **Push** — `git pull --rebase && git push` (pre-commit hook auto-syncs beads)
