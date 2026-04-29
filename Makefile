@@ -279,8 +279,10 @@ test-vendor-sqlite-vec:
 #   - npm deps (biome, markdownlint-cli2) from package.json
 #   - golangci-lint at the pinned version via the official install script
 #   - git hooks via install-git-hooks
-#   Go tool deps (gofumpt, goimports, go-mutesting, govulncheck) are pinned in
-#   go.mod and auto-fetched on first use via `go tool <name>` — no manual install.
+#   Go tool deps (gofumpt, goimports, go-mutesting, govulncheck, shfmt) are pinned in
+#   go.mod and auto-fetched on first use via `go tool <name>`.
+#   CI pins go-arch-lint explicitly because adding it as a Go tool pulls a
+#   large unrelated transitive dependency set.
 setup: install-git-hooks
 	@echo "Installing npm dependencies..."
 	npm install

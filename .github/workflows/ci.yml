@@ -42,7 +42,7 @@ jobs:
 
       - name: go-arch-lint
         run: |
-          go install github.com/fe3dback/go-arch-lint@latest
+          go install github.com/fe3dback/go-arch-lint@v1.14.0
           go-arch-lint check --project-path .
 
       # Tier 4: Testing + Coverage (83% minimum, excluding pkg/mg TUI packages)
@@ -62,9 +62,7 @@ jobs:
 
       # Tier 5: Security
       - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+        run: go tool govulncheck ./...
 
       # Tier 6: Build
       - name: Build
