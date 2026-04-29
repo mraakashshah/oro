@@ -255,7 +255,13 @@ class TestArchitectRouterPolicy:
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     def test_bead_commands_allowed(self):
         """oro bead create/update/show pass through."""
-        for cmd in ["oro bead create --title='test'", "oro bead update oro-123", "oro bead show oro-456", "oro bead ready", "oro bead stats"]:
+        for cmd in [
+            "oro bead create --title='test'",
+            "oro bead update oro-123",
+            "oro bead show oro-456",
+            "oro bead ready",
+            "oro bead stats",
+        ]:
             hook_input = {
                 "tool_name": "Bash",
                 "tool_input": {"command": cmd},

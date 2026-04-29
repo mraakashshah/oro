@@ -80,7 +80,7 @@ func normalizeDashboardSnapshot(snapshot string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func headlessSnapshotIssues() []data.Issue {
+func headlessSnapshotIssues() []data.Issue { //nolint:funlen // fixture data is intentionally verbose
 	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	return []data.Issue{
 		{

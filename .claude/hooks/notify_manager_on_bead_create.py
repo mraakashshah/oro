@@ -38,7 +38,7 @@ _EMPTY_STATE: dict = {"beads": [], "last_create_ts": 0.0}
 
 def _is_bead_create_command(command: str) -> bool:
     """Return True when command creates a bead through the current CLI."""
-    return command.startswith("oro bead create")
+    return command.startswith("oro bead create") or command.startswith("bd create")
 
 
 # ---------------------------------------------------------------------------

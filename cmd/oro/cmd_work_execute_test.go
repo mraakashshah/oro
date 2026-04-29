@@ -98,14 +98,17 @@ func (m *fakeBeadStore) HasChildren(_ context.Context, _ string) (bool, error) {
 func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
 	return []protocol.Bead{}, nil
 }
+
 func (m *fakeBeadStore) InProgress(ctx context.Context) ([]protocol.Bead, error) {
 	m.ensureStore()
 	return m.FakeStore.InProgress(ctx)
 }
+
 func (m *fakeBeadStore) Blocked(ctx context.Context) ([]protocol.Bead, error) {
 	m.ensureStore()
 	return m.FakeStore.Blocked(ctx)
 }
+
 func (m *fakeBeadStore) Closed(ctx context.Context, limit int) ([]protocol.Bead, error) {
 	m.ensureStore()
 	return m.FakeStore.Closed(ctx, limit)
@@ -115,10 +118,12 @@ func (m *fakeBeadStore) Export(ctx context.Context) ([]byte, error) {
 	m.ensureStore()
 	return m.FakeStore.Export(ctx)
 }
+
 func (m *fakeBeadStore) Defer(ctx context.Context, id, until string) error {
 	m.ensureStore()
 	return m.FakeStore.Defer(ctx, id, until)
 }
+
 func (m *fakeBeadStore) Undefer(ctx context.Context, id string) error {
 	m.ensureStore()
 	return m.FakeStore.Undefer(ctx, id)

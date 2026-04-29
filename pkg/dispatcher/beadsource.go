@@ -18,8 +18,10 @@ type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-var _ beadstore.Store = (*CLIStore)(nil)
-var _ DeferredStore = (*CLIStore)(nil)
+var (
+	_ beadstore.Store = (*CLIStore)(nil)
+	_ DeferredStore   = (*CLIStore)(nil)
+)
 
 // CLIStore implements the bead store interfaces by shelling out to the oro CLI.
 type CLIStore struct {

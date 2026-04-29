@@ -342,6 +342,8 @@ type BeadsContext struct {
 }
 
 // FetchContext runs `bd context --json` and returns workspace identity info.
+//
+//oro:testonly
 func FetchContext() (*BeadsContext, error) {
 	out, err := runWithTimeout(timeoutShort, "bd", "context", "--json")
 	if err != nil {
@@ -397,6 +399,8 @@ func issuePrefixFromID(id string) string {
 
 // FetchCurrentIssueIDCLI runs `bd show --current --json` and returns the active issue ID.
 // Returns ("", nil) if no current issue exists (bd exits non-zero).
+//
+//oro:testonly
 func FetchCurrentIssueIDCLI() (string, error) {
 	out, err := runWithTimeout(timeoutShort, "bd", "show", "--current", "--json")
 	if err != nil {

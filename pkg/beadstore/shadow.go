@@ -55,6 +55,8 @@ func WithShadowDivergenceReporter(reporter func(ShadowDivergence)) ShadowStoreOp
 }
 
 // WithShadowLogger logs classified read divergences.
+//
+//oro:testonly
 func WithShadowLogger(logger *slog.Logger) ShadowStoreOption {
 	return func(s *ShadowStore) {
 		s.logger = logger

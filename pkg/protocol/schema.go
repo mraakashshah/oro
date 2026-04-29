@@ -264,7 +264,7 @@ WHERE b.deleted = 0
 // BeadParentTouchTriggerNames names the triggers that bump a bead's updated_at
 // after child-table mutations. Migrations can drop and recreate these around
 // verbatim imports.
-var BeadParentTouchTriggerNames = []string{
+var BeadParentTouchTriggerNames = []string{ //nolint:gochecknoglobals // static migration metadata
 	"bead_deps_touch_parent_ai",
 	"bead_deps_touch_parent_au",
 	"bead_deps_touch_parent_ad",

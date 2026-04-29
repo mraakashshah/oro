@@ -94,6 +94,8 @@ func LoadMetadataSchema(projectDir string, beadsDir ...string) *MetadataSchema {
 // from the local Beads metadata. It prefers config.yaml and falls back to the
 // conventional dolt database name in metadata.json (beads_<prefix>).
 // An optional beadsDir argument overrides the default projectDir/.beads path.
+//
+//oro:testonly
 func LoadIssuePrefix(projectDir string, beadsDir ...string) string {
 	bd := ""
 	if len(beadsDir) > 0 && beadsDir[0] != "" {

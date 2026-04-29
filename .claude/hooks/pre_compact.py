@@ -75,13 +75,9 @@ def parse_transcript(transcript_path: Path) -> dict[str, Any]:
             # Track bead status updates.
             if tool_name.lower() == "bash":
                 cmd = tool_input.get("command", "")
-                if "oro bead update" in cmd and "in_progress" in cmd:
-                    # Extract bead ID from command like "oro bead update oro-xxx --status in_progress"
-                    parts = cmd.split()
-                    for i, p in enumerate(parts):
-                        if p == "update" and i + 1 < len(parts):
-                            bead_id = parts[i + 1]
-                            break
+                parsed_bead_id = _extract_in_progress_bead_id(cmd)
+                if parsed_bead_id:
+                    bead_id = parsed_bead_id
 
         # Extract errors from tool results
         if entry.get("type") == "tool_result" or entry.get("tool_result") is not None:
@@ -113,6 +109,23 @@ def _summarize_input(tool_input: dict[str, Any]) -> str:
         return str(tool_input["file_path"])
     # Fallback: truncated JSON
     return json.dumps(tool_input)[:100]
+
+
+def _extract_in_progress_bead_id(command: str) -> str | None:
+    """Extract a bead ID from bd/oro status update commands."""
+    if "in_progress" not in command:
+        return None
+
+    parts = command.split()
+    for i, part in enumerate(parts):
+        if part != "update" or i + 1 >= len(parts):
+            continue
+        if i >= 1 and parts[i - 1 : i + 1] == ["bd", "update"]:
+            return parts[i + 1]
+        if i >= 2 and parts[i - 2 : i + 1] == ["oro", "bead", "update"]:
+            return parts[i + 1]
+
+    return None
 
 
 def save_state(session_id: str, state: dict[str, Any]) -> Path:
