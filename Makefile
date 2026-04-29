@@ -21,6 +21,7 @@ stage-assets:
 		echo "Error: assets/ directory not found. Cannot stage assets for embedding."; \
 		exit 1; \
 	fi
+	@rm -rf cmd/oro/_assets
 	@mkdir -p cmd/oro/_assets/skills cmd/oro/_assets/hooks cmd/oro/_assets/beacons cmd/oro/_assets/commands
 	@cp -r assets/skills/* cmd/oro/_assets/skills/ 2>/dev/null || true
 	@cp assets/hooks/*.py assets/hooks/*.sh cmd/oro/_assets/hooks/ 2>/dev/null || true

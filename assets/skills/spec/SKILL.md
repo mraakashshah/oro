@@ -58,7 +58,7 @@ Present bead tree. Proceed to execution automatically.
 ### Output
 
 ```
-bd show <epic-id>    ← confirmed bead tree (no design doc)
+oro bead show <epic-id>    ← confirmed bead tree (no design doc)
 ```
 
 ---
@@ -101,7 +101,7 @@ Present the bead tree. Proceed to execution automatically.
 
 ```
 docs/plans/YYYY-MM-DD-<topic>-design.md   ← committed
-bd show <epic-id>                          ← confirmed bead tree
+oro bead show <epic-id>                          ← confirmed bead tree
 ```
 
 ---

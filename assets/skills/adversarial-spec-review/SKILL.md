@@ -230,7 +230,7 @@ If FAIL:
 3. Re-run this review after fixes are applied (the Ralph Loop)
 
 If PASS:
-1. Commit the acceptance test as the epic's criterion: `bd update <epic> --acceptance-criteria "Cmd: ... | Assert: ..."`
+1. Commit the acceptance test as the epic's criterion: `oro bead update <epic> --acceptance "Cmd: ... | Assert: ..."`
 2. Proceed to execution
 
 ## Running as a Subagent

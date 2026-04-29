@@ -61,7 +61,7 @@ Stop after your very next tool call. Write a minimal handoff (goal + files modif
 ### Handoff Steps
 
 1. Close current bead if work is complete
-2. For in-progress work: `bd update <id> --notes "Partial: <what's done, what remains>"`
+2. For in-progress work: `oro bead update <id> --notes "Partial: <what's done, what remains>"`
 3. Verify remaining work exists as beads (create if needed)
 4. Use `create-handoff` skill with `beads:` section
 5. `git pull --rebase && git push`
