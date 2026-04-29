@@ -51,9 +51,10 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 }
 
 func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
-	var buf strings.Builder
+	var stdout strings.Builder
+	var logs strings.Builder
 	origLogOut := logOut
-	logOut = &buf
+	logOut = &logs
 	defer func() { logOut = origLogOut }()
 
 	bs := &mockBeadSource{showDetail: testBead()}
@@ -62,6 +63,7 @@ func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
 		beadSrc:  bs,
 		spawner:  sp,
 		repoRoot: t.TempDir(),
+		stdout:   &stdout,
 	}
 	cfg := &workConfig{
 		beadID:      "oro-test",
@@ -75,7 +77,7 @@ func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
 		t.Fatalf("executeWork dry-run-spawn: %v", err)
 	}
 
-	got := buf.String()
+	got := stdout.String()
 	if !strings.Contains(got, "oro bead create") {
 		t.Fatalf("dry-run spawn prompt missing oro bead create; got:\n%s", got)
 	}
@@ -85,9 +87,101 @@ func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
 	if !strings.Contains(got, "## Bead Tools") {
 		t.Fatalf("dry-run spawn did not print assembled worker prompt; got:\n%s", got)
 	}
+	if strings.Contains(logs.String(), "## Bead Tools") {
+		t.Fatalf("dry-run spawn prompt should not be duplicated in logs; got:\n%s", logs.String())
+	}
 	if sp.called {
 		t.Fatal("dry-run-spawn must not call the worker spawner")
 	}
+}
+
+func TestWorkDryRunSpawnCLI(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	oroScript := `#!/bin/sh
+if [ "$1" = "bead" ] && [ "$2" = "show" ] && [ "$3" = "oro-cli" ] && [ "$4" = "--json" ]; then
+  printf '{"ok":false,"error":"show","message":"bead oro-cli not found","command":"oro bead show"}\n'
+  exit 0
+fi
+printf 'unexpected oro args: %s\n' "$*" >&2
+exit 64
+`
+	if err := os.WriteFile(filepath.Join(binDir, "oro"), []byte(oroScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	bdScript := `#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "oro-cli" ] && [ "$3" = "--json" ]; then
+  printf '%s\n' '[{"id":"oro-cli","title":"CLI bead","description":"from bd\n\n## Acceptance Criteria\nCmd: true"}]'
+  exit 0
+fi
+printf 'unexpected bd args: %s\n' "$*" >&2
+exit 64
+`
+	if err := os.WriteFile(filepath.Join(binDir, "bd"), []byte(bdScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ORO_HOME", tmpDir)
+	t.Setenv("ORO_PROJECT", "")
+	t.Chdir(tmpDir)
+
+	var logs strings.Builder
+	origLogOut := logOut
+	logOut = &logs
+	defer func() { logOut = origLogOut }()
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"work", "oro-cli", "--dry-run-spawn"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	got := captureStdout(t, func() {
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("oro work dry-run-spawn: %v", err)
+		}
+	})
+
+	if !strings.Contains(got, "oro bead create") {
+		t.Fatalf("dry-run spawn prompt missing oro bead create; got:\n%s", got)
+	}
+	if !strings.Contains(got, "oro-cli") {
+		t.Fatalf("dry-run spawn prompt did not use requested bead ID; got:\n%s", got)
+	}
+	if strings.Contains(got, "bd create") {
+		t.Fatalf("dry-run spawn prompt contains legacy bd create; got:\n%s", got)
+	}
+	if strings.Contains(logs.String(), "## Bead Tools") {
+		t.Fatalf("dry-run spawn prompt should not be duplicated in logs; got:\n%s", logs.String())
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 func TestNewWorkCmd_RequiresBeadID(t *testing.T) {

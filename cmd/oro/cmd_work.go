@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -116,6 +118,7 @@ type workDeps struct {
 	hasNewWork    func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
 	runQG         func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
 	runShellCmd   func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
+	stdout        io.Writer
 }
 
 func updateWorkBeadStatus(ctx context.Context, beads beadstore.Store, id, status string) error {
@@ -177,6 +180,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 		hasNewWork:    hasCommitsAhead,
 		runQG:         worker.RunQualityGate,
 		runShellCmd:   defaultRunShellCmd,
+		stdout:        os.Stdout,
 	}, nil
 }
 
@@ -231,6 +235,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 	// Step 1: Load bead.
 	detail, err := deps.beadSrc.Show(ctx, cfg.beadID)
+	if cfg.dryRunSpawn {
+		detail, err = dryRunSpawnBeadDetail(ctx, cfg.beadID, detail, err)
+	}
 	if err != nil {
 		return &exitError{code: exitCodeBeadError, msg: fmt.Sprintf("error: %v", err)}
 	}
@@ -263,7 +270,12 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		if promptErr != nil {
 			return promptErr
 		}
-		logStep("%s", prompt)
+		out := deps.stdout
+		if out == nil {
+			out = os.Stdout
+		}
+		fmt.Fprintln(out, prompt)
+		logStep("Dry-run spawn prompt printed")
 		return nil
 	}
 
@@ -423,6 +435,114 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	return nil
+}
+
+type legacyBDBeadJSON struct {
+	protocol.Bead
+	ParentID string `json:"parent_id"`
+	TypeName string `json:"type"`
+}
+
+func (b legacyBDBeadJSON) toProtocol() protocol.Bead {
+	bead := b.Bead
+	if bead.Epic == "" {
+		bead.Epic = b.ParentID
+	}
+	if bead.Type == "" {
+		bead.Type = b.TypeName
+	}
+	return bead
+}
+
+func dryRunSpawnBeadDetail(ctx context.Context, beadID string, detail *protocol.Bead, showErr error) (*protocol.Bead, error) {
+	if showErr == nil && detail != nil && detail.ID != "" {
+		return detail, nil
+	}
+
+	legacyDetail, legacyErr := showLegacyBDBead(ctx, beadID)
+	if legacyErr == nil && legacyDetail != nil {
+		if legacyDetail.ID != beadID {
+			return nil, fmt.Errorf("bd show %s returned bead %q", beadID, legacyDetail.ID)
+		}
+		return legacyDetail, nil
+	}
+	if showErr != nil {
+		return nil, showErr
+	}
+	if detail == nil {
+		return nil, fmt.Errorf("bead %s not found", beadID)
+	}
+	return detail, nil
+}
+
+func showLegacyBDBead(ctx context.Context, beadID string) (*protocol.Bead, error) {
+	cmd := exec.CommandContext(ctx, "bd", "show", beadID, "--json") //nolint:gosec // beadID is CLI input passed as one argv
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return nil, fmt.Errorf("bd show %s: %w: %s", beadID, err, msg)
+		}
+		return nil, fmt.Errorf("bd show %s: %w", beadID, err)
+	}
+	return decodeLegacyBDBeadDetail(out)
+}
+
+func decodeLegacyBDBeadDetail(out []byte) (*protocol.Bead, error) {
+	var arr []legacyBDBeadJSON
+	if err := json.Unmarshal(out, &arr); err == nil {
+		if len(arr) == 0 {
+			return nil, nil
+		}
+		detail := arr[0].toProtocol()
+		completeLegacyBDDetail(&detail)
+		return &detail, nil
+	}
+
+	var obj legacyBDBeadJSON
+	if err := json.Unmarshal(out, &obj); err != nil {
+		return nil, err
+	}
+	detail := obj.toProtocol()
+	completeLegacyBDDetail(&detail)
+	return &detail, nil
+}
+
+func completeLegacyBDDetail(detail *protocol.Bead) {
+	if detail.AcceptanceCriteria == "" && detail.Description != "" {
+		detail.AcceptanceCriteria = extractLegacyAcceptanceCriteria(detail.Description)
+	}
+}
+
+func extractLegacyAcceptanceCriteria(desc string) string {
+	lower := strings.ToLower(desc)
+	idx := findLegacyHeaderAtLineStart(lower, "## acceptance criteria")
+	headerLen := len("## acceptance criteria")
+	if idx < 0 {
+		idx = findLegacyHeaderAtLineStart(lower, "acceptance criteria")
+		headerLen = len("acceptance criteria")
+	}
+	if idx < 0 {
+		return ""
+	}
+	body := strings.TrimLeft(desc[idx+headerLen:], "\r\n")
+	if next := strings.Index(body, "\n## "); next >= 0 {
+		body = body[:next]
+	}
+	return strings.TrimRight(body, " \t\r\n")
+}
+
+func findLegacyHeaderAtLineStart(text, header string) int {
+	if strings.HasPrefix(text, header) {
+		return 0
+	}
+	idx := strings.Index(text, "\n"+header)
+	if idx < 0 {
+		return -1
+	}
+	return idx + 1
 }
 
 func dryRunSpawnPrompt(cfg *workConfig, deps *workDeps, model string) (string, error) {
