@@ -352,7 +352,7 @@ lane_go() {
 			touched_funcs=$(qg_git diff main -- '*.go' 2>/dev/null |
 				grep -E '^(\+func |@@.*func )' |
 				sed -E 's/.*func[[:space:]]+(\([^)]*\)[[:space:]]+)?([A-Za-z0-9_]+).*/\2/' |
-				grep -v '^$' | sort -u | paste -sd'|' || true)
+				grep -v '^$' | sort -u | paste -sd'|' - || true)
 			if [ -n "$touched_funcs" ]; then
 				match_pattern="($touched_funcs)"
 				echo "Limiting mutations to touched functions: $touched_funcs"
