@@ -230,17 +230,7 @@ func (s *FakeStore) Update(ctx context.Context, id string, params UpdateParams) 
 	}
 	changed := false
 	if params.Status != nil {
-		bead.Status = *params.Status
-		switch *params.Status {
-		case "open":
-			bead.DeferUntil = ""
-			bead.ClosedAt = ""
-			bead.CloseReason = ""
-		case "closed":
-			if bead.ClosedAt == "" {
-				bead.ClosedAt = nowString()
-			}
-		}
+		applyStatusUpdate(&bead, *params.Status)
 		changed = true
 	}
 	if params.Priority != nil {
@@ -279,6 +269,20 @@ func (s *FakeStore) Update(ctx context.Context, id string, params UpdateParams) 
 	return nil
 }
 
+func applyStatusUpdate(bead *protocol.Bead, status string) {
+	bead.Status = status
+	switch status {
+	case "open":
+		bead.DeferUntil = ""
+		bead.ClosedAt = ""
+		bead.CloseReason = ""
+	case "closed":
+		if bead.ClosedAt == "" {
+			bead.ClosedAt = nowString()
+		}
+	}
+}
+
 // Close marks a bead closed with the supplied reason.
 func (s *FakeStore) Close(ctx context.Context, id, reason string) error {
 	if err := ctx.Err(); err != nil {
@@ -305,6 +309,7 @@ func (s *FakeStore) Close(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+// AddDependency records a dependency edge for an existing bead.
 func (s *FakeStore) AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("add dependency context: %w", err)
@@ -341,6 +346,7 @@ func (s *FakeStore) AddDependency(ctx context.Context, beadID, dependsOnID, depT
 	return nil
 }
 
+// RemoveDependency removes dependency edges from beadID to dependsOnID.
 func (s *FakeStore) RemoveDependency(ctx context.Context, beadID, dependsOnID string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("remove dependency context: %w", err)
@@ -365,6 +371,7 @@ func (s *FakeStore) RemoveDependency(ctx context.Context, beadID, dependsOnID st
 	return nil
 }
 
+// ListDependencies returns dependency edges recorded for beadID.
 func (s *FakeStore) ListDependencies(ctx context.Context, beadID string) ([]protocol.Dependency, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("list dependency context: %w", err)
@@ -380,6 +387,7 @@ func (s *FakeStore) ListDependencies(ctx context.Context, beadID string) ([]prot
 	return cloneDependencies(bead.Dependencies), nil
 }
 
+// CountByStatus returns counts for open, in-progress, and closed beads.
 func (s *FakeStore) CountByStatus(ctx context.Context) (StatusCounts, error) {
 	if err := ctx.Err(); err != nil {
 		return StatusCounts{}, fmt.Errorf("count status context: %w", err)
@@ -402,6 +410,7 @@ func (s *FakeStore) CountByStatus(ctx context.Context) (StatusCounts, error) {
 	return counts, nil
 }
 
+// Defer marks a bead deferred until the supplied timestamp.
 func (s *FakeStore) Defer(ctx context.Context, id, until string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("defer bead context: %w", err)
@@ -420,6 +429,7 @@ func (s *FakeStore) Defer(ctx context.Context, id, until string) error {
 	return nil
 }
 
+// Undefer clears a bead's defer timestamp.
 func (s *FakeStore) Undefer(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("undefer bead context: %w", err)

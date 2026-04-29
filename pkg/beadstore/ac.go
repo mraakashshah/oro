@@ -4,11 +4,11 @@ import "strings"
 
 // ExtractAndStripAC extracts an Acceptance Criteria markdown section from a
 // description and returns the remaining description without that section.
-func ExtractAndStripAC(description string) (string, string, error) {
+func ExtractAndStripAC(description string) (acceptanceCriteria, strippedDescription string, err error) {
 	return extractAndStripAC(description)
 }
 
-func extractAndStripAC(description string) (string, string, error) {
+func extractAndStripAC(description string) (acceptanceCriteria, strippedDescription string, err error) {
 	idx, headerLen := findACHeader(description)
 	if idx < 0 {
 		return "", description, nil
@@ -40,7 +40,7 @@ func extractAndStripAC(description string) (string, string, error) {
 	return ac, desc, nil
 }
 
-func findACHeader(description string) (int, int) {
+func findACHeader(description string) (index, headerLen int) {
 	lower := strings.ToLower(description)
 	headers := []string{"## acceptance criteria", "acceptance criteria"}
 	for _, header := range headers {

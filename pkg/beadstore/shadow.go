@@ -134,7 +134,7 @@ func (s *ShadowStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
 	primary, primaryErr := s.primary.Ready(ctx)
 	secondary, secondaryErr := s.secondary.Ready(ctx)
 	s.compareBeads(ctx, "Ready", primary, primaryErr, secondary, secondaryErr)
-	return primary, primaryErr
+	return primary, wrapPrimaryStoreError("read ready beads", primaryErr)
 }
 
 // InProgress returns primary's active beads after comparing the secondary read.
@@ -142,7 +142,7 @@ func (s *ShadowStore) InProgress(ctx context.Context) ([]protocol.Bead, error) {
 	primary, primaryErr := s.primary.InProgress(ctx)
 	secondary, secondaryErr := s.secondary.InProgress(ctx)
 	s.compareBeads(ctx, "InProgress", primary, primaryErr, secondary, secondaryErr)
-	return primary, primaryErr
+	return primary, wrapPrimaryStoreError("read in-progress beads", primaryErr)
 }
 
 // Blocked returns primary's blocked beads after comparing the secondary read.
@@ -150,7 +150,7 @@ func (s *ShadowStore) Blocked(ctx context.Context) ([]protocol.Bead, error) {
 	primary, primaryErr := s.primary.Blocked(ctx)
 	secondary, secondaryErr := s.secondary.Blocked(ctx)
 	s.compareBeads(ctx, "Blocked", primary, primaryErr, secondary, secondaryErr)
-	return primary, primaryErr
+	return primary, wrapPrimaryStoreError("read blocked beads", primaryErr)
 }
 
 // Closed returns primary's recently closed beads after comparing the secondary read.
@@ -158,7 +158,7 @@ func (s *ShadowStore) Closed(ctx context.Context, limit int) ([]protocol.Bead, e
 	primary, primaryErr := s.primary.Closed(ctx, limit)
 	secondary, secondaryErr := s.secondary.Closed(ctx, limit)
 	s.compareBeads(ctx, "Closed", primary, primaryErr, secondary, secondaryErr)
-	return primary, primaryErr
+	return primary, wrapPrimaryStoreError("read closed beads", primaryErr)
 }
 
 // Show returns primary's bead after comparing the secondary read.
@@ -166,22 +166,32 @@ func (s *ShadowStore) Show(ctx context.Context, id string) (*protocol.Bead, erro
 	primary, primaryErr := s.primary.Show(ctx, id)
 	secondary, secondaryErr := s.secondary.Show(ctx, id)
 	s.compareShown("Show", primary, primaryErr, secondary, secondaryErr)
-	return primary, primaryErr
+	return primary, wrapPrimaryStoreError("show bead", primaryErr)
 }
 
 // Create writes to primary only.
 func (s *ShadowStore) Create(ctx context.Context, params CreateParams) (*protocol.Bead, error) {
-	return s.primary.Create(ctx, params)
+	bead, err := s.primary.Create(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("shadow primary create bead: %w", err)
+	}
+	return bead, nil
 }
 
 // Update writes to primary only.
 func (s *ShadowStore) Update(ctx context.Context, id string, params UpdateParams) error {
-	return s.primary.Update(ctx, id, params)
+	if err := s.primary.Update(ctx, id, params); err != nil {
+		return fmt.Errorf("shadow primary update bead: %w", err)
+	}
+	return nil
 }
 
 // Close writes to primary only.
 func (s *ShadowStore) Close(ctx context.Context, id, reason string) error {
-	return s.primary.Close(ctx, id, reason)
+	if err := s.primary.Close(ctx, id, reason); err != nil {
+		return fmt.Errorf("shadow primary close bead: %w", err)
+	}
+	return nil
 }
 
 // Defer writes to primary only when the primary store supports deferred beads.
@@ -190,7 +200,10 @@ func (s *ShadowStore) Defer(ctx context.Context, id, until string) error {
 	if !ok {
 		return fmt.Errorf("primary store does not support defer")
 	}
-	return primary.Defer(ctx, id, until)
+	if err := primary.Defer(ctx, id, until); err != nil {
+		return fmt.Errorf("shadow primary defer bead: %w", err)
+	}
+	return nil
 }
 
 // Undefer writes to primary only when the primary store supports deferred beads.
@@ -199,7 +212,10 @@ func (s *ShadowStore) Undefer(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("primary store does not support undefer")
 	}
-	return primary.Undefer(ctx, id)
+	if err := primary.Undefer(ctx, id); err != nil {
+		return fmt.Errorf("shadow primary undefer bead: %w", err)
+	}
+	return nil
 }
 
 // HasChildren returns primary's answer after comparing the secondary read.
@@ -207,7 +223,7 @@ func (s *ShadowStore) HasChildren(ctx context.Context, epicID string) (bool, err
 	primary, primaryErr := s.primary.HasChildren(ctx, epicID)
 	secondary, secondaryErr := s.secondary.HasChildren(ctx, epicID)
 	s.compareAggregateValue(ctx, "HasChildren", epicID, primary, primaryErr, secondary, secondaryErr)
-	return primary, primaryErr
+	return primary, wrapPrimaryStoreError("check children", primaryErr)
 }
 
 // AllChildrenClosed returns primary's answer after comparing the secondary read.
@@ -215,7 +231,7 @@ func (s *ShadowStore) AllChildrenClosed(ctx context.Context, epicID string) (boo
 	primary, primaryErr := s.primary.AllChildrenClosed(ctx, epicID)
 	secondary, secondaryErr := s.secondary.AllChildrenClosed(ctx, epicID)
 	s.compareAggregateValue(ctx, "AllChildrenClosed", epicID, primary, primaryErr, secondary, secondaryErr)
-	return primary, primaryErr
+	return primary, wrapPrimaryStoreError("check child closure", primaryErr)
 }
 
 // FindByParentAndTag returns primary's children after comparing the secondary read.
@@ -223,7 +239,7 @@ func (s *ShadowStore) FindByParentAndTag(ctx context.Context, parentID, tag stri
 	primary, primaryErr := s.primary.FindByParentAndTag(ctx, parentID, tag)
 	secondary, secondaryErr := s.secondary.FindByParentAndTag(ctx, parentID, tag)
 	s.compareBeads(ctx, "FindByParentAndTag", primary, primaryErr, secondary, secondaryErr)
-	return primary, primaryErr
+	return primary, wrapPrimaryStoreError("find children by tag", primaryErr)
 }
 
 // Export returns primary's JSONL snapshot after comparing the secondary read.
@@ -232,21 +248,28 @@ func (s *ShadowStore) Export(ctx context.Context) ([]byte, error) {
 	secondary, secondaryErr := s.secondary.Export(ctx)
 	if primaryErr != nil || secondaryErr != nil {
 		s.report("Export", ShadowDivergenceReal, "read error")
-		return primary, primaryErr
+		return primary, wrapPrimaryStoreError("export beads", primaryErr)
 	}
 	if !bytes.Equal(primary, secondary) {
-		primaryBeads, decodePrimaryErr := decodeExportBeads(primary)
-		secondaryBeads, decodeSecondaryErr := decodeExportBeads(secondary)
-		if decodePrimaryErr != nil || decodeSecondaryErr != nil {
+		primaryBeads, decodedPrimary := decodeExportBeadsForCompare(primary)
+		secondaryBeads, decodedSecondary := decodeExportBeadsForCompare(secondary)
+		if !decodedPrimary || !decodedSecondary {
 			s.report("Export", ShadowDivergenceReal, "export decode error")
-			return primary, primaryErr
+			return primary, nil
 		}
 		kind := ClassifyShadowDivergence(primaryBeads, secondaryBeads, s.shadowStartedAt)
 		if kind != ShadowDivergenceNone {
 			s.report("Export", kind, "export mismatch")
 		}
 	}
-	return primary, primaryErr
+	return primary, nil
+}
+
+func wrapPrimaryStoreError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("shadow primary %s: %w", operation, err)
 }
 
 func (s *ShadowStore) compareBeads(ctx context.Context, op string, primary []protocol.Bead, primaryErr error, secondary []protocol.Bead, secondaryErr error) {
@@ -255,7 +278,11 @@ func (s *ShadowStore) compareBeads(ctx context.Context, op string, primary []pro
 		return
 	}
 	kind := ClassifyShadowDivergenceWithResolver(primary, secondary, s.shadowStartedAt, func(id string) (*protocol.Bead, error) {
-		return s.primary.Show(ctx, id)
+		bead, err := s.primary.Show(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("resolve primary bead %s: %w", id, err)
+		}
+		return bead, nil
 	})
 	if kind != ShadowDivergenceNone {
 		s.report(op, kind, "bead result mismatch")
@@ -308,7 +335,11 @@ func (s *ShadowStore) compareAggregateValue(ctx context.Context, op, parentID st
 		return
 	}
 	kind := ClassifyShadowDivergenceWithResolver(primaryChildren, secondaryChildren, s.shadowStartedAt, func(id string) (*protocol.Bead, error) {
-		return s.primary.Show(ctx, id)
+		bead, err := s.primary.Show(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("resolve primary bead %s: %w", id, err)
+		}
+		return bead, nil
 	})
 	if kind == ShadowDivergenceNone {
 		kind = ShadowDivergenceReal
@@ -319,11 +350,11 @@ func (s *ShadowStore) compareAggregateValue(ctx context.Context, op, parentID st
 func (s *ShadowStore) childrenForAggregate(ctx context.Context, store Store, parentID string) ([]protocol.Bead, error) {
 	data, err := store.Export(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("export aggregate children: %w", err)
 	}
 	beads, err := decodeExportBeads(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode aggregate children: %w", err)
 	}
 	children := make([]protocol.Bead, 0)
 	for _, bead := range beads {
@@ -488,6 +519,14 @@ func decodeExportBeads(data []byte) ([]protocol.Bead, error) {
 		beads = append(beads, raw.toProtocol())
 	}
 	return beads, nil
+}
+
+func decodeExportBeadsForCompare(data []byte) ([]protocol.Bead, bool) {
+	beads, err := decodeExportBeads(data)
+	if err != nil {
+		return nil, false
+	}
+	return beads, true
 }
 
 type shadowBeadJSON struct {

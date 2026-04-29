@@ -1,8 +1,12 @@
-package beadstore
+package beadstore_test
 
-import "testing"
+import (
+	"testing"
 
-func TestExtractAC(t *testing.T) {
+	"oro/pkg/beadstore"
+)
+
+func TestExtractAndStripAC(t *testing.T) {
 	tests := []struct {
 		name     string
 		desc     string
@@ -67,33 +71,33 @@ func TestExtractAC(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotAC, gotDesc, err := extractAndStripAC(tt.desc)
+			gotAC, gotDesc, err := beadstore.ExtractAndStripAC(tt.desc)
 			if err != nil {
-				t.Fatalf("extractAndStripAC() error = %v", err)
+				t.Fatalf("ExtractAndStripAC() error = %v", err)
 			}
 			if gotAC != tt.wantAC {
-				t.Errorf("extractAndStripAC() ac:\ngot:  %q\nwant: %q", gotAC, tt.wantAC)
+				t.Errorf("ExtractAndStripAC() ac:\ngot:  %q\nwant: %q", gotAC, tt.wantAC)
 			}
 			if gotDesc != tt.wantDesc {
-				t.Errorf("extractAndStripAC() desc:\ngot:  %q\nwant: %q", gotDesc, tt.wantDesc)
+				t.Errorf("ExtractAndStripAC() desc:\ngot:  %q\nwant: %q", gotDesc, tt.wantDesc)
 			}
 
-			secondAC, secondDesc, err := extractAndStripAC(gotDesc)
+			secondAC, secondDesc, err := beadstore.ExtractAndStripAC(gotDesc)
 			if err != nil {
-				t.Fatalf("extractAndStripAC() second pass error = %v", err)
+				t.Fatalf("ExtractAndStripAC() second pass error = %v", err)
 			}
 			if secondAC != "" {
-				t.Errorf("extractAndStripAC() second pass ac = %q, want empty", secondAC)
+				t.Errorf("ExtractAndStripAC() second pass ac = %q, want empty", secondAC)
 			}
 			if secondDesc != gotDesc {
-				t.Errorf("extractAndStripAC() second pass desc = %q, want %q", secondDesc, gotDesc)
+				t.Errorf("ExtractAndStripAC() second pass desc = %q, want %q", secondDesc, gotDesc)
 			}
 		})
 	}
 }
 
 func TestExtractAndStripACPublicWrapper(t *testing.T) {
-	ac, desc, err := ExtractAndStripAC("Build the thing.\n\n## Acceptance Criteria\n- [ ] It works")
+	ac, desc, err := beadstore.ExtractAndStripAC("Build the thing.\n\n## Acceptance Criteria\n- [ ] It works")
 	if err != nil {
 		t.Fatalf("ExtractAndStripAC: %v", err)
 	}
