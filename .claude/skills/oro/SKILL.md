@@ -162,7 +162,7 @@ Signature: func Name(ctx, arg) (Result, error)
 Edges: nil input → ErrInvalid" \
   --estimate 7
 
-# 3. Wire parent + dependency (order matters!)
+# 3. Attach parent + wire dependency (order matters!)
 oro bead update <child-id> --parent <epic-id>
 oro bead dep add <epic-id> <child-id>
 
@@ -171,7 +171,7 @@ oro bead create "Feature name" --type epic \
   --metadata branch=feature/auth ...
 ```
 
-**Never use `oro bead create --parent`** — it adds a backwards dep (child blocked by epic), causing deadlocks.
+`oro bead create --parent` is also valid for hierarchy: parentage does not create dependency edges. Add `oro bead dep add <epic-id> <child-id>` explicitly when the epic must wait for the child.
 
 ### Bead Anatomy — Every bead needs:
 

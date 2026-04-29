@@ -188,7 +188,7 @@ If during RED the bead needs multiple unrelated tests:
 
 1. Discard uncommitted work in worktree
 2. `oro bead update <id> --type epic --notes "Decomposed: needed multiple unrelated tests"`
-3. Create child beads, then `oro bead update <child> --parent <id>` + `oro bead dep add <id> <child>` (do NOT use `oro bead create --parent` — it adds a backwards dependency)
+3. Create child beads with `oro bead create --parent <id>`, then `oro bead dep add <id> <child>` for each child that must finish before the parent
 4. Remove worktree: `git worktree remove .worktrees/bead-<id>`
 5. Delete branch: `git checkout main && git branch -D bead/<id>`
 6. **STOP.** Report what was decomposed. Next invocation picks up a child.

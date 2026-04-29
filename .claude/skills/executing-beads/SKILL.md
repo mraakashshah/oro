@@ -136,7 +136,7 @@ If during Step 3 the bead needs multiple unrelated tests:
 
 1. **STOP** — do not continue implementation
 2. Promote: `oro bead update <id> --type epic`
-3. Create children: `oro bead create --type task --acceptance "..." --estimate <min>`, then `oro bead update <child> --parent <id>` + `oro bead dep add <id> <child>` for each piece (do NOT use `oro bead create --parent` — it adds a backwards dependency)
+3. Create children: `oro bead create --type task --parent <id> --acceptance "..." --estimate <min>`, then `oro bead dep add <id> <child>` for each child that must finish before the parent
 4. Wire dependencies: `oro bead dep add` where ordering matters
 5. Return to Step 1 with the first child bead
 

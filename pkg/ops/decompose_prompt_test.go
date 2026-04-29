@@ -54,8 +54,8 @@ func TestBuildDecomposePromptContainsBeadID(t *testing.T) {
 	if !strings.Contains(prompt, "oro-test123") {
 		t.Errorf("prompt does not contain BeadID %q", opts.BeadID)
 	}
-	if strings.Contains(prompt, "create --parent") {
-		t.Error("prompt must not use create --parent (creates circular dependency deadlock)")
+	if !strings.Contains(prompt, "oro bead create --title=\"...\" --type=task --parent=oro-test123") {
+		t.Error("prompt must use native create --parent for child hierarchy")
 	}
 }
 
@@ -65,7 +65,10 @@ func TestBuildDecomposePromptNoCreateParent(t *testing.T) {
 		QGOutput: "lint failed",
 	}
 	prompt := buildDecomposePrompt(opts)
-	if strings.Contains(prompt, "create --parent") {
-		t.Error("prompt must not use create --parent (creates circular dependency deadlock)")
+	if strings.Contains(prompt, "backwards dependency") || strings.Contains(prompt, "circular dependency deadlock") {
+		t.Error("prompt must not describe native create --parent as dependency-creating")
+	}
+	if !strings.Contains(prompt, "--parent=oro-test") {
+		t.Error("prompt must attach children with native create --parent")
 	}
 }

@@ -24,7 +24,7 @@
 - `oro bead close <id>` then export bead metadata, then `git add -f .beads/issues.jsonl` for clean commits
 - Close multiple beads one at a time; `oro bead close` accepts exactly one id.
 - Stale beads may reappear after `bead metadata export` — re-close if needed
-- **Never use `oro bead create --parent`** — it adds backwards dep (child blocked by epic). Use `oro bead update <child> --parent <epic>` + `oro bead dep add <epic> <child>` instead
+- `oro bead create --parent <epic>` sets hierarchy only. It does not add dependency edges; add `oro bead dep add <epic> <child>` explicitly when the epic must wait for the child.
 - **Never use `interactive bead editing`** — it opens `$EDITOR` which agents cannot use. Use `oro bead update` with flags.
 
 ## Shutdown

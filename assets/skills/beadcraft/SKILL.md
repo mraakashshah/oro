@@ -115,21 +115,21 @@ oro bead create --title="<feature name>" --type=epic \
 For each seam/component, create a task bead. Apply the full Bead Anatomy format:
 
 ```bash
-# Create the child first; set parentage explicitly in the next step
+# Create the child and attach it to the epic. Parentage is hierarchy only.
 oro bead create --title="<specific task>" \
   --type=task \
+  --parent=<epic-id> \
   --acceptance "Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
 Read: <file1>:<Symbol1>, <file2>:<Symbol2>
 Signature: <func signature if applicable>
 Edges: <error conditions if applicable>" \
   --estimate <minutes>
 
-# Set parentage and wire epic to depend on child (epic closes when children finish)
-oro bead update <child-id> --parent=<epic-id>
+# Wire epic to depend on child (epic closes when children finish)
 oro bead dep add <epic-id> <child-id>
 ```
 
-Parentage is not a dependency. Keep the explicit `oro bead dep add <epic-id> <child-id>` edge so the epic waits for its children to close.
+`oro bead create --parent` does not add dependency edges. Keep the explicit `oro bead dep add <epic-id> <child-id>` edge so the epic waits for its children to close.
 
 ### Step 4: Rule of Five (Apply to Each Bead)
 
@@ -140,7 +140,7 @@ Run all 5 passes (P1-P5) on every bead before emitting. Revise until all pass.
 Check every task bead against size heuristics. If too large, decompose:
 
 1. Promote: `oro bead update <id> --type=epic`
-2. Create child tasks, then `oro bead update <child> --parent=<id>` + `oro bead dep add <id> <child>`
+2. Create child tasks with `oro bead create --parent=<id>`, then `oro bead dep add <id> <child>` for each child the epic must wait for
 3. Re-apply size test + Rule of Five to children
 
 ### Step 6: Wire Dependencies

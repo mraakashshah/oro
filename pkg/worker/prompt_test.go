@@ -406,13 +406,26 @@ func TestPromptGolden(t *testing.T) {
 
 	for _, newCommand := range []string{
 		"oro bead create",
-		"oro bead update",
 		"oro bead dep add",
 		"oro bead show",
 	} {
 		if !strings.Contains(combined, newCommand) {
 			t.Fatalf("prompt must contain %q", newCommand)
 		}
+	}
+
+	for _, forbiddenGuidance := range []string{
+		"adds a backwards dependency",
+		"Do NOT use `oro bead create --parent`",
+		"do NOT use `--parent` flag on create",
+	} {
+		if strings.Contains(combined, forbiddenGuidance) {
+			t.Fatalf("prompt must not describe native create --parent as unsafe: found %q", forbiddenGuidance)
+		}
+	}
+
+	if !strings.Contains(epicPrompt, "--parent oro-epic-golden") {
+		t.Fatalf("epic decomposition prompt must use native create --parent for child beads")
 	}
 }
 
@@ -516,7 +529,7 @@ func TestAssemblePrompt_FailureSectionHasOroBeadCreateExamples(t *testing.T) {
 	}{
 		{"oro bead create --title flag", `oro bead create --title=`},
 		{"test failure bug type+priority", `--type=bug --priority=0`},
-		{"decompose sets parent after create", `oro bead update <child-id> --parent`},
+		{"decompose uses native create parent", `oro bead create --title="<subtask>" --type=task --parent <bead-id>`},
 		{"context limit handoff", `oro bead create --title="Continue:`},
 		{"blocker bug creation", `oro bead create --title="Blocker:`},
 		{"oro bead dep add example", `oro bead dep add`},
@@ -762,9 +775,9 @@ func TestPromptHandoffTemplate(t *testing.T) {
 		failureSection = prompt[failStart : failStart+1+failEnd]
 	}
 
-	// Check that handoff template sets parent via oro bead update (not oro bead create --parent)
+	// Check that handoff template attaches child bead with native create --parent.
 	if !strings.Contains(failureSection, "--parent oro-xyz123") {
-		t.Error("expected handoff template to contain 'oro bead update <child-id> --parent oro-xyz123' (not --parent on create)")
+		t.Error("expected handoff template to contain 'oro bead create ... --parent oro-xyz123'")
 	}
 
 	// Check that handoff template contains --acceptance-criteria flag
@@ -863,12 +876,12 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 		if !strings.Contains(prompt, "beadcraft") {
 			t.Errorf("expected epic decomp prompt to contain 'beadcraft', got:\n%s", prompt)
 		}
-		// Must contain oro bead create and parent wiring via oro bead update (not --parent on create)
+		// Must contain oro bead create and parent wiring via native create --parent.
 		if !strings.Contains(prompt, "oro bead create") {
 			t.Errorf("expected epic decomp prompt to contain 'oro bead create', got:\n%s", prompt)
 		}
-		if !strings.Contains(prompt, "oro bead update <child-id> --parent") {
-			t.Errorf("expected epic decomp prompt to contain 'oro bead update <child-id> --parent', got:\n%s", prompt)
+		if !strings.Contains(prompt, "--parent oro-epic-1") {
+			t.Errorf("expected epic decomp prompt to contain native create --parent, got:\n%s", prompt)
 		}
 		// Must NOT contain standard worker sections
 		if strings.Contains(prompt, "## Quality Gate") {
