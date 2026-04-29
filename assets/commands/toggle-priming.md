@@ -1,6 +1,6 @@
 # Toggle Auto-Priming
 
-Toggle whether SessionStart auto-injects project context (handoff, bd ready, git status).
+Toggle whether SessionStart auto-injects project context (handoff, oro bead ready, git status).
 
 Run this command, then report the new state to the user.
 
