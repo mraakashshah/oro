@@ -15019,11 +15019,6 @@ func TestExternalCloseDoesNotMergeWorkerBranch(t *testing.T) {
 	beadID := "bead-ext-close"
 	workerID := "w-ext"
 	worktree := "/tmp/worktree-" + beadID
-	var removed []string
-	wtMgr.removeFn = func(_ context.Context, path string) error {
-		removed = append(removed, path)
-		return nil
-	}
 
 	// Register an assignment so completeAssignment has something to update.
 	res, err := d.db.ExecContext(ctx,
@@ -15066,7 +15061,9 @@ func TestExternalCloseDoesNotMergeWorkerBranch(t *testing.T) {
 
 	// Wait for async cancellation cleanup to complete.
 	waitFor(t, func() bool {
-		return len(removed) == 1
+		wtMgr.mu.Lock()
+		defer wtMgr.mu.Unlock()
+		return len(wtMgr.removed) == 1
 	}, 2*time.Second)
 
 	// Verify the worker was transitioned to ShuttingDown (not Idle) and bead cleared.
@@ -15094,6 +15091,9 @@ func TestExternalCloseDoesNotMergeWorkerBranch(t *testing.T) {
 	if len(beadSrc.closed) != 0 {
 		t.Fatalf("expected external close to avoid implicit beads.Close merge path, got closed=%v", beadSrc.closed)
 	}
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
 	if len(removed) != 1 || removed[0] != worktree {
 		t.Fatalf("expected worktree cleanup for %q, got removed=%v", worktree, removed)
 	}

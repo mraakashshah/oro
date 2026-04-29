@@ -167,7 +167,7 @@ func (s *ShadowStore) Closed(ctx context.Context, limit int) ([]protocol.Bead, e
 func (s *ShadowStore) Show(ctx context.Context, id string) (*protocol.Bead, error) {
 	primary, primaryErr := s.primary.Show(ctx, id)
 	secondary, secondaryErr := s.secondary.Show(ctx, id)
-	s.compareShown("Show", primary, primaryErr, secondary, secondaryErr)
+	s.compareShown(primary, primaryErr, secondary, secondaryErr)
 	return primary, wrapPrimaryStoreError("show bead", primaryErr)
 }
 
@@ -282,7 +282,7 @@ func (s *ShadowStore) compareBeads(ctx context.Context, op string, primary []pro
 	kind := ClassifyShadowDivergenceWithResolver(primary, secondary, s.shadowStartedAt, func(id string) (*protocol.Bead, error) {
 		bead, err := s.primary.Show(ctx, id)
 		if err != nil {
-			return nil, fmt.Errorf("resolve primary bead %s: %w", id, err)
+			return nil, wrapPrimaryStoreError("resolve primary bead", err)
 		}
 		return bead, nil
 	})
@@ -291,9 +291,9 @@ func (s *ShadowStore) compareBeads(ctx context.Context, op string, primary []pro
 	}
 }
 
-func (s *ShadowStore) compareShown(op string, primary *protocol.Bead, primaryErr error, secondary *protocol.Bead, secondaryErr error) {
+func (s *ShadowStore) compareShown(primary *protocol.Bead, primaryErr error, secondary *protocol.Bead, secondaryErr error) {
 	if primaryErr != nil || secondaryErr != nil {
-		s.report(op, ShadowDivergenceReal, "read error")
+		s.report("Show", ShadowDivergenceReal, "read error")
 		return
 	}
 	if reflect.DeepEqual(primary, secondary) {
@@ -308,7 +308,7 @@ func (s *ShadowStore) compareShown(op string, primary *protocol.Bead, primaryErr
 	if secondary != nil {
 		secondarySlice = append(secondarySlice, *secondary)
 	}
-	s.report(op, ClassifyShadowDivergence(primarySlice, secondarySlice, s.shadowStartedAt), "show result mismatch")
+	s.report("Show", ClassifyShadowDivergence(primarySlice, secondarySlice, s.shadowStartedAt), "show result mismatch")
 }
 
 func (s *ShadowStore) compareValue(op string, primary any, primaryErr error, secondary any, secondaryErr error) {
@@ -339,7 +339,7 @@ func (s *ShadowStore) compareAggregateValue(ctx context.Context, op, parentID st
 	kind := ClassifyShadowDivergenceWithResolver(primaryChildren, secondaryChildren, s.shadowStartedAt, func(id string) (*protocol.Bead, error) {
 		bead, err := s.primary.Show(ctx, id)
 		if err != nil {
-			return nil, fmt.Errorf("resolve primary bead %s: %w", id, err)
+			return nil, wrapPrimaryStoreError("resolve primary aggregate child", err)
 		}
 		return bead, nil
 	})

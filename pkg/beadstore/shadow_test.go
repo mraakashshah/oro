@@ -98,6 +98,66 @@ func TestShadowStore(t *testing.T) {
 		}
 	})
 
+	t.Run("reports closed-list divergences", func(t *testing.T) {
+		ctx := context.Background()
+		updatedAt := "2026-04-28T09:00:00Z"
+		primary := beadstore.NewFakeStore(protocol.Bead{ID: "closed", Title: "primary", Status: "closed", ClosedAt: updatedAt, UpdatedAt: updatedAt})
+		secondary := beadstore.NewFakeStore(protocol.Bead{ID: "closed", Title: "secondary", Status: "closed", ClosedAt: updatedAt, UpdatedAt: updatedAt})
+		var events []beadstore.ShadowDivergence
+		store := beadstore.NewShadowStore(
+			primary,
+			secondary,
+			beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		closed, err := store.Closed(ctx, 1)
+		if err != nil {
+			t.Fatalf("Closed: %v", err)
+		}
+		if len(closed) != 1 || closed[0].Title != "primary" {
+			t.Fatalf("Closed returned %#v, want primary result", closed)
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "Closed" || events[0].Kind != beadstore.ShadowDivergenceReal {
+			t.Fatalf("divergence = %#v, want real Closed divergence", events[0])
+		}
+	})
+
+	t.Run("reports show divergences", func(t *testing.T) {
+		ctx := context.Background()
+		updatedAt := "2026-04-28T09:00:00Z"
+		primary := beadstore.NewFakeStore(protocol.Bead{ID: "shown", Title: "primary", Status: "open", UpdatedAt: updatedAt})
+		secondary := beadstore.NewFakeStore(protocol.Bead{ID: "shown", Title: "secondary", Status: "open", UpdatedAt: updatedAt})
+		var events []beadstore.ShadowDivergence
+		store := beadstore.NewShadowStore(
+			primary,
+			secondary,
+			beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		shown, err := store.Show(ctx, "shown")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if shown == nil || shown.Title != "primary" {
+			t.Fatalf("Show returned %#v, want primary result", shown)
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "Show" || events[0].Kind != beadstore.ShadowDivergenceReal {
+			t.Fatalf("divergence = %#v, want real Show divergence", events[0])
+		}
+	})
+
 	t.Run("logs reported divergences when configured", func(t *testing.T) {
 		ctx := context.Background()
 		updatedAt := "2026-04-28T09:00:00Z"
@@ -241,6 +301,34 @@ func TestShadowStore(t *testing.T) {
 		}
 		if secondary.readyCalls != 1 {
 			t.Fatalf("secondary Ready calls = %d, want 1", secondary.readyCalls)
+		}
+	})
+
+	t.Run("secondary read errors are reported while primary result wins", func(t *testing.T) {
+		ctx := context.Background()
+		secondaryErr := errors.New("secondary failed")
+		primary := beadstore.NewFakeStore(protocol.Bead{ID: "ready", Title: "ready", Status: "open"})
+		var events []beadstore.ShadowDivergence
+		store := beadstore.NewShadowStore(
+			primary,
+			errorStore{Store: beadstore.NewFakeStore(), readyErr: secondaryErr},
+			beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+				events = append(events, event)
+			}),
+		)
+
+		got, err := store.Ready(ctx)
+		if err != nil {
+			t.Fatalf("Ready: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != "ready" {
+			t.Fatalf("Ready returned %#v, want primary result", got)
+		}
+		if len(events) != 1 {
+			t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+		}
+		if events[0].Operation != "Ready" || events[0].Kind != beadstore.ShadowDivergenceReal || events[0].Reason != "read error" {
+			t.Fatalf("divergence = %#v, want real Ready read error", events[0])
 		}
 	})
 
