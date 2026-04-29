@@ -54,26 +54,6 @@ func (s Source) Label() string {
 	return "issues.jsonl"
 }
 
-// CheckBdVersion runs `bd --version` and returns a warning if the installed
-// version is known to be broken. Returns "" for any safe or unparseable version.
-//
-//oro:testonly
-func CheckBdVersion() string {
-	return checkBdVersionOutput(nil)
-}
-
-// checkBdVersionOutput parses version output. If out is nil, it shells out to bd.
-func checkBdVersionOutput(out []byte) string {
-	if out == nil {
-		var err error
-		out, err = runWithTimeout(timeoutShort, "bd", "--version")
-		if err != nil {
-			return ""
-		}
-	}
-	return parseBdVersionWarning(string(out))
-}
-
 // parseBdVersionWarning returns a warning string if the version is known-broken,
 // or "" otherwise. Accepts output like "bd version 0.59.0".
 func parseBdVersionWarning(output string) string {
@@ -397,25 +377,6 @@ type DoctorResult struct {
 	OK          bool               `json:"overall_ok"`
 	Summary     string             `json:"summary"`
 	Diagnostics []DoctorDiagnostic `json:"diagnostics"`
-}
-
-// FetchDoctorDiagnostics runs `bd doctor --agent --json` and returns findings.
-// Only returns error/warning diagnostics (not passed checks).
-//
-//oro:testonly
-func FetchDoctorDiagnostics() (*DoctorResult, error) {
-	out, err := runWithTimeout(timeoutMedium, "bd", "doctor", "--agent", "--json")
-	if err != nil {
-		// bd doctor exits non-zero when problems found — still has valid JSON on stdout
-		if out == nil {
-			return nil, wrapExitError("bd doctor", err)
-		}
-	}
-	var result DoctorResult
-	if err := json.Unmarshal(out, &result); err != nil {
-		return nil, fmt.Errorf("bd doctor parse: %w", err)
-	}
-	return &result, nil
 }
 
 // FetchIssueDetail loads a single issue from the bead store.

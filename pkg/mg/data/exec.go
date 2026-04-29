@@ -11,9 +11,6 @@ import (
 
 // Timeout tiers for external command execution.
 const (
-	// timeoutMedium is for data fetches (bd list --json).
-	timeoutMedium = 15 * time.Second
-
 	// timeoutShort is for quick mutations (bd update, bd close, bd create, git config).
 	timeoutShort = 5 * time.Second
 )

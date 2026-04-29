@@ -57,7 +57,7 @@ func TestSourceLabelJSONL(t *testing.T) {
 	}
 }
 
-func TestCheckBdVersionKnownBroken(t *testing.T) {
+func TestParseBdVersionWarningKnownBroken(t *testing.T) {
 	got := parseBdVersionWarning("bd version 0.59.0")
 	if got == "" {
 		t.Fatal("expected warning for v0.59.0, got empty string")
@@ -67,14 +67,14 @@ func TestCheckBdVersionKnownBroken(t *testing.T) {
 	}
 }
 
-func TestCheckBdVersionOK(t *testing.T) {
+func TestParseBdVersionWarningOK(t *testing.T) {
 	got := parseBdVersionWarning("bd version 0.58.0")
 	if got != "" {
 		t.Errorf("expected no warning for v0.58.0, got %q", got)
 	}
 }
 
-func TestCheckBdVersionUnparseable(t *testing.T) {
+func TestParseBdVersionWarningUnparseable(t *testing.T) {
 	cases := []string{
 		"",
 		"garbled output here",
@@ -86,19 +86,6 @@ func TestCheckBdVersionUnparseable(t *testing.T) {
 		if got != "" {
 			t.Errorf("parseBdVersionWarning(%q) = %q, want empty", input, got)
 		}
-	}
-}
-
-func TestCheckBdVersionIgnoresOutputWhenCommandFails(t *testing.T) {
-	tmpDir := t.TempDir()
-	bdPath := filepath.Join(tmpDir, "bd")
-	if err := os.WriteFile(bdPath, []byte("#!/bin/sh\necho 'bd version 0.59.0'\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", tmpDir)
-
-	if got := CheckBdVersion(); got != "" {
-		t.Fatalf("CheckBdVersion() = %q, want empty warning when command exits nonzero", got)
 	}
 }
 
