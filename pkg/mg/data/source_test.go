@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -131,6 +132,29 @@ func TestSourceFetchIssuesUsesFakeStoreExportForAllIssues(t *testing.T) {
 	wantIDs := []string{"mg-1", "mg-2"}
 	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
 		t.Fatalf("issue IDs = %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestSourceStorePreservesTags(t *testing.T) {
+	store := beadstore.NewFakeStore(protocol.Bead{
+		ID:        "mg-1",
+		Title:     "tagged task",
+		Status:    "open",
+		Priority:  2,
+		Type:      "task",
+		UpdatedAt: "2026-03-01T00:00:00Z",
+		Tags:      []string{"phase-5", "mg"},
+	})
+
+	issues, err := FetchIssues(store)
+	if err != nil {
+		t.Fatalf("FetchIssues() error = %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("len(issues) = %d, want 1", len(issues))
+	}
+	if !slices.Equal(issues[0].Tags, []string{"phase-5", "mg"}) {
+		t.Fatalf("Tags = %v, want %v", issues[0].Tags, []string{"phase-5", "mg"})
 	}
 }
 

@@ -252,6 +252,7 @@ func issueFromBead(bead protocol.Bead) (Issue, error) {
 		Labels:             append([]string(nil), bead.Labels...),
 		DeferUntil:         deferUntil,
 		Metadata:           metadataFromBead(bead.Metadata),
+		Tags:               append([]string(nil), bead.Tags...),
 	}, nil
 }
 
