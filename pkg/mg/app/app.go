@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/mg"
 	"oro/pkg/mg/components"
 	"oro/pkg/mg/data"
@@ -62,6 +63,7 @@ type Model struct {
 	ready         bool
 	workAvail     bool
 	projectDir    string
+	store         beadstore.Store
 	inTmux        bool
 	activeWorkers map[string]string // beadID -> tmux paneID
 
@@ -163,6 +165,7 @@ func NewWithGuard(issues []data.Issue, source data.Source, blockingTypes map[str
 		filterInput:    ti,
 		workAvail:      mg.WorkAvailable(),
 		projectDir:     projectDir,
+		store:          source.Store,
 		inTmux:         mg.InTmux() && mg.TmuxAvailable(),
 		activeWorkers:  make(map[string]string),
 		changedIDs:     make(map[string]bool),
@@ -184,33 +187,30 @@ func (m Model) Init() tea.Cmd {
 		cmds = append(cmds, pollWorkerState)
 	}
 	if m.sourceMode == data.SourceCLI {
-		cmds = append(cmds, fetchCurrentIssue, fetchBeadsContext)
+		cmds = append(cmds, fetchStoreBeadsContext(m.projectDir))
 		// Background-hydrate the full closed set after the initial 50.
-		cmds = append(cmds, data.FetchAllClosed(m.projectDir))
+		cmds = append(cmds, data.FetchAllClosedCmd(m.store))
 	}
 	return tea.Batch(cmds...)
-}
-
-// fetchCurrentIssue asks bd for the active issue ID at startup.
-func fetchCurrentIssue() tea.Msg {
-	id, _ := data.FetchCurrentIssueID()
-	return currentIssueMsg{issueID: id}
 }
 
 type beadsContextMsg struct {
 	ctx *data.BeadsContext
 }
 
-// fetchBeadsContext runs bd context --json in the background at startup.
-func fetchBeadsContext() tea.Msg {
-	ctx, _ := data.FetchContext()
-	return beadsContextMsg{ctx: ctx}
+func fetchStoreBeadsContext(projectDir string) tea.Cmd {
+	return func() tea.Msg {
+		return beadsContextMsg{ctx: &data.BeadsContext{
+			RepoRoot: projectDir,
+			Backend:  "sqlite",
+		}}
+	}
 }
 
 // startPoll returns the appropriate polling Cmd based on sourceMode.
 func (m Model) startPoll() tea.Cmd {
 	if m.sourceMode == data.SourceCLI {
-		return data.PollCLI(m.projectDir)
+		return data.PollCLI(m.store)
 	}
 	return data.WatchFile(m.watchPath, m.lastFileMod)
 }
@@ -218,7 +218,7 @@ func (m Model) startPoll() tea.Cmd {
 // startPollImmediate returns an immediate-fetch Cmd for post-mutation refresh.
 func (m Model) startPollImmediate() tea.Cmd {
 	if m.sourceMode == data.SourceCLI {
-		return data.FetchIssuesNow(m.projectDir)
+		return data.FetchIssuesNow(m.store)
 	}
 	return data.WatchFile(m.watchPath, m.lastFileMod)
 }
@@ -459,7 +459,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		label := fmt.Sprintf("Load failed: %s", msg.Err)
 		if m.sourceMode == data.SourceCLI {
-			label = fmt.Sprintf("bd list failed: %s", msg.Err)
+			label = fmt.Sprintf("bead store failed: %s", msg.Err)
 		}
 		toast, toastCmd := components.ShowToast(label, components.ToastError, toastDuration)
 		m.toast = toast
@@ -1109,13 +1109,23 @@ func (m *Model) maybeFetchIssueDetail() tea.Cmd {
 	if m.detail.RichIssueID == issue.ID {
 		return nil
 	}
-	return fetchIssueDetail(issue.ID)
+	return m.fetchIssueDetail(issue.ID)
 }
 
 // fetchIssueDetail returns a Cmd that fetches rich detail for an issue.
-func fetchIssueDetail(issueID string) tea.Cmd {
+func (m Model) fetchIssueDetail(issueID string) tea.Cmd {
+	store := m.store
+	sourceMode := m.sourceMode
 	return func() tea.Msg {
-		issue, err := data.FetchIssueDetail(issueID)
+		var (
+			issue *data.Issue
+			err   error
+		)
+		if sourceMode == data.SourceCLI {
+			issue, err = data.FetchIssueDetail(store, issueID)
+		} else {
+			issue, err = data.FetchIssueDetailCLI(issueID)
+		}
 		return issueDetailMsg{issueID: issueID, issue: issue, err: err}
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/mg/app"
 	"oro/pkg/mg/data"
 	mgTmux "oro/pkg/mg/tmux"
@@ -34,7 +36,7 @@ func newMgCmd() *cobra.Command {
 				return fmt.Errorf("getting working directory: %w", err)
 			}
 			source := resolveSource(cwd, path)
-			if source.Mode == data.SourceJSONL && source.Path == "" {
+			if source.Err == nil && source.Mode == data.SourceJSONL && source.Path == "" {
 				return fmt.Errorf("no .beads/ directory found and bd not on PATH\n\nRun from inside a project with Beads, or specify a path:\n  oro mg --path /path/to/.beads/issues.jsonl")
 			}
 
@@ -68,13 +70,16 @@ func newMgCmd() *cobra.Command {
 
 // loadInitialIssues fetches the initial issue list from source.
 func loadInitialIssues(source data.Source) ([]data.Issue, error) {
+	if source.Err != nil {
+		return nil, source.Err
+	}
 	switch source.Mode {
 	case data.SourceCLI:
-		active, err := data.FetchActiveIssuesCLI(source.ProjectDir)
+		active, err := data.FetchActiveIssues(source.Store)
 		if err != nil {
-			return nil, fmt.Errorf("loading issues via bd list: %w", err)
+			return nil, fmt.Errorf("loading issues via bead store: %w", err)
 		}
-		recentClosed, _ := data.FetchRecentClosedCLI(source.ProjectDir, 50)
+		recentClosed, _ := data.FetchRecentClosed(source.Store, 50)
 		return append(active, recentClosed...), nil
 	default:
 		issues, skipped, err := data.LoadIssues(source.Path)
@@ -157,8 +162,20 @@ func resolveSource(cwd, pathFlag string) data.Source {
 		}
 	}
 
-	if projectDir := findBeadsDir(cwd); projectDir != "" && bdOnPath() {
-		return data.NewSource(projectDir, nil)
+	if projectDir := findProjectDir(cwd); projectDir != "" {
+		jsonlPath := findBeadsFile(cwd)
+		store, err := openMgStore(projectDir)
+		if err == nil {
+			return data.NewSource(store, projectDir)
+		}
+		if jsonlPath != "" {
+			return data.Source{
+				Mode:       data.SourceJSONL,
+				Path:       jsonlPath,
+				ProjectDir: filepath.Dir(filepath.Dir(jsonlPath)),
+			}
+		}
+		return data.Source{Err: fmt.Errorf("open mg bead store: %w", err), ProjectDir: projectDir}
 	}
 
 	if jsonlPath := findBeadsFile(cwd); jsonlPath != "" {
@@ -170,4 +187,74 @@ func resolveSource(cwd, pathFlag string) data.Source {
 	}
 
 	return data.Source{}
+}
+
+func findProjectDir(dir string) string {
+	if projectDir := findBeadsDir(dir); projectDir != "" {
+		return projectDir
+	}
+	for {
+		if projectInitialized(dir) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func openMgStore(projectDir string) (beadstore.Store, error) {
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		return nil, err
+	}
+	stateBase := oroHome
+	if os.Getenv("ORO_DB_PATH") == "" {
+		project, err := readProjectNameForSource(projectDir, oroHome)
+		if err != nil {
+			return nil, err
+		}
+		if project != "" {
+			stateBase = filepath.Join(oroHome, "projects", project)
+		}
+	}
+	stateDBPath := resolvePathWithEnv("ORO_DB_PATH", stateBase, "state.db")
+	if _, err := os.Stat(stateDBPath); err != nil {
+		return nil, err
+	}
+	return beadstore.OpenSQLiteStore(context.Background(), stateDBPath)
+}
+
+func readProjectNameForSource(projectDir, oroHome string) (string, error) {
+	if v := os.Getenv("ORO_PROJECT"); v != "" {
+		return v, nil
+	}
+	configPath := filepath.Join(projectDir, ".oro", "config.yaml")
+	data, err := os.ReadFile(configPath) //nolint:gosec // projectDir is discovered from cwd walk.
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "project:") {
+				return strings.TrimSpace(strings.TrimPrefix(line, "project:")), nil
+			}
+		}
+		return "", nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+
+	hash, err := projectHash(projectDir)
+	if err != nil {
+		return "", err
+	}
+	stealthConfig := filepath.Join(oroHome, "projects", "s-"+hash, "config.yaml")
+	if _, err := os.Stat(stealthConfig); err == nil {
+		return "s-" + hash, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	return "", nil
 }

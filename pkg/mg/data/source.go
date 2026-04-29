@@ -1,12 +1,19 @@
 package data
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"oro/pkg/beadstore"
+	"oro/pkg/protocol"
 )
 
 // SourceMode indicates how issues are loaded.
@@ -14,33 +21,32 @@ type SourceMode int
 
 const (
 	SourceJSONL SourceMode = iota // Legacy: read from .beads/issues.jsonl (or --path)
-	SourceCLI                     // Preferred: shell out to bd list --json
+	SourceCLI                     // Preferred: read from beadstore.Store
 )
 
 // Source describes how mg loads its issue data.
 type Source struct {
-	Mode        SourceMode
-	Path        string   // JSONL file path (SourceJSONL) or empty (SourceCLI)
-	ProjectDir  string   // Project root directory
-	Explicit    bool     // True if --path was used
-	BdExtraArgs []string // Extra args prepended to bd commands (e.g. ["--db=/path/to.db"])
+	Mode       SourceMode
+	Path       string // JSONL file path (SourceJSONL) or empty (SourceCLI)
+	ProjectDir string // Project root directory
+	Explicit   bool   // True if --path was used
+	Store      beadstore.Store
+	Err        error
 }
 
-// NewSource creates a CLI-mode Source for projectDir.
-// bdExtraArgs are prepended to every bd invocation (e.g. ["--db=/path/to.db"]).
-// nil bdExtraArgs means no extra args (backward compatible).
-func NewSource(projectDir string, bdExtraArgs []string) Source {
+// NewSource creates a store-backed Source for projectDir.
+func NewSource(store beadstore.Store, projectDir string) Source {
 	return Source{
-		Mode:        SourceCLI,
-		ProjectDir:  projectDir,
-		BdExtraArgs: bdExtraArgs,
+		Mode:       SourceCLI,
+		ProjectDir: projectDir,
+		Store:      store,
 	}
 }
 
 // Label returns a display string for the footer.
 func (s Source) Label() string {
 	if s.Mode == SourceCLI {
-		return "bd list"
+		return "bead store"
 	}
 	if s.Path != "" {
 		return filepath.Base(s.Path)
@@ -84,58 +90,220 @@ func parseBdVersionWarning(output string) string {
 	return ""
 }
 
-// FetchIssuesCLI runs `bd list --json --limit 0 --all` and parses the result.
+// FetchIssues reads the full issue set from store.Export.
 //
 //oro:testonly
-func FetchIssuesCLI(projectDir string) ([]Issue, error) {
-	out, err := runWithTimeout(timeoutMedium, "bd", bdListArgs()...)
-	if err != nil {
-		// bd may exit non-zero for warnings (orphaned processes, deprecated
-		// config) while still producing valid JSON on stdout. Try parsing
-		// stdout before giving up.
-		if len(out) > 0 {
-			if issues, parseErr := parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir)); parseErr == nil {
-				return issues, nil
-			}
-		}
-		return nil, wrapExitError("bd list --json", err)
+func FetchIssues(store beadstore.Store) ([]Issue, error) {
+	if store == nil {
+		return nil, fmt.Errorf("bead store is nil")
 	}
-	return parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir))
+	out, err := store.Export(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("export beads: %w", err)
+	}
+	return parseIssuesJSONL(out)
 }
 
 func bdListArgs() []string {
 	return []string{"list", "--json", "--limit", "0", "--all"}
 }
 
-// FetchActiveIssuesCLI fetches only non-closed issues (much faster for
-// large projects). Used by the poll loop.
-func FetchActiveIssuesCLI(projectDir string) ([]Issue, error) {
-	return fetchIssuesCLIWithArgs(projectDir, "list", "--json", "--limit", "0")
-}
-
-// FetchRecentClosedCLI fetches the N most recently closed issues.
-func FetchRecentClosedCLI(projectDir string, limit int) ([]Issue, error) {
-	return fetchIssuesCLIWithArgs(projectDir,
-		"list", "--json", "--status=closed", "--sort=closed", "--limit", fmt.Sprintf("%d", limit))
-}
-
-// FetchAllClosedCLI fetches all closed issues (for background hydration).
-func FetchAllClosedCLI(projectDir string) ([]Issue, error) {
-	return fetchIssuesCLIWithArgs(projectDir,
-		"list", "--json", "--status=closed", "--limit", "0")
-}
-
-func fetchIssuesCLIWithArgs(projectDir string, args ...string) ([]Issue, error) {
-	out, err := runWithTimeout(timeoutMedium, "bd", args...)
-	if err != nil {
-		if len(out) > 0 {
-			if issues, parseErr := parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir)); parseErr == nil {
-				return issues, nil
-			}
-		}
-		return nil, wrapExitError("bd list --json", err)
+// FetchActiveIssues fetches only non-closed issues. Used by the poll loop.
+func FetchActiveIssues(store beadstore.Store) ([]Issue, error) {
+	if store == nil {
+		return nil, fmt.Errorf("bead store is nil")
 	}
-	return parseIssuesCLIOutput(out, LoadIssuePrefix(projectDir))
+	issues, err := FetchIssues(store)
+	if err != nil {
+		return nil, err
+	}
+	active := issues[:0]
+	for _, issue := range issues {
+		if issue.Status != StatusClosed {
+			active = append(active, issue)
+		}
+	}
+	return active, nil
+}
+
+// FetchRecentClosed fetches the N most recently closed issues.
+func FetchRecentClosed(store beadstore.Store, limit int) ([]Issue, error) {
+	if store == nil {
+		return nil, fmt.Errorf("bead store is nil")
+	}
+	beads, err := store.Closed(context.Background(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("fetch closed beads: %w", err)
+	}
+	return issuesFromBeads(beads)
+}
+
+// FetchAllClosed fetches all closed issues (for background hydration).
+func FetchAllClosed(store beadstore.Store) ([]Issue, error) {
+	issues, err := FetchIssues(store)
+	if err != nil {
+		return nil, err
+	}
+	closed := issues[:0]
+	for _, issue := range issues {
+		if issue.Status == StatusClosed {
+			closed = append(closed, issue)
+		}
+	}
+	return closed, nil
+}
+
+func parseIssuesJSONL(out []byte) ([]Issue, error) {
+	var issues []Issue
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		bead, err := parseExportBead(line)
+		if err != nil {
+			return nil, fmt.Errorf("parse bead export: %w", err)
+		}
+		issue, err := issueFromBead(bead)
+		if err != nil {
+			return nil, err
+		}
+		issues = append(issues, issue)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan bead export: %w", err)
+	}
+	SortIssues(issues)
+	return issues, nil
+}
+
+func parseExportBead(line []byte) (protocol.Bead, error) {
+	var row struct {
+		protocol.Bead
+		NativeParentID string `json:"parent_id"`
+		NativeType     string `json:"type"`
+	}
+	if err := json.Unmarshal(line, &row); err != nil {
+		return protocol.Bead{}, err
+	}
+	bead := row.Bead
+	if bead.Epic == "" {
+		bead.Epic = row.NativeParentID
+	}
+	if bead.Type == "" {
+		bead.Type = row.NativeType
+	}
+	return bead, nil
+}
+
+func issuesFromBeads(beads []protocol.Bead) ([]Issue, error) {
+	issues := make([]Issue, 0, len(beads))
+	seen := make(map[string]struct{}, len(beads))
+	for _, bead := range beads {
+		if _, ok := seen[bead.ID]; ok {
+			continue
+		}
+		seen[bead.ID] = struct{}{}
+		issue, err := issueFromBead(bead)
+		if err != nil {
+			return nil, err
+		}
+		issues = append(issues, issue)
+	}
+	SortIssues(issues)
+	return issues, nil
+}
+
+func issueFromBead(bead protocol.Bead) (Issue, error) {
+	createdAt, err := parseBeadTime(bead.CreatedAt)
+	if err != nil {
+		return Issue{}, fmt.Errorf("parse created_at for %s: %w", bead.ID, err)
+	}
+	updatedAt, err := parseBeadTime(bead.UpdatedAt)
+	if err != nil {
+		return Issue{}, fmt.Errorf("parse updated_at for %s: %w", bead.ID, err)
+	}
+	closedAt, err := parseOptionalBeadTime(bead.ClosedAt)
+	if err != nil {
+		return Issue{}, fmt.Errorf("parse closed_at for %s: %w", bead.ID, err)
+	}
+	deferUntil, err := parseOptionalBeadTime(bead.DeferUntil)
+	if err != nil {
+		return Issue{}, fmt.Errorf("parse defer_until for %s: %w", bead.ID, err)
+	}
+	return Issue{
+		ID:                 bead.ID,
+		Title:              bead.Title,
+		Description:        bead.Description,
+		Status:             Status(bead.Status),
+		Priority:           Priority(bead.Priority),
+		IssueType:          IssueType(bead.Type),
+		ParentIDValue:      bead.Epic,
+		Owner:              bead.Owner,
+		CreatedAt:          createdAt,
+		UpdatedAt:          updatedAt,
+		ClosedAt:           closedAt,
+		CloseReason:        bead.CloseReason,
+		Dependencies:       dependenciesFromBead(bead.Dependencies),
+		Notes:              bead.Notes,
+		AcceptanceCriteria: bead.AcceptanceCriteria,
+		Labels:             append([]string(nil), bead.Labels...),
+		DeferUntil:         deferUntil,
+		Metadata:           metadataFromBead(bead.Metadata),
+	}, nil
+}
+
+func dependenciesFromBead(deps []protocol.Dependency) []Dependency {
+	if len(deps) == 0 {
+		return nil
+	}
+	out := make([]Dependency, len(deps))
+	for i, dep := range deps {
+		out[i] = Dependency{
+			IssueID:     dep.IssueID,
+			DependsOnID: dep.DependsOnID,
+			Type:        dep.Type,
+		}
+	}
+	return out
+}
+
+func metadataFromBead(metadata map[string]any) map[string]interface{} {
+	if metadata == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		out[key] = value
+	}
+	return out
+}
+
+func parseBeadTime(raw string) (time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return time.Time{}, nil
+	}
+	return parseStoreTime(raw)
+}
+
+func parseOptionalBeadTime(raw string) (*time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parsed, err := parseStoreTime(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func parseStoreTime(raw string) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed, nil
+	}
+	return time.Parse(time.RFC3339, raw)
 }
 
 // ParseIssuesJSON parses Beads/Oro issue arrays through mg's CLI JSON path.
@@ -226,9 +394,9 @@ func issuePrefixFromID(id string) string {
 	return prefix
 }
 
-// FetchCurrentIssueID runs `bd show --current --json` and returns the active issue ID.
+// FetchCurrentIssueIDCLI runs `bd show --current --json` and returns the active issue ID.
 // Returns ("", nil) if no current issue exists (bd exits non-zero).
-func FetchCurrentIssueID() (string, error) {
+func FetchCurrentIssueIDCLI() (string, error) {
 	out, err := runWithTimeout(timeoutShort, "bd", "show", "--current", "--json")
 	if err != nil {
 		return "", nil // bd exits non-zero when no current issue — not an error
@@ -281,10 +449,29 @@ func FetchDoctorDiagnostics() (*DoctorResult, error) {
 	return &result, nil
 }
 
-// FetchIssueDetail runs `bd show <id> --long --json` and returns the enriched issue.
+// FetchIssueDetail loads a single issue from the bead store.
+func FetchIssueDetail(store beadstore.Store, issueID string) (*Issue, error) {
+	if store == nil {
+		return nil, fmt.Errorf("bead store is nil")
+	}
+	bead, err := store.Show(context.Background(), issueID)
+	if err != nil {
+		return nil, fmt.Errorf("show bead: %w", err)
+	}
+	if bead == nil {
+		return nil, fmt.Errorf("bead %s not found", issueID)
+	}
+	issue, err := issueFromBead(*bead)
+	if err != nil {
+		return nil, err
+	}
+	return &issue, nil
+}
+
+// FetchIssueDetailCLI runs `bd show <id> --long --json` and returns the enriched issue.
 // Returns fields not available from bd list: notes, design, acceptance_criteria.
 // The --long flag requests extended metadata (agent identity, gate fields, etc.).
-func FetchIssueDetail(issueID string) (*Issue, error) {
+func FetchIssueDetailCLI(issueID string) (*Issue, error) {
 	out, err := runWithTimeout(timeoutShort, "bd", "show", issueID, "--long", "--json")
 	if err != nil {
 		return nil, wrapExitError("bd show", err)
@@ -299,12 +486,12 @@ func FetchIssueDetail(issueID string) (*Issue, error) {
 	return &issues[0], nil
 }
 
-// FetchIssuesNow returns a tea.Cmd that fetches active issues via bd CLI
+// FetchIssuesNow returns a tea.Cmd that fetches active issues via Store
 // immediately (no timer delay). Emits ActiveIssuesMsg for merge with cached
 // closed issues, or FileWatchErrorMsg on failure.
-func FetchIssuesNow(projectDir string) tea.Cmd {
+func FetchIssuesNow(store beadstore.Store) tea.Cmd {
 	return func() tea.Msg {
-		issues, err := FetchActiveIssuesCLI(projectDir)
+		issues, err := FetchActiveIssues(store)
 		if err != nil {
 			return FileWatchErrorMsg{Err: err}
 		}

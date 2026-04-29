@@ -5,6 +5,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"oro/pkg/beadstore"
 )
 
 // FileChangedMsg signals that the issues file was modified on disk.
@@ -56,12 +58,12 @@ func WatchFile(path string, lastMod time.Time) tea.Cmd {
 	})
 }
 
-// PollCLI polls bd list --json on a timer and emits ActiveIssuesMsg.
+// PollCLI polls the bead store on a timer and emits ActiveIssuesMsg.
 // Only fetches non-closed issues to keep the poll fast (5 active vs 1150+ closed).
 // The app merges the active snapshot with its cached closed issues.
-func PollCLI(projectDir string) tea.Cmd {
+func PollCLI(store beadstore.Store) tea.Cmd {
 	return tea.Tick(cliPollInterval, func(time.Time) tea.Msg {
-		issues, err := FetchActiveIssuesCLI(projectDir)
+		issues, err := FetchActiveIssues(store)
 		if err != nil {
 			return FileWatchErrorMsg{Err: err}
 		}
@@ -81,11 +83,11 @@ type ClosedIssuesMsg struct {
 	Err    error
 }
 
-// FetchAllClosed returns a tea.Cmd that fetches all closed issues in the
+// FetchAllClosedCmd returns a tea.Cmd that fetches all closed issues in the
 // background. Used to hydrate the full closed set after startup.
-func FetchAllClosed(projectDir string) tea.Cmd {
+func FetchAllClosedCmd(store beadstore.Store) tea.Cmd {
 	return func() tea.Msg {
-		issues, err := FetchAllClosedCLI(projectDir)
+		issues, err := FetchAllClosed(store)
 		if err != nil {
 			return ClosedIssuesMsg{Err: err}
 		}

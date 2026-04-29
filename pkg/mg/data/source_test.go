@@ -1,12 +1,15 @@
 package data
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"oro/pkg/beadstore"
+	"oro/pkg/protocol"
 )
 
 func TestSourceLabelJSONL(t *testing.T) {
@@ -28,12 +31,12 @@ func TestSourceLabelJSONL(t *testing.T) {
 		{
 			name: "CLI mode",
 			src:  Source{Mode: SourceCLI},
-			want: "bd list",
+			want: "bead store",
 		},
 		{
 			name: "CLI mode ignores path",
 			src:  Source{Mode: SourceCLI, Path: "/foo/bar"},
-			want: "bd list",
+			want: "bead store",
 		},
 	}
 
@@ -88,6 +91,95 @@ func TestBdListArgs(t *testing.T) {
 	}
 }
 
+func TestSourceFetchActiveIssuesUsesFakeStore(t *testing.T) {
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "mg-2", Title: "open task", Status: "open", Priority: 2, Type: "task", UpdatedAt: "2026-03-02T00:00:00Z"},
+		protocol.Bead{ID: "mg-1", Title: "in flight", Status: "in_progress", Priority: 1, Type: "bug", Epic: "mg-parent", UpdatedAt: "2026-03-03T00:00:00.123456Z"},
+		protocol.Bead{ID: "mg-3", Title: "blocked task", Status: "blocked", Priority: 3, Type: "feature", UpdatedAt: "2026-03-01T00:00:00Z"},
+		protocol.Bead{ID: "mg-5", Title: "deferred task", Status: "open", Priority: 4, Type: "task", DeferUntil: "2026-04-30T00:00:00Z", UpdatedAt: "2026-03-05T00:00:00Z"},
+		protocol.Bead{ID: "mg-4", Title: "closed task", Status: "closed", Priority: 0, Type: "task", UpdatedAt: "2026-03-04T00:00:00Z", ClosedAt: "2026-03-04T00:00:00Z"},
+	)
+
+	issues, err := FetchActiveIssues(store)
+	if err != nil {
+		t.Fatalf("FetchActiveIssues() error = %v", err)
+	}
+	gotIDs := sourceIssueIDs(issues)
+	wantIDs := []string{"mg-1", "mg-2", "mg-3", "mg-5"}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("issue IDs = %v, want %v", gotIDs, wantIDs)
+	}
+	if issues[0].IssueType != TypeBug {
+		t.Fatalf("IssueType = %q, want %q", issues[0].IssueType, TypeBug)
+	}
+	if issues[0].ParentIDValue != "mg-parent" || issues[0].ParentID() != "mg-parent" {
+		t.Fatalf("parent = field %q accessor %q, want mg-parent", issues[0].ParentIDValue, issues[0].ParentID())
+	}
+}
+
+func TestSourceFetchIssuesUsesFakeStoreExportForAllIssues(t *testing.T) {
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "mg-1", Title: "open task", Status: "open", Priority: 2, Type: "task", UpdatedAt: "2026-03-01T00:00:00Z"},
+		protocol.Bead{ID: "mg-2", Title: "closed task", Status: "closed", Priority: 1, Type: "bug", UpdatedAt: "2026-03-02T00:00:00Z", ClosedAt: "2026-03-02T00:00:00Z"},
+	)
+
+	issues, err := FetchIssues(store)
+	if err != nil {
+		t.Fatalf("FetchIssues() error = %v", err)
+	}
+	gotIDs := sourceIssueIDs(issues)
+	wantIDs := []string{"mg-1", "mg-2"}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("issue IDs = %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestSourceFetchIssuesAcceptsNativeExportShape(t *testing.T) {
+	store := rawExportStore{
+		FakeStore: beadstore.NewFakeStore(),
+		export:    []byte(`{"id":"child-flat","title":"child","status":"open","priority":1,"type":"task","parent_id":"parent-1","updated_at":"2026-03-01T00:00:00Z"}` + "\n"),
+	}
+
+	issues, err := FetchIssues(store)
+	if err != nil {
+		t.Fatalf("FetchIssues() error = %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("len(issues) = %d, want 1", len(issues))
+	}
+	if issues[0].IssueType != TypeTask {
+		t.Fatalf("IssueType = %q, want %q", issues[0].IssueType, TypeTask)
+	}
+	if issues[0].ParentIDValue != "parent-1" || issues[0].ParentID() != "parent-1" {
+		t.Fatalf("parent = field %q accessor %q, want parent-1", issues[0].ParentIDValue, issues[0].ParentID())
+	}
+}
+
+func TestFetchIssueDetailUsesStoreShow(t *testing.T) {
+	store := beadstore.NewFakeStore(protocol.Bead{
+		ID:                 "mg-1",
+		Title:              "detail",
+		Status:             "open",
+		Priority:           1,
+		Type:               "task",
+		Epic:               "mg-parent",
+		UpdatedAt:          "2026-03-01T00:00:00Z",
+		Notes:              "store notes",
+		AcceptanceCriteria: "store acceptance",
+	})
+
+	issue, err := FetchIssueDetail(store, "mg-1")
+	if err != nil {
+		t.Fatalf("FetchIssueDetail() error = %v", err)
+	}
+	if issue.Notes != "store notes" || issue.AcceptanceCriteria != "store acceptance" {
+		t.Fatalf("detail = notes %q acceptance %q, want store fields", issue.Notes, issue.AcceptanceCriteria)
+	}
+	if issue.ParentID() != "mg-parent" {
+		t.Fatalf("ParentID() = %q, want mg-parent", issue.ParentID())
+	}
+}
+
 func TestParseIssuesCLIOutputRejectsWrongSinglePrefix(t *testing.T) {
 	out := mustMarshalIssues(t, []Issue{
 		{ID: "vv-12", Title: "wrong project", Status: StatusOpen, Priority: PriorityMedium, IssueType: TypeBug},
@@ -120,61 +212,6 @@ func TestParseIssuesCLIOutputAllowsExpectedAndHQPrefixes(t *testing.T) {
 	}
 }
 
-func TestFetchIssuesCLIUsesFlatWithRealBDInvocation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-based fake bd test is not supported on Windows")
-	}
-
-	tmpDir := t.TempDir()
-	projectDir := filepath.Join(tmpDir, "project")
-	beadsDir := filepath.Join(projectDir, ".beads")
-	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("issue-prefix: mg\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	argsPath := filepath.Join(tmpDir, "bd-args.txt")
-	t.Setenv("FAKE_BD_ARGS_FILE", argsPath)
-	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	script := `#!/bin/sh
-printf '%s
-' "$@" > "$FAKE_BD_ARGS_FILE"
-cat <<'EOF'
-[{"id":"mg-2","title":"CLI issue","status":"open","priority":2,"issue_type":"task","created_at":"2026-03-01T00:00:00Z","created_by":"system","updated_at":"2026-03-01T00:00:00Z"}]
-EOF
-`
-	fakeBD := filepath.Join(tmpDir, "bd")
-	if err := os.WriteFile(fakeBD, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	issues, err := FetchIssuesCLI(projectDir)
-	if err != nil {
-		t.Fatalf("FetchIssuesCLI() error = %v", err)
-	}
-	if len(issues) != 1 || issues[0].ID != "mg-2" {
-		t.Fatalf("FetchIssuesCLI() returned %+v, want single mg-2 issue", issues)
-	}
-
-	argsRaw, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("ReadFile(args) error = %v", err)
-	}
-	gotArgs := strings.Fields(string(argsRaw))
-	wantArgs := bdListArgs()
-	if len(gotArgs) != len(wantArgs) {
-		t.Fatalf("argv len = %d, want %d (%q)", len(gotArgs), len(wantArgs), string(argsRaw))
-	}
-	for i, want := range wantArgs {
-		if gotArgs[i] != want {
-			t.Fatalf("argv[%d] = %q, want %q (full: %q)", i, gotArgs[i], want, string(argsRaw))
-		}
-	}
-}
-
 func TestSourceUsesProjectPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -188,23 +225,16 @@ func TestSourceUsesProjectPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// NewSource stores bdExtraArgs
-	extraArgs := []string{"--db=/tmp/test.db"}
-	src := NewSource(tmpDir, extraArgs)
-	if len(src.BdExtraArgs) != len(extraArgs) || src.BdExtraArgs[0] != extraArgs[0] {
-		t.Errorf("BdExtraArgs = %v, want %v", src.BdExtraArgs, extraArgs)
+	store := beadstore.NewFakeStore()
+	src := NewSource(store, tmpDir)
+	if src.Store != store {
+		t.Errorf("Store = %p, want %p", src.Store, store)
 	}
 	if src.ProjectDir != tmpDir {
 		t.Errorf("ProjectDir = %q, want %q", src.ProjectDir, tmpDir)
 	}
 	if src.Mode != SourceCLI {
 		t.Errorf("Mode = %v, want SourceCLI", src.Mode)
-	}
-
-	// nil bdExtraArgs → no extra args (backward compat)
-	srcNoArgs := NewSource(tmpDir, nil)
-	if srcNoArgs.BdExtraArgs != nil {
-		t.Errorf("nil bdExtraArgs should remain nil, got %v", srcNoArgs.BdExtraArgs)
 	}
 
 	// LoadIssuePrefix uses configurable beads dir (not hardcoded .beads)
@@ -220,6 +250,14 @@ func TestSourceUsesProjectPaths(t *testing.T) {
 	}
 }
 
+func sourceIssueIDs(issues []Issue) []string {
+	ids := make([]string, len(issues))
+	for i, issue := range issues {
+		ids[i] = issue.ID
+	}
+	return ids
+}
+
 func mustMarshalIssues(t *testing.T, issues []Issue) []byte {
 	t.Helper()
 	out, err := json.Marshal(issues)
@@ -227,4 +265,13 @@ func mustMarshalIssues(t *testing.T, issues []Issue) []byte {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	return out
+}
+
+type rawExportStore struct {
+	*beadstore.FakeStore
+	export []byte
+}
+
+func (s rawExportStore) Export(ctx context.Context) ([]byte, error) {
+	return s.export, nil
 }

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/mg/data"
 )
 
@@ -230,16 +233,42 @@ func TestResolveSource_BeadsDirOnPath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// bd IS on PATH; findBeadsDir will find dir, so SourceCLI should be returned.
-	if !bdOnPath() {
-		t.Skip("bd not on PATH, skipping SourceCLI test")
+	if err := os.WriteFile(filepath.Join(dir, ".beads", "issues.jsonl"), []byte(`{"id":"stale-jsonl","title":"stale","status":"open","priority":1,"type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", t.TempDir())
+	store, err := beadstore.OpenSQLiteStore(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+	if _, err := store.Create(context.Background(), beadstore.CreateParams{
+		ID:       "mg-store",
+		Title:    "store issue",
+		Type:     "task",
+		Priority: 1,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	t.Setenv("PATH", "")
 	got := resolveSource(dir, "")
 	if got.Mode != data.SourceCLI {
 		t.Fatalf("expected SourceCLI, got %v", got.Mode)
 	}
 	if got.ProjectDir != dir {
 		t.Fatalf("expected ProjectDir %q, got %q", dir, got.ProjectDir)
+	}
+	if got.Store == nil {
+		t.Fatalf("expected store-backed source when bd is absent")
+	}
+	issues, err := data.FetchActiveIssues(got.Store)
+	if err != nil {
+		t.Fatalf("FetchActiveIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "mg-store" {
+		t.Fatalf("issues = %+v, want mg-store from state db", issues)
 	}
 }
 
@@ -256,6 +285,8 @@ func TestResolveSource_BeadsFileNoBd(t *testing.T) {
 
 	// Remove bd from PATH so bdOnPath returns false.
 	t.Setenv("PATH", "")
+	t.Setenv("ORO_DB_PATH", "")
+	t.Setenv("ORO_HOME", t.TempDir())
 	got := resolveSource(dir, "")
 	if got.Mode != data.SourceJSONL {
 		t.Fatalf("expected SourceJSONL, got %v", got.Mode)
@@ -268,9 +299,180 @@ func TestResolveSource_BeadsFileNoBd(t *testing.T) {
 func TestResolveSource_Nothing(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", "")
+	t.Setenv("ORO_DB_PATH", "")
+	t.Setenv("ORO_PROJECT", "")
 	got := resolveSource(dir, "")
 	if got.Mode != data.SourceJSONL || got.Path != "" {
 		t.Fatalf("expected empty SourceJSONL, got %+v", got)
+	}
+}
+
+func TestResolveSource_UsesOROProjectScopedStore(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "env-proj")
+	t.Setenv("ORO_DB_PATH", "")
+	t.Setenv("PATH", "")
+	dbPath := filepath.Join(oroHome, "projects", "env-proj", "state.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := beadstore.OpenSQLiteStore(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+	if _, err := store.Create(context.Background(), beadstore.CreateParams{
+		ID:       "mg-env",
+		Title:    "env project issue",
+		Type:     "task",
+		Priority: 1,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := resolveSource(dir, "")
+	if got.Mode != data.SourceCLI || got.Store == nil {
+		t.Fatalf("source = %+v, want store-backed SourceCLI", got)
+	}
+	issues, err := data.FetchActiveIssues(got.Store)
+	if err != nil {
+		t.Fatalf("FetchActiveIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "mg-env" {
+		t.Fatalf("issues = %+v, want mg-env from env-scoped db", issues)
+	}
+}
+
+func TestResolveSource_StealthProjectStore(t *testing.T) {
+	dir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_DB_PATH", "")
+	t.Setenv("PATH", "")
+	hash, err := projectHash(dir)
+	if err != nil {
+		t.Fatalf("projectHash: %v", err)
+	}
+	stealthDir := filepath.Join(oroHome, "projects", "s-"+hash)
+	if err := os.MkdirAll(stealthDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stealthDir, "config.yaml"), []byte("mode: stealth\nproject: stealth\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := beadstore.OpenSQLiteStore(context.Background(), filepath.Join(stealthDir, "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+	if _, err := store.Create(context.Background(), beadstore.CreateParams{
+		ID:       "mg-stealth",
+		Title:    "stealth issue",
+		Type:     "task",
+		Priority: 1,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := resolveSource(dir, "")
+	if got.Mode != data.SourceCLI || got.Store == nil {
+		t.Fatalf("source = %+v, want stealth store-backed SourceCLI", got)
+	}
+	issues, err := data.FetchActiveIssues(got.Store)
+	if err != nil {
+		t.Fatalf("FetchActiveIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "mg-stealth" {
+		t.Fatalf("issues = %+v, want mg-stealth from stealth db", issues)
+	}
+}
+
+func TestResolveSource_ReportsStoreOpenErrorWithoutJSONLFallback(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORO_DB_PATH", filepath.Join(t.TempDir(), "missing", "state.db"))
+	t.Setenv("ORO_PROJECT", "")
+
+	got := resolveSource(dir, "")
+	if got.Err == nil {
+		t.Fatalf("expected store open error, got %+v", got)
+	}
+	if _, err := loadInitialIssues(got); err == nil {
+		t.Fatal("loadInitialIssues succeeded, want store open error")
+	}
+}
+
+func TestMgCmd_ReportsStoreOpenError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORO_DB_PATH", filepath.Join(t.TempDir(), "missing", "state.db"))
+	t.Setenv("ORO_PROJECT", "")
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldwd)
+	})
+
+	cmd := newMgCmd()
+	cmd.SetArgs([]string{"--status"})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute succeeded, want store open error")
+	}
+	if !strings.Contains(err.Error(), "open mg bead store") {
+		t.Fatalf("error = %v, want store open context", err)
+	}
+}
+
+func TestResolveSource_GlobalStoreFallback(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_DB_PATH", "")
+	t.Setenv("PATH", "")
+	if err := os.WriteFile(filepath.Join(dir, ".beads", "issues.jsonl"), []byte(`{"id":"stale-jsonl","title":"stale","status":"open","priority":1,"type":"task"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := beadstore.OpenSQLiteStore(context.Background(), filepath.Join(oroHome, "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+	if _, err := store.Create(context.Background(), beadstore.CreateParams{
+		ID:       "mg-global",
+		Title:    "global issue",
+		Type:     "task",
+		Priority: 1,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := resolveSource(dir, "")
+	if got.Mode != data.SourceCLI || got.Store == nil {
+		t.Fatalf("source = %+v, want global store-backed SourceCLI", got)
+	}
+	issues, err := data.FetchActiveIssues(got.Store)
+	if err != nil {
+		t.Fatalf("FetchActiveIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "mg-global" {
+		t.Fatalf("issues = %+v, want mg-global from global db", issues)
 	}
 }
 
