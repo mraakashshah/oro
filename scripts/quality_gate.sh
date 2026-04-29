@@ -128,11 +128,20 @@ parallel_checks() {
 				printf '%b▶%b %-30s%b✓ PASS%b\n' "$BLUE" "$NC" "$name" "$GREEN" "$NC" >"${pfx}.display"
 				echo "pass" >"${pfx}.rc"
 			else
-				{
-					printf '%b▶%b %-30s%b✗ FAIL%b\n' "$BLUE" "$NC" "$name" "$RED" "$NC"
-					head -20 "$cmd_out"
-				} >"${pfx}.display"
-				echo "fail" >"${pfx}.rc"
+				local status=$?
+				if [ "$status" -eq 77 ]; then
+					{
+						printf '%b▶%b %-30s%bSKIP%b\n' "$BLUE" "$NC" "$name" "$YELLOW" "$NC"
+						head -20 "$cmd_out"
+					} >"${pfx}.display"
+					echo "pass" >"${pfx}.rc"
+				else
+					{
+						printf '%b▶%b %-30s%b✗ FAIL%b\n' "$BLUE" "$NC" "$name" "$RED" "$NC"
+						head -20 "$cmd_out"
+					} >"${pfx}.display"
+					echo "fail" >"${pfx}.rc"
+				fi
 			fi
 		) &
 		pids+=($!)
@@ -152,6 +161,57 @@ parallel_checks() {
 		fi
 		j=$((j + 1))
 	done
+}
+
+# shellcheck disable=SC2329
+read_go_formatters_from_config() {
+	[ -f ".oro/config.yaml" ] || return 1
+	awk '
+		/^[[:space:]]*languages:[[:space:]]*$/ { in_languages=1; next }
+		in_languages && /^[^[:space:]#][^:]*:/ { in_languages=0 }
+		in_languages && /^[[:space:]]{2}go:[[:space:]]*$/ { in_go=1; next }
+		in_go && /^[[:space:]]{2}[A-Za-z0-9_-]+:[[:space:]]*$/ { in_go=0; in_formatters=0 }
+		in_go && /^[[:space:]]{4}formatters:[[:space:]]*$/ { in_formatters=1; next }
+		in_formatters && /^[[:space:]]{6}-[[:space:]]*/ {
+			tool=$0
+			sub(/^[[:space:]]*-[[:space:]]*/, "", tool)
+			sub(/[[:space:]#].*$/, "", tool)
+			if (tool ~ /^[A-Za-z0-9_.-]+$/) print tool
+			next
+		}
+		in_formatters && /^[[:space:]]{4}[A-Za-z0-9_-]+:/ { in_formatters=0 }
+	' ".oro/config.yaml"
+}
+
+# shellcheck disable=SC2329
+go_formatter_check() {
+	local tool="$1"
+	local runner=""
+	if go tool -n "$tool" >/dev/null 2>&1; then
+		runner="go-tool"
+	elif command -v "$tool" >/dev/null 2>&1; then
+		runner="path"
+	else
+		echo "SKIP: $tool not installed"
+		return 77
+	fi
+
+	local -a dirs=()
+	local dir
+	for dir in cmd internal pkg; do
+		if [ -d "$dir" ]; then
+			dirs+=("$dir")
+		fi
+	done
+	if [ "${#dirs[@]}" -eq 0 ]; then
+		return 0
+	fi
+
+	if [ "$runner" = "go-tool" ]; then
+		test -z "$(go tool "$tool" -l "${dirs[@]}" 2>/dev/null)"
+	else
+		test -z "$("$tool" -l "${dirs[@]}" 2>/dev/null)"
+	fi
 }
 
 # =============================================================================
@@ -179,14 +239,22 @@ lane_go() {
 		return
 	fi
 
-	local GO_DIRS="cmd internal pkg"
 	make stage-assets 2>/dev/null || true
 
 	# --- Tier 1: Formatting (parallel) ---
 	header "GO TIER 1: FORMATTING"
-	parallel_checks \
-		"gofumpt" "test -z \"\$(go tool gofumpt -l $GO_DIRS 2>/dev/null)\"" \
-		"goimports" "test -z \"\$(go tool goimports -l $GO_DIRS 2>/dev/null)\""
+	local -a go_formatters=()
+	mapfile -t go_formatters < <(read_go_formatters_from_config || true)
+	if [ "${#go_formatters[@]}" -eq 0 ]; then
+		go_formatters=("gofumpt" "goimports")
+	fi
+
+	local -a tier1_checks=()
+	local formatter
+	for formatter in "${go_formatters[@]}"; do
+		tier1_checks+=("$formatter" "go_formatter_check '$formatter'")
+	done
+	parallel_checks "${tier1_checks[@]}"
 	pass=$((pass + TIER_PASS))
 	fail=$((fail + TIER_FAIL))
 	if [ "$fail" -gt 0 ]; then

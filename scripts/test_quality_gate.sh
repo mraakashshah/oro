@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+if [ -n "${LC_ALL:-}" ] && ! locale -a 2>/dev/null | grep -qx "$LC_ALL"; then
+	export LC_ALL=C
+	export LANG=C
+fi
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 BLUE='\033[0;34m'
