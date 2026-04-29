@@ -18,10 +18,10 @@ func TestHandoffContinuationInheritsAC(t *testing.T) {
 	spawnMock.verdict = "Root cause: context limit exceeded"
 	spawnMock.mu.Unlock()
 
-	// Setup parent bead with acceptance criteria in mockBeadSource.
-	beadSrc, ok := d.beads.(*mockBeadSource)
+	// Setup parent bead with acceptance criteria in fakeBeadStore.
+	beadSrc, ok := d.beads.(*fakeBeadStore)
 	if !ok {
-		t.Fatal("beads is not *mockBeadSource")
+		t.Fatal("beads is not *fakeBeadStore")
 	}
 	beadSrc.mu.Lock()
 	if beadSrc.shown == nil {
@@ -103,9 +103,9 @@ func TestHandoffContinuation_NoAC(t *testing.T) {
 	spawnMock.mu.Unlock()
 
 	// Setup parent bead WITHOUT acceptance criteria.
-	beadSrc, ok := d.beads.(*mockBeadSource)
+	beadSrc, ok := d.beads.(*fakeBeadStore)
 	if !ok {
-		t.Fatal("beads is not *mockBeadSource")
+		t.Fatal("beads is not *fakeBeadStore")
 	}
 	beadSrc.mu.Lock()
 	if beadSrc.shown == nil {

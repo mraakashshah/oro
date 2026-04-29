@@ -57,7 +57,7 @@ func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
 	logOut = &logs
 	defer func() { logOut = origLogOut }()
 
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &fakeBeadStore{showDetail: testBead()}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	deps := &workDeps{
 		beadSrc:  bs,
@@ -327,7 +327,7 @@ func TestWorkNoCommits_AlwaysFails(t *testing.T) {
 	// Cmd: field), oro work must return an error. The general QG passing on
 	// a clean checkout is NOT evidence of AC satisfaction.
 
-	bs := &mockBeadSource{showDetail: testBead()} // testBead has AC="Tests pass" (unparseable)
+	bs := &fakeBeadStore{showDetail: testBead()} // testBead has AC="Tests pass" (unparseable)
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
@@ -389,7 +389,7 @@ func TestWorkNoCommits_ACAlreadySatisfied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bs := &mockBeadSource{showDetail: bead}
+	bs := &fakeBeadStore{showDetail: bead}
 	wt := &mockWorktreeManager{createPath: wtDir, createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
@@ -441,7 +441,7 @@ func TestWorkNoCommits_ACAlreadySatisfied_TestFileMissing(t *testing.T) {
 
 	wtDir := t.TempDir() // empty — no test file
 
-	bs := &mockBeadSource{showDetail: bead}
+	bs := &fakeBeadStore{showDetail: bead}
 	wt := &mockWorktreeManager{createPath: wtDir, createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
@@ -489,7 +489,7 @@ func TestWorkNoCommits_ACAlreadySatisfied_CmdFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bs := &mockBeadSource{showDetail: bead}
+	bs := &fakeBeadStore{showDetail: bead}
 	wt := &mockWorktreeManager{createPath: wtDir, createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
@@ -654,7 +654,7 @@ func TestWorkDepsMemoryAndCodeIndex(t *testing.T) {
 			createBranch: "bead/oro-test",
 		}
 
-		bs := &mockBeadSource{showDetail: testBead()}
+		bs := &fakeBeadStore{showDetail: testBead()}
 		deps := &workDeps{
 			beadSrc:    bs,
 			wtMgr:      spyWt,
@@ -1087,7 +1087,7 @@ func TestWorkCommandEpicBranch(t *testing.T) {
 
 	t.Run("hasNewWork uses targetBranch from Epic not main", func(t *testing.T) {
 		var capturedTarget string
-		bs := &mockBeadSource{
+		bs := &fakeBeadStore{
 			showDetail: epicBead,
 			shownByID: map[string]*protocol.BeadDetail{
 				"oro-child": epicBead,
@@ -1163,7 +1163,7 @@ func TestWorkCommandEpicBranch(t *testing.T) {
 			Epic:               "",
 		}
 		var capturedTarget string
-		bs := &mockBeadSource{showDetail: standaloneBead}
+		bs := &fakeBeadStore{showDetail: standaloneBead}
 		wt := &mockWorktreeManager{
 			createPath:   "/tmp/wt-standalone",
 			createBranch: protocol.BranchPrefix + "oro-standalone",
@@ -1220,7 +1220,7 @@ func TestExecuteWork_NonEpicParent_UsesMain(t *testing.T) {
 		Epic:               "task-parent", // parent is a task, not an epic
 	}
 
-	bs := &mockBeadSource{
+	bs := &fakeBeadStore{
 		showDetail: childBead,
 		shownByID: map[string]*protocol.BeadDetail{
 			"child-bead":  childBead,
@@ -1599,7 +1599,7 @@ func TestWorkDeps_DefaultBranch(t *testing.T) {
 			createBranch:         "bead/oro-test",
 		}
 
-		bs := &mockBeadSource{showDetail: testBead()}
+		bs := &fakeBeadStore{showDetail: testBead()}
 		// Load DefaultBranch from config, like newProductionDeps does.
 		defaultBranch := readDefaultBranch(".")
 		if defaultBranch == "" {

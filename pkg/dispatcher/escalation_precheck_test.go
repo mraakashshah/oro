@@ -21,7 +21,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 		name        string
 		escType     string
 		beadID      string
-		setupBead   func(*mockBeadSource)
+		setupBead   func(*fakeBeadStore)
 		setupWorker func(*Dispatcher)
 		want        bool
 	}{
@@ -29,7 +29,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 			name:    "MISSING_AC resolved - AC now populated",
 			escType: "MISSING_AC",
 			beadID:  "oro-test1",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				if m.shown == nil {
 					m.shown = make(map[string]*protocol.BeadDetail)
 				}
@@ -44,7 +44,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 			name:    "MISSING_AC still missing - no AC",
 			escType: "MISSING_AC",
 			beadID:  "oro-test2",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				if m.shown == nil {
 					m.shown = make(map[string]*protocol.BeadDetail)
 				}
@@ -59,7 +59,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 			name:    "MISSING_AC closed bead - do not retry",
 			escType: "MISSING_AC",
 			beadID:  "oro-closed1",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				if m.shown == nil {
 					m.shown = make(map[string]*protocol.BeadDetail)
 				}
@@ -96,7 +96,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 			name:    "WORKER_CRASH resolved - bead no longer in_progress",
 			escType: "WORKER_CRASH",
 			beadID:  "oro-test5",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				if m.shown == nil {
 					m.shown = make(map[string]*protocol.BeadDetail)
 				}
@@ -111,7 +111,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 			name:    "STUCK resolved - bead status changed",
 			escType: "STUCK",
 			beadID:  "oro-test6",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				if m.shown == nil {
 					m.shown = make(map[string]*protocol.BeadDetail)
 				}
@@ -126,7 +126,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 			name:    "MERGE_CONFLICT resolved - bead closed",
 			escType: "MERGE_CONFLICT",
 			beadID:  "oro-test7",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				if m.shown == nil {
 					m.shown = make(map[string]*protocol.BeadDetail)
 				}
@@ -141,7 +141,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 			name:    "PRIORITY_CONTENTION resolved - bead in_progress",
 			escType: "PRIORITY_CONTENTION",
 			beadID:  "oro-test8",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				if m.shown == nil {
 					m.shown = make(map[string]*protocol.BeadDetail)
 				}
@@ -168,7 +168,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 			name:    "beads.Show error - always retry",
 			escType: "MISSING_AC",
 			beadID:  "oro-nonexistent",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				// Bead does not exist in shown map - Show will return default
 			},
 			want: false, // should NOT retry - default has AC
@@ -184,7 +184,7 @@ func TestShouldRetryEscalation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create mock bead source
-			beadSrc := &mockBeadSource{
+			beadSrc := &fakeBeadStore{
 				shown: make(map[string]*protocol.BeadDetail),
 			}
 			if tt.setupBead != nil {
@@ -217,13 +217,13 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 	tests := []struct {
 		name      string
 		beadID    string
-		setupBead func(*mockBeadSource)
+		setupBead func(*fakeBeadStore)
 		want      bool // true = retry (unresolved), false = resolved
 	}{
 		{
 			name:   "resolved - bead promoted to epic",
 			beadID: "oro-epic1",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				m.shown["oro-epic1"] = &protocol.BeadDetail{
 					ID:                 "oro-epic1",
 					Type:               "epic",
@@ -235,7 +235,7 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 		{
 			name:   "resolved - module count dropped to 2",
 			beadID: "oro-small1",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				m.shown["oro-small1"] = &protocol.BeadDetail{
 					ID:                 "oro-small1",
 					Type:               "task",
@@ -247,7 +247,7 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 		{
 			name:   "unresolved - still oversized with 3 modules",
 			beadID: "oro-big1",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				m.shown["oro-big1"] = &protocol.BeadDetail{
 					ID:                 "oro-big1",
 					Type:               "task",
@@ -259,7 +259,7 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 		{
 			name:   "resolved - closed bead stops retry",
 			beadID: "oro-closed1",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				m.shown["oro-closed1"] = &protocol.BeadDetail{
 					ID:                 "oro-closed1",
 					Type:               "task",
@@ -272,7 +272,7 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 		{
 			name:   "resolved - bead has children (already decomposed)",
 			beadID: "oro-decomp1",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				m.shown["oro-decomp1"] = &protocol.BeadDetail{
 					ID:                 "oro-decomp1",
 					Type:               "task",
@@ -285,7 +285,7 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 		{
 			name:   "retry on Show error",
 			beadID: "oro-missing",
-			setupBead: func(m *mockBeadSource) {
+			setupBead: func(m *fakeBeadStore) {
 				m.showErr = errTestShow
 			},
 			want: true, // error → retry
@@ -294,7 +294,7 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			beadSrc := &mockBeadSource{
+			beadSrc := &fakeBeadStore{
 				shown: make(map[string]*protocol.BeadDetail),
 			}
 			if tt.setupBead != nil {
@@ -357,7 +357,7 @@ func TestRetryPendingEscalations_AutoAck(t *testing.T) {
 	}
 
 	// Setup mock bead source
-	beadSrc := &mockBeadSource{
+	beadSrc := &fakeBeadStore{
 		shown: map[string]*protocol.BeadDetail{
 			"oro-resolved": {
 				ID:                 "oro-resolved",

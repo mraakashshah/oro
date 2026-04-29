@@ -21,8 +21,9 @@ import (
 
 // --- Mock implementations ---
 
-// mockBeadSource records calls and returns pre-configured results.
-type mockBeadSource struct {
+// fakeBeadStore records calls and returns pre-configured results.
+type fakeBeadStore struct {
+	*beadstore.FakeStore
 	showDetail *protocol.BeadDetail
 	showErr    error
 	shownByID  map[string]*protocol.BeadDetail // per-ID overrides; checked before showDetail
@@ -32,53 +33,96 @@ type mockBeadSource struct {
 	closeErr   error
 }
 
-func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) { return nil, nil }
-func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
+func (m *fakeBeadStore) ensureStore() {
+	if m.FakeStore != nil {
+		return
+	}
+	var seed []protocol.Bead
+	if m.showDetail != nil {
+		seed = append(seed, *m.showDetail)
+	}
+	for _, detail := range m.shownByID {
+		if detail != nil {
+			seed = append(seed, *detail)
+		}
+	}
+	m.FakeStore = beadstore.NewFakeStore(seed...)
+}
+
+func (m *fakeBeadStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
+	m.ensureStore()
+	return m.FakeStore.Ready(ctx)
+}
+
+func (m *fakeBeadStore) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
 	if m.showErr != nil {
 		return nil, m.showErr
 	}
-	if detail, ok := m.shownByID[id]; ok {
-		return detail, nil
-	}
-	return m.showDetail, nil
+	m.ensureStore()
+	return m.FakeStore.Show(ctx, id)
 }
 
-func (m *mockBeadSource) Close(_ context.Context, id, _ string) error {
+func (m *fakeBeadStore) Close(ctx context.Context, id, reason string) error {
 	m.closeID = id
-	return m.closeErr
+	if m.closeErr != nil {
+		return m.closeErr
+	}
+	m.ensureStore()
+	return m.FakeStore.Close(ctx, id, reason)
 }
 
-func (m *mockBeadSource) Create(_ context.Context, _ beadstore.CreateParams) (*protocol.Bead, error) {
-	return &protocol.Bead{ID: "oro-new"}, nil
+func (m *fakeBeadStore) Create(ctx context.Context, params beadstore.CreateParams) (*protocol.Bead, error) {
+	m.ensureStore()
+	return m.FakeStore.Create(ctx, params)
 }
 
-func (m *mockBeadSource) Update(_ context.Context, _ string, params beadstore.UpdateParams) error {
+func (m *fakeBeadStore) Update(ctx context.Context, id string, params beadstore.UpdateParams) error {
 	if params.Status != nil {
 		m.updates = append(m.updates, *params.Status)
 	}
-	return m.updateErr
+	if m.updateErr != nil {
+		return m.updateErr
+	}
+	m.ensureStore()
+	return m.FakeStore.Update(ctx, id, params)
 }
 
-func (m *mockBeadSource) AllChildrenClosed(_ context.Context, _ string) (bool, error) {
+func (m *fakeBeadStore) AllChildrenClosed(_ context.Context, _ string) (bool, error) {
 	return true, nil
 }
 
-func (m *mockBeadSource) HasChildren(_ context.Context, _ string) (bool, error) {
+func (m *fakeBeadStore) HasChildren(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
 
-func (m *mockBeadSource) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
+func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
 	return []protocol.Bead{}, nil
 }
-func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) { return nil, nil }
-func (m *mockBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error)    { return nil, nil }
-func (m *mockBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
-	return nil, nil
+func (m *fakeBeadStore) InProgress(ctx context.Context) ([]protocol.Bead, error) {
+	m.ensureStore()
+	return m.FakeStore.InProgress(ctx)
 }
-func (m *mockBeadSource) Sync(_ context.Context) error               { return nil }
-func (m *mockBeadSource) Export(_ context.Context) ([]byte, error)   { return nil, nil }
-func (m *mockBeadSource) Defer(_ context.Context, _, _ string) error { return nil }
-func (m *mockBeadSource) Undefer(_ context.Context, _ string) error  { return nil }
+func (m *fakeBeadStore) Blocked(ctx context.Context) ([]protocol.Bead, error) {
+	m.ensureStore()
+	return m.FakeStore.Blocked(ctx)
+}
+func (m *fakeBeadStore) Closed(ctx context.Context, limit int) ([]protocol.Bead, error) {
+	m.ensureStore()
+	return m.FakeStore.Closed(ctx, limit)
+}
+func (m *fakeBeadStore) Sync(_ context.Context) error { return nil }
+func (m *fakeBeadStore) Export(ctx context.Context) ([]byte, error) {
+	m.ensureStore()
+	return m.FakeStore.Export(ctx)
+}
+func (m *fakeBeadStore) Defer(ctx context.Context, id, until string) error {
+	m.ensureStore()
+	return m.FakeStore.Defer(ctx, id, until)
+}
+func (m *fakeBeadStore) Undefer(ctx context.Context, id string) error {
+	m.ensureStore()
+	return m.FakeStore.Undefer(ctx, id)
+}
 
 // mockWorktreeManager records Create/Remove calls.
 type mockWorktreeManager struct {
@@ -189,7 +233,7 @@ func testBead() *protocol.BeadDetail {
 	}
 }
 
-func testDeps(bs *mockBeadSource, wt *mockWorktreeManager, sp *mockSpawner, mg *mockMerger, hasWork bool, qgPassed bool) *workDeps {
+func testDeps(bs *fakeBeadStore, wt *mockWorktreeManager, sp *mockSpawner, mg *mockMerger, hasWork bool, qgPassed bool) *workDeps {
 	return &workDeps{
 		beadSrc:  bs,
 		wtMgr:    wt,
@@ -228,7 +272,7 @@ func TestExecuteWork_NoCommits_BailsOut(t *testing.T) {
 	// 3. Clean up worktree
 	// 4. Return an error
 
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &fakeBeadStore{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
@@ -282,7 +326,7 @@ func TestExecuteWork_QGExhaustion_ResetsBead(t *testing.T) {
 	// When the quality gate fails maxQGRetriesPerTier times on both tiers,
 	// the bead should be reset to "open" (not left in_progress).
 
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &fakeBeadStore{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{}
@@ -321,7 +365,7 @@ func TestExecuteWork_QGExhaustion_ResetsBead(t *testing.T) {
 func TestExecuteWork_MergeFail_ResetsBead(t *testing.T) {
 	// When merge fails, bead should be reset to "open".
 
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &fakeBeadStore{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{err: errors.New("merge: failed to get primary repo path")}
@@ -359,7 +403,7 @@ func TestExecuteWork_MergeFail_ResetsBead(t *testing.T) {
 func TestExecuteWork_Success_NoReset(t *testing.T) {
 	// On success, bead should be closed (not reset to open).
 
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &fakeBeadStore{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
@@ -419,7 +463,7 @@ func TestWorkLogSetup_SurfacesErrors(t *testing.T) {
 	// Point ORO_HOME inside the read-only dir so MkdirAll will fail.
 	t.Setenv("ORO_HOME", filepath.Join(readOnlyDir, "oro"))
 
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &fakeBeadStore{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
@@ -466,7 +510,7 @@ func TestWorkWritesLogFile(t *testing.T) {
 		sjTextDelta("test passed\n"),
 	)
 	sp := &contentSpawner{proc: &mockProcess{}, content: claudeOutput}
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &fakeBeadStore{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
 
@@ -583,7 +627,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 
 		sp := &captureSpawner{proc: &mockProcess{}, stdout: ""}
 		deps := &workDeps{
-			beadSrc:    &mockBeadSource{showDetail: testBead()},
+			beadSrc:    &fakeBeadStore{showDetail: testBead()},
 			wtMgr:      &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"},
 			spawner:    sp,
 			merger:     &mockMerger{},
@@ -617,7 +661,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 		marker := sjNDJSON(sjTextDelta("[MEMORY] type=lesson tags=go: table tests are great\n"))
 		sp := &captureSpawner{proc: &mockProcess{}, stdout: marker}
 		deps := &workDeps{
-			beadSrc:    &mockBeadSource{showDetail: testBead()},
+			beadSrc:    &fakeBeadStore{showDetail: testBead()},
 			wtMgr:      &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"},
 			spawner:    sp,
 			merger:     &mockMerger{},
@@ -653,7 +697,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 	t.Run("nil memStore is safe", func(t *testing.T) {
 		sp := &captureSpawner{proc: &mockProcess{}, stdout: sjNDJSON(sjTextDelta("[MEMORY] type=lesson: orphan marker\n"))}
 		deps := &workDeps{
-			beadSrc:    &mockBeadSource{showDetail: testBead()},
+			beadSrc:    &fakeBeadStore{showDetail: testBead()},
 			wtMgr:      &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"},
 			spawner:    sp,
 			merger:     &mockMerger{},
@@ -696,7 +740,7 @@ func TestExecuteWork_SavesVocabOnExit(t *testing.T) {
 		}
 
 		tmpDir := t.TempDir()
-		bs := &mockBeadSource{showDetail: testBead()}
+		bs := &fakeBeadStore{showDetail: testBead()}
 		wt := &mockWorktreeManager{createPath: tmpDir + "/wt", createBranch: "bead/oro-test"}
 		sp := &mockSpawner{proc: &mockProcess{}}
 		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
@@ -732,7 +776,7 @@ func TestExecuteWork_SavesVocabOnExit(t *testing.T) {
 
 	t.Run("nil memStore does not panic", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		bs := &mockBeadSource{showDetail: testBead()}
+		bs := &fakeBeadStore{showDetail: testBead()}
 		wt := &mockWorktreeManager{createPath: tmpDir + "/wt", createBranch: "bead/oro-test"}
 		sp := &mockSpawner{proc: &mockProcess{}}
 		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
@@ -781,7 +825,7 @@ func TestExecuteWork_DryRunShowsResolvedModel(t *testing.T) {
 		bead := testBead()
 		bead.Model = "opus"
 
-		bs := &mockBeadSource{showDetail: bead}
+		bs := &fakeBeadStore{showDetail: bead}
 		deps := &workDeps{
 			beadSrc:  bs,
 			wtMgr:    &mockWorktreeManager{},
@@ -816,7 +860,7 @@ func TestExecuteWork_DryRunShowsResolvedModel(t *testing.T) {
 		bead := testBead()
 		bead.Model = ""
 
-		bs := &mockBeadSource{showDetail: bead}
+		bs := &fakeBeadStore{showDetail: bead}
 		deps := &workDeps{
 			beadSrc:  bs,
 			wtMgr:    &mockWorktreeManager{},
@@ -857,7 +901,7 @@ func TestExecuteWork_HonorsBeadMetadataModel(t *testing.T) {
 		bead.Model = "opus" // Bead specifies opus
 
 		sp := &modelCapturingSpawner{proc: &mockProcess{}, stdout: ""}
-		bs := &mockBeadSource{showDetail: bead}
+		bs := &fakeBeadStore{showDetail: bead}
 		wt := &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"}
 		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
 
@@ -900,7 +944,7 @@ func TestExecuteWork_HonorsBeadMetadataModel(t *testing.T) {
 		bead.Model = "opus" // Bead specifies opus
 
 		sp := &modelCapturingSpawner{proc: &mockProcess{}, stdout: ""}
-		bs := &mockBeadSource{showDetail: bead}
+		bs := &fakeBeadStore{showDetail: bead}
 		wt := &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"}
 		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
 
@@ -943,7 +987,7 @@ func TestExecuteWork_HonorsBeadMetadataModel(t *testing.T) {
 		bead.Model = "" // No model specified in bead
 
 		sp := &modelCapturingSpawner{proc: &mockProcess{}, stdout: ""}
-		bs := &mockBeadSource{showDetail: bead}
+		bs := &fakeBeadStore{showDetail: bead}
 		wt := &mockWorktreeManager{createPath: "/tmp/wt", createBranch: "bead/oro-test"}
 		mg := &mockMerger{result: &merge.Result{CommitSHA: "abc"}}
 
@@ -983,7 +1027,7 @@ func TestExecuteWork_HonorsBeadMetadataModel(t *testing.T) {
 func TestExecuteWork_DeletesBranchAfterMerge(t *testing.T) {
 	// On successful merge, DeleteBranch should be called with agent/<beadID>.
 
-	bs := &mockBeadSource{showDetail: testBead()}
+	bs := &fakeBeadStore{showDetail: testBead()}
 	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "agent/oro-test"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}

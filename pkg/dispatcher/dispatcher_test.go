@@ -78,7 +78,7 @@ type deferCall struct {
 	id, until string
 }
 
-type mockBeadSource struct {
+type fakeBeadStore struct {
 	mu                   sync.Mutex
 	beads                []protocol.Bead
 	shown                map[string]*protocol.BeadDetail
@@ -112,7 +112,7 @@ type mockBeadSource struct {
 	readyCalled          int // incremented on every Ready() call
 }
 
-func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
+func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.readyCalled++
@@ -124,7 +124,7 @@ func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
 	return out, nil
 }
 
-func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
+func (m *fakeBeadStore) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Check per-ID Show error first (takes precedence).
@@ -154,14 +154,14 @@ func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetai
 	}, nil
 }
 
-func (m *mockBeadSource) Close(_ context.Context, id string, reason string) error {
+func (m *fakeBeadStore) Close(_ context.Context, id string, reason string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closed = append(m.closed, id)
 	return nil
 }
 
-func (m *mockBeadSource) Update(_ context.Context, id string, params beadstore.UpdateParams) error {
+func (m *fakeBeadStore) Update(_ context.Context, id string, params beadstore.UpdateParams) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updateErrs != nil {
@@ -178,14 +178,14 @@ func (m *mockBeadSource) Update(_ context.Context, id string, params beadstore.U
 	return nil
 }
 
-func (m *mockBeadSource) Sync(_ context.Context) error {
+func (m *fakeBeadStore) Sync(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.synced = true
 	return nil
 }
 
-func (m *mockBeadSource) Create(_ context.Context, params beadstore.CreateParams) (*protocol.Bead, error) {
+func (m *fakeBeadStore) Create(_ context.Context, params beadstore.CreateParams) (*protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.created = append(m.created, createCall{
@@ -203,7 +203,7 @@ func (m *mockBeadSource) Create(_ context.Context, params beadstore.CreateParams
 	return &protocol.Bead{ID: id}, nil
 }
 
-func (m *mockBeadSource) AllChildrenClosed(_ context.Context, epicID string) (bool, error) {
+func (m *fakeBeadStore) AllChildrenClosed(_ context.Context, epicID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.allChildrenClosedErr != nil {
@@ -218,7 +218,7 @@ func (m *mockBeadSource) AllChildrenClosed(_ context.Context, epicID string) (bo
 	return false, nil
 }
 
-func (m *mockBeadSource) HasChildren(_ context.Context, epicID string) (bool, error) {
+func (m *fakeBeadStore) HasChildren(_ context.Context, epicID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.hasChildrenErr != nil {
@@ -232,11 +232,11 @@ func (m *mockBeadSource) HasChildren(_ context.Context, epicID string) (bool, er
 	return false, nil
 }
 
-func (m *mockBeadSource) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
+func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
 	return []protocol.Bead{}, nil
 }
 
-func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) {
+func (m *fakeBeadStore) InProgress(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.inProgressErr != nil {
@@ -245,7 +245,7 @@ func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) 
 	return m.inProgressBeads, nil
 }
 
-func (m *mockBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error) {
+func (m *fakeBeadStore) Blocked(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.blockedErr != nil {
@@ -254,7 +254,7 @@ func (m *mockBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error) {
 	return m.blockedBeads, nil
 }
 
-func (m *mockBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
+func (m *fakeBeadStore) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closedErr != nil {
@@ -263,7 +263,7 @@ func (m *mockBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, erro
 	return m.closedBeads, nil
 }
 
-func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) {
+func (m *fakeBeadStore) Export(_ context.Context) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.exportErr != nil {
@@ -272,7 +272,7 @@ func (m *mockBeadSource) Export(_ context.Context) ([]byte, error) {
 	return m.exportData, nil
 }
 
-func (m *mockBeadSource) Defer(_ context.Context, id, until string) error {
+func (m *fakeBeadStore) Defer(_ context.Context, id, until string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deferCalls = append(m.deferCalls, deferCall{id: id, until: until})
@@ -283,7 +283,7 @@ func (m *mockBeadSource) Defer(_ context.Context, id, until string) error {
 	return nil
 }
 
-func (m *mockBeadSource) Undefer(_ context.Context, id string) error {
+func (m *fakeBeadStore) Undefer(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.undeferCalls = append(m.undeferCalls, id)
@@ -294,7 +294,7 @@ func (m *mockBeadSource) Undefer(_ context.Context, id string) error {
 	return nil
 }
 
-func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
+func (m *fakeBeadStore) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.beads = beads
@@ -722,7 +722,7 @@ func newTestDB(t *testing.T) *sql.DB {
 
 // newTestDispatcher creates a Dispatcher with mocks and an in-memory DB.
 // It returns the dispatcher and all mocks for assertions.
-func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktreeManager, *mockEscalator, *mockGitRunner, *mockBatchSpawner) {
+func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktreeManager, *mockEscalator, *mockGitRunner, *mockBatchSpawner) {
 	t.Helper()
 	db := newTestDB(t)
 
@@ -732,7 +732,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *mockBeadSource, *mockWorktre
 	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	opsSpawner := ops.NewSpawner(spawnMock)
 
-	beadSrc := &mockBeadSource{
+	beadSrc := &fakeBeadStore{
 		beads: []protocol.Bead{},
 		shown: make(map[string]*protocol.BeadDetail),
 	}
@@ -2467,7 +2467,7 @@ func TestNew_TargetWorkersUsesInitialWorkers(t *testing.T) {
 	merger := merge.NewCoordinator(gitRunner)
 	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	opsSpawner := ops.NewSpawner(spawnMock)
-	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
+	beadSrc := &fakeBeadStore{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 
@@ -4679,7 +4679,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 	slowSpawner := &slowBatchSpawner{}
 	opsSpawner := ops.NewSpawner(slowSpawner)
 
-	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
+	beadSrc := &fakeBeadStore{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 
@@ -4756,7 +4756,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	merger := merge.NewCoordinator(gitRunner)
 
 	spawner := ops.NewSpawner(&mockBatchSpawner{})
-	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
+	beadSrc := &fakeBeadStore{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 
@@ -4832,7 +4832,7 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 	merger := merge.NewCoordinator(gitRunner)
 
 	spawner := ops.NewSpawner(&mockBatchSpawner{})
-	beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
+	beadSrc := &fakeBeadStore{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 
@@ -6429,7 +6429,7 @@ func TestDispatcher_RespawnsWorkersToTarget(t *testing.T) {
 	merger := merge.NewCoordinator(gitRunner)
 	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	opsSpawner := ops.NewSpawner(spawnMock)
-	beadSrc := &mockBeadSource{
+	beadSrc := &fakeBeadStore{
 		beads: []protocol.Bead{{ID: "bead-q1", Title: "queued bead"}},
 		shown: make(map[string]*protocol.BeadDetail),
 	}
@@ -7323,7 +7323,7 @@ func TestShutdownResetBeadUsesRepoRoot(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 	db := newTestDB(t)
-	beadSrc := &mockBeadSource{shown: make(map[string]*protocol.BeadDetail)}
+	beadSrc := &fakeBeadStore{shown: make(map[string]*protocol.BeadDetail)}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 	merger := merge.NewCoordinator(&mockGitRunner{})
@@ -8777,7 +8777,7 @@ func TestDispatcherBuffering(t *testing.T) {
 	db := newTestDB(t)
 	defer func() { _ = db.Close() }()
 
-	beadSrc := &mockBeadSource{shown: make(map[string]*protocol.BeadDetail)}
+	beadSrc := &fakeBeadStore{shown: make(map[string]*protocol.BeadDetail)}
 	wt := &mockWorktreeManager{}
 	esc := &mockEscalator{}
 	gitRunner := &mockGitRunner{}
@@ -9972,9 +9972,9 @@ func TestHandoffExhaustion_CreatesContinuationBead(t *testing.T) {
 	}
 
 	// Wait for BeadSource.Create to be called with continuation bead.
-	beadSrc, ok := d.beads.(*mockBeadSource)
+	beadSrc, ok := d.beads.(*fakeBeadStore)
 	if !ok {
-		t.Fatal("beads is not *mockBeadSource")
+		t.Fatal("beads is not *fakeBeadStore")
 	}
 	waitFor(t, func() bool {
 		beadSrc.mu.Lock()
@@ -10022,7 +10022,7 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	beadSrc := &mockBeadSource{
+	beadSrc := &fakeBeadStore{
 		beads: []protocol.Bead{},
 		shown: make(map[string]*protocol.BeadDetail),
 	}
@@ -16997,7 +16997,7 @@ func TestDispatcherUsesProjectPaths(t *testing.T) {
 		gitRunner := &mockGitRunner{}
 		merger := merge.NewCoordinator(gitRunner)
 		opsSpawner := ops.NewSpawner(&mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"})
-		beadSrc := &mockBeadSource{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
+		beadSrc := &fakeBeadStore{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
 		wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 		esc := &mockEscalator{}
 

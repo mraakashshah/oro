@@ -230,7 +230,7 @@ func newPIDLockTestDispatcher(t *testing.T, dbPath, socketPath string) (*Dispatc
 		ShutdownTimeout:  100 * time.Millisecond,
 	}
 	d, err := New(cfg, db, merge.NewCoordinator(&mockGitRunner{}), ops.NewSpawner(&mockBatchSpawner{}),
-		&mockBeadSource{shown: make(map[string]*protocol.BeadDetail)},
+		&fakeBeadStore{shown: make(map[string]*protocol.BeadDetail)},
 		&mockWorktreeManager{created: make(map[string]string)},
 		&mockEscalator{}, nil)
 	if err != nil {

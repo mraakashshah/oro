@@ -18,7 +18,7 @@ import (
 // newDreamTestDispatcher creates a Dispatcher with a specific DreamInterval
 // set through the constructor path (Config → withDefaults → New) so that the
 // real defaulting logic is exercised.
-func newDreamTestDispatcher(t *testing.T, dreamInterval int) (*Dispatcher, *mockBeadSource, *mockBatchSpawner) {
+func newDreamTestDispatcher(t *testing.T, dreamInterval int) (*Dispatcher, *fakeBeadStore, *mockBatchSpawner) {
 	t.Helper()
 	db := newTestDB(t)
 
@@ -28,7 +28,7 @@ func newDreamTestDispatcher(t *testing.T, dreamInterval int) (*Dispatcher, *mock
 	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	opsSpawner := ops.NewSpawner(spawnMock)
 
-	beadSrc := &mockBeadSource{
+	beadSrc := &fakeBeadStore{
 		beads: []protocol.Bead{},
 		shown: make(map[string]*protocol.BeadDetail),
 	}

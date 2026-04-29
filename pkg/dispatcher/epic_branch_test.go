@@ -6,11 +6,21 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 )
 
+type showErrorStore struct {
+	*beadstore.FakeStore
+	err error
+}
+
+func (s showErrorStore) Show(context.Context, string) (*protocol.Bead, error) {
+	return nil, s.err
+}
+
 func TestResolveEpicBranch_EmptyParent(t *testing.T) {
-	bs := &mockBeadSource{}
+	bs := beadstore.NewFakeStore()
 	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -24,11 +34,7 @@ func TestResolveEpicBranch_EmptyParent(t *testing.T) {
 }
 
 func TestResolveEpicBranch_DirectEpicParent(t *testing.T) {
-	bs := &mockBeadSource{
-		shown: map[string]*protocol.BeadDetail{
-			"epic-1": {ID: "epic-1", Title: "Epic 1", Type: "epic"},
-		},
-	}
+	bs := beadstore.NewFakeStore(protocol.Bead{ID: "epic-1", Title: "Epic 1", Type: "epic"})
 	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "epic-1", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -42,11 +48,7 @@ func TestResolveEpicBranch_DirectEpicParent(t *testing.T) {
 }
 
 func TestResolveEpicBranch_NonEpicParent_ReturnsMain(t *testing.T) {
-	bs := &mockBeadSource{
-		shown: map[string]*protocol.BeadDetail{
-			"task-1": {ID: "task-1", Title: "Task 1", Type: "task"},
-		},
-	}
+	bs := beadstore.NewFakeStore(protocol.Bead{ID: "task-1", Title: "Task 1", Type: "task"})
 	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -60,12 +62,10 @@ func TestResolveEpicBranch_NonEpicParent_ReturnsMain(t *testing.T) {
 }
 
 func TestResolveEpicBranch_NonEpicParentWithEpicGrandparent(t *testing.T) {
-	bs := &mockBeadSource{
-		shown: map[string]*protocol.BeadDetail{
-			"task-1": {ID: "task-1", Title: "Task 1", Type: "task", Epic: "epic-2"},
-			"epic-2": {ID: "epic-2", Title: "Epic 2", Type: "epic"},
-		},
-	}
+	bs := beadstore.NewFakeStore(
+		protocol.Bead{ID: "task-1", Title: "Task 1", Type: "task", Epic: "epic-2"},
+		protocol.Bead{ID: "epic-2", Title: "Epic 2", Type: "epic"},
+	)
 	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -79,9 +79,7 @@ func TestResolveEpicBranch_NonEpicParentWithEpicGrandparent(t *testing.T) {
 }
 
 func TestResolveEpicBranch_ShowError_ReturnsMainWithError(t *testing.T) {
-	bs := &mockBeadSource{
-		showErr: errors.New("bd show failed"),
-	}
+	bs := showErrorStore{FakeStore: beadstore.NewFakeStore(), err: errors.New("show failed")}
 	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "some-bead", "main")
 	if err == nil {
 		t.Fatal("expected error, got none")
@@ -100,7 +98,7 @@ func TestResolveEpicBranch_DefaultBranch(t *testing.T) {
 	const customDefault = "release/v2"
 
 	t.Run("empty parent returns defaultBranch", func(t *testing.T) {
-		bs := &mockBeadSource{}
+		bs := beadstore.NewFakeStore()
 		branch, epicID, err := resolveEpicBranch(context.Background(), bs, "", customDefault)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -114,11 +112,7 @@ func TestResolveEpicBranch_DefaultBranch(t *testing.T) {
 	})
 
 	t.Run("non-epic chain exhausted returns defaultBranch", func(t *testing.T) {
-		bs := &mockBeadSource{
-			shown: map[string]*protocol.BeadDetail{
-				"task-1": {ID: "task-1", Title: "Task 1", Type: "task"},
-			},
-		}
+		bs := beadstore.NewFakeStore(protocol.Bead{ID: "task-1", Title: "Task 1", Type: "task"})
 		branch, epicID, err := resolveEpicBranch(context.Background(), bs, "task-1", customDefault)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -132,9 +126,7 @@ func TestResolveEpicBranch_DefaultBranch(t *testing.T) {
 	})
 
 	t.Run("show error returns defaultBranch", func(t *testing.T) {
-		bs := &mockBeadSource{
-			showErr: errors.New("bd show failed"),
-		}
+		bs := showErrorStore{FakeStore: beadstore.NewFakeStore(), err: errors.New("show failed")}
 		branch, _, err := resolveEpicBranch(context.Background(), bs, "some-bead", customDefault)
 		if err == nil {
 			t.Fatal("expected error, got none")
@@ -145,13 +137,11 @@ func TestResolveEpicBranch_DefaultBranch(t *testing.T) {
 	})
 
 	t.Run("cycle detected returns defaultBranch", func(t *testing.T) {
-		bs := &mockBeadSource{
-			shown: map[string]*protocol.BeadDetail{
-				// a → b → a (cycle)
-				"a": {ID: "a", Title: "A", Type: "task", Epic: "b"},
-				"b": {ID: "b", Title: "B", Type: "task", Epic: "a"},
-			},
-		}
+		bs := beadstore.NewFakeStore(
+			// a -> b -> a (cycle)
+			protocol.Bead{ID: "a", Title: "A", Type: "task", Epic: "b"},
+			protocol.Bead{ID: "b", Title: "B", Type: "task", Epic: "a"},
+		)
 		branch, epicID, err := resolveEpicBranch(context.Background(), bs, "a", customDefault)
 		if err == nil {
 			t.Fatal("expected cycle error, got none")

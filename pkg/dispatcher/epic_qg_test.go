@@ -26,7 +26,7 @@ func TestEpicQGPassesThenMerges(t *testing.T) {
 	// path is covered: acceptance test passes → checkEpicQG → completeEpicClose.
 	setupEpicQGDispatcher := func(t *testing.T, epicID string) (
 		d *Dispatcher,
-		beadSrc *mockBeadSource,
+		beadSrc *fakeBeadStore,
 		wtMgr *mockWorktreeManager,
 		esc *mockEscalator,
 	) {

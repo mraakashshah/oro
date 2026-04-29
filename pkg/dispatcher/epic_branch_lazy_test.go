@@ -15,7 +15,7 @@ import (
 // lazy creation wired into assignBead.
 func TestEpicBranchLazyCreation(t *testing.T) {
 	// setupEpic adds an epic bead to the store so resolveEpicBranch can find it.
-	setupEpic := func(beadSrc *mockBeadSource, epicID string) {
+	setupEpic := func(beadSrc *fakeBeadStore, epicID string) {
 		beadSrc.mu.Lock()
 		defer beadSrc.mu.Unlock()
 		beadSrc.shown[epicID] = &protocol.BeadDetail{
