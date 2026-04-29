@@ -2,6 +2,7 @@ package data
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -76,6 +77,91 @@ func TestParentIDAccessor(t *testing.T) {
 	})
 }
 
+func TestEmptyVsNilLabelsMetadataTagsOroNativeJSON(t *testing.T) {
+	tests := []struct {
+		name         string
+		json         string
+		wantNil      bool
+		wantLabels   []string
+		wantMetadata map[string]any
+		wantTags     []string
+	}{
+		{
+			name: "missing fields parse as nil and render null",
+			json: `{"id":"oro-missing","title":"Missing","status":"open","priority":2,"type":"task",
+				"created_at":"2026-03-01T00:00:00Z","updated_at":"2026-03-01T00:00:00Z"}`,
+			wantNil: true,
+		},
+		{
+			name: "null fields parse as nil and render null",
+			json: `{"id":"oro-null","title":"Null","status":"open","priority":2,"type":"task",
+				"created_at":"2026-03-01T00:00:00Z","updated_at":"2026-03-01T00:00:00Z",
+				"labels":null,"metadata":null,"tags":null}`,
+			wantNil: true,
+		},
+		{
+			name: "empty fields remain non nil and render empty",
+			json: `{"id":"oro-empty","title":"Empty","status":"open","priority":2,"type":"task",
+				"created_at":"2026-03-01T00:00:00Z","updated_at":"2026-03-01T00:00:00Z",
+				"labels":[],"metadata":{},"tags":[]}`,
+			wantLabels:   []string{},
+			wantMetadata: map[string]any{},
+			wantTags:     []string{},
+		},
+		{
+			name: "populated fields round trip",
+			json: `{"id":"oro-populated","title":"Populated","status":"open","priority":2,"type":"task",
+				"created_at":"2026-03-01T00:00:00Z","updated_at":"2026-03-01T00:00:00Z",
+				"labels":["backend","security"],"metadata":{"component":"api","effort":5,"reviewed":true},"tags":["phase-5","mg"]}`,
+			wantLabels: []string{"backend", "security"},
+			wantMetadata: map[string]any{
+				"component": "api",
+				"effort":    float64(5),
+				"reviewed":  true,
+			},
+			wantTags: []string{"phase-5", "mg"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var iss Issue
+			if err := json.Unmarshal([]byte(tc.json), &iss); err != nil {
+				t.Fatalf("UnmarshalJSON() error = %v", err)
+			}
+
+			if tc.wantNil {
+				if iss.Labels != nil {
+					t.Fatalf("Labels = %#v, want nil", iss.Labels)
+				}
+				if iss.Metadata != nil {
+					t.Fatalf("Metadata = %#v, want nil", iss.Metadata)
+				}
+				if iss.Tags != nil {
+					t.Fatalf("Tags = %#v, want nil", iss.Tags)
+				}
+			} else {
+				assertStringSliceEqual(t, "Labels", iss.Labels, tc.wantLabels)
+				assertMetadataEqual(t, iss.Metadata, tc.wantMetadata)
+				assertStringSliceEqual(t, "Tags", iss.Tags, tc.wantTags)
+			}
+
+			rendered, err := json.Marshal(iss)
+			if err != nil {
+				t.Fatalf("MarshalJSON() error = %v", err)
+			}
+
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(rendered, &fields); err != nil {
+				t.Fatalf("rendered JSON did not decode: %v", err)
+			}
+			assertRenderedJSONField(t, fields, "labels", tc.wantNil, tc.wantLabels)
+			assertRenderedJSONField(t, fields, "metadata", tc.wantNil, tc.wantMetadata)
+			assertRenderedJSONField(t, fields, "tags", tc.wantNil, tc.wantTags)
+		})
+	}
+}
+
 func TestParentID(t *testing.T) {
 	tests := []struct {
 		id   string
@@ -136,6 +222,43 @@ func TestHierarchyParentIDValue(t *testing.T) {
 	}
 	if got := gotChild.NestingDepth(); got != 1 {
 		t.Fatalf("NestingDepth() = %d, want 1 so flat explicit-parent child is not rendered as an orphan", got)
+	}
+}
+
+func assertStringSliceEqual(t *testing.T, field string, got, want []string) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s = %#v, want %#v", field, got, want)
+	}
+}
+
+func assertMetadataEqual(t *testing.T, got, want map[string]any) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Metadata = %#v, want %#v", got, want)
+	}
+}
+
+func assertRenderedJSONField(t *testing.T, fields map[string]json.RawMessage, name string, wantNull bool, want any) {
+	t.Helper()
+
+	got, ok := fields[name]
+	if !ok {
+		t.Fatalf("rendered JSON missing %q field", name)
+	}
+	if wantNull {
+		if string(got) != "null" {
+			t.Fatalf("rendered %s = %s, want null", name, got)
+		}
+		return
+	}
+
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal expected %s field: %v", name, err)
+	}
+	if !reflect.DeepEqual(json.RawMessage(got), json.RawMessage(wantJSON)) {
+		t.Fatalf("rendered %s = %s, want %s", name, got, wantJSON)
 	}
 }
 

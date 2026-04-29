@@ -108,10 +108,11 @@ type Issue struct {
 	Notes              string                 `json:"notes,omitempty"`
 	Design             string                 `json:"design,omitempty"`
 	AcceptanceCriteria string                 `json:"acceptance_criteria,omitempty"`
-	Labels             []string               `json:"labels,omitempty"`
+	Labels             []string               `json:"labels"`
 	DueAt              *time.Time             `json:"due_at,omitempty"`
 	DeferUntil         *time.Time             `json:"defer_until,omitempty"`
-	Metadata           map[string]interface{} `json:"metadata,omitempty"`
+	Metadata           map[string]interface{} `json:"metadata"`
+	Tags               []string               `json:"tags"`
 
 	// HOP (Hierarchy of Proof) — agent reputation and quality tracking.
 	// These fields will be populated when Beads ships HOP support.
