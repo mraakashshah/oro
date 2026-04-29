@@ -25,14 +25,10 @@ jobs:
 
       # Tier 1: Formatting
       - name: gofumpt
-        run: |
-          go install mvdan.cc/gofumpt@latest
-          test -z "$(gofumpt -l cmd internal pkg)"
+        run: test -z "$(go tool gofumpt -l cmd internal pkg)"
 
       - name: goimports
-        run: |
-          go install golang.org/x/tools/cmd/goimports@latest
-          test -z "$(goimports -l cmd internal pkg)"
+        run: test -z "$(go tool goimports -l cmd internal pkg)"
 
       # Tier 2: Linting
       - name: golangci-lint
