@@ -117,15 +117,33 @@ def _extract_in_progress_bead_id(command: str) -> str | None:
         return None
 
     parts = command.split()
+    bead_id: str | None = None
     for i, part in enumerate(parts):
         if part != "update" or i + 1 >= len(parts):
             continue
-        if i >= 1 and parts[i - 1 : i + 1] == ["bd", "update"]:
-            return parts[i + 1]
-        if i >= 2 and parts[i - 2 : i + 1] == ["oro", "bead", "update"]:
-            return parts[i + 1]
+        if i >= 1 and parts[i - 1 : i + 1] == ["bd", "update"] and _update_segment_sets_in_progress(parts, i + 2):
+            bead_id = parts[i + 1]
+        if (
+            i >= 2
+            and parts[i - 2 : i + 1] == ["oro", "bead", "update"]
+            and _update_segment_sets_in_progress(parts, i + 2)
+        ):
+            bead_id = parts[i + 1]
 
-    return None
+    return bead_id
+
+
+def _update_segment_sets_in_progress(parts: list[str], start: int) -> bool:
+    """Return true when this update command segment sets in_progress."""
+    for part in parts[start:]:
+        normalized = part.strip(";")
+        if normalized in {"&&", "||"}:
+            return False
+        if normalized == "in_progress" or normalized.endswith("=in_progress"):
+            return True
+        if part.endswith(";"):
+            return False
+    return False
 
 
 def save_state(session_id: str, state: dict[str, Any]) -> Path:

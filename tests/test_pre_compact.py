@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -15,6 +16,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent / ".claude" / "hooks"))
 
 from pre_compact import main as pre_compact_main
 from pre_compact import parse_transcript, save_state
+
+
+def _load_assets_pre_compact():
+    spec = importlib.util.spec_from_file_location(
+        "assets_pre_compact",
+        Path(__file__).parent.parent / "assets" / "hooks" / "pre_compact.py",
+    )
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 class TestParseTranscript:
@@ -83,6 +96,90 @@ class TestParseTranscript:
         state = parse_transcript(transcript)
         assert len(state["last_tool_calls"]) == 5
         assert state["last_tool_calls"][0]["name"] == "Tool5"
+
+    def test_chained_updates_select_terminal_in_progress_bead(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            "bd update oro-old --status in_progress && "
+                            "oro bead update oro-target --status in_progress --notes 'compacted here'"
+                        )
+                    },
+                }
+            )
+        )
+
+        state = parse_transcript(transcript)
+
+        assert state["bead_id"] == "oro-target"
+
+    def test_assets_hook_chained_updates_select_terminal_in_progress_bead(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            "oro bead update oro-old --status in_progress; "
+                            "bd update oro-target --status in_progress --notes 'compacted here'"
+                        )
+                    },
+                }
+            )
+        )
+
+        state = _load_assets_pre_compact().parse_transcript(transcript)
+
+        assert state["bead_id"] == "oro-target"
+
+    def test_chained_updates_ignore_later_non_in_progress_update(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            "bd update oro-target --status in_progress && "
+                            "bd update oro-closed --status closed --notes done"
+                        )
+                    },
+                }
+            )
+        )
+
+        state = parse_transcript(transcript)
+
+        assert state["bead_id"] == "oro-target"
+
+    def test_chained_updates_accept_equals_status_form(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "transcript.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "name": "Bash",
+                    "tool_input": {
+                        "command": (
+                            "bd update oro-old --status=in_progress && "
+                            "oro bead update oro-target --status=in_progress --notes 'compacted here'"
+                        )
+                    },
+                }
+            )
+        )
+
+        state = parse_transcript(transcript)
+
+        assert state["bead_id"] == "oro-target"
 
 
 class TestSaveState:
