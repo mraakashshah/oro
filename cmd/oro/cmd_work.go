@@ -58,7 +58,7 @@ func (c *workConfig) validate() error {
 		return fmt.Errorf("bead %s has no title", c.bead.ID)
 	}
 	if c.bead.AcceptanceCriteria == "" {
-		return fmt.Errorf("bead %s has no acceptance criteria — add with: bd update %s --acceptance-criteria \"...\"", c.bead.ID, c.bead.ID)
+		return fmt.Errorf("bead %s has no acceptance criteria — add with: oro bead update %s --acceptance \"...\"", c.bead.ID, c.bead.ID)
 	}
 	return nil
 }

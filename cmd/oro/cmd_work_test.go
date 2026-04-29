@@ -214,8 +214,16 @@ func TestWorkConfig_Validate_MissingAC(t *testing.T) {
 			Title: "Test bead",
 		},
 	}
-	if err := cfg.validate(); err == nil {
+	err := cfg.validate()
+	if err == nil {
 		t.Fatal("expected error for missing acceptance criteria")
+	}
+	got := err.Error()
+	if strings.Contains(got, "bd update") {
+		t.Fatalf("missing acceptance guidance must not use legacy bd command: %s", got)
+	}
+	if !strings.Contains(got, `oro bead update oro-test --acceptance "..."`) {
+		t.Fatalf("missing acceptance guidance should use native oro bead update; got: %s", got)
 	}
 }
 

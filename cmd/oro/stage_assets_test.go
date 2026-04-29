@@ -70,6 +70,32 @@ func TestStageAssetsUsesRepoAssetsDir(t *testing.T) {
 	// CI cleans up via 'make clean-assets' after all build/test steps complete.
 }
 
+func TestDevSyncRemovesStaleInstalledSkillAssets(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	oroHome := t.TempDir()
+	staleSkill := filepath.Join(oroHome, ".claude", "skills", "beads", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(staleSkill), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleSkill, []byte("legacy bd ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("make", "dev-sync", "ORO_HOME="+oroHome)
+	cmd.Dir = repoRoot
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make dev-sync failed: %v\nOutput: %s", err, output)
+	}
+
+	if _, err := os.Stat(staleSkill); !os.IsNotExist(err) {
+		t.Fatalf("dev-sync should remove stale deleted skill asset %s; stat err=%v", staleSkill, err)
+	}
+	if _, err := os.Stat(filepath.Join(oroHome, ".claude", "skills", "test-driven-development", "SKILL.md")); err != nil {
+		t.Fatalf("dev-sync should install current skills: %v", err)
+	}
+}
+
 // TestStageAssetsFailsWhenAssetsDirMissing verifies that stage-assets
 // produces a clear error when assets/ directory is missing.
 func TestStageAssetsFailsWhenAssetsDirMissing(t *testing.T) {

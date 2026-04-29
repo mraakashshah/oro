@@ -51,9 +51,9 @@ dev-sync:
 	@echo "Syncing assets/ to $(ORO_HOME)/..."
 	@mkdir -p "$(ORO_HOME)/hooks" "$(ORO_HOME)/.claude/skills" "$(ORO_HOME)/beacons" "$(ORO_HOME)/.claude/commands"
 	@rsync --archive --delete --exclude=oro-search-hook assets/hooks/ "$(ORO_HOME)/hooks/" && echo "  ✓ hooks"
-	@cp -r assets/skills/* "$(ORO_HOME)/.claude/skills/" && echo "  ✓ skills"
-	@cp -r assets/beacons/* "$(ORO_HOME)/beacons/" && echo "  ✓ beacons"
-	@cp -r assets/commands/* "$(ORO_HOME)/.claude/commands/" && echo "  ✓ commands"
+	@rsync --archive --delete assets/skills/ "$(ORO_HOME)/.claude/skills/" && echo "  ✓ skills"
+	@rsync --archive --delete assets/beacons/ "$(ORO_HOME)/beacons/" && echo "  ✓ beacons"
+	@rsync --archive --delete assets/commands/ "$(ORO_HOME)/.claude/commands/" && echo "  ✓ commands"
 	@cp assets/CLAUDE.md "$(ORO_HOME)/.claude/CLAUDE.md" && echo "  ✓ CLAUDE.md"
 	@test -f assets/thresholds.json && cp assets/thresholds.json "$(ORO_HOME)/thresholds.json" && echo "  ✓ thresholds.json" || true
 	@echo "Sanity check..."
