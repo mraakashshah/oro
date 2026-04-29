@@ -3,12 +3,14 @@ languages:
   go:
     formatters:
       - gofumpt
+      - goimports
     linters:
       - golangci-lint
     test_cmd: go test ./...
     security: govulncheck
     coding_rules:
       - Use gofumpt for consistent formatting
+      - Use goimports to normalize Go imports
       - Run golangci-lint with project config
       - Pure core (business logic), impure edges (I/O)
       - Prefer early returns over nested conditionals
