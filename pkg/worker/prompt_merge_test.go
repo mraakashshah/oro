@@ -60,7 +60,7 @@ func TestAssemblePrompt_ExitRequiresMergeToMain(t *testing.T) {
 	}
 
 	// Worker should NOT be told to run merge or close commands themselves
-	prohibitedPhrases := []string{"git merge", "bd close", "checkout main"}
+	prohibitedPhrases := []string{"git merge", "oro bead close", "checkout main"}
 	for _, phrase := range prohibitedPhrases {
 		if strings.Contains(strings.ToLower(exitSection), phrase) {
 			t.Errorf("Exit section must NOT instruct worker to run '%s' (dispatcher handles this). Got:\n%s", phrase, exitSection)
@@ -105,13 +105,13 @@ func TestAssemblePrompt_ExitMergeBlockerHandling(t *testing.T) {
 	}
 
 	// Worker should NOT be instructed to handle merge failures themselves
-	if strings.Contains(strings.ToLower(exitSection), "bd close") {
+	if strings.Contains(strings.ToLower(exitSection), "oro bead close") {
 		t.Errorf("Exit section must NOT instruct worker to close bead (dispatcher handles this). Got:\n%s", exitSection)
 	}
 }
 
 // TestAssemblePrompt_ExitStepByStepLifecycle verifies that the Exit section
-// lists merge-to-main as an explicit step before bd close.
+// lists merge-to-main as an explicit step before bead close.
 func TestAssemblePrompt_ExitStepByStepLifecycle(t *testing.T) {
 	t.Parallel()
 
@@ -159,7 +159,7 @@ func TestAssemblePrompt_ExitStepByStepLifecycle(t *testing.T) {
 	}
 
 	// Worker should NOT be told to close bead themselves
-	if strings.Contains(lowerExit, "bd close") {
-		t.Error("Exit section must NOT tell worker to run 'bd close' (dispatcher handles this)")
+	if strings.Contains(lowerExit, "oro bead close") {
+		t.Error("Exit section must NOT tell worker to run 'oro bead close' (dispatcher handles this)")
 	}
 }

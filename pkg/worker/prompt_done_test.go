@@ -52,7 +52,7 @@ func TestAssemblePrompt_ExitDoesNotInstructWorkerToMerge(t *testing.T) {
 		"switch to main",
 		"checkout main",
 		"cd \"$main_repo\"",
-		"bd close",
+		"oro bead close",
 	}
 
 	var foundProhibited []string
