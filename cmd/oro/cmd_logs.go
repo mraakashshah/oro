@@ -197,13 +197,12 @@ func queryFilteredEvents(ctx context.Context, db *sql.DB, filter eventFilter) ([
 	return scanEvents(rows)
 }
 
-func buildFilteredEventQuery(filter eventFilter) (string, []interface{}) {
-	query := `
+func buildFilteredEventQuery(filter eventFilter) (query string, args []interface{}) {
+	query = `
 		SELECT id, type, source, bead_id, worker_id, payload, created_at
 		FROM events
 		WHERE 1=1
 	`
-	args := []interface{}{}
 	if filter.eventType != "" {
 		query += " AND type = ?"
 		args = append(args, filter.eventType)

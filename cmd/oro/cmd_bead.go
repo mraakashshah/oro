@@ -93,7 +93,7 @@ func newBeadShowCmd(store beadstore.Store) *cobra.Command {
 
 			jsonOutput, err := cmd.Flags().GetBool("json")
 			if err != nil {
-				return err
+				return writeBeadCommandErrorIfJSON(cmd, "flags", fmt.Errorf("read --json: %w", err))
 			}
 			if jsonOutput {
 				return writeBeadJSON(cmd, *bead)
@@ -336,6 +336,16 @@ func newBeadDepCmd(store beadstore.Store) *cobra.Command {
 		Short: "Manage bead dependencies",
 	}
 
+	cmd.AddCommand(
+		newBeadDepAddCmd(store),
+		newBeadDepRemoveCmd(store),
+		newBeadDepListCmd(store),
+	)
+
+	return cmd
+}
+
+func newBeadDepAddCmd(store beadstore.Store) *cobra.Command {
 	addCmd := &cobra.Command{
 		Use:   "add <bead-id> <depends-on-id>",
 		Short: "Add a dependency",
@@ -358,7 +368,10 @@ func newBeadDepCmd(store beadstore.Store) *cobra.Command {
 		},
 	}
 	addCmd.Flags().String("type", "blocks", "dependency type")
+	return addCmd
+}
 
+func newBeadDepRemoveCmd(store beadstore.Store) *cobra.Command {
 	rmCmd := &cobra.Command{
 		Use:   "rm <bead-id> <depends-on-id>",
 		Short: "Remove a dependency",
@@ -380,7 +393,10 @@ func newBeadDepCmd(store beadstore.Store) *cobra.Command {
 			return writeBeadMutationResult(cmd, s, args[0])
 		},
 	}
+	return rmCmd
+}
 
+func newBeadDepListCmd(store beadstore.Store) *cobra.Command {
 	listCmd := &cobra.Command{
 		Use:   "list <bead-id>",
 		Short: "List dependencies for a bead",
@@ -403,14 +419,7 @@ func newBeadDepCmd(store beadstore.Store) *cobra.Command {
 			return writeDependencies(cmd, deps)
 		},
 	}
-
-	cmd.AddCommand(
-		addCmd,
-		rmCmd,
-		listCmd,
-	)
-
-	return cmd
+	return listCmd
 }
 
 func newBeadTagCmd(store beadstore.Store) *cobra.Command {
@@ -458,7 +467,10 @@ func newBeadStatusCmd(store beadstore.Store) *cobra.Command {
 			if isJSONOutput(cmd) {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(counts)
+				if err := enc.Encode(counts); err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "status", fmt.Errorf("encode status JSON: %w", err))
+				}
+				return nil
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "open\t%d\nin_progress\t%d\nclosed\t%d\n", counts.Open, counts.InProgress, counts.Closed)
 			return nil
@@ -489,10 +501,15 @@ func newBeadExportCmd(store beadstore.Store) *cobra.Command {
 				}
 			}
 			if outPath != "" {
-				return os.WriteFile(outPath, data, 0o600)
+				if err := os.WriteFile(outPath, data, 0o600); err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "export", fmt.Errorf("write export %s: %w", outPath, err))
+				}
+				return nil
 			}
-			_, err = cmd.OutOrStdout().Write(data)
-			return err
+			if _, err := cmd.OutOrStdout().Write(data); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "export", fmt.Errorf("write export output: %w", err))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().String("out", "", "output path")
@@ -507,7 +524,10 @@ func writeDependencies(cmd *cobra.Command, deps []protocol.Dependency) error {
 		if deps == nil {
 			deps = []protocol.Dependency{}
 		}
-		return enc.Encode(deps)
+		if err := enc.Encode(deps); err != nil {
+			return fmt.Errorf("encode dependencies JSON: %w", err)
+		}
+		return nil
 	}
 	for _, dep := range deps {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", dep.IssueID, dep.DependsOnID, dep.Type)
@@ -519,23 +539,27 @@ func beadStatusCounts(ctx context.Context, s beadstore.Store) (beadstore.StatusC
 	if counter, ok := s.(interface {
 		CountByStatus(context.Context) (beadstore.StatusCounts, error)
 	}); ok {
-		return counter.CountByStatus(ctx)
+		counts, err := counter.CountByStatus(ctx)
+		if err != nil {
+			return beadstore.StatusCounts{}, fmt.Errorf("count bead statuses: %w", err)
+		}
+		return counts, nil
 	}
 	ready, err := s.Ready(ctx)
 	if err != nil {
-		return beadstore.StatusCounts{}, err
+		return beadstore.StatusCounts{}, fmt.Errorf("list ready beads: %w", err)
 	}
 	blocked, err := s.Blocked(ctx)
 	if err != nil {
-		return beadstore.StatusCounts{}, err
+		return beadstore.StatusCounts{}, fmt.Errorf("list blocked beads: %w", err)
 	}
 	inProgress, err := s.InProgress(ctx)
 	if err != nil {
-		return beadstore.StatusCounts{}, err
+		return beadstore.StatusCounts{}, fmt.Errorf("list in-progress beads: %w", err)
 	}
 	closed, err := s.Closed(ctx, 1_000_000)
 	if err != nil {
-		return beadstore.StatusCounts{}, err
+		return beadstore.StatusCounts{}, fmt.Errorf("list closed beads: %w", err)
 	}
 	return beadstore.StatusCounts{
 		Open:       len(ready) + len(blocked),
@@ -615,7 +639,7 @@ func listBeadsForCmd(ctx context.Context, s beadstore.Store, cmd *cobra.Command)
 		beads, err = s.Ready(ctx)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list beads for status %q: %w", status, err)
 	}
 	return applyBeadListFilters(beads, status, parent, limit), nil
 }
@@ -694,7 +718,10 @@ type beadCommandErrorJSON struct {
 func writeBeadJSON(cmd *cobra.Command, bead protocol.Bead) error {
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
-	return enc.Encode(beadJSONFromProtocol(bead))
+	if err := enc.Encode(beadJSONFromProtocol(bead)); err != nil {
+		return fmt.Errorf("encode bead JSON: %w", err)
+	}
+	return nil
 }
 
 func writeBeadsJSON(cmd *cobra.Command, beads []protocol.Bead) error {
@@ -704,7 +731,10 @@ func writeBeadsJSON(cmd *cobra.Command, beads []protocol.Bead) error {
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	if err := enc.Encode(out); err != nil {
+		return fmt.Errorf("encode beads JSON: %w", err)
+	}
+	return nil
 }
 
 func writeBeadCommandErrorIfJSON(cmd *cobra.Command, code string, err error) error {
@@ -713,12 +743,15 @@ func writeBeadCommandErrorIfJSON(cmd *cobra.Command, code string, err error) err
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
-	return enc.Encode(beadCommandErrorJSON{
+	if err := enc.Encode(beadCommandErrorJSON{
 		OK:      false,
 		Error:   code,
 		Message: err.Error(),
 		Command: cmd.CommandPath(),
-	})
+	}); err != nil {
+		return fmt.Errorf("encode bead command error JSON: %w", err)
+	}
+	return nil
 }
 
 func writeBeadMutationResult(cmd *cobra.Command, store beadstore.Store, id string) error {
