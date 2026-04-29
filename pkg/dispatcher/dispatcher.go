@@ -94,6 +94,11 @@ func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sq
 		if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
 			return nil, fmt.Errorf("select bead source %q: migrate bead schema: %w", mode, err)
 		}
+		if strings.EqualFold(strings.TrimSpace(mode), "shadow") {
+			if _, err := db.ExecContext(ctx, protocol.MigrateKVStore); err != nil {
+				return nil, fmt.Errorf("select bead source %q: migrate kv store: %w", mode, err)
+			}
+		}
 		sqliteStore := beadstore.NewSQLiteStore(db, beadstore.WithMemoryFetcher(func(ctx context.Context, tags []string, description string, maxTokens int) (string, error) {
 			if memories == nil {
 				return "", nil
@@ -103,9 +108,13 @@ func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sq
 		if strings.EqualFold(strings.TrimSpace(mode), "sqlite") {
 			return sqliteStore, nil
 		}
+		shadowStartedAt, err := beadstore.LoadOrInitShadowStartedAt(ctx, db)
+		if err != nil {
+			return nil, fmt.Errorf("select bead source %q: shadow started at: %w", mode, err)
+		}
 		return beadstore.NewShadowStore(primary, sqliteStore, beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
 			logBeadstoreDivergence(ctx, db, event)
-		})), nil
+		}), beadstore.WithShadowStartedAt(shadowStartedAt)), nil
 	default:
 		return nil, fmt.Errorf("unknown %s %q", "ORO_BEADSOURCE_MODE", mode)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -121,4 +122,127 @@ func TestSelectStoreShadowLogsDivergenceEvent(t *testing.T) {
 	if decoded["operation"] != "Ready" || decoded["kind"] != "real" || decoded["reason"] != "bead result mismatch" {
 		t.Fatalf("payload = %#v, want Ready real bead result mismatch", decoded)
 	}
+}
+
+func TestSelectStorePersistsShadowStartedAt(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	primary := beadstore.NewFakeStore()
+
+	first, err := selectStore(ctx, "shadow", primary, db, nil)
+	if err != nil {
+		t.Fatalf("first selectStore: %v", err)
+	}
+	firstShadow, ok := first.(*beadstore.ShadowStore)
+	if !ok {
+		t.Fatalf("first selectStore returned %T, want *beadstore.ShadowStore", first)
+	}
+	firstStartedAt := shadowStartedAt(t, firstShadow)
+
+	var stored string
+	if err := db.QueryRowContext(ctx, `SELECT value FROM kv_store WHERE key = 'beadstore_shadow_started_at'`).Scan(&stored); err != nil {
+		t.Fatalf("query shadow start kv row: %v", err)
+	}
+	if stored != firstStartedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("stored shadow start = %q, want %q", stored, firstStartedAt.Format(time.RFC3339Nano))
+	}
+
+	updatedAfterWindow := firstStartedAt.Add(time.Second).Format(time.RFC3339Nano)
+	updatedBeforeWindow := firstStartedAt.Add(-time.Second).Format(time.RFC3339Nano)
+	primary = beadstore.NewFakeStore(protocol.Bead{
+		ID:        "hot",
+		Title:     "primary",
+		Status:    "open",
+		Priority:  1,
+		UpdatedAt: updatedAfterWindow,
+	})
+	second, err := selectStore(ctx, "shadow", primary, db, nil)
+	if err != nil {
+		t.Fatalf("second selectStore: %v", err)
+	}
+	secondShadow, ok := second.(*beadstore.ShadowStore)
+	if !ok {
+		t.Fatalf("second selectStore returned %T, want *beadstore.ShadowStore", second)
+	}
+	secondStartedAt := shadowStartedAt(t, secondShadow)
+	if !secondStartedAt.Equal(firstStartedAt) {
+		t.Fatalf("second shadowStartedAt = %s, want persisted %s", secondStartedAt.Format(time.RFC3339Nano), firstStartedAt.Format(time.RFC3339Nano))
+	}
+
+	secondary := beadstore.NewFakeStore(protocol.Bead{
+		ID:        "hot",
+		Title:     "secondary",
+		Status:    "open",
+		Priority:  1,
+		UpdatedAt: updatedBeforeWindow,
+	})
+	secondaryField := reflect.ValueOf(secondShadow).Elem().FieldByName("secondary")
+	secondaryField = reflect.NewAt(secondaryField.Type(), unsafe.Pointer(secondaryField.UnsafeAddr())).Elem()
+	secondaryField.Set(reflect.ValueOf(secondary))
+
+	if _, err := secondShadow.Ready(ctx); err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM kv_store WHERE key = 'beadstore_shadow_started_at'`).Scan(&count); err != nil {
+		t.Fatalf("count shadow start kv rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("shadow start kv rows = %d, want 1", count)
+	}
+	var kind string
+	if err := db.QueryRowContext(ctx, `SELECT json_extract(payload, '$.kind') FROM events WHERE type = 'beadstore_divergence'`).Scan(&kind); err != nil {
+		t.Fatalf("query divergence event kind: %v", err)
+	}
+	if kind != "drift" {
+		t.Fatalf("divergence kind = %q, want drift from persisted shadow window", kind)
+	}
+}
+
+func TestSelectStoreCreatesShadowStartedAtOnLegacyDB(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if _, err := db.ExecContext(ctx, `DROP TABLE kv_store`); err != nil {
+		t.Fatalf("drop kv_store: %v", err)
+	}
+
+	store, err := selectStore(ctx, "shadow", beadstore.NewFakeStore(), db, nil)
+	if err != nil {
+		t.Fatalf("selectStore shadow on legacy db: %v", err)
+	}
+	if _, ok := store.(*beadstore.ShadowStore); !ok {
+		t.Fatalf("selectStore returned %T, want *beadstore.ShadowStore", store)
+	}
+	var stored string
+	if err := db.QueryRowContext(ctx, `SELECT value FROM kv_store WHERE key = 'beadstore_shadow_started_at'`).Scan(&stored); err != nil {
+		t.Fatalf("query initialized shadow start: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, stored); err != nil {
+		t.Fatalf("stored shadow start %q is not RFC3339Nano: %v", stored, err)
+	}
+}
+
+func TestSelectStoreRejectsMalformedShadowStartedAt(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO kv_store (key, value, updated_at) VALUES ('beadstore_shadow_started_at', 'not-a-time', '2026-04-28T00:00:00Z')`); err != nil {
+		t.Fatalf("seed malformed shadow start: %v", err)
+	}
+
+	if _, err := selectStore(ctx, "shadow", beadstore.NewFakeStore(), db, nil); err == nil {
+		t.Fatalf("selectStore shadow succeeded with malformed shadow start")
+	} else if !strings.Contains(err.Error(), "beadstore_shadow_started_at") {
+		t.Fatalf("error = %v, want shadow start key", err)
+	}
+}
+
+func shadowStartedAt(t *testing.T, store *beadstore.ShadowStore) time.Time {
+	t.Helper()
+	field := reflect.ValueOf(store).Elem().FieldByName("shadowStartedAt")
+	field = reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	startedAt, ok := field.Interface().(time.Time)
+	if !ok {
+		t.Fatalf("shadowStartedAt field has type %T, want time.Time", field.Interface())
+	}
+	return startedAt
 }

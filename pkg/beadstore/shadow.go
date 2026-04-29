@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -12,6 +14,8 @@ import (
 
 	"oro/pkg/protocol"
 )
+
+const shadowStartedAtKey = "beadstore_shadow_started_at"
 
 // ShadowDivergenceKind classifies a mismatch between primary and secondary reads.
 type ShadowDivergenceKind string
@@ -83,6 +87,46 @@ func NewShadowStore(primary, secondary Store, opts ...ShadowStoreOption) *Shadow
 		opt(store)
 	}
 	return store
+}
+
+// LoadOrInitShadowStartedAt returns the persisted shadow validation window,
+// creating it once when shadow mode is first enabled for a dispatcher DB.
+func LoadOrInitShadowStartedAt(ctx context.Context, db *sql.DB) (time.Time, error) {
+	var raw string
+	err := db.QueryRowContext(ctx, `SELECT value FROM kv_store WHERE key = ?`, shadowStartedAtKey).Scan(&raw)
+	if err == nil {
+		startedAt, parseErr := time.Parse(time.RFC3339Nano, raw)
+		if parseErr != nil {
+			return time.Time{}, fmt.Errorf("parse %s: %w", shadowStartedAtKey, parseErr)
+		}
+		return startedAt, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, fmt.Errorf("load %s: %w", shadowStartedAtKey, err)
+	}
+
+	now := time.Now().UTC()
+	formatted := now.Format(time.RFC3339Nano)
+	result, err := db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)`,
+		shadowStartedAtKey, formatted, formatted,
+	)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("initialize %s: %w", shadowStartedAtKey, err)
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 1 {
+		return now, nil
+	}
+
+	err = db.QueryRowContext(ctx, `SELECT value FROM kv_store WHERE key = ?`, shadowStartedAtKey).Scan(&raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reload %s: %w", shadowStartedAtKey, err)
+	}
+	startedAt, parseErr := time.Parse(time.RFC3339Nano, raw)
+	if parseErr != nil {
+		return time.Time{}, fmt.Errorf("parse %s: %w", shadowStartedAtKey, parseErr)
+	}
+	return startedAt, nil
 }
 
 // Ready returns primary's ready beads after comparing the secondary read.
