@@ -176,7 +176,7 @@ class TestHandlePostToolUseBatching:
             sent_notifications.append(message)
             return True
 
-        # Simulate 5 rapid bd create calls at t=0,1,2,3,4 (all within 30s window)
+        # Simulate 5 rapid bead create calls at t=0,1,2,3,4 (all within 30s window)
         base_ts = 1000.0
         with (
             mock.patch.dict(os.environ, {"ORO_ROLE": "architect"}),
@@ -185,7 +185,7 @@ class TestHandlePostToolUseBatching:
             for i in range(5):
                 now = base_ts + i  # 1s apart, all within 30s window
                 handle_post_tool_use(
-                    self._make_hook_input(f"bd create --title='Bead {i}' --type=task"),
+                    self._make_hook_input(f"oro bead create --title='Bead {i}' --type=task"),
                     state_file=state_file,
                     now=now,
                     window_secs=30,
@@ -197,19 +197,19 @@ class TestHandlePostToolUseBatching:
         )
 
         # Now simulate the debounce window expiring (31s after last create)
-        # In real usage, the next bd create (or a timer) would trigger flush.
-        # We simulate this by calling handle_post_tool_use with no new bd create
-        # but after the window — but since the hook only fires on bd create,
+        # In real usage, the next bead create (or a timer) would trigger flush.
+        # We simulate this by calling handle_post_tool_use with no new bead create
+        # but after the window — but since the hook only fires on bead create,
         # we need a flush trigger. Let's call it with now = base_ts + 4 + 31.
         flush_ts = base_ts + 4 + 31  # 31s after last create
         with (
             mock.patch.dict(os.environ, {"ORO_ROLE": "architect"}),
             mock.patch("notify_manager_on_bead_create.notify_manager", side_effect=mock_notify),
         ):
-            # A new bd create after window → triggers flush of accumulated beads
+            # A new bead create after window → triggers flush of accumulated beads
             # and starts a new batch with this bead
             handle_post_tool_use(
-                self._make_hook_input("bd create --title='Bead 5' --type=task"),
+                self._make_hook_input("oro bead create --title='Bead 5' --type=task"),
                 state_file=state_file,
                 now=flush_ts,
                 window_secs=30,
@@ -239,7 +239,7 @@ class TestHandlePostToolUseBatching:
         ):
             # First bead created
             handle_post_tool_use(
-                self._make_hook_input("bd create --title='Solo Bead' --type=task"),
+                self._make_hook_input("oro bead create --title='Solo Bead' --type=task"),
                 state_file=state_file,
                 now=base_ts,
                 window_secs=30,
@@ -248,13 +248,13 @@ class TestHandlePostToolUseBatching:
         # No notification yet (within window)
         assert len(sent_notifications) == 0
 
-        # Second invocation after window expires (simulated via next bd create)
+        # Second invocation after window expires (simulated via next bead create)
         with (
             mock.patch.dict(os.environ, {"ORO_ROLE": "architect"}),
             mock.patch("notify_manager_on_bead_create.notify_manager", side_effect=mock_notify),
         ):
             handle_post_tool_use(
-                self._make_hook_input("bd create --title='Another Bead' --type=task"),
+                self._make_hook_input("oro bead create --title='Another Bead' --type=task"),
                 state_file=state_file,
                 now=base_ts + 31,
                 window_secs=30,
@@ -277,7 +277,7 @@ class TestHandlePostToolUseBatching:
             mock.patch.dict(os.environ, {"ORO_ROLE": "architect"}),
             mock.patch("notify_manager_on_bead_create.notify_manager", side_effect=mock_notify),
         ):
-            # Non-bd-create command
+            # Non-bead-create command
             handle_post_tool_use(
                 self._make_hook_input("git status"),
                 state_file=state_file,
@@ -301,7 +301,7 @@ class TestHandlePostToolUseBatching:
             mock.patch("notify_manager_on_bead_create.notify_manager", side_effect=mock_notify),
         ):
             handle_post_tool_use(
-                self._make_hook_input("bd create --title='Test' --type=task"),
+                self._make_hook_input("oro bead create --title='Test' --type=task"),
                 state_file=state_file,
                 now=1000.0,
                 window_secs=30,
@@ -318,7 +318,7 @@ class TestHandlePostToolUseBatching:
             sent_notifications.append(message)
             return True
 
-        # Simulate bd create commands that return bead IDs in output
+        # Simulate bead create commands that return bead IDs in output
         # We need to test that the notification includes id+title info
         # Pre-load state with known beads (simulating previous calls)
         pre_state = {
@@ -338,7 +338,7 @@ class TestHandlePostToolUseBatching:
             mock.patch("notify_manager_on_bead_create.notify_manager", side_effect=mock_notify),
         ):
             handle_post_tool_use(
-                self._make_hook_input("bd create --title='New bead' --type=task"),
+                self._make_hook_input("oro bead create --title='New bead' --type=task"),
                 state_file=state_file,
                 now=1000.0 + 31,  # after 30s window
                 window_secs=30,

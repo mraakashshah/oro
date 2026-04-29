@@ -75,7 +75,7 @@ def parse_transcript(transcript_path: Path) -> dict[str, Any]:
             # Track bead status updates.
             if tool_name.lower() == "bash":
                 cmd = tool_input.get("command", "")
-                if ("oro bead update" in cmd or ("b" + "d update") in cmd) and "in_progress" in cmd:
+                if "oro bead update" in cmd and "in_progress" in cmd:
                     # Extract bead ID from command like "oro bead update oro-xxx --status in_progress"
                     parts = cmd.split()
                     for i, p in enumerate(parts):

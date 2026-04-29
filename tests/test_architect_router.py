@@ -13,12 +13,12 @@ import architect_router
 class TestRouteCommand:
     """Test the routing decision logic."""
 
-    def test_bd_commands_stay_local(self):
-        assert architect_router.route_command("bd stats") == "architect"
-        assert architect_router.route_command("bd ready") == "architect"
-        assert architect_router.route_command("bd create --title='test'") == "architect"
-        assert architect_router.route_command("  bd list") == "architect"
-        assert architect_router.route_command("bd sync --from-main") == "architect"
+    def test_bead_commands_stay_local(self):
+        assert architect_router.route_command("oro bead stats") == "architect"
+        assert architect_router.route_command("oro bead ready") == "architect"
+        assert architect_router.route_command("oro bead create --title='test'") == "architect"
+        assert architect_router.route_command("  oro bead list") == "architect"
+        assert architect_router.route_command("oro bead sync --from-main") == "architect"
 
     def test_oro_commands_stay_local(self):
         """route_command always returns architect — no manager forwarding."""
@@ -47,7 +47,7 @@ class TestRouteCommand:
 
     def test_unknown_commands_stay_local(self):
         """Unknown commands now stay with architect (safe default)."""
-        assert architect_router.route_command("echo bd stats") == "architect"
+        assert architect_router.route_command("echo oro bead stats") == "architect"
         assert architect_router.route_command("ls -la") == "architect"
         assert architect_router.route_command("some-random-command") == "architect"
 
@@ -94,10 +94,10 @@ class TestBuildDecision:
         assert architect_router.build_decision(hook_input) is None
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    def test_passthrough_for_bd_commands(self):
+    def test_passthrough_for_bead_commands(self):
         hook_input = {
             "tool_name": "Bash",
-            "tool_input": {"command": "bd stats"},
+            "tool_input": {"command": "oro bead stats"},
         }
         assert architect_router.build_decision(hook_input) is None
 
@@ -253,9 +253,9 @@ class TestArchitectRouterPolicy:
             assert result is None, f"Expected passthrough for: {cmd}"
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
-    def test_bd_commands_allowed(self):
-        """bd create/update/show pass through."""
-        for cmd in ["bd create --title='test'", "bd update bd-123", "bd show bd-456", "bd ready", "bd stats"]:
+    def test_bead_commands_allowed(self):
+        """oro bead create/update/show pass through."""
+        for cmd in ["oro bead create --title='test'", "oro bead update oro-123", "oro bead show oro-456", "oro bead ready", "oro bead stats"]:
             hook_input = {
                 "tool_name": "Bash",
                 "tool_input": {"command": cmd},
@@ -279,8 +279,8 @@ class TestArchitectRouterPolicy:
             "git add main.go",
             "git commit -m 'test'",
             "git push",
-            "bd create --title='test'",
-            "bd update bd-123",
+            "oro bead create --title='test'",
+            "oro bead update oro-123",
             "git status",
             "git log",
             "ls -la",
@@ -300,11 +300,11 @@ class TestNotifyOnBeadCreate:
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane", return_value=True)
-    def test_notifies_manager_on_bd_create(self, mock_send):
-        """When architect runs bd create, manager pane gets notification."""
+    def test_notifies_manager_on_bead_create(self, mock_send):
+        """When architect runs oro bead create, manager pane gets notification."""
         hook_input = {
             "tool_name": "Bash",
-            "tool_input": {"command": "bd create --title='test task' --type=task"},
+            "tool_input": {"command": "oro bead create --title='test task' --type=task"},
             "tool_output": "Created issue: oro-xyz123",
         }
         result = architect_router.notify_on_bead_create(hook_input)
@@ -320,11 +320,11 @@ class TestNotifyOnBeadCreate:
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane", return_value=True)
-    def test_no_notification_for_non_bd_create_commands(self, mock_send):
-        """Only bd create triggers notification, not other bd commands."""
+    def test_no_notification_for_non_bead_create_commands(self, mock_send):
+        """Only oro bead create triggers notification, not other bead commands."""
         hook_input = {
             "tool_name": "Bash",
-            "tool_input": {"command": "bd ready"},
+            "tool_input": {"command": "oro bead ready"},
             "tool_output": "No beads ready",
         }
         result = architect_router.notify_on_bead_create(hook_input)
@@ -338,7 +338,7 @@ class TestNotifyOnBeadCreate:
         """Manager doesn't notify itself."""
         hook_input = {
             "tool_name": "Bash",
-            "tool_input": {"command": "bd create --title='test'"},
+            "tool_input": {"command": "oro bead create --title='test'"},
             "tool_output": "Created issue: oro-xyz",
         }
         result = architect_router.notify_on_bead_create(hook_input)
@@ -352,7 +352,7 @@ class TestNotifyOnBeadCreate:
         """If tmux send-keys fails, don't block or error."""
         hook_input = {
             "tool_name": "Bash",
-            "tool_input": {"command": "bd create --title='test'"},
+            "tool_input": {"command": "oro bead create --title='test'"},
             "tool_output": "Created issue: oro-xyz",
         }
         result = architect_router.notify_on_bead_create(hook_input)

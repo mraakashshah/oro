@@ -21,8 +21,8 @@ from architect_router import send_to_manager_pane
 
 
 def _is_bead_create_command(command: str) -> bool:
-    """Return True when command creates a bead through the current or legacy CLI."""
-    return command.startswith("oro bead create") or command.startswith("b" + "d create")
+    """Return True when command creates a bead through the current CLI."""
+    return command.startswith("oro bead create")
 
 
 def get_oro_role() -> str:

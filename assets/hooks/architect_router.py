@@ -39,8 +39,8 @@ def route_command(command: str) -> str:
 
 
 def _is_bead_create_command(command: str) -> bool:
-    """Return True when command creates a bead through the current or legacy CLI."""
-    return command.startswith("oro bead create") or command.startswith("b" + "d create")
+    """Return True when command creates a bead through the current CLI."""
+    return command.startswith("oro bead create")
 
 
 # Extensions for code files that the architect must not stage or commit
