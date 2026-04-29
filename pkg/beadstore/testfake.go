@@ -19,6 +19,7 @@ import (
 type FakeStore struct {
 	mu     sync.RWMutex
 	beads  map[string]protocol.Bead
+	closed []string
 	nextID int
 }
 
@@ -34,6 +35,37 @@ func NewFakeStore(initial ...protocol.Bead) *FakeStore {
 		store.beads[bead.ID] = cloneBead(bead)
 	}
 	return store
+}
+
+// SetBeads replaces the store contents with the supplied beads.
+//
+//oro:testonly
+func (s *FakeStore) SetBeads(beads []protocol.Bead) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.beads = make(map[string]protocol.Bead, len(beads))
+	for _, bead := range beads {
+		if bead.Status == "" {
+			bead.Status = "open"
+		}
+		if strings.TrimSpace(bead.AcceptanceCriteria) == "" {
+			bead.AcceptanceCriteria = "Test: auto | Assert: PASS"
+		}
+		s.beads[bead.ID] = cloneBead(bead)
+	}
+}
+
+// ClosedBeads returns bead IDs closed through Close, in call order.
+//
+//oro:testonly
+func (s *FakeStore) ClosedBeads() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]string, len(s.closed))
+	copy(out, s.closed)
+	return out
 }
 
 // Ready returns open beads with no active blockers.
@@ -269,6 +301,7 @@ func (s *FakeStore) Close(ctx context.Context, id, reason string) error {
 	bead.ClosedAt = now
 	bead.UpdatedAt = now
 	s.beads[id] = bead
+	s.closed = append(s.closed, id)
 	return nil
 }
 

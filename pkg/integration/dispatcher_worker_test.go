@@ -25,74 +25,7 @@ import (
 	"oro/pkg/worker"
 )
 
-// --- Mock implementations (duplicated from dispatcher_test since they're unexported) ---
-
-type mockBeadSource struct {
-	mu    sync.Mutex
-	beads []protocol.Bead
-}
-
-func (m *mockBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]protocol.Bead, len(m.beads))
-	copy(out, m.beads)
-	return out, nil
-}
-
-func (m *mockBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
-	return &protocol.BeadDetail{Title: id, AcceptanceCriteria: "Test: auto | Assert: PASS"}, nil
-}
-
-func (m *mockBeadSource) Close(_ context.Context, _ string, _ string) error {
-	return nil
-}
-
-func (m *mockBeadSource) Create(_ context.Context, _ beadstore.CreateParams) (*protocol.Bead, error) {
-	return &protocol.Bead{ID: "oro-new"}, nil
-}
-
-func (m *mockBeadSource) Update(_ context.Context, _ string, _ beadstore.UpdateParams) error {
-	return nil
-}
-
-func (m *mockBeadSource) Sync(_ context.Context) error {
-	return nil
-}
-
-func (m *mockBeadSource) AllChildrenClosed(_ context.Context, _ string) (bool, error) {
-	return false, nil
-}
-
-func (m *mockBeadSource) HasChildren(_ context.Context, _ string) (bool, error) {
-	return false, nil
-}
-
-func (m *mockBeadSource) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
-	return []protocol.Bead{}, nil
-}
-
-func (m *mockBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) {
-	return nil, nil
-}
-
-func (m *mockBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error) {
-	return nil, nil
-}
-
-func (m *mockBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
-	return nil, nil
-}
-
-func (m *mockBeadSource) Export(_ context.Context) ([]byte, error)   { return nil, nil }
-func (m *mockBeadSource) Defer(_ context.Context, _, _ string) error { return nil }
-func (m *mockBeadSource) Undefer(_ context.Context, _ string) error  { return nil }
-
-func (m *mockBeadSource) SetBeads(beads []protocol.Bead) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.beads = beads
-}
+// Store fakes use beadstore.FakeStore.
 
 type mockWorktreeManager struct {
 	mu      sync.Mutex
@@ -342,7 +275,7 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-integ-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
-	beadSrc := &mockBeadSource{}
+	beadSrc := beadstore.NewFakeStore()
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 	gitRunner := &mockGitRunner{}
@@ -457,7 +390,6 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 	}
 
 	// Step 6: Clear beads so dispatcher doesn't re-assign
-	beadSrc.SetBeads(nil)
 
 	// Step 7: Worker sends DONE with quality gate passed
 	if err := w.SendDone(ctx, true, ""); err != nil {
@@ -498,7 +430,7 @@ func TestDispatcherWorker_GracefulShutdown(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-integ-shutdown-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
-	beadSrc := &mockBeadSource{}
+	beadSrc := beadstore.NewFakeStore()
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 	gitRunner := &mockGitRunner{}
@@ -565,8 +497,6 @@ func TestDispatcherWorker_GracefulShutdown(t *testing.T) {
 		return len(spawner.SpawnCalls()) > 0
 	})
 
-	beadSrc.SetBeads(nil)
-
 	// Cancel context to trigger graceful shutdown
 	cancel()
 
@@ -601,7 +531,7 @@ func TestDispatcherWorker_Heartbeat(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-integ-hb-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
-	beadSrc := &mockBeadSource{}
+	beadSrc := beadstore.NewFakeStore()
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 	gitRunner := &mockGitRunner{}

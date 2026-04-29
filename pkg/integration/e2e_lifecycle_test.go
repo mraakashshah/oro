@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,85 +18,6 @@ import (
 
 	_ "modernc.org/sqlite"
 )
-
-// trackingBeadSource extends mockBeadSource with Close tracking.
-type trackingBeadSource struct {
-	mu      sync.Mutex
-	beads   []protocol.Bead
-	closed  []string
-	closeMu sync.Mutex
-}
-
-func (m *trackingBeadSource) Ready(_ context.Context) ([]protocol.Bead, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]protocol.Bead, len(m.beads))
-	copy(out, m.beads)
-	return out, nil
-}
-
-func (m *trackingBeadSource) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
-	return &protocol.BeadDetail{Title: id, AcceptanceCriteria: "Test: auto | Assert: PASS"}, nil
-}
-
-func (m *trackingBeadSource) Close(_ context.Context, id string, _ string) error {
-	m.closeMu.Lock()
-	defer m.closeMu.Unlock()
-	m.closed = append(m.closed, id)
-	return nil
-}
-
-func (m *trackingBeadSource) Create(_ context.Context, _ beadstore.CreateParams) (*protocol.Bead, error) {
-	return &protocol.Bead{ID: "oro-new"}, nil
-}
-
-func (m *trackingBeadSource) Update(_ context.Context, _ string, _ beadstore.UpdateParams) error {
-	return nil
-}
-
-func (m *trackingBeadSource) Sync(_ context.Context) error { return nil }
-
-func (m *trackingBeadSource) AllChildrenClosed(_ context.Context, _ string) (bool, error) {
-	return false, nil
-}
-
-func (m *trackingBeadSource) HasChildren(_ context.Context, _ string) (bool, error) {
-	return false, nil
-}
-
-func (m *trackingBeadSource) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
-	return []protocol.Bead{}, nil
-}
-
-func (m *trackingBeadSource) InProgress(_ context.Context) ([]protocol.Bead, error) {
-	return nil, nil
-}
-
-func (m *trackingBeadSource) Blocked(_ context.Context) ([]protocol.Bead, error) {
-	return nil, nil
-}
-
-func (m *trackingBeadSource) Closed(_ context.Context, _ int) ([]protocol.Bead, error) {
-	return nil, nil
-}
-
-func (m *trackingBeadSource) Export(_ context.Context) ([]byte, error)   { return nil, nil }
-func (m *trackingBeadSource) Defer(_ context.Context, _, _ string) error { return nil }
-func (m *trackingBeadSource) Undefer(_ context.Context, _ string) error  { return nil }
-
-func (m *trackingBeadSource) SetBeads(beads []protocol.Bead) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.beads = beads
-}
-
-func (m *trackingBeadSource) ClosedBeads() []string {
-	m.closeMu.Lock()
-	defer m.closeMu.Unlock()
-	dst := make([]string, len(m.closed))
-	copy(dst, m.closed)
-	return dst
-}
 
 // TestE2E_FullLifecycle exercises the complete oro lifecycle in a single test:
 //
@@ -121,7 +41,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-e2e-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
-	beadSrc := &trackingBeadSource{}
+	beadSrc := beadstore.NewFakeStore()
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
 	esc := &mockEscalator{}
 	gitRunner := &mockGitRunner{}
@@ -215,7 +135,6 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	})
 
 	// --- Phase 5: Done with QG passed ---
-	beadSrc.SetBeads(nil) // Clear to prevent re-assignment
 	if err := w.SendDone(ctx, true, ""); err != nil {
 		t.Fatalf("send done: %v", err)
 	}
