@@ -117,6 +117,28 @@ func TestNestingDepth(t *testing.T) {
 	}
 }
 
+func TestHierarchyParentIDValue(t *testing.T) {
+	parent := Issue{ID: "abc-1", IssueType: TypeEpic, Status: StatusOpen}
+	child := Issue{ID: "xyz-3", ParentIDValue: "abc-1", IssueType: TypeTask, Status: StatusOpen}
+	issues := []Issue{parent, child}
+
+	issueMap := BuildIssueMap(issues)
+	gotChild := issueMap["xyz-3"]
+	if gotChild == nil {
+		t.Fatal("child missing from issue map")
+	}
+
+	if got := gotChild.ParentID(); got != "abc-1" {
+		t.Fatalf("ParentID() = %q, want explicit parent abc-1", got)
+	}
+	if _, ok := issueMap[gotChild.ParentID()]; !ok {
+		t.Fatalf("child parent %q missing from issue map", gotChild.ParentID())
+	}
+	if got := gotChild.NestingDepth(); got != 1 {
+		t.Fatalf("NestingDepth() = %d, want 1 so flat explicit-parent child is not rendered as an orphan", got)
+	}
+}
+
 func TestIsOverdue(t *testing.T) {
 	past := time.Now().Add(-48 * time.Hour)
 	future := time.Now().Add(48 * time.Hour)

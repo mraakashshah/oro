@@ -299,6 +299,9 @@ func (i *Issue) ParentID() string {
 // NestingDepth returns how many dots appear in the issue ID.
 // "mg-007" → 0, "mg-007.2" → 1, "mg-007.2.1" → 2.
 func (i *Issue) NestingDepth() int {
+	if i.ParentIDValue != "" {
+		return strings.Count(i.ParentIDValue, ".") + 1
+	}
 	return strings.Count(i.ID, ".")
 }
 
