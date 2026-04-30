@@ -17,7 +17,7 @@ set -euo pipefail
 QG_IS_WORKTREE=false
 if [ -f .git ]; then
 	QG_IS_WORKTREE=true
-	QG_GIT_COMMON_DIR="$(git rev-parse --git-common-dir)"
+	QG_GIT_DIR="$(git rev-parse --git-dir)"
 fi
 unset GIT_DIR GIT_WORK_TREE
 
@@ -62,14 +62,58 @@ NODE_BIN="$REPO_ROOT/node_modules/.bin"
 # Run git with ref-resolution support in worktrees.
 # GIT_DIR is unset globally to prevent leakage into test subprocesses, but
 # mutation testing needs ref resolution (git rev-parse --verify main, git diff
-# main). This wrapper temporarily sets GIT_DIR for the git command only.
+# main). This wrapper temporarily sets the worktree-specific GIT_DIR for the git
+# command only; using the common dir loses the current worktree branch.
 # shellcheck disable=SC2317,SC2329
 qg_git() {
 	if $QG_IS_WORKTREE; then
-		GIT_DIR="$QG_GIT_COMMON_DIR" git "$@"
+		GIT_DIR="$QG_GIT_DIR" git "$@"
 	else
 		git "$@"
 	fi
+}
+
+# shellcheck disable=SC2317,SC2329
+should_run_mutation_tests() {
+	if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
+		return 1
+	fi
+	if [ "${ORO_RUN_MUTATION:-}" = "1" ]; then
+		return 0
+	fi
+	case "${ORO_QG_CONTEXT:-local}" in
+	push | pre-push)
+		return 0
+		;;
+	esac
+	if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
+		return 0
+	fi
+	return 1
+}
+
+# shellcheck disable=SC2317,SC2329
+mutation_skip_reason() {
+	if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
+		printf 'ORO_SKIP_MUTATION=1'
+	else
+		printf 'non-push context; set ORO_QG_CONTEXT=push or ORO_RUN_MUTATION=1'
+	fi
+}
+
+# shellcheck disable=SC2317,SC2329
+mutation_base_ref() {
+	if [ -n "${ORO_MUTATION_BASE:-}" ]; then
+		printf '%s\n' "$ORO_MUTATION_BASE"
+		return 0
+	fi
+	local branch
+	branch=$(qg_git branch --show-current 2>/dev/null || true)
+	if should_run_mutation_tests && [ "$branch" = "main" ] && qg_git rev-parse --verify origin/main >/dev/null 2>&1; then
+		printf 'origin/main\n'
+		return 0
+	fi
+	printf 'main\n'
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -446,23 +490,26 @@ lane_go() {
 	fi
 
 	# --- Tier 4: Mutation Testing (sequential, modifies working tree) ---
-	if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
-		header "GO TIER 4: MUTATION TESTING (skipped — ORO_SKIP_MUTATION=1)"
-	elif command -v go-mutesting >/dev/null 2>&1; then
+	if ! should_run_mutation_tests; then
+		header "GO TIER 4: MUTATION TESTING (skipped — $(mutation_skip_reason))"
+	elif go tool -n go-mutesting >/dev/null 2>&1; then
 		header "GO TIER 4: MUTATION TESTING (incremental)"
 
 		# shellcheck disable=SC2329
 		run_go_mutation_test() {
+			local mutation_base
+			mutation_base=$(mutation_base_ref)
 			# Detect missing main branch explicitly — do NOT silently swallow git errors.
 			# 'git diff ... main 2>/dev/null || true' returns empty when main is absent,
 			# causing a false PASS. Fail loudly instead (oro-xgwr).
-			if ! qg_git rev-parse --verify main >/dev/null 2>&1; then
-				echo "WARNING: Cannot find main branch — cannot determine changed files for mutation"
-				echo "FAIL: mutation testing requires main branch to compute diff"
+			if ! qg_git rev-parse --verify "$mutation_base" >/dev/null 2>&1; then
+				echo "WARNING: Cannot find mutation base $mutation_base (default main) — cannot determine changed files for mutation"
+				echo "FAIL: mutation testing requires a base branch to compute diff"
 				return 1
 			fi
 			local changed
-			changed=$(qg_git diff --name-only main -- '*.go' 2>/dev/null |
+			changed=$(qg_git diff --name-only "$mutation_base" -- cmd/ internal/ pkg/ 2>/dev/null |
+				grep '\.go$' |
 				grep -v '_test\.go$' |
 				grep -v '_generated\.' |
 				grep -v 'cmd/oro/_assets' ||
@@ -475,7 +522,7 @@ lane_go() {
 			# Limit mutations to functions touched in the diff (hunk headers + added func lines).
 			local match_pattern=""
 			local touched_funcs
-			touched_funcs=$(qg_git diff main -- '*.go' 2>/dev/null |
+			touched_funcs=$(qg_git diff "$mutation_base" -- cmd/ internal/ pkg/ 2>/dev/null |
 				grep -E '^(\+func |@@.*func )' |
 				sed -E 's/.*func[[:space:]]+(\([^)]*\)[[:space:]]+)?([A-Za-z0-9_]+).*/\2/' |
 				grep -v '^$' | sort -u | paste -sd'|' - || true)
@@ -609,22 +656,24 @@ lane_python() {
 	fi
 
 	# --- Tier 5: Mutation Testing ---
-	if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
-		header "PYTHON TIER 5: MUTATION TESTING (skipped — ORO_SKIP_MUTATION=1)"
+	if ! should_run_mutation_tests; then
+		header "PYTHON TIER 5: MUTATION TESTING (skipped — $(mutation_skip_reason))"
 	elif [ -f "cosmic-ray.toml" ] && command -v uv >/dev/null 2>&1; then
 		header "PYTHON TIER 5: MUTATION TESTING (incremental)"
 		local CR_SESSION="$QG_DIR/cr-$$.sqlite"
 
 		# shellcheck disable=SC2329
 		run_mutation_test() {
+			local mutation_base
+			mutation_base=$(mutation_base_ref)
 			# Detect missing main branch explicitly (same fix as Go mutation, oro-xgwr).
-			if ! qg_git rev-parse --verify main >/dev/null 2>&1; then
-				echo "WARNING: Cannot find main branch — cannot determine changed files for mutation"
-				echo "FAIL: mutation testing requires main branch to compute diff"
+			if ! qg_git rev-parse --verify "$mutation_base" >/dev/null 2>&1; then
+				echo "WARNING: Cannot find mutation base $mutation_base (default main) — cannot determine changed files for mutation"
+				echo "FAIL: mutation testing requires a base branch to compute diff"
 				return 1
 			fi
 			local changed
-			changed=$(qg_git diff --name-only main -- '*.py' 2>/dev/null |
+			changed=$(qg_git diff --name-only "$mutation_base" -- '*.py' 2>/dev/null |
 				grep -v 'test_' |
 				grep -v '__pycache__' |
 				grep -v 'archive/' ||

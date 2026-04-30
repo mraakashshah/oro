@@ -2156,6 +2156,19 @@ func TestOroInitStealth_EndToEnd(t *testing.T) {
 	if !strings.Contains(string(prePushData), "managed by oro") {
 		t.Error("pre-push hook must be an oro wrapper")
 	}
+	if !strings.Contains(string(prePushData), "ORO_QG_CONTEXT=push") {
+		t.Error("pre-push hook must run quality gate in push context")
+	}
+	if !strings.Contains(string(prePushData), "scripts/quality_gate.sh") {
+		t.Error("pre-push hook must run scripts/quality_gate.sh")
+	}
+	if !strings.Contains(string(prePushData), "all checks; mutation enabled on push") {
+		t.Error("pre-push hook must explain push QG mutation behavior")
+	}
+	stealthQG := filepath.Join(stealthDir, "quality_gate.sh")
+	if !strings.Contains(string(prePushData), stealthQG) {
+		t.Errorf("pre-push hook must reference stealth quality gate %q, got:\n%s", stealthQG, string(prePushData))
+	}
 
 	// 5. settings.json created and is valid JSON.
 	settingsData, err := os.ReadFile(filepath.Join(stealthDir, "settings.json")) //nolint:gosec // test-created file

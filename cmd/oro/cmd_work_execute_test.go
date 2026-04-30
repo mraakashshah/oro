@@ -414,6 +414,11 @@ func TestExecuteWork_Success_NoReset(t *testing.T) {
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
 
 	deps := testDeps(bs, wt, sp, mg, true, true)
+	var qgSkipMutations []bool
+	deps.runQG = func(_ context.Context, _ string, skipMutation bool) (bool, string, error) {
+		qgSkipMutations = append(qgSkipMutations, skipMutation)
+		return true, "qg output", nil
+	}
 
 	cfg := &workConfig{
 		beadID:     "oro-test",
@@ -447,6 +452,14 @@ func TestExecuteWork_Success_NoReset(t *testing.T) {
 	// Merger should have been called
 	if !mg.called {
 		t.Error("expected merger to be called on success")
+	}
+	if len(qgSkipMutations) != 2 {
+		t.Fatalf("expected implementation and pre-merge QG calls, got %d", len(qgSkipMutations))
+	}
+	for i, skipMutation := range qgSkipMutations {
+		if skipMutation {
+			t.Fatalf("QG call %d used ORO_SKIP_MUTATION; local quality_gate.sh should defer mutation by context without disabling other tiers", i)
+		}
 	}
 }
 

@@ -357,14 +357,14 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 		skipClaude = false // Only skip the first iteration.
 
-		logStep("Running quality gate (skip mutation)...")
-		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, true)
+		logStep("Running local quality gate (mutation deferred to push)...")
+		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, false)
 		if qgErr != nil {
 			return fmt.Errorf("quality gate error: %w", qgErr)
 		}
 
 		if passed {
-			logStep("Quality gate passed (mutation deferred to pre-merge)")
+			logStep("Quality gate passed (mutation deferred to push)")
 			break
 		}
 
@@ -395,8 +395,8 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		logStep("Skipping review (--skip-review)")
 	}
 
-	// Step 9: Pre-merge mutation testing.
-	logStep("Running mutation testing...")
+	// Step 9: Pre-merge quality gate. Mutation testing is deferred to push.
+	logStep("Running pre-merge quality gate (mutation deferred to push)...")
 	mutPassed, mutOutput, mutErr := deps.runQG(ctx, worktree, false)
 	if mutErr != nil {
 		return fmt.Errorf("pre-merge quality gate error: %w", mutErr)
@@ -404,10 +404,10 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	if !mutPassed {
 		return &exitError{
 			code: exitCodeRetries,
-			msg:  fmt.Sprintf("Pre-merge quality gate (mutation) failed:\n%s", mutOutput),
+			msg:  fmt.Sprintf("Pre-merge quality gate failed:\n%s", mutOutput),
 		}
 	}
-	logStep("Mutation testing passed")
+	logStep("Pre-merge quality gate passed")
 
 	// Step 10: Merge to main.
 	mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch, targetBranch)
@@ -745,8 +745,8 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 		return rejects, fmt.Errorf("claude re-spawn after review: %w", err)
 	}
 
-	logStep("Re-running quality gate (skip mutation)...")
-	passed, qgOutput, qgErr := deps.runQG(ctx, worktree, true)
+	logStep("Re-running local quality gate (mutation deferred to push)...")
+	passed, qgOutput, qgErr := deps.runQG(ctx, worktree, false)
 	if qgErr != nil {
 		return rejects, fmt.Errorf("quality gate error: %w", qgErr)
 	}

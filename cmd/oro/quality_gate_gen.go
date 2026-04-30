@@ -435,6 +435,13 @@ const qualityGateTmpl = `#!/usr/bin/env bash
 set -euo pipefail
 
 # Unset git hook env vars that leak into test subprocesses.
+# Save worktree state first so mutation testing can still resolve refs after
+# hook env cleanup.
+QG_IS_WORKTREE=false
+if [ -f .git ]; then
+    QG_IS_WORKTREE=true
+    QG_GIT_DIR="$(git rev-parse --git-dir)"
+fi
 unset GIT_DIR GIT_WORK_TREE
 
 # Colors
@@ -448,6 +455,7 @@ NC='\033[0m'
 # Temp directory for all check outputs (cleaned up on exit)
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
 QG_STAGE_ASSETS_LOCK=""
+QG_EXIT_STATUS=0
 # shellcheck disable=SC2329
 cleanup_qg() {
     local status=$?
@@ -472,6 +480,77 @@ NODE_BIN="$REPO_ROOT/node_modules/.bin"
 # =============================================================================
 # PRIMITIVES
 # =============================================================================
+
+# Run git with ref-resolution support in worktrees.
+# shellcheck disable=SC2317,SC2329
+qg_git() {
+    if $QG_IS_WORKTREE; then
+        GIT_DIR="$QG_GIT_DIR" git "$@"
+    else
+        git "$@"
+    fi
+}
+
+# shellcheck disable=SC2317,SC2329
+should_run_mutation_tests() {
+    if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
+        return 1
+    fi
+    if [ "${ORO_RUN_MUTATION:-}" = "1" ]; then
+        return 0
+    fi
+    case "${ORO_QG_CONTEXT:-local}" in
+    push | pre-push)
+        return 0
+        ;;
+    esac
+    if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# shellcheck disable=SC2317,SC2329
+mutation_skip_reason() {
+    if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
+        printf 'ORO_SKIP_MUTATION=1'
+    else
+        printf 'non-push context; set ORO_QG_CONTEXT=push or ORO_RUN_MUTATION=1'
+    fi
+}
+
+# shellcheck disable=SC2317,SC2329
+mutation_base_ref() {
+    if [ -n "${ORO_MUTATION_BASE:-}" ]; then
+        printf '%s\n' "$ORO_MUTATION_BASE"
+        return 0
+    fi
+    local branch
+    branch=$(qg_git branch --show-current 2>/dev/null || true)
+    if should_run_mutation_tests && [ "$branch" = "main" ] && qg_git rev-parse --verify origin/main >/dev/null 2>&1; then
+        printf 'origin/main\n'
+        return 0
+    fi
+    printf 'main\n'
+}
+
+# shellcheck disable=SC2317,SC2329
+restore_go_mutation_worktree() {
+    local unstaged_patch="$1"
+    local -a restore_paths=()
+    local path
+    for path in pkg internal cmd; do
+        if git ls-files -- "$path/" | grep -q .; then
+            restore_paths+=("$path/")
+        fi
+    done
+    if [ "${#restore_paths[@]}" -gt 0 ]; then
+        git checkout -- "${restore_paths[@]}" 2>/dev/null || true
+    fi
+    if [ -s "$unstaged_patch" ]; then
+        git apply --3way --whitespace=nowarn "$unstaged_patch"
+    fi
+}
 
 header() {
     echo ""
@@ -637,6 +716,79 @@ lane_go() {
         "go build" "go build -buildvcs=false ./..." \
         "go vet" "go vet ./..."
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
+    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; return; fi
+
+    # --- Tier 4: Mutation Testing ---
+    if ! should_run_mutation_tests; then
+        header "GO TIER 4: MUTATION TESTING (skipped — $(mutation_skip_reason))"
+    elif go tool -n go-mutesting >/dev/null 2>&1; then
+        header "GO TIER 4: MUTATION TESTING (incremental)"
+
+        # shellcheck disable=SC2329
+        run_go_mutation_test() {
+            local mutation_base
+            mutation_base=$(mutation_base_ref)
+            if ! qg_git rev-parse --verify "$mutation_base" >/dev/null 2>&1; then
+                echo "WARNING: Cannot find mutation base $mutation_base — cannot determine changed files for mutation"
+                echo "FAIL: mutation testing requires a base branch to compute diff"
+                return 1
+            fi
+            local changed
+            changed=$(qg_git diff --name-only "$mutation_base" -- $GO_DIRS 2>/dev/null |
+                grep '\.go$' |
+                grep -v '_test\.go$' |
+                grep -v '_generated\.' |
+                grep -v 'cmd/oro/_assets' ||
+                true)
+            if [ -z "$changed" ]; then
+                echo "No changed Go files to mutate — skipping"
+                return 0
+            fi
+            local -a changed_files
+            mapfile -t changed_files <<< "$changed"
+            local pre_mutation_patch="$QG_DIR/go-mutation-pre-${RANDOM}.patch"
+            git diff -- $GO_DIRS > "$pre_mutation_patch" || true
+            GO_MUTATION_PRE_PATCH="$pre_mutation_patch"
+            trap 'QG_EXIT_STATUS=$?; restore_go_mutation_worktree "$GO_MUTATION_PRE_PATCH" >/dev/null 2>&1 || true; exit "$QG_EXIT_STATUS"' EXIT
+            local output mutesting_exit=0
+            output=$(timeout 480 go tool go-mutesting --exec-timeout=60 "${changed_files[@]}" 2>&1) || mutesting_exit=$?
+            if ! restore_go_mutation_worktree "$pre_mutation_patch"; then
+                echo "FAIL: failed to restore pre-existing unstaged changes after mutation testing"
+                return 1
+            fi
+            if [ "$mutesting_exit" -eq 124 ]; then
+                echo "WARNING: mutation testing timed out after 8min — skipping score check"
+                return 0
+            fi
+            echo "$output"
+            local score
+            score=$(echo "$output" | grep "The mutation score is" | awk '{print $5}')
+            local total
+            total=$(echo "$output" | sed -nE 's/.*total is ([0-9]+).*/\1/p' | tail -1)
+            if [ "$total" = "0" ]; then
+                echo "No mutations generated for changed files — skipping"
+                return 0
+            fi
+            if [ -z "$score" ]; then
+                if [ "$mutesting_exit" -ne 0 ]; then
+                    echo "FAIL: go-mutesting crashed (exit $mutesting_exit) — treating as mutation failure"
+                    return 1
+                fi
+                echo "No mutations generated for changed files — skipping"
+                return 0
+            fi
+            if [ "$(echo "$score < 0.75" | bc -l)" -eq 1 ]; then
+                echo "FAIL: mutation score $score for changed files is below 0.75 threshold"
+                return 1
+            fi
+            echo "PASS: mutation score $score meets 0.75 threshold"
+        }
+        if check "go-mutesting" "run_go_mutation_test"; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
+        fi
+    fi
 
     echo "${pass}:${fail}" > "$QG_DIR/go.rc"
 }
@@ -683,6 +835,44 @@ lane_python() {
         else
             fail=$((fail + 1))
             echo "${pass}:${fail}" > "$QG_DIR/python.rc"; return
+        fi
+    fi
+
+    # --- Tier 5: Mutation Testing ---
+    if ! should_run_mutation_tests; then
+        header "PYTHON TIER 5: MUTATION TESTING (skipped — $(mutation_skip_reason))"
+    elif [ -f "cosmic-ray.toml" ] && command -v uv >/dev/null 2>&1; then
+        header "PYTHON TIER 5: MUTATION TESTING (incremental)"
+
+        # shellcheck disable=SC2329
+        run_python_mutation_test() {
+            local mutation_base
+            mutation_base=$(mutation_base_ref)
+            if ! qg_git rev-parse --verify "$mutation_base" >/dev/null 2>&1; then
+                echo "WARNING: Cannot find mutation base $mutation_base — cannot determine changed files for mutation"
+                echo "FAIL: mutation testing requires a base branch to compute diff"
+                return 1
+            fi
+            local changed
+            changed=$(qg_git diff --name-only "$mutation_base" -- '*.py' 2>/dev/null |
+                grep -v 'test_' |
+                grep -v '__pycache__' |
+                grep -v 'archive/' ||
+                true)
+            if [ -z "$changed" ]; then
+                echo "No changed Python files to mutate — skipping"
+                return 0
+            fi
+            local cr_session="$QG_DIR/cr-$$.sqlite"
+            uv run cosmic-ray init cosmic-ray.toml "$cr_session" --force &&
+                uv run cosmic-ray exec cosmic-ray.toml "$cr_session" &&
+                uv run cr-report "$cr_session" &&
+                uv run cr-rate "$cr_session" --fail-over 50
+        }
+        if check "cosmic-ray" "run_python_mutation_test"; then
+            pass=$((pass + 1))
+        else
+            fail=$((fail + 1))
         fi
     fi
 

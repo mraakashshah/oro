@@ -14,7 +14,7 @@ import (
 // TestEpicQGPassesThenMerges covers all assertion points from the acceptance criteria:
 //
 //  1. checkEpicQG creates temp worktree via Create(epicID+"-qg", epicBranch), runs
-//     qgRunner.Run with skipMutation=false, removes worktree on completion.
+//     qgRunner.Run without the legacy skipMutation override, removes worktree on completion.
 //  2. QG passes  → returns true, tryCloseEpic proceeds to completeEpicClose.
 //  3. QG fails   → logs epic_qg_failed, creates fix bead, returns false (no close).
 //  4. QG error   → logs epic_qg_error, escalates, returns false.
@@ -117,11 +117,15 @@ func TestEpicQGPassesThenMerges(t *testing.T) {
 		// Assert (1): QG was run on the QG worktree path.
 		qgRunner.mu.Lock()
 		qgCalls := append([]string(nil), qgRunner.calls...)
+		skipMutations := append([]bool(nil), qgRunner.skipMutations...)
 		qgRunner.mu.Unlock()
 		foundQGCall := false
-		for _, c := range qgCalls {
+		for i, c := range qgCalls {
 			if c == qgWorktreePath {
 				foundQGCall = true
+				if skipMutations[i] {
+					t.Error("epic local QG should use local context without ORO_SKIP_MUTATION; mutation is deferred by quality_gate.sh itself")
+				}
 				break
 			}
 		}

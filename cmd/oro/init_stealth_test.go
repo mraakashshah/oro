@@ -68,6 +68,14 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 		if !strings.Contains(string(data), "agent/") {
 			t.Error("pre-push hook should embed agent/* rejection check")
 		}
+		hash, err := projectHash(projectDir)
+		if err != nil {
+			t.Fatalf("projectHash: %v", err)
+		}
+		stealthQG := filepath.Join(oroHome, "projects", "s-"+hash, "quality_gate.sh")
+		if !strings.Contains(string(data), stealthQG) {
+			t.Errorf("pre-push hook should reference stealth quality gate %q, got:\n%s", stealthQG, string(data))
+		}
 	})
 
 	t.Run("backs_up_existing_user_hooks_to_dot_user", func(t *testing.T) {

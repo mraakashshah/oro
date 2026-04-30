@@ -7665,23 +7665,25 @@ func TestMergeAndComplete_CleansUpOnNonConflictError(t *testing.T) {
 
 // mockQGRunner is a test double for QGRunner.
 type mockQGRunner struct {
-	mu     sync.Mutex
-	passed bool
-	output string
-	err    error
-	calls  []string // worktree paths passed to Run
+	mu            sync.Mutex
+	passed        bool
+	output        string
+	err           error
+	calls         []string // worktree paths passed to Run
+	skipMutations []bool
 }
 
-func (m *mockQGRunner) Run(_ context.Context, worktree string, _ bool) (bool, string, error) {
+func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool) (bool, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, worktree)
+	m.skipMutations = append(m.skipMutations, skipMutation)
 	return m.passed, m.output, m.err
 }
 
-// TestMergeAndComplete_RunsMutationQG verifies that mergeAndComplete calls the
+// TestMergeAndComplete_RunsPreMergeQG verifies that mergeAndComplete calls the
 // QGRunner before attempting to merge, and handles pass/fail/error correctly.
-func TestMergeAndComplete_RunsMutationQG(t *testing.T) {
+func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 	t.Run("QG pass - merge proceeds normally", func(t *testing.T) {
 		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 		ctx := context.Background()
@@ -7703,12 +7705,16 @@ func TestMergeAndComplete_RunsMutationQG(t *testing.T) {
 		// QG was called with the correct worktree.
 		qgRunner.mu.Lock()
 		calls := append([]string(nil), qgRunner.calls...)
+		skipMutations := append([]bool(nil), qgRunner.skipMutations...)
 		qgRunner.mu.Unlock()
 		if len(calls) != 1 {
 			t.Fatalf("expected QGRunner.Run called once, got %d", len(calls))
 		}
 		if calls[0] != worktree {
 			t.Errorf("QGRunner.Run worktree = %q, want %q", calls[0], worktree)
+		}
+		if skipMutations[0] {
+			t.Error("pre-merge QG should use local context without ORO_SKIP_MUTATION; mutation is deferred by quality_gate.sh itself")
 		}
 
 		// Merge proceeded: bead closed.

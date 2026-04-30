@@ -357,14 +357,14 @@ test_mutation_checks_main_branch_existence() {
 	local fn_body
 	fn_body=$(grep -A 80 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -80)
 
-	# Must have a check for main branch existence (rev-parse, merge-base, or warning message)
-	if echo "$fn_body" | grep -qE 'rev-parse.*verify.*main|merge-base.*main|Cannot find main'; then
+	# Must have a check for the selected mutation base (defaulting to main).
+	if echo "$fn_body" | grep -qE 'rev-parse.*verify.*mutation_base|merge-base.*mutation_base|Cannot find mutation base'; then
 		return 0
 	fi
 
-	echo "FAIL: run_go_mutation_test() does not check for main branch existence"
-	echo "  'git diff --name-only main 2>/dev/null || true' silently returns empty"
-	echo "  when main branch is absent → silent PASS (oro-xgwr)"
+	echo "FAIL: run_go_mutation_test() does not check for mutation base existence"
+	echo "  'git diff --name-only <base> 2>/dev/null || true' silently returns empty"
+	echo "  when the base branch is absent → silent PASS (oro-xgwr)"
 	return 1
 }
 
@@ -419,6 +419,60 @@ test_mutation_missing_main_warning_message() {
 	return 1
 }
 
+# shellcheck disable=SC2317,SC2329
+test_mutation_default_local_context_skips() {
+	if ! grep -q 'should_run_mutation_tests()' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh lacks should_run_mutation_tests helper"
+		return 1
+	fi
+	if ! grep -q 'ORO_QG_CONTEXT:-local' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: mutation context does not default to local"
+		return 1
+	fi
+	if ! grep -q 'non-push context; set ORO_QG_CONTEXT=push or ORO_RUN_MUTATION=1' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: local mutation skip reason is missing"
+		return 1
+	fi
+}
+
+# shellcheck disable=SC2317,SC2329
+test_mutation_push_context_runs() {
+	local helper
+	helper=$(sed -n '/^should_run_mutation_tests()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh")
+	if ! echo "$helper" | grep -q 'push | pre-push'; then
+		echo "FAIL: mutation helper does not run in push/pre-push context"
+		return 1
+	fi
+	if ! echo "$helper" | grep -q 'GITHUB_EVENT_NAME.*push'; then
+		echo "FAIL: mutation helper does not run for GitHub push context"
+		return 1
+	fi
+	if ! echo "$helper" | grep -q 'ORO_RUN_MUTATION'; then
+		echo "FAIL: mutation helper lacks explicit ORO_RUN_MUTATION override"
+		return 1
+	fi
+	if ! grep -q 'go tool -n go-mutesting' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: Go mutation availability must use pinned go tool lookup"
+		return 1
+	fi
+	if grep -q 'elif command -v go-mutesting' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: Go mutation availability still depends on PATH-only go-mutesting lookup"
+		return 1
+	fi
+}
+
+# shellcheck disable=SC2317,SC2329
+test_pre_push_enables_mutation_context() {
+	if ! grep -q 'ORO_QG_CONTEXT=push scripts/quality_gate.sh' "$SCRIPT_DIR/../git/hooks/pre-push"; then
+		echo "FAIL: pre-push hook does not run quality_gate.sh in push mutation context"
+		return 1
+	fi
+	if ! grep -q 'all checks; mutation enabled on push' "$SCRIPT_DIR/../git/hooks/pre-push"; then
+		echo "FAIL: pre-push hook does not advertise all checks with mutation on push"
+		return 1
+	fi
+}
+
 # =============================================================================
 # Python mutation: missing main branch check (oro-xgwr)
 # =============================================================================
@@ -431,11 +485,11 @@ test_python_mutation_checks_main_branch_existence() {
 	local fn_body
 	fn_body=$(grep -A 40 'run_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -40)
 
-	if echo "$fn_body" | grep -qE 'rev-parse.*verify.*main|merge-base.*main|Cannot find main'; then
+	if echo "$fn_body" | grep -qE 'rev-parse.*verify.*mutation_base|merge-base.*mutation_base|Cannot find mutation base'; then
 		return 0
 	fi
 
-	echo "FAIL: Python run_mutation_test() does not check for main branch existence"
+	echo "FAIL: Python run_mutation_test() does not check for mutation base existence"
 	echo "  Same bug as Go mutation — silent PASS when main is absent (oro-xgwr)"
 	return 1
 }
@@ -463,7 +517,7 @@ test_worktree_ref_resolution_after_env_cleanup() {
 	# Verify that quality_gate.sh:
 	# 1. Unsets GIT_DIR/GIT_WORK_TREE (prevents hook leakage)
 	# 2. Detects worktrees via .git gitlink file BEFORE the unset
-	# 3. Saves git-common-dir for later use by mutation testing
+	# 3. Saves worktree git dirs for later use by mutation testing
 	# 4. Provides a qg_git helper that temporarily sets GIT_DIR for ref resolution
 
 	local env_block
@@ -482,13 +536,13 @@ test_worktree_ref_resolution_after_env_cleanup() {
 		return 1
 	fi
 
-	# Must have: git-common-dir saved to a shell variable (not exported as GIT_DIR)
-	if ! echo "$env_block" | grep -qE 'git-common-dir'; then
-		echo "FAIL: quality_gate.sh does not save git-common-dir for worktree ref resolution"
+	# Must have: worktree-specific git-dir saved to a shell variable (not exported as GIT_DIR)
+	if ! echo "$env_block" | grep -qE 'git rev-parse --git-dir'; then
+		echo "FAIL: quality_gate.sh does not save worktree git-dir for worktree ref resolution"
 		return 1
 	fi
 
-	# Must have: qg_git helper function that uses saved common dir
+	# Must have: qg_git helper function that uses saved worktree git-dir
 	if ! grep -q 'qg_git()' "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: quality_gate.sh does not define qg_git() helper for worktree ref resolution"
 		echo "  Mutation testing needs qg_git to resolve refs without leaking GIT_DIR"
@@ -511,7 +565,7 @@ test_worktree_ref_resolution_after_env_cleanup() {
 # shellcheck disable=SC2317,SC2329
 test_worktree_rev_parse_main_functional() {
 	# Functional test: create a real git repo + worktree, simulate hook env,
-	# run the QG env setup + qg_git helper, then verify ref resolution works.
+	# run the QG env setup + qg_git helper, then verify ref/branch resolution works.
 	#
 	# The bug: after 'unset GIT_DIR GIT_WORK_TREE', the worktree's
 	# .git/worktrees/<name> dir has no refs/heads/main — it relies on
@@ -570,7 +624,14 @@ test_worktree_rev_parse_main_functional() {
 			exit 0
 		fi
 
-		# Test 2: GIT_DIR must NOT be exported (would leak into test subprocesses)
+		# Test 2: qg_git must preserve the current worktree branch. Using the
+		# common git dir reports the primary worktree branch instead.
+		if [ \"\$(qg_git branch --show-current)\" != 'test-branch' ]; then
+			echo 'FAIL: qg_git branch --show-current did not preserve worktree branch'
+			exit 0
+		fi
+
+		# Test 3: GIT_DIR must NOT be exported (would leak into test subprocesses)
 		if env | grep -q '^GIT_DIR='; then
 			echo 'FAIL: GIT_DIR is exported — it would leak into test subprocesses'
 			exit 0
@@ -586,6 +647,23 @@ test_worktree_rev_parse_main_functional() {
 		return 0
 	else
 		echo "$result"
+		return 1
+	fi
+}
+
+# shellcheck disable=SC2317,SC2329
+test_go_mutation_limits_changed_files_to_qg_go_surface() {
+	local mutation_body
+	mutation_body=$(grep -A 90 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -90)
+
+	# shellcheck disable=SC2016
+	if ! echo "$mutation_body" | grep -q 'qg_git diff --name-only "$mutation_base" -- cmd/ internal/ pkg/'; then
+		echo "FAIL: Go mutation changed-file discovery is not limited to cmd/internal/pkg"
+		return 1
+	fi
+	# shellcheck disable=SC2016
+	if ! echo "$mutation_body" | grep -q 'qg_git diff "$mutation_base" -- cmd/ internal/ pkg/'; then
+		echo "FAIL: Go mutation touched-function discovery is not limited to cmd/internal/pkg"
 		return 1
 	fi
 }
@@ -815,6 +893,9 @@ test_case "mutation checks main branch existence" test_mutation_checks_main_bran
 test_case "mutation crash flagged as FAIL" test_mutation_crash_flagged_as_fail
 test_case "mutation zero-total report skips" test_mutation_zero_total_skips
 test_case "mutation missing-main warning message" test_mutation_missing_main_warning_message
+test_case "mutation skips by default outside push" test_mutation_default_local_context_skips
+test_case "mutation runs in push context" test_mutation_push_context_runs
+test_case "pre-push enables mutation context" test_pre_push_enables_mutation_context
 
 echo ""
 echo "Testing Python mutation missing main branch (oro-xgwr)"
@@ -829,6 +910,7 @@ echo "=============================================="
 
 test_case "worktree env restores GIT_DIR" test_worktree_ref_resolution_after_env_cleanup
 test_case "worktree rev-parse main works" test_worktree_rev_parse_main_functional
+test_case "go mutation limits QG Go surface" test_go_mutation_limits_changed_files_to_qg_go_surface
 test_case "worktree env no GIT_WORK_TREE leak" test_worktree_env_no_leak_to_subprocesses
 
 echo ""

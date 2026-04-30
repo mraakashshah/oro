@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -237,6 +238,15 @@ func TestInstallHookWrapper(t *testing.T) {
 		if !strings.Contains(oroPrePushCheck, "exit 1") {
 			t.Error("oroPrePushCheck should exit 1 on violation")
 		}
+		if !strings.Contains(oroPrePushCheck, "ORO_QG_CONTEXT=push") {
+			t.Error("oroPrePushCheck should run quality gate in push context")
+		}
+		if !strings.Contains(oroPrePushCheck, "scripts/quality_gate.sh") {
+			t.Error("oroPrePushCheck should run scripts/quality_gate.sh")
+		}
+		if !strings.Contains(oroPrePushCheck, "all checks; mutation enabled on push") {
+			t.Error("oroPrePushCheck should describe push QG mutation behavior")
+		}
 	})
 
 	t.Run("install_pre_push_hook", func(t *testing.T) {
@@ -260,6 +270,45 @@ func TestInstallHookWrapper(t *testing.T) {
 		}
 		if !strings.Contains(string(data), "pre-push.user") {
 			t.Error("pre-push wrapper should reference pre-push.user")
+		}
+	})
+
+	t.Run("pre_push_hook_runs_explicit_quality_gate_path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		marker := filepath.Join(tmpDir, "qg-context.txt")
+		qgPath := filepath.Join(tmpDir, "stealth-quality_gate.sh")
+		qgScript := `#!/bin/sh
+printf '%s' "${ORO_QG_CONTEXT:-}" > "$MARKER"
+`
+		if err := os.WriteFile(qgPath, []byte(qgScript), 0o755); err != nil { //nolint:gosec // test hook script
+			t.Fatal(err)
+		}
+
+		if err := installHookWrapper(gitDir, "pre-push", buildOroPrePushCheck(qgPath)); err != nil {
+			t.Fatalf("installHookWrapper pre-push: %v", err)
+		}
+
+		hookPath := filepath.Join(gitDir, "hooks", "pre-push")
+		cmd := exec.Command(hookPath, "origin", "git@example.invalid:repo.git") //nolint:gosec // test-created hook
+		cmd.Dir = tmpDir
+		cmd.Stdin = strings.NewReader("refs/heads/main 0000000000000000000000000000000000000000 refs/heads/main 0000000000000000000000000000000000000000\n")
+		cmd.Env = append(os.Environ(), "MARKER="+marker)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("pre-push hook failed: %v\n%s", err, string(output))
+		}
+
+		got, err := os.ReadFile(marker) //nolint:gosec // test marker
+		if err != nil {
+			t.Fatalf("read marker: %v", err)
+		}
+		if string(got) != "push" {
+			t.Fatalf("expected explicit quality gate to run with ORO_QG_CONTEXT=push, got %q", string(got))
 		}
 	})
 }

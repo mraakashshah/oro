@@ -1616,9 +1616,10 @@ func (d *Dispatcher) guardMerge(beadID string) func() {
 	}
 }
 
-// checkPreMergeQG runs the mutation quality gate before merging. It returns
-// true when the gate passes and the merge should proceed. On failure or error
-// it handles cleanup and returns false so the caller can return early.
+// checkPreMergeQG runs the local pre-merge quality gate before merging. Mutation
+// testing is deferred to push so local branch merges do not pay that cost.
+// It returns true when the gate passes and the merge should proceed. On failure
+// or error it handles cleanup and returns false so the caller can return early.
 func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64) bool {
 	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, false)
 	if qgErr != nil {
@@ -1643,11 +1644,11 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 	return true
 }
 
-// checkEpicQG creates a temporary worktree from epicBranch, runs the quality
-// gate against it (with mutation testing enabled), and cleans up the worktree
-// on completion. It returns true when the gate passes and tryCloseEpic should
-// proceed to completeEpicClose. On failure or error it handles
-// logging/escalation and returns false.
+// checkEpicQG creates a temporary worktree from epicBranch, runs the local
+// quality gate against it with mutation testing deferred to push, and cleans up
+// the worktree on completion. It returns true when the gate passes and
+// tryCloseEpic should proceed to completeEpicClose. On failure or error it
+// handles logging/escalation and returns false.
 func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBranch string) bool {
 	wtID := epicID + "-qg"
 	worktree, _, err := d.worktrees.Create(ctx, wtID, epicBranch)

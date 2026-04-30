@@ -211,7 +211,11 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			t.Error("go-only config should not include lane_python function")
 		}
 		for _, want := range []string{
+			`should_run_mutation_tests()`,
+			`ORO_QG_CONTEXT:-local`,
+			`ORO_RUN_MUTATION`,
 			`QG_STAGE_ASSETS_LOCK=""`,
+			`QG_EXIT_STATUS=0`,
 			`trap cleanup_qg EXIT`,
 			`trap 'exit 130' INT`,
 			`STAGE_ASSETS_READY=true`,
@@ -220,6 +224,15 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			`export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"`,
 			`GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run`,
 			`ensure_stage_assets()`,
+			`GO TIER 4: MUTATION TESTING (incremental)`,
+			`restore_go_mutation_worktree()`,
+			`pre_mutation_patch`,
+			`trap 'QG_EXIT_STATUS=$?; restore_go_mutation_worktree`,
+			`go tool -n go-mutesting`,
+			`go tool go-mutesting`,
+			`The mutation score is`,
+			`mutation score $score for changed files is below 0.75 threshold`,
+			`PASS: mutation score $score meets 0.75 threshold`,
 			`cmd/oro embeds _assets but Makefile stage-assets target is unavailable`,
 			`expected_rc_files=(`,
 			`FAIL: missing lane result`,
@@ -266,6 +279,16 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		}
 		if !strings.Contains(script, "lane_python") {
 			t.Error("python-only config should include lane_python function")
+		}
+		for _, want := range []string{
+			`should_run_mutation_tests()`,
+			`PYTHON TIER 5: MUTATION TESTING (incremental)`,
+			`uv run cosmic-ray exec`,
+			`uv run cr-rate`,
+		} {
+			if !strings.Contains(script, want) {
+				t.Errorf("generated Python script missing %q", want)
+			}
 		}
 
 		checkBashSyntax(t, script)

@@ -420,7 +420,8 @@ func installAgentBranchGuard(absProjectRoot string) {
 	if _, err := os.Stat(gitDir); err != nil {
 		return
 	}
-	if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
+	qgPath := filepath.Join(absProjectRoot, "scripts", "quality_gate.sh")
+	if err := installHookWrapper(gitDir, "pre-push", buildOroPrePushCheck(qgPath)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: install pre-push hook: %v\n", err)
 	}
 }
@@ -428,7 +429,7 @@ func installAgentBranchGuard(absProjectRoot string) {
 // installStealthGitHooks installs oro pre-commit and pre-push wrappers in the
 // project's .git/hooks directory. Errors are logged as warnings; the function
 // is fail-open because missing hooks are recoverable.
-func installStealthGitHooks(absProjectRoot string) {
+func installStealthGitHooks(absProjectRoot, qualityGatePath string) {
 	gitDir := filepath.Join(absProjectRoot, ".git")
 	if _, err := os.Stat(gitDir); err != nil {
 		return
@@ -436,7 +437,7 @@ func installStealthGitHooks(absProjectRoot string) {
 	if err := installHookWrapper(gitDir, "pre-commit", oroPreCommitCheck); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: install pre-commit hook: %v\n", err)
 	}
-	if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
+	if err := installHookWrapper(gitDir, "pre-push", buildOroPrePushCheck(qualityGatePath)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: install pre-push hook: %v\n", err)
 	}
 }
@@ -499,7 +500,8 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { 
 	initDoltForProject(beadsDir, oroHome)
 
 	// 8. Install git hooks to prevent accidental leakage in stealth mode.
-	installStealthGitHooks(absProjectRoot)
+	stealthPaths := stealthProjectPaths(projectRoot, stealthDir)
+	installStealthGitHooks(absProjectRoot, stealthPaths.QualityGate)
 
 	// 9. Generate settings.json.
 	settingsData, err := generateSettings("$HOME/.oro")
@@ -516,7 +518,6 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { 
 	}
 
 	// 11. Generate quality_gate.sh to the stealth path (not in project root).
-	stealthPaths := stealthProjectPaths(projectRoot, stealthDir)
 	if err := writeQualityGateScriptFile(stealthPaths, false); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
 	}
