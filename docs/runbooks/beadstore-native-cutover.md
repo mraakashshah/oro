@@ -153,12 +153,15 @@ Run against the target `state.db`:
 set -euo pipefail
 
 export ORO_DB_PATH="$state_db"
+representative_id=${ORO_NATIVE_REPRESENTATIVE_ID:?set to a migrated bead id from the migration report, not the smoke bead}
 scripts/check-phase8-no-writers.py
 ORO_BEADSOURCE_MODE=sqlite ./oro bead status
 ORO_BEADSOURCE_MODE=sqlite ./oro bead ready --json > /tmp/oro-native-ready.json
 ORO_BEADSOURCE_MODE=sqlite ./oro bead blocked --json > /tmp/oro-native-blocked.json
 jq -e 'type == "array"' /tmp/oro-native-ready.json
 jq -e 'type == "array"' /tmp/oro-native-blocked.json
+ORO_BEADSOURCE_MODE=sqlite ./oro bead show "$representative_id" --json |
+  jq -e --arg id "$representative_id" '.id == $id and (.status | type == "string")'
 scripts/check-native-beadstore-invariants.py --db "$state_db"
 sqlite3 "$state_db" 'PRAGMA integrity_check;'
 sqlite3 "$state_db" 'SELECT COUNT(*) FROM beads WHERE deleted = 0;'

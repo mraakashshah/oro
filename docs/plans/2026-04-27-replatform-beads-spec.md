@@ -2547,8 +2547,8 @@ $ oro bead acceptance-test
   ✓  WAL mode enabled (journal_mode=wal)
   ✓  busy_timeout=5000
   ✓  All 6 bead tables exist with expected columns
-  ✓  beads_ready vs `bd ready` — zero REAL divergences (classifier-based per §9.4 step 3) across 100+ Ready() calls during shadow window. v12 fix per codex round-4 #2: prior wording said "same count," which contradicts the read-only-shadow drift design (any pre-shadow bead updated during shadow legitimately differs in count between primary and secondary).
-  ✓  beads_blocked vs `bd list --status=blocked` — zero REAL divergences over 100+ calls (same classifier).
+  ✓  Native ready/blocked commands return JSON arrays and `scripts/check-native-beadstore-invariants.py` reports zero ready/blocked view mismatches, ready/blocked overlap, active-assignment leaks, and ready rows with unclosed hard blockers. bd/Dolt parity is audit-only after migration and is not a cutover veto when divergence is caused by bd/Dolt failure, stale bd state, or bd unavailability.
+  ✓  Native validation proves a representative migrated bead with `oro bead show --json` and a controlled native create/show/close/show smoke bead against the target `state.db`.
   ✓  Roundtrip: oro bead create → show → close → show
   ✓  oro bead create --parent=<epic> sets parent_id only (zero bead_deps rows for new bead) — v14 contract
   ✓  Roundtrip: oro bead create → dep add → ready (filtered out) → close dep → ready (returned)

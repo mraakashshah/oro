@@ -12,7 +12,12 @@ to bd/Dolt failure, stale bd state, or bd unavailability. The 24-hour shadow
 monitor gate below is retained as legacy recovery context, not as the current
 Phase 8 cutover gate.
 
-## Current Dry-Run State
+## Historical Dry-Run State
+
+This section records the migration blockers encountered before the native-first
+cutover decision. It is historical context, not the current Phase 8 go/no-go
+gate. For current commands, use
+`docs/runbooks/beadstore-native-cutover.md`.
 
 The 2026-04-29 real-data dry-run blocker was:
 
@@ -22,11 +27,29 @@ dolt internal count error: ... no database selected
 Aborting.
 ```
 
-That specific blocker is resolved by selecting the Dolt database from `.beads/metadata.json`, counting the `issues` table, reporting matched `bd export` and Dolt counts, and preserving bd `deferred` rows as native `open` rows with `defer_until`. A later 2026-04-30 real apply exposed a separate blocker: the target `state.db` already contained stale native bead row `oro-cdb3`, so post-apply SQLite had one row more than `bd export`. Phase 8 is blocked until the target `state.db` is restored or cleared through the rollback path and the fixed dry-run no longer reports `native bead table is not empty`.
+That blocker was resolved by selecting the Dolt database from
+`.beads/metadata.json`, counting the `issues` table, reporting matched
+`bd export` and Dolt counts, and preserving bd `deferred` rows as native `open`
+rows with `defer_until`.
 
-Before relying on the dry-run gate, verify `bd export` can read the source and the externally managed Dolt server on `127.0.0.1:13310` is reachable. A dry-run that cannot run `bd export`, needs `--force-recover`, cannot query Dolt's internal count, or reports a count mismatch is a no-go for real migration.
+A later 2026-04-30 real apply exposed a separate blocker: the target `state.db`
+already contained stale native bead row `oro-cdb3`, so post-apply SQLite had one
+row more than `bd export`. The migration guard now fails closed on a non-empty
+native bead table, and the live target was recovered through a reviewed
+backup/clear path before the successful migration retry. Do not treat that
+resolved incident as a current Phase 8 blocker.
 
-Rollback is also not yet fully executable from the shipped CLI. `oro bead import` is still a stub, and `migrate-from-dolt --from-jsonl` is an initial import path, not an in-place restore command for a populated or corrupted SQLite beadstore. Do not run real migration until an operator-taken `state.db` SQLite backup snapshot has been created, integrity-checked, and recorded in the operator log, or until a native restore primitive exists.
+Before relying on any dry-run gate, verify `bd export` can read the source and
+the externally managed Dolt server on `127.0.0.1:13310` is reachable. A dry-run
+that cannot run `bd export`, needs `--force-recover`, cannot query Dolt's
+internal count, or reports a count mismatch is a no-go for initial import.
+
+Rollback is also not yet fully executable from the shipped CLI. `oro bead
+import` is still a stub, and `migrate-from-dolt --from-jsonl` is an initial
+import path, not an in-place restore command for a populated or corrupted
+SQLite beadstore. Real migration or rollback must have an operator-taken
+`state.db` SQLite backup snapshot that was integrity-checked and recorded in
+the operator log, unless a native restore primitive exists.
 
 ## Legacy Shadow Phase 8 Gate Sequence
 
