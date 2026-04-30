@@ -214,6 +214,12 @@ func (execBeadMigrationRunner) Run(ctx context.Context, name string, args ...str
 
 var defaultBeadMigrationRunner beadMigrationCommandRunner = execBeadMigrationRunner{} //nolint:gochecknoglobals // tests swap this command seam.
 
+const (
+	beadMigrationDoltCountQuery          = "SELECT COUNT(*) AS count FROM issues;"
+	beadMigrationDeferredWithoutUntil    = "2099-01-01T00:00:00Z"
+	beadMigrationDeferredWithoutUntilMsg = "status %q has no defer_until; storing as open with defer_until " + beadMigrationDeferredWithoutUntil
+)
+
 type beadMigrationPreflight struct {
 	checked     bool
 	exportCount int
@@ -1551,7 +1557,11 @@ func runBeadMigrationCorruptionPreflight(ctx context.Context, export []byte, run
 		checked:     true,
 		exportCount: exportCount,
 	}
-	out, doltErr := runner.Run(ctx, "dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;")
+	doltCountArgs, err := beadMigrationDoltCountArgs()
+	if err != nil {
+		return beadMigrationPreflightWithDoltErr(preflight, err), nil
+	}
+	out, doltErr := runner.Run(ctx, "dolt", doltCountArgs...)
 	if doltErr != nil {
 		return beadMigrationPreflightWithDoltErr(preflight, doltErr), nil
 	}
@@ -1561,6 +1571,58 @@ func runBeadMigrationCorruptionPreflight(ctx context.Context, export []byte, run
 	}
 	preflight.doltCount = count
 	return preflight, nil
+}
+
+func beadMigrationDoltCountArgs() ([]string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("resolve working directory for dolt pre-flight: %w", err)
+	}
+	paths, err := ResolvePaths(cwd)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project paths for dolt pre-flight: %w", err)
+	}
+	return beadMigrationDoltCountArgsForBeadsDir(paths.BeadsDir)
+}
+
+func beadMigrationDoltCountArgsForBeadsDir(beadsDir string) ([]string, error) {
+	meta, err := readDoltMeta(beadsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read dolt metadata for pre-flight: %w", err)
+	}
+
+	args := []string{"sql", "--result-format", "json", "-q", beadMigrationDoltCountQuery}
+	if meta == nil {
+		return args, nil
+	}
+
+	dbName := meta.DoltDatabase
+	if dbName == "" {
+		dbName = "beads"
+	}
+	if meta.DoltMode == "server" {
+		port := meta.DoltServerPort
+		if port == 0 {
+			port = DerivePort(beadsDir)
+		}
+		return []string{
+			"--host", "127.0.0.1",
+			"--port", strconv.Itoa(port),
+			"--no-tls",
+			"--use-db", dbName,
+			"sql",
+			"--result-format", "json",
+			"-q", beadMigrationDoltCountQuery,
+		}, nil
+	}
+
+	return []string{
+		"--data-dir", filepath.Join(beadsDir, "dolt"),
+		"--use-db", dbName,
+		"sql",
+		"--result-format", "json",
+		"-q", beadMigrationDoltCountQuery,
+	}, nil
 }
 
 func beadMigrationPreflightWithDoltErr(preflight beadMigrationPreflight, err error) beadMigrationPreflight {
@@ -1595,6 +1657,9 @@ func reportBeadMigrationPreflight(w io.Writer, source beadMigrationSource, prefl
 	}
 	failed := preflight.doltErr != nil || preflight.doltCount != preflight.exportCount
 	if !failed {
+		fmt.Fprintf(w, "[oro] Pre-flight verified Dolt and bd export counts.\n")
+		fmt.Fprintf(w, "[oro] bd export count: %d\n", preflight.exportCount)
+		fmt.Fprintf(w, "[oro] dolt internal count: %d\n", preflight.doltCount)
 		return nil
 	}
 	var b strings.Builder
@@ -1773,6 +1838,15 @@ func validateBDExportRow(raw json.RawMessage, label string, report *beadMigratio
 	if status == "blocked" {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("%s: status %q will be stored as open because native blocked state is derived from dependencies", label, bead.Status))
 	}
+	if status == "deferred" {
+		if firstNonEmpty(bead.DeferredUntil, bead.DeferUntil) == "" {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: "+beadMigrationDeferredWithoutUntilMsg, label, bead.Status))
+			bead.DeferUntil = beadMigrationDeferredWithoutUntil
+		} else {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: status %q will be stored as open with defer_until preserved", label, bead.Status))
+		}
+		status = "open"
+	}
 	bead.Status = status
 	if strings.TrimSpace(bead.ID) == "" {
 		report.Errors = append(report.Errors, fmt.Sprintf("%s: bd export bead is missing id", label))
@@ -1880,7 +1954,7 @@ func normalizeMigrationStatusStrict(status string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(status)); normalized {
 	case "", "open", "pending", "to-do":
 		return "open", nil
-	case "in_progress", "blocked", "closed":
+	case "in_progress", "blocked", "closed", "deferred":
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unknown status %q", status)

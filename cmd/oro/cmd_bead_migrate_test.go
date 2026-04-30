@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+var beadMigrationDefaultDoltCountArgs = []string{"sql", "--result-format", "json", "-q", beadMigrationDoltCountQuery}
+
 func TestBeadMigrateFromDoltDryRunFixturePrintsPlanWithoutMutatingDB(t *testing.T) {
 	repoRoot := findRepoRoot(t)
 	fixture := filepath.Join(repoRoot, "testdata", "dolt-100")
@@ -707,7 +709,7 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 		fake := &fakeBeadMigrationRunner{
 			outputs: map[string][]byte{
 				key("bd", "export"): []byte(validJSONL),
-				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): []byte(`{"rows":[{"count":2}]}`),
+				key("dolt", beadMigrationDefaultDoltCountArgs...): []byte(`{"rows":[{"count":2}]}`),
 			},
 		}
 		restoreBeadMigrationRunner(t, fake)
@@ -724,7 +726,37 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 		if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
 			t.Fatalf("dry-run mismatch mutated DB path %s: stat err=%v", dbPath, statErr)
 		}
-		if fake.count("bd", "export") != 1 || fake.count("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;") != 1 {
+		if fake.count("bd", "export") != 1 || fake.count("dolt", beadMigrationDefaultDoltCountArgs...) != 1 {
+			t.Fatalf("unexpected command calls: %#v", fake.calls)
+		}
+	})
+
+	t.Run("default source reports matched preflight counts on dry-run", func(t *testing.T) {
+		dbPath := setupMigrationLockTestEnv(t)
+		fake := &fakeBeadMigrationRunner{
+			outputs: map[string][]byte{
+				key("bd", "export"): []byte(validJSONL),
+				key("dolt", beadMigrationDefaultDoltCountArgs...): []byte(`{"rows":[{"count":1}]}`),
+			},
+		}
+		restoreBeadMigrationRunner(t, fake)
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--dry-run")
+		for _, want := range []string{
+			"Pre-flight verified Dolt and bd export counts",
+			"bd export count: 1",
+			"dolt internal count: 1",
+			"Migration plan",
+			"DRY RUN -- no writes performed",
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("matched preflight output missing %q:\n%s", want, out)
+			}
+		}
+		if _, statErr := os.Stat(dbPath); !os.IsNotExist(statErr) {
+			t.Fatalf("dry-run matched preflight mutated DB path %s: stat err=%v", dbPath, statErr)
+		}
+		if fake.count("bd", "export") != 1 || fake.count("dolt", beadMigrationDefaultDoltCountArgs...) != 1 {
 			t.Fatalf("unexpected command calls: %#v", fake.calls)
 		}
 	})
@@ -734,7 +766,7 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 		fake := &fakeBeadMigrationRunner{
 			outputs: map[string][]byte{
 				key("bd", "export"): []byte(validJSONL),
-				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): []byte(`{"rows":[{"count":2}]}`),
+				key("dolt", beadMigrationDefaultDoltCountArgs...): []byte(`{"rows":[{"count":2}]}`),
 			},
 		}
 		restoreBeadMigrationRunner(t, fake)
@@ -771,7 +803,7 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 		fake := &fakeBeadMigrationRunner{
 			outputs: map[string][]byte{
 				key("bd", "export"): []byte(export),
-				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): []byte(`{"rows":[{"count":3}]}`),
+				key("dolt", beadMigrationDefaultDoltCountArgs...): []byte(`{"rows":[{"count":3}]}`),
 			},
 		}
 		restoreBeadMigrationRunner(t, fake)
@@ -812,7 +844,7 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 				key("bd", "export"): []byte(validJSONL),
 			},
 			errs: map[string]error{
-				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): fmt.Errorf("dolt corruption"),
+				key("dolt", beadMigrationDefaultDoltCountArgs...): fmt.Errorf("dolt corruption"),
 			},
 		}
 		restoreBeadMigrationRunner(t, fake)
@@ -837,7 +869,7 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 				key("bd", "export"): []byte(validJSONL),
 			},
 			errs: map[string]error{
-				key("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;"): fmt.Errorf("dolt corruption"),
+				key("dolt", beadMigrationDefaultDoltCountArgs...): fmt.Errorf("dolt corruption"),
 			},
 		}
 		restoreBeadMigrationRunner(t, fake)
@@ -873,12 +905,145 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 				if !strings.Contains(out, "Migration plan") {
 					t.Fatalf("expected dry-run plan:\n%s", out)
 				}
-				if fake.count("dolt", "sql", "--result-format", "json", "-q", "SELECT COUNT(*) AS count FROM beads;") != 0 {
+				if fake.count("dolt", beadMigrationDefaultDoltCountArgs...) != 0 {
 					t.Fatalf("explicit source unexpectedly ran dolt preflight: %#v", fake.calls)
 				}
 			})
 		}
 	})
+
+	t.Run("deferred status imports as open with defer_until preserved", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "state.db")
+		t.Setenv("ORO_DB_PATH", dbPath)
+		t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+		t.Setenv("ORO_PROJECT", "")
+		deferredUntil := "2099-01-01T00:00:00Z"
+		jsonlPath := writeMigrationJSONL(t, `{"id":"oro-deferred","title":"Deferred","status":"deferred","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","defer_until":"`+deferredUntil+`"}`+"\n")
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", jsonlPath)
+		for _, want := range []string{
+			"Migration complete",
+			"migration warnings: 1",
+			"status \"deferred\" will be stored as open with defer_until preserved",
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("deferred migration output missing %q:\n%s", want, out)
+			}
+		}
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open migrated db: %v", err)
+		}
+		defer db.Close()
+		var status, gotDeferredUntil string
+		if err := db.QueryRow(`SELECT status, deferred_until FROM beads WHERE id='oro-deferred'`).Scan(&status, &gotDeferredUntil); err != nil {
+			t.Fatalf("query deferred bead: %v", err)
+		}
+		if status != "open" || gotDeferredUntil != deferredUntil {
+			t.Fatalf("deferred row status/deferred_until = %q/%q, want open/%q", status, gotDeferredUntil, deferredUntil)
+		}
+	})
+
+	t.Run("deferred status without defer_until imports with sentinel defer_until", func(t *testing.T) {
+		dbPath := filepath.Join(t.TempDir(), "state.db")
+		t.Setenv("ORO_DB_PATH", dbPath)
+		t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+		t.Setenv("ORO_PROJECT", "")
+		jsonlPath := writeMigrationJSONL(t, `{"id":"oro-bad-deferred","title":"Bad deferred","status":"deferred","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`+"\n")
+
+		out := runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", jsonlPath)
+		for _, want := range []string{
+			"Migration complete",
+			"migration warnings: 1",
+			beadMigrationDeferredWithoutUntil,
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("missing-until deferred output missing %q:\n%s", want, out)
+			}
+		}
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open migrated db: %v", err)
+		}
+		defer db.Close()
+		var status, gotDeferredUntil string
+		if err := db.QueryRow(`SELECT status, deferred_until FROM beads WHERE id='oro-bad-deferred'`).Scan(&status, &gotDeferredUntil); err != nil {
+			t.Fatalf("query missing-until deferred bead: %v", err)
+		}
+		if status != "open" || gotDeferredUntil != beadMigrationDeferredWithoutUntil {
+			t.Fatalf("missing-until deferred row status/deferred_until = %q/%q, want open/%q", status, gotDeferredUntil, beadMigrationDeferredWithoutUntil)
+		}
+	})
+}
+
+func TestBeadMigrationDoltCountArgs(t *testing.T) {
+	t.Run("missing metadata uses default local dolt sql", func(t *testing.T) {
+		args, err := beadMigrationDoltCountArgsForBeadsDir(t.TempDir())
+		if err != nil {
+			t.Fatalf("beadMigrationDoltCountArgsForBeadsDir error: %v", err)
+		}
+		if !reflect.DeepEqual(args, beadMigrationDefaultDoltCountArgs) {
+			t.Fatalf("args = %#v, want %#v", args, beadMigrationDefaultDoltCountArgs)
+		}
+	})
+
+	t.Run("server metadata selects configured host port and database", func(t *testing.T) {
+		beadsDir := t.TempDir()
+		writeDoltCountMetadata(t, beadsDir, `{
+			"backend":"dolt",
+			"dolt_mode":"server",
+			"dolt_server_port":13310,
+			"dolt_database":"beads_oro"
+		}`)
+
+		args, err := beadMigrationDoltCountArgsForBeadsDir(beadsDir)
+		if err != nil {
+			t.Fatalf("beadMigrationDoltCountArgsForBeadsDir error: %v", err)
+		}
+		want := []string{
+			"--host", "127.0.0.1",
+			"--port", "13310",
+			"--no-tls",
+			"--use-db", "beads_oro",
+			"sql",
+			"--result-format", "json",
+			"-q", beadMigrationDoltCountQuery,
+		}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("args = %#v, want %#v", args, want)
+		}
+	})
+
+	t.Run("local dolt metadata selects dolt data dir and database", func(t *testing.T) {
+		beadsDir := t.TempDir()
+		writeDoltCountMetadata(t, beadsDir, `{
+			"backend":"dolt",
+			"dolt_database":"beads_local"
+		}`)
+
+		args, err := beadMigrationDoltCountArgsForBeadsDir(beadsDir)
+		if err != nil {
+			t.Fatalf("beadMigrationDoltCountArgsForBeadsDir error: %v", err)
+		}
+		want := []string{
+			"--data-dir", filepath.Join(beadsDir, "dolt"),
+			"--use-db", "beads_local",
+			"sql",
+			"--result-format", "json",
+			"-q", beadMigrationDoltCountQuery,
+		}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("args = %#v, want %#v", args, want)
+		}
+	})
+}
+
+func writeDoltCountMetadata(t *testing.T, beadsDir, metadata string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(metadata), 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
 }
 
 type comparableMigratedFixtureBead struct {

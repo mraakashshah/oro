@@ -1,10 +1,10 @@
 # Beadstore Migration Safety and Recovery Runbook
 
-This runbook is the operator source of truth for Phase 8 Dolt-to-SQLite beadstore migration safety. Do not run real migration from this repository until the dry-run gate passes without `--force-recover`.
+This runbook is the operator source of truth for Phase 8 Dolt-to-SQLite beadstore migration safety. Do not run real migration from this repository until the full gate sequence below passes and the pre-migration SQLite backup snapshot is recorded.
 
-## Current Blocker
+## Current Dry-Run State
 
-Real migration is blocked by the 2026-04-29 real-data dry-run:
+The 2026-04-29 real-data dry-run blocker was:
 
 ```text
 bd export count: 1718
@@ -12,7 +12,9 @@ dolt internal count error: ... no database selected
 Aborting.
 ```
 
-This is not safe to override. Fix the Dolt internal-count query or source selection first, then rerun the full gate sequence below. A later review rerun also failed earlier because the externally managed Dolt server on `127.0.0.1:13310` was stopped, so the operator must verify `bd export` can read the source before relying on the count preflight. A dry-run that cannot run `bd export`, needs `--force-recover`, cannot query Dolt's internal count, or reports a count mismatch is a no-go for real migration.
+That specific blocker is resolved by selecting the Dolt database from `.beads/metadata.json`, counting the `issues` table, reporting matched `bd export` and Dolt counts, and preserving bd `deferred` rows as native `open` rows with `defer_until`. The latest verified patched dry-run on 2026-04-30 exited 0 without `--force-recover` and printed `DRY RUN -- no writes performed`; it reported 18 warnings for expected `blocked`/`deferred` status remaps and no migration errors.
+
+Before relying on the dry-run gate, verify `bd export` can read the source and the externally managed Dolt server on `127.0.0.1:13310` is reachable. A dry-run that cannot run `bd export`, needs `--force-recover`, cannot query Dolt's internal count, or reports a count mismatch is a no-go for real migration.
 
 Rollback is also not yet fully executable from the shipped CLI. `oro bead import` is still a stub, and `migrate-from-dolt --from-jsonl` is an initial import path, not an in-place restore command for a populated or corrupted SQLite beadstore. Do not run real migration until an operator-taken `state.db` SQLite backup snapshot has been created, integrity-checked, and recorded in the operator log, or until a native restore primitive exists.
 

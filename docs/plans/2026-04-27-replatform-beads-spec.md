@@ -1548,14 +1548,14 @@ func MigrateFromDolt(ctx context.Context, store *beadstore.SQLiteStore, doltExpo
   - If multiple `## Acceptance Criteria` headers (malformed): only the first is extracted and stripped; subsequent ones logged to the migration error report and left in `description` for operator review.
   - Acceptance test in `pkg/beadstore/migrate_test.go`: 8 fixtures covering AC at start / mid / end of description, AC followed by other H2 sections, malformed nested headers, no AC at all, AC with sub-headers (H3) inside its body. Each asserts both `ac` and `descWithoutAC` round-trip correctly.
 - **Numeric vs string priorities**: bd uses int; we keep int.
-- **Status normalization**: bd may produce `pending` or `to-do` historically; map to `open`. Anything not in our 3-state machine is logged and mapped to `open`.
-- **Deferred-until handling**: if bd's status is `open` but `defer_until` is set, we set `status='open'` and `deferred_until=<value>`. The view `beads_ready` excludes deferred beads correctly.
+- **Status normalization**: bd may produce `pending` or `to-do` historically; map to `open`. bd `blocked` is logged and stored as `open` because native blocked state is derived from dependencies. bd `deferred` is logged and stored as native `open` with `deferred_until` preserved.
+- **Deferred-until handling**: if bd's status is `open` or `deferred` and `defer_until`/`deferred_until` is set, we set `status='open'` and `deferred_until=<value>`. If bd exports `status='deferred'` without a defer timestamp, the migration stores a far-future `deferred_until` sentinel and warns rather than making the bead immediately ready. The view `beads_ready` excludes deferred beads correctly.
 - **Parent IDs that haven't been imported yet**: deferred FK enforcement. We do a two-pass import (insert all rows, then add FKs).
 - **Soft-deleted beads**: bd may keep tombstones; we set `deleted=1` for them and skip in views.
 
 ### 9.2b Partial dolt corruption pre-flight (addresses adversarial review C5)
 
-A subtle and dangerous failure mode: dolt is *partially* corrupted. `bd export` succeeds but returns fewer rows than dolt actually contains (it stops at the first unreadable row, silently). The migration's row-count parity check (§9.6) compares `SELECT COUNT(*) FROM beads` against `bd export | jq -s length` — both are 1,100, but dolt actually has 1,200. The 100 missing beads are silently lost.
+A subtle and dangerous failure mode: dolt is *partially* corrupted. `bd export` succeeds but returns fewer rows than dolt actually contains (it stops at the first unreadable row, silently). The migration's row-count parity check (§9.6) compares a configured-source `SELECT COUNT(*) FROM issues` against `bd export | jq -s length` — both are 1,100, but dolt actually has 1,200. The 100 missing beads are silently lost.
 
 **Pre-flight gate.** Before any migration runs, the tool independently verifies dolt's internal row count via dolt's own metadata, not via `bd export`:
 
@@ -1574,9 +1574,9 @@ $ oro bead migrate-from-dolt --dry-run
 
 If `dolt fsck` reports clean and the export is still short, that's a bd-side bug, not corruption. Either way, the operator decides explicitly via `--force-recover`. **No silent data loss.**
 
-The pre-flight queries dolt by spawning `dolt sql -q "SELECT COUNT(*) FROM beads;"` against the dolt directory. If dolt itself fails to start (terminal corruption), the migration falls back to the JSONL path (§9.9) with the same explicit-acknowledgment requirement.
+The pre-flight queries dolt by spawning `dolt sql` against the configured source and running `SELECT COUNT(*) FROM issues;`. Server-mode projects select the host, port, and `dolt_database` from `.beads/metadata.json`; local projects use the resolved project `BeadsDir/dolt` as the Dolt data directory. If dolt itself fails to start (terminal corruption), the migration falls back to the JSONL path (§9.9) with the same explicit-acknowledgment requirement.
 
-**Current real-data blocker (2026-04-29 audit):** the real-data dry-run is not safe to promote. The observed preflight output was:
+**Resolved real-data blocker (2026-04-29 audit, fixed 2026-04-30):** the observed preflight output was:
 
 ```
 bd export count: 1718
@@ -1584,7 +1584,7 @@ dolt internal count error: ... no database selected
 Aborting.
 ```
 
-Real migration must not run until `./oro bead migrate-from-dolt --dry-run` passes cleanly without `--force-recover`. A dry-run that needs `--force-recover`, cannot query dolt's internal count, or reports any count mismatch is a migration-day blocker, not an operator-warning-only condition.
+The blocker was fixed by selecting the configured Dolt database and counting `issues`. Real migration must not run unless `./oro bead migrate-from-dolt --dry-run` passes without `--force-recover`. A dry-run that needs `--force-recover`, cannot query dolt's internal count, or reports any count mismatch is a migration-day blocker, not an operator-warning-only condition.
 
 **Phase 0 deliverable** captures the dolt internal count alongside the bd export count, so any drift between Phase 0 audit and Phase 8 migration day is also visible.
 
@@ -2282,7 +2282,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 - **(v16 explicit per codex round 7) Worker-restart + bd-PATH-strip:** after migration succeeds and `ORO_BEADSOURCE_MODE=shadow` is set, **the operator restarts every worker** before resuming traffic. The dispatcher's worker-spawn config is updated at this point to strip `bd` from worker `PATH` (the dispatcher itself retains bd on its own PATH for migration tool re-runs — only worker subprocesses lose it). v15's no-shim cutover only works if both these steps happen at Phase 8; without them, in-flight workers would still emit `bd …` and silently fail on `command not found`. This is a hard Phase 8 deliverable, not a runbook footnote.
 - **Single-dispatcher invariant:** confirm only one dispatcher is running (no stale PID lock, no orphan dispatcher process).
 - **No concurrent bead writers:** confirm no workers, direct `bd` processes, direct native `oro bead` mutator processes, or other migration commands are running before dry-run or apply. The gate intentionally treats read-only `bd` commands as stop-the-world conflicts so it cannot miss newly added bd mutators. Keep them stopped until the shadow-mode restart.
-- **Real-data dry-run gate:** run `./oro bead migrate-from-dolt --dry-run` and require success without `--force-recover`. The 2026-04-29 audit failure (`bd export count: 1718`; `dolt internal count error: ... no database selected`; `Aborting.`) blocks real migration until fixed.
+- **Real-data dry-run gate:** run `./oro bead migrate-from-dolt --dry-run` and require success without `--force-recover`. The 2026-04-29 audit failure (`bd export count: 1718`; `dolt internal count error: ... no database selected`; `Aborting.`) was fixed on 2026-04-30 by selecting the configured Dolt database and counting `issues`; rerun the gate on migration day and treat any fresh failure as blocking.
 - **Pre-migration SQLite rollback gate:** create a pre-migration `state.db` SQLite backup snapshot after checkpointing WAL, run `sqlite3 "$snapshot_dir/state.db" 'PRAGMA integrity_check;'`, require `ok`, and record the snapshot path before real apply. The migration JSONL backup is required source/audit data, not a restore command for a failed SQLite target.
 - Run migration on production state.db.
 - Set `ORO_BEADSOURCE_MODE=shadow`.
