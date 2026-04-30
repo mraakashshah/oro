@@ -368,6 +368,13 @@ func intDefault(v, dflt int) int {
 	return v
 }
 
+func durationDefault(v, dflt time.Duration) time.Duration {
+	if v == 0 {
+		return dflt
+	}
+	return v
+}
+
 // defaultWorkerCounts returns the resolved (initialWorkers, maxWorkers) pair,
 // applying defaults: maxWorkers defaults to 10; initialWorkers defaults to maxWorkers.
 func defaultWorkerCounts(initial, ceiling int) (initialOut, ceilingOut int) {
@@ -392,43 +399,21 @@ func (c *Config) withDefaults() Config {
 	if shouldDefaultWorkerCounts(out) {
 		out.InitialWorkers, out.MaxWorkers = defaultWorkerCounts(out.InitialWorkers, out.MaxWorkers)
 	}
-	if out.HeartbeatTimeout == 0 {
-		out.HeartbeatTimeout = 45 * time.Second
-	}
-	if out.ProgressTimeout == 0 {
-		out.ProgressTimeout = 10 * time.Minute
-	}
-	if out.PollInterval == 0 {
-		out.PollInterval = 10 * time.Second
-	}
-	if out.FallbackPollInterval == 0 {
-		out.FallbackPollInterval = 60 * time.Second
-	}
-	if out.ShutdownTimeout == 0 {
-		out.ShutdownTimeout = 10 * time.Second
-	}
+	out.HeartbeatTimeout = durationDefault(out.HeartbeatTimeout, 45*time.Second)
+	out.ProgressTimeout = durationDefault(out.ProgressTimeout, 10*time.Minute)
+	out.PollInterval = durationDefault(out.PollInterval, 10*time.Second)
+	out.FallbackPollInterval = durationDefault(out.FallbackPollInterval, 60*time.Second)
+	out.ShutdownTimeout = durationDefault(out.ShutdownTimeout, 10*time.Second)
 	out.ConsolidateAfterN = intDefault(out.ConsolidateAfterN, 5)
 	out.PaneContextThreshold = intDefault(out.PaneContextThreshold, 40)
 	// DreamInterval is intentionally NOT defaulted here: 0 means "disabled"
 	// and must survive withDefaults. Production sets it explicitly in cmd_start.go.
-	if out.PaneMonitorInterval == 0 {
-		out.PaneMonitorInterval = 5 * time.Second
-	}
-	if out.PaneRestartCooldown == 0 {
-		out.PaneRestartCooldown = 2 * time.Minute
-	}
-	if out.PaneInactivityTimeout == 0 {
-		out.PaneInactivityTimeout = 10 * time.Minute
-	}
-	if out.ReviewTimeout == 0 {
-		out.ReviewTimeout = 15 * time.Minute
-	}
-	if out.BackupInterval == 0 {
-		out.BackupInterval = 5 * time.Minute
-	}
-	if out.DoltHealthInterval == 0 {
-		out.DoltHealthInterval = 30 * time.Second
-	}
+	out.PaneMonitorInterval = durationDefault(out.PaneMonitorInterval, 5*time.Second)
+	out.PaneRestartCooldown = durationDefault(out.PaneRestartCooldown, 2*time.Minute)
+	out.PaneInactivityTimeout = durationDefault(out.PaneInactivityTimeout, 10*time.Minute)
+	out.ReviewTimeout = durationDefault(out.ReviewTimeout, 15*time.Minute)
+	out.BackupInterval = durationDefault(out.BackupInterval, 5*time.Minute)
+	out.DoltHealthInterval = durationDefault(out.DoltHealthInterval, 30*time.Second)
 	if out.Estimator == nil {
 		out.Estimator = NewBeadEstimator()
 	}
