@@ -32,6 +32,7 @@ NC='\033[0m'
 # Temp directory for all check outputs (cleaned up on exit)
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
 QG_STAGE_ASSETS_LOCK=""
+QG_EXIT_STATUS=0
 # shellcheck disable=SC2329
 cleanup_qg() {
 	local status=$?
@@ -489,7 +490,7 @@ lane_go() {
 			local pre_mutation_patch="$QG_DIR/go-mutation-pre-${RANDOM}.patch"
 			git diff -- pkg/ internal/ cmd/ >"$pre_mutation_patch" || true
 			GO_MUTATION_PRE_PATCH="$pre_mutation_patch"
-			trap 'restore_go_mutation_worktree "$GO_MUTATION_PRE_PATCH" >/dev/null 2>&1 || true' EXIT
+			trap 'QG_EXIT_STATUS=$?; restore_go_mutation_worktree "$GO_MUTATION_PRE_PATCH" >/dev/null 2>&1 || true; exit "$QG_EXIT_STATUS"' EXIT
 			echo "Mutating changed files: $changed"
 			local output mutesting_exit=0
 			local -a changed_files

@@ -286,6 +286,37 @@ test_quality_gate_mutation_cleanup_preserves_unstaged_work() {
 	return 0
 }
 
+# Test: mutation restore trap preserves parent-owned QG_DIR cleanup.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_mutation_trap_preserves_qg_dir_cleanup() {
+	local mutation_body trap_line
+	mutation_body=$(grep -A 100 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -100)
+	trap_line=$(echo "$mutation_body" | grep "trap .*EXIT" | head -1 || true)
+
+	if [ -z "$trap_line" ]; then
+		echo "FAIL: run_go_mutation_test does not install an EXIT trap"
+		return 1
+	fi
+	if ! echo "$trap_line" | grep -q 'restore_go_mutation_worktree'; then
+		echo "FAIL: mutation EXIT trap does not restore the Go mutation worktree"
+		return 1
+	fi
+	if ! grep -q 'trap cleanup_qg EXIT' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: top-level QG_DIR cleanup trap is missing"
+		return 1
+	fi
+	if echo "$trap_line" | grep -Eq 'cleanup_qg|rm -rf.*QG_DIR'; then
+		echo "FAIL: mutation EXIT trap cleans QG_DIR from the background Go lane"
+		echo "  Expected QG_DIR cleanup to remain owned by the top-level parent trap."
+		return 1
+	fi
+	if ! echo "$trap_line" | grep -q "exit \"\\\$QG_EXIT_STATUS\""; then
+		echo "FAIL: mutation EXIT trap does not preserve the original exit status"
+		return 1
+	fi
+	return 0
+}
+
 # Test: Makefile mutate-go target has trap EXIT handler
 # shellcheck disable=SC2317,SC2329
 test_makefile_mutate_go_trap_present() {
@@ -772,6 +803,7 @@ echo "=============================================="
 
 test_case "quality_gate.sh mutation has trap EXIT" test_quality_gate_mutation_trap_present
 test_case "quality_gate.sh mutation preserves unstaged work" test_quality_gate_mutation_cleanup_preserves_unstaged_work
+test_case "quality_gate.sh mutation trap preserves QG_DIR cleanup" test_quality_gate_mutation_trap_preserves_qg_dir_cleanup
 test_case "Makefile mutate-go has trap" test_makefile_mutate_go_trap_present
 test_case "Makefile mutate-go-diff has trap" test_makefile_mutate_go_diff_trap_present
 
