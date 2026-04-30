@@ -499,18 +499,22 @@ DROP TABLE beads_status_rebuild_old;
 func sqliteForeignKeysEnabled(ctx context.Context, conn *sql.Conn) (bool, error) {
 	var enabled int
 	if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&enabled); err != nil {
-		return false, err
+		return false, fmt.Errorf("query foreign_keys pragma: %w", err)
 	}
 	return enabled != 0, nil
 }
 
 func restoreSQLiteForeignKeys(ctx context.Context, conn *sql.Conn, enabled bool) error {
 	if enabled {
-		_, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`)
-		return err
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+			return fmt.Errorf("restore foreign_keys on: %w", err)
+		}
+		return nil
 	}
-	_, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`)
-	return err
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return fmt.Errorf("restore foreign_keys off: %w", err)
+	}
+	return nil
 }
 
 func dropBeadSchemaRebuildTriggers(ctx context.Context, conn *sql.Conn) error {
