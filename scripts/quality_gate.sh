@@ -21,13 +21,6 @@ if [ -f .git ]; then
 fi
 unset GIT_DIR GIT_WORK_TREE
 
-# Isolate golangci-lint cache per worktree to prevent "parallel golangci-lint
-# is running" errors when multiple workers run QG simultaneously.
-if [ "$QG_IS_WORKTREE" = true ]; then
-	wt_name="$(basename "$(pwd)")"
-	export GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint-cache-${wt_name}"
-fi
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,7 +31,23 @@ NC='\033[0m'
 
 # Temp directory for all check outputs (cleaned up on exit)
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
-trap 'rm -rf "$QG_DIR"' EXIT
+QG_STAGE_ASSETS_LOCK=""
+# shellcheck disable=SC2329
+cleanup_qg() {
+	local status=$?
+	if [ -n "${QG_STAGE_ASSETS_LOCK:-}" ]; then
+		rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
+	fi
+	rm -rf "$QG_DIR"
+	return "$status"
+}
+trap cleanup_qg EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Keep the golangci-lint cache inside the QG temp directory. Shared
+# golangci-lint caches can collide across concurrent workers.
+export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
 
 # Resolve repo root node_modules (works from worktrees too).
 # Worktrees don't have their own node_modules — resolve via git-common-dir.
@@ -214,6 +223,44 @@ go_formatter_check() {
 	fi
 }
 
+# Ensure go:embed assets exist without deleting them during another QG run.
+# The Makefile target rebuilds cmd/oro/_assets in place via rm -rf, so QG only
+# invokes it when assets are missing and serializes that initial staging.
+ensure_stage_assets() {
+	if [ -f "cmd/oro/_assets/.version" ]; then
+		return 0
+	fi
+	if [ ! -f "cmd/oro/embed.go" ] || ! grep -q "_assets" "cmd/oro/embed.go"; then
+		return 0
+	fi
+	if [ ! -f "Makefile" ] || ! grep -qE '^stage-assets:' "Makefile"; then
+		echo "FAIL: cmd/oro embeds _assets but Makefile stage-assets target is unavailable"
+		return 1
+	fi
+
+	local lock_dir="${TMPDIR:-/tmp}/oro-stage-assets.lock"
+	local waited=0
+	while ! mkdir "$lock_dir" 2>/dev/null; do
+		sleep 0.2
+		waited=$((waited + 1))
+		if [ "$waited" -ge 300 ]; then
+			echo "FAIL: timed out waiting for stage-assets lock at $lock_dir"
+			return 1
+		fi
+	done
+	QG_STAGE_ASSETS_LOCK="$lock_dir"
+
+	if [ ! -f "cmd/oro/_assets/.version" ]; then
+		if ! make stage-assets; then
+			rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
+			QG_STAGE_ASSETS_LOCK=""
+			return 1
+		fi
+	fi
+	rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
+	QG_STAGE_ASSETS_LOCK=""
+}
+
 # =============================================================================
 # DETECT PROJECT TYPES
 # =============================================================================
@@ -225,6 +272,14 @@ HAS_SHELL=false
 if [ -f "go.mod" ]; then HAS_GO=true; fi
 if [ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "requirements.txt" ]; then HAS_PYTHON=true; fi
 if compgen -G "*.sh" >/dev/null || compgen -G "ad_hoc/*.sh" >/dev/null; then HAS_SHELL=true; fi
+
+STAGE_ASSETS_READY=true
+STAGE_ASSETS_ERROR=""
+if $HAS_GO; then
+	if ! STAGE_ASSETS_ERROR=$(ensure_stage_assets 2>&1); then
+		STAGE_ASSETS_READY=false
+	fi
+fi
 
 # =============================================================================
 # LANE: GO
@@ -239,7 +294,12 @@ lane_go() {
 		return
 	fi
 
-	make stage-assets 2>/dev/null || true
+	if ! $STAGE_ASSETS_READY; then
+		echo "$STAGE_ASSETS_ERROR"
+		fail=$((fail + 1))
+		echo "${pass}:${fail}" >"$QG_DIR/go.rc"
+		return
+	fi
 
 	# --- Tier 1: Formatting (parallel) ---
 	header "GO TIER 1: FORMATTING"
@@ -259,7 +319,6 @@ lane_go() {
 	fail=$((fail + TIER_FAIL))
 	if [ "$fail" -gt 0 ]; then
 		echo "${pass}:${fail}" >"$QG_DIR/go.rc"
-		make clean-assets 2>/dev/null || true
 		return
 	fi
 
@@ -326,7 +385,7 @@ lane_go() {
 	}
 
 	local tier2_checks=(
-		"golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
+		"golangci-lint" "GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
 		"dead exports" "check_dead_exports"
 		"beadstore imports" "scripts/check-beadstore-imports.sh"
 	)
@@ -338,7 +397,6 @@ lane_go() {
 	fail=$((fail + TIER_FAIL))
 	if [ "$fail" -gt 0 ]; then
 		echo "${pass}:${fail}" >"$QG_DIR/go.rc"
-		make clean-assets 2>/dev/null || true
 		return
 	fi
 
@@ -383,7 +441,6 @@ lane_go() {
 	fail=$((fail + TIER_FAIL))
 	if [ "$fail" -gt 0 ]; then
 		echo "${pass}:${fail}" >"$QG_DIR/go.rc"
-		make clean-assets 2>/dev/null || true
 		return
 	fi
 
@@ -456,6 +513,12 @@ lane_go() {
 			echo "$output"
 			local score
 			score=$(echo "$output" | grep "The mutation score is" | awk '{print $5}')
+			local total
+			total=$(echo "$output" | sed -nE 's/.*total is ([0-9]+).*/\1/p' | tail -1)
+			if [ "$total" = "0" ]; then
+				echo "No mutations generated for changed files — skipping"
+				return 0
+			fi
 			if [ -z "$score" ]; then
 				# Distinguish crash (nonzero exit) from "no mutations possible" (exit 0).
 				# An empty score after a crash is a FAIL, not a silent skip (oro-xgwr).
@@ -480,7 +543,6 @@ lane_go() {
 		fi
 	fi
 
-	make clean-assets 2>/dev/null || true
 	echo "${pass}:${fail}" >"$QG_DIR/go.rc"
 }
 
@@ -671,6 +733,9 @@ for rc_file in "$QG_DIR"/go.rc "$QG_DIR"/python.rc "$QG_DIR"/other.rc; do
 		IFS=: read -r p f <"$rc_file"
 		TOTAL_PASS=$((TOTAL_PASS + p))
 		TOTAL_FAIL=$((TOTAL_FAIL + f))
+	else
+		echo "FAIL: missing lane result $(basename "$rc_file")"
+		TOTAL_FAIL=$((TOTAL_FAIL + 1))
 	fi
 done
 

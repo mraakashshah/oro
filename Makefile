@@ -21,17 +21,32 @@ stage-assets:
 		echo "Error: assets/ directory not found. Cannot stage assets for embedding."; \
 		exit 1; \
 	fi
-	@rm -rf cmd/oro/_assets
-	@mkdir -p cmd/oro/_assets/skills cmd/oro/_assets/hooks cmd/oro/_assets/beacons cmd/oro/_assets/commands
-	@cp -r assets/skills/* cmd/oro/_assets/skills/ 2>/dev/null || true
-	@cp assets/hooks/*.py assets/hooks/*.sh cmd/oro/_assets/hooks/ 2>/dev/null || true
-	@cp -r assets/beacons/* cmd/oro/_assets/beacons/ 2>/dev/null || true
-	@test -d assets/commands && cp -r assets/commands/* cmd/oro/_assets/commands/ 2>/dev/null || true
-	@test -f assets/ORO_AGENT.md && cp assets/ORO_AGENT.md cmd/oro/_assets/ || true
-	@test -f assets/CLAUDE.md && cp assets/CLAUDE.md cmd/oro/_assets/ || true
-	@test -f assets/thresholds.json && cp assets/thresholds.json cmd/oro/_assets/ || true
-	@test -f assets/.test-marker && cp assets/.test-marker cmd/oro/_assets/ || true
-	@echo "$(VERSION)" > cmd/oro/_assets/.version
+	@set -e; tmp="cmd/oro/.assets-stage-$$$$"; old="cmd/oro/.assets-old-$$$$"; \
+	cleanup() { \
+		rc="$$1"; \
+		if [ $$rc -ne 0 ] && [ ! -d cmd/oro/_assets ] && [ -d "$$old" ]; then mv "$$old" cmd/oro/_assets; fi; \
+		rm -rf "$$tmp" "$$old"; \
+		exit $$rc; \
+	}; \
+	trap 'cleanup $$?' EXIT; \
+	trap 'cleanup 130' INT; \
+	trap 'cleanup 143' TERM; \
+	rm -rf "$$tmp" "$$old"; \
+	mkdir -p "$$tmp/skills" "$$tmp/hooks" "$$tmp/beacons" "$$tmp/commands"; \
+	if [ -d assets/skills ] && [ "$$(find assets/skills -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/skills/. "$$tmp/skills/"; fi; \
+	if [ -d assets/beacons ] && [ "$$(find assets/beacons -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/beacons/. "$$tmp/beacons/"; fi; \
+	if [ -d assets/commands ] && [ "$$(find assets/commands -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/commands/. "$$tmp/commands/"; fi; \
+	if [ -d assets/hooks ]; then find assets/hooks -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' \) >"$$tmp/.hooks"; while IFS= read -r hook; do cp "$$hook" "$$tmp/hooks/"; done <"$$tmp/.hooks"; fi; \
+	if [ -f assets/ORO_AGENT.md ]; then cp assets/ORO_AGENT.md "$$tmp/"; fi; \
+	if [ -f assets/CLAUDE.md ]; then cp assets/CLAUDE.md "$$tmp/"; fi; \
+	if [ -f assets/thresholds.json ]; then cp assets/thresholds.json "$$tmp/"; fi; \
+	if [ -f assets/.test-marker ]; then cp assets/.test-marker "$$tmp/"; fi; \
+	rm -f "$$tmp/.hooks"; \
+	echo "$(VERSION)" > "$$tmp/.version"; \
+	if [ -d cmd/oro/_assets ]; then mv cmd/oro/_assets "$$old"; fi; \
+	mv "$$tmp" cmd/oro/_assets; \
+	rm -rf "$$old"; \
+	trap - EXIT INT TERM
 
 clean-assets:
 	@rm -rf cmd/oro/_assets

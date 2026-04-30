@@ -210,6 +210,35 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if strings.Contains(script, "lane_python") {
 			t.Error("go-only config should not include lane_python function")
 		}
+		for _, want := range []string{
+			`QG_STAGE_ASSETS_LOCK=""`,
+			`trap cleanup_qg EXIT`,
+			`trap 'exit 130' INT`,
+			`STAGE_ASSETS_READY=true`,
+			`if ! STAGE_ASSETS_ERROR=$(ensure_stage_assets 2>&1); then`,
+			`if ! $STAGE_ASSETS_READY; then`,
+			`export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"`,
+			`GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run`,
+			`ensure_stage_assets()`,
+			`cmd/oro embeds _assets but Makefile stage-assets target is unavailable`,
+			`expected_rc_files=(`,
+			`FAIL: missing lane result`,
+		} {
+			if !strings.Contains(script, want) {
+				t.Errorf("generated Go script missing %q", want)
+			}
+		}
+		for _, forbidden := range []string{
+			"make clean-assets",
+			`make stage-assets 2>/dev/null || true`,
+		} {
+			if strings.Contains(script, forbidden) {
+				t.Errorf("generated Go script should not contain %q", forbidden)
+			}
+		}
+		if !strings.Contains(script, `[ ! -f "cmd/oro/embed.go" ] || ! grep -q "_assets" "cmd/oro/embed.go"`) {
+			t.Error("generated Go script should keep stage-assets optional for non-Oro Go projects")
+		}
 
 		checkBashSyntax(t, script)
 	})

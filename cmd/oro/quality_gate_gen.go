@@ -447,7 +447,23 @@ NC='\033[0m'
 
 # Temp directory for all check outputs (cleaned up on exit)
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
-trap 'rm -rf "$QG_DIR"' EXIT
+QG_STAGE_ASSETS_LOCK=""
+# shellcheck disable=SC2329
+cleanup_qg() {
+    local status=$?
+    if [ -n "${QG_STAGE_ASSETS_LOCK:-}" ]; then
+        rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
+    fi
+    rm -rf "$QG_DIR"
+    return "$status"
+}
+trap cleanup_qg EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Keep the golangci-lint cache inside the QG temp directory. Shared
+# golangci-lint caches can collide across concurrent workers.
+export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
 
 # Resolve repo root node_modules (works from worktrees too).
 REPO_ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
@@ -528,6 +544,44 @@ parallel_checks() {
         j=$((j + 1))
     done
 }
+
+# Ensure go:embed assets exist without deleting them during another QG run.
+# The Makefile target rebuilds cmd/oro/_assets in place via rm -rf, so QG only
+# invokes it when assets are missing and serializes that initial staging.
+ensure_stage_assets() {
+    if [ -f "cmd/oro/_assets/.version" ]; then
+        return 0
+    fi
+    if [ ! -f "cmd/oro/embed.go" ] || ! grep -q "_assets" "cmd/oro/embed.go"; then
+        return 0
+    fi
+    if [ ! -f "Makefile" ] || ! grep -qE '^stage-assets:' "Makefile"; then
+        echo "FAIL: cmd/oro embeds _assets but Makefile stage-assets target is unavailable"
+        return 1
+    fi
+
+    local lock_dir="${TMPDIR:-/tmp}/oro-stage-assets.lock"
+    local waited=0
+    while ! mkdir "$lock_dir" 2>/dev/null; do
+        sleep 0.2
+        waited=$((waited + 1))
+        if [ "$waited" -ge 300 ]; then
+            echo "FAIL: timed out waiting for stage-assets lock at $lock_dir"
+            return 1
+        fi
+    done
+    QG_STAGE_ASSETS_LOCK="$lock_dir"
+
+    if [ ! -f "cmd/oro/_assets/.version" ]; then
+        if ! make stage-assets; then
+            rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
+            QG_STAGE_ASSETS_LOCK=""
+            return 1
+        fi
+    fi
+    rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
+    QG_STAGE_ASSETS_LOCK=""
+}
 {{if .HasGo}}
 # =============================================================================
 # LANE: GO
@@ -538,7 +592,12 @@ lane_go() {
     local pass=0 fail=0
 
     local GO_DIRS="cmd internal pkg"
-    make stage-assets 2>/dev/null || true
+    if ! $STAGE_ASSETS_READY; then
+        echo "$STAGE_ASSETS_ERROR"
+        fail=$((fail + 1))
+        echo "${pass}:${fail}" > "$QG_DIR/go.rc"
+        return
+    fi
 
     # --- Tier 1: Formatting (parallel) ---
     header "GO TIER 1: FORMATTING"
@@ -546,14 +605,14 @@ lane_go() {
         "gofumpt" "test -z \"\$(go tool gofumpt -l $GO_DIRS 2>/dev/null)\"" \
         "goimports" "test -z \"\$(go tool goimports -l $GO_DIRS 2>/dev/null)\""
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
-    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
+    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; return; fi
 
     # --- Tier 2: Lint (parallel) ---
     header "GO TIER 2: LINT"
     parallel_checks \
-        "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
+        "golangci-lint" "GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
-    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; make clean-assets 2>/dev/null || true; return; fi
+    if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; return; fi
 
     # --- Tier 3: Test + Build (parallel) ---
     header "GO TIER 3: TEST + BUILD"
@@ -579,7 +638,6 @@ lane_go() {
         "go vet" "go vet ./..."
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
 
-    make clean-assets 2>/dev/null || true
     echo "${pass}:${fail}" > "$QG_DIR/go.rc"
 }
 {{end}}{{if .HasPython}}
@@ -686,6 +744,13 @@ echo "Running quality checks in parallel..."
 {{end}}{{if .HasPython}}echo "  Detected: Python project"
 {{end}}echo ""
 
+STAGE_ASSETS_READY=true
+STAGE_ASSETS_ERROR=""
+{{if .HasGo}}if ! STAGE_ASSETS_ERROR=$(ensure_stage_assets 2>&1); then
+    STAGE_ASSETS_READY=false
+fi
+{{end}}
+
 {{if .HasGo}}lane_go > "$QG_DIR/go.out" 2>&1 &
 PID_GO=$!
 {{end}}{{if .HasPython}}lane_python > "$QG_DIR/python.out" 2>&1 &
@@ -704,11 +769,19 @@ PID_OT=$!
 # Aggregate pass/fail counts
 TOTAL_PASS=0
 TOTAL_FAIL=0
-for rc_file in "$QG_DIR"/go.rc "$QG_DIR"/python.rc "$QG_DIR"/other.rc; do
+expected_rc_files=(
+{{if .HasGo}}    "$QG_DIR/go.rc"
+{{end}}{{if .HasPython}}    "$QG_DIR/python.rc"
+{{end}}    "$QG_DIR/other.rc"
+)
+for rc_file in "${expected_rc_files[@]}"; do
     if [ -f "$rc_file" ]; then
         IFS=: read -r p f < "$rc_file"
         TOTAL_PASS=$((TOTAL_PASS + p))
         TOTAL_FAIL=$((TOTAL_FAIL + f))
+    else
+        echo "FAIL: missing lane result $(basename "$rc_file")"
+        TOTAL_FAIL=$((TOTAL_FAIL + 1))
     fi
 done
 

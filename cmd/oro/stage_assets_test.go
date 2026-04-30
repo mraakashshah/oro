@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -68,6 +69,146 @@ func TestStageAssetsUsesRepoAssetsDir(t *testing.T) {
 	// Note: _assets/ is intentionally NOT removed here. The go:embed directive in
 	// embed.go requires _assets/ to exist for subsequent go build steps in CI.
 	// CI cleans up via 'make clean-assets' after all build/test steps complete.
+}
+
+func TestStageAssetsBuildsTempDirBeforeSwap(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	text := string(makefile)
+	for _, want := range []string{
+		`tmp="cmd/oro/.assets-stage-$$$$"`,
+		`old="cmd/oro/.assets-old-$$$$"`,
+		`trap 'cleanup $$?' EXIT`,
+		`trap 'cleanup 130' INT`,
+		`trap 'cleanup 143' TERM`,
+		`mkdir -p "$$tmp/skills"`,
+		`mv cmd/oro/_assets "$$old"`,
+		`mv "$$tmp" cmd/oro/_assets`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("stage-assets should build in a temp dir and swap atomically; missing %q", want)
+		}
+	}
+	stageTarget := text[strings.Index(text, "stage-assets:"):strings.Index(text, "clean-assets:")]
+	if strings.Contains(stageTarget, "|| true") {
+		t.Fatal("stage-assets should not mask copy failures with || true")
+	}
+}
+
+func TestStageAssetsRestoresOldAssetsWhenSwapFails(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "Makefile"), makefile, 0o600); err != nil {
+		t.Fatalf("write temp Makefile: %v", err)
+	}
+	for _, dir := range []string{
+		"assets/skills",
+		"assets/hooks",
+		"assets/beacons",
+		"assets/commands",
+		"cmd/oro/_assets",
+		"bin",
+	} {
+		if err := os.MkdirAll(filepath.Join(tmp, dir), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "assets", "CLAUDE.md"), []byte("# staged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "cmd", "oro", "_assets", "marker"), []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeMV := `#!/bin/sh
+case "$1:$2" in
+  *".assets-stage-"*":cmd/oro/_assets") exit 42 ;;
+esac
+exec /bin/mv "$@"
+`
+	if err := os.WriteFile(filepath.Join(tmp, "bin", "mv"), []byte(fakeMV), 0o700); err != nil {
+		t.Fatalf("write fake mv: %v", err)
+	}
+
+	cmd := exec.Command("make", "stage-assets", "VERSION=test")
+	cmd.Dir = tmp
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(tmp, "bin")+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected stage-assets swap failure, got success\nOutput: %s", output)
+	}
+	marker, err := os.ReadFile(filepath.Join(tmp, "cmd", "oro", "_assets", "marker"))
+	if err != nil {
+		t.Fatalf("old _assets marker was not restored after failed swap; output: %s; err: %v", output, err)
+	}
+	if string(marker) != "old\n" {
+		t.Fatalf("old _assets marker content changed: %q", marker)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(tmp, "cmd", "oro", ".assets-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("stage-assets left temp swap directories: %v", leftovers)
+	}
+}
+
+func TestStageAssetsRestoresOldAssetsWhenCopyFails(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "Makefile"), makefile, 0o600); err != nil {
+		t.Fatalf("write temp Makefile: %v", err)
+	}
+	for _, dir := range []string{
+		"assets/skills/sample",
+		"assets/hooks",
+		"assets/beacons",
+		"assets/commands",
+		"cmd/oro/_assets",
+		"bin",
+	} {
+		if err := os.MkdirAll(filepath.Join(tmp, dir), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "assets", "skills", "sample", "SKILL.md"), []byte("# skill\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "cmd", "oro", "_assets", "marker"), []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeCP := "#!/bin/sh\nexit 42\n"
+	if err := os.WriteFile(filepath.Join(tmp, "bin", "cp"), []byte(fakeCP), 0o700); err != nil {
+		t.Fatalf("write fake cp: %v", err)
+	}
+
+	cmd := exec.Command("make", "stage-assets", "VERSION=test")
+	cmd.Dir = tmp
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(tmp, "bin")+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected stage-assets copy failure, got success\nOutput: %s", output)
+	}
+	marker, err := os.ReadFile(filepath.Join(tmp, "cmd", "oro", "_assets", "marker"))
+	if err != nil {
+		t.Fatalf("old _assets marker was not restored after copy failure; output: %s; err: %v", output, err)
+	}
+	if string(marker) != "old\n" {
+		t.Fatalf("old _assets marker content changed: %q", marker)
+	}
 }
 
 func TestDevSyncRemovesStaleInstalledSkillAssets(t *testing.T) {

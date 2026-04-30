@@ -356,6 +356,24 @@ test_mutation_crash_flagged_as_fail() {
 	return 1
 }
 
+# Test: zero generated mutants skip instead of failing a meaningless 0/0 score
+# shellcheck disable=SC2317,SC2329
+test_mutation_zero_total_skips() {
+	local fn_body
+	fn_body=$(grep -A 110 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -110)
+
+	# shellcheck disable=SC2016
+	if echo "$fn_body" | grep -q 'total is (\[0-9\]+)' &&
+		echo "$fn_body" | grep -q '\[ "$total" = "0" \]' &&
+		echo "$fn_body" | grep -q 'No mutations generated for changed files'; then
+		return 0
+	fi
+
+	echo "FAIL: run_go_mutation_test() does not skip zero-total mutation reports"
+	echo "  go-mutesting can report score 0 with total 0 for template/test-only changes"
+	return 1
+}
+
 # Test: missing main branch warning appears in function output text
 # shellcheck disable=SC2317,SC2329
 test_mutation_missing_main_warning_message() {
@@ -605,6 +623,68 @@ test_quality_gate_changed_is_quoted() {
 	return 0
 }
 
+# Test: asset staging failures fail closed instead of disappearing as a missing lane rc.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_stage_assets_fail_closed() {
+	if ! grep -q 'ensure_stage_assets()' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh lacks ensure_stage_assets helper"
+		return 1
+	fi
+	if ! grep -q "export GOLANGCI_LINT_CACHE=\"\$QG_DIR/golangci-lint-cache\"" "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q "GOCACHE=\$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run" "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not isolate golangci-lint cache and Go build cache"
+		return 1
+	fi
+	if ! grep -q 'QG_STAGE_ASSETS_LOCK=""' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'trap cleanup_qg EXIT' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q "trap 'exit 130' INT" "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not clean up the stage-assets lock on exit/interrupt"
+		return 1
+	fi
+	if ! grep -q 'cmd/oro embeds _assets but Makefile stage-assets target is unavailable' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not fail closed when embedded assets need missing stage-assets"
+		return 1
+	fi
+	local preflight_line lane_spawn_line
+	preflight_line=$(grep -n "STAGE_ASSETS_ERROR=\$(ensure_stage_assets" "$SCRIPT_DIR/quality_gate.sh" | cut -d: -f1 | head -1)
+	lane_spawn_line=$(grep -n 'lane_go >.*go.out' "$SCRIPT_DIR/quality_gate.sh" | cut -d: -f1 | head -1)
+	if [ -z "$preflight_line" ] || [ -z "$lane_spawn_line" ] || [ "$preflight_line" -ge "$lane_spawn_line" ]; then
+		echo "FAIL: quality_gate.sh must stage assets before starting background lanes"
+		return 1
+	fi
+	if ! grep -A 8 "if ! \$STAGE_ASSETS_READY" "$SCRIPT_DIR/quality_gate.sh" | grep -q 'go.rc'; then
+		echo "FAIL: lane_go does not write go.rc when parent asset staging fails"
+		return 1
+	fi
+	local tmpdir lockdir
+	tmpdir=$(mktemp -d)
+	lockdir="$tmpdir/lock"
+	mkdir "$lockdir"
+	if ! bash -c "
+		set -euo pipefail
+		QG_DIR=\"$tmpdir/qg\"
+		QG_STAGE_ASSETS_LOCK=\"$lockdir\"
+		mkdir -p \"\$QG_DIR\"
+		$(sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh")
+		cleanup_qg
+		[ ! -d \"$lockdir\" ]
+	"; then
+		echo "FAIL: cleanup_qg did not remove a held stage-assets lock"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	rm -rf "$tmpdir"
+	if ! grep -q 'FAIL: missing lane result' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not fail closed on missing lane rc files"
+		return 1
+	fi
+	if grep -q 'make clean-assets' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh still deletes staged embed assets"
+		return 1
+	fi
+	return 0
+}
+
 # Test: Makefile mutate-go-diff git diff has 2>/dev/null
 # shellcheck disable=SC2317,SC2329
 test_makefile_git_diff_stderr_redirect() {
@@ -701,6 +781,7 @@ echo "=============================================="
 
 test_case "mutation checks main branch existence" test_mutation_checks_main_branch_existence
 test_case "mutation crash flagged as FAIL" test_mutation_crash_flagged_as_fail
+test_case "mutation zero-total report skips" test_mutation_zero_total_skips
 test_case "mutation missing-main warning message" test_mutation_missing_main_warning_message
 
 echo ""
@@ -731,6 +812,7 @@ echo "=============================================="
 
 test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
+test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
 test_case "Makefile git diff has 2>/dev/null" test_makefile_git_diff_stderr_redirect
 test_case "Makefile \$\$changed is quoted" test_makefile_changed_is_quoted
 test_case "Makefile mutate-py uses PID-isolated path" test_makefile_mutate_py_pid_isolated
