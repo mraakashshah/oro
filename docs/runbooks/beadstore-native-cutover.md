@@ -120,8 +120,8 @@ export ORO_DB_PATH="$state_db"
 ORO_BEADSOURCE_MODE=sqlite ./oro bead status
 ORO_BEADSOURCE_MODE=sqlite ./oro bead ready --json > /tmp/oro-native-ready.json
 ORO_BEADSOURCE_MODE=sqlite ./oro bead blocked --json > /tmp/oro-native-blocked.json
-jq type /tmp/oro-native-ready.json
-jq type /tmp/oro-native-blocked.json
+jq -e 'type == "array"' /tmp/oro-native-ready.json
+jq -e 'type == "array"' /tmp/oro-native-blocked.json
 sqlite3 "$state_db" 'PRAGMA integrity_check;'
 sqlite3 "$state_db" 'SELECT COUNT(*) FROM beads WHERE deleted = 0;'
 ```
@@ -132,7 +132,7 @@ Then prove a controlled native write path:
 set -euo pipefail
 
 test_id="native-cutover-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
-ORO_BEADSOURCE_MODE=sqlite ./oro bead create "$test_id" --title "Native cutover smoke" --type task --priority P4
+ORO_BEADSOURCE_MODE=sqlite ./oro bead create --id "$test_id" --title "Native cutover smoke" --type task --priority 4
 ORO_BEADSOURCE_MODE=sqlite ./oro bead show "$test_id" --json | jq -e '.id == "'"$test_id"'"'
 ORO_BEADSOURCE_MODE=sqlite ./oro bead close "$test_id" --reason "Native cutover smoke passed"
 ORO_BEADSOURCE_MODE=sqlite ./oro bead show "$test_id" --json | jq -e '.status == "closed"'

@@ -1,6 +1,8 @@
 # Beadstore Migration Safety and Recovery Runbook
 
-This runbook is the operator source of truth for Phase 8 Dolt-to-SQLite beadstore migration safety. Do not run real migration from this repository until the full gate sequence below passes and the pre-migration SQLite backup snapshot is recorded.
+This runbook preserves recovery procedures and the legacy shadow-mode Phase 8
+path for reference. Do not use it as the current migration-day command source of
+truth.
 
 For the current native-first cutover decision, use
 `docs/runbooks/beadstore-native-cutover.md` as the migration-day command source
@@ -26,7 +28,10 @@ Before relying on the dry-run gate, verify `bd export` can read the source and t
 
 Rollback is also not yet fully executable from the shipped CLI. `oro bead import` is still a stub, and `migrate-from-dolt --from-jsonl` is an initial import path, not an in-place restore command for a populated or corrupted SQLite beadstore. Do not run real migration until an operator-taken `state.db` SQLite backup snapshot has been created, integrity-checked, and recorded in the operator log, or until a native restore primitive exists.
 
-## Phase 8 Gate Sequence
+## Legacy Shadow Phase 8 Gate Sequence
+
+This section is the old bd-primary shadow path. The current native-first
+migration-day path is `docs/runbooks/beadstore-native-cutover.md`.
 
 Stop the dispatcher and every worker before the first dry-run. Keep them stopped until the real migration completes and the shadow-mode restart begins. Run these commands from the repo root before any real migration:
 
@@ -71,7 +76,10 @@ Expected results:
 
 Initial apply refuses to run when the native `beads` table contains any rows. After that guard passes, it writes a mandatory source JSONL backup under `OroHome/migrations/<timestamp>-pre-migration.jsonl` before importing.
 
-## Apply Path
+## Legacy Shadow Apply Path
+
+This section continues the old bd-primary shadow path. For the current
+native-first cutover, use `docs/runbooks/beadstore-native-cutover.md`.
 
 Only after all gates pass:
 
