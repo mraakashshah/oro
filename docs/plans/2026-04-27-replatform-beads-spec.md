@@ -2325,7 +2325,12 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 - Real-data dry-run exits 0 without `--force-recover` and without a non-empty native target error. Initial migration must fail closed if the native `beads` table already contains any rows, including soft-deleted rows; retry requires restoring or clearing `state.db` through the reviewed runbook rollback path.
 - Pre-migration `state.db` SQLite backup snapshot path recorded, and `PRAGMA integrity_check` on the snapshot returns exactly `ok` before real apply.
 - Real migration report shows zero validation errors and records the mandatory JSONL backup path under `OroHome/migrations/<timestamp>-pre-migration.jsonl`.
-- Native SQLite validation passes directly with `ORO_BEADSOURCE_MODE=sqlite`: `ready` and `blocked` return valid JSON arrays, `show` works for migrated rows, a controlled smoke bead can be created and closed, and `PRAGMA integrity_check` returns exactly `ok` before and after the smoke.
+- Native SQLite validation passes directly with `ORO_BEADSOURCE_MODE=sqlite`:
+  `ready` and `blocked` return valid JSON arrays, `show` works for migrated
+  rows, `scripts/check-native-beadstore-invariants.py` reports zero mismatches
+  for the ready/blocked views and assignment/blocker invariants, a controlled
+  smoke bead can be created and closed, and `PRAGMA integrity_check` returns
+  exactly `ok` before and after the smoke.
 - `ORO_BEADSOURCE_MODE=sqlite` is exported only after a clean real migration and native validation, and the restarted dispatcher process is verified to inherit it.
 - Dispatcher and workers restarted; every restarted worker subprocess has `bd`
   absent from `PATH`, `oro` present, and a controlled per-worker log segment
@@ -2685,8 +2690,9 @@ A new fixture directory `pkg/dispatcher/testdata/beads/` holds JSONL fixtures fo
   before and after the smoke. bd/Dolt divergence is recorded for audit but does
   not veto cutover when bd/Dolt is stale, broken, or unavailable.
 - **Detection:** The native validation gate in
-  `docs/runbooks/beadstore-native-cutover.md`, plus post-cutover operator checks
-  and native beadstore incidents.
+  `docs/runbooks/beadstore-native-cutover.md`, especially
+  `scripts/check-native-beadstore-invariants.py`, plus post-cutover operator
+  checks and native beadstore incidents.
 - **Fallback:** Stop dispatcher and workers, preserve `state.db` and logs, fix
   the native beadstore, and restore the recorded SQLite backup only if data
   corruption is proven. Reverting to bd requires first exporting SQLite and

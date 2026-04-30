@@ -106,6 +106,42 @@ The import report must show zero validation errors. Record source count,
 imported count, verification result, SQLite snapshot path, and JSONL backup
 path.
 
+## Reconcile Refresh
+
+If any bd-tracked bead changes happened after the initial import, run a reconcile
+refresh before native validation. This keeps SQLite current with the chosen
+import source without making bd a cutover veto.
+
+```bash
+set -euo pipefail
+
+dispatcher_matches=$(ps ax -o pid=,command= | rg '([o]ro start|[o]ro dispatcher start)' || true)
+dispatcher_count=$(printf '%s\n' "$dispatcher_matches" | awk 'NF { n++ } END { print n + 0 }')
+printf 'dispatcher_count=%s\n' "$dispatcher_count"
+test "$dispatcher_count" = 0
+scripts/check-phase8-no-writers.py
+./oro bead migrate-from-dolt --reconcile
+```
+
+Apply only after the preview has zero conflicts and an operator snapshot has
+been created and integrity-checked:
+
+```bash
+set -euo pipefail
+
+snapshot_dir="$oro_home/migrations/$(date -u +%Y%m%dT%H%M%SZ)-pre-native-reconcile-state-db"
+mkdir -m 0700 -p "$snapshot_dir"
+scripts/check-phase8-no-writers.py
+sqlite3 "$state_db" 'PRAGMA wal_checkpoint(FULL);'
+sqlite3 "$state_db" ".backup '$snapshot_dir/state.db'"
+integrity=$(sqlite3 "$snapshot_dir/state.db" 'PRAGMA integrity_check;')
+test "$integrity" = ok
+./oro bead migrate-from-dolt --reconcile --apply
+sqlite3 "$state_db" 'PRAGMA integrity_check;'
+```
+
+Record the reconcile preview counts, SQLite snapshot path, and JSONL backup path.
+
 ## Native Validation Gate
 
 This gate replaces the old 24-hour shadow soak. It validates the native store
@@ -117,11 +153,13 @@ Run against the target `state.db`:
 set -euo pipefail
 
 export ORO_DB_PATH="$state_db"
+scripts/check-phase8-no-writers.py
 ORO_BEADSOURCE_MODE=sqlite ./oro bead status
 ORO_BEADSOURCE_MODE=sqlite ./oro bead ready --json > /tmp/oro-native-ready.json
 ORO_BEADSOURCE_MODE=sqlite ./oro bead blocked --json > /tmp/oro-native-blocked.json
 jq -e 'type == "array"' /tmp/oro-native-ready.json
 jq -e 'type == "array"' /tmp/oro-native-blocked.json
+scripts/check-native-beadstore-invariants.py --db "$state_db"
 sqlite3 "$state_db" 'PRAGMA integrity_check;'
 sqlite3 "$state_db" 'SELECT COUNT(*) FROM beads WHERE deleted = 0;'
 ```
@@ -132,10 +170,12 @@ Then prove a controlled native write path:
 set -euo pipefail
 
 test_id="native-cutover-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
+scripts/check-phase8-no-writers.py
 ORO_BEADSOURCE_MODE=sqlite ./oro bead create --id "$test_id" --title "Native cutover smoke" --type task --priority 4
 ORO_BEADSOURCE_MODE=sqlite ./oro bead show "$test_id" --json | jq -e '.id == "'"$test_id"'"'
 ORO_BEADSOURCE_MODE=sqlite ./oro bead close "$test_id" --reason "Native cutover smoke passed"
 ORO_BEADSOURCE_MODE=sqlite ./oro bead show "$test_id" --json | jq -e '.status == "closed"'
+scripts/check-native-beadstore-invariants.py --db "$state_db"
 sqlite3 "$state_db" 'PRAGMA integrity_check;'
 ```
 
