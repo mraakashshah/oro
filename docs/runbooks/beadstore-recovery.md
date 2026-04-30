@@ -283,6 +283,69 @@ printf 'restored state.db from %s; failed DB moved to %s\n' "$snapshot_dir" "$fa
 - Restart dispatcher and workers only after the restored `state.db` passes integrity check.
 - Fix the importer or source data, then rerun dry-run before any apply.
 
+If the recorded pre-migration SQLite snapshot is itself non-empty, as happened
+on 2026-04-30 with stale row `oro-cdb3`, restoring that snapshot alone is not
+enough. The initial migration guard will still fail. In that case, preserve the
+failed database, keep all writers stopped, and clear only the native beadstore
+tables before retrying the full gate sequence:
+
+```bash
+set -euo pipefail
+
+state_db=<same state_db path recorded before apply>
+snapshot_dir=<recorded pre-migration-state-db snapshot dir>
+recovery_dir="$(dirname "$state_db")/failed-migration-clear-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -m 0700 -p "$recovery_dir"
+
+dispatcher_matches=$(ps ax -o pid=,command= | rg '([o]ro start|[o]ro dispatcher start)' || true)
+dispatcher_count=$(printf '%s\n' "$dispatcher_matches" | awk 'NF { n++ } END { print n + 0 }')
+printf 'dispatcher_count=%s\n' "$dispatcher_count"
+test "$dispatcher_count" = 0
+scripts/check-phase8-no-writers.py
+mode=${ORO_BEADSOURCE_MODE-}
+printf 'ORO_BEADSOURCE_MODE=%s\n' "$mode"
+case "$mode" in "" | cli) ;; *) echo "ORO_BEADSOURCE_MODE must be empty or cli before clearing target" >&2; exit 1 ;; esac
+
+sqlite3 -bail "$state_db" 'PRAGMA wal_checkpoint(FULL);'
+sqlite3 -bail "$state_db" ".backup '$recovery_dir/failed-state.db'"
+integrity=$(sqlite3 -bail "$recovery_dir/failed-state.db" 'PRAGMA integrity_check;')
+test "$integrity" = ok
+snapshot_count=$(sqlite3 -bail "$snapshot_dir/state.db" 'SELECT COUNT(*) FROM beads;')
+printf 'recorded pre-migration snapshot bead count: %s\n' "$snapshot_count"
+
+sqlite3 -bail "$state_db" <<'SQL'
+PRAGMA trusted_schema=ON;
+PRAGMA foreign_keys=ON;
+BEGIN IMMEDIATE;
+DELETE FROM bead_notes;
+DELETE FROM bead_metadata;
+DELETE FROM bead_labels;
+DELETE FROM bead_tags;
+DELETE FROM bead_deps;
+DELETE FROM beads;
+INSERT INTO beads_fts(beads_fts) VALUES('rebuild');
+DELETE FROM kv_store WHERE key = 'beadstore_shadow_started_at';
+COMMIT;
+PRAGMA integrity_check;
+SELECT 'beads', COUNT(*) FROM beads;
+SELECT 'bead_deps', COUNT(*) FROM bead_deps;
+SELECT 'bead_tags', COUNT(*) FROM bead_tags;
+SELECT 'bead_labels', COUNT(*) FROM bead_labels;
+SELECT 'bead_metadata', COUNT(*) FROM bead_metadata;
+SELECT 'bead_notes', COUNT(*) FROM bead_notes;
+SQL
+```
+
+The integrity check must print `ok`, and every native beadstore table count must
+be `0`. `PRAGMA trusted_schema=ON` is required for this one-shot operator
+cleanup because the native bead schema includes FTS triggers on `beads`; without
+it, the SQLite CLI can reject the delete with `unsafe use of virtual table
+"beads_fts"`. Record `recovery_dir`, `snapshot_count`, and the table-count
+output in the operator log. Then rerun the complete Phase 8 gate sequence from
+the top, starting with `scripts/check-bd-version.sh` and a fresh dry-run. Do not
+set `ORO_BEADSOURCE_MODE=shadow`, run reconcile, or restart dispatcher/workers
+until the real migration has subsequently completed cleanly.
+
 Bad reconcile apply:
 
 - Preserve `OroHome/migrations/<timestamp>-pre-reconcile-sqlite.jsonl`; it is a JSONL snapshot for audit/recovery tooling, not a shipped in-place restore command.
