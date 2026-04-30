@@ -9,7 +9,6 @@ import sqlite3
 import sys
 from pathlib import Path
 
-
 CHECKS: tuple[tuple[str, str, object | None], ...] = (
     (
         "integrity_check",
