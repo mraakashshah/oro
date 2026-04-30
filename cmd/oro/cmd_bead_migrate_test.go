@@ -243,6 +243,170 @@ func TestMigrateFromDoltBackupAndReport(t *testing.T) {
 	})
 }
 
+func TestMigrateFromDoltRejectsNonEmptyNativeTarget(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	staleJSONL := writeMigrationJSONL(t, `{"id":"oro-stale-native","title":"Stale native row","status":"closed","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`+"\n")
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", staleJSONL)
+
+	freshJSONL := writeMigrationJSONL(t, `{"id":"oro-fresh-source","title":"Fresh source row","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`+"\n")
+	dryRunOut, dryRunErr := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--dry-run", "--from-jsonl", freshJSONL)
+	if dryRunErr == nil {
+		t.Fatalf("dry-run succeeded despite non-empty native target:\n%s", dryRunOut)
+	}
+	for _, want := range []string{
+		"Migration plan",
+		"migration error: native bead table is not empty (1 existing rows)",
+		"DRY RUN -- no writes performed",
+	} {
+		if !strings.Contains(dryRunOut, want) {
+			t.Fatalf("dry-run non-empty target output missing %q:\n%s", want, dryRunOut)
+		}
+	}
+
+	applyOut, applyErr := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", freshJSONL)
+	if applyErr == nil {
+		t.Fatalf("apply succeeded despite non-empty native target:\n%s", applyOut)
+	}
+	if !strings.Contains(applyOut, "native bead table is not empty (1 existing rows)") {
+		t.Fatalf("apply non-empty target output missing target guard:\n%s", applyOut)
+	}
+	if strings.Contains(applyOut, "Migration complete") {
+		t.Fatalf("apply reported completion despite target guard:\n%s", applyOut)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open guarded db: %v", err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE deleted=0`).Scan(&count); err != nil {
+		t.Fatalf("query guarded db count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("guarded db count = %d, want original stale row only", count)
+	}
+	var freshCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-fresh-source' AND deleted=0`).Scan(&freshCount); err != nil {
+		t.Fatalf("query fresh source count: %v", err)
+	}
+	if freshCount != 0 {
+		t.Fatalf("fresh source rows = %d, want 0 after guarded apply", freshCount)
+	}
+}
+
+func TestMigrateFromDoltRejectsSoftDeletedNativeTarget(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	staleJSONL := writeMigrationJSONL(t, `{"id":"oro-soft-stale","title":"Soft-deleted stale row","status":"closed","priority":2,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`+"\n")
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", staleJSONL)
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open stale db: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE beads SET deleted=1 WHERE id='oro-soft-stale'`); err != nil {
+		_ = db.Close()
+		t.Fatalf("soft-delete stale row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close stale db: %v", err)
+	}
+
+	freshJSONL := writeMigrationJSONL(t, `{"id":"oro-fresh-source","title":"Fresh source row","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`+"\n")
+	dryRunOut, dryRunErr := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--dry-run", "--from-jsonl", freshJSONL)
+	if dryRunErr == nil {
+		t.Fatalf("dry-run succeeded despite soft-deleted native target row:\n%s", dryRunOut)
+	}
+	if !strings.Contains(dryRunOut, "migration error: native bead table is not empty (1 existing rows)") {
+		t.Fatalf("dry-run soft-deleted target output missing target guard:\n%s", dryRunOut)
+	}
+
+	applyOut, applyErr := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", freshJSONL)
+	if applyErr == nil {
+		t.Fatalf("apply succeeded despite soft-deleted native target row:\n%s", applyOut)
+	}
+	if !strings.Contains(applyOut, "native bead table is not empty (1 existing rows)") {
+		t.Fatalf("apply soft-deleted target output missing target guard:\n%s", applyOut)
+	}
+
+	db, err = sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open guarded db: %v", err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads`).Scan(&count); err != nil {
+		t.Fatalf("query guarded db count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("guarded db total count = %d, want original soft-deleted row only", count)
+	}
+	var freshCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-fresh-source'`).Scan(&freshCount); err != nil {
+		t.Fatalf("query fresh source count: %v", err)
+	}
+	if freshCount != 0 {
+		t.Fatalf("fresh source rows = %d, want 0 after guarded apply", freshCount)
+	}
+}
+
+func TestMigrateFromDoltRejectsTargetRowInsertedAfterPrecheck(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	origHook := beadMigrationAfterInitialTargetPrecheckForTest
+	t.Cleanup(func() { beadMigrationAfterInitialTargetPrecheckForTest = origHook })
+	beadMigrationAfterInitialTargetPrecheckForTest = func() {
+		db, err := openStateDB(dbPath)
+		if err != nil {
+			t.Fatalf("open state db in race hook: %v", err)
+		}
+		defer db.Close()
+		_, err = db.Exec(`INSERT INTO beads (id, title, status, priority, type, created_at, updated_at) VALUES ('oro-race-stale', 'Race stale row', 'closed', 2, 'task', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+		if err != nil {
+			t.Fatalf("insert stale row in race hook: %v", err)
+		}
+	}
+
+	freshJSONL := writeMigrationJSONL(t, `{"id":"oro-fresh-source","title":"Fresh source row","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-02T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}`+"\n")
+	applyOut, applyErr := runBeadMigrateCommandErr(t, "migrate-from-dolt", "--from-jsonl", freshJSONL)
+	if applyErr == nil {
+		t.Fatalf("apply succeeded despite target row inserted after precheck:\n%s", applyOut)
+	}
+	if !strings.Contains(applyOut, "native bead table is not empty (1 existing rows)") {
+		t.Fatalf("apply race output missing target guard:\n%s", applyOut)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open guarded db: %v", err)
+	}
+	defer db.Close()
+	var staleCount, freshCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-race-stale'`).Scan(&staleCount); err != nil {
+		t.Fatalf("query race stale count: %v", err)
+	}
+	if staleCount != 1 {
+		t.Fatalf("race stale rows = %d, want 1", staleCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-fresh-source'`).Scan(&freshCount); err != nil {
+		t.Fatalf("query fresh source count: %v", err)
+	}
+	if freshCount != 0 {
+		t.Fatalf("fresh source rows = %d, want 0 after guarded race apply", freshCount)
+	}
+}
+
 func TestMigrateFromDoltValidationReport(t *testing.T) {
 	jsonlPath := writeMigrationJSONL(t, strings.Join([]string{
 		`{"id":"oro-default-priority","title":"Default priority","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,

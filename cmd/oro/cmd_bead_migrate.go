@@ -134,6 +134,10 @@ func runBeadMigrateApplyOrPlanCmd(cmd *cobra.Command, opts beadMigrateOptions) e
 }
 
 func runBeadMigrationApplyCmd(cmd *cobra.Command, source beadMigrationSource, data []byte) error {
+	if err := ensureInitialMigrationTargetEmpty(cmd.Context()); err != nil {
+		return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
+	}
+	beadMigrationAfterInitialTargetPrecheckForTest()
 	backupPath, err := writeBeadMigrationBackup(data)
 	if err != nil {
 		return writeBeadCommandErrorIfJSON(cmd, "migrate", fmt.Errorf("write migration backup: %w", err))
@@ -170,9 +174,13 @@ func writeBeadMigrationPlanForCmd(cmd *cobra.Command, source beadMigrationSource
 	if err != nil && !errors.As(err, &validationErr) {
 		return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
 	}
+	checkInitialMigrationTargetForPlan(cmd.Context(), &plan)
 	writeBeadMigrationPlan(cmd.OutOrStdout(), source, plan)
 	if err != nil {
 		return writeBeadCommandErrorIfJSON(cmd, "migrate", err)
+	}
+	if len(plan.Errors) > 0 {
+		return writeBeadCommandErrorIfJSON(cmd, "migrate", beadMigrationValidationError{count: len(plan.Errors)})
 	}
 	return nil
 }
@@ -311,7 +319,10 @@ type bdExportBead struct {
 
 const beadMigrationPIDLockMaxAge = time.Hour
 
-var beadMigrationBeforeRemoveInspectedPIDLockForTest = func(inspectedPIDLock) {} //nolint:gochecknoglobals // tests hook the narrow lock race point.
+var (
+	beadMigrationBeforeRemoveInspectedPIDLockForTest = func(inspectedPIDLock) {} //nolint:gochecknoglobals // tests hook the narrow lock race point.
+	beadMigrationAfterInitialTargetPrecheckForTest   = func() {}                 //nolint:gochecknoglobals // tests hook the target precheck race point.
+)
 
 func runBeadMigration(ctx context.Context, data []byte) (beadMigrationValidationReport, error) {
 	beads, report, err := validateBDExportForMigration(data)
@@ -340,6 +351,9 @@ func runBeadMigration(ctx context.Context, data []byte) (beadMigrationValidation
 	if err := setBeadParentTouchTriggers(ctx, tx, false); err != nil {
 		return report, err
 	}
+	if err := ensureInitialMigrationTargetEmptyTx(ctx, tx); err != nil {
+		return report, err
+	}
 	for _, bead := range beads {
 		if err := insertMigratedBeadAtomically(ctx, tx, bead); err != nil {
 			report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", migrationRowLabel(bead.ID), err))
@@ -363,6 +377,78 @@ func runBeadMigration(ctx context.Context, data []byte) (beadMigrationValidation
 		report.Verification = "OK"
 	}
 	return report, report.err()
+}
+
+func checkInitialMigrationTargetForPlan(ctx context.Context, plan *beadMigrationPlan) {
+	existingRows, err := countExistingNativeBeads(ctx)
+	if err != nil {
+		plan.Errors = append(plan.Errors, fmt.Sprintf("target validation: %v", err))
+		return
+	}
+	if existingRows > 0 {
+		plan.Errors = append(plan.Errors, initialMigrationNonEmptyTargetMessage(existingRows))
+	}
+}
+
+func ensureInitialMigrationTargetEmpty(ctx context.Context) error {
+	existingRows, err := countExistingNativeBeads(ctx)
+	if err != nil {
+		return fmt.Errorf("validate native migration target: %w", err)
+	}
+	if existingRows > 0 {
+		return errors.New(initialMigrationNonEmptyTargetMessage(existingRows))
+	}
+	return nil
+}
+
+func ensureInitialMigrationTargetEmptyTx(ctx context.Context, tx *sql.Tx) error {
+	var existingRows int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads`).Scan(&existingRows); err != nil {
+		return fmt.Errorf("count existing native beads in migration transaction: %w", err)
+	}
+	if existingRows > 0 {
+		return errors.New(initialMigrationNonEmptyTargetMessage(existingRows))
+	}
+	return nil
+}
+
+func initialMigrationNonEmptyTargetMessage(rows int) string {
+	return fmt.Sprintf("native bead table is not empty (%d existing rows); restore or clear state.db before initial migration, or use --reconcile after a reviewed baseline migration", rows)
+}
+
+func countExistingNativeBeads(ctx context.Context) (int, error) {
+	paths, err := ResolveProjectDBPaths()
+	if err != nil {
+		return 0, fmt.Errorf("resolve bead store paths: %w", err)
+	}
+	if _, err := os.Stat(paths.StateDBPath); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("stat sqlite state db: %w", err)
+	}
+	dbURL := url.URL{Scheme: "file", Path: paths.StateDBPath, RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", dbURL.String())
+	if err != nil {
+		return 0, fmt.Errorf("open sqlite state db read-only: %w", err)
+	}
+	defer db.Close()
+	if err := db.PingContext(ctx); err != nil {
+		return 0, fmt.Errorf("ping sqlite state db read-only: %w", err)
+	}
+
+	var tableCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='beads'`).Scan(&tableCount); err != nil {
+		return 0, fmt.Errorf("check native bead table: %w", err)
+	}
+	if tableCount == 0 {
+		return 0, nil
+	}
+	var existingRows int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads`).Scan(&existingRows); err != nil {
+		return 0, fmt.Errorf("count existing native beads: %w", err)
+	}
+	return existingRows, nil
 }
 
 func writeBeadMigrationBackup(data []byte) (string, error) {
@@ -1829,25 +1915,9 @@ func validateBDExportRow(raw json.RawMessage, label string, report *beadMigratio
 	}
 	report.UnknownFields += countUnknownBDExportFields(fields)
 	bead.Priority = defaultBDExportPriority(fields, bead.Priority)
-	status, err := normalizeMigrationStatusStrict(bead.Status)
-	if err != nil {
-		report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", label, err))
-		recordSkippedID()
+	if !normalizeBDExportRowStatus(label, &bead, report, recordSkippedID) {
 		return bdExportBead{}, false
 	}
-	if status == "blocked" {
-		report.Warnings = append(report.Warnings, fmt.Sprintf("%s: status %q will be stored as open because native blocked state is derived from dependencies", label, bead.Status))
-	}
-	if status == "deferred" {
-		if firstNonEmpty(bead.DeferredUntil, bead.DeferUntil) == "" {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: "+beadMigrationDeferredWithoutUntilMsg, label, bead.Status))
-			bead.DeferUntil = beadMigrationDeferredWithoutUntil
-		} else {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: status %q will be stored as open with defer_until preserved", label, bead.Status))
-		}
-		status = "open"
-	}
-	bead.Status = status
 	if strings.TrimSpace(bead.ID) == "" {
 		report.Errors = append(report.Errors, fmt.Sprintf("%s: bd export bead is missing id", label))
 		return bdExportBead{}, false
@@ -1868,6 +1938,29 @@ func validateBDExportRow(raw json.RawMessage, label string, report *beadMigratio
 		return bdExportBead{}, false
 	}
 	return bead, true
+}
+
+func normalizeBDExportRowStatus(label string, bead *bdExportBead, report *beadMigrationValidationReport, recordSkippedID func()) bool {
+	status, err := normalizeMigrationStatusStrict(bead.Status)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("%s: %v", label, err))
+		recordSkippedID()
+		return false
+	}
+	if status == "blocked" {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("%s: status %q will be stored as open because native blocked state is derived from dependencies", label, bead.Status))
+	}
+	if status == "deferred" {
+		if firstNonEmpty(bead.DeferredUntil, bead.DeferUntil) == "" {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: "+beadMigrationDeferredWithoutUntilMsg, label, bead.Status))
+			bead.DeferUntil = beadMigrationDeferredWithoutUntil
+		} else {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: status %q will be stored as open with defer_until preserved", label, bead.Status))
+		}
+		status = "open"
+	}
+	bead.Status = status
+	return true
 }
 
 func countUnknownBDExportFields(fields map[string]json.RawMessage) int {

@@ -12,7 +12,7 @@ dolt internal count error: ... no database selected
 Aborting.
 ```
 
-That specific blocker is resolved by selecting the Dolt database from `.beads/metadata.json`, counting the `issues` table, reporting matched `bd export` and Dolt counts, and preserving bd `deferred` rows as native `open` rows with `defer_until`. The latest verified patched dry-run on 2026-04-30 exited 0 without `--force-recover` and printed `DRY RUN -- no writes performed`; it reported 18 warnings for expected `blocked`/`deferred` status remaps and no migration errors.
+That specific blocker is resolved by selecting the Dolt database from `.beads/metadata.json`, counting the `issues` table, reporting matched `bd export` and Dolt counts, and preserving bd `deferred` rows as native `open` rows with `defer_until`. A later 2026-04-30 real apply exposed a separate blocker: the target `state.db` already contained stale native bead row `oro-cdb3`, so post-apply SQLite had one row more than `bd export`. Phase 8 is blocked until the target `state.db` is restored or cleared through the rollback path and the fixed dry-run no longer reports `native bead table is not empty`.
 
 Before relying on the dry-run gate, verify `bd export` can read the source and the externally managed Dolt server on `127.0.0.1:13310` is reachable. A dry-run that cannot run `bd export`, needs `--force-recover`, cannot query Dolt's internal count, or reports a count mismatch is a no-go for real migration.
 
@@ -46,7 +46,7 @@ Expected results:
 - Worker/writer process scan prints `active_writer_count=0`. If any worker, any direct `bd` process, direct native `oro bead` mutator, or another migration command is active, stop it before dry-run. The scanner inspects process command names and argv tokens instead of substring-matching the whole shell command, so macOS daemons such as `sbd` and `donotdisturbd` and the shell running this gate do not trip the gate. This intentionally treats read-only `bd` commands as stop-the-world conflicts so the gate cannot miss newly added bd mutators; otherwise `bd export`, `state.db` snapshotting, or migration apply can race an active writer.
 - `ORO_BEADSOURCE_MODE` is empty or `cli`; the command block exits non-zero otherwise. Do not migrate while already in `shadow` or `sqlite`.
 - Help output matches the actual migration flags listed below; do not add unimplemented backup toggles.
-- Dry-run exits successfully without `--force-recover`.
+- Dry-run exits successfully without `--force-recover` and does not report `native bead table is not empty`. Initial migration is not a repair command for an existing native bead table; any pre-existing row, including a soft-deleted row, means the operator must restore or clear `state.db` through a reviewed rollback path before retrying.
 - A `state.db` SQLite backup snapshot is created and integrity-checked before the real apply command. The migration JSONL backup is mandatory source/audit data, but it is not the rollback mechanism for a failed or partially populated SQLite beadstore.
 
 ## Actual Migration Flags
@@ -61,7 +61,7 @@ Expected results:
 - `--allow-running-dispatcher`: emergency override for the dispatcher PID-lock gate. Do not use during real migration approval; stop the dispatcher instead.
 - `--force-recover`: emergency partial-recovery acknowledgment. Do not use for real migration approval; a dry-run that requires it blocks Phase 8.
 
-Initial apply writes a mandatory source JSONL backup under `OroHome/migrations/<timestamp>-pre-migration.jsonl` before importing.
+Initial apply refuses to run when the native `beads` table contains any rows. After that guard passes, it writes a mandatory source JSONL backup under `OroHome/migrations/<timestamp>-pre-migration.jsonl` before importing.
 
 ## Apply Path
 

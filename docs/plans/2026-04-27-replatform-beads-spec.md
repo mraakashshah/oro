@@ -2295,7 +2295,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 - Dispatcher, workers, direct bd processes, direct native `oro bead` mutators,
   and other migration commands are stopped before dry-run, real apply, and
   reconcile preview/apply.
-- Real-data dry-run exits 0 without `--force-recover`.
+- Real-data dry-run exits 0 without `--force-recover` and without a non-empty native target error. Initial migration must fail closed if the native `beads` table already contains any rows, including soft-deleted rows; retry requires restoring or clearing `state.db` through the reviewed runbook rollback path.
 - Pre-migration `state.db` SQLite backup snapshot path recorded, and `PRAGMA integrity_check` on the snapshot returns exactly `ok` before real apply.
 - Real migration report shows zero validation errors and records the mandatory JSONL backup path under `OroHome/migrations/<timestamp>-pre-migration.jsonl`.
 - `ORO_BEADSOURCE_MODE=shadow` is exported only after a clean real migration, and the restarted dispatcher process is verified to inherit it.
