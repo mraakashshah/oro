@@ -735,7 +735,7 @@ oro bead
     list <bead-id>
   search <query>                       FTS over title/description/AC
   export [--out=path] [--format=jsonl|json]   Snapshot to disk
-  import <path>                        Read JSONL/JSON, upsert
+  import <path>                        Planned JSONL/JSON upsert; current shipped command is a stub
   doctor                               Health check
   status                               Quick stats: open/in-progress/closed counts
   --json                               Global flag for machine-readable output
@@ -1318,17 +1318,17 @@ func (s *ShadowStore) HasChildren(ctx context.Context, epicID string) (bool, err
 func (s *ShadowStore) compare(op string, primary []protocol.Bead, errP error,
                               secondary []protocol.Bead, errS error) {
     if errP != nil || errS != nil {
-        s.event("beadstore_divergence_real", op, "error",
+        s.event("beadstore_divergence", op, "real", "error",
             "errP", errP, "errS", errS)
         return
     }
     real, drift := classify(primary, secondary, s.shadowStartedAt)
     if real {
-        s.event("beadstore_divergence_real", op, "real",
+        s.event("beadstore_divergence", op, "real", "read result mismatch",
             "primary_n", len(primary), "secondary_n", len(secondary))
     }
     if drift {
-        s.event("beadstore_drift", op, "drift",
+        s.event("beadstore_divergence", op, "drift", "expected shadow drift",
             "primary_n", len(primary), "secondary_n", len(secondary))
     }
 }
@@ -1504,8 +1504,10 @@ A new subcommand `oro bead migrate-from-dolt` that:
 4. For each dependency in the row, upserts into `bead_deps`.
 5. For each tag/label/metadata/note, populates the corresponding table.
 6. Logs row counts and any malformed rows to stderr.
-7. Optionally writes a backup snapshot to `~/.oro/migrations/<timestamp>-pre-migration.jsonl`.
+7. Writes a mandatory source backup snapshot to `OroHome/migrations/<timestamp>-pre-migration.jsonl` before the first import write.
 8. Verifies counts post-migration.
+
+Initial migration backup is mandatory on apply and automatic. Dry-run skips all SQLite writes and migration-lock acquisition, so it also skips the backup write.
 
 Pseudocode:
 
@@ -1574,6 +1576,16 @@ If `dolt fsck` reports clean and the export is still short, that's a bd-side bug
 
 The pre-flight queries dolt by spawning `dolt sql -q "SELECT COUNT(*) FROM beads;"` against the dolt directory. If dolt itself fails to start (terminal corruption), the migration falls back to the JSONL path (§9.9) with the same explicit-acknowledgment requirement.
 
+**Current real-data blocker (2026-04-29 audit):** the real-data dry-run is not safe to promote. The observed preflight output was:
+
+```
+bd export count: 1718
+dolt internal count error: ... no database selected
+Aborting.
+```
+
+Real migration must not run until `./oro bead migrate-from-dolt --dry-run` passes cleanly without `--force-recover`. A dry-run that needs `--force-recover`, cannot query dolt's internal count, or reports any count mismatch is a migration-day blocker, not an operator-warning-only condition.
+
 **Phase 0 deliverable** captures the dolt internal count alongside the bd export count, so any drift between Phase 0 audit and Phase 8 migration day is also visible.
 
 ### 9.3 The migration UX
@@ -1588,7 +1600,7 @@ $ oro bead migrate-from-dolt --dry-run
 $ oro bead migrate-from-dolt
 [oro] Reading dolt export via bd...
 [oro] Found 1,247 beads.
-[oro] Backing up to ~/.oro/migrations/2026-04-27T15-04-03-pre-migration.jsonl
+[oro] Backing up to OroHome/migrations/2026-04-27T15-04-03-pre-migration.jsonl
 [oro] Importing... 1,247/1,247 ✓
 [oro] Verifying... ready=18, in_progress=2, closed=1227, ✓
 [oro] Migration complete in 3.1s.
@@ -1605,17 +1617,33 @@ This is the critical section. The full sequence:
    - Operators verify the build, smoke-test `oro bead` subcommands manually against an empty `beads` table.
 
 2. **Day 1 (migration):**
-   - Stop the dispatcher.
+   - Stop the dispatcher and every worker. Run the safe gate sequence from
+     `docs/runbooks/beadstore-recovery.md`: `scripts/check-bd-version.sh`;
+     dispatcher count check covering both `oro start` and `oro dispatcher start`;
+     worker/any direct-`bd` process/direct-native-`oro bead`
+     mutator/other-migration process check; fail-closed `ORO_BEADSOURCE_MODE`
+     check requiring empty or `cli`; `./oro bead migrate-from-dolt --help`;
+     `./oro bead migrate-from-dolt --dry-run`.
+   - Confirm the dry-run passes without `--force-recover`. If it does not, stop. Do not run real migration.
+   - Create and integrity-check a pre-migration `state.db` SQLite backup snapshot per `docs/runbooks/beadstore-recovery.md`.
    - Run `oro bead migrate-from-dolt`.
    - Verify counts (`oro bead status`).
    - Set `ORO_BEADSOURCE_MODE=shadow`.
-   - Restart the dispatcher.
+   - Restart the dispatcher and every worker from that environment with the
+     executable runbook sequence: record the old PID from `oro.pid`, run
+     `ORO_HUMAN_CONFIRMED=1 ./oro stop --force`, then run
+     `ORO_BEADSOURCE_MODE=shadow ./oro dispatcher start --workers <count>`.
+   - Verify the restarted dispatcher inherited `ORO_BEADSOURCE_MODE=shadow`.
+   - Verify worker subprocesses have `bd` stripped from `PATH`, still have `oro`
+     available, and that each controlled test bead assigned after recording the
+     worker log byte offset appears in the new log segment with native
+     `oro bead` commands and no `bd` command invocation.
 
 3. **Days 1–7 (shadow mode, *read-only*):**
    - Dispatcher reads from `CLIBeadSource` (authoritative); `SQLiteStore` shadows on every read; divergences logged to `events` table.
    - **All writes go through `CLIBeadSource` → bd → dolt only.** SQLite is **not** mirrored on writes during the shadow window.
    - SQLite goes stale during the week — that's expected and fine.
-   - Operator monitors `oro events --type=beadstore_divergence` and investigates any non-zero **structural-read** rate.
+   - Operator runs `scripts/check-beadstore-shadow-monitor.sh` via the fail-closed 24h shadow monitor gate in `docs/runbooks/beadstore-recovery.md` and investigates any non-zero **structural-read** rate. The real/drift classifier is recorded in the JSON payload as `"kind":"real"` or `"kind":"drift"`. The monitor script must run with `set -euo pipefail`, verify the persisted `beadstore_shadow_started_at` row is at least 24 hours old, fail if `oro events` cannot read the target `state.db`, and use an uncapped SQLite count over the last 24 hours so a high volume of drift events cannot hide a later real divergence behind CLI pagination.
    - **Divergence classification (load-bearing — v5 added this; v9 corrects the key from `created_at` to `updated_at`):** `ShadowStore.compare()` partitions divergences and surfaces only structural read failures. The classification key is **`updated_at`**, not `created_at`. The v8 spec used `created_at`, which broke as soon as the dispatcher updated a pre-shadow bead during the window: bd's `Ready()` would no longer return it (status changed to `in_progress`), SQLite's stale `Ready()` still would, and the classifier would mark this "real" because the bead's `created_at` was pre-shadow — even though the actual cause was a legitimate dispatcher write to bd that SQLite couldn't see. v9 keys on `updated_at`:
      - **Expected drift (NOT a real divergence):** a bead returned by primary but not by secondary, *and* the primary's `updated_at` for that bead falls within the shadow window. This includes pre-shadow beads whose status changed during shadow (which is what dispatcher activity does to most beads).
      - **Expected drift (NOT real):** content differs between primary and secondary, *and* primary's `updated_at` is within the shadow window with bd's value newer.
@@ -1627,12 +1655,17 @@ This is the critical section. The full sequence:
 
 4. **Day 7 (cutover, if shadow read-divergences are zero for 24h):**
    - Stop dispatcher.
-   - **Run `oro bead migrate-from-dolt --reconcile`** to apply the week's worth of bd-only writes to SQLite. Reconcile is now load-bearing — it's how SQLite catches up. See §9.6 for `--reconcile` semantics.
+   - Confirm no workers, direct `bd` processes, direct native `oro bead` mutator processes, or other migration commands are running before reconcile preview or apply.
+   - **Run `oro bead migrate-from-dolt --reconcile`** to preview the week's worth of bd-only writes to SQLite. Reconcile is now load-bearing — it's how SQLite catches up. See §9.8 for `--reconcile` semantics.
+   - Create and integrity-check a pre-reconcile `state.db` SQLite backup snapshot per `docs/runbooks/beadstore-recovery.md`.
+   - Run `oro bead migrate-from-dolt --reconcile --apply` only after the preview is reviewed and conflict-free.
    - Verify counts (`oro bead status` vs `bd export | wc -l`).
    - Set `ORO_BEADSOURCE_MODE=sqlite`.
    - Restart dispatcher.
    - SQLite is now authoritative. bd is no longer queried.
-   - bd binary stripped from worker PATH (v15 no-shim; dispatcher retains bd on its own PATH only for the migration tool's `--reconcile` re-reads, until Phase 10).
+   - Worker subprocesses continue with the Phase 8 `bd` PATH strip (v15 no-shim);
+     the dispatcher retains bd on its own PATH only for the migration tool's
+     `--reconcile` re-reads, until Phase 10.
 
 5. **Days 7–30 (sqlite primary, bd binary still installed):**
    - All bead state lives in SQLite.
@@ -1649,7 +1682,7 @@ This is the critical section. The full sequence:
 
 ### 9.5 Reversibility
 
-Until Day 30, every step is reversible. `ORO_BEADSOURCE_MODE=cli` reverts to bd. The dolt database is preserved. The migration tool's backup file lives at `~/.oro/migrations/<ts>-pre-migration.jsonl`.
+Until Day 30, every step is reversible when the runbook gates are followed. `ORO_BEADSOURCE_MODE=cli` reverts to bd. The dolt database is preserved. The migration tool's JSONL backup file lives at `OroHome/migrations/<ts>-pre-migration.jsonl`; rollback of a failed SQLite target uses the operator's pre-migration or pre-reconcile `state.db` SQLite backup snapshot, not JSONL import.
 
 After Day 30 cleanup: rollback requires re-cloning bd, restoring dolt from a backup, and reverting the deletions. Plan accordingly — don't do Day 30 cleanup until you're confident.
 
@@ -1780,7 +1813,9 @@ The shadow window is read-only on the SQLite side, so SQLite drifts behind bd by
 6. **Surface conflicts**: any bead whose dolt vs sqlite content differs by something other than timestamps (e.g., independent edits to the same field) is logged to stderr with both versions. The operator inspects and decides; default is bd-wins because bd was authoritative.
 7. **Idempotent**: re-running `--reconcile` twice produces zero net changes.
 
-`--reconcile` requires `--apply` to actually mutate. Without `--apply`, it prints what it would do (a `--dry-run` for reconcile specifically). This is mandatory: a buggy reconcile pass touching production data without explicit consent is the worst-case failure mode of this whole project.
+`--reconcile` requires `--apply` to actually mutate. Without `--apply`, it prints what it would do (a dry-run for reconcile specifically). This is mandatory: a buggy reconcile pass touching production data without explicit consent is the worst-case failure mode of this whole project.
+
+If both `--dry-run` and `--apply` are present, `--dry-run` wins. `oro bead migrate-from-dolt --dry-run --reconcile --apply` must not apply changes.
 
 ```bash
 $ oro bead migrate-from-dolt --reconcile
@@ -1790,7 +1825,7 @@ $ oro bead migrate-from-dolt --reconcile
 [oro] Pass --apply to write changes.
 
 $ oro bead migrate-from-dolt --reconcile --apply
-[oro] Backing up SQLite to ~/.oro/migrations/2026-05-04T15-04-pre-reconcile.jsonl
+[oro] Backing up SQLite to OroHome/migrations/2026-05-04T15-04-pre-reconcile-sqlite.jsonl
 [oro] Applying... 9 inserts, 14 updates, 0 deletes ✓
 [oro] Verifying... 1,256 beads in both stores ✓
 ```
@@ -1844,7 +1879,7 @@ The same two-stage check (`kill` + `mtime < 1h`) applies to the dispatcher PID l
 
 **Why two locks:** the dispatcher lock is per-dispatcher-instance and held for the dispatcher's whole lifetime; the migration lock is per-migration-invocation and held briefly. They don't compete for the same identity but both must be checked.
 
-**Override-flag audit trail (v8):** any use of `--allow-running-dispatcher` (this section) or `--ignore-version-drift` (§12.9) writes an event row to the `events` table with `type='override_invoked'` and a payload naming the flag, the user (`os.Getenv("USER")`), the host, and the timestamp. The events row exists *before* the migration proceeds, so the audit survives even if the migration crashes mid-flight. Override flags are rare emergency hatches; durable audit is cheap and aligns with oro's existing event-log discipline.
+**Override-flag note (2026-04-29 audit):** durable waiver events are not implemented. Do not rely on the migration tool to write durable event rows for waivers. Operators must capture any waiver in the runbook log and command transcript instead.
 
 **Note on `oro bead` CLI subprocess locking:** the v4 reviewer asked whether worker `oro bead create` invocations need their own lock. They do not. SQLite WAL serializes writes natively; multiple workers calling `oro bead create` concurrently is safe and expected. The migration tool's lock is *only* about preventing two migration runs (which involve pre-flight checks, backup writes, and verification — operations that don't compose under interleaving). The dispatcher's PID lock (§16.14) is about preventing two dispatchers. Three locks total, each with a distinct scope:
 
@@ -1890,13 +1925,15 @@ The default oro setup adds the nightly cron suggestion to `oro readiness`'s chec
 
 ### 10.3 Import / round-trip
 
-`oro bead import <file.jsonl>` does the inverse: reads JSONL, upserts. Useful for:
+Target design, not shipped yet: `oro bead import <file.jsonl>` will read JSONL and upsert into a clean or operator-approved target. It is intended for:
 
 - Disaster recovery from a backup.
 - Migrating beads from one machine to another.
 - Restoring a known-good state.
 
-Conflict policy: `--on-conflict=skip|overwrite|merge`. Default is `skip` (don't overwrite existing rows).
+Current shipped behavior: `oro bead import` is still a stub. Do not use it as Phase 8 rollback evidence, and do not treat migration JSONL backups as an in-place SQLite restore path until a native restore/import implementation is reviewed and exercised.
+
+Planned conflict policy after native import ships: skip by default, with explicit overwrite or merge modes. No conflict-policy flag is supported by the current stub.
 
 ### 10.4 What we explicitly do NOT do
 
@@ -2074,7 +2111,7 @@ The v1 spec proposed deleting `BeadsDir` from `cmd/oro/paths.go` in Phase 10. Th
 | `oro bead migrate-from-dolt --reconcile` | Same — for the cutover reconcile pass |
 | `oro uninstall` | Cleans up old `.beads/dolt/`, `.beads/.doltcfg`, `.beads/backup/` for users uninstalling oro after migration |
 | `oro doctor` | Detects orphaned `.beads/` directories from old projects and recommends cleanup |
-| `oro bead import` | If users hand-edit `.beads/issues.jsonl` snapshots and want them imported |
+| `oro bead import` (planned; current shipped command is a stub) | If users hand-edit `.beads/issues.jsonl` snapshots and want them imported after the native import implementation lands |
 | Documentation tooling | Generates "if you have an old `.beads/` directory, here's how to clean it up" guidance |
 
 **Phase 10 staging:**
@@ -2105,6 +2142,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 - **bd-ready behavior audit:** read bd's source for its `ready` computation (the third-party project at `github.com/steveyegge/beads`). Document every filter, sort key, and edge case it applies. Compare against the spec's `beads_ready` view definition (§6.3). Resolve divergences in v3.1 of this spec before Phase 1. The deliverable is a `docs/plans/notes/bd-ready-semantics.md` file with a side-by-side comparison table.
 - **bd version pin:** record the exact bd commit/tag in use (`bd --version` output and `go list -m github.com/steveyegge/beads@<ver>` if vendored). Pin in `docs/INSTALL.md` as the supported version through Phase 9 cutover. Operators must not upgrade bd between Phase 0 and Phase 9; documented as an explicit warning in the runbook.
 - **JSONL-fallback inventory:** identify every JSONL snapshot that exists today (`.beads/issues.jsonl` if not gitignored on this operator's machine, `.beads/backup/full-state.jsonl` heartbeat backup, ad-hoc `bd export > foo.jsonl` artifacts). Document discovered locations. The migration tool gains a `--from-jsonl <path>` mode (see §9.9) to use these if dolt is unrecoverable at Phase 8.
+- **Recovery runbook:** create `docs/runbooks/beadstore-recovery.md` with the exact Phase 8 gates, real-data blocker, backup/rollback paths, and reconcile semantics. This runbook is the operator source of truth for migration-day commands.
 - **Bead-source caller grep:** verify `BeadSource` interface is the only seam at all caller sites. Any stray bd shell-outs that bypass the interface get listed and either (a) routed through the interface or (b) explicitly accepted as legacy with a comment.
 - **Baseline capture:** record current bead counts, ready count, in-progress count, average `Ready()` latency, dispatcher startup time. Provides B1–B5 baselines for §18.
 - **Schema sign-off** with one other engineer reviewing §6 and the field mapping in §9.6.
@@ -2160,10 +2198,11 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 
 **Deliverables:**
 
-- `cmd/oro/cmd_bead_migrate.go`: `oro bead migrate-from-dolt [--dry-run] [--reconcile]`.
+- `cmd/oro/cmd_bead_migrate.go`: `oro bead migrate-from-dolt [--dry-run] [--reconcile] [--apply] [--from-jsonl <path>] [--from-fixture <path>] [--ignore-version-drift] [--allow-running-dispatcher] [--force-recover]`.
 - Handles all edge cases per §9.2.
 - Writes a backup snapshot before mutating.
 - Produces a migration report with counts and errors.
+- Backup is mandatory for initial apply.
 
 **Acceptance:**
 
@@ -2239,18 +2278,32 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 
 **Deliverables (in order):**
 
-- **bd-version pin check:** confirm `bd --version` matches the version recorded in Phase 0. **Comparison strategy (v7):** parse the version string as `vMAJOR.MINOR.PATCH[-prerelease][+build]` per SemVer 2.0; compare on `MAJOR.MINOR` only. Build metadata (commit hash, "-dirty" suffix) and patch level are ignored — they're irrelevant for the JSON-output contract this migration relies on. If `MAJOR.MINOR` drifted, abort with: `bd version drifted from <pinned major.minor> to <current major.minor>; reinstall pinned version or restart from Phase 0`. Override with `--ignore-version-drift` for explicit operator acknowledgment. This addresses v3 risk R-BD-VERSION (§16) and v4/v6 review notes.
+- **bd-version pin check:** run `scripts/check-bd-version.sh` and confirm `bd --version` matches the version recorded in Phase 0. **Comparison strategy (v7):** parse the version string as `vMAJOR.MINOR.PATCH[-prerelease][+build]` per SemVer 2.0; compare on `MAJOR.MINOR` only. Build metadata (commit hash, "-dirty" suffix) and patch level are ignored — they're irrelevant for the JSON-output contract this migration relies on. If `MAJOR.MINOR` drifted, abort with: `bd version drifted from <pinned major.minor> to <current major.minor>; reinstall pinned version or restart from Phase 0`. `--ignore-version-drift` appears in `migrate-from-dolt --help` but is not implemented for initial migration. The only approved waiver path is `scripts/check-bd-version.sh --ignore-version-drift`, with the waiver recorded in the operator log. This addresses v3 risk R-BD-VERSION (§16) and v4/v6 review notes.
 - **(v16 explicit per codex round 7) Worker-restart + bd-PATH-strip:** after migration succeeds and `ORO_BEADSOURCE_MODE=shadow` is set, **the operator restarts every worker** before resuming traffic. The dispatcher's worker-spawn config is updated at this point to strip `bd` from worker `PATH` (the dispatcher itself retains bd on its own PATH for migration tool re-runs — only worker subprocesses lose it). v15's no-shim cutover only works if both these steps happen at Phase 8; without them, in-flight workers would still emit `bd …` and silently fail on `command not found`. This is a hard Phase 8 deliverable, not a runbook footnote.
 - **Single-dispatcher invariant:** confirm only one dispatcher is running (no stale PID lock, no orphan dispatcher process).
+- **No concurrent bead writers:** confirm no workers, direct `bd` processes, direct native `oro bead` mutator processes, or other migration commands are running before dry-run or apply. The gate intentionally treats read-only `bd` commands as stop-the-world conflicts so it cannot miss newly added bd mutators. Keep them stopped until the shadow-mode restart.
+- **Real-data dry-run gate:** run `./oro bead migrate-from-dolt --dry-run` and require success without `--force-recover`. The 2026-04-29 audit failure (`bd export count: 1718`; `dolt internal count error: ... no database selected`; `Aborting.`) blocks real migration until fixed.
+- **Pre-migration SQLite rollback gate:** create a pre-migration `state.db` SQLite backup snapshot after checkpointing WAL, run `sqlite3 "$snapshot_dir/state.db" 'PRAGMA integrity_check;'`, require `ok`, and record the snapshot path before real apply. The migration JSONL backup is required source/audit data, not a restore command for a failed SQLite target.
 - Run migration on production state.db.
 - Set `ORO_BEADSOURCE_MODE=shadow`.
-- Restart dispatcher.
-- Monitor divergences for 24h.
+- Restart dispatcher with `ORO_HUMAN_CONFIRMED=1 ./oro stop --force` followed by `ORO_BEADSOURCE_MODE=shadow ./oro dispatcher start --workers <count>`.
+- Monitor divergences for 24h with the fail-closed runbook block, including persisted shadow-window evidence and an events query that cannot false-pass if the state database is unreadable.
 
 **Acceptance:**
 
 - bd-version match.
-- Zero *real* divergences over 24h (drift events are visibility-only; see §9.4 step 3).
+- Dispatcher, workers, direct bd processes, direct native `oro bead` mutators,
+  and other migration commands are stopped before dry-run, real apply, and
+  reconcile preview/apply.
+- Real-data dry-run exits 0 without `--force-recover`.
+- Pre-migration `state.db` SQLite backup snapshot path recorded, and `PRAGMA integrity_check` on the snapshot returns exactly `ok` before real apply.
+- Real migration report shows zero validation errors and records the mandatory JSONL backup path under `OroHome/migrations/<timestamp>-pre-migration.jsonl`.
+- `ORO_BEADSOURCE_MODE=shadow` is exported only after a clean real migration, and the restarted dispatcher process is verified to inherit it.
+- Dispatcher and workers restarted; every restarted worker subprocess has `bd`
+  absent from `PATH`, `oro` present, and a controlled per-worker log segment
+  captured after a pre-assignment byte offset proving the assigned test bead
+  was handled with native `oro bead` commands and no `bd` command invocation.
+- Zero *real* divergences over 24h (drift events are visibility-only; see §9.4 step 3), proven by the runbook monitor block after `beadstore_shadow_started_at` is at least 24 hours old.
 
 ### 12.10 Phase 9 — Cutover + observation (7 days passive)
 
@@ -2472,7 +2525,7 @@ $ oro bead acceptance-test
   ✓  Show returns *protocol.Bead with persisted fields populated; runtime fields (WorkerID, ContextPercent, etc.) populated when assignment+fetcher exist, omitted via omitempty otherwise
   ✓  Create takes CreateParams, returns *protocol.Bead with id populated (v15/v16 reshape)
   ✓  Export produces valid JSONL parseable by jq
-  ✓  Export → Import roundtrip preserves all fields (10 random beads)
+  ✓  Export parity: `oro bead export` JSONL parses and matches bd-compatible export data after migration; native import roundtrip is deferred until `oro bead import` ships
   ✓  beads_fts indexes are queryable
   ✓  Triggers fire: insert dep → parent updated_at advances
   ✓  Triggers fire: delete tag → parent updated_at advances
@@ -2575,7 +2628,7 @@ Mechanical, file-by-file. Two patterns dominate:
 
 ### 15.4 Fixtures
 
-A new fixture directory `pkg/dispatcher/testdata/beads/` holds JSONL fixtures we can `oro bead import` into a test SQLite for integration tests. Sample fixtures: one ready bead, one in-progress bead, one epic with three children, one chain of three blocking deps.
+A new fixture directory `pkg/dispatcher/testdata/beads/` holds JSONL fixtures for integration tests. Until native `oro bead import` is implemented, migration fixtures use `oro bead migrate-from-dolt --from-jsonl` or package-level test helpers. Sample fixtures: one ready bead, one in-progress bead, one epic with three children, one chain of three blocking deps.
 
 ---
 
@@ -2585,16 +2638,16 @@ A new fixture directory `pkg/dispatcher/testdata/beads/` holds JSONL fixtures we
 
 - **Severity:** High — historical bead data lost.
 - **Likelihood:** Low — migration is idempotent, has dry-run, has backup.
-- **Mitigation:** `--dry-run` first; backup written to `~/.oro/migrations/` before mutation; reconcile pass after Phase 8.
+- **Mitigation:** `--dry-run` first; backup written to `OroHome/migrations/` before mutation; reconcile pass after Phase 8.
 - **Detection:** Post-migration counts comparison.
-- **Fallback:** Restore from backup; revert `ORO_BEADSOURCE_MODE` to `cli`.
+- **Fallback:** Restore `state.db` from the operator's pre-migration SQLite backup snapshot, preserve the JSONL pre-migration backup for audit/recovery tooling, and revert `ORO_BEADSOURCE_MODE` to `cli`.
 
 ### 16.2 R-SHADOW-READ-DIVERGENCE
 
 - **Severity:** Medium — `SQLiteStore` returns reads that disagree with `CLIBeadSource` for the same pre-shadow bead. Any non-zero *real* rate blocks cutover.
 - **Likelihood:** Medium — first time we run the new code against real load. Most likely cause: subtle differences in dependency-graph computation (the `beads_ready` view vs bd's internal logic), tag/label set ordering, or AC extraction from markdown.
 - **Mitigation:** Shadow mode logs every divergence with both implementations' results, partitioning into "real" (logged + counted toward cutover gate) and "expected drift" (counted separately, doesn't block). Classification per §9.4 step 3. Cutover gated on 24h zero *real* divergences. Read-only shadow design eliminates the dual-write divergence class entirely (writes go through bd alone during shadow).
-- **Detection:** `oro events --type=beadstore_divergence_real` for the gate; `--type=beadstore_drift` for the visibility counter.
+- **Detection:** `scripts/check-beadstore-shadow-monitor.sh` as invoked by the fail-closed 24h shadow monitor gate in `docs/runbooks/beadstore-recovery.md`: require `ORO_BEADSOURCE_MODE=shadow`, query `kv_store.beadstore_shadow_started_at`, require the window to be at least 24 hours old, run a minimal `oro events --type=beadstore_divergence --since=24h --limit=1` smoke check so unreadable event logs fail closed, then count `"kind":"real"` and `"kind":"drift"` payloads with an uncapped SQLite query over the last 24 hours.
 - **Fallback:** Stay in shadow mode longer; investigate real divergences; fix the SQLite-side query or the migration; reconcile again.
 
 ### 16.2b R-RECONCILE-CORRECTNESS (NEW)
@@ -2603,12 +2656,13 @@ A new fixture directory `pkg/dispatcher/testdata/beads/` holds JSONL fixtures we
 - **Likelihood:** Low if `--apply` is gated and dry-run is exercised, but the algorithm has edge cases (e.g., timestamp-tied updates with content drift).
 - **Mitigation:**
   - `--reconcile` requires `--apply` to mutate; default behavior is a diff report.
-  - Backup SQLite to `~/.oro/migrations/` before any reconcile-apply.
+  - Take an operator `state.db` SQLite backup snapshot and verify `PRAGMA integrity_check` before any reconcile-apply.
+  - Backup SQLite to `OroHome/migrations/` before any reconcile-apply.
   - Conflict detection (§9.6 step 6) surfaces non-timestamp drift to operator.
-  - Reconcile is idempotent — re-running after fixing a bug is safe.
+  - Reconcile preview is idempotent. If a reconcile apply fails or corrupts SQLite, restore the pre-reconcile `state.db` SQLite backup snapshot or move the failed DB aside before rerunning preview/apply.
   - Test fixture: a 100-bead synthetic shadow window (some inserted, some updated, some deleted in bd) with a known reconcile-result; CI checks the algorithm matches.
 - **Detection:** Post-reconcile bead count comparison against `bd export | wc -l`; spot-check 10 random beads field-by-field.
-- **Fallback:** Restore SQLite from the pre-reconcile backup; fix the reconcile bug; rerun.
+- **Fallback:** Restore `state.db` from the operator's pre-reconcile SQLite backup snapshot, preserve the JSONL pre-reconcile backup for audit/recovery tooling, fix the reconcile bug, then rerun.
 
 ### 16.3 R-WORKER-CMD-CHANGE (v15 reshape — no shim)
 
@@ -2662,8 +2716,8 @@ A new fixture directory `pkg/dispatcher/testdata/beads/` holds JSONL fixtures we
 
 - **Severity:** Low — tools that consume `bd export` output may break if our JSONL format diverges.
 - **Likelihood:** Low — we deliberately emit bd-compatible JSON.
-- **Mitigation:** Round-trip test: `bd export` → `oro bead import` → `oro bead export` → diff against original.
-- **Detection:** Round-trip diff fails.
+- **Mitigation:** Export parity test: compare `bd export` against `oro bead export` after migration. A native import round-trip is deferred until `oro bead import` ships.
+- **Detection:** Export parity diff fails.
 - **Fallback:** Adjust the export format to match bd's exactly.
 
 ### 16.10 R-FK-CASCADE-SURPRISES
@@ -2691,11 +2745,11 @@ A new fixture directory `pkg/dispatcher/testdata/beads/` holds JSONL fixtures we
 - **Severity:** Medium — if Phase 8 or Phase 9 fail mid-flight, operators are between two recovery doctrines: the dolt ladder no longer applies because the migration is half-done, and a SQLite-recovery ladder hasn't been written yet.
 - **Likelihood:** Low (each phase has explicit gates) but consequences are confusion at the worst time.
 - **Mitigation:** Phase 0 deliverable adds `docs/runbooks/beadstore-recovery.md` with these scenarios:
-  1. **Migration aborted mid-import** (transaction rolled back; SQLite is empty or pre-migration state). Recovery: re-run migration; SQLite is idempotent.
-  2. **Reconcile produced corrupt SQLite.** Recovery: restore from `~/.oro/migrations/<ts>-pre-reconcile.jsonl` backup; rerun reconcile after fix.
-  3. **Cutover flipped to sqlite, then a critical bug found.** Recovery: `ORO_BEADSOURCE_MODE=cli`; restart dispatcher; reconcile bd from a fresh `oro bead export`. Documented step-by-step in §17.
+  1. **Migration aborted mid-import.** Recovery: treat any non-zero migration error count as a possible partial SQLite import, because row-level insert failures can be collected while other rows commit. Preserve the failed `state.db` and command transcript, then restore a known-good pre-migration `state.db` SQLite backup snapshot or move the failed DB aside before retrying the full gate sequence.
+  2. **Reconcile produced corrupt SQLite.** Recovery: preserve `OroHome/migrations/<ts>-pre-reconcile-sqlite.jsonl` for audit/recovery tooling, restore `state.db` from an operator-taken SQLite backup snapshot, then rerun reconcile after fix. `oro bead import` is still a stub and `migrate-from-dolt --from-jsonl` is not an in-place SQLite restore command.
+  3. **Cutover flipped to sqlite, then a critical bug found.** Recovery: stop dispatcher and workers; export SQLite with `oro bead export`; run `bd import --dry-run` and `bd import` so bd has SQLite-side writes; only then set `ORO_BEADSOURCE_MODE=cli` and restart dispatcher and workers. Documented step-by-step in §17.
   4. **Both stores diverge inexplicably during shadow window.** Recovery: stop dispatcher, re-run migration from a fresh `bd export`, reset `ORO_BEADSOURCE_MODE=shadow`, restart.
-  5. **Dolt destroyed during shadow window** (e.g., another operator runs `bd init --force`). Recovery: SQLite has the read-side state; promote via `--reconcile --from-sqlite-only` (a new flag added for this case); skip the bd-side reconcile.
+  5. **Dolt destroyed during shadow window** (e.g., another operator runs `bd init --force`). Recovery: SQLite contains only the imported read-side state from the start of shadow and may be stale. There is no SQLite-only reconcile promotion path. Stop the dispatcher, restore dolt from its own recovery path or choose an operator-reviewed JSONL snapshot, then rerun the matching dry-run gate before any apply (`./oro bead migrate-from-dolt --dry-run --from-jsonl <path>` for JSONL fallback). Apply JSONL fallback only against a clean target DB.
 - The dolt ladder entries in `MEMORY.md` stay through Phase 10. Only at Phase 10 do we mark them "superseded by docs/runbooks/beadstore-recovery.md" — and only if the new runbook has been exercised in at least one drill.
 - **Detection:** any operator question of the form "what do I do when X" should map to a runbook entry.
 - **Fallback:** if a scenario isn't in the runbook, document it as soon as it's resolved and add to the runbook.
@@ -2726,7 +2780,7 @@ Phased reversibility:
 |---|---|---|
 | Phases 1–7 (code shipped, mode `cli`) | Revert code; bd remains authoritative the whole time | Engineering time |
 | Phase 8 (migration done, mode `shadow`) | Set `ORO_BEADSOURCE_MODE=cli`; restart dispatcher | <5 min |
-| Phase 9 (mode `sqlite` for ≤7 days) | Set `ORO_BEADSOURCE_MODE=cli`; reconcile bd from SQLite via `bd import` from a fresh `oro bead export`; restart dispatcher | <30 min |
+| Phase 9 (mode `sqlite` for ≤7 days) | Stop dispatcher and workers; export SQLite with `oro bead export`; run `bd import --dry-run` and `bd import` so bd has SQLite-side writes; set `ORO_BEADSOURCE_MODE=cli`; restart dispatcher and workers | <30 min |
 | Phase 10 (cleanup deletions merged) | Revert deletion commit; reinstall bd; reconcile data | Hours-to-day depending on data drift |
 
 The key principle: **don't do Phase 10 until Phase 9 has been stable for 30 days.** Reversibility is more valuable than tidiness.
@@ -3169,10 +3223,10 @@ oro bead note add <bead-id> '...'
 oro bead note list <bead-id>
 oro bead search <query>                     # FTS5 over title/description/AC
 oro bead export [--out=path] [--format=jsonl|json]
-oro bead import <path> [--on-conflict=skip|overwrite|merge]
+oro bead import <path>                     # planned; current shipped command is a stub
 oro bead doctor
 oro bead status                             # open / in_progress / closed counts
-oro bead migrate-from-dolt [--dry-run] [--reconcile]
+oro bead migrate-from-dolt [--dry-run] [--reconcile] [--apply] [--from-jsonl <path>] [--from-fixture <path>] [--ignore-version-drift] [--allow-running-dispatcher] [--force-recover]
 ```
 
 ---
