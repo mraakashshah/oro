@@ -383,9 +383,13 @@ func defaultWorkerCounts(initial, ceiling int) (initialOut, ceilingOut int) {
 	return initial, ceiling
 }
 
+func shouldDefaultWorkerCounts(c Config) bool {
+	return !c.AllowZeroWorkers || c.InitialWorkers != 0 || c.MaxWorkers != 0
+}
+
 func (c *Config) withDefaults() Config {
 	out := *c
-	if !out.AllowZeroWorkers || out.InitialWorkers != 0 || out.MaxWorkers != 0 {
+	if shouldDefaultWorkerCounts(out) {
 		out.InitialWorkers, out.MaxWorkers = defaultWorkerCounts(out.InitialWorkers, out.MaxWorkers)
 	}
 	if out.HeartbeatTimeout == 0 {
