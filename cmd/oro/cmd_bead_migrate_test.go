@@ -118,6 +118,51 @@ func TestMigrate100BeadFixture(t *testing.T) {
 	}
 }
 
+func TestMigrateFromDoltOldSchemaAllowsLaterAndDanglingDependencyTargets(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	seedOldBeadSchemaForMigration(t, dbPath)
+	jsonlPath := writeMigrationJSONL(t, strings.Join([]string{
+		`{"id":"oro-child","title":"Child","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","dependencies":[{"depends_on_id":"oro-parent","type":"blocks"},{"depends_on_id":"oro-missing","type":"blocks"}]}`,
+		`{"id":"oro-parent","title":"Parent","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`,
+		"",
+	}, "\n"))
+
+	out := runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", jsonlPath)
+	for _, want := range []string{
+		"Migration complete",
+		"source rows: 2",
+		"imported rows: 2",
+		"verification: OK (sqlite rows: 2)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("old-schema migration output missing %q:\n%s", want, out)
+		}
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	defer db.Close()
+	var beadCount, depCount, fkViolations int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE deleted=0`).Scan(&beadCount); err != nil {
+		t.Fatalf("count migrated beads: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM bead_deps`).Scan(&depCount); err != nil {
+		t.Fatalf("count migrated dependencies: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&fkViolations); err != nil {
+		t.Fatalf("count foreign key violations: %v", err)
+	}
+	if beadCount != 2 || depCount != 2 || fkViolations != 1 {
+		t.Fatalf("migrated counts beads/deps/fk = %d/%d/%d, want 2/2/1", beadCount, depCount, fkViolations)
+	}
+}
+
 func TestMigrateUpdatedAtVerbatim(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "state.db")
 	t.Setenv("ORO_DB_PATH", dbPath)
@@ -1793,6 +1838,48 @@ func writeMigrationJSONL(t *testing.T, contents string) string {
 		t.Fatalf("write jsonl: %v", err)
 	}
 	return path
+}
+
+func seedOldBeadSchemaForMigration(t *testing.T, dbPath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open old schema db: %v", err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`
+CREATE TABLE beads (
+    id                    TEXT PRIMARY KEY,
+    title                 TEXT NOT NULL,
+    description           TEXT NOT NULL DEFAULT '',
+    acceptance_criteria   TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL CHECK (status IN ('open','in_progress','closed')),
+    priority              INTEGER NOT NULL DEFAULT 2,
+    type                  TEXT NOT NULL DEFAULT 'task',
+    parent_id             TEXT REFERENCES beads(id),
+    owner                 TEXT,
+    estimated_minutes     INTEGER,
+    tier                  TEXT,
+    model                 TEXT,
+    deferred_until        TEXT,
+    close_reason          TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    closed_at             TEXT,
+    deleted               INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE bead_deps (
+    bead_id       TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    depends_on_id TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    type          TEXT NOT NULL DEFAULT 'blocks',
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    created_by    TEXT,
+    PRIMARY KEY (bead_id, depends_on_id, type)
+);
+`)
+	if err != nil {
+		t.Fatalf("seed old bead schema: %v", err)
+	}
 }
 
 func migrationOutputValue(t *testing.T, out, prefix string) string {
