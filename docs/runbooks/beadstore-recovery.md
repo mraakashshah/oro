@@ -125,6 +125,8 @@ old_dispatcher_pid=$(cat "$pid_path" 2>/dev/null || true)
 worker_count=<operator-selected restarted worker count>
 test -n "$worker_count"
 ORO_HUMAN_CONFIRMED=1 ./oro stop --force
+bd dolt start
+bd dolt status
 ORO_BEADSOURCE_MODE=shadow ./oro dispatcher start --workers "$worker_count"
 
 test -r "$pid_path"
@@ -132,6 +134,11 @@ dispatcher_pid=$(cat "$pid_path")
 test -z "$old_dispatcher_pid" || test "$dispatcher_pid" != "$old_dispatcher_pid"
 ps eww -p "$dispatcher_pid" | rg 'ORO_BEADSOURCE_MODE=shadow'
 ```
+
+`./oro stop --force` can stop or flush the Dolt server that bd uses as the
+shadow-mode primary. Restart and verify bd's Dolt server before starting the
+shadow dispatcher, especially for a manual monitor start with `--workers 0`.
+If `bd dolt status` does not show a reachable server, do not start shadow mode.
 
 Every restarted worker subprocess must no longer have `bd` on `PATH`, and a controlled test bead per restarted worker must prove workers emit native `oro bead` commands rather than `bd` commands before normal work resumes. Worker logs are append-only, so record each worker log byte offset before assigning the controlled bead and inspect only the new log segment:
 

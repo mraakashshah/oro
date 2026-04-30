@@ -23,15 +23,17 @@ type dispatcherFakeSpawner struct {
 	called     bool
 	pidPath    string
 	workers    int
+	maxWorkers int
 	returnPID  int
 	returnErr  error
 	socketPath string // if set, create a UDS listener after "spawn"
 }
 
-func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers, _ int) (int, error) {
+func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers, maxWorkers int) (int, error) {
 	f.called = true
 	f.pidPath = pidPath
 	f.workers = workers
+	f.maxWorkers = maxWorkers
 	if f.returnErr != nil {
 		return 0, f.returnErr
 	}
@@ -102,9 +104,12 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 			t.Fatal("expected SpawnDaemon to be called")
 		}
 
-		// 2. workers=0 (manual worker mode, no auto-scaling).
+		// 2. workers=0 and maxWorkers=0 (manual worker mode, no auto-scaling).
 		if spawner.workers != 0 {
 			t.Errorf("expected workers=0, got %d", spawner.workers)
+		}
+		if spawner.maxWorkers != 0 {
+			t.Errorf("expected maxWorkers=0, got %d", spawner.maxWorkers)
 		}
 
 		// 3. Output must contain PID.

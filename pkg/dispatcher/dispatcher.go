@@ -334,6 +334,7 @@ type Config struct {
 	BeadsDir              string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
 	MaxWorkers            int           // Worker pool ceiling for auto-scale (default 10).
 	InitialWorkers        int           // Initial targetWorkers on startup (default: MaxWorkers).
+	AllowZeroWorkers      bool          // Preserve InitialWorkers=0 and MaxWorkers=0 for explicit manual-worker mode.
 	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
 	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
 	PollInterval          time.Duration // oro bead ready poll interval (default 10s).
@@ -384,7 +385,9 @@ func defaultWorkerCounts(initial, ceiling int) (initialOut, ceilingOut int) {
 
 func (c *Config) withDefaults() Config {
 	out := *c
-	out.InitialWorkers, out.MaxWorkers = defaultWorkerCounts(out.InitialWorkers, out.MaxWorkers)
+	if !out.AllowZeroWorkers || out.InitialWorkers != 0 || out.MaxWorkers != 0 {
+		out.InitialWorkers, out.MaxWorkers = defaultWorkerCounts(out.InitialWorkers, out.MaxWorkers)
+	}
 	if out.HeartbeatTimeout == 0 {
 		out.HeartbeatTimeout = 45 * time.Second
 	}

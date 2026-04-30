@@ -2457,6 +2457,17 @@ func TestConfigInitialWorkersFallback(t *testing.T) {
 			t.Errorf("InitialWorkers: got %d, want 3 (should preserve explicit value)", resolved.InitialWorkers)
 		}
 	})
+
+	t.Run("explicit manual worker mode preserves zero target and ceiling", func(t *testing.T) {
+		cfg := Config{AllowZeroWorkers: true}
+		resolved := cfg.withDefaults()
+		if resolved.InitialWorkers != 0 {
+			t.Errorf("InitialWorkers: got %d, want 0", resolved.InitialWorkers)
+		}
+		if resolved.MaxWorkers != 0 {
+			t.Errorf("MaxWorkers: got %d, want 0", resolved.MaxWorkers)
+		}
+	})
 }
 
 func TestNew_TargetWorkersUsesInitialWorkers(t *testing.T) {

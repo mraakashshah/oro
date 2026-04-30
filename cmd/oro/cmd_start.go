@@ -773,18 +773,19 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	opsSpawner := ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, opsReviewTimeout)
 
 	cfg := dispatcher.Config{
-		SocketPath:      sockPath,
-		InitialWorkers:  initialWorkers,
-		MaxWorkers:      maxWorkers,
-		DBPath:          dbPath,
-		RepoRoot:        repoRoot,
-		ProgressTimeout: progressTimeout,
-		ReviewTimeout:   reviewStallTimeout,
-		WorkerProgram:   resolveWorkerProgramPath(repoRoot),
-		DefaultBranch:   baseBranch,
-		DreamInterval:   10,
-		WebEnabled:      webEnabled,
-		WebAddr:         webAddr,
+		SocketPath:       sockPath,
+		InitialWorkers:   initialWorkers,
+		MaxWorkers:       maxWorkers,
+		AllowZeroWorkers: initialWorkers == 0 && maxWorkers == 0,
+		DBPath:           dbPath,
+		RepoRoot:         repoRoot,
+		ProgressTimeout:  progressTimeout,
+		ReviewTimeout:    reviewStallTimeout,
+		WorkerProgram:    resolveWorkerProgramPath(repoRoot),
+		DefaultBranch:    baseBranch,
+		DreamInterval:    10,
+		WebEnabled:       webEnabled,
+		WebAddr:          webAddr,
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)

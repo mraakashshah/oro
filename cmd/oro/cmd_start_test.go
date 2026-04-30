@@ -666,6 +666,32 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		}
 	})
 
+	t.Run("dispatcher manual worker mode preserves zero target and ceiling", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		d, db, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, "", false, "")
+		if err != nil {
+			t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		cfg := d.GetConfig()
+		if cfg.InitialWorkers != 0 {
+			t.Errorf("InitialWorkers: got %d, want 0", cfg.InitialWorkers)
+		}
+		if cfg.MaxWorkers != 0 {
+			t.Errorf("MaxWorkers: got %d, want 0", cfg.MaxWorkers)
+		}
+		if got := d.TargetWorkers(); got != 0 {
+			t.Errorf("TargetWorkers: got %d, want 0", got)
+		}
+	})
+
 	t.Run("help describes separate review timeout domains", func(t *testing.T) {
 		cmd := newStartCmd()
 		var out bytes.Buffer
