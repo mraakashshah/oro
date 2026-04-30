@@ -63,3 +63,25 @@ PATH="$cutover_path" ORO_DB_PATH="$state_db" ORO_BEADSOURCE_MODE=sqlite "$oro_bi
   dispatcher PID `88728` inherited `ORO_BEADSOURCE_MODE=sqlite`, and its `PATH`
   exactly matched the generated stripped path. The dispatcher was then stopped
   with `dispatcher stop --force`. No live worker was spawned by this smoke.
+- Main integration proof for blocker `oro-nqih.1`: commit `0c89975d` passed
+  focused main tests and a disposable stripped-`PATH` smoke using
+  `/tmp/oro-main-nqih1`. The smoke started sqlite dispatcher workers=0,
+  verified socket readiness, `ORO_BEADSOURCE_MODE=sqlite`, exact stripped
+  dispatcher `PATH`, `bd` absent from `PATH`, and clean dispatcher stop.
+- Live P8-4 retry after `oro-nqih.1` closure: gates passed with
+  `active_writer_count=0`, dispatcher count `0`, native invariants clean,
+  SQLite `integrity_check=ok`, `ORO_BEADSOURCE_MODE` empty, and native ready
+  length `0` before restart. Built reviewed binary `/tmp/oro-native-cutover`.
+  Started dispatcher PID `74998` from stripped path
+  `/tmp/oro-sqlite-cutover-bin.mfqtTh:/usr/bin:/bin:/usr/sbin:/sbin` with
+  `ORO_BEADSOURCE_MODE=sqlite`, `--force`, and `--workers 1`; dispatcher env
+  mode and path matched expectations.
+- Worker proof blocked: worker `sqlite-smoke-20260430T2055` PID `77112`
+  inherited the exact stripped path and log offset `0`, but remained idle.
+  Controlled native bead `native-worker-smoke-20260430T2056` was created and
+  stayed open/ready. Targeted `worker launch --bead` spawned
+  `worker-spawnfor-1777582706091359000`, which heartbeated, but no `assign`
+  event appeared after more than one assign interval. Dispatcher/workers were
+  stopped, the smoke bead was closed manually for cleanup, and
+  `scripts/check-phase8-no-writers.py` returned `active_writer_count=0`.
+  New blocker: `oro-ect4.6`.
