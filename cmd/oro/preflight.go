@@ -17,8 +17,10 @@ import (
 // and that the git repository is in a good state for oro to operate.
 // Returns an error with an actionable message if any check fails.
 func runPreflightChecks() error {
-	requiredTools := []string{"tmux", "claude", "bd", "git"}
+	return runPreflightChecksForTools("tmux", "claude", "bd", "git")
+}
 
+func runPreflightChecksForTools(requiredTools ...string) error {
 	for _, tool := range requiredTools {
 		if _, err := exec.LookPath(tool); err != nil {
 			return fmt.Errorf("required tool '%s' not found in PATH — run 'oro init' to bootstrap all dependencies", tool)
@@ -36,6 +38,10 @@ func runPreflightChecks() error {
 	}
 
 	return nil
+}
+
+func runSQLiteDaemonPreflightChecks() error {
+	return runPreflightChecksForTools("claude", "git")
 }
 
 // ensureSearchHook builds the oro-search-hook binary if it is missing or stale

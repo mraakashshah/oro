@@ -20,13 +20,14 @@ import (
 
 // dispatcherFakeSpawner records SpawnDaemon calls for dispatcher tests.
 type dispatcherFakeSpawner struct {
-	called     bool
-	pidPath    string
-	workers    int
-	maxWorkers int
-	returnPID  int
-	returnErr  error
-	socketPath string // if set, create a UDS listener after "spawn"
+	called              bool
+	pidPath             string
+	workers             int
+	maxWorkers          int
+	returnPID           int
+	returnErr           error
+	socketPath          string // if set, create a UDS listener after "spawn"
+	daemonSkipPreflight string
 }
 
 func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers, maxWorkers int) (int, error) {
@@ -34,6 +35,7 @@ func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers, maxWorkers 
 	f.pidPath = pidPath
 	f.workers = workers
 	f.maxWorkers = maxWorkers
+	f.daemonSkipPreflight = os.Getenv(daemonSkipPreflightEnv)
 	if f.returnErr != nil {
 		return 0, f.returnErr
 	}
@@ -253,6 +255,87 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 			t.Errorf("expected error to mention socket, got: %v", err)
 		}
 	})
+}
+
+func TestWithDaemonPreflightBypass(t *testing.T) {
+	t.Run("sets env only while enabled", func(t *testing.T) {
+		t.Setenv(daemonSkipPreflightEnv, "")
+		if err := os.Unsetenv(daemonSkipPreflightEnv); err != nil {
+			t.Fatalf("unset env: %v", err)
+		}
+
+		err := withDaemonPreflightBypass(true, func() error {
+			if got := os.Getenv(daemonSkipPreflightEnv); got != "1" {
+				t.Fatalf("%s = %q, want 1", daemonSkipPreflightEnv, got)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("withDaemonPreflightBypass: %v", err)
+		}
+		if _, ok := os.LookupEnv(daemonSkipPreflightEnv); ok {
+			t.Fatalf("%s leaked after callback", daemonSkipPreflightEnv)
+		}
+	})
+
+	t.Run("does not set env while disabled", func(t *testing.T) {
+		if err := os.Unsetenv(daemonSkipPreflightEnv); err != nil {
+			t.Fatalf("unset env: %v", err)
+		}
+		err := withDaemonPreflightBypass(false, func() error {
+			if _, ok := os.LookupEnv(daemonSkipPreflightEnv); ok {
+				t.Fatalf("%s unexpectedly set", daemonSkipPreflightEnv)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("withDaemonPreflightBypass: %v", err)
+		}
+	})
+}
+
+func TestDispatcherStartForcePropagatesDaemonPreflightBypass(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	sockPath := fmt.Sprintf("/tmp/oro-dsf-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	dbPath := filepath.Join(tmpDir, "state.db")
+
+	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+	t.Setenv("PATH", tmpDir)
+
+	spawner := &dispatcherFakeSpawner{
+		returnPID:  12345,
+		socketPath: sockPath,
+	}
+	previousFactory := newDispatcherDaemonSpawner
+	newDispatcherDaemonSpawner = func() DaemonSpawner { return spawner }
+	t.Cleanup(func() { newDispatcherDaemonSpawner = previousFactory })
+
+	cmd := newDispatcherCmd()
+	cmd.SetArgs([]string{"start", "--force", "--workers", "0"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dispatcher start --force: %v", err)
+	}
+	if !spawner.called {
+		t.Fatal("expected daemon spawner to be called")
+	}
+	if spawner.daemonSkipPreflight != "1" {
+		t.Fatalf("%s seen by spawner = %q, want 1", daemonSkipPreflightEnv, spawner.daemonSkipPreflight)
+	}
+	if _, ok := os.LookupEnv(daemonSkipPreflightEnv); ok {
+		t.Fatalf("%s leaked after command", daemonSkipPreflightEnv)
+	}
+	if !strings.Contains(stdout.String(), "dispatcher started") {
+		t.Fatalf("expected start output, got %q", stdout.String())
+	}
 }
 
 // TestDispatcherCmdStructure verifies the cobra command hierarchy.

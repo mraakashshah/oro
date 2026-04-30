@@ -203,8 +203,9 @@ export ORO_BEADSOURCE_MODE=sqlite
 printf 'ORO_BEADSOURCE_MODE=%s\n' "$ORO_BEADSOURCE_MODE"
 ```
 
-Restart dispatcher and workers from this environment. Every restarted worker
-must have `bd` absent from `PATH` and `oro` present.
+Restart dispatcher and workers from this environment. Workers inherit the
+dispatcher daemon environment, so start the dispatcher from a deliberately
+stripped `PATH` that resolves `oro` but not `bd`.
 
 ```bash
 state_dir=$(dirname "$state_db")
@@ -212,13 +213,31 @@ pid_path=${ORO_PID_PATH:-"$state_dir/oro.pid"}
 old_dispatcher_pid=$(cat "$pid_path" 2>/dev/null || true)
 worker_count=<operator-selected restarted worker count>
 test -n "$worker_count"
+
+oro_bin=<absolute reviewed oro binary path outside the repo worktree>
+test -x "$oro_bin"
+cutover_bin_dir=$(mktemp -d /tmp/oro-sqlite-cutover-bin.XXXXXX)
+ln -s "$oro_bin" "$cutover_bin_dir/oro"
+ln -s "$(command -v claude)" "$cutover_bin_dir/claude"
+for tool in go jq rg node; do
+  tool_path=$(command -v "$tool" || true)
+  if test -n "$tool_path"; then ln -s "$tool_path" "$cutover_bin_dir/$tool"; fi
+done
+cutover_path="$cutover_bin_dir:/usr/bin:/bin:/usr/sbin:/sbin"
+PATH="$cutover_path" command -v oro
+PATH="$cutover_path" command -v claude
+PATH="$cutover_path" command -v git
+! PATH="$cutover_path" command -v bd
+
 ORO_HUMAN_CONFIRMED=1 ./oro stop --force
-ORO_BEADSOURCE_MODE=sqlite ./oro dispatcher start --workers "$worker_count"
+PATH="$cutover_path" ORO_BEADSOURCE_MODE=sqlite "$oro_bin" dispatcher start --force --workers "$worker_count"
 
 test -r "$pid_path"
 dispatcher_pid=$(cat "$pid_path")
 test -z "$old_dispatcher_pid" || test "$dispatcher_pid" != "$old_dispatcher_pid"
 ps eww -p "$dispatcher_pid" | rg 'ORO_BEADSOURCE_MODE=sqlite'
+dispatcher_path=$(ps eww -p "$dispatcher_pid" | tr ' ' '\n' | awk -F= '$1=="PATH" { print substr($0, 6); exit }')
+test "$dispatcher_path" = "$cutover_path"
 ```
 
 For each restarted worker, record PID, PATH check output, log path, and a

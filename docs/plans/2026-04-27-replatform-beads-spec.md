@@ -1656,9 +1656,11 @@ This is the critical section. The full sequence:
      `show`, controlled create/close smoke bead, and SQLite integrity checks.
    - Set `ORO_BEADSOURCE_MODE=sqlite`.
    - Restart the dispatcher and every worker from that environment with the
-     executable runbook sequence: record the old PID from `oro.pid`, run
-     `ORO_HUMAN_CONFIRMED=1 ./oro stop --force`, then run
-     `ORO_BEADSOURCE_MODE=sqlite ./oro dispatcher start --workers <count>`.
+     executable runbook sequence: record the old PID from `oro.pid`, build a
+     stripped `PATH` that resolves the reviewed `oro` binary, `claude`, and
+     `git` but not `bd`, run `ORO_HUMAN_CONFIRMED=1 ./oro stop --force`, then
+     run `PATH="$cutover_path" ORO_BEADSOURCE_MODE=sqlite "$oro_bin"
+     dispatcher start --force --workers <count>`.
    - Verify the restarted dispatcher inherited `ORO_BEADSOURCE_MODE=sqlite`.
    - Verify worker subprocesses have `bd` stripped from `PATH`, still have `oro`
      available, and that each controlled test bead assigned after recording the
@@ -2302,7 +2304,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 **Deliverables (in order):**
 
 - **bd-version pin check:** run `scripts/check-bd-version.sh` and confirm `bd --version` matches the version recorded in Phase 0. **Comparison strategy (v7):** parse the version string as `vMAJOR.MINOR.PATCH[-prerelease][+build]` per SemVer 2.0; compare on `MAJOR.MINOR` only. Build metadata (commit hash, "-dirty" suffix) and patch level are ignored — they're irrelevant for the JSON-output contract this migration relies on. If `MAJOR.MINOR` drifted, abort with: `bd version drifted from <pinned major.minor> to <current major.minor>; reinstall pinned version or restart from Phase 0`. `--ignore-version-drift` appears in `migrate-from-dolt --help` but is not implemented for initial migration. The only approved waiver path is `scripts/check-bd-version.sh --ignore-version-drift`, with the waiver recorded in the operator log. This addresses v3 risk R-BD-VERSION (§16) and v4/v6 review notes.
-- **(v16 explicit per codex round 7) Worker-restart + bd-PATH-strip:** after migration succeeds, native validation passes, and `ORO_BEADSOURCE_MODE=sqlite` is set, **the operator restarts every worker** before resuming traffic. The dispatcher's worker-spawn config is updated at this point to strip `bd` from worker `PATH` (the dispatcher itself retains bd on its own PATH for migration audit/recovery tooling until Phase 10; only worker subprocesses lose it). v15's no-shim cutover only works if both these steps happen at Phase 8; without them, in-flight workers would still emit `bd …` and silently fail on `command not found`. This is a hard Phase 8 deliverable, not a runbook footnote.
+- **(v16 explicit per codex round 7) Worker-restart + bd-PATH-strip:** after migration succeeds, native validation passes, and `ORO_BEADSOURCE_MODE=sqlite` is set, **the operator restarts every worker** before resuming traffic. Workers inherit the dispatcher daemon environment, so the Phase 8 restart starts the dispatcher itself from a generated `PATH` that resolves the reviewed `oro` binary, `claude`, and `git` but not `bd`, using the executable sequence in `docs/runbooks/beadstore-native-cutover.md`. v15's no-shim cutover only works if both these steps happen at Phase 8; without them, in-flight workers would still emit `bd …` and silently fail on `command not found`. This is a hard Phase 8 deliverable, not a runbook footnote.
 - **Single-dispatcher invariant:** confirm only one dispatcher is running (no stale PID lock, no orphan dispatcher process).
 - **No concurrent bead writers:** confirm no workers, direct `bd` processes, direct native `oro bead` mutator processes, or other migration commands are running before dry-run, apply, native validation, or restart. The gate intentionally treats read-only `bd` commands as stop-the-world conflicts so it cannot miss newly added bd mutators. Keep them stopped until the sqlite-mode cutover restart.
 - **Real-data dry-run gate:** run `./oro bead migrate-from-dolt --dry-run` and require success without `--force-recover`. The 2026-04-29 audit failure (`bd export count: 1718`; `dolt internal count error: ... no database selected`; `Aborting.`) was fixed on 2026-04-30 by selecting the configured Dolt database and counting `issues`; rerun the gate on migration day and treat any fresh failure as blocking.
@@ -2311,7 +2313,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 - Validate native SQLite directly with `ORO_BEADSOURCE_MODE=sqlite` against
   `ready`, `blocked`, `show`, and a controlled create/close smoke bead.
 - Set `ORO_BEADSOURCE_MODE=sqlite`.
-- Restart dispatcher with `ORO_HUMAN_CONFIRMED=1 ./oro stop --force` followed by `ORO_BEADSOURCE_MODE=sqlite ./oro dispatcher start --workers <count>`.
+- Restart dispatcher with `ORO_HUMAN_CONFIRMED=1 ./oro stop --force` followed by the stripped-`PATH` `dispatcher start --force --workers <count>` sequence in `docs/runbooks/beadstore-native-cutover.md`.
 - Treat bd/Dolt as import source, audit trail, and rollback reference. bd parity
   does not veto cutover when divergence is caused by bd/Dolt failure, stale bd
   state, or bd unavailability.

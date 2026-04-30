@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -160,6 +161,67 @@ func TestCleanEnvForDaemon(t *testing.T) {
 			t.Errorf("expected 2 env vars, got %d", len(cleaned))
 		}
 	})
+}
+
+func TestStartPreflightAndCheckRunning_DaemonOnlyBypass(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	toolsDir := filepath.Join(tmpDir, "tools")
+	if err := os.Mkdir(toolsDir, 0o755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	for _, tool := range []string{"claude", "git"} {
+		path := filepath.Join(toolsDir, tool)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("write tool %s: %v", tool, err)
+		}
+	}
+
+	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+	t.Setenv("PATH", toolsDir)
+	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+	t.Setenv(daemonSkipPreflightEnv, "1")
+
+	got, err := startPreflightAndCheckRunning(io.Discard, true)
+	if err != nil {
+		t.Fatalf("startPreflightAndCheckRunning: %v", err)
+	}
+	if got != pidFile {
+		t.Fatalf("pid path = %q, want %q", got, pidFile)
+	}
+}
+
+func TestStartPreflightAndCheckRunning_NonDaemonDoesNotBypass(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	t.Setenv("PATH", tmpDir)
+	t.Setenv(daemonSkipPreflightEnv, "1")
+
+	_, err := startPreflightAndCheckRunning(io.Discard, false)
+	if err == nil {
+		t.Fatal("expected non-daemon start to run preflight")
+	}
+	if !strings.Contains(err.Error(), "required tool") {
+		t.Fatalf("expected required tool error, got %v", err)
+	}
+}
+
+func TestStartPreflightAndCheckRunning_DaemonBypassRequiresSQLiteMode(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	t.Setenv("PATH", tmpDir)
+	t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+	t.Setenv(daemonSkipPreflightEnv, "1")
+
+	_, err := startPreflightAndCheckRunning(io.Discard, true)
+	if err == nil {
+		t.Fatal("expected daemon bypass to require sqlite mode")
+	}
+	if !strings.Contains(err.Error(), "required tool") {
+		t.Fatalf("expected required tool error, got %v", err)
+	}
 }
 
 func TestBootstrapOroDir_CreatesWithCorrectPerms(t *testing.T) {

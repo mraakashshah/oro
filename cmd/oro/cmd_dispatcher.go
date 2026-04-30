@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var newDispatcherDaemonSpawner = func() DaemonSpawner { return &ExecDaemonSpawner{} } //nolint:gochecknoglobals // test seam for dispatcher start wiring
+
 // newDispatcherCmd creates the "oro dispatcher" subcommand group.
 func newDispatcherCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -144,7 +146,9 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 				}
 			}
 
-			return runDispatcherStart(w, workers, &ExecDaemonSpawner{}, socketPollTimeout)
+			return withDaemonPreflightBypass(force, func() error {
+				return runDispatcherStart(w, workers, newDispatcherDaemonSpawner(), socketPollTimeout)
+			})
 		},
 	}
 

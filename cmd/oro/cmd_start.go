@@ -182,6 +182,32 @@ const socketPollTimeout = 15 * time.Second
 // socketPollInterval is how often to check for the socket file.
 const socketPollInterval = 50 * time.Millisecond
 
+const daemonSkipPreflightEnv = "ORO_DAEMON_SKIP_PREFLIGHT"
+
+func withDaemonPreflightBypass(enabled bool, fn func() error) error {
+	if !enabled {
+		return fn()
+	}
+	previous, hadPrevious := os.LookupEnv(daemonSkipPreflightEnv)
+	if err := os.Setenv(daemonSkipPreflightEnv, "1"); err != nil {
+		return fmt.Errorf("set %s: %w", daemonSkipPreflightEnv, err)
+	}
+	defer func() {
+		if hadPrevious {
+			_ = os.Setenv(daemonSkipPreflightEnv, previous)
+			return
+		}
+		_ = os.Unsetenv(daemonSkipPreflightEnv)
+	}()
+	return fn()
+}
+
+func shouldSkipDaemonPreflight(daemonOnly bool) bool {
+	return daemonOnly &&
+		os.Getenv(daemonSkipPreflightEnv) == "1" &&
+		strings.EqualFold(strings.TrimSpace(os.Getenv("ORO_BEADSOURCE_MODE")), "sqlite")
+}
+
 // isDetached returns true when oro start should skip interactive attach.
 // This happens when the --detach flag is set or stdin is not a terminal.
 func isDetached(flag bool) bool {
@@ -311,11 +337,15 @@ func attachOrDetach(w io.Writer, sess *TmuxSession, detach bool) error {
 // and checks if the daemon is already running. Returns the pidPath on success,
 // or "" if the daemon is already running (caller should return nil).
 func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
+	return preflightAndCheckRunningWith(w, runPreflightChecks)
+}
+
+func preflightAndCheckRunningWith(w io.Writer, preflight func() error) (pidPath string, err error) {
 	// Clear CLAUDECODE early — it leaks from Claude Code's Bash tool
 	// and blocks nested claude sessions in tmux panes and workers.
 	os.Unsetenv("CLAUDECODE")
 
-	if err := runPreflightChecks(); err != nil {
+	if err := preflight(); err != nil {
 		return "", fmt.Errorf("preflight checks failed: %w", err)
 	}
 
@@ -378,6 +408,13 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 	}
 
 	return pidPath, nil
+}
+
+func startPreflightAndCheckRunning(w io.Writer, daemonOnly bool) (pidPath string, err error) {
+	if shouldSkipDaemonPreflight(daemonOnly) {
+		return preflightAndCheckRunningWith(w, runSQLiteDaemonPreflightChecks)
+	}
+	return preflightAndCheckRunning(w)
 }
 
 // reconnectTmux ensures the tmux session is healthy when the daemon is already
@@ -451,7 +488,7 @@ func newStartCmd() *cobra.Command {
 			if maxWorkers == 0 {
 				maxWorkers = workers
 			}
-			pidPath, err := preflightAndCheckRunning(cmd.OutOrStdout())
+			pidPath, err := startPreflightAndCheckRunning(cmd.OutOrStdout(), daemonOnly)
 			if err != nil {
 				return err
 			}
