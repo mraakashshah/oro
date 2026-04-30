@@ -452,6 +452,10 @@ func ensureBeadStatusAllowsBlocked(ctx context.Context, db *sql.DB) (bool, error
 		return false, nil
 	}
 
+	foreignKeysEnabled, err := sqliteForeignKeysEnabled(ctx, conn)
+	if err != nil {
+		return false, fmt.Errorf("inspect foreign_keys pragma: %w", err)
+	}
 	fkViolationsBefore, err := countSQLiteForeignKeyViolations(ctx, conn)
 	if err != nil {
 		return false, fmt.Errorf("count foreign keys before beads rebuild: %w", err)
@@ -459,7 +463,7 @@ func ensureBeadStatusAllowsBlocked(ctx context.Context, db *sql.DB) (bool, error
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
 		return false, fmt.Errorf("disable foreign keys: %w", err)
 	}
-	defer func() { _, _ = conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`) }()
+	defer func() { _ = restoreSQLiteForeignKeys(context.Background(), conn, foreignKeysEnabled) }()
 	if _, err := conn.ExecContext(ctx, `PRAGMA legacy_alter_table=ON`); err != nil {
 		return false, fmt.Errorf("enable legacy alter table: %w", err)
 	}
@@ -490,6 +494,23 @@ DROP TABLE beads_status_rebuild_old;
 		return false, fmt.Errorf("foreign key violations increased after beads rebuild: before=%d after=%d", fkViolationsBefore, fkViolationsAfter)
 	}
 	return true, nil
+}
+
+func sqliteForeignKeysEnabled(ctx context.Context, conn *sql.Conn) (bool, error) {
+	var enabled int
+	if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&enabled); err != nil {
+		return false, err
+	}
+	return enabled != 0, nil
+}
+
+func restoreSQLiteForeignKeys(ctx context.Context, conn *sql.Conn, enabled bool) error {
+	if enabled {
+		_, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`)
+		return err
+	}
+	_, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`)
+	return err
 }
 
 func dropBeadSchemaRebuildTriggers(ctx context.Context, conn *sql.Conn) error {

@@ -266,6 +266,13 @@ INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-child', 'oro-m
 	if _, err := db.ExecContext(ctx, `UPDATE beads SET status='blocked' WHERE id='oro-child'`); err != nil {
 		t.Fatalf("blocked status rejected after migration: %v", err)
 	}
+	var foreignKeys int
+	if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		t.Fatalf("foreign_keys pragma: %v", err)
+	}
+	if foreignKeys != 0 {
+		t.Fatalf("foreign_keys pragma = %d, want original default OFF after schema rebuild", foreignKeys)
+	}
 	var violationCount int
 	rows, err := db.QueryContext(ctx, `PRAGMA foreign_key_check`)
 	if err != nil {
