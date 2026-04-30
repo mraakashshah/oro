@@ -2,6 +2,14 @@
 
 This runbook is the operator source of truth for Phase 8 Dolt-to-SQLite beadstore migration safety. Do not run real migration from this repository until the full gate sequence below passes and the pre-migration SQLite backup snapshot is recorded.
 
+For the current native-first cutover decision, use
+`docs/runbooks/beadstore-native-cutover.md` as the migration-day command source
+of truth. bd/Dolt is now an import source, audit trail, and rollback reference;
+it is not a long-running authority that can veto cutover when divergence is due
+to bd/Dolt failure, stale bd state, or bd unavailability. The 24-hour shadow
+monitor gate below is retained as legacy recovery context, not as the current
+Phase 8 cutover gate.
+
 ## Current Dry-Run State
 
 The 2026-04-29 real-data dry-run blocker was:
@@ -174,7 +182,12 @@ for worker_id in $worker_ids; do
 done
 ```
 
-## 24h Shadow Monitor Gate
+## Legacy 24h Shadow Monitor Gate
+
+The current Phase 8 gate is the native validation gate in
+`docs/runbooks/beadstore-native-cutover.md`, not a 24-hour shadow soak. This
+legacy gate is useful only if an operator deliberately chooses to keep bd as the
+temporary primary for additional observation.
 
 Run this gate only after the dispatcher and workers have restarted in `ORO_BEADSOURCE_MODE=shadow`. Set `ORO_DB_PATH` to the same `state.db` path recorded before initial apply so `./oro events` and the SQLite shadow-start check read the same database:
 
