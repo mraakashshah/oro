@@ -30,9 +30,7 @@ dispatcher_matches=$(ps ax -o pid=,command= | rg '([o]ro start|[o]ro dispatcher 
 dispatcher_count=$(printf '%s\n' "$dispatcher_matches" | awk 'NF { n++ } END { print n + 0 }')
 printf 'dispatcher_count=%s\n' "$dispatcher_count"
 test "$dispatcher_count" = 0
-active_writer_re='([o]ro start|[o]ro dispatcher start|[o]ro (work|worker|worker-launch)|[o]ro (--json )?bead (--json )?(create|update|close|reopen|dep|deps|tag|defer|undefer|comment|note|meta|import|migrate-from-dolt)|[b]d( |$))'
-active_writers=$(ps ax -o pid=,command= | rg "$active_writer_re" || true)
-test -z "$active_writers" || { printf '%s\n' "$active_writers"; exit 1; }
+scripts/check-phase8-no-writers.py
 mode=${ORO_BEADSOURCE_MODE-}
 printf 'ORO_BEADSOURCE_MODE=%s\n' "$mode"
 case "$mode" in "" | cli) ;; *) echo "ORO_BEADSOURCE_MODE must be empty or cli before migration" >&2; exit 1 ;; esac
@@ -45,7 +43,7 @@ Expected results:
 - `scripts/check-bd-version.sh` passes. If a waiver is required, use `scripts/check-bd-version.sh --ignore-version-drift` and record the waiver in the operator log. Although `--ignore-version-drift` appears in `migrate-from-dolt --help`, it is not implemented for initial migration.
 - Run the gate block as one script, with `set -euo pipefail` active, so any failed `test` aborts before dry-run.
 - Dispatcher count is `0` across both `oro start` and `oro dispatcher start` invocation paths. Stop all dispatchers before migration.
-- Worker/writer process scan prints no lines. If any worker, any direct `bd` process, direct native `oro bead` mutator, or another migration command is active, stop it before dry-run. This intentionally treats read-only `bd` commands as stop-the-world conflicts so the gate cannot miss newly added bd mutators; otherwise `bd export`, `state.db` snapshotting, or migration apply can race an active writer.
+- Worker/writer process scan prints `active_writer_count=0`. If any worker, any direct `bd` process, direct native `oro bead` mutator, or another migration command is active, stop it before dry-run. The scanner inspects process command names and argv tokens instead of substring-matching the whole shell command, so macOS daemons such as `sbd` and `donotdisturbd` and the shell running this gate do not trip the gate. This intentionally treats read-only `bd` commands as stop-the-world conflicts so the gate cannot miss newly added bd mutators; otherwise `bd export`, `state.db` snapshotting, or migration apply can race an active writer.
 - `ORO_BEADSOURCE_MODE` is empty or `cli`; the command block exits non-zero otherwise. Do not migrate while already in `shadow` or `sqlite`.
 - Help output matches the actual migration flags listed below; do not add unimplemented backup toggles.
 - Dry-run exits successfully without `--force-recover`.
@@ -102,9 +100,7 @@ dispatcher_matches=$(ps ax -o pid=,command= | rg '([o]ro start|[o]ro dispatcher 
 dispatcher_count=$(printf '%s\n' "$dispatcher_matches" | awk 'NF { n++ } END { print n + 0 }')
 printf 'dispatcher_count=%s\n' "$dispatcher_count"
 test "$dispatcher_count" = 0
-active_writer_re='([o]ro start|[o]ro dispatcher start|[o]ro (work|worker|worker-launch)|[o]ro (--json )?bead (--json )?(create|update|close|reopen|dep|deps|tag|defer|undefer|comment|note|meta|import|migrate-from-dolt)|[b]d( |$))'
-active_writers=$(ps ax -o pid=,command= | rg "$active_writer_re" || true)
-test -z "$active_writers" || { printf '%s\n' "$active_writers"; exit 1; }
+scripts/check-phase8-no-writers.py
 mode=${ORO_BEADSOURCE_MODE-}
 printf 'ORO_BEADSOURCE_MODE=%s\n' "$mode"
 case "$mode" in "" | cli) ;; *) echo "ORO_BEADSOURCE_MODE must be empty or cli before migration" >&2; exit 1 ;; esac
@@ -192,16 +188,14 @@ dispatcher_matches=$(ps ax -o pid=,command= | rg '([o]ro start|[o]ro dispatcher 
 dispatcher_count=$(printf '%s\n' "$dispatcher_matches" | awk 'NF { n++ } END { print n + 0 }')
 printf 'dispatcher_count=%s\n' "$dispatcher_count"
 test "$dispatcher_count" = 0
-active_writer_re='([o]ro start|[o]ro dispatcher start|[o]ro (work|worker|worker-launch)|[o]ro (--json )?bead (--json )?(create|update|close|reopen|dep|deps|tag|defer|undefer|comment|note|meta|import|migrate-from-dolt)|[b]d( |$))'
-active_writers=$(ps ax -o pid=,command= | rg "$active_writer_re" || true)
-test -z "$active_writers" || { printf '%s\n' "$active_writers"; exit 1; }
+scripts/check-phase8-no-writers.py
 mode=${ORO_BEADSOURCE_MODE-}
 printf 'ORO_BEADSOURCE_MODE=%s\n' "$mode"
 test "$mode" = shadow
 ./oro bead migrate-from-dolt --reconcile
 ```
 
-Dispatcher count must be `0` across both dispatcher invocation paths, `ORO_BEADSOURCE_MODE` must be exactly `shadow`, and the worker/writer process scan must print no lines. Apply only after the preview is reviewed and conflict-free, with the dispatcher, workers, direct `bd` processes, direct native `oro bead` mutators, and other migration commands still stopped:
+Dispatcher count must be `0` across both dispatcher invocation paths, `ORO_BEADSOURCE_MODE` must be exactly `shadow`, and the worker/writer process scan must print `active_writer_count=0`. Apply only after the preview is reviewed and conflict-free, with the dispatcher, workers, direct `bd` processes, direct native `oro bead` mutators, and other migration commands still stopped:
 
 ```bash
 set -euo pipefail
@@ -236,9 +230,7 @@ dispatcher_matches=$(ps ax -o pid=,command= | rg '([o]ro start|[o]ro dispatcher 
 dispatcher_count=$(printf '%s\n' "$dispatcher_matches" | awk 'NF { n++ } END { print n + 0 }')
 printf 'dispatcher_count=%s\n' "$dispatcher_count"
 test "$dispatcher_count" = 0
-active_writer_re='([o]ro start|[o]ro dispatcher start|[o]ro (work|worker|worker-launch)|[o]ro (--json )?bead (--json )?(create|update|close|reopen|dep|deps|tag|defer|undefer|comment|note|meta|import|migrate-from-dolt)|[b]d( |$))'
-active_writers=$(ps ax -o pid=,command= | rg "$active_writer_re" || true)
-test -z "$active_writers" || { printf '%s\n' "$active_writers"; exit 1; }
+scripts/check-phase8-no-writers.py
 mode=${ORO_BEADSOURCE_MODE-}
 printf 'ORO_BEADSOURCE_MODE=%s\n' "$mode"
 test "$mode" = shadow
