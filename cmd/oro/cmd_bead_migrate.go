@@ -1947,9 +1947,6 @@ func normalizeBDExportRowStatus(label string, bead *bdExportBead, report *beadMi
 		recordSkippedID()
 		return false
 	}
-	if status == "blocked" {
-		report.Warnings = append(report.Warnings, fmt.Sprintf("%s: status %q will be stored as open because native blocked state is derived from dependencies", label, bead.Status))
-	}
 	if status == "deferred" {
 		if firstNonEmpty(bead.DeferredUntil, bead.DeferUntil) == "" {
 			report.Warnings = append(report.Warnings, fmt.Sprintf("%s: "+beadMigrationDeferredWithoutUntilMsg, label, bead.Status))
@@ -2056,7 +2053,7 @@ func normalizeMigrationStatusStrict(status string) (string, error) {
 
 func normalizeMigrationInsertStatus(status string) string {
 	switch normalizeMigrationStatus(status) {
-	case "in_progress", "closed":
+	case "in_progress", "blocked", "closed":
 		return normalizeMigrationStatus(status)
 	default:
 		return "open"

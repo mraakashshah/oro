@@ -109,11 +109,47 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	mustCreate(t, store, CreateParams{ID: "oro-ready", Title: "ready", Priority: 2})
 	mustCreate(t, store, CreateParams{ID: "oro-blocker", Title: "blocker", Priority: 1})
 	mustCreate(t, store, CreateParams{ID: "oro-blocked", Title: "blocked"})
+	mustCreate(t, store, CreateParams{ID: "oro-manual-blocked", Title: "manual blocked"})
+	mustCreate(t, store, CreateParams{ID: "oro-stale-deferred-manual-blocked", Title: "stale deferred manual blocked"})
+	mustCreate(t, store, CreateParams{ID: "oro-parent", Title: "parent"})
+	mustCreate(t, store, CreateParams{ID: "oro-child", Title: "child"})
+	mustCreate(t, store, CreateParams{ID: "oro-missing-parent-child", Title: "missing parent child"})
+	mustCreate(t, store, CreateParams{ID: "oro-deferred-blocked", Title: "deferred blocked"})
+	mustCreate(t, store, CreateParams{ID: "oro-past-deferred-blocked", Title: "past deferred blocked"})
+	mustCreate(t, store, CreateParams{ID: "oro-deferred-hard-blocked", Title: "deferred hard blocked"})
+	mustCreate(t, store, CreateParams{ID: "oro-assigned", Title: "assigned"})
+	mustCreate(t, store, CreateParams{ID: "oro-assigned-blocked", Title: "assigned blocked"})
 	mustCreate(t, store, CreateParams{ID: "oro-progress", Title: "progress"})
 	mustCreate(t, store, CreateParams{ID: "oro-closed1", Title: "closed 1"})
 	mustCreate(t, store, CreateParams{ID: "oro-closed2", Title: "closed 2"})
 	mustUpdate(t, store, "oro-blocked", UpdateParams{Priority: intPtr(0)})
+	mustUpdate(t, store, "oro-manual-blocked", UpdateParams{Status: strPtr("blocked")})
+	mustExec(t, store.db, `UPDATE beads SET deferred_until='2999-01-01T00:00:00Z' WHERE id='oro-stale-deferred-manual-blocked'`)
+	mustUpdate(t, store, "oro-stale-deferred-manual-blocked", UpdateParams{Status: strPtr("blocked")})
+	var staleManualDeferred sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT deferred_until FROM beads WHERE id='oro-stale-deferred-manual-blocked'`).Scan(&staleManualDeferred); err != nil {
+		t.Fatalf("query stale deferred manual blocked: %v", err)
+	}
+	if staleManualDeferred.Valid {
+		t.Fatalf("blocked update left deferred_until set: %q", staleManualDeferred.String)
+	}
+	mustExec(t, store.db, `UPDATE beads SET deferred_until='2999-01-01T00:00:00Z' WHERE id='oro-stale-deferred-manual-blocked'`)
 	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-blocked', 'oro-blocker', 'conditional-blocks')`)
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-assigned-blocked', 'oro-blocker', 'conditional-blocks')`)
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-child', 'oro-parent', 'parent-child')`)
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-missing-parent-child', 'oro-missing-parent', 'parent-child')`)
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-deferred-blocked', 'oro-parent', 'parent-child')`)
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-past-deferred-blocked', 'oro-parent', 'parent-child')`)
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-deferred-hard-blocked', 'oro-blocker', 'blocks')`)
+	mustExec(t, store.db, `INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-assigned', 'worker-1', '/tmp/assigned', 'active')`)
+	mustExec(t, store.db, `INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-assigned-blocked', 'worker-2', '/tmp/assigned-blocked', 'active')`)
+	if err := store.Defer(ctx, "oro-deferred-blocked", "2999-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("Defer deferred blocked: %v", err)
+	}
+	if err := store.Defer(ctx, "oro-deferred-hard-blocked", "2999-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("Defer deferred hard blocked: %v", err)
+	}
+	mustExec(t, store.db, `UPDATE beads SET deferred_until='2026-01-01T00:00:00Z' WHERE id='oro-past-deferred-blocked'`)
 	mustUpdate(t, store, "oro-progress", UpdateParams{Status: strPtr("in_progress")})
 	mustClose(t, store, "oro-closed1", "done")
 	mustClose(t, store, "oro-closed2", "done")
@@ -122,7 +158,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready: %v", err)
 	}
-	if ids(ready) != "oro-blocker,oro-ready" {
+	if ids(ready) != "oro-parent,oro-blocker,oro-ready" {
 		t.Fatalf("Ready ids = %s", ids(ready))
 	}
 
@@ -130,15 +166,45 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Blocked: %v", err)
 	}
-	if ids(blocked) != "oro-blocked" {
+	if ids(blocked) != "oro-blocked,oro-manual-blocked,oro-stale-deferred-manual-blocked,oro-child,oro-missing-parent-child,oro-deferred-hard-blocked" {
 		t.Fatalf("Blocked ids = %s", ids(blocked))
+	}
+	counts, err := store.CountByStatus(ctx)
+	if err != nil {
+		t.Fatalf("CountByStatus: %v", err)
+	}
+	if counts != (StatusCounts{Open: 11, InProgress: 3, Closed: 2}) {
+		t.Fatalf("CountByStatus = %#v, want active assignments counted as in_progress", counts)
+	}
+	var assignedReadyCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads_ready WHERE id=?`, "oro-assigned").Scan(&assignedReadyCount); err != nil {
+		t.Fatalf("query beads_ready for active assignment: %v", err)
+	}
+	if assignedReadyCount != 0 {
+		t.Fatalf("beads_ready included active assignment oro-assigned")
+	}
+	var assignedBlockedCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads_blocked WHERE id=?`, "oro-assigned-blocked").Scan(&assignedBlockedCount); err != nil {
+		t.Fatalf("query beads_blocked for active assignment: %v", err)
+	}
+	if assignedBlockedCount != 0 {
+		t.Fatalf("beads_blocked included active assignment oro-assigned-blocked")
+	}
+
+	mustClose(t, store, "oro-parent", "parent done")
+	ready, err = store.Ready(ctx)
+	if err != nil {
+		t.Fatalf("Ready after parent close: %v", err)
+	}
+	if ids(ready) != "oro-child,oro-blocker,oro-ready" {
+		t.Fatalf("Ready ids after parent close = %s", ids(ready))
 	}
 
 	progress, err := store.InProgress(ctx)
 	if err != nil {
 		t.Fatalf("InProgress: %v", err)
 	}
-	if ids(progress) != "oro-progress" {
+	if ids(progress) != "oro-progress,oro-assigned,oro-assigned-blocked" {
 		t.Fatalf("InProgress ids = %s", ids(progress))
 	}
 
@@ -155,7 +221,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready after close: %v", err)
 	}
-	if ids(ready) != "oro-blocked,oro-ready" {
+	if ids(ready) != "oro-blocked,oro-child,oro-ready" {
 		t.Fatalf("Ready after blocker close ids = %s", ids(ready))
 	}
 }
@@ -821,8 +887,8 @@ func TestParityDependencyAndStatusAPIs(t *testing.T) {
 }
 
 func TestParityUpdateValidatesStatusTransitions(t *testing.T) {
-	validStatuses := []string{"in_progress", "closed", "open"}
-	invalidStatuses := []string{"ready", "blocked", "deferred", ""}
+	validStatuses := []string{"in_progress", "blocked", "closed", "open"}
+	invalidStatuses := []string{"ready", "deferred", ""}
 
 	for _, fixture := range newParityFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {

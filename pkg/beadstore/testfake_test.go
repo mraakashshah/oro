@@ -121,12 +121,36 @@ func TestFakeStore(t *testing.T) {
 				}},
 			},
 			protocol.Bead{
+				ID:         "deferred-child",
+				Title:      "deferred child metadata",
+				Status:     "open",
+				Priority:   1,
+				DeferUntil: "2999-01-01T00:00:00Z",
+				Dependencies: []protocol.Dependency{{
+					IssueID:     "deferred-child",
+					DependsOnID: "dependency",
+					Type:        "parent-child",
+				}},
+			},
+			protocol.Bead{
 				ID:       "blocked",
 				Title:    "waiting",
 				Status:   "open",
 				Priority: 1,
 				Dependencies: []protocol.Dependency{{
 					IssueID:     "blocked",
+					DependsOnID: "dependency",
+					Type:        "blocks",
+				}},
+			},
+			protocol.Bead{
+				ID:         "deferred-hard-blocked",
+				Title:      "deferred but hard blocked",
+				Status:     "open",
+				Priority:   1,
+				DeferUntil: "2999-01-01T00:00:00Z",
+				Dependencies: []protocol.Dependency{{
+					IssueID:     "deferred-hard-blocked",
 					DependsOnID: "dependency",
 					Type:        "blocks",
 				}},
@@ -159,7 +183,7 @@ func TestFakeStore(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Ready: %v", err)
 		}
-		assertIDs(t, ready, []string{"blocked-empty-type", "child-metadata", "dependency", "open"})
+		assertIDs(t, ready, []string{"blocked-empty-type", "dependency", "open"})
 
 		inProgress, err := store.InProgress(ctx)
 		if err != nil {
@@ -171,7 +195,14 @@ func TestFakeStore(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Blocked: %v", err)
 		}
-		assertIDs(t, blocked, []string{"blocked", "blocked-conditional"})
+		assertIDs(t, blocked, []string{"blocked", "blocked-conditional", "child-metadata", "deferred-hard-blocked"})
+		counts, err := store.CountByStatus(ctx)
+		if err != nil {
+			t.Fatalf("CountByStatus: %v", err)
+		}
+		if counts != (beadstore.StatusCounts{Open: 8, InProgress: 2, Closed: 1}) {
+			t.Fatalf("CountByStatus = %#v, want active assignment counted as in_progress", counts)
+		}
 
 		if err := store.Close(ctx, "dependency", "unblocked"); err != nil {
 			t.Fatalf("Close dependency: %v", err)
@@ -180,7 +211,7 @@ func TestFakeStore(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Ready after dependency close: %v", err)
 		}
-		assertIDs(t, ready, []string{"blocked", "blocked-conditional", "blocked-empty-type", "child-metadata", "open"})
+		assertIDs(t, ready, []string{"blocked", "blocked-conditional", "blocked-empty-type", "open"})
 	})
 
 	t.Run("reports child and tag queries", func(t *testing.T) {

@@ -434,8 +434,6 @@ func TestMigrateFromDoltValidationReport(t *testing.T) {
 			"beads: 4",
 			"unknown fields: 1",
 			"migration errors: 3",
-			"migration warnings: 1",
-			"line 3: status \"blocked\" will be stored as open",
 			"line 4: decode notes for oro-bad-notes",
 			"line 5: unknown status \"triaged\"",
 			"line 6: decode bd export JSONL",
@@ -464,8 +462,6 @@ func TestMigrateFromDoltValidationReport(t *testing.T) {
 			"Migration complete",
 			"unknown fields: 1",
 			"migration errors: 3",
-			"migration warnings: 1",
-			"line 3: status \"blocked\" will be stored as open",
 			"line 4: decode notes for oro-bad-notes",
 			"line 5: unknown status \"triaged\"",
 			"line 6: decode bd export JSONL",
@@ -508,7 +504,7 @@ func TestMigrateFromDoltValidationReport(t *testing.T) {
 			priority int
 		}{
 			"oro-after-error":      {status: "closed", priority: 3},
-			"oro-blocked":          {status: "open", priority: 1},
+			"oro-blocked":          {status: "blocked", priority: 1},
 			"oro-default-priority": {status: "open", priority: 2},
 			"oro-p0":               {status: "open", priority: 0},
 		}
@@ -1638,8 +1634,6 @@ func TestMigrateFromDoltReconcileReportsBlockedStatusRemap(t *testing.T) {
 		"inserts: 3",
 		"deletes: 0",
 		"migration errors: 3",
-		"migration warnings: 1",
-		"line 2: status \"blocked\" will be stored as open",
 		"line 3: unknown status \"triaged\"",
 		"line 4: decode bd export bead",
 		"row oro-unsafe-reconcile: insert migrated tag for oro-unsafe-reconcile",
@@ -1659,8 +1653,8 @@ func TestMigrateFromDoltReconcileReportsBlockedStatusRemap(t *testing.T) {
 	if err := db.QueryRow(`SELECT status FROM beads WHERE id='oro-blocked-reconcile'`).Scan(&status); err != nil {
 		t.Fatalf("query reconciled blocked bead: %v", err)
 	}
-	if status != "open" {
-		t.Fatalf("reconciled blocked status = %q, want open with warning", status)
+	if status != "blocked" {
+		t.Fatalf("reconciled blocked status = %q, want blocked", status)
 	}
 	var invalidCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM beads WHERE id='oro-invalid-reconcile'`).Scan(&invalidCount); err != nil {

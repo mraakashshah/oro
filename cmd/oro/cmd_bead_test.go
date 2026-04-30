@@ -422,6 +422,10 @@ func TestCmdBeadDependencyRoundTrip(t *testing.T) {
 	if !beadJSONArrayHasID(ready, "oro-blocker") {
 		t.Fatalf("ready did not include blocker before close: %#v", ready)
 	}
+	blocked := decodeBeadJSONArray(t, executeBeadCommand(t, store, "list", "--status=blocked", "--json"))
+	if !beadJSONArrayHasID(blocked, "oro-blocked") {
+		t.Fatalf("list --status=blocked omitted dependency-blocked bead: %#v", blocked)
+	}
 
 	removed := decodeBeadJSONObject(t, executeBeadCommand(t, store, "dep", "rm", "oro-blocked", "oro-blocker", "--json"))
 	removedDeps, ok := removed["dependencies"].([]any)
@@ -434,6 +438,22 @@ func TestCmdBeadDependencyRoundTrip(t *testing.T) {
 	ready = decodeBeadJSONArray(t, executeBeadCommand(t, store, "ready", "--json"))
 	if !beadJSONArrayHasID(ready, "oro-blocked") {
 		t.Fatalf("ready did not include unblocked bead after dependency close: %#v", ready)
+	}
+}
+
+func TestBeadListInProgressIncludesActiveAssignments(t *testing.T) {
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "oro-assigned", Title: "Assigned", Status: "open", WorkerID: "worker-1"},
+		protocol.Bead{ID: "oro-progress", Title: "Progress", Status: "in_progress"},
+	)
+
+	got := decodeBeadJSONArray(t, executeBeadCommand(t, store, "list", "--status=in_progress", "--json"))
+	if !beadJSONArrayHasID(got, "oro-assigned") || !beadJSONArrayHasID(got, "oro-progress") {
+		t.Fatalf("list --status=in_progress = %#v, want assigned and explicit in-progress beads", got)
+	}
+	status := decodeBeadJSONObject(t, executeBeadCommand(t, store, "status", "--json"))
+	if status["open"] != float64(0) || status["in_progress"] != float64(2) || status["closed"] != float64(0) {
+		t.Fatalf("status = %#v, want assigned open bead counted as in_progress", status)
 	}
 }
 

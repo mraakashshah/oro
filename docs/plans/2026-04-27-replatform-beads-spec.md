@@ -79,7 +79,7 @@
 | # | What v14 had | v15 changes to |
 |---|---|---|
 | 1 | `Store` byte-identical to `BeadSource` (13 methods, mixed return types, positional `Create`, no-op `Sync`) | Reshaped `Store` (**12 methods** — v16 corrected from v15's 10; HasChildren is non-redundant), single `Bead` type for all reads (`*BeadDetail` becomes a type alias during migration, removed in Phase 10), `CreateParams`/`UpdateParams` structs, no `Sync` |
-| 2 | Schema `CHECK status IN ('open','in_progress','closed','blocked','ready')` matching what dispatcher writes today | `CHECK status IN ('open','in_progress','closed')` only; `blocked` and `ready` become *derived* states via views; dispatcher's `Update(..., "ready")` callsites patched to write `"open"` |
+| 2 | Schema `CHECK status IN ('open','in_progress','closed','blocked','ready')` matching what dispatcher writes today | `CHECK status IN ('open','in_progress','blocked','closed')`; `ready` remains derived via `beads_ready`, while `blocked` is stored for manually blocked/imported bd rows and also derived for dependency-blocked open rows via `beads_blocked`; dispatcher's `Update(..., "ready")` callsites patched to write `"open"` |
 | 3 | `bd-shim` translator binary with ~30 translation rules + deny-default + test extraction | **No shim.** Cutover protocol: operators restart all workers; in-flight prompts emitting `bd …` fail; that's intentional and observable. One inconvenient hour vs permanent translator code. |
 | 4 | JSON output schema "matches bd verbatim" (`parent`, `issue_type`, etc.) | Clean schema (`parent_id`, `type`, RFC3339 timestamps); `pkg/mg/data` parsers update in lockstep with the rewrite already scheduled in Phase 5 |
 | 5 | Migration extracts AC from `## Acceptance Criteria` markdown headers in description, leaves header in description | Migration normalizes: AC text moves to `acceptance_criteria` column; `## Acceptance Criteria` header *and* its body are stripped from `description`. One-time clean-up. |
@@ -172,7 +172,7 @@ The high-leverage seam is the bead-source interface. Get the new implementation 
 - Beads as a concept (bead = unit of work).
 - The data model: id, title, description, AC, status, priority, type, deps, tags, metadata, parent/child epic, defer_until, owner.
 - `bd ready` semantics (open + no unmet deps + not deferred). Derived in oro via the `beads_ready` view.
-- The 3-state machine (open / in_progress / closed). "Blocked" and "deferred" become *derived* via views, never stored.
+- The status machine (`open` / `in_progress` / `blocked` / `closed`). `ready` is derived via `beads_ready`; `blocked` is both stored for manual/imported blocked rows and derived for dependency-blocked open rows.
 - Hierarchical dotted ID format ("oro-7nzy", "mg-007.2.1") — still referenced by tmux pane names, branch names, event log payloads.
 - Audit history — `updated_at` preserved verbatim during migration so historical timestamps match.
 - Stealth mode (zero-footprint projects under `~/.oro/projects/s-<hash>/`).
@@ -189,7 +189,7 @@ The high-leverage seam is the bead-source interface. Get the new implementation 
 - Cross-process race conditions between dispatcher writes and external bd writes (since there are no external bd writes anymore).
 - **(v15) The 13-method byte-identical interface.** Replaced with a reshaped 12-method `Store` interface using a single `Bead` type, `CreateParams`/`UpdateParams` structs, and no `Sync`. (v15 first cut said 10; v16 added `HasChildren` back; v17 final count 12.)
 - **(v15) `Sync()` no-op method.** Pure interface ceremony. Drop entirely.
-- **(v15) `blocked` and `ready` as stored statuses.** Both are derivable runtime states; the dispatcher's `Update(..., "ready")` callsites are patched to write `"open"` (semantically: "this bead is now assignable again"). The `beads_ready` and `beads_blocked` views compute the rest.
+- **(v15/v18) `ready` as a stored status.** `ready` is derivable runtime state; the dispatcher's `Update(..., "ready")` callsites are patched to write `"open"` (semantically: "this bead is now assignable again"). `blocked` remains an allowed stored status for manually blocked/imported bd rows, and dependency-blocked open rows are still derived through `beads_blocked`.
 - **(v15) The bd-shim translator binary.** No shim, no translation table, no deny-default. Cutover restarts workers; in-flight `bd …` prompts fail.
 - **(v15) JSON output parity with bd.** `pkg/mg/data` parsers update to read oro's clean JSON (`parent_id`, `type`, RFC3339 fields).
 - **(v15) AC-in-markdown extraction at read time.** Migration normalizes AC into the column once; `description` no longer carries a `## Acceptance Criteria` section after migration.
@@ -490,7 +490,7 @@ SELECT id FROM beads
     AND id NOT IN (
       SELECT bead_id FROM bead_deps bd
       JOIN beads parent ON parent.id = bd.depends_on_id
-      WHERE bd.bead_id = ? AND bd.type IN ('blocks','conditional-blocks')
+      WHERE bd.bead_id = ? AND bd.type IN ('blocks','conditional-blocks','parent-child')
         AND parent.status != 'closed'
     );
 -- if row returned:
@@ -519,15 +519,13 @@ CREATE TABLE IF NOT EXISTS beads (
     title                 TEXT NOT NULL,
     description           TEXT NOT NULL DEFAULT '',
     acceptance_criteria   TEXT NOT NULL DEFAULT '',  -- dedicated column, no markdown extraction
-    -- v15 (need-first pivot): only three real stored statuses. 'blocked' and
-    -- 'ready' are derived runtime states computed by the beads_ready and
-    -- beads_blocked views — they were never persisted state, just dispatcher
-    -- shorthand written via Update(). Phase 1 patches the 6 dispatcher
-    -- callsites that wrote "ready" to write "open" instead (semantically:
-    -- "this bead is now assignable again"). v9-v14 carried both as stored
-    -- values for parity with current dispatcher writes; v15 drops that.
+    -- v18: 'ready' is derived runtime state computed by beads_ready.
+    -- 'blocked' is allowed as persisted operator/import state, while
+    -- beads_blocked also derives dependency-blocked open rows.
+    -- Phase 1 patches dispatcher callsites that wrote "ready" to write
+    -- "open" instead (semantically: "this bead is now assignable again").
     status                TEXT NOT NULL CHECK (status IN
-                          ('open','in_progress','closed')),
+                          ('open','in_progress','blocked','closed')),
     priority              INTEGER NOT NULL DEFAULT 2,
     type                  TEXT NOT NULL DEFAULT 'task',   -- task | bug | epic | research | chore
     parent_id             TEXT REFERENCES beads(id),
@@ -653,27 +651,52 @@ SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
   AND b.status = 'open'
-  AND (b.deferred_until IS NULL OR datetime(b.deferred_until) <= datetime('now'))
+  AND (b.deferred_until IS NULL OR b.deferred_until = '')
+  AND NOT EXISTS (
+    SELECT 1 FROM assignments a
+    WHERE a.bead_id = b.id
+      AND a.status = 'active'
+  )
   AND NOT EXISTS (
     SELECT 1 FROM bead_deps d
-    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+    LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
     WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND parent.status != 'closed'
+      AND d.type IN ('blocks','conditional-blocks','parent-child')
+      AND (parent.id IS NULL OR parent.status != 'closed')
   );
 
--- "Blocked" beads: open with at least one unmet blocking dep.
+-- "Blocked" beads: stored blocked rows plus open rows with unmet deps.
 CREATE VIEW IF NOT EXISTS beads_blocked AS
 SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
-  AND b.status = 'open'
-  AND EXISTS (
-    SELECT 1 FROM bead_deps d
-    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-    WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND parent.status != 'closed'
+  AND b.status IN ('open','blocked')
+  AND (
+    b.status = 'blocked'
+    OR b.deferred_until IS NULL
+    OR b.deferred_until = ''
+    OR EXISTS (
+      SELECT 1 FROM bead_deps d
+      LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+      WHERE d.bead_id = b.id
+        AND d.type IN ('blocks','conditional-blocks')
+        AND (parent.id IS NULL OR parent.status != 'closed')
+    )
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM assignments a
+    WHERE a.bead_id = b.id
+      AND a.status = 'active'
+  )
+  AND (
+    b.status = 'blocked'
+    OR EXISTS (
+      SELECT 1 FROM bead_deps d
+      LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+      WHERE d.bead_id = b.id
+        AND d.type IN ('blocks','conditional-blocks','parent-child')
+        AND (parent.id IS NULL OR parent.status != 'closed')
+    )
   );
 ```
 
@@ -825,7 +848,7 @@ v9–v14 specified a byte-identical interface to bd's `BeadSource` (13 methods, 
 // - One `Bead` struct for all reads. No separate BeadDetail.
 // - CreateParams struct, not 7-arg positional Create.
 // - No Sync. (Was a bd no-op kept for interface ceremony.)
-// - Three-status enum (open/in_progress/closed); no stored 'blocked'/'ready'.
+// - Stored statuses are open/in_progress/blocked/closed; ready is derived.
 package beadstore
 
 import (
@@ -1548,7 +1571,7 @@ func MigrateFromDolt(ctx context.Context, store *beadstore.SQLiteStore, doltExpo
   - If multiple `## Acceptance Criteria` headers (malformed): only the first is extracted and stripped; subsequent ones logged to the migration error report and left in `description` for operator review.
   - Acceptance test in `pkg/beadstore/migrate_test.go`: 8 fixtures covering AC at start / mid / end of description, AC followed by other H2 sections, malformed nested headers, no AC at all, AC with sub-headers (H3) inside its body. Each asserts both `ac` and `descWithoutAC` round-trip correctly.
 - **Numeric vs string priorities**: bd uses int; we keep int.
-- **Status normalization**: bd may produce `pending` or `to-do` historically; map to `open`. bd `blocked` is logged and stored as `open` because native blocked state is derived from dependencies. bd `deferred` is logged and stored as native `open` with `deferred_until` preserved.
+- **Status normalization**: bd may produce `pending` or `to-do` historically; map to `open`. bd `blocked` is stored as native `blocked` so manual/imported blocked rows survive migration. bd `deferred` is logged and stored as native `open` with `deferred_until` preserved.
 - **Deferred-until handling**: if bd's status is `open` or `deferred` and `defer_until`/`deferred_until` is set, we set `status='open'` and `deferred_until=<value>`. If bd exports `status='deferred'` without a defer timestamp, the migration stores a far-future `deferred_until` sentinel and warns rather than making the bead immediately ready. The view `beads_ready` excludes deferred beads correctly.
 - **Parent IDs that haven't been imported yet**: deferred FK enforcement. We do a two-pass import (insert all rows, then add FKs).
 - **Soft-deleted beads**: bd may keep tombstones; we set `deleted=1` for them and skip in views.
@@ -2164,7 +2187,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 - **Single-dispatcher PID lock**: `pkg/dispatcher/lock.go` + tests, lock path `canonicalDBPath + ".lock"` via `filepath.EvalSymlinks`. Tests (a)–(e) per §16.14.
 - **No `pkg/memory` changes required.** Existing `memory.ForPrompt(ctx, store, tags, desc, maxTokens)` is the contract.
 - **Interface migration pass (v15 — replaces the v14 alias):** mechanical rewrite of ~40 call sites across `pkg/dispatcher`, `pkg/ops`, `pkg/mg/data` to consume the reshaped `Store` interface — `BeadSource` references → `beadstore.Store`, positional `Create(...)` → `Create(ctx, beadstore.CreateParams{...})`, status-`Update(...,"x")` → `Update(ctx, id, UpdateParams{Status: &s})`, `Show()` consumers handle `*Bead` instead of `*BeadDetail`, `.Sync()` calls deleted. Estimate: 3 days. CI catches every miss at compile time.
-- **Dispatcher `Update("ready")` patch (v15):** 6 call sites (`pkg/dispatcher/dispatcher.go:3234, 3245, 3263, 3277, 3412, 3449, 3461, 3477` per the inventory) currently write `"ready"` via `Update()`. v15 patches them to write `"open"` — semantically identical ("this bead is now assignable") and compatible with the v15 three-status schema CHECK. No callers consume the literal `"ready"` value via `Show()` in production paths; the `beads_ready` view derives readiness from `(status='open' AND no unmet deps AND not deferred)`.
+- **Dispatcher `Update("ready")` patch (v15/v18):** 6 call sites (`pkg/dispatcher/dispatcher.go:3234, 3245, 3263, 3277, 3412, 3449, 3461, 3477` per the inventory) currently write `"ready"` via `Update()`. v15 patches them to write `"open"` — semantically identical ("this bead is now assignable") and compatible with the v18 schema CHECK (`open`, `in_progress`, `blocked`, `closed`). No callers consume the literal `"ready"` value via `Show()` in production paths; the `beads_ready` view derives readiness from `(status='open' AND no unmet deps AND not deferred)`.
 - CI rule: `go vet`/import-graph check that `pkg/beadstore` does not import `pkg/dispatcher`, `pkg/worker`, `pkg/ops`, or `pkg/mg`.
 - `pkg/beadstore/sqlite_test.go`: in-memory SQLite tests for every method, including:
   - Ready returns correct rows when deps are open vs closed.
@@ -2985,9 +3008,10 @@ CREATE TABLE IF NOT EXISTS beads (
     title                 TEXT NOT NULL,
     description           TEXT NOT NULL DEFAULT '',
     acceptance_criteria   TEXT NOT NULL DEFAULT '',
-    -- v15: three stored statuses only; blocked/ready/deferred derive via views.
+    -- v18: ready is derived via views; blocked is stored for manual/imported
+    -- rows and also derived for dependency-blocked open rows.
     status                TEXT NOT NULL CHECK (status IN
-                          ('open','in_progress','closed')),
+                          ('open','in_progress','blocked','closed')),
     priority              INTEGER NOT NULL DEFAULT 2,
     type                  TEXT NOT NULL DEFAULT 'task',
     parent_id             TEXT REFERENCES beads(id),
@@ -3154,26 +3178,51 @@ SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
   AND b.status = 'open'
-  AND (b.deferred_until IS NULL OR datetime(b.deferred_until) <= datetime('now'))
+  AND (b.deferred_until IS NULL OR b.deferred_until = '')
+  AND NOT EXISTS (
+    SELECT 1 FROM assignments a
+    WHERE a.bead_id = b.id
+      AND a.status = 'active'
+  )
   AND NOT EXISTS (
     SELECT 1 FROM bead_deps d
-    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+    LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
     WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND parent.status != 'closed'
+      AND d.type IN ('blocks','conditional-blocks','parent-child')
+      AND (parent.id IS NULL OR parent.status != 'closed')
   );
 
 CREATE VIEW IF NOT EXISTS beads_blocked AS
 SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
-  AND b.status = 'open'
-  AND EXISTS (
-    SELECT 1 FROM bead_deps d
-    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-    WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND parent.status != 'closed'
+  AND b.status IN ('open','blocked')
+  AND (
+    b.status = 'blocked'
+    OR b.deferred_until IS NULL
+    OR b.deferred_until = ''
+    OR EXISTS (
+      SELECT 1 FROM bead_deps d
+      LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+      WHERE d.bead_id = b.id
+        AND d.type IN ('blocks','conditional-blocks')
+        AND (parent.id IS NULL OR parent.status != 'closed')
+    )
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM assignments a
+    WHERE a.bead_id = b.id
+      AND a.status = 'active'
+  )
+  AND (
+    b.status = 'blocked'
+    OR EXISTS (
+      SELECT 1 FROM bead_deps d
+      LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+      WHERE d.bead_id = b.id
+        AND d.type IN ('blocks','conditional-blocks','parent-child')
+        AND (parent.id IS NULL OR parent.status != 'closed')
+    )
   );
 ```
 

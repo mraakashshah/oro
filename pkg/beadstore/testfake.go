@@ -117,7 +117,11 @@ func (s *FakeStore) Blocked(ctx context.Context) ([]protocol.Bead, error) {
 
 	var blocked []protocol.Bead
 	for _, bead := range s.beads {
-		if bead.WorkerID == "" && (bead.Status == "blocked" || (bead.Status == "open" && s.hasActiveBlockerLocked(bead))) {
+		if bead.WorkerID != "" {
+			continue
+		}
+		if bead.Status == "blocked" ||
+			(bead.Status == "open" && (!isFutureDeferred(bead.DeferUntil) || s.hasHardBlockerLocked(bead)) && s.hasActiveBlockerLocked(bead)) {
 			blocked = append(blocked, cloneBead(bead))
 		}
 	}
@@ -276,6 +280,13 @@ func applyStatusUpdate(bead *protocol.Bead, status string) {
 		bead.DeferUntil = ""
 		bead.ClosedAt = ""
 		bead.CloseReason = ""
+	case "blocked":
+		bead.DeferUntil = ""
+		bead.ClosedAt = ""
+		bead.CloseReason = ""
+	case "in_progress":
+		bead.ClosedAt = ""
+		bead.CloseReason = ""
 	case "closed":
 		if bead.ClosedAt == "" {
 			bead.ClosedAt = nowString()
@@ -398,13 +409,13 @@ func (s *FakeStore) CountByStatus(ctx context.Context) (StatusCounts, error) {
 
 	var counts StatusCounts
 	for _, bead := range s.beads {
-		switch bead.Status {
-		case "open":
-			counts.Open++
-		case "in_progress":
-			counts.InProgress++
-		case "closed":
+		switch {
+		case bead.Status == "closed":
 			counts.Closed++
+		case bead.Status == "in_progress" || bead.WorkerID != "":
+			counts.InProgress++
+		case bead.Status == "open" || bead.Status == "blocked":
+			counts.Open++
 		}
 	}
 	return counts, nil
@@ -530,6 +541,22 @@ func (s *FakeStore) Export(ctx context.Context) ([]byte, error) {
 
 func (s *FakeStore) hasActiveBlockerLocked(bead protocol.Bead) bool {
 	for _, dependency := range bead.Dependencies {
+		if dependency.Type != "blocks" && dependency.Type != "conditional-blocks" && dependency.Type != "parent-child" {
+			continue
+		}
+		if dependency.DependsOnID == "" {
+			continue
+		}
+		blocker, ok := s.beads[dependency.DependsOnID]
+		if !ok || blocker.Status != "closed" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *FakeStore) hasHardBlockerLocked(bead protocol.Bead) bool {
+	for _, dependency := range bead.Dependencies {
 		if dependency.Type != "blocks" && dependency.Type != "conditional-blocks" {
 			continue
 		}
@@ -631,14 +658,7 @@ func hasTag(bead protocol.Bead, tag string) bool {
 }
 
 func isFutureDeferred(until string) bool {
-	if until == "" {
-		return false
-	}
-	parsed, err := time.Parse(time.RFC3339Nano, until)
-	if err != nil {
-		return true
-	}
-	return parsed.After(time.Now().UTC())
+	return until != ""
 }
 
 func sortBeads(beads []protocol.Bead) {

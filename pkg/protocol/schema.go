@@ -3,7 +3,9 @@ package protocol
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 // SchemaDDL defines the SQLite schema for the Oro dispatcher runtime database.
@@ -140,14 +142,14 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
 END;
 `
 
-const beadSchemaDDL = `
+const beadTableDDL = `
 CREATE TABLE IF NOT EXISTS beads (
     id                    TEXT PRIMARY KEY,
     title                 TEXT NOT NULL,
     description           TEXT NOT NULL DEFAULT '',
     acceptance_criteria   TEXT NOT NULL DEFAULT '',
     status                TEXT NOT NULL CHECK (status IN
-                          ('open','in_progress','closed')),
+                          ('open','in_progress','blocked','closed')),
     priority              INTEGER NOT NULL DEFAULT 2,
     type                  TEXT NOT NULL DEFAULT 'task',
     parent_id             TEXT REFERENCES beads(id),
@@ -162,6 +164,35 @@ CREATE TABLE IF NOT EXISTS beads (
     closed_at             TEXT,
     deleted               INTEGER NOT NULL DEFAULT 0
 );
+`
+
+const beadSchemaDDL = beadTableDDL + `
+CREATE TABLE IF NOT EXISTS assignments (
+    id INTEGER PRIMARY KEY,
+    bead_id TEXT NOT NULL,
+    worker_id TEXT NOT NULL,
+    worktree TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    attempt_count INTEGER DEFAULT 0,
+    handoff_count INTEGER DEFAULT 0
+);
+
+UPDATE assignments
+SET status = 'completed',
+    completed_at = COALESCE(completed_at, datetime('now'))
+WHERE status = 'active'
+  AND id NOT IN (
+    SELECT MAX(id)
+    FROM assignments
+    WHERE status = 'active'
+    GROUP BY bead_id
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_assignments_one_active_per_bead
+ON assignments(bead_id)
+WHERE status = 'active';
 
 CREATE INDEX IF NOT EXISTS idx_beads_status     ON beads(status) WHERE deleted = 0;
 CREATE INDEX IF NOT EXISTS idx_beads_parent     ON beads(parent_id) WHERE deleted = 0;
@@ -233,32 +264,61 @@ END;
 
 ` + BeadParentTouchTriggerDDL + `
 
+DROP VIEW IF EXISTS beads_ready;
+DROP VIEW IF EXISTS beads_blocked;
+
 CREATE VIEW IF NOT EXISTS beads_ready AS
 SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
   AND b.status = 'open'
-  AND (b.deferred_until IS NULL OR datetime(b.deferred_until) <= datetime('now'))
+  AND (b.deferred_until IS NULL OR b.deferred_until = '')
+  AND NOT EXISTS (
+    SELECT 1 FROM assignments a
+    WHERE a.bead_id = b.id
+      AND a.status = 'active'
+  )
   AND NOT EXISTS (
     SELECT 1 FROM bead_deps d
-    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+    LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
     WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND parent.status != 'closed'
+      AND d.type IN ('blocks','conditional-blocks','parent-child')
+      AND (parent.id IS NULL OR parent.status != 'closed')
   );
 
 CREATE VIEW IF NOT EXISTS beads_blocked AS
 SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
-  AND b.status = 'open'
-  AND EXISTS (
-    SELECT 1 FROM bead_deps d
-    JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-    WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND parent.status != 'closed'
-  );
+  AND b.status IN ('open','blocked')
+  AND (
+    b.status = 'blocked'
+    OR b.deferred_until IS NULL
+    OR b.deferred_until = ''
+    OR EXISTS (
+      SELECT 1 FROM bead_deps d
+      LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+      WHERE d.bead_id = b.id
+        AND d.type IN ('blocks','conditional-blocks')
+        AND (parent.id IS NULL OR parent.status != 'closed')
+    )
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM assignments a
+    WHERE a.bead_id = b.id
+      AND a.status = 'active'
+  )
+  AND (
+    b.status = 'blocked'
+    OR EXISTS (
+      SELECT 1 FROM bead_deps d
+      LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+      WHERE d.bead_id = b.id
+        AND d.type IN ('blocks','conditional-blocks','parent-child')
+        AND (parent.id IS NULL OR parent.status != 'closed')
+    )
+  )
+;
 `
 
 // BeadParentTouchTriggerNames names the triggers that bump a bead's updated_at
@@ -357,7 +417,107 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate bead schema: %w", err)
 	}
+	rebuiltStatusConstraint, err := ensureBeadStatusAllowsBlocked(ctx, db)
+	if err != nil {
+		return fmt.Errorf("migrate bead status constraint: %w", err)
+	}
+	_, err = db.ExecContext(ctx, beadSchemaDDL)
+	if err != nil {
+		return fmt.Errorf("refresh bead schema: %w", err)
+	}
+	if rebuiltStatusConstraint {
+		if _, err := db.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
+			return fmt.Errorf("rebuild beads fts: %w", err)
+		}
+	}
 	return nil
+}
+
+func ensureBeadStatusAllowsBlocked(ctx context.Context, db *sql.DB) (bool, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("acquire sqlite connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	var tableSQL string
+	err = conn.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='table' AND name='beads'`).Scan(&tableSQL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect beads table: %w", err)
+	}
+	if strings.Contains(tableSQL, "'blocked'") {
+		return false, nil
+	}
+
+	fkViolationsBefore, err := countSQLiteForeignKeyViolations(ctx, conn)
+	if err != nil {
+		return false, fmt.Errorf("count foreign keys before beads rebuild: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return false, fmt.Errorf("disable foreign keys: %w", err)
+	}
+	defer func() { _, _ = conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`) }()
+	if _, err := conn.ExecContext(ctx, `PRAGMA legacy_alter_table=ON`); err != nil {
+		return false, fmt.Errorf("enable legacy alter table: %w", err)
+	}
+	defer func() { _, _ = conn.ExecContext(context.Background(), `PRAGMA legacy_alter_table=OFF`) }()
+
+	if err := dropBeadSchemaRebuildTriggers(ctx, conn); err != nil {
+		return false, err
+	}
+
+	const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted`
+	rebuild := `
+DROP VIEW IF EXISTS beads_ready;
+DROP VIEW IF EXISTS beads_blocked;
+ALTER TABLE beads RENAME TO beads_status_rebuild_old;
+` + beadTableDDL + `
+INSERT INTO beads (` + beadColumns + `)
+SELECT ` + beadColumns + ` FROM beads_status_rebuild_old;
+DROP TABLE beads_status_rebuild_old;
+`
+	if _, err := conn.ExecContext(ctx, rebuild); err != nil {
+		return false, fmt.Errorf("rebuild beads table: %w", err)
+	}
+	fkViolationsAfter, err := countSQLiteForeignKeyViolations(ctx, conn)
+	if err != nil {
+		return false, fmt.Errorf("count foreign keys after beads rebuild: %w", err)
+	}
+	if fkViolationsAfter > fkViolationsBefore {
+		return false, fmt.Errorf("foreign key violations increased after beads rebuild: before=%d after=%d", fkViolationsBefore, fkViolationsAfter)
+	}
+	return true, nil
+}
+
+func dropBeadSchemaRebuildTriggers(ctx context.Context, conn *sql.Conn) error {
+	dropTriggers := make([]string, 0, 3+len(BeadParentTouchTriggerNames))
+	dropTriggers = append(dropTriggers, "beads_fts_ai", "beads_fts_ad", "beads_fts_au")
+	dropTriggers = append(dropTriggers, BeadParentTouchTriggerNames...)
+	for _, name := range dropTriggers {
+		if _, err := conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+name); err != nil {
+			return fmt.Errorf("drop trigger %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func countSQLiteForeignKeyViolations(ctx context.Context, conn *sql.Conn) (int, error) {
+	rows, err := conn.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return 0, fmt.Errorf("check foreign keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var count int
+	for rows.Next() {
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate foreign key check: %w", err)
+	}
+	return count, nil
 }
 
 // MigrateFileTracking adds files_read and files_modified columns to existing memories tables.

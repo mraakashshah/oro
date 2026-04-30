@@ -137,6 +137,154 @@ func TestSchemaMigration11(t *testing.T) {
 	testBeadSchemaMigration(t)
 }
 
+func TestMigrateBeadSchemaRebuildsOldStatusConstraint(t *testing.T) {
+	db, err := dbutil.OpenDB(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("exec runtime schema: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE beads (
+    id                    TEXT PRIMARY KEY,
+    title                 TEXT NOT NULL,
+    description           TEXT NOT NULL DEFAULT '',
+    acceptance_criteria   TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL CHECK (status IN ('open','in_progress','closed')),
+    priority              INTEGER NOT NULL DEFAULT 2,
+    type                  TEXT NOT NULL DEFAULT 'task',
+    parent_id             TEXT REFERENCES beads(id),
+    owner                 TEXT,
+    estimated_minutes     INTEGER,
+    tier                  TEXT,
+    model                 TEXT,
+    deferred_until        TEXT,
+    close_reason          TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    closed_at             TEXT,
+    deleted               INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE bead_deps (
+    bead_id       TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    depends_on_id TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    type          TEXT NOT NULL DEFAULT 'blocks',
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    created_by    TEXT,
+    PRIMARY KEY (bead_id, depends_on_id, type)
+);
+INSERT INTO beads (id, title, status) VALUES
+    ('oro-parent', 'parent', 'open'),
+    ('oro-child', 'child', 'open');
+INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-child', 'oro-parent', 'parent-child');
+INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-parent', 'worker-1', '/tmp/parent', 'active');
+`)
+	if err != nil {
+		t.Fatalf("seed old bead schema: %v", err)
+	}
+
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate old bead schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE beads SET status='blocked' WHERE id='oro-child'`); err != nil {
+		t.Fatalf("blocked status rejected after migration: %v", err)
+	}
+	var readyCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads_ready`).Scan(&readyCount); err != nil {
+		t.Fatalf("query beads_ready: %v", err)
+	}
+	if readyCount != 0 {
+		t.Fatalf("beads_ready count = %d, want 0 with active assignment and blocked child", readyCount)
+	}
+	rows, err := db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if rows.Next() {
+		t.Fatalf("foreign_key_check returned a violation")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("foreign_key_check rows: %v", err)
+	}
+}
+
+func TestMigrateBeadSchemaToleratesPreexistingForeignKeyViolations(t *testing.T) {
+	db, err := dbutil.OpenDB(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("exec runtime schema: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+CREATE TABLE beads (
+    id                    TEXT PRIMARY KEY,
+    title                 TEXT NOT NULL,
+    description           TEXT NOT NULL DEFAULT '',
+    acceptance_criteria   TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL CHECK (status IN ('open','in_progress','closed')),
+    priority              INTEGER NOT NULL DEFAULT 2,
+    type                  TEXT NOT NULL DEFAULT 'task',
+    parent_id             TEXT REFERENCES beads(id),
+    owner                 TEXT,
+    estimated_minutes     INTEGER,
+    tier                  TEXT,
+    model                 TEXT,
+    deferred_until        TEXT,
+    close_reason          TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    closed_at             TEXT,
+    deleted               INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE bead_deps (
+    bead_id       TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    depends_on_id TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,
+    type          TEXT NOT NULL DEFAULT 'blocks',
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    created_by    TEXT,
+    PRIMARY KEY (bead_id, depends_on_id, type)
+);
+INSERT INTO beads (id, title, status) VALUES ('oro-child', 'child', 'open');
+INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-child', 'oro-missing-parent', 'parent-child');
+`)
+	if err != nil {
+		t.Fatalf("seed old bead schema with dangling dependency: %v", err)
+	}
+
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate old bead schema with preexisting FK violation: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE beads SET status='blocked' WHERE id='oro-child'`); err != nil {
+		t.Fatalf("blocked status rejected after migration: %v", err)
+	}
+	var violationCount int
+	rows, err := db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("foreign_key_check: %v", err)
+	}
+	for rows.Next() {
+		violationCount++
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close foreign_key_check rows: %v", err)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("foreign_key_check rows: %v", err)
+	}
+	if violationCount != 1 {
+		t.Fatalf("foreign_key_check violations = %d, want the one preexisting dangling dependency", violationCount)
+	}
+}
+
 func testBeadSchemaMigration(t *testing.T) {
 	t.Helper()
 	db, err := dbutil.OpenDB(":memory:")

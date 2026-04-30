@@ -369,30 +369,33 @@ func (s *SQLiteStore) ListDependencies(ctx context.Context, beadID string) ([]pr
 
 // CountByStatus returns open, in-progress, and closed bead counts.
 func (s *SQLiteStore) CountByStatus(ctx context.Context) (StatusCounts, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM beads WHERE deleted=0 GROUP BY status`)
+	var counts StatusCounts
+	err := s.db.QueryRowContext(ctx, `
+SELECT
+  COALESCE(SUM(CASE
+    WHEN b.status IN ('open','blocked')
+      AND NOT EXISTS (
+        SELECT 1 FROM assignments a
+        WHERE a.bead_id = b.id
+          AND a.status = 'active'
+      )
+    THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE
+    WHEN b.status = 'in_progress'
+      OR (
+        b.status != 'closed'
+        AND EXISTS (
+          SELECT 1 FROM assignments a
+          WHERE a.bead_id = b.id
+            AND a.status = 'active'
+        )
+      )
+    THEN 1 ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN b.status = 'closed' THEN 1 ELSE 0 END), 0)
+FROM beads b
+WHERE b.deleted = 0`).Scan(&counts.Open, &counts.InProgress, &counts.Closed)
 	if err != nil {
 		return StatusCounts{}, fmt.Errorf("beadstore: count statuses: %w", err)
-	}
-	defer rows.Close()
-
-	var counts StatusCounts
-	for rows.Next() {
-		var status string
-		var count int
-		if err := rows.Scan(&status, &count); err != nil {
-			return StatusCounts{}, fmt.Errorf("beadstore: scan status count: %w", err)
-		}
-		switch status {
-		case "open":
-			counts.Open = count
-		case "in_progress":
-			counts.InProgress = count
-		case "closed":
-			counts.Closed = count
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return StatusCounts{}, fmt.Errorf("beadstore: iterate status counts: %w", err)
 	}
 	return counts, nil
 }
@@ -837,6 +840,10 @@ func (s *updateStatement) addStatus(status *string) {
 	switch *status {
 	case "open":
 		s.assignments = append(s.assignments, "deferred_until=NULL", "closed_at=NULL", "close_reason=NULL")
+	case "blocked":
+		s.assignments = append(s.assignments, "deferred_until=NULL", "closed_at=NULL", "close_reason=NULL")
+	case "in_progress":
+		s.assignments = append(s.assignments, "closed_at=NULL", "close_reason=NULL")
 	case "closed":
 		s.assignments = append(s.assignments, "closed_at=COALESCE(closed_at, ?)")
 		s.args = append(s.args, nowString())
@@ -901,7 +908,7 @@ func updatePayload(params UpdateParams) map[string]any {
 }
 
 func validStatus(status string) bool {
-	return status == "open" || status == "in_progress" || status == "closed"
+	return status == "open" || status == "in_progress" || status == "blocked" || status == "closed"
 }
 
 func isAllowedModel(model string) bool {

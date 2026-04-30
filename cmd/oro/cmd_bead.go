@@ -641,7 +641,7 @@ func listBeadsForCmd(ctx context.Context, s beadstore.Store, cmd *cobra.Command)
 	if err != nil {
 		return nil, fmt.Errorf("list beads for status %q: %w", status, err)
 	}
-	return applyBeadListFilters(beads, status, parent, limit), nil
+	return applyBeadListFilters(beads, "", parent, limit), nil
 }
 
 func applyBeadListFilters(beads []protocol.Bead, status, parent string, limit int) []protocol.Bead {
