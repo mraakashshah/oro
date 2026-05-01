@@ -777,6 +777,14 @@ func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 
 	// Wait for the listener to be ready
 	waitFor(t, func() bool {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("dispatcher exited before listener ready: %v", err)
+			}
+			t.Fatal("dispatcher exited before listener ready")
+		default:
+		}
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		return d.listener != nil

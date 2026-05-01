@@ -2992,7 +2992,8 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	pbSnapshot := d.sortBeadsByPriority(beads)
 
 	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.
-	d.maybeAutoScale(ctx, len(beads), len(idle))
+	queueDepth, idleCount := autoscaleInputsForIdleWorkers(idle, beads)
+	d.maybeAutoScale(ctx, queueDepth, idleCount)
 
 	// Priority contention is now handled by the preemption system (oro-wofg).
 	// Escalating to the manager is noisy and unhelpful.
@@ -3006,6 +3007,38 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads)
 	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads)
+}
+
+func autoscaleInputsForIdleWorkers(idle []idleWorker, beads []protocol.Bead) (queueDepth, idleCount int) {
+	if len(idle) == 0 {
+		return len(beads), 0
+	}
+
+	targetedIdle := 0
+	generalIdle := 0
+	targets := make(map[string]bool)
+	for _, candidate := range idle {
+		if candidate.targetBeadID == "" {
+			generalIdle++
+			continue
+		}
+		targetedIdle++
+		targets[candidate.targetBeadID] = true
+	}
+	if targetedIdle == 0 || generalIdle > 0 {
+		return len(beads), len(idle)
+	}
+
+	generalQueueDepth := 0
+	for _, bead := range beads {
+		if !targets[bead.ID] {
+			generalQueueDepth++
+		}
+	}
+	if generalQueueDepth == 0 {
+		return len(beads), len(idle)
+	}
+	return targetedIdle + generalQueueDepth, 0
 }
 
 func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead) map[string]bool {

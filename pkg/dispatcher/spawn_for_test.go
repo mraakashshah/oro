@@ -130,6 +130,33 @@ func TestSpawnFor_TargetedWorkerDoesNotReceiveDifferentReadyBead(t *testing.T) {
 	}
 }
 
+func TestSpawnFor_TargetedIdleWorkerDoesNotBlockAutoscaleForOtherReadyBead(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.targetWorkers = 1
+	d.workers["worker-spawnfor-test"] = &trackedWorker{
+		id:           "worker-spawnfor-test",
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		targetBeadID: requestedID,
+	}
+	d.mu.Unlock()
+
+	d.tryAssign(context.Background())
+
+	waitFor(t, func() bool {
+		return len(pm.SpawnedIDs()) == 1
+	}, 1*time.Second)
+}
+
 func TestSpawnFor_TargetedWorkerGetsRequestedBeadNotFirstReady(t *testing.T) {
 	d, beads, wt, _, _, _ := newTestDispatcher(t)
 	pm := &mockProcessManager{}
