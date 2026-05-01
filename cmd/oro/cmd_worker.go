@@ -24,7 +24,7 @@ func newWorkerCmd() *cobra.Command {
 		Use:   "worker",
 		Short: "Run an oro worker process",
 		Long: `Starts a worker that connects to the dispatcher UDS socket,
-receives bead assignments, and executes them via claude -p.
+receives bead assignments, and executes them via the configured agent runtime.
 
 This command is typically invoked by the dispatcher, not by humans.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -52,7 +52,10 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	spawner := &worker.ClaudeSpawner{}
+	spawner, err := workerSpawnerForRuntime()
+	if err != nil {
+		return err
+	}
 	w, err := worker.New(id, socketPath, spawner)
 	if err != nil {
 		return fmt.Errorf("create worker %s: %w", id, err)
@@ -81,6 +84,14 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 		_ = memStore.SaveVocab(context.Background())
 	}
 	return nil
+}
+
+func workerSpawnerForRuntime() (worker.StreamingSpawner, error) {
+	runtime, err := resolveProductionRuntime()
+	if err != nil {
+		return nil, err
+	}
+	return runtime.workerSpawn, nil
 }
 
 // openWorkerMemoryStore creates a memory.Store from an open DB connection.
