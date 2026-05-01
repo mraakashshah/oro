@@ -17,7 +17,11 @@ import (
 // and that the git repository is in a good state for oro to operate.
 // Returns an error with an actionable message if any check fails.
 func runPreflightChecks() error {
-	return runPreflightChecksForTools("tmux", "claude", "bd", "git")
+	return runPreflightChecksForTools(standardPreflightTools()...)
+}
+
+func standardPreflightTools() []string {
+	return []string{"tmux", "claude", "git"}
 }
 
 func runPreflightChecksForTools(requiredTools ...string) error {

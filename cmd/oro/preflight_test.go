@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -28,7 +29,7 @@ func TestPreflightChecks_ErrorMessage(t *testing.T) {
 	// verify that the error messages contain the tool name and guidance.
 	//
 	// This test documents the expected error format.
-	requiredTools := []string{"tmux", "claude", "bd", "git"}
+	requiredTools := standardPreflightTools()
 
 	for _, tool := range requiredTools {
 		// Verify each tool is mentioned in our implementation.
@@ -52,6 +53,29 @@ func TestPreflightChecks_GitRepoStatus(t *testing.T) {
 		// If this fails, it should be because the repo is in a bad state,
 		// not because the function doesn't exist.
 		t.Logf("preflight checks reported: %v", err)
+	}
+}
+
+func TestRunPreflightChecksNoLegacyBd(t *testing.T) {
+	tmpDir := t.TempDir()
+	for _, tool := range []string{"tmux", "claude", "git"} {
+		path := filepath.Join(tmpDir, tool)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("write tool %s: %v", tool, err)
+		}
+	}
+
+	t.Setenv("PATH", tmpDir)
+
+	if err := runPreflightChecks(); err != nil {
+		t.Fatalf("runPreflightChecks should pass without bd on PATH: %v", err)
+	}
+}
+
+func TestStandardPreflightTools(t *testing.T) {
+	want := []string{"tmux", "claude", "git"}
+	if got := standardPreflightTools(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("standard preflight tools = %v, want %v", got, want)
 	}
 }
 
@@ -419,11 +443,11 @@ func initGitRepo(dir string) error {
 	return nil
 }
 
-// skipIfToolsMissing skips the test when any oro-required tool (tmux, claude, bd)
+// skipIfToolsMissing skips the test when any oro-required tool (tmux, claude)
 // is not in PATH. Git is assumed present in all CI environments.
 func skipIfToolsMissing(t *testing.T) {
 	t.Helper()
-	for _, tool := range []string{"tmux", "claude", "bd"} {
+	for _, tool := range []string{"tmux", "claude"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("required tool %q not in PATH, skipping", tool)
 		}
