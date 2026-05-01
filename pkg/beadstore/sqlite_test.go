@@ -158,7 +158,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready: %v", err)
 	}
-	if ids(ready) != "oro-parent,oro-blocker,oro-ready" {
+	if ids(ready) != "oro-parent,oro-child,oro-missing-parent-child,oro-blocker,oro-ready" {
 		t.Fatalf("Ready ids = %s", ids(ready))
 	}
 
@@ -166,7 +166,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Blocked: %v", err)
 	}
-	if ids(blocked) != "oro-blocked,oro-manual-blocked,oro-stale-deferred-manual-blocked,oro-child,oro-missing-parent-child,oro-deferred-hard-blocked" {
+	if ids(blocked) != "oro-blocked,oro-manual-blocked,oro-stale-deferred-manual-blocked,oro-deferred-hard-blocked" {
 		t.Fatalf("Blocked ids = %s", ids(blocked))
 	}
 	counts, err := store.CountByStatus(ctx)
@@ -196,7 +196,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready after parent close: %v", err)
 	}
-	if ids(ready) != "oro-child,oro-blocker,oro-ready" {
+	if ids(ready) != "oro-child,oro-missing-parent-child,oro-blocker,oro-ready" {
 		t.Fatalf("Ready ids after parent close = %s", ids(ready))
 	}
 
@@ -221,8 +221,37 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready after close: %v", err)
 	}
-	if ids(ready) != "oro-blocked,oro-child,oro-ready" {
+	if ids(ready) != "oro-blocked,oro-child,oro-missing-parent-child,oro-ready" {
 		t.Fatalf("Ready after blocker close ids = %s", ids(ready))
+	}
+}
+
+func TestSQLiteStoreParentChildDoesNotBlockChildReadiness(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	mustCreate(t, store, CreateParams{ID: "oro-parent", Title: "parent", Type: "epic", Priority: 1})
+	mustCreate(t, store, CreateParams{ID: "oro-child", Title: "child", Priority: 0})
+	mustCreate(t, store, CreateParams{ID: "oro-blocker", Title: "blocker", Priority: 1})
+	mustCreate(t, store, CreateParams{ID: "oro-explicitly-blocked", Title: "explicitly blocked", Priority: 0})
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-child', 'oro-parent', 'parent-child')`)
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-explicitly-blocked', 'oro-parent', 'parent-child')`)
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-explicitly-blocked', 'oro-blocker', 'blocks')`)
+
+	ready, err := store.Ready(ctx)
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if ids(ready) != "oro-child,oro-parent,oro-blocker" {
+		t.Fatalf("Ready ids = %s, want parent-child child ready and explicitly blocked child absent", ids(ready))
+	}
+
+	blocked, err := store.Blocked(ctx)
+	if err != nil {
+		t.Fatalf("Blocked: %v", err)
+	}
+	if ids(blocked) != "oro-explicitly-blocked" {
+		t.Fatalf("Blocked ids = %s, want only explicit blocking dependency", ids(blocked))
 	}
 }
 

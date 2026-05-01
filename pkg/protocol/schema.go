@@ -282,7 +282,7 @@ WHERE b.deleted = 0
     SELECT 1 FROM bead_deps d
     LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
     WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks','parent-child')
+      AND d.type IN ('blocks','conditional-blocks')
       AND (parent.id IS NULL OR parent.status != 'closed')
   );
 
@@ -314,7 +314,7 @@ WHERE b.deleted = 0
       SELECT 1 FROM bead_deps d
       LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
       WHERE d.bead_id = b.id
-        AND d.type IN ('blocks','conditional-blocks','parent-child')
+        AND d.type IN ('blocks','conditional-blocks')
         AND (parent.id IS NULL OR parent.status != 'closed')
     )
   )

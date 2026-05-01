@@ -541,7 +541,7 @@ func (s *FakeStore) Export(ctx context.Context) ([]byte, error) {
 
 func (s *FakeStore) hasActiveBlockerLocked(bead protocol.Bead) bool {
 	for _, dependency := range bead.Dependencies {
-		if dependency.Type != "blocks" && dependency.Type != "conditional-blocks" && dependency.Type != "parent-child" {
+		if dependency.Type != "blocks" && dependency.Type != "conditional-blocks" {
 			continue
 		}
 		if dependency.DependsOnID == "" {
