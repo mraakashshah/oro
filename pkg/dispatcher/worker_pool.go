@@ -97,8 +97,13 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	d.mu.Lock()
 	// Consume the pending managed ID if present (delete is no-op if absent).
 	managed := d.pendingManagedIDs[id]
+	targetBeadID := d.pendingWorkerTargets[id]
 	delete(d.pendingManagedIDs, id)
+	delete(d.pendingWorkerTargets, id)
 	d.upsertWorker(id, conn, managed)
+	if targetBeadID != "" {
+		d.workers[id].targetBeadID = targetBeadID
+	}
 
 	// Check for pending ralph handoffs — assign immediately if one exists.
 	var h *pendingHandoff

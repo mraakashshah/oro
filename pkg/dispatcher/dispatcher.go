@@ -304,7 +304,13 @@ type trackedWorker struct {
 	shutdownApproved bool               // set by handleShutdownApproved; checked by checkShutdownApproved
 	shutdownReason   string             // why graceful shutdown was requested
 	managed          bool               // true if spawned by the dispatcher (vs externally connected)
+	targetBeadID     string             // set for spawn-for workers; only this bead may be assigned
 	prevSession      bool               // true if worker ID predates this dispatcher's startTime (previous session)
+}
+
+type idleWorker struct {
+	worker       *trackedWorker
+	targetBeadID string
 }
 
 const shutdownReasonScaleDown = "scale_down"
@@ -591,6 +597,10 @@ type Dispatcher struct {
 	// from this set and the trackedWorker.managed flag is set to true.
 	pendingManagedIDs map[string]bool
 
+	// pendingWorkerTargets tracks spawn-for worker IDs until they connect. The
+	// target is transferred to trackedWorker.targetBeadID in registerWorker.
+	pendingWorkerTargets map[string]string
+
 	// unexpectedManagedExits counts managed workers removed by checkHeartbeats
 	// (heartbeat or progress timeout). Used by reconcileScale to cap spawning:
 	// managedCount + unexpectedManagedExits >= 2*target blocks scaleUp, preventing
@@ -695,16 +705,17 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			epicMergeFailed:        make(map[string]bool),
 			processedExternalClose: make(map[string]bool),
 		},
-		priorityBeads:     make(map[string]bool),
-		pendingManagedIDs: make(map[string]bool),
-		workerReadyCh:     make(chan struct{}, 1),
-		shutdownCh:        make(chan struct{}),
-		beadsDir:          beadsDir,
-		panesDir:          filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
-		signaledPanes:     make(map[string]bool),
-		paneStates:        make(map[string]*paneState),
-		nowFunc:           time.Now,
-		acceptSem:         make(chan struct{}, 100), // limit to 100 concurrent connection handlers
+		priorityBeads:        make(map[string]bool),
+		pendingManagedIDs:    make(map[string]bool),
+		pendingWorkerTargets: make(map[string]string),
+		workerReadyCh:        make(chan struct{}, 1),
+		shutdownCh:           make(chan struct{}),
+		beadsDir:             beadsDir,
+		panesDir:             filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
+		signaledPanes:        make(map[string]bool),
+		paneStates:           make(map[string]*paneState),
+		nowFunc:              time.Now,
+		acceptSem:            make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
 }
 
@@ -2955,12 +2966,12 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	// Find idle workers and count total workers.
 	d.mu.Lock()
-	var idle []*trackedWorker
+	var idle []idleWorker
 	totalWorkers := 0
 	for _, w := range d.workers {
 		totalWorkers++
 		if w.state == protocol.WorkerIdle {
-			idle = append(idle, w)
+			idle = append(idle, idleWorker{worker: w, targetBeadID: w.targetBeadID})
 		}
 	}
 	d.mu.Unlock()
@@ -2993,18 +3004,65 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
+	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads)
+	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads)
+}
+
+func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead) map[string]bool {
+	assignedBeads := make(map[string]bool)
+	beadsByID := make(map[string]protocol.Bead, len(beads))
+	for _, bead := range beads {
+		beadsByID[bead.ID] = bead
+	}
+
+	for _, candidate := range idle {
+		if candidate.targetBeadID == "" {
+			continue
+		}
+		bead, ok := beadsByID[candidate.targetBeadID]
+		if !ok {
+			continue
+		}
+		_ = d.assignBead(ctx, candidate.worker, bead)
+		d.mu.Lock()
+		if candidate.worker.state != protocol.WorkerIdle {
+			assignedBeads[bead.ID] = true
+			candidate.worker.targetBeadID = ""
+			delete(d.priorityBeads, bead.ID)
+		}
+		d.mu.Unlock()
+	}
+	return assignedBeads
+}
+
+func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead, pbSnapshot, assignedBeads map[string]bool) {
 	// Assign beads to idle workers. Advance the idle cursor only when a worker is
 	// actually claimed — epics skipped in assignBead leave the worker idle so the
 	// next bead in the list can still be paired with it.
 	idleIdx := 0
 	for _, bead := range beads {
+		if assignedBeads[bead.ID] {
+			continue
+		}
 		if idleIdx >= len(idle) {
 			break
 		}
-		_ = d.assignBead(ctx, idle[idleIdx], bead)
+		for idleIdx < len(idle) {
+			d.mu.Lock()
+			isAssignableIdle := idle[idleIdx].worker.state == protocol.WorkerIdle && idle[idleIdx].worker.targetBeadID == ""
+			d.mu.Unlock()
+			if isAssignableIdle {
+				break
+			}
+			idleIdx++
+		}
+		if idleIdx >= len(idle) {
+			break
+		}
+		_ = d.assignBead(ctx, idle[idleIdx].worker, bead)
 		// Advance idle cursor and clean up priority snapshot under a single lock.
 		d.mu.Lock()
-		if idle[idleIdx].state != protocol.WorkerIdle {
+		if idle[idleIdx].worker.state != protocol.WorkerIdle {
 			idleIdx++
 		}
 		if pbSnapshot[bead.ID] {
@@ -4177,6 +4235,7 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 
 	d.mu.Lock()
 	d.pendingManagedIDs[newID] = true
+	d.pendingWorkerTargets[newID] = beadID
 	d.mu.Unlock()
 
 	_ = d.logEvent(context.Background(), "spawn_for", "dispatcher", beadID, newID, "")

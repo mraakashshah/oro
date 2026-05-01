@@ -82,6 +82,100 @@ func TestSpawnFor_WorkerImmediatelyReceivesAssignment(t *testing.T) {
 	}
 }
 
+func TestSpawnFor_TargetedWorkerDoesNotReceiveDifferentReadyBead(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	d.cfg.PollInterval = 10 * time.Second
+	d.cfg.FallbackPollInterval = 10 * time.Second
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	startDispatcher(t, d)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "spawn-for", requestedID)
+	if !ack.OK {
+		t.Fatalf("spawn-for directive failed: %s", ack.Detail)
+	}
+	waitFor(t, func() bool {
+		return len(pm.SpawnedIDs()) > 0
+	}, 1*time.Second)
+
+	workerID := pm.SpawnedIDs()[0]
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: workerID, ContextPct: 5},
+	})
+
+	if msg, ok := readMsg(t, conn, 300*time.Millisecond); ok && msg.Type == protocol.MsgAssign {
+		got := "<nil>"
+		if msg.Assign != nil {
+			got = msg.Assign.BeadID
+		}
+		t.Fatalf("targeted spawn-for worker was assigned %q, want no assignment until %q is ready", got, requestedID)
+	}
+
+	st, bid, ok := d.WorkerInfo(workerID)
+	if !ok || st != protocol.WorkerIdle || bid != "" {
+		t.Fatalf("expected targeted worker to remain idle, got state=%s bead=%q ok=%v", st, bid, ok)
+	}
+}
+
+func TestSpawnFor_TargetedWorkerGetsRequestedBeadNotFirstReady(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	d.cfg.PollInterval = 10 * time.Second
+	d.cfg.FallbackPollInterval = 10 * time.Second
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{
+		{ID: otherID, Priority: 0},
+		{ID: requestedID, Priority: 3},
+	})
+
+	startDispatcher(t, d)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "spawn-for", requestedID)
+	if !ack.OK {
+		t.Fatalf("spawn-for directive failed: %s", ack.Detail)
+	}
+	waitFor(t, func() bool {
+		return len(pm.SpawnedIDs()) > 0
+	}, 1*time.Second)
+
+	workerID := pm.SpawnedIDs()[0]
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: workerID, ContextPct: 5},
+	})
+
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok || msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN within 3s, got ok=%v type=%v", ok, msg.Type)
+	}
+	if msg.Assign == nil || msg.Assign.BeadID != requestedID {
+		t.Fatalf("expected bead %s assigned, got %v", requestedID, msg.Assign)
+	}
+}
+
 // TestIdleWorker_PicksUpQueuedBeadImmediately verifies that a worker connecting
 // while beads are queued receives an ASSIGN without waiting for the poll interval.
 //
