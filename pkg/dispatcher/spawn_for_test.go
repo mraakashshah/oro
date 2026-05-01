@@ -244,6 +244,53 @@ func TestSpawnFor_TargetedWorkerDoesNotConsumeUnrelatedPendingHandoff(t *testing
 	}
 }
 
+func TestSpawnFor_ReconnectingTargetedWorkerDoesNotConsumeUnrelatedPendingHandoff(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	workerID := "worker-spawnfor-test"
+	requestedID := "oro-spawnfor-requested"
+	handoffID := "oro-handoff-other"
+	oldConn := newMockConn()
+	newConn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         oldConn,
+		state:        protocol.WorkerIdle,
+		encoder:      json.NewEncoder(oldConn),
+		managed:      true,
+		targetBeadID: requestedID,
+	}
+	d.pendingHandoffs[handoffID] = &pendingHandoff{
+		beadID:   handoffID,
+		worktree: "/tmp/worktree-" + handoffID,
+		model:    "haiku",
+	}
+	d.mu.Unlock()
+
+	d.registerWorker(workerID, newConn)
+
+	if len(newConn.written) != 0 {
+		t.Fatalf("reconnected targeted worker received unrelated handoff assignment, wrote %d message(s)", len(newConn.written))
+	}
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	_, handoffStillPending := d.pendingHandoffs[handoffID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("expected worker to remain registered")
+	}
+	if w.state != protocol.WorkerIdle || w.beadID != "" || w.targetBeadID != requestedID {
+		t.Fatalf("expected reconnected targeted worker idle for %s, got state=%s bead=%q target=%q",
+			requestedID, w.state, w.beadID, w.targetBeadID)
+	}
+	if !handoffStillPending {
+		t.Fatalf("unrelated handoff %s was consumed by reconnected targeted worker", handoffID)
+	}
+}
+
 func TestSpawnFor_PendingTargetIsNotAssignedToGeneralIdleWorker(t *testing.T) {
 	d, beads, wt, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)
