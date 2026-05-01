@@ -1146,6 +1146,47 @@ func TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState(t *testing.T)
 	d.mu.Unlock()
 }
 
+func TestSpawnFor_StoppedWorkerHeartbeatTimeoutDoesNotEscalateCrash(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	now := time.Date(2026, 5, 1, 19, 30, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	workerID := "worker-spawnfor-stopped-timeout"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn,
+		state:    protocol.WorkerShuttingDown,
+		managed:  true,
+		spawnFor: true,
+		lastSeen: now.Add(-2 * d.cfg.HeartbeatTimeout),
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillTracked := d.workers[workerID]
+	unexpectedManagedExits := d.unexpectedManagedExits
+	d.mu.Unlock()
+	if stillTracked {
+		t.Fatal("stopped spawn-for worker should be reaped after heartbeat timeout")
+	}
+	if unexpectedManagedExits != 0 {
+		t.Fatalf("stopped spawn-for worker should not count as unexpected managed exit, got %d", unexpectedManagedExits)
+	}
+	if messages := esc.Messages(); len(messages) != 0 {
+		t.Fatalf("stopped spawn-for worker should not escalate worker crash, got %v", messages)
+	}
+
+	if got := eventCount(t, d.db, "spawn_for_shutdown_timeout"); got != 1 {
+		t.Fatalf("spawn_for_shutdown_timeout event count = %d, want 1", got)
+	}
+}
+
 func TestSpawnFor_TargetedWorkerGetsRequestedBeadNotFirstReady(t *testing.T) {
 	d, beads, wt, _, _, _ := newTestDispatcher(t)
 	pm := &mockProcessManager{}

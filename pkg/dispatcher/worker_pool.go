@@ -450,6 +450,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	d.mu.Lock()
 	var dead []string
 	var stuck []string
+	var stoppedSpawnFor []string
 	for id, w := range d.workers {
 		if w.state == protocol.WorkerReserved {
 			continue
@@ -457,6 +458,10 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 		// Liveness check: heartbeat timeout (applies to all non-reserved workers,
 		// including idle — an idle worker with a stale heartbeat is disconnected).
 		if now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
+			if w.spawnFor && w.state == protocol.WorkerShuttingDown && w.beadID == "" {
+				stoppedSpawnFor = append(stoppedSpawnFor, id)
+				continue
+			}
 			dead = append(dead, id)
 			continue
 		}
@@ -481,6 +486,12 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 			newManagedExits++
 		}
 		_ = d.logEventLocked(ctx, "heartbeat_timeout", "dispatcher", w.beadID, id, "")
+		_ = w.conn.Close()
+		delete(d.workers, id)
+	}
+	for _, id := range stoppedSpawnFor {
+		w := d.workers[id]
+		_ = d.logEventLocked(ctx, "spawn_for_shutdown_timeout", "dispatcher", "", id, "")
 		_ = w.conn.Close()
 		delete(d.workers, id)
 	}
