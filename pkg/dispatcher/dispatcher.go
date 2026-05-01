@@ -1216,6 +1216,12 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 		d.mu.Unlock()
 		return
 	}
+	if w.spawnFor && w.state == protocol.WorkerShuttingDown {
+		w.lastSeen = d.nowFunc()
+		d.mu.Unlock()
+		d.notifyAssignLoop()
+		return
+	}
 	beadID := w.beadID
 	delete(d.workers, workerID)
 	d.mu.Unlock()

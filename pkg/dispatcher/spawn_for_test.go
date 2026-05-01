@@ -1071,6 +1071,81 @@ func TestSpawnFor_KillBusyReconnectDoesNotResumeWork(t *testing.T) {
 	}
 }
 
+func TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	workerID := "worker-spawnfor-cleanup-reconnect"
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	conn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		spawnFor:     true,
+		targetBeadID: requestedID,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	d.GracefulShutdownWorker(workerID, time.Hour)
+	d.connCloseCleanup(workerID, conn)
+
+	d.mu.Lock()
+	if w := d.workers[workerID]; w == nil || w.state != protocol.WorkerShuttingDown || !w.spawnFor {
+		d.mu.Unlock()
+		t.Fatalf("conn cleanup lost stopped spawn-for metadata: worker=%#v", w)
+	}
+	d.pendingHandoffs[otherID] = &pendingHandoff{
+		beadID:   otherID,
+		worktree: "/tmp/worktree-handoff",
+		model:    "test-model",
+	}
+	d.mu.Unlock()
+
+	reconnectConn := newMockConn()
+	d.registerWorker(workerID, reconnectConn)
+	d.handleReconnect(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: workerID,
+			BeadID:   requestedID,
+			State:    "running",
+		},
+	})
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("spawn-for worker should remain tracked after reconnect")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		d.mu.Unlock()
+		t.Fatalf("spawn-for worker state after reconnect = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker resumed assignment after cleanup race: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+	if _, ok := d.pendingHandoffs[otherID]; !ok {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker consumed unrelated pending handoff %q", otherID)
+	}
+	d.mu.Unlock()
+}
+
 func TestSpawnFor_TargetedWorkerGetsRequestedBeadNotFirstReady(t *testing.T) {
 	d, beads, wt, _, _, _ := newTestDispatcher(t)
 	pm := &mockProcessManager{}
