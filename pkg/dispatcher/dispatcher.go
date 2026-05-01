@@ -309,6 +309,43 @@ type trackedWorker struct {
 	prevSession      bool               // true if worker ID predates this dispatcher's startTime (previous session)
 }
 
+func (w *trackedWorker) markShuttingDownWithoutAssignment() {
+	w.state = protocol.WorkerShuttingDown
+	w.assignmentID = 0
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	w.targetBeadID = ""
+}
+
+const directWorkerWriteTimeout = 250 * time.Millisecond
+
+func sendToWorkerWithoutBuffering(w *trackedWorker, msg protocol.Message) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+
+	if err := w.conn.SetWriteDeadline(time.Now().Add(directWorkerWriteTimeout)); err == nil {
+		defer func() { _ = w.conn.SetWriteDeadline(time.Time{}) }()
+	}
+	_, _ = w.conn.Write(data)
+}
+
+func sendShutdownWithoutBuffering(w *trackedWorker) {
+	sendToWorkerWithoutBuffering(w, protocol.Message{Type: protocol.MsgShutdown})
+}
+
+func sendPrepareShutdownWithoutBuffering(w *trackedWorker, timeout time.Duration) {
+	sendToWorkerWithoutBuffering(w, protocol.Message{
+		Type: protocol.MsgPrepareShutdown,
+		PrepareShutdown: &protocol.PrepareShutdownPayload{
+			Timeout: timeout,
+		},
+	})
+}
+
 type idleWorker struct {
 	worker       *trackedWorker
 	targetBeadID string
@@ -1439,16 +1476,14 @@ func (d *Dispatcher) releaseWorkerAfterDoneLocked(workerID, beadID string) doneW
 	w.targetBeadID = ""
 
 	if spawnFor {
-		d.shutdownCompletedSpawnForWorkerLocked(workerID, w)
+		d.shutdownCompletedSpawnForWorkerLocked(w)
 	}
 	return release
 }
 
-func (d *Dispatcher) shutdownCompletedSpawnForWorkerLocked(workerID string, w *trackedWorker) {
-	if err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown}); err != nil {
-		_ = w.conn.Close()
-		delete(d.workers, workerID)
-	}
+func (d *Dispatcher) shutdownCompletedSpawnForWorkerLocked(w *trackedWorker) {
+	sendShutdownWithoutBuffering(w)
+	w.markShuttingDownWithoutAssignment()
 }
 
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
@@ -2716,6 +2751,13 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	if beadID == "" {
 		d.mu.Lock()
 		if w, ok := d.workers[workerID]; ok {
+			if w.spawnFor && w.state == protocol.WorkerShuttingDown {
+				w.markShuttingDownWithoutAssignment()
+				sendShutdownWithoutBuffering(w)
+				w.lastSeen = d.nowFunc()
+				d.mu.Unlock()
+				return
+			}
 			w.state = protocol.WorkerIdle
 			w.beadID = ""
 			w.lastSeen = d.nowFunc()
@@ -2768,20 +2810,21 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 	var beadID string
 	var assignmentID int64
 	if ok {
-		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		w.shutdownApproved = true
 		beadID = w.beadID // capture before clearing
 		assignmentID = w.assignmentID
-		if w.shutdownReason == shutdownReasonScaleDown {
-			w.state = protocol.WorkerShuttingDown
+		if w.shutdownReason == shutdownReasonScaleDown || w.spawnFor {
+			sendShutdownWithoutBuffering(w)
+			w.markShuttingDownWithoutAssignment()
 		} else {
+			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 			w.state = protocol.WorkerIdle
 			w.shutdownReason = ""
+			w.assignmentID = 0
+			w.beadID = ""
+			w.epicID = ""
+			w.isEpicDecomp = false
 		}
-		w.assignmentID = 0
-		w.beadID = ""
-		w.epicID = ""
-		w.isEpicDecomp = false
 	}
 	d.mu.Unlock()
 
@@ -4288,9 +4331,16 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 	managed := w.managed
 	spawnFor := w.spawnFor
 
-	// Close connection and remove worker from pool.
-	_ = w.conn.Close()
-	delete(d.workers, workerID)
+	if spawnFor {
+		sendShutdownWithoutBuffering(w)
+		if current := d.workers[workerID]; current == w {
+			w.markShuttingDownWithoutAssignment()
+		}
+	} else {
+		// Close connection and remove worker from pool.
+		_ = w.conn.Close()
+		delete(d.workers, workerID)
+	}
 
 	// Decrement target count only for managed workers; external workers are
 	// not counted against targetWorkers. Spawn-for workers are one-shot

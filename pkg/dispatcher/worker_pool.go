@@ -110,6 +110,12 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	if pendingTargetBeadID != "" {
 		d.workers[id].targetBeadID = pendingTargetBeadID
 	}
+	if w := d.workers[id]; w.spawnFor && w.state == protocol.WorkerShuttingDown {
+		w.markShuttingDownWithoutAssignment()
+		sendShutdownWithoutBuffering(w)
+		d.mu.Unlock()
+		return
+	}
 	targetBeadID := d.workers[id].targetBeadID
 
 	// Check for pending ralph handoffs. Spawn-for workers may only consume a
@@ -576,16 +582,20 @@ func (d *Dispatcher) gracefulShutdownWorker(workerID string, timeout time.Durati
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	w.shutdownCancel = cancel
 	w.shutdownReason = reason
-	if reason == shutdownReasonScaleDown {
+	if reason == shutdownReasonScaleDown || w.spawnFor {
 		w.state = protocol.WorkerShuttingDown
 	}
 
-	_ = d.sendToWorker(w, protocol.Message{
-		Type: protocol.MsgPrepareShutdown,
-		PrepareShutdown: &protocol.PrepareShutdownPayload{
-			Timeout: timeout,
-		},
-	})
+	if w.spawnFor {
+		sendPrepareShutdownWithoutBuffering(w, timeout)
+	} else {
+		_ = d.sendToWorker(w, protocol.Message{
+			Type: protocol.MsgPrepareShutdown,
+			PrepareShutdown: &protocol.PrepareShutdownPayload{
+				Timeout: timeout,
+			},
+		})
+	}
 	d.mu.Unlock()
 
 	// Spawn background goroutine to wait for approval or timeout
@@ -622,17 +632,18 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 	var assignmentID int64
 	w, ok := d.workers[workerID]
 	if ok {
-		_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 		beadID = w.beadID // capture before clearing
 		assignmentID = w.assignmentID
-		if w.shutdownReason == shutdownReasonScaleDown {
-			w.state = protocol.WorkerShuttingDown
+		if w.shutdownReason == shutdownReasonScaleDown || w.spawnFor {
+			sendShutdownWithoutBuffering(w)
+			w.markShuttingDownWithoutAssignment()
 		} else {
+			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 			w.state = protocol.WorkerIdle
 			w.shutdownReason = ""
+			w.assignmentID = 0
+			w.beadID = ""
 		}
-		w.assignmentID = 0
-		w.beadID = ""
 		w.shutdownCancel = nil
 	}
 	d.mu.Unlock()
