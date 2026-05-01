@@ -99,6 +99,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	managed := d.pendingManagedIDs[id]
 	pendingTargetBeadID := d.pendingWorkerTargets[id]
 	delete(d.pendingManagedIDs, id)
+	delete(d.pendingManagedSince, id)
 	delete(d.pendingWorkerTargets, id)
 	d.upsertWorker(id, conn, managed)
 	if pendingTargetBeadID != "" {

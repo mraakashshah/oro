@@ -330,6 +330,67 @@ func TestSpawnFor_PendingTargetIsNotAssignedToGeneralIdleWorker(t *testing.T) {
 	}
 }
 
+func TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	now := time.Date(2026, 5, 1, 4, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.HeartbeatTimeout = time.Second
+
+	requestedID := "oro-spawnfor-requested"
+	staleWorkerID := "worker-spawnfor-stale"
+	generalWorkerID := "worker-general-idle"
+	generalConn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: requestedID, Priority: 0}})
+
+	d.mu.Lock()
+	d.targetWorkers = 1
+	d.pendingManagedIDs[staleWorkerID] = true
+	d.pendingManagedSince[staleWorkerID] = now.Add(-2 * time.Second)
+	d.pendingWorkerTargets[staleWorkerID] = requestedID
+	d.priorityBeads[requestedID] = true
+	d.workers[generalWorkerID] = &trackedWorker{
+		id:      generalWorkerID,
+		conn:    generalConn,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(generalConn),
+		managed: false,
+	}
+	d.mu.Unlock()
+
+	d.tryAssign(context.Background())
+
+	if len(generalConn.written) == 0 {
+		t.Fatal("stale pending spawn-for target reserved bead forever; general idle worker received no assignment")
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(generalConn.written[0], &msg); err != nil {
+		t.Fatalf("unmarshal assignment: %v", err)
+	}
+	if msg.Type != protocol.MsgAssign || msg.Assign == nil || msg.Assign.BeadID != requestedID {
+		t.Fatalf("expected general worker assigned stale spawn-for bead %s, got type=%s assign=%v",
+			requestedID, msg.Type, msg.Assign)
+	}
+
+	d.mu.Lock()
+	_, pendingManaged := d.pendingManagedIDs[staleWorkerID]
+	_, pendingSince := d.pendingManagedSince[staleWorkerID]
+	_, pendingTarget := d.pendingWorkerTargets[staleWorkerID]
+	exits := d.unexpectedManagedExits
+	d.mu.Unlock()
+	if pendingManaged || pendingSince || pendingTarget {
+		t.Fatalf("stale pending worker was not fully cleared: managed=%v since=%v target=%v",
+			pendingManaged, pendingSince, pendingTarget)
+	}
+	if exits != 1 {
+		t.Fatalf("expected stale pending worker to count as one managed exit, got %d", exits)
+	}
+}
+
 func TestSpawnFor_TargetClearedAfterMatchingPendingHandoffAssignment(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 

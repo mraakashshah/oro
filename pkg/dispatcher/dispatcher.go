@@ -597,6 +597,10 @@ type Dispatcher struct {
 	// from this set and the trackedWorker.managed flag is set to true.
 	pendingManagedIDs map[string]bool
 
+	// pendingManagedSince records when pending managed workers were spawned. It
+	// lets reconciliation discard workers that exited before their first heartbeat.
+	pendingManagedSince map[string]time.Time
+
 	// pendingWorkerTargets tracks spawn-for worker IDs until they connect. The
 	// target is transferred to trackedWorker.targetBeadID in registerWorker.
 	pendingWorkerTargets map[string]string
@@ -707,6 +711,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		},
 		priorityBeads:        make(map[string]bool),
 		pendingManagedIDs:    make(map[string]bool),
+		pendingManagedSince:  make(map[string]time.Time),
 		pendingWorkerTargets: make(map[string]string),
 		workerReadyCh:        make(chan struct{}, 1),
 		shutdownCh:           make(chan struct{}),
@@ -4276,6 +4281,7 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 	d.priorityBeads[beadID] = true
 	d.targetWorkers++
 	d.pendingManagedIDs[newID] = true
+	d.pendingManagedSince[newID] = d.nowFunc()
 	d.pendingWorkerTargets[newID] = beadID
 	d.mu.Unlock()
 
@@ -4284,6 +4290,7 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 		delete(d.priorityBeads, beadID)
 		d.targetWorkers--
 		delete(d.pendingManagedIDs, newID)
+		delete(d.pendingManagedSince, newID)
 		delete(d.pendingWorkerTargets, newID)
 		d.mu.Unlock()
 		return "", fmt.Errorf("spawn failed: %w", err)
@@ -4325,6 +4332,7 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	// sets managed=true when the respawned process connects.
 	if wasManaged {
 		d.pendingManagedIDs[workerID] = true
+		d.pendingManagedSince[workerID] = d.nowFunc()
 	}
 
 	// Target count remains unchanged (unlike kill-worker)
@@ -4459,6 +4467,7 @@ func (d *Dispatcher) reconcileScale() string {
 	defer d.reconcilingScale.Store(false)
 
 	d.mu.Lock()
+	d.cleanupStalePendingManagedLocked(d.nowFunc())
 	target := d.targetWorkers
 	// Count both connected managed workers AND pending spawns (oro-ovpc).
 	// Without counting pending, concurrent reconcileScale calls both see
@@ -4482,6 +4491,25 @@ func (d *Dispatcher) reconcileScale() string {
 		return d.scaleDown(target, managedCount)
 	default:
 		return ""
+	}
+}
+
+func (d *Dispatcher) cleanupStalePendingManagedLocked(now time.Time) {
+	if d.cfg.HeartbeatTimeout <= 0 {
+		return
+	}
+	for id := range d.pendingManagedSince {
+		if !d.pendingManagedIDs[id] {
+			delete(d.pendingManagedSince, id)
+			continue
+		}
+		if now.Sub(d.pendingManagedSince[id]) <= d.cfg.HeartbeatTimeout {
+			continue
+		}
+		delete(d.pendingManagedIDs, id)
+		delete(d.pendingManagedSince, id)
+		delete(d.pendingWorkerTargets, id)
+		d.unexpectedManagedExits++
 	}
 }
 
@@ -4511,6 +4539,7 @@ func (d *Dispatcher) scaleUp(target, connected int) string {
 		// Record as managed so registerWorker sets managed=true when it connects.
 		d.mu.Lock()
 		d.pendingManagedIDs[id] = true
+		d.pendingManagedSince[id] = d.nowFunc()
 		d.mu.Unlock()
 		spawned++
 	}
