@@ -199,7 +199,7 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
  │  └──────────────────────┘  └──────────────────────────┘ │
  └─────────────────────────────────────────────────────────┘
                           │
-                    beads (bd CLI)
+                    oro bead CLI
                           │
                           ▼
  ┌─────────────────────────────────────────────────────────┐
@@ -232,7 +232,7 @@ Three layers of persistent memory:
 
 | Layer | Storage | Scope | Access |
 |-------|---------|-------|--------|
-| **Bead annotations** | Beads DB | Per-work-item notes, acceptance criteria | `bd show <id>` |
+| **Bead annotations** | Native bead store | Per-work-item notes, acceptance criteria | `oro bead show <id>` |
 | **Handoffs** | YAML files in worktree | Immediate task context for continuation | Auto-read by next worker |
 | **Project memory** | SQLite FTS5 | Cross-session learnings, patterns, decisions | `oro remember` / `oro recall` |
 
@@ -250,9 +250,6 @@ Runtime requirements (macOS only):
 # Supported agent runtime CLIs
 claude --version
 codex --version
-
-# Beads issue tracker
-brew install beads
 
 # tmux (for swarm sessions)
 brew install tmux
@@ -430,7 +427,7 @@ oro stop
 
 ### Beads
 
-Work items tracked by the `bd` CLI. Each bead has a title, description, acceptance criteria, priority (P0–P4), type (task/feature/bug/epic), and optional dependencies. The dispatcher assigns ready beads (no unresolved blockers) to idle workers.
+Work items tracked by the native `oro bead` CLI. Each bead has a title, description, acceptance criteria, priority (P0-P4), type (task/feature/bug/epic), and optional dependencies. The dispatcher assigns ready beads (no unresolved blockers) to idle workers.
 
 ### Epics
 

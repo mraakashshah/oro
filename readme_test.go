@@ -37,3 +37,37 @@ func TestREADMEContainsReferencesSection(t *testing.T) {
 		}
 	}
 }
+
+func TestNoBdInstallInstructions(t *testing.T) {
+	docs := []string{
+		"docs/INSTALL.md",
+		"README.md",
+		"docs/dev-setup.md",
+	}
+
+	for _, path := range docs {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("Failed to read %s: %v", path, err)
+		}
+
+		text := string(content)
+		forbidden := []string{
+			"bd CLI",
+			"`bd ",
+			"bd version",
+			"brew install beads",
+			"Beads issue tracker",
+			"pinned bd",
+		}
+		for _, phrase := range forbidden {
+			if strings.Contains(text, phrase) {
+				t.Errorf("%s contains operator-facing bd instruction/reference %q", path, phrase)
+			}
+		}
+
+		if path != "docs/dev-setup.md" && !strings.Contains(text, "oro bead") {
+			t.Errorf("%s must reference native oro bead operator workflows", path)
+		}
+	}
+}
