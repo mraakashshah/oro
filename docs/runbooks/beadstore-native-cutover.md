@@ -207,6 +207,11 @@ Restart dispatcher and workers from this environment. Workers inherit the
 dispatcher daemon environment, so start the dispatcher from a deliberately
 stripped `PATH` that resolves `oro` but not `bd`.
 
+In sqlite mode, the dispatcher must not enter legacy bd/Dolt health recovery.
+If `events` contains `dolt_recovery_started` after sqlite restart, stop before
+assigning worker proof beads and fix the dispatcher; with `bd` stripped from
+`PATH`, legacy recovery pauses assignment instead of recovering anything useful.
+
 ```bash
 state_dir=$(dirname "$state_db")
 pid_path=${ORO_PID_PATH:-"$state_dir/oro.pid"}

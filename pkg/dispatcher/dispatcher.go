@@ -467,6 +467,9 @@ type Dispatcher struct {
 	escalator Escalator
 	memories  *memory.Store
 	codeIndex CodeIndex // interface for FTS5 code search (nil means no search)
+	// beadSourceMode is the normalized ORO_BEADSOURCE_MODE captured at startup.
+	// It controls legacy bd/Dolt safety loops that must not run after sqlite cutover.
+	beadSourceMode string
 
 	// embedder fields — populated by the warm-up goroutine (next bead).
 	// embedderReady == nil means semantic search is disabled for this session.
@@ -650,7 +653,8 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	memStore := memory.NewStore(db)
 	// NewEmbedder returns the default *TFIDFEmbedder implementation of the Embedder interface.
 	memStore.SetEmbedder(memory.NewEmbedder())
-	selectedBeads, err := selectStore(context.Background(), os.Getenv("ORO_BEADSOURCE_MODE"), beads, db, memStore)
+	beadSourceMode := strings.ToLower(strings.TrimSpace(os.Getenv("ORO_BEADSOURCE_MODE")))
+	selectedBeads, err := selectStore(context.Background(), beadSourceMode, beads, db, memStore)
 	if err != nil {
 		return nil, err
 	}
@@ -664,6 +668,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		escalator:      esc,
 		memories:       memStore,
 		codeIndex:      codeIdx,
+		beadSourceMode: beadSourceMode,
 		repoRoot:       rootDir,
 		shutdownRunner: &ExecCommandRunner{Dir: rootDir},
 		acceptance:     &ShellAcceptanceRunner{},

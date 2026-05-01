@@ -85,3 +85,11 @@ PATH="$cutover_path" ORO_DB_PATH="$state_db" ORO_BEADSOURCE_MODE=sqlite "$oro_bi
   stopped, the smoke bead was closed manually for cleanup, and
   `scripts/check-phase8-no-writers.py` returned `active_writer_count=0`.
   New blocker: `oro-ect4.6`.
+- Root cause for `oro-ect4.6`: sqlite dispatcher startup still allowed the
+  legacy bd/Dolt health loop. With `bd` intentionally stripped from `PATH`, the
+  loop logged `dolt_recovery_started` and `dolt_recovery_failed` for
+  `bd dolt start`, leaving `doltRecovering=true`; `tryAssign` exits early in
+  that state. Fix branch `bead/oro-ect4.6-sqlite-assign` now captures
+  `ORO_BEADSOURCE_MODE` at dispatcher startup and skips bd/Dolt health recovery
+  only in sqlite mode. Detailed note:
+  `docs/runbooks/beadstore-sqlite-assignment-blocker-2026-04-30.md`.

@@ -52,6 +52,16 @@ func (d *Dispatcher) checkDoltHealth(ctx context.Context) bool {
 	return err == nil
 }
 
+func (d *Dispatcher) shouldCheckDoltHealth() bool {
+	return d.beadSourceMode != "sqlite"
+}
+
+func (d *Dispatcher) maybeRecoverDolt(ctx context.Context) {
+	if d.shouldCheckDoltHealth() && !d.doltRecovering.Load() && !d.checkDoltHealth(ctx) {
+		d.recoverDolt(ctx)
+	}
+}
+
 // applyHealth returns a JSON representation of the swarm health status.
 // It includes daemon status, pane statuses, and worker statuses.
 func (d *Dispatcher) applyHealth() (string, error) {

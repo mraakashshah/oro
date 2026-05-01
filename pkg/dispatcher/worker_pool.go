@@ -335,9 +335,7 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 			case <-backupTicker.C:
 				d.backupFullState(ctx)
 			case <-doltHealthTicker.C:
-				if !d.doltRecovering.Load() && !d.checkDoltHealth(ctx) {
-					d.recoverDolt(ctx)
-				}
+				d.maybeRecoverDolt(ctx)
 			}
 			return false
 		}()
