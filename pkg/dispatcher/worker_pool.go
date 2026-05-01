@@ -448,66 +448,11 @@ func managedWorkerIDs(slices ...[]workerExitInfo) []string {
 func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	now := d.nowFunc()
 	d.mu.Lock()
-	var dead []string
-	var stuck []string
-	var stoppedSpawnFor []string
-	for id, w := range d.workers {
-		if w.state == protocol.WorkerReserved {
-			continue
-		}
-		// Liveness check: heartbeat timeout (applies to all non-reserved workers,
-		// including idle — an idle worker with a stale heartbeat is disconnected).
-		if now.Sub(w.lastSeen) > d.cfg.HeartbeatTimeout {
-			if w.spawnFor && w.state == protocol.WorkerShuttingDown && w.beadID == "" {
-				stoppedSpawnFor = append(stoppedSpawnFor, id)
-				continue
-			}
-			dead = append(dead, id)
-			continue
-		}
-		// Progress check: busy worker has not made meaningful progress.
-		if w.state == protocol.WorkerBusy && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > d.cfg.ProgressTimeout {
-			stuck = append(stuck, id)
-			continue
-		}
-		// Review timeout: reviewing worker has stalled without progress.
-		if w.state == protocol.WorkerReviewing && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > d.cfg.ReviewTimeout {
-			stuck = append(stuck, id)
-		}
-	}
-	// Remove dead workers and collect info for escalation after unlock.
-	// Count managed exits inline to feed the reconcileScale cap (oro-kdne).
-	var newManagedExits int
-	deadWorkers := make([]workerExitInfo, 0, len(dead))
-	for _, id := range dead {
-		w := d.workers[id]
-		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, prevSession: w.prevSession, managed: w.managed})
-		if w.managed && !w.spawnFor {
-			newManagedExits++
-		}
-		_ = d.logEventLocked(ctx, "heartbeat_timeout", "dispatcher", w.beadID, id, "")
-		_ = w.conn.Close()
-		delete(d.workers, id)
-	}
-	for _, id := range stoppedSpawnFor {
-		w := d.workers[id]
-		_ = d.logEventLocked(ctx, "spawn_for_shutdown_timeout", "dispatcher", "", id, "")
-		_ = w.conn.Close()
-		delete(d.workers, id)
-	}
-	// Kill stuck workers and collect info for escalation after unlock.
-	stuckWorkers := make([]workerExitInfo, 0, len(stuck))
-	for _, id := range stuck {
-		w := d.workers[id]
-		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, managed: w.managed})
-		if w.managed && !w.spawnFor {
-			newManagedExits++
-		}
-		_ = d.logEventLocked(ctx, "progress_timeout", "dispatcher", w.beadID, id,
-			fmt.Sprintf(`{"last_progress_ago":%q}`, now.Sub(w.lastProgress).Round(time.Second)))
-		_ = w.conn.Close()
-		delete(d.workers, id)
-	}
+	dead, stuck, stoppedSpawnFor := d.collectTimedOutWorkersLocked(now)
+	deadWorkers, deadManagedExits := d.removeDeadWorkersLocked(ctx, dead)
+	d.removeStoppedSpawnForWorkersLocked(ctx, stoppedSpawnFor)
+	stuckWorkers, stuckManagedExits := d.removeStuckWorkersLocked(ctx, stuck, now)
+	newManagedExits := deadManagedExits + stuckManagedExits
 	d.unexpectedManagedExits += newManagedExits
 	d.mu.Unlock()
 
@@ -521,6 +466,90 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 
 	// Kill OS processes for timed-out managed workers (best-effort, outside lock).
 	d.killManagedWorkers(managedWorkerIDs(deadWorkers, stuckWorkers))
+}
+
+func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor []string) {
+	for id, w := range d.workers {
+		if w.state == protocol.WorkerReserved {
+			continue
+		}
+		if stoppedSpawnForHeartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
+			stoppedSpawnFor = append(stoppedSpawnFor, id)
+			continue
+		}
+		// Liveness check: heartbeat timeout (applies to all non-reserved workers,
+		// including idle — an idle worker with a stale heartbeat is disconnected).
+		if heartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
+			dead = append(dead, id)
+			continue
+		}
+		// Progress check: busy worker has not made meaningful progress.
+		if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
+			stuck = append(stuck, id)
+			continue
+		}
+		// Review timeout: reviewing worker has stalled without progress.
+		if workerReviewTimedOut(w, now, d.cfg.ReviewTimeout) {
+			stuck = append(stuck, id)
+		}
+	}
+	return dead, stuck, stoppedSpawnFor
+}
+
+func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string) (deadWorkers []workerExitInfo, managedExits int) {
+	deadWorkers = make([]workerExitInfo, 0, len(dead))
+	for _, id := range dead {
+		w := d.workers[id]
+		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, prevSession: w.prevSession, managed: w.managed})
+		if w.managed && !w.spawnFor {
+			managedExits++
+		}
+		_ = d.logEventLocked(ctx, "heartbeat_timeout", "dispatcher", w.beadID, id, "")
+		_ = w.conn.Close()
+		delete(d.workers, id)
+	}
+	return deadWorkers, managedExits
+}
+
+func (d *Dispatcher) removeStoppedSpawnForWorkersLocked(ctx context.Context, stoppedSpawnFor []string) {
+	for _, id := range stoppedSpawnFor {
+		w := d.workers[id]
+		_ = d.logEventLocked(ctx, "spawn_for_shutdown_timeout", "dispatcher", "", id, "")
+		_ = w.conn.Close()
+		delete(d.workers, id)
+	}
+}
+
+func (d *Dispatcher) removeStuckWorkersLocked(ctx context.Context, stuck []string, now time.Time) (stuckWorkers []workerExitInfo, managedExits int) {
+	stuckWorkers = make([]workerExitInfo, 0, len(stuck))
+	for _, id := range stuck {
+		w := d.workers[id]
+		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, managed: w.managed})
+		if w.managed && !w.spawnFor {
+			managedExits++
+		}
+		_ = d.logEventLocked(ctx, "progress_timeout", "dispatcher", w.beadID, id,
+			fmt.Sprintf(`{"last_progress_ago":%q}`, now.Sub(w.lastProgress).Round(time.Second)))
+		_ = w.conn.Close()
+		delete(d.workers, id)
+	}
+	return stuckWorkers, managedExits
+}
+
+func stoppedSpawnForHeartbeatTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
+	return w.spawnFor && w.state == protocol.WorkerShuttingDown && w.beadID == "" && heartbeatTimedOut(w, now, timeout)
+}
+
+func heartbeatTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
+	return now.Sub(w.lastSeen) > timeout
+}
+
+func workerProgressTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
+	return w.state == protocol.WorkerBusy && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
+}
+
+func workerReviewTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
+	return w.state == protocol.WorkerReviewing && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
 }
 
 // --- UDS send helper ---
