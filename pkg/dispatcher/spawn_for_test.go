@@ -244,6 +244,80 @@ func TestSpawnFor_TargetedWorkerDoesNotConsumeUnrelatedPendingHandoff(t *testing
 	}
 }
 
+func TestSpawnFor_PendingTargetIsNotAssignedToGeneralIdleWorker(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	requestedID := "oro-spawnfor-requested"
+	generalWorkerID := "worker-general-idle"
+	generalConn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: requestedID, Priority: 0}})
+
+	d.mu.Lock()
+	d.targetWorkers = 1
+	d.pendingManagedIDs["worker-spawnfor-pending"] = true
+	d.pendingWorkerTargets["worker-spawnfor-pending"] = requestedID
+	d.priorityBeads[requestedID] = true
+	d.workers[generalWorkerID] = &trackedWorker{
+		id:      generalWorkerID,
+		conn:    generalConn,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(generalConn),
+		managed: false,
+	}
+	d.mu.Unlock()
+
+	d.tryAssign(context.Background())
+
+	if len(generalConn.written) != 0 {
+		var msg protocol.Message
+		_ = json.Unmarshal(generalConn.written[0], &msg)
+		t.Fatalf("general worker received pending spawn-for bead assignment: type=%s assign=%v", msg.Type, msg.Assign)
+	}
+	st, bid, ok := d.WorkerInfo(generalWorkerID)
+	if !ok || st != protocol.WorkerIdle || bid != "" {
+		t.Fatalf("expected general worker to remain idle, got state=%s bead=%q ok=%v", st, bid, ok)
+	}
+}
+
+func TestSpawnFor_TargetClearedAfterMatchingPendingHandoffAssignment(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	workerID := "worker-spawnfor-test"
+	requestedID := "oro-spawnfor-requested"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.pendingManagedIDs[workerID] = true
+	d.pendingWorkerTargets[workerID] = requestedID
+	d.pendingHandoffs[requestedID] = &pendingHandoff{
+		beadID:   requestedID,
+		worktree: "/tmp/worktree-" + requestedID,
+		model:    "haiku",
+	}
+	d.mu.Unlock()
+
+	d.registerWorker(workerID, conn)
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	_, handoffStillPending := d.pendingHandoffs[requestedID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("expected worker to remain registered")
+	}
+	if w.state != protocol.WorkerBusy || w.beadID != requestedID || w.targetBeadID != "" {
+		t.Fatalf("expected busy worker on %s with cleared target, got state=%s bead=%q target=%q",
+			requestedID, w.state, w.beadID, w.targetBeadID)
+	}
+	if handoffStillPending {
+		t.Fatalf("matching handoff %s should be consumed", requestedID)
+	}
+}
+
 func TestSpawnFor_TargetedIdleWorkerDoesNotBlockAutoscaleForOtherReadyBead(t *testing.T) {
 	d, beads, _, _, _, _ := newTestDispatcher(t)
 	pm := &mockProcessManager{}

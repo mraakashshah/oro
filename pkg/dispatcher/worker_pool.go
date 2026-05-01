@@ -173,6 +173,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		return
 	}
 	w.state = protocol.WorkerBusy
+	w.targetBeadID = ""
 	if err := d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{

@@ -2990,6 +2990,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	beads := d.filterAssignable(ctx, allBeads)
 
 	pbSnapshot := d.sortBeadsByPriority(beads)
+	reservedTargets := d.reservedSpawnForTargets()
 
 	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.
 	queueDepth, idleCount := autoscaleInputsForIdleWorkers(idle, beads)
@@ -3006,7 +3007,25 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	}
 
 	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads)
-	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads)
+	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads, reservedTargets)
+}
+
+func (d *Dispatcher) reservedSpawnForTargets() map[string]bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	targets := make(map[string]bool, len(d.pendingWorkerTargets))
+	for _, target := range d.pendingWorkerTargets {
+		if target != "" {
+			targets[target] = true
+		}
+	}
+	for _, worker := range d.workers {
+		if worker.state == protocol.WorkerIdle && worker.targetBeadID != "" {
+			targets[worker.targetBeadID] = true
+		}
+	}
+	return targets
 }
 
 func autoscaleInputsForIdleWorkers(idle []idleWorker, beads []protocol.Bead) (queueDepth, idleCount int) {
@@ -3068,13 +3087,16 @@ func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleW
 	return assignedBeads
 }
 
-func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead, pbSnapshot, assignedBeads map[string]bool) {
+func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead, pbSnapshot, assignedBeads, reservedTargets map[string]bool) {
 	// Assign beads to idle workers. Advance the idle cursor only when a worker is
 	// actually claimed — epics skipped in assignBead leave the worker idle so the
 	// next bead in the list can still be paired with it.
 	idleIdx := 0
 	for _, bead := range beads {
 		if assignedBeads[bead.ID] {
+			continue
+		}
+		if reservedTargets[bead.ID] {
 			continue
 		}
 		if idleIdx >= len(idle) {
