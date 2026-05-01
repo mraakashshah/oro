@@ -2,11 +2,25 @@ package dispatcher //nolint:testpackage
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
+
+type hookProcessManager struct {
+	mockProcessManager
+	onSpawn func(id string)
+}
+
+func (m *hookProcessManager) Spawn(id string) (*os.Process, error) {
+	if m.onSpawn != nil {
+		m.onSpawn(id)
+	}
+	return m.mockProcessManager.Spawn(id)
+}
 
 // TestSpawnFor_WorkerImmediatelyReceivesAssignment verifies that a worker
 // spawned by the spawn-for directive receives an ASSIGN message without
@@ -127,6 +141,106 @@ func TestSpawnFor_TargetedWorkerDoesNotReceiveDifferentReadyBead(t *testing.T) {
 	st, bid, ok := d.WorkerInfo(workerID)
 	if !ok || st != protocol.WorkerIdle || bid != "" {
 		t.Fatalf("expected targeted worker to remain idle, got state=%s bead=%q ok=%v", st, bid, ok)
+	}
+}
+
+func TestSpawnFor_TargetRegisteredBeforeSpawnedWorkerCanConnect(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 1
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.mu.Unlock()
+	d.setState(StateRunning)
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	workerConn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	pm := &hookProcessManager{}
+	pm.onSpawn = func(id string) {
+		d.registerWorker(id, workerConn)
+	}
+	d.procMgr = pm
+
+	if _, err := d.applySpawnFor(requestedID); err != nil {
+		t.Fatalf("applySpawnFor failed: %v", err)
+	}
+	for _, workerID := range pm.SpawnedIDs() {
+		d.mu.Lock()
+		target := d.workers[workerID].targetBeadID
+		managed := d.workers[workerID].managed
+		workerCount := len(d.workers)
+		d.mu.Unlock()
+		if target != requestedID {
+			t.Fatalf("spawned worker=%s target=%q, want %q before assignment", workerID, target, requestedID)
+		}
+		if !managed {
+			t.Fatalf("spawned worker=%s is unmanaged before assignment", workerID)
+		}
+		if workerCount != 1 {
+			t.Fatalf("expected exactly 1 worker before assignment, got %d", workerCount)
+		}
+	}
+	if len(workerConn.written) != 0 {
+		t.Fatalf("spawn-for worker received %d message(s) during registration, want none", len(workerConn.written))
+	}
+	d.tryAssign(context.Background())
+
+	if len(workerConn.written) != 0 {
+		var msg protocol.Message
+		_ = json.Unmarshal(workerConn.written[0], &msg)
+		t.Fatalf("spawn-for worker received %d message(s), first type=%s assign=%v; want none until %s is ready",
+			len(workerConn.written), msg.Type, msg.Assign, requestedID)
+	}
+	for _, workerID := range pm.SpawnedIDs() {
+		st, bid, ok := d.WorkerInfo(workerID)
+		if !ok || st != protocol.WorkerIdle || bid != "" {
+			t.Fatalf("expected spawned worker=%s idle with no bead, got state=%s bead=%q ok=%v", workerID, st, bid, ok)
+		}
+	}
+}
+
+func TestSpawnFor_TargetedWorkerDoesNotConsumeUnrelatedPendingHandoff(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	workerID := "worker-spawnfor-test"
+	requestedID := "oro-spawnfor-requested"
+	handoffID := "oro-handoff-other"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.pendingManagedIDs[workerID] = true
+	d.pendingWorkerTargets[workerID] = requestedID
+	d.pendingHandoffs[handoffID] = &pendingHandoff{
+		beadID:   handoffID,
+		worktree: "/tmp/worktree-" + handoffID,
+		model:    "haiku",
+	}
+	d.mu.Unlock()
+
+	d.registerWorker(workerID, conn)
+
+	if len(conn.written) != 0 {
+		t.Fatalf("targeted worker received unrelated handoff assignment, wrote %d message(s)", len(conn.written))
+	}
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	_, handoffStillPending := d.pendingHandoffs[handoffID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("expected worker to remain registered")
+	}
+	if w.state != protocol.WorkerIdle || w.beadID != "" || w.targetBeadID != requestedID {
+		t.Fatalf("expected targeted worker idle for %s, got state=%s bead=%q target=%q",
+			requestedID, w.state, w.beadID, w.targetBeadID)
+	}
+	if !handoffStillPending {
+		t.Fatalf("unrelated handoff %s was consumed by targeted worker", handoffID)
 	}
 }
 

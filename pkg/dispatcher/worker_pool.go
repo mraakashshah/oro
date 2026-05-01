@@ -105,13 +105,22 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		d.workers[id].targetBeadID = targetBeadID
 	}
 
-	// Check for pending ralph handoffs — assign immediately if one exists.
+	// Check for pending ralph handoffs. Spawn-for workers may only consume a
+	// handoff for their target bead; unrelated handoffs must wait for a general
+	// worker or their own handoff respawn.
 	var h *pendingHandoff
 	var handoffBeadID string
-	for beadID, ph := range d.pendingHandoffs {
-		h = ph
-		handoffBeadID = beadID
-		break
+	if targetBeadID != "" {
+		if ph, ok := d.pendingHandoffs[targetBeadID]; ok {
+			h = ph
+			handoffBeadID = targetBeadID
+		}
+	} else {
+		for beadID, ph := range d.pendingHandoffs {
+			h = ph
+			handoffBeadID = beadID
+			break
+		}
 	}
 
 	if h != nil {

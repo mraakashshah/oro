@@ -44,7 +44,7 @@ These commands control the swarm. All connect to the dispatcher via UDS.
 - `oro directive focus <epic>` — prioritize beads belonging to the given epic
 - `oro directive status` — display current swarm state (workers, queue depth, active beads)
 - `oro directive kill-worker <id>` — terminate a specific worker and return its bead to queue
-- `oro directive spawn-for <bead-id>` — spawn a dedicated worker for a specific bead (doesn't change target count)
+- `oro directive spawn-for <bead-id>` — spawn a dedicated worker targeted at a specific bead
 - `oro directive restart-worker <id>` — kill and respawn a worker, requeue its bead
 - `oro directive preempt <id>` — gracefully preempt a worker for higher-priority work
 
@@ -97,7 +97,7 @@ Clear focus when:
 - **Scale down** when: queue is empty, most beads are blocked, or session is ending.
 - **Hard maximum**: never exceed the configured max (default 10).
 - **Merge contention**: watch for contention when running >5 workers. If merge conflicts spike, scale down.
-- **One-off priority work**: for P0 beads that need immediate attention without changing the target count, use `oro directive spawn-for <bead-id>` instead of scaling up.
+- **One-off priority work**: for P0 beads that need immediate attention, use `oro directive spawn-for <bead-id>` instead of assigning a general worker.
 
 ## Escalations
 

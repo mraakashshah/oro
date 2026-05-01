@@ -4237,6 +4237,7 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 	}
 	beadID := args
 
+	newID := fmt.Sprintf("worker-spawnfor-%d", d.nowFunc().UnixNano())
 	d.mu.Lock()
 	for _, w := range d.workers {
 		if w.beadID == beadID {
@@ -4245,31 +4246,26 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 			return "", fmt.Errorf("bead %s already assigned to %s", beadID, workerID)
 		}
 	}
-	d.priorityBeads[beadID] = true
-	d.targetWorkers++
-	d.mu.Unlock()
-
 	if d.procMgr == nil {
-		d.mu.Lock()
-		delete(d.priorityBeads, beadID)
-		d.targetWorkers--
 		d.mu.Unlock()
 		return "", fmt.Errorf("no process manager configured")
 	}
-
-	newID := fmt.Sprintf("worker-spawnfor-%d", d.nowFunc().UnixNano())
-	if _, err := d.procMgr.Spawn(newID); err != nil {
-		d.mu.Lock()
-		delete(d.priorityBeads, beadID)
-		d.targetWorkers--
-		d.mu.Unlock()
-		return "", fmt.Errorf("spawn failed: %w", err)
-	}
-
-	d.mu.Lock()
+	procMgr := d.procMgr
+	d.priorityBeads[beadID] = true
+	d.targetWorkers++
 	d.pendingManagedIDs[newID] = true
 	d.pendingWorkerTargets[newID] = beadID
 	d.mu.Unlock()
+
+	if _, err := procMgr.Spawn(newID); err != nil {
+		d.mu.Lock()
+		delete(d.priorityBeads, beadID)
+		d.targetWorkers--
+		delete(d.pendingManagedIDs, newID)
+		delete(d.pendingWorkerTargets, newID)
+		d.mu.Unlock()
+		return "", fmt.Errorf("spawn failed: %w", err)
+	}
 
 	_ = d.logEvent(context.Background(), "spawn_for", "dispatcher", beadID, newID, "")
 	return fmt.Sprintf("spawned worker %s for bead %s", newID, beadID), nil
