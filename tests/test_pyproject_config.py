@@ -20,8 +20,7 @@ def test_pyright_python_version():
 
     pyright_cfg = config.get("tool", {}).get("pyright", {})
     assert pyright_cfg.get("pythonVersion") == "3.13", (
-        f"pyproject.toml [tool.pyright] pythonVersion must be '3.13', "
-        f"got {pyright_cfg.get('pythonVersion')!r}"
+        f"pyproject.toml [tool.pyright] pythonVersion must be '3.13', got {pyright_cfg.get('pythonVersion')!r}"
     )
 
     pyrightconfig = PROJECT_ROOT / "pyrightconfig.json"
