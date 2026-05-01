@@ -2675,13 +2675,13 @@ func TestApplyDirective_SpawnFor(t *testing.T) {
 		t.Errorf("expected detail to mention bead ID, got: %s", detail)
 	}
 
-	// Assert: target count incremented
+	// Assert: spawn-for is one-shot capacity, not persistent general pool size.
 	d.mu.Lock()
 	targetCount := d.targetWorkers
 	hasPriority := d.priorityBeads["oro-test-bead"]
 	d.mu.Unlock()
-	if targetCount != 2 {
-		t.Errorf("targetWorkers = %d, want 2 (incremented from 1)", targetCount)
+	if targetCount != 1 {
+		t.Errorf("targetWorkers = %d, want 1 (spawn-for must not alter general pool target)", targetCount)
 	}
 	if !hasPriority {
 		t.Error("expected bead to be in priorityBeads")
@@ -13652,6 +13652,35 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 		d.mu.Unlock()
 		if target != 1 {
 			t.Errorf("targetWorkers = %d, want 1 after killing managed worker", target)
+		}
+	})
+
+	t.Run("managed spawn-for worker: targetWorkers NOT decremented", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     conn,
+			state:    protocol.WorkerIdle,
+			managed:  true,
+			spawnFor: true,
+			encoder:  json.NewEncoder(conn),
+		}
+		d.targetWorkers = 2
+		d.mu.Unlock()
+
+		_, err := d.applyKillWorker(workerID)
+		if err != nil {
+			t.Fatalf("applyKillWorker returned error: %v", err)
+		}
+
+		d.mu.Lock()
+		target := d.targetWorkers
+		d.mu.Unlock()
+		if target != 2 {
+			t.Errorf("targetWorkers = %d, want 2 after killing spawn-for worker", target)
 		}
 	})
 

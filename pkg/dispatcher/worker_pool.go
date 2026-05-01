@@ -97,11 +97,16 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	d.mu.Lock()
 	// Consume the pending managed ID if present (delete is no-op if absent).
 	managed := d.pendingManagedIDs[id]
+	spawnFor := d.pendingSpawnForWorkers[id]
 	pendingTargetBeadID := d.pendingWorkerTargets[id]
 	delete(d.pendingManagedIDs, id)
 	delete(d.pendingManagedSince, id)
 	delete(d.pendingWorkerTargets, id)
+	delete(d.pendingSpawnForWorkers, id)
 	d.upsertWorker(id, conn, managed)
+	if spawnFor {
+		d.workers[id].spawnFor = true
+	}
 	if pendingTargetBeadID != "" {
 		d.workers[id].targetBeadID = pendingTargetBeadID
 	}
@@ -466,7 +471,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	for _, id := range dead {
 		w := d.workers[id]
 		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, prevSession: w.prevSession, managed: w.managed})
-		if w.managed {
+		if w.managed && !w.spawnFor {
 			newManagedExits++
 		}
 		_ = d.logEventLocked(ctx, "heartbeat_timeout", "dispatcher", w.beadID, id, "")
@@ -478,7 +483,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	for _, id := range stuck {
 		w := d.workers[id]
 		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, managed: w.managed})
-		if w.managed {
+		if w.managed && !w.spawnFor {
 			newManagedExits++
 		}
 		_ = d.logEventLocked(ctx, "progress_timeout", "dispatcher", w.beadID, id,

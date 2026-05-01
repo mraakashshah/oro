@@ -173,6 +173,7 @@ func TestSpawnFor_TargetRegisteredBeforeSpawnedWorkerCanConnect(t *testing.T) {
 		d.mu.Lock()
 		target := d.workers[workerID].targetBeadID
 		managed := d.workers[workerID].managed
+		spawnFor := d.workers[workerID].spawnFor
 		workerCount := len(d.workers)
 		d.mu.Unlock()
 		if target != requestedID {
@@ -180,6 +181,9 @@ func TestSpawnFor_TargetRegisteredBeforeSpawnedWorkerCanConnect(t *testing.T) {
 		}
 		if !managed {
 			t.Fatalf("spawned worker=%s is unmanaged before assignment", workerID)
+		}
+		if !spawnFor {
+			t.Fatalf("spawned worker=%s is not marked spawn-for", workerID)
 		}
 		if workerCount != 1 {
 			t.Fatalf("expected exactly 1 worker before assignment, got %d", workerCount)
@@ -306,6 +310,7 @@ func TestSpawnFor_PendingTargetIsNotAssignedToGeneralIdleWorker(t *testing.T) {
 	d.mu.Lock()
 	d.targetWorkers = 1
 	d.pendingManagedIDs["worker-spawnfor-pending"] = true
+	d.pendingSpawnForWorkers["worker-spawnfor-pending"] = true
 	d.pendingWorkerTargets["worker-spawnfor-pending"] = requestedID
 	d.priorityBeads[requestedID] = true
 	d.workers[generalWorkerID] = &trackedWorker{
@@ -350,6 +355,7 @@ func TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever(t *testing.T) {
 	d.mu.Lock()
 	d.targetWorkers = 1
 	d.pendingManagedIDs[staleWorkerID] = true
+	d.pendingSpawnForWorkers[staleWorkerID] = true
 	d.pendingManagedSince[staleWorkerID] = now.Add(-2 * time.Second)
 	d.pendingWorkerTargets[staleWorkerID] = requestedID
 	d.priorityBeads[requestedID] = true
@@ -380,14 +386,15 @@ func TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever(t *testing.T) {
 	_, pendingManaged := d.pendingManagedIDs[staleWorkerID]
 	_, pendingSince := d.pendingManagedSince[staleWorkerID]
 	_, pendingTarget := d.pendingWorkerTargets[staleWorkerID]
+	_, pendingSpawnFor := d.pendingSpawnForWorkers[staleWorkerID]
 	exits := d.unexpectedManagedExits
 	d.mu.Unlock()
-	if pendingManaged || pendingSince || pendingTarget {
-		t.Fatalf("stale pending worker was not fully cleared: managed=%v since=%v target=%v",
-			pendingManaged, pendingSince, pendingTarget)
+	if pendingManaged || pendingSince || pendingTarget || pendingSpawnFor {
+		t.Fatalf("stale pending worker was not fully cleared: managed=%v since=%v target=%v spawnFor=%v",
+			pendingManaged, pendingSince, pendingTarget, pendingSpawnFor)
 	}
-	if exits != 1 {
-		t.Fatalf("expected stale pending worker to count as one managed exit, got %d", exits)
+	if exits != 0 {
+		t.Fatalf("expected stale spawn-for worker to stay out of general managed-exit cap, got %d", exits)
 	}
 }
 
@@ -442,6 +449,7 @@ func TestSpawnFor_TargetedIdleWorkerDoesNotBlockAutoscaleForOtherReadyBead(t *te
 		id:           "worker-spawnfor-test",
 		state:        protocol.WorkerIdle,
 		managed:      true,
+		spawnFor:     true,
 		targetBeadID: requestedID,
 	}
 	d.mu.Unlock()
@@ -451,6 +459,163 @@ func TestSpawnFor_TargetedIdleWorkerDoesNotBlockAutoscaleForOtherReadyBead(t *te
 	waitFor(t, func() bool {
 		return len(pm.SpawnedIDs()) == 1
 	}, 1*time.Second)
+}
+
+func TestSpawnFor_TargetedIdleWorkerAddsOneGeneralWorkerForOtherReadyBead(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 3
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.workers["worker-spawnfor-test"] = &trackedWorker{
+		id:           "worker-spawnfor-test",
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		spawnFor:     true,
+		targetBeadID: requestedID,
+	}
+	d.mu.Unlock()
+
+	d.tryAssign(context.Background())
+
+	waitFor(t, func() bool {
+		return len(pm.SpawnedIDs()) >= 1
+	}, 1*time.Second)
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("spawn-for targeted idle worker should cause exactly one general worker for one unrelated bead, got %d: %v",
+			got, pm.SpawnedIDs())
+	}
+	d.mu.Lock()
+	targetWorkers := d.targetWorkers
+	d.mu.Unlock()
+	if targetWorkers != 1 {
+		t.Fatalf("targetWorkers = %d, want 1 for the unrelated ready bead only", targetWorkers)
+	}
+}
+
+func TestSpawnFor_DoesNotAutoscaleGeneralWorkerWhenManualPoolDisabled(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 0
+	d.cfg.HeartbeatTimeout = time.Second
+
+	now := time.Date(2026, 5, 1, 5, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	if _, err := d.applySpawnFor(requestedID); err != nil {
+		t.Fatalf("applySpawnFor failed: %v", err)
+	}
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("spawn-for should spawn exactly one targeted worker, got %d", got)
+	}
+	workerID := pm.SpawnedIDs()[0]
+	conn := newMockConn()
+	d.registerWorker(workerID, conn)
+
+	d.tryAssign(context.Background())
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("manual pool spawned unrelated general worker while spawn-for target was idle; spawned=%v", pm.SpawnedIDs())
+	}
+	if len(conn.written) != 0 {
+		var msg protocol.Message
+		_ = json.Unmarshal(conn.written[0], &msg)
+		t.Fatalf("spawn-for worker received unrelated assignment: type=%s assign=%v", msg.Type, msg.Assign)
+	}
+
+	now = now.Add(2 * time.Second)
+	d.checkHeartbeats(context.Background())
+	d.tryAssign(context.Background())
+
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("manual pool spawned unrelated general worker after spawn-for worker exit; spawned=%v", pm.SpawnedIDs())
+	}
+	d.mu.Lock()
+	targetWorkers := d.targetWorkers
+	managedCount := d.managedWorkerCountLocked()
+	d.mu.Unlock()
+	if targetWorkers != 0 {
+		t.Fatalf("targetWorkers = %d, want 0 after spawn-for in manual mode", targetWorkers)
+	}
+	if managedCount != 0 {
+		t.Fatalf("general managed worker count = %d, want 0", managedCount)
+	}
+}
+
+func TestSpawnFor_DoneShutsDownOneShotWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	workerID := "worker-spawnfor-test"
+	beadID := "oro-spawnfor-requested"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: 42,
+		managed:      true,
+		spawnFor:     true,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.handleDone(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            beadID,
+			WorkerID:          workerID,
+			QualityGatePassed: true,
+		},
+	})
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("spawn-for worker should remain tracked until it disconnects")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		t.Fatalf("spawn-for worker state = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		t.Fatalf("spawn-for worker tracking not cleared: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.written) != 1 {
+		t.Fatalf("expected one shutdown message, got %d", len(conn.written))
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(conn.written[0], &msg); err != nil {
+		t.Fatalf("decode shutdown message: %v", err)
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("message type = %s, want %s", msg.Type, protocol.MsgShutdown)
+	}
 }
 
 func TestSpawnFor_TargetedWorkerGetsRequestedBeadNotFirstReady(t *testing.T) {

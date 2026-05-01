@@ -304,6 +304,7 @@ type trackedWorker struct {
 	shutdownApproved bool               // set by handleShutdownApproved; checked by checkShutdownApproved
 	shutdownReason   string             // why graceful shutdown was requested
 	managed          bool               // true if spawned by the dispatcher (vs externally connected)
+	spawnFor         bool               // true for one-shot workers spawned by spawn-for
 	targetBeadID     string             // set for spawn-for workers; only this bead may be assigned
 	prevSession      bool               // true if worker ID predates this dispatcher's startTime (previous session)
 }
@@ -311,6 +312,7 @@ type trackedWorker struct {
 type idleWorker struct {
 	worker       *trackedWorker
 	targetBeadID string
+	spawnFor     bool
 }
 
 const shutdownReasonScaleDown = "scale_down"
@@ -605,6 +607,11 @@ type Dispatcher struct {
 	// target is transferred to trackedWorker.targetBeadID in registerWorker.
 	pendingWorkerTargets map[string]string
 
+	// pendingSpawnForWorkers tracks one-shot spawn-for worker IDs until they
+	// connect. These workers are managed for process cleanup but do not count
+	// toward the general worker pool target.
+	pendingSpawnForWorkers map[string]bool
+
 	// unexpectedManagedExits counts managed workers removed by checkHeartbeats
 	// (heartbeat or progress timeout). Used by reconcileScale to cap spawning:
 	// managedCount + unexpectedManagedExits >= 2*target blocks scaleUp, preventing
@@ -709,18 +716,19 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			epicMergeFailed:        make(map[string]bool),
 			processedExternalClose: make(map[string]bool),
 		},
-		priorityBeads:        make(map[string]bool),
-		pendingManagedIDs:    make(map[string]bool),
-		pendingManagedSince:  make(map[string]time.Time),
-		pendingWorkerTargets: make(map[string]string),
-		workerReadyCh:        make(chan struct{}, 1),
-		shutdownCh:           make(chan struct{}),
-		beadsDir:             beadsDir,
-		panesDir:             filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
-		signaledPanes:        make(map[string]bool),
-		paneStates:           make(map[string]*paneState),
-		nowFunc:              time.Now,
-		acceptSem:            make(chan struct{}, 100), // limit to 100 concurrent connection handlers
+		priorityBeads:          make(map[string]bool),
+		pendingManagedIDs:      make(map[string]bool),
+		pendingManagedSince:    make(map[string]time.Time),
+		pendingWorkerTargets:   make(map[string]string),
+		pendingSpawnForWorkers: make(map[string]bool),
+		workerReadyCh:          make(chan struct{}, 1),
+		shutdownCh:             make(chan struct{}),
+		beadsDir:               beadsDir,
+		panesDir:               filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
+		signaledPanes:          make(map[string]bool),
+		paneStates:             make(map[string]*paneState),
+		nowFunc:                time.Now,
+		acceptSem:              make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
 }
 
@@ -1353,28 +1361,11 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 		return
 	}
 
-	// Get worktree from tracked worker
 	d.mu.Lock()
-	w, ok := d.workers[workerID]
-	var worktree, branch, epicID, targetBranch string
-	var assignmentID int64
-	var isEpicDecomp bool
-	if ok {
-		assignmentID = w.assignmentID
-		worktree = w.worktree
-		branch = protocol.BranchPrefix + beadID
-		epicID = w.epicID             // Capture epicID before clearing
-		targetBranch = w.targetBranch // Capture targetBranch before clearing
-		isEpicDecomp = w.isEpicDecomp
-		w.state = protocol.WorkerIdle
-		w.assignmentID = 0
-		w.beadID = ""
-		w.epicID = ""
-		w.isEpicDecomp = false
-	}
+	release := d.releaseWorkerAfterDoneLocked(workerID, beadID)
 	d.mu.Unlock()
 
-	if !ok || worktree == "" {
+	if !release.ok || release.worktree == "" {
 		return
 	}
 
@@ -1384,19 +1375,19 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	// Re-check bead type: if a task bead was promoted to an epic mid-flight,
 	// skip merge to avoid landing decomposition work as a finished task.
 	// Show errors are best-effort — fall through to the normal merge path.
-	if !isEpicDecomp {
+	if !release.isEpicDecomp {
 		if detail, err := d.beads.Show(ctx, beadID); err == nil && detail != nil && detail.Type == "epic" {
 			_ = d.logEvent(ctx, "type_changed_to_epic", workerID, beadID, workerID, "")
-			d.safeGo(func() { d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree) })
+			d.safeGo(func() { d.removeWorktreeAndClearTracking(ctx, beadID, workerID, release.worktree) })
 			return
 		}
 	}
 
-	if isEpicDecomp {
+	if release.isEpicDecomp {
 		// Epic decomposition complete — skip merge/close; just clean up the worktree.
 		_ = d.logEvent(ctx, "epic_decomp_done", workerID, beadID, workerID, "")
 		d.safeGo(func() {
-			if err := d.worktrees.Remove(ctx, worktree); err != nil {
+			if err := d.worktrees.Remove(ctx, release.worktree); err != nil {
 				_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
 			}
 		})
@@ -1405,8 +1396,59 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 
 	// Merge in background
 	d.safeGo(func() {
-		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, assignmentID)
+		d.mergeAndComplete(ctx, beadID, workerID, release.worktree, release.branch, release.epicID, release.targetBranch, release.assignmentID)
 	})
+}
+
+type doneWorkerRelease struct {
+	worktree     string
+	branch       string
+	epicID       string
+	targetBranch string
+	assignmentID int64
+	isEpicDecomp bool
+	ok           bool
+}
+
+func (d *Dispatcher) releaseWorkerAfterDoneLocked(workerID, beadID string) doneWorkerRelease {
+	w, ok := d.workers[workerID]
+	if !ok {
+		return doneWorkerRelease{}
+	}
+
+	release := doneWorkerRelease{
+		worktree:     w.worktree,
+		branch:       protocol.BranchPrefix + beadID,
+		epicID:       w.epicID,
+		targetBranch: w.targetBranch,
+		assignmentID: w.assignmentID,
+		isEpicDecomp: w.isEpicDecomp,
+		ok:           true,
+	}
+	spawnFor := w.spawnFor
+
+	if spawnFor {
+		w.state = protocol.WorkerShuttingDown
+	} else {
+		w.state = protocol.WorkerIdle
+	}
+	w.assignmentID = 0
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	w.targetBeadID = ""
+
+	if spawnFor {
+		d.shutdownCompletedSpawnForWorkerLocked(workerID, w)
+	}
+	return release
+}
+
+func (d *Dispatcher) shutdownCompletedSpawnForWorkerLocked(workerID string, w *trackedWorker) {
+	if err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown}); err != nil {
+		_ = w.conn.Close()
+		delete(d.workers, workerID)
+	}
 }
 
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
@@ -2976,7 +3018,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	for _, w := range d.workers {
 		totalWorkers++
 		if w.state == protocol.WorkerIdle {
-			idle = append(idle, idleWorker{worker: w, targetBeadID: w.targetBeadID})
+			idle = append(idle, idleWorker{worker: w, targetBeadID: w.targetBeadID, spawnFor: w.spawnFor})
 		}
 	}
 	d.mu.Unlock()
@@ -3038,19 +3080,36 @@ func autoscaleInputsForIdleWorkers(idle []idleWorker, beads []protocol.Bead) (qu
 		return len(beads), 0
 	}
 
+	autoscaleIdle := 0
 	targetedIdle := 0
 	generalIdle := 0
 	targets := make(map[string]bool)
 	for _, candidate := range idle {
+		if candidate.targetBeadID != "" {
+			targets[candidate.targetBeadID] = true
+		}
+		if candidate.spawnFor {
+			continue
+		}
+		autoscaleIdle++
 		if candidate.targetBeadID == "" {
 			generalIdle++
 			continue
 		}
 		targetedIdle++
-		targets[candidate.targetBeadID] = true
+	}
+
+	if autoscaleIdle == 0 {
+		generalQueueDepth := 0
+		for _, bead := range beads {
+			if !targets[bead.ID] {
+				generalQueueDepth++
+			}
+		}
+		return generalQueueDepth, 0
 	}
 	if targetedIdle == 0 || generalIdle > 0 {
-		return len(beads), len(idle)
+		return len(beads), autoscaleIdle
 	}
 
 	generalQueueDepth := 0
@@ -3060,7 +3119,7 @@ func autoscaleInputsForIdleWorkers(idle []idleWorker, beads []protocol.Bead) (qu
 		}
 	}
 	if generalQueueDepth == 0 {
-		return len(beads), len(idle)
+		return len(beads), autoscaleIdle
 	}
 	return targetedIdle + generalQueueDepth, 0
 }
@@ -3109,7 +3168,9 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 		}
 		for idleIdx < len(idle) {
 			d.mu.Lock()
-			isAssignableIdle := idle[idleIdx].worker.state == protocol.WorkerIdle && idle[idleIdx].worker.targetBeadID == ""
+			isAssignableIdle := idle[idleIdx].worker.state == protocol.WorkerIdle &&
+				idle[idleIdx].worker.targetBeadID == "" &&
+				!idle[idleIdx].worker.spawnFor
 			d.mu.Unlock()
 			if isAssignableIdle {
 				break
@@ -4225,14 +4286,16 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 	beadID := w.beadID
 	assignmentID := w.assignmentID
 	managed := w.managed
+	spawnFor := w.spawnFor
 
 	// Close connection and remove worker from pool.
 	_ = w.conn.Close()
 	delete(d.workers, workerID)
 
 	// Decrement target count only for managed workers; external workers are
-	// not counted against targetWorkers.
-	if managed && d.targetWorkers > 0 {
+	// not counted against targetWorkers. Spawn-for workers are one-shot
+	// managed processes and are also outside targetWorkers.
+	if managed && !spawnFor && d.targetWorkers > 0 {
 		d.targetWorkers--
 	}
 	d.mu.Unlock()
@@ -4279,19 +4342,19 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 	}
 	procMgr := d.procMgr
 	d.priorityBeads[beadID] = true
-	d.targetWorkers++
 	d.pendingManagedIDs[newID] = true
 	d.pendingManagedSince[newID] = d.nowFunc()
 	d.pendingWorkerTargets[newID] = beadID
+	d.pendingSpawnForWorkers[newID] = true
 	d.mu.Unlock()
 
 	if _, err := procMgr.Spawn(newID); err != nil {
 		d.mu.Lock()
 		delete(d.priorityBeads, beadID)
-		d.targetWorkers--
 		delete(d.pendingManagedIDs, newID)
 		delete(d.pendingManagedSince, newID)
 		delete(d.pendingWorkerTargets, newID)
+		delete(d.pendingSpawnForWorkers, newID)
 		d.mu.Unlock()
 		return "", fmt.Errorf("spawn failed: %w", err)
 	}
@@ -4506,17 +4569,26 @@ func (d *Dispatcher) cleanupStalePendingManagedLocked(now time.Time) {
 		if now.Sub(d.pendingManagedSince[id]) <= d.cfg.HeartbeatTimeout {
 			continue
 		}
+		spawnFor := d.pendingSpawnForWorkers[id]
 		delete(d.pendingManagedIDs, id)
 		delete(d.pendingManagedSince, id)
 		delete(d.pendingWorkerTargets, id)
-		d.unexpectedManagedExits++
+		delete(d.pendingSpawnForWorkers, id)
+		if !spawnFor {
+			d.unexpectedManagedExits++
+		}
 	}
 }
 
 func (d *Dispatcher) managedWorkerCountLocked() int {
-	count := len(d.pendingManagedIDs)
+	count := 0
+	for id := range d.pendingManagedIDs {
+		if !d.pendingSpawnForWorkers[id] {
+			count++
+		}
+	}
 	for _, w := range d.workers {
-		if w.managed {
+		if w.managed && !w.spawnFor {
 			count++
 		}
 	}
@@ -4555,7 +4627,7 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 	// Partition managed workers into idle and busy — unmanaged are excluded.
 	var idle, busy []string
 	for id, w := range d.workers {
-		if !w.managed {
+		if !w.managed || w.spawnFor {
 			continue
 		}
 		if w.state == protocol.WorkerIdle {
