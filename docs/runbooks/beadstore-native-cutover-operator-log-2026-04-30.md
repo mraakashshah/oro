@@ -106,3 +106,58 @@ native_gate=pass
 - Real cutover restart has not been executed in this log.
 - `ORO_BEADSOURCE_MODE` has not been globally exported by this log.
 - Dispatcher/workers remain stopped for Phase 8 until the restart beads execute.
+
+## Cutover Completion Update
+
+On 2026-05-01, Phase 8 cutover was completed with native SQLite as the active
+bead store.
+
+Committed fixes and docs:
+
+- `66703059` fixed sqlite dispatcher assignment by skipping legacy bd/Dolt
+  recovery only when `ORO_BEADSOURCE_MODE=sqlite`.
+- `2250d25f` finalized the cutover `PATH` construction and repo-local
+  `.envrc` switch to `ORO_BEADSOURCE_MODE=sqlite`.
+
+Verification:
+
+```text
+scripts/check-bd-version.sh: exit 0
+dispatcher_count before restart: 0
+scripts/check-phase8-no-writers.py before mutation/restart: active_writer_count=0
+ORO_BEADSOURCE_MODE before migration/restart gates: empty
+sqlite3 "$state_db" 'PRAGMA integrity_check;': ok
+native invariant gate: exit 0
+ready JSON shape: array
+blocked JSON shape: array
+controlled native create/show/close smoke: passed
+local scripts/quality_gate.sh after dispatcher fix: passed 20/0
+```
+
+Controlled worker restart proof:
+
+- Dispatcher started in sqlite mode from a generated cutover `PATH` where
+  `command -v bd` fails.
+- Targeted worker assignment succeeded for
+  `native-worker-smoke-20260430t213044` at event `789083`.
+- Targeted worker assignment succeeded for
+  `native-worker-smoke-20260430t213245` at event `789100`; this exposed that
+  the initial minimal `PATH` also removed QG tools.
+- Full tool `PATH` excluding only `bd` was generated at
+  `/tmp/oro-sqlite-cutover-bin-full.l5Z1eJ`; it resolved `oro`, `claude`,
+  `git`, Homebrew `bash`, Go, Python, shell, and lint tools while `bd` stayed
+  absent.
+- Full-`PATH` targeted worker assignment succeeded for
+  `native-worker-smoke-20260430t213801` at event `789138` and reached
+  `awaiting_review` without missing-tool failures.
+
+Final live state:
+
+- Repo-local `.envrc` exports `ORO_BEADSOURCE_MODE=sqlite`.
+- Phase 8 (`oro-ect4`) is closed in the native SQLite bead store.
+- Phase 9 (`oro-cpv0`) is in progress and time-gated unless the operator
+  rewrites or waives its observation children.
+- Dispatcher is running in sqlite mode as PID `79558` with `--workers 0` from
+  the generated bd-free cutover `PATH`.
+- bd/Dolt is retained as import-source/audit/rollback reference only, not as a
+  cutover veto.
