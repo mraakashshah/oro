@@ -995,6 +995,82 @@ func TestSpawnFor_KillIdleSendFailureReconnectDoesNotAssignGeneralWork(t *testin
 	}
 }
 
+func TestSpawnFor_KillBusyReconnectDoesNotResumeWork(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	workerID := "worker-spawnfor-busy-reconnect"
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	conn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		managed:      true,
+		spawnFor:     true,
+		beadID:       requestedID,
+		targetBeadID: requestedID,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	if _, err := d.applyKillWorker(workerID); err != nil {
+		t.Fatalf("applyKillWorker returned error: %v", err)
+	}
+
+	reconnectConn := newMockConn()
+	d.registerWorker(workerID, reconnectConn)
+	d.handleReconnect(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: workerID,
+			BeadID:   requestedID,
+			State:    "running",
+		},
+	})
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("spawn-for worker should remain tracked after busy reconnect")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		d.mu.Unlock()
+		t.Fatalf("spawn-for worker state after busy reconnect = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker resumed assignment: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+	d.mu.Unlock()
+
+	reconnectConn.mu.Lock()
+	defer reconnectConn.mu.Unlock()
+	if len(reconnectConn.written) != 2 {
+		t.Fatalf("expected shutdown on busy reconnect and no assignment, got %d messages", len(reconnectConn.written))
+	}
+	for i, written := range reconnectConn.written {
+		var msg protocol.Message
+		if err := json.Unmarshal(written, &msg); err != nil {
+			t.Fatalf("decode reconnect shutdown message %d: %v", i, err)
+		}
+		if msg.Type != protocol.MsgShutdown {
+			t.Fatalf("reconnect message %d type = %s, want %s", i, msg.Type, protocol.MsgShutdown)
+		}
+	}
+}
+
 func TestSpawnFor_TargetedWorkerGetsRequestedBeadNotFirstReady(t *testing.T) {
 	d, beads, wt, _, _, _ := newTestDispatcher(t)
 	pm := &mockProcessManager{}

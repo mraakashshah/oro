@@ -7689,6 +7689,27 @@ func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool
 	return m.passed, m.output, m.err
 }
 
+func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
+	t.Setenv("ORO_SKIP_MUTATION", "1")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo unexpected; exit 1; fi\necho clean\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, false)
+	if err != nil {
+		t.Fatalf("ShellQGRunner.Run: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected QG to pass without inherited ORO_SKIP_MUTATION, output: %s", output)
+	}
+}
+
 // TestMergeAndComplete_RunsPreMergeQG verifies that mergeAndComplete calls the
 // QGRunner before attempting to merge, and handles pass/fail/error correctly.
 func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {

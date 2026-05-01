@@ -263,9 +263,7 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
-	if skipMutation {
-		cmd.Env = append(os.Environ(), "ORO_SKIP_MUTATION=1")
-	}
+	cmd.Env = qgRunnerEnv(skipMutation)
 	out, runErr := cmd.CombinedOutput()
 	output = string(out)
 	if runErr != nil {
@@ -276,6 +274,20 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 		return false, output, fmt.Errorf("run quality gate: %w", runErr)
 	}
 	return true, output, nil
+}
+
+func qgRunnerEnv(skipMutation bool) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	if skipMutation {
+		env = append(env, "ORO_SKIP_MUTATION=1")
+	}
+	return env
 }
 
 // --- Worker tracking ---
@@ -2744,6 +2756,9 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	_ = d.logEvent(ctx, "reconnect", workerID, msg.Reconnect.BeadID, workerID, msg.Reconnect.State)
 
 	beadID := msg.Reconnect.BeadID
+	if d.shutdownReconnectIfSpawnForStopping(workerID) {
+		return
+	}
 
 	// oro-sydf: If BeadID is empty, the worker was idle before the network glitch.
 	// Skip bead validation entirely — there is no bead to look up — and
@@ -2751,13 +2766,6 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	if beadID == "" {
 		d.mu.Lock()
 		if w, ok := d.workers[workerID]; ok {
-			if w.spawnFor && w.state == protocol.WorkerShuttingDown {
-				w.markShuttingDownWithoutAssignment()
-				sendShutdownWithoutBuffering(w)
-				w.lastSeen = d.nowFunc()
-				d.mu.Unlock()
-				return
-			}
 			w.state = protocol.WorkerIdle
 			w.beadID = ""
 			w.lastSeen = d.nowFunc()
@@ -2795,6 +2803,19 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	for _, buffered := range msg.Reconnect.BufferedEvents {
 		d.handleMessage(ctx, workerID, buffered)
 	}
+}
+
+func (d *Dispatcher) shutdownReconnectIfSpawnForStopping(workerID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok || !w.spawnFor || w.state != protocol.WorkerShuttingDown {
+		return false
+	}
+	w.markShuttingDownWithoutAssignment()
+	sendShutdownWithoutBuffering(w)
+	w.lastSeen = d.nowFunc()
+	return true
 }
 
 func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string, msg protocol.Message) {
