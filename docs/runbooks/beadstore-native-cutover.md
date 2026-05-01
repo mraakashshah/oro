@@ -223,18 +223,32 @@ oro_bin=<absolute reviewed oro binary path outside the repo worktree>
 test -x "$oro_bin"
 cutover_bin_dir=$(mktemp -d /tmp/oro-sqlite-cutover-bin.XXXXXX)
 ln -s "$oro_bin" "$cutover_bin_dir/oro"
-ln -s "$(command -v claude)" "$cutover_bin_dir/claude"
-for tool in go jq rg node; do
-  tool_path=$(command -v "$tool" || true)
-  if test -n "$tool_path"; then ln -s "$tool_path" "$cutover_bin_dir/$tool"; fi
+old_ifs=$IFS
+IFS=:
+for dir in $PATH; do
+  IFS=$old_ifs
+  test -d "$dir" || { IFS=:; continue; }
+  for tool_path in "$dir"/*; do
+    test -e "$tool_path" || continue
+    test -x "$tool_path" || continue
+    tool_name=$(basename "$tool_path")
+    test "$tool_name" != bd || continue
+    test ! -e "$cutover_bin_dir/$tool_name" || continue
+    ln -s "$tool_path" "$cutover_bin_dir/$tool_name"
+  done
+  IFS=:
 done
+IFS=$old_ifs
 cutover_path="$cutover_bin_dir:/usr/bin:/bin:/usr/sbin:/sbin"
 PATH="$cutover_path" command -v oro
 PATH="$cutover_path" command -v claude
 PATH="$cutover_path" command -v git
+PATH="$cutover_path" command -v bash
+PATH="$cutover_path" command -v ruff
+PATH="$cutover_path" command -v yamllint
 ! PATH="$cutover_path" command -v bd
 
-ORO_HUMAN_CONFIRMED=1 ./oro stop --force
+ORO_HUMAN_CONFIRMED=1 "$oro_bin" dispatcher stop --force
 PATH="$cutover_path" ORO_BEADSOURCE_MODE=sqlite "$oro_bin" dispatcher start --force --workers "$worker_count"
 
 test -r "$pid_path"
@@ -245,9 +259,13 @@ dispatcher_path=$(ps eww -p "$dispatcher_pid" | tr ' ' '\n' | awk -F= '$1=="PATH
 test "$dispatcher_path" = "$cutover_path"
 ```
 
-For each restarted worker, record PID, PATH check output, log path, and a
-post-offset log segment from a controlled test bead showing native `oro bead`
-commands and no `bd` invocation.
+For each restarted worker, record PID, PATH check output, log path, the
+controlled test bead ID, and dispatcher `assign`/`status` events for that bead.
+Worker `output.log` may contain progress-only lines rather than full command
+transcripts; inspect only the post-offset segment and stop if it shows `bd`
+execution or missing-tool failures. The authoritative `bd` exclusion proof is
+the worker process `PATH` check plus successful worker startup/assignment from
+that environment.
 
 ## Rollback Stance
 
