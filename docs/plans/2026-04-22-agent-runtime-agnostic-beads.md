@@ -1,6 +1,7 @@
 # Agent Runtime Agnostic Bead Decomposition
 
 **Date:** 2026-04-22
+**Phase 10 note:** The runtime-agnostic decomposition remains useful for provider work, but any lines that describe bd/Dolt as the current source of truth are historical pre-migration context. Current bead state is the native SQLite beadstore.
 **Spec:** [2026-04-22-agent-runtime-agnostic-design.md](./2026-04-22-agent-runtime-agnostic-design.md)
 **Epic Slug:** `agent-runtime-agnostic`
 **Intent:** Decompose the runtime-agnostic migration into executable Oro beads with explicit dependencies and acceptance criteria.
@@ -191,4 +192,4 @@ Edges: tests that require runtime binaries should skip cleanly with explicit rea
 
 ## Tracker Note
 
-`bd` creation is currently blocked in this repo because the configured Dolt server port seen by `bd` does not match the live Dolt metadata, so this file is the safe source of truth for bead creation until the tracker backend is healthy again.
+Historical pre-migration note: when this decomposition was written, `bd` creation was blocked because the configured Dolt server port seen by `bd` did not match live Dolt metadata, so this file was used as a temporary source of truth for bead creation. Current bead state lives in the native SQLite beadstore.

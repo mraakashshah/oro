@@ -1,7 +1,10 @@
 # Port Registry for Collision-Free Dolt Port Allocation
 
 **Date:** 2026-04-21
-**Status:** Approved (R2 PASS — 4 minor findings fixed)
+**Status:** SUPERSEDED after Phase 10 native beadstore cleanup. Historical
+analysis only; do not use this as future implementation guidance. The referenced
+runtime Dolt helpers were removed or retired when normal Oro operation moved to
+SQLite.
 **Tags:** #dolt #init #multi-project
 
 ## Problem
@@ -113,10 +116,11 @@ This prevents the regression where the first project to init claims a port that 
 
 #### Integration points
 
-**`initDoltForProject` (cmd_init.go:712-747)**: Replace `deriveEffectivePort` call:
-- If shared server active → return 13307 (unchanged, registry not consulted)
-- Else → call `AllocatePort(beadsDir, projectName)`
-- If the returned port differs from the existing `metadata.json` port, use `setDoltPort` (not `ensureDoltMetadata`) to unconditionally overwrite. This prevents the split-brain where registry says port A but metadata says port B.
+**Superseded after Phase 10:** `initDoltForProject` and `setDoltPort` were
+removed during the native beadstore cleanup. This port-registry plan is
+historical; do not use it as guidance for new work. Future legacy-Dolt recovery
+must go through the beadstore recovery runbook or external bd/Dolt tooling, not
+new oro runtime helpers.
 
 **`makeDoltLifecycle` (cmd_start.go:419-443)**: Currently reads port from metadata or `DerivePort`. After this change, it should read from the registry (via `AllocatePort` which is idempotent) to ensure consistency. If the registry doesn't exist yet (pre-migration binary), fall back to existing behavior.
 

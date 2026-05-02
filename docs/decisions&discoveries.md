@@ -1,5 +1,11 @@
 # Decisions and Discoveries
 
+## 2026-05-02: Phase 10 supersedes historical runtime Dolt guidance
+**Tags:** #beadstore #phase10 #dolt #sqlite
+**Context:** Phase 10 moved normal Oro operation onto the native SQLite beadstore and removed runtime bd/Dolt lifecycle helpers from the active command surface.
+**Decision:** Historical March/April notes that describe `oro dolt` setup/start/stop, runtime Dolt launchd ownership, shared Dolt persistence, or bd/Dolt as the active beadstore are retained only as migration history and failure analysis. Do not use those entries as current implementation guidance unless a Phase 11 legacy-migration task explicitly calls them out.
+**Implications:** Treat new post-cutover failures as native SQLite/Oro bugs first. Fall back to bd/Dolt only for import audit or rollback evidence when data corruption is shown.
+
 ## 2026-04-28: Phase 0 schema sign-off
 **Reviewer:** Codex manual adversarial review (GPT-5 coding agent), 2026-04-28.
 **Scope:** Replatform beads spec sections 6, 9.6, and 12.1.

@@ -1,7 +1,10 @@
 # oro shared dolt — lifecycle coordination
 
 **Date:** 2026-04-20
-**Status:** Design
+**Status:** SUPERSEDED after Phase 10 native beadstore cleanup. Historical
+analysis only; do not use this as future implementation guidance. The referenced
+runtime Dolt helpers were removed or retired when normal Oro operation moved to
+SQLite.
 **Owner:** as21
 **Reproduction:**
 - *This session*: 3 oro projects running simultaneously; a fall-through `startSharedDoltServer` call from one instance overrode the dolt on :13307 with a different `--data-dir`, making `beads_oro` invisible to this project (`bd ready` → `database "beads_oro" not found`).
@@ -151,7 +154,7 @@ Migration runs at every `oro start`:
    - If `.beads/dolt-server.port` is missing → write it from the metadata value, then strip the field.
    - If both exist and agree → strip the field silently.
    - If both exist and disagree → port file wins; strip metadata; emit `WARN: metadata.json had stale dolt_server_port=N, port file has M; port file kept`.
-2. Atomic write: **`writeFileAtomic` does not yet exist in source** (oro-kn25 was closed by ops escalation but code sits unmerged on `agent/oro-kn25`). **Decision: inline a private `atomicWriteFile` helper in `cmd/oro/dolt_migrate.go`** — unblocks this spec without waiting for oro-kn25 merge. When oro-kn25 eventually lands, switch call site and delete the private helper. Operation: write to `.tmp`, `fsync`, `rename` (POSIX atomic).
+2. **Superseded after Phase 10:** the proposed private `atomicWriteFile` helper in `cmd/oro/dolt_migrate.go` was removed with the native beadstore cleanup. Do not reintroduce this helper from the historical migration plan.
 3. Migration is **idempotent** — read → modify → write is safe for a second-comer (same input → same output). Worktrees sharing the parent's `.beads/` (confirmed: `.worktrees/oro-cjpn` shares `/Users/as21/codehouse/oro/.beads/`) do not need cross-process locking for the migration itself; atomicity + idempotence is sufficient.
 
 **Risks accepted:**
@@ -249,15 +252,14 @@ Audit: `cmd/oro/cmd_setup.go` phases 1–5 are prereqs/language-detect/tools/boo
 
 | File | Line (current) | Change |
 |------|----------------|--------|
-| `cmd/oro/dolt.go` | 457 | D0: fix `tryLaunchctlKickstart` label from `com.oro.dolt-server` to `launchAgentLabel` (`dev.getoro.dolt`). |
-| `cmd/oro/dolt.go` | 427-445 | D1, D6.1: `ensureSharedDoltRunning`: probe-before-adopt; remove direct-spawn fallback (gated by `integration build tag`). Add `runIdentityProbe(oroHome, dbName) (probeResult, error)` and cookie I/O. |
+| Superseded after Phase 10 | n/a | `tryLaunchctlKickstart` and `ensureSharedDoltRunning` were removed with the native beadstore cleanup. Treat this plan as historical; do not reintroduce oro runtime Dolt startup helpers. |
 | `cmd/oro/dolt.go` | 490-515 | D2: retire `checkSharedPortConflict` or delegate to `runIdentityProbe`. |
 | `cmd/oro/cmd_dolt_repair.go` | NEW | D3: `oro dolt repair` subcommand. Flock on `~/.oro/.dolt-spawn.lock`. Exit codes 0/2/3/4/5. |
 | `cmd/oro/cmd_dolt.go` | 43-49 | D3: register `repair` subcommand in `newDoltCmd()`. |
 | `cmd/oro/cmd_dolt.go` | 608-618 | D6.2: `newDoltStartCmd` routes through `ensureSharedDoltRunning` instead of calling `startSharedDoltServer` directly. |
 | `cmd/oro/cmd_init.go` | 722 | D6.5: `initDoltForProject` refuses per-project spawn when derived port == `SharedDoltPort`. |
 | `cmd/oro/cmd_init.go` | (port/metadata write) | D4: stop writing `dolt_server_port` to `metadata.json`. |
-| `cmd/oro/dolt_migrate.go` | NEW | D4: `MigrateMetadataPort(beadsDir) error`. Idempotent. Atomic write via inline private `atomicWriteFile` helper (switch to shared helper if/when oro-kn25 lands). |
+| Superseded after Phase 10 | n/a | The proposed `cmd/oro/dolt_migrate.go` / `MigrateMetadataPort` / private `atomicWriteFile` path was removed with the native beadstore cleanup. |
 | `cmd/oro/cmd_start.go` | 419-442 | D1, D4: `makeDoltLifecycle` calls `MigrateMetadataPort` first, then probe-before-adopt. |
 | `cmd/oro/daemon.go` | 182-194 | D5: `SetupSignalHandler` stop closure guards on shared port → no-op. |
 | `cmd/oro/dolt.go` | 229-278 | D5: `stopDoltServer` UNCHANGED (legitimate callers `runDoltStop`/`runDoltTeardown` must still work). |
@@ -269,7 +271,7 @@ Audit: `cmd/oro/cmd_setup.go` phases 1–5 are prereqs/language-detect/tools/boo
 New test files:
 - `cmd/oro/cmd_dolt_repair_test.go`
 - `cmd/oro/identity_probe_test.go`
-- `cmd/oro/dolt_migrate_test.go`
+- Superseded after Phase 10: `cmd/oro/dolt_migrate_test.go` was removed with the proposed private migration helper.
 - `cmd/oro/cmd_stop_shared_dolt_test.go`
 - `cmd/oro/kickstart_label_test.go` (D0 regression)
 - `cmd/oro/cmd_setup_dolt_chain_test.go` (D7)

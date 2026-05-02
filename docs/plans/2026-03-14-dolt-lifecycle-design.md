@@ -1,6 +1,10 @@
 # Dolt Server Lifecycle Management
 
 **Date:** 2026-03-14
+**Status:** SUPERSEDED after Phase 10 native beadstore cleanup. Historical analysis only; do not use this as future implementation guidance. Normal Oro operation now uses the native SQLite beadstore; runtime bd/Dolt lifecycle helpers were removed.
+
+> Phase 10 retained this document only as historical context for pre-migration failures. Do not reintroduce `oro dolt` setup/start/stop/teardown or runtime Dolt lifecycle management from this plan.
+
 **Goal:** Run 3 oro instances in 3 projects concurrently without port collisions.
 
 ## Problem

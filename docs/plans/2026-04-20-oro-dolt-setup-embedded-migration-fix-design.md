@@ -1,11 +1,15 @@
 # oro dolt setup — embedded-mode migration fix
 
 **Date:** 2026-04-20
-**Status:** Design
+**Status:** Superseded after Phase 10 native beadstore migration
 **Owner:** as21
 **Reproduction:** scriptwriter session, 2026-04-19. `oro dolt setup` reported success migrating 8 projects but scriptwriter's shared DB was empty; recovery required manual `dolt dump` from `.beads/embeddeddolt/scriptwriter/` and metadata patch.
 
 ---
+
+> Phase 10 removed the legacy `oro dolt` setup/migration command path in favor
+> of the native SQLite beadstore. This document is retained as historical
+> recovery context only; it is not current implementation guidance.
 
 ## Problem
 

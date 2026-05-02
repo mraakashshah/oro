@@ -512,11 +512,11 @@ func completeActiveAssignments(ctx context.Context, db *sql.DB, beadID string) (
 		`UPDATE assignments SET status='completed', completed_at=datetime('now') WHERE bead_id=? AND status='active'`,
 		beadID)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("complete active assignments: %w", err)
 	}
 	affected, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read completed assignment count: %w", err)
 	}
 	return affected > 0, nil
 }

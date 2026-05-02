@@ -1,11 +1,15 @@
 # oro dolt setup — launchd race condition fix
 
 **Date:** 2026-04-22
-**Status:** Design
+**Status:** Superseded after Phase 10 native beadstore migration
 **Owner:** as21
 **Supersedes:** partial refinement of D6.3 in `2026-04-20-oro-dolt-shared-lifecycle-coordination-design.md`
 
 ---
+
+> Phase 10 removed the legacy `oro dolt` command path and the shared-Dolt
+> direct-spawn helpers. This document is retained as historical context only;
+> it is not current implementation guidance.
 
 ## Problem
 

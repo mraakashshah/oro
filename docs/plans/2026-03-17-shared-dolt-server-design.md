@@ -1,6 +1,10 @@
 # Shared Dolt Server with launchd Auto-Start
 
 **Date:** 2026-03-17
+**Status:** SUPERSEDED after Phase 10 native beadstore cleanup. Historical analysis only; do not use this as future implementation guidance. Normal Oro operation now uses the native SQLite beadstore; runtime bd/Dolt lifecycle helpers were removed.
+
+> Phase 10 retained this document only as historical context for pre-migration failures. Do not reintroduce `oro dolt` setup/start/stop/teardown or launchd-managed Dolt from this plan.
+
 **Problem:** Dolt servers die on sleep/reboot. Each project spawns its own process. No auto-restart. Users must manually `bd dolt start` after every wake.
 **Solution:** Single shared dolt server at `~/.oro/dolt/` on port 13307, managed by macOS LaunchAgent.
 

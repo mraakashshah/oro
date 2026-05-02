@@ -2,6 +2,7 @@
 
 **Date:** 2026-04-05
 **Status:** Approved (R1 FAIL → fixed, R2 PASS)
+**Phase 10 note:** The release/install mechanics are historical context for v0.1.0. Any bd/Dolt, `.beads`, or launchd-managed Dolt cleanup references below are superseded by the native SQLite beadstore cleanup and must not be used as current runtime guidance.
 **Goal:** Ship oro v0.1.0 on GitHub Releases with clean curl install/uninstall.
 
 ## User Experience

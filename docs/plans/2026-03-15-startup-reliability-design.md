@@ -1,6 +1,10 @@
 # Startup Reliability: Stale Socket Fix + Persistent Dolt
 
 **Date:** 2026-03-15
+**Status:** PARTIALLY SUPERSEDED after Phase 10 native beadstore cleanup. The stale socket analysis remains historical context; the persistent-Dolt and post-init Dolt startup guidance is obsolete. Normal Oro operation now uses the native SQLite beadstore; runtime bd/Dolt lifecycle helpers were removed.
+
+> Do not reintroduce `oro dolt` setup/start/stop/teardown, runtime Dolt startup, or Dolt persistence behavior from this plan.
+
 **Beads:** oro-7v9j (stale socket), oro-jthg (dolt after init)
 
 ## Problem

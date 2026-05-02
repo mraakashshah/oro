@@ -679,61 +679,6 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	return cfg, nil
 }
 
-// doltSharedServerActive reports whether the shared dolt-server.port file is
-// present in oroHome, indicating shared-server mode is active.
-func doltSharedServerActive(oroHome string) bool {
-	if oroHome == "" {
-		return false
-	}
-	_, err := os.Stat(filepath.Join(oroHome, "dolt-server.port"))
-	return err == nil
-}
-
-// doltEnsureAndStart writes metadata.json with the given port (if needed) and
-// starts the dolt server. Errors are logged as warnings (fail-open).
-func doltEnsureAndStart(beadsPath string, port int) {
-	if err := ensureDoltMetadata(beadsPath, port); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: dolt metadata setup failed: %v\n", err)
-	}
-	if meta, _ := readDoltMeta(beadsPath); meta != nil {
-		if _, startErr := startDoltServer(beadsPath, port); startErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: dolt server start failed: %v\n", startErr)
-		}
-	}
-}
-
-// initDoltPerProjectPort syncs metadata.json to the deterministic per-project
-// port before starting the legacy Dolt server.
-func initDoltPerProjectPort(beadsPath, _ string) {
-	port := DerivePort(beadsPath)
-	if port == SharedDoltPort {
-		fmt.Fprintf(os.Stderr, "warning: per-project dolt port collides with retired shared server port; skipping legacy dolt init\n")
-		return
-	}
-	syncDoltMetadataPort(beadsPath, port)
-	if meta, _ := readDoltMeta(beadsPath); meta != nil {
-		if _, startErr := startDoltServer(beadsPath, port); startErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: dolt server start failed: %v\n", startErr)
-		}
-	}
-}
-
-// syncDoltMetadataPort updates metadata.json to record port. Uses setDoltPort
-// when an existing non-zero port differs from port (force-sync); otherwise calls
-// ensureDoltMetadata which creates the file if absent.
-func syncDoltMetadataPort(beadsPath string, port int) {
-	meta, _ := readDoltMeta(beadsPath)
-	if meta != nil && meta.DoltServerPort != 0 && meta.DoltServerPort != port {
-		if portErr := setDoltPort(beadsPath, port); portErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: dolt metadata port update failed: %v\n", portErr)
-		}
-		return
-	}
-	if err := ensureDoltMetadata(beadsPath, port); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: dolt metadata setup failed: %v\n", err)
-	}
-}
-
 // createProjectAnchor writes the .oro/config.yaml anchor file in the project root.
 // It includes the project name and detected language profiles.
 // Returns the detected language config so callers can use it without re-reading from disk.
