@@ -676,6 +676,15 @@ type Dispatcher struct {
 	// toward the general worker pool target.
 	pendingSpawnForWorkers map[string]bool
 
+	// pendingExternalIDs tracks worker IDs reserved by `oro worker launch`
+	// before the external worker process connects. These are not managed by the
+	// dispatcher, but they consume MaxWorkers capacity while pending.
+	pendingExternalIDs map[string]bool
+
+	// pendingExternalSince records when external launch reservations were made
+	// so stale reservations do not strand capacity forever.
+	pendingExternalSince map[string]time.Time
+
 	// unexpectedManagedExits counts managed workers removed by checkHeartbeats
 	// (heartbeat or progress timeout). Used by reconcileScale to cap spawning:
 	// managedCount + unexpectedManagedExits >= 2*target blocks scaleUp, preventing
@@ -785,6 +794,8 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		pendingManagedSince:    make(map[string]time.Time),
 		pendingWorkerTargets:   make(map[string]string),
 		pendingSpawnForWorkers: make(map[string]bool),
+		pendingExternalIDs:     make(map[string]bool),
+		pendingExternalSince:   make(map[string]time.Time),
 		workerReadyCh:          make(chan struct{}, 1),
 		shutdownCh:             make(chan struct{}),
 		beadsDir:               beadsDir,
@@ -1439,6 +1450,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	d.mu.Lock()
 	release := d.releaseWorkerAfterDoneLocked(workerID, beadID)
 	d.mu.Unlock()
+	d.assignPendingHandoffsToIdleWorkers()
 
 	if !release.ok || release.worktree == "" {
 		return
@@ -2432,6 +2444,17 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model,
 	d.mu.Unlock()
 
 	_ = d.logEvent(ctx, "handoff_pending", "dispatcher", beadID, "", worktree)
+	d.assignPendingHandoffsToIdleWorkers()
+	if newID != "" {
+		d.mu.Lock()
+		_, stillPending := d.pendingHandoffs[beadID]
+		if !stillPending {
+			delete(d.pendingManagedIDs, newID)
+			delete(d.pendingManagedSince, newID)
+			newID = ""
+		}
+		d.mu.Unlock()
+	}
 
 	if d.procMgr != nil && newID != "" {
 		if _, err := d.procMgr.Spawn(newID); err != nil {
@@ -2919,7 +2942,7 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 	args := msg.Directive.Args
 	ack := protocol.ACKPayload{OK: true}
 
-	if !dir.Valid() {
+	if !dir.Valid() && dir != directiveLaunchWorkers && dir != directiveCancelWorkerLaunch {
 		ack.OK = false
 		ack.Detail = "invalid directive"
 	} else {
@@ -3120,6 +3143,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	// Reconcile worker pool size (spawns/removes workers to match target).
 	d.reconcileScale()
+	d.assignPendingHandoffsToIdleWorkers()
 
 	// Find idle workers and count total workers.
 	d.mu.Lock()
@@ -4122,6 +4146,15 @@ type statusResponse struct {
 	ProgressTimeoutSecs float64        `json:"progress_timeout_secs"`
 }
 
+const (
+	directiveLaunchWorkers      protocol.Directive = "launch-workers"
+	directiveCancelWorkerLaunch protocol.Directive = "cancel-worker-launch"
+)
+
+type workerLaunchReservation struct {
+	WorkerIDs []string `json:"worker_ids"`
+}
+
 // applyDirective transitions the dispatcher state machine and returns a detail
 // string for the ACK response. Returns an error for invalid args (e.g. scale).
 //
@@ -4148,6 +4181,10 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applyWorkerLogs(args)
 	case protocol.DirectiveMaxWorkers:
 		return d.applyMaxWorkersDirective(args)
+	case directiveLaunchWorkers:
+		return d.applyLaunchWorkers(args)
+	case directiveCancelWorkerLaunch:
+		return d.applyCancelWorkerLaunch(args)
 	case protocol.DirectiveStart:
 		return d.applyStart()
 	case protocol.DirectiveStop:
@@ -4378,7 +4415,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 		MaxWorkers:          d.cfg.MaxWorkers,
 		ManagedCount:        managedCount,
 		UnmanagedCount:      unmanagedCount,
-		PendingWorkerCount:  len(d.pendingManagedIDs),
+		PendingWorkerCount:  len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
 		UptimeSeconds:       now.Sub(d.startTime).Seconds(),
 		PendingHandoffCount: len(d.pendingHandoffs),
 		AttemptCounts:       attemptCounts,
@@ -4579,6 +4616,85 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 
 	_ = d.logEvent(context.Background(), "spawn_for", "dispatcher", beadID, newID, "")
 	return fmt.Sprintf("spawned worker %s for bead %s", newID, beadID), nil
+}
+
+func (d *Dispatcher) parseWorkerLaunchReservation(args string) (workerLaunchReservation, error) {
+	var req workerLaunchReservation
+	if err := json.Unmarshal([]byte(args), &req); err != nil {
+		return req, fmt.Errorf("invalid worker launch args: %w", err)
+	}
+	if len(req.WorkerIDs) == 0 {
+		return req, fmt.Errorf("worker IDs required")
+	}
+	seen := make(map[string]bool, len(req.WorkerIDs))
+	for _, id := range req.WorkerIDs {
+		if strings.TrimSpace(id) == "" {
+			return req, fmt.Errorf("worker ID required")
+		}
+		if seen[id] {
+			return req, fmt.Errorf("duplicate worker ID %q", id)
+		}
+		seen[id] = true
+	}
+	return req, nil
+}
+
+func (d *Dispatcher) applyLaunchWorkers(args string) (string, error) {
+	req, err := d.parseWorkerLaunchReservation(args)
+	if err != nil {
+		return "", err
+	}
+
+	d.mu.Lock()
+	d.cleanupStalePendingManagedLocked(d.nowFunc())
+	for _, id := range req.WorkerIDs {
+		if _, exists := d.workers[id]; exists {
+			d.mu.Unlock()
+			return "", fmt.Errorf("worker %s already connected", id)
+		}
+		if d.pendingManagedIDs[id] || d.pendingExternalIDs[id] {
+			d.mu.Unlock()
+			return "", fmt.Errorf("worker %s already pending", id)
+		}
+	}
+	totalWorkers := d.liveWorkerCountLocked()
+	if d.cfg.MaxWorkers > 0 {
+		available := d.cfg.MaxWorkers - totalWorkers
+		if len(req.WorkerIDs) > available {
+			maxWorkers := d.cfg.MaxWorkers
+			d.mu.Unlock()
+			return "", fmt.Errorf("max workers reached: requested=%d available=%d total=%d MaxWorkers=%d",
+				len(req.WorkerIDs), available, totalWorkers, maxWorkers)
+		}
+	}
+	now := d.nowFunc()
+	for _, id := range req.WorkerIDs {
+		d.pendingExternalIDs[id] = true
+		d.pendingExternalSince[id] = now
+	}
+	d.mu.Unlock()
+
+	return fmt.Sprintf("reserved %d workers", len(req.WorkerIDs)), nil
+}
+
+func (d *Dispatcher) applyCancelWorkerLaunch(args string) (string, error) {
+	req, err := d.parseWorkerLaunchReservation(args)
+	if err != nil {
+		return "", err
+	}
+
+	d.mu.Lock()
+	cancelled := 0
+	for _, id := range req.WorkerIDs {
+		if d.pendingExternalIDs[id] {
+			delete(d.pendingExternalIDs, id)
+			delete(d.pendingExternalSince, id)
+			cancelled++
+		}
+	}
+	d.mu.Unlock()
+
+	return fmt.Sprintf("cancelled %d worker reservations", cancelled), nil
 }
 
 // applyRestartWorker terminates a specific worker, returns its bead to the
@@ -4818,6 +4934,17 @@ func (d *Dispatcher) cleanupStalePendingManagedLocked(now time.Time) {
 			d.unexpectedManagedExits++
 		}
 	}
+	for id, since := range d.pendingExternalSince {
+		if !d.pendingExternalIDs[id] {
+			delete(d.pendingExternalSince, id)
+			continue
+		}
+		if now.Sub(since) <= d.cfg.HeartbeatTimeout {
+			continue
+		}
+		delete(d.pendingExternalIDs, id)
+		delete(d.pendingExternalSince, id)
+	}
 }
 
 func (d *Dispatcher) managedWorkerCountLocked() int {
@@ -4862,12 +4989,22 @@ func (d *Dispatcher) activeWorkerCountLocked() int {
 			count++
 		}
 	}
+	for id := range d.pendingExternalIDs {
+		if _, connected := d.workers[id]; !connected {
+			count++
+		}
+	}
 	return count
 }
 
 func (d *Dispatcher) liveWorkerCountLocked() int {
 	count := len(d.workers)
 	for id := range d.pendingManagedIDs {
+		if _, connected := d.workers[id]; !connected {
+			count++
+		}
+	}
+	for id := range d.pendingExternalIDs {
 		if _, connected := d.workers[id]; !connected {
 			count++
 		}
@@ -4910,18 +5047,37 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 	toRemove := connected - target
 
 	d.mu.Lock()
-	// Partition managed workers into idle and busy — unmanaged are excluded.
-	var idle, busy []string
-	for id, w := range d.workers {
-		if !w.managed || w.spawnFor {
+	var killPending []string
+	for id := range d.pendingManagedIDs {
+		if toRemove == 0 {
+			break
+		}
+		if d.pendingSpawnForWorkers[id] {
 			continue
 		}
-		if w.state == protocol.WorkerIdle {
-			idle = append(idle, id)
-		} else {
-			busy = append(busy, id)
+		killPending = append(killPending, id)
+		delete(d.pendingManagedIDs, id)
+		delete(d.pendingManagedSince, id)
+		delete(d.pendingWorkerTargets, id)
+		delete(d.pendingSpawnForWorkers, id)
+		toRemove--
+	}
+
+	// Partition managed workers into idle and busy — unmanaged are excluded.
+	var idle, busy []string
+	if toRemove > 0 {
+		for id, w := range d.workers {
+			if !w.managed || w.spawnFor {
+				continue
+			}
+			if w.state == protocol.WorkerIdle {
+				idle = append(idle, id)
+			} else {
+				busy = append(busy, id)
+			}
 		}
 	}
+	procMgr := d.procMgr
 	d.mu.Unlock()
 
 	// Build removal list: idle first, then busy (newest = end of slice).
@@ -4934,11 +5090,16 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 		victims = victims[:toRemove]
 	}
 
+	if procMgr != nil {
+		for _, id := range killPending {
+			_ = procMgr.Kill(id)
+		}
+	}
 	for _, id := range victims {
 		d.gracefulShutdownWorker(id, d.cfg.ShutdownTimeout, shutdownReasonScaleDown)
 	}
 
-	return fmt.Sprintf("target=%d, shutting down %d", target, len(victims))
+	return fmt.Sprintf("target=%d, shutting down %d", target, len(killPending)+len(victims))
 }
 
 // heartbeatLoop, checkHeartbeats → worker_pool.go

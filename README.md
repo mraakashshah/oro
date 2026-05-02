@@ -348,7 +348,7 @@ oro stop
 
 **`oro init`** flags: `--check` (verify only), `--force` (overwrite config), `--project-root <dir>`, `--quiet`, `--local` (in-repo mode: create `.oro/` in project root). Default is stealth mode — zero footprint, config stored under `~/.oro/projects/s-<hash>/`.
 
-**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (ceiling for scale directives), `--model` (default: sonnet), `--detach, -D`, `--daemon-only, -d`
+**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (hard ceiling for autoscale, scale directives, spawn-for, and manual `oro worker launch` reservations), `--model` (default: sonnet), `--detach, -D`, `--daemon-only, -d`
 
 **`oro stop`** flags: `--force` (skip confirmation, requires `ORO_HUMAN_CONFIRMED=1`)
 

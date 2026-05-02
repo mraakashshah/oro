@@ -372,6 +372,50 @@ func TestRegisterWorker_ShutsDownExcessPendingManagedWorkerAtMaxWorkers(t *testi
 	}
 }
 
+func TestRespawnWorkerAssignsPendingHandoffToExistingIdleWorkerAtCap(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 1
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers["idle-at-cap"] = &trackedWorker{
+		id:      "idle-at-cap",
+		conn:    conn,
+		state:   protocol.WorkerIdle,
+		managed: true,
+		encoder: json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.respawnWorker(context.Background(), "handoff-at-cap", "/tmp/handoff-at-cap", protocol.ModelSonnet, "", "main", "main", "Handoff at cap", nil)
+
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("spawned handoff workers despite idle worker at cap: %v", spawned)
+	}
+	d.mu.Lock()
+	w := d.workers["idle-at-cap"]
+	_, stillPending := d.pendingHandoffs["handoff-at-cap"]
+	d.mu.Unlock()
+	if stillPending {
+		t.Fatal("pending handoff remained queued despite existing idle worker")
+	}
+	if w.state != protocol.WorkerBusy {
+		t.Fatalf("idle worker state = %s, want %s", w.state, protocol.WorkerBusy)
+	}
+	if w.beadID != "handoff-at-cap" {
+		t.Fatalf("worker bead = %q, want handoff-at-cap", w.beadID)
+	}
+	conn.mu.Lock()
+	writes := len(conn.written)
+	conn.mu.Unlock()
+	if writes != 1 {
+		t.Fatalf("assign writes = %d, want 1", writes)
+	}
+}
+
 // TestRegisterWorker_EarlyReturnWhenWorkerGoneAfterRelock verifies mutation 13
 // (skip unlock+return when worker is gone after reacquiring lock).
 // This tests the guard condition d.workers[id] check after lock re-acquire.

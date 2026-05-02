@@ -103,6 +103,8 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	delete(d.pendingManagedSince, id)
 	delete(d.pendingWorkerTargets, id)
 	delete(d.pendingSpawnForWorkers, id)
+	delete(d.pendingExternalIDs, id)
+	delete(d.pendingExternalSince, id)
 	d.upsertWorker(id, conn, managed)
 	if spawnFor {
 		d.workers[id].spawnFor = true
@@ -212,6 +214,37 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		return
 	}
 	delete(d.pendingHandoffs, handoffBeadID)
+}
+
+func (d *Dispatcher) assignPendingHandoffsToIdleWorkers() int {
+	assigned := 0
+	for {
+		d.mu.Lock()
+		var workerID, handoffBeadID string
+		var h *pendingHandoff
+		for id, w := range d.workers {
+			if w.state != protocol.WorkerIdle || w.spawnFor || w.targetBeadID != "" {
+				continue
+			}
+			workerID = id
+			break
+		}
+		if workerID == "" {
+			d.mu.Unlock()
+			return assigned
+		}
+		for beadID, pending := range d.pendingHandoffs {
+			handoffBeadID = beadID
+			h = pending
+			break
+		}
+		if h == nil {
+			d.mu.Unlock()
+			return assigned
+		}
+		d.assignHandoffToWorker(workerID, handoffBeadID, h)
+		assigned++
+	}
 }
 
 // ConnectedWorkers returns the number of currently connected workers.

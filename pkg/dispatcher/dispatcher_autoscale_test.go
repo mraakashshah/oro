@@ -649,6 +649,74 @@ func TestApplyMaxWorkersDirectiveCancelsExcessPendingManagedSpawns(t *testing.T)
 	}
 }
 
+func TestReconcileScaleCancelsPendingManagedWhenManualWorkersConsumeCapacity(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.MaxWorkers = 2
+
+	d.mu.Lock()
+	d.targetWorkers = 2
+	d.pendingManagedIDs["pending-1"] = true
+	d.pendingManagedSince["pending-1"] = d.nowFunc()
+	d.pendingManagedIDs["pending-2"] = true
+	d.pendingManagedSince["pending-2"] = d.nowFunc()
+	for i := 0; i < 2; i++ {
+		conn := newMockConn()
+		id := fmt.Sprintf("manual-%d", i)
+		d.workers[id] = &trackedWorker{
+			id:      id,
+			conn:    conn,
+			state:   protocol.WorkerIdle,
+			managed: false,
+			encoder: json.NewEncoder(conn),
+		}
+	}
+	d.mu.Unlock()
+
+	detail := d.reconcileScale()
+	if !strings.Contains(detail, "shutting down 2") {
+		t.Fatalf("reconcile detail = %q, want pending shutdown detail", detail)
+	}
+	if killed := pm.KilledIDs(); len(killed) != 2 {
+		t.Fatalf("killed pending workers = %v, want 2", killed)
+	}
+	d.mu.Lock()
+	pendingCount := len(d.pendingManagedIDs)
+	d.mu.Unlock()
+	if pendingCount != 0 {
+		t.Fatalf("pending managed count = %d, want 0", pendingCount)
+	}
+}
+
+func TestApplyLaunchWorkersDirectiveReservesExternalWorkersAgainstMaxWorkers(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 1
+
+	detail, err := d.applyDirective(protocol.Directive("launch-workers"), `{"worker_ids":["manual-reserved"]}`)
+	if err != nil {
+		t.Fatalf("launch-workers directive failed: %v", err)
+	}
+	if !strings.Contains(detail, "reserved 1") {
+		t.Fatalf("detail = %q, want reservation detail", detail)
+	}
+
+	d.mu.Lock()
+	live := d.liveWorkerCountLocked()
+	d.mu.Unlock()
+	if live != 1 {
+		t.Fatalf("live worker count = %d, want 1 reserved external worker", live)
+	}
+
+	_, err = d.applyDirective(protocol.Directive("launch-workers"), `{"worker_ids":["manual-over-cap"]}`)
+	if err == nil {
+		t.Fatal("expected second launch reservation to fail at MaxWorkers cap")
+	}
+	if !strings.Contains(err.Error(), "max workers reached") {
+		t.Fatalf("error = %v, want max workers reached", err)
+	}
+}
+
 func TestReconcileScaleIgnoresWorkersAlreadyShuttingDownForDrainPressure(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,12 +20,9 @@ type WorkerSpawner interface {
 	SpawnWorker(socketPath, workerID, logPath string) error
 }
 
-type workerLaunchCapacity struct {
-	maxWorkers int
-	totalLive  int
+type workerLaunchReservation struct {
+	WorkerIDs []string `json:"worker_ids"`
 }
-
-var getWorkerLaunchCapacity = fetchWorkerLaunchCapacity //nolint:gochecknoglobals // test seam for CLI unit tests
 
 // ExecWorkerSpawner spawns a real worker subprocess running `oro worker --socket <path> --id <id>`.
 // The child is placed in its own session (Setsid: true) so it survives parent exit.
@@ -116,67 +114,64 @@ func runWorkerLaunch(spawner WorkerSpawner, count int, workerID, beadID string) 
 	if beadID != "" {
 		return sendSpawnForDirective(sockPath, beadID)
 	}
-	if err := validateWorkerLaunchCapacity(sockPath, count); err != nil {
+	ts := time.Now().UnixNano()
+	ids := buildWorkerLaunchIDs(count, workerID, ts)
+	if err := reserveWorkerLaunch(sockPath, ids); err != nil {
 		return err
 	}
 
-	// Spawn count workers directly.
-	ts := time.Now().UnixNano()
-	for i := range count {
-		id := workerID
-		if id == "" {
-			id = fmt.Sprintf("ext-%d-%d", ts, i)
-		} else if count > 1 {
-			// Multiple workers with explicit base ID: append index.
-			id = fmt.Sprintf("%s-%d", workerID, i)
-		}
-
+	for i, id := range ids {
 		logDir := filepath.Join(paths.OroHome, "workers", id)
 		logPath := filepath.Join(logDir, "output.log")
 
 		if err := spawner.SpawnWorker(sockPath, id, logPath); err != nil {
+			releaseWorkerLaunchReservation(sockPath, ids[i:])
 			return fmt.Errorf("spawn worker %s: %w", id, err)
 		}
 	}
 	return nil
 }
 
-func validateWorkerLaunchCapacity(sockPath string, count int) error {
-	capacity, err := getWorkerLaunchCapacity(sockPath)
-	if err != nil {
-		return fmt.Errorf("query dispatcher capacity: %w", err)
+func buildWorkerLaunchIDs(count int, workerID string, ts int64) []string {
+	ids := make([]string, 0, count)
+	for i := range count {
+		id := workerID
+		if id == "" {
+			id = fmt.Sprintf("ext-%d-%d", ts, i)
+		} else if count > 1 {
+			id = fmt.Sprintf("%s-%d", workerID, i)
+		}
+		ids = append(ids, id)
 	}
-	if capacity.maxWorkers <= 0 {
-		return nil
-	}
-	available := capacity.maxWorkers - capacity.totalLive
-	if count > available {
-		return fmt.Errorf("max workers reached: requested=%d available=%d total=%d MaxWorkers=%d",
-			count, available, capacity.totalLive, capacity.maxWorkers)
-	}
-	return nil
+	return ids
 }
 
-func fetchWorkerLaunchCapacity(sockPath string) (workerLaunchCapacity, error) {
+func reserveWorkerLaunch(sockPath string, ids []string) error {
+	return sendWorkerLaunchDirective(sockPath, "launch-workers", ids)
+}
+
+func releaseWorkerLaunchReservation(sockPath string, ids []string) {
+	_ = sendWorkerLaunchDirective(sockPath, "cancel-worker-launch", ids)
+}
+
+func sendWorkerLaunchDirective(sockPath, op string, ids []string) error {
+	payload, err := json.Marshal(workerLaunchReservation{WorkerIDs: ids})
+	if err != nil {
+		return fmt.Errorf("marshal worker launch reservation: %w", err)
+	}
 	conn, err := dialDispatcher(context.Background(), sockPath)
 	if err != nil {
-		return workerLaunchCapacity{}, fmt.Errorf("dial dispatcher: %w", err)
+		return fmt.Errorf("dial dispatcher: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := sendDirective(conn, string(protocol.DirectiveStatus), ""); err != nil {
-		return workerLaunchCapacity{}, fmt.Errorf("send status directive: %w", err)
+	if err := sendDirective(conn, op, string(payload)); err != nil {
+		return fmt.Errorf("send %s directive: %w", op, err)
 	}
-	ack, err := readACK(conn)
-	if err != nil {
-		return workerLaunchCapacity{}, fmt.Errorf("status ack: %w", err)
+	if _, err := readACK(conn); err != nil {
+		return fmt.Errorf("%s ack: %w", op, err)
 	}
-	resp, err := parseStatusFromACK(ack.Detail)
-	if err != nil {
-		return workerLaunchCapacity{}, err
-	}
-	total := resp.WorkerCount + resp.PendingWorkerCount
-	return workerLaunchCapacity{maxWorkers: resp.MaxWorkers, totalLive: total}, nil
+	return nil
 }
 
 // sendSpawnForDirective sends a "spawn-for" directive to the dispatcher, asking
