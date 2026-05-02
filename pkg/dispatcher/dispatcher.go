@@ -3415,6 +3415,16 @@ func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID
 func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 
+	allBeads = d.filterExecutableBeads(ctx, allBeads)
+
+	d.mu.Lock()
+	candidates := d.assignmentCandidatesLocked(allBeads, now)
+	d.mu.Unlock()
+
+	return d.filterAlreadyMergedBranches(ctx, candidates)
+}
+
+func (d *Dispatcher) filterExecutableBeads(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	// Already-decomposed epics are not executable worker tasks. Childless epics
 	// remain assignable so a decomposition worker can create child beads.
 	executable := make([]protocol.Bead, 0, len(allBeads))
@@ -3432,10 +3442,10 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 		}
 		executable = append(executable, b)
 	}
-	allBeads = executable
+	return executable
+}
 
-	d.mu.Lock()
-
+func (d *Dispatcher) assignmentCandidatesLocked(allBeads []protocol.Bead, now time.Time) []protocol.Bead {
 	// Build the set of open bead IDs for dependency resolution.
 	// A bead is "open" (can block others) if it is not closed.
 	openBeadIDs := make(map[string]bool, len(allBeads))
@@ -3460,8 +3470,10 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 			candidates = append(candidates, b)
 		}
 	}
-	d.mu.Unlock()
+	return candidates
+}
 
+func (d *Dispatcher) filterAlreadyMergedBranches(ctx context.Context, candidates []protocol.Bead) []protocol.Bead {
 	// Second pass: check whether the agent branch is already merged to main.
 	// This requires a git subprocess, so it runs outside the lock.
 	out := make([]protocol.Bead, 0, len(candidates))

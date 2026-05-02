@@ -230,5 +230,9 @@ func spawnExtractor(ctx context.Context, spawner Spawner, model, prompt, workdir
 			return reader, nil
 		}
 	}
-	return spawner.Spawn(ctx, model, prompt)
+	reader, err := spawner.Spawn(ctx, model, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("spawn extractor: %w", err)
+	}
+	return reader, nil
 }
