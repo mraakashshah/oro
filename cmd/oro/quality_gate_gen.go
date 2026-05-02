@@ -434,6 +434,11 @@ const qualityGateTmpl = `#!/usr/bin/env bash
 
 set -euo pipefail
 
+if [ -n "${LC_ALL:-}" ] && ! locale -a 2>/dev/null | grep -qx "$LC_ALL"; then
+    export LC_ALL=C
+    export LANG=C
+fi
+
 # Unset git hook env vars that leak into test subprocesses.
 # Save worktree state first so mutation testing can still resolve refs after
 # hook env cleanup.
@@ -577,6 +582,75 @@ check() {
         head -20 "$out"
         return 1
     fi
+}
+
+qg_python_tool_path() {
+    local tool="$1"
+    local candidate
+    for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool" "$HOME/.local/bin/$tool"; do
+        if [ -x "$candidate" ]; then
+            if ! qg_python_tool_path_allowed "$candidate"; then
+                continue
+            fi
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    candidate=$(command -v "$tool" 2>/dev/null || true)
+    if [ -z "$candidate" ]; then
+        return 1
+    fi
+    qg_python_tool_path_allowed "$candidate" || return 1
+    printf '%s\n' "$candidate"
+}
+
+qg_python_tool_path_allowed() {
+    local candidate="$1"
+    local resolved="$candidate"
+    if command -v realpath >/dev/null 2>&1; then
+        resolved=$(realpath "$candidate" 2>/dev/null || printf '%s\n' "$candidate")
+    elif [ -L "$candidate" ]; then
+        return 1
+    fi
+    local path_check
+    for path_check in "$candidate" "$resolved"; do
+        case "$path_check" in
+        */.pyenv/shims/* | */pyenv/shims/* | */libexec/pyenv*)
+            return 1
+            ;;
+        esac
+    done
+}
+
+qg_run_python_tool() {
+    local tool="$1"
+    shift
+    local path
+    if path=$(qg_python_tool_path "$tool"); then
+        "$path" "$@"
+        return
+    fi
+    if command -v uv >/dev/null 2>&1; then
+        uv run "$tool" "$@"
+        return
+    fi
+    echo "SKIP: $tool not installed"
+    return 77
+}
+
+qg_ruff() {
+    qg_run_python_tool ruff "$@"
+}
+
+qg_pyright() {
+    local path
+    if path=$(qg_python_tool_path pyright); then
+        "$path" "$@"
+        return
+    fi
+    echo "SKIP: pyright not installed"
+    return 77
 }
 
 # Run multiple checks in parallel, preserving output order.
@@ -803,7 +877,7 @@ lane_python() {
 
     # --- Tier 1: Formatting ---
     header "PYTHON TIER 1: FORMATTING"
-    if check "ruff format" "ruff format --check ."; then
+    if check "ruff format" "qg_ruff format --check ."; then
         pass=$((pass + 1))
     else
         fail=$((fail + 1))
@@ -812,14 +886,14 @@ lane_python() {
 
     # --- Tier 2: Linting (parallel) ---
     header "PYTHON TIER 2: LINTING"
-    parallel_checks "ruff check" "ruff check ."
+    parallel_checks "ruff check" "qg_ruff check ."
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/python.rc"; return; fi
 
     # --- Tier 3: Type Checking ---
     header "PYTHON TIER 3: TYPE CHECKING"
-    if command -v pyright >/dev/null 2>&1 && pyright --version >/dev/null 2>&1; then
-        if check "pyright" "pyright"; then
+    if qg_pyright --version >/dev/null 2>&1; then
+        if check "pyright" "qg_pyright"; then
             pass=$((pass + 1))
         else
             fail=$((fail + 1))

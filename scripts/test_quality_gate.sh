@@ -521,7 +521,7 @@ test_worktree_ref_resolution_after_env_cleanup() {
 	# 4. Provides a qg_git helper that temporarily sets GIT_DIR for ref resolution
 
 	local env_block
-	env_block=$(head -25 "$SCRIPT_DIR/quality_gate.sh")
+	env_block=$(sed -n '/^# Prevent hook env leakage/,/^unset GIT_DIR/p' "$SCRIPT_DIR/quality_gate.sh")
 
 	# Must have: unset GIT_DIR (still needed for hook leakage prevention)
 	if ! echo "$env_block" | grep -q 'unset GIT_DIR'; then
@@ -794,6 +794,175 @@ test_quality_gate_stage_assets_fail_closed() {
 	return 0
 }
 
+write_quality_gate_python_helpers() {
+	local out="$1"
+	sed -n '/^qg_python_tool_path()/,/^# Run multiple checks/p' "$SCRIPT_DIR/quality_gate.sh" |
+		sed '$d' >"$out"
+}
+
+write_generated_quality_gate_python_helpers() {
+	local out="$1"
+	sed -n '/^qg_python_tool_path()/,/^# Run multiple checks/p' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go" |
+		sed '$d' >"$out"
+}
+
+run_python_tool_resolution_fixture() {
+	local helpers="$1"
+	local tmpdir
+	tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/qg-python-tools.XXXXXX")
+	mkdir -p "$tmpdir/home/.local/bin" "$tmpdir/.pyenv/shims" "$tmpdir/linkbin" "$tmpdir/bin" "$tmpdir/repo/.venv/bin"
+
+	cat >"$tmpdir/.pyenv/shims/ruff" <<'EOS'
+#!/bin/sh
+echo SHIM_EXECUTED "$@"
+exit 99
+EOS
+	chmod +x "$tmpdir/.pyenv/shims/ruff"
+	ln -s "$tmpdir/.pyenv/shims/ruff" "$tmpdir/home/.local/bin/ruff"
+	ln -s "$tmpdir/.pyenv/shims/ruff" "$tmpdir/linkbin/ruff"
+
+	cat >"$tmpdir/bin/uv" <<'EOS'
+#!/bin/sh
+echo UV_FALLBACK "$@"
+exit 0
+EOS
+	chmod +x "$tmpdir/bin/uv"
+
+	local output rc
+	output=$(PATH="$tmpdir/linkbin:$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'source "$1"; qg_ruff check .' _ "$helpers" 2>&1)
+	rc=$?
+	if [ "$rc" -ne 0 ] || echo "$output" | grep -q 'SHIM_EXECUTED'; then
+		echo "FAIL: qg_ruff executed or failed on symlinked pyenv shim: rc=$rc output=$output"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	if ! echo "$output" | grep -q 'UV_FALLBACK run ruff check .'; then
+		echo "FAIL: qg_ruff did not fall back to uv after rejecting pyenv shim: $output"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+
+	output=$(PATH="$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'source "$1"; qg_ruff format --check .' _ "$helpers" 2>&1)
+	rc=$?
+	if [ "$rc" -ne 0 ] || echo "$output" | grep -q 'SHIM_EXECUTED'; then
+		echo "FAIL: qg_ruff executed or failed on HOME/.local/bin symlinked pyenv shim: rc=$rc output=$output"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+
+	output=$(PATH="$tmpdir/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'source "$1"; qg_ruff check .' _ "$helpers" 2>&1)
+	rc=$?
+	if [ "$rc" -ne 0 ] || echo "$output" | grep -q 'SHIM_EXECUTED'; then
+		echo "FAIL: qg_ruff executed or failed on symlinked pyenv shim without realpath on PATH: rc=$rc output=$output"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	if ! echo "$output" | grep -q 'UV_FALLBACK run ruff check .'; then
+		echo "FAIL: qg_ruff did not fall back to uv after rejecting unresolved symlink: $output"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+
+	output=$(PATH="$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'source "$1"; qg_pyright --version' _ "$helpers" 2>&1)
+	rc=$?
+	if [ "$rc" -ne 77 ] || [ "$output" != "SKIP: pyright not installed" ]; then
+		echo "FAIL: qg_pyright should skip without uv fallback when no direct binary exists: rc=$rc output=$output"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+
+	rm -rf "$tmpdir"
+}
+
+# Test: Python tool resolution avoids pyenv shims and uses deterministic wrappers.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_python_tools_avoid_pyenv_shims() {
+	if ! grep -q 'qg_python_tool_path()' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh lacks qg_python_tool_path helper"
+		return 1
+	fi
+	if ! grep -q 'pyenv/shims' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not reject pyenv shim paths"
+		return 1
+	fi
+	if ! grep -q 'qg_python_tool_path_allowed()' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'realpath "$candidate"' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not resolve symlinks before rejecting pyenv shims"
+		return 1
+	fi
+	if ! grep -q 'qg_ruff format --check .' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'qg_ruff check .' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh ruff lanes do not use qg_ruff wrapper"
+		return 1
+	fi
+	if ! grep -q 'qg_pyright --version' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'check "pyright" "qg_pyright"' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh pyright lane does not use qg_pyright wrapper"
+		return 1
+	fi
+	local helpers
+	helpers=$(mktemp "${TMPDIR:-/tmp}/qg-helpers.XXXXXX")
+	write_quality_gate_python_helpers "$helpers"
+	run_python_tool_resolution_fixture "$helpers"
+	local rc=$?
+	rm -f "$helpers"
+	return "$rc"
+}
+
+# Test: generated quality gate template includes the same Python tool resolver.
+# shellcheck disable=SC2317,SC2329
+test_generated_quality_gate_python_tools_avoid_pyenv_shims() {
+	local gen="$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"
+	if ! grep -q 'qg_python_tool_path()' "$gen"; then
+		echo "FAIL: generated quality gate template lacks qg_python_tool_path helper"
+		return 1
+	fi
+	if ! grep -q 'pyenv/shims' "$gen"; then
+		echo "FAIL: generated quality gate template does not reject pyenv shim paths"
+		return 1
+	fi
+	if ! grep -q 'qg_python_tool_path_allowed()' "$gen" ||
+		! grep -q 'realpath "$candidate"' "$gen"; then
+		echo "FAIL: generated quality gate template does not resolve symlinks before rejecting pyenv shims"
+		return 1
+	fi
+	if ! grep -q 'qg_ruff format --check .' "$gen" ||
+		! grep -q 'qg_ruff check .' "$gen"; then
+		echo "FAIL: generated quality gate template ruff lanes do not use qg_ruff wrapper"
+		return 1
+	fi
+	if ! grep -q 'qg_pyright --version' "$gen" ||
+		! grep -q 'check "pyright" "qg_pyright"' "$gen"; then
+		echo "FAIL: generated quality gate template pyright lane does not use qg_pyright wrapper"
+		return 1
+	fi
+	local helpers
+	helpers=$(mktemp "${TMPDIR:-/tmp}/qg-generated-helpers.XXXXXX")
+	write_generated_quality_gate_python_helpers "$helpers"
+	run_python_tool_resolution_fixture "$helpers"
+	local rc=$?
+	rm -f "$helpers"
+	return "$rc"
+}
+
+# Test: invalid LC_ALL values are normalized before invoking Python tools.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_invalid_locale_sanitized() {
+	if ! head -20 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'locale -a'; then
+		echo "FAIL: quality_gate.sh does not validate LC_ALL early"
+		return 1
+	fi
+	if ! head -20 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'export LC_ALL=C'; then
+		echo "FAIL: quality_gate.sh does not normalize invalid LC_ALL to C"
+		return 1
+	fi
+	if ! grep -q 'locale -a' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go" ||
+		! grep -q 'export LC_ALL=C' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
+		echo "FAIL: generated quality gate template does not normalize invalid LC_ALL"
+		return 1
+	fi
+}
+
 # Test: Makefile mutate-go-diff git diff has 2>/dev/null
 # shellcheck disable=SC2317,SC2329
 test_makefile_git_diff_stderr_redirect() {
@@ -927,6 +1096,9 @@ echo "=============================================="
 test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
+test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_python_tools_avoid_pyenv_shims
+test_case "generated quality gate Python tools avoid pyenv shims" test_generated_quality_gate_python_tools_avoid_pyenv_shims
+test_case "quality_gate.sh invalid locale sanitized" test_quality_gate_invalid_locale_sanitized
 test_case "Makefile git diff has 2>/dev/null" test_makefile_git_diff_stderr_redirect
 test_case "Makefile \$\$changed is quoted" test_makefile_changed_is_quoted
 test_case "Makefile mutate-py uses PID-isolated path" test_makefile_mutate_py_pid_isolated
