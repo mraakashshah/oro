@@ -778,14 +778,14 @@ v9–v14 specified a `bd-shim` translator binary with ~30 translation rules + de
 
 **Cutover protocol:**
 
-1. **Phase 6 lands first** — every prompt, hook, skill, and manager/architect template now emits `oro bead` syntax. CI gate: `git grep -l 'bd ' assets/skills/ pkg/worker/ pkg/ops/ cmd/oro/manager.go cmd/oro/architect.go assets/hooks/` returns zero files. (`bd` references in this doc, in changelog history, and in the migration tool itself are exempted by allow-list.)
+1. **Phase 6 lands first** — every rendered prompt, shipped runtime hook, shipped skill, and manager/architect template now emits `oro bead` syntax. The CI gate checks runtime surfaces for executable legacy `bd` command invocations; tests, historical docs, and migration-only references are excluded by allow-list.
 2. **Phase 8 (migration day)** — operator runs `oro bead migrate-from-dolt`, validates the native store directly, then sets `ORO_BEADSOURCE_MODE=sqlite` and restarts the dispatcher. **And restarts every worker.** New worker spawns will use Phase-6-updated prompts emitting `oro bead` natively.
 3. **Any in-flight worker not restarted** continues with its old prompt. When it eventually emits `bd update ...`, the call fails with `command not found` — loudly, traceably. The dispatcher's existing failure-recovery path retries the bead with a fresh worker.
 4. **bd binary remains installed through Phase 10** only as a precaution for the migration tool itself (`bd export` for re-reads if `--reconcile` needs to re-fetch). Workers do not see it on PATH; the dispatcher's worker-spawn config strips bd from worker `PATH` at Phase 8.
 
 **What this trades:** one-hour cutover-attention spike (operator restarts workers; one or two workers may need manual restart if missed) versus permanent shim code (30+ translation rules, test extraction, deny-default, lifecycle management). Net: simpler, smaller, no permanent runtime code.
 
-**Acceptance test row** (Phase 8 inventory, replaces the bd-shim row): post-cutover, `git grep -l 'bd ' assets/skills/ pkg/worker/ pkg/ops/ cmd/oro/manager.go cmd/oro/architect.go assets/hooks/` returns zero files; new worker spawns produce no `bd: command not found` events in the event log over a 4-hour window.
+**Acceptance test row** (Phase 8 inventory, replaces the bd-shim row): post-cutover, rendered worker/ops prompts and shipped runtime hook/skill assets contain no executable legacy `bd` command invocations; new worker spawns inherit a `PATH` with `oro` present and `bd` absent, and any post-cutover `bd: command not found` event is treated as a native worker bug to fix rather than as a rollback trigger.
 
 *The v9–v14 translation table that lived here has been removed in v15. The full table (~30 rows) was the bd-shim's job description. With no shim, no table.*
 
@@ -1946,7 +1946,7 @@ Default location if `--out` omitted: `.oro/exports/<timestamp>.jsonl`.
 | Nightly cron | `0 2 * * * cd /path && oro bead export --out=.oro/backups/$(date +\%F).jsonl` | Built-in habit |
 | Pre-merge snapshot | git pre-commit hook calls `oro bead export` if needed | Off by default |
 | Litestream (advanced) | Replicate `state.db` to S3 | For high-availability ops |
-| Optional acceptance-test cron | `0 3 * * * cd /path && oro bead acceptance-test \|\| <alert>` | Optional post-cutover operational hygiene. It is not a Phase 9 cutover gate; Phase 9 is validated by the native-first evidence in §12.10. |
+| Optional native validation cron | `0 3 * * * cd /path && scripts/check-native-beadstore-invariants.py --db ~/.oro/projects/<project>/state.db \|\| <alert>` | Optional post-cutover operational hygiene. It is not a Phase 9 cutover gate; Phase 9 is validated by the native-first evidence in §12.10. |
 
 The default oro setup adds the nightly cron suggestion to `oro readiness`'s checklist (Companion spec §4.5/§7.7).
 
@@ -2079,7 +2079,7 @@ Total budget: **10–14 person-days**, parallelizable to 5–7 calendar days if 
 | `assets/skills/resume-handoff/SKILL.md:51` | **v13** — same |
 | `assets/skills/spec/SKILL.md:61` | **v13** — same |
 | `assets/skills/beads/SKILL.md` | **v13: DELETE in Phase 6** — this is general bd documentation that becomes obsolete after the migration. The advanced bd subcommands taught here (`bd prime`, `bd mol`, `bd pour`, `bd wisp`) are not part of oro's emitted surface; users who want them after Phase 10 must install bd separately. |
-| **Phase 6 hard gate** | `git grep -l 'bd ' assets/skills/` returns zero files. CI step in Phase 6 enforces this. |
+| **Phase 6 hard gate** | Rendered worker/ops prompts and shipped runtime hook/skill assets contain no executable legacy `bd` command invocations. Advisory grep checks must exclude `*_test.*`, historical docs, and migration-only fallback surfaces. |
 
 ### 11.5 Worker prompt (`pkg/worker/prompt.go`)
 
@@ -2341,9 +2341,9 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
   exactly `ok` before and after the smoke.
 - `ORO_BEADSOURCE_MODE=sqlite` is exported only after a clean real migration and native validation, and the restarted dispatcher process is verified to inherit it.
 - Dispatcher and workers restarted; every restarted worker subprocess has `bd`
-  absent from `PATH`, `oro` present, and a controlled per-worker log segment
-  captured after a pre-assignment byte offset proving the assigned test bead
-  was handled with native `oro bead` commands and no `bd` command invocation.
+  absent from `PATH`, `oro` present, and controlled evidence proves targeted
+  assignment plus process inheritance under sqlite mode. Full worker/QG/merge
+  completion is proved separately by the post-cutover worker execution smoke.
 - The operator log links to `docs/runbooks/beadstore-native-cutover.md` and
   records why any bd/Dolt divergence was treated as non-veto.
 
@@ -2557,61 +2557,18 @@ oro bead dep add <epic-id> <child-id>
 
 v9–v14 had a "shim window" here describing how worker prompts emitting `bd <verb>` would be caught and translated to `oro bead <verb>` during a transition period. **v15 deleted the shim**; v18 cleans up this section to match.
 
-Worker prompts in flight at Phase 8 cutover that still emit `bd <verb>` will fail with `command not found`. The dispatcher's existing failure-recovery path retries the bead with a fresh worker. The Phase 8 deliverable list (§12.9) explicitly includes "restart all workers" + "strip bd from worker PATH" — together they ensure no worker continues running with the old prompt. Phase 6's `git grep -l 'bd ' …` CI gate ensures no in-tree prompts emit `bd` post-Phase-6. The combination produces a clean cutover with no permanent translator code. Trade: more cutover-day attention; permanently simpler runtime.
+Worker prompts in flight at Phase 8 cutover that still emit `bd <verb>` will fail with `command not found`. The dispatcher's existing failure-recovery path retries the bead with a fresh worker. The Phase 8 deliverable list (§12.9) explicitly includes "restart all workers" + "strip bd from worker PATH" — together they ensure no worker continues running with the old prompt. Phase 6's runtime-surface gate ensures rendered prompts and shipped runtime assets no longer emit executable `bd` commands. The combination produces a clean cutover with no permanent translator code. Trade: more cutover-day attention; permanently simpler runtime.
 
-### 14.5 End-to-end acceptance test (`oro bead acceptance-test`) (addresses adversarial review C1)
+### 14.5 Acceptance Evidence Inventory
 
-The v3 spec had per-phase acceptance gates but no single command verifying that
-the migration is *globally* complete and correct. The old Phase 9 passive
-observation window is superseded by the native-first evidence gate in §12.10,
-but the end-to-end acceptance command remains useful as an operator check:
-
-```
-$ oro bead acceptance-test
-[oro] Running checks (count grows per phase; see "Acceptance test inventory" below)...
-  ✓  state.db schema integrity (PRAGMA integrity_check)
-  ✓  WAL mode enabled (journal_mode=wal)
-  ✓  busy_timeout=5000
-  ✓  All 6 bead tables exist with expected columns
-  ✓  Native ready/blocked commands return JSON arrays and `scripts/check-native-beadstore-invariants.py` reports zero ready/blocked view mismatches, ready/blocked overlap, active-assignment leaks, and ready rows with unclosed hard blockers. bd/Dolt parity is audit-only after migration and is not a cutover veto when divergence is caused by bd/Dolt failure, stale bd state, or bd unavailability.
-  ✓  Native validation proves a representative migrated bead with `oro bead show --json` and a controlled native create/show/close/show smoke bead against the target `state.db`.
-  ✓  Roundtrip: oro bead create → show → close → show
-  ✓  oro bead create --parent=<epic> sets parent_id only (zero bead_deps rows for new bead) — v14 contract
-  ✓  Roundtrip: oro bead create → dep add → ready (filtered out) → close dep → ready (returned)
-  ✓  defer/undefer clears deferred_until (regression-test for bd zombie-defer-until bug)
-  ✓  Update(open) clears deferred_until
-  ✓  AllChildrenClosed correctly identifies completed epics
-  ✓  HasChildren returns true iff the epic has any children (open or closed) — distinct from AllChildrenClosed
-  ✓  Show returns *protocol.Bead with persisted fields populated; runtime fields (WorkerID, ContextPercent, etc.) populated when assignment+fetcher exist, omitted via omitempty otherwise
-  ✓  Create takes CreateParams, returns *protocol.Bead with id populated (v15/v16 reshape)
-  ✓  Export produces valid JSONL parseable by jq
-  ✓  Export parity: `oro bead export` JSONL parses and matches bd-compatible export data after migration; native import roundtrip is deferred until `oro bead import` ships
-  ✓  beads_fts indexes are queryable
-  ✓  Triggers fire: insert dep → parent updated_at advances
-  ✓  Triggers fire: delete tag → parent updated_at advances
-  ✓  Concurrent reads: 10 goroutines × 100 reads, no errors
-  ✓  Concurrent writes: 10 goroutines × 10 creates, all unique ids
-  ✓  PID lock prevents second dispatcher
-  ✓  Stealth-mode test: state.db at ~/.oro/projects/s-<hash>/state.db works
-  ✓  Hooks execute against state.db successfully (sample: bd_create_notifier)
-  ✓  Migration tool dry-run completes against fixture dolt export
-  ✓  Reconcile detects timestamp ties as conflicts (not no-ops)
-  ✓  Partial-dolt-corruption pre-flight refuses without --force-recover
-  ✓  JSONL fallback path works when dolt is unavailable
-  ✓  Worker prompt rendering produces no `bd ` references (post-Phase-6)
-  ✓  Ops prompts produce no `bd ` references (post-Phase-6)
-  ✓  Hooks produce no `bd ` references (post-Phase-6)
-  ✓  Phase 6 CI gate: `git grep -l 'bd ' assets/skills/ pkg/worker/ pkg/ops/ cmd/oro/manager.go cmd/oro/architect.go assets/hooks/` returns zero files (replaces v14's bd-shim coverage check)
-  ✓  Phase 8 cutover: workers restarted; bd stripped from worker PATH; new spawns produce no `bd: command not found` events over 4-hour window (replaces v14's shim deny-default check)
-  ✓  CI lint: pkg/beadstore does not import pkg/dispatcher
-  ✓  CI lint: no sql.Open outside cmd/oro/db.go
-  ✓  CLIBeadSource (legacy) implements beadstore.Store after Phase 1 adapter pass: var _ beadstore.Store = (*dispatcher.CLIBeadSource)(nil)
-  ✓  SQLiteStore implements beadstore.Store: var _ beadstore.Store = (*beadstore.SQLiteStore)(nil)
-  ✓  All 12 v15/v16/v17 reshaped Store methods implemented by SQLiteStore: Ready, InProgress, Blocked, Closed, Show, Create, Update, Close, HasChildren, AllChildrenClosed, FindByParentAndTag, Export
-PASS — checks succeeded in 4.3s
-```
-
-**Single command, binary pass/fail.** Returns exit code 0 on full pass; non-zero with the failed check name on any failure. This is the acceptance test for the migration as a whole.
+The v3 spec had per-phase acceptance gates but no consolidated inventory of the
+checks needed to prove the migration. The current implementation does not ship a
+single `oro bead acceptance-test` command. Operators should run the reviewed
+native validation runbooks and scripts, including
+`scripts/check-native-beadstore-invariants.py` and
+`scripts/check-phase10-no-bd-install.sh`, and record the command outputs in the
+phase evidence report. The old Phase 9 passive observation window is superseded
+by the native-first evidence gate in §12.10.
 
 **Acceptance test inventory by phase** (the v4 review correctly noted the inventory wasn't enumerated; v5 fixes this):
 
@@ -2625,7 +2582,7 @@ PASS — checks succeeded in 4.3s
 | 2 | `oro bead defer` then `oro bead update --status=open` clears `deferred_until` (zombie-defer regression test) |
 | 2 | `oro bead dep add` → `oro bead ready` filters; close dep → `oro bead ready` returns the now-unblocked bead |
 | 2 | `oro bead --json` emits the oro-native schema (v15) and round-trips through the rewritten `pkg/mg/data` parsers — verified against fixtures using `parent_id`, `type`, RFC3339Nano timestamps |
-| 2 | Phase 6 CI gate verified: `git grep -l 'bd[[:space:]]' assets/skills/ pkg/worker/ pkg/ops/ cmd/oro/manager.go cmd/oro/architect.go assets/hooks/` returns zero files post-Phase-6 (v15 no-shim cutover; replaces v14's bd-shim translation-table coverage row) |
+| 2 | Phase 6 runtime-surface gate verified: rendered worker/ops prompts and shipped runtime hook/skill assets contain no executable legacy `bd` command invocations post-Phase-6 (v15 no-shim cutover; replaces v14's bd-shim translation-table coverage row). Advisory grep checks exclude tests, historical docs, and migration-only fallback surfaces. |
 | 3 | Migration tool dry-run completes against real-data dolt snapshot; row-count parity matches; partial-corruption pre-flight refuses without `--force-recover`; JSONL fallback path works with dolt absent; reconcile detects timestamp ties as conflicts not no-ops; reconcile is idempotent |
 | 3 | Migration concurrency lock refuses second invocation on same project |
 | 4 | Shadow mode writes divergence events on intentional drift; primary read is authoritative |
@@ -2643,9 +2600,9 @@ The gate is the native-first evidence listed in §12.10 and the current
 operator runbook. After that evidence passes, failures are native beadstore bugs
 unless data corruption requires restoring a recorded SQLite backup.
 
-**Phase 1 deliverable** includes the initial acceptance-test stub. Each phase
-adds its row(s) from the table above. By Phase 9, the full inventory can be run
-on demand; scheduled runs are optional post-cutover hygiene, not a cutover gate.
+Each phase adds its row(s) from the table above. By Phase 9, the full inventory
+can be run on demand through the reviewed runbook commands and scripts;
+scheduled runs are optional post-cutover hygiene, not a cutover gate.
 
 ---
 
@@ -2748,7 +2705,12 @@ A new fixture directory `pkg/dispatcher/testdata/beads/` holds JSONL fixtures fo
 
 - **Severity:** Medium — at Phase 8 cutover, workers in flight with v14-era prompts will emit `bd …` invocations that fail with `command not found`.
 - **Likelihood:** High during the cutover hour, zero thereafter (v15 has no shim; the failures are by design).
-- **Mitigation:** Phase 6 lands prompt updates first (`git grep -l 'bd ' …` returns zero in-tree files); Phase 8 deliverable list explicitly includes "restart all workers" + "strip bd from worker PATH"; the dispatcher's existing failure-recovery path retries failed beads with fresh workers (whose prompts use `oro bead`).
+- **Mitigation:** Phase 6 lands prompt updates first and verifies rendered
+  worker/ops prompts plus shipped runtime hook/skill assets contain no
+  executable legacy `bd` command invocations; Phase 8 deliverable list
+  explicitly includes "restart all workers" + "strip bd from worker PATH"; the
+  dispatcher's existing failure-recovery path retries failed beads with fresh
+  workers whose prompts use `oro bead`.
 - **Detection:** `bd: command not found` events in the event log; should drop to zero within the cutover hour.
 - **Fallback:** if any worker survives the restart sweep, kill it manually; re-run with `oro bead`-emitting prompts. v15 trades shim complexity for one-hour cutover attention.
 

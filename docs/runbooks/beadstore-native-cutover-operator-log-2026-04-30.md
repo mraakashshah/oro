@@ -149,7 +149,8 @@ Controlled worker restart proof:
   absent.
 - Full-`PATH` targeted worker assignment succeeded for
   `native-worker-smoke-20260430t213801` at event `789138` and reached
-  `awaiting_review` without missing-tool failures.
+  `awaiting_review` without missing-tool failures. This proves process
+  environment and targeted assignment, not a full worker/QG/merge lifecycle.
 
 Final live state:
 

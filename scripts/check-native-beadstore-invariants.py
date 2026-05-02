@@ -18,7 +18,7 @@ CHECKS: tuple[tuple[str, str, object | None], ...] = (
     (
         "legacy_foreign_key_violations",
         "SELECT COUNT(*) FROM pragma_foreign_key_check;",
-        None,
+        0,
     ),
     (
         "invalid_status_rows",

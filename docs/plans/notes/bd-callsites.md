@@ -102,5 +102,6 @@ dispatcher/work operation: cleanup uses native SQLite, mg uses native store or
 local JSONL snapshots, stop no longer flushes bd/Dolt, doctor no longer repairs
 Dolt, dispatcher health no longer shells to bd, and the `oro bd` wrapper plus
 dispatcher CLI beadsource/recovery files are deleted. Remaining references in
-this inventory identify follow-up cleanup surfaces such as prompt/hook text,
-the migration-only `bd export` import fallback, and stale comments.
+this inventory are migration-only import/export fallback surfaces, historical
+docs, test fixtures, and stale comments; they are not live worker/dispatcher
+coordination paths.
