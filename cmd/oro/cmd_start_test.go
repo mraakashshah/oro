@@ -671,7 +671,7 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		oroHome := t.TempDir()
 		t.Setenv("ORO_HOME", oroHome)
 		t.Setenv("ORO_PROJECT", "")
-		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+		t.Setenv("ORO_BEADSOURCE_MODE", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
 		d, db, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, "", false, "")
@@ -689,6 +689,50 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		}
 		if got := d.TargetWorkers(); got != 0 {
 			t.Errorf("TargetWorkers: got %d, want 0", got)
+		}
+	})
+
+	t.Run("dispatcher rejects legacy beadsource modes in production", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroHome := t.TempDir()
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		_, _, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, "", false, "")
+		if err == nil {
+			t.Fatal("buildDispatcherWithReviewTimeouts succeeded with legacy cli beadsource mode")
+		}
+		if !strings.Contains(err.Error(), "native sqlite beadstore") {
+			t.Fatalf("error = %v, want native sqlite beadstore rejection", err)
+		}
+	})
+
+	t.Run("native production start skips dolt lifecycle by default", func(t *testing.T) {
+		t.Setenv("ORO_BEADSOURCE_MODE", "")
+
+		doltStart, err := nativeProductionDoltStart()
+		if err != nil {
+			t.Fatalf("nativeProductionDoltStart: %v", err)
+		}
+		if doltStart != nil {
+			t.Fatal("nativeProductionDoltStart returned legacy dolt lifecycle in default sqlite mode")
+		}
+	})
+
+	t.Run("native production start rejects shadow before dolt lifecycle", func(t *testing.T) {
+		t.Setenv("ORO_BEADSOURCE_MODE", "shadow")
+
+		doltStart, err := nativeProductionDoltStart()
+		if err == nil {
+			t.Fatal("nativeProductionDoltStart succeeded with legacy shadow mode")
+		}
+		if doltStart != nil {
+			t.Fatal("nativeProductionDoltStart returned dolt lifecycle with rejected shadow mode")
+		}
+		if !strings.Contains(err.Error(), "native sqlite beadstore") {
+			t.Fatalf("error = %v, want native sqlite beadstore rejection", err)
 		}
 	})
 

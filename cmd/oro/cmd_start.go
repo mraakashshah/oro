@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
@@ -205,7 +206,7 @@ func withDaemonPreflightBypass(enabled bool, fn func() error) error {
 func shouldSkipDaemonPreflight(daemonOnly bool) bool {
 	return daemonOnly &&
 		os.Getenv(daemonSkipPreflightEnv) == "1" &&
-		strings.EqualFold(strings.TrimSpace(os.Getenv("ORO_BEADSOURCE_MODE")), "sqlite")
+		nativeProductionBeadSourceMode() == "sqlite"
 }
 
 // isDetached returns true when oro start should skip interactive attach.
@@ -598,6 +599,13 @@ func checkDoltModeForWorkers(beadsDir string, workerCount int) error {
 	return nil
 }
 
+func nativeProductionDoltStart() (func() (int, error), error) {
+	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
 func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration) error {
 	project, err := readProjectConfig(".")
@@ -616,14 +624,10 @@ func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach 
 	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
 		return fmt.Errorf("set ORO_HOME: %w", err)
 	}
-	beadsDir, err := absoluteBeadsDir()
+	doltStart, err := nativeProductionDoltStart()
 	if err != nil {
-		return fmt.Errorf("resolve beads dir: %w", err)
-	}
-	if err := checkDoltModeForWorkers(beadsDir, workers); err != nil {
 		return err
 	}
-	doltStart, _ := makeDoltLifecycle(".", oroHome)
 	return runFullStart(w, workers, maxWorkers, model, project,
 		&ExecDaemonSpawner{ProgressTimeout: progressTimeout, OpsReviewTimeout: opsReviewTimeout, ReviewStallTimeout: reviewStallTimeout},
 		&ExecRunner{},
@@ -758,6 +762,9 @@ func buildDispatcher(baseBranch string, webEnabled bool, webAddr string) (*dispa
 // buildDispatcherWithReviewTimeouts constructs a Dispatcher with separate
 // ops-review subprocess and reviewing-worker stall timeout controls.
 func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
+		return nil, nil, err
+	}
 	runtime, err := resolveProductionRuntime()
 	if err != nil {
 		return nil, nil, err
@@ -803,7 +810,7 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	}
 	projectPaths, _ := ResolvePaths(repoRoot)
 	runner := &dispatcher.ExecCommandRunner{}
-	beadSrc := dispatcher.NewCLIStore(runner)
+	beadSrc := beadstore.NewSQLiteStore(db)
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner)
 	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})

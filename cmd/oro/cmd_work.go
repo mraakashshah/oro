@@ -1,9 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -128,6 +127,15 @@ func updateWorkBeadStatus(ctx context.Context, beads beadstore.Store, id, status
 	return nil
 }
 
+func newWorkerBeadStore(db *sql.DB, memories *memory.Store) *beadstore.SQLiteStore {
+	return beadstore.NewSQLiteStore(db, beadstore.WithMemoryFetcher(func(ctx context.Context, tags []string, description string, maxTokens int) (string, error) {
+		if memories == nil {
+			return "", nil
+		}
+		return memory.ForPrompt(ctx, memories, tags, description, maxTokens)
+	}))
+}
+
 // exitError carries an exit code through the normal error return path,
 // allowing deferred cleanup to run (unlike os.Exit).
 type exitError struct {
@@ -139,6 +147,9 @@ func (e *exitError) Error() string { return e.msg }
 
 // newProductionDeps creates real dependencies.
 func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
+	if err := requireNativeProductionBeadSourceMode("oro work"); err != nil {
+		return nil, err
+	}
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("getwd: %w", err)
@@ -150,13 +161,20 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	runner := &dispatcher.ExecCommandRunner{}
 
 	// Initialize memory store and code index from project-scoped DB paths.
-	// Both are nil on failure — errors are non-fatal, the worker degrades gracefully.
+	// The native beadstore is required; memory/code index degrade gracefully.
+	var beadDB *sql.DB
 	var memStore *memory.Store
 	var codeIdx *codesearch.CodeIndex
-	if paths, pathsErr := ResolveProjectDBPaths(); pathsErr == nil {
-		if db, dbErr := openStateDB(paths.StateDBPath); dbErr == nil {
-			memStore = openWorkerMemoryStore(db)
-		}
+	paths, pathsErr := ResolveProjectDBPaths()
+	if pathsErr != nil {
+		return nil, fmt.Errorf("resolve project db paths: %w", pathsErr)
+	}
+	beadDB, dbErr := openStateDB(paths.StateDBPath)
+	if dbErr != nil {
+		return nil, fmt.Errorf("open beadstore db: %w", dbErr)
+	}
+	memStore = openWorkerMemoryStore(beadDB)
+	if paths.CodeIndexDBPath != "" {
 		if idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath); idxErr == nil {
 			codeIdx = idx
 		}
@@ -171,7 +189,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	}
 
 	return &workDeps{
-		beadSrc:       dispatcher.NewCLIStore(runner),
+		beadSrc:       newWorkerBeadStore(beadDB, memStore),
 		wtMgr:         dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
 		spawner:       runtime.workerSpawn,
 		opsMgr:        ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
@@ -440,34 +458,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	return nil
 }
 
-type legacyBDBeadJSON struct {
-	protocol.Bead
-	ParentID string `json:"parent_id"`
-	TypeName string `json:"type"`
-}
-
-func (b legacyBDBeadJSON) toProtocol() protocol.Bead {
-	bead := b.Bead
-	if bead.Epic == "" {
-		bead.Epic = b.ParentID
-	}
-	if bead.Type == "" {
-		bead.Type = b.TypeName
-	}
-	return bead
-}
-
-func dryRunSpawnBeadDetail(ctx context.Context, beadID string, detail *protocol.Bead, showErr error) (*protocol.Bead, error) {
+func dryRunSpawnBeadDetail(_ context.Context, beadID string, detail *protocol.Bead, showErr error) (*protocol.Bead, error) {
 	if showErr == nil && detail != nil && detail.ID != "" {
 		return detail, nil
-	}
-
-	legacyDetail, legacyErr := showLegacyBDBead(ctx, beadID)
-	if legacyErr == nil && legacyDetail != nil {
-		if legacyDetail.ID != beadID {
-			return nil, fmt.Errorf("bd show %s returned bead %q", beadID, legacyDetail.ID)
-		}
-		return legacyDetail, nil
 	}
 	if showErr != nil {
 		return nil, showErr
@@ -476,76 +469,6 @@ func dryRunSpawnBeadDetail(ctx context.Context, beadID string, detail *protocol.
 		return nil, fmt.Errorf("bead %s not found", beadID)
 	}
 	return detail, nil
-}
-
-func showLegacyBDBead(ctx context.Context, beadID string) (*protocol.Bead, error) {
-	cmd := exec.CommandContext(ctx, "bd", "show", beadID, "--json") //nolint:gosec // beadID is CLI input passed as one argv
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg != "" {
-			return nil, fmt.Errorf("bd show %s: %w: %s", beadID, err, msg)
-		}
-		return nil, fmt.Errorf("bd show %s: %w", beadID, err)
-	}
-	return decodeLegacyBDBeadDetail(out)
-}
-
-func decodeLegacyBDBeadDetail(out []byte) (*protocol.Bead, error) {
-	var arr []legacyBDBeadJSON
-	if err := json.Unmarshal(out, &arr); err == nil {
-		if len(arr) == 0 {
-			return nil, nil
-		}
-		detail := arr[0].toProtocol()
-		completeLegacyBDDetail(&detail)
-		return &detail, nil
-	}
-
-	var obj legacyBDBeadJSON
-	if err := json.Unmarshal(out, &obj); err != nil {
-		return nil, fmt.Errorf("decode bd bead detail: %w", err)
-	}
-	detail := obj.toProtocol()
-	completeLegacyBDDetail(&detail)
-	return &detail, nil
-}
-
-func completeLegacyBDDetail(detail *protocol.Bead) {
-	if detail.AcceptanceCriteria == "" && detail.Description != "" {
-		detail.AcceptanceCriteria = extractLegacyAcceptanceCriteria(detail.Description)
-	}
-}
-
-func extractLegacyAcceptanceCriteria(desc string) string {
-	lower := strings.ToLower(desc)
-	idx := findLegacyHeaderAtLineStart(lower, "## acceptance criteria")
-	headerLen := len("## acceptance criteria")
-	if idx < 0 {
-		idx = findLegacyHeaderAtLineStart(lower, "acceptance criteria")
-		headerLen = len("acceptance criteria")
-	}
-	if idx < 0 {
-		return ""
-	}
-	body := strings.TrimLeft(desc[idx+headerLen:], "\r\n")
-	if next := strings.Index(body, "\n## "); next >= 0 {
-		body = body[:next]
-	}
-	return strings.TrimRight(body, " \t\r\n")
-}
-
-func findLegacyHeaderAtLineStart(text, header string) int {
-	if strings.HasPrefix(text, header) {
-		return 0
-	}
-	idx := strings.Index(text, "\n"+header)
-	if idx < 0 {
-		return -1
-	}
-	return idx + 1
 }
 
 func dryRunSpawnPrompt(cfg *workConfig, deps *workDeps, model string) (string, error) {

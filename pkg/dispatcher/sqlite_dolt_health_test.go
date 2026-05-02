@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -117,5 +118,51 @@ func TestSQLiteModeSkipsDoltRecoveryAndAssignsReadyBead(t *testing.T) {
 	st, assigned, ok := d.WorkerInfo("sqlite-worker")
 	if !ok || st != protocol.WorkerBusy || assigned != beadID {
 		t.Fatalf("sqlite ready bead not assigned: ok=%v state=%s bead=%q", ok, st, assigned)
+	}
+}
+
+func TestSQLitePrimaryDefaultsToSQLiteMode(t *testing.T) {
+	previous, hadPrevious := os.LookupEnv("ORO_BEADSOURCE_MODE")
+	if err := os.Unsetenv("ORO_BEADSOURCE_MODE"); err != nil {
+		t.Fatalf("unset mode: %v", err)
+	}
+	t.Cleanup(func() {
+		if hadPrevious {
+			_ = os.Setenv("ORO_BEADSOURCE_MODE", previous)
+			return
+		}
+		_ = os.Unsetenv("ORO_BEADSOURCE_MODE")
+	})
+
+	db := newTestDB(t)
+	runner := &failingDoltRunner{}
+	sockPath := fmt.Sprintf("/tmp/oro-sqlite-primary-default-%d.sock", time.Now().UnixNano())
+	d, err := New(
+		Config{
+			SocketPath:         sockPath,
+			DBPath:             ":memory:",
+			MaxWorkers:         1,
+			DoltHealthInterval: time.Millisecond,
+			BackupInterval:     time.Hour,
+		},
+		db,
+		merge.NewCoordinator(&mockGitRunner{}),
+		ops.NewSpawner(&mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}),
+		beadstore.NewSQLiteStore(db),
+		&mockWorktreeManager{created: make(map[string]string)},
+		&mockEscalator{},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.shutdownRunner = runner
+
+	if d.beadSourceMode != "sqlite" {
+		t.Fatalf("beadSourceMode = %q, want sqlite", d.beadSourceMode)
+	}
+	d.maybeRecoverDolt(context.Background())
+	if got := runner.count(); got != 0 {
+		t.Fatalf("sqlite primary default must not probe or recover dolt; got %d calls: %v", got, runner.snapshot())
 	}
 }

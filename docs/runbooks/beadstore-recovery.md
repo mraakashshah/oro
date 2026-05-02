@@ -55,6 +55,9 @@ the operator log, unless a native restore primitive exists.
 
 This section is the old bd-primary shadow path. The current native-first
 migration-day path is `docs/runbooks/beadstore-native-cutover.md`.
+After Phase 10 native dispatcher/worker startup begins, production `oro start`
+and `oro work` fail closed for `ORO_BEADSOURCE_MODE=cli` and `shadow`; the
+commands below are retained only for pre-cutover legacy recovery.
 
 Stop the dispatcher and every worker before the first dry-run. Keep them stopped until the real migration completes and the shadow-mode restart begins. Run these commands from the repo root before any real migration:
 
@@ -303,7 +306,9 @@ Migration aborted before import:
 
 Migration aborted mid-import:
 
-- Leave `ORO_BEADSOURCE_MODE=cli`.
+- Legacy-only: leave `ORO_BEADSOURCE_MODE=cli`. After Phase 10 native
+  dispatcher/worker startup begins, keep production stopped instead of trying to
+  restart in `cli`.
 - Keep dispatcher, workers, direct `bd` processes, direct native `oro bead` mutators, and other migration commands stopped until the failed `state.db` is restored or moved aside and integrity-checked.
 - Preserve the command transcript, the `OroHome/migrations/<timestamp>-pre-migration.jsonl` backup, and the failed `state.db`.
 - The migration validates rows before opening SQLite, but row-level insert failures can be collected and committed for other rows before the command returns a validation error. Treat any non-zero migration error count as a partial import unless proven otherwise.
@@ -311,7 +316,9 @@ Migration aborted mid-import:
 
 Bad initial import:
 
-- Set `ORO_BEADSOURCE_MODE=cli`.
+- Legacy-only: set `ORO_BEADSOURCE_MODE=cli`. After Phase 10 native
+  dispatcher/worker startup begins, keep production stopped and use the
+  recorded SQLite backup path instead.
 - Preserve `OroHome/migrations/<timestamp>-pre-migration.jsonl` and the command transcript.
 - Keep all writers stopped. Restore the recorded pre-migration `state.db` SQLite backup snapshot, moving the failed DB aside first:
 
@@ -418,7 +425,9 @@ test "$integrity" = ok
 printf 'restored state.db from %s; failed DB moved to %s\n' "$snapshot_dir" "$failed_dir"
 ```
 
-- Keep `ORO_BEADSOURCE_MODE=shadow` or revert to `cli`.
+- Legacy-only: keep `ORO_BEADSOURCE_MODE=shadow` or revert to `cli`. After
+  Phase 10 native dispatcher/worker startup begins, those modes are forensic
+  reference modes only and production start/work reject them.
 - Fix reconcile, rerun `--reconcile`, then rerun `--reconcile --apply`.
 
 Critical bug after sqlite cutover:
@@ -436,8 +445,11 @@ bd import --dry-run "$rollback_export"
 bd import "$rollback_export"
 ```
 
-- Set `ORO_BEADSOURCE_MODE=cli` only after bd has the SQLite-side writes that occurred during Phase 9.
-- Restart dispatcher and workers.
+- Do not restart production dispatcher/workers with `ORO_BEADSOURCE_MODE=cli`
+  after Phase 10 native startup begins; production start/work reject legacy
+  modes. If bd must be used temporarily, run a reviewed pre-cutover binary or
+  branch outside the production dispatcher/worker path after bd has the
+  SQLite-side writes that occurred during Phase 9.
 - Keep bd installed and Dolt data intact until Phase 10 cleanup is complete.
 
 Dolt destroyed during shadow:

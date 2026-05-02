@@ -12,6 +12,7 @@ import (
 	"time"
 
 	codexruntime "oro/pkg/agentruntime/codex"
+	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
@@ -95,26 +96,16 @@ func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
 	}
 }
 
-func TestWorkDryRunSpawnCLI(t *testing.T) {
+func TestWorkDryRunSpawnDoesNotFallbackToBD(t *testing.T) {
 	tmpDir := t.TempDir()
 	binDir := filepath.Join(tmpDir, "bin")
 	if err := os.MkdirAll(binDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
 
-	oroScript := `#!/bin/sh
-if [ "$1" = "bead" ] && [ "$2" = "show" ] && [ "$3" = "oro-cli" ] && [ "$4" = "--json" ]; then
-  printf '{"ok":false,"error":"show","message":"bead oro-cli not found","command":"oro bead show"}\n'
-  exit 0
-fi
-printf 'unexpected oro args: %s\n' "$*" >&2
-exit 64
-`
-	if err := os.WriteFile(filepath.Join(binDir, "oro"), []byte(oroScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
+	markerPath := filepath.Join(tmpDir, "bd-invoked")
 	bdScript := `#!/bin/sh
+printf invoked > "$BD_MARKER"
 if [ "$1" = "show" ] && [ "$2" = "oro-cli" ] && [ "$3" = "--json" ]; then
   printf '%s\n' '[{"id":"oro-cli","title":"CLI bead","description":"from bd\n\n## Acceptance Criteria\nCmd: true"}]'
   exit 0
@@ -127,37 +118,18 @@ exit 64
 	}
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("ORO_HOME", tmpDir)
-	t.Setenv("ORO_PROJECT", "")
-	t.Chdir(tmpDir)
+	t.Setenv("BD_MARKER", markerPath)
 
-	var logs strings.Builder
-	origLogOut := logOut
-	logOut = &logs
-	defer func() { logOut = origLogOut }()
-
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"work", "oro-cli", "--dry-run-spawn"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-
-	got := captureStdout(t, func() {
-		if err := cmd.ExecuteContext(context.Background()); err != nil {
-			t.Fatalf("oro work dry-run-spawn: %v", err)
-		}
-	})
-
-	if !strings.Contains(got, "oro bead create") {
-		t.Fatalf("dry-run spawn prompt missing oro bead create; got:\n%s", got)
+	errNative := errors.New("native bead not found")
+	detail, err := dryRunSpawnBeadDetail(context.Background(), "oro-cli", nil, errNative)
+	if !errors.Is(err, errNative) {
+		t.Fatalf("dry-run spawn detail error = %v, want native lookup error", err)
 	}
-	if !strings.Contains(got, "oro-cli") {
-		t.Fatalf("dry-run spawn prompt did not use requested bead ID; got:\n%s", got)
+	if detail != nil {
+		t.Fatalf("dry-run spawn detail = %+v, want nil when native lookup fails", detail)
 	}
-	if strings.Contains(got, "bd create") {
-		t.Fatalf("dry-run spawn prompt contains legacy bd create; got:\n%s", got)
-	}
-	if strings.Contains(logs.String(), "## Bead Tools") {
-		t.Fatalf("dry-run spawn prompt should not be duplicated in logs; got:\n%s", logs.String())
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("dry-run spawn invoked bd fallback, marker stat err=%v", err)
 	}
 }
 
@@ -630,8 +602,23 @@ func TestWorkDepsMemoryAndCodeIndex(t *testing.T) {
 		if deps.memStore == nil {
 			t.Error("memStore should be non-nil when StateDBPath is valid")
 		}
+		if _, ok := deps.beadSrc.(*beadstore.SQLiteStore); !ok {
+			t.Fatalf("beadSrc = %T, want *beadstore.SQLiteStore", deps.beadSrc)
+		}
 		if deps.codeIndex == nil {
 			t.Error("codeIndex should be non-nil when CodeIndexDBPath is valid")
+		}
+	})
+
+	t.Run("newProductionDeps rejects legacy beadsource modes", func(t *testing.T) {
+		t.Setenv("ORO_BEADSOURCE_MODE", "shadow")
+
+		_, err := newProductionDeps(0)
+		if err == nil {
+			t.Fatal("newProductionDeps succeeded with legacy shadow beadsource mode")
+		}
+		if !strings.Contains(err.Error(), "native sqlite beadstore") {
+			t.Fatalf("error = %v, want native sqlite beadstore rejection", err)
 		}
 	})
 

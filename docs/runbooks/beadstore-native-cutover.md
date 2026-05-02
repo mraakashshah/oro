@@ -275,10 +275,14 @@ Rollback to bd is not the normal answer after cutover. Use this order:
 2. Preserve the current `state.db`, WAL/SHM files, command transcript, and logs.
 3. If SQLite data corruption is proven, restore the recorded SQLite backup
    snapshot and rerun native validation.
-4. If bd must be used temporarily, first export SQLite with `oro bead export` and
-   import that into bd so bd contains native-side writes made after cutover.
-5. Set `ORO_BEADSOURCE_MODE=cli` only after bd has been refreshed from SQLite or
-   after an explicit data-loss decision is recorded.
+4. Do not use `ORO_BEADSOURCE_MODE=cli` or `shadow` as a production
+   dispatcher/worker rollback after Phase 10 begins. Native dispatcher and
+   worker startup fail closed for legacy modes.
+5. If bd must be used temporarily for forensic recovery, run it outside the
+   production dispatcher/worker path from an explicitly checked-out pre-cutover
+   binary or branch. First export SQLite with `oro bead export` and import that
+   into bd so bd contains native-side writes made after cutover, or record the
+   explicit data-loss decision.
 
 ## Operator Log Checklist
 

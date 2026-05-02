@@ -167,13 +167,7 @@ func setupPhase3Tools(w io.Writer, opts setupOptions) error {
 	case opts.dryRun:
 		fmt.Fprintln(w, "Phase 3: Tool installation...")
 		fmt.Fprintln(w, "  [dry-run] Would check and install missing tools from defaultToolDefs")
-		results := checkAllTools(defaultToolDefs)
-		missing := countMissing(results)
-		if missing > 0 {
-			fmt.Fprintf(w, "  [dry-run] %d tools currently missing — would attempt install\n", missing)
-		} else {
-			fmt.Fprintf(w, "  [dry-run] All %d tools already present\n", len(results))
-		}
+		fmt.Fprintf(w, "  [dry-run] Would evaluate %d configured tools without running version checks\n", len(defaultToolDefs))
 	default:
 		fmt.Fprintln(w, "Phase 3: Installing tools...")
 		results := checkAllTools(defaultToolDefs)

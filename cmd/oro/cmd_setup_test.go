@@ -123,6 +123,30 @@ func TestSetupDryRun(t *testing.T) {
 	}
 }
 
+func TestSetupPhase3DryRunDoesNotExecuteToolChecks(t *testing.T) {
+	tmpDir := t.TempDir()
+	markerPath := filepath.Join(tmpDir, "marker")
+	toolPath := filepath.Join(tmpDir, "fake-tool")
+	toolScript := "#!/bin/sh\nprintf executed > " + markerPath + "\n"
+	if err := os.WriteFile(toolPath, []byte(toolScript), 0o755); err != nil { //nolint:gosec // test helper script
+		t.Fatalf("failed to write fake tool: %v", err)
+	}
+
+	origDefs := defaultToolDefs
+	defaultToolDefs = []toolDef{
+		{Name: "fake-tool", Category: "test", CheckCmd: toolPath, CheckArgs: []string{"--version"}},
+	}
+	t.Cleanup(func() { defaultToolDefs = origDefs })
+
+	var buf bytes.Buffer
+	if err := setupPhase3Tools(&buf, setupOptions{dryRun: true}); err != nil {
+		t.Fatalf("dry-run phase 3 should not fail: %v", err)
+	}
+	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
+		t.Fatalf("dry-run phase 3 executed tool check, marker stat err=%v", err)
+	}
+}
+
 // TestSetupSkipTools verifies that --skip-tools skips Phase 3.
 func TestSetupSkipTools(t *testing.T) {
 	var buf bytes.Buffer

@@ -120,6 +120,19 @@ func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sq
 	}
 }
 
+func normalizeBeadSourceModeForPrimary(mode string, primary DeferredStore) string {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" && isSQLiteStore(primary) {
+		return "sqlite"
+	}
+	return normalized
+}
+
+func isSQLiteStore(store DeferredStore) bool {
+	_, ok := store.(*beadstore.SQLiteStore)
+	return ok
+}
+
 func logBeadstoreDivergence(ctx context.Context, db *sql.DB, event beadstore.ShadowDivergence) {
 	if db == nil {
 		return
@@ -578,9 +591,9 @@ type Dispatcher struct {
 	// Used as the target directory for git operations on the primary repo (e.g. epic FF merge).
 	repoRoot string
 
-	// shutdownRunner is the CommandRunner used by shutdownResetActiveBeads to run
-	// `oro bead update` from the repo root. Initialised by New() to
-	// &ExecCommandRunner{Dir: cfg.RepoRoot}; overridable in tests.
+	// shutdownRunner is the CommandRunner used for repo-root git and recovery
+	// commands. Initialised by New() to &ExecCommandRunner{Dir: cfg.RepoRoot};
+	// overridable in tests.
 	shutdownRunner CommandRunner
 
 	// beadsDir is the directory to watch for bead changes (defaults to protocol.BeadsDir)
@@ -723,7 +736,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	memStore := memory.NewStore(db)
 	// NewEmbedder returns the default *TFIDFEmbedder implementation of the Embedder interface.
 	memStore.SetEmbedder(memory.NewEmbedder())
-	beadSourceMode := strings.ToLower(strings.TrimSpace(os.Getenv("ORO_BEADSOURCE_MODE")))
+	beadSourceMode := normalizeBeadSourceModeForPrimary(os.Getenv("ORO_BEADSOURCE_MODE"), beads)
 	selectedBeads, err := selectStore(context.Background(), beadSourceMode, beads, db, memStore)
 	if err != nil {
 		return nil, err
@@ -5539,10 +5552,6 @@ func (d *Dispatcher) shutdownRemoveWorktrees(paths []string) {
 // shutdownResetActiveBeads queries active assignments and resets each bead to
 // "open" so it becomes re-assignable on next dispatcher start. Best-effort:
 // failures are logged but do not block shutdown.
-//
-// It uses d.shutdownRunner (anchored to cfg.RepoRoot) so that `oro bead update`
-// always runs from the repository root, not from a worker worktree that may
-// lack a .beads/ database.
 func (d *Dispatcher) shutdownResetActiveBeads() {
 	ctx := context.Background()
 	rows, err := d.db.QueryContext(ctx, `SELECT bead_id FROM assignments WHERE status='active'`)
@@ -5552,17 +5561,13 @@ func (d *Dispatcher) shutdownResetActiveBeads() {
 	}
 	defer func() { _ = rows.Close() }()
 
-	// Use a CLIStore backed by the shutdown runner so oro bead commands are
-	// executed from the repo root regardless of the process working directory.
-	rootBeads := NewCLIStore(d.shutdownRunner)
-
 	for rows.Next() {
 		var beadID string
 		if scanErr := rows.Scan(&beadID); scanErr != nil {
 			_ = d.logEvent(ctx, "shutdown_reset_scan_failed", "dispatcher", "", "", scanErr.Error())
 			continue
 		}
-		if updateErr := updateBeadStatus(ctx, rootBeads, beadID, "open"); updateErr != nil {
+		if updateErr := updateBeadStatus(ctx, d.beads, beadID, "open"); updateErr != nil {
 			_ = d.logEvent(ctx, "shutdown_reset_bead_failed", "dispatcher", beadID, "", updateErr.Error())
 		}
 	}
