@@ -133,29 +133,6 @@ exit 64
 	}
 }
 
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = orig }()
-
-	fn()
-
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
-}
-
 func TestNewWorkCmd_RequiresBeadID(t *testing.T) {
 	cmd := newWorkCmd()
 	cmd.SetArgs([]string{})

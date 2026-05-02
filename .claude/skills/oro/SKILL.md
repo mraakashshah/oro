@@ -99,7 +99,6 @@ The monitoring prompt should:
 | `oro logs [-f] [--tail N]` | Query event logs |
 | `oro directive <op>` | Control dispatcher: `status`, `pause`, `resume`, `scale N` |
 | `oro cleanup` | Clean stale state after crash |
-| `oro dolt setup\|teardown\|status` | Manage shared Dolt server |
 
 Run `oro <command> --help` for flags.
 
@@ -201,20 +200,18 @@ go test ./pkg/dispatcher/... -count=1 -timeout 180s
 go test ./pkg/worker/... -v -count=1
 ```
 
-## Dolt/Beads Recovery
+## Native Beadstore Recovery
 
 **NEVER run `force-initialization commands`.** It destroys all bead history. This has happened 3 times.
 
-When bead database/Dolt errors occur, follow this recovery ladder:
+bd/Dolt is an import, audit, and rollback reference only. When native beadstore
+errors occur, inspect the SQLite state directly, verify `oro bead ready`,
+`oro bead blocked`, and `oro bead show`, and follow
+`docs/runbooks/beadstore-recovery.md` for backup or restore operations. Do not
+restart or repair Dolt from Oro; the `oro dolt` operator commands are removed.
 
-1. `check Dolt server status` — is the server running?
-2. `restart the Dolt server` — restart it
-3. `test Dolt connectivity` — can we connect?
-4. `run bead-store server diagnostics` — deeper diagnosis
-5. `run non-destructive bead-store repair` — auto-repair
-6. `rebuild from JSONL backup` — rebuild from backup WITHOUT wiping
-
-If none of these work, **ask the user**. Never nuke the database autonomously.
+If the native store cannot be recovered with the reviewed runbook, **ask the
+user**. Never nuke the database autonomously.
 
 ## Key Gotchas
 

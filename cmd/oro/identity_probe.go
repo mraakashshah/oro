@@ -210,24 +210,6 @@ func runSQLProbe(cfg *identityProbeConfig) (bool, error) {
 	return present, err
 }
 
-// runProcessProbe probes the shared dolt server process on port SharedDoltPort.
-//
-// Resolution order:
-//  1. PID file at <oroHome>/dolt-server.pid
-//  2. lsof -i :13307 -sTCP:LISTEN -t fallback
-//
-// Returns the resolved PID and the --data-dir value from the process command
-// line. Returns ErrDataDirMismatch if --data-dir is absent or does not equal
-// <oroHome>/dolt. Returns ErrCannotIdentify if neither the pid file nor lsof
-// can locate the process.
-func runProcessProbe(oroHome string) (pid int, dataDir string, err error) {
-	return runProcessProbeWith(oroHome, processProbe{
-		readPIDFile: defaultReadPIDFile,
-		discoverPID: discoverPIDByPort,
-		readPSArgs:  defaultReadPSArgs,
-	})
-}
-
 func runProcessProbeWith(oroHome string, probe processProbe) (pid int, dataDir string, err error) {
 	pidPath := filepath.Join(oroHome, "dolt-server.pid")
 	pid, err = probe.readPIDFile(pidPath)
@@ -271,18 +253,6 @@ func parseDataDir(args string) (string, error) {
 		}
 	}
 	return "", errors.New("--data-dir not found in process args")
-}
-
-func defaultReadPIDFile(path string) (int, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path is oroHome/dolt-server.pid — caller-controlled
-	if err != nil {
-		return 0, fmt.Errorf("read %s: %w", path, err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0, fmt.Errorf("parse PID file %q: %w", path, err)
-	}
-	return pid, nil
 }
 
 func defaultReadPSArgs(pid int) (string, error) {

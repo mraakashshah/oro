@@ -23,8 +23,8 @@ func TestSelectStore(t *testing.T) {
 		mode     string
 		wantType any
 	}{
-		{name: "default", mode: "", wantType: &CLIStore{}},
-		{name: "cli", mode: "cli", wantType: &CLIStore{}},
+		{name: "default", mode: "", wantType: &beadstore.FakeStore{}},
+		{name: "cli", mode: "cli", wantType: &beadstore.FakeStore{}},
 		{name: "shadow", mode: "shadow", wantType: &beadstore.ShadowStore{}},
 		{name: "sqlite", mode: "sqlite", wantType: &beadstore.SQLiteStore{}},
 	}
@@ -41,8 +41,7 @@ func TestSelectStore(t *testing.T) {
 			}
 
 			db := newTestDB(t)
-			runner := &mockCommandRunner{}
-			beadSrc := NewCLIStore(runner)
+			beadSrc := beadstore.NewFakeStore()
 			gitRunner := &mockGitRunner{}
 			spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 			sockPath := fmt.Sprintf("/tmp/oro-select-store-%d.sock", time.Now().UnixNano())

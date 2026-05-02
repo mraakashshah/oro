@@ -522,10 +522,9 @@ func startSharedDoltServer(oroHome string) (int, error) { //nolint:unparam // PI
 // ensureSharedDoltRunning verifies the shared Dolt server on SharedDoltPort is
 // reachable. If not, it attempts launchctl kickstart (launchd auto-start).
 //
-// D6.1: direct spawn is intentionally removed. If kickstart fails the caller
-// must run `oro dolt setup` (first-time install) or `oro dolt repair`
-// (post-failure restart). This prevents race conditions when multiple oro
-// instances start concurrently and each falls through to spawn.
+// D6.1: direct spawn is intentionally removed. During the native SQLite
+// cutover, this helper is retained only for migration/rollback code paths; it
+// must not direct operators to removed `oro dolt` commands.
 func ensureSharedDoltRunning(oroHome string) (int, error) {
 	// Already running — adopt.
 	if isDoltServerRunning(SharedDoltPort) {
@@ -541,7 +540,7 @@ func ensureSharedDoltRunning(oroHome string) (int, error) {
 
 	return 0, fmt.Errorf(
 		"shared dolt server is not running and launchctl kickstart failed: "+
-			"run 'oro dolt setup' to install the server, or 'oro dolt repair' to restart it (oroHome: %s)",
+			"use the native beadstore recovery runbook or external bd/Dolt tooling if rollback requires it (oroHome: %s)",
 		oroHome,
 	)
 }
@@ -552,11 +551,6 @@ func ensureSharedDoltRunning(oroHome string) (int, error) {
 func kickstartServiceTarget(uid int) string {
 	return fmt.Sprintf("gui/%d/%s", uid, launchAgentLabel)
 }
-
-// ensureSharedDoltRunningFn is injectable for testing.
-//
-//nolint:gochecknoglobals // replaceable in tests
-var ensureSharedDoltRunningFn = ensureSharedDoltRunning
 
 // tryLaunchctlKickstart attempts to start the shared Dolt server via the
 // macOS launchd service. Returns true if the kickstart command succeeds,

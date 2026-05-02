@@ -702,19 +702,13 @@ func doltEnsureAndStart(beadsPath string, port int) {
 	}
 }
 
-// initDoltPerProjectPort allocates a collision-free port via the registry and
-// syncs metadata.json before starting the server.
-func initDoltPerProjectPort(beadsPath, oroHome string) {
-	projectName := filepath.Base(filepath.Dir(beadsPath))
-	port, allocErr := AllocatePort(beadsPath, projectName, oroHome)
-	if allocErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: port allocation failed: %v\n", allocErr)
-		port = DerivePort(beadsPath)
-		if port == SharedDoltPort {
-			fmt.Fprintf(os.Stderr, "error: cannot initialize per-project dolt when port collides with shared server\n")
-			fmt.Fprintf(os.Stderr, "hint: run 'oro dolt setup' to migrate to shared-server mode\n")
-			return
-		}
+// initDoltPerProjectPort syncs metadata.json to the deterministic per-project
+// port before starting the legacy Dolt server.
+func initDoltPerProjectPort(beadsPath, _ string) {
+	port := DerivePort(beadsPath)
+	if port == SharedDoltPort {
+		fmt.Fprintf(os.Stderr, "warning: per-project dolt port collides with retired shared server port; skipping legacy dolt init\n")
+		return
 	}
 	syncDoltMetadataPort(beadsPath, port)
 	if meta, _ := readDoltMeta(beadsPath); meta != nil {

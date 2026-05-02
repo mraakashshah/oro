@@ -565,15 +565,9 @@ type Dispatcher struct {
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
 	BeadTracker
 
-	mu                   sync.Mutex
-	reconcilingScale     atomic.Bool // prevents concurrent reconcileScale() calls (oro-ovpc.1)
-	doltRecovering       atomic.Bool // pauses tryAssign while dolt crash-recovery is in progress (oro-cb6y)
-	doltRecoveryAttempts int         // consecutive dolt recovery failures; reset to 0 on success
-	lastRecoveryTime     time.Time   // time of the most recent recoverDolt invocation
-
-	// recoverDoltBackoffFn, if non-nil, overrides the exponential backoff duration
-	// used by recoverDolt. Intended for tests that need deterministic, fast backoff.
-	recoverDoltBackoffFn func(n int) time.Duration
+	mu               sync.Mutex
+	reconcilingScale atomic.Bool // prevents concurrent reconcileScale() calls (oro-ovpc.1)
+	doltRecovering   atomic.Bool // pauses tryAssign while dolt crash-recovery is in progress (oro-cb6y)
 
 	state                       State
 	listener                    net.Listener

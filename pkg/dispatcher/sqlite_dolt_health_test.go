@@ -70,7 +70,7 @@ func TestSQLiteModeSkipsDoltRecoveryAndAssignsReadyBead(t *testing.T) {
 		db,
 		merge.NewCoordinator(&mockGitRunner{}),
 		ops.NewSpawner(&mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}),
-		NewCLIStore(runner),
+		beadstore.NewFakeStore(),
 		wt,
 		&mockEscalator{},
 		nil,

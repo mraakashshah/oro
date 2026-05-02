@@ -34,9 +34,6 @@ Memory:
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
 
-Database:
-  dolt       Manage the shared Dolt server (setup, status, start, stop, teardown)
-
 Search:
   index      Semantic code search (build, search)
 
@@ -44,7 +41,6 @@ Workflow:
   work       Execute a bead through the full lifecycle
   bead       Manage native Oro beads
   shell      Launch an interactive agent session with oro settings
-  bd         Run bd with project-aware --db flag (stealth mode support)
 
 Global:
   agent-assets         Sync oro skills and runtime assets for agent sessions

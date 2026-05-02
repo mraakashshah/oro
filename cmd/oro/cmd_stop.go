@@ -28,7 +28,6 @@ type stopConfig struct {
 	isTTY    func() bool     // returns true if stdin is a TTY; injectable for testing
 	force    bool            // --force flag: skip interactive confirmation
 	oroHome  string          // base directory for daemon discovery
-	beadsDir string          // legacy project bead directory, retained for stop-all path discovery
 }
 
 // projectDaemon describes a running daemon discovered in a project directory.
@@ -120,15 +119,6 @@ Use --all to stop daemons in all projects simultaneously.`,
 				return runStopAll(cmd.Context(), paths.OroHome, force, cmd.OutOrStdout())
 			}
 
-			cwd, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("getwd: %w", err)
-			}
-			projPaths, err := ResolvePaths(cwd)
-			if err != nil {
-				return fmt.Errorf("resolve project paths: %w", err)
-			}
-
 			cfg := &stopConfig{
 				pidPath:  paths.PIDPath,
 				sockPath: paths.SocketPath,
@@ -142,7 +132,6 @@ Use --all to stop daemons in all projects simultaneously.`,
 				isTTY:    isStdinTTY,
 				force:    force,
 				oroHome:  paths.OroHome,
-				beadsDir: projPaths.BeadsDir,
 			}
 
 			return runStopSequence(cmd.Context(), cfg)
@@ -171,8 +160,6 @@ func suggestStopAll(w io.Writer, oroHome string) {
 }
 
 // runStopAll discovers and stops all running project daemons.
-// Dolt server is intentionally NOT stopped — it persists across sessions so
-// standalone bd commands continue to work.
 func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) error {
 	daemons := discoverProjectDaemons(oroHome)
 	if len(daemons) == 0 {
@@ -188,23 +175,6 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) er
 	for _, d := range daemons {
 		sockPath := strings.TrimSuffix(d.PIDPath, "oro.pid") + "oro.sock"
 
-		// Read project.root from the project dir to derive beadsDir.
-		// Graceful degradation: if project.root is missing, skip dolt cleanup.
-		var beadsDir string
-		projectRootFile := filepath.Join(filepath.Dir(d.PIDPath), "project.root")
-		rootBytes, readErr := os.ReadFile(projectRootFile) //nolint:gosec // path derived from trusted oroHome
-		if readErr != nil {
-			fmt.Fprintf(w, "warning: cannot read project.root for %s, skipping dolt cleanup\n", d.Project)
-		} else {
-			rootPath := strings.TrimSpace(string(rootBytes))
-			projPaths, pathErr := ResolvePaths(rootPath)
-			if pathErr != nil {
-				beadsDir = "" // skip dolt cleanup if paths can't be resolved
-			} else {
-				beadsDir = projPaths.BeadsDir
-			}
-		}
-
 		cfg := &stopConfig{
 			pidPath:  d.PIDPath,
 			sockPath: sockPath,
@@ -217,7 +187,6 @@ func runStopAll(ctx context.Context, oroHome string, force bool, w io.Writer) er
 			killFn:   defaultKill,
 			isTTY:    isStdinTTY,
 			force:    force,
-			beadsDir: beadsDir,
 		}
 
 		fmt.Fprintf(w, "\nstopping %s (PID %d)...\n", d.Project, d.PID)

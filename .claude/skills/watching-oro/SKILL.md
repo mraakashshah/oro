@@ -139,18 +139,20 @@ make build
 
 **Note:** `./oro stop` requires an interactive terminal. In agent/non-TTY contexts, use `ORO_HUMAN_CONFIRMED=1 ./oro stop --force`.
 
-## Dolt/Beads Errors During Monitoring
+## Native Beadstore Errors During Monitoring
 
 **NEVER run `force-initialization commands`.** It destroys all bead history. This has happened 3 times.
 
-When bead database/Dolt errors occur during observation:
+When native beadstore errors occur during observation:
 
-1. `check Dolt server status` → `restart the Dolt server` → `test Dolt connectivity`
-2. If still broken: `run bead-store server diagnostics` → `run non-destructive bead-store repair`
-3. If still broken: `rebuild from JSONL backup`
+1. Inspect `./oro status`, logs, and event output for the failing component.
+2. Verify the active SQLite state path and run `./oro bead ready`,
+   `./oro bead blocked`, and `./oro bead show <id>` directly.
+3. If the store is damaged, follow `docs/runbooks/beadstore-recovery.md` and
+   restore only from reviewed JSONL or SQLite backups.
 4. If still broken: **ask the user**
 
-The dispatcher survives dolt outages — workers stay connected, only bead assignment pauses. Don't panic. Don't nuke.
+Do not restart or repair Dolt from Oro. Don't panic. Don't nuke.
 
 ## Context Management
 
