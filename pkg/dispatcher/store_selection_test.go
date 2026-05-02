@@ -41,7 +41,10 @@ func TestSelectStore(t *testing.T) {
 			}
 
 			db := newTestDB(t)
-			beadSrc := beadstore.NewFakeStore()
+			var beadSrc DeferredStore = beadstore.NewFakeStore()
+			if tt.name == "sqlite" {
+				beadSrc = beadstore.NewSQLiteStore(db)
+			}
 			gitRunner := &mockGitRunner{}
 			spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 			sockPath := fmt.Sprintf("/tmp/oro-select-store-%d.sock", time.Now().UnixNano())

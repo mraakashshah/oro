@@ -1333,6 +1333,8 @@ func TestCheckBeadReady_SkipsOversizedCheckForEpicType(t *testing.T) {
 	// Epic bead touching 3 modules — would be oversized if not filtered first.
 	oversizedAC := "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38"
 	beadSrc.mu.Lock()
+	beadSrc.hasChildrenMap = map[string]bool{"bead-epic1": true}
+	beadSrc.allChildrenClosedMap = map[string]bool{"bead-epic1": false}
 	beadSrc.shown = map[string]*protocol.BeadDetail{
 		"bead-epic1": {ID: "bead-epic1", Title: "Epic bead", AcceptanceCriteria: oversizedAC, Type: "epic"},
 	}
@@ -3920,6 +3922,73 @@ func TestHandleDonePreservesEpicID(t *testing.T) {
 	if !epicClosed {
 		t.Error("expected epic to be auto-closed when child completed with epicID preserved")
 	}
+}
+
+func TestHandleDone_EpicDecompositionCompletesAssignmentAndReopensEpic(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	epicID := "epic-decomp-done"
+	workerID := "worker-epic-decomp"
+	worktree := "/tmp/worktree-" + epicID
+	beadSrc.SetBeads([]protocol.Bead{{ID: epicID, Title: "Epic", Status: "in_progress", Type: "Epic"}})
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		epicID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		assignmentID: assignmentID,
+		beadID:       epicID,
+		state:        protocol.WorkerBusy,
+		worktree:     worktree,
+		isEpicDecomp: true,
+	}
+	d.worktreeByBead[epicID] = worktree
+	d.mu.Unlock()
+
+	d.handleDone(ctx, workerID, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            epicID,
+			WorkerID:          workerID,
+			QualityGatePassed: true,
+		},
+	})
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("assignment status = %q, want completed", assignmentStatus)
+	}
+
+	beadSrc.mu.Lock()
+	updatedStatus := beadSrc.updated[epicID]
+	beadSrc.mu.Unlock()
+	if updatedStatus != "open" {
+		t.Fatalf("epic status update = %q, want open", updatedStatus)
+	}
+
+	waitFor(t, func() bool {
+		wtMgr.mu.Lock()
+		defer wtMgr.mu.Unlock()
+		return len(wtMgr.removed) == 1 && wtMgr.removed[0] == worktree
+	}, time.Second)
 }
 
 // TestHandleDone_TypeChangedToEpic verifies that handleDone re-checks the bead
@@ -13810,11 +13879,13 @@ func TestAssignBead_EmptyBeadIDReturnsError(t *testing.T) {
 	}
 }
 
-// TestAssignEpicDecomposition verifies that epics are filtered as non-executable
-// issue types and never assigned to workers, regardless of their children state.
+// TestAssignEpicDecomposition verifies that epics with no children are assigned
+// in decomposition mode, while epics that already have open children are skipped.
 func TestAssignEpicDecomposition(t *testing.T) {
-	t.Run("epic with no children not assigned", func(t *testing.T) {
+	t.Run("epic with no children assigned for decomposition", func(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		d.cfg.HeartbeatTimeout = 10 * time.Second
+		d.shutdownRunner = &mockCommandRunner{err: errors.New("branch missing")}
 		startDispatcher(t, d)
 
 		conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -13828,7 +13899,7 @@ func TestAssignEpicDecomposition(t *testing.T) {
 		beadSrc.hasChildrenMap = map[string]bool{"oro-epic1": false}
 		beadSrc.shown["oro-epic1"] = &protocol.BeadDetail{
 			Title:              "Epic: Add feature",
-			AcceptanceCriteria: "Decompose into subtasks",
+			AcceptanceCriteria: "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38",
 		}
 		beadSrc.mu.Unlock()
 
@@ -13840,24 +13911,53 @@ func TestAssignEpicDecomposition(t *testing.T) {
 			Title: "Epic: Add feature",
 			Type:  "epic",
 		}})
-
-		// Epic must not be assigned even when it has no children.
-		// Wait for non_executable_issue_type event, then confirm no assignment.
+		heartbeatSentAt := time.Now()
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
 		waitFor(t, func() bool {
-			var count int
-			_ = d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type = ? AND bead_id = ?`,
-				"non_executable_issue_type", "oro-epic1").Scan(&count)
-			return count > 0
-		}, 2*time.Second)
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			w := d.workers["w1"]
+			return w != nil && w.lastSeen.After(heartbeatSentAt)
+		}, time.Second)
+		d.mu.Lock()
+		worker := d.workers["w1"]
+		d.mu.Unlock()
+		if worker == nil {
+			t.Fatal("worker w1 not registered")
+		}
+		if err := d.assignBead(context.Background(), worker, protocol.Bead{
+			ID:    "oro-epic1",
+			Title: "Epic: Add feature",
+			Type:  "Epic",
+		}); err != nil {
+			t.Fatalf("assignBead: %v", err)
+		}
 
-		_, ok := readMsg(t, conn, 200*time.Millisecond)
-		if ok {
-			t.Fatal("epic must not be assigned to a worker regardless of children state")
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("timed out waiting for epic decomposition ASSIGN")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected MsgAssign, got %s", msg.Type)
+		}
+		if msg.Assign == nil {
+			t.Fatal("expected Assign payload")
+		}
+		if msg.Assign.BeadID != "oro-epic1" {
+			t.Fatalf("assigned bead = %q, want oro-epic1", msg.Assign.BeadID)
+		}
+		if !msg.Assign.IsEpicDecomposition {
+			t.Fatal("expected IsEpicDecomposition=true for mixed-case childless epic")
 		}
 	})
 
 	t.Run("epic with open children skipped", func(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		d.cfg.HeartbeatTimeout = 10 * time.Second
+		d.shutdownRunner = &mockCommandRunner{err: errors.New("branch missing")}
 		startDispatcher(t, d)
 
 		conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -13884,6 +13984,14 @@ func TestAssignEpicDecomposition(t *testing.T) {
 			Title: "Epic: Existing",
 			Type:  "epic",
 		}})
+		all, err := beadSrc.Ready(context.Background())
+		if err != nil {
+			t.Fatalf("ready: %v", err)
+		}
+		filtered := d.filterAssignable(context.Background(), all)
+		if len(filtered) != 0 {
+			t.Fatalf("epic with open children should be filtered before assignment, got %+v", filtered)
+		}
 
 		_, ok := readMsg(t, conn, 500*time.Millisecond)
 		if ok {
@@ -16967,8 +17075,9 @@ func TestAssignSkipsBlockedBeads(t *testing.T) {
 					},
 				},
 			},
-			// bead-e is an epic: filtered as non-executable. bead-f passes (parent-child dep is non-blocking).
-			wantIDs: []string{"bead-f"},
+			// bead-e is a childless epic and is eligible for decomposition. bead-f passes
+			// because parent-child deps are non-blocking.
+			wantIDs: []string{"bead-e", "bead-f"},
 		},
 		{
 			name: "conditional-blocks",
@@ -17635,6 +17744,7 @@ func TestCheckEpicAssignable_RetriesOnError(t *testing.T) {
 	ctx := context.Background()
 	epicID := "epic-retry-test"
 	epicBead := protocol.Bead{ID: epicID, Type: "epic", Title: "Epic"}
+	mixedCaseEpicBead := protocol.Bead{ID: epicID, Type: "Epic", Title: "Epic"}
 	workerID := "w-test"
 
 	// Test 1: HasChildren returns error → skip=true (bead skipped this cycle, retried next)
@@ -17650,6 +17760,10 @@ func TestCheckEpicAssignable_RetriesOnError(t *testing.T) {
 	isDecomp, skip = d.checkEpicAssignable(ctx, epicBead, workerID)
 	if !isDecomp || skip {
 		t.Errorf("After HasChildren recovers with no children: got (%v, %v), want (true, false)", isDecomp, skip)
+	}
+	isDecomp, skip = d.checkEpicAssignable(ctx, mixedCaseEpicBead, workerID)
+	if !isDecomp || skip {
+		t.Errorf("Mixed-case epic with no children: got (%v, %v), want (true, false)", isDecomp, skip)
 	}
 
 	// Test 2: AllChildrenClosed returns error → skip=true (retried next cycle)

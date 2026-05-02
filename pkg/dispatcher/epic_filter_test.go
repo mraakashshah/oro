@@ -1,18 +1,21 @@
 package dispatcher //nolint:testpackage // internal white-box tests need access to unexported fields
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
 
-// TestEpicNotAssigned verifies that when the ready list contains an epic and a
-// valid task, the dispatcher skips the epic (logging non_executable_issue_type)
-// and assigns the task. This covers the type-level filter regardless of whether
-// the epic has children.
-func TestEpicNotAssigned(t *testing.T) {
+// TestEpicWithChildrenNotAssigned verifies that when the ready list contains
+// an already-decomposed epic and a valid task, the dispatcher skips the epic and
+// assigns the task.
+func TestEpicWithChildrenNotAssigned(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.HeartbeatTimeout = 10 * time.Second
+	d.shutdownRunner = &mockCommandRunner{err: errors.New("branch missing")}
 	startDispatcher(t, d)
 
 	// Connect a worker.
@@ -29,13 +32,31 @@ func TestEpicNotAssigned(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Ready list: one epic (no children set — mock default returns hasChildren=false),
-	// one valid task. With type-level filtering, the epic must be skipped regardless
-	// of its children state.
+	beadSrc.mu.Lock()
+	beadSrc.hasChildrenMap = map[string]bool{"epic-1": true}
+	beadSrc.allChildrenClosedMap = map[string]bool{"epic-1": false}
+	beadSrc.mu.Unlock()
+
+	// Ready list: one already-decomposed epic and one valid task. The epic must
+	// be skipped because it has open children.
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "epic-1", Title: "Big epic", Priority: 0, Type: "epic"},
 		{ID: "task-1", Title: "Implement thing", Priority: 1, Type: "task"},
 	})
+	all, _ := beadSrc.Ready(context.Background())
+	filtered := d.filterAssignable(context.Background(), all)
+	if len(filtered) != 1 || filtered[0].ID != "task-1" {
+		t.Fatalf("filtered beads = %+v, want only task-1", filtered)
+	}
+	d.mu.Lock()
+	worker := d.workers["w1"]
+	d.mu.Unlock()
+	if worker == nil {
+		t.Fatal("worker w1 not registered")
+	}
+	if err := d.assignBead(context.Background(), worker, filtered[0]); err != nil {
+		t.Fatalf("assignBead: %v", err)
+	}
 
 	// The ASSIGN message must be for the task, not the epic.
 	msg, ok := readMsg(t, conn, 2*time.Second)
@@ -46,17 +67,8 @@ func TestEpicNotAssigned(t *testing.T) {
 		t.Fatalf("expected MsgAssign, got %s", msg.Type)
 	}
 	if msg.Assign.BeadID != "task-1" {
-		t.Fatalf("expected task-1 assigned, got %s — epic must not be assigned to workers", msg.Assign.BeadID)
+		t.Fatalf("expected task-1 assigned, got %s — decomposed epic must not be assigned to workers", msg.Assign.BeadID)
 	}
-
-	// Wait for the non_executable_issue_type event to be logged for the epic.
-	waitFor(t, func() bool {
-		var count int
-		row := d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type = ? AND bead_id = ?`,
-			"non_executable_issue_type", "epic-1")
-		_ = row.Scan(&count)
-		return count > 0
-	}, 2*time.Second)
 }
 
 // TestReadyQueueSkipsNonExecutableOperationalBeads verifies that operational
@@ -64,6 +76,8 @@ func TestEpicNotAssigned(t *testing.T) {
 // block the next executable bug/task bead.
 func TestReadyQueueSkipsNonExecutableOperationalBeads(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.HeartbeatTimeout = 10 * time.Second
+	d.shutdownRunner = &mockCommandRunner{err: errors.New("branch missing")}
 	startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -83,6 +97,10 @@ func TestReadyQueueSkipsNonExecutableOperationalBeads(t *testing.T) {
 		operationalID = "oro-operational"
 		executableID  = "oro-executable"
 	)
+	beadSrc.mu.Lock()
+	beadSrc.hasChildrenMap = map[string]bool{"oro-epic": true}
+	beadSrc.allChildrenClosedMap = map[string]bool{"oro-epic": false}
+	beadSrc.mu.Unlock()
 	beadSrc.shown[operationalID] = &protocol.BeadDetail{
 		ID:                 operationalID,
 		Title:              "Restart dispatcher",
@@ -98,6 +116,23 @@ func TestReadyQueueSkipsNonExecutableOperationalBeads(t *testing.T) {
 		{ID: operationalID, Title: "Restart dispatcher", Priority: 0, Type: "task"},
 		{ID: executableID, Title: "Fix executable bug", Priority: 1, Type: "bug"},
 	})
+	all, _ := beadSrc.Ready(context.Background())
+	filtered := d.filterAssignable(context.Background(), all)
+	if len(filtered) != 2 || filtered[0].ID != operationalID || filtered[1].ID != executableID {
+		t.Fatalf("filtered beads = %+v, want operational then executable", filtered)
+	}
+	d.mu.Lock()
+	worker := d.workers["w1"]
+	d.mu.Unlock()
+	if worker == nil {
+		t.Fatal("worker w1 not registered")
+	}
+	if err := d.assignBead(context.Background(), worker, filtered[0]); err != nil {
+		t.Fatalf("assign operational: %v", err)
+	}
+	if err := d.assignBead(context.Background(), worker, filtered[1]); err != nil {
+		t.Fatalf("assign executable: %v", err)
+	}
 
 	msg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
@@ -122,22 +157,22 @@ func TestReadyQueueSkipsNonExecutableOperationalBeads(t *testing.T) {
 	}
 }
 
-// TestAssignableQueueFiltersEpics verifies that calculateLiveQueueDepth excludes
-// epics from the assignable queue depth. If only epics are ready, depth must be 0.
-func TestAssignableQueueFiltersEpics(t *testing.T) {
-	t.Run("only epics ready gives depth 0", func(t *testing.T) {
+// TestAssignableQueueCountsChildlessEpics verifies that queue depth reports
+// ready epic decomposition work instead of blanket-filtering epic types.
+func TestAssignableQueueCountsChildlessEpics(t *testing.T) {
+	t.Run("only childless epics ready gives depth 2", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "epic-1", Type: "epic", Title: "Big feature"},
 			{ID: "epic-2", Type: "Epic", Title: "Another epic"}, // case variation
 		}
 		workers := map[string]*trackedWorker{}
 		depth := calculateLiveQueueDepth(beads, workers)
-		if depth != 0 {
-			t.Errorf("expected assignable queue depth 0 with only epics ready, got %d", depth)
+		if depth != 2 {
+			t.Errorf("expected assignable queue depth 2 with only childless epics ready, got %d", depth)
 		}
 	})
 
-	t.Run("mixed ready list counts only non-epics", func(t *testing.T) {
+	t.Run("mixed ready list counts epics and non-epics", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "epic-1", Type: "epic"},
 			{ID: "task-1", Type: "task"},
@@ -145,12 +180,12 @@ func TestAssignableQueueFiltersEpics(t *testing.T) {
 		}
 		workers := map[string]*trackedWorker{}
 		depth := calculateLiveQueueDepth(beads, workers)
-		if depth != 2 {
-			t.Errorf("expected assignable queue depth 2 (task + bug), got %d", depth)
+		if depth != 3 {
+			t.Errorf("expected assignable queue depth 3 (epic + task + bug), got %d", depth)
 		}
 	})
 
-	t.Run("assigned non-epic not counted", func(t *testing.T) {
+	t.Run("assigned non-epic not counted but unassigned epic is counted", func(t *testing.T) {
 		beads := []protocol.Bead{
 			{ID: "epic-1", Type: "epic"},
 			{ID: "task-1", Type: "task"},
@@ -159,8 +194,39 @@ func TestAssignableQueueFiltersEpics(t *testing.T) {
 			"w1": {beadID: "task-1"},
 		}
 		depth := calculateLiveQueueDepth(beads, workers)
-		if depth != 0 {
-			t.Errorf("expected depth 0 (task assigned, epic filtered), got %d", depth)
+		if depth != 1 {
+			t.Errorf("expected depth 1 (task assigned, epic ready), got %d", depth)
 		}
 	})
+}
+
+func TestStatusQueueBeadsSkipsDecomposedEpics(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	beadSrc.mu.Lock()
+	beadSrc.hasChildrenMap = map[string]bool{
+		"epic-with-children": true,
+		"epic-childless":     false,
+	}
+	beadSrc.mu.Unlock()
+
+	got := d.statusQueueBeads(ctx, []protocol.Bead{
+		{ID: "epic-with-children", Type: "Epic"},
+		{ID: "epic-childless", Type: "epic"},
+		{ID: "task-ready", Type: "task"},
+	})
+	gotIDs := make([]string, len(got))
+	for i, bead := range got {
+		gotIDs[i] = bead.ID
+	}
+	want := []string{"epic-childless", "task-ready"}
+	if len(gotIDs) != len(want) {
+		t.Fatalf("status queue beads = %v, want %v", gotIDs, want)
+	}
+	for i := range want {
+		if gotIDs[i] != want[i] {
+			t.Fatalf("status queue beads = %v, want %v", gotIDs, want)
+		}
+	}
 }

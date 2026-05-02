@@ -125,6 +125,9 @@ func normalizeBeadSourceModeForPrimary(mode string, primary DeferredStore) strin
 	if normalized == "" && isSQLiteStore(primary) {
 		return "sqlite"
 	}
+	if normalized == "sqlite" && !isSQLiteStore(primary) {
+		return "cli"
+	}
 	return normalized
 }
 
@@ -1453,6 +1456,12 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 	if release.isEpicDecomp {
 		// Epic decomposition complete — skip merge/close; just clean up the worktree.
 		_ = d.logEvent(ctx, "epic_decomp_done", workerID, beadID, workerID, "")
+		if err := d.completeAssignment(ctx, release.assignmentID, beadID); err != nil {
+			_ = d.logEvent(ctx, "assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+		}
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "epic_decomp_reopen_failed", "dispatcher", beadID, workerID, err.Error())
+		}
 		d.safeGo(func() {
 			if err := d.worktrees.Remove(ctx, release.worktree); err != nil {
 				_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
@@ -3405,15 +3414,22 @@ func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID
 func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 
-	// Separate non-executable issue types (epics cannot be assigned to workers).
-	// Log a non_executable_issue_type event for each and check auto-close before discarding.
+	// Already-decomposed epics are not executable worker tasks. Childless epics
+	// remain assignable so a decomposition worker can create child beads.
 	executable := make([]protocol.Bead, 0, len(allBeads))
 	for _, b := range allBeads {
 		if strings.EqualFold(b.Type, "epic") {
-			d.processEpicSkip(ctx, b)
-		} else {
-			executable = append(executable, b)
+			hasChildren, err := d.beads.HasChildren(ctx, b.ID)
+			if err != nil {
+				_ = d.logEvent(ctx, "epic_has_children_error", "dispatcher", b.ID, "", err.Error())
+				continue
+			}
+			if hasChildren {
+				d.processEpicSkip(ctx, b)
+				continue
+			}
 		}
+		executable = append(executable, b)
 	}
 	allBeads = executable
 
@@ -3598,16 +3614,18 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		d.recordAssignmentFailure(bead.ID) // 60-second cooldown prevents re-triggering
 		return title, "", false            // skip assignment this cycle
 	}
-	if executable, reason := isWorkerExecutableBead(bead, protocol.BeadDetail{AcceptanceCriteria: acceptance}); !executable {
-		_ = d.logEvent(ctx, "bead_skipped_non_tdd_acceptance", "dispatcher", bead.ID, workerID,
-			fmt.Sprintf(`{"reason":%q}`, reason))
-		d.recordAssignmentFailure(bead.ID)
-		return title, "", false
+	if !strings.EqualFold(bead.Type, "epic") {
+		if executable, reason := isWorkerExecutableBead(bead, protocol.BeadDetail{AcceptanceCriteria: acceptance}); !executable {
+			_ = d.logEvent(ctx, "bead_skipped_non_tdd_acceptance", "dispatcher", bead.ID, workerID,
+				fmt.Sprintf(`{"reason":%q}`, reason))
+			d.recordAssignmentFailure(bead.ID)
+			return title, "", false
+		}
 	}
 	if modules := protocol.CountDistinctModules(acceptance); modules > 2 {
 		// Epics are expected to span multiple modules; skip the oversized check.
 		// Also skip if the bead already has children — it was decomposed externally.
-		isEpic := bead.Type == "epic"
+		isEpic := strings.EqualFold(bead.Type, "epic")
 		hasChildren, _ := d.beads.HasChildren(ctx, bead.ID)
 		if !isEpic && !hasChildren {
 			d.escalate(ctx, protocol.FormatEscalation(protocol.EscOversizedBead, bead.ID,
@@ -3982,7 +4000,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 // epic with open children (not ready), epic with all children closed (auto-closed here),
 // or any HasChildren/AllChildrenClosed error. For non-epic beads both values are false.
 func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead, workerID string) (isEpicDecomp, skip bool) {
-	if bead.Type != "epic" {
+	if !strings.EqualFold(bead.Type, "epic") {
 		return false, false
 	}
 	hasChildren, err := d.beads.HasChildren(ctx, bead.ID)
@@ -4215,17 +4233,32 @@ func calculateLiveQueueDepth(readyBeads []protocol.Bead, workers map[string]*tra
 		}
 	}
 
-	// Count ready beads that are not assigned, excluding non-executable types (epics).
+	// Count ready beads that are not assigned. Childless epics are executable
+	// decomposition work, so status must not blanket-filter epic types here.
 	queueDepth := 0
 	for _, bead := range readyBeads {
-		if strings.EqualFold(bead.Type, "epic") {
-			continue
-		}
 		if !assignedBeadIDs[bead.ID] {
 			queueDepth++
 		}
 	}
 	return queueDepth
+}
+
+func (d *Dispatcher) statusQueueBeads(ctx context.Context, readyBeads []protocol.Bead) []protocol.Bead {
+	if len(readyBeads) == 0 {
+		return readyBeads
+	}
+	queueBeads := make([]protocol.Bead, 0, len(readyBeads))
+	for _, bead := range readyBeads {
+		if strings.EqualFold(bead.Type, "epic") {
+			hasChildren, err := d.beads.HasChildren(ctx, bead.ID)
+			if err != nil || hasChildren {
+				continue
+			}
+		}
+		queueBeads = append(queueBeads, bead)
+	}
+	return queueBeads
 }
 
 func (d *Dispatcher) buildStatusJSON() string {
@@ -4237,6 +4270,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 	if err != nil {
 		readyBeads = nil // Continue with empty ready list on error.
 	}
+	readyBeads = d.statusQueueBeads(ctx, readyBeads)
 
 	d.mu.Lock()
 	workers, assignments, activeCount, idleCount := d.snapshotWorkers(now)
