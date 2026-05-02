@@ -13,30 +13,6 @@ import (
 	"oro/pkg/protocol"
 )
 
-// --- Mock CommandRunner ---
-
-// mockCommandRunner records calls and returns pre-configured output or errors.
-type mockCommandRunner struct {
-	calls  []mockCall
-	output []byte
-	err    error
-	// callFn, if set, overrides output/err based on the call.
-	callFn func(ctx context.Context, name string, args ...string) ([]byte, error)
-}
-
-type mockCall struct {
-	Name string
-	Args []string
-}
-
-func (m *mockCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	m.calls = append(m.calls, mockCall{Name: name, Args: args})
-	if m.callFn != nil {
-		return m.callFn(ctx, name, args...)
-	}
-	return m.output, m.err
-}
-
 func createParams(title, beadType string, priority int, description, parent, acceptance string) beadstore.CreateParams {
 	return beadstore.CreateParams{
 		Title:              title,

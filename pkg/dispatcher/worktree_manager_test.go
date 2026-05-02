@@ -12,8 +12,6 @@ import (
 	"testing"
 )
 
-// worktree tests reuse mockCommandRunner from beadsource_test.go
-
 func TestGitWorktreeManager_Create_Success(t *testing.T) {
 	runner := &mockCommandRunner{}
 	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
