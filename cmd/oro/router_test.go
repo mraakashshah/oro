@@ -10,26 +10,26 @@ func TestRouteCommand(t *testing.T) {
 		command  string
 		wantDest RouteDestination
 	}{
-		// bd commands stay with architect
+		// bd commands forward to manager (ArchitectLocal removed)
 		{
 			name:     "bd stats",
 			command:  "bd stats",
-			wantDest: ArchitectLocal,
+			wantDest: ForwardToManager,
 		},
 		{
 			name:     "bd ready",
 			command:  "bd ready",
-			wantDest: ArchitectLocal,
+			wantDest: ForwardToManager,
 		},
 		{
 			name:     "bd create",
 			command:  `bd create --title="test" --type=task`,
-			wantDest: ArchitectLocal,
+			wantDest: ForwardToManager,
 		},
 		{
 			name:     "bd with leading whitespace",
 			command:  "  bd list",
-			wantDest: ArchitectLocal,
+			wantDest: ForwardToManager,
 		},
 
 		// oro commands forward to manager

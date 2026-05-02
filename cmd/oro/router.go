@@ -10,10 +10,8 @@ import (
 type RouteDestination int
 
 const (
-	// ArchitectLocal means the command should be executed by the architect.
-	ArchitectLocal RouteDestination = iota
 	// ForwardToManager means the command should be forwarded to the manager pane.
-	ForwardToManager
+	ForwardToManager RouteDestination = iota
 )
 
 // RouteCommand determines where a command should be routed based on its prefix.
