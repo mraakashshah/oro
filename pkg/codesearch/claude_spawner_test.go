@@ -72,3 +72,38 @@ func TestBuildCmd_UsesCodexWhenConfigured(t *testing.T) {
 		t.Fatalf("BuildCmd args = %v, want codex exec args", cmd.Args)
 	}
 }
+
+func TestBuildCmd_NormalizesWorkdirAndGitEnv(t *testing.T) {
+	t.Setenv("ORO_AGENT_RUNTIME", "codex")
+	t.Setenv("PWD", "/poisoned/main")
+	t.Setenv("GIT_DIR", "/poisoned/main/.git")
+	t.Setenv("GIT_WORK_TREE", "/poisoned/main")
+	t.Setenv("GIT_INDEX_FILE", "/poisoned/main/.git/index")
+
+	cmd := codesearch.BuildCmd(context.Background(), "test prompt")
+
+	if cmd.Dir == "" {
+		t.Fatal("BuildCmd Dir must be set to a neutral workdir")
+	}
+	if cmd.Dir == "/poisoned/main" {
+		t.Fatalf("BuildCmd Dir = poisoned main checkout %q", cmd.Dir)
+	}
+	if got := envValue(cmd.Env, "PWD"); got != cmd.Dir {
+		t.Fatalf("PWD env = %q, want cmd.Dir %q", got, cmd.Dir)
+	}
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
+		if got := envValue(cmd.Env, key); got != "" {
+			t.Fatalf("%s env = %q, want unset", key, got)
+		}
+	}
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}

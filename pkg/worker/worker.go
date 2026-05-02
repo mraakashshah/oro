@@ -735,13 +735,14 @@ func (w *Worker) extractImplicitMemories(ctx context.Context) {
 	store := w.memStore
 	text := w.sessionText.String()
 	beadID := w.beadID
+	worktree := w.worktree
 	w.mu.Unlock()
 
 	if spawner == nil || store == nil {
 		return
 	}
 
-	if err := memory.ExtractWithLLM(ctx, spawner, text, beadID, store); err != nil {
+	if err := memory.ExtractWithLLMInWorkdir(ctx, spawner, text, beadID, store, worktree); err != nil {
 		fmt.Fprintf(os.Stderr, "worker %s: extract implicit memories: %v\n", w.ID, err)
 	}
 }

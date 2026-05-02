@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"oro/pkg/agentruntime"
+	"oro/pkg/processenv"
 )
 
 const codexRerankModel = "gpt-5-codex"
@@ -31,16 +32,24 @@ func BuildCmd(ctx context.Context, prompt string) *exec.Cmd {
 func buildClaudeCmd(ctx context.Context, prompt string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", "haiku", "--output-format", "json") //nolint:gosec // prompt is constructed internally
 	cmd.Stdin = strings.NewReader("")
-	cmd.Env = slices.DeleteFunc(os.Environ(), func(e string) bool {
+	env := slices.DeleteFunc(os.Environ(), func(e string) bool {
 		return strings.HasPrefix(e, "CLAUDECODE")
 	})
+	bindRerankCmdToNeutralWorkdir(cmd, env)
 	return cmd
 }
 
 func buildCodexCmd(ctx context.Context, prompt string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", codexRerankModel, prompt) //nolint:gosec // prompt is constructed internally
 	cmd.Stdin = strings.NewReader("")
+	bindRerankCmdToNeutralWorkdir(cmd, os.Environ())
 	return cmd
+}
+
+func bindRerankCmdToNeutralWorkdir(cmd *exec.Cmd, env []string) {
+	workdir := os.TempDir()
+	cmd.Dir = workdir
+	cmd.Env = processenv.ForWorkdir(env, workdir)
 }
 
 // Spawn runs the configured rerank CLI and normalizes its output into raw JSON.

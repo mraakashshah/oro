@@ -3186,9 +3186,11 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 
 // mockExtractSpawner implements memory.Spawner for testing ExtractWithLLM integration.
 type mockExtractSpawner struct {
-	mu        sync.Mutex
-	callCount int
-	output    string // simulated LLM output
+	mu               sync.Mutex
+	callCount        int
+	workdirCallCount int
+	lastWorkdir      string
+	output           string // simulated LLM output
 }
 
 func (m *mockExtractSpawner) Spawn(_ context.Context, _, _ string) (io.ReadCloser, error) {
@@ -3198,10 +3200,25 @@ func (m *mockExtractSpawner) Spawn(_ context.Context, _, _ string) (io.ReadClose
 	return io.NopCloser(strings.NewReader(m.output)), nil
 }
 
+func (m *mockExtractSpawner) SpawnInWorkdir(_ context.Context, _, _, workdir string) (io.ReadCloser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount++
+	m.workdirCallCount++
+	m.lastWorkdir = workdir
+	return io.NopCloser(strings.NewReader(m.output)), nil
+}
+
 func (m *mockExtractSpawner) CallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.callCount
+}
+
+func (m *mockExtractSpawner) WorkdirCall() (int, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.workdirCallCount, m.lastWorkdir
 }
 
 // TestExtractImplicitMemories_CallsExtractWithLLM verifies that when a subprocess
@@ -3275,6 +3292,9 @@ func TestExtractImplicitMemories_CallsExtractWithLLM(t *testing.T) {
 
 	if extractSpawner.CallCount() != 1 {
 		t.Errorf("expected 1 ExtractWithLLM call, got %d", extractSpawner.CallCount())
+	}
+	if gotCount, gotWorktree := extractSpawner.WorkdirCall(); gotCount != 1 || gotWorktree != worktree {
+		t.Errorf("expected extraction in assigned worktree %q once, got count=%d worktree=%q", worktree, gotCount, gotWorktree)
 	}
 
 	// Verify the memory was inserted into the store (proves ExtractWithLLM ran end-to-end).

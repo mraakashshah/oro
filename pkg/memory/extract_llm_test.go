@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -235,6 +237,7 @@ func TestExtractWithLLM(t *testing.T) {
 func TestCLISpawnerImplementsSpawner(t *testing.T) {
 	// Compile-time check: CLISpawner must implement Spawner.
 	var _ Spawner = CLISpawner{}
+	var _ WorkdirSpawner = CLISpawner{}
 }
 
 func TestCLISpawner_SetsStdinToDevNull(t *testing.T) {
@@ -255,6 +258,65 @@ func TestCLISpawner_SetsStdinToDevNull(t *testing.T) {
 	// claude ran — clean up.
 	if reader != nil {
 		_ = reader.Close()
+	}
+}
+
+func TestCLISpawner_SpawnInWorkdirNormalizesGitEnv(t *testing.T) {
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	workdir := filepath.Join(tmp, "worktree")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	canonicalWorkdir, err := filepath.EvalSymlinks(workdir)
+	if err != nil {
+		t.Fatalf("canonical workdir: %v", err)
+	}
+	fakeCodex := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"printf 'PWD=%s\\n' \"$PWD\"\n" +
+		"printf 'GIT_DIR=%s\\n' \"${GIT_DIR-unset}\"\n" +
+		"printf 'GIT_WORK_TREE=%s\\n' \"${GIT_WORK_TREE-unset}\"\n" +
+		"printf 'GIT_INDEX_FILE=%s\\n' \"${GIT_INDEX_FILE-unset}\"\n" +
+		"printf 'ACTUAL=%s\\n' \"$(pwd -P)\"\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	t.Setenv("ORO_AGENT_RUNTIME", "codex")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PWD", "/poisoned/main")
+	t.Setenv("GIT_DIR", "/poisoned/main/.git")
+	t.Setenv("GIT_WORK_TREE", "/poisoned/main")
+	t.Setenv("GIT_INDEX_FILE", "/poisoned/main/.git/index")
+
+	reader, err := CLISpawner{}.SpawnInWorkdir(context.Background(), "gpt-5-codex", "extract", workdir)
+	if err != nil {
+		t.Fatalf("SpawnInWorkdir() error: %v", err)
+	}
+	out, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil {
+		t.Fatalf("read stdout: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close stdout: %v", closeErr)
+	}
+
+	text := string(out)
+	for _, want := range []string{
+		"PWD=" + workdir,
+		"GIT_DIR=unset",
+		"GIT_WORK_TREE=unset",
+		"GIT_INDEX_FILE=unset",
+		"ACTUAL=" + canonicalWorkdir,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("SpawnInWorkdir output missing %q:\n%s", want, text)
+		}
 	}
 }
 
