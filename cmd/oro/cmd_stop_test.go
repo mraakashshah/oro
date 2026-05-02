@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -551,103 +550,30 @@ func TestStopAllCorrectBeadsDir(t *testing.T) {
 	})
 }
 
-// TestStopSequenceFlushDolt verifies that runStopSequence calls bd dolt commit
-// after worker shutdown (waitForExit) but before tmux kill-session, and that
-// the output contains a flush confirmation. It also verifies that a dolt flush
-// failure is non-fatal (logs warning, continues shutdown).
-func TestStopSequenceFlushDolt(t *testing.T) {
-	t.Run("calls bd dolt commit before tmux kill and confirms in output", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		pidFile := filepath.Join(tmpDir, "oro.pid")
-		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
-			t.Fatalf("setup PID: %v", err)
-		}
+func TestStopSequenceDoesNotShellOutToBd(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
 
-		fake := newFakeCmd()
-		var buf bytes.Buffer
-		cfg := ttyStop(pidFile, fake, &buf)
-		cfg.beadsDir = filepath.Join(tmpDir, ".beads")
+	fake := newFakeCmd()
+	var buf bytes.Buffer
+	cfg := ttyStop(pidFile, fake, &buf)
+	cfg.beadsDir = filepath.Join(tmpDir, ".beads")
 
-		if err := runStopSequence(context.Background(), cfg); err != nil {
-			t.Fatalf("runStopSequence: %v", err)
-		}
+	if err := runStopSequence(context.Background(), cfg); err != nil {
+		t.Fatalf("runStopSequence: %v", err)
+	}
 
-		// Verify bd dolt commit was called and precedes tmux kill-session.
-		doltIdx := -1
-		tmuxIdx := -1
-		for i, call := range fake.calls {
-			if len(call) == 3 && call[0] == "bd" && call[1] == "dolt" && call[2] == "commit" {
-				doltIdx = i
-			}
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "kill-session" {
-				tmuxIdx = i
-			}
+	for _, call := range fake.calls {
+		if len(call) > 0 && call[0] == "bd" {
+			t.Fatalf("runStopSequence must not call bd; calls = %v", fake.calls)
 		}
-		if doltIdx == -1 {
-			t.Errorf("expected 'bd dolt commit' to be called; calls = %v", fake.calls)
-		}
-		if tmuxIdx == -1 {
-			t.Errorf("expected 'tmux kill-session' to be called; calls = %v", fake.calls)
-		}
-		if doltIdx != -1 && tmuxIdx != -1 && doltIdx > tmuxIdx {
-			t.Errorf("'bd dolt commit' (idx %d) must occur before 'tmux kill-session' (idx %d); calls = %v", doltIdx, tmuxIdx, fake.calls)
-		}
-
-		// Output must contain flush confirmation.
-		if !strings.Contains(buf.String(), "dolt: working set committed") {
-			t.Errorf("expected 'dolt: working set committed' in output, got %q", buf.String())
-		}
-	})
-
-	t.Run("dolt flush failure is non-fatal and logs warning", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		pidFile := filepath.Join(tmpDir, "oro.pid")
-		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
-			t.Fatalf("setup PID: %v", err)
-		}
-
-		fake := newFakeCmd()
-		fake.errs[key("bd", "dolt", "commit")] = fmt.Errorf("dolt commit failed")
-		var buf bytes.Buffer
-		cfg := ttyStop(pidFile, fake, &buf)
-		cfg.beadsDir = filepath.Join(tmpDir, ".beads")
-
-		// Must not return an error even when dolt flush fails.
-		if err := runStopSequence(context.Background(), cfg); err != nil {
-			t.Fatalf("runStopSequence must not fail when dolt flush fails: %v", err)
-		}
-
-		// Must log a warning about dolt flush.
-		if !strings.Contains(buf.String(), "warning: dolt flush") {
-			t.Errorf("expected warning about dolt flush failure, got %q", buf.String())
-		}
-		// Shutdown must still complete.
-		if !strings.Contains(buf.String(), "shutdown complete") {
-			t.Errorf("expected 'shutdown complete' despite dolt failure, got %q", buf.String())
-		}
-	})
-
-	t.Run("skips bd dolt commit when beadsDir is empty", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		pidFile := filepath.Join(tmpDir, "oro.pid")
-		if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
-			t.Fatalf("setup PID: %v", err)
-		}
-
-		fake := newFakeCmd()
-		var buf bytes.Buffer
-		cfg := ttyStop(pidFile, fake, &buf) // beadsDir is empty by default in ttyStop
-
-		if err := runStopSequence(context.Background(), cfg); err != nil {
-			t.Fatalf("runStopSequence: %v", err)
-		}
-
-		for _, call := range fake.calls {
-			if len(call) == 3 && call[0] == "bd" && call[1] == "dolt" && call[2] == "commit" {
-				t.Errorf("unexpected 'bd dolt commit' when beadsDir is empty; calls = %v", fake.calls)
-			}
-		}
-	})
+	}
+	if !strings.Contains(buf.String(), "shutdown complete") {
+		t.Errorf("expected 'shutdown complete', got %q", buf.String())
+	}
 }
 
 // TestStopAll_DoltPersists verifies that runStopAll does NOT clean up dolt PID
