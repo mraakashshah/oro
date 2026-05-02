@@ -1,14 +1,7 @@
+// Package processenv normalizes subprocess environments for isolated worktrees.
 package processenv
 
 import "strings"
-
-var gitEnvKeys = map[string]struct{}{
-	"GIT_COMMON_DIR": {},
-	"GIT_DIR":        {},
-	"GIT_INDEX_FILE": {},
-	"GIT_PREFIX":     {},
-	"GIT_WORK_TREE":  {},
-}
 
 // ForWorkdir returns env with git worktree override variables stripped and PWD
 // aligned with workdir. cmd.Dir changes the process cwd, but many nested tools
@@ -18,17 +11,19 @@ func ForWorkdir(env []string, workdir string) []string {
 	pwdSet := workdir == ""
 	for _, e := range env {
 		key, _, ok := strings.Cut(e, "=")
-		if ok {
-			if _, strip := gitEnvKeys[key]; strip {
-				continue
+		if !ok {
+			out = append(out, e)
+			continue
+		}
+		if isGitOverrideEnv(key) {
+			continue
+		}
+		if key == "PWD" {
+			if workdir != "" {
+				out = append(out, "PWD="+workdir)
 			}
-			if key == "PWD" {
-				if workdir != "" {
-					out = append(out, "PWD="+workdir)
-				}
-				pwdSet = true
-				continue
-			}
+			pwdSet = true
+			continue
 		}
 		out = append(out, e)
 	}
@@ -36,4 +31,13 @@ func ForWorkdir(env []string, workdir string) []string {
 		out = append(out, "PWD="+workdir)
 	}
 	return out
+}
+
+func isGitOverrideEnv(key string) bool {
+	switch key {
+	case "GIT_COMMON_DIR", "GIT_DIR", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_WORK_TREE":
+		return true
+	default:
+		return false
+	}
 }

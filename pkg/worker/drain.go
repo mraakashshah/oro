@@ -21,6 +21,8 @@ type MemoryInserter interface {
 // LLM-based extraction on the accumulated text via memory.ExtractWithLLM.
 // Safe when store or spawner is nil. Nil writers in the slice are filtered out.
 // Empty writers slice is a no-op for output.
+//
+//oro:testonly
 func DrainOutput(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner memory.Spawner, writers ...io.Writer) {
 	DrainOutputInWorkdir(ctx, stdout, format, store, beadID, spawner, "", writers...)
 }

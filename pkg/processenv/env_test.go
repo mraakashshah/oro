@@ -1,6 +1,10 @@
-package processenv
+package processenv_test
 
-import "testing"
+import (
+	"testing"
+
+	"oro/pkg/processenv"
+)
 
 func TestForWorkdirNormalizesPWDAndStripsGitEnv(t *testing.T) {
 	env := []string{
@@ -14,7 +18,7 @@ func TestForWorkdirNormalizesPWDAndStripsGitEnv(t *testing.T) {
 		"CUSTOM=1",
 	}
 
-	got := ForWorkdir(env, "/assigned/worktree")
+	got := processenv.ForWorkdir(env, "/assigned/worktree")
 	wantPresent := map[string]bool{
 		"PATH=/bin":              false,
 		"PWD=/assigned/worktree": false,
@@ -40,7 +44,7 @@ func TestForWorkdirNormalizesPWDAndStripsGitEnv(t *testing.T) {
 }
 
 func TestForWorkdirAddsPWDWhenMissing(t *testing.T) {
-	got := ForWorkdir([]string{"PATH=/bin"}, "/assigned/worktree")
+	got := processenv.ForWorkdir([]string{"PATH=/bin"}, "/assigned/worktree")
 	if len(got) != 2 || got[1] != "PWD=/assigned/worktree" {
 		t.Fatalf("ForWorkdir() = %v, want PWD appended", got)
 	}

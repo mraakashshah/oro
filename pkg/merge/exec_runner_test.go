@@ -1,4 +1,4 @@
-package merge
+package merge_test
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"oro/pkg/merge"
 )
 
 func TestExecGitRunnerRun_NormalizesGitEnvToRequestedDir(t *testing.T) {
@@ -25,7 +27,7 @@ func TestExecGitRunnerRun_NormalizesGitEnvToRequestedDir(t *testing.T) {
 	t.Setenv("GIT_INDEX_FILE", filepath.Join(mainRepo, ".git", "index"))
 	t.Setenv("GIT_COMMON_DIR", filepath.Join(mainRepo, ".git"))
 
-	stdout, stderr, err := (&ExecGitRunner{}).Run(context.Background(), assignedRepo, "status", "--short")
+	stdout, stderr, err := (&merge.ExecGitRunner{}).Run(context.Background(), assignedRepo, "status", "--short")
 	if err != nil {
 		t.Fatalf("git status: %v\nstderr:\n%s", err, stderr)
 	}
@@ -56,7 +58,7 @@ func initExecGitRunnerRepo(t *testing.T, name string) string {
 
 func runExecGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	stdout, stderr, err := (&ExecGitRunner{}).Run(context.Background(), dir, args...)
+	stdout, stderr, err := (&merge.ExecGitRunner{}).Run(context.Background(), dir, args...)
 	if err != nil {
 		t.Fatalf("git %v: %v\nstdout:\n%s\nstderr:\n%s", args, err, stdout, stderr)
 	}

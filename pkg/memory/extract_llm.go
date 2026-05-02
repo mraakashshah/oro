@@ -223,7 +223,11 @@ func extractWithLLM(spawner Spawner, sessionText, beadID string, store Inserter,
 func spawnExtractor(ctx context.Context, spawner Spawner, model, prompt, workdir string) (io.ReadCloser, error) {
 	if workdir != "" {
 		if workdirSpawner, ok := spawner.(WorkdirSpawner); ok {
-			return workdirSpawner.SpawnInWorkdir(ctx, model, prompt, workdir)
+			reader, err := workdirSpawner.SpawnInWorkdir(ctx, model, prompt, workdir)
+			if err != nil {
+				return nil, fmt.Errorf("spawn extractor in workdir: %w", err)
+			}
+			return reader, nil
 		}
 	}
 	return spawner.Spawn(ctx, model, prompt)
