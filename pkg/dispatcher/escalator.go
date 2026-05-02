@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// CommandRunner is defined in beadsource.go.
-
 // EscalationType and FormatEscalation are now in pkg/protocol/types.go
 
 // TmuxEscalator implements the Escalator interface by sending messages to a

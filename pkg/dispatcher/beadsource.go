@@ -12,12 +12,6 @@ import (
 	"oro/pkg/protocol"
 )
 
-// CommandRunner abstracts command execution for testability.
-// Production implementation uses os/exec; tests provide a mock.
-type CommandRunner interface {
-	Run(ctx context.Context, name string, args ...string) ([]byte, error)
-}
-
 var (
 	_ beadstore.Store = (*CLIStore)(nil)
 	_ DeferredStore   = (*CLIStore)(nil)
