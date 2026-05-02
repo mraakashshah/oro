@@ -623,6 +623,7 @@ qg_python_tool_path_allowed() {
     done
 }
 
+# shellcheck disable=SC2329 # invoked indirectly via check/parallel_checks command strings
 qg_run_python_tool() {
     local tool="$1"
     shift
@@ -639,6 +640,7 @@ qg_run_python_tool() {
     return 77
 }
 
+# shellcheck disable=SC2329 # invoked indirectly via check/parallel_checks command strings
 qg_ruff() {
     qg_run_python_tool ruff "$@"
 }

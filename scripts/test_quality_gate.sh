@@ -794,18 +794,21 @@ test_quality_gate_stage_assets_fail_closed() {
 	return 0
 }
 
+# shellcheck disable=SC2329 # invoked by name through the test runner
 write_quality_gate_python_helpers() {
 	local out="$1"
 	sed -n '/^qg_python_tool_path()/,/^# Run multiple checks/p' "$SCRIPT_DIR/quality_gate.sh" |
 		sed '$d' >"$out"
 }
 
+# shellcheck disable=SC2329 # invoked by name through the test runner
 write_generated_quality_gate_python_helpers() {
 	local out="$1"
 	sed -n '/^qg_python_tool_path()/,/^# Run multiple checks/p' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go" |
 		sed '$d' >"$out"
 }
 
+# shellcheck disable=SC2329 # invoked by name through the test runner
 run_python_tool_resolution_fixture() {
 	local helpers="$1"
 	local tmpdir
@@ -829,7 +832,7 @@ EOS
 	chmod +x "$tmpdir/bin/uv"
 
 	local output rc
-	output=$(PATH="$tmpdir/linkbin:$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'source "$1"; qg_ruff check .' _ "$helpers" 2>&1)
+	output=$(PATH="$tmpdir/linkbin:$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'cd "$REPO_ROOT"; source "$1"; qg_ruff check .' _ "$helpers" 2>&1)
 	rc=$?
 	if [ "$rc" -ne 0 ] || echo "$output" | grep -q 'SHIM_EXECUTED'; then
 		echo "FAIL: qg_ruff executed or failed on symlinked pyenv shim: rc=$rc output=$output"
@@ -842,7 +845,7 @@ EOS
 		return 1
 	fi
 
-	output=$(PATH="$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'source "$1"; qg_ruff format --check .' _ "$helpers" 2>&1)
+	output=$(PATH="$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'cd "$REPO_ROOT"; source "$1"; qg_ruff format --check .' _ "$helpers" 2>&1)
 	rc=$?
 	if [ "$rc" -ne 0 ] || echo "$output" | grep -q 'SHIM_EXECUTED'; then
 		echo "FAIL: qg_ruff executed or failed on HOME/.local/bin symlinked pyenv shim: rc=$rc output=$output"
@@ -850,7 +853,7 @@ EOS
 		return 1
 	fi
 
-	output=$(PATH="$tmpdir/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'source "$1"; qg_ruff check .' _ "$helpers" 2>&1)
+	output=$(PATH="$tmpdir/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'cd "$REPO_ROOT"; source "$1"; qg_ruff check .' _ "$helpers" 2>&1)
 	rc=$?
 	if [ "$rc" -ne 0 ] || echo "$output" | grep -q 'SHIM_EXECUTED'; then
 		echo "FAIL: qg_ruff executed or failed on symlinked pyenv shim without realpath on PATH: rc=$rc output=$output"
@@ -863,7 +866,7 @@ EOS
 		return 1
 	fi
 
-	output=$(PATH="$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'source "$1"; qg_pyright --version' _ "$helpers" 2>&1)
+	output=$(PATH="$tmpdir/bin:/usr/bin:/bin" HOME="$tmpdir/home" REPO_ROOT="$tmpdir/repo" /bin/bash -c 'cd "$REPO_ROOT"; source "$1"; qg_pyright --version' _ "$helpers" 2>&1)
 	rc=$?
 	if [ "$rc" -ne 77 ] || [ "$output" != "SKIP: pyright not installed" ]; then
 		echo "FAIL: qg_pyright should skip without uv fallback when no direct binary exists: rc=$rc output=$output"
@@ -877,6 +880,7 @@ EOS
 # Test: Python tool resolution avoids pyenv shims and uses deterministic wrappers.
 # shellcheck disable=SC2317,SC2329
 test_quality_gate_python_tools_avoid_pyenv_shims() {
+	local realpath_candidate_pattern="realpath \"\$candidate\""
 	if ! grep -q 'qg_python_tool_path()' "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: quality_gate.sh lacks qg_python_tool_path helper"
 		return 1
@@ -886,7 +890,7 @@ test_quality_gate_python_tools_avoid_pyenv_shims() {
 		return 1
 	fi
 	if ! grep -q 'qg_python_tool_path_allowed()' "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q 'realpath "$candidate"' "$SCRIPT_DIR/quality_gate.sh"; then
+		! grep -q "$realpath_candidate_pattern" "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: quality_gate.sh does not resolve symlinks before rejecting pyenv shims"
 		return 1
 	fi
@@ -913,6 +917,7 @@ test_quality_gate_python_tools_avoid_pyenv_shims() {
 # shellcheck disable=SC2317,SC2329
 test_generated_quality_gate_python_tools_avoid_pyenv_shims() {
 	local gen="$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"
+	local realpath_candidate_pattern="realpath \"\$candidate\""
 	if ! grep -q 'qg_python_tool_path()' "$gen"; then
 		echo "FAIL: generated quality gate template lacks qg_python_tool_path helper"
 		return 1
@@ -922,7 +927,7 @@ test_generated_quality_gate_python_tools_avoid_pyenv_shims() {
 		return 1
 	fi
 	if ! grep -q 'qg_python_tool_path_allowed()' "$gen" ||
-		! grep -q 'realpath "$candidate"' "$gen"; then
+		! grep -q "$realpath_candidate_pattern" "$gen"; then
 		echo "FAIL: generated quality gate template does not resolve symlinks before rejecting pyenv shims"
 		return 1
 	fi
