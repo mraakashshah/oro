@@ -177,6 +177,34 @@ func TestStartupCallsDetectZombieDeferred(t *testing.T) {
 		}
 	})
 
+	t.Run("skips repair in sqlite mode", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		d.beadSourceMode = "sqlite"
+		beadSrc.exportData = []byte(`{"id":"oro-native-deferred","status":"open","defer_until":"2026-07-31T13:00:00Z"}` + "\n")
+
+		sockPath := shortSockPath(t, "zombie-sqlite")
+		ln, err := net.Listen("unix", sockPath)
+		if err != nil {
+			t.Fatalf("listen active socket: %v", err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		d.cfg.SocketPath = sockPath
+
+		err = d.Run(context.Background())
+		if err == nil {
+			t.Fatal("Run returned nil error, want active socket error")
+		}
+		if len(beadSrc.deferCalls) != 0 {
+			t.Fatalf("defer calls = %v, want none in sqlite mode", beadSrc.deferCalls)
+		}
+		if len(beadSrc.undeferCalls) != 0 {
+			t.Fatalf("undefer calls = %v, want none in sqlite mode", beadSrc.undeferCalls)
+		}
+		if n := eventCount(t, d.db, "startup_zombie_defer_summary"); n != 0 {
+			t.Fatalf("startup_zombie_defer_summary events = %d, want 0 in sqlite mode", n)
+		}
+	})
+
 	t.Run("export error logs and startup continues", func(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		beadSrc.exportErr = errors.New("boom")
