@@ -127,19 +127,26 @@ and performs a safe recovery:
 			if err != nil {
 				return fmt.Errorf("get working dir: %w", err)
 			}
-			projPaths, err := ResolvePaths(repoRoot)
+			cfg, err := doctorRecoverConfigForRepo(repoRoot, cmd.OutOrStdout(), time.Now, defaultRunCmd)
 			if err != nil {
-				return fmt.Errorf("resolve paths: %w", err)
-			}
-			cfg := &doctorRecoverConfig{
-				beadsDir: projPaths.BeadsDir,
-				w:        cmd.OutOrStdout(),
-				now:      time.Now,
-				runCmd:   defaultRunCmd,
+				return err
 			}
 			return runDoctorRecoverDolt(cfg)
 		},
 	}
+}
+
+func doctorRecoverConfigForRepo(repoRoot string, w io.Writer, now func() time.Time, runCmd func(name string, args ...string) error) (*doctorRecoverConfig, error) {
+	projPaths, err := ResolvePaths(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve paths: %w", err)
+	}
+	return &doctorRecoverConfig{
+		beadsDir: projPaths.LegacyBeadsDir,
+		w:        w,
+		now:      now,
+		runCmd:   runCmd,
+	}, nil
 }
 
 // defaultRunCmd runs a command by name with the given args, inheriting stdout/stderr.

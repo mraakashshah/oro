@@ -1,11 +1,13 @@
-# Runbook: Archive `.beads/dolt/` on Operator Machines
+# Runbook: Archive legacy Dolt data on operator machines
 
 ## Context
 
 Oro Phase 10 migrates bead storage away from the in-repo `.beads/` directory.
-The Dolt database previously lived at `.beads/dolt/` inside each project repo.
-After migrating to the new storage backend, this directory is no longer read by
-oro and can be safely archived or deleted.
+The Dolt database previously lived under `.beads/`, most commonly at
+`.beads/dolt/`. Older bd fallback modes may also have written databases at
+`.beads/beads_<project>/.dolt` or `.beads/embeddeddolt/<project>/.dolt`.
+After migrating to the new storage backend, these directories are no longer
+read by oro and can be safely archived or deleted.
 
 ## When to run this
 
@@ -27,25 +29,47 @@ If the dispatcher is still running, stop it first:
 oro stop
 ```
 
-### 2. Identify projects with legacy Dolt data
+### 2. Identify legacy Dolt directories
 
 ```sh
-find ~ -type d -name dolt -path '*/.beads/*' 2>/dev/null
+find ~ -type d \( \
+  -path '*/.beads/dolt' -o \
+  -path '*/.beads/beads_*/.dolt' -o \
+  -path '*/.beads/embeddeddolt/*/.dolt' \
+\) 2>/dev/null
 ```
 
-### 3. Archive each `.beads/dolt/` directory
+### 3. Archive each legacy Dolt directory
 
-For each project root `<REPO>` found above:
+For each `<LEGACY_DOLT_PATH>` found above:
 
 ```sh
-# Create a timestamped tarball in the project root
-tar -czf <REPO>/beads-dolt-archive-$(date +%Y%m%d).tar.gz -C <REPO>/.beads dolt
+case "$LEGACY_DOLT_PATH" in
+  */.beads/dolt)
+    archive_item="$LEGACY_DOLT_PATH"
+    legacy_beads_dir=$(dirname "$LEGACY_DOLT_PATH")
+    ;;
+  */.beads/beads_*/.dolt|*/.beads/embeddeddolt/*/.dolt)
+    archive_item=$(dirname "$LEGACY_DOLT_PATH")
+    legacy_beads_dir=${LEGACY_DOLT_PATH%%/.beads/*}/.beads
+    ;;
+  *)
+    echo "unexpected legacy Dolt path: $LEGACY_DOLT_PATH" >&2
+    exit 1
+    ;;
+esac
 
-# Verify the archive is readable
-tar -tzf <REPO>/beads-dolt-archive-$(date +%Y%m%d).tar.gz | head
+repo_root=$(dirname "$legacy_beads_dir")
+archive="$repo_root/beads-dolt-archive-$(date +%Y%m%d).tar.gz"
 
-# Remove the now-archived directory
-rm -rf <REPO>/.beads/dolt
+# Create a timestamped tarball in the project root.
+tar -czf "$archive" -C "$(dirname "$archive_item")" "$(basename "$archive_item")"
+
+# Verify the archive is readable.
+tar -tzf "$archive" | head
+
+# Remove the now-archived directory.
+rm -rf "$archive_item"
 ```
 
 ### 4. (Optional) Remove the entire `.beads/` directory
@@ -70,4 +94,5 @@ tar -xzf <REPO>/beads-dolt-archive-<DATE>.tar.gz -C <REPO>/.beads
 ## Reference
 
 - `LegacyBeadsDir` constant in `cmd/oro/paths.go` defines the legacy directory name (`.beads`).
-- Dolt subdirectory within it is always named `dolt/`.
+- Known legacy Dolt layouts are `.beads/dolt/`, `.beads/beads_<project>/.dolt`,
+  and `.beads/embeddeddolt/<project>/.dolt`.
