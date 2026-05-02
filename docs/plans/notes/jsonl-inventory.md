@@ -18,7 +18,7 @@ Spec references:
 | `.beads/issues.jsonl` | Yes | Yes | `bd export .beads/issues.jsonl` / bd hooks | Third priority | Current repo has this file tracked. `git ls-files .beads/issues.jsonl` confirms it is committed in this checkout. |
 | `.beads/export-state.json` | Yes | Yes | `bd export` metadata | Not a bead snapshot | Keep with `.beads/issues.jsonl` for bd state bookkeeping, but do not feed it to `--from-jsonl`. |
 | `.beads/backup/full-state.jsonl` | No | Ignored by `.beads/.gitignore` | Dispatcher heartbeat backup via `backupFullState` | First priority when present | Current checkout has no `.beads/backup/` directory. The path is intentionally ignored. |
-| `.beads/full-state.jsonl` | No | Not tracked | Legacy `oro doctor recover-dolt` expectation | Compatibility hazard | Current doctor recovery code looks here, but dispatcher backup code writes `.beads/backup/full-state.jsonl`. Resolve this mismatch during migration/fallback implementation. |
+| `.beads/full-state.jsonl` | No | Not tracked | Removed legacy doctor recovery expectation | Legacy alias only | Phase 10 blocker `oro-p10d` removed the doctor recovery path. Treat this path only as a manually reviewed compatibility alias for migration fallback, not as an automatic repair source. |
 | `.beads/memory/knowledge.jsonl` | Yes | Yes | memory/import tooling | Not a bead snapshot | Human learning memory, not bead state. Exclude from migration fallback. |
 
 ## Heartbeat backup
@@ -38,18 +38,13 @@ This is the best automatic fallback source, but it is only available after a
 dispatcher has run long enough to write it. Because the directory is ignored, it
 must be collected from the operator's machine, not from git.
 
-## Doctor recovery mismatch
+## Removed Doctor Recovery Path
 
-`cmd/oro/cmd_doctor.go` still documents and implements this recovery path:
-
-1. Look for `.beads/full-state.jsonl`.
-2. Copy that file to `.beads/issues.jsonl`.
-3. Run `bd init --from-jsonl`.
-
-That differs from the dispatcher heartbeat backup path
-`.beads/backup/full-state.jsonl` and from §9.9. The migration tool should use
-the §9.9 priority order and either update doctor recovery or accept
-`.beads/full-state.jsonl` only as a legacy compatibility alias.
+`cmd/oro/cmd_doctor.go` no longer documents or implements the old automatic
+doctor recovery flow that copied `.beads/full-state.jsonl` to
+`.beads/issues.jsonl` and reinitialized bd state. The migration tool should use
+the §9.9 priority order and treat `.beads/full-state.jsonl` only as a legacy
+compatibility alias when an operator explicitly selects it.
 
 ## Ad-hoc export artifacts
 
@@ -90,6 +85,6 @@ Only files with bd bead export row shape should be accepted by
 2. Use an explicit operator path from `--from-jsonl <path>`.
 3. Use `.beads/issues.jsonl` if it exists, is parseable, and the operator
    accepts that it may be stale or git-derived.
-4. Treat `.beads/full-state.jsonl` as a legacy alias only if doctor recovery is
-   kept backward-compatible.
+4. Treat `.beads/full-state.jsonl` as a legacy alias only when an operator
+   explicitly selects it and its contents validate as bd bead export JSONL.
 5. Reject unrelated JSONL fixtures by schema, not by filename alone.

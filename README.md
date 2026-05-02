@@ -415,7 +415,7 @@ oro stop
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `oro doctor` | Diagnose and repair oro installation issues (e.g. corrupt Dolt) | `oro doctor --fix` |
+| `oro doctor` | Diagnose oro installation issues | `oro doctor` |
 
 ### Internal
 

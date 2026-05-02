@@ -50,7 +50,7 @@ Global:
   agent-assets         Sync oro skills and runtime assets for agent sessions
 
 Maintenance:
-  doctor     Diagnose and repair oro installation issues (e.g. corrupt Dolt)
+  doctor     Diagnose oro installation issues
   uninstall  Remove oro and all its artifacts from this machine
 
 Internal:
