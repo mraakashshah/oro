@@ -44,26 +44,27 @@ construct native SQLite stores for production.
 
 | File | Direct bd use | Marker | Resolution |
 | --- | --- | --- | --- |
-| `assets/hooks/session_start_extras.py` | `bd list --status=closed`; `bd ready`; `bd list --status=in_progress`; `bd show <id>` | route-through-interface | Replace with `oro bead ...` or native status APIs in Phase 6. §11.4 already lists this file. |
-| `assets/hooks/session_start_compact.py` | `bd list --status=in_progress`; continuation bead creation through `bd create` command text | route-through-interface | Replace with `oro bead list/create` in Phase 6. §11.4 already lists this file. |
-| `assets/hooks/architect_router.py` | Allows/routes user-entered `bd ...`; not a direct bd subprocess for bead state, but notifies manager after `bd create` | route-through-interface | Update command routing and notifications to `oro bead ...` during prompt/hook migration. |
-| `assets/hooks/bd_create_notifier.py` | Watches for `bd create` command text; no bd subprocess | route-through-interface | Retarget to `oro bead create` or native event table notification. |
-| `assets/hooks/notify_manager_on_bead_create.py` | Watches for `bd create` command text; no bd subprocess | route-through-interface | Retarget to `oro bead create` or native event table notification. |
-| `assets/hooks/pre_compact.py` | Parses transcript `bd update --status=in_progress`; tells user to run `bd ready` | route-through-interface | Replace transcript pattern and advice with `oro bead` equivalents. |
-| `assets/hooks/validate_agent_completion.py` | Checks transcript for `bd close`; does not execute bd | route-through-interface | Replace completion detector with dispatcher/native close signal or `oro bead close` text. |
+| `assets/hooks/session_start_extras.py` | formerly `bd list --status=closed`; `bd ready`; `bd list --status=in_progress`; `bd show <id>` | migrated | Current hook invokes `oro bead list --status=in_progress --json`; worker sessions skip subprocess calls entirely. |
+| `assets/hooks/session_start_compact.py` | formerly `bd list --status=in_progress`; continuation bead creation through `bd create` command text | migrated | Current hook no longer contains direct `bd` command strings. |
+| `assets/hooks/architect_router.py` | formerly allowed/routed user-entered `bd ...` and watched `bd create` text | migrated | Current hook no longer contains direct `bd` command strings. |
+| `assets/hooks/bd_create_notifier.py` | formerly watched `bd create` command text; no bd subprocess | migrated | Current hook no longer contains direct `bd` command strings. |
+| `assets/hooks/notify_manager_on_bead_create.py` | formerly watched `bd create` command text; no bd subprocess | migrated | Current hook no longer contains direct `bd` command strings. |
+| `assets/hooks/pre_compact.py` | formerly parsed transcript `bd update --status=in_progress`; told user to run `bd ready` | migrated | Current hook no longer contains direct `bd` command strings. |
+| `assets/hooks/validate_agent_completion.py` | formerly checked transcript for `bd close`; did not execute bd | migrated | Current hook no longer contains direct `bd` command strings. |
 
 ## Prompt and instruction surfaces
 
-These are not shell-outs by themselves, but they cause agents to emit bd commands
-and therefore must be migrated with the hook work:
+These are not shell-outs by themselves, but they can cause agents to emit bead
+commands and therefore were part of the prompt/hook migration gate. Current
+production prompt and hook surfaces are migrated:
 
-- `pkg/worker/prompt.go`: `bd create`, `bd update`, `bd dep add`, `bd show`
-  examples in decomposition/failure guidance.
-- `cmd/oro/manager.go` and `cmd/oro/architect.go`: role guidance still tells
-  managers/architects to use `bd`.
-- `assets/beacons/*.md` and `assets/skills/*/SKILL.md`: multiple bd command
-  examples. §11.4 lists the skill files and requires a Phase 6 hard gate where
-  `git grep -l 'bd ' assets/skills/` returns zero files.
+- `pkg/worker/prompt.go`: the Bead Tools section names `oro bead create` and
+  `oro bead dep add`; no `bd` command examples remain in the production worker
+  prompt.
+- `pkg/ops`, `cmd/oro/manager.go`, `cmd/oro/architect.go`,
+  `assets/hooks/`, and `assets/skills/`: `rg -n 'bd create|bd update|bd
+  dep|bd show|bd close|bd ready|bd list'` returns no current command examples
+  outside test-only or historical documentation contexts.
 
 ## Test-only legacy references
 
