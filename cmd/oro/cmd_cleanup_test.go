@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"oro/pkg/beadstore"
 )
 
 func TestCleanup_NothingToClean(t *testing.T) {
@@ -420,52 +422,105 @@ func TestCleanup_ResetsInProgressBeads(t *testing.T) {
 	// git branch --list returns empty
 	fake.output[key("git", "branch", "--list", "agent/*")] = ""
 	fake.output[key("git", "branch", "--list", "epic/*")] = ""
-	// bd list returns beads in progress
-	fake.output[key("bd", "list", "--status=in_progress", "--json")] = `[{"id":"oro-abc1"},{"id":"oro-xyz2"}]`
 
 	tmpDir := t.TempDir()
-	var buf bytes.Buffer
-	cfg := &cleanupConfig{
-		runner:   fake,
-		w:        &buf,
-		tmuxName: TmuxSessionName(""),
-		pidPath:  filepath.Join(tmpDir, "oro.pid"),
-		sockPath: filepath.Join(tmpDir, "oro.sock"),
-		signalFn: func(int) error { return nil },
-		aliveFn:  func(int) bool { return false },
+	dbPath := filepath.Join(tmpDir, "state.db")
+	store, err := beadstore.OpenSQLiteStore(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open bead store: %v", err)
+	}
+	for _, id := range []string{"oro-abc1", "oro-xyz2"} {
+		if _, err := store.Create(context.Background(), beadstore.CreateParams{
+			ID:       id,
+			Title:    id,
+			Type:     "task",
+			Priority: 1,
+		}); err != nil {
+			t.Fatalf("create bead %s: %v", id, err)
+		}
+		status := "in_progress"
+		if err := store.Update(context.Background(), id, beadstore.UpdateParams{Status: &status}); err != nil {
+			t.Fatalf("mark bead %s in_progress: %v", id, err)
+		}
+	}
+	if _, err := store.Create(context.Background(), beadstore.CreateParams{
+		ID:       "oro-assigned-open",
+		Title:    "assigned open",
+		Type:     "task",
+		Priority: 1,
+	}); err != nil {
+		t.Fatalf("create assigned open bead: %v", err)
+	}
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-assigned-open', 'worker-1', '/tmp/oro-assigned-open', 'active')`); err != nil {
+		t.Fatalf("insert active assignment: %v", err)
 	}
 
-	err := runCleanup(context.Background(), cfg)
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:      fake,
+		w:           &buf,
+		tmuxName:    TmuxSessionName(""),
+		pidPath:     filepath.Join(tmpDir, "oro.pid"),
+		sockPath:    filepath.Join(tmpDir, "oro.sock"),
+		stateDBPath: dbPath,
+		signalFn:    func(int) error { return nil },
+		aliveFn:     func(int) bool { return false },
+	}
+
+	err = runCleanup(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify bd update was called for each bead
-	var resetBeads []string
 	for _, call := range fake.calls {
-		if len(call) >= 4 && call[0] == "bd" && call[1] == "update" && call[3] == "--status=open" {
-			resetBeads = append(resetBeads, call[2])
+		if len(call) > 0 && call[0] == "bd" {
+			t.Fatalf("cleanup used bd runner call: %v", call)
 		}
 	}
 
-	if len(resetBeads) != 2 {
-		t.Fatalf("expected 2 bead resets, got %d: %v", len(resetBeads), resetBeads)
+	var activeAssignments int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM assignments WHERE bead_id='oro-assigned-open' AND status='active'`).Scan(&activeAssignments); err != nil {
+		t.Fatalf("count active assignments: %v", err)
 	}
-
-	found := map[string]bool{}
-	for _, b := range resetBeads {
-		found[b] = true
+	if activeAssignments != 0 {
+		t.Fatalf("active assignment count = %d, want 0", activeAssignments)
 	}
-	if !found["oro-abc1"] {
-		t.Error("expected oro-abc1 to be reset to open")
+	for _, id := range []string{"oro-abc1", "oro-xyz2"} {
+		bead, err := store.Show(context.Background(), id)
+		if err != nil {
+			t.Fatalf("show bead %s: %v", id, err)
+		}
+		if bead == nil {
+			t.Fatalf("bead %s missing", id)
+		}
+		if bead.Status != "open" {
+			t.Errorf("bead %s status = %q, want open", id, bead.Status)
+		}
 	}
-	if !found["oro-xyz2"] {
-		t.Error("expected oro-xyz2 to be reset to open")
+	assigned, err := store.Show(context.Background(), "oro-assigned-open")
+	if err != nil {
+		t.Fatalf("show assigned bead: %v", err)
+	}
+	if assigned == nil {
+		t.Fatal("assigned bead missing")
+	}
+	if assigned.Status != "open" {
+		t.Errorf("assigned bead status = %q, want open", assigned.Status)
 	}
 
 	out := buf.String()
 	if !strings.Contains(out, "oro-abc1") || !strings.Contains(out, "oro-xyz2") {
 		t.Errorf("expected output to mention reset beads, got: %s", out)
+	}
+	if !strings.Contains(out, "cleared active assignment for bead oro-assigned-open") {
+		t.Errorf("expected output to mention cleared assignment, got: %s", out)
 	}
 }
 
@@ -518,21 +573,18 @@ func TestCleanup_ContinuesOnErrors(t *testing.T) {
 		t.Errorf("expected warnings in output, got: %s", out)
 	}
 
-	// Verify all steps were attempted (calls include tmux, git, bd)
-	var hasGitCall, hasBdCall bool
+	// Verify later non-bead cleanup was attempted without falling back to bd.
+	var hasGitCall bool
 	for _, call := range fake.calls {
 		if call[0] == "git" {
 			hasGitCall = true
 		}
 		if call[0] == "bd" {
-			hasBdCall = true
+			t.Fatalf("cleanup used bd runner call: %v", call)
 		}
 	}
 	if !hasGitCall {
 		t.Error("expected git commands to be attempted despite earlier failures")
-	}
-	if !hasBdCall {
-		t.Error("expected bd commands to be attempted despite earlier failures")
 	}
 }
 

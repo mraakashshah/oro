@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"oro/pkg/beadstore"
 
 	"github.com/spf13/cobra"
 )
@@ -21,6 +23,7 @@ type cleanupConfig struct {
 	tmuxName     string
 	pidPath      string
 	sockPath     string
+	stateDBPath  string          // path to native SQLite state.db; empty disables bead state repair
 	beadsDir     string          // path to .beads directory; empty disables per-project dolt cleanup
 	worktreesDir string          // path to .worktrees directory; empty disables worktree dir removal
 	oroHome      string          // path to ~/.oro; empty disables shared dolt PID cleanup
@@ -60,6 +63,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				tmuxName:     TmuxSessionName(readProjectNameCWD()),
 				pidPath:      paths.PIDPath,
 				sockPath:     paths.SocketPath,
+				stateDBPath:  paths.StateDBPath,
 				beadsDir:     projPaths.BeadsDir,
 				worktreesDir: projPaths.WorktreesDir,
 				oroHome:      paths.OroHome,
@@ -71,11 +75,6 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 			return runCleanup(cmd.Context(), cfg)
 		},
 	}
-}
-
-// beadEntry represents a minimal bead from bd list JSON output.
-type beadEntry struct {
-	ID string `json:"id"`
 }
 
 // runCleanup performs best-effort cleanup of all Oro state.
@@ -140,7 +139,7 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	}
 
 	// 9. Reset in_progress beads back to open.
-	if cleanedBeads := cleanupBeads(cfg); cleanedBeads {
+	if cleanedBeads := cleanupBeads(ctx, cfg); cleanedBeads {
 		cleaned = true
 	}
 
@@ -598,16 +597,22 @@ func cleanupSharedDoltPID(cfg *cleanupConfig) bool {
 }
 
 // cleanupBeads resets in_progress beads back to open. Returns true if beads were reset.
-func cleanupBeads(cfg *cleanupConfig) bool {
-	out, err := cfg.runner.Run("bd", "list", "--status=in_progress", "--json")
-	if err != nil {
-		fmt.Fprintf(cfg.w, "warning: list in_progress beads: %v\n", err)
+func cleanupBeads(ctx context.Context, cfg *cleanupConfig) bool {
+	if cfg.stateDBPath == "" {
 		return false
 	}
 
-	var beads []beadEntry
-	if err := json.Unmarshal([]byte(out), &beads); err != nil {
-		fmt.Fprintf(cfg.w, "warning: parse bead list: %v\n", err)
+	db, err := openStateDB(cfg.stateDBPath)
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: open bead store: %v\n", err)
+		return false
+	}
+	defer func() { _ = db.Close() }()
+	store := beadstore.NewSQLiteStore(db)
+
+	beads, err := store.InProgress(ctx)
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: list in_progress beads: %v\n", err)
 		return false
 	}
 
@@ -615,11 +620,38 @@ func cleanupBeads(cfg *cleanupConfig) bool {
 		return false
 	}
 
+	cleaned := false
 	for _, bead := range beads {
-		fmt.Fprintf(cfg.w, "resetting bead %s to open\n", bead.ID)
-		if _, err := cfg.runner.Run("bd", "update", bead.ID, "--status=open"); err != nil {
-			fmt.Fprintf(cfg.w, "warning: reset bead %s: %v\n", bead.ID, err)
+		if cleared, err := completeActiveAssignments(ctx, db, bead.ID); err != nil {
+			fmt.Fprintf(cfg.w, "warning: clear active assignment for bead %s: %v\n", bead.ID, err)
+		} else if cleared {
+			cleaned = true
+			fmt.Fprintf(cfg.w, "cleared active assignment for bead %s\n", bead.ID)
 		}
+		if bead.Status != "in_progress" {
+			continue
+		}
+		fmt.Fprintf(cfg.w, "resetting bead %s to open\n", bead.ID)
+		status := "open"
+		if err := store.Update(ctx, bead.ID, beadstore.UpdateParams{Status: &status}); err != nil {
+			fmt.Fprintf(cfg.w, "warning: reset bead %s: %v\n", bead.ID, err)
+			continue
+		}
+		cleaned = true
 	}
-	return true
+	return cleaned
+}
+
+func completeActiveAssignments(ctx context.Context, db *sql.DB, beadID string) (bool, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE assignments SET status='completed', completed_at=datetime('now') WHERE bead_id=? AND status='active'`,
+		beadID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
