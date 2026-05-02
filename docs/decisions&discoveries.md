@@ -6,6 +6,12 @@
 **Decision:** Historical March/April notes that describe `oro dolt` setup/start/stop, runtime Dolt launchd ownership, shared Dolt persistence, or bd/Dolt as the active beadstore are retained only as migration history and failure analysis. Do not use those entries as current implementation guidance unless a Phase 11 legacy-migration task explicitly calls them out.
 **Implications:** Treat new post-cutover failures as native SQLite/Oro bugs first. Fall back to bd/Dolt only for import audit or rollback evidence when data corruption is shown.
 
+## 2026-05-02: Phase 10 signoff assigns Phase 11 owner
+**Tags:** #beadstore #phase-10 #phase-11 #migration
+**Context:** Phase 10 cleanup can close only if Phase 11 has a named owner and a 90-day follow-up reminder. Phase 11 is intentionally deferred so late-migrating operators still have `LegacyBeadsDir` and migration tooling available for one release cycle.
+**Decision:** Phase 11 owner is Akash Shah (`mraakashshah@users.noreply.github.com`). The follow-up bead is `oro-23m2`, deferred in the native tracker until 2026-07-31T13:00:00Z, which is 90 days after the 2026-05-02 Phase 10 signoff.
+**Implications:** Do not silently delete `LegacyBeadsDir` or the migration command before `oro-23m2`. On 2026-07-31, run the Phase 11 survey, decide whether legacy migration paths are still needed, and either complete Phase 11 or document a deliberate extension.
+
 ## 2026-04-28: Phase 0 schema sign-off
 **Reviewer:** Codex manual adversarial review (GPT-5 coding agent), 2026-04-28.
 **Scope:** Replatform beads spec sections 6, 9.6, and 12.1.

@@ -658,7 +658,15 @@ func hasTag(bead protocol.Bead, tag string) bool {
 }
 
 func isFutureDeferred(until string) bool {
-	return until != ""
+	until = strings.TrimSpace(until)
+	if until == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339Nano, until)
+	if err != nil {
+		return true
+	}
+	return time.Now().UTC().Before(t)
 }
 
 func sortBeads(beads []protocol.Bead) {

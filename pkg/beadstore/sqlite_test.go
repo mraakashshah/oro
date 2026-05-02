@@ -149,7 +149,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err := store.Defer(ctx, "oro-deferred-hard-blocked", "2999-01-01T00:00:00Z"); err != nil {
 		t.Fatalf("Defer deferred hard blocked: %v", err)
 	}
-	mustExec(t, store.db, `UPDATE beads SET deferred_until='2026-01-01T00:00:00Z' WHERE id='oro-past-deferred-blocked'`)
+	mustExec(t, store.db, `UPDATE beads SET deferred_until='2000-01-01T00:00:00Z' WHERE id='oro-past-deferred-blocked'`)
 	mustUpdate(t, store, "oro-progress", UpdateParams{Status: strPtr("in_progress")})
 	mustClose(t, store, "oro-closed1", "done")
 	mustClose(t, store, "oro-closed2", "done")
@@ -158,7 +158,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready: %v", err)
 	}
-	if ids(ready) != "oro-parent,oro-child,oro-missing-parent-child,oro-blocker,oro-ready" {
+	if ids(ready) != "oro-parent,oro-child,oro-missing-parent-child,oro-past-deferred-blocked,oro-blocker,oro-ready" {
 		t.Fatalf("Ready ids = %s", ids(ready))
 	}
 
@@ -196,7 +196,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready after parent close: %v", err)
 	}
-	if ids(ready) != "oro-child,oro-missing-parent-child,oro-blocker,oro-ready" {
+	if ids(ready) != "oro-child,oro-missing-parent-child,oro-past-deferred-blocked,oro-blocker,oro-ready" {
 		t.Fatalf("Ready ids after parent close = %s", ids(ready))
 	}
 
@@ -221,7 +221,7 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ready after close: %v", err)
 	}
-	if ids(ready) != "oro-blocked,oro-child,oro-missing-parent-child,oro-ready" {
+	if ids(ready) != "oro-blocked,oro-child,oro-missing-parent-child,oro-past-deferred-blocked,oro-ready" {
 		t.Fatalf("Ready after blocker close ids = %s", ids(ready))
 	}
 }
@@ -1037,6 +1037,28 @@ func TestParityDeferUndeferRoundTrips(t *testing.T) {
 			}
 			if ids(ready) != "oro-deferred" {
 				t.Fatalf("Ready after Undefer ids = %s", ids(ready))
+			}
+		})
+	}
+}
+
+func TestParityExpiredDeferUntilSurfacesBead(t *testing.T) {
+	const expiredUntil = "2000-01-01T00:00:00Z"
+
+	for _, fixture := range newParityFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-expired-defer", Title: "expired defer"})
+
+			if err := fixture.store.Defer(ctx, "oro-expired-defer", expiredUntil); err != nil {
+				t.Fatalf("Defer: %v", err)
+			}
+			ready, err := fixture.store.Ready(ctx)
+			if err != nil {
+				t.Fatalf("Ready after expired defer: %v", err)
+			}
+			if ids(ready) != "oro-expired-defer" {
+				t.Fatalf("Ready after expired defer ids = %s, want oro-expired-defer", ids(ready))
 			}
 		})
 	}

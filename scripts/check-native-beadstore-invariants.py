@@ -33,7 +33,11 @@ CHECKS: tuple[tuple[str, str, object | None], ...] = (
           FROM beads b
           WHERE b.deleted = 0
             AND b.status = 'open'
-            AND (b.deferred_until IS NULL OR b.deferred_until = '')
+            AND (
+              b.deferred_until IS NULL
+              OR b.deferred_until = ''
+              OR julianday(b.deferred_until) <= julianday('now')
+            )
             AND NOT EXISTS (
               SELECT 1 FROM assignments a
               WHERE a.bead_id = b.id
@@ -45,7 +49,7 @@ CHECKS: tuple[tuple[str, str, object | None], ...] = (
                 ON parent.id = d.depends_on_id
                AND parent.deleted = 0
               WHERE d.bead_id = b.id
-                AND d.type IN ('blocks','conditional-blocks','parent-child')
+                AND d.type IN ('blocks','conditional-blocks')
                 AND (parent.id IS NULL OR parent.status != 'closed')
             )
         ),
@@ -73,6 +77,7 @@ CHECKS: tuple[tuple[str, str, object | None], ...] = (
               b.status = 'blocked'
               OR b.deferred_until IS NULL
               OR b.deferred_until = ''
+              OR julianday(b.deferred_until) <= julianday('now')
               OR EXISTS (
                 SELECT 1 FROM bead_deps d
                 LEFT JOIN beads parent
@@ -96,7 +101,7 @@ CHECKS: tuple[tuple[str, str, object | None], ...] = (
                   ON parent.id = d.depends_on_id
                  AND parent.deleted = 0
                 WHERE d.bead_id = b.id
-                  AND d.type IN ('blocks','conditional-blocks','parent-child')
+                  AND d.type IN ('blocks','conditional-blocks')
                   AND (parent.id IS NULL OR parent.status != 'closed')
               )
             )
@@ -142,7 +147,7 @@ CHECKS: tuple[tuple[str, str, object | None], ...] = (
         FROM beads_ready r
         JOIN bead_deps d ON d.bead_id = r.id
         LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-        WHERE d.type IN ('blocks','conditional-blocks','parent-child')
+        WHERE d.type IN ('blocks','conditional-blocks')
           AND (parent.id IS NULL OR parent.status != 'closed');
         """,
         0,
