@@ -1681,13 +1681,15 @@ This is the critical section. The full sequence:
      the dispatcher retains bd on its own PATH only for migration audit/recovery
      tooling until Phase 10.
 
-5. **Days 1–30 (sqlite primary, bd binary still installed):**
+5. **Post-evidence cleanup:**
    - All bead state lives in SQLite.
    - Workers are using `oro bead` via prompts (v15: no shim — see §7.3).
-   - Nightly: `oro bead export --out=.beads/snapshots/$(date +%F).jsonl` for backup.
-   - Operator verifies no anomalies for 4 weeks.
+   - Nightly `oro bead export --out=.beads/snapshots/$(date +%F).jsonl`
+     remains optional backup hygiene, not a cutover gate.
+   - Phase 10 cleanup may start after the native-first evidence in §12.10
+     passes and strict closure reviews approve it.
 
-6. **Day 30+ (cleanup):**
+6. **Phase 10 cleanup:**
    - Delete `cmd/oro/cmd_dolt.go`, `cmd/oro/cmd_bd.go`, `pkg/dispatcher/dolt_recovery.go`, `pkg/dispatcher/cli_beadsource.go` (and rename `pkg/dispatcher/beadsource.go`'s interface file as needed).
    - Remove `bd` from `oro init` tool list (`cmd/oro/cmd_init.go:76`).
    - (v15 has no bd-shim; this v14 cleanup item is N/A.)
@@ -1696,16 +1698,20 @@ This is the critical section. The full sequence:
 
 ### 9.5 Reversibility
 
-Until Day 30, the recorded SQLite backups and JSONL source backups preserve a
-recovery path when the runbook gates are followed. `ORO_BEADSOURCE_MODE=cli`
-reverts to bd only after bd has been refreshed from SQLite or an explicit
-data-loss decision is recorded. The dolt database is preserved as an audit and
-fallback source. The migration tool's JSONL backup file lives at
+The recorded SQLite backups and JSONL source backups preserve a recovery path
+when the runbook gates are followed. `ORO_BEADSOURCE_MODE=cli` is not a
+production rollback after native cutover; use it only for explicit forensic
+recovery from a checked-out pre-cutover revision with a recorded data-loss
+decision. The dolt database is preserved as an audit and fallback source. The
+migration tool's JSONL backup file lives at
 `OroHome/migrations/<ts>-pre-migration.jsonl`; rollback of a failed SQLite
 target uses the operator's pre-migration `state.db` SQLite backup snapshot, not
 JSONL import.
 
-After Day 30 cleanup: rollback requires re-cloning bd, restoring dolt from a backup, and reverting the deletions. Plan accordingly — don't do Day 30 cleanup until you're confident.
+After Phase 10 cleanup, rollback to bd requires reverting the cleanup commit,
+re-cloning bd if needed, and restoring Dolt from a recorded backup. Plan
+accordingly: do not treat bd parity or availability as a normal post-cutover
+veto unless SQLite data corruption is shown.
 
 ### 9.6 Field-by-field bd → SQLite mapping (the migration contract)
 
