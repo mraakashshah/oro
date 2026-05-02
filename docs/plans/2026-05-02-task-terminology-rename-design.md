@@ -1,0 +1,322 @@
+# Rename Beads To Tasks
+
+**Date:** 2026-05-02
+**Status:** Draft — researched against current code; pending adversarial review and beadcraft decomposition
+**Goal:** Rename Oro's user-facing work-item vocabulary from "bead" to "task" without breaking the native SQLite runtime, existing data, migration audit trails, worker/dispatcher assignment protocol, or historical references.
+
+## Context
+
+Oro currently uses "bead" for every work item: CLI commands (`oro bead`), storage (`pkg/beadstore`, SQLite `beads` tables), protocol structs (`protocol.Bead`), branch names (`bead/<id>`), worker prompts, README copy, skills, hooks, event payloads, and migration runbooks.
+
+The native beadstore migration has just completed through Phase 10. That makes this rename unusually risky: the word "bead" is now both product language and storage/protocol language. A mechanical global rename would touch thousands of references, break JSON contracts, invalidate migration docs, and make rollback hard.
+
+## Research Summary
+
+Files and references read:
+
+- `cmd/oro/cmd_bead.go`: owns the public `oro bead` Cobra subtree. It contains user-facing command names, help text, flags, JSON error paths, and direct calls into `pkg/beadstore`.
+- `cmd/oro/root.go` and `cmd/oro/cmd_help.go`: register `newBeadCmd()` and advertise `bead` under Workflow.
+- `cmd/oro/cmd_work.go`: exposes `oro work <bead-id>` and loads/validates a `protocol.Bead`.
+- `pkg/protocol/types.go`: defines `type Bead` and JSON fields. Some JSON keys are already legacy-shaped (`issue_type`, `parent`) and must not be casually churned.
+- `pkg/protocol/tables.go`: assignment, event, escalation, and memory rows expose `bead_id` JSON fields.
+- `pkg/protocol/schema.go`: SQLite schema creates `beads`, `bead_deps`, `bead_tags`, `bead_labels`, `bead_metadata`, `bead_notes`, and `beads_fts`.
+- `pkg/beadstore/store.go` and `pkg/beadstore/sqlite.go`: the native store interface and implementation are named around beads.
+- `pkg/dispatcher/dispatcher.go`: dispatcher state fields, assignment routing, counters, events, and spawn-for targeting all use bead terminology.
+- `pkg/worker/prompt.go`: worker prompts instruct agents to execute one bead, decompose epics with `oro bead create`, and create blocker/handoff beads.
+- `docs/plans/2026-04-27-replatform-beads-spec.md`: explicitly made beads the native concept and storage seam during migration.
+- `docs/plans/notes/bd-callsites.md`: documents `beadstore.Store` as the post-Phase-10 production seam.
+- `README.md`: public docs define beads as work items and describe the worker lifecycle around beads.
+
+Observed scope:
+
+- `rg` found roughly 7,500 current "bead" references across code, tests, docs, assets, and scripts, excluding some generated/historical folders.
+- The current public command is `oro bead`; there is no `oro task` command.
+- Storage and protocol are stable and working after the native migration. Renaming them now has data-migration and compatibility costs unrelated to the user-facing terminology goal.
+
+External prior art was skipped: this is an internal product/API terminology migration, not an algorithm or library-selection problem.
+
+## Problem
+
+"Bead" is now overloaded:
+
+1. **Product language:** the human-facing concept should be "task".
+2. **CLI language:** `oro bead` is unintuitive for new users; `oro task` is clearer.
+3. **Storage/protocol language:** `beads` tables, `bead_id` fields, `protocol.Bead`, and `pkg/beadstore` are working persistence contracts.
+4. **Historical language:** migration runbooks, old plans, and audit trails intentionally reference beads/bd/Dolt.
+
+The rename needs to separate those layers instead of trying to erase every occurrence in one pass.
+
+## Non-Goals
+
+- No immediate SQLite table rename from `beads` to `tasks`.
+- No immediate JSON field rename from `bead_id` to `task_id` in protocol/event/memory rows.
+- No rewrite of historical runbooks, old design docs, migration audit logs, or closed work records.
+- No deletion of `oro bead` in the first release after `oro task` lands.
+- No change to task type values. `type=task|bug|epic|research|chore` remains exactly as today.
+- No new work tracker. This is a terminology/API compatibility layer over the existing native SQLite store.
+
+## Design Decision
+
+Preferred design: **public alias first, internals later**.
+
+Add `oro task` as the preferred public command tree. Keep `oro bead` as a hidden or clearly deprecated compatibility alias for at least one release cycle. The underlying implementation can initially call the same command constructors and store interfaces.
+
+Then migrate prompts, docs, skills, hooks, and operator-facing output to say "task". After those pass, evaluate whether internal package/type/schema names are still worth changing. The default assumption is that storage/protocol names remain `bead*` until a separate compatibility spec proves the value exceeds the migration risk.
+
+### Alternatives Considered
+
+**A. Hard rename everything now**
+
+Rename `bead` to `task` across packages, structs, tables, JSON, branches, docs, prompts, and tests in one project.
+
+- Benefit: clean final vocabulary.
+- Cost: enormous blast radius, table migration, JSON compatibility break, branch/worktree naming churn, and high chance of breaking the just-proven sqlite dispatcher/worker runtime.
+- Premortem: a worker passes package tests but misses an event JSON field or migration report field; external scripts fail silently because `bead_id` disappeared. This is a high-severity tiger.
+
+**B. Public alias first**
+
+Add `oro task` and update operator/worker-facing text while preserving storage/protocol names.
+
+- Benefit: users see the new vocabulary quickly; runtime state remains stable; `oro bead` continues to work for old scripts and workers.
+- Cost: two terms coexist for a while.
+- Premortem: docs can become inconsistent if old and new terms are mixed without a style guide. This is manageable with grep-based acceptance tests.
+
+**C. Documentation-only rename**
+
+Call work items tasks in README and prompts, but keep only `oro bead` in the CLI.
+
+- Benefit: minimal code change.
+- Cost: creates a worse mismatch: docs say "task", commands say "bead".
+- Premortem: workers emit `oro task` commands that do not exist, or humans keep asking whether task and bead are different. This is a real product failure.
+
+Decision: choose **B**.
+
+## Premortem
+
+```yaml
+premortem:
+  mode: quick
+  context: "rename user-facing bead terminology to task"
+  tigers:
+    - risk: "Hard-renaming storage/protocol breaks native sqlite runtime and historical migration contracts."
+      severity: high
+      evidence: "pkg/protocol/schema.go creates beads/bead_* tables; pkg/protocol/tables.go emits bead_id JSON; docs/plans/notes/bd-callsites.md records beadstore.Store as the production seam."
+      mitigation: "Do not rename schema, JSON fields, or pkg/beadstore in this spec."
+    - risk: "Prompts/docs move to task before CLI exists, causing workers to emit invalid oro task commands."
+      severity: high
+      evidence: "pkg/worker/prompt.go currently prints command examples such as oro bead create and oro bead dep add."
+      mitigation: "First implementation bead adds and tests oro task alias before any prompt/docs rewrite."
+    - risk: "Two terms coexist indefinitely without an intentional boundary."
+      severity: medium
+      evidence: "README.md and worker prompts are public surfaces; protocol/storage names are internal compatibility surfaces."
+      mitigation: "Add glossary and grep-based acceptance: current docs/prompts use task for new user-facing prose, while storage/protocol docs may retain bead."
+  elephants:
+    - risk: "The project name beadstore may remain forever even after the product says task."
+      mitigation: "Accept for first release; revisit only after public task surfaces are stable."
+  paper_tigers:
+    - risk: "Existing IDs like oro-abc need to change."
+      reason: "IDs are not bead-prefixed; existing hierarchical IDs are already neutral enough."
+    - risk: "The type value task conflicts with the renamed object."
+      reason: "The existing type vocabulary already uses task as one type among bug/epic/research/chore; docs can call the object a work item/task and the type a task-type leaf."
+```
+
+## Architecture
+
+### 1. CLI compatibility layer
+
+Add `newTaskCmdWithStore(store beadstore.Store) *cobra.Command`.
+
+The command should expose the same subcommands as `oro bead`:
+
+- `ready`
+- `list`
+- `show`
+- `create`
+- `update`
+- `close`
+- `reopen`
+- `defer`
+- `undefer`
+- `blocked`
+- `closed`
+- `dep`
+- `tag`
+- `meta`
+- `note`
+- `search`
+- `export`
+- `import`
+- `doctor`
+- `status`
+- `migrate-from-dolt` remains under `oro bead` only unless explicitly needed for migration operators.
+
+Recommended first cut:
+
+- Factor shared constructor logic into a helper that accepts `noun`/`plural`/`includeMigration`.
+- Register `newTaskCmd()` in `cmd/oro/root.go`.
+- Keep `newBeadCmd()` registered for compatibility.
+- Update root categorized help to show `task` as preferred and `bead` as compatibility/legacy.
+
+Acceptance must prove:
+
+- `oro task create/show/update/close/ready/list/status` works against native sqlite.
+- `oro bead ...` still works.
+- Help lists `task` as the preferred command.
+
+### 2. User-facing text migration
+
+After `oro task` exists, update live user-facing text:
+
+- Root help and command descriptions in `cmd/oro/cmd_help.go`, `cmd/oro/cmd_bead.go`, and `cmd/oro/cmd_work.go`.
+- Worker prompts in `pkg/worker/prompt.go`.
+- Ops/review prompts that instruct agents to create or close work items.
+- Assets and skills under `assets/skills/`, `.claude/skills/`, and generated `_assets` mirrors.
+- Hook messages under `assets/hooks/` and `.claude/hooks/` where they display instructions to humans/agents.
+- README current public sections.
+
+Do not rewrite historical docs under `docs/plans/done/`, old runbooks, audit logs, migration reports, or closed-bead notes.
+
+### 3. Protocol and storage compatibility
+
+Keep these stable in this spec:
+
+- `pkg/beadstore`
+- `beads` and `bead_*` tables
+- `beads_ready` and `beads_blocked` views
+- `protocol.Bead`
+- JSON fields `bead_id`, `issue_id`, `depends_on_id`, `issue_type`
+- event names containing `bead`, unless a separate compatibility plan maps event aliases
+- branch prefix `bead/<id>` for worker implementation branches
+- `ORO_BEADSOURCE_MODE`
+
+Rationale: these are persistence and observability contracts. A public noun rename does not require storage churn.
+
+### 4. Glossary and operator guidance
+
+Add a glossary to README:
+
+- **Task:** preferred public term for an Oro work item.
+- **Bead:** legacy/internal term still visible in storage, historical docs, compatibility CLI, and migration artifacts.
+- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.
+
+This prevents confusion while both words exist.
+
+### 5. Future internal rename gate
+
+A later spec may rename internals only if all of these are true:
+
+- `oro task` has been stable for one release.
+- Compatibility tests prove `oro bead` still aliases correctly or has an explicit removal plan.
+- JSON/event consumers are inventoried.
+- SQLite migration and rollback for table/view/trigger names are designed and tested.
+- Native worker/dispatcher proof passes in sqlite mode after the migration.
+
+## Acceptance Test
+
+Epic acceptance should run against `main`:
+
+```bash
+make stage-assets &&
+go test ./cmd/oro ./pkg/worker ./pkg/dispatcher -run 'Test(TaskCmd|BeadCmd|WorkCmd|Prompt|Help|TaskTerminology)' -count=1 &&
+tmp=$(mktemp -d) &&
+ORO_HOME="$tmp/home" ORO_DB_PATH="$tmp/state.db" ORO_BEADSOURCE_MODE=sqlite ./oro task create --id oro-task-rename-smoke --title "Task rename smoke" --type task --priority 4 --acceptance "smoke" &&
+ORO_HOME="$tmp/home" ORO_DB_PATH="$tmp/state.db" ORO_BEADSOURCE_MODE=sqlite ./oro task show oro-task-rename-smoke --json | jq -e '.id=="oro-task-rename-smoke"' &&
+ORO_HOME="$tmp/home" ORO_DB_PATH="$tmp/state.db" ORO_BEADSOURCE_MODE=sqlite ./oro bead show oro-task-rename-smoke --json | jq -e '.id=="oro-task-rename-smoke"'
+```
+
+Assert:
+
+- command exits 0
+- `oro task` can create and show a native sqlite work item
+- `oro bead` compatibility can show the same row
+- focused Go tests pass
+
+## Implementation Phases
+
+### Phase 1: Add `oro task` CLI alias
+
+Add the new command tree and tests. Do not change prompts/docs yet.
+
+Primary files:
+
+- `cmd/oro/cmd_bead.go`
+- `cmd/oro/root.go`
+- `cmd/oro/cmd_help.go`
+- `cmd/oro/cmd_bead_test.go` or new `cmd/oro/cmd_task_test.go`
+
+### Phase 2: Update direct CLI/user help text
+
+Make `task` preferred in command help and `oro work` text while keeping `bead` compatibility wording where necessary.
+
+Primary files:
+
+- `cmd/oro/cmd_help.go`
+- `cmd/oro/cmd_work.go`
+- `cmd/oro/*_test.go` help-output tests
+
+### Phase 3: Update worker and ops prompts
+
+Workers should receive `oro task ...` examples. Compatibility examples can mention `oro bead` once as legacy fallback, but not as the primary instruction.
+
+Primary files:
+
+- `pkg/worker/prompt.go`
+- `pkg/worker/prompt_test.go`
+- `pkg/ops/*prompt*.go`
+- corresponding ops tests
+
+### Phase 4: Update assets and skills
+
+Update active skills/hooks/assets that teach agents commands.
+
+Primary paths:
+
+- `assets/skills/`
+- `.claude/skills/`
+- `assets/hooks/`
+- `.claude/hooks/`
+- `assets/commands/`
+- `.claude/commands/`
+- `cmd/oro/_assets/` after `make stage-assets`
+
+### Phase 5: Update public docs
+
+Update README and current operator docs. Historical migration docs retain bead language unless they describe current commands.
+
+Primary files:
+
+- `README.md`
+- `docs/INSTALL.md`
+- current runbooks that operators still execute
+- `docs/plans/notes/bd-callsites.md` only if a short addendum is needed
+
+### Phase 6: Add terminology guardrails
+
+Add focused grep/test guardrails that prevent new public-facing docs/prompts from reintroducing "bead" as the primary product term, while allowing storage/protocol/internal/historical contexts.
+
+Primary files:
+
+- `cmd/oro/terminology_test.go` or `scripts/check-task-terminology.sh`
+- `scripts/quality_gate.sh` only if the guard is stable and cheap
+
+## Rollback
+
+Rollback is straightforward through Phase 5 because no data migration occurs:
+
+- Remove `newTaskCmd()` registration.
+- Revert prompt/docs changes.
+- Keep `oro bead` untouched throughout.
+
+Do not remove `oro bead` or rename storage/protocol in this spec; that is what keeps rollback low-risk.
+
+## Open Questions
+
+1. Should `oro task migrate-from-dolt` exist as an alias, or should migration remain intentionally under `oro bead` because it is historical/legacy?
+2. Should worker branches remain `bead/<id>` forever, or should a later spec introduce `task/<id>` while preserving old branch cleanup logic?
+3. Should the mg dashboard labels change in this pass, or be handled when mg is replaced/retired?
+
+Recommended answers for this spec:
+
+1. Keep migration under `oro bead`.
+2. Keep branch prefix `bead/` for now.
+3. Update only clearly active mg user-facing labels if tests are cheap; do not make mg the critical path.
