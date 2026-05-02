@@ -98,6 +98,29 @@ func TestBuildCmd_NormalizesWorkdirAndGitEnv(t *testing.T) {
 	}
 }
 
+func TestBuildCmdInWorkdir_UsesAssignedWorkdir(t *testing.T) {
+	t.Setenv("ORO_AGENT_RUNTIME", "codex")
+	t.Setenv("PWD", "/poisoned/main")
+	t.Setenv("GIT_DIR", "/poisoned/main/.git")
+	t.Setenv("GIT_WORK_TREE", "/poisoned/main")
+	t.Setenv("GIT_INDEX_FILE", "/poisoned/main/.git/index")
+	assigned := t.TempDir()
+
+	cmd := codesearch.BuildCmdInWorkdir(context.Background(), "test prompt", assigned)
+
+	if cmd.Dir != assigned {
+		t.Fatalf("BuildCmdInWorkdir Dir = %q, want assigned %q", cmd.Dir, assigned)
+	}
+	if got := envValue(cmd.Env, "PWD"); got != assigned {
+		t.Fatalf("PWD env = %q, want assigned %q", got, assigned)
+	}
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
+		if got := envValue(cmd.Env, key); got != "" {
+			t.Fatalf("%s env = %q, want unset", key, got)
+		}
+	}
+}
+
 func envValue(env []string, key string) string {
 	prefix := key + "="
 	for _, entry := range env {

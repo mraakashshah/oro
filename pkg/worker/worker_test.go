@@ -855,6 +855,52 @@ func TestRunQualityGate_RestoreUsesAssignedWorktreeWithPoisonedGitEnv(t *testing
 	}
 }
 
+func TestRunQualityGate_ChildProcessUsesAssignedWorktreeEnv(t *testing.T) {
+	mainRoot := t.TempDir()
+	assignedWorktree := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(assignedWorktree, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(assignedWorktree, "scripts", "quality_gate.sh")
+	script := `#!/bin/sh
+set -eu
+sh -c 'printf "PWD=%s\nACTUAL=%s\nGIT_DIR=%s\nGIT_WORK_TREE=%s\nGIT_INDEX_FILE=%s\n" "$PWD" "$(pwd -P)" "${GIT_DIR-unset}" "${GIT_WORK_TREE-unset}" "${GIT_INDEX_FILE-unset}" > qg-hook-env.txt'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+
+	t.Setenv("PWD", mainRoot)
+	t.Setenv("GIT_DIR", filepath.Join(mainRoot, ".git"))
+	t.Setenv("GIT_WORK_TREE", mainRoot)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(mainRoot, ".git", "index"))
+
+	passed, output, err := worker.RunQualityGate(context.Background(), assignedWorktree, false)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected quality gate to pass, output: %q", output)
+	}
+
+	assignedEnv, err := os.ReadFile(filepath.Join(assignedWorktree, "qg-hook-env.txt"))
+	if err != nil {
+		t.Fatalf("assigned child env missing: %v", err)
+	}
+	text := string(assignedEnv)
+	if !strings.Contains(text, "PWD="+assignedWorktree+"\n") {
+		t.Fatalf("expected child PWD to be assigned worktree, got:\n%s", text)
+	}
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
+		if !strings.Contains(text, key+"=unset\n") {
+			t.Fatalf("expected %s unset in child env, got:\n%s", key, text)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(mainRoot, "qg-hook-env.txt")); !os.IsNotExist(err) {
+		t.Fatalf("poisoned env wrote hook artifact in main root, stat err: %v", err)
+	}
+}
+
 func TestRunQualityGate_RestoreFails_ReturnsError(t *testing.T) {
 	t.Parallel()
 

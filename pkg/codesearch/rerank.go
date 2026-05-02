@@ -13,6 +13,11 @@ type RerankSpawner interface {
 	Spawn(ctx context.Context, prompt string) (string, error)
 }
 
+// WorkdirRerankSpawner binds reranker subprocess execution to a worktree.
+type WorkdirRerankSpawner interface {
+	SpawnInWorkdir(ctx context.Context, prompt, workdir string) (string, error)
+}
+
 // ScoredChunk is a chunk with a rank position and reason from the reranker.
 type ScoredChunk struct {
 	Chunk  Chunk
@@ -67,6 +72,12 @@ type rerankEntry struct {
 // Rerank sends chunks to Claude for relevance ranking and returns reordered results.
 // Empty chunks returns nil, nil. Errors from the spawner or unparseable output are returned.
 func (r *Reranker) Rerank(ctx context.Context, query string, chunks []Chunk, topK int) ([]ScoredChunk, error) {
+	return r.RerankInWorkdir(ctx, query, chunks, topK, "")
+}
+
+// RerankInWorkdir sends chunks for relevance ranking from workdir when the
+// configured spawner supports workdir binding.
+func (r *Reranker) RerankInWorkdir(ctx context.Context, query string, chunks []Chunk, topK int, workdir string) ([]ScoredChunk, error) {
 	if len(chunks) == 0 {
 		return nil, nil
 	}
@@ -77,7 +88,7 @@ func (r *Reranker) Rerank(ctx context.Context, query string, chunks []Chunk, top
 
 	prompt := r.BuildPrompt(query, chunks)
 
-	output, err := r.spawner.Spawn(ctx, prompt)
+	output, err := spawnReranker(ctx, r.spawner, prompt, workdir)
 	if err != nil {
 		return nil, fmt.Errorf("rerank spawn: %w", err)
 	}
@@ -110,6 +121,15 @@ func (r *Reranker) Rerank(ctx context.Context, query string, chunks []Chunk, top
 	}
 
 	return results, nil
+}
+
+func spawnReranker(ctx context.Context, spawner RerankSpawner, prompt, workdir string) (string, error) {
+	if workdir != "" {
+		if workdirSpawner, ok := spawner.(WorkdirRerankSpawner); ok {
+			return workdirSpawner.SpawnInWorkdir(ctx, prompt, workdir)
+		}
+	}
+	return spawner.Spawn(ctx, prompt)
 }
 
 // BuildPrompt constructs the reranking prompt with XML-tagged chunks.

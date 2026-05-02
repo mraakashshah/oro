@@ -262,6 +262,11 @@ func (ci *CodeIndex) insertChunk(ctx context.Context, exec dbExecer, chunk Chunk
 // Claude reranking. If reranker is nil, returns FTS5-only results scored by
 // rank position. FTS5 returns 0 candidates → returns empty without calling reranker.
 func (ci *CodeIndex) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
+	return ci.SearchInWorkdir(ctx, query, topK, "")
+}
+
+// SearchInWorkdir performs Search with reranker subprocesses bound to workdir.
+func (ci *CodeIndex) SearchInWorkdir(ctx context.Context, query string, topK int, workdir string) ([]SearchResult, error) {
 	candidates, err := ci.FTS5Search(ctx, query, 30)
 	if err != nil {
 		return nil, fmt.Errorf("search fts5 phase: %w", err)
@@ -286,7 +291,7 @@ func (ci *CodeIndex) Search(ctx context.Context, query string, topK int) ([]Sear
 	}
 
 	// Rerank candidates.
-	scored, err := ci.reranker.Rerank(ctx, query, candidates, topK)
+	scored, err := ci.reranker.RerankInWorkdir(ctx, query, candidates, topK, workdir)
 	if err != nil {
 		return nil, fmt.Errorf("search rerank phase: %w", err)
 	}

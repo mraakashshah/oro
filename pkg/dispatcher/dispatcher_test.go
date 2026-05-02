@@ -12868,12 +12868,13 @@ func TestBuildStatusJSON_LiveQueueDepth(t *testing.T) {
 
 // mockCodeIndex implements CodeIndex for testing.
 type mockCodeIndex struct {
-	mu            sync.Mutex
-	chunks        []CodeChunk    // returned by FTS5Search
-	searchResults []SearchResult // returned by Search
-	err           error
-	queries       []string // queries captured by FTS5Search
-	searchQueries []string // queries captured by Search
+	mu             sync.Mutex
+	chunks         []CodeChunk    // returned by FTS5Search
+	searchResults  []SearchResult // returned by Search
+	err            error
+	queries        []string // queries captured by FTS5Search
+	searchQueries  []string // queries captured by Search
+	searchWorkdirs []string
 }
 
 func (m *mockCodeIndex) FTS5Search(_ context.Context, query string, _ int) ([]CodeChunk, error) {
@@ -12887,9 +12888,14 @@ func (m *mockCodeIndex) FTS5Search(_ context.Context, query string, _ int) ([]Co
 }
 
 func (m *mockCodeIndex) Search(_ context.Context, query string, _ int) ([]SearchResult, error) {
+	return m.SearchInWorkdir(context.Background(), query, 0, "")
+}
+
+func (m *mockCodeIndex) SearchInWorkdir(_ context.Context, query string, _ int, workdir string) ([]SearchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.searchQueries = append(m.searchQueries, query)
+	m.searchWorkdirs = append(m.searchWorkdirs, workdir)
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -12949,12 +12955,16 @@ func TestAssignBead_InjectsCodeContext(t *testing.T) {
 	// Verify Search was called with the bead title.
 	codeIdx.mu.Lock()
 	queries := codeIdx.searchQueries
+	workdirs := codeIdx.searchWorkdirs
 	codeIdx.mu.Unlock()
 	if len(queries) == 0 {
 		t.Fatal("expected Search to be called")
 	}
 	if queries[0] != "Add code search" {
 		t.Errorf("expected Search query to be bead title %q, got %q", "Add code search", queries[0])
+	}
+	if len(workdirs) == 0 || workdirs[0] != "/tmp/worktree-bead-code1" {
+		t.Fatalf("expected code search to run in assigned worktree, got %v", workdirs)
 	}
 }
 

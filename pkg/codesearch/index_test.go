@@ -777,12 +777,52 @@ func RerankedB() string { return "rerank target beta" }
 	}
 }
 
+func TestSearchInWorkdir_PassesWorkdirToReranker(t *testing.T) {
+	rootDir := t.TempDir()
+	writeGoFile(t, rootDir, "assigned.go", `package main
+
+func AssignedWorkdirTarget() string { return "assigned workdir target" }
+`)
+
+	dbPath := t.TempDir() + "/rerank_workdir_test.db"
+	spawner := &fixedRankSpawner{response: `[{"id":1,"reason":"assigned workdir"}]`}
+	idx, err := codesearch.NewCodeIndex(dbPath)
+	if err != nil {
+		t.Fatalf("NewCodeIndex: %v", err)
+	}
+	defer idx.Close()
+	idx.SetReranker(codesearch.NewReranker(spawner))
+
+	ctx := context.Background()
+	if _, err := idx.Build(ctx, rootDir); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	assigned := t.TempDir()
+
+	results, err := idx.SearchInWorkdir(ctx, "assigned", 5, assigned)
+	if err != nil {
+		t.Fatalf("SearchInWorkdir: %v", err)
+	}
+	if spawner.workdir != assigned {
+		t.Fatalf("reranker workdir = %q, want %q", spawner.workdir, assigned)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected reranked results")
+	}
+}
+
 // fixedRankSpawner returns a fixed JSON response for reranking.
 type fixedRankSpawner struct {
 	response string
+	workdir  string
 }
 
 func (s *fixedRankSpawner) Spawn(_ context.Context, _ string) (string, error) {
+	return s.response, nil
+}
+
+func (s *fixedRankSpawner) SpawnInWorkdir(_ context.Context, _, workdir string) (string, error) {
+	s.workdir = workdir
 	return s.response, nil
 }
 

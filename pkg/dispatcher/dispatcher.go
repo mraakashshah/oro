@@ -205,6 +205,10 @@ type CodeIndex interface {
 	Search(ctx context.Context, query string, topK int) ([]SearchResult, error)
 }
 
+type workdirCodeIndex interface {
+	SearchInWorkdir(ctx context.Context, query string, topK int, workdir string) ([]SearchResult, error)
+}
+
 // CodeChunk represents a code search result.
 type CodeChunk struct {
 	FilePath  string
@@ -3946,7 +3950,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if d.codeIndex != nil {
 		ctx5s, cancel5s := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel5s()
-		results, _ := d.codeIndex.Search(ctx5s, bead.Title, 5)
+		results, _ := d.searchCodeInWorkdir(ctx5s, bead.Title, 5, worktree)
 		if len(results) > 0 {
 			codeCtx = formatSearchResults(results)
 		}
@@ -4005,6 +4009,13 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
 	return nil
+}
+
+func (d *Dispatcher) searchCodeInWorkdir(ctx context.Context, query string, topK int, worktree string) ([]SearchResult, error) {
+	if idx, ok := d.codeIndex.(workdirCodeIndex); ok {
+		return idx.SearchInWorkdir(ctx, query, topK, worktree)
+	}
+	return d.codeIndex.Search(ctx, query, topK)
 }
 
 // checkEpicAssignable determines whether an epic bead should proceed to assignment.
