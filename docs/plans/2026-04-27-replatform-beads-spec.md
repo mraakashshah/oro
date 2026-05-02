@@ -950,7 +950,7 @@ type Bead struct {
     Memory         string `json:"memory,omitempty"`
 }
 
-// BeadDetail is removed in Phase 10 (deferred 30 days like other cleanup).
+// BeadDetail is removed in Phase 10 after native cutover evidence passes.
 // Until then, BeadDetail is a type alias: type BeadDetail = Bead.
 ```
 
@@ -2002,7 +2002,7 @@ Expected: `main` branch only, no remotes, commits only from `bd` automated write
 | `pkg/mg/data/mutate.go` | 10–37 | Same — use `beadstore.Store` for writes |
 | `cmd/oro/cmd_mg.go` | 36–38, 73–77, 143–160 | **v13 add per codex R5#3** — wrapper that bootstraps mg/data; checks `.beads/` and bd-on-PATH today. Update to: (a) drop the `.beads/`-presence and bd-on-PATH preflight, (b) construct the new `mgdata.Source` with a `beadstore.Store` instead of the bd-backed loader, (c) verify `state.db` is reachable via `dbutil.OpenDB(StateDBPath)` instead. |
 
-**Files that get deleted (Phase 10, deferred 30 days):**
+**Files that get deleted (Phase 10, after native cutover evidence):**
 
 | File | Why |
 |---|---|
@@ -2369,7 +2369,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 - Bead operation latency is improved or unchanged versus the Phase 0 bd
   baseline in `docs/plans/notes/baseline-metrics.md`.
 
-### 12.11 Phase 10 — Cleanup pass 1 (2 days, deferred 30 days)
+### 12.11 Phase 10 — Cleanup pass 1 (2 days, after Phase 9 evidence)
 
 **Deliverables:**
 
@@ -2421,7 +2421,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 | Phase 7 (tests; **no bd-shim test extraction**) | 9–13 (was 10–14 in v14; -1 for no shim tests) | 1.5–2 weeks |
 | Phase 8 (migration day; **operator restarts all workers**) | 1 | 1 day |
 | Phase 9 (native cutover evidence) | active validation | same day after Phase 8 proof |
-| Phase 10 (cleanup pass 1) | 2 | deferred 30 days |
+| Phase 10 (cleanup pass 1) | 2 | same day after Phase 9 evidence |
 | Phase 11 (cleanup pass 2) | 1 | deferred ~1–2 release cycles |
 | **Total active engineering** | **43–48 days** | **≈ 8.5–10 weeks** |
 
@@ -3043,7 +3043,7 @@ This spec touches no AGPL software. tldr, ouros, fastedit are all separately sco
 - `docs/dev-setup.md`
 - (~368 test files — mostly mechanical, ~50 require golden-file regen)
 
-**Deleted files (Phase 10, deferred ≥30 days):**
+**Deleted files (Phase 10, after native cutover evidence):**
 
 - `cmd/oro/cmd_dolt.go`
 - `cmd/oro/cmd_bd.go`

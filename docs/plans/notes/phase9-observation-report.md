@@ -154,6 +154,40 @@ Both controlled smoke beads are closed:
 - `oro-phase10-smoke-074350`: closed as the sqlite/no-bd dispatcher-worker
   proof bead.
 
+A second controlled proof bead, `oro-phase10-smoke-115523`, was run after review
+asked for process-level worker evidence. The dispatcher, worker, and Claude
+child all inherited sqlite mode and the stripped no-`bd` path:
+
+```text
+dispatcher_pid=90049
+worker_pid=90063
+claude_child_pid=90254
+PATH=/tmp/oro-phase10-nobd-arm-bin.tfMC5N:/usr/bin:/bin:/usr/sbin:/sbin
+ORO_DB_PATH=/Users/as21/.oro/projects/oro/state.db
+ORO_BEADSOURCE_MODE=sqlite
+command -v bd in worker PATH: absent
+command -v bd in Claude child PATH: absent
+command -v oro in worker PATH: /tmp/oro-phase10-nobd-arm-bin.tfMC5N/oro
+```
+
+Native assignment evidence:
+
+```text
+797571 spawn_for dispatcher oro-phase10-smoke-115523 worker-spawnfor-1777722923942133000
+797579 assign dispatcher oro-phase10-smoke-115523 worker-spawnfor-1777722923942133000
+       {"worktree":"/Users/as21/codehouse/oro/.worktrees/oro-phase10-smoke-115523",
+        "branch":"agent/oro-phase10-smoke-115523"}
+```
+
+`oro status` reported `worker-spawnfor-1777722923942133000 ->
+oro-phase10-smoke-115523` as the single active assignment. The worker
+`output.log` remained 0 bytes after assignment, so there was no post-offset `bd`,
+`dolt`, or missing-tool text. `stop --force` then left no
+`/tmp/oro-current-phase10 dispatcher start` or worker processes, and
+`scripts/check-phase8-no-writers.py` returned `active_writer_count=0` with
+`PRAGMA integrity_check` returning `ok`. The proof bead was closed with this
+evidence.
+
 ## Conclusion
 
 Phase 9's old passive observation gate is superseded. Native SQLite validation,
