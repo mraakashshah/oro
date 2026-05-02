@@ -18,7 +18,6 @@ const (
 // Pure function for testability.
 //
 // Routing rules:
-//   - Commands starting with "bd " stay with the architect (ArchitectLocal)
 //   - Commands starting with "oro " or "oro directive" forward to manager (ForwardToManager)
 //   - All other commands (git, ls, unknown) forward to manager (ForwardToManager)
 //   - Empty or whitespace-only commands forward to manager (ForwardToManager)
@@ -26,11 +25,6 @@ func RouteCommand(command string) RouteDestination {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
 		return ForwardToManager
-	}
-
-	// Check if command starts with "bd " (including the space to avoid false matches)
-	if strings.HasPrefix(trimmed, "bd ") {
-		return ArchitectLocal
 	}
 
 	// Check if command starts with "oro " (all oro commands forward to manager)

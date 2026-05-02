@@ -10,7 +10,7 @@ func TestRouteCommand(t *testing.T) {
 		command  string
 		wantDest RouteDestination
 	}{
-		// bd commands forward to manager (ArchitectLocal removed)
+		// bd commands forward to manager
 		{
 			name:     "bd stats",
 			command:  "bd stats",
