@@ -3,7 +3,9 @@ package dispatcher //nolint:testpackage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -591,6 +593,50 @@ func TestSpawnFor_DoesNotAutoscaleGeneralWorkerWhenManualPoolDisabled(t *testing
 	}
 	if managedCount != 0 {
 		t.Fatalf("general managed worker count = %d, want 0", managedCount)
+	}
+}
+
+func TestSpawnFor_RejectsWhenTotalWorkersAtMaxWorkers(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 2
+
+	for i := 0; i < 2; i++ {
+		workerID := fmt.Sprintf("worker-%d", i)
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			conn:    conn,
+			state:   protocol.WorkerIdle,
+			managed: true,
+			encoder: json.NewEncoder(conn),
+		}
+		d.mu.Unlock()
+	}
+
+	_, err := d.applySpawnFor("oro-cap-target")
+	if err == nil {
+		t.Fatal("expected spawn-for to reject when total workers already reached MaxWorkers")
+	}
+	if !strings.Contains(err.Error(), "max workers reached") {
+		t.Fatalf("expected max workers error, got %v", err)
+	}
+	if got := len(pm.SpawnedIDs()); got != 0 {
+		t.Fatalf("spawn-for spawned %d workers despite MaxWorkers cap", got)
+	}
+
+	d.mu.Lock()
+	priority := d.priorityBeads["oro-cap-target"]
+	pendingCount := len(d.pendingManagedIDs) + len(d.pendingWorkerTargets) + len(d.pendingSpawnForWorkers)
+	d.mu.Unlock()
+	if priority {
+		t.Fatal("spawn-for left capped bead in priorityBeads")
+	}
+	if pendingCount != 0 {
+		t.Fatalf("spawn-for left pending worker state behind: %d pending entries", pendingCount)
 	}
 }
 

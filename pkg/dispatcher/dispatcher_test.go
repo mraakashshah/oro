@@ -6859,6 +6859,7 @@ func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 	// multiple synchronization steps + DB writes before the handoff completes.
 	// Under CI with race detector, 500ms is too tight.
 	d.cfg.HeartbeatTimeout = 10 * time.Second
+	d.cfg.MaxWorkers = 10
 	pm := &mockProcessManager{}
 	d.procMgr = pm
 	startDispatcher(t, d)
@@ -14095,7 +14096,7 @@ func TestScaleUp_ExactCount(t *testing.T) {
 	}
 
 	// scaleUp to target 4 with 2 connected = should spawn exactly 2.
-	result := d.scaleUp(4, 2)
+	result := d.scaleUp(4, 2, 10)
 	spawned := pm.SpawnedIDs()
 	if len(spawned) != 2 {
 		t.Fatalf("expected exactly 2 workers spawned (target=4, connected=2), got %d: detail=%s", len(spawned), result)
@@ -14123,7 +14124,7 @@ func TestScaleUp_SpawnsCorrectDifference(t *testing.T) {
 	}
 
 	// target=5, connected=2 → should spawn 3 (not 7 = 5+2).
-	d.scaleUp(5, 2)
+	d.scaleUp(5, 2, 10)
 	spawned := pm.SpawnedIDs()
 	if len(spawned) != 3 {
 		t.Fatalf("expected 3 workers spawned (5-2=3), got %d (mutation toSpawn=target+connected would give 7)", len(spawned))

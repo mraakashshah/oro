@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,10 +212,12 @@ func TestAutoScaleRespectsMax(t *testing.T) {
 
 // TestReconcileScaleIgnoresUnmanagedWorkers verifies:
 //  1. With MaxWorkers=2 and 2 managed + 1 unmanaged worker, reconcileScale does
-//     not send PREPARE_SHUTDOWN to the unmanaged worker.
-//  2. With MaxWorkers=0, reconcileScale is a no-op even with connected workers.
+//     not send PREPARE_SHUTDOWN to the unmanaged worker, but does drain managed
+//     capacity until total live workers are within MaxWorkers.
+//  2. With MaxWorkers=0, reconcileScale drains managed workers and leaves
+//     unmanaged/manual workers alone.
 func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
-	t.Run("unmanaged worker not killed when at target", func(t *testing.T) {
+	t.Run("manual worker consumes capacity but is not killed", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		d.cfg.MaxWorkers = 2
 
@@ -246,13 +249,13 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 			managed: false, // external worker
 			encoder: json.NewEncoder(connUnmanaged),
 		}
-		// targetWorkers equals managed count: scale is balanced for managed workers.
+		// targetWorkers equals managed count, but the manual worker pushes total
+		// live workers over MaxWorkers.
 		d.targetWorkers = 2
 		d.mu.Unlock()
 
 		result := d.reconcileScale()
 
-		// reconcileScale should report no action needed (or scale-up detail).
 		// Key assertion: unmanaged worker must NOT receive PREPARE_SHUTDOWN.
 		connUnmanaged.mu.Lock()
 		unmanagedWrites := len(connUnmanaged.written)
@@ -261,17 +264,28 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 			t.Errorf("unmanaged worker received %d message(s), expected 0; reconcileScale must not kill unmanaged workers", unmanagedWrites)
 		}
 
-		// Also verify that managed workers were not killed (target == managed count).
+		// One managed worker must be drained so total live workers can return to
+		// MaxWorkers once the shutdown completes.
 		connManaged1.mu.Lock()
 		managed1Writes := len(connManaged1.written)
 		connManaged1.mu.Unlock()
 		connManaged2.mu.Lock()
 		managed2Writes := len(connManaged2.written)
 		connManaged2.mu.Unlock()
-		if managed1Writes > 0 || managed2Writes > 0 {
-			t.Errorf("managed workers received messages when already at target: m1=%d m2=%d", managed1Writes, managed2Writes)
+		messaged := 0
+		if managed1Writes > 0 {
+			messaged++
 		}
-		_ = result
+		if managed2Writes > 0 {
+			messaged++
+		}
+		if messaged != 1 {
+			t.Errorf("expected 1 managed worker shutdown to restore total cap, got %d (m1=%d m2=%d)",
+				messaged, managed1Writes, managed2Writes)
+		}
+		if !strings.Contains(result, "shutting down 1") {
+			t.Fatalf("result = %q, want one managed shutdown", result)
+		}
 	})
 
 	t.Run("scaleDown only kills managed workers", func(t *testing.T) {
@@ -405,6 +419,327 @@ func TestReconcileScaleIgnoresUnmanagedWorkers(t *testing.T) {
 			t.Error("MaxWorkers=0: expected non-empty result string from scaleDown")
 		}
 	})
+}
+
+func TestReconcileScaleCapsTotalWorkersAtMaxWorkers(t *testing.T) {
+	t.Run("manual workers consume max worker capacity", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 2
+
+		d.mu.Lock()
+		d.targetWorkers = 2
+		for i := 0; i < 2; i++ {
+			id := fmt.Sprintf("manual-%d", i)
+			conn := newMockConn()
+			d.workers[id] = &trackedWorker{
+				id:      id,
+				conn:    conn,
+				state:   protocol.WorkerBusy,
+				managed: false,
+				encoder: json.NewEncoder(conn),
+			}
+		}
+		d.mu.Unlock()
+
+		result := d.reconcileScale()
+
+		if got := len(pm.SpawnedIDs()); got != 0 {
+			t.Fatalf("spawned %d workers despite total workers already at MaxWorkers; result=%q", got, result)
+		}
+		if !strings.Contains(result, "total") || !strings.Contains(result, "MaxWorkers") {
+			t.Fatalf("result = %q, want MaxWorkers total cap detail", result)
+		}
+	})
+
+	t.Run("partial manual capacity limits scale up", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 3
+
+		d.mu.Lock()
+		d.targetWorkers = 3
+		conn := newMockConn()
+		d.workers["manual-1"] = &trackedWorker{
+			id:      "manual-1",
+			conn:    conn,
+			state:   protocol.WorkerBusy,
+			managed: false,
+			encoder: json.NewEncoder(conn),
+		}
+		d.mu.Unlock()
+
+		result := d.reconcileScale()
+
+		if got := len(pm.SpawnedIDs()); got != 2 {
+			t.Fatalf("spawned %d workers, want 2 to keep total live workers <= MaxWorkers; result=%q", got, result)
+		}
+	})
+
+	t.Run("pending spawn-for workers consume max worker capacity", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		pm := &mockProcessManager{}
+		d.procMgr = pm
+		d.cfg.MaxWorkers = 2
+
+		d.mu.Lock()
+		d.targetWorkers = 2
+		d.pendingManagedIDs["worker-spawnfor-pending"] = true
+		d.pendingSpawnForWorkers["worker-spawnfor-pending"] = true
+		conn := newMockConn()
+		d.workers["manual-1"] = &trackedWorker{
+			id:      "manual-1",
+			conn:    conn,
+			state:   protocol.WorkerIdle,
+			managed: false,
+			encoder: json.NewEncoder(conn),
+		}
+		d.mu.Unlock()
+
+		result := d.reconcileScale()
+
+		if got := len(pm.SpawnedIDs()); got != 0 {
+			t.Fatalf("spawned %d workers despite pending spawn-for plus manual worker at cap; result=%q", got, result)
+		}
+	})
+}
+
+func TestScaleUpReservesPendingBeforeSpawnRejectsConcurrentManualWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 1
+
+	manualConn := newMockConn()
+	pm := &hookProcessManager{}
+	pm.onSpawn = func(_ string) {
+		d.registerWorker("manual-during-spawn", manualConn)
+	}
+	d.procMgr = pm
+
+	result := d.scaleUp(1, 0, 1)
+
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("spawned %d managed workers, want 1; result=%q", got, result)
+	}
+	d.mu.Lock()
+	pending := d.pendingManagedIDs[pm.SpawnedIDs()[0]]
+	d.mu.Unlock()
+	if !pending {
+		t.Fatal("managed worker was not reserved before Spawn returned")
+	}
+
+	d.mu.Lock()
+	manual := d.workers["manual-during-spawn"]
+	d.mu.Unlock()
+	if manual == nil {
+		t.Fatal("manual worker should be tracked until it disconnects")
+	}
+	if manual.state != protocol.WorkerShuttingDown {
+		t.Fatalf("manual worker state = %s, want %s", manual.state, protocol.WorkerShuttingDown)
+	}
+	manualConn.mu.Lock()
+	defer manualConn.mu.Unlock()
+	if len(manualConn.written) != 1 {
+		t.Fatalf("expected one shutdown message for concurrent manual worker, got %d", len(manualConn.written))
+	}
+}
+
+func TestApplyMaxWorkersDrainsManagedWhenManualWorkersConsumeCapacity(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 5
+
+	managedConns := make([]*mockConn, 3)
+	d.mu.Lock()
+	d.targetWorkers = 3
+	for i := 0; i < 3; i++ {
+		conn := newMockConn()
+		managedConns[i] = conn
+		id := fmt.Sprintf("managed-%d", i)
+		d.workers[id] = &trackedWorker{
+			id:      id,
+			conn:    conn,
+			state:   protocol.WorkerIdle,
+			managed: true,
+			encoder: json.NewEncoder(conn),
+		}
+	}
+	for i := 0; i < 2; i++ {
+		conn := newMockConn()
+		id := fmt.Sprintf("manual-%d", i)
+		d.workers[id] = &trackedWorker{
+			id:      id,
+			conn:    conn,
+			state:   protocol.WorkerIdle,
+			managed: false,
+			encoder: json.NewEncoder(conn),
+		}
+	}
+	d.mu.Unlock()
+
+	detail, err := d.applyMaxWorkersDirective("2")
+	if err != nil {
+		t.Fatalf("applyMaxWorkersDirective failed: %v", err)
+	}
+	if !strings.Contains(detail, "max_workers=2") {
+		t.Fatalf("detail = %q, want max_workers=2", detail)
+	}
+
+	shutdowns := 0
+	for i, conn := range managedConns {
+		conn.mu.Lock()
+		writes := len(conn.written)
+		conn.mu.Unlock()
+		if writes > 0 {
+			shutdowns++
+		} else {
+			t.Errorf("managed-%d did not receive shutdown despite manual workers consuming all capacity", i)
+		}
+	}
+	if shutdowns != 3 {
+		t.Fatalf("managed shutdown count = %d, want 3", shutdowns)
+	}
+}
+
+func TestApplyMaxWorkersDirectiveCancelsExcessPendingManagedSpawns(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.MaxWorkers = 4
+
+	d.mu.Lock()
+	d.targetWorkers = 4
+	d.pendingManagedIDs["pending-1"] = true
+	d.pendingManagedSince["pending-1"] = d.nowFunc()
+	d.pendingManagedIDs["pending-2"] = true
+	d.pendingManagedSince["pending-2"] = d.nowFunc()
+	for i := 0; i < 2; i++ {
+		conn := newMockConn()
+		id := fmt.Sprintf("managed-%d", i)
+		d.workers[id] = &trackedWorker{
+			id:      id,
+			conn:    conn,
+			state:   protocol.WorkerIdle,
+			managed: true,
+			encoder: json.NewEncoder(conn),
+		}
+	}
+	d.mu.Unlock()
+
+	detail, err := d.applyMaxWorkersDirective("2")
+	if err != nil {
+		t.Fatalf("applyMaxWorkersDirective failed: %v", err)
+	}
+	if !strings.Contains(detail, "max_workers=2") {
+		t.Fatalf("detail = %q, want max_workers=2", detail)
+	}
+
+	killed := pm.KilledIDs()
+	if len(killed) != 2 {
+		t.Fatalf("killed pending workers = %v, want two pending kills", killed)
+	}
+	d.mu.Lock()
+	pendingCount := len(d.pendingManagedIDs)
+	d.mu.Unlock()
+	if pendingCount != 0 {
+		t.Fatalf("pending managed count = %d, want 0 after cap cancellation", pendingCount)
+	}
+}
+
+func TestReconcileScaleIgnoresWorkersAlreadyShuttingDownForDrainPressure(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 2
+
+	managedConns := make([]*mockConn, 2)
+	d.mu.Lock()
+	d.targetWorkers = 2
+	for i := 0; i < 2; i++ {
+		conn := newMockConn()
+		managedConns[i] = conn
+		id := fmt.Sprintf("managed-%d", i)
+		d.workers[id] = &trackedWorker{
+			id:      id,
+			conn:    conn,
+			state:   protocol.WorkerBusy,
+			managed: true,
+			encoder: json.NewEncoder(conn),
+		}
+	}
+	manualConn := newMockConn()
+	d.workers["manual-rejected"] = &trackedWorker{
+		id:      "manual-rejected",
+		conn:    manualConn,
+		state:   protocol.WorkerShuttingDown,
+		managed: false,
+		encoder: json.NewEncoder(manualConn),
+	}
+	d.mu.Unlock()
+
+	result := d.reconcileScale()
+	if result != "" {
+		t.Fatalf("reconcileScale result = %q, want no drain while rejected manual worker is already shutting down", result)
+	}
+	for i, conn := range managedConns {
+		conn.mu.Lock()
+		writes := len(conn.written)
+		conn.mu.Unlock()
+		if writes != 0 {
+			t.Fatalf("managed-%d received %d shutdown messages due to already-shutting-down manual worker", i, writes)
+		}
+	}
+}
+
+func TestStatusJSONExposesWorkerCapacityRoles(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 2
+
+	managedConn := newMockConn()
+	manualConn := newMockConn()
+	d.mu.Lock()
+	d.workers["managed-1"] = &trackedWorker{
+		id:      "managed-1",
+		conn:    managedConn,
+		state:   protocol.WorkerIdle,
+		managed: true,
+		encoder: json.NewEncoder(managedConn),
+	}
+	d.workers["manual-1"] = &trackedWorker{
+		id:      "manual-1",
+		conn:    manualConn,
+		state:   protocol.WorkerIdle,
+		managed: false,
+		encoder: json.NewEncoder(manualConn),
+	}
+	d.pendingManagedIDs["pending-managed"] = true
+	d.pendingManagedSince["pending-managed"] = d.nowFunc()
+	d.mu.Unlock()
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(d.buildStatusJSON()), &status); err != nil {
+		t.Fatalf("decode status JSON: %v", err)
+	}
+	if status.MaxWorkers != 2 {
+		t.Fatalf("max_workers = %d, want 2", status.MaxWorkers)
+	}
+	if status.ManagedCount != 1 || status.UnmanagedCount != 1 || status.PendingWorkerCount != 1 {
+		t.Fatalf("worker role counts: managed=%d unmanaged=%d pending=%d, want 1/1/1",
+			status.ManagedCount, status.UnmanagedCount, status.PendingWorkerCount)
+	}
+
+	roles := make(map[string]bool)
+	for _, worker := range status.Workers {
+		roles[worker.ID] = worker.Managed
+	}
+	if !roles["managed-1"] {
+		t.Fatal("managed worker status did not expose managed=true")
+	}
+	if roles["manual-1"] {
+		t.Fatal("manual worker status exposed managed=true")
+	}
 }
 
 // TestReconcileScale_CapsAtDoubleTarget verifies that reconcileScale refuses to
@@ -599,6 +934,110 @@ func TestApplyRestartWorker_PreservesManagedFlag(t *testing.T) {
 
 	if !isManaged {
 		t.Errorf("respawned worker %q should be managed after reconnect, but managed=%v", workerID, isManaged)
+	}
+}
+
+func TestRespawnWorker_ReservesHandoffWorkerAsManagedAtMaxWorkers(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 2
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	now := time.Date(2026, 5, 2, 17, 40, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+
+	oldConn := newMockConn()
+	d.mu.Lock()
+	d.workers["old-handoff-worker"] = &trackedWorker{
+		id:      "old-handoff-worker",
+		conn:    oldConn,
+		state:   protocol.WorkerShuttingDown,
+		managed: true,
+		encoder: json.NewEncoder(oldConn),
+	}
+	d.mu.Unlock()
+
+	d.respawnWorker(context.Background(), "bead-handoff", "/tmp/wt-handoff", protocol.ModelSonnet, "", "main", "main", "Handoff bead", nil)
+
+	spawned := pm.SpawnedIDs()
+	if len(spawned) != 1 {
+		t.Fatalf("spawned %d handoff workers, want 1", len(spawned))
+	}
+	workerID := spawned[0]
+
+	d.mu.Lock()
+	pending := d.pendingManagedIDs[workerID]
+	d.mu.Unlock()
+	if !pending {
+		t.Fatalf("handoff worker %q was not reserved as managed before reconnect", workerID)
+	}
+
+	conn := newMockConn()
+	d.registerWorker(workerID, conn)
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("handoff worker should be tracked after registration")
+	}
+	if !w.managed {
+		t.Fatal("handoff worker should reconnect as managed")
+	}
+	if w.state != protocol.WorkerBusy {
+		t.Fatalf("handoff worker state = %s, want %s", w.state, protocol.WorkerBusy)
+	}
+	if w.beadID != "bead-handoff" {
+		t.Fatalf("handoff worker bead = %q, want bead-handoff", w.beadID)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.written) != 1 {
+		t.Fatalf("expected one ASSIGN message, got %d", len(conn.written))
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(conn.written[0], &msg); err != nil {
+		t.Fatalf("decode worker message: %v", err)
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("message type = %s, want %s", msg.Type, protocol.MsgAssign)
+	}
+}
+
+func TestRespawnWorker_DefersSpawnWhenMaxLiveWorkersReached(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 1
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	oldConn := newMockConn()
+	d.mu.Lock()
+	d.workers["old-handoff-worker"] = &trackedWorker{
+		id:      "old-handoff-worker",
+		conn:    oldConn,
+		state:   protocol.WorkerShuttingDown,
+		managed: true,
+		encoder: json.NewEncoder(oldConn),
+	}
+	d.mu.Unlock()
+
+	d.respawnWorker(context.Background(), "bead-handoff", "/tmp/wt-handoff", protocol.ModelSonnet, "", "main", "main", "Handoff bead", nil)
+
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("spawned handoff workers despite MaxWorkers live cap: %v", spawned)
+	}
+	d.mu.Lock()
+	handoff := d.pendingHandoffs["bead-handoff"]
+	pendingCount := len(d.pendingManagedIDs)
+	d.mu.Unlock()
+	if handoff == nil {
+		t.Fatal("pending handoff should remain queued when spawn is deferred")
+	}
+	if pendingCount != 0 {
+		t.Fatalf("pending managed workers = %d, want 0 when handoff spawn is deferred", pendingCount)
 	}
 }
 

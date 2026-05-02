@@ -30,6 +30,15 @@ func (f *fakeWorkerSpawner) SpawnWorker(socketPath, workerID, logPath string) er
 	return f.returnErr
 }
 
+func allowWorkerLaunchCapacity(t *testing.T, maxWorkers, totalLive int) {
+	t.Helper()
+	prev := getWorkerLaunchCapacity
+	getWorkerLaunchCapacity = func(string) (workerLaunchCapacity, error) {
+		return workerLaunchCapacity{maxWorkers: maxWorkers, totalLive: totalLive}, nil
+	}
+	t.Cleanup(func() { getWorkerLaunchCapacity = prev })
+}
+
 // createFakeSocket creates an empty file at sockPath to satisfy the socket-exists check.
 func createFakeSocket(t *testing.T, sockPath string) {
 	t.Helper()
@@ -53,6 +62,7 @@ func TestWorkerLaunchSpawnsProcess(t *testing.T) {
 		t.Setenv("ORO_SOCKET_PATH", sockPath)
 		t.Setenv("ORO_DB_PATH", dbPath)
 		t.Setenv("ORO_HOME", tmpDir)
+		allowWorkerLaunchCapacity(t, 2, 1)
 
 		spawner := &fakeWorkerSpawner{}
 		err := runWorkerLaunch(spawner, 1, "", "")
@@ -85,6 +95,7 @@ func TestWorkerLaunchSpawnsProcess(t *testing.T) {
 		t.Setenv("ORO_SOCKET_PATH", sockPath)
 		t.Setenv("ORO_DB_PATH", dbPath)
 		t.Setenv("ORO_HOME", tmpDir)
+		allowWorkerLaunchCapacity(t, 5, 1)
 
 		spawner := &fakeWorkerSpawner{}
 		err := runWorkerLaunch(spawner, 3, "", "")
@@ -121,6 +132,7 @@ func TestWorkerLaunchSpawnsProcess(t *testing.T) {
 		t.Setenv("ORO_SOCKET_PATH", sockPath)
 		t.Setenv("ORO_DB_PATH", dbPath)
 		t.Setenv("ORO_HOME", tmpDir)
+		allowWorkerLaunchCapacity(t, 2, 1)
 
 		spawner := &fakeWorkerSpawner{}
 		err := runWorkerLaunch(spawner, 1, "my-worker", "")
@@ -144,6 +156,7 @@ func TestWorkerLaunchSpawnsProcess(t *testing.T) {
 		t.Setenv("ORO_SOCKET_PATH", sockPath)
 		t.Setenv("ORO_DB_PATH", dbPath)
 		t.Setenv("ORO_HOME", tmpDir)
+		allowWorkerLaunchCapacity(t, 2, 1)
 
 		spawner := &fakeWorkerSpawner{}
 		err := runWorkerLaunch(spawner, 1, "", "")
@@ -167,6 +180,7 @@ func TestWorkerLaunchSpawnsProcess(t *testing.T) {
 		t.Setenv("ORO_SOCKET_PATH", sockPath)
 		t.Setenv("ORO_DB_PATH", dbPath)
 		t.Setenv("ORO_HOME", tmpDir)
+		allowWorkerLaunchCapacity(t, 2, 1)
 
 		spawner := &fakeWorkerSpawner{}
 		err := runWorkerLaunch(spawner, 1, "w-test", "")
@@ -182,6 +196,54 @@ func TestWorkerLaunchSpawnsProcess(t *testing.T) {
 			t.Errorf("expected logPath under %q, got %q", expectedDir, spawner.calls[0].logPath)
 		}
 	})
+}
+
+func TestWorkerLaunchRejectsWhenMaxWorkersCapacityIsFull(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "oro.sock")
+	dbPath := filepath.Join(tmpDir, "state.db")
+	createFakeSocket(t, sockPath)
+
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", tmpDir)
+	allowWorkerLaunchCapacity(t, 2, 2)
+
+	spawner := &fakeWorkerSpawner{}
+	err := runWorkerLaunch(spawner, 1, "", "")
+	if err == nil {
+		t.Fatal("expected worker launch to reject when MaxWorkers capacity is full")
+	}
+	if !strings.Contains(err.Error(), "max workers reached") {
+		t.Fatalf("error = %v, want max workers reached", err)
+	}
+	if len(spawner.calls) != 0 {
+		t.Fatalf("spawn calls = %d, want 0 when MaxWorkers capacity is full", len(spawner.calls))
+	}
+}
+
+func TestWorkerLaunchCountsPendingWorkersAgainstMaxWorkers(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "oro.sock")
+	dbPath := filepath.Join(tmpDir, "state.db")
+	createFakeSocket(t, sockPath)
+
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", tmpDir)
+	allowWorkerLaunchCapacity(t, 3, 2)
+
+	spawner := &fakeWorkerSpawner{}
+	err := runWorkerLaunch(spawner, 2, "", "")
+	if err == nil {
+		t.Fatal("expected worker launch to reject when pending workers consume capacity")
+	}
+	if !strings.Contains(err.Error(), "requested=2") || !strings.Contains(err.Error(), "available=1") {
+		t.Fatalf("error = %v, want requested/available capacity detail", err)
+	}
+	if len(spawner.calls) != 0 {
+		t.Fatalf("spawn calls = %d, want 0 when requested workers exceed available capacity", len(spawner.calls))
+	}
 }
 
 // TestWorkerLaunchCmdStructure verifies the cobra command hierarchy for worker launch.
@@ -213,6 +275,7 @@ func TestWorkerLaunchBeadFlag(t *testing.T) {
 	t.Setenv("ORO_SOCKET_PATH", sockPath)
 	t.Setenv("ORO_DB_PATH", dbPath)
 	t.Setenv("ORO_HOME", tmpDir)
+	allowWorkerLaunchCapacity(t, 0, 0)
 
 	// When --bead is set, spawner should NOT be called (directive sent instead).
 	// Socket is a plain file (not a UDS listener), so dialing it fails.

@@ -273,6 +273,105 @@ func TestRegisterWorker_NoPendingHandoff_NoAssign(t *testing.T) {
 	}
 }
 
+func TestRegisterWorker_ShutsDownExcessUnmanagedWorkerAtMaxWorkers(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 2
+
+	for i := 0; i < 2; i++ {
+		workerID := fmt.Sprintf("managed-%d", i)
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:      workerID,
+			conn:    conn,
+			state:   protocol.WorkerIdle,
+			managed: true,
+			encoder: json.NewEncoder(conn),
+		}
+		d.mu.Unlock()
+	}
+
+	conn := newMockConn()
+	d.registerWorker("manual-excess", conn)
+
+	d.mu.Lock()
+	w := d.workers["manual-excess"]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("excess unmanaged worker should remain tracked until it disconnects")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		t.Fatalf("excess unmanaged worker state = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		t.Fatalf("excess unmanaged worker retained assignment state: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.written) != 1 {
+		t.Fatalf("expected one shutdown message, got %d", len(conn.written))
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(conn.written[0], &msg); err != nil {
+		t.Fatalf("decode shutdown message: %v", err)
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("message type = %s, want %s", msg.Type, protocol.MsgShutdown)
+	}
+}
+
+func TestRegisterWorker_ShutsDownExcessPendingManagedWorkerAtMaxWorkers(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 1
+
+	existingConn := newMockConn()
+	d.mu.Lock()
+	d.workers["managed-existing"] = &trackedWorker{
+		id:      "managed-existing",
+		conn:    existingConn,
+		state:   protocol.WorkerIdle,
+		managed: true,
+		encoder: json.NewEncoder(existingConn),
+	}
+	d.pendingManagedIDs["managed-pending"] = true
+	d.pendingManagedSince["managed-pending"] = d.nowFunc()
+	d.mu.Unlock()
+
+	pendingConn := newMockConn()
+	d.registerWorker("managed-pending", pendingConn)
+
+	d.mu.Lock()
+	w := d.workers["managed-pending"]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("excess pending managed worker should remain tracked until it disconnects")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		t.Fatalf("pending managed worker state = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		t.Fatalf("pending managed worker retained assignment state: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+
+	pendingConn.mu.Lock()
+	defer pendingConn.mu.Unlock()
+	if len(pendingConn.written) != 1 {
+		t.Fatalf("expected one shutdown message for excess pending managed worker, got %d", len(pendingConn.written))
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(pendingConn.written[0], &msg); err != nil {
+		t.Fatalf("decode shutdown message: %v", err)
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("message type = %s, want %s", msg.Type, protocol.MsgShutdown)
+	}
+}
+
 // TestRegisterWorker_EarlyReturnWhenWorkerGoneAfterRelock verifies mutation 13
 // (skip unlock+return when worker is gone after reacquiring lock).
 // This tests the guard condition d.workers[id] check after lock re-acquire.

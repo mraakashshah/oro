@@ -18,6 +18,9 @@ type workerStatus struct {
 	BeadID            string  `json:"bead_id,omitempty"`
 	LastProgressSecs  float64 `json:"last_progress_secs"`
 	LastHeartbeatSecs float64 `json:"last_heartbeat_secs,omitempty"`
+	Managed           bool    `json:"managed"`
+	SpawnFor          bool    `json:"spawn_for,omitempty"`
+	TargetBeadID      string  `json:"target_bead_id,omitempty"`
 }
 
 // statusResponse mirrors the dispatcher's status JSON structure.
@@ -35,6 +38,10 @@ type statusResponse struct {
 	ActiveCount         int            `json:"active_count"`
 	IdleCount           int            `json:"idle_count"`
 	TargetCount         int            `json:"target_count"`
+	MaxWorkers          int            `json:"max_workers"`
+	ManagedCount        int            `json:"managed_count"`
+	UnmanagedCount      int            `json:"unmanaged_count"`
+	PendingWorkerCount  int            `json:"pending_worker_count"`
 	UptimeSeconds       float64        `json:"uptime_seconds"`
 	PendingHandoffCount int            `json:"pending_handoff_count"`
 	AttemptCounts       map[string]int `json:"attempt_counts,omitempty"`
@@ -215,7 +222,12 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 		activeCount = len(filterActiveWorkers(resp.Workers))
 		idleCount = len(resp.Workers) - activeCount
 	}
-	fmt.Fprintf(w, "  workers:     %d active, %d idle (target: %d)\n", activeCount, idleCount, resp.TargetCount)
+	fmt.Fprintf(w, "  workers:     %d active, %d idle (target: %d", activeCount, idleCount, resp.TargetCount)
+	if resp.MaxWorkers > 0 || resp.ManagedCount > 0 || resp.UnmanagedCount > 0 || resp.PendingWorkerCount > 0 {
+		fmt.Fprintf(w, ", max: %d, managed: %d, manual: %d, pending: %d",
+			resp.MaxWorkers, resp.ManagedCount, resp.UnmanagedCount, resp.PendingWorkerCount)
+	}
+	fmt.Fprintln(w, ")")
 
 	fmt.Fprintf(w, "  queue:       %d ready\n", resp.QueueDepth)
 

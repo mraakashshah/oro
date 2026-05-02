@@ -155,6 +155,7 @@ func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
 	t.Parallel()
 
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 6
 	startDispatcher(t, d)
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)

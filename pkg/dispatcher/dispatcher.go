@@ -2406,6 +2406,10 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 // respawnWorker stores a pending handoff and spawns a fresh worker process.
 func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model, epicID, baseBranch, targetBranch, title string, labels []string) {
 	assignmentID := d.activeAssignmentIDForBead(ctx, beadID)
+	newID := ""
+	if d.procMgr != nil {
+		newID = fmt.Sprintf("worker-handoff-%d", d.nowFunc().UnixNano())
+	}
 	d.mu.Lock()
 	d.pendingHandoffs[beadID] = &pendingHandoff{
 		assignmentID: assignmentID,
@@ -2418,13 +2422,23 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model,
 		title:        title,
 		labels:       labels,
 	}
+	if newID != "" && d.cfg.MaxWorkers > 0 && d.liveWorkerCountLocked() >= d.cfg.MaxWorkers {
+		newID = ""
+	}
+	if newID != "" {
+		d.pendingManagedIDs[newID] = true
+		d.pendingManagedSince[newID] = d.nowFunc()
+	}
 	d.mu.Unlock()
 
 	_ = d.logEvent(ctx, "handoff_pending", "dispatcher", beadID, "", worktree)
 
-	if d.procMgr != nil {
-		newID := fmt.Sprintf("worker-handoff-%d", d.nowFunc().UnixNano())
+	if d.procMgr != nil && newID != "" {
 		if _, err := d.procMgr.Spawn(newID); err != nil {
+			d.mu.Lock()
+			delete(d.pendingManagedIDs, newID)
+			delete(d.pendingManagedSince, newID)
+			d.mu.Unlock()
 			_ = d.logEvent(ctx, "handoff_spawn_failed", "dispatcher", beadID, newID, err.Error())
 		} else {
 			_ = d.logEvent(ctx, "handoff_spawned", "dispatcher", beadID, newID, worktree)
@@ -4079,6 +4093,9 @@ type workerStatus struct {
 	LastProgressSecs  float64 `json:"last_progress_secs"`
 	LastHeartbeatSecs float64 `json:"last_heartbeat_secs"`
 	ContextPct        int     `json:"context_pct"`
+	Managed           bool    `json:"managed"`
+	SpawnFor          bool    `json:"spawn_for,omitempty"`
+	TargetBeadID      string  `json:"target_bead_id,omitempty"`
 }
 
 // statusResponse is the JSON structure returned by the status directive.
@@ -4095,6 +4112,10 @@ type statusResponse struct {
 	ActiveCount         int            `json:"active_count"`
 	IdleCount           int            `json:"idle_count"`
 	TargetCount         int            `json:"target_count"`
+	MaxWorkers          int            `json:"max_workers"`
+	ManagedCount        int            `json:"managed_count"`
+	UnmanagedCount      int            `json:"unmanaged_count"`
+	PendingWorkerCount  int            `json:"pending_worker_count"`
 	UptimeSeconds       float64        `json:"uptime_seconds"`
 	PendingHandoffCount int            `json:"pending_handoff_count"`
 	AttemptCounts       map[string]int `json:"attempt_counts,omitempty"`
@@ -4245,6 +4266,9 @@ func (d *Dispatcher) snapshotWorkers(now time.Time) (workers []workerStatus, ass
 			LastProgressSecs:  progressSecs,
 			LastHeartbeatSecs: heartbeatSecs,
 			ContextPct:        w.contextPct,
+			Managed:           w.managed,
+			SpawnFor:          w.spawnFor,
+			TargetBeadID:      w.targetBeadID,
 		})
 		if w.state == protocol.WorkerBusy || w.state == protocol.WorkerReserved {
 			active++
@@ -4309,6 +4333,14 @@ func (d *Dispatcher) buildStatusJSON() string {
 
 	// Calculate live queue depth (ready beads minus assigned beads).
 	queueDepth := calculateLiveQueueDepth(readyBeads, d.workers)
+	managedCount, unmanagedCount := 0, 0
+	for _, w := range d.workers {
+		if w.managed {
+			managedCount++
+		} else {
+			unmanagedCount++
+		}
+	}
 
 	// Build set of active bead IDs (assigned to workers OR in ready queue).
 	activeBeadIDs := make(map[string]bool)
@@ -4343,6 +4375,10 @@ func (d *Dispatcher) buildStatusJSON() string {
 		ActiveCount:         activeCount,
 		IdleCount:           idleCount,
 		TargetCount:         d.targetWorkers,
+		MaxWorkers:          d.cfg.MaxWorkers,
+		ManagedCount:        managedCount,
+		UnmanagedCount:      unmanagedCount,
+		PendingWorkerCount:  len(d.pendingManagedIDs),
 		UptimeSeconds:       now.Sub(d.startTime).Seconds(),
 		PendingHandoffCount: len(d.pendingHandoffs),
 		AttemptCounts:       attemptCounts,
@@ -4405,8 +4441,29 @@ func (d *Dispatcher) applyMaxWorkersDirective(args string) (string, error) {
 	if d.targetWorkers > n {
 		d.targetWorkers = n
 	}
+	var killPending []string
+	procMgr := d.procMgr
+	if n > 0 {
+		live := d.liveWorkerCountLocked()
+		for id := range d.pendingManagedIDs {
+			if live <= n {
+				break
+			}
+			killPending = append(killPending, id)
+			delete(d.pendingManagedIDs, id)
+			delete(d.pendingManagedSince, id)
+			delete(d.pendingWorkerTargets, id)
+			delete(d.pendingSpawnForWorkers, id)
+			live--
+		}
+	}
 	d.mu.Unlock()
 
+	if procMgr != nil {
+		for _, id := range killPending {
+			_ = procMgr.Kill(id)
+		}
+	}
 	d.reconcileScale()
 	return fmt.Sprintf("max_workers=%d", n), nil
 }
@@ -4494,6 +4551,12 @@ func (d *Dispatcher) applySpawnFor(args string) (string, error) {
 	if d.procMgr == nil {
 		d.mu.Unlock()
 		return "", fmt.Errorf("no process manager configured")
+	}
+	totalWorkers := d.liveWorkerCountLocked()
+	if d.cfg.MaxWorkers > 0 && totalWorkers >= d.cfg.MaxWorkers {
+		maxWorkers := d.cfg.MaxWorkers
+		d.mu.Unlock()
+		return "", fmt.Errorf("max workers reached: total=%d MaxWorkers=%d", totalWorkers, maxWorkers)
 	}
 	procMgr := d.procMgr
 	d.priorityBeads[beadID] = true
@@ -4638,8 +4701,8 @@ func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount i
 	currentTarget := d.targetWorkers
 	maxWorkers := d.cfg.MaxWorkers
 	explicitScaleTarget := d.explicitScaleTarget
-	managedCount := d.managedWorkerCountLocked()
-	if explicitScaleTarget && managedCount <= currentTarget {
+	liveManagedCount := d.liveManagedWorkerCountLocked()
+	if explicitScaleTarget && liveManagedCount <= currentTarget {
 		d.explicitScaleTarget = false
 		explicitScaleTarget = false
 	}
@@ -4696,17 +4759,39 @@ func (d *Dispatcher) reconcileScale() string {
 	// Unmanaged (orphaned) workers are excluded so they cannot block managed
 	// worker spawning.
 	managedExits := d.unexpectedManagedExits
+	totalWorkers := d.activeWorkerCountLocked()
+	totalLiveWorkers := d.liveWorkerCountLocked()
+	maxWorkers := d.cfg.MaxWorkers
 	d.mu.Unlock()
 
+	desiredManaged := target
+	if maxWorkers > 0 && totalWorkers > maxWorkers {
+		capDesired := managedCount - (totalWorkers - maxWorkers)
+		if capDesired < desiredManaged {
+			desiredManaged = capDesired
+		}
+	}
+	if desiredManaged < 0 {
+		desiredManaged = 0
+	}
+
 	switch {
+	case managedCount > desiredManaged:
+		return d.scaleDown(desiredManaged, managedCount)
 	case managedCount < target:
 		if managedCount+managedExits >= 2*target {
 			return fmt.Sprintf("target=%d, managed=%d, exits=%d, managed+exits %d >= 2*target %d — cap reached, skipping scaleUp",
 				target, managedCount, managedExits, managedCount+managedExits, 2*target)
 		}
-		return d.scaleUp(target, managedCount)
-	case managedCount > target:
-		return d.scaleDown(target, managedCount)
+		capacity := target - managedCount
+		if maxWorkers > 0 {
+			capacity = maxWorkers - totalLiveWorkers
+		}
+		if capacity <= 0 {
+			return fmt.Sprintf("target=%d, managed=%d, total=%d, MaxWorkers=%d — total cap reached, skipping scaleUp",
+				target, managedCount, totalLiveWorkers, maxWorkers)
+		}
+		return d.scaleUp(target, managedCount, capacity)
 	default:
 		return ""
 	}
@@ -4743,6 +4828,21 @@ func (d *Dispatcher) managedWorkerCountLocked() int {
 		}
 	}
 	for _, w := range d.workers {
+		if w.managed && !w.spawnFor && w.state != protocol.WorkerShuttingDown {
+			count++
+		}
+	}
+	return count
+}
+
+func (d *Dispatcher) liveManagedWorkerCountLocked() int {
+	count := 0
+	for id := range d.pendingManagedIDs {
+		if !d.pendingSpawnForWorkers[id] {
+			count++
+		}
+	}
+	for _, w := range d.workers {
 		if w.managed && !w.spawnFor {
 			count++
 		}
@@ -4750,24 +4850,55 @@ func (d *Dispatcher) managedWorkerCountLocked() int {
 	return count
 }
 
+func (d *Dispatcher) activeWorkerCountLocked() int {
+	count := 0
+	for _, w := range d.workers {
+		if w.state != protocol.WorkerShuttingDown {
+			count++
+		}
+	}
+	for id := range d.pendingManagedIDs {
+		if _, connected := d.workers[id]; !connected {
+			count++
+		}
+	}
+	return count
+}
+
+func (d *Dispatcher) liveWorkerCountLocked() int {
+	count := len(d.workers)
+	for id := range d.pendingManagedIDs {
+		if _, connected := d.workers[id]; !connected {
+			count++
+		}
+	}
+	return count
+}
+
 // scaleUp spawns (target - connected) new worker processes.
-func (d *Dispatcher) scaleUp(target, connected int) string {
+func (d *Dispatcher) scaleUp(target, connected, capacity int) string {
 	toSpawn := target - connected
+	if toSpawn > capacity {
+		toSpawn = capacity
+	}
 	if d.procMgr == nil {
 		return fmt.Sprintf("target=%d, need %d workers but no ProcessManager configured", target, toSpawn)
 	}
 
 	spawned := 0
 	for i := 0; i < toSpawn; i++ {
-		id := fmt.Sprintf("worker-%d-%d", time.Now().UnixNano(), i)
-		if _, err := d.procMgr.Spawn(id); err != nil {
-			continue
-		}
-		// Record as managed so registerWorker sets managed=true when it connects.
+		id := fmt.Sprintf("worker-%d-%d", d.nowFunc().UnixNano(), i)
 		d.mu.Lock()
 		d.pendingManagedIDs[id] = true
 		d.pendingManagedSince[id] = d.nowFunc()
 		d.mu.Unlock()
+		if _, err := d.procMgr.Spawn(id); err != nil {
+			d.mu.Lock()
+			delete(d.pendingManagedIDs, id)
+			delete(d.pendingManagedSince, id)
+			d.mu.Unlock()
+			continue
+		}
 		spawned++
 	}
 	return fmt.Sprintf("target=%d, spawning %d", target, spawned)

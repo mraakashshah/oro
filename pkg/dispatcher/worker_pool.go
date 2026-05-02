@@ -110,6 +110,13 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	if pendingTargetBeadID != "" {
 		d.workers[id].targetBeadID = pendingTargetBeadID
 	}
+	if d.cfg.MaxWorkers > 0 && d.liveWorkerCountLocked() > d.cfg.MaxWorkers {
+		w := d.workers[id]
+		w.markShuttingDownWithoutAssignment()
+		sendShutdownWithoutBuffering(w)
+		d.mu.Unlock()
+		return
+	}
 	if w := d.workers[id]; w.spawnFor && w.state == protocol.WorkerShuttingDown {
 		w.markShuttingDownWithoutAssignment()
 		sendShutdownWithoutBuffering(w)
