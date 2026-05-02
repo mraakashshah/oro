@@ -11,8 +11,6 @@ import (
 	"oro/pkg/protocol"
 )
 
-// CommandRunner is defined in beadsource.go.
-
 // GitWorktreeManager is the production WorktreeManager that shells out
 // to git to create and remove worktrees.
 type GitWorktreeManager struct {
