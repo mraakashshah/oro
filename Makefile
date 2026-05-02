@@ -1,6 +1,7 @@
 .PHONY: build build-search-hook install install-git-hooks setup test test-all test-integration lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GO_BUILD_FLAGS ?= -buildvcs=false
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
 ORO_HOME ?= $(HOME)/.oro
 GOLANGCI_LINT_VERSION ?= v2.10.1
@@ -80,19 +81,19 @@ dev-sync:
 	@echo "✓ dev-sync complete"
 
 build: stage-assets
-	go build $(LDFLAGS) ./cmd/oro
+	go build $(GO_BUILD_FLAGS) $(LDFLAGS) ./cmd/oro
 	@if [ -d cmd/oro-search-hook ]; then \
 		mkdir -p .claude/hooks $(ORO_HOME)/hooks && \
-		go build -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook && \
+		go build $(GO_BUILD_FLAGS) -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook && \
 		cp .claude/hooks/oro-search-hook $(ORO_HOME)/hooks/oro-search-hook; \
 	fi
 	@$(MAKE) clean-assets
 
 install: stage-assets
-	go install $(LDFLAGS) ./cmd/oro
+	go install $(GO_BUILD_FLAGS) $(LDFLAGS) ./cmd/oro
 	@if [ -d cmd/oro-search-hook ]; then \
 		mkdir -p .claude/hooks $(ORO_HOME)/hooks && \
-		go build -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook && \
+		go build $(GO_BUILD_FLAGS) -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook && \
 		install -m 0755 .claude/hooks/oro-search-hook $(ORO_HOME)/hooks/oro-search-hook; \
 	else \
 		echo "Warning: cmd/oro-search-hook/ not found, skipping oro-search-hook build"; \
@@ -102,7 +103,7 @@ install: stage-assets
 
 build-search-hook:
 	@mkdir -p $(ORO_HOME)/hooks
-	go build -o $(ORO_HOME)/hooks/oro-search-hook ./cmd/oro-search-hook
+	go build $(GO_BUILD_FLAGS) -o $(ORO_HOME)/hooks/oro-search-hook ./cmd/oro-search-hook
 
 test: stage-assets
 	go test -race -shuffle=on -p 2 ./...
