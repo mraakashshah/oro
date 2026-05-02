@@ -95,7 +95,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 3, 3, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
+		err := runFullStart(&stdout, 3, 3, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false)
 		// We expect an error because AttachInteractive tries to attach to a real tmux session.
 		// In the test environment, there's no real "oro" session, so attach will fail.
 		if err == nil {
@@ -214,7 +214,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, newFakeCmd(), func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, newFakeCmd(), func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false)
 		if err == nil {
 			t.Fatal("expected error when spawn fails")
 		}
@@ -237,7 +237,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, newFakeCmd(), func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, newFakeCmd(), func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false)
 		if err == nil {
 			t.Fatal("expected error when socket never appears")
 		}
@@ -267,7 +267,7 @@ func TestFullStart(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false)
 		if err == nil {
 			t.Fatal("expected error when tmux create fails")
 		}
@@ -394,7 +394,7 @@ func TestCreateWithNudges(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 3, 3, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true, nil)
+		err := runFullStart(&stdout, 3, 3, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

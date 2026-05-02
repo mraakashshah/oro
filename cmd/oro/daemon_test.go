@@ -5,12 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -54,40 +52,6 @@ func TestIsSharedBeadsDir_MissingMetadata(t *testing.T) {
 	beadsDir := t.TempDir()
 	if isSharedBeadsDir(beadsDir) {
 		t.Error("isSharedBeadsDir = true, want false when metadata.json is absent")
-	}
-}
-
-// TestSetupSignalHandlerNoStopsSharedDolt verifies the aipkm regression fix:
-// SetupSignalHandler's cleanup must NOT call stopDoltServer when beadsDir
-// resolves to the shared port. Asserts the preservation log is emitted.
-func TestSetupSignalHandlerNoStopsSharedDolt(t *testing.T) {
-	beadsDir := t.TempDir()
-	meta := []byte(`{"backend":"dolt","dolt_database":"beads_oro","dolt_server_port":13307}`)
-	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Capture stderr to assert the preservation log fires.
-	origStderr := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = origStderr })
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	_, cleanup := SetupSignalHandler(ctx, "", nil, beadsDir)
-	cleanup()
-
-	_ = w.Close()
-	captured, _ := io.ReadAll(r)
-	os.Stderr = origStderr
-
-	if !strings.Contains(string(captured), "shared dolt server preserved") {
-		t.Errorf("expected stderr to contain 'shared dolt server preserved', got:\n%s", string(captured))
 	}
 }
 
@@ -253,7 +217,7 @@ func TestDaemonLifecycle(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, nil, "")
+		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, nil)
 
 		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 			t.Fatalf("sending SIGTERM: %v", err)
@@ -281,7 +245,7 @@ func TestDaemonLifecycle(t *testing.T) {
 		defer cancel()
 
 		var authorized atomic.Bool // defaults to false
-		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized, "")
+		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized)
 		defer cleanupFn()
 
 		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
@@ -307,7 +271,7 @@ func TestDaemonLifecycle(t *testing.T) {
 
 		var authorized atomic.Bool
 		authorized.Store(true)
-		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized, "")
+		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized)
 		defer cleanupFn()
 
 		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
@@ -331,7 +295,7 @@ func TestDaemonLifecycle(t *testing.T) {
 		defer cancel()
 
 		var authorized atomic.Bool // false — but SIGINT should still work
-		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized, "")
+		shutdownCtx, cleanupFn := SetupSignalHandler(ctx, pidFile, &authorized)
 		defer cleanupFn()
 
 		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
@@ -532,62 +496,12 @@ func runMockPIDDispatcher(ctx context.Context, t *testing.T, sockPath, statusJSO
 	}
 }
 
-func TestSignalHandlerKillsDolt(t *testing.T) {
-	// Test that signal handler cleans up dolt when receiving SIGINT.
-	beadsDir := t.TempDir()
-	doltPIDPath := filepath.Join(beadsDir, "dolt-server.pid")
-	doltPortPath := filepath.Join(beadsDir, "dolt-server.port")
-
-	// Write a dolt PID file with a non-existent PID (already dead).
-	// Signal handler should detect this and clean up the PID/port files.
-	deadPID := 4000000
-	if err := os.WriteFile(doltPIDPath, []byte(strconv.Itoa(deadPID)), 0o600); err != nil {
-		t.Fatalf("setup: write dolt PID file: %v", err)
-	}
-	if err := os.WriteFile(doltPortPath, []byte("13308"), 0o600); err != nil {
-		t.Fatalf("setup: write dolt port file: %v", err)
-	}
-
-	daemonPIDFile := filepath.Join(t.TempDir(), "oro.pid")
-	if err := WritePIDFile(daemonPIDFile, os.Getpid()); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Unified SetupSignalHandler with beads directory should clean up dolt on signal.
-	shutdownCtx, cleanupFn := SetupSignalHandler(ctx, daemonPIDFile, nil, beadsDir)
-	defer cleanupFn()
-
-	// Send SIGINT (always honored).
-	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
-		t.Fatalf("sending SIGINT: %v", err)
-	}
-
-	// Wait for shutdown.
-	select {
-	case <-shutdownCtx.Done():
-		// OK — context was cancelled by signal handler.
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for signal handler to cancel context")
-	}
-
-	// Verify dolt PID/port files were cleaned up.
-	if _, err := os.Stat(doltPIDPath); !os.IsNotExist(err) {
-		t.Error("dolt-server.pid should be removed by signal handler")
-	}
-	if _, err := os.Stat(doltPortPath); !os.IsNotExist(err) {
-		t.Error("dolt-server.port should be removed by signal handler")
-	}
-}
-
-func TestSignalHandlerNoDolt(t *testing.T) {
-	t.Run("cleanup does not touch dolt files when beadsDir empty", func(t *testing.T) {
+func TestSignalHandlerDoesNotManageDolt(t *testing.T) {
+	t.Run("cleanup does not touch dolt files", func(t *testing.T) {
 		beadsDir := t.TempDir()
 		doltPIDPath := filepath.Join(beadsDir, "dolt-server.pid")
 
-		// Write a dolt PID file — cleanup should NOT remove it (no beadsDir passed).
+		// Write a dolt PID file — runtime signal cleanup should not remove it.
 		if err := os.WriteFile(doltPIDPath, []byte(strconv.Itoa(4000000)), 0o600); err != nil {
 			t.Fatalf("setup: write dolt PID file: %v", err)
 		}
@@ -596,55 +510,14 @@ func TestSignalHandlerNoDolt(t *testing.T) {
 		defer cancel()
 
 		daemonPIDFile := filepath.Join(t.TempDir(), "oro.pid")
-		_, cleanupFn := SetupSignalHandler(ctx, daemonPIDFile, nil, "")
+		_, cleanupFn := SetupSignalHandler(ctx, daemonPIDFile, nil)
 
 		cleanupFn()
 
-		// Dolt PID file should still exist — empty beadsDir means no dolt management.
+		// Dolt PID file should still exist; runtime signal handling no longer
+		// owns Dolt lifecycle.
 		if _, err := os.Stat(doltPIDPath); err != nil {
 			t.Error("dolt-server.pid should NOT be removed by signal handler cleanup")
 		}
 	})
-}
-
-func TestSignalHandlerCleanupStopsDolt(t *testing.T) {
-	// Test that the cleanup func (non-signal shutdown) also stops dolt.
-	// This covers the ctx.Done() / defer-cleanup path where no signal fires.
-	beadsDir := t.TempDir()
-	doltPIDPath := filepath.Join(beadsDir, "dolt-server.pid")
-	doltPortPath := filepath.Join(beadsDir, "dolt-server.port")
-
-	// Write dolt PID/port files with a dead PID.
-	if err := os.WriteFile(doltPIDPath, []byte("4000000"), 0o600); err != nil {
-		t.Fatalf("setup: write dolt PID file: %v", err)
-	}
-	if err := os.WriteFile(doltPortPath, []byte("13308"), 0o600); err != nil {
-		t.Fatalf("setup: write dolt port file: %v", err)
-	}
-
-	daemonPIDFile := filepath.Join(t.TempDir(), "oro.pid")
-	if err := WritePIDFile(daemonPIDFile, os.Getpid()); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	_, cleanupFn := SetupSignalHandler(ctx, daemonPIDFile, nil, beadsDir)
-
-	// Call cleanup directly (simulates non-signal shutdown like dispatcher exit).
-	cleanupFn()
-
-	// Verify dolt PID/port files were cleaned up.
-	if _, err := os.Stat(doltPIDPath); !os.IsNotExist(err) {
-		t.Error("dolt-server.pid should be removed by cleanup func")
-	}
-	if _, err := os.Stat(doltPortPath); !os.IsNotExist(err) {
-		t.Error("dolt-server.port should be removed by cleanup func")
-	}
-
-	// Verify daemon PID file was also removed.
-	if _, err := os.Stat(daemonPIDFile); !os.IsNotExist(err) {
-		t.Error("daemon PID file should be removed by cleanup func")
-	}
 }

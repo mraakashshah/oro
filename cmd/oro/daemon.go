@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -166,8 +165,7 @@ func StopDaemon(pidPath string) error {
 
 // SetupSignalHandler installs a SIGTERM/SIGINT handler that cancels the
 // returned context when a signal is received. It also returns a cleanup
-// function that removes the PID file and stops dolt (if beadsDir is set).
-// Callers should defer the cleanup function.
+// function that removes the PID file. Callers should defer the cleanup function.
 //
 // The authorized flag gates SIGTERM handling:
 //   - nil: SIGTERM always honored (backward compatibility)
@@ -177,37 +175,13 @@ func StopDaemon(pidPath string) error {
 // SIGINT is always honored regardless of authorization (human Ctrl+C).
 // SIGPIPE is explicitly ignored so the daemon survives broken stdout/stderr
 // pipes after the parent process exits.
-//
-// When beadsDir is non-empty, stopDoltServer is called on every shutdown path:
-// signal receipt, context cancellation, and explicit cleanup.
-func SetupSignalHandler(parent context.Context, pidPath string, authorized *atomic.Bool, beadsDir string) (shutdownCtx context.Context, cleanup func()) {
+func SetupSignalHandler(parent context.Context, pidPath string, authorized *atomic.Bool) (shutdownCtx context.Context, cleanup func()) {
 	ctx, cancel := context.WithCancel(parent)
 
 	signal.Ignore(syscall.SIGPIPE)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-
-	// stopDolt is wrapped in sync.Once so the multiple shutdown paths (signal
-	// receipt, ctx.Done(), explicit cleanup) coalesce to a single call. This
-	// also avoids racing reads/writes on os.Stderr between the handler
-	// goroutine and the caller's cleanup, which previously failed under -race.
-	var stopOnce sync.Once
-	stopDolt := func() {
-		stopOnce.Do(func() {
-			if beadsDir == "" {
-				return
-			}
-			// Never stop the shared dolt server — its lifecycle is owned by launchd
-			// (or another oro instance) and persists across sessions. Per-project
-			// dolt servers are still stopped.
-			if isSharedBeadsDir(beadsDir) {
-				fmt.Fprintf(os.Stderr, "shutdown: shared dolt server preserved across sessions\n")
-				return
-			}
-			_ = stopDoltServer(beadsDir)
-		})
-	}
 
 	goroutineDone := make(chan struct{})
 	go func() {
@@ -218,7 +192,6 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 				// SIGINT: always honor (human Ctrl+C).
 				if sig == syscall.SIGINT {
 					fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
-					stopDolt()
 					cancel()
 					signal.Stop(sigCh)
 					return
@@ -230,12 +203,10 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 				}
 				fmt.Fprintf(os.Stderr, "shutdown: received %v (PID %d)\n", sig, os.Getpid())
 				dumpProcessSnapshot()
-				stopDolt()
 				cancel()
 				signal.Stop(sigCh)
 				return
 			case <-ctx.Done():
-				stopDolt()
 				signal.Stop(sigCh)
 				return
 			}
@@ -243,7 +214,6 @@ func SetupSignalHandler(parent context.Context, pidPath string, authorized *atom
 	}()
 
 	cleanup = func() {
-		stopDolt()
 		cancel()
 		<-goroutineDone
 		_ = RemovePIDFile(pidPath)

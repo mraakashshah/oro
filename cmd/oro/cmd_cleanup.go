@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -24,9 +23,7 @@ type cleanupConfig struct {
 	pidPath      string
 	sockPath     string
 	stateDBPath  string          // path to native SQLite state.db; empty disables bead state repair
-	beadsDir     string          // path to .beads directory; empty disables per-project dolt cleanup
 	worktreesDir string          // path to .worktrees directory; empty disables worktree dir removal
-	oroHome      string          // path to ~/.oro; empty disables shared dolt PID cleanup
 	signalFn     func(int) error // sends SIGINT; injectable for testing
 	aliveFn      func(int) bool  // checks process liveness; injectable for testing
 	isTTY        func() bool     // returns true if stdin is a TTY; injectable for testing
@@ -64,9 +61,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				pidPath:      paths.PIDPath,
 				sockPath:     paths.SocketPath,
 				stateDBPath:  paths.StateDBPath,
-				beadsDir:     projPaths.BeadsDir,
 				worktreesDir: projPaths.WorktreesDir,
-				oroHome:      paths.OroHome,
 				signalFn:     defaultSignalINT,
 				aliveFn:      IsProcessAlive,
 				isTTY:        isStdinTTY,
@@ -95,14 +90,6 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 
 	// 2. Kill dispatcher process if running (read PID file).
 	if cleanedDispatcher := cleanupDispatcher(cfg); cleanedDispatcher {
-		cleaned = true
-	}
-
-	// 2.5. Kill dolt server if running (per-project and shared).
-	if cleanedDolt := cleanupDolt(cfg); cleanedDolt {
-		cleaned = true
-	}
-	if cleanedShared := cleanupSharedDoltPID(cfg); cleanedShared {
 		cleaned = true
 	}
 
@@ -472,128 +459,6 @@ func parseBranchNames(output string) []string {
 		branches = append(branches, line)
 	}
 	return branches
-}
-
-// cleanupDolt removes stale dolt PID/port files when the referenced process
-// is dead. Does NOT kill healthy running dolt servers — dolt persists across
-// sessions. When no PID file exists, scans for orphan dolt processes via pgrep.
-// Returns true if stale files were cleaned or orphans were signaled. Idempotent.
-func cleanupDolt(cfg *cleanupConfig) bool {
-	if cfg.beadsDir == "" {
-		return false
-	}
-
-	pidPath := filepath.Join(cfg.beadsDir, "dolt-server.pid")
-	data, err := os.ReadFile(pidPath) //nolint:gosec // beadsDir is caller-controlled
-	if err != nil {
-		// No PID file — scan for orphan dolt processes
-		return cleanupOrphanDolt(cfg)
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		// Corrupt PID file — remove it.
-		removeDoltServerFiles(cfg.beadsDir)
-		return true
-	}
-
-	if !cfg.aliveFn(pid) {
-		removeDoltServerFiles(cfg.beadsDir)
-		fmt.Fprintf(cfg.w, "removed stale dolt PID file (process %d dead)\n", pid)
-		return true
-	}
-
-	return false // dolt is healthy, leave it alone
-}
-
-// cleanupOrphanDolt scans for orphan dolt processes using pgrep and signals them.
-// Returns true if orphans were found and signaled. Exits gracefully if pgrep is
-// not available. Excludes the shared dolt server PID from cleanup.
-func cleanupOrphanDolt(cfg *cleanupConfig) bool {
-	out, err := cfg.runner.Run("pgrep", "-f", `dolt sql-server.*\.beads/dolt`)
-	if err != nil {
-		// pgrep not in PATH or no matches
-		return false
-	}
-
-	pids := parseWorkerPIDs(out)
-	if len(pids) == 0 {
-		return false
-	}
-
-	// Exclude the shared dolt server PID to avoid killing a healthy shared server.
-	sharedPID := readSharedDoltPID(cfg.oroHome)
-	var orphans []int
-	for _, pid := range pids {
-		if pid != sharedPID {
-			orphans = append(orphans, pid)
-		}
-	}
-	if len(orphans) == 0 {
-		return false
-	}
-
-	fmt.Fprintf(cfg.w, "killing %d orphan dolt process(es)\n", len(orphans))
-	for _, pid := range orphans {
-		if err := cfg.signalFn(pid); err != nil {
-			fmt.Fprintf(cfg.w, "warning: signal orphan dolt PID %d: %v\n", pid, err)
-		}
-	}
-
-	removeDoltServerFiles(cfg.beadsDir)
-	return true
-}
-
-// readSharedDoltPID reads the PID from ~/.oro/dolt-server.pid if it exists.
-// Returns 0 if the file doesn't exist or can't be parsed.
-func readSharedDoltPID(oroHome string) int {
-	if oroHome == "" {
-		return 0
-	}
-
-	pidPath := filepath.Join(oroHome, "dolt-server.pid")
-	data, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
-	if err != nil {
-		return 0
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0
-	}
-	return pid
-}
-
-// cleanupSharedDoltPID removes a stale ~/.oro/dolt-server.pid when the referenced
-// process is dead. Does NOT kill a running shared server. Returns true if stale
-// files were cleaned. Idempotent.
-func cleanupSharedDoltPID(cfg *cleanupConfig) bool {
-	if cfg.oroHome == "" {
-		return false
-	}
-
-	pidPath := filepath.Join(cfg.oroHome, "dolt-server.pid")
-	data, err := os.ReadFile(pidPath) //nolint:gosec // oroHome is caller-controlled
-	if err != nil {
-		return false // no PID file, nothing to clean
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		// Corrupt PID file — remove it.
-		_ = os.Remove(pidPath)
-		_ = os.Remove(filepath.Join(cfg.oroHome, "dolt-server.port"))
-		return true
-	}
-
-	if !IsProcessAlive(pid) {
-		_ = os.Remove(pidPath)
-		_ = os.Remove(filepath.Join(cfg.oroHome, "dolt-server.port"))
-		fmt.Fprintf(cfg.w, "removed stale shared dolt PID file (process %d dead)\n", pid)
-		return true
-	}
-
-	return false // shared server is healthy, leave it alone
 }
 
 // cleanupBeads resets in_progress beads back to open. Returns true if beads were reset.

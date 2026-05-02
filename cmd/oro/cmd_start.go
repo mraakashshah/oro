@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -256,7 +255,7 @@ func pollForSocket(log *startupLog, sockPath string, socketTimeout time.Duration
 	return nil
 }
 
-func runFullStart(w io.Writer, workers, maxWorkers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, killFn func(int) error, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool, doltStartFn func() (int, error)) error {
+func runFullStart(w io.Writer, workers, maxWorkers int, model, project string, spawner DaemonSpawner, tmuxRunner CmdRunner, killFn func(int) error, socketTimeout time.Duration, sleeper func(time.Duration), beaconTimeout time.Duration, detach bool) error {
 	// Initialize startup logger (TTY detection for spinner vs static output)
 	isTTY := isatty.IsTerminal(os.Stdout.Fd())
 	log := newStartupLog(w, isTTY)
@@ -270,26 +269,17 @@ func runFullStart(w io.Writer, workers, maxWorkers int, model, project string, s
 
 	log.Step("Preflight checks passed")
 
-	// 0. Start dolt server before daemon (dolt must be up before dispatcher connects).
-	// doltCleanup is a no-op unless dolt was successfully started.
-	doltCleanup, err := startDoltIfNeeded(doltStartFn)
-	if err != nil {
-		return err
-	}
-
 	// 1. Spawn the daemon subprocess.
 	pid, err := spawner.SpawnDaemon(pidPath, workers, maxWorkers)
 	if err != nil {
-		doltCleanup()
 		return fmt.Errorf("spawn daemon: %w", err)
 	}
 
-	// cleanupOrphans kills the daemon and stops dolt on error after spawn.
+	// cleanupOrphans kills the daemon on error after spawn.
 	cleanupOrphans := func() {
 		if killErr := killFn(pid); killErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to kill orphaned daemon (PID %d): %v\n", pid, killErr)
 		}
-		doltCleanup()
 	}
 
 	log.Step(fmt.Sprintf("Daemon started (PID %d)", pid))
@@ -526,86 +516,6 @@ func newStartCmd() *cobra.Command {
 	return cmd
 }
 
-// startDoltIfNeeded starts the dolt server when doltStartFn is non-nil and
-// returns a cleanup function that stops dolt on error. Returns a no-op cleanup
-// and nil error when doltStartFn is nil (non-dolt project).
-func startDoltIfNeeded(doltStartFn func() (int, error)) (cleanup func(), err error) {
-	noop := func() {}
-	if doltStartFn == nil {
-		return noop, nil
-	}
-	if _, err := doltStartFn(); err != nil {
-		return noop, fmt.Errorf("start dolt: %w", err)
-	}
-	// Dolt persists across sessions — never stop it on cleanup.
-	return noop, nil
-}
-
-// makeDoltLifecycle reads .beads/metadata.json from workDir and returns start/stop
-// functions for the dolt server if the backend is "dolt". Returns (nil, nil) for
-// non-dolt projects or when the metadata file is missing or unreadable.
-func makeDoltLifecycle(workDir, oroHome string) (func() (int, error), func() error) { //nolint:gocritic // named results hurt readability here
-	projPaths, err := ResolvePaths(workDir)
-	if err != nil {
-		return nil, nil
-	}
-	beadsDir := projPaths.BeadsDir
-	MigrateMetadataPort(beadsDir) // best-effort; migration errors don't block start
-	meta, err := readDoltMeta(beadsDir)
-	if err != nil || meta == nil {
-		return nil, nil
-	}
-	port := meta.DoltServerPort
-	if port == 0 {
-		port = DerivePort(beadsDir)
-	}
-	if isSharedServer(port) {
-		// Shared server is machine-wide — never stopped from oro start.
-		return func() (int, error) { return ensureSharedDoltRunning(oroHome) }, nil
-	}
-	return func() (int, error) { return startDoltServer(beadsDir, port) },
-		func() error { return stopDoltServer(beadsDir) }
-}
-
-// checkDoltModeForWorkers returns an error when dolt_mode in
-// <beadsDir>/metadata.json is "embedded" (or missing/unreadable) and
-// workerCount > 1. Embedded dolt is a single-writer store — concurrent
-// workers corrupt it. Falls through (nil) when workers == 1 or dolt_mode
-// is "server".
-func checkDoltModeForWorkers(beadsDir string, workerCount int) error {
-	if workerCount <= 1 {
-		return nil
-	}
-
-	metaPath := filepath.Join(beadsDir, "metadata.json")
-	data, err := os.ReadFile(metaPath) //nolint:gosec // beadsDir is caller-controlled
-	if err != nil {
-		return fmt.Errorf(
-			"dolt is in embedded mode (metadata unreadable) at %s: cannot start with %d workers — run 'oro dolt setup' to switch to server mode",
-			beadsDir, workerCount,
-		)
-	}
-
-	var cfg struct {
-		DoltMode string `json:"dolt_mode"`
-	}
-	if jsonErr := json.Unmarshal(data, &cfg); jsonErr != nil || cfg.DoltMode != "server" {
-		return fmt.Errorf(
-			"dolt is in embedded mode at %s: cannot start with %d workers — run 'oro dolt setup' to switch to server mode",
-			beadsDir, workerCount,
-		)
-	}
-
-	return nil
-}
-
-func nativeProductionDoltStart() (func() (int, error), error) {
-	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
-		return nil, err
-	}
-	return nil, nil
-}
-
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
 func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration) error {
 	project, err := readProjectConfig(".")
@@ -624,8 +534,7 @@ func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach 
 	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
 		return fmt.Errorf("set ORO_HOME: %w", err)
 	}
-	doltStart, err := nativeProductionDoltStart()
-	if err != nil {
+	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 		return err
 	}
 	return runFullStart(w, workers, maxWorkers, model, project,
@@ -633,7 +542,7 @@ func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach 
 		&ExecRunner{},
 		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
 		socketPollTimeout, nil, 0, isDetached(detach),
-		doltStart)
+	)
 }
 
 // cleanStaleWorkerLogs deletes worker log directories older than maxAge.
@@ -683,13 +592,8 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, 
 
 	wireDependencies(d, paths.SocketPath, paths.OroHome, &dispatcher.ExecCommandRunner{}, true /* daemonOnly */)
 
-	beadsDir, err := absoluteBeadsDir()
-	if err != nil {
-		return fmt.Errorf("resolve beads dir: %w", err)
-	}
-
 	ctx := cmd.Context()
-	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized(), beadsDir)
+	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized())
 	defer cleanup()
 
 	if err := d.Run(shutdownCtx); err != nil {

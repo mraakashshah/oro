@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -219,7 +218,7 @@ func TestStartPrintsQuitHint(t *testing.T) {
 
 		var stdout bytes.Buffer
 		// detach=false means attach, so hint should be printed
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false)
 		// Expect error because AttachInteractive tries to attach to real tmux
 		if err == nil {
 			t.Fatal("expected error from AttachInteractive in test environment")
@@ -260,7 +259,7 @@ func TestStartPrintsQuitHint(t *testing.T) {
 
 		var stdout bytes.Buffer
 		// detach=true means no attach, so hint should NOT be printed
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true, nil)
+		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true)
 		if err != nil {
 			t.Fatalf("runFullStart with detach should succeed, got: %v", err)
 		}
@@ -337,7 +336,7 @@ func TestRunFullStartKillsDaemonOnSessionCreateError(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	err := runFullStart(&stdout, 2, 2, "sonnet", "", spawnerFn, fakeTmux, killFn, 200*time.Millisecond, noopSleep, 50*time.Millisecond, false, nil)
+	err := runFullStart(&stdout, 2, 2, "sonnet", "", spawnerFn, fakeTmux, killFn, 200*time.Millisecond, noopSleep, 50*time.Millisecond, false)
 	if err == nil {
 		t.Fatal("expected runFullStart to return error when tmux session create fails")
 	}
@@ -709,33 +708,6 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		}
 	})
 
-	t.Run("native production start skips dolt lifecycle by default", func(t *testing.T) {
-		t.Setenv("ORO_BEADSOURCE_MODE", "")
-
-		doltStart, err := nativeProductionDoltStart()
-		if err != nil {
-			t.Fatalf("nativeProductionDoltStart: %v", err)
-		}
-		if doltStart != nil {
-			t.Fatal("nativeProductionDoltStart returned legacy dolt lifecycle in default sqlite mode")
-		}
-	})
-
-	t.Run("native production start rejects shadow before dolt lifecycle", func(t *testing.T) {
-		t.Setenv("ORO_BEADSOURCE_MODE", "shadow")
-
-		doltStart, err := nativeProductionDoltStart()
-		if err == nil {
-			t.Fatal("nativeProductionDoltStart succeeded with legacy shadow mode")
-		}
-		if doltStart != nil {
-			t.Fatal("nativeProductionDoltStart returned dolt lifecycle with rejected shadow mode")
-		}
-		if !strings.Contains(err.Error(), "native sqlite beadstore") {
-			t.Fatalf("error = %v, want native sqlite beadstore rejection", err)
-		}
-	})
-
 	t.Run("help describes separate review timeout domains", func(t *testing.T) {
 		cmd := newStartCmd()
 		var out bytes.Buffer
@@ -1057,155 +1029,6 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 	})
 }
 
-// callOrderSpawner delegates to an inner fakeSpawner but records its call
-// in callOrder so tests can verify dolt is started before the daemon.
-type callOrderSpawner struct {
-	callOrder *[]string
-	inner     *fakeSpawner
-}
-
-func (s *callOrderSpawner) SpawnDaemon(pidPath string, workers, maxWorkers int) (int, error) {
-	*s.callOrder = append(*s.callOrder, "daemon")
-	return s.inner.SpawnDaemon(pidPath, workers, maxWorkers)
-}
-
-// TestDoltStartedBeforeDaemon verifies that runFullStart calls doltStartFn before
-// SpawnDaemon, and that doltStopFn is called for cleanup on subsequent errors.
-func TestDoltStartedBeforeDaemon(t *testing.T) {
-	t.Run("dolt started before daemon spawn", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		pidFile := filepath.Join(tmpDir, "oro.pid")
-		sockPath := fmt.Sprintf("/tmp/oro-dolt-ord-%d.sock", time.Now().UnixNano())
-		t.Cleanup(func() { _ = os.Remove(sockPath) })
-
-		t.Setenv("ORO_PID_PATH", pidFile)
-		t.Setenv("ORO_SOCKET_PATH", sockPath)
-		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
-
-		var callOrder []string
-
-		doltStartFn := func() (int, error) {
-			callOrder = append(callOrder, "dolt")
-			return 42, nil
-		}
-
-		spawner := &callOrderSpawner{
-			callOrder: &callOrder,
-			inner:     &fakeSpawner{returnPID: 12345, socketPath: sockPath},
-		}
-
-		fakeTmux := newFakeCmd()
-		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
-
-		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux,
-			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true,
-			doltStartFn)
-		if err != nil {
-			t.Fatalf("runFullStart failed: %v", err)
-		}
-
-		doltIdx, daemonIdx := -1, -1
-		for i, c := range callOrder {
-			switch c {
-			case "dolt":
-				doltIdx = i
-			case "daemon":
-				daemonIdx = i
-			}
-		}
-		if doltIdx == -1 {
-			t.Fatal("doltStartFn was not called")
-		}
-		if daemonIdx == -1 {
-			t.Fatal("SpawnDaemon was not called")
-		}
-		if doltIdx >= daemonIdx {
-			t.Errorf("expected dolt before daemon, got call order: %v", callOrder)
-		}
-	})
-
-	t.Run("dolt NOT stopped when daemon spawn fails", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
-		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
-		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
-
-		doltStarted := false
-		doltStartFn := func() (int, error) {
-			doltStarted = true
-			return 42, nil
-		}
-
-		spawner := &fakeSpawner{returnErr: fmt.Errorf("spawn failed")}
-
-		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, newFakeCmd(),
-			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, false,
-			doltStartFn)
-		if err == nil {
-			t.Fatal("expected error when daemon spawn fails")
-		}
-		if !doltStarted {
-			t.Error("doltStartFn should have been called before spawn attempt")
-		}
-		// Dolt persists across sessions — cleanup should NOT stop it.
-	})
-
-	t.Run("dolt NOT stopped on socket poll failure", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		pidFile := filepath.Join(tmpDir, "oro.pid")
-
-		t.Setenv("ORO_PID_PATH", pidFile)
-		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "nonexistent.sock"))
-		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
-
-		daemonKilled := false
-
-		// Spawner succeeds but does NOT create a socket — pollForSocket will timeout.
-		spawner := &fakeSpawner{returnPID: 12345}
-
-		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, newFakeCmd(),
-			func(int) error { daemonKilled = true; return nil },
-			1*time.Millisecond, noopSleep, 50*time.Millisecond, false,
-			func() (int, error) { return 42, nil })
-
-		if err == nil {
-			t.Fatal("expected error when socket poll times out")
-		}
-		if !daemonKilled {
-			t.Error("daemon should have been killed after socket poll failure")
-		}
-	})
-
-	t.Run("nil doltStartFn skips dolt for non-dolt projects", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		pidFile := filepath.Join(tmpDir, "oro.pid")
-		sockPath := fmt.Sprintf("/tmp/oro-nodolt-%d.sock", time.Now().UnixNano())
-		t.Cleanup(func() { _ = os.Remove(sockPath) })
-
-		t.Setenv("ORO_PID_PATH", pidFile)
-		t.Setenv("ORO_SOCKET_PATH", sockPath)
-		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
-
-		fakeTmux := newFakeCmd()
-		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
-
-		spawner := &fakeSpawner{returnPID: 12345, socketPath: sockPath}
-
-		var stdout bytes.Buffer
-		err := runFullStart(&stdout, 2, 2, "sonnet", "", spawner, fakeTmux,
-			func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true,
-			nil)
-		if err != nil {
-			t.Fatalf("runFullStart with nil dolt should succeed: %v", err)
-		}
-	})
-}
-
 // fakeCommandRunner is a mock CommandRunner for testing.
 type fakeCommandRunner struct{}
 
@@ -1394,171 +1217,6 @@ func TestPreflightStatusStaleRemovesSocket(t *testing.T) {
 	}
 }
 
-// TestMakeDoltLifecycleSharedServer verifies that makeDoltLifecycle returns a
-// shared-server-aware startFn when port==SharedDoltPort, and preserves the
-// existing per-project behavior for all other ports.
-func TestMakeDoltLifecycleSharedServer(t *testing.T) {
-	t.Run("shared port dials 13307 and adopts running server", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		beadsDir := filepath.Join(tmpDir, ".beads")
-		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		writeMetadata(t, beadsDir, map[string]any{
-			"backend":          "dolt",
-			"dolt_server_port": SharedDoltPort,
-			"dolt_database":    "beads",
-		})
-
-		oroHome := filepath.Join(tmpDir, ".oro")
-		if err := os.MkdirAll(oroHome, 0o750); err != nil {
-			t.Fatal(err)
-		}
-
-		// Start a TCP listener on SharedDoltPort to simulate running shared server.
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", SharedDoltPort))
-		if err != nil {
-			t.Skipf("cannot bind port %d: %v", SharedDoltPort, err)
-		}
-		defer ln.Close()
-
-		startFn, stopFn := makeDoltLifecycle(tmpDir, oroHome)
-		if startFn == nil {
-			t.Fatal("expected non-nil startFn for shared server")
-		}
-		// Shared server is never stopped from oro start.
-		if stopFn != nil {
-			t.Error("expected nil stopFn for shared server")
-		}
-
-		pid, err := startFn()
-		if err != nil {
-			t.Fatalf("startFn should adopt running shared server: %v", err)
-		}
-		if pid != 0 {
-			t.Errorf("expected PID 0 (adoption), got %d", pid)
-		}
-	})
-
-	t.Run("shared unreachable returns error (D6.1: direct spawn disabled)", func(t *testing.T) {
-		if isDoltServerRunning(SharedDoltPort) {
-			t.Skipf("port %d already in use — cannot test fallback", SharedDoltPort)
-		}
-
-		tmpDir := t.TempDir()
-		beadsDir := filepath.Join(tmpDir, ".beads")
-		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		writeMetadata(t, beadsDir, map[string]any{
-			"backend":          "dolt",
-			"dolt_server_port": SharedDoltPort,
-			"dolt_database":    "beads",
-		})
-
-		oroHome := filepath.Join(tmpDir, ".oro")
-		if err := os.MkdirAll(oroHome, 0o750); err != nil {
-			t.Fatal(err)
-		}
-
-		startFn, _ := makeDoltLifecycle(tmpDir, oroHome)
-		if startFn == nil {
-			t.Fatal("expected non-nil startFn for shared server")
-		}
-
-		// D6.1: dial 13307 → fail, launchctl kickstart → fail →
-		// error pointing user to 'oro dolt setup' / 'oro dolt repair'.
-		_, err := startFn()
-		if err == nil {
-			t.Fatal("expected error when shared dolt unreachable (D6.1: direct spawn disabled)")
-		}
-		if !strings.Contains(err.Error(), "oro dolt") {
-			t.Errorf("error should mention 'oro dolt' commands, got: %v", err)
-		}
-	})
-
-	t.Run("non-shared port returns startFn that calls startDoltServer", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		beadsDir := filepath.Join(tmpDir, ".beads")
-		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		writeMetadata(t, beadsDir, map[string]any{
-			"backend":          "dolt",
-			"dolt_server_port": 14000,
-			"dolt_database":    "beads",
-		})
-
-		oroHome := filepath.Join(tmpDir, ".oro")
-
-		startFn, stopFn := makeDoltLifecycle(tmpDir, oroHome)
-		if startFn == nil {
-			t.Fatal("expected non-nil startFn for non-shared server")
-		}
-		if stopFn == nil {
-			t.Fatal("expected non-nil stopFn for non-shared server")
-		}
-
-		// startFn calls startDoltServer → exec.ErrNotFound (no dolt binary)
-		_, err := startFn()
-		if err != nil && !errors.Is(err, exec.ErrNotFound) {
-			t.Fatalf("expected nil or exec.ErrNotFound, got: %v", err)
-		}
-	})
-}
-
-// TestMakeDoltLifecycleRunsMigration verifies that makeDoltLifecycle calls
-// MigrateMetadataPort before readDoltMeta, stripping stale dolt_server_port
-// values (3307 upstream default) from metadata.json.
-func TestMakeDoltLifecycleRunsMigration(t *testing.T) {
-	tmpDir := t.TempDir()
-	beadsDir := filepath.Join(tmpDir, ".beads")
-	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create metadata.json with stale dolt_server_port (3307 upstream default)
-	writeMetadata(t, beadsDir, map[string]any{
-		"backend":          "dolt",
-		"dolt_server_port": doltUpstreamDefaultPort, // 3307
-		"dolt_database":    "beads",
-	})
-
-	oroHome := filepath.Join(tmpDir, ".oro")
-	if err := os.MkdirAll(oroHome, 0o750); err != nil {
-		t.Fatal(err)
-	}
-
-	// Call makeDoltLifecycle which should trigger MigrateMetadataPort
-	startFn, stopFn := makeDoltLifecycle(tmpDir, oroHome)
-
-	// Verify makeDoltLifecycle returned functions (didn't error on migration)
-	if startFn == nil {
-		t.Fatal("expected non-nil startFn after migration")
-	}
-
-	// Verify the stale port field was removed from metadata.json
-	metaData, err := os.ReadFile(filepath.Join(beadsDir, "metadata.json"))
-	if err != nil {
-		t.Fatalf("read metadata after migration: %v", err)
-	}
-
-	var meta map[string]any
-	if err := json.Unmarshal(metaData, &meta); err != nil {
-		t.Fatalf("parse metadata: %v", err)
-	}
-
-	// The dolt_server_port field should be removed (not present in JSON)
-	if _, exists := meta["dolt_server_port"]; exists {
-		t.Errorf("expected dolt_server_port to be removed from metadata, but it still exists")
-	}
-
-	// Non-shared server should have stop function
-	if stopFn == nil {
-		t.Error("expected non-nil stopFn for non-shared server")
-	}
-}
-
 // TestSendStartDirectiveTimeout verifies that sendStartDirective times out
 // after 10 seconds if the dispatcher doesn't send an ACK response.
 func TestSendStartDirectiveTimeout(t *testing.T) {
@@ -1611,52 +1269,4 @@ func TestSendStartDirectiveTimeout(t *testing.T) {
 	if elapsed > 12*time.Second {
 		t.Logf("warning: timeout took longer than expected: %v", elapsed)
 	}
-}
-
-// TestCheckDoltModeForWorkers verifies that checkDoltModeForWorkers blocks
-// embedded-mode dolt from starting with multiple workers, fails closed when
-// metadata.json is missing or unreadable, and allows single-worker starts
-// regardless of mode.
-func TestCheckDoltModeForWorkers(t *testing.T) {
-	t.Run("embedded+workers==2 returns error with oro dolt setup and beadsDir", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		writeMetadata(t, tmpDir, map[string]any{"dolt_mode": "embedded"})
-		err := checkDoltModeForWorkers(tmpDir, 2)
-		if err == nil {
-			t.Fatal("expected error for embedded mode with 2 workers, got nil")
-		}
-		if !strings.Contains(err.Error(), "oro dolt setup") {
-			t.Errorf("error must contain 'oro dolt setup', got: %v", err)
-		}
-		if !strings.Contains(err.Error(), tmpDir) {
-			t.Errorf("error must contain beadsDir path %q, got: %v", tmpDir, err)
-		}
-	})
-
-	t.Run("server+workers==2 returns nil", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		writeMetadata(t, tmpDir, map[string]any{"dolt_mode": "server"})
-		if err := checkDoltModeForWorkers(tmpDir, 2); err != nil {
-			t.Errorf("expected nil for server mode with 2 workers, got: %v", err)
-		}
-	})
-
-	t.Run("embedded+workers==1 returns nil", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		writeMetadata(t, tmpDir, map[string]any{"dolt_mode": "embedded"})
-		if err := checkDoltModeForWorkers(tmpDir, 1); err != nil {
-			t.Errorf("expected nil for embedded mode with 1 worker, got: %v", err)
-		}
-	})
-
-	t.Run("no metadata.json+workers==2 returns error", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		err := checkDoltModeForWorkers(tmpDir, 2)
-		if err == nil {
-			t.Fatal("expected error for missing metadata.json with 2 workers, got nil")
-		}
-		if !strings.Contains(err.Error(), "oro dolt setup") {
-			t.Errorf("error must contain 'oro dolt setup', got: %v", err)
-		}
-	})
 }
