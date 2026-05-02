@@ -22,6 +22,12 @@ type MemoryInserter interface {
 // Safe when store or spawner is nil. Nil writers in the slice are filtered out.
 // Empty writers slice is a no-op for output.
 func DrainOutput(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner memory.Spawner, writers ...io.Writer) {
+	DrainOutputInWorkdir(ctx, stdout, format, store, beadID, spawner, "", writers...)
+}
+
+// DrainOutputInWorkdir is DrainOutput with a worktree binding for post-drain
+// LLM memory extraction subprocesses.
+func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner memory.Spawner, workdir string, writers ...io.Writer) {
 	defer func() { _ = stdout.Close() }()
 
 	out := filterWriters(writers)
@@ -60,7 +66,7 @@ func DrainOutput(ctx context.Context, stdout io.ReadCloser, format StreamFormat,
 
 	// Post-drain LLM extraction on accumulated session text.
 	if spawner != nil && store != nil {
-		_ = memory.ExtractWithLLM(ctx, spawner, accumulated.String(), beadID, store)
+		_ = memory.ExtractWithLLMInWorkdir(ctx, spawner, accumulated.String(), beadID, store, workdir)
 	}
 }
 

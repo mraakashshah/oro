@@ -2,8 +2,11 @@ package merge
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strings"
+
+	"oro/pkg/processenv"
 )
 
 // ExecGitRunner implements GitRunner using os/exec.
@@ -13,6 +16,7 @@ type ExecGitRunner struct{}
 func (r *ExecGitRunner) Run(ctx context.Context, dir string, args ...string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = processenv.ForWorkdir(os.Environ(), dir)
 
 	var stdoutBuf, stderrBuf strings.Builder
 	cmd.Stdout = &stdoutBuf

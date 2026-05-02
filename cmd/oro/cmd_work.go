@@ -587,7 +587,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		if deps.memStore != nil {
 			memInserter = deps.memStore
 		}
-		worker.DrainOutput(ctx, stdout, deps.spawner.StreamFormat(), memInserter, cfg.beadID, &memory.CLISpawner{}, writers...)
+		worker.DrainOutputInWorkdir(ctx, stdout, deps.spawner.StreamFormat(), memInserter, cfg.beadID, &memory.CLISpawner{}, worktree, writers...)
 	}
 
 	if err := proc.Wait(); err != nil {

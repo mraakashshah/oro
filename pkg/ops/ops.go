@@ -6,12 +6,14 @@ package ops
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 
 	"github.com/google/uuid"
@@ -454,6 +456,7 @@ func isDocsOnlyDiff(ctx context.Context, worktree, baseBranch string) (bool, err
 
 	diffCmd := exec.CommandContext(ctx, "git", "diff", "--name-only", base, "--") //nolint:gosec // fixed git invocation
 	diffCmd.Dir = worktree
+	diffCmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
 	diffOut, err := diffCmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("git diff docs-only check: %w", err)
@@ -461,6 +464,7 @@ func isDocsOnlyDiff(ctx context.Context, worktree, baseBranch string) (bool, err
 
 	untrackedCmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard") //nolint:gosec // fixed git invocation
 	untrackedCmd.Dir = worktree
+	untrackedCmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
 	untrackedOut, err := untrackedCmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("git ls-files docs-only check: %w", err)

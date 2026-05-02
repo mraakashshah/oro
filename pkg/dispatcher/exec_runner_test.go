@@ -45,6 +45,36 @@ func TestExecCommandRunner_Run_MultipleArgs(t *testing.T) {
 	}
 }
 
+func TestExecCommandRunner_Run_NormalizesWorkdirAndGitEnv(t *testing.T) {
+	workdir := t.TempDir()
+	poisoned := t.TempDir()
+	t.Setenv("PWD", poisoned)
+	t.Setenv("GIT_DIR", filepath.Join(poisoned, ".git"))
+	t.Setenv("GIT_WORK_TREE", poisoned)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(poisoned, ".git", "index"))
+	t.Setenv("GIT_COMMON_DIR", filepath.Join(poisoned, ".git"))
+	t.Setenv("GIT_PREFIX", "poison/")
+
+	runner := &dispatcher.ExecCommandRunner{Dir: workdir}
+	out, err := runner.Run(context.Background(), "sh", "-c", `printf 'PWD=%s\nGIT_DIR=%s\nGIT_WORK_TREE=%s\nGIT_INDEX_FILE=%s\nGIT_COMMON_DIR=%s\nGIT_PREFIX=%s\n' "$PWD" "$GIT_DIR" "$GIT_WORK_TREE" "$GIT_INDEX_FILE" "$GIT_COMMON_DIR" "$GIT_PREFIX"`)
+	if err != nil {
+		t.Fatalf("Run(sh env probe) failed: %v", err)
+	}
+
+	text := string(out)
+	if !strings.Contains(text, "PWD="+workdir+"\n") {
+		t.Fatalf("expected PWD=%q, got:\n%s", workdir, text)
+	}
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"} {
+		if strings.Contains(text, key+"="+poisoned) || strings.Contains(text, key+"=poison/") {
+			t.Fatalf("expected %s to be stripped from child env, got:\n%s", key, text)
+		}
+		if !strings.Contains(text, key+"=\n") {
+			t.Fatalf("expected %s to be empty in child env, got:\n%s", key, text)
+		}
+	}
+}
+
 func TestExecCommandRunner_Run_WithGitRepo(t *testing.T) {
 	// Isolate git from the parent repo and any hook environment.
 	// t.Setenv is race-safe and auto-restores on cleanup.
