@@ -37,6 +37,7 @@ func TestProcessOutputDoesNotBlockOnHighThroughput(t *testing.T) {
 	// Create mock spawner with high-throughput stdout
 	spawner := newMockSpawner()
 	spawner.stdout = newPipeReader(lines)
+	worktree := validAssignWorktree(t, "flush-worktree")
 
 	// Create worker with pipe connection
 	dispatcherConn, workerConn := net.Pipe()
@@ -59,7 +60,7 @@ func TestProcessOutputDoesNotBlockOnHighThroughput(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "high-throughput-bead",
-			Worktree: "/fake/worktree",
+			Worktree: worktree,
 		},
 	})
 
@@ -116,6 +117,7 @@ func TestProcessOutputBuffersCorrectly(t *testing.T) {
 
 	spawner := newMockSpawner()
 	spawner.stdout = newPipeReader(testLines)
+	worktree := validAssignWorktree(t, "buffer-worktree")
 
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
@@ -135,7 +137,7 @@ func TestProcessOutputBuffersCorrectly(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "buffer-test-bead",
-			Worktree: "/fake/worktree",
+			Worktree: worktree,
 		},
 	})
 

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"oro/pkg/processenv"
 )
 
 // ExecProcessManager implements ProcessManager by spawning worker
@@ -60,7 +62,9 @@ func NewOroProcessManager(socketPath, oroHome string) *ExecProcessManager {
 	self := os.Args[0]
 	pm.cmdFactory = func(id string) *exec.Cmd {
 		//nolint:gosec // intentionally spawning worker subprocess
-		return exec.CommandContext(context.Background(), self, "worker", "--socket", socketPath, "--id", id)
+		cmd := exec.CommandContext(context.Background(), self, "worker", "--socket", socketPath, "--id", id)
+		cmd.Env = processenv.ForWorkdir(os.Environ(), "")
+		return cmd
 	}
 	return pm
 }

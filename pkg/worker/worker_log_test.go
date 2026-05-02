@@ -49,6 +49,7 @@ func TestProcessOutputWritesToLogFile(t *testing.T) {
 		textDeltaLine("editing done\n"),
 		toolUseLine("Bash"),
 	})
+	worktree := validAssignWorktree(t, "log-worktree")
 
 	// Create worker with pipe connection
 	dispatcherConn, workerConn := net.Pipe()
@@ -71,7 +72,7 @@ func TestProcessOutputWritesToLogFile(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "test-bead",
-			Worktree: "/fake/worktree",
+			Worktree: worktree,
 		},
 	})
 
@@ -115,6 +116,8 @@ func TestOpenLogFileAppendsInsteadOfTruncating(t *testing.T) {
 	// Create mock spawner
 	spawner := newMockSpawner()
 	spawner.stdout = newPipeReader([]string{toolUseLine("Read")})
+	firstWorktree := validAssignWorktree(t, "append-worktree1")
+	secondWorktree := validAssignWorktree(t, "append-worktree2")
 
 	// Create worker with pipe connection
 	dispatcherConn, workerConn := net.Pipe()
@@ -137,7 +140,7 @@ func TestOpenLogFileAppendsInsteadOfTruncating(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "first-bead",
-			Worktree: "/fake/worktree1",
+			Worktree: firstWorktree,
 		},
 	})
 
@@ -167,7 +170,7 @@ func TestOpenLogFileAppendsInsteadOfTruncating(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "second-bead",
-			Worktree: "/fake/worktree2",
+			Worktree: secondWorktree,
 		},
 	})
 

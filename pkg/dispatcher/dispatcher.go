@@ -33,6 +33,7 @@ import (
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
+	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 	"oro/pkg/web"
 
@@ -279,7 +280,7 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
-	cmd.Env = qgRunnerEnv(skipMutation)
+	cmd.Env = qgRunnerEnv(skipMutation, worktree)
 	out, runErr := cmd.CombinedOutput()
 	output = string(out)
 	if runErr != nil {
@@ -292,7 +293,7 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 	return true, output, nil
 }
 
-func qgRunnerEnv(skipMutation bool) []string {
+func qgRunnerEnv(skipMutation bool, worktree string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
@@ -303,7 +304,7 @@ func qgRunnerEnv(skipMutation bool) []string {
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
 	}
-	return env
+	return processenv.ForWorkdir(env, worktree)
 }
 
 // --- Worker tracking ---

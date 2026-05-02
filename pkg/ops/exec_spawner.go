@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"oro/pkg/processenv"
 )
 
 // RuntimeSpec describes how an ops runtime launches a subprocess.
@@ -30,7 +32,9 @@ func (s *ExecSpawner) Spawn(ctx context.Context, model, prompt, workdir string) 
 	cmd := exec.CommandContext(ctx, s.spec.Command, s.spec.BuildArgs(model, prompt)...)
 	cmd.Dir = workdir
 	if s.spec.BuildEnv != nil {
-		cmd.Env = s.spec.BuildEnv()
+		cmd.Env = processenv.ForWorkdir(s.spec.BuildEnv(), workdir)
+	} else {
+		cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
 	}
 
 	var outBuf strings.Builder

@@ -7724,10 +7724,13 @@ func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool
 
 func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
 	t.Setenv("ORO_SKIP_MUTATION", "1")
+	t.Setenv("PWD", "/wrong/root")
+	t.Setenv("GIT_DIR", "/wrong/root/.git")
+	t.Setenv("GIT_WORK_TREE", "/wrong/root")
 
 	tmpDir := t.TempDir()
 	script := filepath.Join(tmpDir, "quality_gate.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo unexpected; exit 1; fi\necho clean\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo unexpected; exit 1; fi\nprintf 'PWD=%s GIT_DIR=%s GIT_WORK_TREE=%s\\n' \"$PWD\" \"${GIT_DIR-unset}\" \"${GIT_WORK_TREE-unset}\"\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
 		t.Fatal(err)
 	}
 	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
@@ -7740,6 +7743,11 @@ func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
 	}
 	if !passed {
 		t.Fatalf("expected QG to pass without inherited ORO_SKIP_MUTATION, output: %s", output)
+	}
+	if !strings.Contains(output, "PWD="+tmpDir) ||
+		!strings.Contains(output, "GIT_DIR=unset") ||
+		!strings.Contains(output, "GIT_WORK_TREE=unset") {
+		t.Fatalf("ShellQGRunner leaked cwd/git env into QG subprocess, output: %s", output)
 	}
 }
 

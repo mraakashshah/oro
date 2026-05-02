@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"oro/pkg/ops"
+	"oro/pkg/processenv"
 	"oro/pkg/worker"
 )
 
@@ -37,6 +38,7 @@ func (s *WorkerSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 	cmd := exec.CommandContext(ctx, s.binary(), buildExecArgs(model, BuildBootstrapPrompt(prompt, workdir))...) //nolint:gosec // args built internally
 	cmd.Dir = workdir
 	cmd.Stderr = os.Stderr
+	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
 
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {

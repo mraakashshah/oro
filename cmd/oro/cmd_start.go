@@ -19,6 +19,7 @@ import (
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
+	"oro/pkg/processenv"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -172,7 +173,7 @@ func cleanEnvForDaemon(env []string) []string {
 		}
 		cleaned = append(cleaned, e)
 	}
-	return cleaned
+	return processenv.ForWorkdir(cleaned, "")
 }
 
 // socketPollTimeout is the maximum time to wait for the dispatcher socket.

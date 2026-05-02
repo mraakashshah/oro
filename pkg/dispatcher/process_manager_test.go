@@ -163,6 +163,7 @@ func TestExecProcessManager_ConcurrentSpawn(t *testing.T) {
 // workers using os.Args[0] (the current binary path) instead of a
 // hardcoded "oro" string. This ensures oro works without being on PATH.
 func TestSpawnUsesCurrentBinary(t *testing.T) {
+	t.Setenv("GIT_DIR", "/repo/.git")
 	pm := dispatcher.NewOroProcessManager("/tmp/test.sock", "")
 
 	cmd := pm.CmdForWorker("w-test")
@@ -184,6 +185,68 @@ func TestSpawnUsesCurrentBinary(t *testing.T) {
 	for i, exp := range expectedArgs {
 		if cmd.Args[i] != exp {
 			t.Fatalf("arg[%d]: expected %q, got %q", i, exp, cmd.Args[i])
+		}
+	}
+	for _, entry := range cmd.Env {
+		if entry == "GIT_DIR=/repo/.git" {
+			t.Fatal("worker process env leaked GIT_DIR")
+		}
+	}
+}
+
+func TestOroProcessManagerSpawnStripsGitEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	reportPath := filepath.Join(tmpDir, "worker-env.txt")
+	fakeOro := filepath.Join(tmpDir, "fake-oro")
+	script := fmt.Sprintf(`#!/bin/sh
+printf 'PWD=%%s
+GIT_DIR=%%s
+GIT_WORK_TREE=%%s
+GIT_INDEX_FILE=%%s
+' "${PWD-unset}" "${GIT_DIR-unset}" "${GIT_WORK_TREE-unset}" "${GIT_INDEX_FILE-unset}" > %q
+`, reportPath)
+	if err := os.WriteFile(fakeOro, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake oro script: %v", err)
+	}
+
+	origArgs := os.Args
+	os.Args = append([]string{fakeOro}, os.Args[1:]...)
+	t.Cleanup(func() { os.Args = origArgs })
+
+	mainRoot := filepath.Join(tmpDir, "main")
+	t.Setenv("PWD", mainRoot)
+	t.Setenv("GIT_DIR", filepath.Join(mainRoot, ".git"))
+	t.Setenv("GIT_WORK_TREE", mainRoot)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(mainRoot, ".git", "index"))
+
+	pm := dispatcher.NewOroProcessManager("/tmp/test.sock", "")
+	proc, err := pm.Spawn("w-env")
+	if err != nil {
+		t.Fatalf("Spawn returned error: %v", err)
+	}
+	if proc == nil {
+		t.Fatal("Spawn returned nil process")
+	}
+	pm.Wait()
+
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	report := string(data)
+	for _, forbidden := range []string{
+		"PWD=" + mainRoot,
+		"GIT_DIR=" + filepath.Join(mainRoot, ".git"),
+		"GIT_WORK_TREE=" + mainRoot,
+		"GIT_INDEX_FILE=" + filepath.Join(mainRoot, ".git", "index"),
+	} {
+		if strings.Contains(report, forbidden) {
+			t.Fatalf("worker process env leaked %q in report:\n%s", forbidden, report)
+		}
+	}
+	for _, expected := range []string{"GIT_DIR=unset", "GIT_WORK_TREE=unset", "GIT_INDEX_FILE=unset"} {
+		if !strings.Contains(report, expected) {
+			t.Fatalf("worker process env report missing %q:\n%s", expected, report)
 		}
 	}
 }
