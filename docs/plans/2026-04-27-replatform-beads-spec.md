@@ -1940,7 +1940,7 @@ Default location if `--out` omitted: `.oro/exports/<timestamp>.jsonl`.
 | Nightly cron | `0 2 * * * cd /path && oro bead export --out=.oro/backups/$(date +\%F).jsonl` | Built-in habit |
 | Pre-merge snapshot | git pre-commit hook calls `oro bead export` if needed | Off by default |
 | Litestream (advanced) | Replicate `state.db` to S3 | For high-availability ops |
-| **Acceptance-test cron (Phase 9)** | `0 3 * * * cd /path && oro bead acceptance-test \|\| <alert>` | Required during Phase 9 observation week. macOS: launchd plist under `~/Library/LaunchAgents/`; Linux: systemd timer or operator's user crontab. The spec does not prescribe the scheduler — the operator picks per their environment. `oro doctor` reports if the cron is missing. |
+| Optional acceptance-test cron | `0 3 * * * cd /path && oro bead acceptance-test \|\| <alert>` | Optional post-cutover operational hygiene. It is not a Phase 9 cutover gate; Phase 9 is validated by the native-first evidence in §12.10. |
 
 The default oro setup adds the nightly cron suggestion to `oro readiness`'s checklist (Companion spec §4.5/§7.7).
 
@@ -2341,18 +2341,33 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 - The operator log links to `docs/runbooks/beadstore-native-cutover.md` and
   records why any bd/Dolt divergence was treated as non-veto.
 
-### 12.10 Phase 9 — Cutover + observation (7 days passive)
+### 12.10 Phase 9 — Native cutover evidence
 
 **Deliverables:**
 
-- Set `ORO_BEADSOURCE_MODE=sqlite`.
-- Workers updated to call `oro bead` directly (v15: no shim; Phase 8 restart of all workers picks up the Phase-6-updated prompts).
-- Operator verification daily for 1 week.
+- Native SQLite remains the authority after Phase 8 cutover evidence passes.
+- bd/Dolt is retained only as import source, audit trail, and rollback
+  reference. bd parity does not veto cutover when divergence is caused by
+  bd/Dolt failure, stale bd state, or bd unavailability.
+- Dispatcher and worker startup are proven with `ORO_BEADSOURCE_MODE=sqlite`
+  and a `PATH` that resolves `oro` but not `bd`.
+- Operator evidence is recorded in
+  `docs/plans/notes/phase9-observation-report.md`.
 
 **Acceptance:**
 
-- No bead-related incidents.
-- Bead operations latency improved or unchanged (SQLite local should beat dolt subprocess).
+- `scripts/check-phase8-no-writers.py` reports `active_writer_count=0`
+  before and after validation.
+- Native commands work directly against the target `state.db`: `oro bead
+  status`, `ready --json`, `blocked --json`, and `show <representative-id>
+  --json`.
+- `scripts/check-native-beadstore-invariants.py` reports zero ready/blocked
+  view mismatches, zero ready/blocked overlap, zero assignment/blocker
+  mismatches, and `PRAGMA integrity_check` returns `ok`.
+- A controlled sqlite/no-bd dispatcher-worker smoke records native `spawn_for`
+  and `assign` events for the requested bead.
+- Bead operation latency is improved or unchanged versus the Phase 0 bd
+  baseline in `docs/plans/notes/baseline-metrics.md`.
 
 ### 12.11 Phase 10 — Cleanup pass 1 (2 days, deferred 30 days)
 
@@ -2405,7 +2420,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 | Phase 6 (prompts/assets — **must complete before Phase 8** since no shim safety net) | 3 (was 2 in v14; +1 for stricter cutover gating) | 3 days |
 | Phase 7 (tests; **no bd-shim test extraction**) | 9–13 (was 10–14 in v14; -1 for no shim tests) | 1.5–2 weeks |
 | Phase 8 (migration day; **operator restarts all workers**) | 1 | 1 day |
-| Phase 9 (observation) | passive | 1 week |
+| Phase 9 (native cutover evidence) | active validation | same day after Phase 8 proof |
 | Phase 10 (cleanup pass 1) | 2 | deferred 30 days |
 | Phase 11 (cleanup pass 2) | 1 | deferred ~1–2 release cycles |
 | **Total active engineering** | **43–48 days** | **≈ 8.5–10 weeks** |
@@ -2540,7 +2555,10 @@ Worker prompts in flight at Phase 8 cutover that still emit `bd <verb>` will fai
 
 ### 14.5 End-to-end acceptance test (`oro bead acceptance-test`) (addresses adversarial review C1)
 
-The v3 spec had per-phase acceptance gates but no single command verifying that the migration is *globally* complete and correct. Phase 9's "no incidents over 7 days" is observation, not automation. v4 adds an end-to-end test command:
+The v3 spec had per-phase acceptance gates but no single command verifying that
+the migration is *globally* complete and correct. The old Phase 9 passive
+observation window is superseded by the native-first evidence gate in §12.10,
+but the end-to-end acceptance command remains useful as an operator check:
 
 ```
 $ oro bead acceptance-test
@@ -2614,9 +2632,14 @@ PASS — checks succeeded in 4.3s
 | 9 | PID lock prevents second dispatcher; stale-lock detection reclaims dead-process locks |
 | 9 | Hooks execute against `state.db` successfully (sample run of each of the 7 hook scripts) |
 
-**Phase 9 acceptance** is amended: the observation period must include `oro bead acceptance-test` running daily (cron) and producing exit-zero for 7 consecutive days. Any failure during the observation period blocks Phase 10.
+**Phase 9 acceptance** is amended: do not require a passive shadow or cron soak.
+The gate is the native-first evidence listed in §12.10 and the current
+operator runbook. After that evidence passes, failures are native beadstore bugs
+unless data corruption requires restoring a recorded SQLite backup.
 
-**Phase 1 deliverable** includes the initial acceptance-test stub. Each phase adds its row(s) from the table above. By Phase 9, the full inventory runs nightly.
+**Phase 1 deliverable** includes the initial acceptance-test stub. Each phase
+adds its row(s) from the table above. By Phase 9, the full inventory can be run
+on demand; scheduled runs are optional post-cutover hygiene, not a cutover gate.
 
 ---
 
@@ -2835,10 +2858,12 @@ Phased reversibility:
 |---|---|---|
 | Phases 1–7 (code shipped, mode `cli`) | Revert code; bd remains authoritative the whole time | Engineering time |
 | Phase 8 (migration imported, before sqlite restart) | Stop dispatcher and workers if any were started; preserve current `state.db`; restore the recorded SQLite backup only if data corruption is proven | <15 min |
-| Phase 9 (mode `sqlite` for ≤7 days) | Stop dispatcher and workers; export SQLite with `oro bead export`; run `bd import --dry-run` and `bd import` so bd has SQLite-side writes; set `ORO_BEADSOURCE_MODE=cli`; restart dispatcher and workers | <30 min |
+| Phase 9 (native SQLite authority) | Stop dispatcher and workers; preserve current `state.db`, WAL/SHM, command transcript, and logs; restore the recorded SQLite backup only if data corruption is proven. If bd must be used for forensic recovery, first export SQLite with `oro bead export` so native-side writes are not silently lost. | <30 min for backup restore; longer if forensic bd reimport is required |
 | Phase 10 (cleanup deletions merged) | Revert deletion commit; reinstall bd; reconcile data | Hours-to-day depending on data drift |
 
-The key principle: **don't do Phase 10 until Phase 9 has been stable for 30 days.** Reversibility is more valuable than tidiness.
+The key principle: **do not let bd/Dolt veto cutover after native validation is
+clean.** Reversibility comes from recorded SQLite backups and JSONL audit
+exports, not from a long-running bd-primary shadow period.
 
 ---
 
@@ -2852,7 +2877,7 @@ The key principle: **don't do Phase 10 until Phase 9 has been stable for 30 days
 - **B4:** Stuck-bead incidents per week.
 - **B5:** Manual operator interventions per week related to bd or dolt.
 
-### 18.2 Post-migration thresholds (measure 30 days after Phase 9)
+### 18.2 Post-migration thresholds (measure during native validation and normal operation)
 
 - **K1:** Bead-operation latency p95 ≤ B1's p95 × 0.5 (we expect roughly 2× speedup from in-process SQLite vs subprocess + dolt). Soft target.
 - **K2:** Dispatcher startup ≤ B2 (no regression).
@@ -3331,11 +3356,14 @@ oro bead migrate-from-dolt [--dry-run] [--reconcile] [--apply] [--from-jsonl <pa
 - **WAL** — SQLite Write-Ahead Logging; enables concurrent readers with one writer.
 - **FTS5** — SQLite's built-in full-text search.
 - **Migration #11** — the new schema migration this spec adds (`MigrateBeadSchema`).
-- **Shadow window** — the validation period (days 1–7) where bd is authoritative for both reads and writes; SQLiteStore is read-only and validates parity.
-- **Read-only shadow** — the v2 design choice: shadow mode never mirrors writes to SQLite. SQLite drift during shadow is closed at cutover via `--reconcile`.
+- **Shadow window** — legacy validation design where bd was authoritative for
+  reads and writes while SQLite validated parity. Superseded for cutover by the
+  native-first Phase 9 evidence gate.
+- **Read-only shadow** — the v2 design choice: shadow mode never mirrors writes
+  to SQLite. Kept as historical recovery context, not the current cutover gate.
 - **`--reconcile`** — the migration-tool flag that applies a week's worth of bd-only writes onto SQLite before cutover. Idempotent; gated by `--apply`.
 - **Cutover** — the moment `ORO_BEADSOURCE_MODE` flips from `shadow` to `sqlite`.
-- **Phase 10** — first cleanup pass; deletes dolt management code; retains `LegacyBeadsDir`. Runs ≥30 days after cutover.
+- **Phase 10** — first cleanup pass; deletes dolt management code; retains `LegacyBeadsDir`. Runs after Phase 9 native evidence passes.
 - **Phase 11** — second cleanup pass; removes `LegacyBeadsDir` and the migration tool. Runs ≥1–2 release cycles after Phase 10.
 
 ---
